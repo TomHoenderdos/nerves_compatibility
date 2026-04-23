@@ -1,0 +1,46 @@
+{
+  "schema": 2,
+  "generated_at": "2025-12-23T10:30:00Z",
+  "entries": {
+    "phoenix@1.7.14|nerves_system_rpi4@1.26.1": {
+      "hex_pkg": "phoenix",
+      "hex_version": "1.7.14",
+      "system_pkg": "nerves_system_rpi4",
+      "system_version": "1.26.1",
+      "status": "pass",
+      "run_id": "run_001_phoenix_rpi4",
+      "log_path": "logs/phoenix_rpi4_1.7.14.log",
+      "finished_at": "2025-12-23T09:15:00Z"
+    },
+    "phoenix@1.7.14|nerves_system_bbb@2.20.1": {
+      "hex_pkg": "phoenix",
+      "hex_version": "1.7.14",
+      "system_pkg": "nerves_system_bbb",
+      "system_version": "2.20.1",
+      "status": "pass",
+      "run_id": "run_002_phoenix_bbb",
+      "log_path": "logs/phoenix_bbb_1.7.14.log",
+      "finished_at": "2025-12-23T09:15:30Z"
+    },
+    "jason@1.4.1|nerves_system_rpi4@1.26.1": {
+      "hex_pkg": "jason",
+      "hex_version": "1.4.1",
+      "system_pkg": "nerves_system_rpi4",
+      "system_version": "1.26.1",
+      "status": "pass",
+      "run_id": "run_003_jason_rpi4",
+      "log_path": "logs/jason_rpi4_1.4.1.log",
+      "finished_at": "2025-12-23T09:20:00Z"
+    },
+    "jason@1.4.1|nerves_system_bbb@2.20.1": {
+      "hex_pkg": "jason",
+      "hex_version": "1.4.1",
+      "system_pkg": "nerves_system_bbb",
+      "system_version": "2.20.1",
+      "status": "fail",
+      "run_id": "run_004_jason_bbb",
+      "log_path": "logs/jason_bbb_1.4.1.log",
+      "finished_at": "2025-12-23T09:20:15Z"
+    }
+  }
+}

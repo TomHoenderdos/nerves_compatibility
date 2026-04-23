@@ -1,0 +1,34 @@
+{
+  "run_id": "test_run_002_fail",
+  "package": {
+    "name": "some_package_that_fails",
+    "version": "0.1.0"
+  },
+  "image": {
+    "name": "ghcr.io/nerves-project/ncc-worker",
+    "digest": "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+  },
+  "toolchain": {
+    "elixir": "1.15.7",
+    "erlang": "26",
+    "mix": "1.15.7",
+    "nerves_bootstrap": "1.12.0"
+  },
+  "systems": {
+    "nerves_system_rpi0": {
+      "status": "fail",
+      "duration_sec": 12.5,
+      "firmware_size_bytes": null,
+      "log_tail": "** (CompileError) lib/some_file.ex:10: undefined function bad_function/1\n    (elixir 1.15.7) lib/kernel/parallel_compiler.ex:347: anonymous fn/5\n",
+      "error": "mix firmware exited with code 1"
+    },
+    "nerves_system_bbb": {
+      "status": "fail",
+      "duration_sec": 13.2,
+      "firmware_size_bytes": null,
+      "log_tail": "** (CompileError) lib/some_file.ex:10: undefined function bad_function/1\n    (elixir 1.15.7) lib/kernel/parallel_compiler.ex:347: anonymous fn/5\n",
+      "error": "mix firmware exited with code 1"
+    }
+  },
+  "finished_at": "2025-12-24T10:35:00Z"
+}

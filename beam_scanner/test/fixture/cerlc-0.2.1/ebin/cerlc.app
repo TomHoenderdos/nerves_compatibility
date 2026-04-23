@@ -1,0 +1,9 @@
+{application,cerlc,
+             [{description,"A Native Erlang Configurable CRC function generator"},
+              {vsn,"0.2.1"},
+              {registered,[]},
+              {applications,[kernel,stdlib]},
+              {env,[]},
+              {modules,[cerlc]},
+              {licenses,["Apache 2.0"]},
+              {links,[{"GitHub","https://github.com/mdsebald/cerlc"}]}]}.

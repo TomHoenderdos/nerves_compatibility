@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Statistics - Nerves Compatibility Tracker</title>
+  <style>
+    <%= Site.Nav.css() %>
+    h2 { font-size: 1.5em; margin-bottom: 15px; color: #1f2937; }
+    .breadcrumb {
+      margin-bottom: 15px;
+      font-size: 0.9em;
+      opacity: 0.9;
+    }
+    .breadcrumb a { color: white; text-decoration: none; }
+    .breadcrumb a:hover { text-decoration: underline; }
+    .stats-section {
+      background: white;
+      border-radius: 8px;
+      padding: 30px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+      margin-top: 20px;
+    }
+    .stat-card {
+      background: #f9fafb;
+      padding: 20px;
+      border-radius: 6px;
+      border-left: 4px solid #e5e7eb;
+    }
+    .stat-card.pass { border-left-color: #22c55e; }
+    .stat-card.fail { border-left-color: #ef4444; }
+    .stat-card.error { border-left-color: #f97316; }
+    .stat-card.skipped { border-left-color: #6b7280; }
+    .stat-card .label {
+      font-size: 0.9em;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    .stat-card .value {
+      font-size: 2.5em;
+      font-weight: bold;
+      color: #1f2937;
+    }
+    .stat-card.pass .value { color: #15803d; }
+    .stat-card.fail .value { color: #991b1b; }
+    .stat-card.error .value { color: #9a3412; }
+    .stat-card.skipped .value { color: #4b5563; }
+    .stat-card .percentage {
+      font-size: 0.9em;
+      color: #6b7280;
+      margin-top: 5px;
+    }
+    .system-stats {
+      margin-top: 20px;
+    }
+    .system-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+    }
+    .system-table th {
+      background: #f9fafb;
+      padding: 12px;
+      text-align: left;
+      font-weight: 600;
+      border-bottom: 2px solid #e5e7eb;
+      font-size: 0.9em;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #6b7280;
+    }
+    .system-table td {
+      padding: 12px;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .system-table tr:hover { background: #f9fafb; }
+    .system-name {
+      font-family: monospace;
+      font-weight: 600;
+      color: #1f2937;
+    }
+    .count {
+      text-align: center;
+      font-weight: 500;
+    }
+    .count.pass { color: #15803d; }
+    .count.fail { color: #991b1b; }
+    .count.error { color: #9a3412; }
+    footer {
+      text-align: center;
+      margin-top: 40px;
+      padding: 20px;
+      color: #666;
+      font-size: 0.9em;
+    }
+    footer a {
+      color: #5e2ca5;
+      text-decoration: none;
+    }
+    footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <%= @nav_html %>
+  <main class="page">
+  <h1>Statistics</h1>
+  <p class="subtitle">Overall test results across all packages and systems · Generated <%= @generated_at %></p>
+
+  <section class="stats-section">
+    <h2>Overall Statistics</h2>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="label">Unique Packages</div>
+        <div class="value"><%= @counts.total %></div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Total Package/Versions</div>
+        <div class="value"><%= @counts.total_versions %></div>
+      </div>
+      <div class="stat-card pass">
+        <div class="label">Passing</div>
+        <div class="value"><%= @counts.pass %></div>
+        <%= if @counts.total_versions > 0 do %>
+          <div class="percentage"><%= Float.round(@counts.pass / @counts.total_versions * 100, 1) %>%</div>
+        <% end %>
+      </div>
+      <div class="stat-card fail">
+        <div class="label">Failing</div>
+        <div class="value"><%= @counts.fail %></div>
+        <%= if @counts.total_versions > 0 do %>
+          <div class="percentage"><%= Float.round(@counts.fail / @counts.total_versions * 100, 1) %>%</div>
+        <% end %>
+      </div>
+      <div class="stat-card error">
+        <div class="label">Errors</div>
+        <div class="value"><%= @counts.error %></div>
+        <%= if @counts.total_versions > 0 do %>
+          <div class="percentage"><%= Float.round(@counts.error / @counts.total_versions * 100, 1) %>%</div>
+        <% end %>
+      </div>
+      <%= if @counts.skipped > 0 do %>
+        <div class="stat-card skipped">
+          <div class="label">Skipped</div>
+          <div class="value"><%= @counts.skipped %></div>
+          <div class="percentage"><%= Float.round(@counts.skipped / @counts.total_versions * 100, 1) %>%</div>
+        </div>
+      <% end %>
+    </div>
+  </section>
+
+  <section class="stats-section">
+    <h2>BEAM Scanner Statistics</h2>
+    <% beam_stats = @beam_stats || %{} %>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="label">Packages Scanned</div>
+        <div class="value"><%= beam_stats["packages_with_beam_scan"] || 0 %></div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Packages with NIFs</div>
+        <div class="value"><%= beam_stats["packages_with_nif"] || 0 %></div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Use Protocols</div>
+        <div class="value"><%= beam_stats["packages_with_protocols"] || 0 %></div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Start Callbacks</div>
+        <div class="value"><%= beam_stats["packages_with_start_callback"] || 0 %></div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Shell Calls</div>
+        <div class="value"><%= beam_stats["packages_with_shell"] || 0 %></div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Halt Calls</div>
+        <div class="value"><%= beam_stats["packages_with_halt"] || 0 %></div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Average BEAM Files / Package</div>
+        <div class="value">
+          <%= beam_stats["avg_beam_count_per_pkg"] || "n/a" %>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top: 20px;">
+      <h3 style="margin-bottom: 10px;">Languages Observed</h3>
+      <% languages = beam_stats["languages"] || %{} %>
+      <%= if map_size(languages) == 0 do %>
+        <p style="color: #6b7280;">No language data available.</p>
+      <% else %>
+        <ul style="list-style: disc; padding-left: 20px; color: #1f2937;">
+          <%= for {lang, count} <- Enum.sort_by(languages, fn {_l, c} -> -c end) do %>
+            <li><strong><%= lang %></strong>: <%= count %></li>
+          <% end %>
+        </ul>
+      <% end %>
+    </div>
+  </section>
+
+  <section class="stats-section">
+    <h2>Statistics by System</h2>
+    <div class="system-stats">
+      <%
+        # Drop the synthetic "forced@..." bucket (it's not a real system —
+        # it's our Gleam-skip / admin-override sink) and rekey by CPU
+        # architecture so the table reads the same way as the dashboard
+        # pass-rate tile. system_key looks like "nerves_system_x86_64@1.33.3";
+        # split off the @version tail and run through Architecture.label.
+        real_rows =
+          @by_system
+          |> Enum.reject(fn {k, _} -> String.starts_with?(to_string(k), "forced") end)
+          |> Enum.map(fn {system_key, counts} ->
+            [system_pkg | _] = to_string(system_key) |> String.split("@")
+            {Site.Architecture.label(system_pkg), system_key, counts}
+          end)
+          |> Enum.sort_by(fn {arch, _, _} -> arch end)
+
+        show_skipped? = Enum.any?(real_rows, fn {_, _, c} -> c.skipped > 0 end)
+      %>
+      <table class="system-table">
+        <thead>
+          <tr>
+            <th>Architecture</th>
+            <th>Nerves system</th>
+            <th class="count">Total</th>
+            <th class="count">Pass</th>
+            <th class="count">Fail</th>
+            <th class="count">Error</th>
+            <%= if show_skipped? do %>
+              <th class="count">Skipped</th>
+            <% end %>
+          </tr>
+        </thead>
+        <tbody>
+          <%= for {arch, system_key, system_counts} <- real_rows do %>
+            <% total = system_counts.pass + system_counts.fail + system_counts.error + system_counts.skipped + system_counts.unknown %>
+            <tr>
+              <td class="system-name"><%= arch %></td>
+              <td class="system-name" style="color: #6b7280; font-size: 0.92em;"><%= system_key %></td>
+              <td class="count"><%= total %></td>
+              <td class="count pass"><%= system_counts.pass %></td>
+              <td class="count fail"><%= system_counts.fail %></td>
+              <td class="count error"><%= system_counts.error %></td>
+              <%= if show_skipped? do %>
+                <td class="count"><%= system_counts.skipped %></td>
+              <% end %>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <p>Last test run: <%= @last_run_finished_at %> · Site updated: <%= @generated_at %></p>
+  </footer>
+  </main>
+</body>
+</html>

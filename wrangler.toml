@@ -1,0 +1,15 @@
+# Cloudflare Pages config for the compat-tracker site.
+#
+# `public/site/` is the generated artifact directory. Pages serves that
+# directory at the project's domain — here `compatibility.embedded-elixir.com`
+# once the custom domain is wired up in the Cloudflare dashboard.
+#
+# Wrangler reads this file when invoked with `wrangler pages deploy
+# public/site --project-name=compatibility-embedded-elixir` (see the
+# Makefile `deploy-site` target). The project must exist in Cloudflare
+# before the first deploy — create it once via
+# `wrangler pages project create compatibility-embedded-elixir`.
+
+name = "compatibility-embedded-elixir"
+compatibility_date = "2026-04-01"
+pages_build_output_dir = "public/site"

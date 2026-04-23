@@ -1,0 +1,5 @@
+** (Mix) Compiling 1 file (.ex)
+
+== Compilation error in file lib/some_file.ex ==
+** (CompileError) lib/some_file.ex:10: undefined function bad_function/1
+    (elixir 1.15.7) lib/kernel/parallel_compiler.ex:347: anonymous fn/5 in Kernel.ParallelCompiler.spawn_workers/7

@@ -1,0 +1,23 @@
+{
+  "run_id": "phoenix-1.7.0-20231224-001",
+  "image_digest": "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+  "image_name": "ghcr.io/nerves-project/ncc-worker",
+  "package": {
+    "name": "phoenix",
+    "version": "1.7.0",
+    "source": "hex"
+  },
+  "systems_override": null,
+  "limits": {
+    "timeout_seconds": 600,
+    "max_log_bytes": 10485760
+  },
+  "docker": {
+    "platform": "linux/amd64",
+    "network_mode": "bridge",
+    "memory": "4g",
+    "cpus": "2",
+    "pids_limit": 1024
+  },
+  "cache_dir": null
+}
