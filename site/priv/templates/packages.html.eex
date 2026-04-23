@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Packages — Nerves Compatibility</title>
+  <style>
+    <%= Site.Nav.css() %>
+    .filters { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px 20px; margin-bottom: 18px; display: grid; grid-template-columns: minmax(180px, 1fr) repeat(4, auto); gap: 14px; align-items: end; }
+    @media (max-width: 900px) { .filters { grid-template-columns: 1fr 1fr; } }
+    .filters label { display: block; font-size: 0.78em; color: #6b7280; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; }
+    .filters input, .filters select { width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.95em; background: #fff; }
+    .result-meta { color: #6b7280; margin-bottom: 12px; font-size: 0.9em; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+    th, td { padding: 10px 14px; text-align: left; font-size: 0.93em; }
+    th { background: #f9fafb; border-bottom: 2px solid #e5e7eb; font-weight: 600; color: #4b5563; font-size: 0.82em; text-transform: uppercase; letter-spacing: 0.4px; }
+    tr:not(:last-child) td { border-bottom: 1px solid #f3f4f6; }
+    tr:hover td { background: #fafafa; }
+    a.pkg-link { color: #5e2ca5; text-decoration: none; font-weight: 600; }
+    a.pkg-link:hover { text-decoration: underline; }
+    .sys-chip { display: inline-block; font-family: ui-monospace, monospace; font-size: 0.75em; padding: 2px 7px; border-radius: 10px; margin-right: 3px; font-weight: 600; }
+    .sys-chip.pass { background: #d1fae5; color: #065f46; }
+    .sys-chip.fail { background: #fee2e2; color: #991b1b; }
+    .sys-chip.error { background: #fee2e2; color: #991b1b; }
+    .sys-chip.skipped { background: #fef3c7; color: #92400e; }
+    .sys-chip.unknown { background: #e5e7eb; color: #374151; }
+    .lang-tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 0.76em; font-weight: 600; margin-right: 3px; }
+    .lang-tag.rust { background: #fed7aa; color: #7c2d12; }
+    .lang-tag.zig { background: #fef3c7; color: #78350f; }
+    .lang-tag.c { background: #dbeafe; color: #1e3a8a; }
+    .lang-tag.shell { background: #d1fae5; color: #065f46; }
+    .lang-tag.python { background: #ede9fe; color: #5b21b6; }
+    .lang-tag.ruby { background: #fee2e2; color: #991b1b; }
+    .lang-tag.none { background: #f3f4f6; color: #6b7280; }
+    .empty { text-align: center; padding: 40px; color: #6b7280; font-style: italic; }
+    .overall-pass { color: #065f46; }
+    .overall-fail { color: #991b1b; font-weight: 600; }
+    .overall-partial { color: #92400e; }
+    .overall-skipped { color: #92400e; }
+    .overall-unknown { color: #6b7280; }
+    .pager { display: flex; justify-content: center; gap: 8px; margin-top: 20px; }
+    .pager button { padding: 6px 12px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; cursor: pointer; font-size: 0.9em; }
+    .pager button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .pager .pager-info { padding: 6px 12px; color: #6b7280; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <%= @nav_html %>
+  <main class="page">
+    <h1>Packages</h1>
+    <p class="subtitle"><%= @total_packages %> scanned · <%= @total_placeholders %> queued placeholders · filter and sort to find what you need.</p>
+
+    <div class="filters">
+      <div>
+        <label for="pkg-search">Search</label>
+        <input id="pkg-search" type="text" placeholder="package name…" autocomplete="off">
+      </div>
+      <div>
+        <label for="status-filter">Status</label>
+        <select id="status-filter">
+          <option value="all">All</option>
+          <option value="pass">All passing</option>
+          <option value="fail">Any fail</option>
+          <option value="partial">Partial</option>
+          <option value="skipped">Skipped</option>
+          <option value="unknown">Unknown / not scanned</option>
+        </select>
+      </div>
+      <div>
+        <label for="native-filter">Native code</label>
+        <select id="native-filter">
+          <option value="all">All</option>
+          <option value="any">Any native code</option>
+          <option value="none">No native code</option>
+          <option value="rust">Rust</option>
+          <option value="zig">Zig</option>
+          <option value="c">C</option>
+          <option value="language unknown">Language unknown</option>
+        </select>
+      </div>
+      <div>
+        <label for="sort">Sort</label>
+        <select id="sort">
+          <option value="name">Name (A→Z)</option>
+          <option value="recent">Recently scanned</option>
+          <option value="status">Status (fails first)</option>
+          <option value="footprint-desc">Footprint (largest first)</option>
+          <option value="footprint-asc">Footprint (smallest first)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="result-meta"><span id="result-count"></span></div>
+    <div id="table-container"></div>
+    <div class="pager">
+      <button id="page-prev">← Prev</button>
+      <span class="pager-info" id="page-info"></span>
+      <button id="page-next">Next →</button>
+    </div>
+  </main>
+
+  <script>
+    const ROWS = <%= @rows_json %>;
+    const PLACEHOLDERS = <%= @placeholders_json %>;
+
+    const PAGE_SIZE = 50;
+    // Read initial filter state from URL query params so deep-links like
+    // `packages.html?status=fail` land with that filter pre-applied. Keep
+    // in sync with valid values in each <select>.
+    const params = new URLSearchParams(window.location.search);
+    const valid = {
+      status: ['all','pass','fail','partial','skipped','unknown'],
+      native: ['all','any','none','rust','zig','c','language unknown'],
+      sort:   ['name','recent','status','footprint-desc','footprint-asc']
+    };
+    const pick = (k) => {
+      const v = params.get(k);
+      return v && valid[k].includes(v) ? v : valid[k][0];
+    };
+    let state = {
+      search: (params.get('q') || '').trim().toLowerCase(),
+      status: pick('status'),
+      native: pick('native'),
+      sort:   pick('sort'),
+      page:   0
+    };
+
+    const $ = id => document.getElementById(id);
+    const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    function matches(row) {
+      if (state.search && !row.name.toLowerCase().includes(state.search)) return false;
+      if (state.status !== 'all' && row.overall !== state.status) return false;
+      if (state.native !== 'all') {
+        const native = row.native;
+        if (state.native === 'any') {
+          if (native === 'none' || native === 'not scanned') return false;
+        } else if (state.native === 'none') {
+          if (native !== 'none') return false;
+        } else {
+          // exact bucket match (rust / zig / c / "language unknown")
+          if (native !== state.native) return false;
+        }
+      }
+      return true;
+    }
+
+    function fmtBytes(n) {
+      if (n == null) return '—';
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      if (n < 1024 * 1024 * 1024) return (n / (1024*1024)).toFixed(1) + ' MB';
+      return (n / (1024*1024*1024)).toFixed(2) + ' GB';
+    }
+
+    function sorted(rows) {
+      if (state.sort === 'recent') {
+        return [...rows].sort((a, b) => (b.last_run_at || '').localeCompare(a.last_run_at || ''));
+      }
+      if (state.sort === 'status') {
+        const rank = { fail: 0, error: 0, partial: 1, skipped: 2, unknown: 3, pass: 4 };
+        return [...rows].sort((a, b) => (rank[a.overall] ?? 9) - (rank[b.overall] ?? 9));
+      }
+      if (state.sort === 'footprint-desc' || state.sort === 'footprint-asc') {
+        // Null footprints sort to the end regardless of direction.
+        const dir = state.sort === 'footprint-asc' ? 1 : -1;
+        return [...rows].sort((a, b) => {
+          const av = a.avg_footprint_bytes, bv = b.avg_footprint_bytes;
+          if (av == null && bv == null) return a.name.localeCompare(b.name);
+          if (av == null) return 1;
+          if (bv == null) return -1;
+          return dir * (av - bv);
+        });
+      }
+      return [...rows].sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    function nativeTag(bucket) {
+      if (bucket == null || bucket === 'none' || bucket === 'not scanned') {
+        return '<span style="color:#9ca3af">—</span>';
+      }
+      if (bucket === 'language unknown') {
+        return '<span class="lang-tag none" title="Package has native code but its language wasn\'t determined">native: ?</span>';
+      }
+      return `<span class="lang-tag ${esc(bucket)}">${esc(bucket)}</span>`;
+    }
+
+    function rowHtml(row) {
+      const sysChips = row.systems.map(s => `<span class="sys-chip ${esc(s.status)}">${esc(s.short)}</span>`).join('');
+      const overall = `<span class="overall-${esc(row.overall)}">${esc(row.overall)}</span>`;
+      const lastRun = row.last_run_at ? row.last_run_at.slice(0, 10) : '—';
+      const footprint = row.avg_footprint_bytes != null
+        ? `<span title="average across target systems">${fmtBytes(row.avg_footprint_bytes)}</span>`
+        : '<span style="color:#9ca3af">—</span>';
+      return `<tr>
+        <td><a class="pkg-link" href="packages/${esc(row.filename)}">${esc(row.name)}</a> <span style="color:#9ca3af;font-size:0.82em">@${esc(row.version)}</span></td>
+        <td>${overall}</td>
+        <td>${sysChips || '<span style="color:#9ca3af">—</span>'}</td>
+        <td>${nativeTag(row.native)}</td>
+        <td style="text-align:right;font-family:ui-monospace,monospace;font-size:0.88em;white-space:nowrap">${footprint}</td>
+        <td style="color:#6b7280;font-size:0.88em;white-space:nowrap">${esc(lastRun)}</td>
+      </tr>`;
+    }
+
+    function placeholderRowHtml(ph) {
+      return `<tr>
+        <td><a class="pkg-link" href="packages/${esc(ph.filename)}">${esc(ph.name)}</a></td>
+        <td><span class="overall-unknown">not scanned</span></td>
+        <td><span style="color:#9ca3af">—</span></td>
+        <td><span style="color:#9ca3af">—</span></td>
+        <td style="color:#9ca3af">—</td>
+        <td style="color:#9ca3af">—</td>
+      </tr>`;
+    }
+
+    function render() {
+      const base = ROWS.filter(matches);
+      const includePlaceholders = state.status === 'all' || state.status === 'unknown';
+      // Placeholders have no scan data, so any Native filter more specific
+      // than "all" or "none" excludes them.
+      const nativeOk = state.native === 'all' || state.native === 'none';
+      const placeholderRows = includePlaceholders && nativeOk
+        ? PLACEHOLDERS.filter(p => !state.search || p.name.toLowerCase().includes(state.search))
+        : [];
+
+      const sortedRows = sorted(base);
+      const totalMatches = sortedRows.length + placeholderRows.length;
+
+      const maxPage = Math.max(0, Math.ceil(totalMatches / PAGE_SIZE) - 1);
+      if (state.page > maxPage) state.page = maxPage;
+
+      const start = state.page * PAGE_SIZE;
+      const end = start + PAGE_SIZE;
+
+      // Combined slice: real rows first, then placeholders
+      const combined = [...sortedRows.map(r => ({t:'real', r})), ...placeholderRows.map(r => ({t:'ph', r}))];
+      const pageItems = combined.slice(start, end);
+
+      $('result-count').textContent = `${totalMatches.toLocaleString()} package${totalMatches === 1 ? '' : 's'} match your filters`;
+      $('page-info').textContent = totalMatches === 0 ? '' : `Showing ${start + 1}–${Math.min(end, totalMatches)} of ${totalMatches}`;
+      $('page-prev').disabled = state.page === 0;
+      $('page-next').disabled = state.page >= maxPage;
+
+      if (totalMatches === 0) {
+        $('table-container').innerHTML = '<div class="empty">No packages match your filters.</div>';
+        return;
+      }
+
+      const body = pageItems.map(it => it.t === 'real' ? rowHtml(it.r) : placeholderRowHtml(it.r)).join('');
+      $('table-container').innerHTML = `<table>
+        <thead><tr>
+          <th>Package</th>
+          <th style="width:90px">Overall</th>
+          <th style="width:200px">Systems</th>
+          <th style="width:150px">Native</th>
+          <th style="width:110px; text-align:right">Avg footprint</th>
+          <th style="width:110px">Last scan</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table>`;
+    }
+
+    // Reflect initial URL-derived state into the visible controls
+    $('pkg-search').value = state.search;
+    $('status-filter').value = state.status;
+    $('native-filter').value = state.native;
+    $('sort').value = state.sort;
+
+    function syncUrl() {
+      const p = new URLSearchParams();
+      if (state.search) p.set('q', state.search);
+      for (const k of ['status','native','sort']) {
+        if (state[k] !== valid[k][0]) p.set(k, state[k]);
+      }
+      const qs = p.toString();
+      const newUrl = window.location.pathname + (qs ? '?' + qs : '');
+      window.history.replaceState(null, '', newUrl);
+    }
+
+    $('pkg-search').addEventListener('input', e => { state.search = e.target.value.trim().toLowerCase(); state.page = 0; syncUrl(); render(); });
+    $('status-filter').addEventListener('change', e => { state.status = e.target.value; state.page = 0; syncUrl(); render(); });
+    $('native-filter').addEventListener('change', e => { state.native = e.target.value; state.page = 0; syncUrl(); render(); });
+    $('sort').addEventListener('change', e => { state.sort = e.target.value; state.page = 0; syncUrl(); render(); });
+    $('page-prev').addEventListener('click', () => { if (state.page > 0) { state.page--; render(); window.scrollTo(0, 0); } });
+    $('page-next').addEventListener('click', () => { state.page++; render(); window.scrollTo(0, 0); });
+
+    render();
+  </script>
+</body>
+</html>

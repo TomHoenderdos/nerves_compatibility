@@ -1,0 +1,23 @@
+{
+  "run_id": "test_run_001",
+  "image": {
+    "name": "ghcr.io/nerves-project/ncc-worker",
+    "digest": "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+  },
+  "package": {
+    "name": "jason",
+    "version": "1.4.1"
+  },
+  "systems_override": {
+    "nerves_system_rpi4": "~> 1.26.0",
+    "nerves_system_bbb": "~> 2.20.0"
+  },
+  "paths": {
+    "work_dir": "/work",
+    "output_dir": "/out"
+  },
+  "limits": {
+    "per_system_timeout_sec": 600,
+    "log_tail_bytes": 4096
+  }
+}
