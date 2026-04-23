@@ -314,6 +314,20 @@
       true ->
         {"#{pass_count}/#{total_systems} systems passing", "warning"}
     end
+
+    issue_title = "Incorrect result: #{@package_name}@#{@package_version}"
+    issue_body = """
+    **Package:** #{@package_name}@#{@package_version}
+
+    **What looks wrong?**
+    <!-- e.g. The page says rpi4 failed to build, but I built this locally without issue. -->
+
+    **How do you know?** (optional)
+    <!-- Build logs, firmware versions, Elixir/OTP versions, anything that helps us reproduce. -->
+    """
+    report_issue_url =
+      "https://github.com/fhunleth/nerves_compatibility/issues/new?" <>
+        URI.encode_query(title: issue_title, body: issue_body)
   %>
   <header>
     <h1 style="margin-bottom: 4px; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;">
@@ -349,7 +363,10 @@
       <% end %>
     </h1>
     <p style="margin-bottom: 12px;"><%= @package.description %></p>
-    <div class="overall-status <%= overall_status_class %>" style="display: inline-block;"><%= overall_status_text %></div>
+    <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+      <div class="overall-status <%= overall_status_class %>"><%= overall_status_text %></div>
+      <a href="<%= report_issue_url %>" target="_blank" rel="noopener" style="color: #fff; font-size: 0.9em; text-decoration: underline; opacity: 0.9;">Report incorrect info for this package →</a>
+    </div>
 
     <%!-- Dep-derived entries are synthesized by convert_results from other
         packages' dependency_scans. They look like real package pages but
@@ -808,7 +825,7 @@
         <li>All dependencies are from Hex (no git or path dependencies)</li>
         <li>The firmware can be built successfully</li>
       </ul>
-      <p>If you believe a status is incorrect or have additional compatibility information, please <a href="https://github.com/fhunleth/nerves_compatibility/issues/new" class="hex-link" target="_blank">create an issue</a>.</p>
+      <p>If you believe a status is incorrect or have additional compatibility information, please <a href="<%= report_issue_url %>" class="hex-link" target="_blank" rel="noopener">open an issue</a> (the title and template are pre-filled for this package).</p>
     </div>
     </section>
     </div>

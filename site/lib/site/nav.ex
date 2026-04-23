@@ -46,7 +46,11 @@ defmodule Site.Nav do
       ~s[index.html">Nerves Compatibility</a>],
       ~s[<div class="site-nav-links">],
       links,
-      ~s[</div></div></nav>]
+      ~s[</div></div></nav>],
+      ~s[<div class="site-banner"><div class="site-banner-inner">],
+      ~s[<strong>Experimental:</strong> Compatibility results are generated automatically and may be wrong. ],
+      ~s[Spot a problem? <a href="https://github.com/fhunleth/nerves_compatibility/issues/new" target="_blank" rel="noopener">Open an issue on GitHub</a>.],
+      ~s[</div></div>]
     ]
   end
 
@@ -73,7 +77,7 @@ defmodule Site.Nav do
     a { color: #5e2ca5; }
 
     /* Top nav */
-    .site-nav { background: #1e1b3a; color: #fff; padding: 10px 24px; margin-bottom: 24px; }
+    .site-nav { background: #1e1b3a; color: #fff; padding: 10px 24px; }
     .site-nav-inner { max-width: 1200px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap; }
     .site-nav-brand { color: #fff; text-decoration: none; font-weight: 700; font-size: 1.05em; letter-spacing: 0.2px; }
     .site-nav-brand:hover { color: #c4b5fd; }
@@ -81,6 +85,11 @@ defmodule Site.Nav do
     .site-nav-links .nav-link { color: #cbd5e1; text-decoration: none; padding: 6px 12px; border-radius: 6px; font-size: 0.95em; transition: background 120ms; }
     .site-nav-links .nav-link:hover { background: rgba(255,255,255,0.08); color: #fff; }
     .site-nav-links .nav-link.nav-active { background: #5e2ca5; color: #fff; }
+
+    /* Experimental banner */
+    .site-banner { background: #fef3c7; color: #78350f; border-bottom: 1px solid #fcd34d; padding: 8px 24px; margin-bottom: 24px; }
+    .site-banner-inner { max-width: 1200px; margin: 0 auto; font-size: 0.9em; }
+    .site-banner a { color: #78350f; font-weight: 600; }
     """
   end
 end
