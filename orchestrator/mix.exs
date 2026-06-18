@@ -27,6 +27,9 @@ defmodule Orchestrator.MixProject do
     [
       {:req, "~> 0.5"},
       {:req_hex, "~> 0.2"},
+      {:bandit, "~> 1.6"},
+      {:jason, "~> 1.4"},
+      {:plug, "~> 1.16"},
       {:ncc_runner, path: "../runner"},
       {:site, path: "../site"}
     ]

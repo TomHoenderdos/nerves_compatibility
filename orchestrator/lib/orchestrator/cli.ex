@@ -14,7 +14,15 @@ defmodule Orchestrator.CLI do
   def main(args) do
     {opts, command, _} =
       OptionParser.parse(args,
-        strict: [help: :boolean, config: :string],
+        strict: [
+          help: :boolean,
+          config: :string,
+          source: :string,
+          version: :string,
+          subject: :string,
+          verified: :boolean,
+          human_check: :string
+        ],
         aliases: [h: :help, c: :config]
       )
 
@@ -36,6 +44,7 @@ defmodule Orchestrator.CLI do
       ["pause"] -> pause_command()
       ["resume"] -> resume_command()
       ["clear-checked"] -> clear_checked_command()
+      ["request-scan", package] -> request_scan_command(package, opts)
       _ -> print_help()
     end
   end
@@ -54,15 +63,23 @@ defmodule Orchestrator.CLI do
       pause           Pause processing
       resume          Resume processing
       clear-checked   Clear all checked packages (use with caution)
+      request-scan PACKAGE
+                      Queue a package rescan request
 
     Options:
       -h, --help            Show this help
       -c, --config FILE     Load configuration from FILE
+      --version VERSION     Package version to scan (defaults to latest from Hex)
+      --source SOURCE       anonymous_manual, anonymous_turnstile, hex_owner, or github_repo
+      --human-check CHECK   manual or turnstile for anonymous requests
+      --verified            Required for hex_owner and github_repo sources
+      --subject SUBJECT     Verified Hex or GitHub username
 
     Examples:
       ncc_orchestrator start
       ncc_orchestrator status
       ncc_orchestrator queue
+      ncc_orchestrator request-scan jason --version 1.4.4 --source anonymous_manual --human-check manual
       ncc_orchestrator --config config.exs start
     """)
   end
@@ -206,6 +223,31 @@ defmodule Orchestrator.CLI do
 
       _ ->
         IO.puts("Cancelled.")
+    end
+  end
+
+  defp request_scan_command(package, opts) do
+    ensure_started()
+
+    attrs = %{
+      package: package,
+      version: opts[:version],
+      source: opts[:source] || "anonymous_manual",
+      human_check: opts[:human_check] || "manual",
+      verified?: opts[:verified] || false,
+      subject: opts[:subject]
+    }
+
+    case Orchestrator.ScanRequest.submit(attrs) do
+      {:ok, request} ->
+        IO.puts(
+          "Queued #{request.package}:#{request.version} via #{request.source}" <>
+            if(request.subject, do: " for #{request.subject}", else: "")
+        )
+
+      {:error, reason} ->
+        IO.puts("Could not queue request: #{reason}")
+        System.halt(1)
     end
   end
 

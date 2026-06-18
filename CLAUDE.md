@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Layout
 
-This is a **monorepo of five independent Mix projects** that together produce a static site tracking Hex.pm package compatibility with Nerves target systems. The projects depend on each other via `path:` dependencies — there is no top-level `mix.exs`. Each project has its own `deps/`, `_build/`, and `mix.lock`.
+This is a **monorepo of six independent Mix projects** plus two non-Mix deploy targets, together producing a static site tracking Hex.pm package compatibility with Nerves target systems. Mix projects depend on each other via `path:` dependencies — there is no top-level `mix.exs`. Each has its own `deps/`, `_build/`, and `mix.lock`.
 
 | Project | Role | Produces |
 | --- | --- | --- |
@@ -12,10 +12,18 @@ This is a **monorepo of five independent Mix projects** that together produce a 
 | `beam_scanner/` | Scans compiled BEAM files for NIF loads, ports, Application env use, etc. | Library |
 | `worker/` | Runs **inside** the Docker container. Creates a Nerves project, adds the package, builds firmware per system, enforces Hex-only deps. | `ncc_worker` escript |
 | `runner/` | Runs **on the host**. Takes a job JSON, invokes Docker with the right mounts, collects `result.json` + logs. | `ncc_runner` escript |
-| `orchestrator/` | Long-running service: polls Hex.pm, maintains DETS queue, invokes runner, regenerates site. Depends on `runner` and `site`. | `ncc_orchestrator` escript |
+| `orchestrator/` | Long-running service: polls Hex.pm, maintains a DETS **priority** queue, serves a scan-request HTTP API, invokes runner, regenerates site. Depends on `runner` and `site`. | `ncc_orchestrator` escript |
 | `site/` | Static site generator (Mix tasks `site.gen`, `site.serve`, `convert_results`). | HTML + JSON in `public/` |
+| `portal/` | **Phoenix 1.8 + SQLite** web app: admin UI, accounts, GitHub/Hex auth, stores scan requests and forwards them to the orchestrator. Standalone (no `path:` deps). | Phoenix server |
+
+Non-Mix deploy targets:
+
+- `functions/` — **Cloudflare Pages Functions** (JS). Public scan-request intake: `api/scan-requests.js` (anonymous, Cloudflare Turnstile-gated) and `api/auth/hex/{start,complete}.js` (Hex OAuth device flow). Each verifies the caller, then forwards to the orchestrator's HTTP API with a `Bearer` shared secret.
+- `public/site/` — the generated static artifact, deployed to Cloudflare Pages (`wrangler.toml`, `make deploy-site`).
 
 The worker/runner split is deliberate: the worker never touches Docker, the runner never touches Mix projects. They communicate only via the JSON input/output contract described in `worker/README.md` and `docs/INDEX_FORMAT.md`.
+
+`portal/AGENTS.md` carries extensive Phoenix 1.8 / LiveView / HEEx conventions — read it before touching `portal/`.
 
 ## Common Commands
 
@@ -54,6 +62,18 @@ mix site.gen --in ../example_data --out ../public
 mix site.serve --dir ../public --port 4000    # http://localhost:4000/site/index.html
 ```
 
+Portal (Phoenix, standalone — not driven by the Makefile):
+
+```bash
+cd portal
+mix setup                          # deps + SQLite DB create/migrate + assets
+mix phx.server                     # http://localhost:4000
+mix test
+mix precommit                      # run when finishing portal changes (see portal/AGENTS.md)
+```
+
+Note: `make format` only runs `mix format` in `compat/`, `worker/`, `runner/`, and `site/` — it skips `beam_scanner/`, `orchestrator/`, and `portal/`; format those from their subdirs.
+
 ## How a Package Gets Checked (End-to-End)
 
 1. **Orchestrator** (`orchestrator/lib/orchestrator/hex_poller.ex`) polls Hex.pm, pushes new `{pkg, ver}` into a DETS-backed queue (`queue.dets`). Already-checked entries live in `checked.dets`.
@@ -71,6 +91,19 @@ mix site.serve --dir ../public --port 4000    # http://localhost:4000/site/index
    - `NccWorker.FileArchiver` content-addresses compiled artifacts by SHA256 into `files_dir` for the precompiled API.
    - Writes atomic `result.json`.
 5. **Site generator** (`site/lib/site/generator.ex`) reads the three index JSONs and emits HTML pages, per-package SVG badges, a precompiled-package manifest (`site/lib/site/precompiled_manifest.ex`), and copies logs.
+
+The orchestrator's queue is **priority-ordered** (`orchestrator/lib/orchestrator/queue.ex`): rank `hex_owner` (0) < `github_repo` (10) < `anonymous` (50) < `normal` (100, the Hex poller's default) < `pending_review` (200). Lower rank pops first; re-queuing an existing package keeps the higher-priority entry.
+
+## On-Demand Scan Requests (Dynamic Site)
+
+Beyond the Hex poller, users can request a specific package be scanned. Two intake fronts converge on one orchestrator endpoint:
+
+1. **Cloudflare Pages Functions** (`functions/api/`) — anonymous requests pass Turnstile; package owners auth via Hex OAuth device flow. Both forward to the orchestrator.
+2. **Portal** (`portal/`, Phoenix) — `Portal.ScanRequests.forward_to_orchestrator/2` POSTs via `Req` to the orchestrator using `:orchestrator_scan_request_url` + `:scan_request_shared_secret`.
+
+**Orchestrator HTTP API** (`Orchestrator.ScanRequestRouter`, a `Plug.Router` served by **Bandit**): `POST /scan-requests`, `/auth/hex/start`, `/auth/hex/complete`, `GET /health`. All non-health routes require `Authorization: Bearer <shared_secret>`. The server is **off by default** — enable via `config :orchestrator, :scan_request_server, true` (port `:scan_request_port`, default 4080) and set `NCC_SCAN_REQUEST_SECRET` (`:scan_request_shared_secret`). Wired in `application.ex` (`maybe_add_scan_request_server/1`).
+
+`Orchestrator.ScanRequest.submit/1` validates the package, authorizes by `:source` (`:hex_owner` / `:github_repo` require a verified subject; `:anonymous_turnstile` requires a human check), and maps source → queue priority. `Orchestrator.HexAuth` implements the Hex.pm OAuth device login and package-ownership check. Auth providers live **outside** `ScanRequest` — the caller (Function or portal) verifies identity first, then submits with the matching `:source`.
 
 ## Exit Code Conventions
 

@@ -59,6 +59,49 @@ defmodule Orchestrator.QueueTest do
       assert {:ok, {"ecto", "3.10.0"}} = Queue.dequeue()
       assert :empty = Queue.dequeue()
     end
+
+    test "dequeues priority requests before normal polling work" do
+      Queue.enqueue({"normal_one", "1.0.0"})
+      Queue.enqueue({"normal_two", "1.0.0"})
+      Queue.request_rescan({"jason", "1.4.4"}, priority: :anonymous, source: :anonymous_turnstile)
+      Queue.request_rescan({"ecto", "3.10.0"}, priority: :hex_owner, source: :hex_owner)
+
+      assert {:ok, {"ecto", "3.10.0"}} = Queue.dequeue()
+      assert {:ok, {"jason", "1.4.4"}} = Queue.dequeue()
+      assert {:ok, {"normal_one", "1.0.0"}} = Queue.dequeue()
+      assert {:ok, {"normal_two", "1.0.0"}} = Queue.dequeue()
+    end
+
+    test "priority request upgrades an existing queued normal item" do
+      Queue.enqueue({"jason", "1.4.4"})
+      Queue.enqueue({"ecto", "3.10.0"})
+
+      Queue.request_rescan({"ecto", "3.10.0"}, priority: :hex_owner, source: :hex_owner)
+
+      assert {:ok, {"ecto", "3.10.0"}} = Queue.dequeue()
+      assert {:ok, {"jason", "1.4.4"}} = Queue.dequeue()
+    end
+  end
+
+  describe "request_rescan/2" do
+    test "can requeue an already checked package" do
+      item = {"jason", "1.4.4"}
+      Queue.enqueue(item)
+      Queue.mark_checked(item)
+
+      assert :ok = Queue.request_rescan(item, priority: :anonymous, source: :anonymous_turnstile)
+      assert Queue.size() == 1
+      assert {:ok, ^item} = Queue.dequeue()
+    end
+
+    test "stores request metadata" do
+      Queue.request_rescan({"jason", "1.4.4"}, priority: :github_repo, source: :github_repo)
+
+      assert [
+               {{"jason", "1.4.4"},
+                %{priority: :github_repo, source: :github_repo, requested_at: %DateTime{}}}
+             ] = Queue.list_entries()
+    end
   end
 
   describe "mark_checked/1" do

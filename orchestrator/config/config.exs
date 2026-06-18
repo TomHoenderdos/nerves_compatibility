@@ -15,6 +15,13 @@ config :orchestrator, :poll_interval_ms, :timer.hours(1)
 # if they're already checked/queued, thanks to Queue.enqueue's dedup).
 config :orchestrator, :priority_users, ["nerves", "fhunleth"]
 
+# Optional HTTP ingest API for Cloudflare Pages Functions. Enable only when
+# `:scan_request_shared_secret` is configured and the endpoint is reachable
+# from Cloudflare.
+config :orchestrator, :scan_request_server, false
+config :orchestrator, :scan_request_port, 4080
+config :orchestrator, :scan_request_shared_secret, System.get_env("NCC_SCAN_REQUEST_SECRET")
+
 # Path to the runner executable
 config :orchestrator, :runner_path, Path.expand("../../runner/ncc_runner", __DIR__)
 

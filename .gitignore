@@ -41,3 +41,8 @@ orchestrator/orchestrator.log
 # Wrangler local cache (deploys via Cloudflare Pages)
 .wrangler/
 
+# Portal local SQLite databases and runtime state
+portal/var/
+
+# macOS
+.DS_Store

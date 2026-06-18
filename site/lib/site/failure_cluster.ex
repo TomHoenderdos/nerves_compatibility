@@ -19,17 +19,13 @@ defmodule Site.FailureCluster do
     {"NIF built for wrong architecture (scrub-otp)",
      ~r/scrub-otp-release\.sh: ERROR: Unexpected executable format/,
      "A dependency's NIF .so was compiled against the host architecture, not the Nerves target — Nerves' scrub-otp step rejects it at firmware-build time. Usually fixable by forcing a clean rebuild of the dep for the target."},
-    {"Failed to load NIF library at runtime",
-     ~r/Failed to load NIF library/,
+    {"Failed to load NIF library at runtime", ~r/Failed to load NIF library/,
      "Application loaded on target but the NIF .so couldn't be dlopened — usually means the NIF was compiled but for the wrong libc/ABI."},
-    {"UndefinedFunctionError",
-     ~r/\*\* \(UndefinedFunctionError\) function ([^\s]+) is undefined/,
+    {"UndefinedFunctionError", ~r/\*\* \(UndefinedFunctionError\) function ([^\s]+) is undefined/,
      "Package calls into an API that's missing. Often a version skew: the package expects a newer version of a dep than what resolved."},
-    {"CompileError in package source",
-     ~r/\*\* \(CompileError\) ([^\n]+)/,
+    {"CompileError in package source", ~r/\*\* \(CompileError\) ([^\n]+)/,
      "The package's own Elixir source fails to compile. Could be a syntax issue triggered by a newer Elixir, or a missing macro dep."},
-    {"Could not compile dependency",
-     ~r/could not compile dependency :(\w+)/,
+    {"Could not compile dependency", ~r/could not compile dependency :(\w+)/,
      "Catch-all for build failures where a dep's `mix compile` returned nonzero. See the representative log for the specific dep and cause."}
   ]
 
@@ -133,7 +129,12 @@ defmodule Site.FailureCluster do
       @patterns
       |> Enum.map(fn {title, _rx, hint} -> build_cluster(title, hint, acc[title]) end)
 
-    other = build_cluster("Other / unclassified", "Failures whose logs didn't match any known signature — worth eyeballing to propose a new pattern.", acc[:__other__])
+    other =
+      build_cluster(
+        "Other / unclassified",
+        "Failures whose logs didn't match any known signature — worth eyeballing to propose a new pattern.",
+        acc[:__other__]
+      )
 
     (ordered ++ [other])
     |> Enum.reject(&(&1.count == 0))
