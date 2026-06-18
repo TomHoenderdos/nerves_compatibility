@@ -1,0 +1,55 @@
+<Layouts.flash_group flash={@flash} />
+
+<main class="min-h-screen bg-base-100 text-base-content">
+  <.site_nav current_user={@current_user} />
+
+  <div class="site-banner">
+    <div class="site-banner-inner">
+      Create a portal account for package scan requests.
+    </div>
+  </div>
+
+  <div class="mx-auto max-w-md px-4 py-12 sm:px-6 lg:px-8">
+    <section class="card border border-base-300 bg-base-100 shadow-sm">
+      <div class="card-body gap-5">
+        <div>
+          <h1 class="card-title text-2xl">Register</h1>
+          <p class="mt-1 text-sm leading-6 text-base-content/70">
+            Passwords are stored with Argon2 hashing. Hex.pm owner verification can be connected after registration.
+          </p>
+        </div>
+
+        <form method="post" action={~p"/register"} class="space-y-4">
+          <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+          <label class="form-control">
+            <span class="label"><span class="label-text font-semibold">Username</span></span>
+            <input
+              name="username"
+              value={@username}
+              autocomplete="username"
+              required
+              pattern="[a-zA-Z0-9_][a-zA-Z0-9_.-]{2,39}"
+              class="input input-bordered w-full"
+            />
+          </label>
+          <label class="form-control">
+            <span class="label"><span class="label-text font-semibold">Password</span></span>
+            <input
+              name="password"
+              type="password"
+              autocomplete="new-password"
+              minlength="12"
+              required
+              class="input input-bordered w-full"
+            />
+          </label>
+          <button type="submit" class="btn btn-primary w-full">Create account</button>
+        </form>
+
+        <p class="text-sm text-base-content/70">
+          Already have an account? <a href={~p"/login"} class="link link-primary">Login</a>.
+        </p>
+      </div>
+    </section>
+  </div>
+</main>

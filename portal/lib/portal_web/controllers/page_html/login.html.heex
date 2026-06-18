@@ -1,0 +1,53 @@
+<Layouts.flash_group flash={@flash} />
+
+<main class="min-h-screen bg-base-100 text-base-content">
+  <.site_nav current_user={@current_user} />
+
+  <div class="site-banner">
+    <div class="site-banner-inner">
+      Sign in to manage package scan requests.
+    </div>
+  </div>
+
+  <div class="mx-auto max-w-md px-4 py-12 sm:px-6 lg:px-8">
+    <section class="card border border-base-300 bg-base-100 shadow-sm">
+      <div class="card-body gap-5">
+        <div>
+          <h1 class="card-title text-2xl">Login</h1>
+          <p class="mt-1 text-sm leading-6 text-base-content/70">
+            Use your portal account. Hex.pm owner verification still happens separately per package.
+          </p>
+        </div>
+
+        <form method="post" action={~p"/login"} class="space-y-4">
+          <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+          <label class="form-control">
+            <span class="label"><span class="label-text font-semibold">Username</span></span>
+            <input
+              name="username"
+              value={@username}
+              autocomplete="username"
+              required
+              class="input input-bordered w-full"
+            />
+          </label>
+          <label class="form-control">
+            <span class="label"><span class="label-text font-semibold">Password</span></span>
+            <input
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+              class="input input-bordered w-full"
+            />
+          </label>
+          <button type="submit" class="btn btn-primary w-full">Login</button>
+        </form>
+
+        <p class="text-sm text-base-content/70">
+          No account yet? <a href={~p"/register"} class="link link-primary">Register</a>.
+        </p>
+      </div>
+    </section>
+  </div>
+</main>
