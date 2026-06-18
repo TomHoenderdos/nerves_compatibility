@@ -1,4 +1,4 @@
-defmodule Compat.Types do
+defmodule Compatibility.Types do
   @moduledoc """
   Shared type definitions for the compatibility tracker.
   """
