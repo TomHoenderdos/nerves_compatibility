@@ -1,4 +1,4 @@
-defmodule Compat.PackageMetadata do
+defmodule Compatibility.PackageMetadata do
   @moduledoc """
   Loads and manages package-specific metadata.
 
@@ -30,10 +30,10 @@ defmodule Compat.PackageMetadata do
 
   ## Examples
 
-      iex> Compat.PackageMetadata.load("package_metadata.json")
-      {:ok, %Compat.PackageMetadata{packages: %{...}}}
+      iex> Compatibility.PackageMetadata.load("package_metadata.json")
+      {:ok, %Compatibility.PackageMetadata{packages: %{...}}}
 
-      iex> Compat.PackageMetadata.load("missing.json")
+      iex> Compatibility.PackageMetadata.load("missing.json")
       {:error, :enoent}
   """
   @spec load(Path.t()) :: {:ok, t()} | {:error, term()}
@@ -59,12 +59,12 @@ defmodule Compat.PackageMetadata do
 
   ## Examples
 
-      iex> metadata = %Compat.PackageMetadata{packages: %{"jason" => %{notes: "Test"}}}
-      iex> Compat.PackageMetadata.get(metadata, "jason")
+      iex> metadata = %Compatibility.PackageMetadata{packages: %{"jason" => %{notes: "Test"}}}
+      iex> Compatibility.PackageMetadata.get(metadata, "jason")
       %{forced_status: nil, notes: "Test", allowed_systems: [], denied_systems: []}
 
-      iex> metadata = %Compat.PackageMetadata{packages: %{}}
-      iex> Compat.PackageMetadata.get(metadata, "unknown")
+      iex> metadata = %Compatibility.PackageMetadata{packages: %{}}
+      iex> Compatibility.PackageMetadata.get(metadata, "unknown")
       %{forced_status: nil, notes: nil, allowed_systems: [], denied_systems: []}
   """
   @spec get(t(), String.t()) :: metadata()
@@ -77,12 +77,12 @@ defmodule Compat.PackageMetadata do
 
   ## Examples
 
-      iex> metadata = %Compat.PackageMetadata{packages: %{"jason" => %{forced_status: :skip}}}
-      iex> Compat.PackageMetadata.forced_status(metadata, "jason")
+      iex> metadata = %Compatibility.PackageMetadata{packages: %{"jason" => %{forced_status: :skip}}}
+      iex> Compatibility.PackageMetadata.forced_status(metadata, "jason")
       {:forced, :skip}
 
-      iex> metadata = %Compat.PackageMetadata{packages: %{}}
-      iex> Compat.PackageMetadata.forced_status(metadata, "jason")
+      iex> metadata = %Compatibility.PackageMetadata{packages: %{}}
+      iex> Compatibility.PackageMetadata.forced_status(metadata, "jason")
       :none
   """
   @spec forced_status(t(), String.t()) :: {:forced, status()} | :none
@@ -106,7 +106,7 @@ defmodule Compat.PackageMetadata do
 
   ## Examples
 
-      iex> metadata = %Compat.PackageMetadata{
+      iex> metadata = %Compatibility.PackageMetadata{
       ...>   packages: %{
       ...>     "wifi_pkg" => %{
       ...>       allowed_systems: [],
@@ -114,9 +114,9 @@ defmodule Compat.PackageMetadata do
       ...>     }
       ...>   }
       ...> }
-      iex> Compat.PackageMetadata.system_allowed?(metadata, "wifi_pkg", "nerves_system_rpi4")
+      iex> Compatibility.PackageMetadata.system_allowed?(metadata, "wifi_pkg", "nerves_system_rpi4")
       true
-      iex> Compat.PackageMetadata.system_allowed?(metadata, "wifi_pkg", "nerves_system_grisp2")
+      iex> Compatibility.PackageMetadata.system_allowed?(metadata, "wifi_pkg", "nerves_system_grisp2")
       false
   """
   @spec system_allowed?(t(), String.t(), String.t()) :: boolean()
@@ -145,7 +145,7 @@ defmodule Compat.PackageMetadata do
 
   ## Examples
 
-      iex> metadata = %Compat.PackageMetadata{
+      iex> metadata = %Compatibility.PackageMetadata{
       ...>   packages: %{
       ...>     "pkg" => %{
       ...>       allowed_systems: [],
@@ -154,7 +154,7 @@ defmodule Compat.PackageMetadata do
       ...>   }
       ...> }
       iex> systems = ["nerves_system_rpi4", "nerves_system_grisp2"]
-      iex> Compat.PackageMetadata.filter_systems(metadata, "pkg", systems)
+      iex> Compatibility.PackageMetadata.filter_systems(metadata, "pkg", systems)
       ["nerves_system_rpi4"]
   """
   @spec filter_systems(t(), String.t(), [String.t()]) :: [String.t()]
@@ -174,12 +174,12 @@ defmodule Compat.PackageMetadata do
 
   ## Examples
 
-      iex> metadata = %Compat.PackageMetadata{skip_if_depends_on: ["nerves_system_br"]}
-      iex> Compat.PackageMetadata.should_skip_by_dependency?(metadata, ["nerves_system_br", "jason"])
+      iex> metadata = %Compatibility.PackageMetadata{skip_if_depends_on: ["nerves_system_br"]}
+      iex> Compatibility.PackageMetadata.should_skip_by_dependency?(metadata, ["nerves_system_br", "jason"])
       true
 
-      iex> metadata = %Compat.PackageMetadata{skip_if_depends_on: ["nerves_system_br"]}
-      iex> Compat.PackageMetadata.should_skip_by_dependency?(metadata, ["jason", "ecto"])
+      iex> metadata = %Compatibility.PackageMetadata{skip_if_depends_on: ["nerves_system_br"]}
+      iex> Compatibility.PackageMetadata.should_skip_by_dependency?(metadata, ["jason", "ecto"])
       false
   """
   @spec should_skip_by_dependency?(t(), [String.t()]) :: boolean()
@@ -195,8 +195,8 @@ defmodule Compat.PackageMetadata do
 
   ## Examples
 
-      iex> metadata = %Compat.PackageMetadata{skip_if_depends_on: ["nerves_system_br"]}
-      iex> Compat.PackageMetadata.get_skip_dependencies(metadata)
+      iex> metadata = %Compatibility.PackageMetadata{skip_if_depends_on: ["nerves_system_br"]}
+      iex> Compatibility.PackageMetadata.get_skip_dependencies(metadata)
       ["nerves_system_br"]
   """
   @spec get_skip_dependencies(t()) :: [String.t()]
