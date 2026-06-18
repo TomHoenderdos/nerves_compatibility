@@ -1,0 +1,135 @@
+<Layouts.flash_group flash={@flash} />
+
+<main class="min-h-screen bg-base-100 text-base-content">
+  <.site_nav active={:admin} current_user={@current_user} />
+
+  <div class="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+    <section class="py-8">
+      <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p class="text-sm font-semibold text-primary">Admin</p>
+          <h1 class="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">
+            Scan request operations
+          </h1>
+          <p class="mt-4 max-w-2xl leading-7 text-base-content/70">
+            Review anonymous submissions and inspect accepted requests waiting for scanner processing.
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-8 grid gap-4 sm:grid-cols-2">
+        <div class="rounded-box border border-base-300 bg-base-200/50 p-4">
+          <p class="text-xs font-semibold uppercase text-base-content/60">Needs review</p>
+          <p class="mt-2 text-3xl font-semibold">{length(@pending_anonymous_requests)}</p>
+        </div>
+        <div class="rounded-box border border-base-300 bg-base-200/50 p-4">
+          <p class="text-xs font-semibold uppercase text-base-content/60">Current queue</p>
+          <p class="mt-2 text-3xl font-semibold">{length(@queue_requests)}</p>
+        </div>
+      </div>
+
+      <section class="card mt-8 border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 class="card-title">Anonymous approvals</h2>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                These requests need a human check before queue promotion.
+              </p>
+            </div>
+            <span class="badge badge-outline w-fit">Manual review</span>
+          </div>
+
+          <%= if @pending_anonymous_requests == [] do %>
+            <p class="mt-5 text-sm leading-6 text-base-content/70">
+              No anonymous requests are waiting for approval.
+            </p>
+          <% else %>
+            <div class="mt-5 overflow-x-auto">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Package</th>
+                    <th>Requested by</th>
+                    <th>Submitted</th>
+                    <th class="text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={request <- @pending_anonymous_requests}>
+                    <td class="font-mono">{request.package_name}</td>
+                    <td>{request.subject || "anonymous"}</td>
+                    <td>{format_datetime(request.inserted_at)}</td>
+                    <td>
+                      <div class="flex justify-end gap-2">
+                        <form method="post" action={~p"/admin/requests/#{request.id}/reject"}>
+                          <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                          <button type="submit" class="btn btn-sm btn-ghost text-error">
+                            Reject
+                          </button>
+                        </form>
+                        <form method="post" action={~p"/admin/requests/#{request.id}/approve"}>
+                          <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                          <button type="submit" class="btn btn-sm btn-primary">
+                            Approve
+                          </button>
+                        </form>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </div>
+      </section>
+
+      <section class="card mt-6 border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 class="card-title">Current queue</h2>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                Accepted portal requests are shown oldest first. Pending anonymous requests stay out of this list until approved.
+              </p>
+            </div>
+            <span class="badge badge-primary w-fit">Accepted</span>
+          </div>
+
+          <%= if @queue_requests == [] do %>
+            <p class="mt-5 text-sm leading-6 text-base-content/70">
+              No accepted portal requests are currently queued.
+            </p>
+          <% else %>
+            <div class="mt-5 overflow-x-auto">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Package</th>
+                    <th>Verification</th>
+                    <th>Status</th>
+                    <th>Subject</th>
+                    <th>Submitted</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={request <- @queue_requests}>
+                    <td class="font-mono">{request.package_name}</td>
+                    <td>{verification_label(request.source)}</td>
+                    <td>
+                      <span class="badge badge-outline">
+                        {request_status_label(request.status)}
+                      </span>
+                    </td>
+                    <td>{request.subject || "-"}</td>
+                    <td>{format_datetime(request.inserted_at)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </div>
+      </section>
+    </section>
+  </div>
+</main>

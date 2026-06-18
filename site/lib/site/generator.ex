@@ -74,9 +74,18 @@ defmodule Site.Generator do
       # Generate stats page
       generate_stats_page(site_dir, stats)
 
+      # Generate scan request page
+      generate_request_scan_page(site_dir)
+
       # Generate package detail pages (one per version) plus placeholder
       # pages for the dep names above.
-      generate_package_pages(packages_dir, packages_data, metadata, all_pkgs_index, placeholder_names)
+      generate_package_pages(
+        packages_dir,
+        packages_data,
+        metadata,
+        all_pkgs_index,
+        placeholder_names
+      )
 
       # Generate failure clusters page — groups every fail by normalized
       # log-tail signature so the root causes blocking the most packages
@@ -113,6 +122,17 @@ defmodule Site.Generator do
       )
 
     File.write!(Path.join(site_dir, "failure_clusters.html"), content)
+  end
+
+  defp generate_request_scan_page(site_dir) do
+    template_path = template_path("request_scan.html.eex")
+
+    content =
+      EEx.eval_file(template_path,
+        assigns: %{nav_html: Site.Nav.render(:request_scan)}
+      )
+
+    File.write!(Path.join(site_dir, "request_scan.html"), content)
   end
 
   # -- New browsable packages page --------------------------------------
@@ -650,7 +670,13 @@ defmodule Site.Generator do
     File.write!(output_path, content)
   end
 
-  defp generate_package_pages(packages_dir, packages_data, metadata, all_packages, placeholder_names) do
+  defp generate_package_pages(
+         packages_dir,
+         packages_data,
+         metadata,
+         all_packages,
+         placeholder_names
+       ) do
     template_path = template_path("package.html.eex")
     badges_dir = Path.join(Path.dirname(packages_dir), "badges")
     File.mkdir_p!(badges_dir)
