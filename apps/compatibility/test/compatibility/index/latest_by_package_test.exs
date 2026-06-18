@@ -1,12 +1,12 @@
-defmodule Compat.Index.LatestByPackageTest do
+defmodule Compatibility.Index.LatestByPackageTest do
   use ExUnit.Case, async: true
 
-  alias Compat.Index.LatestByPackage
+  alias Compatibility.Index.LatestByPackage
 
   describe "load/1" do
     test "loads valid example data" do
-      # Navigate from test/compat/index to project root (4 levels up)
-      path = Path.expand("../../../../example_data/latest_by_pkg.json", __DIR__)
+      # Navigate from apps/compatibility/test/compatibility/index to repo root (5 levels up)
+      path = Path.expand("../../../../../example_data/latest_by_pkg.json", __DIR__)
 
       assert {:ok, index} = LatestByPackage.load(path)
       assert index.schema == 2
