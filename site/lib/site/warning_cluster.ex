@@ -43,7 +43,9 @@ defmodule Site.WarningCluster do
         packages
         |> Enum.flat_map(fn {name, pkg} ->
           cond do
-            MapSet.member?(allow, name) -> []
+            MapSet.member?(allow, name) ->
+              []
+
             true ->
               case rule.detect.(name, pkg) do
                 nil -> []
@@ -130,8 +132,11 @@ defmodule Site.WarningCluster do
       |> Enum.uniq()
 
     case affected_systems do
-      [] -> nil
-      systems -> entry(name, pkg, evidence: ["non-deterministic on: " <> Enum.join(systems, ", ")])
+      [] ->
+        nil
+
+      systems ->
+        entry(name, pkg, evidence: ["non-deterministic on: " <> Enum.join(systems, ", ")])
     end
   end
 

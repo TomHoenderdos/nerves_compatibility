@@ -1,0 +1,501 @@
+<Layouts.flash_group flash={@flash} />
+
+<main class="min-h-screen bg-base-100 text-base-content">
+  <.site_nav active={:request_scan} current_user={@current_user} />
+
+  <div class="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
+    <section class="py-8">
+      <div class="max-w-3xl">
+        <p class="text-sm font-semibold text-primary">Queue priority requests</p>
+        <h1 class="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">
+          Request scans for packages
+        </h1>
+        <p class="mt-4 max-w-2xl leading-7 text-base-content/70">
+          Add one or more Hex.pm packages, choose how ownership should be verified, and move accepted requests near the top of the compatibility scan queue.
+        </p>
+      </div>
+
+      <section class="card mt-8 border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-6">
+          <div class="rounded-box border border-warning/30 bg-warning/10 p-4 text-sm leading-6 text-base-content/80">
+            <strong>Experimental results:</strong>
+            Compatibility scans can still be wrong.
+            <a
+              href="https://github.com/fhunleth/nerves_compatibility/issues/new"
+              target="_blank"
+              rel="noopener"
+              class="font-semibold underline"
+            >
+              Open an issue on GitHub
+            </a>
+            if you spot a problem.
+          </div>
+
+          <div>
+            <h2 class="card-title">1. Add packages</h2>
+            <p class="mt-1 text-sm leading-6 text-base-content/70">
+              Search Hex.pm packages or paste several names separated by commas, spaces, or new lines.
+            </p>
+          </div>
+
+          <form
+            method="post"
+            action={~p"/auth/hex/start"}
+            class="space-y-6"
+            data-package-picker
+          >
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <input
+              type="hidden"
+              name="packages"
+              value={Enum.join(@packages, "\n")}
+              data-package-list-input
+            />
+
+            <div class="form-control">
+              <span class="label">
+                <span class="label-text font-semibold">Package names</span>
+              </span>
+              <div class="flex flex-col gap-2 sm:flex-row">
+                <input
+                  id="package"
+                  name="package"
+                  value={@package}
+                  placeholder="jason, nerves, phoenix"
+                  autocomplete="off"
+                  list="hex-package-suggestions"
+                  class="input input-bordered input-lg min-w-0 flex-1 font-mono"
+                  data-package-entry
+                />
+                <button type="button" class="btn btn-lg sm:w-28" data-add-package>
+                  <.icon name="hero-plus-mini" class="size-5" /> Add
+                </button>
+              </div>
+              <datalist id="hex-package-suggestions"></datalist>
+              <div
+                class={[
+                  "mt-3 flex min-h-12 flex-wrap gap-2 rounded-box border border-base-300 bg-base-200/40 p-3",
+                  @packages == [] && "items-center"
+                ]}
+                data-package-chips
+              >
+                <span
+                  :if={@packages == []}
+                  class="text-sm text-base-content/60"
+                  data-package-empty
+                >
+                  Selected packages will appear here.
+                </span>
+                <span
+                  :for={package <- @packages}
+                  class="badge badge-lg gap-2 font-mono"
+                  data-package-chip={package}
+                >
+                  {package}
+                  <button
+                    type="button"
+                    class="text-base-content/60 hover:text-error"
+                    data-remove-package={package}
+                  >
+                    <.icon name="hero-x-mark-mini" class="size-4" />
+                  </button>
+                </span>
+              </div>
+              <p class="mt-2 text-xs leading-5 text-base-content/60">
+                Duplicates are ignored. The server validates package names again before creating requests.
+              </p>
+            </div>
+
+            <div>
+              <h2 class="card-title">2. Choose verification</h2>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                Access tokens are used for verification only and are not stored.
+              </p>
+            </div>
+
+            <fieldset class="grid gap-3" data-verification-methods>
+              <label class="cursor-pointer rounded-box border border-primary/40 bg-primary/5 p-4 transition hover:border-primary/70">
+                <input
+                  type="radio"
+                  name="verification_method"
+                  value="hex"
+                  class="sr-only"
+                  checked
+                  data-verification-method
+                  data-action={~p"/auth/hex/start"}
+                  data-submit-label="Continue with Hex.pm"
+                />
+                <span class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <span class="flex min-w-0 items-start gap-3">
+                    <span class="grid size-10 shrink-0 place-items-center rounded-box bg-primary text-primary-content">
+                      <.icon name="hero-key-mini" class="size-5" />
+                    </span>
+                    <span class="min-w-0">
+                      <span class="block font-semibold">Verify with Hex.pm</span>
+                      <span class="block text-sm leading-6 text-base-content/65">
+                        Highest priority. Requires owner access on every selected Hex.pm package.
+                      </span>
+                    </span>
+                  </span>
+                  <span class="badge badge-primary w-fit shrink-0">Highest</span>
+                </span>
+              </label>
+
+              <label class="cursor-pointer rounded-box border border-base-300 bg-base-200/40 p-4 transition hover:border-secondary/60 hover:bg-base-200">
+                <input
+                  type="radio"
+                  name="verification_method"
+                  value="github"
+                  class="sr-only"
+                  data-verification-method
+                  data-action={~p"/auth/github/start"}
+                  data-submit-label="Continue with GitHub"
+                />
+                <span class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <span class="flex min-w-0 items-start gap-3">
+                    <span class="grid size-10 shrink-0 place-items-center rounded-box border border-base-300 bg-base-100 text-base-content/70">
+                      <.icon name="hero-code-bracket-square-mini" class="size-5" />
+                    </span>
+                    <span class="min-w-0">
+                      <span class="block font-semibold">Verify with GitHub</span>
+                      <span class="block text-sm leading-6 text-base-content/65">
+                        Checks write access to the GitHub repository linked from package metadata.
+                      </span>
+                    </span>
+                  </span>
+                  <span class="badge badge-secondary w-fit shrink-0">Repository access</span>
+                </span>
+              </label>
+
+              <label class="cursor-pointer rounded-box border border-base-300 bg-base-200/40 p-4 transition hover:border-base-content/30 hover:bg-base-200">
+                <input
+                  type="radio"
+                  name="verification_method"
+                  value="anonymous"
+                  class="sr-only"
+                  data-verification-method
+                  data-action={~p"/requests/anonymous"}
+                  data-submit-label="Request manual review"
+                />
+                <span class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <span class="flex min-w-0 items-start gap-3">
+                    <span class="grid size-10 shrink-0 place-items-center rounded-box border border-base-300 bg-base-100 text-base-content/70">
+                      <.icon name="hero-user-circle-mini" class="size-5" />
+                    </span>
+                    <span class="min-w-0">
+                      <span class="block font-semibold">Request manual review</span>
+                      <span class="block text-sm leading-6 text-base-content/65">
+                        No login required. Lower priority and reviewed by a human before queue promotion.
+                      </span>
+                    </span>
+                  </span>
+                  <span class="badge badge-outline w-fit shrink-0">Manual review</span>
+                </span>
+              </label>
+            </fieldset>
+
+            <div class="flex flex-col gap-3 border-t border-base-300 pt-5 sm:flex-row sm:items-center sm:justify-between">
+              <p class="text-sm leading-6 text-base-content/65">
+                Selected packages will be submitted using the verification method above.
+              </p>
+              <button type="submit" class="btn btn-primary sm:min-w-56" data-verification-submit>
+                Continue with Hex.pm
+              </button>
+            </div>
+          </form>
+
+          <%= if @hex_flow do %>
+            <div
+              class="rounded-box border border-primary/30 bg-primary/5 p-4"
+              data-hex-approval-url={
+                @hex_flow.verification_uri_complete || @hex_flow.verification_uri
+              }
+              data-hex-device-code={@hex_flow.device_code}
+            >
+              <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p class="text-sm text-base-content/70">Hex.pm code</p>
+                  <p class="font-mono text-lg font-semibold tracking-widest">
+                    {@hex_flow.user_code}
+                  </p>
+                </div>
+                <div class="flex flex-wrap gap-3">
+                  <a
+                    class="btn btn-secondary"
+                    href={@hex_flow.verification_uri_complete || @hex_flow.verification_uri}
+                    target="_blank"
+                    rel="noopener"
+                    data-hex-approval-link
+                  >
+                    Open approval
+                  </a>
+
+                  <form method="post" action={~p"/auth/hex/complete"}>
+                    <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                    <button type="submit" class="btn btn-primary">I approved it</button>
+                  </form>
+                </div>
+              </div>
+              <p class="mt-3 text-sm leading-6 text-base-content/70">
+                Hex.pm does not redirect back after approval. Keep this page open, approve the code in the Hex.pm tab, then return here. One approval verifies every selected package.
+              </p>
+            </div>
+          <% end %>
+
+          <%= if @polling? do %>
+            <form method="post" action={~p"/auth/hex/complete"}>
+              <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+              <button type="submit" class="btn btn-primary">Check again</button>
+            </form>
+          <% end %>
+
+          <%= if @github_flow do %>
+            <div
+              class="rounded-box border border-secondary/30 bg-secondary/5 p-4"
+              data-github-approval-url={@github_flow.verification_uri}
+              data-github-device-code={@github_flow.device_code}
+            >
+              <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p class="text-sm text-base-content/70">GitHub code</p>
+                  <p class="font-mono text-lg font-semibold tracking-widest">
+                    {@github_flow.user_code}
+                  </p>
+                </div>
+                <div class="flex flex-wrap gap-3">
+                  <a
+                    class="btn btn-secondary"
+                    href={@github_flow.verification_uri}
+                    target="_blank"
+                    rel="noopener"
+                    data-github-approval-link
+                  >
+                    Open approval
+                  </a>
+
+                  <form method="post" action={~p"/auth/github/complete"}>
+                    <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                    <button type="submit" class="btn btn-primary">I approved it</button>
+                  </form>
+                </div>
+              </div>
+              <p class="mt-3 text-sm leading-6 text-base-content/70">
+                GitHub checks the repository linked in each Hex.pm package. One approval verifies every selected package where your account has write access.
+              </p>
+            </div>
+          <% end %>
+
+          <%= if @github_polling? do %>
+            <form method="post" action={~p"/auth/github/complete"}>
+              <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+              <button type="submit" class="btn btn-primary">Check GitHub again</button>
+            </form>
+          <% end %>
+        </div>
+      </section>
+
+      <section
+        :if={@current_user && @recent_requests != []}
+        class="card mt-6 border border-base-300 bg-base-100 shadow-sm"
+      >
+        <div class="card-body">
+          <h2 class="card-title">Your recent requests</h2>
+          <div class="overflow-x-auto">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Package</th>
+                  <th>Verification</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={request <- @recent_requests}>
+                  <td class="font-mono">{request.package_name}</td>
+                  <td>{verification_label(request.source)}</td>
+                  <td>
+                    <span class="badge badge-outline">
+                      {request_status_label(request.status)}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </section>
+  </div>
+</main>
+
+<script>
+  const packagePicker = document.querySelector("[data-package-picker]");
+
+  if (packagePicker) {
+    const entry = packagePicker.querySelector("[data-package-entry]");
+    const listInput = packagePicker.querySelector("[data-package-list-input]");
+    const chips = packagePicker.querySelector("[data-package-chips]");
+    const emptyState = packagePicker.querySelector("[data-package-empty]");
+    const suggestions = document.querySelector("#hex-package-suggestions");
+    const submitButton = packagePicker.querySelector("[data-verification-submit]");
+    const methodInputs = packagePicker.querySelectorAll("[data-verification-method]");
+    let selectedPackages = listInput.value.split(/\s+/).filter(Boolean);
+    let searchTimer;
+
+    function normalizePackage(value) {
+      return value.trim().toLowerCase();
+    }
+
+    function packageTokens(value) {
+      return value.split(/[\s,;]+/).map(normalizePackage).filter(Boolean);
+    }
+
+    function renderPackages() {
+      listInput.value = selectedPackages.join("\n");
+
+      chips.querySelectorAll("[data-package-chip]").forEach((chip) => chip.remove());
+      emptyState?.classList.toggle("hidden", selectedPackages.length > 0);
+      chips.classList.toggle("items-center", selectedPackages.length === 0);
+
+      selectedPackages.forEach((packageName) => {
+        const chip = document.createElement("span");
+        chip.className = "badge badge-lg gap-2 font-mono";
+        chip.dataset.packageChip = packageName;
+
+        const label = document.createTextNode(packageName);
+        const removeButton = document.createElement("button");
+        removeButton.type = "button";
+        removeButton.className = "text-base-content/60 hover:text-error";
+        removeButton.dataset.removePackage = packageName;
+        removeButton.setAttribute("aria-label", `Remove ${packageName}`);
+        removeButton.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 20 20\" fill=\"currentColor\" class=\"size-4\"><path d=\"M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z\" /></svg>";
+
+        chip.append(label, removeButton);
+        chips.append(chip);
+      });
+    }
+
+    function addPackages(value) {
+      packageTokens(value).forEach((packageName) => {
+        if (!selectedPackages.includes(packageName)) {
+          selectedPackages.push(packageName);
+        }
+      });
+
+      entry.value = "";
+      renderPackages();
+    }
+
+    function syncVerificationMethod() {
+      const selected = packagePicker.querySelector("[data-verification-method]:checked");
+      if (!selected) return;
+
+      packagePicker.action = selected.dataset.action;
+      submitButton.textContent = selected.dataset.submitLabel;
+
+      methodInputs.forEach((input) => {
+        input.closest("label").classList.toggle("border-primary/60", input.checked);
+        input.closest("label").classList.toggle("bg-primary/5", input.checked);
+      });
+    }
+
+    async function fetchHexSuggestions(query) {
+      if (query.length < 2) {
+        suggestions.innerHTML = "";
+        return;
+      }
+
+      try {
+        const response = await fetch(`/api/packages/hex?query=${encodeURIComponent(query)}`);
+        const body = await response.json();
+        suggestions.innerHTML = "";
+
+        body.packages.forEach((packageResult) => {
+          const option = document.createElement("option");
+          option.value = packageResult.name;
+          option.label = packageResult.description || packageResult.name;
+          suggestions.append(option);
+        });
+      } catch (_error) {
+        suggestions.innerHTML = "";
+      }
+    }
+
+    packagePicker.querySelector("[data-add-package]")?.addEventListener("click", () => {
+      addPackages(entry.value);
+      entry.focus();
+    });
+
+    entry.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === ",") {
+        event.preventDefault();
+        addPackages(entry.value);
+      }
+    });
+
+    entry.addEventListener("input", () => {
+      window.clearTimeout(searchTimer);
+      searchTimer = window.setTimeout(() => fetchHexSuggestions(normalizePackage(entry.value)), 180);
+    });
+
+    chips.addEventListener("click", (event) => {
+      const removeButton = event.target.closest("[data-remove-package]");
+
+      if (removeButton) {
+        selectedPackages = selectedPackages.filter(
+          (packageName) => packageName !== removeButton.dataset.removePackage
+        );
+        renderPackages();
+      }
+    });
+
+    methodInputs.forEach((input) => input.addEventListener("change", syncVerificationMethod));
+
+    packagePicker.addEventListener("submit", () => {
+      if (entry.value.trim() !== "") {
+        addPackages(entry.value);
+      }
+    });
+
+    renderPackages();
+    syncVerificationMethod();
+  }
+
+  const hexFlow = document.querySelector("[data-hex-approval-url]");
+  const githubFlow = document.querySelector("[data-github-approval-url]");
+  const popupFeatures = "popup=yes,width=520,height=720,left=120,top=80,menubar=no,toolbar=no,location=yes,status=no,resizable=yes,scrollbars=yes";
+
+  function openApproval(url, windowName) {
+    const popup = window.open(url, windowName, popupFeatures);
+
+    if (popup) {
+      popup.focus();
+      return true;
+    }
+
+    return false;
+  }
+
+  if (hexFlow && sessionStorage.getItem("hex-approval-opened") !== hexFlow.dataset.hexDeviceCode) {
+    sessionStorage.setItem("hex-approval-opened", hexFlow.dataset.hexDeviceCode);
+    openApproval(hexFlow.dataset.hexApprovalUrl, "hex_pm_approval");
+  }
+
+  document.querySelector("[data-hex-approval-link]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    openApproval(event.currentTarget.href, "hex_pm_approval");
+  });
+
+  if (
+    githubFlow &&
+    sessionStorage.getItem("github-approval-opened") !== githubFlow.dataset.githubDeviceCode
+  ) {
+    sessionStorage.setItem("github-approval-opened", githubFlow.dataset.githubDeviceCode);
+    openApproval(githubFlow.dataset.githubApprovalUrl, "github_approval");
+  }
+
+  document.querySelector("[data-github-approval-link]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    openApproval(event.currentTarget.href, "github_approval");
+  });
+</script>

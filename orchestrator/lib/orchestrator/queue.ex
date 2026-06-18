@@ -13,6 +13,13 @@ defmodule Orchestrator.Queue do
   require Logger
 
   @type package_version :: {package :: String.t(), version :: String.t()}
+  @type priority :: :hex_owner | :github_repo | :anonymous | :normal | :pending_review
+  @type queue_entry :: %{
+          counter: non_neg_integer(),
+          priority: priority(),
+          source: atom(),
+          requested_at: DateTime.t()
+        }
 
   ## Client API
 
@@ -30,9 +37,26 @@ defmodule Orchestrator.Queue do
   - `:ok` if enqueued
   - `{:already_checked, timestamp}` if already checked
   """
-  @spec enqueue(package_version()) :: :ok | {:already_checked, DateTime.t()}
-  def enqueue({package, version} = item) when is_binary(package) and is_binary(version) do
-    GenServer.call(__MODULE__, {:enqueue, item})
+  @spec enqueue(package_version(), keyword()) :: :ok | {:already_checked, DateTime.t()}
+  def enqueue({package, version} = item, opts \\ [])
+      when is_binary(package) and is_binary(version) do
+    GenServer.call(__MODULE__, {:enqueue, item, opts})
+  end
+
+  @doc """
+  Queues an owner or human-checked rescan ahead of normal Hex polling work.
+
+  Unlike `enqueue/2`, this may requeue an already checked package/version.
+  """
+  @spec request_rescan(package_version(), keyword()) :: :ok
+  def request_rescan({package, version} = item, opts \\ [])
+      when is_binary(package) and is_binary(version) do
+    opts =
+      opts
+      |> Keyword.put_new(:allow_checked?, true)
+      |> Keyword.put_new(:priority, :anonymous)
+
+    GenServer.call(__MODULE__, {:enqueue, item, opts})
   end
 
   @doc """
@@ -96,6 +120,14 @@ defmodule Orchestrator.Queue do
   end
 
   @doc """
+  Returns all queue entries with priority metadata.
+  """
+  @spec list_entries() :: [{package_version(), queue_entry()}]
+  def list_entries() do
+    GenServer.call(__MODULE__, :list_entries)
+  end
+
+  @doc """
   Returns recent checked items (up to limit).
   """
   @spec recent_checked(non_neg_integer()) :: [{package_version(), DateTime.t()}]
@@ -147,22 +179,31 @@ defmodule Orchestrator.Queue do
   end
 
   @impl true
-  def handle_call({:enqueue, {package, version} = item}, _from, state) do
+  def handle_call({:enqueue, {package, version} = item, opts}, _from, state) do
+    allow_checked? = Keyword.get(opts, :allow_checked?, false)
+
     case :dets.lookup(state.checked, item) do
-      [{^item, timestamp}] ->
+      [{^item, timestamp}] when not allow_checked? ->
         {:reply, {:already_checked, timestamp}, state}
 
-      [] ->
+      _ ->
         # Check if already in queue
         case :dets.lookup(state.queue, item) do
-          [{^item, _counter}] ->
+          [{^item, stored}] ->
+            existing_entry = normalize_entry(stored)
+            requested_entry = build_entry(existing_entry.counter, opts)
+            entry = higher_priority_entry(existing_entry, requested_entry)
+            :dets.insert(state.queue, {item, entry})
+
+            Logger.debug("Updated queued item: #{package}:#{version} priority=#{entry.priority}")
             {:reply, :ok, state}
 
           [] ->
             # Add to queue with counter for ordering
             new_counter = state.counter + 1
-            :dets.insert(state.queue, {item, new_counter})
-            Logger.debug("Enqueued: #{package}:#{version}")
+            entry = build_entry(new_counter, opts)
+            :dets.insert(state.queue, {item, entry})
+            Logger.debug("Enqueued: #{package}:#{version} priority=#{entry.priority}")
             {:reply, :ok, %{state | counter: new_counter}}
         end
     end
@@ -174,7 +215,7 @@ defmodule Orchestrator.Queue do
       nil ->
         {:reply, :empty, state}
 
-      {item, _counter} ->
+      {item, _entry} ->
         :dets.delete(state.queue, item)
         {:reply, {:ok, item}, state}
     end
@@ -210,7 +251,7 @@ defmodule Orchestrator.Queue do
     next_item =
       case find_oldest_item(state.queue) do
         nil -> nil
-        {item, _counter} -> item
+        {item, _entry} -> item
       end
 
     stats = %{
@@ -226,10 +267,20 @@ defmodule Orchestrator.Queue do
   def handle_call(:list, _from, state) do
     items =
       :dets.match(state.queue, {:"$1", :"$2"})
-      |> Enum.sort_by(fn [_item, counter] -> counter end)
-      |> Enum.map(fn [item, _counter] -> item end)
+      |> sort_queue_rows()
+      |> Enum.map(fn [item, _entry] -> item end)
 
     {:reply, items, state}
+  end
+
+  @impl true
+  def handle_call(:list_entries, _from, state) do
+    entries =
+      :dets.match(state.queue, {:"$1", :"$2"})
+      |> sort_queue_rows()
+      |> Enum.map(fn [item, entry] -> {item, normalize_entry(entry)} end)
+
+    {:reply, entries, state}
   end
 
   @impl true
@@ -261,16 +312,61 @@ defmodule Orchestrator.Queue do
 
   defp get_max_counter(table) do
     :dets.match(table, {:"$1", :"$2"})
-    |> Enum.map(fn [_item, counter] -> counter end)
+    |> Enum.map(fn [_item, entry] -> normalize_entry(entry).counter end)
     |> Enum.max(fn -> 0 end)
   end
 
   defp find_oldest_item(table) do
     :dets.match(table, {:"$1", :"$2"})
-    |> Enum.min_by(fn [_item, counter] -> counter end, fn -> nil end)
+    |> sort_queue_rows()
+    |> List.first()
     |> case do
       nil -> nil
-      [item, counter] -> {item, counter}
+      [item, entry] -> {item, normalize_entry(entry)}
     end
   end
+
+  defp sort_queue_rows(rows) do
+    Enum.sort_by(rows, fn [_item, entry] ->
+      entry = normalize_entry(entry)
+      {priority_rank(entry.priority), entry.counter}
+    end)
+  end
+
+  defp build_entry(counter, opts) do
+    %{
+      counter: counter,
+      priority: Keyword.get(opts, :priority, :normal),
+      source: Keyword.get(opts, :source, :hex_poll),
+      requested_at: Keyword.get(opts, :requested_at, DateTime.utc_now())
+    }
+  end
+
+  defp normalize_entry(counter) when is_integer(counter) do
+    %{counter: counter, priority: :normal, source: :hex_poll, requested_at: DateTime.utc_now()}
+  end
+
+  defp normalize_entry(entry) when is_map(entry) do
+    %{
+      counter: Map.fetch!(entry, :counter),
+      priority: Map.get(entry, :priority, :normal),
+      source: Map.get(entry, :source, :hex_poll),
+      requested_at: Map.get(entry, :requested_at, DateTime.utc_now())
+    }
+  end
+
+  defp higher_priority_entry(existing, requested) do
+    if priority_rank(requested.priority) < priority_rank(existing.priority) do
+      requested
+    else
+      existing
+    end
+  end
+
+  defp priority_rank(:hex_owner), do: 0
+  defp priority_rank(:github_repo), do: 10
+  defp priority_rank(:anonymous), do: 50
+  defp priority_rank(:normal), do: 100
+  defp priority_rank(:pending_review), do: 200
+  defp priority_rank(_), do: 100
 end

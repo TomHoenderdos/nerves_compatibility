@@ -41,6 +41,78 @@ Wrangler runs via `npx` — no global install needed, just Node.js.
 
 3. In the Cloudflare dashboard, wire a custom domain (`compatibility.embedded-elixir.com`) to the project. DNS gets added automatically if the domain is on Cloudflare.
 
+## Scan Request API
+
+The `Request scan` page posts anonymous requests to a Cloudflare Pages Function at `/api/scan-requests`. The function verifies Cloudflare Turnstile and forwards accepted requests to the orchestrator.
+
+Configure these Cloudflare Pages environment variables:
+
+| Env var | Purpose |
+| --- | --- |
+| `TURNSTILE_SECRET_KEY` | Server-side Turnstile verification secret |
+| `ORCHESTRATOR_SCAN_REQUEST_URL` | Full URL to the orchestrator ingest endpoint, ending in `/scan-requests` |
+| `SCAN_REQUEST_SHARED_SECRET` | Bearer token shared with the orchestrator |
+
+Enable the orchestrator ingest server with matching config:
+
+```bash
+NCC_SCAN_REQUEST_SECRET=... \
+mix run --eval 'Application.put_env(:orchestrator, :scan_request_server, true); Application.ensure_all_started(:orchestrator); Process.sleep(:infinity)'
+```
+
+By default the ingest API listens on port `4080`. Override with `config :orchestrator, :scan_request_port, PORT` if needed.
+
+## Portal on a Linux Server
+
+The Phoenix portal stores users, scan requests, admin approvals, and queue
+state in a local SQLite database. It does not store raw Hex.pm or GitHub OAuth
+access tokens.
+
+Configure these variables for the portal service:
+
+| Env var | Purpose |
+| --- | --- |
+| `GITHUB_CLIENT_ID` | GitHub OAuth App client ID with device flow enabled |
+| `PORTAL_DATABASE_PATH` | SQLite database path, for example `/var/lib/nerves-compatibility/portal.sqlite3` |
+| `PORTAL_SEED_ADMINS` | Optional seed list for admin users, for example `alice,bob:temporary-password` |
+| `PORTAL_SEED_ADMIN_PASSWORD` | Optional shared password used when a seeded admin does not include `:password` |
+| `ORCHESTRATOR_SCAN_REQUEST_URL` | Optional orchestrator ingest URL |
+| `SCAN_REQUEST_SHARED_SECRET` | Optional bearer token shared with the orchestrator |
+
+Prepare the database directory on the server:
+
+```bash
+sudo install -d -m 0750 -o nerves-compat -g nerves-compat /var/lib/nerves-compatibility
+```
+
+Run migrations before starting a release:
+
+```bash
+PORTAL_DATABASE_PATH=/var/lib/nerves-compatibility/portal.sqlite3 \
+bin/portal eval 'Ecto.Migrator.with_repo(Portal.Repo, &Ecto.Migrator.run(&1, :up, all: true))'
+```
+
+Seed admin users after migrations. Existing users are promoted to admin by
+username; missing users require a password:
+
+```bash
+PORTAL_DATABASE_PATH=/var/lib/nerves-compatibility/portal.sqlite3 \
+PORTAL_SEED_ADMINS='alice,bob:change-this-temporary-password' \
+bin/portal eval 'Portal.Seeds.seed_admins_from_env!()'
+```
+
+Systemd example:
+
+```ini
+[Service]
+User=nerves-compat
+WorkingDirectory=/opt/nerves_compatibility/portal
+Environment=PHX_SERVER=true
+Environment=GITHUB_CLIENT_ID=...
+Environment=PORTAL_DATABASE_PATH=/var/lib/nerves-compatibility/portal.sqlite3
+ExecStart=/opt/nerves_compatibility/portal/bin/portal start
+```
+
 ## Deploying
 
 From a clean state (orchestrator has populated `compat_test_results/`):
