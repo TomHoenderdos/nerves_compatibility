@@ -16,8 +16,8 @@ Collapse to the **smallest sensible Mix footprint**: one umbrella, three apps. S
 
 ## Decisions (locked)
 
-- **Deployment topology:** single host with Docker. Phoenix + Oban + Docker all on one box; the web process drains the build queue itself.
-- **Database / queue:** SQLite (`ash_sqlite`) + **Oban Lite** engine. Single node, so a file DB is fine.
+- **Deployment topology:** single host with Docker (for now). Phoenix + Oban + Postgres + Docker all on one box; the web process drains the build queue itself. Postgres keeps the split web/builder door open for later, but it is not a goal.
+- **Database / queue:** **Postgres** (`ash_postgres`) + **full Oban** (with `Oban.Web` dashboard, `LISTEN/NOTIFY`). Chosen over SQLite specifically for the Oban Web queue dashboard. Requires swapping portal's existing `ash_sqlite` data layer to `ash_postgres` (cheap now — portal is new with ~no data; expensive later).
 - **Project structure:** **umbrella**, 3 apps.
 - **Site rendering:** **fully dynamic**, Phoenix-served. No static gen, no Cloudflare Pages, no `wrangler.toml`, no `public/site/`.
 - **Scan triggers:** keep **all four** — Hex owner request, GitHub repo request, anonymous + Turnstile, Hex firehose poller.
@@ -38,7 +38,7 @@ nerves_compatibility/          umbrella root: mix.exs, config/, one mix.lock, on
 │   │                          creates Nerves project, builds firmware per system, emits result.json
 │   │                          absorbs beam_scanner (BEAM NIF/port/app-env scan)
 │   │                          deps: compatibility + jason — NEVER depends on portal
-│   └── portal/                Phoenix + Ash + ash_sqlite + Oban + Req
+│   └── portal/                Phoenix + Ash + ash_postgres + Oban (+ Oban.Web) + Req
 │                              absorbs orchestrator + runner + site + functions
 ├── apps/worker/Dockerfile     builds the worker escript only (see Section 5)
 └── Makefile                   thinned: build image · run one package · dev server
@@ -62,9 +62,9 @@ nerves_compatibility/          umbrella root: mix.exs, config/, one mix.lock, on
 
 ---
 
-## Section 2 — Ash domain model (SQLite)
+## Section 2 — Ash domain model (Postgres)
 
-Four Ash domains. Two exist (`Portal.Accounts.User`, `Portal.ScanRequests.ScanRequest`), two are new.
+Four Ash domains. Two exist (`Portal.Accounts.User`, `Portal.ScanRequests.ScanRequest`) — currently on `ash_sqlite`, **migrated to `ash_postgres`** as part of this work — two are new.
 
 ```
 Portal.Accounts        User          (exists)
@@ -100,7 +100,7 @@ Add `run_id` (nullable) linking a request to the `Run` it produced. Status flow 
 
 ### Storage decisions
 
-1. **Artifact blobs on disk** (`disk_path`, served by Phoenix); DB holds metadata only. Avoids SQLite BLOB bloat.
+1. **Artifact blobs on disk** (`disk_path`, served by Phoenix); DB holds metadata only. Avoids bloating Postgres with binary firmware artifacts.
 2. **`PackageOverride` as a DB resource** (vs the `package_metadata.json` file) — admin-editable live; one-time import of the existing JSON during cutover.
 
 ### Ingestion
@@ -118,6 +118,8 @@ The builder Oban job is the **only writer** of catalog data: `docker run` → re
 | `builds` | 1–2 | `Workers.Build` — heavy `docker run` | Low concurrency on purpose: builds are minutes-long and share the `~/.ncc-*` caches |
 | `intake` | ~5 | `Workers.Enqueue` (optional) | Light; web request usually enqueues directly |
 | `maintenance` | 1 | `Workers.DiscoverReleases` (cron), `Workers.RefreshStats` (cron) | Firehose poll + cached aggregate refresh |
+
+**Oban Web dashboard:** mounted in the router behind admin auth (`/admin/oban`) — live queue depth, job states, retries, manual retry/cancel. The reason for choosing Postgres over SQLite.
 
 ### Priority map (old DETS rank → Oban `priority`, 0 = runs first)
 
@@ -198,6 +200,7 @@ ADMIN (exists + add)
   approve/reject anonymous requests (exists)
   + PackageOverride CRUD (live-editable overrides, was package_metadata.json)
   + re-queue / force-rescan button
+  + mount Oban.Web at "/admin/oban" (behind admin auth)
 ```
 
 `functions/` deletes entirely — Turnstile verify + Hex OAuth proxy are now native Phoenix. `/` flips from the request form to the **compatibility home**; the form moves to `/request-scan`.
@@ -236,7 +239,7 @@ Incremental — `mix compile` + tests green after **every** phase. The **Docker 
 | # | Phase | Deliverable | Gate |
 | --- | --- | --- | --- |
 | 1 | **Umbrella scaffold + rename** | root `mix.exs` (`apps_path`), move `compat`→`apps/compatibility` (`Compat`→`Compatibility`), `worker`→`apps/worker` (fold `beam_scanner`), `portal`→`apps/portal`. Fix `worker/Dockerfile` paths. | worker + compatibility unit tests + docker build/integration pass |
-| 2 | **Catalog + Oban schema** | Ash resources Package/Run/SystemResult/Artifact/PackageOverride + migrations; Oban + `oban_jobs`. No behavior change. | resource tests |
+| 2 | **Postgres swap + Catalog + Oban** | Swap portal `ash_sqlite`→`ash_postgres` (Repo + User/ScanRequest resources + dev/test/runtime config). Add Ash resources Package/Run/SystemResult/Artifact/PackageOverride + migrations. Oban + `oban_jobs` + `Oban.Web`. No behavior change. | resource tests; `mix ecto.migrate` clean; Oban Web loads |
 | 3 | **Builder + Build worker** | port `docker.ex`→`Portal.Builder`; `Workers.Build` runs docker → parses `result.json` → ingests. | new integration test: one pkg → docker → DB rows (replaces runner's integration test) |
 | 4 | **Triggers** | `Workers.DiscoverReleases` cron; wire Hex/GitHub/Turnstile intake → enqueue `Build` (drop `forward_to_orchestrator`); Turnstile siteverify in-app. Delete `functions/`. | intake tests; manual Turnstile check |
 | 5 | **Dynamic site** | LiveViews (`/`, `/packages/:name`, `/requests/:id`), badge + `/api` controllers from Catalog (schema-v2 JSON). Port `site/generator.ex` render logic into views. | view/LiveView tests; badge/API snapshot |
@@ -248,14 +251,14 @@ Each phase is independently shippable. Phases 1 and 3 are the risky ones (they t
 
 ## Out of scope / non-goals
 
-- Multi-node / split web-vs-builder topology (would require Postgres). Single host only for now.
+- Multi-node / split web-vs-builder topology. Postgres keeps the door open, but deployment stays single-host for now.
 - Keeping Cloudflare Pages / static generation.
 - Changing the worker↔container JSON contract, exit codes, or `LockPolicy`.
-- Distributed Oban (Oban Lite is single-node by design).
 
 ## Risks
 
 - **Phase 1 + 3 touch the Docker boundary** — the integration test is the gate; do not proceed past either with it red.
+- **Postgres swap (Phase 2)** — portal currently runs `ash_sqlite`; the data-layer change touches Repo config + the two existing resources + dev/test/runtime config. Do it while portal has ~no data. Adds an operational dependency (a running Postgres) for dev + prod.
 - **Umbrella config bleed** — portal-only config must not break the worker image build (Section 5 caveat).
 - **Firehose volume** — `DiscoverReleases` enqueues every new Hex release at low priority; ensure `builds` concurrency + dedupe keep it bounded.
 - **Data backfill** — existing `package_metadata.json` and any prod index data need a one-time import into Catalog/PackageOverride.
