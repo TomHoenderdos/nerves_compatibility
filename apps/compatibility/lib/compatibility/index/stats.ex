@@ -1,4 +1,4 @@
-defmodule Compat.Index.Stats do
+defmodule Compatibility.Index.Stats do
   @moduledoc """
   Loader and validator for stats.json index.
 

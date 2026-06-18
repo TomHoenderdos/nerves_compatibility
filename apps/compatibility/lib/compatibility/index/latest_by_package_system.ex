@@ -1,4 +1,4 @@
-defmodule Compat.Index.LatestByPackageSystem do
+defmodule Compatibility.Index.LatestByPackageSystem do
   @moduledoc """
   Loader and validator for latest_by_pkg_system.json index.
 
@@ -21,7 +21,7 @@ defmodule Compat.Index.LatestByPackageSystem do
     }
   """
 
-  alias Compat.Types
+  alias Compatibility.Types
 
   defmodule Entry do
     @moduledoc false
