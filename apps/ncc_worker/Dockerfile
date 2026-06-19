@@ -29,13 +29,14 @@ COPY apps/ncc_worker        ./apps/ncc_worker
 # Ensure nerves user owns the directories
 RUN sudo chown -R nerves:nerves /app /work /out /hex-cache /home/nerves/.nerves
 
-# Build the worker escript. mix only discovers compatibility + worker under apps/,
-# so deps.get fetches only their deps.
-WORKDIR /app
-RUN mix deps.get
+# Build the worker escript. Mix only discovers compatibility + ncc_worker under
+# apps/, so dep resolution never pulls Phoenix/Ash/Oban into the image even
+# though the umbrella's mix.lock includes those entries.
 WORKDIR /app/apps/ncc_worker
-RUN mix clean --deps
-RUN mix escript.build
+# Build the worker escript as a standalone Mix project. Copy the umbrella's
+# shared mix.lock so dep versions match the rest of the repo, then let the
+# child app resolve its own (tiny) dep closure: compatibility + req + jason.
+RUN cp /app/mix.lock mix.lock && mix deps.get && mix escript.build
 
 # Set environment defaults
 ENV NCC_INPUT=/work/input.json
