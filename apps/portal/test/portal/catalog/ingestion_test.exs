@@ -1,0 +1,142 @@
+defmodule Portal.Catalog.IngestionTest do
+  use Portal.DataCase, async: false
+
+  require Ash.Query
+
+  alias Portal.ArtifactStore
+  alias Portal.Catalog.{Artifact, Ingestion, Package, SystemResult}
+  alias Portal.ScanRequests
+
+  @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
+
+  defp load_fixture do
+    @fixture |> File.read!() |> Jason.decode!()
+  end
+
+  # Create a files_dir containing the content-addressed blob referenced by the
+  # fixture's beam_scan manifest so artifact registration has something to move.
+  defp seed_files_dir(shas) do
+    dir = Path.join(System.tmp_dir!(), "ingest-files-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    Enum.each(shas, fn sha -> File.write!(Path.join(dir, sha), "blob-#{sha}") end)
+    on_exit(fn -> File.rm_rf(dir) end)
+    dir
+  end
+
+  test "ingests a result.json into Package + Run + SystemResults + Artifacts" do
+    result = load_fixture()
+    sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
+    files_dir = seed_files_dir([sha])
+
+    {:ok, run} =
+      Ingestion.ingest(result, %{
+        run_id: "fixture-jason-1.4.1",
+        image_digest: "sha256:deadbeef",
+        files_dir: files_dir,
+        scan_request_id: nil,
+        log: "build log"
+      })
+
+    # Package upserted
+    package = Ash.get!(Package, run.package_id, domain: Portal.Catalog)
+    assert package.name == "jason"
+    assert package.latest_version == "1.4.1"
+    refute is_nil(package.last_run_at)
+
+    # Run envelope
+    assert run.version_tested == "1.4.1"
+    assert run.image_digest == "sha256:deadbeef"
+    # at least one system passed → overall pass
+    assert run.overall_status == :pass
+    assert run.footprint["file_count"] == 12
+
+    # System results: 3 systems including host
+    system_results =
+      SystemResult
+      |> Ash.Query.filter(run_id == ^run.id)
+      |> Ash.read!(domain: Portal.Catalog)
+
+    assert length(system_results) == 3
+    statuses = Map.new(system_results, &{&1.system_pkg, &1.status})
+    assert statuses["nerves_system_rpi4"] == :pass
+    assert statuses["nerves_system_x86_64"] == :fail
+    assert statuses["host"] == :pass
+
+    # Artifact registered + blob moved into the store
+    artifacts = Ash.read!(Artifact, domain: Portal.Catalog)
+    assert Enum.any?(artifacts, &(&1.sha256 == sha))
+    assert File.exists?(ArtifactStore.blob_path(sha))
+    # source moved out of files_dir
+    refute File.exists?(Path.join(files_dir, sha))
+  end
+
+  test "links the run to a scan_request when given" do
+    result = load_fixture()
+    files_dir = seed_files_dir([])
+
+    {:ok, request} =
+      ScanRequests.create_once(%{
+        package_name: "jason",
+        source: :hex_owner,
+        status: :accepted
+      })
+
+    {:ok, run} =
+      Ingestion.ingest(result, %{
+        run_id: "rid-linked",
+        image_digest: "sha256:1",
+        files_dir: files_dir,
+        scan_request_id: request.id,
+        log: nil
+      })
+
+    assert run.scan_request_id == request.id
+  end
+
+  test "overall_status honours a top-level forced_status" do
+    result = load_fixture() |> Map.put("forced_status", "skipped")
+    files_dir = seed_files_dir([])
+
+    {:ok, run} =
+      Ingestion.ingest(result, %{
+        run_id: "rid-forced",
+        image_digest: "sha256:1",
+        files_dir: files_dir,
+        scan_request_id: nil
+      })
+
+    assert run.overall_status == :skipped
+  end
+
+  test "upserts the package on a second run rather than duplicating" do
+    result = load_fixture()
+    files_dir = seed_files_dir([])
+
+    {:ok, run1} =
+      Ingestion.ingest(result, %{
+        run_id: "rid-a",
+        image_digest: "sha256:1",
+        files_dir: files_dir,
+        scan_request_id: nil
+      })
+
+    {:ok, run2} =
+      Ingestion.ingest(
+        Map.put(result, "package", Map.put(result["package"], "version", "1.4.2")),
+        %{
+          run_id: "rid-b",
+          image_digest: "sha256:2",
+          files_dir: files_dir,
+          scan_request_id: nil
+        }
+      )
+
+    assert run1.package_id == run2.package_id
+
+    package = Ash.get!(Package, run2.package_id, domain: Portal.Catalog)
+    assert package.latest_version == "1.4.2"
+
+    packages = Ash.read!(Package, domain: Portal.Catalog)
+    assert Enum.count(packages, &(&1.name == "jason")) == 1
+  end
+end

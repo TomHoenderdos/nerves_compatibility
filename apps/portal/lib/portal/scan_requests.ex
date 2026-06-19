@@ -82,6 +82,28 @@ defmodule Portal.ScanRequests do
 
   def get_request(_id), do: {:error, :not_found}
 
+  @doc """
+  Update a request's lifecycle status (and optionally error_reason / run_id).
+  Used by the Build worker to mark requests built/rejected/error.
+  """
+  def set_status(request_or_id, status, opts \\ [])
+
+  def set_status(%ScanRequest{} = request, status, opts) do
+    request
+    |> Ash.Changeset.for_update(:set_status, %{
+      status: status,
+      error_reason: Keyword.get(opts, :error_reason),
+      run_id: Keyword.get(opts, :run_id)
+    })
+    |> Ash.update(domain: __MODULE__)
+  end
+
+  def set_status(id, status, opts) when is_binary(id) do
+    with {:ok, request} <- get_request(id) do
+      set_status(request, status, opts)
+    end
+  end
+
   defp create_request(attrs) do
     ScanRequest
     |> Ash.Changeset.for_create(:create, attrs)

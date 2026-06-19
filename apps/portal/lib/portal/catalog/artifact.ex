@@ -24,6 +24,13 @@ defmodule Portal.Catalog.Artifact do
       accept([:sha256, :byte_size, :disk_path, :system_result_id])
     end
 
+    create :upsert do
+      accept([:sha256, :byte_size, :disk_path, :system_result_id])
+      upsert?(true)
+      upsert_identity(:unique_sha256)
+      upsert_fields([:byte_size, :disk_path])
+    end
+
     update :update do
       accept([:byte_size, :disk_path])
     end
