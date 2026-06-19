@@ -3,7 +3,7 @@ defmodule Site.Generator do
   Generates static HTML pages from compatibility index files.
   """
 
-  alias Compat.Index.{LatestByPackage, Stats}
+  alias Compatibility.Index.{LatestByPackage, Stats}
 
   @doc """
   Generates the static site.
@@ -21,9 +21,9 @@ defmodule Site.Generator do
 
     # Load package metadata
     metadata =
-      case Compat.PackageMetadata.load(metadata_file) do
+      case Compatibility.PackageMetadata.load(metadata_file) do
         {:ok, m} -> m
-        {:error, _} -> %Compat.PackageMetadata{}
+        {:error, _} -> %Compatibility.PackageMetadata{}
       end
 
     # Try to load the new format first, fall back to old format
@@ -344,7 +344,7 @@ defmodule Site.Generator do
     # per-system pass-rate tile so it doesn't read as a 0% system.
     |> Enum.reject(fn {sys_key, _} -> String.starts_with?(to_string(sys_key), "forced") end)
     |> Enum.map(fn {sys_key, counts} ->
-      # counts is a Compat.Index.Stats.SystemCounts struct — pull named fields
+      # counts is a Compatibility.Index.Stats.SystemCounts struct — pull named fields
       # rather than enumerating. Defensive get_in for non-struct maps too.
       pass = get_count(counts, :pass)
       fail = get_count(counts, :fail)
@@ -695,7 +695,7 @@ defmodule Site.Generator do
       systems = Enum.sort_by(pkg_data.systems, fn {key, _} -> key end)
 
       # Get package metadata
-      pkg_meta = Compat.PackageMetadata.get(metadata, pkg_name)
+      pkg_meta = Compatibility.PackageMetadata.get(metadata, pkg_name)
 
       # Generate badge (use package name, not package@version)
       badge_svg = Site.Badge.generate(pkg_name, pkg_data)
