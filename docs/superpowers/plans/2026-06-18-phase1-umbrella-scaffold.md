@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Convert the repo from 6 standalone Mix projects into a Mix **umbrella** holding `apps/compatibility` (renamed from `compat`), `apps/worker` (with `beam_scanner` folded in), and `apps/portal`, while keeping the soon-to-be-deleted `runner`/`site`/`orchestrator` compiling standalone — and keep the Docker worker image building.
+**Goal:** Convert the repo from 6 standalone Mix projects into a Mix **umbrella** holding `apps/compatibility` (renamed from `compat`), `apps/ncc_worker` (with `beam_scanner` folded in), and `apps/portal`, while keeping the soon-to-be-deleted `runner`/`site`/`orchestrator` compiling standalone — and keep the Docker worker image building.
 
-**Architecture:** A new umbrella root (`mix.exs` with `apps_path: "apps"`, root `config/`) builds the three keeper apps as one project. `compat`→`compatibility` is a directory + app-name + module rename (`Compat.*`→`Compatibility.*`). `beam_scanner` collapses into `apps/worker` (same `BeamScanner.*` namespace, now in-app). The trio `runner`/`site`/`orchestrator` stay at repo root as standalone projects; only their `compat` path-dep + `Compat.*` references are repointed so they still compile. The `worker/Dockerfile` is rewritten for the umbrella layout, copying **only** `compatibility` + `worker` so Phoenix/Ash never enter the container image.
+**Architecture:** A new umbrella root (`mix.exs` with `apps_path: "apps"`, root `config/`) builds the three keeper apps as one project. `compat`→`compatibility` is a directory + app-name + module rename (`Compat.*`→`Compatibility.*`). `beam_scanner` collapses into `apps/ncc_worker` (same `BeamScanner.*` namespace, now in-app). The trio `runner`/`site`/`orchestrator` stay at repo root as standalone projects; only their `compat` path-dep + `Compat.*` references are repointed so they still compile. The `apps/ncc_worker/Dockerfile` is rewritten for the umbrella layout, copying **only** `compatibility` + `worker` so Phoenix/Ash never enter the container image.
 
 **Tech Stack:** Elixir/Mix umbrella, ExUnit, Docker (worker image `ncc-worker:local`).
 
@@ -12,7 +12,7 @@
 
 - **No behavior changes.** This phase is purely structural. Every existing test must still pass; no test logic is rewritten.
 - **Worker reproducibility boundary is untouched:** worker reads `NCC_INPUT`, writes `result.json`, exit codes `0`/`10`/`11`, `LockPolicy` — none change.
-- **Worker container image must NOT contain Phoenix/Ash/Oban.** The `worker/Dockerfile` copies only `apps/compatibility` + `apps/worker`.
+- **Worker container image must NOT contain Phoenix/Ash/Oban.** The `apps/ncc_worker/Dockerfile` copies only `apps/compatibility` + `apps/ncc_worker`.
 - **App names stay the same except `:compat`→`:compatibility`.** `worker` keeps OTP app `:ncc_worker`; `runner`/`site`/`orchestrator` keep theirs.
 - **The Docker integration test is the invariant gate.** Do not consider Phase 1 done until `make build` succeeds and the runner integration test passes.
 - **Never commit generated paths:** `_build/`, `deps/`, `*.dets`, `runner/tmp/`, `public/`. (Each app's `.gitignore` already covers these.)
@@ -28,9 +28,9 @@
 | `config/config.exs` (new, root) | Umbrella compile-time config; imports portal config if present |
 | `config/runtime.exs` (new, root) | Umbrella runtime config; imports portal runtime if present |
 | `apps/compatibility/` (moved from `compat/`) | Shared contract; modules renamed `Compat.*`→`Compatibility.*` |
-| `apps/worker/` (moved from `worker/`) | In-container escript; `beam_scanner` folded in |
+| `apps/ncc_worker/` (moved from `worker/`) | In-container escript; `beam_scanner` folded in |
 | `apps/portal/` (moved from `portal/`) | Phoenix app; config now imported from root |
-| `worker/Dockerfile` (rewritten) | Builds worker escript from the umbrella layout |
+| `apps/ncc_worker/Dockerfile` (rewritten) | Builds worker escript from the umbrella layout |
 | `runner/`, `site/`, `orchestrator/` (stay) | Standalone; `compat` dep + `Compat.*` refs repointed only |
 
 ---
@@ -139,11 +139,11 @@ git commit -m "refactor: scaffold umbrella, move compat -> apps/compatibility (C
 
 ---
 
-## Task 2: Move `worker` → `apps/worker` and fold in `beam_scanner`
+## Task 2: Move `worker` → `apps/ncc_worker` and fold in `beam_scanner`
 
 **Files:**
-- Move: `worker/` → `apps/worker/`; `beam_scanner/lib/*` → `apps/worker/lib/`; `beam_scanner/test/*` → `apps/worker/test/`
-- Modify: `apps/worker/mix.exs` (deps), `apps/worker/lib/ncc_worker/worker.ex`, `apps/worker/lib/ncc_worker/json_writer.ex` (module refs)
+- Move: `worker/` → `apps/ncc_worker/`; `beam_scanner/lib/*` → `apps/ncc_worker/lib/`; `beam_scanner/test/*` → `apps/ncc_worker/test/`
+- Modify: `apps/ncc_worker/mix.exs` (deps), `apps/ncc_worker/lib/ncc_worker/worker.ex`, `apps/ncc_worker/lib/ncc_worker/json_writer.ex` (module refs)
 - Delete: `beam_scanner/`
 
 **Interfaces:**
@@ -153,20 +153,20 @@ git commit -m "refactor: scaffold umbrella, move compat -> apps/compatibility (C
 - [ ] **Step 1: Move `worker` into `apps/`**
 
 ```bash
-git mv worker apps/worker
+git mv worker apps/ncc_worker
 ```
 
-- [ ] **Step 2: Fold `beam_scanner` source + tests into `apps/worker`**
+- [ ] **Step 2: Fold `beam_scanner` source + tests into `apps/ncc_worker`**
 
 ```bash
-git mv beam_scanner/lib/beam_scanner apps/worker/lib/beam_scanner
-git mv beam_scanner/lib/beam_scanner.ex apps/worker/lib/beam_scanner.ex
+git mv beam_scanner/lib/beam_scanner apps/ncc_worker/lib/beam_scanner
+git mv beam_scanner/lib/beam_scanner.ex apps/ncc_worker/lib/beam_scanner.ex
 # move beam_scanner tests if any exist
-[ -d beam_scanner/test ] && git mv beam_scanner/test/* apps/worker/test/ 2>/dev/null || true
+[ -d beam_scanner/test ] && git mv beam_scanner/test/* apps/ncc_worker/test/ 2>/dev/null || true
 git rm -r beam_scanner
 ```
 
-- [ ] **Step 3: Update `apps/worker/mix.exs` deps**
+- [ ] **Step 3: Update `apps/ncc_worker/mix.exs` deps**
 
 Replace the deps list (was `{:beam_scanner, path: "../beam_scanner"}, {:compat, path: "../compat"}, {:req, "~> 0.5.0"}`) with:
 
@@ -184,7 +184,7 @@ end
 - [ ] **Step 4: Rename `Compat` → `Compatibility` references in worker source**
 
 ```bash
-grep -rl 'Compat' apps/worker/lib apps/worker/test \
+grep -rl 'Compat' apps/ncc_worker/lib apps/ncc_worker/test \
   | xargs perl -pi -e 's/\bCompat\b/Compatibility/g'
 ```
 
@@ -197,15 +197,15 @@ Expected: PASS (umbrella now holds `compatibility` + `worker`). No `BeamScanner`
 
 - [ ] **Step 6: Verify the escript still builds**
 
-Run: `cd apps/worker && mix escript.build && ls ncc_worker && cd ../..`
+Run: `cd apps/ncc_worker && mix escript.build && ls ncc_worker && cd ../..`
 Expected: `ncc_worker` escript produced, no errors.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/worker
+git add apps/ncc_worker
 git rm -r --cached beam_scanner 2>/dev/null || true
-git commit -m "refactor: move worker -> apps/worker, fold beam_scanner in"
+git commit -m "refactor: move worker -> apps/ncc_worker, fold beam_scanner in"
 ```
 
 ---
@@ -320,16 +320,16 @@ git commit -m "refactor: repoint runner/site/orchestrator to apps/compatibility"
 
 ---
 
-## Task 5: Rewrite `worker/Dockerfile` for the umbrella + verify the Docker gate
+## Task 5: Rewrite `apps/ncc_worker/Dockerfile` for the umbrella + verify the Docker gate
 
 **Files:**
-- Modify: `worker/Dockerfile`
+- Modify: `apps/ncc_worker/Dockerfile`
 - Modify: `Makefile` (worker build context / escript path, if it references `worker/`)
 
 **Interfaces:**
 - Produces: the `ncc-worker:local` image with the same `ENTRYPOINT` behavior; the runner integration test passes against it.
 
-- [ ] **Step 1: Update the COPY/build section of `worker/Dockerfile`**
+- [ ] **Step 1: Update the COPY/build section of `apps/ncc_worker/Dockerfile`**
 
 Replace the old copy+build block (was `COPY compat ./compat`, `COPY beam_scanner ./beam_scanner`, `COPY worker ./worker`, `WORKDIR /app/worker`, build, `ENTRYPOINT ["/app/worker/ncc_worker"]`) with the umbrella layout. Copy **only** the umbrella root manifest, config, and the two apps the worker needs — never `apps/portal`:
 
@@ -339,7 +339,7 @@ Replace the old copy+build block (was `COPY compat ./compat`, `COPY beam_scanner
 COPY mix.exs mix.lock ./
 COPY config ./config
 COPY apps/compatibility ./apps/compatibility
-COPY apps/worker        ./apps/worker
+COPY apps/ncc_worker        ./apps/ncc_worker
 
 RUN sudo chown -R nerves:nerves /app /work /out /hex-cache /home/nerves/.nerves
 
@@ -347,7 +347,7 @@ RUN sudo chown -R nerves:nerves /app /work /out /hex-cache /home/nerves/.nerves
 # so deps.get fetches only their deps.
 WORKDIR /app
 RUN mix deps.get
-WORKDIR /app/apps/worker
+WORKDIR /app/apps/ncc_worker
 RUN mix clean --deps
 RUN mix escript.build
 ```
@@ -355,7 +355,7 @@ RUN mix escript.build
 And update the entrypoint:
 
 ```dockerfile
-ENTRYPOINT ["/app/apps/worker/ncc_worker"]
+ENTRYPOINT ["/app/apps/ncc_worker/ncc_worker"]
 ```
 
 Keep all other lines (base image, Elixir install, archive installs, `mkdir`, ssh-keygen, final `chmod -R a+rwX /home/nerves /app`) unchanged. Ensure the final `chmod` line still references `/app` (it does).
@@ -364,14 +364,22 @@ Keep all other lines (base image, Elixir install, archive installs, `mkdir`, ssh
 
 The image does not copy `apps/portal`, so `File.exists?(".../apps/portal/config/config.exs")` is false and the portal import is skipped. No action needed — this step is a read-through verification of Task 1 Step 3.
 
-- [ ] **Step 3: Update the Makefile build target if needed**
+- [ ] **Step 3: Update the Makefile build target**
 
-The current target is `docker build --no-cache -f worker/Dockerfile -t ncc-worker:local .` with context `.` (repo root) — already correct for the umbrella (root is the context). Confirm the `-f worker/Dockerfile` path and `.` context are unchanged. If any Makefile recipe does `cd worker && mix escript.build` for a host-side build, update it to `cd apps/worker && mix escript.build`.
+In Task 2 the Dockerfile moved with the worker dir — it now lives at `apps/ncc_worker/Dockerfile`. The Makefile `build` target currently reads `docker build --no-cache -f worker/Dockerfile -t ncc-worker:local .`. Update the `-f` flag to the new path (keep the `.` context — repo root is correct for the umbrella):
+
+```make
+build: apps/ncc_worker/Dockerfile
+	@echo "Building worker Docker image..."
+	docker build --no-cache -f apps/ncc_worker/Dockerfile -t $(WORKER_IMAGE) .
+```
+
+Also update any host-side escript recipe `cd worker && mix escript.build` → `cd apps/ncc_worker && mix escript.build`.
 
 - [ ] **Step 4: Build the worker image (THE GATE, part 1)**
 
 Run: `make build`
-Expected: image builds; final stage produces `/app/apps/worker/ncc_worker`; no Phoenix/Ash in the dep fetch logs.
+Expected: image builds; final stage produces `/app/apps/ncc_worker/ncc_worker`; no Phoenix/Ash in the dep fetch logs.
 
 - [ ] **Step 5: Run the runner integration test (THE GATE, part 2)**
 
@@ -381,7 +389,7 @@ Expected: jason → real container → asserts pass. This proves the worker boun
 - [ ] **Step 6: Commit**
 
 ```bash
-git add worker/Dockerfile Makefile
+git add apps/ncc_worker/Dockerfile Makefile
 git commit -m "build: rewrite worker Dockerfile for umbrella layout"
 ```
 
@@ -396,7 +404,7 @@ git commit -m "build: rewrite worker Dockerfile for umbrella layout"
 
 - [ ] **Step 1: Update Makefile per-project paths**
 
-Anywhere the Makefile does `cd compat`, `cd worker`, or `mix format` over those dirs, change to `cd apps/compatibility` / `cd apps/worker`. The `format` target (was `cd compat && mix format`, etc.) should run `mix format` at the umbrella root instead:
+Anywhere the Makefile does `cd compat`, `cd worker`, or `mix format` over those dirs, change to `cd apps/compatibility` / `cd apps/ncc_worker`. The `format` target (was `cd compat && mix format`, etc.) should run `mix format` at the umbrella root instead:
 
 ```make
 format:
@@ -408,7 +416,7 @@ format:
 
 - [ ] **Step 2: Update CLAUDE.md + AGENTS.md project layout**
 
-Edit the "Project Layout" sections to describe the umbrella: `apps/compatibility`, `apps/worker` (beam_scanner folded), `apps/portal`, with `runner`/`site`/`orchestrator` noted as legacy standalone projects pending removal. Replace `compat/` references with `apps/compatibility/` and `Compat.Types` with `Compatibility.Types`.
+Edit the "Project Layout" sections to describe the umbrella: `apps/compatibility`, `apps/ncc_worker` (beam_scanner folded), `apps/portal`, with `runner`/`site`/`orchestrator` noted as legacy standalone projects pending removal. Replace `compat/` references with `apps/compatibility/` and `Compat.Types` with `Compatibility.Types`.
 
 - [ ] **Step 3: Format check the umbrella**
 
