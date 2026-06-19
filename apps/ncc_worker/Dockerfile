@@ -19,18 +19,22 @@ RUN sudo mkdir -p /work /out /hex-cache /home/nerves/.nerves
 # Create app directory
 WORKDIR /app
 
-# Copy compat and worker code
-COPY compat ./compat
-COPY beam_scanner ./beam_scanner
-COPY worker ./worker
+# Copy umbrella manifest + config and ONLY the apps the worker needs.
+# apps/portal is intentionally NOT copied, so Phoenix/Ash never enter the image.
+COPY mix.exs mix.lock ./
+COPY config ./config
+COPY apps/compatibility ./apps/compatibility
+COPY apps/ncc_worker        ./apps/ncc_worker
 
 # Ensure nerves user owns the directories
-RUN sudo chown -R nerves:nerves /app/worker /work /out /hex-cache /home/nerves/.nerves
+RUN sudo chown -R nerves:nerves /app /work /out /hex-cache /home/nerves/.nerves
 
-# Build worker
-WORKDIR /app/worker
-RUN mix clean --deps
+# Build the worker escript. mix only discovers compatibility + worker under apps/,
+# so deps.get fetches only their deps.
+WORKDIR /app
 RUN mix deps.get
+WORKDIR /app/apps/ncc_worker
+RUN mix clean --deps
 RUN mix escript.build
 
 # Set environment defaults
@@ -46,4 +50,4 @@ RUN ssh-keygen -t rsa -N "" -f $HOME/.ssh/id_rsa
 RUN sudo chmod -R a+rwX /home/nerves /app
 
 # Set entrypoint
-ENTRYPOINT ["/app/worker/ncc_worker"]
+ENTRYPOINT ["/app/apps/ncc_worker/ncc_worker"]
