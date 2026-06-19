@@ -64,7 +64,7 @@ defmodule NccWorker.JsonWriter do
   @spec convert_system_result(map()) :: map()
   defp convert_system_result(system_result) do
     %{
-      status: Compat.Types.status_to_string(system_result.status),
+      status: Compatibility.Types.status_to_string(system_result.status),
       duration_sec: system_result.duration_sec,
       firmware_size_bytes: system_result.firmware_size_bytes,
       log_tail: system_result.log_tail,

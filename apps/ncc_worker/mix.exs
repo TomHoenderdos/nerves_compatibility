@@ -20,8 +20,7 @@ defmodule NccWorker.MixProject do
 
   defp deps() do
     [
-      {:beam_scanner, path: "../beam_scanner"},
-      {:compat, path: "../compat"},
+      {:compatibility, in_umbrella: true},
       {:req, "~> 0.5.0"}
     ]
   end
