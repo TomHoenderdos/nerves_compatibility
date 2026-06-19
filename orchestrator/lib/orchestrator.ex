@@ -104,11 +104,11 @@ defmodule Orchestrator do
 
   Returns empty metadata if file doesn't exist or on error.
   """
-  @spec load_package_metadata() :: Compat.PackageMetadata.t()
+  @spec load_package_metadata() :: Compatibility.PackageMetadata.t()
   def load_package_metadata() do
-    case Compat.PackageMetadata.load(package_metadata_file()) do
+    case Compatibility.PackageMetadata.load(package_metadata_file()) do
       {:ok, metadata} -> metadata
-      {:error, _} -> %Compat.PackageMetadata{}
+      {:error, _} -> %Compatibility.PackageMetadata{}
     end
   end
 end

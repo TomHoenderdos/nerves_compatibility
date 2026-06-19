@@ -162,7 +162,7 @@ defmodule Orchestrator.Processor do
 
       :continue ->
         # Check if package has forced status
-        case Compat.PackageMetadata.forced_status(metadata, package) do
+        case Compatibility.PackageMetadata.forced_status(metadata, package) do
           {:forced, status} ->
             Logger.info("Package #{package} has forced status: #{status}")
             create_forced_result(package, version, status, metadata, nil)
@@ -190,7 +190,7 @@ defmodule Orchestrator.Processor do
   end
 
   defp check_dependency_skip(package, version, metadata) do
-    skip_deps = Compat.PackageMetadata.get_skip_dependencies(metadata)
+    skip_deps = Compatibility.PackageMetadata.get_skip_dependencies(metadata)
 
     if skip_deps == [] do
       # No dependencies to skip, continue
@@ -201,7 +201,7 @@ defmodule Orchestrator.Processor do
         {:ok, dependencies} ->
           dep_names = Enum.map(dependencies, & &1["package"])
 
-          if Compat.PackageMetadata.should_skip_by_dependency?(metadata, dep_names) do
+          if Compatibility.PackageMetadata.should_skip_by_dependency?(metadata, dep_names) do
             matching_deps = Enum.filter(dep_names, &(&1 in skip_deps))
 
             reason =
@@ -250,7 +250,7 @@ defmodule Orchestrator.Processor do
   defp create_forced_result(package, version, status, metadata, custom_notes) do
     Logger.info("Creating forced result for #{package}:#{version} with status: #{status}")
 
-    pkg_meta = Compat.PackageMetadata.get(metadata, package)
+    pkg_meta = Compatibility.PackageMetadata.get(metadata, package)
     results_dir = Orchestrator.results_dir()
     dest = Path.join(results_dir, "#{package}.json")
 
@@ -331,7 +331,7 @@ defmodule Orchestrator.Processor do
     ]
 
     # Filter systems based on allow/deny lists
-    filtered_systems = Compat.PackageMetadata.filter_systems(metadata, package, default_systems)
+    filtered_systems = Compatibility.PackageMetadata.filter_systems(metadata, package, default_systems)
 
     # Set systems_filter if filtering resulted in a different list
     systems_filter =
