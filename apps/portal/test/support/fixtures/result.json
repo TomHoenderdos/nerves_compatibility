@@ -1,0 +1,65 @@
+{
+  "run_id": "fixture-jason-1.4.1",
+  "package": {
+    "name": "jason",
+    "version": "1.4.1",
+    "description": "A blazing fast JSON parser and generator in pure Elixir.",
+    "dependencies": [],
+    "footprint": {
+      "file_count": 12,
+      "total_bytes": 81234
+    }
+  },
+  "image": {
+    "name": "ncc-worker:local",
+    "digest": "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+  },
+  "toolchain": {
+    "elixir": "1.16.0",
+    "erlang": "26",
+    "mix": "1.16.0",
+    "nerves_bootstrap": "1.12.0"
+  },
+  "systems": {
+    "nerves_system_rpi4": {
+      "status": "pass",
+      "duration_sec": 245.3,
+      "firmware_size_bytes": 45678901,
+      "log_tail": "...build ok...",
+      "system_version": "1.24.0",
+      "beam_scan": {
+        "footprint": {
+          "file_manifest": {
+            "ebin": [
+              {"path": "ebin/jason.beam", "sha256": "aaaa000000000000000000000000000000000000000000000000000000000001"}
+            ],
+            "priv": []
+          }
+        }
+      },
+      "dependency_scans": null,
+      "error": null
+    },
+    "nerves_system_x86_64": {
+      "status": "fail",
+      "duration_sec": 12.0,
+      "firmware_size_bytes": null,
+      "log_tail": "...build failed...",
+      "system_version": "1.24.0",
+      "beam_scan": null,
+      "dependency_scans": null,
+      "error": "mix firmware exited with code 1"
+    },
+    "host": {
+      "status": "pass",
+      "duration_sec": 5.0,
+      "firmware_size_bytes": null,
+      "log_tail": "...host compile ok...",
+      "system_version": null,
+      "beam_scan": null,
+      "dependency_scans": null,
+      "error": null
+    }
+  },
+  "finished_at": "2026-06-19T10:30:00Z"
+}
