@@ -129,7 +129,7 @@ Worker and runner use numeric exit codes that propagate meaning up the stack —
 
 ## Data Contracts
 
-- **Job input** (runner → worker): see `runner/examples/` and `worker/examples/input.json`. Key fields: `run_id`, `image.name`, `image.digest`, `package.{name,version}`, optional `systems_override`, `systems_filter`, `paths`, `limits`.
+- **Job input** (runner → worker): see `runner/examples/` and `apps/ncc_worker/examples/input.json`. Key fields: `run_id`, `image.name`, `image.digest`, `package.{name,version}`, optional `systems_override`, `systems_filter`, `paths`, `limits`.
 - **Worker output** (`result.json`): typespec at top of `apps/ncc_worker/lib/ncc_worker/worker.ex`. Status enum lives in `Compatibility.Types` — `pass | fail | error | skipped | unknown`.
 - **Site indexes**: `latest_by_pkg.json`, `latest_by_pkg_system.json`, `stats.json`. Schema version 2. Documented in `docs/INDEX_FORMAT.md`.
 - **Package overrides**: `package_metadata.json` at repo root lets you force status / add notes / allow-list or deny-list systems without running tests. Documented in `docs/PACKAGE_METADATA.md`.
