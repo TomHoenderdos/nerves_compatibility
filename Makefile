@@ -218,8 +218,8 @@ test-all:
 	@echo "All tests complete! Run 'make collect' and 'make site' to generate the website."
 
 format:
-	@cd apps/compatibility && mix format
-	@cd apps/ncc_worker && mix format
+	mix format
 	@cd runner && mix format
 	@cd site && mix format
-	@echo "Formatted all code."
+	@cd orchestrator && mix format
+	@echo "Formatted all umbrella and standalone code."

@@ -2,15 +2,24 @@
 
 ## Project Structure & Module Organization
 
-This repository is a monorepo of independent Elixir Mix projects; there is no top-level `mix.exs`.
+This repository is a **Mix umbrella** (top-level `mix.exs`) with three umbrella apps and three legacy standalone projects (pending removal in Phase 2).
 
-- `compat/`: shared types, JSON index loaders, and validators.
-- `beam_scanner/`: compiled BEAM inspection.
-- `worker/`: Docker-side Nerves project setup, firmware builds, and result JSON.
+Umbrella apps under `apps/`:
+
+- `apps/compatibility`: shared types (`Compatibility.Types`), JSON index loaders, and validators.
+- `apps/ncc_worker`: Docker-side Nerves project setup, firmware builds, result JSON, and BEAM file inspection (beam_scanner folded in). Dockerfile at `apps/ncc_worker/Dockerfile`.
+- `apps/portal`: Phoenix 1.8 + SQLite web app for admin UI, accounts, and scan-request intake.
+
+Legacy standalone projects at repo root (depend on `apps/compatibility` via `path:`):
+
 - `runner/`: host-side Docker invocation and output collection.
 - `orchestrator/`: Hex.pm polling, queue management, runner invocation, and site regeneration.
 - `site/`: static HTML and JSON generation.
+
+Other:
+
 - `docs/`, `PRECOMPILED_API.md`, and `package_metadata.json`: contracts and package overrides.
+- `functions/`: Cloudflare Pages Functions (JS) for public scan-request intake.
 
 Do not commit generated paths such as `_build/`, `deps/`, `public/`, `runner/tmp/`, `compat_test_results/`, or `*.dets`.
 
@@ -25,13 +34,21 @@ Use the root `Makefile` for full workflows:
 - `make test-integration` runs the Docker-backed runner integration test.
 - `make format` runs `mix format` across the Mix projects.
 
-For project-local work:
+For umbrella-level work (run from repo root):
 
 ```bash
-cd worker
 mix deps.get
 mix test
-mix test test/ncc_worker/scanner_test.exs
+mix test apps/ncc_worker/test/ncc_worker/scanner_test.exs
+mix format
+```
+
+For standalone project work (run from the project's subdir):
+
+```bash
+cd runner    # or site, orchestrator
+mix deps.get
+mix test
 mix escript.build
 ```
 
