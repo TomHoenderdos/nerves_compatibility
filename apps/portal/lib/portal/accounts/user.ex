@@ -8,11 +8,17 @@ defmodule Portal.Accounts.User do
 
   use Ash.Resource,
     domain: Portal.Accounts,
-    data_layer: AshSqlite.DataLayer
+    data_layer: AshPostgres.DataLayer
 
-  sqlite do
+  postgres do
     table("portal_users")
     repo(Portal.Repo)
+
+    custom_indexes do
+      index([:username], unique: true)
+      index([:hex_username])
+      index([:github_username])
+    end
   end
 
   actions do
