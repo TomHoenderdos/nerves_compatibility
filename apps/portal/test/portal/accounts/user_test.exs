@@ -1,5 +1,5 @@
 defmodule Portal.Accounts.UserTest do
-  use ExUnit.Case, async: false
+  use Portal.DataCase, async: false
 
   alias Portal.Accounts.User
 

@@ -1,5 +1,5 @@
 defmodule Portal.ScanRequests.ScanRequestTest do
-  use ExUnit.Case, async: false
+  use Portal.DataCase, async: false
 
   alias Portal.ScanRequests.ScanRequest
 
