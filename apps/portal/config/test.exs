@@ -12,6 +12,15 @@ config :portal, Portal.Repo,
 # Disable Oban queues + plugins during tests; jobs run inline via `Oban.Testing`.
 config :portal, Oban, testing: :manual
 
+# Isolate Builder scratch + artifact store under tmp during tests.
+config :portal, Portal.Builder,
+  docker_image: "ncc-worker:local",
+  scratch_root: Path.join(System.tmp_dir!(), "ncc-test-scratch"),
+  nerves_cache: Path.join(System.tmp_dir!(), "ncc-test-nerves-cache"),
+  hex_cache: Path.join(System.tmp_dir!(), "ncc-test-hex-cache")
+
+config :portal, :artifact_store, path: Path.join(System.tmp_dir!(), "ncc-test-artifacts")
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :portal, PortalWeb.Endpoint,

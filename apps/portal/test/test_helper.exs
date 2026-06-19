@@ -11,4 +11,6 @@ end
 
 Ecto.Adapters.SQL.Sandbox.mode(Portal.Repo, :manual)
 
-ExUnit.start()
+# Integration tests (real Docker container) are excluded by default.
+# Run explicitly with: mix test --only integration
+ExUnit.start(exclude: [:integration])
