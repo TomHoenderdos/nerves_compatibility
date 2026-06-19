@@ -145,5 +145,4 @@ defmodule NccWorker.Project do
       String.replace(acc, pattern, "\\1\"#{requirement}\"")
     end)
   end
-
 end
