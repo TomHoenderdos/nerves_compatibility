@@ -1,5 +1,12 @@
 import Config
 
+# NOTE: Under the umbrella, this file is NOT loaded at runtime.
+# runtime.exs does not support import_config, so portal's runtime configuration
+# has been inlined into the umbrella root config/runtime.exs (guarded by a
+# File.exists? check so it is skipped in Docker builds that omit apps/portal).
+# If you need to change portal runtime config, edit config/runtime.exs at the
+# umbrella root — changes made here alone will have NO effect.
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration
