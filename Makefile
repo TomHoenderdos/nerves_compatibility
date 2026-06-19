@@ -40,9 +40,9 @@ TEST_PACKAGES := crc32cer:1.1.1 circuits_gpio:2.1.3 phoenix:1.8.3
 
 # Build the worker Docker image
 # Run this whenever changing the Dockerfile or worker code
-build: worker/Dockerfile
+build: apps/ncc_worker/Dockerfile
 	@echo "Building worker Docker image..."
-	docker build --no-cache -f worker/Dockerfile -t $(WORKER_IMAGE) .
+	docker build --no-cache -f apps/ncc_worker/Dockerfile -t $(WORKER_IMAGE) .
 	@echo "Build complete: $(WORKER_IMAGE)"
 
 # Run the runner with a job
@@ -75,7 +75,7 @@ ifdef PACKAGE
 	@echo '{\n  "run_id": "shell-'$$(date +%s)'",\n  "image_name": "$(WORKER_IMAGE)",\n  "image_digest": "'$$(docker inspect --format='{{index .RepoDigests 0}}' $(WORKER_IMAGE) 2>/dev/null | cut -d@ -f2 || echo "sha256:local")'",\n  "package": {\n    "name": "'$$(echo $(PACKAGE) | cut -d: -f1)'",\n    "version": "'$$(echo $(PACKAGE) | cut -d: -f2)'"\n  },\n  "paths": {\n    "work_dir": "/work",\n    "output_dir": "/out"\n  },\n  "cache_dir": "$(abspath $(HEX_CACHE))"\n}' > $(OUTPUT_DIR)/input.json
 	@echo ""
 	@echo "Starting interactive shell..."
-	@echo "Run: /app/worker/ncc_worker setup"
+	@echo "Run: /app/apps/ncc_worker/ncc_worker setup"
 	@echo "Then: cd proj && MIX_TARGET=<target> mix firmware"
 	@echo ""
 	@docker run --rm -it \
@@ -218,8 +218,8 @@ test-all:
 	@echo "All tests complete! Run 'make collect' and 'make site' to generate the website."
 
 format:
-	@cd compat && mix format
-	@cd worker && mix format
+	@cd apps/compatibility && mix format
+	@cd apps/ncc_worker && mix format
 	@cd runner && mix format
 	@cd site && mix format
 	@echo "Formatted all code."
