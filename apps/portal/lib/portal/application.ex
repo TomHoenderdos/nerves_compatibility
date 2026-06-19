@@ -11,6 +11,7 @@ defmodule Portal.Application do
       PortalWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:portal, :dns_cluster_query) || :ignore},
       Portal.Repo,
+      {Oban, Application.fetch_env!(:portal, Oban)},
       {Phoenix.PubSub, name: Portal.PubSub},
       # Start a worker by calling: Portal.Worker.start_link(arg)
       # {Portal.Worker, arg},
