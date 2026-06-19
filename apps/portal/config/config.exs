@@ -3,9 +3,14 @@ import Config
 config :ash, :validate_domain_resource_inclusion?, false
 
 config :portal,
-  ash_domains: [Portal.Accounts, Portal.ScanRequests],
+  ash_domains: [Portal.Accounts, Portal.ScanRequests, Portal.Catalog],
   ecto_repos: [Portal.Repo],
   generators: [timestamp_type: :utc_datetime]
+
+config :portal, Oban,
+  repo: Portal.Repo,
+  queues: [builds: 1, intake: 5, maintenance: 1],
+  plugins: [Oban.Plugins.Pruner]
 
 config :portal, PortalWeb.Endpoint,
   url: [host: "localhost"],
