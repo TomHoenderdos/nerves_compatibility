@@ -19,7 +19,7 @@ defmodule Site.MixProject do
 
   defp deps do
     [
-      {:compat, path: "../compat", override: true}
+      {:compatibility, path: "../apps/compatibility", override: true}
     ]
   end
 end
