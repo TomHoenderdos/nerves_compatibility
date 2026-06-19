@@ -61,7 +61,7 @@ defmodule NccWorker.Worker do
           },
           systems: %{
             String.t() => %{
-              status: Compat.Types.status(),
+              status: Compatibility.Types.status(),
               duration_sec: float(),
               firmware_size_bytes: integer() | nil,
               log_tail: String.t(),
