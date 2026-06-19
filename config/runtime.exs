@@ -15,16 +15,22 @@ if File.exists?(Path.expand("../apps/portal", __DIR__)) do
 
   repo_pool_size =
     case System.get_env("PORTAL_DATABASE_POOL_SIZE") do
-      nil -> Keyword.get(repo_config, :pool_size, 5)
+      nil -> Keyword.get(repo_config, :pool_size, 10)
       value -> String.to_integer(value)
     end
 
-  config :portal, Portal.Repo,
-    database:
-      System.get_env("PORTAL_DATABASE_PATH") ||
-        Keyword.get(repo_config, :database) ||
-        "var/portal.sqlite3",
-    pool_size: repo_pool_size
+  case System.get_env("DATABASE_URL") do
+    nil ->
+      :ok
+
+    url ->
+      maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
+
+      config :portal, Portal.Repo,
+        url: url,
+        pool_size: repo_pool_size,
+        socket_options: maybe_ipv6
+  end
 
   config :portal,
     orchestrator_scan_request_url: System.get_env("ORCHESTRATOR_SCAN_REQUEST_URL"),

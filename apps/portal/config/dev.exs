@@ -1,8 +1,13 @@
 import Config
 
 config :portal, Portal.Repo,
-  database: Path.expand("../var/portal_dev.sqlite3", __DIR__),
-  pool_size: 5
+  username: System.get_env("PORTAL_PG_USER", "postgres"),
+  password: System.get_env("PORTAL_PG_PASSWORD", "postgres"),
+  hostname: System.get_env("PORTAL_PG_HOST", "localhost"),
+  database: "portal_dev",
+  port: String.to_integer(System.get_env("PORTAL_PG_PORT", "5432")),
+  show_sensitive_data_on_connection_error: true,
+  pool_size: 10
 
 # For development, we disable any cache and enable
 # debugging and code reloading.

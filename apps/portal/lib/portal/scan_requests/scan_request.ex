@@ -5,14 +5,16 @@ defmodule Portal.ScanRequests.ScanRequest do
 
   use Ash.Resource,
     domain: Portal.ScanRequests,
-    data_layer: AshSqlite.DataLayer
+    data_layer: AshPostgres.DataLayer
 
-  sqlite do
+  postgres do
     table("portal_scan_requests")
     repo(Portal.Repo)
 
     custom_indexes do
       index([:package_name, :status], name: "portal_scan_requests_package_status_index")
+      index([:status])
+      index([:source])
     end
   end
 
