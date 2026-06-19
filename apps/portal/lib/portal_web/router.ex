@@ -1,6 +1,8 @@
 defmodule PortalWeb.Router do
   use PortalWeb, :router
 
+  import Oban.Web.Router
+
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
@@ -12,6 +14,11 @@ defmodule PortalWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+  end
+
+  pipeline :admin do
+    plug :browser
+    plug PortalWeb.Plugs.RequireAdmin
   end
 
   scope "/", PortalWeb do
@@ -35,6 +42,12 @@ defmodule PortalWeb.Router do
     get "/auth/github/complete", PageController, :request_scan
     post "/auth/github/complete", PageController, :github_complete
     post "/requests/anonymous", PageController, :anonymous_request
+  end
+
+  scope "/admin" do
+    pipe_through [:admin]
+
+    oban_dashboard("/oban")
   end
 
   scope "/api", PortalWeb do
