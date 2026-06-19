@@ -51,6 +51,14 @@ defmodule Portal.ScanRequests.ScanRequest do
         :error_reason
       ])
     end
+
+    update :set_status do
+      accept([
+        :status,
+        :error_reason,
+        :run_id
+      ])
+    end
   end
 
   attributes do
@@ -75,10 +83,14 @@ defmodule Portal.ScanRequests.ScanRequest do
       allow_nil?(false)
       public?(true)
       default(:accepted)
-      constraints(one_of: [:pending, :accepted, :queued, :rejected])
+      constraints(one_of: [:pending, :accepted, :queued, :built, :rejected, :error])
     end
 
     attribute :user_id, :uuid do
+      public?(true)
+    end
+
+    attribute :run_id, :uuid do
       public?(true)
     end
 
