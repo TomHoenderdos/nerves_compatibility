@@ -4,33 +4,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Layout
 
-This is a **monorepo of six independent Mix projects** plus two non-Mix deploy targets, together producing a static site tracking Hex.pm package compatibility with Nerves target systems. Mix projects depend on each other via `path:` dependencies — there is no top-level `mix.exs`. Each has its own `deps/`, `_build/`, and `mix.lock`.
+This is a **Mix umbrella** at the repo root (top-level `mix.exs`) plus three legacy standalone projects and two non-Mix deploy targets, together producing a static site tracking Hex.pm package compatibility with Nerves target systems.
+
+### Umbrella apps (`apps/`)
+
+| App | Role | Produces |
+| --- | --- | --- |
+| `apps/compatibility` | Core library: JSON index loaders, validators, shared types (`Compatibility.Types`, `Compatibility.Index.*`) | Library (used as umbrella dep) |
+| `apps/ncc_worker` | Runs **inside** the Docker container. Creates a Nerves project, adds the package, builds firmware per system, enforces Hex-only deps. Includes BEAM file scanner (formerly `beam_scanner/`). Dockerfile at `apps/ncc_worker/Dockerfile`. | `ncc_worker` escript |
+| `apps/portal` | **Phoenix 1.8 + SQLite** web app: admin UI, accounts, GitHub/Hex auth, stores scan requests and forwards them to the orchestrator. | Phoenix server |
+
+### Legacy standalone projects (pending removal in Phase 2)
 
 | Project | Role | Produces |
 | --- | --- | --- |
-| `compat/` | Core library: JSON index loaders, validators, shared types (`Compat.Types`, `Compat.Index.*`) | Library (used as path dep) |
-| `beam_scanner/` | Scans compiled BEAM files for NIF loads, ports, Application env use, etc. | Library |
-| `worker/` | Runs **inside** the Docker container. Creates a Nerves project, adds the package, builds firmware per system, enforces Hex-only deps. | `ncc_worker` escript |
-| `runner/` | Runs **on the host**. Takes a job JSON, invokes Docker with the right mounts, collects `result.json` + logs. | `ncc_runner` escript |
-| `orchestrator/` | Long-running service: polls Hex.pm, maintains a DETS **priority** queue, serves a scan-request HTTP API, invokes runner, regenerates site. Depends on `runner` and `site`. | `ncc_orchestrator` escript |
-| `site/` | Static site generator (Mix tasks `site.gen`, `site.serve`, `convert_results`). | HTML + JSON in `public/` |
-| `portal/` | **Phoenix 1.8 + SQLite** web app: admin UI, accounts, GitHub/Hex auth, stores scan requests and forwards them to the orchestrator. Standalone (no `path:` deps). | Phoenix server |
+| `runner/` | Runs **on the host**. Takes a job JSON, invokes Docker with the right mounts, collects `result.json` + logs. Depends on `apps/compatibility` via `path:`. | `ncc_runner` escript |
+| `orchestrator/` | Long-running service: polls Hex.pm, maintains a DETS **priority** queue, serves a scan-request HTTP API, invokes runner, regenerates site. Depends on `apps/compatibility`, `runner`, and `site`. | `ncc_orchestrator` escript |
+| `site/` | Static site generator (Mix tasks `site.gen`, `site.serve`, `convert_results`). Depends on `apps/compatibility` via `path:`. | HTML + JSON in `public/` |
 
 Non-Mix deploy targets:
 
 - `functions/` — **Cloudflare Pages Functions** (JS). Public scan-request intake: `api/scan-requests.js` (anonymous, Cloudflare Turnstile-gated) and `api/auth/hex/{start,complete}.js` (Hex OAuth device flow). Each verifies the caller, then forwards to the orchestrator's HTTP API with a `Bearer` shared secret.
 - `public/site/` — the generated static artifact, deployed to Cloudflare Pages (`wrangler.toml`, `make deploy-site`).
 
-The worker/runner split is deliberate: the worker never touches Docker, the runner never touches Mix projects. They communicate only via the JSON input/output contract described in `worker/README.md` and `docs/INDEX_FORMAT.md`.
+The worker/runner split is deliberate: the worker never touches Docker, the runner never touches Mix projects. They communicate only via the JSON input/output contract described in `apps/ncc_worker/README.md` and `docs/INDEX_FORMAT.md`.
 
-`portal/AGENTS.md` carries extensive Phoenix 1.8 / LiveView / HEEx conventions — read it before touching `portal/`.
+`apps/portal/AGENTS.md` carries extensive Phoenix 1.8 / LiveView / HEEx conventions — read it before touching `apps/portal/`.
 
 ## Common Commands
 
 The top-level `Makefile` orchestrates the full pipeline. Most day-to-day work goes through it.
 
 ```bash
-make build                         # Rebuild the ncc-worker:local Docker image (needed when Dockerfile or worker/ changes)
+make build                         # Rebuild the ncc-worker:local Docker image (needed when apps/ncc_worker/Dockerfile or apps/ncc_worker/ changes)
 make run PACKAGE=jason:1.4.1       # Run one package through the full pipeline
 make test-all                      # Run the hardcoded TEST_PACKAGES list
 make test-integration              # End-to-end runner test: jason → real container → assert pass (needs docker + built image)
@@ -39,18 +45,27 @@ make site                          # collect + generate public/site/
 make shell                         # Interactive shell in the worker container (add PACKAGE=x:y to pre-stage a job)
 make clean                         # Remove runner/tmp, public/data, public/site, compat_test_results
 make realclean                     # clean + purge ~/.ncc-nerves-cache and ~/.ncc-hex-cache
-make format                        # mix format in all four Elixir projects
+make format                        # mix format at umbrella root + runner/site/orchestrator
 ```
 
 The integration test (`runner/test/ncc_runner/integration_test.exs`) is the regression gate for the worker+runner boundary. It's tagged `:integration` and excluded from `mix test` by default; run it after any change that could affect Docker invocation, the JSON contract, or the worker's firmware-build path.
 
-Per-project work (run from each subdir):
+Umbrella commands (run from repo root):
 
 ```bash
 mix deps.get
-mix test                           # compat, worker, runner, orchestrator, site all have their own suites
+mix test                           # runs all umbrella apps (compatibility, ncc_worker, portal)
+mix test apps/compatibility/test/  # single umbrella app
+mix format                         # format all umbrella apps
+```
+
+Per-project work for standalone projects (run from each subdir):
+
+```bash
+mix deps.get
+mix test                           # runner, orchestrator, site each have their own suites
 mix test path/to/file_test.exs:42  # single test
-mix escript.build                  # worker, runner, orchestrator produce escripts
+mix escript.build                  # runner, orchestrator produce escripts
 mix format
 ```
 
@@ -62,17 +77,17 @@ mix site.gen --in ../example_data --out ../public
 mix site.serve --dir ../public --port 4000    # http://localhost:4000/site/index.html
 ```
 
-Portal (Phoenix, standalone — not driven by the Makefile):
+Portal (Phoenix, in the umbrella — run from repo root or from apps/portal):
 
 ```bash
-cd portal
+cd apps/portal
 mix setup                          # deps + SQLite DB create/migrate + assets
-mix phx.server                     # http://localhost:4000
+mix phx.server                     # http://localhost:4001
 mix test
-mix precommit                      # run when finishing portal changes (see portal/AGENTS.md)
+mix precommit                      # run when finishing portal changes (see apps/portal/AGENTS.md)
 ```
 
-Note: `make format` only runs `mix format` in `compat/`, `worker/`, `runner/`, and `site/` — it skips `beam_scanner/`, `orchestrator/`, and `portal/`; format those from their subdirs.
+Note: `make format` runs `mix format` at the umbrella root (covers `apps/compatibility`, `apps/ncc_worker`, `apps/portal`) and then formats `runner/`, `site/`, and `orchestrator/` individually.
 
 ## How a Package Gets Checked (End-to-End)
 
@@ -83,7 +98,7 @@ Note: `make format` only runs `mix format` in `compat/`, `worker/`, `runner/`, a
    - `/out` → outputs (result.json, logs, runner_metadata.json)
    - `/home/nerves/.nerves` → shared Nerves cache (`~/.ncc-nerves-cache`)
    - `/hex-cache` → shared Hex cache (`~/.ncc-hex-cache`)
-4. **Worker** (`worker/lib/ncc_worker/worker.ex`) inside the container:
+4. **Worker** (`apps/ncc_worker/lib/ncc_worker/worker.ex`) inside the container:
    - Reads `NCC_INPUT` (default `/work/input.json`).
    - `NccWorker.Project.create/3` generates a fresh Nerves project and adds the target package.
    - `NccWorker.LockPolicy` aborts with exit 11 if `mix.lock` contains any non-Hex (git/path) deps.
@@ -115,7 +130,7 @@ Worker and runner use numeric exit codes that propagate meaning up the stack —
 ## Data Contracts
 
 - **Job input** (runner → worker): see `runner/examples/` and `worker/examples/input.json`. Key fields: `run_id`, `image.name`, `image.digest`, `package.{name,version}`, optional `systems_override`, `systems_filter`, `paths`, `limits`.
-- **Worker output** (`result.json`): typespec at top of `worker/lib/ncc_worker/worker.ex`. Status enum lives in `Compat.Types` — `pass | fail | error | skipped | unknown`.
+- **Worker output** (`result.json`): typespec at top of `apps/ncc_worker/lib/ncc_worker/worker.ex`. Status enum lives in `Compatibility.Types` — `pass | fail | error | skipped | unknown`.
 - **Site indexes**: `latest_by_pkg.json`, `latest_by_pkg_system.json`, `stats.json`. Schema version 2. Documented in `docs/INDEX_FORMAT.md`.
 - **Package overrides**: `package_metadata.json` at repo root lets you force status / add notes / allow-list or deny-list systems without running tests. Documented in `docs/PACKAGE_METADATA.md`.
 - **Precompiled API**: manifests and content-addressed files served by the site. Full spec in `PRECOMPILED_API.md`.
@@ -128,7 +143,7 @@ Worker and runner use numeric exit codes that propagate meaning up the stack —
 
 ## Dependency Policy (Worker)
 
-The worker **rejects any project whose `mix.lock` references git or path deps**. This is enforced in `NccWorker.LockPolicy` and is load-bearing for reproducibility — don't relax it without understanding why it exists (see `worker/README.md`).
+The worker **rejects any project whose `mix.lock` references git or path deps**. This is enforced in `NccWorker.LockPolicy` and is load-bearing for reproducibility — don't relax it without understanding why it exists (see `apps/ncc_worker/README.md`).
 
 ## Generated / Ignored Paths
 
