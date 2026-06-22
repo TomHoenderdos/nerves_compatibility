@@ -82,6 +82,7 @@ defmodule PortalWeb do
       # Core UI components
       import PortalWeb.CoreComponents
       import PortalWeb.SiteNav
+      import PortalWeb.UI
 
       # Common modules used in templates
       alias Phoenix.LiveView.JS
