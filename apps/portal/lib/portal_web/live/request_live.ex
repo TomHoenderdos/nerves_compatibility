@@ -64,18 +64,18 @@ defmodule PortalWeb.RequestLive do
         <div class="rounded-2xl border border-base-300 bg-base-100 p-6 shadow-sm">
           <h2 class="text-sm font-semibold uppercase tracking-wider text-base-content/60">Build progress</h2>
           <ol class="mt-5 space-y-5">
-            <li :for={{key, label, desc} <- stages()} class={[
+            <li :for={{_key, label, desc, state} <- stage_items(assigns)} class={[
               "flex items-start gap-3",
-              stage_state(key, assigns) == :pending && "opacity-40"
+              state == :pending && "opacity-40"
             ]}>
               <span class={[
                 "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full",
-                stage_state(key, assigns) == :done && "bg-emerald-500 text-white",
-                stage_state(key, assigns) == :active && "bg-primary text-primary-content",
-                stage_state(key, assigns) == :pending && "border-2 border-base-300 text-base-content/40"
+                state == :done && "bg-emerald-500 text-white",
+                state == :active && "bg-primary text-primary-content",
+                state == :pending && "border-2 border-base-300 text-base-content/40"
               ]}>
-                <.icon :if={stage_state(key, assigns) == :done} name="hero-check-mini" class="size-3.5" />
-                <span :if={stage_state(key, assigns) == :active} class="h-2 w-2 animate-pulse rounded-full bg-current"></span>
+                <.icon :if={state == :done} name="hero-check-mini" class="size-3.5" />
+                <span :if={state == :active} class="h-2 w-2 animate-pulse rounded-full bg-current"></span>
               </span>
               <div>
                 <div class="font-medium text-base-content">{label}</div>
@@ -87,7 +87,7 @@ defmodule PortalWeb.RequestLive do
 
         <div :if={map_size(@payload) > 0} class="overflow-hidden rounded-2xl border border-base-300 bg-base-300/30 shadow-sm">
           <div class="border-b border-base-300 px-4 py-2.5 font-mono text-xs text-base-content/60">latest progress</div>
-          <pre class="overflow-auto p-4 font-mono text-xs leading-relaxed text-base-content/80"><%= inspect(@payload, pretty: true) %></pre>
+          <pre class="overflow-auto p-4 font-mono text-xs leading-relaxed text-base-content/80">{inspect(@payload, pretty: true)}</pre>
         </div>
       </section>
     </Layouts.app>
@@ -100,6 +100,10 @@ defmodule PortalWeb.RequestLive do
       {:building, "Building firmware", "Compiling per Nerves system in the build container."},
       {:ingesting, "Ingest results", "Persist runs and archive precompiled artifacts."}
     ]
+  end
+
+  defp stage_items(assigns) do
+    Enum.map(stages(), fn {key, label, desc} -> {key, label, desc, stage_state(key, assigns)} end)
   end
 
   # Map the request status + live stage onto a tri-state per stage.
