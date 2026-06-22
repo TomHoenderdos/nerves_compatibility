@@ -3,29 +3,17 @@
 <main class="min-h-screen bg-base-100 text-base-content">
   <.site_nav active={:admin} current_user={@current_user} />
 
-  <div class="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-    <section class="py-8">
-      <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p class="text-sm font-semibold text-primary">Admin</p>
-          <h1 class="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-            Scan request operations
-          </h1>
-          <p class="mt-4 max-w-2xl leading-7 text-base-content/70">
-            Review anonymous submissions and inspect accepted requests waiting for scanner processing.
-          </p>
-        </div>
-      </div>
+  <div class="mx-auto max-w-5xl px-4 py-10 sm:px-6 lg:px-8">
+    <section class="space-y-8">
+      <PortalWeb.UI.page_header kicker="Admin" title="Scan request operations">
+        <:subtitle>
+          Review anonymous submissions and inspect accepted requests waiting for scanner processing.
+        </:subtitle>
+      </PortalWeb.UI.page_header>
 
-      <div class="mt-8 grid gap-4 sm:grid-cols-2">
-        <div class="rounded-box border border-base-300 bg-base-200/50 p-4">
-          <p class="text-xs font-semibold uppercase text-base-content/60">Needs review</p>
-          <p class="mt-2 text-3xl font-semibold">{length(@pending_anonymous_requests)}</p>
-        </div>
-        <div class="rounded-box border border-base-300 bg-base-200/50 p-4">
-          <p class="text-xs font-semibold uppercase text-base-content/60">Current queue</p>
-          <p class="mt-2 text-3xl font-semibold">{length(@queue_requests)}</p>
-        </div>
+      <div class="grid gap-3 sm:grid-cols-2">
+        <PortalWeb.UI.stat_card label="Needs review" value={to_string(length(@pending_anonymous_requests))} />
+        <PortalWeb.UI.stat_card label="Current queue" value={to_string(length(@queue_requests))} />
       </div>
 
       <section class="card mt-8 border border-base-300 bg-base-100 shadow-sm">
