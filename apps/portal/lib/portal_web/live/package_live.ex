@@ -24,9 +24,12 @@ defmodule PortalWeb.PackageLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} active={:packages}>
+    <Layouts.app flash={@flash} active={:packages} current_user={@current_user}>
       <section class="space-y-8">
-        <a href={~p"/"} class="inline-flex items-center gap-1.5 text-sm font-medium text-base-content/60 transition hover:text-base-content">
+        <a
+          href={~p"/"}
+          class="inline-flex items-center gap-1.5 text-sm font-medium text-base-content/60 transition hover:text-base-content"
+        >
           <.icon name="hero-chevron-left-mini" class="size-4" /> All packages
         </a>
 
@@ -39,7 +42,10 @@ defmodule PortalWeb.PackageLive do
 
         <div class="grid gap-3 sm:grid-cols-3">
           <PortalWeb.UI.stat_card label="Latest version" value={@package.latest_version || "unknown"} />
-          <PortalWeb.UI.stat_card label="Last run" value={to_string(@package.last_run_at || "not run")} />
+          <PortalWeb.UI.stat_card
+            label="Last run"
+            value={to_string(@package.last_run_at || "not run")}
+          />
           <PortalWeb.UI.stat_card label="Systems" value={to_string(length(@systems))} />
         </div>
 
@@ -54,13 +60,19 @@ defmodule PortalWeb.PackageLive do
               </tr>
             </thead>
             <tbody class="divide-y divide-base-200">
-              <tr :for={system <- @systems} id={"system-#{dom_id(system.system_pkg)}"} class="transition hover:bg-base-200/40">
+              <tr
+                :for={system <- @systems}
+                id={"system-#{dom_id(system.system_pkg)}"}
+                class="transition hover:bg-base-200/40"
+              >
                 <td class="px-5 py-4">
                   <div class="font-mono font-medium text-base-content">{system.system_pkg}</div>
                   <div class="text-base-content/50">{system.system_version || "host"}</div>
                 </td>
                 <td class="px-5 py-4"><PortalWeb.UI.status_badge status={system.status} /></td>
-                <td class="px-5 py-4 font-mono text-base-content/70">{system.firmware_size_bytes || "—"}</td>
+                <td class="px-5 py-4 font-mono text-base-content/70">
+                  {system.firmware_size_bytes || "—"}
+                </td>
                 <td class="px-5 py-4 font-mono text-xs text-base-content/40">{system.run_id}</td>
               </tr>
             </tbody>

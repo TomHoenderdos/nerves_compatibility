@@ -29,7 +29,7 @@ defmodule PortalWeb.IndexLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} active={:packages}>
+    <Layouts.app flash={@flash} active={:packages} current_user={@current_user}>
       <section class="space-y-8">
         <PortalWeb.UI.page_header kicker="Catalog" title="Nerves Compatibility">
           <:subtitle>
@@ -48,7 +48,10 @@ defmodule PortalWeb.IndexLive do
         <form id="package-search" phx-change="search" class="space-y-2">
           <label for="q" class="sr-only">Search packages</label>
           <div class="relative">
-            <.icon name="hero-magnifying-glass-mini" class="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-base-content/40" />
+            <.icon
+              name="hero-magnifying-glass-mini"
+              class="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-base-content/40"
+            />
             <input
               id="q"
               name="q"
@@ -72,8 +75,9 @@ defmodule PortalWeb.IndexLive do
             description={package.description}
             version={package.latest_version && "v#{package.latest_version}"}
             href={~p"/packages/#{package.name}"}
-            summary={package.last_run_at && "scanned" || "not run"}
-            summary_status={(package.last_run_at && "pass") || "skipped"}
+            summary={package.summary}
+            summary_status={package.summary_status}
+            statuses={package.statuses}
           />
         </div>
       </section>
@@ -87,6 +91,30 @@ defmodule PortalWeb.IndexLive do
     Catalog.latest_by_pkg_json().packages
     |> Enum.map(fn {name, data} -> Map.put(data, :name, name) end)
     |> Enum.filter(fn package -> q == "" or String.contains?(package.name, q) end)
+    |> Enum.map(fn package ->
+      statuses = system_statuses(package)
+      {summary, summary_status} = summarize(statuses)
+      Map.merge(package, %{statuses: statuses, summary: summary, summary_status: summary_status})
+    end)
     |> Enum.sort_by(& &1.name)
+  end
+
+  defp system_statuses(package) do
+    package |> Map.get(:systems, %{}) |> Map.values() |> Enum.map(&to_string(&1.status))
+  end
+
+  defp summarize(statuses) do
+    cond do
+      statuses == [] -> {"not run", "skipped"}
+      "error" in statuses -> {tally(statuses), "error"}
+      "fail" in statuses -> {tally(statuses), "fail"}
+      Enum.all?(statuses, &(&1 == "pass")) -> {tally(statuses), "pass"}
+      true -> {tally(statuses), "skipped"}
+    end
+  end
+
+  defp tally(statuses) do
+    pass = Enum.count(statuses, &(&1 == "pass"))
+    "#{pass}/#{length(statuses)} pass"
   end
 end

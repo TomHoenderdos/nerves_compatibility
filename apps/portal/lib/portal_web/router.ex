@@ -24,7 +24,13 @@ defmodule PortalWeb.Router do
   scope "/", PortalWeb do
     pipe_through :browser
 
-    get "/", PageController, :request_scan
+    live_session :public, on_mount: [{PortalWeb.UserAuth, :assign_current_user}] do
+      live "/", IndexLive, :index
+      live "/packages/:name", PackageLive, :show
+      live "/requests/:id", RequestLive, :show
+    end
+
+    get "/badge/:name", CatalogApiController, :badge
     get "/request-scan", PageController, :request_scan
     get "/admin", PageController, :admin
     post "/admin/requests/:id/approve", PageController, :approve_anonymous_request
@@ -54,5 +60,10 @@ defmodule PortalWeb.Router do
     pipe_through :api
 
     get "/packages/hex", PageController, :hex_package_search
+    get "/precompiled/manifests/:package", CatalogApiController, :precompiled_manifest
+    get "/precompiled/files/:sha256", CatalogApiController, :precompiled_file
+    get "/packages", CatalogApiController, :packages
+    get "/packages/:name", CatalogApiController, :package
+    get "/stats", CatalogApiController, :stats
   end
 end
