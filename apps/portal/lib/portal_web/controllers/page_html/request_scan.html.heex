@@ -14,6 +14,29 @@
         </:subtitle>
       </PortalWeb.UI.page_header>
 
+      <div
+        :if={@submitted_requests != []}
+        class="rounded-2xl border border-primary/30 bg-primary/5 p-6 shadow-sm"
+      >
+        <h2 class="text-sm font-semibold uppercase tracking-wider text-primary">
+          Requested {length(@submitted_requests)} package(s) — track progress
+        </h2>
+        <ul class="mt-4 divide-y divide-base-200">
+          <li
+            :for={request <- @submitted_requests}
+            class="flex items-center justify-between py-3"
+          >
+            <span class="font-mono text-base-content">{request.package_name}</span>
+            <a
+              href={~p"/requests/#{request.id}"}
+              class="inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline"
+            >
+              View progress <span aria-hidden="true">→</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+
       <section class="card border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body gap-6">
           <div class="rounded-box border border-warning/30 bg-warning/10 p-4 text-sm leading-6 text-base-content/80">
