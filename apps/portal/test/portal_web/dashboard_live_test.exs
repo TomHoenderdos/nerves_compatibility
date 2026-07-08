@@ -4,11 +4,14 @@ defmodule PortalWeb.DashboardLiveTest do
   import Phoenix.LiveViewTest
   alias Portal.Catalog.Ingestion
 
-  test "dashboard renders all five section headings", %{conn: conn} do
+  test "dashboard renders summary + tiles + recent lists", %{conn: conn} do
     {:ok, _view, html} = live(conn, ~p"/")
+    assert html =~ "Unique Packages"
+    assert html =~ "Passing"
+    assert html =~ "Failing"
     assert html =~ "Top failure clusters"
-    assert html =~ "Pass rate per system"
     assert html =~ "Native code"
+    assert html =~ "Pass rate per system"
     assert html =~ "Recently checked passing"
     assert html =~ "Recently checked failing"
   end
@@ -23,7 +26,9 @@ defmodule PortalWeb.DashboardLiveTest do
         %{
           "package" => %{"name" => "dashfail", "version" => "1.0.0"},
           "finished_at" => "2026-07-04T10:00:00Z",
-          "systems" => %{"nerves_system_rpi0" => %{"status" => "fail", "log_tail" => "Exec format error"}}
+          "systems" => %{
+            "nerves_system_rpi0" => %{"status" => "fail", "log_tail" => "Exec format error"}
+          }
         },
         %{run_id: "dashfail-1", image_digest: "sha256:x", files_dir: dir, log: "l"}
       )
