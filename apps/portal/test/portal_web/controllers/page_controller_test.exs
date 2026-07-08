@@ -1,8 +1,18 @@
 defmodule PortalWeb.PageControllerTest do
   use PortalWeb.ConnCase
 
-  test "GET /", %{conn: conn} do
-    conn = get(conn, ~p"/")
+  defmodule StubVersions do
+    def latest_version(_package), do: {:ok, "1.0.0"}
+  end
+
+  setup do
+    Application.put_env(:portal, :package_version_resolver, StubVersions)
+    on_exit(fn -> Application.delete_env(:portal, :package_version_resolver) end)
+    :ok
+  end
+
+  test "GET /request-scan", %{conn: conn} do
+    conn = get(conn, ~p"/request-scan")
     assert html_response(conn, 200) =~ "Request scans for packages"
     assert html_response(conn, 200) =~ "Verify with Hex.pm"
     assert html_response(conn, 200) =~ "Verify with GitHub"
@@ -65,6 +75,23 @@ defmodule PortalWeb.PageControllerTest do
     assert length(requests) == 1
   end
 
+  test "submitting an anonymous request shows a confirmation panel linking to each request", %{
+    conn: conn
+  } do
+    conn =
+      post(conn, ~p"/requests/anonymous", %{
+        "packages" => "coolpkg",
+        "verification_method" => "anonymous"
+      })
+
+    body = html_response(conn, 200)
+    assert body =~ "track progress"
+    assert body =~ "coolpkg"
+
+    # a /requests/<uuid> link is present
+    assert body =~ ~r/\/requests\/[0-9a-f-]{36}/
+  end
+
   test "POST /auth/github/start reports unavailable without a configured GitHub client", %{
     conn: conn
   } do
@@ -119,6 +146,6 @@ defmodule PortalWeb.PageControllerTest do
     assert html_response(conn, 200) =~ "Approved anonymous request for jason"
 
     assert {:ok, updated} = Portal.ScanRequests.get_request(request.id)
-    assert updated.status == :accepted
+    assert updated.status == :queued
   end
 end
