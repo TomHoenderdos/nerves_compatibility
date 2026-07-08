@@ -1,74 +1,31 @@
 defmodule Portal.Catalog.Rollup do
-  @moduledoc """
-  Rolls up per-system results into package-level buckets.
-  """
+  @moduledoc "Pure package-level rollups over per-system results."
 
-  @doc """
-  Rolls per-system statuses into a single package status bucket.
+  @doc "Roll a list of per-system statuses into one package-level bucket."
+  @spec overall_status([atom() | String.t()]) :: :pass | :fail | :partial | :skipped | :unknown
+  def overall_status([]), do: :unknown
 
-  Priority: fail > error > partial > pass > skipped > unknown.
-
-  - If any system is :fail or "fail" (or :error or "error"), returns :fail.
-  - If any system is :skipped or "skipped" but none failed/errored, and others are :pass, returns :partial.
-  - If all are :skipped or "skipped", returns :skipped.
-  - If all are :pass or "pass", returns :pass.
-  - If list is empty, returns :unknown.
-  - Otherwise returns :unknown.
-  """
-  def overall_status(statuses) when is_list(statuses) do
-    normalized = Enum.map(statuses, &normalize_status/1)
+  def overall_status(statuses) do
+    s = Enum.map(statuses, &to_string/1)
 
     cond do
-      Enum.any?(normalized, &(&1 in [:fail, :error])) ->
-        :fail
-
-      Enum.any?(normalized, &(&1 == :skipped)) and Enum.any?(normalized, &(&1 == :pass)) ->
-        :partial
-
-      Enum.all?(normalized, &(&1 == :skipped)) and length(normalized) > 0 ->
-        :skipped
-
-      Enum.all?(normalized, &(&1 == :pass)) and length(normalized) > 0 ->
-        :pass
-
-      length(normalized) == 0 ->
-        :unknown
-
-      true ->
-        :unknown
+      Enum.any?(s, &(&1 in ["fail", "error"])) -> :fail
+      Enum.all?(s, &(&1 == "pass")) -> :pass
+      Enum.all?(s, &(&1 == "skipped")) -> :skipped
+      Enum.any?(s, &(&1 == "pass")) -> :partial
+      true -> :unknown
     end
   end
 
-  defp normalize_status(status) when is_binary(status) do
-    String.to_atom(status)
-  end
+  @doc "Classify a package's native-code bucket."
+  @spec native_bucket(String.t() | nil, [String.t()], boolean()) :: String.t()
+  def native_bucket(_nif, _ports, false), do: "not scanned"
+  def native_bucket(nif, _ports, true) when is_binary(nif) and nif != "", do: nif
 
-  defp normalize_status(status) when is_atom(status) do
-    status
-  end
-
-  @doc """
-  Classifies native language presence for a build.
-
-  Returns a classification string:
-  - If nif_language is provided, returns it.
-  - If port_languages is non-empty, returns the first language.
-  - If any_scanned? is false, returns "not scanned".
-  - Otherwise returns "none".
-  """
-  def native_bucket(nif_language, port_languages, any_scanned?) do
-    cond do
-      is_binary(nif_language) and nif_language != "" ->
-        nif_language
-
-      is_list(port_languages) and length(port_languages) > 0 ->
-        List.first(port_languages)
-
-      not any_scanned? ->
-        "not scanned"
-
-      true ->
-        "none"
+  def native_bucket(_nif, ports, true) do
+    case Enum.reject(ports || [], &(is_nil(&1) or &1 == "")) do
+      [lang | _] -> lang
+      [] -> "none"
     end
   end
 end
