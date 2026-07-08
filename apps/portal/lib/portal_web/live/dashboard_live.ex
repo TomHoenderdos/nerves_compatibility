@@ -66,11 +66,11 @@ defmodule PortalWeb.DashboardLive do
         <div class="grid gap-6 sm:grid-cols-2">
           <.section title="Recently checked passing">
             <.empty :if={@recent_pass == []}>Nothing yet.</.empty>
-            <.recent_list :if={@recent_pass != []} rows={@recent_pass} status="pass" />
+            <.recent_list :if={@recent_pass != []} rows={@recent_pass} />
           </.section>
           <.section title="Recently checked failing">
             <.empty :if={@recent_fail == []}>Nothing yet.</.empty>
-            <.recent_list :if={@recent_fail != []} rows={@recent_fail} status="fail" />
+            <.recent_list :if={@recent_fail != []} rows={@recent_fail} />
           </.section>
         </div>
       </section>
@@ -99,7 +99,6 @@ defmodule PortalWeb.DashboardLive do
   end
 
   attr :rows, :list, required: true
-  attr :status, :string, required: true
 
   defp recent_list(assigns) do
     ~H"""
@@ -108,7 +107,7 @@ defmodule PortalWeb.DashboardLive do
         <a href={~p"/packages/#{row.package}"} class="font-medium text-base-content hover:text-primary">
           {row.package} <span class="font-mono text-xs text-base-content/50">v{row.version}</span>
         </a>
-        <PortalWeb.UI.status_badge status={@status} />
+        <PortalWeb.UI.status_badge status={to_string(row.overall_status)} />
       </li>
     </ul>
     """

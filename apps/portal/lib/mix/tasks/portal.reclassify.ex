@@ -14,6 +14,9 @@ defmodule Mix.Tasks.Portal.Reclassify do
 
     counts =
       Enum.reduce(results, %{}, fn sr, acc ->
+        # Reclassify from the persisted log_tail only — the worker's per-system
+        # `error` string is not stored, so a category that originally matched on
+        # `error` alone (not log_tail) may fall back to "Other / unclassified".
         category =
           FailureClassifier.classify(%{
             "status" => to_string(sr.status),
