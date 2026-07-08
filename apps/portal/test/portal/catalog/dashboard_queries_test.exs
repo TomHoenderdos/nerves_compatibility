@@ -4,7 +4,7 @@ defmodule Portal.Catalog.DashboardQueriesTest do
   alias Portal.Catalog
   alias Portal.Catalog.Ingestion
 
-  defp ingest(name, version, systems, native \\ nil, finished \\ "2026-07-01T10:00:00Z") do
+  defp ingest(name, version, systems, native, finished) do
     dir = Path.join(System.tmp_dir!(), "dq-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf(dir) end)
