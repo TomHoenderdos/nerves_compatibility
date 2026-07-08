@@ -42,9 +42,12 @@ defmodule PortalWeb.RequestLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} active={:request_scan}>
+    <Layouts.app flash={@flash} active={:request_scan} current_user={@current_user}>
       <section class="space-y-7">
-        <a href={~p"/"} class="inline-flex items-center gap-1.5 text-sm font-medium text-base-content/60 transition hover:text-base-content">
+        <a
+          href={~p"/"}
+          class="inline-flex items-center gap-1.5 text-sm font-medium text-base-content/60 transition hover:text-base-content"
+        >
           <.icon name="hero-chevron-left-mini" class="size-4" /> All packages
         </a>
 
@@ -55,19 +58,26 @@ defmodule PortalWeb.RequestLive do
         <div class="grid grid-cols-3 gap-3">
           <div class="rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm">
             <div class="text-sm text-base-content/60">Status</div>
-            <div id="request-status" class="mt-1 text-lg font-semibold text-primary">{@request.status}</div>
+            <div id="request-status" class="mt-1 text-lg font-semibold text-primary">
+              {@request.status}
+            </div>
           </div>
           <PortalWeb.UI.stat_card label="Version" value={@request.version || "latest"} />
           <PortalWeb.UI.stat_card label="Source" value={to_string(@request.source)} />
         </div>
 
         <div class="rounded-2xl border border-base-300 bg-base-100 p-6 shadow-sm">
-          <h2 class="text-sm font-semibold uppercase tracking-wider text-base-content/60">Build progress</h2>
+          <h2 class="text-sm font-semibold uppercase tracking-wider text-base-content/60">
+            Build progress
+          </h2>
           <ol class="mt-5 space-y-5">
-            <li :for={{_key, label, desc, state} <- stage_items(assigns)} class={[
-              "flex items-start gap-3",
-              state == :pending && "opacity-40"
-            ]}>
+            <li
+              :for={{_key, label, desc, state} <- stage_items(assigns)}
+              class={[
+                "flex items-start gap-3",
+                state == :pending && "opacity-40"
+              ]}
+            >
               <span class={[
                 "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full",
                 state == :done && "bg-emerald-500 text-white",
@@ -75,7 +85,8 @@ defmodule PortalWeb.RequestLive do
                 state == :pending && "border-2 border-base-300 text-base-content/40"
               ]}>
                 <.icon :if={state == :done} name="hero-check-mini" class="size-3.5" />
-                <span :if={state == :active} class="h-2 w-2 animate-pulse rounded-full bg-current"></span>
+                <span :if={state == :active} class="h-2 w-2 animate-pulse rounded-full bg-current">
+                </span>
               </span>
               <div>
                 <div class="font-medium text-base-content">{label}</div>
@@ -85,8 +96,13 @@ defmodule PortalWeb.RequestLive do
           </ol>
         </div>
 
-        <div :if={map_size(@payload) > 0} class="overflow-hidden rounded-2xl border border-base-300 bg-base-300/30 shadow-sm">
-          <div class="border-b border-base-300 px-4 py-2.5 font-mono text-xs text-base-content/60">latest progress</div>
+        <div
+          :if={map_size(@payload) > 0}
+          class="overflow-hidden rounded-2xl border border-base-300 bg-base-300/30 shadow-sm"
+        >
+          <div class="border-b border-base-300 px-4 py-2.5 font-mono text-xs text-base-content/60">
+            latest progress
+          </div>
           <pre class="overflow-auto p-4 font-mono text-xs leading-relaxed text-base-content/80">{inspect(@payload, pretty: true)}</pre>
         </div>
       </section>
@@ -107,18 +123,26 @@ defmodule PortalWeb.RequestLive do
   end
 
   # Map the request status + live stage onto a tri-state per stage.
+  # Terminal requests (finished, one way or another) show every stage as done
+  # instead of leaving the final stage pulsing as :active.
   defp stage_state(key, %{request: request, stage: stage}) do
-    order = [:queued, :building, :ingesting]
-    current = current_stage(request.status, stage)
+    if terminal?(request.status) do
+      :done
+    else
+      order = [:queued, :building, :ingesting]
+      current = current_stage(request.status, stage)
 
-    cond do
-      Enum.find_index(order, &(&1 == key)) < Enum.find_index(order, &(&1 == current)) -> :done
-      key == current -> :active
-      true -> :pending
+      cond do
+        Enum.find_index(order, &(&1 == key)) < Enum.find_index(order, &(&1 == current)) -> :done
+        key == current -> :active
+        true -> :pending
+      end
     end
   end
 
   # Status enum: :pending, :accepted, :queued, :built, :rejected, :error
+  defp terminal?(status), do: to_string(status) in ["built", "rejected", "error"]
+
   defp current_stage(status, stage) do
     status = to_string(status)
     stage = to_string(stage)
@@ -126,7 +150,7 @@ defmodule PortalWeb.RequestLive do
     cond do
       status in ["built", "rejected", "error"] -> :ingesting
       stage =~ "ingest" -> :ingesting
-      stage =~ "build" or status == "building" -> :building
+      stage =~ "build" -> :building
       true -> :queued
     end
   end
