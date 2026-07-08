@@ -42,10 +42,7 @@ defmodule PortalWeb.PackageLive do
 
         <div class="grid gap-3 sm:grid-cols-3">
           <PortalWeb.UI.stat_card label="Latest version" value={@package.latest_version || "unknown"} />
-          <PortalWeb.UI.stat_card
-            label="Last run"
-            value={to_string(@package.last_run_at || "not run")}
-          />
+          <PortalWeb.UI.stat_card label="Last run" value={format_last_run(@package.last_run_at)} />
           <PortalWeb.UI.stat_card label="Systems" value={to_string(length(@systems))} />
         </div>
 
@@ -90,4 +87,29 @@ defmodule PortalWeb.PackageLive do
   end
 
   defp dom_id(value), do: value |> String.replace("_", "-") |> String.replace("@", "-")
+
+  defp format_last_run(nil), do: "not run"
+
+  defp format_last_run(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _offset} -> relative_time(dt)
+      _ -> iso
+    end
+  end
+
+  defp format_last_run(%DateTime{} = dt), do: relative_time(dt)
+  defp format_last_run(other), do: to_string(other)
+
+  defp relative_time(dt) do
+    diff = DateTime.diff(DateTime.utc_now(), dt, :second)
+
+    cond do
+      diff < 0 -> Calendar.strftime(dt, "%b %-d, %Y %H:%M UTC")
+      diff < 60 -> "just now"
+      diff < 3600 -> "#{div(diff, 60)} min ago"
+      diff < 86_400 -> "#{div(diff, 3600)} hr ago"
+      diff < 2_592_000 -> "#{div(diff, 86_400)} days ago"
+      true -> Calendar.strftime(dt, "%b %-d, %Y")
+    end
+  end
 end
