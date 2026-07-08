@@ -45,7 +45,7 @@ defmodule PortalWeb.RequestLive do
     <Layouts.app flash={@flash} active={:request_scan} current_user={@current_user}>
       <section class="space-y-7">
         <a
-          href={~p"/"}
+          href={~p"/packages"}
           class="inline-flex items-center gap-1.5 text-sm font-medium text-base-content/60 transition hover:text-base-content"
         >
           <.icon name="hero-chevron-left-mini" class="size-4" /> All packages

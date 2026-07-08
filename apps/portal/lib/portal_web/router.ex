@@ -25,7 +25,8 @@ defmodule PortalWeb.Router do
     pipe_through :browser
 
     live_session :public, on_mount: [{PortalWeb.UserAuth, :assign_current_user}] do
-      live "/", IndexLive, :index
+      live "/", DashboardLive, :index
+      live "/packages", IndexLive, :index
       live "/packages/:name", PackageLive, :show
       live "/requests/:id", RequestLive, :show
     end
