@@ -162,20 +162,86 @@ defmodule Portal.Catalog do
     end)
   end
 
+  @failure_meta %{
+    "NIF built for wrong architecture" =>
+      {"NIF built for wrong architecture",
+       "A dependency's NIF was compiled for the host, not the Nerves target — the scrub-otp step rejects it at firmware-build time. Usually fixable by forcing a clean rebuild of the dep for the target."},
+    "Precompiled NIF missing for target" =>
+      {"Precompiled NIF missing for this target",
+       "The package ships a precompiled NIF but no build exists for the Nerves target triple. The package vendor would need to add the triple to their release."},
+    "Dependency resolution failed" =>
+      {"Dependency resolution failed",
+       "A dependency could not be resolved or fetched. Often a version skew or a git/path dep that Hex can't satisfy."},
+    "Compilation error" =>
+      {"Compilation error",
+       "The package's own source failed to compile — often a syntax issue triggered by a newer Elixir, or a missing macro dependency."},
+    "Other / unclassified" =>
+      {"Other / unclassified",
+       "Build failures that don't match a known pattern. See the representative log for the specific cause."}
+  }
+
+  @doc "One bucket per package via Rollup.overall_status over its latest run's systems."
+  def package_status_counts do
+    by_pkg =
+      latest_annotated_systems()
+      |> Enum.group_by(& &1.package)
+      |> Enum.map(fn {_pkg, rows} ->
+        Portal.Catalog.Rollup.overall_status(Enum.map(rows, & &1.status))
+      end)
+
+    %{
+      unique: length(by_pkg),
+      pass: Enum.count(by_pkg, &(&1 == :pass)),
+      fail: Enum.count(by_pkg, &(&1 == :fail)),
+      partial: Enum.count(by_pkg, &(&1 == :partial)),
+      skipped: Enum.count(by_pkg, &(&1 == :skipped)),
+      unknown: Enum.count(by_pkg, &(&1 == :unknown))
+    }
+  end
+
   @doc "Non-pass systems grouped by failure_category with occurrence + distinct-package counts."
   def failure_clusters(limit \\ 10) do
     latest_annotated_systems()
     |> Enum.filter(&(&1.status in [:fail, :error] and not is_nil(&1.failure_category)))
     |> Enum.group_by(& &1.failure_category)
     |> Enum.map(fn {category, rows} ->
+      {title, hint} = Map.get(@failure_meta, category, {category, "Build failures in this category."})
+
+      entries =
+        Enum.map(rows, fn r ->
+          %{
+            package: r.package,
+            version: r.version,
+            arch_label: Portal.Catalog.Architecture.label(r.system_pkg),
+            nif_language: r.nif_language,
+            detail: nil
+          }
+        end)
+
       %{
         category: category,
+        title: title,
+        hint: hint,
         systems: length(rows),
-        packages: rows |> Enum.map(& &1.package) |> Enum.uniq() |> length()
+        packages: rows |> Enum.map(& &1.package) |> Enum.uniq() |> length(),
+        entries: entries,
+        sample_log: sample_log(rows)
       }
     end)
     |> Enum.sort_by(& &1.systems, :desc)
     |> Enum.take(limit)
+  end
+
+  # Shortest non-empty log_tail in the cluster, last 40 lines.
+  defp sample_log(rows) do
+    rows
+    |> Enum.map(& &1.log_tail)
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.min_by(&String.length/1, fn -> nil end)
+    |> case do
+      nil -> nil
+      log -> log |> String.split("\n") |> Enum.take(-40) |> Enum.join("\n")
+    end
   end
 
   @doc "Packages grouped by native implementation language (NIF + ports), plus a pure-Elixir bucket."
@@ -352,7 +418,10 @@ defmodule Portal.Catalog do
         package: Map.get(run_to_pkg, sr.run_id),
         system_pkg: sr.system_pkg,
         status: sr.status,
-        failure_category: sr.failure_category
+        failure_category: sr.failure_category,
+        log_tail: sr.log_tail,
+        version: sr.hex_version_tested,
+        nif_language: nil
       }
     end)
   end
