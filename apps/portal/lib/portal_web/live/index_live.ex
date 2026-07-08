@@ -2,28 +2,33 @@ defmodule PortalWeb.IndexLive do
   use PortalWeb, :live_view
 
   alias Portal.Catalog
+  alias Portal.ScanRequests
 
   @impl true
   def mount(_params, _session, socket) do
-    packages = list_packages("")
+    entries = entries("")
 
     {:ok,
      socket
-     |> stream_configure(:packages, dom_id: &"package-#{&1.name}")
+     |> stream_configure(:packages,
+       dom_id: fn entry ->
+         if entry.placeholder?, do: "placeholder-#{entry.name}", else: "package-#{entry.name}"
+       end
+     )
      |> assign(:q, "")
-     |> assign(:package_count, length(packages))
-     |> stream(:packages, packages)}
+     |> assign(:package_count, length(entries))
+     |> stream(:packages, entries)}
   end
 
   @impl true
   def handle_event("search", %{"q" => q}, socket) do
-    packages = list_packages(q)
+    entries = entries(q)
 
     {:noreply,
      socket
      |> assign(:q, q)
-     |> assign(:package_count, length(packages))
-     |> stream(:packages, packages, reset: true)}
+     |> assign(:package_count, length(entries))
+     |> stream(:packages, entries, reset: true)}
   end
 
   @impl true
@@ -69,15 +74,15 @@ defmodule PortalWeb.IndexLive do
 
         <div id="packages" phx-update="stream" class="grid gap-3 sm:grid-cols-2">
           <PortalWeb.UI.package_card
-            :for={{id, package} <- @streams.packages}
+            :for={{id, item} <- @streams.packages}
             id={id}
-            name={package.name}
-            description={package.description}
-            version={package.latest_version && "v#{package.latest_version}"}
-            href={~p"/packages/#{package.name}"}
-            summary={package.summary}
-            summary_status={package.summary_status}
-            statuses={package.statuses}
+            name={item.name}
+            description={item.description}
+            version={item.version}
+            href={item.href}
+            summary={item.summary}
+            summary_status={item.summary_status}
+            statuses={item.statuses}
           />
         </div>
       </section>
@@ -85,18 +90,55 @@ defmodule PortalWeb.IndexLive do
     """
   end
 
-  defp list_packages(q) do
-    q = q |> to_string() |> String.downcase()
+  # -- entries ---------------------------------------------------------------
 
+  defp entries(q) do
+    q = q |> to_string() |> String.downcase()
+    catalog = catalog_entries(q)
+    names = MapSet.new(catalog, & &1.name)
+
+    (catalog ++ placeholder_entries(q, names))
+    |> Enum.sort_by(& &1.name)
+  end
+
+  defp catalog_entries(q) do
     Catalog.latest_by_pkg_json().packages
     |> Enum.map(fn {name, data} -> Map.put(data, :name, name) end)
     |> Enum.filter(fn package -> q == "" or String.contains?(package.name, q) end)
     |> Enum.map(fn package ->
       statuses = system_statuses(package)
       {summary, summary_status} = summarize(statuses)
-      Map.merge(package, %{statuses: statuses, summary: summary, summary_status: summary_status})
+
+      %{
+        name: package.name,
+        description: package.description,
+        version: package.latest_version && "v#{package.latest_version}",
+        href: ~p"/packages/#{package.name}",
+        summary: summary,
+        summary_status: summary_status,
+        statuses: statuses,
+        placeholder?: false
+      }
     end)
-    |> Enum.sort_by(& &1.name)
+  end
+
+  defp placeholder_entries(q, catalog_names) do
+    ScanRequests.queue_requests()
+    |> Enum.reject(&MapSet.member?(catalog_names, &1.package_name))
+    |> Enum.filter(fn req -> q == "" or String.contains?(req.package_name, q) end)
+    |> Enum.uniq_by(& &1.package_name)
+    |> Enum.map(fn req ->
+      %{
+        name: req.package_name,
+        description: "Awaiting first scan.",
+        version: nil,
+        href: ~p"/requests/#{req.id}",
+        summary: "in queue",
+        summary_status: "queued",
+        statuses: [],
+        placeholder?: true
+      }
+    end)
   end
 
   defp system_statuses(package) do
