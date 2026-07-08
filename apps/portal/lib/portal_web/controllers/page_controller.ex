@@ -133,7 +133,10 @@ defmodule PortalWeb.PageController do
         |> delete_session(:hex_package)
         |> delete_session(:hex_packages)
         |> put_flash(:info, "Verified Hex.pm owner and accepted #{pluralize(count, "package")}.")
-        |> render_request_scan(packages: Enum.map(requests, & &1.package_name))
+        |> render_request_scan(
+          packages: Enum.map(requests, & &1.package_name),
+          submitted_requests: requests
+        )
 
       {:pending, _reason} ->
         conn
@@ -195,7 +198,10 @@ defmodule PortalWeb.PageController do
           :info,
           "Verified GitHub maintainer and accepted #{pluralize(count, "package")}."
         )
-        |> render_request_scan(packages: Enum.map(requests, & &1.package_name))
+        |> render_request_scan(
+          packages: Enum.map(requests, & &1.package_name),
+          submitted_requests: requests
+        )
 
       {:pending, _reason} ->
         conn
@@ -234,7 +240,10 @@ defmodule PortalWeb.PageController do
               :info,
               "Accepted anonymous #{pluralize(length(requests), "request")}; pending human review."
             )
-            |> render_request_scan(packages: Enum.map(requests, & &1.package_name))
+            |> render_request_scan(
+              packages: Enum.map(requests, & &1.package_name),
+              submitted_requests: requests
+            )
 
           {:error, _reason} ->
             conn
@@ -259,7 +268,8 @@ defmodule PortalWeb.PageController do
       polling?: Keyword.get(assigns, :polling?, false),
       github_polling?: Keyword.get(assigns, :github_polling?, false),
       current_user: current_user(conn),
-      recent_requests: recent_requests
+      recent_requests: recent_requests,
+      submitted_requests: Keyword.get(assigns, :submitted_requests, [])
     )
   end
 
