@@ -17,7 +17,7 @@ defmodule PortalWeb.PackageLive do
         {:ok,
          socket
          |> put_flash(:error, "Package not found")
-         |> push_navigate(to: ~p"/")}
+         |> push_navigate(to: ~p"/packages")}
     end
   end
 
@@ -27,7 +27,7 @@ defmodule PortalWeb.PackageLive do
     <Layouts.app flash={@flash} active={:packages} current_user={@current_user}>
       <section class="space-y-8">
         <a
-          href={~p"/"}
+          href={~p"/packages"}
           class="inline-flex items-center gap-1.5 text-sm font-medium text-base-content/60 transition hover:text-base-content"
         >
           <.icon name="hero-chevron-left-mini" class="size-4" /> All packages

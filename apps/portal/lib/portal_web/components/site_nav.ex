@@ -14,16 +14,12 @@ defmodule PortalWeb.SiteNav do
     ~H"""
     <nav class="site-nav">
       <div class="site-nav-inner">
-        <a class="site-nav-brand" href="/site/index.html">Nerves Compatibility</a>
+        <a class="site-nav-brand" href="/">Nerves Compatibility</a>
         <div class="site-nav-links">
-          <.nav_link href="/site/index.html" active={@active == :home}>Dashboard</.nav_link>
-          <.nav_link href="/site/packages.html" active={@active == :packages}>Packages</.nav_link>
+          <.nav_link href="/" active={@active == :home}>Dashboard</.nav_link>
+          <.nav_link href="/packages" active={@active == :packages}>Packages</.nav_link>
           <.nav_link href="/request-scan" active={@active == :request_scan}>Request scan</.nav_link>
-          <.nav_link href="/site/failure_clusters.html" active={@active == :clusters}>
-            Failure clusters
-          </.nav_link>
-          <.nav_link href="/site/warnings.html" active={@active == :warnings}>Warnings</.nav_link>
-          <.nav_link href="/site/stats.html" active={@active == :stats}>Stats</.nav_link>
+          <.nav_link href="/api/stats" active={@active == :stats}>Stats API</.nav_link>
           <.nav_link
             :if={Portal.Accounts.admin?(@current_user)}
             href="/admin"
