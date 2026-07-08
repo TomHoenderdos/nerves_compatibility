@@ -5,13 +5,18 @@ defmodule PortalWeb.DashboardLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    counts = Catalog.package_status_counts()
+    stats = Catalog.stats_json()
+
     {:ok,
      socket
-     |> assign(:clusters, Catalog.failure_clusters(8))
-     |> assign(:rates, Catalog.pass_rate_per_system())
+     |> assign(:counts, counts)
+     |> assign(:clusters, Catalog.failure_clusters(3))
      |> assign(:native, Catalog.native_breakdown())
-     |> assign(:recent_pass, Catalog.recent_runs(:pass, 5))
-     |> assign(:recent_fail, Catalog.recent_runs(:fail, 5))}
+     |> assign(:rates, Catalog.pass_rate_per_system())
+     |> assign(:recent_pass, Catalog.recent_runs(:pass, 10))
+     |> assign(:recent_fail, Catalog.recent_runs(:fail, 10))
+     |> assign(:last_run, stats[:last_run_finished_at])}
   end
 
   @impl true
@@ -20,96 +25,114 @@ defmodule PortalWeb.DashboardLive do
     <Layouts.app flash={@flash} active={:home} current_user={@current_user}>
       <section class="space-y-10">
         <PortalWeb.UI.page_header kicker="Dashboard" title="Nerves Compatibility">
-          <:subtitle>Build results across every Nerves system, summarized.</:subtitle>
-          <:actions>
-            <a href={~p"/packages"} class="inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-content shadow-sm transition hover:brightness-95">
-              Browse packages
-            </a>
-          </:actions>
+          <:subtitle>Compatibility results generated automatically across Nerves systems.</:subtitle>
         </PortalWeb.UI.page_header>
 
-        <.section title="Top failure clusters">
-          <.empty :if={@clusters == []}>No failures recorded yet.</.empty>
-          <ul :if={@clusters != []} class="divide-y divide-base-200">
-            <li :for={c <- @clusters} class="flex items-center justify-between py-3">
-              <span class="font-medium text-base-content">{c.category}</span>
-              <span class="font-mono text-sm text-base-content/60">{c.systems} / {c.packages} pkg</span>
-            </li>
-          </ul>
-        </.section>
-
-        <.section title="Pass rate per system">
-          <.empty :if={@rates == []}>No system results yet.</.empty>
-          <ul :if={@rates != []} class="space-y-3">
-            <li :for={r <- @rates} class="space-y-1">
-              <div class="flex items-center justify-between text-sm">
-                <span class="font-mono text-base-content">{r.system_pkg}</span>
-                <span class="text-base-content/60">{r.pass}/{r.total} · {round(r.rate * 100)}%</span>
-              </div>
-              <div class="h-2 w-full overflow-hidden rounded-full bg-base-200">
-                <div class="h-full rounded-full bg-emerald-400 dark:bg-emerald-500" style={"width: #{round(r.rate * 100)}%"}></div>
-              </div>
-            </li>
-          </ul>
-        </.section>
-
-        <.section title="Native code">
-          <.empty :if={@native == []}>No packages yet.</.empty>
-          <ul :if={@native != []} class="divide-y divide-base-200">
-            <li :for={n <- @native} class="flex items-center justify-between py-3">
-              <span class="font-medium text-base-content">{n.language}</span>
-              <span class="font-mono text-sm text-base-content/60">{n.packages} pkg</span>
-            </li>
-          </ul>
-        </.section>
-
-        <div class="grid gap-6 sm:grid-cols-2">
-          <.section title="Recently checked passing">
-            <.empty :if={@recent_pass == []}>Nothing yet.</.empty>
-            <.recent_list :if={@recent_pass != []} rows={@recent_pass} />
-          </.section>
-          <.section title="Recently checked failing">
-            <.empty :if={@recent_fail == []}>Nothing yet.</.empty>
-            <.recent_list :if={@recent_fail != []} rows={@recent_fail} />
-          </.section>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <PortalWeb.UI.stat_card label="Unique Packages" value={to_string(@counts.unique)} />
+          <PortalWeb.UI.stat_card label="Passing" value={to_string(@counts.pass)} accent="pass" />
+          <a href={~p"/packages"} class="block">
+            <PortalWeb.UI.stat_card label="Failing" value={to_string(@counts.fail)} />
+          </a>
         </div>
+
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <.tile title="Top failure clusters" href={~p"/failure_clusters"}>
+            <p :if={@clusters == []} class="text-sm text-base-content/50">
+              No failures recorded yet.
+            </p>
+            <ul :if={@clusters != []} class="space-y-2">
+              <li :for={c <- @clusters} class="flex items-center justify-between text-sm">
+                <span class="truncate text-base-content">{c.title}</span>
+                <span class="font-mono text-base-content/50">{c.systems} / {c.packages} pkg</span>
+              </li>
+            </ul>
+          </.tile>
+
+          <.tile title="Native code">
+            <p :if={@native == []} class="text-sm text-base-content/50">No packages yet.</p>
+            <ul :if={@native != []} class="space-y-2">
+              <li :for={n <- @native} class="flex items-center justify-between text-sm">
+                <span class="text-base-content">{n.language}</span>
+                <span class="font-mono text-base-content/50">{n.packages}</span>
+              </li>
+            </ul>
+          </.tile>
+
+          <.tile title="Pass rate per system">
+            <p :if={@rates == []} class="text-sm text-base-content/50">No system results yet.</p>
+            <ul :if={@rates != []} class="space-y-2">
+              <li :for={r <- @rates} class="space-y-1">
+                <div class="flex justify-between text-xs">
+                  <span class="font-mono text-base-content">{r.system_pkg}</span>
+                  <span class="text-base-content/50">
+                    {r.pass}/{r.total} · {round(r.rate * 100)}%
+                  </span>
+                </div>
+                <div class="h-1.5 w-full overflow-hidden rounded-full bg-base-200">
+                  <div
+                    class="h-full rounded-full bg-emerald-400 dark:bg-emerald-500"
+                    style={"width: #{round(r.rate * 100)}%"}
+                  >
+                  </div>
+                </div>
+              </li>
+            </ul>
+          </.tile>
+        </div>
+
+        <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
+          <.recent title="Recently checked passing" rows={@recent_pass} status="pass" />
+          <.recent title="Recently checked failing" rows={@recent_fail} status="fail" />
+        </div>
+
+        <p class="text-xs text-base-content/40">Last test run: {@last_run || "n/a"}</p>
       </section>
     </Layouts.app>
     """
   end
 
   attr :title, :string, required: true
+  attr :href, :string, default: nil
   slot :inner_block, required: true
 
-  defp section(assigns) do
+  defp tile(assigns) do
     ~H"""
-    <div class="rounded-2xl border border-base-300 bg-base-100 p-6 shadow-sm">
-      <h2 class="mb-4 text-sm font-semibold uppercase tracking-wider text-base-content/60">{@title}</h2>
+    <div class="rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm">
+      <div class="mb-3 flex items-center justify-between">
+        <h2 class="text-sm font-semibold uppercase tracking-wider text-base-content/60">{@title}</h2>
+        <a :if={@href} href={@href} class="text-xs font-medium text-primary hover:underline">
+          see all →
+        </a>
+      </div>
       {render_slot(@inner_block)}
     </div>
     """
   end
 
-  slot :inner_block, required: true
-
-  defp empty(assigns) do
-    ~H"""
-    <p class="text-sm text-base-content/50">{render_slot(@inner_block)}</p>
-    """
-  end
-
+  attr :title, :string, required: true
   attr :rows, :list, required: true
+  attr :status, :string, required: true
 
-  defp recent_list(assigns) do
+  defp recent(assigns) do
     ~H"""
-    <ul class="divide-y divide-base-200">
-      <li :for={row <- @rows} class="flex items-center justify-between py-3">
-        <a href={~p"/packages/#{row.package}"} class="font-medium text-base-content hover:text-primary">
-          {row.package} <span class="font-mono text-xs text-base-content/50">v{row.version}</span>
-        </a>
-        <PortalWeb.UI.status_badge status={to_string(row.overall_status)} />
-      </li>
-    </ul>
+    <div class="rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm">
+      <h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-base-content/60">
+        {@title}
+      </h2>
+      <p :if={@rows == []} class="text-sm text-base-content/50">Nothing yet.</p>
+      <ul :if={@rows != []} class="divide-y divide-base-200">
+        <li :for={row <- @rows} class="flex items-center justify-between py-2">
+          <a
+            href={~p"/packages/#{row.package}"}
+            class="font-medium text-base-content hover:text-primary"
+          >
+            {row.package} <span class="font-mono text-xs text-base-content/50">v{row.version}</span>
+          </a>
+          <PortalWeb.UI.status_badge status={to_string(row.overall_status)} />
+        </li>
+      </ul>
+    </div>
     """
   end
 end
