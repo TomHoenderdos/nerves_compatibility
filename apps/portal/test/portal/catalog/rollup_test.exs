@@ -8,8 +8,11 @@ defmodule Portal.Catalog.RollupTest do
     assert Architecture.label("nerves_system_x86_64") == "x86_64"
     assert Architecture.label("host") == "host"
     assert Architecture.label("nerves_system_grisp2") == "arm32"
+    assert Architecture.label("nerves_system_rpi") == "arm32"
+    assert Architecture.label("nerves_system_rpi0_2") == "arm64"
     assert Architecture.label("nerves_system_newthing") == "newthing"
     assert Architecture.label("forced@x") == "forced"
+    assert Architecture.label("forcedxyz") == "forced"
     assert Architecture.label(nil) == ""
   end
 
@@ -21,6 +24,7 @@ defmodule Portal.Catalog.RollupTest do
     assert Rollup.overall_status(["skipped", "skipped"]) == :skipped
     assert Rollup.overall_status([]) == :unknown
     assert Rollup.overall_status([:pass, :fail]) == :fail
+    assert Rollup.overall_status(["pass", "unknown"]) == :partial
   end
 
   test "native_bucket classifies language / none / not scanned" do
@@ -28,5 +32,6 @@ defmodule Portal.Catalog.RollupTest do
     assert Rollup.native_bucket(nil, ["c"], true) == "c"
     assert Rollup.native_bucket(nil, [], true) == "none"
     assert Rollup.native_bucket(nil, [], false) == "not scanned"
+    assert Rollup.native_bucket("rust", ["c"], false) == "not scanned"
   end
 end
