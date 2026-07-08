@@ -31,7 +31,9 @@ defmodule Portal.Catalog.SystemResult do
         :hex_version_tested,
         :beam_scan,
         :dependency_scans,
-        :log_path
+        :log_path,
+        :log_tail,
+        :failure_category
       ])
     end
 
@@ -42,7 +44,8 @@ defmodule Portal.Catalog.SystemResult do
         :hex_version_tested,
         :beam_scan,
         :dependency_scans,
-        :log_path
+        :log_path,
+        :failure_category
       ])
     end
   end
@@ -83,6 +86,14 @@ defmodule Portal.Catalog.SystemResult do
     end
 
     attribute :log_path, :string do
+      public?(true)
+    end
+
+    attribute :log_tail, :string do
+      public?(true)
+    end
+
+    attribute :failure_category, :string do
       public?(true)
     end
 
