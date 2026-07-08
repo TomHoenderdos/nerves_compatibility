@@ -27,6 +27,13 @@ defmodule PortalWeb.SiteNav do
           >
             Admin
           </.nav_link>
+          <.nav_link
+            :if={Portal.Accounts.admin?(@current_user)}
+            href="/admin/oban"
+            active={@active == :oban}
+          >
+            Oban
+          </.nav_link>
 
           <div class="site-nav-theme">
             <Layouts.theme_toggle />
