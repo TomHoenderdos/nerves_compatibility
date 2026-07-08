@@ -20,7 +20,7 @@ defmodule Portal.Catalog.Package do
     defaults([:read, :destroy])
 
     create :create do
-      accept([:name, :description, :latest_version, :last_run_at])
+      accept([:name, :description, :latest_version, :last_run_at, :native_components])
     end
 
     update :update do
@@ -28,10 +28,10 @@ defmodule Portal.Catalog.Package do
     end
 
     create :upsert do
-      accept([:name, :description, :latest_version, :last_run_at])
+      accept([:name, :description, :latest_version, :last_run_at, :native_components])
       upsert?(true)
       upsert_identity(:unique_name)
-      upsert_fields([:description, :latest_version, :last_run_at])
+      upsert_fields([:description, :latest_version, :last_run_at, :native_components])
     end
   end
 
@@ -56,6 +56,10 @@ defmodule Portal.Catalog.Package do
     end
 
     attribute :last_run_at, :utc_datetime do
+      public?(true)
+    end
+
+    attribute :native_components, :map do
       public?(true)
     end
 
