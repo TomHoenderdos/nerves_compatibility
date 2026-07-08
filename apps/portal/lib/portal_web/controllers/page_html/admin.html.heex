@@ -12,11 +12,14 @@
       </PortalWeb.UI.page_header>
 
       <div class="grid gap-3 sm:grid-cols-2">
-        <PortalWeb.UI.stat_card label="Needs review" value={to_string(length(@pending_anonymous_requests))} />
+        <PortalWeb.UI.stat_card
+          label="Needs review"
+          value={to_string(length(@pending_anonymous_requests))}
+        />
         <PortalWeb.UI.stat_card label="Current queue" value={to_string(length(@queue_requests))} />
       </div>
 
-      <section class="card mt-8 border border-base-300 bg-base-100 shadow-sm">
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body">
           <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -72,7 +75,7 @@
         </div>
       </section>
 
-      <section class="card mt-6 border border-base-300 bg-base-100 shadow-sm">
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body">
           <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
