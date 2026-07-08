@@ -18,6 +18,9 @@ defmodule PortalWeb.SiteNav do
         <div class="site-nav-links">
           <.nav_link href="/" active={@active == :home}>Dashboard</.nav_link>
           <.nav_link href="/packages" active={@active == :packages}>Packages</.nav_link>
+          <.nav_link href="/failure_clusters" active={@active == :clusters}>Failure clusters</.nav_link>
+          <.nav_link href="/warnings" active={@active == :warnings}>Warnings</.nav_link>
+          <.nav_link href="/stats" active={@active == :stats}>Stats</.nav_link>
           <.nav_link href="/request-scan" active={@active == :request_scan}>Request scan</.nav_link>
           <.nav_link href="/api/stats" active={@active == :stats}>Stats API</.nav_link>
           <.nav_link
