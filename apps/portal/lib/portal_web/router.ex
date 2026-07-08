@@ -29,6 +29,9 @@ defmodule PortalWeb.Router do
       live "/packages", IndexLive, :index
       live "/packages/:name", PackageLive, :show
       live "/requests/:id", RequestLive, :show
+      live "/failure_clusters", FailureClustersLive, :index
+      live "/warnings", WarningsLive, :index
+      live "/stats", StatsLive, :index
     end
 
     get "/badge/:name", CatalogApiController, :badge
