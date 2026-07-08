@@ -67,7 +67,8 @@ defmodule Portal.Catalog.Ingestion do
       name: name,
       description: info["description"],
       latest_version: info["version"],
-      last_run_at: last_run_at
+      last_run_at: last_run_at,
+      native_components: info["native_components"]
     })
     |> Ash.create(domain: @domain)
   end
@@ -111,7 +112,9 @@ defmodule Portal.Catalog.Ingestion do
         hex_version_tested: version,
         beam_scan: sys["beam_scan"],
         dependency_scans: sys["dependency_scans"],
-        log_path: nil
+        log_path: nil,
+        log_tail: sys["log_tail"],
+        failure_category: Portal.Catalog.FailureClassifier.classify(sys)
       })
       |> Ash.create(domain: @domain)
 
