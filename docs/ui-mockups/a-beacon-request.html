@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>A · Beacon — Request status</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { theme: { extend: {
+      colors: { nerves: { DEFAULT:'#FD4F00', dark:'#D63F00', soft:'#FFF1EB' } },
+      fontFamily: { sans:['Inter','ui-sans-serif','system-ui','sans-serif'], mono:['"JetBrains Mono"','ui-monospace','monospace'] },
+    }}};
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+</head>
+<body class="min-h-screen bg-zinc-50 font-sans text-zinc-900 antialiased">
+  <header class="sticky top-0 z-20 border-b border-zinc-200/80 bg-white/80 backdrop-blur">
+    <div class="mx-auto flex max-w-3xl items-center justify-between px-6 py-4">
+      <a href="a-beacon.html" class="flex items-center gap-2.5">
+        <span class="flex h-7 w-7 items-center justify-center rounded-lg bg-nerves text-white">
+          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h4l2-6 2 12 2-6h4"/></svg>
+        </span>
+        <span class="text-[15px] font-semibold tracking-tight">Nerves Compatibility</span>
+      </a>
+      <nav class="hidden items-center gap-1 text-sm font-medium text-zinc-600 sm:flex">
+        <a class="rounded-lg px-3 py-1.5 transition hover:bg-zinc-100" href="a-beacon.html">Packages</a>
+        <a class="rounded-lg px-3 py-1.5 text-zinc-900" href="#">Request scan</a>
+        <a class="ml-2 rounded-lg border border-zinc-200 px-3 py-1.5 transition hover:border-zinc-300 hover:bg-zinc-50" href="#">Sign in</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-3xl px-6 py-10">
+    <a href="a-beacon.html" class="inline-flex items-center gap-1.5 text-sm font-medium text-zinc-500 transition hover:text-zinc-900">
+      <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg> All packages
+    </a>
+
+    <!-- Header -->
+    <section class="mt-5">
+      <p class="text-xs font-semibold uppercase tracking-[0.25em] text-nerves">Scan request</p>
+      <div class="mt-2 flex items-center gap-3">
+        <h1 class="font-mono text-4xl font-bold tracking-tight text-zinc-950">vintage_net</h1>
+        <span class="inline-flex items-center gap-1.5 rounded-full bg-nerves-soft px-3 py-1 text-sm font-semibold text-nerves">
+          <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-nerves"></span> Building
+        </span>
+      </div>
+      <p class="mt-2 font-mono text-sm text-zinc-500">req_01HZX9K2QF8M3</p>
+    </section>
+
+    <!-- Stat cards -->
+    <section class="mt-7 grid grid-cols-3 gap-3">
+      <div class="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm"><div class="text-sm text-zinc-500">Status</div><div class="mt-1 text-lg font-semibold text-nerves">building</div></div>
+      <div class="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm"><div class="text-sm text-zinc-500">Version</div><div class="mt-1 font-mono text-lg font-semibold text-zinc-950">v0.13.5</div></div>
+      <div class="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm"><div class="text-sm text-zinc-500">Source</div><div class="mt-1 text-lg font-semibold text-zinc-950">hex</div></div>
+    </section>
+
+    <!-- Progress stepper -->
+    <section class="mt-6 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+      <h2 class="text-sm font-semibold uppercase tracking-wider text-zinc-500">Build progress</h2>
+      <ol class="mt-5 space-y-5">
+        <li class="flex items-start gap-3">
+          <span class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white"><svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="3"><path d="m5 13 4 4L19 7"/></svg></span>
+          <div><div class="font-medium text-zinc-900">Queued</div><div class="text-sm text-zinc-500">Accepted and scheduled on the builds queue.</div></div>
+        </li>
+        <li class="flex items-start gap-3">
+          <span class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white"><svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="3"><path d="m5 13 4 4L19 7"/></svg></span>
+          <div><div class="font-medium text-zinc-900">Project created</div><div class="text-sm text-zinc-500">Fresh Nerves project, dependency lock policy enforced.</div></div>
+        </li>
+        <li class="flex items-start gap-3">
+          <span class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-nerves text-white"><span class="h-2 w-2 animate-pulse rounded-full bg-white"></span></span>
+          <div><div class="font-medium text-zinc-900">Building firmware <span class="ml-1 font-mono text-xs text-nerves">4 / 6 systems</span></div><div class="text-sm text-zinc-500">Compiling per Nerves system in the build container…</div></div>
+        </li>
+        <li class="flex items-start gap-3 opacity-40">
+          <span class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 border-zinc-300 text-zinc-400"></span>
+          <div><div class="font-medium text-zinc-900">Ingest results</div><div class="text-sm text-zinc-500">Persist runs and archive precompiled artifacts.</div></div>
+        </li>
+      </ol>
+    </section>
+
+    <!-- Live log -->
+    <section class="mt-4 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 shadow-sm">
+      <div class="flex items-center gap-2 border-b border-zinc-800 px-4 py-2.5">
+        <span class="h-2.5 w-2.5 rounded-full bg-red-400"></span><span class="h-2.5 w-2.5 rounded-full bg-amber-400"></span><span class="h-2.5 w-2.5 rounded-full bg-emerald-400"></span>
+        <span class="ml-2 font-mono text-xs text-zinc-400">latest progress</span>
+      </div>
+      <pre class="overflow-auto p-4 font-mono text-xs leading-relaxed text-zinc-200">{
+  "stage": "build_firmware",
+  "system": "nerves_system_rpi4",
+  "elapsed_ms": 41832,
+  "completed": ["rpi0", "rpi3", "rpi4", "rpi5"],
+  "remaining": ["bbb", "x86_64"]
+}</pre>
+    </section>
+  </main>
+
+  <footer class="mx-auto max-w-3xl px-6 py-10 text-sm text-zinc-400">
+    Direction A · <span class="font-semibold text-zinc-600">Beacon</span> — request status (live).
+  </footer>
+</body>
+</html>

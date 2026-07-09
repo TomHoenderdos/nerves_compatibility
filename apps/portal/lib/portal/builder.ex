@@ -2,9 +2,9 @@ defmodule Portal.Builder do
   @moduledoc """
   Host-side Docker invocation for a single package build.
 
-  Ported from the standalone `runner` project (`NccRunner.Docker` + `NccRunner.Job`
-  + `NccRunner.CLI`). Keeps the `docker run` invocation identical to the runner:
-  same mounts (`/work`, `/out`, `/files`, `/home/nerves/.nerves` ← nerves cache,
+  Host-side replacement for the retired standalone runner. Keeps the `docker run`
+  invocation contract stable for the worker: same mounts (`/work`, `/out`, `/files`,
+  `/home/nerves/.nerves` ← nerves cache,
   `/hex-cache` ← hex cache), `--user uid:gid`, `--pull=never`, the worker image,
   `NCC_INPUT=/work/input.json`, container naming, and a wall-clock timeout.
 
@@ -199,8 +199,8 @@ defmodule Portal.Builder do
   end
 
   @doc false
-  # Builds the docker run argument list. Mounts and flags mirror the runner's
-  # NccRunner.Docker exactly so the container sees an identical environment.
+  # Builds the docker run argument list. Mounts and flags intentionally preserve
+  # the worker container environment expected by apps/ncc_worker.
   @spec build_docker_args(map(), Path.t(), Path.t(), Path.t()) :: [String.t()]
   def build_docker_args(job, work_dir, output_dir, files_dir) do
     {uid, gid} = current_user()

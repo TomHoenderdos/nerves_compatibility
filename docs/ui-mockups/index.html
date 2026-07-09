@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>UI pass — A/B/C — Nerves Compatibility</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;font-family:ui-sans-serif,system-ui,sans-serif;background:#18181b;color:#e4e4e7}
+    header{padding:24px 28px;border-bottom:1px solid #27272a}
+    h1{margin:0;font-size:18px}p{margin:6px 0 0;color:#a1a1aa;font-size:14px}
+    .tabs{display:flex;gap:8px;padding:14px 28px;border-bottom:1px solid #27272a;flex-wrap:wrap}
+    .tab{padding:8px 16px;border-radius:9px;border:1px solid #3f3f46;color:#d4d4d8;cursor:pointer;font-size:14px;font-weight:600;background:#27272a}
+    .tab small{display:block;font-weight:400;color:#a1a1aa;font-size:12px}
+    .tab.on{background:#FD4F00;border-color:#FD4F00;color:#fff}.tab.on small{color:#ffe6da}
+    .tab a{color:inherit;text-decoration:none}
+    iframe{width:100%;height:calc(100vh - 150px);border:0;background:#fff;display:block}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>UI pass — Package browser, 3 aesthetic directions</h1>
+    <p>Click a tab to preview. Each opens in its own tab via the ↗ link.</p>
+  </header>
+  <div class="tabs">
+    <strong style="align-self:center;color:#71717a;font-size:12px;margin-right:4px">DIRECTIONS</strong>
+    <div class="tab on" onclick="show('a-beacon.html',this)">A · Beacon <small>clean technical ↗ <a href="a-beacon.html" target="_blank">open</a></small></div>
+    <div class="tab" onclick="show('b-console.html',this)">B · Console <small>terminal / CI ↗ <a href="b-console.html" target="_blank">open</a></small></div>
+    <div class="tab" onclick="show('c-workshop.html',this)">C · Workshop <small>friendly editorial ↗ <a href="c-workshop.html" target="_blank">open</a></small></div>
+    <strong style="align-self:center;color:#71717a;font-size:12px;margin:0 4px 0 16px">BEACON PAGES</strong>
+    <div class="tab" onclick="show('a-beacon-detail.html',this)">Package detail <small>↗ <a href="a-beacon-detail.html" target="_blank">open</a></small></div>
+    <div class="tab" onclick="show('a-beacon-request.html',this)">Request status <small>↗ <a href="a-beacon-request.html" target="_blank">open</a></small></div>
+  </div>
+  <iframe id="frame" src="a-beacon.html"></iframe>
+  <script>
+    function show(src, el){
+      document.getElementById('frame').src = src;
+      document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+      el.classList.add('on');
+    }
+  </script>
+</body>
+</html>

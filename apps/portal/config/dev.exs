@@ -17,7 +17,7 @@ config :portal, Portal.Repo,
 # to bundle .js and .css sources.
 config :portal, PortalWeb.Endpoint,
   # Bind to all IPv4 interfaces so phones on the same network can reach dev.
-  http: [ip: {0, 0, 0, 0}, port: 4001],
+  http: [ip: {0, 0, 0, 0}, port: String.to_integer(System.get_env("PORT", "4001"))],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
