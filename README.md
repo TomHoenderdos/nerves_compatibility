@@ -1,43 +1,46 @@
 # Nerves Compatibility Tracker
 
-A static site that tracks Hex.pm package compatibility with Nerves target systems.
+A Phoenix-served compatibility tracker for Hex.pm packages on Nerves target systems.
 
 ## Layout
 
-Monorepo of five independent Mix projects (no top-level `mix.exs`):
+This repository is a Mix umbrella with three apps:
 
-- `compat/` — shared types, JSON index loaders and validators
-- `beam_scanner/` — inspects compiled BEAMs for NIFs, ports, env access, etc.
-- `worker/` — runs inside the Docker container; builds firmware per system
-- `runner/` — runs on the host; invokes Docker and collects results
-- `orchestrator/` — polls Hex.pm, queues work, invokes the runner, regenerates the site
-- `site/` — static site generator (Mix tasks `site.gen`, `site.serve`)
-
-See each subdir's README for details.
+- `apps/compatibility` — shared result/index types, validators, and status helpers.
+- `apps/ncc_worker` — the Docker-side worker escript. It creates a temporary Nerves project, builds firmware per system, scans BEAM artifacts, and emits `result.json` plus content-addressed artifacts.
+- `apps/portal` — Phoenix 1.8 + Ash/Postgres + Oban web app. It owns scan intake, admin UI, build queue, Catalog persistence, dynamic package browser, badges, schema-v2 JSON API, and precompiled artifact API.
 
 ## Common commands
 
-The top-level `Makefile` wraps the full pipeline:
-
 ```bash
-make build                    # build the ncc-worker:local Docker image
-make run PACKAGE=jason:1.4.1  # run one package end-to-end
-make site                     # collect results and generate public/site/
-make test-integration         # end-to-end regression test (needs Docker)
+make build                     # build ncc-worker:local
+make dev                       # start the Phoenix portal
+make test                      # run umbrella tests
+make test-integration          # real Docker -> Portal.Catalog integration test
+make format                    # mix format
 ```
 
-Site-only iteration (no Docker):
+Umbrella-level commands can also be run directly from the repo root:
 
 ```bash
-cd site
-mix site.gen --in ../example_data --out ../public
-mix site.serve --dir ../public --port 4000
+mix deps.get
+mix test
+mix format
 ```
+
+## Public routes
+
+- `/` — package browser
+- `/packages/:name` — package details and latest system results
+- `/requests/:id` — live scan-request/build status
+- `/badge/:name.svg` — SVG compatibility badge
+- `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
+- `/api/precompiled/manifests/:package.json`, `/api/precompiled/files/:sha256` — precompiled artifact API
 
 ## Docs
 
-- `docs/INDEX_FORMAT.md` — index JSON schemas
-- `docs/PACKAGE_METADATA.md` — `package_metadata.json` overrides
+- `docs/INDEX_FORMAT.md` — schema-v2 JSON API shapes
+- `docs/PACKAGE_METADATA.md` — admin-managed package overrides
 - `PRECOMPILED_API.md` — precompiled package API
 
 ## License

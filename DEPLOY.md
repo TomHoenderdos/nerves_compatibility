@@ -2,160 +2,114 @@
 
 ## Overview
 
-Two logical services on two separate hosts:
+The tracker now deploys as one Phoenix service plus Postgres and Docker on the host. Phoenix serves the public compatibility site, admin UI, Oban dashboard, schema-v2 JSON API, badges, and precompiled artifact API.
 
-| Host | Content | Backed by |
-| --- | --- | --- |
-| `compatibility.embedded-elixir.com` | The compat-tracker site (HTML/CSS/JS + small JSON indexes) | Cloudflare Pages |
-| `prebuilt.embedded-elixir.com` *(TBD)* | Precompiled-binary API — `/manifests/<pkg>.json` + `/files/<sha256>` | Cloudflare R2 public bucket (or similar) |
+The worker still runs in Docker as `ncc-worker:local`; the portal shells out to that image from `Portal.Builder` when Oban executes build jobs.
 
-Two hosts because they serve different users for different reasons: the tracker is a research surface, the binaries service is infrastructure that downstream Mix/Livebook code depends on. Splitting them lets each evolve independently and keeps their URL spaces clean.
+## Required services
 
-## Configurable base URLs
+- PostgreSQL 14+
+- Docker daemon
+- Phoenix release for `apps/portal`
+- Worker image built as `ncc-worker:local`
 
-All URL-containing output from the site goes through `Site.Config` (see `site/lib/site/config.ex`). Three env vars control where things live:
+## Build the worker image
 
-| Env var | Default | What it controls |
-| --- | --- | --- |
-| `SITE_BASE_URL` | `https://compatibility.embedded-elixir.com` | Canonical tracker host |
-| `PRECOMPILED_FILES_BASE` | `${SITE_BASE_URL}/files` | Where `/files/<sha256>` blobs are served |
-| `PRECOMPILED_MANIFESTS_BASE` | `${SITE_BASE_URL}/manifests` | Where `/manifests/<pkg>.json` is served |
+From the repo root:
 
-Currently the emitted `public/site/manifests/_meta.json` records the active base URLs so downstream tooling doesn't have to hardcode them.
+```bash
+make build
+```
 
-When the binaries service moves to its own host, set the two `PRECOMPILED_*` vars at site-gen time and everything downstream updates.
+Run this whenever `apps/ncc_worker/`, `apps/compatibility/`, or `apps/ncc_worker/Dockerfile` changes.
 
-## Cloudflare Pages setup (one-time)
+## Portal configuration
 
-Wrangler runs via `npx` — no global install needed, just Node.js.
-
-1. Authenticate (browser flow).
-   ```bash
-   npx wrangler login
-   ```
-
-2. Create the Pages project (once).
-   ```bash
-   npx wrangler pages project create compatibility-embedded-elixir
-   ```
-
-3. In the Cloudflare dashboard, wire a custom domain (`compatibility.embedded-elixir.com`) to the project. DNS gets added automatically if the domain is on Cloudflare.
-
-## Scan Request API
-
-The `Request scan` page posts anonymous requests to a Cloudflare Pages Function at `/api/scan-requests`. The function verifies Cloudflare Turnstile and forwards accepted requests to the orchestrator.
-
-Configure these Cloudflare Pages environment variables:
+Configure these environment variables for the Phoenix service:
 
 | Env var | Purpose |
 | --- | --- |
-| `TURNSTILE_SECRET_KEY` | Server-side Turnstile verification secret |
-| `ORCHESTRATOR_SCAN_REQUEST_URL` | Full URL to the orchestrator ingest endpoint, ending in `/scan-requests` |
-| `SCAN_REQUEST_SHARED_SECRET` | Bearer token shared with the orchestrator |
+| `PHX_SERVER` | Set to `true` in releases so the endpoint starts |
+| `PORT` | HTTP port, default `4001` |
+| `SECRET_KEY_BASE` | Phoenix secret key base |
+| `DATABASE_URL` | Postgres URL for `Portal.Repo` |
+| `POOL_SIZE` | Optional DB pool size |
+| `ECTO_IPV6` | Set to `true` when the DB needs IPv6 socket options |
+| `GITHUB_CLIENT_ID` | Optional GitHub OAuth App client ID with device flow enabled |
+| `PORTAL_SEED_ADMINS` | Optional seed list, e.g. `alice,bob:temporary-password` |
+| `PORTAL_SEED_ADMIN_PASSWORD` | Optional shared password for seeded admins without `:password` |
+| `TURNSTILE_SECRET_KEY` | Optional server-side Turnstile verification secret |
+| `NCC_ARTIFACT_STORE` | Optional artifact blob store path; defaults to `~/.ncc-artifacts` |
 
-Enable the orchestrator ingest server with matching config:
+The root `config/runtime.exs` owns runtime config. Do not add child-app `runtime.exs` files under `apps/portal/config/`; they are not loaded in an umbrella.
 
-```bash
-NCC_SCAN_REQUEST_SECRET=... \
-mix run --eval 'Application.put_env(:orchestrator, :scan_request_server, true); Application.ensure_all_started(:orchestrator); Process.sleep(:infinity)'
-```
+## Database setup
 
-By default the ingest API listens on port `4080`. Override with `config :orchestrator, :scan_request_port, PORT` if needed.
-
-## Portal on a Linux Server
-
-The Phoenix portal stores users, scan requests, admin approvals, and queue
-state in a local SQLite database. It does not store raw Hex.pm or GitHub OAuth
-access tokens.
-
-Configure these variables for the portal service:
-
-| Env var | Purpose |
-| --- | --- |
-| `GITHUB_CLIENT_ID` | GitHub OAuth App client ID with device flow enabled |
-| `PORTAL_DATABASE_PATH` | SQLite database path, for example `/var/lib/nerves-compatibility/portal.sqlite3` |
-| `PORTAL_SEED_ADMINS` | Optional seed list for admin users, for example `alice,bob:temporary-password` |
-| `PORTAL_SEED_ADMIN_PASSWORD` | Optional shared password used when a seeded admin does not include `:password` |
-| `ORCHESTRATOR_SCAN_REQUEST_URL` | Optional orchestrator ingest URL |
-| `SCAN_REQUEST_SHARED_SECRET` | Optional bearer token shared with the orchestrator |
-
-Prepare the database directory on the server:
+Create and migrate the database before starting the release:
 
 ```bash
-sudo install -d -m 0750 -o nerves-compat -g nerves-compat /var/lib/nerves-compatibility
-```
-
-Run migrations before starting a release:
-
-```bash
-PORTAL_DATABASE_PATH=/var/lib/nerves-compatibility/portal.sqlite3 \
+DATABASE_URL=ecto://USER:PASS@HOST/DB \
 bin/portal eval 'Ecto.Migrator.with_repo(Portal.Repo, &Ecto.Migrator.run(&1, :up, all: true))'
 ```
 
-Seed admin users after migrations. Existing users are promoted to admin by
-username; missing users require a password:
+Seed admin users after migrations:
 
 ```bash
-PORTAL_DATABASE_PATH=/var/lib/nerves-compatibility/portal.sqlite3 \
+DATABASE_URL=ecto://USER:PASS@HOST/DB \
 PORTAL_SEED_ADMINS='alice,bob:change-this-temporary-password' \
 bin/portal eval 'Portal.Seeds.seed_admins_from_env!()'
 ```
 
-Systemd example:
+## Import package overrides
+
+`package_metadata.json` was imported during the Phase 6 cutover and removed from the repo. Future overrides are admin-managed in `Portal.Catalog.PackageOverride` rows.
+
+For one-time imports in another environment, run before removing the source file:
+
+```bash
+mix portal.import_overrides /path/to/package_metadata.json
+```
+
+## Systemd example
 
 ```ini
 [Service]
 User=nerves-compat
 WorkingDirectory=/opt/nerves_compatibility/portal
 Environment=PHX_SERVER=true
-Environment=GITHUB_CLIENT_ID=...
-Environment=PORTAL_DATABASE_PATH=/var/lib/nerves-compatibility/portal.sqlite3
+Environment=PORT=4001
+Environment=DATABASE_URL=ecto://portal:secret@127.0.0.1/portal_prod
+Environment=SECRET_KEY_BASE=...
 ExecStart=/opt/nerves_compatibility/portal/bin/portal start
 ```
 
-## Deploying
+Ensure the service user can talk to Docker and can read/write the artifact store and the shared caches (`~/.ncc-nerves-cache`, `~/.ncc-hex-cache`, or the configured equivalents).
 
-From a clean state (orchestrator has populated `compat_test_results/`):
+## Public endpoints
 
-```bash
-make deploy-site
-```
+- `/` — package browser
+- `/packages/:name` — package details
+- `/requests/:id` — live request/build status
+- `/badge/:name.svg` — SVG badge
+- `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
+- `/api/precompiled/manifests/:package.json` — precompiled package manifest
+- `/api/precompiled/files/:sha256` — content-addressed artifact blob
+- `/admin/oban` — Oban Web dashboard behind admin auth
 
-The target:
-1. Regenerates `public/site/` (via `make site`).
-2. Re-runs the site generator with production env vars so URLs bake in.
-3. Rsyncs `public/site/` into `public/.deploy/` excluding `files/` — the
-   precompiled-binary blob store. Individual artifacts can exceed Pages'
-   25 MiB per-file ceiling and the directory is destined for R2 anyway.
-   `wrangler pages deploy` has no native exclude flag, so we stage first.
-4. Rsyncs `public/data/logs/` into `public/.deploy/data/logs/` so the
-   per-system log links on package pages resolve. Logs live outside
-   `public/site/` locally but the package-page links are relative
-   (`../../data/logs/…`), so they need to land at `/data/logs/` under
-   the deploy root.
-5. Invokes `npx wrangler pages deploy public/.deploy --project-name=compatibility-embedded-elixir`.
-
-Wrangler prints a deployment preview URL; the custom domain updates when the deployment finishes propagating.
-
-### Targeting a different base URL (staging, preview)
+## Verification after deploy
 
 ```bash
-SITE_BASE_URL=https://staging.compatibility.embedded-elixir.com make deploy-site
+make build
+mix test
+make test-integration
 ```
 
-### Pre-committing to a separate binaries host
+Then boot the portal and check:
 
-```bash
-PRECOMPILED_FILES_BASE=https://prebuilt.embedded-elixir.com/files \
-PRECOMPILED_MANIFESTS_BASE=https://prebuilt.embedded-elixir.com/manifests \
-make deploy-site
-```
-
-## When the site grows past Pages limits
-
-Cloudflare Pages has a 20k-file-per-deployment ceiling and a 25MB-per-file ceiling. The tracker's HTML + indexes stay well under both. Two things will eventually force a split:
-
-- **Logs.** `public/data/logs/<pkg>/<system>.log` hits 20k files quickly — each package contributes a handful. Move logs to R2 with a rewrite rule when the count gets uncomfortable.
-- **Precompiled files.** The `/files/<sha256>` blob store is designed to grow unboundedly. Put this on R2 from day one when you stand up the binaries host.
-
-Both moves are purely additive: update the two `PRECOMPILED_*` env vars (for `/files/…`) or introduce a new one for logs, regenerate, redeploy.
+- `/`
+- `/request-scan`
+- `/admin`
+- `/admin/oban`
+- `/badge/jason.svg` after catalog data exists
+- `/api/packages`
+- `/api/precompiled/manifests/<package>.json` after artifact data exists

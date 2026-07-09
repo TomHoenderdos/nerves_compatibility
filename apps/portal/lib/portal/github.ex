@@ -44,7 +44,6 @@ defmodule Portal.GitHub do
          {:ok, %{"login" => login} = github_profile} <- current_user(access_token),
          {:ok, user} <- upsert_github_user(github_profile),
          {:ok, requests} <- create_repo_requests(package_names, login, access_token, user) do
-      Enum.each(requests, &forward_to_orchestrator/1)
       {:ok, requests}
     else
       {:pending, reason} -> {:pending, reason}
@@ -300,25 +299,5 @@ defmodule Portal.GitHub do
       verification_provider: "github_oauth_device"
     }
     |> Portal.ScanRequests.create_once()
-  end
-
-  defp forward_to_orchestrator(request) do
-    url = Application.get_env(:portal, :orchestrator_scan_request_url)
-    secret = Application.get_env(:portal, :scan_request_shared_secret)
-
-    if is_binary(url) and url != "" and is_binary(secret) and secret != "" do
-      Req.post(url,
-        headers: [
-          {"content-type", "application/json"},
-          {"authorization", "Bearer #{secret}"}
-        ],
-        json: %{
-          package: request.package_name,
-          source: "github_repo",
-          verified: true,
-          subject: request.subject
-        }
-      )
-    end
   end
 end

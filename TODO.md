@@ -19,7 +19,7 @@
 1. Detect whether package compiles deterministically or not
 1. On each package's page, show the pass/fail/unknown compatibility status of each of that package's dependencies
 1. Add a way to prioritize a list of packages to check. Add `circuits_gpio`, `circuits_i2c`, `circuits_spi`, `circuits_uart`, `vintage_net`, `vintage_net_wifi`, and other commonly used Nerves packages to it.
-1. ✅ Fix URLs to logs in all packages. They now point to `public/data/logs/{package}/{system}.log` and are properly copied during site generation
+1. ✅ Fix log links on package pages so they resolve through the Phoenix-served site and API.
 1. ✅ Add a way to skip a package based on whether it has a dependency. Skip all packages that depend on `:nerves_system_br` or `:nerves_toolchain_ctng`.
 1. ✅ Change the main page to provide a summary of the packages checked. Include top ten lists of the most recently checked passing packages, most recently checked failing packages.
 1. If a package/version has been marked as retired in hex.pm, mark it as skipped with a reason that it was retired on hex.pm.

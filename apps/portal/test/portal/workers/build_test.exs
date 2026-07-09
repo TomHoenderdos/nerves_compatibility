@@ -25,9 +25,19 @@ defmodule Portal.Workers.BuildTest do
     def docker_image, do: "ncc-worker:local"
   end
 
+  defmodule StubVersions do
+    def latest_version(_package), do: {:ok, "1.0.0"}
+  end
+
   setup do
     Application.put_env(:portal, :build_runner, StubBuilder)
-    on_exit(fn -> Application.delete_env(:portal, :build_runner) end)
+    Application.put_env(:portal, :package_version_resolver, StubVersions)
+
+    on_exit(fn ->
+      Application.delete_env(:portal, :build_runner)
+      Application.delete_env(:portal, :package_version_resolver)
+    end)
+
     :ok
   end
 
@@ -147,8 +157,8 @@ defmodule Portal.Workers.BuildTest do
       assert {:error, _reason} = Build.perform(job)
 
       {:ok, updated} = ScanRequests.get_request(request.id)
-      # Early attempt leaves it queued/accepted, not error
-      assert updated.status == :accepted
+      # Early attempt leaves it queued, not error
+      assert updated.status == :queued
     end
 
     test "marks request error on the final attempt" do

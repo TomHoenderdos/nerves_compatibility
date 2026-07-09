@@ -12,6 +12,7 @@ defmodule Portal.ScanRequests do
   end
 
   alias Portal.ScanRequests.ScanRequest
+  alias Portal.Workers.Build
 
   def pending_anonymous_requests do
     ScanRequest
@@ -31,16 +32,19 @@ defmodule Portal.ScanRequests do
     package_name = Map.fetch!(attrs, :package_name)
     requested_status = Map.get(attrs, :status, :accepted)
 
-    case open_request_for_package(package_name) do
-      nil ->
-        create_request(attrs)
+    request_result =
+      case open_request_for_package(package_name) do
+        nil ->
+          create_request(attrs)
 
-      %ScanRequest{status: :pending} = request when requested_status in [:accepted, :queued] ->
-        replace_open_request(request, attrs)
+        %ScanRequest{status: :pending} = request when requested_status in [:accepted, :queued] ->
+          replace_open_request(request, attrs)
 
-      %ScanRequest{} = request ->
-        {:ok, request}
-    end
+        %ScanRequest{} = request ->
+          {:ok, request}
+      end
+
+    maybe_enqueue_accepted(request_result, requested_status)
   end
 
   def open_request_for_package(package_name) when is_binary(package_name) do
@@ -56,8 +60,8 @@ defmodule Portal.ScanRequests do
   def approve_anonymous_request(id, admin_user) do
     with {:ok, request} <- get_request(id),
          :ok <- ensure_pending_anonymous(request),
-         {:ok, request} <- update_review(request, :accepted, nil) do
-      forward_to_orchestrator(request, admin_user)
+         {:ok, request} <- update_review(request, :accepted, nil),
+         {:ok, request} <- enqueue_build(request, :anonymous_manual, admin_user) do
       {:ok, request}
     end
   end
@@ -137,24 +141,49 @@ defmodule Portal.ScanRequests do
     |> Ash.update(domain: __MODULE__)
   end
 
-  defp forward_to_orchestrator(request, admin_user) do
-    url = Application.get_env(:portal, :orchestrator_scan_request_url)
-    secret = Application.get_env(:portal, :scan_request_shared_secret)
+  defp maybe_enqueue_accepted({:ok, %ScanRequest{} = request}, requested_status)
+       when requested_status in [:accepted, :queued] do
+    enqueue_build(request, request.source)
+  end
 
-    if is_binary(url) and url != "" and is_binary(secret) and secret != "" do
-      Req.post(url,
-        headers: [
-          {"content-type", "application/json"},
-          {"authorization", "Bearer #{secret}"}
-        ],
-        json: %{
-          package: request.package_name,
-          source: "anonymous_manual",
-          verified: true,
-          verification_provider: "manual_admin_review",
-          subject: "approved_by:#{admin_user.username}"
-        }
-      )
+  defp maybe_enqueue_accepted(result, _requested_status), do: result
+
+  defp enqueue_build(%ScanRequest{} = request, source, admin_user \\ nil) do
+    with {:ok, version} <- version_resolver().latest_version(request.package_name),
+         {:ok, _job} <- insert_build_job(request, version, source),
+         {:ok, request} <- set_status(request, :queued) do
+      maybe_mark_admin_approval(request, admin_user)
     end
+  end
+
+  defp insert_build_job(request, version, source) do
+    %{package: request.package_name, version: version, scan_request_id: request.id}
+    |> Build.new(priority: priority(source))
+    |> Oban.insert()
+  end
+
+  defp priority(:hex_owner), do: 0
+  defp priority(:github_repo), do: 1
+  defp priority(:anonymous_turnstile), do: 3
+  defp priority(:anonymous_manual), do: 3
+  defp priority(_source), do: 6
+
+  defp version_resolver do
+    Application.get_env(:portal, :package_version_resolver, Portal.HexPm)
+  end
+
+  defp maybe_mark_admin_approval(request, nil), do: {:ok, request}
+
+  defp maybe_mark_admin_approval(request, admin_user) do
+    request
+    |> Ash.Changeset.for_update(:replace_open_request, %{
+      source: :anonymous_manual,
+      status: :queued,
+      user_id: request.user_id,
+      subject: "approved_by:#{admin_user.username}",
+      verification_provider: "manual_admin_review",
+      error_reason: nil
+    })
+    |> Ash.update(domain: __MODULE__)
   end
 end
