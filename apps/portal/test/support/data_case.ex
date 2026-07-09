@@ -18,7 +18,14 @@ defmodule Portal.DataCase do
   end
 
   setup tags do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(Portal.Repo, shared: not tags[:async])
+    opts = [shared: not tags[:async]]
+
+    opts =
+      if tags[:integration],
+        do: Keyword.put(opts, :ownership_timeout, :timer.minutes(45)),
+        else: opts
+
+    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(Portal.Repo, opts)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
     :ok
   end

@@ -27,16 +27,6 @@ defmodule PortalWeb.Endpoint do
     only: PortalWeb.static_paths(),
     raise_on_missing_only: code_reloading?
 
-  plug Plug.Static,
-    at: "/site",
-    from: Path.expand("../../../public/site", __DIR__),
-    gzip: false
-
-  plug Plug.Static,
-    at: "/data",
-    from: Path.expand("../../../public/data", __DIR__),
-    gzip: false
-
   # Code reloading can be explicitly enabled under the
   # :code_reloader configuration of your endpoint.
   if code_reloading? do

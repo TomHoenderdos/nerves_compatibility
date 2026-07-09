@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>B · Console — Nerves Compatibility</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <style>
+    :root{
+      --bg:#0b0e0d; --panel:#111614; --panel2:#0e1311; --line:#1e2724;
+      --fg:#cfe3d6; --dim:#6f8478; --bright:#eafff2;
+      --pass:#34d399; --fail:#fbbf24; --error:#f87171; --skip:#5b6b63; --accent:#FD4F00;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--fg);font-family:"JetBrains Mono",ui-monospace,monospace;font-size:14px;line-height:1.6;
+      background-image:radial-gradient(circle at 1px 1px,rgba(255,255,255,.03) 1px,transparent 0);background-size:22px 22px;}
+    a{color:inherit;text-decoration:none}
+    .wrap{max-width:1040px;margin:0 auto;padding:0 20px}
+    /* top bar */
+    .bar{position:sticky;top:0;z-index:10;border-bottom:1px solid var(--line);background:rgba(11,14,13,.85);backdrop-filter:blur(6px)}
+    .bar .wrap{display:flex;align-items:center;justify-content:space-between;height:52px}
+    .brand{display:flex;align-items:center;gap:10px;font-weight:700;color:var(--bright)}
+    .dot{width:9px;height:9px;border-radius:2px;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+    .nav a{color:var(--dim);margin-left:18px}.nav a:hover{color:var(--bright)}.nav a.on{color:var(--accent)}
+    /* hero */
+    .hero{padding:40px 0 24px}
+    .kicker{color:var(--accent);font-size:12px;letter-spacing:.25em}
+    h1{margin:10px 0 0;font-size:30px;color:var(--bright);font-weight:700;letter-spacing:-.01em}
+    .sub{color:var(--dim);margin-top:8px;max-width:60ch}
+    /* stat row */
+    .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:26px}
+    .stat{background:var(--panel);padding:14px 16px}
+    .stat b{display:block;color:var(--bright);font-size:22px}
+    .stat span{color:var(--dim);font-size:12px}
+    .stat.green b{color:var(--pass)}
+    /* prompt search */
+    .prompt{display:flex;align-items:center;gap:10px;margin-top:26px;border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:12px 14px}
+    .prompt::before{content:"ncc>";color:var(--accent);font-weight:700}
+    .prompt input{flex:1;background:transparent;border:0;outline:0;color:var(--bright);font-family:inherit;font-size:14px}
+    .prompt input::placeholder{color:var(--skip)}
+    .meta{display:flex;justify-content:space-between;color:var(--dim);font-size:12px;margin:14px 2px}
+    .filters span{margin-left:14px;cursor:pointer}.filters .on{color:var(--bright);border-bottom:1px solid var(--accent)}
+    /* table */
+    .tbl{border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:6px}
+    .row{display:grid;grid-template-columns:1.4fr 2.4fr auto 150px;gap:16px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--line)}
+    .row:last-child{border-bottom:0}
+    .row.head{color:var(--dim);font-size:11px;letter-spacing:.12em;text-transform:uppercase;background:var(--panel2)}
+    .row.item:hover{background:var(--panel)}
+    .pkg{color:var(--bright);font-weight:700}
+    .ver{color:var(--dim);font-size:12px}
+    .desc{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .badge{font-weight:700;font-size:12px;padding:2px 8px;border-radius:4px;border:1px solid}
+    .b-pass{color:var(--pass);border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.08)}
+    .b-fail{color:var(--fail);border-color:rgba(251,191,36,.4);background:rgba(251,191,36,.08)}
+    .b-error{color:var(--error);border-color:rgba(248,113,113,.4);background:rgba(248,113,113,.08)}
+    .b-skip{color:var(--skip);border-color:var(--line);background:transparent}
+    .grid6{display:flex;gap:3px;justify-content:flex-end}
+    .cell{width:18px;height:14px;border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0b0e0d;font-weight:700}
+    .c-pass{background:var(--pass)}.c-fail{background:var(--fail)}.c-error{background:var(--error)}.c-skip{background:var(--skip)}
+    footer{color:var(--skip);font-size:12px;padding:30px 0}
+  </style>
+</head>
+<body>
+  <div class="bar"><div class="wrap">
+    <a class="brand" href="#"><span class="dot"></span>nerves-compat</a>
+    <nav class="nav"><a class="on" href="#">packages</a><a href="#">request-scan</a><a href="#">api</a><a href="#">login</a></nav>
+  </div></div>
+
+  <div class="wrap">
+    <section class="hero">
+      <div class="kicker">// CATALOG</div>
+      <h1>nerves_compatibility --list</h1>
+      <p class="sub">Reproducible per-system firmware build results for Hex packages. <span style="color:var(--pass)">●</span> pass <span style="color:var(--fail)">●</span> fail <span style="color:var(--error)">●</span> error <span style="color:var(--skip)">●</span> skipped</p>
+    </section>
+
+    <section class="stats">
+      <div class="stat"><b>1284</b><span>packages</span></div>
+      <div class="stat green"><b>92%</b><span>pass rate</span></div>
+      <div class="stat"><b>6</b><span>systems</span></div>
+      <div class="stat"><b>3m</b><span>last run</span></div>
+    </section>
+
+    <label class="prompt"><input type="search" placeholder="grep packages... e.g. vintage_net" autofocus /></label>
+    <div class="meta">
+      <span>10 / 1284 rows &nbsp;·&nbsp; sort: name ▲</span>
+      <span class="filters">filter:<span class="on">all</span><span>pass</span><span>fail</span><span>error</span></span>
+    </div>
+
+    <div class="tbl">
+      <div class="row head"><div>package</div><div>description</div><div>status</div><div style="text-align:right">rpi0 rpi3 rpi4 rpi5 bbb x86</div></div>
+
+      <a class="row item" href="#">
+        <div><div class="pkg">nerves</div><div class="ver">v1.10.5</div></div>
+        <div class="desc">Craft and deploy bulletproof embedded software</div>
+        <div><span class="badge b-pass">PASS</span></div>
+        <div class="grid6"><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span></div>
+      </a>
+
+      <a class="row item" href="#">
+        <div><div class="pkg">vintage_net</div><div class="ver">v0.13.5</div></div>
+        <div class="desc">Network configuration and management for Nerves</div>
+        <div><span class="badge b-pass">PASS</span></div>
+        <div class="grid6"><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span></div>
+      </a>
+
+      <a class="row item" href="#">
+        <div><div class="pkg">circuits_gpio</div><div class="ver">v2.1.2</div></div>
+        <div class="desc">Use GPIOs, including PWM, in Elixir</div>
+        <div><span class="badge b-pass">PASS</span></div>
+        <div class="grid6"><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span></div>
+      </a>
+
+      <a class="row item" href="#">
+        <div><div class="pkg">circuits_i2c</div><div class="ver">v2.0.3</div></div>
+        <div class="desc">Use I2C in Elixir</div>
+        <div><span class="badge b-fail">FAIL</span></div>
+        <div class="grid6"><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-fail">✕</span><span class="cell c-fail">✕</span></div>
+      </a>
+
+      <a class="row item" href="#">
+        <div><div class="pkg">nerves_ssh</div><div class="ver">v1.0.0</div></div>
+        <div class="desc">Manage an SSH daemon and provide an IEx console</div>
+        <div><span class="badge b-error">ERROR</span></div>
+        <div class="grid6"><span class="cell c-error">!</span><span class="cell c-error">!</span><span class="cell c-skip">·</span><span class="cell c-skip">·</span><span class="cell c-skip">·</span><span class="cell c-skip">·</span></div>
+      </a>
+
+      <a class="row item" href="#">
+        <div><div class="pkg">toolshed</div><div class="ver">v0.4.2</div></div>
+        <div class="desc">A toolshed of useful IEx helpers</div>
+        <div><span class="badge b-pass">PASS</span></div>
+        <div class="grid6"><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span><span class="cell c-pass">✓</span></div>
+      </a>
+
+      <a class="row item" href="#">
+        <div><div class="pkg">ramoops_logger</div><div class="ver">v0.2.0</div></div>
+        <div class="desc">Send Elixir logs to a ramoops region for post-mortem debugging</div>
+        <div><span class="badge b-skip">SKIP</span></div>
+        <div class="grid6"><span class="cell c-skip">·</span><span class="cell c-skip">·</span><span class="cell c-skip">·</span><span class="cell c-skip">·</span><span class="cell c-skip">·</span><span class="cell c-skip">·</span></div>
+      </a>
+    </div>
+
+    <footer>// direction B · CONSOLE — terminal / CI dashboard. dark, monospace, scannable.</footer>
+  </div>
+</body>
+</html>

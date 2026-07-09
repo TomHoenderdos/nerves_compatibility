@@ -50,7 +50,6 @@ defmodule Portal.HexPm do
          {:ok, %{"username" => username} = hex_profile} <- current_user(access_token),
          {:ok, user} <- upsert_hex_user(hex_profile),
          {:ok, requests} <- create_owner_requests(package_names, username, user) do
-      Enum.each(requests, &forward_to_orchestrator/1)
       {:ok, requests}
     else
       {:pending, reason} -> {:pending, reason}
@@ -86,6 +85,31 @@ defmodule Portal.HexPm do
   end
 
   def search_packages(_query), do: {:ok, []}
+
+  def latest_version(package_name) when is_binary(package_name) do
+    case Req.get("#{@api_url}/packages/#{package_name}") do
+      {:ok, %{status: 200, body: package}} when is_map(package) ->
+        package
+        |> latest_version_from_package()
+        |> case do
+          version when is_binary(version) and version != "" -> {:ok, version}
+          _ -> {:error, :unknown_package_version}
+        end
+
+      {:ok, %{status: 404}} ->
+        {:error, :unknown_package}
+
+      {:ok, %{status: status, body: body}} ->
+        Logger.warning("Hex package metadata failed: HTTP #{status} #{inspect(body)}")
+        {:error, :hex_api_unavailable}
+
+      {:error, reason} ->
+        Logger.warning("Hex package metadata failed: #{inspect(reason)}")
+        {:error, :hex_api_unavailable}
+    end
+  end
+
+  def latest_version(_package_name), do: {:error, :unknown_package}
 
   defp poll_device_flow(device_code) when is_binary(device_code) do
     body =
@@ -169,6 +193,17 @@ defmodule Portal.HexPm do
   end
 
   defp package_search_result(_), do: []
+
+  defp latest_version_from_package(package) do
+    package["latest_version"] ||
+      get_in(package, ["meta", "latest_version"]) ||
+      package
+      |> Map.get("releases", [])
+      |> Enum.find_value(fn
+        %{"version" => version} when is_binary(version) -> version
+        _ -> nil
+      end)
+  end
 
   defp post_form(url, body) do
     Req.post(url,
@@ -261,25 +296,5 @@ defmodule Portal.HexPm do
       verification_provider: "hex_pm_oauth_device"
     }
     |> Portal.ScanRequests.create_once()
-  end
-
-  defp forward_to_orchestrator(request) do
-    url = Application.get_env(:portal, :orchestrator_scan_request_url)
-    secret = Application.get_env(:portal, :scan_request_shared_secret)
-
-    if is_binary(url) and url != "" and is_binary(secret) and secret != "" do
-      Req.post(url,
-        headers: [
-          {"content-type", "application/json"},
-          {"authorization", "Bearer #{secret}"}
-        ],
-        json: %{
-          package: request.package_name,
-          source: "hex_owner",
-          verified: true,
-          subject: request.subject
-        }
-      )
-    end
   end
 end

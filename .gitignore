@@ -46,3 +46,4 @@ portal/var/
 
 # macOS
 .DS_Store
+.gstack/
