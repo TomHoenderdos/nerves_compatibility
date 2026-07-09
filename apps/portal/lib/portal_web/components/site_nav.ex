@@ -29,6 +29,7 @@ defmodule PortalWeb.SiteNav do
           >
             Request scan
           </a>
+          |
           <.nav_link
             :if={Portal.Accounts.admin?(@current_user)}
             href="/admin"
@@ -38,21 +39,14 @@ defmodule PortalWeb.SiteNav do
           </.nav_link>
           <.nav_link
             :if={Portal.Accounts.admin?(@current_user)}
-            href="/admin/oban"
+            href="/admin/monitor"
             active={@active == :oban}
           >
             Oban
           </.nav_link>
-
-          <div class="site-nav-theme">
-            <Layouts.theme_toggle />
-          </div>
-
           <div class="site-nav-auth">
             <%= if @current_user do %>
-              <div class="site-avatar" title={@current_user.username}>
-                {avatar_initial(@current_user)}
-              </div>
+              |
               <form method="post" action="/logout">
                 <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
                 <button type="submit" class="nav-link nav-button">Logout</button>
@@ -69,6 +63,9 @@ defmodule PortalWeb.SiteNav do
               </details>
             <% end %>
           </div>
+          <div class="site-nav-theme">
+            <Layouts.theme_toggle />
+          </div>
         </div>
       </div>
     </nav>
@@ -83,15 +80,5 @@ defmodule PortalWeb.SiteNav do
     ~H"""
     <a class={["nav-link", @active && "nav-active"]} href={@href}>{render_slot(@inner_block)}</a>
     """
-  end
-
-  defp avatar_initial(user) do
-    user.username
-    |> to_string()
-    |> String.first()
-    |> case do
-      nil -> "?"
-      initial -> String.upcase(initial)
-    end
   end
 end
