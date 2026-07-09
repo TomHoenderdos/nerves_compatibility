@@ -23,8 +23,12 @@ defmodule PortalWeb.SiteNav do
           </.nav_link>
           <.nav_link href="/warnings" active={@active == :warnings}>Warnings</.nav_link>
           <.nav_link href="/stats" active={@active == :stats}>Stats</.nav_link>
-          <.nav_link href="/request-scan" active={@active == :request_scan}>Request scan</.nav_link>
-          <.nav_link href="/api/stats" active={@active == :stats}>Stats API</.nav_link>
+          <a
+            href="/request-scan"
+            class="rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-content transition hover:brightness-95"
+          >
+            Request scan
+          </a>
           <.nav_link
             :if={Portal.Accounts.admin?(@current_user)}
             href="/admin"
