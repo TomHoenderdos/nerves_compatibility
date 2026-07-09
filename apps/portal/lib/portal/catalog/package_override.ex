@@ -17,11 +17,33 @@ defmodule Portal.Catalog.PackageOverride do
     defaults([:read, :destroy])
 
     create :create do
-      accept([:package_name, :forced_status, :allow_systems, :deny_systems, :notes])
+      accept([
+        :package_name,
+        :forced_status,
+        :allow_systems,
+        :deny_systems,
+        :skip_if_depends_on,
+        :notes
+      ])
+    end
+
+    create :upsert do
+      accept([
+        :package_name,
+        :forced_status,
+        :allow_systems,
+        :deny_systems,
+        :skip_if_depends_on,
+        :notes
+      ])
+
+      upsert?(true)
+      upsert_identity(:unique_package_name)
+      upsert_fields([:forced_status, :allow_systems, :deny_systems, :skip_if_depends_on, :notes])
     end
 
     update :update do
-      accept([:forced_status, :allow_systems, :deny_systems, :notes])
+      accept([:forced_status, :allow_systems, :deny_systems, :skip_if_depends_on, :notes])
     end
   end
 
@@ -48,6 +70,11 @@ defmodule Portal.Catalog.PackageOverride do
     end
 
     attribute :deny_systems, {:array, :string} do
+      public?(true)
+      default([])
+    end
+
+    attribute :skip_if_depends_on, {:array, :string} do
       public?(true)
       default([])
     end

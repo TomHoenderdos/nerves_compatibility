@@ -1,7 +1,18 @@
 defmodule Portal.ScanRequests.ScanRequestTest do
   use Portal.DataCase, async: false
+  use Oban.Testing, repo: Portal.Repo
 
   alias Portal.ScanRequests.ScanRequest
+
+  defmodule StubVersions do
+    def latest_version(_package), do: {:ok, "9.9.9"}
+  end
+
+  setup do
+    Application.put_env(:portal, :package_version_resolver, StubVersions)
+    on_exit(fn -> Application.delete_env(:portal, :package_version_resolver) end)
+    :ok
+  end
 
   test "records verified Hex owner requests" do
     user =
@@ -14,9 +25,8 @@ defmodule Portal.ScanRequests.ScanRequestTest do
       })
       |> Ash.create!(domain: Portal.Accounts)
 
-    request =
-      ScanRequest
-      |> Ash.Changeset.for_create(:create, %{
+    {:ok, request} =
+      Portal.ScanRequests.create_once(%{
         package_name: "jason",
         source: :hex_owner,
         status: :accepted,
@@ -24,13 +34,17 @@ defmodule Portal.ScanRequests.ScanRequestTest do
         subject: "owner",
         verification_provider: "hex_pm_oauth_device"
       })
-      |> Ash.create!(domain: Portal.ScanRequests)
 
     assert request.package_name == "jason"
     assert request.source == :hex_owner
-    assert request.status == :accepted
+    assert request.status == :queued
     assert request.user_id == user.id
     assert request.subject == "owner"
+
+    assert_enqueued(
+      worker: Portal.Workers.Build,
+      args: %{"package" => "jason", "version" => "9.9.9", "scan_request_id" => request.id}
+    )
   end
 
   test "promotes an open pending anonymous request instead of duplicating it" do
@@ -53,8 +67,17 @@ defmodule Portal.ScanRequests.ScanRequestTest do
       })
 
     assert accepted.id == pending.id
-    assert accepted.status == :accepted
+    assert accepted.status == :queued
     assert accepted.source == :github_repo
+
+    assert_enqueued(
+      worker: Portal.Workers.Build,
+      args: %{
+        "package" => "dedupe_pkg",
+        "version" => "9.9.9",
+        "scan_request_id" => accepted.id
+      }
+    )
 
     matches =
       ScanRequest
@@ -62,5 +85,31 @@ defmodule Portal.ScanRequests.ScanRequestTest do
       |> Enum.filter(&(&1.package_name == "dedupe_pkg"))
 
     assert length(matches) == 1
+  end
+
+  test "approved anonymous requests enqueue local builds instead of forwarding externally" do
+    {:ok, admin} =
+      Portal.Accounts.seed_admin_user("approve_enqueue", "correct horse battery staple")
+
+    {:ok, pending} =
+      Portal.ScanRequests.create_once(%{
+        package_name: "manual_pkg",
+        source: :anonymous_manual,
+        status: :pending,
+        subject: "anonymous",
+        verification_provider: "manual_review"
+      })
+
+    assert {:ok, request} = Portal.ScanRequests.approve_anonymous_request(pending.id, admin)
+    assert request.status == :queued
+
+    assert_enqueued(
+      worker: Portal.Workers.Build,
+      args: %{
+        "package" => "manual_pkg",
+        "version" => "9.9.9",
+        "scan_request_id" => request.id
+      }
+    )
   end
 end

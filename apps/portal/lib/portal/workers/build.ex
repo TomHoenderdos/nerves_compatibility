@@ -11,13 +11,13 @@ defmodule Portal.Workers.Build do
     5. Update the linked `ScanRequest` status (built / rejected / error).
     6. Broadcast progress to `"request:<scan_request_id>"` over `Portal.PubSub`.
 
-  Exit-code contract (preserved from the runner/orchestrator):
+  Exit-code contract:
 
-      worker  0   -> success → ingest
+      worker   0  -> success → ingest
       worker  11  -> policy (git/path dep) → cancel, request rejected, no retry
       worker  10  -> internal → retry (Oban backoff)
-      runner  20  -> runner error → retry
-      runner  21  -> container non-zero → retry; on exhaustion request error
+      host    20  -> host/Docker invocation error → retry
+      host    21  -> container non-zero → retry; on exhaustion request error
       (pre-check) unknown package → cancel, request rejected
   """
 

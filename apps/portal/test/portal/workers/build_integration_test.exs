@@ -45,13 +45,20 @@ defmodule Portal.Workers.BuildIntegrationTest do
 
     image_digest = Builder.image_digest(@image)
 
-    assert :ok =
-             perform_job(Build, %{
-               "package" => "jason",
-               "version" => "1.4.4",
-               "image_digest" => image_digest,
-               "scan_request_id" => request.id
-             })
+    # Call perform/1 directly (not perform_job) so the ingestion transaction
+    # runs in the test process, which owns the sandbox DB connection.
+    job = %Oban.Job{
+      args: %{
+        "package" => "jason",
+        "version" => "1.4.4",
+        "image_digest" => image_digest,
+        "scan_request_id" => request.id
+      },
+      attempt: 1,
+      max_attempts: 3
+    }
+
+    assert :ok = Build.perform(job)
 
     # Package row
     packages = Ash.read!(Package, domain: Portal.Catalog)

@@ -17,7 +17,7 @@ config :portal, Oban,
   queues: [builds: 1, intake: 5, maintenance: 1],
   plugins: [Oban.Plugins.Pruner]
 
-# Host-side Docker invocation (ported from the standalone runner/orchestrator).
+# Host-side Docker invocation for worker builds.
 # Runtime-overridable in config/runtime.exs.
 config :portal, Portal.Builder,
   docker_image: "ncc-worker:local",
