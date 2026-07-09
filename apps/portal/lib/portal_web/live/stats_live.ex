@@ -98,7 +98,7 @@ defmodule PortalWeb.StatsLive do
     pass = get.([:pass, "pass"])
     fail = get.([:fail, "fail"])
     error = get.([:error, "error"])
-    skipped = get.([:skipped, "skipped"])
-    %{pass: pass, fail: fail, error: error, total: pass + fail + error + skipped}
+    # Total reconciles with the visible Pass/Fail/Error columns (skipped has no column).
+    %{pass: pass, fail: fail, error: error, total: pass + fail + error}
   end
 end
