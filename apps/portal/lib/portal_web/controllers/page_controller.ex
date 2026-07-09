@@ -7,6 +7,13 @@ defmodule PortalWeb.PageController do
     render_request_scan(conn)
   end
 
+  def oban_embed(conn, _params) do
+    case require_admin(conn) do
+      {:ok, conn, user} -> render(conn, :oban_embed, current_user: user)
+      {:error, conn} -> conn
+    end
+  end
+
   def admin(conn, _params) do
     case require_admin(conn) do
       {:ok, conn, user} -> render_admin(conn, user)

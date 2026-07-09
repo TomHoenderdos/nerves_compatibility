@@ -1,0 +1,32 @@
+<Layouts.flash_group flash={@flash} />
+
+<main class="min-h-screen bg-base-100 text-base-content">
+  <.site_nav active={:oban} current_user={@current_user} />
+
+  <div class="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <PortalWeb.UI.page_header kicker="Admin" title="Oban dashboard">
+      <:subtitle>
+        Background job queues, running inside the site so navigation stays put.
+      </:subtitle>
+      <:actions>
+        <a
+          href="/admin/oban"
+          target="_blank"
+          rel="noopener"
+          class="inline-flex items-center gap-1 rounded-md border border-base-300 px-3 py-1.5 text-sm font-medium text-base-content/70 transition hover:text-base-content"
+        >
+          Open full screen <span aria-hidden="true">↗</span>
+        </a>
+      </:actions>
+    </PortalWeb.UI.page_header>
+
+    <div class="mt-6 overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm">
+      <iframe
+        src="/admin/oban"
+        title="Oban Web dashboard"
+        class="h-[calc(100vh-14rem)] w-full border-0"
+      >
+      </iframe>
+    </div>
+  </div>
+</main>
