@@ -62,7 +62,8 @@ if portal_available? do
     nerves_cache: System.get_env("NCC_NERVES_CACHE"),
     hex_cache: System.get_env("NCC_HEX_CACHE"),
     cpus: System.get_env("NCC_BUILD_CPUS"),
-    memory: System.get_env("NCC_BUILD_MEMORY")
+    memory: System.get_env("NCC_BUILD_MEMORY"),
+    run_as_user: System.get_env("NCC_BUILD_USER")
   ]
 
   case Enum.reject(builder_env, fn {_k, v} -> is_nil(v) end) do
