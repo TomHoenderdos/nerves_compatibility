@@ -67,13 +67,19 @@ DATABASE_URL=ecto://USER:PASS@HOST/DB \
 bin/portal eval 'Ecto.Migrator.with_repo(Portal.Repo, &Ecto.Migrator.run(&1, :up, all: true))'
 ```
 
-Seed admin users after migrations:
+Seed admin users after migrations. This one runs against the *running* node,
+not through `eval`: seeding goes through an Ash action, and `eval` starts a bare
+VM in which `Portal.Repo` was never started, so it fails with `could not lookup
+Ecto repo Portal.Repo`. Start the service first, then:
 
 ```bash
-DATABASE_URL=ecto://USER:PASS@HOST/DB \
 PORTAL_SEED_ADMINS='alice,bob:change-this-temporary-password' \
-bin/portal eval 'Portal.Seeds.seed_admins_from_env!()'
+bin/portal rpc 'Portal.Seeds.seed_admins_from_env!()'
 ```
+
+`rpc` inherits the running node's environment, so `PORTAL_SEED_ADMINS` and
+`PORTAL_SEED_ADMIN_PASSWORD` belong in the service's env file, not on this
+command line, unless the node already has them.
 
 ## Import package overrides
 
@@ -85,18 +91,50 @@ For one-time imports in another environment, run before removing the source file
 mix portal.import_overrides /path/to/package_metadata.json
 ```
 
+## Building the release
+
+There is no root-level release definition per app; the umbrella defines one
+release named `portal` (see `releases/0` in the root `mix.exs`).
+
+Run the build from the **umbrella root**, not from `apps/portal`. Assets resolve
+their dependencies through the umbrella's `deps/`, and running mix from inside
+`apps/portal` gives that app its own separate `deps/` tree.
+
+```bash
+MIX_ENV=prod mix deps.get --only prod
+MIX_ENV=prod mix assets.setup
+MIX_ENV=prod mix assets.deploy
+MIX_ENV=prod mix release portal
+```
+
+`assets.deploy` must come before `mix release`, or the release ships without
+CSS/JS and without a digest manifest.
+
+A release links against the glibc of the machine that built it. When building in
+a container for a different host, the base image must match that host's
+distribution.
+
 ## Systemd example
 
 ```ini
 [Service]
+Type=exec
 User=nerves-compat
-WorkingDirectory=/opt/nerves_compatibility/portal
-Environment=PHX_SERVER=true
-Environment=PORT=4001
-Environment=DATABASE_URL=ecto://portal:secret@127.0.0.1/portal_prod
-Environment=SECRET_KEY_BASE=...
+WorkingDirectory=/var/lib/nerves-compat
+EnvironmentFile=/etc/ncc-portal/portal.env
+Environment=RELEASE_TMP=/var/lib/nerves-compat/tmp
 ExecStart=/opt/nerves_compatibility/portal/bin/portal start
+ExecStop=/opt/nerves_compatibility/portal/bin/portal stop
+Restart=on-failure
 ```
+
+`WorkingDirectory` must be a directory the service user can actually read. The
+release boots a VM there, and pointing it at a directory the user cannot enter
+produces a kernel-level crash during boot rather than a clear error.
+
+`RELEASE_TMP` matters when the release directory is not writable by the service
+user: the release regenerates `vm.args` and `runtime.exs` output on every boot
+and needs somewhere to put them.
 
 Ensure the service user can talk to Docker and can read/write the artifact store and the shared caches (`~/.ncc-nerves-cache`, `~/.ncc-hex-cache`, or the configured equivalents).
 
