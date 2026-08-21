@@ -1,0 +1,14 @@
+# The worker Dockerfile copies only mix.exs, mix.lock, config/ and the
+# compatibility + ncc_worker apps. Everything else is context the daemon
+# receives and then discards. On a build host that is hundreds of megabytes
+# pushed over the socket on every `make build`.
+.git
+.github
+_build
+deps
+.buildhome
+.elixir_ls
+apps/portal
+**/node_modules
+erl_crash.dump
+*.tar
