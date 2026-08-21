@@ -394,25 +394,60 @@ defmodule NccWorker.Worker do
 
   @spec build_all_systems(String.t(), list(), String.t(), integer(), integer(), String.t()) ::
           map()
-  defp build_all_systems(project_dir, systems, output_dir, timeout, log_tail_bytes, package_name) do
-    systems
-    |> Enum.map(fn system ->
-      result =
-        build_system(project_dir, system, output_dir, timeout, log_tail_bytes, package_name)
+  defp build_all_systems(project_dir, systems, output_dir, _timeout, log_tail_bytes, package_name) do
+    # Two phases, deliberately.
+    #
+    # `mix deps.get` resolves against the one `mix.lock` in the project root and
+    # writes it back, so those runs stay serial: two targets fetching at the same
+    # time race on that file. They are cheap anyway, the hex cache is mounted and
+    # warm by the time we get here.
+    #
+    # The firmware builds are the expensive half and now share nothing. Each
+    # target already had its own `MIX_BUILD_PATH`; giving it its own
+    # `MIX_DEPS_PATH` too costs a little disk and unpack time, and keeps deps
+    # that compile inside their own source tree (anything on elixir_make) from
+    # clobbering each other across targets.
+    prepared =
+      Enum.map(systems, fn system ->
+        {system, prepare_system(project_dir, system, output_dir)}
+      end)
 
-      {system.name, result}
+    prepared
+    |> Task.async_stream(
+      fn {system, prep} -> build_system(system, prep, log_tail_bytes, package_name) end,
+      max_concurrency: build_concurrency(),
+      timeout: :infinity
+    )
+    |> Enum.zip(prepared)
+    |> Enum.map(fn
+      {{:ok, result}, {system, _prep}} ->
+        {system.name, result}
+
+      {{:exit, reason}, {system, prep}} ->
+        {system.name, task_crash_result(prep, log_tail_bytes, reason)}
     end)
     |> Map.new()
   end
 
-  @spec build_system(String.t(), map(), String.t(), integer(), integer(), String.t()) :: map()
-  defp build_system(project_dir, system, output_dir, _timeout, log_tail_bytes, package_name) do
-    log_file = Path.join([output_dir, "logs", "#{system.name}.log"])
-    start_time = System.monotonic_time(:second)
+  # How many targets may build at once. One is the historical serial behaviour
+  # and stays the default: the limit that matters is the CPU cap on the whole
+  # container, which the deployment knows about and this code does not.
+  defp build_concurrency do
+    case Integer.parse(System.get_env("NCC_BUILD_CONCURRENCY", "1")) do
+      {n, _} when n > 0 -> n
+      _ -> 1
+    end
+  end
 
-    # Set up isolated build environment for this target
+  # Serial phase: fetch this target's deps and hand the rest to the parallel
+  # phase. `deps_duration` is carried across so the reported duration still
+  # covers the whole target, not just the part that ran concurrently.
+  @spec prepare_system(String.t(), map(), String.t()) :: map()
+  defp prepare_system(project_dir, system, output_dir) do
+    log_file = Path.join([output_dir, "logs", "#{system.name}.log"])
     build_path = Path.join([project_dir, "_build", system.target])
-    deps_path = Path.join([project_dir, "deps"])
+    deps_path = Path.join([project_dir, "deps_#{system.target}"])
+    start_time = System.monotonic_time(:second)
 
     env = [
       {"MIX_TARGET", system.target},
@@ -421,46 +456,70 @@ defmodule NccWorker.Worker do
       {"MIX_ENV", "prod"}
     ]
 
-    # First run deps.get for this target
-    case System.cmd("mix", ["deps.get"],
-           cd: project_dir,
-           env: env,
-           stderr_to_stdout: true,
-           into: File.stream!(log_file, [:append])
-         ) do
-      {_, 0} ->
-        # deps.get succeeded, now run firmware
-        firmware_result =
-          run_firmware(
-            project_dir,
-            env,
-            log_file,
-            start_time,
-            build_path,
-            log_tail_bytes,
-            package_name
-          )
+    deps =
+      case System.cmd("mix", ["deps.get"],
+             cd: project_dir,
+             env: env,
+             stderr_to_stdout: true,
+             into: File.stream!(log_file, [:append])
+           ) do
+        {_, 0} -> :ok
+        {_, exit_code} -> {:error, exit_code}
+      end
 
-        # Extract system version from the full log
-        system_name = if is_map(system), do: system.name, else: system
-        system_version = extract_system_version(log_file, system_name)
-        Map.put(firmware_result, :system_version, system_version)
+    %{
+      project_dir: project_dir,
+      log_file: log_file,
+      build_path: build_path,
+      env: env,
+      deps: deps,
+      deps_duration: System.monotonic_time(:second) - start_time
+    }
+  end
 
-      {_, exit_code} ->
-        duration = System.monotonic_time(:second) - start_time
-        log_tail = read_log_tail(log_file, log_tail_bytes)
+  @spec build_system(map(), map(), integer(), String.t()) :: map()
+  defp build_system(system, prep, log_tail_bytes, package_name) do
+    case prep.deps do
+      :ok ->
+        # Backdating the start by the deps time keeps duration_sec meaning the
+        # same thing it did when both phases ran back to back.
+        start_time = System.monotonic_time(:second) - prep.deps_duration
 
-        %{
-          status: :fail,
-          duration_sec: duration * 1.0,
-          firmware_size_bytes: nil,
-          log_tail: log_tail,
-          system_version: nil,
-          beam_scan: nil,
-          dependency_scans: nil,
-          error: "mix deps.get exited with code #{exit_code}"
-        }
+        prep.project_dir
+        |> run_firmware(
+          prep.env,
+          prep.log_file,
+          start_time,
+          prep.build_path,
+          log_tail_bytes,
+          package_name
+        )
+        |> Map.put(:system_version, extract_system_version(prep.log_file, system.name))
+
+      {:error, exit_code} ->
+        failed_system_result(
+          prep,
+          log_tail_bytes,
+          "mix deps.get exited with code #{exit_code}"
+        )
     end
+  end
+
+  defp task_crash_result(prep, log_tail_bytes, reason) do
+    failed_system_result(prep, log_tail_bytes, "build task exited: #{inspect(reason)}")
+  end
+
+  defp failed_system_result(prep, log_tail_bytes, error) do
+    %{
+      status: :fail,
+      duration_sec: prep.deps_duration * 1.0,
+      firmware_size_bytes: nil,
+      log_tail: read_log_tail(prep.log_file, log_tail_bytes),
+      system_version: nil,
+      beam_scan: nil,
+      dependency_scans: nil,
+      error: error
+    }
   end
 
   @spec run_firmware(String.t(), list(), String.t(), integer(), String.t(), integer(), String.t()) ::

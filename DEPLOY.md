@@ -23,6 +23,10 @@ make build
 
 Run this whenever `apps/ncc_worker/`, `apps/compatibility/`, or `apps/ncc_worker/Dockerfile` changes.
 
+Docker layer caching is on, so a source-only change reuses the apt, Elixir and
+hex-archive layers above the `COPY`. Use `make build-clean` (`--no-cache`) when
+those upper layers are what you want refetched, e.g. after an OTP bump.
+
 ## Portal configuration
 
 Configure these environment variables for the Phoenix service:
@@ -55,6 +59,7 @@ resolved by the host daemon and must be a path the daemon can see:
 | `NCC_BUILD_CPUS` | Cap cores per build, e.g. `3`. Unset means unbounded |
 | `NCC_BUILD_MEMORY` | Cap memory per build, e.g. `4g`. Unset means unbounded |
 | `NCC_BUILD_USER` | `--user` for the build container. Unset means our own uid:gid. Set `0:0` on a rootless daemon, where our uid is already 0 inside the namespace |
+| `NCC_BUILD_CONCURRENCY` | How many Nerves targets one build may compile at once. Unset means 1 (serial). Raise it together with `NCC_BUILD_CPUS`: the targets share that cap, and the win comes from overlapping the single-threaded stretches (release assembly, squashfs, fwup) |
 
 The root `config/runtime.exs` owns runtime config. Do not add child-app `runtime.exs` files under `apps/portal/config/`; they are not loaded in an umbrella.
 
@@ -137,6 +142,20 @@ user: the release regenerates `vm.args` and `runtime.exs` output on every boot
 and needs somewhere to put them.
 
 Ensure the service user can talk to Docker and can read/write the artifact store and the shared caches (`~/.ncc-nerves-cache`, `~/.ncc-hex-cache`, or the configured equivalents).
+
+## Build pipeline
+
+A scan request runs as two Oban jobs, not one:
+
+1. `Portal.Workers.Build` (queue `builds`, concurrency 1) runs the worker
+   container and leaves the run's scratch directory in place.
+2. `Portal.Workers.Ingest` (queue `ingest`) reads that scratch directory back
+   and writes the Catalog rows, then removes it.
+
+They are split so a database-side ingest failure retries the database write
+instead of the multi-target firmware build that produced it. A scratch dir that
+outlives its run therefore means an ingest that never completed: check the
+`ingest` queue before deleting it by hand.
 
 ## Public endpoints
 

@@ -63,6 +63,7 @@ if portal_available? do
     hex_cache: System.get_env("NCC_HEX_CACHE"),
     cpus: System.get_env("NCC_BUILD_CPUS"),
     memory: System.get_env("NCC_BUILD_MEMORY"),
+    build_concurrency: System.get_env("NCC_BUILD_CONCURRENCY"),
     run_as_user: System.get_env("NCC_BUILD_USER")
   ]
 

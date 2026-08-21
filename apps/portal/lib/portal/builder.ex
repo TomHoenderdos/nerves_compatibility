@@ -131,6 +131,39 @@ defmodule Portal.Builder do
   end
 
   @doc """
+  Re-read a finished run's output from its scratch directory.
+
+  The counterpart to `build/2` for `Portal.Workers.Ingest`, which runs as a
+  separate job and so cannot be handed the return value of the build that
+  produced it. Same shape as `build/2` returns, minus a meaningful exit code:
+  reaching this point at all means the container exited 0.
+
+  `{:error, :missing_result_json}` means the scratch dir is gone or never held a
+  result, which no retry can fix.
+  """
+  @spec load_run(String.t()) :: {:ok, build_result()} | {:error, term()}
+  def load_run(run_id) do
+    scratch = Path.join(scratch_root(), safe_name(run_id))
+    output_dir = Path.join(scratch, "out")
+    files_dir = Path.join(scratch, "files")
+
+    case read_result_json(output_dir) do
+      nil ->
+        {:error, :missing_result_json}
+
+      result ->
+        {:ok,
+         %{
+           exit_code: 0,
+           result: result,
+           files_dir: files_dir,
+           output_dir: output_dir,
+           log: read_log(Path.join(output_dir, "runner.log"))
+         }}
+    end
+  end
+
+  @doc """
   Remove a run's scratch directory. Best-effort.
   """
   @spec cleanup(String.t()) :: :ok
@@ -247,7 +280,19 @@ defmodule Portal.Builder do
       "TAR_OPTIONS=--no-same-owner"
     ]
 
-    base ++ limits ++ mounts ++ env ++ [image_ref(job)]
+    base ++ limits ++ mounts ++ env ++ concurrency_env() ++ [image_ref(job)]
+  end
+
+  # How many targets the worker may build at once inside one container. Unset
+  # means one, the serial behaviour this started with. Worth raising only
+  # together with the CPU cap: the targets share whatever `--cpus` allows, and
+  # the gain comes from overlapping the single-threaded stretches (release
+  # assembly, squashfs, fwup), not from finding more cores.
+  defp concurrency_env do
+    case config(:build_concurrency, nil) do
+      nil -> []
+      value -> ["-e", "NCC_BUILD_CONCURRENCY=#{value}"]
+    end
   end
 
   # Buildroot cross-compiles will use every core they are given. On a host that
