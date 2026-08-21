@@ -234,7 +234,17 @@ defmodule Portal.Builder do
       "-e",
       "HOME=/home/nerves",
       "-e",
-      "HEX_HOME=/hex-cache"
+      "HEX_HOME=/hex-cache",
+      # Nerves extracts prebuilt system tarballs with the external `tar`, and
+      # GNU tar restores ownership by default when it believes it is root. On a
+      # rootless daemon run_as_user is "0:0", so it does believe that, and every
+      # chown then fails against --cap-drop=ALL: tar exits 2 and
+      # Nerves.Artifact.Cache.put/2 raises. Dropping the chown is the fix, not
+      # granting CAP_CHOWN back to a container that builds untrusted package
+      # code. Under a rootful daemon we run as our own non-root uid, where this
+      # is already tar's default, so it is a no-op there.
+      "-e",
+      "TAR_OPTIONS=--no-same-owner"
     ]
 
     base ++ limits ++ mounts ++ env ++ [image_ref(job)]
