@@ -31,15 +31,29 @@ Configure these environment variables for the Phoenix service:
 | --- | --- |
 | `PHX_SERVER` | Set to `true` in releases so the endpoint starts |
 | `PORT` | HTTP port, default `4001` |
+| `PHX_HOST` | Public hostname used to generate URLs. Defaults to `example.com`, so it must be set |
+| `PHX_BIND_IP` | Address the endpoint binds to. Defaults to every interface; set `127.0.0.1` behind a reverse proxy on the same host |
 | `SECRET_KEY_BASE` | Phoenix secret key base |
 | `DATABASE_URL` | Postgres URL for `Portal.Repo` |
-| `POOL_SIZE` | Optional DB pool size |
+| `PORTAL_DATABASE_POOL_SIZE` | Optional DB pool size |
 | `ECTO_IPV6` | Set to `true` when the DB needs IPv6 socket options |
 | `GITHUB_CLIENT_ID` | Optional GitHub OAuth App client ID with device flow enabled |
 | `PORTAL_SEED_ADMINS` | Optional seed list, e.g. `alice,bob:temporary-password` |
 | `PORTAL_SEED_ADMIN_PASSWORD` | Optional shared password for seeded admins without `:password` |
 | `TURNSTILE_SECRET_KEY` | Optional server-side Turnstile verification secret |
 | `NCC_ARTIFACT_STORE` | Optional artifact blob store path; defaults to `~/.ncc-artifacts` |
+
+Build-host settings. Every path below is passed to `docker run --mount source=`, so it is
+resolved by the host daemon and must be a path the daemon can see:
+
+| Env var | Purpose |
+| --- | --- |
+| `NCC_DOCKER_IMAGE` | Worker image; defaults to `ncc-worker:local` |
+| `NCC_SCRATCH_ROOT` | Per-run scratch dirs; defaults to `~/.ncc-scratch` |
+| `NCC_NERVES_CACHE` | Shared Nerves cache; defaults to `~/.ncc-nerves-cache` |
+| `NCC_HEX_CACHE` | Shared Hex cache; defaults to `~/.ncc-hex-cache` |
+| `NCC_BUILD_CPUS` | Cap cores per build, e.g. `3`. Unset means unbounded |
+| `NCC_BUILD_MEMORY` | Cap memory per build, e.g. `4g`. Unset means unbounded |
 
 The root `config/runtime.exs` owns runtime config. Do not add child-app `runtime.exs` files under `apps/portal/config/`; they are not loaded in an umbrella.
 
