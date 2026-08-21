@@ -17,6 +17,14 @@ RUN mix local.hex --force && \
     mix archive.install hex nerves_bootstrap --force && \
     mix archive.install hex igniter_new --force
 
+# mksquashfs sets ownership on the rootfs entries while assembling a firmware
+# image. The build container runs with --cap-drop=ALL, so those chowns fail and
+# the image build dies. fakeroot fakes the bookkeeping in userspace, which lets
+# the firmware step succeed without the container ever holding CAP_CHOWN.
+RUN sudo apt-get update && \
+    sudo apt-get install -y --no-install-recommends fakeroot && \
+    sudo rm -rf /var/lib/apt/lists/*
+
 # Create mount points
 RUN sudo mkdir -p /work /out /hex-cache /home/nerves/.nerves
 

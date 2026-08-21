@@ -474,10 +474,10 @@ defmodule NccWorker.Worker do
          log_tail_bytes,
          package_name
        ) do
-    with :ok <- run_mix(["firmware"], project_dir, env, log_file),
+    with :ok <- run_firmware_mix(project_dir, env, log_file),
          {:ok, hash1} <- hash_package_artifacts(build_path, package_name),
          :ok <- run_mix(["deps.clean", "--build", package_name], project_dir, env, log_file),
-         :ok <- run_mix(["firmware"], project_dir, env, log_file),
+         :ok <- run_firmware_mix(project_dir, env, log_file),
          {:ok, hash2} <- hash_package_artifacts(build_path, package_name) do
       duration = System.monotonic_time(:second) - start_time
       firmware_info = Scanner.find_firmware(build_path)
@@ -515,7 +515,28 @@ defmodule NccWorker.Worker do
   end
 
   defp run_mix(args, project_dir, env, log_file) do
-    case System.cmd("mix", args,
+    run_cmd("mix", args, project_dir, env, log_file)
+  end
+
+  # Assembling a firmware image runs mksquashfs, which sets ownership on the
+  # rootfs entries it packs. The build container runs with --cap-drop=ALL, so
+  # those chowns come back "Operation not permitted" and the build dies partway
+  # through the image (nerves_system_x86_64 hits it on /var/www; systems whose
+  # overlay carries no such entry never notice). fakeroot fakes the ownership
+  # bookkeeping in userspace, so the image gets the uids it expects without
+  # granting CAP_CHOWN to a container that compiles untrusted package code.
+  #
+  # Absent fakeroot the plain command still runs, so an older image keeps its
+  # current behaviour rather than failing to start.
+  defp run_firmware_mix(project_dir, env, log_file) do
+    case System.find_executable("fakeroot") do
+      nil -> run_cmd("mix", ["firmware"], project_dir, env, log_file)
+      fakeroot -> run_cmd(fakeroot, ["mix", "firmware"], project_dir, env, log_file)
+    end
+  end
+
+  defp run_cmd(command, args, project_dir, env, log_file) do
+    case System.cmd(command, args,
            cd: project_dir,
            env: env,
            stderr_to_stdout: true,
