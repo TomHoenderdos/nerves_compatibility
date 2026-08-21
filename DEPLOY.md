@@ -54,6 +54,7 @@ resolved by the host daemon and must be a path the daemon can see:
 | `NCC_HEX_CACHE` | Shared Hex cache; defaults to `~/.ncc-hex-cache` |
 | `NCC_BUILD_CPUS` | Cap cores per build, e.g. `3`. Unset means unbounded |
 | `NCC_BUILD_MEMORY` | Cap memory per build, e.g. `4g`. Unset means unbounded |
+| `NCC_BUILD_USER` | `--user` for the build container. Unset means our own uid:gid. Set `0:0` on a rootless daemon, where our uid is already 0 inside the namespace |
 
 The root `config/runtime.exs` owns runtime config. Do not add child-app `runtime.exs` files under `apps/portal/config/`; they are not loaded in an umbrella.
 
