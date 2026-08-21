@@ -477,7 +477,7 @@ defmodule NccWorker.Worker do
     with :ok <- run_firmware_mix(project_dir, env, log_file),
          {:ok, hash1} <- hash_package_artifacts(build_path, package_name),
          :ok <- run_mix(["deps.clean", "--build", package_name], project_dir, env, log_file),
-         :ok <- run_firmware_mix(project_dir, env, log_file),
+         :ok <- run_release_mix(project_dir, env, log_file),
          {:ok, hash2} <- hash_package_artifacts(build_path, package_name) do
       duration = System.monotonic_time(:second) - start_time
       firmware_info = Scanner.find_firmware(build_path)
@@ -533,6 +533,21 @@ defmodule NccWorker.Worker do
       nil -> run_cmd("mix", ["firmware"], project_dir, env, log_file)
       fakeroot -> run_cmd(fakeroot, ["mix", "firmware"], project_dir, env, log_file)
     end
+  end
+
+  # Second pass of the determinism check. It only has to reproduce the
+  # package's own BEAM files, and `hash_package_artifacts/2` reads those from
+  # `<build_path>/rel`, which `mix release` populates on its own. Running the
+  # full `mix firmware` here rebuilt the rootfs, squashfs and .fw image as
+  # well, none of which the comparison looks at: about 40% of a target's wall
+  # clock spent producing an image that is immediately thrown away.
+  #
+  # `mix nerves.new` sets `overwrite: true` in the release config, so
+  # reassembling over the first pass's release directory needs no prompt.
+  # No fakeroot here: without the image step there is nothing left that wants
+  # to set ownership.
+  defp run_release_mix(project_dir, env, log_file) do
+    run_cmd("mix", ["release"], project_dir, env, log_file)
   end
 
   defp run_cmd(command, args, project_dir, env, log_file) do
