@@ -14,7 +14,7 @@ config :portal,
 
 config :portal, Oban,
   repo: Portal.Repo,
-  queues: [builds: 1, intake: 5, maintenance: 1],
+  queues: [builds: 1, ingest: 2, intake: 5, maintenance: 1],
   plugins: [Oban.Plugins.Pruner]
 
 # Host-side Docker invocation for worker builds.
