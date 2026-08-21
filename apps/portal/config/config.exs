@@ -45,7 +45,10 @@ config :esbuild,
     args:
       ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/*),
     cd: Path.expand("../assets", __DIR__),
-    env: %{"NODE_PATH" => [Path.expand("../deps", __DIR__), Mix.Project.build_path()]}
+    # deps_path/0, not "../deps": in an umbrella the deps are fetched to the
+    # umbrella root, and apps/portal/deps only exists on machines that still
+    # have a stale pre-umbrella copy of it.
+    env: %{"NODE_PATH" => [Mix.Project.deps_path(), Mix.Project.build_path()]}
   ]
 
 config :tailwind,
