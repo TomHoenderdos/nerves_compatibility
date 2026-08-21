@@ -76,6 +76,7 @@ defmodule NccWorker.Worker do
 
   @default_timeout_sec 600
   @default_log_tail_bytes 4096
+  @max_build_concurrency 2
 
   @doc """
   Runs the worker evaluation for a single package.
@@ -432,9 +433,15 @@ defmodule NccWorker.Worker do
   # How many targets may build at once. One is the historical serial behaviour
   # and stays the default: the limit that matters is the CPU cap on the whole
   # container, which the deployment knows about and this code does not.
+  #
+  # Capped at @max_build_concurrency. Targets get their own _build and deps
+  # trees but still share one project dir (mix.lock, .nerves) and one Hex
+  # cache. Three at once loses that race: a sibling re-fetching a package
+  # cleans out an artifact another target has already built, and the second
+  # `mix release` pass dies with "could not find an app file".
   defp build_concurrency do
     case Integer.parse(System.get_env("NCC_BUILD_CONCURRENCY", "1")) do
-      {n, _} when n > 0 -> n
+      {n, _} when n > 0 -> min(n, @max_build_concurrency)
       _ -> 1
     end
   end
