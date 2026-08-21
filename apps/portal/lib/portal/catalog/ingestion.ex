@@ -133,39 +133,64 @@ defmodule Portal.Catalog.Ingestion do
   defp register_artifacts(sys, system_result_id, files_dir) do
     sys
     |> collect_shas()
-    |> Enum.each(fn sha ->
+    |> Enum.flat_map(fn sha ->
       source = Path.join(files_dir, sha)
 
       case ArtifactStore.put(sha, source) do
         {:ok, %{disk_path: disk_path, byte_size: bytes}} ->
-          upsert_artifact(sha, bytes, disk_path, system_result_id)
+          [
+            %{
+              sha256: sha,
+              byte_size: bytes,
+              disk_path: disk_path,
+              system_result_id: system_result_id
+            }
+          ]
 
         {:error, :source_missing} ->
           Logger.debug("Artifact blob #{sha} not present in files_dir; skipping")
+          []
 
         {:error, reason} ->
           Logger.warning("Failed to store artifact #{sha}: #{inspect(reason)}")
+          []
       end
     end)
-
-    :ok
+    |> upsert_artifacts()
   end
 
-  defp upsert_artifact(sha, bytes, disk_path, system_result_id) do
-    Artifact
-    |> Ash.Changeset.for_create(:upsert, %{
-      sha256: sha,
-      byte_size: bytes,
-      disk_path: disk_path,
-      system_result_id: system_result_id
-    })
-    |> Ash.create(domain: @domain)
+  # One statement per batch of blobs, not one per blob.
+  #
+  # A single system's manifest carries on the order of a thousand
+  # content-addressed BEAM files, and this used to be a row-at-a-time
+  # `Ash.create/2`: ~950 sequential round trips, all inside the ingest
+  # transaction. That runs past DBConnection's 15s checkout limit, which kills
+  # the connection mid-ingest, fails the build job, and makes Oban retry the
+  # whole 16-minute build. The blobs themselves are ~15MB total, so the cost was
+  # never volume, only the number of round trips.
+  defp upsert_artifacts([]), do: :ok
+
+  defp upsert_artifacts(entries) do
+    entries
+    |> Ash.bulk_create(Artifact, :upsert,
+      domain: @domain,
+      upsert?: true,
+      upsert_identity: :unique_sha256,
+      upsert_fields: [:byte_size, :disk_path],
+      return_errors?: true,
+      stop_on_error?: false,
+      transaction: false
+    )
     |> case do
-      {:ok, _artifact} ->
+      %Ash.BulkResult{status: :success} ->
         :ok
 
-      {:error, reason} ->
-        Logger.warning("Failed to register artifact #{sha}: #{inspect(reason)}")
+      %Ash.BulkResult{errors: errors} ->
+        Logger.warning(
+          "Failed to register #{length(errors)} of #{length(entries)} artifacts; " <>
+            "first error: #{inspect(List.first(errors))}"
+        )
+
         :ok
     end
   end
