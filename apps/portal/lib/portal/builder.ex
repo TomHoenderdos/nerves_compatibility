@@ -203,8 +203,6 @@ defmodule Portal.Builder do
   # the worker container environment expected by apps/ncc_worker.
   @spec build_docker_args(map(), Path.t(), Path.t(), Path.t()) :: [String.t()]
   def build_docker_args(job, work_dir, output_dir, files_dir) do
-    {uid, gid} = current_user()
-
     base = [
       "run",
       "--rm",
@@ -212,7 +210,7 @@ defmodule Portal.Builder do
       "--name",
       container_name(job.run_id),
       "--user",
-      "#{uid}:#{gid}",
+      run_as_user(),
       "--cap-drop=ALL",
       "--security-opt=no-new-privileges"
     ]
@@ -260,6 +258,22 @@ defmodule Portal.Builder do
   # name@digest for reproducibility.
   defp image_ref(%{image_name: name, image_digest: digest}) do
     if String.contains?(name, "/"), do: "#{name}@#{digest}", else: name
+  end
+
+  # Matching our own uid keeps bind-mounted output owned by us on a normal
+  # daemon. Under rootless Docker it does the opposite: the daemon runs in a
+  # user namespace where our uid is already 0, so passing it literally lands
+  # container writes on a subuid we cannot read back. Rootless hosts set
+  # "0:0", which maps to the service user outside the namespace.
+  defp run_as_user do
+    case config(:run_as_user, nil) do
+      nil ->
+        {uid, gid} = current_user()
+        "#{uid}:#{gid}"
+
+      value ->
+        to_string(value)
+    end
   end
 
   defp current_user do
