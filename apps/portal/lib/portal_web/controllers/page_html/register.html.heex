@@ -3,44 +3,70 @@
 <main class="min-h-screen bg-base-100 text-base-content">
   <.site_nav current_user={@current_user} />
 
-  <div class="mx-auto max-w-md px-4 py-12 sm:px-6 lg:px-8">
-    <div class="rounded-2xl border border-base-300 bg-base-100 p-6 shadow-sm">
-      <PortalWeb.UI.page_header title="Create account">
+  <div class="mx-auto max-w-md px-4 py-10 sm:px-6 lg:px-8">
+    <section class="space-y-8">
+      <PortalWeb.UI.page_header kicker="Account" title="Create account">
         <:subtitle>
           Passwords are stored with Argon2 hashing. Hex.pm owner verification can be connected after registration.
         </:subtitle>
       </PortalWeb.UI.page_header>
 
-      <form method="post" action={~p"/register"} class="mt-6 space-y-4">
-        <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
-        <label class="form-control">
-          <span class="label"><span class="label-text font-semibold">Username</span></span>
-          <input
-            name="username"
-            value={@username}
-            autocomplete="username"
-            required
-            pattern="[a-zA-Z0-9_][a-zA-Z0-9_.-]{2,39}"
-            class="input input-bordered w-full"
-          />
-        </label>
-        <label class="form-control">
-          <span class="label"><span class="label-text font-semibold">Password</span></span>
-          <input
-            name="password"
-            type="password"
-            autocomplete="new-password"
-            minlength="12"
-            required
-            class="input input-bordered w-full"
-          />
-        </label>
-        <button type="submit" class="btn btn-primary w-full">Create account</button>
-      </form>
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-6">
+          <form method="post" action={~p"/register"} class="space-y-4">
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
 
-      <p class="mt-4 text-sm text-base-content/70">
-        Already have an account? <a href={~p"/login"} class="link link-primary">Login</a>.
-      </p>
-    </div>
+            <div class="form-control">
+              <span class="label">
+                <span class="label-text font-semibold">Username</span>
+              </span>
+              <input
+                id="username"
+                name="username"
+                value={@username}
+                autocomplete="username"
+                required
+                pattern="[a-zA-Z0-9_][a-zA-Z0-9_.-]{2,39}"
+                class="input input-bordered w-full font-mono"
+              />
+              <span class="label">
+                <span class="label-text-alt text-base-content/60">
+                  3–40 characters: letters, digits, <code>_</code>, <code>.</code>, <code>-</code>.
+                </span>
+              </span>
+            </div>
+
+            <div class="form-control">
+              <span class="label">
+                <span class="label-text font-semibold">Password</span>
+              </span>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autocomplete="new-password"
+                minlength="12"
+                required
+                class="input input-bordered w-full"
+              />
+              <span class="label">
+                <span class="label-text-alt text-base-content/60">At least 12 characters.</span>
+              </span>
+            </div>
+
+            <button type="submit" class="btn btn-primary w-full">
+              <.icon name="hero-user-plus-mini" class="size-5" /> Create account
+            </button>
+          </form>
+
+          <p class="text-sm leading-6 text-base-content/70">
+            Already have an account? <a
+              href={~p"/login"}
+              class="font-semibold text-primary hover:underline"
+            >Login</a>.
+          </p>
+        </div>
+      </section>
+    </section>
   </div>
 </main>
