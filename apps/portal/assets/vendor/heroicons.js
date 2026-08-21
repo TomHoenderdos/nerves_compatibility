@@ -3,7 +3,18 @@ const fs = require("fs")
 const path = require("path")
 
 module.exports = plugin(function({matchComponents, theme}) {
-  let iconsDir = path.join(__dirname, "../../deps/heroicons/optimized")
+  // Portal lives in an umbrella, so deps are fetched to the umbrella root, not
+  // to apps/portal/deps. The pre-umbrella path only still resolves on machines
+  // that have a stale apps/portal/deps lying around; on a clean checkout it
+  // does not exist and `mix assets.deploy` dies on ENOENT.
+  let iconsDir = [
+    path.join(__dirname, "../../../../deps/heroicons/optimized"),
+    path.join(__dirname, "../../deps/heroicons/optimized")
+  ].find(candidate => fs.existsSync(candidate))
+
+  if (!iconsDir) {
+    throw new Error("heroicons dep not found; run `mix deps.get` before building assets")
+  }
   let values = {}
   let icons = [
     ["", "/24/outline"],
