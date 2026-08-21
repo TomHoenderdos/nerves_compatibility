@@ -217,6 +217,8 @@ defmodule Portal.Builder do
       "--security-opt=no-new-privileges"
     ]
 
+    limits = resource_limits()
+
     mounts =
       List.flatten([
         ["--mount", "type=bind,source=#{work_dir},target=/work"],
@@ -237,7 +239,21 @@ defmodule Portal.Builder do
       "HEX_HOME=/hex-cache"
     ]
 
-    base ++ mounts ++ env ++ [image_ref(job)]
+    base ++ limits ++ mounts ++ env ++ [image_ref(job)]
+  end
+
+  # Buildroot cross-compiles will use every core they are given. On a host that
+  # shares the machine with other services, an unbounded build starves them, so
+  # deployments can cap what a single build may take. Unset means unbounded,
+  # which is the historical behaviour and stays the default.
+  defp resource_limits do
+    [{:cpus, "--cpus"}, {:memory, "--memory"}]
+    |> Enum.flat_map(fn {key, flag} ->
+      case config(key, nil) do
+        nil -> []
+        value -> [flag, to_string(value)]
+      end
+    end)
   end
 
   # Local images (no registry slash) use the tag directly; remote images use
