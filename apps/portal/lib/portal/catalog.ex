@@ -137,7 +137,13 @@ defmodule Portal.Catalog do
     |> Enum.map(fn {system_pkg, rows} ->
       total = length(rows)
       pass = Enum.count(rows, &(&1.status == :pass))
-      %{system_pkg: system_pkg, pass: pass, total: total, rate: if(total > 0, do: pass / total, else: 0.0)}
+
+      %{
+        system_pkg: system_pkg,
+        pass: pass,
+        total: total,
+        rate: if(total > 0, do: pass / total, else: 0.0)
+      }
     end)
     |> Enum.sort_by(& &1.system_pkg)
   end
@@ -151,6 +157,11 @@ defmodule Portal.Catalog do
     |> Ash.read!(domain: __MODULE__)
     |> Enum.filter(&(&1.overall_status in wanted and not is_nil(&1.finished_at)))
     |> Enum.sort_by(& &1.finished_at, {:desc, DateTime})
+    # One row per package. A package that gets re-checked often (jason, while
+    # the build pipeline was being tuned) would otherwise fill the whole list
+    # with its own history and hide every other package. Runs with no package
+    # keep their own key so they cannot collapse into each other.
+    |> Enum.uniq_by(&(&1.package_id || &1.id))
     |> Enum.take(limit)
     |> Enum.map(fn run ->
       %{
@@ -205,7 +216,8 @@ defmodule Portal.Catalog do
     |> Enum.filter(&(&1.status in [:fail, :error] and not is_nil(&1.failure_category)))
     |> Enum.group_by(& &1.failure_category)
     |> Enum.map(fn {category, rows} ->
-      {title, hint} = Map.get(@failure_meta, category, {category, "Build failures in this category."})
+      {title, hint} =
+        Map.get(@failure_meta, category, {category, "Build failures in this category."})
 
       entries =
         Enum.map(rows, fn r ->
@@ -251,10 +263,15 @@ defmodule Portal.Catalog do
     |> Enum.flat_map(fn pkg ->
       nc = pkg.native_components || %{}
       langs = [nc["nif_language"] | nc["port_languages"] || []] |> Enum.reject(&is_nil/1)
-      if langs == [], do: [{"Pure Elixir / none", pkg.name}], else: Enum.map(langs, &{&1, pkg.name})
+
+      if langs == [],
+        do: [{"Pure Elixir / none", pkg.name}],
+        else: Enum.map(langs, &{&1, pkg.name})
     end)
     |> Enum.group_by(fn {lang, _} -> lang end, fn {_, name} -> name end)
-    |> Enum.map(fn {language, names} -> %{language: language, packages: names |> Enum.uniq() |> length()} end)
+    |> Enum.map(fn {language, names} ->
+      %{language: language, packages: names |> Enum.uniq() |> length()}
+    end)
     |> Enum.sort_by(& &1.packages, :desc)
   end
 
