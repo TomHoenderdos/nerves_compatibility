@@ -72,14 +72,23 @@ work.
 
 Measured on jason, warm caches, 6-core Contabo:
 
-| config | wall clock | outcome |
-|---|---|---|
-| serial, `CPUS=3` | 15.5 min | all 4 pass |
-| `CONCURRENCY=2`, `CPUS=3` | 15.5 min | all 4 pass |
-| `CONCURRENCY=2`, `CPUS=5` | 11.9 min | all 4 pass |
+| config | wall clock |
+|---|---|
+| serial, `CPUS=3` | 15.5 min |
+| `CONCURRENCY=2`, `CPUS=3` | 15.5 min |
+| `CONCURRENCY=2`, `CPUS=5` | 11.9 min |
+| `CONCURRENCY=3`, `CPUS=5` | 4.5 min |
+| `CONCURRENCY=4`, `CPUS=5` | **3.2 min** |
+
+Every row is jason on the same host, all four systems passing, firmware sizes
+matching to within a few hundred bytes. The last two rows also carry the
+`deps.clean` fix below, which is most of the drop between 11.9 and 4.5: the
+cross-target clean was making every target recompile the package repeatedly
+even when nothing ran in parallel.
 
 Raising concurrency without raising `CPUS` buys nothing: the targets just split
-the same cap.
+the same cap. At `CONCURRENCY=4`/`CPUS=5` on a 6-core host, load peaked at 7.7
+and the co-tenant site's slowest request was 0.64s.
 
 One historical trap, fixed but worth knowing if it comes back. The determinism
 check used to force a rebuild with `mix deps.clean --build <pkg>`, and that task
