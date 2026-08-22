@@ -43,6 +43,35 @@ if portal_available? do
         socket_options: maybe_ipv6
   end
 
+  # Which Oban queues this node runs, e.g. "builds:1,ingest:2". Unset means the
+  # full set, so a single-node deploy needs nothing here.
+  #
+  # This is how the work splits across hosts: the web box runs the light queues,
+  # the build box runs `builds` and `ingest`, and Postgres is the only thing they
+  # share. `ingest` has to sit on the same host as `builds` because the two hand
+  # off through the run's scratch directory on local disk, not through the
+  # database.
+  parsed_queues =
+    case System.get_env("OBAN_QUEUES") do
+      nil ->
+        [builds: 1, ingest: 2, intake: 5, maintenance: 1]
+
+      queues ->
+        queues
+        |> String.split(",", trim: true)
+        |> Enum.map(fn pair ->
+          case String.split(pair, ":", parts: 2) do
+            [name, limit] ->
+              {String.to_atom(String.trim(name)), String.to_integer(String.trim(limit))}
+
+            _ ->
+              raise "OBAN_QUEUES entries must look like `name:limit`, got: #{inspect(pair)}"
+          end
+        end)
+    end
+
+  config :portal, Oban, queues: parsed_queues
+
   config :portal,
     orchestrator_scan_request_url: System.get_env("ORCHESTRATOR_SCAN_REQUEST_URL"),
     scan_request_shared_secret: System.get_env("SCAN_REQUEST_SHARED_SECRET"),
