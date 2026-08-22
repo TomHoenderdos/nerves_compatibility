@@ -18,7 +18,20 @@ config :portal, Oban,
   # give each host its own set. Config deep-merges keyword lists, so anything
   # named here would survive the runtime override and run on every node.
   queues: [],
-  plugins: [Oban.Plugins.Pruner]
+  plugins: [
+    Oban.Plugins.Pruner,
+    # Without this, a build node that dies mid-job leaves the job `executing`
+    # and its scan request `queued` forever, with no error anywhere. That was a
+    # remote possibility while everything ran on one host; with `builds` on a
+    # separate box reached over a WAN link it is a question of when.
+    #
+    # Rescuing is purely time-based, so `rescue_after` has to sit well above the
+    # slowest honest build or it would restart one that is still working. Warm
+    # builds land in minutes and a cold cache costs tens; two hours leaves room
+    # for a first-of-its-kind Nerves system and still catches a dead node the
+    # same morning.
+    {Oban.Plugins.Lifeline, rescue_after: :timer.hours(2)}
+  ]
 
 # Host-side Docker invocation for worker builds.
 # Runtime-overridable in config/runtime.exs.
