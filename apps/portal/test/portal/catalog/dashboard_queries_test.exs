@@ -64,4 +64,24 @@ defmodule Portal.Catalog.DashboardQueriesTest do
     native = Catalog.native_breakdown()
     assert Enum.any?(native, &(&1.language == "rust" and &1.packages == 1))
   end
+
+  test "recent_runs shows a package once, at its newest run" do
+    systems = %{"nerves_system_x86_64" => %{"status" => "pass"}}
+
+    for {version, finished} <- [
+          {"1.0.0", "2026-07-01T10:00:00Z"},
+          {"1.0.1", "2026-07-02T10:00:00Z"},
+          {"1.0.2", "2026-07-03T10:00:00Z"}
+        ] do
+      ingest("repeat", version, systems, nil, finished)
+    end
+
+    ingest("other", "9.0.0", systems, nil, "2026-07-04T10:00:00Z")
+
+    recent = Catalog.recent_runs(:pass, 10)
+
+    assert Enum.count(recent, &(&1.package == "repeat")) == 1
+    assert Enum.find(recent, &(&1.package == "repeat")).version == "1.0.2"
+    assert Enum.any?(recent, &(&1.package == "other"))
+  end
 end
