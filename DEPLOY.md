@@ -140,6 +140,40 @@ For one-time imports in another environment, run before removing the source file
 mix portal.import_overrides /path/to/package_metadata.json
 ```
 
+## Seeding the catalogue from upstream
+
+The upstream compatibility site has scanned a few thousand packages that this
+catalogue does not know about yet. `Portal.UpstreamBackfill` reads its
+`/packages` page, which ships the whole table as a `const ROWS` literal, and
+queues one scan per package.
+
+Run it against the *running* node, not with `eval`:
+
+```bash
+bin/portal rpc 'Portal.UpstreamBackfill.run(limit: 25) |> IO.inspect()'
+```
+
+`eval` starts the runtime without the applications, so `Oban.insert/1` has no
+instance to insert into and the call fails. `rpc` runs inside the node that is
+already serving traffic, where Oban is up.
+
+Start with a `:limit` and watch a handful through to `built` before dropping
+it. A full sweep is a few thousand builds; at one build at a time it runs for
+days, so it is worth knowing the pipeline is healthy first.
+
+Options:
+
+| option | default | |
+|---|---|---|
+| `:limit` | none | only queue the first N packages |
+| `:stagger_ms` | `1000` | spacing between jobs, keeping the sweep under hex.pm's rate limit |
+| `:include_placeholders` | `false` | also queue packages upstream lists but has not scanned |
+
+Each package becomes its own `intake` job, so the sweep survives a restart and
+retries individual failures rather than starting over. Requests are recorded
+with source `:backfill`, which carries Oban's lowest priority: a sweep this
+size never delays a request from a real user.
+
 ## Building the release
 
 There is no root-level release definition per app; the umbrella defines one
