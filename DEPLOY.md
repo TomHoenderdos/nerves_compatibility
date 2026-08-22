@@ -59,31 +59,41 @@ resolved by the host daemon and must be a path the daemon can see:
 | `NCC_BUILD_CPUS` | Cap cores per build, e.g. `3`. Unset means unbounded |
 | `NCC_BUILD_MEMORY` | Cap memory per build, e.g. `4g`. Unset means unbounded |
 | `NCC_BUILD_USER` | `--user` for the build container. Unset means our own uid:gid. Set `0:0` on a rootless daemon, where our uid is already 0 inside the namespace |
-| `NCC_BUILD_CONCURRENCY` | How many Nerves targets one build may compile at once. Unset means 1 (serial). Raise it together with `NCC_BUILD_CPUS`: the targets share that cap, and the win comes from overlapping the single-threaded stretches (release assembly, squashfs, fwup). **Do not go above 2.** See the note below |
+| `NCC_BUILD_CONCURRENCY` | How many Nerves targets one build may compile at once. Unset means 1 (serial). Raise it together with `NCC_BUILD_CPUS`: the targets share that cap, and the win comes from overlapping the single-threaded stretches (release assembly, squashfs, fwup). Capped at 4 in code. See the note below |
 
-### Why concurrency stops at 2
+### Picking a concurrency
 
-Each target gets its own `MIX_BUILD_PATH` and `MIX_DEPS_PATH`, but all targets
-still share one project directory (`mix.lock`, `.nerves/`) and one Hex cache.
-Two targets tolerate that; three do not. Measured on a 6-core host with
-`NCC_BUILD_CPUS=5`, a run at concurrency 3 finished `mix firmware` for
-`nerves_system_mangopi_mq_pro` and then failed the `mix release` pass with:
+Targets each get their own `MIX_BUILD_PATH` and `MIX_DEPS_PATH`, so the
+firmware builds do not share compiled state. They do share the project
+directory and the Hex cache, so this is bounded by the host, not by
+correctness: `@max_build_concurrency` in `NccWorker.Worker` caps it at 4, and
+anything above that leaves a 6-core machine with nothing for the rest of its
+work.
+
+Measured on jason, warm caches, 6-core Contabo:
+
+| config | wall clock | outcome |
+|---|---|---|
+| serial, `CPUS=3` | 15.5 min | all 4 pass |
+| `CONCURRENCY=2`, `CPUS=3` | 15.5 min | all 4 pass |
+| `CONCURRENCY=2`, `CPUS=5` | 11.9 min | all 4 pass |
+
+Raising concurrency without raising `CPUS` buys nothing: the targets just split
+the same cap.
+
+One historical trap, fixed but worth knowing if it comes back. The determinism
+check used to force a rebuild with `mix deps.clean --build <pkg>`, and that task
+globs `Path.dirname(build_path)/*/lib/<app>` — with every target's build dir
+under one `_build/`, it deleted the package from the *sibling* targets as well.
+Concurrently that landed between a sibling's compile and its release step:
 
 ```
-* Cleaning jason
 Unchecked dependencies for environment prod:
 * jason (Hex package)
   could not find an app file at "_build/mangopi_mq_pro/lib/jason/ebin/jason.app"
-** (Mix) Can't continue due to errors on dependencies
 ```
 
-A sibling target re-fetching the package wiped the built artifact out from
-under this one. Until the project directory is per-target too, 2 is the
-supported ceiling.
-
-Timings on that host, same package, warm caches: serial with `CPUS=3` took
-15.5 min, `CONCURRENCY=2` with `CPUS=5` took 11.9 min. Raising concurrency
-without raising `CPUS` bought nothing: the targets just split the same cap.
+The worker now removes its own `<build_path>/lib/<pkg>` directly instead.
 
 The root `config/runtime.exs` owns runtime config. Do not add child-app `runtime.exs` files under `apps/portal/config/`; they are not loaded in an umbrella.
 
