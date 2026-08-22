@@ -237,12 +237,30 @@ local disk and the database keeps only metadata, so a build node fills its own
 are named by their SHA256 and therefore immutable, so a periodic pull is enough:
 
 ```bash
-rsync -a --ignore-existing builder:/var/lib/ncc/artifacts/ /var/lib/ncc/artifacts/
+rsync -a --ignore-existing -e ssh root@BUILD_HOST:/ /var/lib/ncc/artifacts/
 ```
 
-Run that *from* the web node. Pulling rather than pushing keeps the credential
-on the trusted side: the build node executes unreviewed package code, so it
-should never hold a key into the machine serving the site.
+Run that *from* the web node, on a timer. Pulling rather than pushing keeps the
+credential on the trusted side: the build node executes unreviewed package code,
+so it should never hold a key into the machine serving the site.
+
+Restrict the key it uses on the build host, in `~/.ssh/authorized_keys`:
+
+```
+command="rrsync -ro /var/lib/ncc/artifacts",restrict ssh-rsa AAAA...
+```
+
+`rrsync` ships with rsync and confines the connection to that one directory,
+read-only. That is why the source path above is `:/` and not the real path: the
+remote side is already chrooted to the artifact store, so an absolute path would
+resolve underneath it. Verify both halves after installing the key. The pull
+must work, and
+
+```bash
+ssh root@BUILD_HOST id
+```
+
+must be refused with `SSH_ORIGINAL_COMMAND does not run rsync`.
 
 ## Public endpoints
 
