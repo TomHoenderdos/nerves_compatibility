@@ -46,6 +46,7 @@ Configure these environment variables for the Phoenix service:
 | `PORTAL_SEED_ADMIN_PASSWORD` | Optional shared password for seeded admins without `:password` |
 | `TURNSTILE_SECRET_KEY` | Optional server-side Turnstile verification secret |
 | `NCC_ARTIFACT_STORE` | Optional artifact blob store path; defaults to `~/.ncc-artifacts` |
+| `OBAN_QUEUES` | Which queues this node runs, e.g. `builds:1,ingest:2`. Unset means all of them. See [Splitting the build host](#splitting-the-build-host) |
 
 Build-host settings. Every path below is passed to `docker run --mount source=`, so it is
 resolved by the host daemon and must be a path the daemon can see:
@@ -199,6 +200,49 @@ They are split so a database-side ingest failure retries the database write
 instead of the multi-target firmware build that produced it. A scratch dir that
 outlives its run therefore means an ingest that never completed: check the
 `ingest` queue before deleting it by hand.
+
+## Splitting the build host
+
+Builds are the expensive part and they do not need to sit next to the web
+server. `OBAN_QUEUES` lets one deploy run as two nodes against one database:
+
+| | web node | build node |
+| --- | --- | --- |
+| `OBAN_QUEUES` | `intake:5,maintenance:1` | `builds:1,ingest:2` |
+| `DATABASE_URL` | local Postgres | the same Postgres, over the private network |
+| Docker daemon | not used | runs the worker image |
+| Apache/TLS | yes | no, firewall it to the private interface |
+
+Both nodes run the same release. Oban coordinates through Postgres rows, not
+through BEAM distribution, so the nodes never need to see each other and no
+epmd port has to be opened between them. Adding a third build box is the same
+env file again.
+
+Three things decide where a queue can live:
+
+**`ingest` must sit with `builds`.** They hand off through the run's scratch
+directory on local disk. Put `ingest` on the web node and it finds nothing to
+read, then cancels the request with `build output missing`.
+
+**Latency, not CPU, decides the rest.** A build is minutes of compilation and a
+handful of queries, so a slow link to the database costs nothing. Query-chatty
+work is the opposite: at 23ms round trip a job doing 50 queries spends over a
+second waiting. Measure the link before moving a queue that talks to the
+database more than it computes.
+
+**Artifacts land where `ingest` runs.** `Portal.ArtifactStore` writes blobs to
+local disk and the database keeps only metadata, so a build node fills its own
+`NCC_ARTIFACT_STORE` while the web node serves
+`/api/precompiled/files/:sha256` from a directory that never sees them. Blobs
+are named by their SHA256 and therefore immutable, so a periodic pull is enough:
+
+```bash
+rsync -a --ignore-existing builder:/var/lib/ncc/artifacts/ /var/lib/ncc/artifacts/
+```
+
+Run that *from* the web node. Pulling rather than pushing keeps the credential
+on the trusted side: the build node executes unreviewed package code, so it
+should never hold a key into the machine serving the site.
 
 ## Public endpoints
 

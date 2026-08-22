@@ -14,7 +14,10 @@ config :portal,
 
 config :portal, Oban,
   repo: Portal.Repo,
-  queues: [builds: 1, ingest: 2, intake: 5, maintenance: 1],
+  # Deliberately empty: `config/runtime.exs` owns the queue list so a deploy can
+  # give each host its own set. Config deep-merges keyword lists, so anything
+  # named here would survive the runtime override and run on every node.
+  queues: [],
   plugins: [Oban.Plugins.Pruner]
 
 # Host-side Docker invocation for worker builds.
