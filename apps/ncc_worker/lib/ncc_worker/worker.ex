@@ -76,7 +76,7 @@ defmodule NccWorker.Worker do
 
   @default_timeout_sec 600
   @default_log_tail_bytes 4096
-  @max_build_concurrency 2
+  @max_build_concurrency 4
 
   @doc """
   Runs the worker evaluation for a single package.
@@ -434,11 +434,10 @@ defmodule NccWorker.Worker do
   # and stays the default: the limit that matters is the CPU cap on the whole
   # container, which the deployment knows about and this code does not.
   #
-  # Capped at @max_build_concurrency. Targets get their own _build and deps
-  # trees but still share one project dir (mix.lock, .nerves) and one Hex
-  # cache. Three at once loses that race: a sibling re-fetching a package
-  # cleans out an artifact another target has already built, and the second
-  # `mix release` pass dies with "could not find an app file".
+  # Capped at @max_build_concurrency, which is about the machine rather than
+  # correctness: targets share one project dir and one Hex cache, and past a
+  # handful of concurrent Buildroot builds the host stops being usable for
+  # anything else.
   defp build_concurrency do
     case Integer.parse(System.get_env("NCC_BUILD_CONCURRENCY", "1")) do
       {n, _} when n > 0 -> min(n, @max_build_concurrency)
@@ -542,7 +541,7 @@ defmodule NccWorker.Worker do
        ) do
     with :ok <- run_firmware_mix(project_dir, env, log_file),
          {:ok, hash1} <- hash_package_artifacts(build_path, package_name),
-         :ok <- run_mix(["deps.clean", "--build", package_name], project_dir, env, log_file),
+         :ok <- clean_package_build(build_path, package_name),
          :ok <- run_release_mix(project_dir, env, log_file),
          {:ok, hash2} <- hash_package_artifacts(build_path, package_name) do
       duration = System.monotonic_time(:second) - start_time
@@ -582,6 +581,21 @@ defmodule NccWorker.Worker do
 
   defp run_mix(args, project_dir, env, log_file) do
     run_cmd("mix", args, project_dir, env, log_file)
+  end
+
+  # Drop this target's compiled copy of the package so the second pass has to
+  # rebuild it. Deliberately not `mix deps.clean --build`: that task globs
+  # `Path.dirname(build_path)/*/lib/<app>`, so with every target's build dir
+  # under one `_build/` it wipes the package out of the *sibling* targets too.
+  # Concurrently, that lands between a sibling's compile and its release step
+  # and kills it with "could not find an app file at
+  # _build/<target>/lib/<pkg>/ebin/<pkg>.app". Removing our own directory is
+  # what the task would have done for us anyway.
+  defp clean_package_build(build_path, package_name) do
+    case build_path |> Path.join("lib/#{package_name}") |> File.rm_rf() do
+      {:ok, _} -> :ok
+      {:error, reason, path} -> {:error, "could not clean #{path}: #{inspect(reason)}"}
+    end
   end
 
   # Assembling a firmware image runs mksquashfs, which sets ownership on the
