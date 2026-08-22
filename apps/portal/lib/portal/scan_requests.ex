@@ -166,6 +166,9 @@ defmodule Portal.ScanRequests do
   defp priority(:github_repo), do: 1
   defp priority(:anonymous_turnstile), do: 3
   defp priority(:anonymous_manual), do: 3
+  # A sweep of the whole upstream catalogue must never delay a real request, so
+  # it takes the lowest priority Oban offers.
+  defp priority(:backfill), do: 9
   defp priority(_source), do: 6
 
   defp version_resolver do
