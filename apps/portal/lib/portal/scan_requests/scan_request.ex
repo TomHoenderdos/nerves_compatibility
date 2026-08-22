@@ -76,7 +76,10 @@ defmodule Portal.ScanRequests.ScanRequest do
     attribute :source, :atom do
       allow_nil?(false)
       public?(true)
-      constraints(one_of: [:hex_owner, :github_repo, :anonymous_turnstile, :anonymous_manual])
+
+      constraints(
+        one_of: [:hex_owner, :github_repo, :anonymous_turnstile, :anonymous_manual, :backfill]
+      )
     end
 
     attribute :status, :atom do
