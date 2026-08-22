@@ -185,6 +185,21 @@ produces a kernel-level crash during boot rather than a clear error.
 user: the release regenerates `vm.args` and `runtime.exs` output on every boot
 and needs somewhere to put them.
 
+The env file needs the same care, one level up. `deploy.sh` runs the migration
+as the service user, and sourcing a file means traversing its directory, so both
+have to be reachable by that user:
+
+```bash
+install -d -o root -g nerves-compat -m 0750 /etc/ncc-portal
+install -o root -g nerves-compat -m 0640 portal.env /etc/ncc-portal/portal.env
+```
+
+A directory left at `0700 root:root` fails in a way that is easy to misread. The
+service still starts, because systemd reads `EnvironmentFile` as root before it
+drops privileges, so only the deploy script reports `Permission denied`, and it
+does so after building the release but before restarting into it. The unit keeps
+reporting `active` on the previous build.
+
 Ensure the service user can talk to Docker and can read/write the artifact store and the shared caches (`~/.ncc-nerves-cache`, `~/.ncc-hex-cache`, or the configured equivalents).
 
 ## Build pipeline
