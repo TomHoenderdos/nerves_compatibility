@@ -69,14 +69,98 @@ defmodule NccWorker.BuildCacheTest do
     end
   end
 
-  describe "plan/5" do
+  describe "plan/6" do
     test "is disabled when no cache is mounted" do
-      assert BuildCache.plan("/nonexistent", "/nonexistent/_build", "rpi4", [], []) == :disabled
+      assert BuildCache.plan(
+               "/nonexistent",
+               "/nonexistent/deps",
+               "/nonexistent/_build",
+               "rpi4",
+               [],
+               []
+             ) == :disabled
     end
 
     test "restore and store are no-ops when disabled" do
       assert BuildCache.restore(:disabled) == {0, 0}
       assert BuildCache.store(:disabled) == 0
+    end
+  end
+
+  describe "dep_target_agnostic?/2" do
+    setup do
+      deps = Path.join(System.tmp_dir!(), "ncc-deps-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(deps) end)
+      {:ok, deps: deps}
+    end
+
+    defp write_dep(deps, name, files) do
+      Enum.each(files, fn {path, contents} ->
+        full = Path.join([deps, name, path])
+        File.mkdir_p!(Path.dirname(full))
+        File.write!(full, contents)
+      end)
+    end
+
+    test "clears a plain Elixir dependency", ctx do
+      write_dep(ctx.deps, "jason", [
+        {"mix.exs", "defmodule X do end"},
+        {"lib/jason.ex", "defmodule Jason do end"}
+      ])
+
+      assert BuildCache.dep_target_agnostic?(ctx.deps, "jason")
+    end
+
+    test "holds out a dependency that is missing entirely", ctx do
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "absent")
+    end
+
+    test "holds out anything Nerves-owned by name", ctx do
+      write_dep(ctx.deps, "nerves_system_rpi4", [{"mix.exs", "defmodule X do end"}])
+
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "nerves_system_rpi4")
+    end
+
+    test "holds out a native build, by directory or by makefile", ctx do
+      write_dep(ctx.deps, "with_c", [{"mix.exs", "x"}, {"c_src/port.c", "int main(){}"}])
+      write_dep(ctx.deps, "with_make", [{"mix.exs", "x"}, {"Makefile", "all:"}])
+
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "with_c")
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "with_make")
+    end
+
+    test "holds out a native build declared only in mix.exs", ctx do
+      write_dep(ctx.deps, "porcelain", [
+        {"mix.exs", "compilers: [:elixir_make] ++ Mix.compilers()"}
+      ])
+
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "porcelain")
+    end
+
+    test "holds out a rebar dependency with port specs", ctx do
+      write_dep(ctx.deps, "reb", [
+        {"rebar.config", "{port_specs, [{\"priv/x.so\", [\"c_src/*.c\"]}]}."}
+      ])
+
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "reb")
+    end
+
+    test "holds out a dependency that reads the target at compile time", ctx do
+      write_dep(ctx.deps, "peeker", [
+        {"mix.exs", "defmodule X do end"},
+        {"lib/peeker.ex", "defmodule Peeker do @t Mix.target() end"}
+      ])
+
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "peeker")
+    end
+
+    test "does not confuse a beam file for a source read", ctx do
+      write_dep(ctx.deps, "compiled", [
+        {"mix.exs", "defmodule X do end"},
+        {"ebin/Elixir.Compiled.beam", "MIX_TARGET"}
+      ])
+
+      assert BuildCache.dep_target_agnostic?(ctx.deps, "compiled")
     end
   end
 
