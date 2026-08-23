@@ -149,10 +149,25 @@ defmodule Portal.ScanRequests do
   defp maybe_enqueue_accepted(result, _requested_status), do: result
 
   defp enqueue_build(%ScanRequest{} = request, source, admin_user \\ nil) do
-    with {:ok, version} <- version_resolver().latest_version(request.package_name),
-         {:ok, _job} <- insert_build_job(request, version, source),
-         {:ok, request} <- set_status(request, :queued) do
-      maybe_mark_admin_approval(request, admin_user)
+    case version_resolver().latest_version(request.package_name) do
+      {:ok, version} ->
+        with {:ok, _job} <- insert_build_job(request, version, source),
+             {:ok, request} <- set_status(request, :queued) do
+          maybe_mark_admin_approval(request, admin_user)
+        end
+
+      {:error, reason} when reason in [:unknown_package, :unknown_package_version] ->
+        # The row is committed before we ever ask hex whether the package
+        # exists, and `open_request_for_package/1` matches only open statuses.
+        # Leaving it `:accepted` stranded it there for good: the caller's
+        # `{:cancel, reason}` tidied up the job but not the row, and every later
+        # request for the same name short-circuited to the dead one and was
+        # never scanned. Close it out here instead.
+        _ = set_status(request, :rejected, error_reason: "package not found on hex.pm")
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
