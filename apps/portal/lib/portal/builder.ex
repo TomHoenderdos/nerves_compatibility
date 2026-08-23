@@ -280,7 +280,48 @@ defmodule Portal.Builder do
       "TAR_OPTIONS=--no-same-owner"
     ]
 
-    base ++ limits ++ mounts ++ env ++ concurrency_env() ++ [image_ref(job)]
+    base ++ limits ++ mounts ++ env ++ cpu_env() ++ concurrency_env() ++ [image_ref(job)]
+  end
+
+  # `--cpus` is a CFS quota, not a core assignment: `nproc` inside the container
+  # still reports every core the host has. Nothing in the build reads the quota,
+  # so each container started a BEAM with one scheduler per *host* core, and BEAM
+  # schedulers busy-wait by default. Five concurrent builds on six cores left the
+  # host at 21% system time with a run queue of 20: a fifth of the machine spent
+  # spinning and being throttled instead of compiling. Tell the runtimes how much
+  # CPU they actually have.
+  #
+  # ERL_FLAGS covers the worker's own VM and any `erl` it starts; mix and elixir
+  # read ELIXIR_ERL_OPTIONS instead, and that is where the compile parallelism
+  # lives. MAKEFLAGS caps the C builds that NIF-carrying deps kick off.
+  defp cpu_env do
+    case cpu_quota() do
+      nil ->
+        []
+
+      quota ->
+        beam_flags = "+S #{quota}:#{quota} +sbwt none +sbwtdcpu none +sbwtdio none"
+
+        [
+          "-e",
+          "ERL_FLAGS=#{beam_flags}",
+          "-e",
+          "ELIXIR_ERL_OPTIONS=#{beam_flags}",
+          "-e",
+          "MAKEFLAGS=-j#{quota}"
+        ]
+    end
+  end
+
+  # Whole cores only, and never zero: a fractional cap still needs at least one
+  # scheduler to make progress.
+  defp cpu_quota do
+    with value when not is_nil(value) <- config(:cpus, nil),
+         {cpus, _rest} <- Float.parse(to_string(value)) do
+      max(1, trunc(cpus))
+    else
+      _ -> nil
+    end
   end
 
   # How many targets the worker may build at once inside one container. Unset
