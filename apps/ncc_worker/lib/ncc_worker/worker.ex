@@ -570,10 +570,16 @@ defmodule NccWorker.Worker do
   # what they did. `mix deps.get` used to compile the whole tree by way of
   # nerves_bootstrap; since it stopped doing that, `deps_sec` is fetch and unpack
   # only and the tree compiles inside `mix firmware`. So `firmware_sec` is now
-  # compile cost plus image assembly, and it is the compile part that dominates
-  # by two orders of magnitude: measured per target, assembling the rootfs,
-  # squashfs and image takes 18 seconds against 8 to 25 minutes of compiling.
-  # That is the ratio that made the build cache worth its correctness risk.
+  # compile cost plus image assembly.
+  #
+  # Compiling dominates in aggregate, which is what made the build cache worth
+  # its correctness risk, but the ratio is very target-dependent and the earlier
+  # "18 seconds of assembly" figure here was an x86_64-only measurement. Timing
+  # the gap between the last beam written and the .fw appearing gives assembly
+  # costs of 115 to 421 seconds on the ARM targets. For a small package that is
+  # most of the build: bencoding on rpi4 was 42s of compiling against 176s of
+  # assembly. Caching dep compiles therefore cannot help those builds much, and
+  # a flat firmware_sec hides which half a given package is paying for.
   @spec run_firmware(map(), integer(), String.t()) :: map()
   defp run_firmware(prep, log_tail_bytes, package_name) do
     %{
