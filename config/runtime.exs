@@ -47,10 +47,31 @@ if portal_available? do
           value -> String.to_integer(value)
         end
 
+      # DBConnection decides the pool is unhealthy when a checkout waits longer
+      # than queue_target, and then starts dropping queued requests outright. The
+      # 50ms default assumes Postgres is on the same box; across the tailnet a
+      # single round trip already costs more than that, so the pool looks
+      # permanently sick and drops work that was only waiting its turn. That
+      # surfaced as `connection not available and request was dropped from queue`
+      # once the checkout-hold bug above stopped masking it.
+      queue_target =
+        case System.get_env("PORTAL_DATABASE_QUEUE_TARGET") do
+          nil -> 500
+          value -> String.to_integer(value)
+        end
+
+      queue_interval =
+        case System.get_env("PORTAL_DATABASE_QUEUE_INTERVAL") do
+          nil -> 5_000
+          value -> String.to_integer(value)
+        end
+
       config :portal, Portal.Repo,
         url: url,
         pool_size: repo_pool_size,
         timeout: repo_timeout,
+        queue_target: queue_target,
+        queue_interval: queue_interval,
         socket_options: maybe_ipv6
   end
 
