@@ -122,6 +122,7 @@ if portal_available? do
     scratch_root: System.get_env("NCC_SCRATCH_ROOT"),
     nerves_cache: System.get_env("NCC_NERVES_CACHE"),
     hex_cache: System.get_env("NCC_HEX_CACHE"),
+    build_cache: System.get_env("NCC_BUILD_CACHE"),
     cpus: System.get_env("NCC_BUILD_CPUS"),
     memory: System.get_env("NCC_BUILD_MEMORY"),
     build_concurrency: System.get_env("NCC_BUILD_CONCURRENCY"),
