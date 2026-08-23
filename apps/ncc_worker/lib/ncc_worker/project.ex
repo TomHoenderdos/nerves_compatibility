@@ -34,6 +34,15 @@ defmodule NccWorker.Project do
   Adds the target package to the project by editing mix.exs and running
   `mix deps.get`.
 
+  `env` is not optional on purpose. nerves_bootstrap hooks `deps.get` and
+  compiles the whole dependency tree there, because it has to load every dep to
+  resolve Nerves artifacts. With no env that compile runs in `MIX_ENV=dev` into
+  `_build/dev`, which nothing downstream ever reads: the host build uses
+  `_build/host` in `:prod` and each target its own `_build/<target>`. Measured on
+  a project with `ash` as its only dep, that threw away 393 seconds and 2106
+  beam files per run. Handing in the host build's env makes the same compile
+  land where the host stage will pick it up.
+
   Note: we deliberately avoid `mix igniter.install`. That command temporarily
   injects igniter into mix.exs with `only: [:dev, :test]`, which fails with
   "Dependencies have diverged" whenever the target package depends on igniter
@@ -51,14 +60,14 @@ defmodule NccWorker.Project do
     - {:ok, :added} - Package was added successfully
     - {:error, reason} - Failed to add package
   """
-  @spec add_package(String.t(), map()) :: {:ok, :added} | {:error, term()}
-  def add_package(project_dir, package) do
+  @spec add_package(String.t(), map(), keyword() | list()) :: {:ok, :added} | {:error, term()}
+  def add_package(project_dir, package, env) do
     mix_exs_path = Path.join(project_dir, "mix.exs")
 
     with {:ok, content} <- File.read(mix_exs_path),
          {:ok, new_content} <- inject_dep(content, package),
          :ok <- File.write(mix_exs_path, new_content),
-         :ok <- run_deps_get(project_dir) do
+         :ok <- run_deps_get(project_dir, env) do
       {:ok, :added}
     end
   end
@@ -90,9 +99,9 @@ defmodule NccWorker.Project do
   defp dep_tuple(%{name: name}),
     do: ~s[{:#{name}, ">= 0.0.0"}]
 
-  @spec run_deps_get(String.t()) :: :ok | {:error, term()}
-  defp run_deps_get(project_dir) do
-    case System.cmd("mix", ["deps.get"], cd: project_dir, stderr_to_stdout: true) do
+  @spec run_deps_get(String.t(), list()) :: :ok | {:error, term()}
+  defp run_deps_get(project_dir, env) do
+    case System.cmd("mix", ["deps.get"], cd: project_dir, env: env, stderr_to_stdout: true) do
       {_, 0} -> :ok
       {error, _} -> {:error, {:deps_get_failed, error}}
     end

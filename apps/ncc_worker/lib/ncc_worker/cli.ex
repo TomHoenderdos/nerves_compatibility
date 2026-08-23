@@ -62,7 +62,12 @@ defmodule NccWorker.CLI do
          {:ok, work_dir} <- get_work_dir(input),
          {:ok, package} <- get_package(input),
          {:ok, project_dir} <- Project.create(work_dir, package, nil),
-         {:ok, _} <- Project.add_package(project_dir, package) do
+         {:ok, _} <-
+           Project.add_package(project_dir, package, [
+             {"MIX_BUILD_PATH", Path.join([project_dir, "_build", "host"])},
+             {"MIX_DEPS_PATH", Path.join([project_dir, "deps"])},
+             {"MIX_ENV", "prod"}
+           ]) do
       IO.puts("Setup complete. Project ready in #{project_dir}")
       IO.puts("Run: cd proj && MIX_TARGET=<target> mix firmware")
       :ok

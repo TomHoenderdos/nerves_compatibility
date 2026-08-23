@@ -152,7 +152,7 @@ defmodule NccWorker.Worker do
       else
         with {:ok, project_dir} <-
                Project.create(paths.work_dir, input.package, input[:systems_override]),
-             {:ok, _} <- Project.add_package(project_dir, input.package),
+             {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
              :ok <- LockPolicy.validate(project_dir) do
           systems = discover_systems(project_dir, input[:systems_filter])
 
@@ -744,19 +744,25 @@ defmodule NccWorker.Worker do
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason), do: inspect(reason)
 
+  # Shared with `Project.add_package/3`, and that sharing is the point. The first
+  # `mix deps.get` already compiles the whole tree by way of nerves_bootstrap, so
+  # it has to write into the same build path this stage reads, or the work is
+  # done twice: once into `_build/dev` that nobody reads, once here.
+  @spec host_env(String.t()) :: [{String.t(), String.t()}]
+  defp host_env(project_dir) do
+    [
+      {"MIX_BUILD_PATH", Path.join([project_dir, "_build", "host"])},
+      {"MIX_DEPS_PATH", Path.join([project_dir, "deps"])},
+      {"MIX_ENV", "prod"}
+    ]
+  end
+
   @spec compile_host(String.t(), String.t(), integer()) :: map()
   defp compile_host(project_dir, output_dir, log_tail_bytes) do
     log_file = Path.join([output_dir, "logs", "host.log"])
     start_time = System.monotonic_time(:second)
 
-    build_path = Path.join([project_dir, "_build", "host"])
-    deps_path = Path.join([project_dir, "deps"])
-
-    env = [
-      {"MIX_BUILD_PATH", build_path},
-      {"MIX_DEPS_PATH", deps_path},
-      {"MIX_ENV", "prod"}
-    ]
+    env = host_env(project_dir)
 
     case run_mix(["deps.get"], project_dir, env, log_file) do
       :ok ->
