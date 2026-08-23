@@ -28,6 +28,7 @@ defmodule Portal.Catalog.SystemResult do
         :system_version,
         :status,
         :firmware_size_bytes,
+        :duration_sec,
         :hex_version_tested,
         :beam_scan,
         :dependency_scans,
@@ -41,6 +42,7 @@ defmodule Portal.Catalog.SystemResult do
       accept([
         :status,
         :firmware_size_bytes,
+        :duration_sec,
         :hex_version_tested,
         :beam_scan,
         :dependency_scans,
@@ -70,6 +72,14 @@ defmodule Portal.Catalog.SystemResult do
     end
 
     attribute :firmware_size_bytes, :integer do
+      public?(true)
+    end
+
+    # The worker has always reported this and nobody stored it, which left the
+    # only per-target cost signal on the floor: a run compiles the same
+    # dependency tree once per system, so knowing which system is expensive is
+    # the whole basis for deciding what to cache or drop.
+    attribute :duration_sec, :float do
       public?(true)
     end
 

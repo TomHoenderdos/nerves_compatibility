@@ -62,6 +62,11 @@ defmodule Portal.Catalog.IngestionTest do
     assert statuses["nerves_system_x86_64"] == :fail
     assert statuses["host"] == :pass
 
+    # Per-system duration is the only signal that says which target costs what.
+    durations = Map.new(system_results, &{&1.system_pkg, &1.duration_sec})
+    assert durations["nerves_system_rpi4"] == 245.3
+    assert durations["host"] == 5.0
+
     # Artifact registered + blob moved into the store
     artifacts = Ash.read!(Artifact, domain: Portal.Catalog)
     assert Enum.any?(artifacts, &(&1.sha256 == sha))
