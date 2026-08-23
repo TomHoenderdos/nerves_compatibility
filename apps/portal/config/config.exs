@@ -19,7 +19,13 @@ config :portal, Oban,
   # named here would survive the runtime override and run on every node.
   queues: [],
   plugins: [
-    Oban.Plugins.Pruner,
+    # The 60s default deletes a completed job before anyone can look at it. That
+    # made the one measurement this pipeline actually needs impossible: how long
+    # a build took. `catalog_runs` records only when a run landed, and
+    # `started_at` is never written, so `attempted_at`/`completed_at` on the job
+    # row is the sole source of per-build duration. At roughly ten builds an
+    # hour, six hours of history is a few hundred rows.
+    {Oban.Plugins.Pruner, max_age: :timer.hours(6)},
     # Without this, a build node that dies mid-job leaves the job `executing`
     # and its scan request `queued` forever, with no error anywhere. That was a
     # remote possibility while everything ran on one host; with `builds` on a
