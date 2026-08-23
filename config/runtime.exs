@@ -37,9 +37,20 @@ if portal_available? do
     url ->
       maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
 
+      # The build box talks to Postgres across a ~80ms tailnet link while five
+      # buildroot compiles fight for its six cores. DBConnection's 15s default
+      # kills a connection that is merely slow, which surfaces as
+      # `tcp recv: closed` rather than as a timeout.
+      repo_timeout =
+        case System.get_env("PORTAL_DATABASE_TIMEOUT") do
+          nil -> 60_000
+          value -> String.to_integer(value)
+        end
+
       config :portal, Portal.Repo,
         url: url,
         pool_size: repo_pool_size,
+        timeout: repo_timeout,
         socket_options: maybe_ipv6
   end
 

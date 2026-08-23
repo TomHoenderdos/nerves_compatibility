@@ -3,7 +3,7 @@ defmodule Portal.Catalog.Ingestion do
   Ingests a parsed worker `result.json` into the `Portal.Catalog` domain.
 
   The builder Oban job is the only writer of catalog data. One successful build
-  becomes, in a single transaction:
+  becomes:
 
     * an upserted `Package` (by name; refreshes `latest_version`/`last_run_at`)
     * one `Run` (the envelope of `result.json`)
@@ -13,6 +13,9 @@ defmodule Portal.Catalog.Ingestion do
 
   `overall_status` is derived from the per-system statuses (or a top-level
   `forced_status` when the worker emitted one).
+
+  Blobs are moved on disk *before* the transaction opens; only the row inserts
+  run inside it. See `ingest/2`.
   """
 
   require Logger
@@ -22,6 +25,11 @@ defmodule Portal.Catalog.Ingestion do
   alias Portal.Repo
 
   @domain Portal.Catalog
+
+  # An ingest writes a handful of rows, but each one crosses a ~80ms tailnet
+  # link from the build box to Postgres. DBConnection's 15s default leaves no
+  # headroom for a loaded builder; 60s does, without hiding a real hang.
+  @transaction_timeout 60_000
 
   @type ingest_opts :: %{
           required(:run_id) => String.t(),
@@ -33,19 +41,34 @@ defmodule Portal.Catalog.Ingestion do
 
   @doc """
   Ingest a parsed `result.json` map. Returns `{:ok, run}` or `{:error, reason}`.
-  Runs entirely inside one DB transaction.
+
+  Two phases. Blobs are moved out of `files_dir` into the artifact store first,
+  with no database connection held; the rows they produce are then written in
+  one transaction.
+
+  Both phases used to share the transaction. Moving the blobs costs a `mkdir` +
+  `stat` + `rename` + `chmod` per file, on the order of a thousand files per
+  system and four systems per run, on a box already saturated by buildroot. That
+  ran past DBConnection's 15s checkout limit, so DBConnection killed the
+  connection out from under the ingest and every large package failed with
+  `tcp recv: closed`. Filesystem work does not belong in a transaction.
   """
   @spec ingest(map(), ingest_opts()) :: {:ok, Run.t()} | {:error, term()}
   def ingest(result, opts) when is_map(result) do
-    Repo.transaction(fn ->
-      case do_ingest(result, opts) do
-        {:ok, run} -> run
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
+    staged = stage_artifacts(Map.get(result, "systems", %{}), opts.files_dir)
+
+    Repo.transaction(
+      fn ->
+        case do_ingest(result, opts, staged) do
+          {:ok, run} -> run
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end,
+      timeout: @transaction_timeout
+    )
   end
 
-  defp do_ingest(result, opts) do
+  defp do_ingest(result, opts, staged) do
     package_info = Map.get(result, "package", %{})
     package_name = package_info["name"] || raise "result.json missing package.name"
     version = package_info["version"] || "unknown"
@@ -56,7 +79,7 @@ defmodule Portal.Catalog.Ingestion do
     with {:ok, package} <- upsert_package(package_name, package_info, finished_at),
          {:ok, run} <-
            create_run(result, opts, package.id, version, overall, finished_at),
-         :ok <- create_system_results(systems, run.id, version, opts.files_dir) do
+         :ok <- create_system_results(systems, run.id, version, staged) do
       {:ok, run}
     end
   end
@@ -89,16 +112,16 @@ defmodule Portal.Catalog.Ingestion do
     |> Ash.create(domain: @domain)
   end
 
-  defp create_system_results(systems, run_id, version, files_dir) do
+  defp create_system_results(systems, run_id, version, staged) do
     Enum.reduce_while(systems, :ok, fn {system_pkg, sys}, _acc ->
-      case create_system_result(system_pkg, sys, run_id, version, files_dir) do
+      case create_system_result(system_pkg, sys, run_id, version, staged) do
         {:ok, _} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
 
-  defp create_system_result(system_pkg, sys, run_id, version, files_dir) do
+  defp create_system_result(system_pkg, sys, run_id, version, staged) do
     status = Compatibility.Types.parse_status(sys["status"])
 
     result =
@@ -120,7 +143,12 @@ defmodule Portal.Catalog.Ingestion do
 
     case result do
       {:ok, system_result} ->
-        :ok = register_artifacts(sys, system_result.id, files_dir)
+        :ok =
+          staged
+          |> Map.get(system_pkg, [])
+          |> Enum.map(&Map.put(&1, :system_result_id, system_result.id))
+          |> upsert_artifacts()
+
         {:ok, system_result}
 
       {:error, reason} ->
@@ -128,9 +156,17 @@ defmodule Portal.Catalog.Ingestion do
     end
   end
 
-  # Move every content-addressed blob referenced by this system's manifests out
-  # of files_dir into the artifact store and record an Artifact row.
-  defp register_artifacts(sys, system_result_id, files_dir) do
+  # Move every content-addressed blob referenced by the manifests out of
+  # files_dir into the artifact store, returning the pending Artifact rows keyed
+  # by system package. Filesystem only: no database connection is held here, and
+  # nothing below may acquire one.
+  defp stage_artifacts(systems, files_dir) do
+    Map.new(systems, fn {system_pkg, sys} ->
+      {system_pkg, stage_system_artifacts(sys, files_dir)}
+    end)
+  end
+
+  defp stage_system_artifacts(sys, files_dir) do
     sys
     |> collect_shas()
     |> Enum.flat_map(fn sha ->
@@ -138,14 +174,7 @@ defmodule Portal.Catalog.Ingestion do
 
       case ArtifactStore.put(sha, source) do
         {:ok, %{disk_path: disk_path, byte_size: bytes}} ->
-          [
-            %{
-              sha256: sha,
-              byte_size: bytes,
-              disk_path: disk_path,
-              system_result_id: system_result_id
-            }
-          ]
+          [%{sha256: sha, byte_size: bytes, disk_path: disk_path}]
 
         {:error, :source_missing} ->
           Logger.debug("Artifact blob #{sha} not present in files_dir; skipping")
@@ -156,7 +185,6 @@ defmodule Portal.Catalog.Ingestion do
           []
       end
     end)
-    |> upsert_artifacts()
   end
 
   # One statement per batch of blobs, not one per blob.
@@ -164,10 +192,9 @@ defmodule Portal.Catalog.Ingestion do
   # A single system's manifest carries on the order of a thousand
   # content-addressed BEAM files, and this used to be a row-at-a-time
   # `Ash.create/2`: ~950 sequential round trips, all inside the ingest
-  # transaction. That runs past DBConnection's 15s checkout limit, which kills
-  # the connection mid-ingest, fails the build job, and makes Oban retry the
-  # whole 16-minute build. The blobs themselves are ~15MB total, so the cost was
-  # never volume, only the number of round trips.
+  # transaction, which blew the same 15s checkout limit that `ingest/2`
+  # describes. The blobs themselves are ~15MB total, so the cost was never
+  # volume, only the number of round trips.
   defp upsert_artifacts([]), do: :ok
 
   defp upsert_artifacts(entries) do
