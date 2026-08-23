@@ -2,12 +2,14 @@ defmodule NccWorker.BuildCache do
   @moduledoc """
   Cross-run cache of compiled dependency artifacts.
 
-  Compiling the dependency tree is not part of the cost of a package build, it
-  is essentially all of it. Assembling the firmware image takes about 18
-  seconds; compiling the tree takes 8 to 25 minutes per target, and nearly every
-  one of those beams belongs to a dependency that the next package in the queue
-  will compile again from scratch. On a sweep of 2500 packages the same `ash`
-  gets rebuilt hundreds of times, once per target each time.
+  Compiling the dependency tree is the bulk of a package build. Compiling the
+  tree takes 8 to 25 minutes per target, against 115 to 421 seconds to assemble
+  the firmware image, and nearly every one of those beams belongs to a
+  dependency that the next package in the queue will compile again from scratch.
+  On a sweep of 2500 packages the same `ash` gets rebuilt hundreds of times,
+  once per target each time. (An earlier version of this paragraph claimed 18
+  seconds of assembly. That was an x86_64-only measurement and it is wrong for
+  every ARM target, where assembly can be most of a small package's build.)
 
   Restoring `_build/<target>/lib/<dep>` from an earlier run removes that work:
   measured on `ash_ai`, an rpi4 build went from 13m40 to 32 seconds, with only
@@ -31,6 +33,59 @@ defmodule NccWorker.BuildCache do
   mount at a per-image directory, so rebuilding the image starts from an empty
   cache instead of trusting artifacts built by a different Elixir or OTP.
 
+  ## Sharing one artifact across targets
+
+  A dependency built for `rpi4` and the same dependency built for
+  `mangopi_mq_pro` are, for almost everything in the tree, the same bytes. The
+  target selects a Nerves system and a cross toolchain, but Elixir dependencies
+  are compiled by the *host* Elixir into target-independent BEAM files; the
+  toolchain only ever touches the C side of the firmware.
+
+  That is measured, not assumed. Comparing every BEAM chunk of the 64
+  dependencies shared between an `rpi4` and a `mangopi_mq_pro` build of the same
+  package: 63 of 64 have byte-identical `Code` chunks, `ash` (1317 modules),
+  `ecto`, `spark`, `phoenix` and `jason` included. Only `CInf`, `Dbgi` and
+  `Docs` differ, and `CInf` differs by exactly ten bytes, which is
+  `len("mangopi_mq_pro") - len("rpi4")`: the embedded `deps_<target>` source
+  path, nothing else. The single outlier, `xema`, differs between *all three*
+  target pairs at identical byte size with the atom table unchanged and only the
+  literal chunk moving. That is compile nondeterminism, not target dependence:
+  it computes `%Schema{} |> Map.keys()` over a 50-key struct, and above 32 keys
+  a map is a hashmap whose iteration order follows atom hashes, which follow
+  atom interning order in whichever compiler run produced it.
+
+  Mix accepts the restore because it decides whether to recompile a dependency
+  from `.mix/compile.elixir_scm`, which holds
+  `{manifest_vsn, {elixir_vsn, otp_release}, scm, lock_entry}` and carries no
+  target, no absolute paths and no mtimes. The source paths in
+  `.mix/compile.elixir` are relative, so an artifact is not tied to the
+  `deps_<target>` directory it came from.
+
+  So a dependency the guard below clears gets `target=any` in its key and one
+  stored artifact serves every target. What the guard has to hold out:
+
+    * anything with a native build, because that genuinely is cross-compiled:
+      `c_src`, `native`, a `Makefile`, `elixir_make`, `rustler`, `zigler`,
+      `cc_precompiler`, or a rebar config with port specs.
+    * anything reading the target at compile time, `Mix.target()` or
+      `MIX_TARGET`, found by grepping the dependency's own sources.
+    * anything Nerves-owned by name, which covers the systems and toolchains
+      that are target-specific by definition.
+    * anything whose *transitive closure* fails any of the above, because a
+      dependency compiled against a target-sensitive one can inline values from
+      it.
+
+  The `host` target never shares. The generated project's `config.exs` branches
+  on `Mix.target() == :host` and imports a different file, so host and target
+  compile-time configuration genuinely differ. Between two non-host targets they
+  do not: `nerves.new` writes one `target.exs` for all of them and leaves the
+  per-target `import_config` commented out. That is why `Application.compile_env`
+  is not in the guard. It cannot vary across the targets that share.
+
+  One accepted cosmetic consequence: `Dbgi` and `CInf` in a shared artifact name
+  the `deps_<target>` directory of whichever target built it first. Nothing in
+  the build reads those; a debugger or coverage tool would.
+
   ## The one thing the key cannot cover
 
   Where two dependencies declare each other optionally (`jason` and `decimal`
@@ -45,7 +100,7 @@ defmodule NccWorker.BuildCache do
   """
 
   @cache_env "NCC_BUILD_CACHE"
-  @key_version "v1"
+  @key_version "v2"
 
   @type entry :: %{name: String.t(), key: String.t(), dir: String.t()}
   @type plan :: %{root: String.t(), entries: [entry()]}
@@ -61,21 +116,25 @@ defmodule NccWorker.BuildCache do
   `deps_tree.dot` into the project root, so two targets doing this at once would
   race. The callers do it in the serial preparation phase for that reason.
   """
-  @spec plan(String.t(), String.t(), String.t(), keyword(), [String.t()]) :: plan() | :disabled
-  def plan(project_dir, build_path, target, env, exclude) do
+  @spec plan(String.t(), String.t(), String.t(), String.t(), keyword(), [String.t()]) ::
+          plan() | :disabled
+  def plan(project_dir, deps_path, build_path, target, env, exclude) do
     with root when is_binary(root) <- cache_root(),
          {:ok, lock} <- read_lock(project_dir),
          {:ok, graph} <- dep_graph(project_dir, env) do
       excluded = MapSet.new(exclude)
+      agnostic = agnostic_deps(deps_path, graph, lock, target)
 
       entries =
         lock
         |> Map.keys()
         |> Enum.reject(&MapSet.member?(excluded, &1))
         |> Enum.map(fn name ->
+          closure = closure(graph, name)
+
           %{
             name: name,
-            key: key_for(name, target, closure(graph, name), lock),
+            key: key_for(name, target_component(name, closure, target, agnostic), closure, lock),
             dir: Path.join([build_path, "lib", name])
           }
         end)
@@ -83,6 +142,30 @@ defmodule NccWorker.BuildCache do
       %{root: root, entries: entries}
     else
       _ -> :disabled
+    end
+  end
+
+  # `nil` means sharing is off for this target and every key stays target-scoped.
+  defp agnostic_deps(_deps_path, _graph, _lock, "host"), do: nil
+
+  defp agnostic_deps(deps_path, graph, lock, _target) do
+    graph
+    |> Enum.flat_map(fn {from, tos} -> [from | tos] end)
+    |> Enum.concat(Map.keys(lock))
+    |> Enum.uniq()
+    |> Enum.filter(&dep_target_agnostic?(deps_path, &1))
+    |> MapSet.new()
+  end
+
+  # A name absent from `agnostic` is treated as target-specific, which is what
+  # an unresolvable closure member has to be: not proven safe means not shared.
+  defp target_component(_name, _closure, target, nil), do: target
+
+  defp target_component(name, closure, target, agnostic) do
+    if MapSet.member?(agnostic, name) and Enum.all?(closure, &MapSet.member?(agnostic, &1)) do
+      "any"
+    else
+      target
     end
   end
 
@@ -244,6 +327,62 @@ defmodule NccWorker.BuildCache do
     else
       reachable(graph, Map.get(graph, node, []) ++ rest, MapSet.put(visited, node))
     end
+  end
+
+  # Directories and files that mean something outside the BEAM compiler produces
+  # part of this dependency, and therefore that the target matters.
+  @native_dirs ~w(c_src native zig_src go_src)
+  @native_files ~w(Makefile Makefile.win GNUmakefile CMakeLists.txt build.zig Cargo.toml)
+  @native_deps ~w(elixir_make rustler rustler_precompiled zigler cc_precompiler)
+  @rebar_native ~w(port_specs port_env)
+
+  # Whether one dependency, on its own, compiles to the same bytes on every
+  # target. Answers only for the dependency itself: the caller has to apply it
+  # across the transitive closure too, because a dependency compiled against a
+  # target-sensitive one can inline values out of it.
+  #
+  # Every branch fails closed. A dependency whose source directory is missing, or
+  # whose sources cannot be grepped, is reported as target-specific, which costs
+  # a cache hit and nothing else.
+  @doc false
+  @spec dep_target_agnostic?(String.t(), String.t()) :: boolean()
+  def dep_target_agnostic?(deps_path, name) do
+    dir = Path.join(deps_path, name)
+
+    File.dir?(dir) and not String.starts_with?(name, "nerves") and not native?(dir) and
+      not reads_target?(dir)
+  end
+
+  defp native?(dir) do
+    Enum.any?(@native_dirs, &File.dir?(Path.join(dir, &1))) or
+      Enum.any?(@native_files, &File.regular?(Path.join(dir, &1))) or
+      mentions?(Path.join(dir, "mix.exs"), @native_deps) or
+      mentions?(Path.join(dir, "rebar.config"), @rebar_native)
+  end
+
+  defp mentions?(path, needles) do
+    case File.read(path) do
+      {:ok, contents} -> Enum.any?(needles, &String.contains?(contents, &1))
+      _ -> false
+    end
+  end
+
+  # `grep -r` over the sources rather than a load-and-scan in Elixir: the tree is
+  # a few megabytes for the larger dependencies and this stays one process. The
+  # `--include` filters keep it off beam files and priv blobs. Exit 0 is a match,
+  # 1 is no match, and anything else (no grep, unreadable tree) counts as a match
+  # so the dependency stays target-scoped.
+  defp reads_target?(dir) do
+    args =
+      ["-r", "-q", "-F", "--include=*.ex", "--include=*.exs", "--include=*.erl"] ++
+        ["-e", "Mix.target(", "-e", "MIX_TARGET", "--", dir]
+
+    case System.cmd("grep", args, stderr_to_stdout: true) do
+      {_, 1} -> false
+      _ -> true
+    end
+  rescue
+    _ -> true
   end
 
   @doc false

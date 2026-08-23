@@ -458,7 +458,7 @@ defmodule NccWorker.Worker do
   # whole target, not just the part that ran concurrently.
   #
   # The cache work belongs here rather than alongside the compile because
-  # `BuildCache.plan/5` shells out to `mix deps.tree`, which writes a file into
+  # `BuildCache.plan/6` shells out to `mix deps.tree`, which writes a file into
   # the project root: two targets doing that at once would race on it. This
   # phase is serial by construction, so they cannot.
   @spec prepare_system(String.t(), map(), String.t(), String.t()) :: map()
@@ -488,7 +488,7 @@ defmodule NccWorker.Worker do
 
     {cache_plan, cache_stats} =
       case deps do
-        :ok -> restore_cache(project_dir, build_path, system.target, env, package_name)
+        :ok -> restore_cache(project_dir, deps_path, build_path, system.target, env, package_name)
         _ -> {:disabled, %{}}
       end
 
@@ -509,8 +509,13 @@ defmodule NccWorker.Worker do
   # `phase_timings` because a cache whose hit rate nobody can see is a cache
   # nobody can tell is broken: a key that is too specific still produces correct
   # builds, just slow ones, and this is the only signal that separates the two.
-  defp restore_cache(project_dir, build_path, target, env, package_name) do
-    plan = BuildCache.plan(project_dir, build_path, target, env, [package_name, @wrapper_app])
+  defp restore_cache(project_dir, deps_path, build_path, target, env, package_name) do
+    plan =
+      BuildCache.plan(project_dir, deps_path, build_path, target, env, [
+        package_name,
+        @wrapper_app
+      ])
+
     {restored, total} = BuildCache.restore(plan)
     {plan, %{cache_restored: restored * 1.0, cache_candidates: total * 1.0}}
   end
@@ -832,7 +837,11 @@ defmodule NccWorker.Worker do
 
     case run_mix(["deps.get"], project_dir, env, log_file) do
       :ok ->
-        {plan, stats} = restore_cache(project_dir, build_path, "host", env, package_name)
+        deps_path = Path.join([project_dir, "deps"])
+
+        {plan, stats} =
+          restore_cache(project_dir, deps_path, build_path, "host", env, package_name)
+
         compile_result = run_compile(project_dir, env, log_file, start_time, log_tail_bytes)
 
         stats =
