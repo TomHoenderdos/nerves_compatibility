@@ -3,7 +3,7 @@ defmodule NccWorker.Worker do
   Main worker implementation that evaluates a package against Nerves systems.
   """
 
-  alias NccWorker.{BeamScan, Footprint, HexMetadata, LockPolicy, Project, Scanner}
+  alias NccWorker.{BeamScan, BuildCache, Footprint, HexMetadata, LockPolicy, Project, Scanner}
 
   @forced_skip_system "forced@admin@unknown"
 
@@ -78,6 +78,11 @@ defmodule NccWorker.Worker do
   @default_timeout_sec 600
   @default_log_tail_bytes 4096
   @max_build_concurrency 4
+
+  # The generated wrapper application, from `Project.new_project/2`. It is not a
+  # dependency of anything and is rewritten for every package, so caching its
+  # build would be both wrong and pointless.
+  @wrapper_app "nerves_compatibility_test"
 
   @doc """
   Runs the worker evaluation for a single package.
@@ -192,7 +197,8 @@ defmodule NccWorker.Worker do
 
             {:ok, source_before} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
 
-            host_result = compile_host(project_dir, paths.output_dir, log_tail_bytes)
+            host_result =
+              compile_host(project_dir, paths.output_dir, log_tail_bytes, input.package.name)
 
             system_results =
               build_all_systems(
@@ -411,7 +417,7 @@ defmodule NccWorker.Worker do
     # clobbering each other across targets.
     prepared =
       Enum.map(systems, fn system ->
-        {system, prepare_system(project_dir, system, output_dir)}
+        {system, prepare_system(project_dir, system, output_dir, package_name)}
       end)
 
     prepared
@@ -446,11 +452,17 @@ defmodule NccWorker.Worker do
     end
   end
 
-  # Serial phase: fetch this target's deps and hand the rest to the parallel
-  # phase. `deps_duration` is carried across so the reported duration still
-  # covers the whole target, not just the part that ran concurrently.
-  @spec prepare_system(String.t(), map(), String.t()) :: map()
-  defp prepare_system(project_dir, system, output_dir) do
+  # Serial phase: fetch this target's deps, restore whatever the build cache
+  # already has for them, and hand the rest to the parallel phase.
+  # `deps_duration` is carried across so the reported duration still covers the
+  # whole target, not just the part that ran concurrently.
+  #
+  # The cache work belongs here rather than alongside the compile because
+  # `BuildCache.plan/5` shells out to `mix deps.tree`, which writes a file into
+  # the project root: two targets doing that at once would race on it. This
+  # phase is serial by construction, so they cannot.
+  @spec prepare_system(String.t(), map(), String.t(), String.t()) :: map()
+  defp prepare_system(project_dir, system, output_dir, package_name) do
     log_file = Path.join([output_dir, "logs", "#{system.name}.log"])
     build_path = Path.join([project_dir, "_build", system.target])
     deps_path = Path.join([project_dir, "deps_#{system.target}"])
@@ -474,14 +486,33 @@ defmodule NccWorker.Worker do
         {_, exit_code} -> {:error, exit_code}
       end
 
+    {cache_plan, cache_stats} =
+      case deps do
+        :ok -> restore_cache(project_dir, build_path, system.target, env, package_name)
+        _ -> {:disabled, %{}}
+      end
+
     %{
       project_dir: project_dir,
       log_file: log_file,
       build_path: build_path,
       env: env,
       deps: deps,
+      cache_plan: cache_plan,
+      cache_stats: cache_stats,
       deps_duration: System.monotonic_time(:second) - start_time
     }
+  end
+
+  # Populates `_build/<target>/lib` from the shared cache before anything
+  # compiles, and reports what it managed to fill in. The counts ride along in
+  # `phase_timings` because a cache whose hit rate nobody can see is a cache
+  # nobody can tell is broken: a key that is too specific still produces correct
+  # builds, just slow ones, and this is the only signal that separates the two.
+  defp restore_cache(project_dir, build_path, target, env, package_name) do
+    plan = BuildCache.plan(project_dir, build_path, target, env, [package_name, @wrapper_app])
+    {restored, total} = BuildCache.restore(plan)
+    {plan, %{cache_restored: restored * 1.0, cache_candidates: total * 1.0}}
   end
 
   @spec build_system(map(), map(), integer(), String.t()) :: map()
@@ -490,6 +521,7 @@ defmodule NccWorker.Worker do
       :ok ->
         prep
         |> run_firmware(log_tail_bytes, package_name)
+        |> store_cache(prep)
         |> Map.put(:system_version, extract_system_version(prep.log_file, system.name))
 
       {:error, exit_code} ->
@@ -499,6 +531,21 @@ defmodule NccWorker.Worker do
           "mix deps.get exited with code #{exit_code}"
         )
     end
+  end
+
+  # Only a passing build gets stored. A failure can leave a dependency directory
+  # that Mix abandoned partway through, and there is no way to tell that apart
+  # from a complete one after the fact.
+  defp store_cache(%{status: :pass} = result, prep) do
+    stored = BuildCache.store(prep.cache_plan)
+
+    result
+    |> Map.update!(:phase_timings, &Map.merge(&1, prep.cache_stats))
+    |> put_in([:phase_timings, :cache_stored], stored * 1.0)
+  end
+
+  defp store_cache(result, prep) do
+    Map.update(result, :phase_timings, prep.cache_stats, &Map.merge(&1, prep.cache_stats))
   end
 
   defp task_crash_result(prep, log_tail_bytes, reason) do
@@ -519,13 +566,14 @@ defmodule NccWorker.Worker do
     }
   end
 
-  # The phase split is the point, not a nicety. `mix deps.get` compiles the whole
-  # dependency tree by way of nerves_bootstrap, so `deps_sec` is compile cost and
-  # is the only phase a shared build cache could ever remove. `firmware_sec`
-  # (rootfs + squashfs + image) is close to a fixed cost per target and caching
-  # cannot touch it. Reporting only the total hides which of the two dominates,
-  # and that is exactly the number needed to decide whether a cache is worth its
-  # correctness risk.
+  # The phase split is the point, not a nicety, but the labels no longer mean
+  # what they did. `mix deps.get` used to compile the whole tree by way of
+  # nerves_bootstrap; since it stopped doing that, `deps_sec` is fetch and unpack
+  # only and the tree compiles inside `mix firmware`. So `firmware_sec` is now
+  # compile cost plus image assembly, and it is the compile part that dominates
+  # by two orders of magnitude: measured per target, assembling the rootfs,
+  # squashfs and image takes 18 seconds against 8 to 25 minutes of compiling.
+  # That is the ratio that made the build cache worth its correctness risk.
   @spec run_firmware(map(), integer(), String.t()) :: map()
   defp run_firmware(prep, log_tail_bytes, package_name) do
     %{
@@ -768,17 +816,28 @@ defmodule NccWorker.Worker do
     ]
   end
 
-  @spec compile_host(String.t(), String.t(), integer()) :: map()
-  defp compile_host(project_dir, output_dir, log_tail_bytes) do
+  @spec compile_host(String.t(), String.t(), integer(), String.t()) :: map()
+  defp compile_host(project_dir, output_dir, log_tail_bytes, package_name) do
     log_file = Path.join([output_dir, "logs", "host.log"])
     start_time = System.monotonic_time(:second)
 
     env = host_env(project_dir)
+    build_path = Path.join([project_dir, "_build", "host"])
 
     case run_mix(["deps.get"], project_dir, env, log_file) do
       :ok ->
+        {plan, stats} = restore_cache(project_dir, build_path, "host", env, package_name)
         compile_result = run_compile(project_dir, env, log_file, start_time, log_tail_bytes)
-        Map.put(compile_result, :system_version, nil)
+
+        stats =
+          case compile_result do
+            %{status: :pass} -> Map.put(stats, :cache_stored, BuildCache.store(plan) * 1.0)
+            _ -> stats
+          end
+
+        compile_result
+        |> Map.put(:system_version, nil)
+        |> Map.put(:phase_timings, stats)
 
       {:error, reason} ->
         duration = System.monotonic_time(:second) - start_time

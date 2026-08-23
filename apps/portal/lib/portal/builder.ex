@@ -53,6 +53,17 @@ defmodule Portal.Builder do
   @spec hex_cache() :: Path.t()
   def hex_cache, do: config(:hex_cache, Path.expand("~/.ncc-hex-cache"))
 
+  @doc """
+  Host path for the shared dependency build cache, or nil when it is off.
+
+  Unset is the default and means the worker compiles every dependency from
+  scratch, which is what it did before the cache existed. That makes turning it
+  off a config change rather than a deploy, which is what you want for something
+  whose failure mode is subtly wrong artifacts rather than a crash.
+  """
+  @spec build_cache() :: Path.t() | nil
+  def build_cache, do: config(:build_cache, nil)
+
   defp config(key, default) do
     :portal
     |> Application.get_env(__MODULE__, [])
@@ -256,7 +267,8 @@ defmodule Portal.Builder do
         ["--mount", "type=bind,source=#{output_dir},target=/out"],
         ["--mount", "type=bind,source=#{files_dir},target=/files"],
         ["--mount", "type=bind,source=#{nerves_cache()},target=/home/nerves/.nerves"],
-        ["--mount", "type=bind,source=#{hex_cache()},target=/hex-cache"]
+        ["--mount", "type=bind,source=#{hex_cache()},target=/hex-cache"],
+        build_cache_mount(job)
       ])
 
     env = [
@@ -280,7 +292,53 @@ defmodule Portal.Builder do
       "TAR_OPTIONS=--no-same-owner"
     ]
 
-    base ++ limits ++ mounts ++ env ++ cpu_env() ++ concurrency_env() ++ [image_ref(job)]
+    base ++
+      limits ++
+      mounts ++ env ++ build_cache_env(job) ++ cpu_env() ++ concurrency_env() ++ [image_ref(job)]
+  end
+
+  # The cache is mounted per worker image rather than as one flat directory.
+  # Artifacts are only interchangeable between builds that used the same Elixir,
+  # OTP and Nerves toolchain, and the image is what pins all three, so making it
+  # part of the path means a rebuilt image starts from an empty cache instead of
+  # inheriting entries it cannot vouch for. The worker's own cache key covers
+  # everything below that line; this covers the line itself.
+  defp build_cache_mount(job) do
+    case build_cache_dir(job) do
+      nil -> []
+      dir -> ["--mount", "type=bind,source=#{dir},target=/build-cache"]
+    end
+  end
+
+  defp build_cache_env(job) do
+    case build_cache_dir(job) do
+      nil -> []
+      _dir -> ["-e", "NCC_BUILD_CACHE=/build-cache"]
+    end
+  end
+
+  # Created here rather than by the deployment: the directory is per image, so
+  # its name is not known until a build runs. A failure to create it disables the
+  # cache for that build instead of failing it, since a cache that cannot be
+  # written is a slowdown and not an error.
+  defp build_cache_dir(job) do
+    case build_cache() do
+      nil ->
+        nil
+
+      root ->
+        dir = Path.join(root, image_slug(job))
+
+        case File.mkdir_p(dir) do
+          :ok -> dir
+          {:error, _reason} -> nil
+        end
+    end
+  end
+
+  defp image_slug(job) do
+    (job.image_digest || job.image_name || "unknown")
+    |> String.replace(~r/[^A-Za-z0-9._-]/, "_")
   end
 
   # `--cpus` is a CFS quota, not a core assignment: `nproc` inside the container
