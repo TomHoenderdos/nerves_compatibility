@@ -133,6 +133,7 @@ defmodule Portal.Catalog.Ingestion do
         status: status,
         firmware_size_bytes: sys["firmware_size_bytes"],
         duration_sec: sys["duration_sec"],
+        phase_timings: sys["phase_timings"],
         hex_version_tested: version,
         beam_scan: sys["beam_scan"],
         dependency_scans: sys["dependency_scans"],

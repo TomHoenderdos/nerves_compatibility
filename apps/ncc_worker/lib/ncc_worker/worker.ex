@@ -63,6 +63,7 @@ defmodule NccWorker.Worker do
             String.t() => %{
               status: Compatibility.Types.status(),
               duration_sec: float(),
+              phase_timings: map() | nil,
               firmware_size_bytes: integer() | nil,
               log_tail: String.t(),
               system_version: String.t() | nil,
@@ -487,19 +488,8 @@ defmodule NccWorker.Worker do
   defp build_system(system, prep, log_tail_bytes, package_name) do
     case prep.deps do
       :ok ->
-        # Backdating the start by the deps time keeps duration_sec meaning the
-        # same thing it did when both phases ran back to back.
-        start_time = System.monotonic_time(:second) - prep.deps_duration
-
-        prep.project_dir
-        |> run_firmware(
-          prep.env,
-          prep.log_file,
-          start_time,
-          prep.build_path,
-          log_tail_bytes,
-          package_name
-        )
+        prep
+        |> run_firmware(log_tail_bytes, package_name)
         |> Map.put(:system_version, extract_system_version(prep.log_file, system.name))
 
       {:error, exit_code} ->
@@ -519,6 +509,7 @@ defmodule NccWorker.Worker do
     %{
       status: :fail,
       duration_sec: prep.deps_duration * 1.0,
+      phase_timings: %{deps_sec: prep.deps_duration * 1.0},
       firmware_size_bytes: nil,
       log_tail: read_log_tail(prep.log_file, log_tail_bytes),
       system_version: nil,
@@ -528,32 +519,51 @@ defmodule NccWorker.Worker do
     }
   end
 
-  @spec run_firmware(String.t(), list(), String.t(), integer(), String.t(), integer(), String.t()) ::
-          map()
-  defp run_firmware(
-         project_dir,
-         env,
-         log_file,
-         start_time,
-         build_path,
-         log_tail_bytes,
-         package_name
-       ) do
+  # The phase split is the point, not a nicety. `mix deps.get` compiles the whole
+  # dependency tree by way of nerves_bootstrap, so `deps_sec` is compile cost and
+  # is the only phase a shared build cache could ever remove. `firmware_sec`
+  # (rootfs + squashfs + image) is close to a fixed cost per target and caching
+  # cannot touch it. Reporting only the total hides which of the two dominates,
+  # and that is exactly the number needed to decide whether a cache is worth its
+  # correctness risk.
+  @spec run_firmware(map(), integer(), String.t()) :: map()
+  defp run_firmware(prep, log_tail_bytes, package_name) do
+    %{
+      project_dir: project_dir,
+      env: env,
+      log_file: log_file,
+      build_path: build_path,
+      deps_duration: deps_duration
+    } = prep
+
+    firmware_start = System.monotonic_time(:second)
+
     with :ok <- run_firmware_mix(project_dir, env, log_file),
+         firmware_sec = System.monotonic_time(:second) - firmware_start,
          {:ok, hash1} <- hash_package_artifacts(build_path, package_name),
+         release_start = System.monotonic_time(:second),
          :ok <- clean_package_build(build_path, package_name),
          :ok <- run_release_mix(project_dir, env, log_file),
          {:ok, hash2} <- hash_package_artifacts(build_path, package_name) do
-      duration = System.monotonic_time(:second) - start_time
+      release_sec = System.monotonic_time(:second) - release_start
+      scan_start = System.monotonic_time(:second)
       firmware_info = Scanner.find_firmware(build_path)
       log_tail = read_log_tail(log_file, log_tail_bytes)
       beam_scan = analyze_beam_scan(build_path, package_name)
       dependency_scans = analyze_dependency_beam_scans(build_path, package_name)
       {deterministic, determinism_changes} = compare_hashes(hash1, hash2)
+      scan_sec = System.monotonic_time(:second) - scan_start
+      duration = deps_duration + (System.monotonic_time(:second) - firmware_start)
 
       %{
         status: :pass,
         duration_sec: duration * 1.0,
+        phase_timings: %{
+          deps_sec: deps_duration * 1.0,
+          firmware_sec: firmware_sec * 1.0,
+          release_sec: release_sec * 1.0,
+          scan_sec: scan_sec * 1.0
+        },
         firmware_size_bytes: firmware_info[:size],
         log_tail: log_tail,
         beam_scan: beam_scan,
@@ -564,12 +574,13 @@ defmodule NccWorker.Worker do
       }
     else
       {:error, reason} ->
-        duration = System.monotonic_time(:second) - start_time
+        duration = deps_duration + (System.monotonic_time(:second) - firmware_start)
         log_tail = read_log_tail(log_file, log_tail_bytes)
 
         %{
           status: :fail,
           duration_sec: duration * 1.0,
+          phase_timings: %{deps_sec: deps_duration * 1.0},
           firmware_size_bytes: nil,
           log_tail: log_tail,
           beam_scan: nil,
