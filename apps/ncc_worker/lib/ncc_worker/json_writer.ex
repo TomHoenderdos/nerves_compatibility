@@ -66,6 +66,7 @@ defmodule NccWorker.JsonWriter do
     %{
       status: Compatibility.Types.status_to_string(system_result.status),
       duration_sec: system_result.duration_sec,
+      phase_timings: Map.get(system_result, :phase_timings),
       firmware_size_bytes: system_result.firmware_size_bytes,
       log_tail: system_result.log_tail,
       system_version: Map.get(system_result, :system_version),
