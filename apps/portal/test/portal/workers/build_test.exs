@@ -6,7 +6,7 @@ defmodule Portal.Workers.BuildTest do
 
   alias Portal.Catalog.{Package, Run}
   alias Portal.ScanRequests
-  alias Portal.Workers.Build
+  alias Portal.Workers.{Build, Ingest}
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
 
@@ -23,6 +23,15 @@ defmodule Portal.Workers.BuildTest do
     def cleanup(_run_id), do: :ok
     def image_digest(_image), do: "sha256:stub"
     def docker_image, do: "ncc-worker:local"
+
+    # The ingest job re-reads the build from its scratch dir. There is no
+    # scratch dir here, so replay whatever build/2 was told to return.
+    def load_run(_run_id) do
+      case Process.get(:stub_build_response) do
+        {:ok, build} -> {:ok, build}
+        _ -> {:error, :missing_result_json}
+      end
+    end
   end
 
   defmodule StubVersions do
@@ -62,8 +71,16 @@ defmodule Portal.Workers.BuildTest do
     end
   end
 
+  # The build job hands off to Portal.Workers.Ingest rather than writing rows
+  # itself, so a success case has to drain that queue too. Both run in the test
+  # process, which owns the sandbox connection.
+  defp run_enqueued_ingest do
+    assert [job] = all_enqueued(worker: Ingest)
+    Ingest.perform(%Oban.Job{args: job.args, attempt: 1, max_attempts: 5})
+  end
+
   describe "perform/1 success" do
-    test "exit 0 ingests result and marks the request built" do
+    test "exit 0 enqueues the ingest, which ingests and marks the request built" do
       {:ok, request} =
         ScanRequests.create_once(%{package_name: "jason", source: :hex_owner, status: :accepted})
 
@@ -91,6 +108,10 @@ defmodule Portal.Workers.BuildTest do
 
       assert_received :stub_build_called
 
+      # Nothing is in the Catalog until the ingest job runs.
+      assert Ash.read!(Run, domain: Portal.Catalog) == []
+      assert :ok = run_enqueued_ingest()
+
       runs = Ash.read!(Run, domain: Portal.Catalog)
       assert length(runs) == 1
       run = hd(runs)
@@ -99,6 +120,40 @@ defmodule Portal.Workers.BuildTest do
       {:ok, updated} = ScanRequests.get_request(request.id)
       assert updated.status == :built
       assert updated.run_id == run.id
+    end
+  end
+
+  describe "ingest retries" do
+    test "a failed ingest retries on its own without touching the build" do
+      files_dir = files_dir_with([])
+
+      # A result the Ingestion cannot map to Catalog rows.
+      set_response(
+        {:ok,
+         %{
+           exit_code: 0,
+           result: %{"garbage" => true},
+           files_dir: files_dir,
+           output_dir: files_dir,
+           log: "ok"
+         }}
+      )
+
+      assert :ok =
+               perform_job(Build, %{
+                 "package" => "jason",
+                 "version" => "1.4.1",
+                 "image_digest" => "sha256:deadbeef"
+               })
+
+      assert [job] = all_enqueued(worker: Ingest)
+
+      assert {:error, _reason} =
+               Ingest.perform(%Oban.Job{args: job.args, attempt: 1, max_attempts: 5})
+
+      # The retry is the ingest job's, not the build's: no second build was run.
+      assert_received :stub_build_called
+      refute_received :stub_build_called
     end
   end
 

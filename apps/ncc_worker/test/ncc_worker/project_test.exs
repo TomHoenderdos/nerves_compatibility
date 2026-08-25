@@ -68,7 +68,7 @@ defmodule NccWorker.ProjectTest do
       File.write!(Path.join(dir, "mix.exs"), "# a file with no deps list at all\n")
 
       assert {:error, {:mix_exs_deps_list_not_found, _}} =
-               Project.add_package(dir, %{name: "jason", version: "1.4.4"})
+               Project.add_package(dir, %{name: "jason", version: "1.4.4"}, [])
     end
   end
 
@@ -78,7 +78,7 @@ defmodule NccWorker.ProjectTest do
   # available in the ambient test environment against an empty project) — but
   # the mix.exs was already edited by that point, which is what we're asserting.
   defp inject_dep_only(project_dir, package) do
-    _ = Project.add_package(project_dir, package)
+    _ = Project.add_package(project_dir, package, [])
     :ok
   end
 end

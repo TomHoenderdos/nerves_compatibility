@@ -1,9 +1,13 @@
-FROM ghcr.io/nerves-project/nerves_system_br:1.33.0
+# The base determines the OTP version the *target* runs. Official Nerves systems
+# moved to OTP 29, and nerves refuses to build when host and target majors differ,
+# so this tag and the Elixir build below must stay on the same major.
+# nerves_system_br 1.34.1 ships Erlang 29.0.4.
+FROM ghcr.io/nerves-project/nerves_system_br:1.34.1
 
 # Install Elixir from GitHub releases
-RUN wget https://repo.hex.pm/builds/elixir/v1.19.4-otp-28.zip && \
-    unzip v1.19.4-otp-28.zip -d /home/nerves/.elixir && \
-    rm v1.19.4-otp-28.zip
+RUN wget https://repo.hex.pm/builds/elixir/v1.20.3-otp-29.zip && \
+    unzip v1.20.3-otp-29.zip -d /home/nerves/.elixir && \
+    rm v1.20.3-otp-29.zip
 
 ENV PATH="/home/nerves/.elixir/bin:${PATH}"
 
@@ -12,6 +16,14 @@ RUN mix local.hex --force && \
     mix local.rebar --force && \
     mix archive.install hex nerves_bootstrap --force && \
     mix archive.install hex igniter_new --force
+
+# mksquashfs sets ownership on the rootfs entries while assembling a firmware
+# image. The build container runs with --cap-drop=ALL, so those chowns fail and
+# the image build dies. fakeroot fakes the bookkeeping in userspace, which lets
+# the firmware step succeed without the container ever holding CAP_CHOWN.
+RUN sudo apt-get update && \
+    sudo apt-get install -y --no-install-recommends fakeroot && \
+    sudo rm -rf /var/lib/apt/lists/*
 
 # Create mount points
 RUN sudo mkdir -p /work /out /hex-cache /home/nerves/.nerves

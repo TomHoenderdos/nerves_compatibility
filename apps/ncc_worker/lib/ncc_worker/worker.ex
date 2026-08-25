@@ -3,7 +3,7 @@ defmodule NccWorker.Worker do
   Main worker implementation that evaluates a package against Nerves systems.
   """
 
-  alias NccWorker.{BeamScan, Footprint, HexMetadata, LockPolicy, Project, Scanner}
+  alias NccWorker.{BeamScan, BuildCache, Footprint, HexMetadata, LockPolicy, Project, Scanner}
 
   @forced_skip_system "forced@admin@unknown"
 
@@ -63,6 +63,7 @@ defmodule NccWorker.Worker do
             String.t() => %{
               status: Compatibility.Types.status(),
               duration_sec: float(),
+              phase_timings: map() | nil,
               firmware_size_bytes: integer() | nil,
               log_tail: String.t(),
               system_version: String.t() | nil,
@@ -76,6 +77,12 @@ defmodule NccWorker.Worker do
 
   @default_timeout_sec 600
   @default_log_tail_bytes 4096
+  @max_build_concurrency 4
+
+  # The generated wrapper application, from `Project.new_project/2`. It is not a
+  # dependency of anything and is rewritten for every package, so caching its
+  # build would be both wrong and pointless.
+  @wrapper_app "nerves_compatibility_test"
 
   @doc """
   Runs the worker evaluation for a single package.
@@ -151,7 +158,7 @@ defmodule NccWorker.Worker do
       else
         with {:ok, project_dir} <-
                Project.create(paths.work_dir, input.package, input[:systems_override]),
-             {:ok, _} <- Project.add_package(project_dir, input.package),
+             {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
              :ok <- LockPolicy.validate(project_dir) do
           systems = discover_systems(project_dir, input[:systems_filter])
 
@@ -190,7 +197,8 @@ defmodule NccWorker.Worker do
 
             {:ok, source_before} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
 
-            host_result = compile_host(project_dir, paths.output_dir, log_tail_bytes)
+            host_result =
+              compile_host(project_dir, paths.output_dir, log_tail_bytes, input.package.name)
 
             system_results =
               build_all_systems(
@@ -394,25 +402,71 @@ defmodule NccWorker.Worker do
 
   @spec build_all_systems(String.t(), list(), String.t(), integer(), integer(), String.t()) ::
           map()
-  defp build_all_systems(project_dir, systems, output_dir, timeout, log_tail_bytes, package_name) do
-    systems
-    |> Enum.map(fn system ->
-      result =
-        build_system(project_dir, system, output_dir, timeout, log_tail_bytes, package_name)
+  defp build_all_systems(project_dir, systems, output_dir, _timeout, log_tail_bytes, package_name) do
+    # Two phases, deliberately.
+    #
+    # `mix deps.get` resolves against the one `mix.lock` in the project root and
+    # writes it back, so those runs stay serial: two targets fetching at the same
+    # time race on that file. They are cheap anyway, the hex cache is mounted and
+    # warm by the time we get here.
+    #
+    # The firmware builds are the expensive half and now share nothing. Each
+    # target already had its own `MIX_BUILD_PATH`; giving it its own
+    # `MIX_DEPS_PATH` too costs a little disk and unpack time, and keeps deps
+    # that compile inside their own source tree (anything on elixir_make) from
+    # clobbering each other across targets.
+    prepared =
+      Enum.map(systems, fn system ->
+        {system, prepare_system(project_dir, system, output_dir, package_name)}
+      end)
 
-      {system.name, result}
+    prepared
+    |> Task.async_stream(
+      fn {system, prep} -> build_system(system, prep, log_tail_bytes, package_name) end,
+      max_concurrency: build_concurrency(),
+      timeout: :infinity
+    )
+    |> Enum.zip(prepared)
+    |> Enum.map(fn
+      {{:ok, result}, {system, _prep}} ->
+        {system.name, result}
+
+      {{:exit, reason}, {system, prep}} ->
+        {system.name, task_crash_result(prep, log_tail_bytes, reason)}
     end)
     |> Map.new()
   end
 
-  @spec build_system(String.t(), map(), String.t(), integer(), integer(), String.t()) :: map()
-  defp build_system(project_dir, system, output_dir, _timeout, log_tail_bytes, package_name) do
-    log_file = Path.join([output_dir, "logs", "#{system.name}.log"])
-    start_time = System.monotonic_time(:second)
+  # How many targets may build at once. One is the historical serial behaviour
+  # and stays the default: the limit that matters is the CPU cap on the whole
+  # container, which the deployment knows about and this code does not.
+  #
+  # Capped at @max_build_concurrency, which is about the machine rather than
+  # correctness: targets share one project dir and one Hex cache, and past a
+  # handful of concurrent Buildroot builds the host stops being usable for
+  # anything else.
+  defp build_concurrency do
+    case Integer.parse(System.get_env("NCC_BUILD_CONCURRENCY", "1")) do
+      {n, _} when n > 0 -> min(n, @max_build_concurrency)
+      _ -> 1
+    end
+  end
 
-    # Set up isolated build environment for this target
+  # Serial phase: fetch this target's deps, restore whatever the build cache
+  # already has for them, and hand the rest to the parallel phase.
+  # `deps_duration` is carried across so the reported duration still covers the
+  # whole target, not just the part that ran concurrently.
+  #
+  # The cache work belongs here rather than alongside the compile because
+  # `BuildCache.plan/6` shells out to `mix deps.tree`, which writes a file into
+  # the project root: two targets doing that at once would race on it. This
+  # phase is serial by construction, so they cannot.
+  @spec prepare_system(String.t(), map(), String.t(), String.t()) :: map()
+  defp prepare_system(project_dir, system, output_dir, package_name) do
+    log_file = Path.join([output_dir, "logs", "#{system.name}.log"])
     build_path = Path.join([project_dir, "_build", system.target])
-    deps_path = Path.join([project_dir, "deps"])
+    deps_path = Path.join([project_dir, "deps_#{system.target}"])
+    start_time = System.monotonic_time(:second)
 
     env = [
       {"MIX_TARGET", system.target},
@@ -421,74 +475,154 @@ defmodule NccWorker.Worker do
       {"MIX_ENV", "prod"}
     ]
 
-    # First run deps.get for this target
-    case System.cmd("mix", ["deps.get"],
-           cd: project_dir,
-           env: env,
-           stderr_to_stdout: true,
-           into: File.stream!(log_file, [:append])
-         ) do
-      {_, 0} ->
-        # deps.get succeeded, now run firmware
-        firmware_result =
-          run_firmware(
-            project_dir,
-            env,
-            log_file,
-            start_time,
-            build_path,
-            log_tail_bytes,
-            package_name
-          )
+    deps =
+      case System.cmd("mix", ["deps.get"],
+             cd: project_dir,
+             env: env,
+             stderr_to_stdout: true,
+             into: File.stream!(log_file, [:append])
+           ) do
+        {_, 0} -> :ok
+        {_, exit_code} -> {:error, exit_code}
+      end
 
-        # Extract system version from the full log
-        system_name = if is_map(system), do: system.name, else: system
-        system_version = extract_system_version(log_file, system_name)
-        Map.put(firmware_result, :system_version, system_version)
+    {cache_plan, cache_stats} =
+      case deps do
+        :ok -> restore_cache(project_dir, deps_path, build_path, system.target, env, package_name)
+        _ -> {:disabled, %{}}
+      end
 
-      {_, exit_code} ->
-        duration = System.monotonic_time(:second) - start_time
-        log_tail = read_log_tail(log_file, log_tail_bytes)
+    %{
+      project_dir: project_dir,
+      log_file: log_file,
+      build_path: build_path,
+      env: env,
+      deps: deps,
+      cache_plan: cache_plan,
+      cache_stats: cache_stats,
+      deps_duration: System.monotonic_time(:second) - start_time
+    }
+  end
 
-        %{
-          status: :fail,
-          duration_sec: duration * 1.0,
-          firmware_size_bytes: nil,
-          log_tail: log_tail,
-          system_version: nil,
-          beam_scan: nil,
-          dependency_scans: nil,
-          error: "mix deps.get exited with code #{exit_code}"
-        }
+  # Populates `_build/<target>/lib` from the shared cache before anything
+  # compiles, and reports what it managed to fill in. The counts ride along in
+  # `phase_timings` because a cache whose hit rate nobody can see is a cache
+  # nobody can tell is broken: a key that is too specific still produces correct
+  # builds, just slow ones, and this is the only signal that separates the two.
+  defp restore_cache(project_dir, deps_path, build_path, target, env, package_name) do
+    plan =
+      BuildCache.plan(project_dir, deps_path, build_path, target, env, [
+        package_name,
+        @wrapper_app
+      ])
+
+    {restored, total} = BuildCache.restore(plan)
+    {plan, %{cache_restored: restored * 1.0, cache_candidates: total * 1.0}}
+  end
+
+  @spec build_system(map(), map(), integer(), String.t()) :: map()
+  defp build_system(system, prep, log_tail_bytes, package_name) do
+    case prep.deps do
+      :ok ->
+        prep
+        |> run_firmware(log_tail_bytes, package_name)
+        |> store_cache(prep)
+        |> Map.put(:system_version, extract_system_version(prep.log_file, system.name))
+
+      {:error, exit_code} ->
+        failed_system_result(
+          prep,
+          log_tail_bytes,
+          "mix deps.get exited with code #{exit_code}"
+        )
     end
   end
 
-  @spec run_firmware(String.t(), list(), String.t(), integer(), String.t(), integer(), String.t()) ::
-          map()
-  defp run_firmware(
-         project_dir,
-         env,
-         log_file,
-         start_time,
-         build_path,
-         log_tail_bytes,
-         package_name
-       ) do
-    with :ok <- run_mix(["firmware"], project_dir, env, log_file),
+  # Only a passing build gets stored. A failure can leave a dependency directory
+  # that Mix abandoned partway through, and there is no way to tell that apart
+  # from a complete one after the fact.
+  defp store_cache(%{status: :pass} = result, prep) do
+    stored = BuildCache.store(prep.cache_plan)
+
+    result
+    |> Map.update!(:phase_timings, &Map.merge(&1, prep.cache_stats))
+    |> put_in([:phase_timings, :cache_stored], stored * 1.0)
+  end
+
+  defp store_cache(result, prep) do
+    Map.update(result, :phase_timings, prep.cache_stats, &Map.merge(&1, prep.cache_stats))
+  end
+
+  defp task_crash_result(prep, log_tail_bytes, reason) do
+    failed_system_result(prep, log_tail_bytes, "build task exited: #{inspect(reason)}")
+  end
+
+  defp failed_system_result(prep, log_tail_bytes, error) do
+    %{
+      status: :fail,
+      duration_sec: prep.deps_duration * 1.0,
+      phase_timings: %{deps_sec: prep.deps_duration * 1.0},
+      firmware_size_bytes: nil,
+      log_tail: read_log_tail(prep.log_file, log_tail_bytes),
+      system_version: nil,
+      beam_scan: nil,
+      dependency_scans: nil,
+      error: error
+    }
+  end
+
+  # The phase split is the point, not a nicety, but the labels no longer mean
+  # what they did. `mix deps.get` used to compile the whole tree by way of
+  # nerves_bootstrap; since it stopped doing that, `deps_sec` is fetch and unpack
+  # only and the tree compiles inside `mix firmware`. So `firmware_sec` is now
+  # compile cost plus image assembly.
+  #
+  # Compiling dominates in aggregate, which is what made the build cache worth
+  # its correctness risk, but the ratio is very target-dependent and the earlier
+  # "18 seconds of assembly" figure here was an x86_64-only measurement. Timing
+  # the gap between the last beam written and the .fw appearing gives assembly
+  # costs of 115 to 421 seconds on the ARM targets. For a small package that is
+  # most of the build: bencoding on rpi4 was 42s of compiling against 176s of
+  # assembly. Caching dep compiles therefore cannot help those builds much, and
+  # a flat firmware_sec hides which half a given package is paying for.
+  @spec run_firmware(map(), integer(), String.t()) :: map()
+  defp run_firmware(prep, log_tail_bytes, package_name) do
+    %{
+      project_dir: project_dir,
+      env: env,
+      log_file: log_file,
+      build_path: build_path,
+      deps_duration: deps_duration
+    } = prep
+
+    firmware_start = System.monotonic_time(:second)
+
+    with :ok <- run_firmware_mix(project_dir, env, log_file),
+         firmware_sec = System.monotonic_time(:second) - firmware_start,
          {:ok, hash1} <- hash_package_artifacts(build_path, package_name),
-         :ok <- run_mix(["deps.clean", "--build", package_name], project_dir, env, log_file),
-         :ok <- run_mix(["firmware"], project_dir, env, log_file),
+         release_start = System.monotonic_time(:second),
+         :ok <- clean_package_build(build_path, package_name),
+         :ok <- run_release_mix(project_dir, env, log_file),
          {:ok, hash2} <- hash_package_artifacts(build_path, package_name) do
-      duration = System.monotonic_time(:second) - start_time
+      release_sec = System.monotonic_time(:second) - release_start
+      scan_start = System.monotonic_time(:second)
       firmware_info = Scanner.find_firmware(build_path)
       log_tail = read_log_tail(log_file, log_tail_bytes)
       beam_scan = analyze_beam_scan(build_path, package_name)
       dependency_scans = analyze_dependency_beam_scans(build_path, package_name)
       {deterministic, determinism_changes} = compare_hashes(hash1, hash2)
+      scan_sec = System.monotonic_time(:second) - scan_start
+      duration = deps_duration + (System.monotonic_time(:second) - firmware_start)
 
       %{
         status: :pass,
         duration_sec: duration * 1.0,
+        phase_timings: %{
+          deps_sec: deps_duration * 1.0,
+          firmware_sec: firmware_sec * 1.0,
+          release_sec: release_sec * 1.0,
+          scan_sec: scan_sec * 1.0
+        },
         firmware_size_bytes: firmware_info[:size],
         log_tail: log_tail,
         beam_scan: beam_scan,
@@ -499,12 +633,13 @@ defmodule NccWorker.Worker do
       }
     else
       {:error, reason} ->
-        duration = System.monotonic_time(:second) - start_time
+        duration = deps_duration + (System.monotonic_time(:second) - firmware_start)
         log_tail = read_log_tail(log_file, log_tail_bytes)
 
         %{
           status: :fail,
           duration_sec: duration * 1.0,
+          phase_timings: %{deps_sec: deps_duration * 1.0},
           firmware_size_bytes: nil,
           log_tail: log_tail,
           beam_scan: nil,
@@ -515,7 +650,58 @@ defmodule NccWorker.Worker do
   end
 
   defp run_mix(args, project_dir, env, log_file) do
-    case System.cmd("mix", args,
+    run_cmd("mix", args, project_dir, env, log_file)
+  end
+
+  # Drop this target's compiled copy of the package so the second pass has to
+  # rebuild it. Deliberately not `mix deps.clean --build`: that task globs
+  # `Path.dirname(build_path)/*/lib/<app>`, so with every target's build dir
+  # under one `_build/` it wipes the package out of the *sibling* targets too.
+  # Concurrently, that lands between a sibling's compile and its release step
+  # and kills it with "could not find an app file at
+  # _build/<target>/lib/<pkg>/ebin/<pkg>.app". Removing our own directory is
+  # what the task would have done for us anyway.
+  defp clean_package_build(build_path, package_name) do
+    case build_path |> Path.join("lib/#{package_name}") |> File.rm_rf() do
+      {:ok, _} -> :ok
+      {:error, reason, path} -> {:error, "could not clean #{path}: #{inspect(reason)}"}
+    end
+  end
+
+  # Assembling a firmware image runs mksquashfs, which sets ownership on the
+  # rootfs entries it packs. The build container runs with --cap-drop=ALL, so
+  # those chowns come back "Operation not permitted" and the build dies partway
+  # through the image (nerves_system_x86_64 hits it on /var/www; systems whose
+  # overlay carries no such entry never notice). fakeroot fakes the ownership
+  # bookkeeping in userspace, so the image gets the uids it expects without
+  # granting CAP_CHOWN to a container that compiles untrusted package code.
+  #
+  # Absent fakeroot the plain command still runs, so an older image keeps its
+  # current behaviour rather than failing to start.
+  defp run_firmware_mix(project_dir, env, log_file) do
+    case System.find_executable("fakeroot") do
+      nil -> run_cmd("mix", ["firmware"], project_dir, env, log_file)
+      fakeroot -> run_cmd(fakeroot, ["mix", "firmware"], project_dir, env, log_file)
+    end
+  end
+
+  # Second pass of the determinism check. It only has to reproduce the
+  # package's own BEAM files, and `hash_package_artifacts/2` reads those from
+  # `<build_path>/rel`, which `mix release` populates on its own. Running the
+  # full `mix firmware` here rebuilt the rootfs, squashfs and .fw image as
+  # well, none of which the comparison looks at: about 40% of a target's wall
+  # clock spent producing an image that is immediately thrown away.
+  #
+  # `mix nerves.new` sets `overwrite: true` in the release config, so
+  # reassembling over the first pass's release directory needs no prompt.
+  # No fakeroot here: without the image step there is nothing left that wants
+  # to set ownership.
+  defp run_release_mix(project_dir, env, log_file) do
+    run_cmd("mix", ["release"], project_dir, env, log_file)
+  end
+
+  defp run_cmd(command, args, project_dir, env, log_file) do
+    case System.cmd(command, args,
            cd: project_dir,
            env: env,
            stderr_to_stdout: true,
@@ -628,24 +814,45 @@ defmodule NccWorker.Worker do
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason), do: inspect(reason)
 
-  @spec compile_host(String.t(), String.t(), integer()) :: map()
-  defp compile_host(project_dir, output_dir, log_tail_bytes) do
+  # Shared with `Project.add_package/3`, and that sharing is the point. The first
+  # `mix deps.get` already compiles the whole tree by way of nerves_bootstrap, so
+  # it has to write into the same build path this stage reads, or the work is
+  # done twice: once into `_build/dev` that nobody reads, once here.
+  @spec host_env(String.t()) :: [{String.t(), String.t()}]
+  defp host_env(project_dir) do
+    [
+      {"MIX_BUILD_PATH", Path.join([project_dir, "_build", "host"])},
+      {"MIX_DEPS_PATH", Path.join([project_dir, "deps"])},
+      {"MIX_ENV", "prod"}
+    ]
+  end
+
+  @spec compile_host(String.t(), String.t(), integer(), String.t()) :: map()
+  defp compile_host(project_dir, output_dir, log_tail_bytes, package_name) do
     log_file = Path.join([output_dir, "logs", "host.log"])
     start_time = System.monotonic_time(:second)
 
+    env = host_env(project_dir)
     build_path = Path.join([project_dir, "_build", "host"])
-    deps_path = Path.join([project_dir, "deps"])
-
-    env = [
-      {"MIX_BUILD_PATH", build_path},
-      {"MIX_DEPS_PATH", deps_path},
-      {"MIX_ENV", "prod"}
-    ]
 
     case run_mix(["deps.get"], project_dir, env, log_file) do
       :ok ->
+        deps_path = Path.join([project_dir, "deps"])
+
+        {plan, stats} =
+          restore_cache(project_dir, deps_path, build_path, "host", env, package_name)
+
         compile_result = run_compile(project_dir, env, log_file, start_time, log_tail_bytes)
-        Map.put(compile_result, :system_version, nil)
+
+        stats =
+          case compile_result do
+            %{status: :pass} -> Map.put(stats, :cache_stored, BuildCache.store(plan) * 1.0)
+            _ -> stats
+          end
+
+        compile_result
+        |> Map.put(:system_version, nil)
+        |> Map.put(:phase_timings, stats)
 
       {:error, reason} ->
         duration = System.monotonic_time(:second) - start_time

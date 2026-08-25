@@ -53,6 +53,17 @@ defmodule Portal.Builder do
   @spec hex_cache() :: Path.t()
   def hex_cache, do: config(:hex_cache, Path.expand("~/.ncc-hex-cache"))
 
+  @doc """
+  Host path for the shared dependency build cache, or nil when it is off.
+
+  Unset is the default and means the worker compiles every dependency from
+  scratch, which is what it did before the cache existed. That makes turning it
+  off a config change rather than a deploy, which is what you want for something
+  whose failure mode is subtly wrong artifacts rather than a crash.
+  """
+  @spec build_cache() :: Path.t() | nil
+  def build_cache, do: config(:build_cache, nil)
+
   defp config(key, default) do
     :portal
     |> Application.get_env(__MODULE__, [])
@@ -131,6 +142,39 @@ defmodule Portal.Builder do
   end
 
   @doc """
+  Re-read a finished run's output from its scratch directory.
+
+  The counterpart to `build/2` for `Portal.Workers.Ingest`, which runs as a
+  separate job and so cannot be handed the return value of the build that
+  produced it. Same shape as `build/2` returns, minus a meaningful exit code:
+  reaching this point at all means the container exited 0.
+
+  `{:error, :missing_result_json}` means the scratch dir is gone or never held a
+  result, which no retry can fix.
+  """
+  @spec load_run(String.t()) :: {:ok, build_result()} | {:error, term()}
+  def load_run(run_id) do
+    scratch = Path.join(scratch_root(), safe_name(run_id))
+    output_dir = Path.join(scratch, "out")
+    files_dir = Path.join(scratch, "files")
+
+    case read_result_json(output_dir) do
+      nil ->
+        {:error, :missing_result_json}
+
+      result ->
+        {:ok,
+         %{
+           exit_code: 0,
+           result: result,
+           files_dir: files_dir,
+           output_dir: output_dir,
+           log: read_log(Path.join(output_dir, "runner.log"))
+         }}
+    end
+  end
+
+  @doc """
   Remove a run's scratch directory. Best-effort.
   """
   @spec cleanup(String.t()) :: :ok
@@ -203,8 +247,6 @@ defmodule Portal.Builder do
   # the worker container environment expected by apps/ncc_worker.
   @spec build_docker_args(map(), Path.t(), Path.t(), Path.t()) :: [String.t()]
   def build_docker_args(job, work_dir, output_dir, files_dir) do
-    {uid, gid} = current_user()
-
     base = [
       "run",
       "--rm",
@@ -212,10 +254,12 @@ defmodule Portal.Builder do
       "--name",
       container_name(job.run_id),
       "--user",
-      "#{uid}:#{gid}",
+      run_as_user(),
       "--cap-drop=ALL",
       "--security-opt=no-new-privileges"
     ]
+
+    limits = resource_limits()
 
     mounts =
       List.flatten([
@@ -223,7 +267,8 @@ defmodule Portal.Builder do
         ["--mount", "type=bind,source=#{output_dir},target=/out"],
         ["--mount", "type=bind,source=#{files_dir},target=/files"],
         ["--mount", "type=bind,source=#{nerves_cache()},target=/home/nerves/.nerves"],
-        ["--mount", "type=bind,source=#{hex_cache()},target=/hex-cache"]
+        ["--mount", "type=bind,source=#{hex_cache()},target=/hex-cache"],
+        build_cache_mount(job)
       ])
 
     env = [
@@ -234,16 +279,155 @@ defmodule Portal.Builder do
       "-e",
       "HOME=/home/nerves",
       "-e",
-      "HEX_HOME=/hex-cache"
+      "HEX_HOME=/hex-cache",
+      # Nerves extracts prebuilt system tarballs with the external `tar`, and
+      # GNU tar restores ownership by default when it believes it is root. On a
+      # rootless daemon run_as_user is "0:0", so it does believe that, and every
+      # chown then fails against --cap-drop=ALL: tar exits 2 and
+      # Nerves.Artifact.Cache.put/2 raises. Dropping the chown is the fix, not
+      # granting CAP_CHOWN back to a container that builds untrusted package
+      # code. Under a rootful daemon we run as our own non-root uid, where this
+      # is already tar's default, so it is a no-op there.
+      "-e",
+      "TAR_OPTIONS=--no-same-owner"
     ]
 
-    base ++ mounts ++ env ++ [image_ref(job)]
+    base ++
+      limits ++
+      mounts ++ env ++ build_cache_env(job) ++ cpu_env() ++ concurrency_env() ++ [image_ref(job)]
+  end
+
+  # The cache is mounted per worker image rather than as one flat directory.
+  # Artifacts are only interchangeable between builds that used the same Elixir,
+  # OTP and Nerves toolchain, and the image is what pins all three, so making it
+  # part of the path means a rebuilt image starts from an empty cache instead of
+  # inheriting entries it cannot vouch for. The worker's own cache key covers
+  # everything below that line; this covers the line itself.
+  defp build_cache_mount(job) do
+    case build_cache_dir(job) do
+      nil -> []
+      dir -> ["--mount", "type=bind,source=#{dir},target=/build-cache"]
+    end
+  end
+
+  defp build_cache_env(job) do
+    case build_cache_dir(job) do
+      nil -> []
+      _dir -> ["-e", "NCC_BUILD_CACHE=/build-cache"]
+    end
+  end
+
+  # Created here rather than by the deployment: the directory is per image, so
+  # its name is not known until a build runs. A failure to create it disables the
+  # cache for that build instead of failing it, since a cache that cannot be
+  # written is a slowdown and not an error.
+  defp build_cache_dir(job) do
+    case build_cache() do
+      nil ->
+        nil
+
+      root ->
+        dir = Path.join(root, image_slug(job))
+
+        case File.mkdir_p(dir) do
+          :ok -> dir
+          {:error, _reason} -> nil
+        end
+    end
+  end
+
+  defp image_slug(job) do
+    (job.image_digest || job.image_name || "unknown")
+    |> String.replace(~r/[^A-Za-z0-9._-]/, "_")
+  end
+
+  # `--cpus` is a CFS quota, not a core assignment: `nproc` inside the container
+  # still reports every core the host has. Nothing in the build reads the quota,
+  # so each container started a BEAM with one scheduler per *host* core, and BEAM
+  # schedulers busy-wait by default. Five concurrent builds on six cores left the
+  # host at 21% system time with a run queue of 20: a fifth of the machine spent
+  # spinning and being throttled instead of compiling. Tell the runtimes how much
+  # CPU they actually have.
+  #
+  # ERL_FLAGS covers the worker's own VM and any `erl` it starts; mix and elixir
+  # read ELIXIR_ERL_OPTIONS instead, and that is where the compile parallelism
+  # lives. MAKEFLAGS caps the C builds that NIF-carrying deps kick off.
+  defp cpu_env do
+    case cpu_quota() do
+      nil ->
+        []
+
+      quota ->
+        beam_flags = "+S #{quota}:#{quota} +sbwt none +sbwtdcpu none +sbwtdio none"
+
+        [
+          "-e",
+          "ERL_FLAGS=#{beam_flags}",
+          "-e",
+          "ELIXIR_ERL_OPTIONS=#{beam_flags}",
+          "-e",
+          "MAKEFLAGS=-j#{quota}"
+        ]
+    end
+  end
+
+  # Whole cores only, and never zero: a fractional cap still needs at least one
+  # scheduler to make progress.
+  defp cpu_quota do
+    with value when not is_nil(value) <- config(:cpus, nil),
+         {cpus, _rest} <- Float.parse(to_string(value)) do
+      max(1, trunc(cpus))
+    else
+      _ -> nil
+    end
+  end
+
+  # How many targets the worker may build at once inside one container. Unset
+  # means one, the serial behaviour this started with. Worth raising only
+  # together with the CPU cap: the targets share whatever `--cpus` allows, and
+  # the gain comes from overlapping the single-threaded stretches (release
+  # assembly, squashfs, fwup), not from finding more cores.
+  defp concurrency_env do
+    case config(:build_concurrency, nil) do
+      nil -> []
+      value -> ["-e", "NCC_BUILD_CONCURRENCY=#{value}"]
+    end
+  end
+
+  # Buildroot cross-compiles will use every core they are given. On a host that
+  # shares the machine with other services, an unbounded build starves them, so
+  # deployments can cap what a single build may take. Unset means unbounded,
+  # which is the historical behaviour and stays the default.
+  defp resource_limits do
+    [{:cpus, "--cpus"}, {:memory, "--memory"}]
+    |> Enum.flat_map(fn {key, flag} ->
+      case config(key, nil) do
+        nil -> []
+        value -> [flag, to_string(value)]
+      end
+    end)
   end
 
   # Local images (no registry slash) use the tag directly; remote images use
   # name@digest for reproducibility.
   defp image_ref(%{image_name: name, image_digest: digest}) do
     if String.contains?(name, "/"), do: "#{name}@#{digest}", else: name
+  end
+
+  # Matching our own uid keeps bind-mounted output owned by us on a normal
+  # daemon. Under rootless Docker it does the opposite: the daemon runs in a
+  # user namespace where our uid is already 0, so passing it literally lands
+  # container writes on a subuid we cannot read back. Rootless hosts set
+  # "0:0", which maps to the service user outside the namespace.
+  defp run_as_user do
+    case config(:run_as_user, nil) do
+      nil ->
+        {uid, gid} = current_user()
+        "#{uid}:#{gid}"
+
+      value ->
+        to_string(value)
+    end
   end
 
   defp current_user do
