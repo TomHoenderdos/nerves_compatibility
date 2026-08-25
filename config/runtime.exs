@@ -146,6 +146,17 @@ if portal_available? do
 
     config :portal, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
+    # Self-hosted Umami: cookieless, no consent banner needed. The site id is
+    # public anyway, it ships in every page, so a default here beats another
+    # required environment variable. Set UMAMI_WEBSITE_ID="" to turn it off.
+    umami_website_id =
+      case System.get_env("UMAMI_WEBSITE_ID", "437028cd-8e45-471d-854c-87508b70f2e4") do
+        "" -> nil
+        id -> id
+      end
+
+    config :portal, :umami_website_id, umami_website_id
+
     # Defaults to every interface. Behind a reverse proxy on the same host,
     # set PHX_BIND_IP=127.0.0.1 so the port is not reachable from outside it.
     bind_ip =

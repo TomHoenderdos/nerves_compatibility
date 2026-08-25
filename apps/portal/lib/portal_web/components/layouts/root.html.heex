@@ -29,6 +29,10 @@
         window.addEventListener("phx:set-theme", (e) => setTheme(e.target.dataset.phxTheme));
       })();
     </script>
+    <%= if umami_id = Application.get_env(:portal, :umami_website_id) do %>
+      <script defer src="https://analytics.tomhoenderdos.nl/script.js" data-website-id={umami_id}>
+      </script>
+    <% end %>
   </head>
   <body>
     {@inner_content}
