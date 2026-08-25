@@ -15,6 +15,40 @@ defmodule Portal.Catalog do
 
   @statuses ~w(pass fail error skipped unknown)
 
+  # The dashboard reads these tables whole, so every query on its path names the
+  # columns it needs. `catalog_system_results` is 304 MB, of which 275 MB is the
+  # `dependency_scans` jsonb and 10 MB the `beam_scan` jsonb; nothing the
+  # dashboard renders reads either. Loading them anyway decoded ~300 MB of blob
+  # into the heap on every call, several calls per render, which is what made a
+  # single page load cost gigabytes and run the node out of memory.
+  @annotated_fields [
+    :run_id,
+    :system_pkg,
+    :status,
+    :failure_category,
+    :log_tail,
+    :hex_version_tested
+  ]
+  @stats_fields [:system_pkg, :system_version, :status]
+  @run_fields [
+    :id,
+    :run_id,
+    :package_id,
+    :version_tested,
+    :overall_status,
+    :finished_at,
+    :inserted_at
+  ]
+  @json_fields [
+    :run_id,
+    :system_pkg,
+    :system_version,
+    :status,
+    :firmware_size_bytes,
+    :hex_version_tested,
+    :log_path
+  ]
+
   resources do
     resource(Package)
     resource(Run)
@@ -34,7 +68,7 @@ defmodule Portal.Catalog do
       runs
       |> Map.values()
       |> Enum.map(& &1.id)
-      |> system_results_for_runs()
+      |> json_results_for_runs()
       |> Enum.group_by(& &1.run_id)
 
     package_entries =
@@ -56,8 +90,11 @@ defmodule Portal.Catalog do
   Returns the schema-v2 `stats.json` shape from Catalog rows.
   """
   def stats_json do
-    results = Ash.read!(SystemResult, domain: __MODULE__)
-    runs_by_id = Run |> Ash.read!(domain: __MODULE__) |> Map.new(&{&1.id, &1})
+    results =
+      SystemResult
+      |> Ash.Query.select(@stats_fields)
+      |> Ash.read!(domain: __MODULE__)
+
 
     %{
       schema: 2,
@@ -67,7 +104,30 @@ defmodule Portal.Catalog do
         results
         |> Enum.group_by(&system_key/1)
         |> Map.new(fn {key, rows} -> {key, counts(rows, false)} end),
-      last_run_finished_at: last_finished_at(runs_by_id)
+      last_run_finished_at: last_finished_at(run_summaries())
+    }
+  end
+
+  @doc """
+  Everything the dashboard renders, from one pass over the catalog.
+
+  The functions below each derive their answer from `latest_annotated_systems/0`
+  and from the runs table. Called one by one, as the dashboard used to, they
+  repeat both loads per caller. Threading the loaded rows through instead keeps
+  a render to a single pass.
+  """
+  def dashboard(cluster_limit \\ 3, recent_limit \\ 10) do
+    annotated = latest_annotated_systems()
+    runs = run_summaries()
+
+    %{
+      counts: package_status_counts(annotated),
+      clusters: failure_clusters(annotated, cluster_limit),
+      native: native_breakdown(),
+      rates: pass_rate_per_system(annotated),
+      recent_pass: recent_runs(:pass, recent_limit, runs),
+      recent_fail: recent_runs(:fail, recent_limit, runs),
+      last_run: last_finished_at(runs)
     }
   end
 
@@ -131,8 +191,11 @@ defmodule Portal.Catalog do
   end
 
   @doc "Per-system pass counts over the latest run of every package."
-  def pass_rate_per_system do
-    latest_annotated_systems()
+  def pass_rate_per_system, do: pass_rate_per_system(latest_annotated_systems())
+
+  @doc false
+  def pass_rate_per_system(annotated) do
+    annotated
     |> Enum.group_by(& &1.system_pkg)
     |> Enum.map(fn {system_pkg, rows} ->
       total = length(rows)
@@ -149,12 +212,14 @@ defmodule Portal.Catalog do
   end
 
   @doc "Most recently finished passing (:pass) or failing (:fail/:error) runs."
-  def recent_runs(status, limit \\ 5) do
+  def recent_runs(status, limit \\ 5), do: recent_runs(status, limit, run_summaries())
+
+  @doc false
+  def recent_runs(status, limit, runs) do
     wanted = if status == :pass, do: [:pass], else: [:fail, :error]
     pkgs = Package |> Ash.read!(domain: __MODULE__) |> Map.new(&{&1.id, &1})
 
-    Run
-    |> Ash.read!(domain: __MODULE__)
+    runs
     |> Enum.filter(&(&1.overall_status in wanted and not is_nil(&1.finished_at)))
     |> Enum.sort_by(& &1.finished_at, {:desc, DateTime})
     # One row per package. A package that gets re-checked often (jason, while
@@ -192,9 +257,12 @@ defmodule Portal.Catalog do
   }
 
   @doc "One bucket per package via Rollup.overall_status over its latest run's systems."
-  def package_status_counts do
+  def package_status_counts, do: package_status_counts(latest_annotated_systems())
+
+  @doc false
+  def package_status_counts(annotated) do
     by_pkg =
-      latest_annotated_systems()
+      annotated
       |> Enum.group_by(& &1.package)
       |> Enum.map(fn {_pkg, rows} ->
         Portal.Catalog.Rollup.overall_status(Enum.map(rows, & &1.status))
@@ -211,8 +279,11 @@ defmodule Portal.Catalog do
   end
 
   @doc "Non-pass systems grouped by failure_category with occurrence + distinct-package counts."
-  def failure_clusters(limit \\ 10) do
-    latest_annotated_systems()
+  def failure_clusters(limit \\ 10), do: failure_clusters(latest_annotated_systems(), limit)
+
+  @doc false
+  def failure_clusters(annotated, limit) do
+    annotated
     |> Enum.filter(&(&1.status in [:fail, :error] and not is_nil(&1.failure_category)))
     |> Enum.group_by(& &1.failure_category)
     |> Enum.map(fn {category, rows} ->
@@ -295,6 +366,7 @@ defmodule Portal.Catalog do
     Run
     |> Ash.Query.filter(package_id in ^package_ids)
     |> Ash.Query.sort(finished_at: :desc, inserted_at: :desc)
+    |> Ash.Query.select(@run_fields)
     |> Ash.read!(domain: __MODULE__)
     |> Enum.reduce(%{}, fn run, acc -> Map.put_new(acc, run.package_id, run) end)
   end
@@ -303,6 +375,32 @@ defmodule Portal.Catalog do
     Run
     |> Ash.Query.filter(package_id == ^package_id)
     |> Ash.Query.sort(finished_at: :desc, inserted_at: :desc)
+    |> Ash.read!(domain: __MODULE__)
+  end
+
+  defp run_summaries do
+    Run
+    |> Ash.Query.select(@run_fields)
+    |> Ash.read!(domain: __MODULE__)
+  end
+
+  defp json_results_for_runs([]), do: []
+
+  defp json_results_for_runs(run_ids) do
+    SystemResult
+    |> Ash.Query.filter(run_id in ^run_ids)
+    |> Ash.Query.sort(system_pkg: :asc)
+    |> Ash.Query.select(@json_fields)
+    |> Ash.read!(domain: __MODULE__)
+  end
+
+  defp annotated_results_for_runs([]), do: []
+
+  defp annotated_results_for_runs(run_ids) do
+    SystemResult
+    |> Ash.Query.filter(run_id in ^run_ids)
+    |> Ash.Query.sort(system_pkg: :asc)
+    |> Ash.Query.select(@annotated_fields)
     |> Ash.read!(domain: __MODULE__)
   end
 
@@ -403,9 +501,8 @@ defmodule Portal.Catalog do
     if include_total?, do: Map.put(counted, "total", length(results)), else: counted
   end
 
-  defp last_finished_at(runs_by_id) do
-    runs_by_id
-    |> Map.values()
+  defp last_finished_at(runs) do
+    runs
     |> Enum.map(& &1.finished_at)
     |> Enum.reject(&is_nil/1)
     |> Enum.sort(DateTime)
@@ -429,7 +526,7 @@ defmodule Portal.Catalog do
 
     run_to_pkg
     |> Map.keys()
-    |> system_results_for_runs()
+    |> annotated_results_for_runs()
     |> Enum.map(fn sr ->
       %{
         package: Map.get(run_to_pkg, sr.run_id),
