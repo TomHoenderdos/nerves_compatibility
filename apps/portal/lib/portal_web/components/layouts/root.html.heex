@@ -33,12 +33,16 @@
       <%!-- data-cfasync="false" keeps Cloudflare Rocket Loader from rewriting the
            tag. Rocket Loader loads it through its own shim, which leaves
            document.currentScript null, and that is where the tracker reads its
-           website id from, so every pageview would be dropped. --%>
+           website id from, so every pageview would be dropped.
+           data-performance="true" is opt-in per tag: without it the tracker
+           never starts its PerformanceObserver, so ttfb/fcp/lcp/cls/inp stay
+           empty and the Performance view in Umami shows nothing. --%>
       <script
         defer
         data-cfasync="false"
         src="https://analytics.tomhoenderdos.nl/script.js"
         data-website-id={umami_id}
+        data-performance="true"
       >
       </script>
     <% end %>
