@@ -83,8 +83,10 @@ defmodule NccWorker.FileArchiver do
       else
         Logger.debug("Collecting manifests for #{system_name} from build_path: #{build_path}")
 
+        index = build_rel_index(build_path)
+
         # Get the package's own beam_scan
-        package_files = collect_manifest_entries(system_result[:beam_scan], build_path, "package")
+        package_files = collect_manifest_entries(system_result[:beam_scan], index, "package")
 
         # Get all dependency scans
         dependency_files =
@@ -95,7 +97,7 @@ defmodule NccWorker.FileArchiver do
             deps when is_map(deps) ->
               deps
               |> Enum.flat_map(fn {app_version, dep_scan} ->
-                collect_manifest_entries(dep_scan, build_path, app_version)
+                collect_manifest_entries(dep_scan, index, app_version)
               end)
 
             _ ->
@@ -145,11 +147,11 @@ defmodule NccWorker.FileArchiver do
     end
   end
 
-  @spec collect_manifest_entries(map() | nil, String.t(), String.t()) ::
+  @spec collect_manifest_entries(map() | nil, %{String.t() => String.t()}, String.t()) ::
           [{String.t(), map()}]
-  defp collect_manifest_entries(nil, _build_path, _source), do: []
+  defp collect_manifest_entries(nil, _index, _source), do: []
 
-  defp collect_manifest_entries(scan, build_path, source) do
+  defp collect_manifest_entries(scan, index, source) do
     # The manifest is in footprint.file_manifest with ebin/priv keys
     # Try footprint.file_manifest first (current structure)
     footprint = get_in(scan, ["footprint"]) || get_in(scan, [:footprint])
@@ -195,7 +197,7 @@ defmodule NccWorker.FileArchiver do
       # The manifest entry has a relative path like "ebin/myapp.beam" or "priv/static/file.js"
       # We need to locate this in the build directory structure
       relative_path = entry["path"] || entry[:path]
-      source_path = find_file_in_build(build_path, relative_path)
+      source_path = Map.get(index, relative_path)
 
       if is_nil(source_path) do
         Logger.debug("Could not find file for path: #{relative_path}")
@@ -206,27 +208,62 @@ defmodule NccWorker.FileArchiver do
     |> Enum.reject(fn {source, _entry} -> is_nil(source) end)
   end
 
-  @spec find_file_in_build(String.t(), String.t()) :: String.t() | nil
-  defp find_file_in_build(build_path, relative_path) do
-    # The file should be in the release directory structure
-    # Try both "rel" (for firmware builds) and "dev/rel" (for other builds)
-    rel_paths = [
-      Path.join(build_path, "rel"),
-      Path.join([build_path, "dev", "rel"])
-    ]
-
-    rel_paths
-    |> Enum.find_value(fn rel_dir ->
-      if File.dir?(rel_dir) do
-        # Find the file by searching in the release directory
-        pattern = Path.join([rel_dir, "**", relative_path])
-
-        case Path.wildcard(pattern) do
-          [path | _] -> path
-          [] -> nil
-        end
-      end
+  # Walk the release tree once and index every file by all of its trailing
+  # segment suffixes, so a manifest entry like "ebin/jason.beam" becomes a map
+  # lookup.
+  #
+  # This used to be one `Path.wildcard/1` call per manifest entry, with a `**`
+  # pattern that walks the whole release tree. A single system carries on the
+  # order of a thousand entries, so the archive step re-walked the same tree a
+  # thousand times: measured at roughly 0.24s per file, several minutes per
+  # target on top of a firmware build that itself takes about five.
+  #
+  # Ties keep the lexicographically smallest path, matching what the wildcard
+  # returned: it sorts its results and the caller took the head.
+  @spec build_rel_index(String.t()) :: %{String.t() => String.t()}
+  defp build_rel_index(build_path) do
+    # Firmware builds land under "rel"; other builds under "dev/rel".
+    [Path.join(build_path, "rel"), Path.join([build_path, "dev", "rel"])]
+    |> Enum.filter(&File.dir?/1)
+    |> Enum.reduce(%{}, fn rel_dir, acc ->
+      rel_dir
+      |> walk_files()
+      |> Enum.reduce(acc, fn path, inner ->
+        path
+        |> Path.relative_to(rel_dir)
+        |> Path.split()
+        |> path_suffixes()
+        |> Enum.reduce(inner, fn suffix, map ->
+          Map.update(map, suffix, path, &min(&1, path))
+        end)
+      end)
     end)
+  end
+
+  @spec path_suffixes([String.t()]) :: [String.t()]
+  defp path_suffixes(segments) do
+    Enum.map(0..(length(segments) - 1)//1, fn drop ->
+      segments |> Enum.drop(drop) |> Enum.join("/")
+    end)
+  end
+
+  @spec walk_files(String.t()) :: [String.t()]
+  defp walk_files(dir) do
+    case File.ls(dir) do
+      {:ok, entries} ->
+        Enum.flat_map(entries, fn entry ->
+          path = Path.join(dir, entry)
+
+          cond do
+            File.dir?(path) -> walk_files(path)
+            File.regular?(path) -> [path]
+            true -> []
+          end
+        end)
+
+      {:error, _} ->
+        []
+    end
   end
 
   @spec archive_file(String.t(), String.t(), map()) ::

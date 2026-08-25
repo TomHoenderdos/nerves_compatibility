@@ -14,8 +14,30 @@ config :portal,
 
 config :portal, Oban,
   repo: Portal.Repo,
-  queues: [builds: 1, intake: 5, maintenance: 1],
-  plugins: [Oban.Plugins.Pruner]
+  # Deliberately empty: `config/runtime.exs` owns the queue list so a deploy can
+  # give each host its own set. Config deep-merges keyword lists, so anything
+  # named here would survive the runtime override and run on every node.
+  queues: [],
+  plugins: [
+    # The 60s default deletes a completed job before anyone can look at it. That
+    # made the one measurement this pipeline actually needs impossible: how long
+    # a build took. `catalog_runs` records only when a run landed, and
+    # `started_at` is never written, so `attempted_at`/`completed_at` on the job
+    # row is the sole source of per-build duration. At roughly ten builds an
+    # hour, six hours of history is a few hundred rows.
+    {Oban.Plugins.Pruner, max_age: :timer.hours(6)},
+    # Without this, a build node that dies mid-job leaves the job `executing`
+    # and its scan request `queued` forever, with no error anywhere. That was a
+    # remote possibility while everything ran on one host; with `builds` on a
+    # separate box reached over a WAN link it is a question of when.
+    #
+    # Rescuing is purely time-based, so `rescue_after` has to sit well above the
+    # slowest honest build or it would restart one that is still working. Warm
+    # builds land in minutes and a cold cache costs tens; two hours leaves room
+    # for a first-of-its-kind Nerves system and still catches a dead node the
+    # same morning.
+    {Oban.Plugins.Lifeline, rescue_after: :timer.hours(2)}
+  ]
 
 # Host-side Docker invocation for worker builds.
 # Runtime-overridable in config/runtime.exs.
@@ -45,7 +67,10 @@ config :esbuild,
     args:
       ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/*),
     cd: Path.expand("../assets", __DIR__),
-    env: %{"NODE_PATH" => [Path.expand("../deps", __DIR__), Mix.Project.build_path()]}
+    # deps_path/0, not "../deps": in an umbrella the deps are fetched to the
+    # umbrella root, and apps/portal/deps only exists on machines that still
+    # have a stale pre-umbrella copy of it.
+    env: %{"NODE_PATH" => [Mix.Project.deps_path(), Mix.Project.build_path()]}
   ]
 
 config :tailwind,

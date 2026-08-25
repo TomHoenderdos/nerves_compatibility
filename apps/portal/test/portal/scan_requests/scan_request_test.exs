@@ -2,10 +2,16 @@ defmodule Portal.ScanRequests.ScanRequestTest do
   use Portal.DataCase, async: false
   use Oban.Testing, repo: Portal.Repo
 
+  require Ash.Query
+
   alias Portal.ScanRequests.ScanRequest
 
   defmodule StubVersions do
     def latest_version(_package), do: {:ok, "9.9.9"}
+  end
+
+  defmodule MissingVersions do
+    def latest_version(_package), do: {:error, :unknown_package}
   end
 
   setup do
@@ -111,5 +117,25 @@ defmodule Portal.ScanRequests.ScanRequestTest do
         "scan_request_id" => request.id
       }
     )
+  end
+
+  test "closes the request when hex has never heard of the package" do
+    Application.put_env(:portal, :package_version_resolver, MissingVersions)
+
+    assert {:error, :unknown_package} =
+             Portal.ScanRequests.create_once(%{
+               package_name: "no_such_package_at_all",
+               source: :backfill
+             })
+
+    # The row is committed before the version lookup runs, so the failure has to
+    # close it. An `:accepted` leftover is matched by `open_request_for_package/1`
+    # forever after, which would stop the package being scanned if it ever ships.
+    assert [%ScanRequest{status: :rejected}] =
+             ScanRequest
+             |> Ash.Query.filter(package_name == "no_such_package_at_all")
+             |> Ash.read!(domain: Portal.ScanRequests)
+
+    assert Portal.ScanRequests.open_request_for_package("no_such_package_at_all") == nil
   end
 end

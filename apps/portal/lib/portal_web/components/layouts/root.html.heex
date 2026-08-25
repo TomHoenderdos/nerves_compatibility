@@ -29,6 +29,19 @@
         window.addEventListener("phx:set-theme", (e) => setTheme(e.target.dataset.phxTheme));
       })();
     </script>
+    <%= if umami_id = Application.get_env(:portal, :umami_website_id) do %>
+      <%!-- data-cfasync="false" keeps Cloudflare Rocket Loader from rewriting the
+           tag. Rocket Loader loads it through its own shim, which leaves
+           document.currentScript null, and that is where the tracker reads its
+           website id from, so every pageview would be dropped. --%>
+      <script
+        defer
+        data-cfasync="false"
+        src="https://analytics.tomhoenderdos.nl/script.js"
+        data-website-id={umami_id}
+      >
+      </script>
+    <% end %>
   </head>
   <body>
     {@inner_content}

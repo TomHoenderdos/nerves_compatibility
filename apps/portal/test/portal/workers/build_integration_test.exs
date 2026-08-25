@@ -21,7 +21,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
   alias Portal.Builder
   alias Portal.Catalog.{Package, Run, SystemResult}
   alias Portal.ScanRequests
-  alias Portal.Workers.Build
+  alias Portal.Workers.{Build, Ingest}
 
   @moduletag :integration
   @moduletag timeout: :timer.minutes(30)
@@ -59,6 +59,12 @@ defmodule Portal.Workers.BuildIntegrationTest do
     }
 
     assert :ok = Build.perform(job)
+
+    # The build hands off to the ingest job; run it here for the same reason.
+    assert [ingest_job] = all_enqueued(worker: Ingest)
+
+    assert :ok =
+             Ingest.perform(%Oban.Job{args: ingest_job.args, attempt: 1, max_attempts: 5})
 
     # Package row
     packages = Ash.read!(Package, domain: Portal.Catalog)

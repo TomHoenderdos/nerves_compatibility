@@ -5,18 +5,17 @@ defmodule PortalWeb.DashboardLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    counts = Catalog.package_status_counts()
-    stats = Catalog.stats_json()
+    data = Catalog.dashboard(3, 10)
 
     {:ok,
      socket
-     |> assign(:counts, counts)
-     |> assign(:clusters, Catalog.failure_clusters(3))
-     |> assign(:native, Catalog.native_breakdown())
-     |> assign(:rates, Catalog.pass_rate_per_system())
-     |> assign(:recent_pass, Catalog.recent_runs(:pass, 10))
-     |> assign(:recent_fail, Catalog.recent_runs(:fail, 10))
-     |> assign(:last_run, stats[:last_run_finished_at])}
+     |> assign(:counts, data.counts)
+     |> assign(:clusters, data.clusters)
+     |> assign(:native, data.native)
+     |> assign(:rates, data.rates)
+     |> assign(:recent_pass, data.recent_pass)
+     |> assign(:recent_fail, data.recent_fail)
+     |> assign(:last_run, data.last_run)}
   end
 
   @impl true
