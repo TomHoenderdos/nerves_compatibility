@@ -7,12 +7,21 @@ defmodule Portal.GitHub do
 
   @github_url "https://github.com"
   @api_url "https://api.github.com"
-  @scope "read:user public_repo"
-  @writable_permissions ~w(admin maintain write)
+  # No OAuth scope is requested. GitHub grants unscoped tokens read-only access
+  # to public information, which covers both authenticated calls this module
+  # makes: `GET /user` (we read only `login`) and `GET /repos/:owner/:repo` (we
+  # read only the `permissions` block describing the caller's own access).
+  # Verified against a zero-scope token: both return exactly what we need.
+  #
+  # The previous `read:user public_repo` grant is deliberately gone.
+  # `public_repo` is read *and write* to every public repository the maintainer
+  # can touch — an unreasonable ask for a flow that only ever reads.
+  @scope ""
+  @writable_permissions ~w(admin maintain push)
 
   def start_device_flow do
     with {:ok, client_id} <- client_id() do
-      body = URI.encode_query(%{client_id: client_id, scope: @scope})
+      body = URI.encode_query(device_flow_params(client_id))
 
       case post_form("#{@github_url}/login/device/code", body) do
         {:ok, %{status: 200, body: body}} when is_map(body) ->
@@ -53,6 +62,20 @@ defmodule Portal.GitHub do
   end
 
   def complete_repo_requests(_package_names, _device_code), do: {:error, :missing_package}
+
+  @doc """
+  OAuth scope requested from GitHub. Empty on purpose; see `@scope`.
+  """
+  def scope, do: @scope
+
+  # `scope` is optional in the device flow. Omit the key entirely rather than
+  # sending an empty value, so the consent screen reads as public data only.
+  defp device_flow_params(client_id) do
+    case scope() do
+      "" -> %{client_id: client_id}
+      scope -> %{client_id: client_id, scope: scope}
+    end
+  end
 
   defp client_id do
     Application.get_env(:portal, :github_client_id)
@@ -120,8 +143,8 @@ defmodule Portal.GitHub do
     package_names
     |> Enum.reduce_while({:ok, []}, fn package_name, {:ok, requests} ->
       with {:ok, repo} <- package_github_repo(package_name),
-           {:ok, permission} <- repo_permission(repo, login, access_token),
-           true <- permission in @writable_permissions,
+           {:ok, permissions} <- repo_permission(repo, login, access_token),
+           true <- writable_permission?(permissions),
            {:ok, request} <- create_scan_request(package_name, repo, user) do
         {:cont, {:ok, [request | requests]}}
       else
@@ -201,14 +224,25 @@ defmodule Portal.GitHub do
 
   defp repo_from_parts(_parts), do: :error
 
-  defp repo_permission(repo, login, access_token) do
-    path = "/repos/#{repo.owner}/#{repo.repo}/collaborators/#{login}/permission"
+  # Reads the authenticated user's own access off the repository record rather
+  # than `/collaborators/:login/permission`. That endpoint answers "what access
+  # does user X have", so GitHub gates it behind *push access of the caller* and
+  # returns 403 "Must have push access to view collaborator permission" for the
+  # exact population we need to reject cleanly. `GET /repos/:owner/:repo`
+  # answers "what access do *I* have", which is the only question we ask.
+  defp repo_permission(repo, _login, access_token) do
+    case github_get("/repos/#{repo.owner}/#{repo.repo}", access_token) do
+      {:ok, %{status: 200, body: %{"permissions" => permissions}}} when is_map(permissions) ->
+        {:ok, permissions}
 
-    case github_get(path, access_token) do
-      {:ok, %{status: 200, body: %{"permission" => permission}}} when is_binary(permission) ->
-        {:ok, permission}
+      # A repo readable without a `permissions` block means the token was not
+      # accepted as an identity for it. Fail loudly instead of silently
+      # rejecting a real maintainer.
+      {:ok, %{status: 200, body: body}} ->
+        Logger.warning("GitHub repo response had no permissions block: #{inspect(body)}")
+        {:error, :github_api_unavailable}
 
-      {:ok, %{status: 404}} ->
+      {:ok, %{status: status}} when status in [403, 404] ->
         {:error, {:not_repo_maintainer, repo.full_name}}
 
       {:ok, %{status: status, body: body}} ->
@@ -220,6 +254,18 @@ defmodule Portal.GitHub do
         {:error, :github_api_unavailable}
     end
   end
+
+  @doc """
+  True when the repository `permissions` block grants write or better.
+
+  Mirrors the role strings the collaborator-permission endpoint used to return:
+  `push` is the boolean form of the "write" role.
+  """
+  def writable_permission?(permissions) when is_map(permissions) do
+    Enum.any?(@writable_permissions, &(permissions[&1] == true))
+  end
+
+  def writable_permission?(_permissions), do: false
 
   defp github_get(path, access_token) do
     Req.get("#{@api_url}#{path}",
