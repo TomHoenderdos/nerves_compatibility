@@ -6,11 +6,23 @@ defmodule Portal.HexPm do
   require Logger
 
   @client_id "78ea6566-89fd-481e-a1d6-7d9d78eacca8"
-  @scope "api"
+  @scope "api:read"
   @api_url "https://hex.pm/api"
 
+  @doc """
+  OAuth scope requested from Hex.pm.
+
+  Read-only on purpose. The only authenticated call this module makes is
+  `GET /api/users/me`; package and owner lookups are unauthenticated. Hex.pm
+  expands the bare `api` scope into `api:read` + `api:write` on its consent
+  screen, which shows a write permission we never use and requires the user to
+  have 2FA enabled.
+  """
+  def scope, do: @scope
+
   def start_device_flow do
-    body = URI.encode_query(%{client_id: @client_id, scope: @scope, name: "Nerves Compatibility"})
+    body =
+      URI.encode_query(%{client_id: @client_id, scope: scope(), name: "Nerves Compatibility"})
 
     case post_form("#{@api_url}/oauth/device_authorization", body) do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
