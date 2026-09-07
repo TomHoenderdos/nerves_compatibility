@@ -21,6 +21,11 @@ defmodule PortalWeb.Router do
     plug PortalWeb.Plugs.RequireAdmin
   end
 
+  pipeline :authenticated do
+    plug :browser
+    plug PortalWeb.Plugs.RequireLogin
+  end
+
   scope "/", PortalWeb do
     pipe_through :browser
 
@@ -55,6 +60,13 @@ defmodule PortalWeb.Router do
     get "/auth/github/complete", PageController, :request_scan
     post "/auth/github/complete", PageController, :github_complete
     post "/requests/anonymous", PageController, :anonymous_request
+  end
+
+  scope "/", PortalWeb do
+    pipe_through :authenticated
+
+    get "/settings", PageController, :settings
+    post "/settings", PageController, :update_settings
   end
 
   scope "/admin" do

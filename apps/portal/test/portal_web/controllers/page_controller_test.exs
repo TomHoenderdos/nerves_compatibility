@@ -123,6 +123,150 @@ defmodule PortalWeb.PageControllerTest do
     assert html_response(conn, 200) =~ "Approve"
   end
 
+  test "GET /settings redirects anonymous users", %{conn: conn} do
+    conn = get(conn, ~p"/settings")
+
+    assert redirected_to(conn) == ~p"/login"
+  end
+
+  test "GET /settings shows the current username for signed-in users", %{conn: conn} do
+    {:ok, user} = Portal.Accounts.register_user("settings_viewer", "correct horse battery staple")
+
+    conn =
+      conn
+      |> init_test_session(user_id: user.id)
+      |> get(~p"/settings")
+
+    body = html_response(conn, 200)
+    assert body =~ "Account settings"
+    assert body =~ "Change username"
+    assert body =~ "Change password"
+    assert body =~ "settings_viewer"
+  end
+
+  test "POST /settings updates the username", %{conn: conn} do
+    {:ok, user} = Portal.Accounts.register_user("settings_rename", "correct horse battery staple")
+
+    conn =
+      conn
+      |> init_test_session(user_id: user.id)
+      |> post(~p"/settings", %{"username" => "settings_renamed"})
+
+    assert html_response(conn, 200) =~ "Account settings updated."
+
+    assert {:ok, updated} = Portal.Accounts.get_user(user.id)
+    assert updated.username == "settings_renamed"
+  end
+
+  test "POST /settings rejects a username taken by another user", %{conn: conn} do
+    {:ok, other} = Portal.Accounts.register_user("settings_taken", "correct horse battery staple")
+    {:ok, user} = Portal.Accounts.register_user("settings_thief", "correct horse battery staple")
+
+    conn =
+      conn
+      |> init_test_session(user_id: user.id)
+      |> post(~p"/settings", %{"username" => other.username})
+
+    assert html_response(conn, 200) =~ "That username is already registered."
+
+    assert {:ok, unchanged} = Portal.Accounts.get_user(user.id)
+    assert unchanged.username == "settings_thief"
+  end
+
+  test "POST /settings rejects an invalid username", %{conn: conn} do
+    {:ok, user} =
+      Portal.Accounts.register_user("settings_invalid", "correct horse battery staple")
+
+    conn =
+      conn
+      |> init_test_session(user_id: user.id)
+      |> post(~p"/settings", %{"username" => "no"})
+
+    assert html_response(conn, 200) =~ "Use a username with 3-40 letters"
+
+    assert {:ok, unchanged} = Portal.Accounts.get_user(user.id)
+    assert unchanged.username == "settings_invalid"
+  end
+
+  test "POST /settings keeping the same username succeeds", %{conn: conn} do
+    {:ok, user} = Portal.Accounts.register_user("settings_same", "correct horse battery staple")
+
+    conn =
+      conn
+      |> init_test_session(user_id: user.id)
+      |> post(~p"/settings", %{"username" => "settings_same"})
+
+    assert html_response(conn, 200) =~ "Account settings updated."
+
+    assert {:ok, updated} = Portal.Accounts.get_user(user.id)
+    assert updated.username == "settings_same"
+  end
+
+  test "POST /settings changes the password with the correct current password", %{conn: conn} do
+    {:ok, user} = Portal.Accounts.register_user("settings_pwd", "correct horse battery staple")
+
+    conn =
+      conn
+      |> init_test_session(user_id: user.id)
+      |> post(~p"/settings", %{
+        "current_password" => "correct horse battery staple",
+        "new_password" => "another much longer secret"
+      })
+
+    assert html_response(conn, 200) =~ "Account settings updated."
+
+    assert {:ok, updated} = Portal.Accounts.get_user(user.id)
+    refute Argon2.verify_pass("correct horse battery staple", updated.password_hash)
+    assert Argon2.verify_pass("another much longer secret", updated.password_hash)
+  end
+
+  test "POST /settings rejects a wrong current password", %{conn: conn} do
+    {:ok, user} = Portal.Accounts.register_user("settings_badpwd", "correct horse battery staple")
+
+    conn =
+      conn
+      |> init_test_session(user_id: user.id)
+      |> post(~p"/settings", %{
+        "current_password" => "wrong horse battery staple",
+        "new_password" => "another much longer secret"
+      })
+
+    assert html_response(conn, 200) =~ "Current password is incorrect."
+
+    assert {:ok, unchanged} = Portal.Accounts.get_user(user.id)
+    assert Argon2.verify_pass("correct horse battery staple", unchanged.password_hash)
+    refute Argon2.verify_pass("another much longer secret", unchanged.password_hash)
+  end
+
+  test "POST /settings rejects a too-short new password", %{conn: conn} do
+    {:ok, user} =
+      Portal.Accounts.register_user("settings_shortpwd", "correct horse battery staple")
+
+    conn =
+      conn
+      |> init_test_session(user_id: user.id)
+      |> post(~p"/settings", %{
+        "current_password" => "correct horse battery staple",
+        "new_password" => "short"
+      })
+
+    assert html_response(conn, 200) =~ "New password must be at least 12 characters."
+
+    assert {:ok, unchanged} = Portal.Accounts.get_user(user.id)
+    assert Argon2.verify_pass("correct horse battery staple", unchanged.password_hash)
+  end
+
+  test "signed-in nav links to the settings page", %{conn: conn} do
+    {:ok, user} = Portal.Accounts.register_user("settings_nav", "correct horse battery staple")
+
+    conn =
+      conn
+      |> init_test_session(user_id: user.id)
+      |> get(~p"/settings")
+
+    assert html_response(conn, 200) =~ ~s(href="/settings">Settings)
+  end
+
   test "POST /admin/requests/:id/approve accepts pending anonymous request", %{conn: conn} do
     {:ok, admin} =
       Portal.Accounts.seed_admin_user("admin_review", "correct horse battery staple")

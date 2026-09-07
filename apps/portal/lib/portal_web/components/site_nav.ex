@@ -45,7 +45,7 @@ defmodule PortalWeb.SiteNav do
           </.nav_link>
           <div class="site-nav-auth">
             <%= if @current_user do %>
-              |
+              | <.nav_link href="/settings" active={@active == :settings}>Settings</.nav_link>
               <form method="post" action="/logout">
                 <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
                 <button type="submit" class="nav-link nav-button">Logout</button>
