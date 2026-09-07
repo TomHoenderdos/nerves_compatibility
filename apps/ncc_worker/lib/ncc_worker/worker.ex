@@ -3,7 +3,16 @@ defmodule NccWorker.Worker do
   Main worker implementation that evaluates a package against Nerves systems.
   """
 
-  alias NccWorker.{BeamScan, BuildCache, Footprint, HexMetadata, LockPolicy, Project, Scanner}
+  alias NccWorker.{
+    BeamScan,
+    BuildCache,
+    Footprint,
+    HexHome,
+    HexMetadata,
+    LockPolicy,
+    Project,
+    Scanner
+  }
 
   @forced_skip_system "forced@admin@unknown"
 
@@ -468,12 +477,15 @@ defmodule NccWorker.Worker do
     deps_path = Path.join([project_dir, "deps_#{system.target}"])
     start_time = System.monotonic_time(:second)
 
-    env = [
-      {"MIX_TARGET", system.target},
-      {"MIX_BUILD_PATH", build_path},
-      {"MIX_DEPS_PATH", deps_path},
-      {"MIX_ENV", "prod"}
-    ]
+    hex_home = HexHome.prepare(project_dir, system.target)
+
+    env =
+      [
+        {"MIX_TARGET", system.target},
+        {"MIX_BUILD_PATH", build_path},
+        {"MIX_DEPS_PATH", deps_path},
+        {"MIX_ENV", "prod"}
+      ] ++ hex_env(hex_home)
 
     deps =
       case System.cmd("mix", ["deps.get"],
@@ -497,6 +509,7 @@ defmodule NccWorker.Worker do
       log_file: log_file,
       build_path: build_path,
       env: env,
+      hex_home: hex_home,
       deps: deps,
       cache_plan: cache_plan,
       cache_stats: cache_stats,
@@ -522,21 +535,31 @@ defmodule NccWorker.Worker do
 
   @spec build_system(map(), map(), integer(), String.t()) :: map()
   defp build_system(system, prep, log_tail_bytes, package_name) do
-    case prep.deps do
-      :ok ->
-        prep
-        |> run_firmware(log_tail_bytes, package_name)
-        |> store_cache(prep)
-        |> Map.put(:system_version, extract_system_version(prep.log_file, system.name))
+    result =
+      case prep.deps do
+        :ok ->
+          prep
+          |> run_firmware(log_tail_bytes, package_name)
+          |> store_cache(prep)
+          |> Map.put(:system_version, extract_system_version(prep.log_file, system.name))
 
-      {:error, exit_code} ->
-        failed_system_result(
-          prep,
-          log_tail_bytes,
-          "mix deps.get exited with code #{exit_code}"
-        )
-    end
+        {:error, exit_code} ->
+          failed_system_result(
+            prep,
+            log_tail_bytes,
+            "mix deps.get exited with code #{exit_code}"
+          )
+      end
+
+    # Also on the failure path: `mix deps.get` already ran, so this build's
+    # registry may be ahead of the shared one even when nothing compiled.
+    HexHome.publish(prep.hex_home)
+
+    result
   end
+
+  defp hex_env(nil), do: []
+  defp hex_env(dir), do: [{"HEX_HOME", dir}]
 
   # Only a passing build gets stored. A failure can leave a dependency directory
   # that Mix abandoned partway through, and there is no way to tell that apart
@@ -832,9 +855,44 @@ defmodule NccWorker.Worker do
     log_file = Path.join([output_dir, "logs", "host.log"])
     start_time = System.monotonic_time(:second)
 
-    env = host_env(project_dir)
+    hex_home = HexHome.prepare(project_dir, "host")
+    env = host_env(project_dir) ++ hex_env(hex_home)
     build_path = Path.join([project_dir, "_build", "host"])
 
+    result =
+      compile_host_run(
+        project_dir,
+        build_path,
+        env,
+        log_file,
+        start_time,
+        log_tail_bytes,
+        package_name
+      )
+
+    HexHome.publish(hex_home)
+    result
+  end
+
+  @spec compile_host_run(
+          String.t(),
+          String.t(),
+          list(),
+          String.t(),
+          integer(),
+          integer(),
+          String.t()
+        ) ::
+          map()
+  defp compile_host_run(
+         project_dir,
+         build_path,
+         env,
+         log_file,
+         start_time,
+         log_tail_bytes,
+         package_name
+       ) do
     case run_mix(["deps.get"], project_dir, env, log_file) do
       :ok ->
         deps_path = Path.join([project_dir, "deps"])
