@@ -17,8 +17,14 @@ defmodule Portal.Workers.BuildTest do
   # A stub that mimics Portal.Builder.build/2 by returning a canned outcome.
   # Configured via `config :portal, :build_runner, StubBuilder` per-test.
   defmodule StubBuilder do
-    def build(_args, _opts \\ []) do
+    def build(args, _opts \\ []) do
       send(self(), :stub_build_called)
+
+      # Portal.Builder creates the scratch dir before it runs docker, so a
+      # failure returned from here still leaves one on disk.
+      if root = Process.get(:stub_scratch_root) do
+        File.mkdir_p!(Path.join(root, args.run_id))
+      end
 
       case Process.get(:stub_build_response) do
         # Portal.Builder raises rather than returns for some failures — a full
@@ -251,6 +257,37 @@ defmodule Portal.Workers.BuildTest do
 
       {:ok, updated} = ScanRequests.get_request(request.id)
       assert updated.status == :error
+    end
+
+    test "a builder error frees the scratch dir instead of leaking it" do
+      {:ok, request} =
+        ScanRequests.create_once(%{package_name: "leaky", source: :hex_owner, status: :accepted})
+
+      root = Path.join(System.tmp_dir!(), "build-scratch-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf(root) end)
+
+      Application.put_env(:portal, Portal.Builder, scratch_root: root)
+      on_exit(fn -> Application.delete_env(:portal, Portal.Builder) end)
+      Process.put(:stub_scratch_root, root)
+
+      set_response({:error, :docker_unavailable})
+
+      job = %Oban.Job{
+        args: %{
+          "package" => "leaky",
+          "version" => "1.0.0",
+          "image_digest" => "sha256:x",
+          "scan_request_id" => request.id
+        },
+        attempt: 1,
+        max_attempts: 3
+      }
+
+      assert {:error, :docker_unavailable} = Build.perform(job)
+
+      # Nothing will ever read this build, so the tree must not survive the job.
+      assert File.ls!(root) == []
     end
 
     test "a crashing build still frees the scratch dir and marks the request" do
