@@ -80,8 +80,15 @@ defmodule Portal.Workers.Build do
         )
 
       {:error, reason} ->
-        # Runner-side failure (docker unavailable, scratch setup). Treat as retryable.
+        # Runner-side failure (docker unavailable, scratch setup, wall-clock
+        # timeout). Treat as retryable.
         Logger.error("Builder failed for #{package} #{version}: #{inspect(reason)}")
+
+        # No ingest job will ever read this scratch dir, so this branch owns it.
+        # Forgetting that leaked a full build tree per failure: a package that
+        # times out three times left three multi-gigabyte trees behind, which is
+        # how the disk filled in the first place.
+        Builder.cleanup(run_id)
 
         on_retry_or_exhaust(
           scan_request_id,
