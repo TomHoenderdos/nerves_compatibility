@@ -2,6 +2,16 @@ import Config
 
 config :ash, :validate_domain_resource_inclusion?, false
 
+# Required from ash 3.33: the unit `min_length`/`max_length` and `string_length`
+# count in. `:mixed` keeps the pre-3.33 behaviour, where Elixir counted
+# graphemes and the SQL data layer counted codepoints -- a grapheme can be an
+# unbounded number of codepoints, so `max_length` bounded nothing, which is the
+# DoS the advisory is about. `:codepoints` is the fix and matches Postgres.
+#
+# No resource here sets a length constraint today, so this is inert for us; it
+# is set to the correct value so it stays inert when one is added.
+config :ash, :default_string_length_count, :codepoints
+
 # The Build ingestion creates Catalog rows inside one Ecto transaction, so Ash
 # can't dispatch after-action notifications until commit. That's expected here;
 # silence the otherwise-noisy "missed notifications" warnings.

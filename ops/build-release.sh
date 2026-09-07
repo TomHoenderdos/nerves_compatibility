@@ -49,14 +49,24 @@ docker run --rm \
     # tree, so this does not touch what gets released. `deps.loadpaths` is what
     # puts mix_audit s yaml_elixir on the code path — `mix deps.audit` alone
     # dies with `function YamlElixir.read_from_file/1 is undefined`.
+    #
+    # Both checks run, because they do not see the same advisories. mix_audit
+    # reads a mirror of the GitHub Advisory Database; hex.audit asks hex.pm,
+    # which carries EEF-issued CVEs the mirror can lag on. The first real
+    # finding here came from hex.audit alone, against a lock mix_audit called
+    # clean. hex.audit only reports advisories on Hex >= 2.5, which the
+    # local.hex above installs fresh.
     echo "=== dependency advisory audit ==="
-    if MIX_ENV=dev mix deps.get >/dev/null && \
-       MIX_ENV=dev mix do deps.loadpaths + deps.audit; then
+    audit_ok=1
+    MIX_ENV=dev mix deps.get >/dev/null || audit_ok=0
+    MIX_ENV=dev mix do deps.loadpaths + deps.audit || audit_ok=0
+    mix hex.audit || audit_ok=0
+    if [ "$audit_ok" = 1 ]; then
       echo "=== audit clean ==="
     else
       echo "!!!" >&2
       echo "!!! ADVISORY AUDIT FAILED - the deploy continues, but fix mix.lock." >&2
-      echo "!!! Reproduce locally: mix do deps.loadpaths + deps.audit" >&2
+      echo "!!! Reproduce: mix do deps.loadpaths + deps.audit ; mix hex.audit" >&2
       echo "!!!" >&2
     fi
 
