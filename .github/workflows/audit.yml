@@ -1,0 +1,60 @@
+name: audit
+
+# Dependency advisory audit. This is the blocking copy of the check: a
+# vulnerable `mix.lock` fails here and shows red on the commit.
+#
+# The schedule is the reason this workflow exists at all. `push` only tells us
+# about locks we changed; most advisories arrive as *upstream* publications
+# against a lock that has not moved in weeks, and nothing would surface those
+# until the next unrelated commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Mondays 06:17 UTC. Deliberately off the hour: scheduled runs on the :00
+    # mark queue behind everyone else's and drift by tens of minutes.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deps-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Match the release container in ops/build-release.sh. The audit only
+      # reads mix.lock, so the versions are not load-bearing for the result —
+      # they are here so a compile error surfaces on the same toolchain that
+      # builds production.
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "28"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: mix-${{ runner.os }}-
+
+      - run: mix deps.get
+
+      # `deps.audit` reads mix.lock, but the task itself lives in mix_audit,
+      # whose yaml_elixir dependency is only put on the code path by
+      # `deps.loadpaths`. Running `mix deps.audit` alone dies with
+      # `function YamlElixir.read_from_file/1 is undefined`.
+      - name: Dependency advisories (mix_audit)
+        run: mix do deps.loadpaths + deps.audit
+
+      - name: Retired packages
+        run: mix hex.audit

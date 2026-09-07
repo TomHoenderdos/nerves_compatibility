@@ -62,7 +62,7 @@ defmodule Portal.MixProject do
       {:oban_web, "~> 2.11"},
       {:compatibility, in_umbrella: true},
       {:argon2_elixir, "~> 4.1"},
-      {:req, "~> 0.5"},
+      {:req, "~> 0.7"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"}

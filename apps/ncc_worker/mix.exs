@@ -21,7 +21,7 @@ defmodule NccWorker.MixProject do
   defp deps() do
     [
       {:compatibility, in_umbrella: true},
-      {:req, "~> 0.5.0"}
+      {:req, "~> 0.7"}
     ]
   end
 
