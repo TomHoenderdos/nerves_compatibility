@@ -33,10 +33,20 @@ config :portal, Oban,
     #
     # Rescuing is purely time-based, so `rescue_after` has to sit well above the
     # slowest honest build or it would restart one that is still working. Warm
-    # builds land in minutes and a cold cache costs tens; two hours leaves room
-    # for a first-of-its-kind Nerves system and still catches a dead node the
-    # same morning.
-    {Oban.Plugins.Lifeline, rescue_after: :timer.hours(2)}
+    # builds land in minutes and a cold cache costs tens.
+    #
+    # Two hours was wrong: it is exactly `Portal.Builder.total_timeout_ms/0`, so
+    # a build running right up against its own wall clock could be rescued while
+    # still executing — a second container and a second multi-gigabyte scratch
+    # tree for work already in flight. Three hours clears the wall clock and
+    # matches `Portal.Workers.Sweep`'s scratch retention, so the two agree on
+    # when a build is definitely over.
+    {Oban.Plugins.Lifeline, rescue_after: :timer.hours(3)},
+    # Hourly, off the :00 mark. The plugin inserts only on the Oban leader, but
+    # the row it inserts carries `Sweep`'s own `:ingest` queue — which only the
+    # build host runs — so it executes on the machine that actually has the
+    # disks, whichever node holds leadership.
+    {Oban.Plugins.Cron, crontab: [{"23 * * * *", Portal.Workers.Sweep}]}
   ]
 
 # Host-side Docker invocation for worker builds.
@@ -45,7 +55,15 @@ config :portal, Portal.Builder,
   docker_image: "ncc-worker:local",
   scratch_root: Path.expand("~/.ncc-scratch"),
   nerves_cache: Path.expand("~/.ncc-nerves-cache"),
-  hex_cache: Path.expand("~/.ncc-hex-cache")
+  hex_cache: Path.expand("~/.ncc-hex-cache"),
+  # Refuse to start a build with less than this free on the scratch filesystem.
+  # One scratch tree is ~3.5G and the build host runs `builds:3`, so 25G is
+  # roughly two builds of headroom above the worst case. This is a refusal, not
+  # a reservation — `Portal.Workers.Sweep` is what maintains the headroom.
+  min_free_disk_gb: 25,
+  # How long a scratch dir may sit before `Sweep` treats it as orphaned: the 2h
+  # docker wall clock plus an hour for the ingest handoff.
+  scratch_max_age_ms: :timer.hours(3)
 
 # Content-addressed artifact blob store (firmware, precompiled BEAM, etc).
 # The Build worker moves the worker's files_dir outputs here.

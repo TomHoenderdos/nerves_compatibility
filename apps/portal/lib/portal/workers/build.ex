@@ -79,6 +79,23 @@ defmodule Portal.Workers.Build do
           {package, version, image_digest, scan_request_id, run_id, attempt, max_attempts}
         )
 
+      {:error, {:insufficient_disk, free, needed}} ->
+        # A disk that is full right now is usually full because other builds are
+        # in flight; when they finish and clean up, this one just works. Burning
+        # three attempts would mark every queued scan request `:error` inside the
+        # hour for a host condition that resolves itself.
+        #
+        # `{:snooze, _}` raises `max_attempts` alongside `attempt`, so the retry
+        # budget survives. No `Progress.mark`: the request stays `:queued`, which
+        # is exactly what is true.
+        Logger.error(
+          "Build deferred for #{package} #{version}: " <>
+            "#{gb(free)} GB free, need #{gb(needed)} GB"
+        )
+
+        Builder.cleanup(run_id)
+        {:snooze, 900}
+
       {:error, reason} ->
         # Runner-side failure (docker unavailable, scratch setup, wall-clock
         # timeout). Treat as retryable.
@@ -251,6 +268,17 @@ defmodule Portal.Workers.Build do
     ts = System.system_time(:millisecond)
     "#{package}-#{version}-#{ts}"
   end
+
+  # Oban's default backoff is quartic in `attempt`, and `{:snooze, _}` increments
+  # `attempt` on every deferral even though it leaves the retry budget alone. A
+  # build snoozed a dozen times over a long disk-full window would otherwise come
+  # back with a delay measured in days. Cap it at an hour.
+  @impl Oban.Worker
+  def backoff(%Oban.Job{} = job) do
+    job |> Oban.Worker.backoff() |> min(3600)
+  end
+
+  defp gb(bytes), do: Float.round(bytes / 1024 / 1024 / 1024, 1)
 
   # Builder module is injectable for tests via `config :portal, :build_runner`.
   defp builder, do: Application.get_env(:portal, :build_runner, Builder)
