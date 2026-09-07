@@ -73,6 +73,26 @@ defmodule PortalWeb.PageController do
     end
   end
 
+  def settings(conn, _params) do
+    render_settings(conn, settings_user(conn))
+  end
+
+  def update_settings(conn, params) do
+    user = settings_user(conn)
+
+    case apply_settings_changes(user, params) do
+      {:ok, updated} ->
+        conn
+        |> put_flash(:info, "Account settings updated.")
+        |> render_settings(updated)
+
+      {:error, reason} ->
+        conn
+        |> put_flash(:error, settings_error_message(reason))
+        |> render_settings(user)
+    end
+  end
+
   def logout(conn, _params) do
     conn
     |> clear_session()
@@ -287,6 +307,46 @@ defmodule PortalWeb.PageController do
     )
   end
 
+  defp render_settings(conn, user) do
+    render(conn, :settings, current_user: user, username: user.username)
+  end
+
+  # `PortalWeb.Plugs.RequireLogin` resolves this from the `:user_id` session and
+  # halts otherwise, so settings actions never read a user id from params.
+  defp settings_user(conn), do: conn.assigns.current_user
+
+  defp apply_settings_changes(user, params) do
+    username = params |> string_param("username") |> String.trim()
+    current_password = string_param(params, "current_password")
+    new_password = string_param(params, "new_password")
+
+    if username == "" and current_password == "" and new_password == "" do
+      {:error, :no_changes}
+    else
+      with {:ok, user} <- maybe_change_username(user, username),
+           {:ok, user} <- maybe_change_password(user, current_password, new_password) do
+        {:ok, user}
+      end
+    end
+  end
+
+  defp string_param(params, key) do
+    case Map.get(params, key) do
+      value when is_binary(value) -> value
+      _other -> ""
+    end
+  end
+
+  defp maybe_change_username(user, ""), do: {:ok, user}
+
+  defp maybe_change_username(user, username),
+    do: Portal.Accounts.change_username(user, username)
+
+  defp maybe_change_password(user, "", ""), do: {:ok, user}
+
+  defp maybe_change_password(user, current_password, new_password),
+    do: Portal.Accounts.change_password(user, current_password, new_password)
+
   defp render_admin(conn, user) do
     render(conn, :admin,
       current_user: user,
@@ -460,6 +520,19 @@ defmodule PortalWeb.PageController do
   defp account_error_message(:username_taken), do: "That username is already registered."
   defp account_error_message(:invalid_credentials), do: "Invalid username or password."
   defp account_error_message(_), do: "Account request failed."
+
+  defp settings_error_message(:invalid_current_password), do: "Current password is incorrect."
+
+  defp settings_error_message(:invalid_password),
+    do: "New password must be at least 12 characters."
+
+  defp settings_error_message(:no_changes), do: "Enter a new username or password."
+
+  defp settings_error_message(reason)
+       when reason in [:invalid_username, :username_taken],
+       do: account_error_message(reason)
+
+  defp settings_error_message(_reason), do: "Account settings update failed."
 
   defp admin_error_message(:not_found), do: "Request was not found."
   defp admin_error_message(:not_pending_anonymous), do: "Request is no longer pending review."

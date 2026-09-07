@@ -1,0 +1,113 @@
+<Layouts.flash_group flash={@flash} />
+
+<main class="min-h-screen bg-base-100 text-base-content">
+  <.site_nav current_user={@current_user} />
+
+  <div class="mx-auto max-w-md px-4 py-10 sm:px-6 lg:px-8">
+    <section class="space-y-8">
+      <PortalWeb.UI.page_header kicker="Account" title="Account settings">
+        <:subtitle>
+          Signed in as <span class="font-mono font-semibold text-base-content">{@username}</span>.
+          Update your username or rotate your password below.
+        </:subtitle>
+      </PortalWeb.UI.page_header>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-6">
+          <div class="space-y-1">
+            <h2 class="text-lg font-semibold tracking-tight">Change username</h2>
+            <p class="text-sm leading-6 text-base-content/70">
+              Your username identifies you on scan requests and admin actions.
+            </p>
+          </div>
+
+          <form id="username-form" method="post" action={~p"/settings"} class="space-y-4">
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+
+            <div class="form-control">
+              <span class="label">
+                <span class="label-text font-semibold">Username</span>
+              </span>
+              <input
+                id="username"
+                name="username"
+                value={@username}
+                autocomplete="username"
+                required
+                pattern="[a-zA-Z0-9_][a-zA-Z0-9_.-]{2,39}"
+                class="input input-bordered w-full font-mono"
+              />
+              <span class="label">
+                <span class="label-text-alt text-base-content/60">
+                  3–40 characters: letters, digits, <code>_</code>, <code>.</code>, <code>-</code>.
+                </span>
+              </span>
+            </div>
+
+            <button type="submit" class="btn btn-primary w-full">
+              <.icon name="hero-identification-mini" class="size-5" /> Save username
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-6">
+          <div class="space-y-1">
+            <h2 class="text-lg font-semibold tracking-tight">Change password</h2>
+            <p class="text-sm leading-6 text-base-content/70">
+              Confirm your current password first. New passwords are stored with Argon2 hashing.
+            </p>
+          </div>
+
+          <form id="password-form" method="post" action={~p"/settings"} class="space-y-4">
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+
+            <div class="form-control">
+              <span class="label">
+                <span class="label-text font-semibold">Current password</span>
+              </span>
+              <input
+                id="current_password"
+                name="current_password"
+                type="password"
+                autocomplete="current-password"
+                required
+                class="input input-bordered w-full"
+              />
+            </div>
+
+            <div class="form-control">
+              <span class="label">
+                <span class="label-text font-semibold">New password</span>
+              </span>
+              <input
+                id="new_password"
+                name="new_password"
+                type="password"
+                autocomplete="new-password"
+                minlength="12"
+                required
+                class="input input-bordered w-full"
+              />
+              <span class="label">
+                <span class="label-text-alt text-base-content/60">At least 12 characters.</span>
+              </span>
+            </div>
+
+            <button type="submit" class="btn btn-primary w-full">
+              <.icon name="hero-key-mini" class="size-5" /> Update password
+            </button>
+          </form>
+
+          <p class="text-sm leading-6 text-base-content/70">
+            Done here? <a
+              href={~p"/request-scan"}
+              class="font-semibold text-primary hover:underline"
+            >Request a scan</a>.
+          </p>
+        </div>
+      </section>
+    </section>
+  </div>
+</main>

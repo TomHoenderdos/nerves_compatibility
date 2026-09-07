@@ -57,6 +57,10 @@ defmodule Portal.Accounts.User do
     update :set_admin do
       accept([:is_admin])
     end
+
+    update :update_profile do
+      accept([:username, :password_hash])
+    end
   end
 
   attributes do

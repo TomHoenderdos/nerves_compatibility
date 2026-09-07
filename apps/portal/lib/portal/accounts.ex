@@ -73,6 +73,44 @@ defmodule Portal.Accounts do
 
   def admin?(_user), do: false
 
+  @doc """
+  Changes the username of an existing user.
+
+  The candidate is normalized like registration input and must match the shared
+  username format. Keeping the current username is allowed; any other user
+  already holding the name rejects the change.
+  """
+  def change_username(%Portal.Accounts.User{} = user, username) do
+    username = normalize_username(username)
+
+    cond do
+      not Regex.match?(@username_regex, username) ->
+        {:error, :invalid_username}
+
+      username_taken_by_other?(user, username) ->
+        {:error, :username_taken}
+
+      true ->
+        update_profile(user, %{username: username})
+    end
+  end
+
+  @doc """
+  Replaces a user's password after verifying the current one with Argon2.
+  """
+  def change_password(%Portal.Accounts.User{} = user, current_password, new_password) do
+    cond do
+      not current_password?(user, current_password) ->
+        {:error, :invalid_current_password}
+
+      not valid_password?(new_password) ->
+        {:error, :invalid_password}
+
+      true ->
+        update_profile(user, %{password_hash: Argon2.hash_pwd_salt(new_password)})
+    end
+  end
+
   def seed_admin_user(username, password \\ nil) do
     username = normalize_username(username)
 
@@ -124,6 +162,25 @@ defmodule Portal.Accounts do
     else
       {:error, :invalid_password}
     end
+  end
+
+  defp username_taken_by_other?(%Portal.Accounts.User{id: id}, username) do
+    case get_user_by_username(username) do
+      {:ok, %Portal.Accounts.User{id: existing_id}} -> existing_id != id
+      _other -> false
+    end
+  end
+
+  defp current_password?(%Portal.Accounts.User{} = user, password) when is_binary(password) do
+    Argon2.verify_pass(password, user.password_hash)
+  end
+
+  defp current_password?(_user, _password), do: false
+
+  defp update_profile(user, params) do
+    user
+    |> Ash.Changeset.for_update(:update_profile, params)
+    |> Ash.update(domain: __MODULE__)
   end
 
   defp set_admin(user, is_admin) do
