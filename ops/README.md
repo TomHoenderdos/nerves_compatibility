@@ -44,8 +44,13 @@ Reproduce either locally:
 
 ```bash
 mix do deps.loadpaths + deps.audit   # `mix deps.audit` alone cannot find yaml_elixir
-mix hex.audit                        # retired packages
+mix hex.audit                        # needs Hex >= 2.5 to report advisories at all
 ```
+
+Run both. They read different sources: `mix_audit` uses a mirror of the GitHub
+Advisory Database, `hex.audit` asks hex.pm, which carries EEF-issued CVEs the
+mirror can lag on. If `hex.audit` says only `No retired packages found`, your
+Hex is too old to be checking advisories -- `mix local.hex --force`.
 
 ## Not tracked here
 

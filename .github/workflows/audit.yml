@@ -56,5 +56,11 @@ jobs:
       - name: Dependency advisories (mix_audit)
         run: mix do deps.loadpaths + deps.audit
 
-      - name: Retired packages
+      # Not redundant with mix_audit. mix_audit reads a mirror of the GitHub
+      # Advisory Database; this asks hex.pm, which carries EEF-issued CVEs the
+      # mirror can lag on. The first finding this workflow ever produced -- 29
+      # advisories across the ash family -- came from here, against a lock
+      # mix_audit called clean. Advisory reporting needs Hex >= 2.5;
+      # setup-beam installs current Hex, so this is only a trap locally.
+      - name: Advisories and retired packages (hex.pm)
         run: mix hex.audit
