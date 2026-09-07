@@ -57,7 +57,9 @@ defmodule Portal.Workers.Build do
         :ok
 
       true ->
-        do_build(package, version, image_digest, scan_request_id, run_id, attempt, max_attempts)
+        with_crash_cleanup(scan_request_id, run_id, attempt, max_attempts, fn ->
+          do_build(package, version, image_digest, scan_request_id, run_id, attempt, max_attempts)
+        end)
     end
   end
 
@@ -132,7 +134,13 @@ defmodule Portal.Workers.Build do
 
     case args |> Ingest.new() |> Oban.insert() do
       {:ok, _job} ->
-        Progress.broadcast(scan_request_id, :ingesting, %{run_id: run_id})
+        # Nothing after this point may raise. The ingest job now owns the
+        # scratch dir, and `with_crash_cleanup/5` deletes it on the way out of
+        # an exception — which is only correct while no ingest job exists yet.
+        safely("ingesting broadcast", fn ->
+          Progress.broadcast(scan_request_id, :ingesting, %{run_id: run_id})
+        end)
+
         :ok
 
       {:error, reason} ->
@@ -172,6 +180,53 @@ defmodule Portal.Workers.Build do
     end
 
     :ok
+  end
+
+  # Every cleanup path above is reached by *returning* a value, so an exception
+  # skips all of them: the scratch dir is never removed and the linked request
+  # is stranded at `queued` forever, because `on_retry_or_exhaust/4` never runs.
+  #
+  # That is not hypothetical. A full disk made `IO.binwrite/2` raise `:enospc`
+  # while streaming docker output, and the leak was self-reinforcing — each
+  # crashed build left another multi-gigabyte scratch dir behind, which made the
+  # next `:enospc` more likely. It took the build host down for four days.
+  #
+  # Run the same bookkeeping for a crash, then re-raise, so Oban still sees the
+  # real exception and applies its normal retry/discard behaviour.
+  defp with_crash_cleanup(scan_request_id, run_id, attempt, max_attempts, fun) do
+    fun.()
+  rescue
+    exception ->
+      crash_cleanup(scan_request_id, run_id, attempt, max_attempts, Exception.message(exception))
+      reraise exception, __STACKTRACE__
+  catch
+    kind, reason ->
+      crash_cleanup(scan_request_id, run_id, attempt, max_attempts, "#{kind} #{inspect(reason)}")
+      :erlang.raise(kind, reason, __STACKTRACE__)
+  end
+
+  defp crash_cleanup(scan_request_id, run_id, attempt, max_attempts, reason) do
+    Logger.error("Build crashed for run #{run_id}: #{reason}")
+
+    # Both steps are best-effort: whatever made the build crash (a full disk, a
+    # dead database) can just as easily make the cleanup crash, and raising here
+    # would replace the real error with a misleading one.
+    safely("scratch cleanup", fn -> Builder.cleanup(run_id) end)
+
+    safely("request status", fn ->
+      on_retry_or_exhaust(scan_request_id, attempt, max_attempts, "build crashed: #{reason}")
+    end)
+
+    :ok
+  end
+
+  defp safely(label, fun) do
+    fun.()
+    :ok
+  rescue
+    exception -> Logger.error("#{label} failed: #{Exception.message(exception)}")
+  catch
+    kind, reason -> Logger.error("#{label} failed: #{kind} #{inspect(reason)}")
   end
 
   defp run_exists?(package, version, image_digest) do

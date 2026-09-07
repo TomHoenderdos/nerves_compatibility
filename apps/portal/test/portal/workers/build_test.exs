@@ -2,6 +2,8 @@ defmodule Portal.Workers.BuildTest do
   use Portal.DataCase, async: false
   use Oban.Testing, repo: Portal.Repo
 
+  import ExUnit.CaptureLog
+
   require Ash.Query
 
   alias Portal.Catalog.{Package, Run}
@@ -17,10 +19,17 @@ defmodule Portal.Workers.BuildTest do
   defmodule StubBuilder do
     def build(_args, _opts \\ []) do
       send(self(), :stub_build_called)
-      Process.get(:stub_build_response)
+
+      case Process.get(:stub_build_response) do
+        # Portal.Builder raises rather than returns for some failures — a full
+        # disk makes IO.binwrite/2 raise :enospc while streaming docker output.
+        {:raise, exception} -> raise exception
+        response -> response
+      end
     end
 
     def cleanup(_run_id), do: :ok
+
     def image_digest(_image), do: "sha256:stub"
     def docker_image, do: "ncc-worker:local"
 
@@ -242,6 +251,69 @@ defmodule Portal.Workers.BuildTest do
 
       {:ok, updated} = ScanRequests.get_request(request.id)
       assert updated.status == :error
+    end
+
+    test "a crashing build still frees the scratch dir and marks the request" do
+      {:ok, request} =
+        ScanRequests.create_once(%{
+          package_name: "crasher",
+          source: :hex_owner,
+          status: :accepted
+        })
+
+      set_response({:raise, %ErlangError{original: :enospc}})
+
+      job = %Oban.Job{
+        args: %{
+          "package" => "crasher",
+          "version" => "1.0.0",
+          "image_digest" => "sha256:x",
+          "scan_request_id" => request.id
+        },
+        attempt: 3,
+        max_attempts: 3
+      }
+
+      # The exception must still reach Oban, so it records the real error.
+      log = capture_log(fn -> assert_raise ErlangError, fn -> Build.perform(job) end end)
+
+      # Proves the crash path ran its bookkeeping. `Portal.Builder.cleanup/1` is
+      # called directly rather than through the stub, so the log is the seam.
+      assert log =~ "Build crashed for run"
+
+      {:ok, updated} = ScanRequests.get_request(request.id)
+      assert updated.status == :error
+    end
+
+    test "a crash before the last attempt frees scratch but leaves the request retryable" do
+      {:ok, request} =
+        ScanRequests.create_once(%{
+          package_name: "crasher2",
+          source: :hex_owner,
+          status: :accepted
+        })
+
+      set_response({:raise, %ErlangError{original: :enospc}})
+
+      job = %Oban.Job{
+        args: %{
+          "package" => "crasher2",
+          "version" => "1.0.0",
+          "image_digest" => "sha256:x",
+          "scan_request_id" => request.id
+        },
+        attempt: 1,
+        max_attempts: 3
+      }
+
+      log = capture_log(fn -> assert_raise ErlangError, fn -> Build.perform(job) end end)
+
+      # The scratch dir goes either way; only the terminal status waits for the
+      # attempts to be spent.
+      assert log =~ "Build crashed for run"
+
+      {:ok, updated} = ScanRequests.get_request(request.id)
+      refute updated.status == :error
     end
   end
 
