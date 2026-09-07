@@ -95,7 +95,6 @@ defmodule Portal.Catalog do
       |> Ash.Query.select(@stats_fields)
       |> Ash.read!(domain: __MODULE__)
 
-
     %{
       schema: 2,
       generated_at: generated_at(),
