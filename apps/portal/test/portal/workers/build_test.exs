@@ -290,6 +290,46 @@ defmodule Portal.Workers.BuildTest do
       assert File.ls!(root) == []
     end
 
+    test "a full disk snoozes instead of burning an attempt" do
+      {:ok, request} =
+        ScanRequests.create_once(%{
+          package_name: "cramped",
+          source: :hex_owner,
+          status: :accepted
+        })
+
+      root = Path.join(System.tmp_dir!(), "build-scratch-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf(root) end)
+
+      Application.put_env(:portal, Portal.Builder, scratch_root: root)
+      on_exit(fn -> Application.delete_env(:portal, Portal.Builder) end)
+      Process.put(:stub_scratch_root, root)
+
+      set_response({:error, {:insufficient_disk, 1_000_000, 20_000_000_000}})
+
+      job = %Oban.Job{
+        args: %{
+          "package" => "cramped",
+          "version" => "1.0.0",
+          "image_digest" => "sha256:x",
+          "scan_request_id" => request.id
+        },
+        # The last attempt: a plain {:error, _} here would mark the request
+        # `:error` for a host condition that resolves itself.
+        attempt: 3,
+        max_attempts: 3
+      }
+
+      assert {:snooze, 900} = Build.perform(job)
+
+      # Snoozing does not excuse leaking: nothing will read this tree.
+      assert File.ls!(root) == []
+
+      {:ok, updated} = ScanRequests.get_request(request.id)
+      assert updated.status == :queued
+    end
+
     test "a crashing build still frees the scratch dir and marks the request" do
       {:ok, request} =
         ScanRequests.create_once(%{
@@ -380,6 +420,15 @@ defmodule Portal.Workers.BuildTest do
                })
 
       refute_received :stub_build_called
+    end
+  end
+
+  describe "backoff/1" do
+    test "is capped so repeated snoozes cannot push a retry days out" do
+      # Oban's default backoff is quartic in `attempt`, and every {:snooze, _}
+      # increments `attempt` even though it preserves the retry budget.
+      assert Build.backoff(%Oban.Job{attempt: 30, max_attempts: 3}) == 3600
+      assert Build.backoff(%Oban.Job{attempt: 1, max_attempts: 3}) < 3600
     end
   end
 end

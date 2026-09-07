@@ -64,6 +64,36 @@ defmodule Portal.Builder do
   @spec build_cache() :: Path.t() | nil
   def build_cache, do: config(:build_cache, nil)
 
+  @doc """
+  Minimum free bytes on the scratch filesystem required to start a build.
+
+  One scratch tree is ~3.5G and the build host runs `builds:3`, so three can be
+  live at once. 25G is roughly two builds of headroom above that worst case.
+
+  This is a per-build check at start, not a reservation: three builds can each
+  pass it and still fill the disk between them. It turns a full disk into a
+  clean, visible refusal instead of an `:enospc` mid-stream — maintaining the
+  headroom in the first place is `Portal.Workers.Sweep`'s job.
+  """
+  @spec min_free_bytes() :: non_neg_integer()
+  def min_free_bytes do
+    # Env vars arrive as strings; config.exs supplies a number.
+    case :min_free_disk_gb |> config(25) |> to_string() |> Float.parse() do
+      {gb, _rest} -> trunc(gb * 1024 * 1024 * 1024)
+      :error -> 25 * 1024 * 1024 * 1024
+    end
+  end
+
+  @doc """
+  Hard wall-clock ceiling for one build, in milliseconds.
+
+  Exposed so the Oban config test can assert `Lifeline`'s `rescue_after` still
+  sits above it. Rescuing a build that is genuinely still running starts a second
+  container and a second multi-gigabyte scratch tree for the same work.
+  """
+  @spec total_timeout_ms() :: pos_integer()
+  def total_timeout_ms, do: @total_timeout_ms
+
   defp config(key, default) do
     :portal
     |> Application.get_env(__MODULE__, [])
@@ -123,7 +153,14 @@ defmodule Portal.Builder do
       systems_filter: Map.get(args, :systems_filter)
     }
 
-    with {:ok, _version} <- check_docker(),
+    # Free space first: it is the cheapest check in the chain, and it is the
+    # condition most likely to be true during an incident. Ahead of
+    # `ensure_directories/1` so a refusal leaves nothing at all on disk, and
+    # ahead of `check_docker/0` so the log carries the disk error rather than a
+    # downstream `:enospc` from `IO.binwrite/2` — which is the exception that
+    # took the host down.
+    with :ok <- check_free_space(scratch_root()),
+         {:ok, _version} <- check_docker(),
          :ok <- ensure_directories([work_dir, output_dir, files_dir, nerves_cache(), hex_cache()]),
          :ok <- write_worker_input(job, work_dir),
          {:ok, exit_code} <- run_container(job, work_dir, output_dir, files_dir, log_file) do
@@ -199,6 +236,69 @@ defmodule Portal.Builder do
     _ -> @zero_digest
   end
 
+  @doc """
+  Free bytes on the filesystem holding `path`, or nil when it cannot be measured.
+
+  `df -Pk` rather than `:disksup`: os_mon is not started, and starting it would
+  run memsup and cpu_sup on every node including the web host and every test run.
+  `:disksup` also answers from a table it refreshes every 30 minutes — stale in
+  the one direction that matters, since during a fill it reports the free space
+  from before the fill began. `-P` is POSIX and gives identical single-line
+  output on macOS (dev) and Linux (prod).
+  """
+  @spec free_bytes(Path.t()) :: non_neg_integer() | nil
+  def free_bytes(path) do
+    with dir when is_binary(dir) <- existing_ancestor(path),
+         {out, 0} <- System.cmd("df", ["-Pk", dir], stderr_to_stdout: true),
+         [_header, line | _] <- String.split(out, "\n", trim: true),
+         [_fs, _blocks, _used, avail | _] <- String.split(line, ~r/\s+/, trim: true),
+         {kb, ""} <- Integer.parse(avail) do
+      kb * 1024
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  @doc """
+  Names of the docker containers running right now.
+
+  `Portal.Workers.Sweep` uses this to refuse to delete the scratch dir of a build
+  that is still executing. Returns an empty set when docker cannot be reached: a
+  docker outage does not make directories live, and failing the sweep closed
+  would disable reclamation exactly when the disk is most likely to be the
+  underlying problem. The sweep's age floor is what makes that safe to do.
+  """
+  @spec running_containers() :: MapSet.t(String.t())
+  def running_containers do
+    case System.cmd("docker", ["ps", "--format", "{{.Names}}"], stderr_to_stdout: true) do
+      {out, 0} -> out |> String.split("\n", trim: true) |> MapSet.new(&String.trim/1)
+      {_out, _status} -> MapSet.new()
+    end
+  rescue
+    _ -> MapSet.new()
+  end
+
+  @doc """
+  Directory name under `build_cache/0` for an image digest.
+
+  `Portal.Workers.Sweep` prunes that directory, so the writer and the pruner have
+  to agree on this exactly — if the two sanitizers ever drift apart, the sweep
+  deletes the live cache. One function, one regex.
+  """
+  @spec cache_slug(String.t()) :: String.t()
+  def cache_slug(digest), do: String.replace(digest, ~r/[^A-Za-z0-9._-]/, "_")
+
+  @doc """
+  Scratch directory name for a run id.
+
+  Public because `Portal.Workers.Sweep` has to map a directory on disk back to
+  the `run_id` in an Oban job's args, and must use this exact transform to do it.
+  """
+  @spec safe_name(String.t()) :: String.t()
+  def safe_name(run_id), do: String.replace(run_id, ~r/[^A-Za-z0-9_.\-]/, "_")
+
   # ── Internals ──────────────────────────────────────────────────────────────
 
   defp ensure_directories(dirs) do
@@ -206,6 +306,34 @@ defmodule Portal.Builder do
     :ok
   rescue
     e -> {:error, {:scratch_setup_failed, Exception.message(e)}}
+  end
+
+  defp check_free_space(path) do
+    required = min_free_bytes()
+
+    case free_bytes(path) do
+      nil ->
+        # A preflight that cannot measure must not block every build. This leaves
+        # the pre-existing failure mode (fill up, crash on :enospc) exactly as it
+        # was, so nothing regresses when `df` is unavailable.
+        Logger.warning("Could not measure free space on #{path}; skipping preflight")
+        :ok
+
+      free when free >= required ->
+        :ok
+
+      free ->
+        {:error, {:insufficient_disk, free, required}}
+    end
+  end
+
+  # `~/.ncc-scratch` does not exist until the first build creates it, and `df` on
+  # a missing path exits non-zero.
+  defp existing_ancestor("/"), do: "/"
+  defp existing_ancestor("."), do: "."
+
+  defp existing_ancestor(path) do
+    if File.dir?(path), do: path, else: existing_ancestor(Path.dirname(path))
   end
 
   defp write_worker_input(job, work_dir) do
@@ -336,10 +464,7 @@ defmodule Portal.Builder do
     end
   end
 
-  defp image_slug(job) do
-    (job.image_digest || job.image_name || "unknown")
-    |> String.replace(~r/[^A-Za-z0-9._-]/, "_")
-  end
+  defp image_slug(job), do: cache_slug(job.image_digest || job.image_name || "unknown")
 
   # `--cpus` is a CFS quota, not a core assignment: `nproc` inside the container
   # still reports every core the host has. Nothing in the build reads the quota,
@@ -439,8 +564,6 @@ defmodule Portal.Builder do
   # Docker container names must match [a-zA-Z0-9][a-zA-Z0-9_.-]*. The "ncc-"
   # prefix guarantees a valid leading char.
   defp container_name(run_id), do: "ncc-#{safe_name(run_id)}"
-
-  defp safe_name(run_id), do: String.replace(run_id, ~r/[^A-Za-z0-9_.\-]/, "_")
 
   defp log_command(args, log_file) do
     timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
