@@ -15,12 +15,25 @@ defmodule Portal.Catalog.Phase1aQueriesTest do
       "systems" => systems
     }
 
-    {:ok, _} = Ingestion.ingest(result, %{run_id: "#{name}-#{version}", image_digest: "sha256:x", files_dir: dir, log: "l"})
+    {:ok, _} =
+      Ingestion.ingest(result, %{
+        run_id: "#{name}-#{version}",
+        image_digest: "sha256:x",
+        files_dir: dir,
+        log: "l"
+      })
   end
 
   test "package_status_counts buckets one row per package" do
-    ingest("allpass", "1.0.0", %{"nerves_system_rpi0" => %{"status" => "pass"}, "host" => %{"status" => "pass"}})
-    ingest("hasfail", "1.0.0", %{"nerves_system_rpi0" => %{"status" => "fail", "log_tail" => "Exec format error"}, "host" => %{"status" => "pass"}})
+    ingest("allpass", "1.0.0", %{
+      "nerves_system_rpi0" => %{"status" => "pass"},
+      "host" => %{"status" => "pass"}
+    })
+
+    ingest("hasfail", "1.0.0", %{
+      "nerves_system_rpi0" => %{"status" => "fail", "log_tail" => "Exec format error"},
+      "host" => %{"status" => "pass"}
+    })
 
     counts = Catalog.package_status_counts()
     assert counts.unique == 2
@@ -29,7 +42,12 @@ defmodule Portal.Catalog.Phase1aQueriesTest do
   end
 
   test "failure_clusters returns title, entries, and a sample log" do
-    ingest("clusterpkg", "2.0.0", %{"nerves_system_rpi4" => %{"status" => "fail", "log_tail" => "sh: cannot execute binary file: Exec format error"}})
+    ingest("clusterpkg", "2.0.0", %{
+      "nerves_system_rpi4" => %{
+        "status" => "fail",
+        "log_tail" => "sh: cannot execute binary file: Exec format error"
+      }
+    })
 
     [cluster | _] = Catalog.failure_clusters(10)
     assert cluster.category == "NIF built for wrong architecture"

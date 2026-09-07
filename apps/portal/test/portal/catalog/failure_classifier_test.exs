@@ -9,22 +9,34 @@ defmodule Portal.Catalog.FailureClassifierTest do
   end
 
   test "wrong-architecture NIF" do
-    assert FC.classify(%{"status" => "fail", "log_tail" => "sh: cannot execute binary file: Exec format error"}) ==
+    assert FC.classify(%{
+             "status" => "fail",
+             "log_tail" => "sh: cannot execute binary file: Exec format error"
+           }) ==
              "NIF built for wrong architecture"
   end
 
   test "missing precompiled NIF" do
-    assert FC.classify(%{"status" => "fail", "log_tail" => "could not find precompiled NIF for target rpi0"}) ==
+    assert FC.classify(%{
+             "status" => "fail",
+             "log_tail" => "could not find precompiled NIF for target rpi0"
+           }) ==
              "Precompiled NIF missing for target"
   end
 
   test "dependency resolution failure" do
-    assert FC.classify(%{"status" => "error", "log_tail" => "Failed to use \"foo\" because no matching version"}) ==
+    assert FC.classify(%{
+             "status" => "error",
+             "log_tail" => "Failed to use \"foo\" because no matching version"
+           }) ==
              "Dependency resolution failed"
   end
 
   test "compilation error" do
-    assert FC.classify(%{"status" => "fail", "log_tail" => "** (CompileError) lib/foo.ex:3: undefined function bar/0"}) ==
+    assert FC.classify(%{
+             "status" => "fail",
+             "log_tail" => "** (CompileError) lib/foo.ex:3: undefined function bar/0"
+           }) ==
              "Compilation error"
   end
 
