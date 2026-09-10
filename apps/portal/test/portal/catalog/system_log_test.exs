@@ -77,4 +77,61 @@ defmodule Portal.Catalog.SystemLogTest do
 
     assert loaded.system_log.body == "x"
   end
+
+  describe "Portal.Catalog.system_log/2" do
+    defp ingest_failed_run(package, log_body, run_id) do
+      files = Path.join(System.tmp_dir!(), "csl-f-#{System.unique_integer([:positive])}")
+      out = Path.join(System.tmp_dir!(), "csl-o-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(files)
+      File.mkdir_p!(Path.join(out, "logs"))
+      File.write!(Path.join([out, "logs", "nerves_system_rpi4.log"]), log_body)
+
+      on_exit(fn ->
+        File.rm_rf(files)
+        File.rm_rf(out)
+      end)
+
+      {:ok, run} =
+        Ingestion.ingest(
+          %{
+            "package" => %{"name" => package, "version" => "1.0.0"},
+            "finished_at" => "2026-09-10T10:00:00Z",
+            "systems" => %{"nerves_system_rpi4" => %{"status" => "fail"}}
+          },
+          %{
+            run_id: run_id,
+            image_digest: "sha256:x",
+            files_dir: files,
+            output_dir: out,
+            log: "runner"
+          }
+        )
+
+      run
+    end
+
+    test "returns the stored log for the latest run" do
+      ingest_failed_run("cslpkg", "older log\n", "cslpkg-1")
+      ingest_failed_run("cslpkg", "newer log\n", "cslpkg-2")
+
+      assert {:ok, log} = Portal.Catalog.system_log("cslpkg", "nerves_system_rpi4")
+
+      assert log.body == "newer log\n"
+      assert log.status == "fail"
+      assert log.run_id == "cslpkg-2"
+      assert log.version_tested == "1.0.0"
+      assert log.system_pkg == "nerves_system_rpi4"
+      refute log.truncated
+    end
+
+    test "returns :error for an unknown package" do
+      assert Portal.Catalog.system_log("nope", "nerves_system_rpi4") == :error
+    end
+
+    test "returns :error for a system with no stored log" do
+      ingest_failed_run("cslpkg2", "log\n", "cslpkg2-1")
+
+      assert Portal.Catalog.system_log("cslpkg2", "nerves_system_x86_64") == :error
+    end
+  end
 end
