@@ -39,6 +39,11 @@ defmodule Portal.Catalog.SystemLog do
     attribute :body, :string do
       allow_nil?(false)
       public?(true)
+      # Ash's :string type trims and drops empty strings by default. A log body
+      # is stored verbatim: trailing newlines are real content, and an empty
+      # sanitized log (an empty build log) must not silently become nil and
+      # violate allow_nil?.
+      constraints(trim?: false, allow_empty?: true)
     end
 
     # Size of the log *before* truncation, so the page can say what was dropped.
