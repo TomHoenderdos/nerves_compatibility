@@ -345,6 +345,20 @@ defmodule Portal.Catalog do
     |> Enum.sort_by(& &1.packages, :desc)
   end
 
+  @doc """
+  Name and last-run timestamp of every package, sorted by name.
+
+  For `/sitemap.xml`, which needs one `<url>` per package and nothing else.
+  Two columns rather than the row: `catalog_packages` also carries a
+  description and a `native_components` blob the sitemap never looks at.
+  """
+  def package_slugs do
+    Package
+    |> Ash.Query.select([:name, :last_run_at])
+    |> Ash.Query.sort(name: :asc)
+    |> Ash.read!(domain: __MODULE__)
+  end
+
   defp packages(nil) do
     Package
     |> Ash.Query.sort(name: :asc)
