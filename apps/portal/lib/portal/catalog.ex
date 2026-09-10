@@ -39,6 +39,27 @@ defmodule Portal.Catalog do
     :finished_at,
     :inserted_at
   ]
+  # Everything on a system result except the three jsonb blobs. The badge and
+  # `latest_system_results/1` render status, the failure category and the log
+  # tail; `dependency_scans` alone is 275 MB across the table and `beam_scan`
+  # another 10 MB, and decoding either to answer "is this package passing?" is
+  # the exact shape of the read that ran the node out of memory.
+  @summary_fields [
+    :id,
+    :run_id,
+    :system_pkg,
+    :system_version,
+    :status,
+    :firmware_size_bytes,
+    :duration_sec,
+    :hex_version_tested,
+    :log_path,
+    :log_tail,
+    :failure_category
+  ]
+  # The precompiled manifest is the one caller that genuinely needs `beam_scan`
+  # — the file manifest lives inside it — and needs nothing else wide.
+  @manifest_fields [:id, :run_id, :system_pkg, :beam_scan]
   @json_fields [
     :run_id,
     :system_pkg,
@@ -138,7 +159,7 @@ defmodule Portal.Catalog do
       [package] ->
         case latest_runs([package]) |> Map.get(package.id) do
           nil -> []
-          run -> system_results_for_runs([run.id])
+          run -> summary_results_for_runs([run.id])
         end
 
       [] ->
@@ -152,7 +173,7 @@ defmodule Portal.Catalog do
   def precompiled_manifest(package_name) do
     with [package] <- packages(package_name),
          runs when runs != [] <- runs_for_package(package.id),
-         results when results != [] <- system_results_for_runs(Enum.map(runs, & &1.id)) do
+         results when results != [] <- manifest_results_for_runs(Enum.map(runs, & &1.id)) do
       artifacts_by_system_result_id =
         results
         |> Enum.map(& &1.id)
@@ -370,10 +391,14 @@ defmodule Portal.Catalog do
     |> Enum.reduce(%{}, fn run, acc -> Map.put_new(acc, run.package_id, run) end)
   end
 
+  # Named columns, like every other read here. Unselected, this loaded
+  # `catalog_runs.log` — the whole `runner.log` of every run of the package —
+  # for a caller that reads `id`, `version_tested` and `finished_at`.
   defp runs_for_package(package_id) do
     Run
     |> Ash.Query.filter(package_id == ^package_id)
     |> Ash.Query.sort(finished_at: :desc, inserted_at: :desc)
+    |> Ash.Query.select(@run_fields)
     |> Ash.read!(domain: __MODULE__)
   end
 
@@ -403,12 +428,21 @@ defmodule Portal.Catalog do
     |> Ash.read!(domain: __MODULE__)
   end
 
-  defp system_results_for_runs([]), do: []
-
-  defp system_results_for_runs(run_ids) do
+  defp summary_results_for_runs(run_ids) do
     SystemResult
     |> Ash.Query.filter(run_id in ^run_ids)
     |> Ash.Query.sort(system_pkg: :asc)
+    |> Ash.Query.select(@summary_fields)
+    |> Ash.read!(domain: __MODULE__)
+  end
+
+  defp manifest_results_for_runs([]), do: []
+
+  defp manifest_results_for_runs(run_ids) do
+    SystemResult
+    |> Ash.Query.filter(run_id in ^run_ids)
+    |> Ash.Query.sort(system_pkg: :asc)
+    |> Ash.Query.select(@manifest_fields)
     |> Ash.read!(domain: __MODULE__)
   end
 
