@@ -4,7 +4,7 @@ defmodule Portal.Catalog.IngestionTest do
   require Ash.Query
 
   alias Portal.ArtifactStore
-  alias Portal.Catalog.{Artifact, Ingestion, Package, SystemLog, SystemResult}
+  alias Portal.Catalog.{Artifact, Ingestion, Package, SystemResult}
   alias Portal.ScanRequests
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])

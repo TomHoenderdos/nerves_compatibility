@@ -76,7 +76,7 @@ defmodule PortalWeb.LogLive do
           the middle is marked where it was elided.
         </div>
 
-        <form id="log-filter-form" phx-change="filter" class="max-w-md">
+        <form id="log-filter-form" phx-change="filter" phx-submit="filter" class="max-w-md">
           <.input
             type="text"
             id="log-filter"
@@ -84,7 +84,7 @@ defmodule PortalWeb.LogLive do
             value={@filter}
             label="Filter lines"
             placeholder="substring, case-insensitive"
-            phx-debounce="150"
+            phx-debounce="300"
           />
         </form>
 
@@ -93,20 +93,41 @@ defmodule PortalWeb.LogLive do
         </div>
 
         <div class="overflow-hidden rounded-2xl border border-base-300 bg-base-300/30 shadow-sm">
-          <pre class="overflow-x-auto p-4 font-mono text-xs leading-relaxed text-base-content/80"><code id="log-body"><span :for={{text, number} <- @visible} class="block"><span class="mr-4 inline-block w-10 select-none text-right text-base-content/30">{number}</span>{text}</span></code></pre>
+          <pre class="overflow-x-auto p-4 font-mono text-xs leading-relaxed text-base-content/80"><code id="log-body"><span :for={{text, _downcased, number} <- @visible} class="block"><span class="mr-4 inline-block w-10 select-none text-right text-base-content/30">{number}</span>{text}</span></code></pre>
         </div>
       </section>
     </Layouts.app>
     """
   end
 
-  defp number_lines(body), do: body |> String.split("\n") |> Enum.with_index(1)
+  # Each line carries a downcased copy built once here rather than on every
+  # keystroke. Re-downcasing a 16k-line log per debounced change threw away
+  # ~800 KB of garbage each time to recompute a string that never changes.
+  defp number_lines(body) do
+    body
+    |> String.split("\n")
+    |> drop_trailing_blank()
+    |> Enum.with_index(1)
+    |> Enum.map(fn {text, number} -> {text, String.downcase(text), number} end)
+  end
+
+  # A newline-terminated log splits into a final "" that is not a line. It was
+  # being counted and rendered as a blank numbered row, so a 200-line log
+  # reported "201 lines".
+  defp drop_trailing_blank(lines) do
+    case List.last(lines) do
+      "" -> Enum.drop(lines, -1)
+      _ -> lines
+    end
+  end
 
   defp filter_lines(lines, ""), do: lines
 
   defp filter_lines(lines, query) do
     needle = String.downcase(query)
 
-    Enum.filter(lines, fn {text, _number} -> String.contains?(String.downcase(text), needle) end)
+    Enum.filter(lines, fn {_text, downcased, _number} ->
+      String.contains?(downcased, needle)
+    end)
   end
 end
