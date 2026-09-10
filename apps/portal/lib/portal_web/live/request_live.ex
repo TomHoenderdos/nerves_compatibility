@@ -97,6 +97,17 @@ defmodule PortalWeb.RequestLive do
         </div>
 
         <div
+          :if={@request.error_log}
+          id="request-error-log"
+          class="overflow-hidden rounded-2xl border border-error/40 bg-base-300/30 shadow-sm"
+        >
+          <div class="border-b border-base-300 px-4 py-2.5 font-mono text-xs text-base-content/60">
+            build failed: {@request.error_reason}
+          </div>
+          <pre class="max-h-96 overflow-auto p-4 font-mono text-xs leading-relaxed text-base-content/80">{@request.error_log}</pre>
+        </div>
+
+        <div
           :if={map_size(@payload) > 0}
           class="overflow-hidden rounded-2xl border border-base-300 bg-base-300/30 shadow-sm"
         >
