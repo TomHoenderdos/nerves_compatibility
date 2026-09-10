@@ -221,6 +221,22 @@ defmodule Portal.Builder do
   end
 
   @doc """
+  Read a run's `runner.log` off disk. Returns `""` when there is nothing there.
+
+  Failure paths that never got a `build` map still want the log, and it is about
+  to be deleted along with the scratch dir. Returns the raw bytes; the caller
+  sanitizes.
+  """
+  @spec read_runner_log(String.t()) :: String.t()
+  def read_runner_log(run_id) do
+    scratch_root()
+    |> Path.join(safe_name(run_id))
+    |> Path.join("out")
+    |> Path.join("runner.log")
+    |> read_log()
+  end
+
+  @doc """
   Resolve the digest for a (usually local) image via `docker inspect`.
 
   Local images have no RepoDigest, so we fall back to the image Id. Returns a
