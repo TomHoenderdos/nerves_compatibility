@@ -208,7 +208,7 @@ defmodule Portal.Workers.Build do
 
   # On the final attempt, a retryable failure becomes a permanent `error` on the
   # request; earlier attempts leave it queued so Oban can retry.
-  defp on_retry_or_exhaust(scan_request_id, attempt, max_attempts, reason, error_log \\ nil) do
+  defp on_retry_or_exhaust(scan_request_id, attempt, max_attempts, reason, error_log) do
     if attempt >= max_attempts do
       Progress.mark(scan_request_id, :error, error_reason: reason, error_log: error_log)
       Progress.broadcast(scan_request_id, :error, %{reason: reason})
@@ -228,7 +228,7 @@ defmodule Portal.Workers.Build do
 
   # Every cleanup path above is reached by *returning* a value, so an exception
   # skips all of them: the scratch dir is never removed and the linked request
-  # is stranded at `queued` forever, because `on_retry_or_exhaust/4` never runs.
+  # is stranded at `queued` forever, because `on_retry_or_exhaust/5` never runs.
   #
   # That is not hypothetical. A full disk made `IO.binwrite/2` raise `:enospc`
   # while streaming docker output, and the leak was self-reinforcing — each
