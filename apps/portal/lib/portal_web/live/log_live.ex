@@ -40,12 +40,18 @@ defmodule PortalWeb.LogLive do
   end
 
   @impl true
-  def handle_event("filter", %{"filter" => query}, socket) do
+  def handle_event("filter", %{"filter" => query}, socket) when is_binary(query) do
     {:noreply,
      socket
      |> assign(:filter, query)
      |> assign(:visible, filter_lines(socket.assigns.lines, query))}
   end
+
+  # `phx-change` payloads are decoded by `Plug.Conn.Query`, so `filter[a]=b`
+  # arrives as a map and `filter` can be missing entirely. Without this clause
+  # the crash remounts the view, which re-runs the queries and re-materialises a
+  # log body of tens of megabytes — an unauthenticated loop the caller controls.
+  def handle_event("filter", _params, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do
