@@ -128,10 +128,21 @@ defmodule Portal.Catalog.SystemLogTest do
       assert Portal.Catalog.system_log("nope", "nerves_system_rpi4") == :error
     end
 
-    test "returns :error for a system with no stored log" do
+    test "returns :error for a system the run never built" do
       ingest_failed_run("cslpkg2", "log\n", "cslpkg2-1")
 
       assert Portal.Catalog.system_log("cslpkg2", "nerves_system_x86_64") == :error
+    end
+
+    # `body` is `allow_nil?(false)`, and Ash's :string type coerces an empty
+    # string to nil unless `allow_empty?: true` is set. A failed build whose log
+    # file is empty would otherwise fail ingest outright.
+    test "round-trips an empty log body" do
+      ingest_failed_run("cslpkg3", "", "cslpkg3-1")
+
+      assert {:ok, log} = Portal.Catalog.system_log("cslpkg3", "nerves_system_rpi4")
+      assert log.body == ""
+      assert log.byte_size == 0
     end
   end
 end

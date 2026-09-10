@@ -442,9 +442,10 @@ defmodule Portal.Catalog do
     |> Ash.read!(domain: __MODULE__)
   end
 
-  # Named columns, like every other query on a page-render path: this table
-  # carries the dependency_scans and beam_scan blobs, and this page renders
-  # neither.
+  # Named columns: this table carries the dependency_scans and beam_scan blobs
+  # and is the largest in the database, while this page renders neither. Note
+  # `system_results_for_runs/1` above still reads it unselected on the package
+  # page's own render path — a pre-existing gap, not a pattern to copy.
   defp system_result_for(run_id, system_pkg) do
     SystemResult
     |> Ash.Query.filter(run_id == ^run_id and system_pkg == ^system_pkg)
