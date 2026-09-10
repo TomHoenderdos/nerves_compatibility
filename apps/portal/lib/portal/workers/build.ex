@@ -104,7 +104,7 @@ defmodule Portal.Workers.Build do
 
         # Read before cleanup: the scratch dir is about to go, and this excerpt
         # is the only thing the requester will ever see about why.
-        error_log = excerpt_from(Builder.read_runner_log(run_id))
+        error_log = excerpt_from_file(Builder.runner_log_path(run_id))
 
         # No ingest job will ever read this scratch dir, so this branch owns it.
         # Forgetting that leaked a full build tree per failure: a package that
@@ -226,6 +226,17 @@ defmodule Portal.Workers.Build do
 
   defp excerpt_from(_raw), do: nil
 
+  # The file is read a tail at a time. Everything here is a failure path, and
+  # one of them is the crash path, where the thing that crashed the build is
+  # often the disk being full — not a moment to pull a whole log into memory.
+  defp excerpt_from_file(path) do
+    case LogSanitizer.runner_excerpt_file(path) do
+      {:ok, ""} -> nil
+      {:ok, excerpt} -> excerpt
+      {:error, _reason} -> nil
+    end
+  end
+
   # Every cleanup path above is reached by *returning* a value, so an exception
   # skips all of them: the scratch dir is never removed and the linked request
   # is stranded at `queued` forever, because `on_retry_or_exhaust/5` never runs.
@@ -257,7 +268,7 @@ defmodule Portal.Workers.Build do
     # and raising would replace the real error with a misleading one.
     error_log =
       try do
-        excerpt_from(Builder.read_runner_log(run_id))
+        excerpt_from_file(Builder.runner_log_path(run_id))
       rescue
         _ -> nil
       end

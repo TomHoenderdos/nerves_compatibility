@@ -221,19 +221,20 @@ defmodule Portal.Builder do
   end
 
   @doc """
-  Read a run's `runner.log` off disk. Returns `""` when there is nothing there.
+  Where a run's `runner.log` lives. The file may not exist.
 
   Failure paths that never got a `build` map still want the log, and it is about
-  to be deleted along with the scratch dir. Returns the raw bytes; the caller
-  sanitizes.
+  to be deleted along with the scratch dir. A path rather than the bytes: the
+  only consumer keeps the last 16 KB, and one of its callers is the crash path,
+  where what crashed the build is often a full disk. `LogSanitizer` reads the
+  tail it needs and nothing else.
   """
-  @spec read_runner_log(String.t()) :: String.t()
-  def read_runner_log(run_id) do
+  @spec runner_log_path(String.t()) :: Path.t()
+  def runner_log_path(run_id) do
     scratch_root()
     |> Path.join(safe_name(run_id))
     |> Path.join("out")
     |> Path.join("runner.log")
-    |> read_log()
   end
 
   @doc """

@@ -264,4 +264,207 @@ defmodule Portal.Catalog.LogSanitizerTest do
       assert excerpt =~ ~r/truncated, showing the last \d+ bytes of \d+/
     end
   end
+
+  describe "system_log_file/1" do
+    setup do
+      {:ok, dir: tmp_dir()}
+    end
+
+    test "reads a small log whole, matching the in-memory path", %{dir: dir} do
+      raw = "\e[31mCompiling 3 files\e[0m\nGenerated jason app\n"
+      path = write!(dir, "small.log", raw)
+
+      assert {:ok, log} = LogSanitizer.system_log_file(path)
+      assert log == LogSanitizer.system_log(raw)
+      refute log.truncated
+    end
+
+    test "an empty log round-trips as an empty body", %{dir: dir} do
+      path = write!(dir, "empty.log", "")
+
+      assert {:ok, log} = LogSanitizer.system_log_file(path)
+      assert log == %{body: "", byte_size: 0, truncated: false}
+    end
+
+    # The whole point of the file path: the bytes between head and tail are
+    # never read, so a runaway build's log does not become a runaway
+    # allocation inside the ingest transaction.
+    test "keeps head and tail of an over-cap log without reading the middle", %{dir: dir} do
+      head = String.duplicate("h", 400 * 1024)
+      middle = String.duplicate("m", 5 * 1024 * 1024)
+      tail = String.duplicate("t", 400 * 1024)
+      path = write!(dir, "big.log", head <> middle <> tail)
+
+      assert {:ok, log} = LogSanitizer.system_log_file(path)
+
+      assert log.truncated
+      assert log.byte_size == 400 * 1024 + 5 * 1024 * 1024 + 400 * 1024
+      assert String.starts_with?(log.body, "hhh")
+      assert String.ends_with?(log.body, "ttt")
+      assert log.body =~ "#{5 * 1024 * 1024} bytes elided by the portal"
+      refute log.body =~ "mmm"
+    end
+
+    test "never allocates the whole file", %{dir: dir} do
+      path = write!(dir, "huge.log", String.duplicate("x", 32 * 1024 * 1024))
+
+      {peak, {:ok, log}} = with_peak_memory(fn -> LogSanitizer.system_log_file(path) end)
+
+      assert log.byte_size == 32 * 1024 * 1024
+      # Head + tail is 800 KB. Anything near 32 MB means the file was slurped.
+      assert peak < 8 * 1024 * 1024, "allocated #{peak} bytes reading a 32 MB log"
+    end
+
+    test "scrubs a codepoint split by the head or tail cut", %{dir: dir} do
+      # é straddles the head boundary, and another straddles the tail cut.
+      raw =
+        String.duplicate("x", 400 * 1024 - 1) <>
+          "é" <>
+          String.duplicate("m", 1024) <>
+          "é" <> String.duplicate("t", 400 * 1024 - 1)
+
+      path = write!(dir, "utf8.log", raw)
+
+      assert {:ok, log} = LogSanitizer.system_log_file(path)
+      assert String.valid?(log.body)
+      assert log.body =~ "\uFFFD"
+    end
+
+    test "refuses a symlink rather than following it", %{dir: dir} do
+      secret = write!(dir, "secret.txt", "host filesystem contents")
+      link = Path.join(dir, "linked.log")
+      File.ln_s!(secret, link)
+
+      assert {:error, {:not_regular, :symlink}} = LogSanitizer.system_log_file(link)
+    end
+
+    test "refuses a directory", %{dir: dir} do
+      assert {:error, {:not_regular, :directory}} = LogSanitizer.system_log_file(dir)
+    end
+
+    test "reports a missing file rather than raising", %{dir: dir} do
+      assert {:error, :enoent} = LogSanitizer.system_log_file(Path.join(dir, "nope.log"))
+    end
+  end
+
+  describe "runner_excerpt_file/2" do
+    setup do
+      {:ok, dir: tmp_dir()}
+    end
+
+    test "matches the in-memory excerpt for a short log", %{dir: dir} do
+      raw = "docker: boom\nthe actual error\n"
+      path = write!(dir, "runner.log", raw)
+
+      assert {:ok, excerpt} = LogSanitizer.runner_excerpt_file(path, [])
+      assert excerpt == LogSanitizer.runner_excerpt(raw, [])
+    end
+
+    test "an empty runner log is an empty excerpt", %{dir: dir} do
+      path = write!(dir, "runner.log", "")
+
+      assert {:ok, ""} = LogSanitizer.runner_excerpt_file(path, [])
+    end
+
+    test "masks host roots inside the tail window", %{dir: dir} do
+      root = "/Users/deploy/.ncc-scratch"
+      raw = String.duplicate("x", 4096) <> "\nbind source: #{root}/pkg/work\n"
+      path = write!(dir, "runner.log", raw)
+
+      assert {:ok, excerpt} = LogSanitizer.runner_excerpt_file(path, [root])
+      refute excerpt =~ root
+      assert excerpt =~ "<host>/pkg/work"
+    end
+
+    # The banner has to name the file's size, not the size of the window that
+    # was read off its end — otherwise it understates what was dropped by a
+    # factor of however large the log actually was.
+    test "reports the file's real size, not the window's", %{dir: dir} do
+      raw = String.duplicate("x", 4 * 1024 * 1024) <> "\nthe actual error\n"
+      path = write!(dir, "runner.log", raw)
+
+      assert {:ok, excerpt} = LogSanitizer.runner_excerpt_file(path, [])
+      assert excerpt =~ "the actual error"
+      assert excerpt =~ "showing the last 16384 bytes of #{byte_size(raw)}"
+      assert byte_size(excerpt) <= 16 * 1024 + 200
+    end
+
+    test "never allocates the whole file", %{dir: dir} do
+      path = write!(dir, "runner.log", String.duplicate("x", 32 * 1024 * 1024))
+
+      {peak, {:ok, excerpt}} =
+        with_peak_memory(fn -> LogSanitizer.runner_excerpt_file(path, []) end)
+
+      assert byte_size(excerpt) <= 16 * 1024 + 200
+      assert peak < 8 * 1024 * 1024, "allocated #{peak} bytes reading a 32 MB log"
+    end
+
+    # A short log makes the builder header part of the tail, and that header
+    # carries the whole docker argv and every host mount path.
+    test "strips the builder header even though only the tail is read", %{dir: dir} do
+      header =
+        %{
+          run_id: "11111111-2222-3333-4444-555555555555",
+          image_name: "ncc-worker",
+          image_digest: "sha256:deadbeef"
+        }
+        |> Portal.Builder.build_docker_args("/scratch/work", "/scratch/out", "/scratch/files")
+        |> Portal.Builder.command_log_header()
+
+      path = write!(dir, "runner.log", header <> "boom\n")
+
+      assert {:ok, "boom\n"} = LogSanitizer.runner_excerpt_file(path, [])
+    end
+
+    test "refuses a symlink rather than following it", %{dir: dir} do
+      secret = write!(dir, "secret.txt", "host filesystem contents")
+      link = Path.join(dir, "runner.log")
+      File.ln_s!(secret, link)
+
+      assert {:error, {:not_regular, :symlink}} = LogSanitizer.runner_excerpt_file(link, [])
+    end
+
+    test "reports a missing file rather than raising", %{dir: dir} do
+      assert {:error, :enoent} = LogSanitizer.runner_excerpt_file(Path.join(dir, "nope.log"), [])
+    end
+  end
+
+  defp tmp_dir do
+    dir = Path.join(System.tmp_dir!(), "ncc-log-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    dir
+  end
+
+  defp write!(dir, name, contents) do
+    path = Path.join(dir, name)
+    File.write!(path, contents)
+    path
+  end
+
+  # The fixture binary is built in this process and would dominate any
+  # measurement taken here, so the call runs in its own process and that
+  # process's own peak is what is reported.
+  defp with_peak_memory(fun) do
+    parent = self()
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        result = fun.()
+        send(parent, {:result, self(), :erlang.process_info(self(), :memory), result})
+      end)
+
+    receive do
+      {:result, ^pid, {:memory, peak}, result} ->
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _} -> :ok
+        after
+          5_000 -> :ok
+        end
+
+        {peak, result}
+    after
+      30_000 -> flunk("timed out reading the fixture")
+    end
+  end
 end

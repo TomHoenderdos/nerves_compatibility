@@ -68,6 +68,103 @@ defmodule Portal.Catalog.LogSanitizer do
   end
 
   @doc """
+  Sanitize a per-system build log read straight off disk.
+
+  Reads at most `@head_bytes + @tail_bytes` however large the file is. The
+  in-memory `system_log/1` needs the whole log as a binary first, which meant a
+  runaway build that emitted gigabytes allocated all of it inside the ingest
+  transaction only for the truncation below to throw away everything but 800 KB
+  — on `ingest:3`, three of those at once.
+
+  `{:error, {:not_regular, type}}` for anything that is not a regular file. /out
+  is a read-write bind mount and the container runs as the invoking host user,
+  so package code can leave `logs/<system>.log` as a symlink to any file that
+  user can read; `lstat` does not follow it.
+  """
+  @spec system_log_file(Path.t()) ::
+          {:ok, system_log()} | {:error, {:not_regular, atom()} | File.posix()}
+  def system_log_file(path), do: with_regular_file(path, &read_system_log/2)
+
+  @doc """
+  Sanitize a `runner.log` tail read straight off disk, without reading the head.
+
+  Same bound, and the reason is sharper here: one caller is the crash path in
+  `Portal.Workers.Build`, where what crashed the build is often a full disk.
+  """
+  @spec runner_excerpt_file(Path.t(), Path.t() | nil | [Path.t() | nil]) ::
+          {:ok, String.t()} | {:error, {:not_regular, atom()} | File.posix()}
+  def runner_excerpt_file(path, roots \\ default_roots()) do
+    with_regular_file(path, &read_runner_excerpt(&1, &2, roots))
+  end
+
+  # `lstat` before opening, so a symlink is refused rather than followed, and
+  # `:raw` so the read never round-trips through a file-server process.
+  defp with_regular_file(path, fun) do
+    with {:ok, %File.Stat{type: :regular, size: size}} <- File.lstat(path),
+         {:ok, fd} <- :file.open(path, [:read, :binary, :raw]) do
+      try do
+        fun.(fd, size)
+      after
+        :file.close(fd)
+      end
+    else
+      {:ok, %File.Stat{type: type}} -> {:error, {:not_regular, type}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Under the cap the whole file is already bounded, so this is the in-memory
+  # path verbatim — including stripping the escapes *before* the truncation
+  # check, which is what keeps a log that only exceeds the cap in ANSI noise
+  # from being reported as truncated.
+  defp read_system_log(fd, size) when size <= @head_bytes + @tail_bytes do
+    with {:ok, raw} <- pread(fd, 0, size), do: {:ok, system_log(raw)}
+  end
+
+  defp read_system_log(fd, size) do
+    with {:ok, head} <- pread(fd, 0, @head_bytes),
+         {:ok, tail} <- pread(fd, size - @tail_bytes, @tail_bytes) do
+      body = clean(head) <> elision(size - @head_bytes - @tail_bytes) <> clean(tail)
+      {:ok, %{body: body, byte_size: size, truncated: true}}
+    end
+  end
+
+  # Twice the budget of raw bytes for one budget of output. Stripping escapes
+  # and masking host roots both shrink the text, so reading exactly
+  # `@runner_bytes` would deliver an excerpt short of what it claims. The
+  # reported total is the file's real size, not the size of this window.
+  defp read_runner_excerpt(fd, size, roots) do
+    window = min(size, 2 * @runner_bytes)
+
+    with {:ok, raw} <- pread(fd, size - window, window) do
+      cleaned =
+        raw
+        |> scrub()
+        |> strip_builder_header()
+        |> mask_roots(roots)
+        |> strip_controls()
+
+      {:ok, truncate_tail(cleaned, @runner_bytes, size)}
+    end
+  end
+
+  # `:file.pread/3` answers `:eof` rather than `{:ok, ""}` for a zero-byte read,
+  # which is what an empty log file is.
+  defp pread(_fd, _offset, 0), do: {:ok, ""}
+
+  defp pread(fd, offset, bytes) do
+    case :file.pread(fd, offset, bytes) do
+      {:ok, data} -> {:ok, data}
+      :eof -> {:ok, ""}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp clean(raw), do: raw |> scrub() |> strip_controls()
+
+  defp elision(bytes), do: "\n\n[... #{bytes} bytes elided by the portal ...]\n\n"
+
+  @doc """
   Sanitize a `runner.log` tail for the run-level fallback.
 
   Tail only: a runner failure is always at the end. The `Portal.Builder` header
@@ -85,7 +182,7 @@ defmodule Portal.Catalog.LogSanitizer do
     |> strip_builder_header()
     |> mask_roots(roots)
     |> strip_controls()
-    |> truncate_tail(@runner_bytes)
+    |> then(&truncate_tail(&1, @runner_bytes, byte_size(&1)))
   end
 
   # `String.valid?/1` is the fast path: almost every log is already valid, and
@@ -164,20 +261,23 @@ defmodule Portal.Catalog.LogSanitizer do
       # something it will reject.
       body =
         scrub(binary_part(text, 0, @head_bytes)) <>
-          "\n\n[... #{elided} bytes elided by the portal ...]\n\n" <>
+          elision(elided) <>
           scrub(binary_part(text, size - @tail_bytes, @tail_bytes))
 
       {body, true}
     end
   end
 
-  defp truncate_tail(text, max) do
+  # `original` is reported rather than measured: when the text arrived as a
+  # window read off the end of a file, its own size is the window's, not the
+  # log's, and the banner would understate what was dropped.
+  defp truncate_tail(text, max, original) do
     size = byte_size(text)
 
     if size <= max do
       text
     else
-      "[... truncated, showing the last #{max} bytes of #{size} ...]\n" <>
+      "[... truncated, showing the last #{max} bytes of #{original} ...]\n" <>
         scrub(binary_part(text, size - max, max))
     end
   end
