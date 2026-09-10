@@ -279,6 +279,36 @@ defmodule Portal.Catalog.IngestionTest do
     # read-write bind mount and the container runs as the invoking host user,
     # so package code can leave the log itself as a symlink to any file that
     # user can read, and `File.read/1` would follow it into a public log body.
+    # `system_pkg` is a key from a result.json written inside a container that
+    # runs untrusted package code, and the bytes at the path it builds become a
+    # publicly readable log body. Nothing today can steer the key, but the guard
+    # is what keeps that true.
+    test "a build log for a traversing system name is never read" do
+      output_dir = seed_output_dir(%{})
+      secret = Path.join(output_dir, "secret.txt")
+      File.write!(secret, "host filesystem contents")
+
+      result =
+        load_fixture()
+        |> Map.put("systems", %{"../secret.txt" => %{"status" => "fail"}})
+
+      {ingest, log} =
+        with_log(fn ->
+          Ingestion.ingest(result, %{
+            run_id: "traversal-#{System.unique_integer([:positive])}",
+            image_digest: "sha256:deadbeef",
+            files_dir: seed_files_dir([]),
+            output_dir: output_dir,
+            log: "runner"
+          })
+        end)
+
+      assert {:ok, run} = ingest
+      assert logs_by_system(run.id) == %{}
+      assert log =~ "Refusing to read a build log for suspicious system"
+      refute log =~ "host filesystem contents"
+    end
+
     test "a build log that is a symlink is skipped" do
       output_dir = seed_output_dir(%{})
       secret = Path.join(output_dir, "secret.txt")
