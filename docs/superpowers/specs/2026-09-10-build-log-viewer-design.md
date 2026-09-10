@@ -139,7 +139,11 @@ unreviewed third-party Hex packages; it is attacker-influenced input.
    package emitting a stray byte would crash the ingest through all five
    attempts and discard the build.
 2. **Strip ANSI CSI sequences and C0 control characters**, keeping `\n` and
-   `\t`. Build output is colorized; raw escapes render as garbage.
+   `\t`. Note this is defensive, not routine: `build_docker_args/4` allocates
+   no TTY, so `mix` disables color and normal output carries no escapes — a
+   real `vix 0.41.0` failure log contained zero. A package can still emit them
+   directly, and stripping is cheap, so it stays. It should not be described as
+   the common case.
 3. **Truncate**, with an explicit elision marker, to a caller-supplied budget:
    head 400 KB + tail 400 KB for a per-system log, and tail-only 16 KB for the
    `runner.log` excerpt. Both ends of a system log carry signal — dependency
@@ -151,6 +155,36 @@ unreviewed third-party Hex packages; it is attacker-influenced input.
    log makes the header part of the tail. (The container environment itself is
    clean — `build_docker_args/4` passes only `NCC_INPUT`, `LANG`, `HOME`,
    `HEX_HOME`, `TAR_OPTIONS`, and the build-tuning vars. No secrets.)
+
+## Worked example
+
+`vix 0.41.0` against `nerves_system_x86_64`, built locally on 2026-09-10.
+Per-system log, 3804 bytes, 125 lines:
+
+- **Head** — Hex resolution, naming the exact `nerves_system_*` and
+  `nerves_toolchain_*` versions that resolved.
+- **Middle** — ~60 lines of `Generated <app> app`.
+- **Tail** — the root cause:
+
+  ```
+  Downloading precompiled NIF to …/vix-nif-2.17-x86_64-linux-musl-0.41.0.tar.gz
+  Compiling 28 files (.ex)
+
+  08:55:16.677 [warning] The on_load function for module Elixir.Vix.Nif returned:
+  {:error, {:load_failed, ~c"Failed to load NIF library: '…/vix/priv/vix.so:
+   cannot open shared object file: No such file or directory'"}}
+
+  == Compilation error in file lib/vix/vips/enum.ex ==
+  ** (UndefinedFunctionError) function Vix.Nif.nif_vips_enum_list/0 is undefined
+  ```
+
+`FailureClassifier` labels this "Compilation error", which is accurate and tells
+a maintainer nothing. That the precompiled NIF downloads but `vix.so` never
+lands — so `on_load` fails and a compile-time macro calling into the NIF dies —
+exists only in the log body. This is the case the feature is for.
+
+It also confirms the head+tail truncation choice: both ends carry signal and the
+middle does not.
 
 ## Viewing
 
@@ -217,6 +251,14 @@ Measured on production, counting only the last 4096 bytes of each system log:
 These are real deprecations against modern Elixir and OTP — the compatibility
 signal this site exists to report — and the true counts are higher, since this
 only counts warnings that happened to land in the last 4 KB.
+
+**Two warning shapes exist, and a parser must handle both.** Compile warnings
+(`warning: unused require Logger`, followed by a `└─ file:line` continuation)
+and Logger output emitted during compilation
+(`08:55:16.677 [warning] The on_load function for module Elixir.Vix.Nif
+returned: …`). In the `vix 0.41.0` log above the second kind is the only
+warning present and is the line that explains the failure. A parser anchored on
+`^warning:` would miss it.
 
 Warnings are a different feature at every layer and belong in their own spec:
 they apply to **passing** builds, which this spec deliberately excludes from log
