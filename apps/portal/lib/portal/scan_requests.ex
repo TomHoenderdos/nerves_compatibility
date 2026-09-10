@@ -87,7 +87,7 @@ defmodule Portal.ScanRequests do
   def get_request(_id), do: {:error, :not_found}
 
   @doc """
-  Update a request's lifecycle status (and optionally error_reason / run_id).
+  Update a request's lifecycle status (and optionally error_reason / error_log / run_id).
   Used by the Build worker to mark requests built/rejected/error.
   """
   def set_status(request_or_id, status, opts \\ [])
@@ -97,6 +97,7 @@ defmodule Portal.ScanRequests do
     |> Ash.Changeset.for_update(:set_status, %{
       status: status,
       error_reason: Keyword.get(opts, :error_reason),
+      error_log: Keyword.get(opts, :error_log),
       run_id: Keyword.get(opts, :run_id)
     })
     |> Ash.update(domain: __MODULE__)
