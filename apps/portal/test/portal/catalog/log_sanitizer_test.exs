@@ -64,16 +64,19 @@ defmodule Portal.Catalog.LogSanitizerTest do
     end
 
     test "re-scrubs tail slice to prevent UTF-8 corruption at truncation boundary" do
-      # Create text where a multi-byte character straddles the tail boundary
-      head = String.duplicate("h", 400 * 1024)
-      middle = String.duplicate("m", 1000)
-      # Place a multi-byte character right at where the tail boundary would cut
-      tail = "éé" <> String.duplicate("t", 400 * 1024 - 2)
+      # Position é so truncation cuts at its 0xA9 continuation byte
+      # With @tail_bytes = 409_600:
+      # size = 500_000 + 2 + 409_599 = 909_601
+      # cut_offset = 909_601 - 409_600 = 500_001
+      # é at indices [500_000, 500_001], tail slice starts at 500_001
+      text = String.duplicate("h", 500_000) <> "é" <> String.duplicate("t", 400 * 1024 - 1)
 
-      log = LogSanitizer.system_log(head <> middle <> tail)
+      log = LogSanitizer.system_log(text)
 
-      # The body should be valid UTF-8
+      # The body should be valid UTF-8 even after cutting mid-character
       assert String.valid?(log.body)
+      # The orphaned continuation byte becomes a replacement character.
+      assert log.body =~ "�"
     end
   end
 
@@ -112,16 +115,23 @@ defmodule Portal.Catalog.LogSanitizerTest do
     end
 
     test "re-scrubs runner tail to prevent UTF-8 corruption at truncation boundary" do
-      # Create a log larger than 16 KB with a multi-byte character near the end
-      large_head = String.duplicate("x", 17 * 1024)
-      tail_with_multibyte = "é" <> String.duplicate("t", 100)
+      # Position é so the tail cut lands on its 0xA9 continuation byte rather
+      # than on a valid leading byte — otherwise the slice is already valid and
+      # the test would pass even with the `scrub/1` wrapper removed.
+      #
+      # No header and no control characters, so nothing upstream of the cut
+      # shifts these offsets. With @runner_bytes = 16_384:
+      #   size        = 20_000 + 2 + 16_383 = 36_385
+      #   cut_offset  = 36_385 - 16_384     = 20_001
+      #   é occupies indices [20_000, 20_001], so the slice starts mid-codepoint.
+      text = String.duplicate("x", 20_000) <> "é" <> String.duplicate("t", 16 * 1024 - 1)
 
-      excerpt = LogSanitizer.runner_excerpt(large_head <> tail_with_multibyte)
+      excerpt = LogSanitizer.runner_excerpt(text)
 
-      # The excerpt should be valid UTF-8
       assert String.valid?(excerpt)
-      # Should have the truncation marker
-      assert excerpt =~ ~r/truncated, showing the last \d+ bytes/
+      # The orphaned continuation byte becomes a replacement character.
+      assert excerpt =~ "�"
+      assert excerpt =~ ~r/truncated, showing the last \d+ bytes of \d+/
     end
   end
 end
