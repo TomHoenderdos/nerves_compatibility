@@ -581,10 +581,18 @@ defmodule Portal.Builder do
   # prefix guarantees a valid leading char.
   defp container_name(run_id), do: "ncc-#{safe_name(run_id)}"
 
-  defp log_command(args, log_file) do
+  defp log_command(args, log_file), do: File.write!(log_file, command_log_header(args))
+
+  @doc false
+  # Public only so `Portal.Catalog.LogSanitizer`'s tests can assert against the
+  # real header instead of a hand-copied one. The sanitizer strips this block
+  # before the excerpt reaches the public request page, and it carries the full
+  # docker argv and the host mount paths.
+  @spec command_log_header([String.t()]) :: String.t()
+  def command_log_header(args) do
     timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
 
-    header = """
+    """
     ================================================================================
     Portal.Builder - Docker Execution Log
     Started: #{timestamp}
@@ -592,8 +600,6 @@ defmodule Portal.Builder do
     ================================================================================
 
     """
-
-    File.write!(log_file, header)
   end
 
   defp run_docker(args, log_file, container_name) do

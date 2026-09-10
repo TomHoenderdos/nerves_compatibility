@@ -74,12 +74,26 @@ defmodule Portal.ScanRequests do
     end
   end
 
+  # This used to read every row and filter in Elixir. It is called from
+  # `RequestLive.mount/3` on a public route, again on every progress broadcast,
+  # and up to four times per build from `Progress.mark/3` — against a table that
+  # grows one row per Hex release discovered across the catalog, and whose rows
+  # now carry up to 16 KB of `error_log` each.
+  #
+  # The id comes straight off `/requests/:id`, so it is not necessarily a UUID.
+  # Ash turns an uncastable filter value into an `InvalidFilterValue` error and,
+  # inside a transaction, into a rollback throw, where the old full scan simply
+  # found nothing — so the shape is checked before the query is built.
   def get_request(id) when is_binary(id) do
-    with {:ok, requests} <- Ash.read(ScanRequest, domain: __MODULE__),
-         %ScanRequest{} = request <- Enum.find(requests, &(&1.id == id)) do
+    with {:ok, _uuid} <- Ecto.UUID.cast(id),
+         {:ok, %ScanRequest{} = request} <-
+           ScanRequest
+           |> Ash.Query.filter(expr(id == ^id))
+           |> Ash.read_one(domain: __MODULE__) do
       {:ok, request}
     else
-      nil -> {:error, :not_found}
+      :error -> {:error, :not_found}
+      {:ok, nil} -> {:error, :not_found}
       {:error, reason} -> {:error, reason}
     end
   end

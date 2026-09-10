@@ -138,4 +138,37 @@ defmodule Portal.ScanRequests.ScanRequestTest do
 
     assert Portal.ScanRequests.open_request_for_package("no_such_package_at_all") == nil
   end
+
+  describe "get_request/1" do
+    test "finds a request by id" do
+      {:ok, request} =
+        Portal.ScanRequests.create_once(%{
+          package_name: "getreq",
+          source: :anonymous_manual,
+          status: :pending
+        })
+
+      assert {:ok, found} = Portal.ScanRequests.get_request(request.id)
+      assert found.id == request.id
+    end
+
+    test "an unknown but well-formed id is :not_found" do
+      assert Portal.ScanRequests.get_request(Ecto.UUID.generate()) == {:error, :not_found}
+    end
+
+    # `/requests/:id` is public and the parameter is not validated by the
+    # router. The old full-table scan found nothing and said so; a filtered read
+    # hands the junk to Ash, which answers with an InvalidFilterValue error —
+    # and, inside a transaction, with a rollback throw.
+    test "a malformed id is :not_found rather than a cast error" do
+      assert Portal.ScanRequests.get_request("not-a-uuid") == {:error, :not_found}
+      assert Portal.ScanRequests.get_request("") == {:error, :not_found}
+      assert Portal.ScanRequests.get_request("' OR 1=1 --") == {:error, :not_found}
+      assert Portal.ScanRequests.get_request(nil) == {:error, :not_found}
+
+      assert Portal.Repo.transaction(fn ->
+               Portal.ScanRequests.get_request("not-a-uuid")
+             end) == {:ok, {:error, :not_found}}
+    end
+  end
 end

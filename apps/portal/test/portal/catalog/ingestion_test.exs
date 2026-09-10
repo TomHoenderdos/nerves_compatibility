@@ -3,8 +3,10 @@ defmodule Portal.Catalog.IngestionTest do
 
   require Ash.Query
 
+  import ExUnit.CaptureLog, only: [with_log: 1]
+
   alias Portal.ArtifactStore
-  alias Portal.Catalog.{Artifact, Ingestion, Package, SystemResult}
+  alias Portal.Catalog.{Artifact, Ingestion, Package, Run, SystemResult}
   alias Portal.ScanRequests
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
@@ -209,6 +211,68 @@ defmodule Portal.Catalog.IngestionTest do
     test "a missing log file ingests cleanly and creates no row" do
       assert {:ok, run} = ingest_fixture(seed_output_dir(%{}))
       assert logs_by_system(run.id) == %{}
+    end
+
+    # The reviewer's reproduction: a database error on the log insert used to
+    # abort the whole ingest transaction, which burns an Oban attempt and, at
+    # exhaustion, discards the completed build. Fails without the SAVEPOINT in
+    # `insert_log/3` — the CHECK constraint stands in for the transport errors
+    # (pool timeout, dropped connection, statement timeout) that cause it in
+    # production, since no log *content* can reach Postgres badly formed.
+    test "a database error inserting the log still commits the run" do
+      Portal.Repo.query!(
+        "ALTER TABLE catalog_system_logs ADD CONSTRAINT ncc_probe_no_boom " <>
+          "CHECK (body NOT LIKE '%rejected-by-postgres%')"
+      )
+
+      output_dir =
+        seed_output_dir(%{"nerves_system_x86_64" => "rejected-by-postgres: build failed"})
+
+      {run, _log} = with_log(fn -> ingest_fixture(output_dir) end)
+
+      assert {:ok, run} = run
+
+      # The log row is the only casualty.
+      assert logs_by_system(run.id) == %{}
+
+      # The run and every system result are readable, so the transaction
+      # committed rather than rolling back.
+      assert %Run{} = Ash.get!(Run, run.id, domain: Portal.Catalog)
+
+      system_results =
+        SystemResult
+        |> Ash.Query.filter(run_id == ^run.id)
+        |> Ash.read!(domain: Portal.Catalog)
+
+      assert length(system_results) == 3
+    end
+
+    test "a system name that escapes the logs directory is skipped" do
+      output_dir = seed_output_dir(%{})
+      File.write!(Path.join(output_dir, "secret.log"), "host filesystem contents")
+
+      result =
+        load_fixture()
+        |> Map.put("systems", %{
+          "../../etc/passwd" => %{"status" => "fail"},
+          "../secret" => %{"status" => "fail"}
+        })
+
+      {ingest, log} =
+        with_log(fn ->
+          Ingestion.ingest(result, %{
+            run_id: "traversal-#{System.unique_integer([:positive])}",
+            image_digest: "sha256:deadbeef",
+            files_dir: seed_files_dir([]),
+            output_dir: output_dir,
+            log: "runner"
+          })
+        end)
+
+      assert {:ok, run} = ingest
+      assert logs_by_system(run.id) == %{}
+      assert log =~ "Refusing to read a build log"
+      refute log =~ "host filesystem contents"
     end
 
     test "an ingest with no output_dir at all still succeeds" do

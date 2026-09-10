@@ -31,6 +31,30 @@ defmodule Portal.Catalog.LogSanitizerTest do
       assert LogSanitizer.system_log(raw).body == "a\tb\ncde"
     end
 
+    # U+202E reverses the visual order of everything after it, so a package's
+    # log can make its own output read as something else entirely on a page that
+    # renders it. Trojan Source, aimed at whoever is reading the failure.
+    test "strips bidi overrides and isolates" do
+      raw = "user\u202Egnp.js\u202C ok \u2066spoof\u2069 \u202A\u202B\u202D done"
+
+      body = LogSanitizer.system_log(raw).body
+
+      assert body == "usergnp.js ok spoof  done"
+      refute body =~ "\u202E"
+      refute body =~ "\u2066"
+    end
+
+    test "strips C1 controls" do
+      raw = "before" <> <<0x80::utf8>> <> <<0x9B::utf8>> <> <<0x9F::utf8>> <> "after"
+
+      assert LogSanitizer.system_log(raw).body == "beforeafter"
+    end
+
+    test "strips OSC window-title sequences whole" do
+      assert LogSanitizer.system_log("\e]0;pwned\a done").body == " done"
+      assert LogSanitizer.system_log("\e]8;;http://evil\e\\link").body == "link"
+    end
+
     test "truncates head + tail, marks the elision, keeps the original size" do
       head = String.duplicate("h", 400 * 1024)
       middle = String.duplicate("m", 1024)
@@ -97,6 +121,64 @@ defmodule Portal.Catalog.LogSanitizerTest do
       refute excerpt =~ "docker run"
       refute excerpt =~ "/var/lib/ncc/scratch"
       assert excerpt =~ "Compilation error"
+    end
+
+    # The strip used to pin the rule to exactly 80 `=`. Nothing tied it to the
+    # builder, so a one-character change there would have shipped the docker
+    # argv and the host mount paths to the public request page with the suite
+    # still green. Build the header from `Portal.Builder` itself.
+    test "strips the header Portal.Builder actually writes" do
+      job = %{
+        run_id: "11111111-2222-3333-4444-555555555555",
+        image_name: "ncc-worker",
+        image_digest: "sha256:deadbeef"
+      }
+
+      header =
+        job
+        |> Portal.Builder.build_docker_args("/scratch/work", "/scratch/out", "/scratch/files")
+        |> Portal.Builder.command_log_header()
+
+      excerpt = LogSanitizer.runner_excerpt(header <> "boom\n")
+
+      refute excerpt =~ "docker run"
+      refute excerpt =~ "ncc-worker"
+      refute excerpt =~ "Portal.Builder - Docker Execution Log"
+      assert excerpt == "boom\n"
+    end
+
+    # Docker daemon errors echo the bind source path, and a mount failure is
+    # exactly what produces a run-level error_log. The header strip does not
+    # help: this text is in the body.
+    test "masks the host scratch root out of the body" do
+      root = "/Users/deploy/.ncc-scratch"
+
+      raw = """
+      docker: Error response from daemon: invalid mount config for type bind:
+        bind source path does not exist: #{root}/pkg-1.0.0-123/work
+      boom
+      """
+
+      excerpt = LogSanitizer.runner_excerpt(raw, root)
+
+      refute excerpt =~ root
+      refute excerpt =~ "/Users/deploy"
+      assert excerpt =~ "<scratch>/pkg-1.0.0-123/work"
+      assert excerpt =~ "boom"
+    end
+
+    test "an unset scratch root leaves the text alone" do
+      assert LogSanitizer.runner_excerpt("boom\n", nil) == "boom\n"
+      assert LogSanitizer.runner_excerpt("boom\n", "") == "boom\n"
+    end
+
+    test "defaults the scratch root to the builder's own" do
+      raw = "bind source path does not exist: #{Portal.Builder.scratch_root()}/x/work\n"
+
+      excerpt = LogSanitizer.runner_excerpt(raw)
+
+      refute excerpt =~ Portal.Builder.scratch_root()
+      assert excerpt =~ "<scratch>/x/work"
     end
 
     test "keeps only the tail and reports byte counts" do

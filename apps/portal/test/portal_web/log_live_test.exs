@@ -75,6 +75,27 @@ defmodule PortalWeb.LogLiveTest do
     assert view |> element("#log-line-count") |> render() =~ "3 of 3 lines"
   end
 
+  # `filter[a]=b` on the wire decodes to a map, and the filter key can be absent
+  # entirely. Each crash remounts the view and re-materialises the whole log
+  # body, so a crafted param was an unauthenticated way to make this process do
+  # tens of megabytes of work on a loop.
+  test "a non-binary filter param leaves the view alive", %{conn: conn} do
+    seed("alpha line\nbeta line\n")
+
+    {:ok, view, _html} = live(conn, ~p"/packages/logpkg/log/nerves_system_rpi4")
+
+    render_change(view, "filter", %{"filter" => %{"a" => "b"}})
+    render_change(view, "filter", %{"filter" => ["x"]})
+    render_change(view, "filter", %{"filter" => nil})
+    render_change(view, "filter", %{})
+
+    assert has_element?(view, "#log-body", "alpha line")
+
+    # Still a working filter afterwards.
+    view |> element("#log-filter-form") |> render_change(%{"filter" => "beta"})
+    refute has_element?(view, "#log-body", "alpha line")
+  end
+
   test "renders a script tag as text, never as markup", %{conn: conn} do
     seed("<script>alert(1)</script>\n")
 

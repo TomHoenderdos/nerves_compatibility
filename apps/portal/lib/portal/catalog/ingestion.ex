@@ -31,6 +31,9 @@ defmodule Portal.Catalog.Ingestion do
   # headroom for a loaded builder; 60s does, without hiding a real hang.
   @transaction_timeout 60_000
 
+  # Scopes a failed log insert to itself. See `insert_log/3`.
+  @log_savepoint "ncc_system_log"
+
   @type ingest_opts :: %{
           required(:run_id) => String.t(),
           required(:image_digest) => String.t(),
@@ -172,6 +175,24 @@ defmodule Portal.Catalog.Ingestion do
   defp maybe_store_log(_system_result, _system_pkg, _status, nil), do: :ok
 
   defp maybe_store_log(system_result, system_pkg, _status, output_dir) do
+    if traversal?(system_pkg) do
+      # `system_pkg` is a key from the worker's result.json, and /out is a
+      # read-write bind mount in a container that runs untrusted package code.
+      # Nothing today can steer this key, but the bytes at the path it builds
+      # become a publicly readable log body, so refuse to leave the logs dir.
+      Logger.warning("Refusing to read a build log for suspicious system #{inspect(system_pkg)}")
+      :ok
+    else
+      read_and_insert_log(system_result, system_pkg, output_dir)
+    end
+  end
+
+  defp traversal?(system_pkg) when is_binary(system_pkg),
+    do: String.contains?(system_pkg, ["/", "\\", ".."])
+
+  defp traversal?(_system_pkg), do: true
+
+  defp read_and_insert_log(system_result, system_pkg, output_dir) do
     path = Path.join([output_dir, "logs", "#{system_pkg}.log"])
 
     case File.read(path) do
@@ -186,30 +207,61 @@ defmodule Portal.Catalog.Ingestion do
     end
   end
 
-  # This runs inside the ingest transaction, so a database error here would
-  # poison it. Nothing can realistically raise one: the body is scrubbed to
-  # valid UTF-8 and capped at 800 KB, and `system_result` was inserted moments
-  # ago, so the unique index cannot fire. Log and carry on rather than lose the
-  # build over the one row nobody is waiting for.
+  # A log must never fail an ingest: a failed ingest burns an Oban attempt and,
+  # at exhaustion, discards a completed multi-gigabyte build. This insert runs
+  # inside the ingest transaction, and in Postgres one failed statement aborts
+  # the whole transaction — every later statement is refused until it ends — so
+  # "never fail" needs more than an error branch.
+  #
+  # Nothing about the log's *content* can trigger that: the sanitizer guarantees
+  # valid UTF-8 with no NUL bytes and caps the body at 800 KB, and
+  # `system_result` was inserted moments ago, so the unique index cannot fire.
+  # Its *transport* can: a pool checkout timeout, a connection dropped over the
+  # ~80ms tailnet link to Postgres, or a statement timeout all abort the
+  # statement the same way. Hence the SAVEPOINT, which scopes the damage to this
+  # one row.
+  #
+  # Two details are measured rather than assumed. A nested `Repo.transaction/1`
+  # is *not* a savepoint — DBConnection runs a nested transaction on the same
+  # connection and only marks it failed until the outermost call rolls back, so
+  # with one the insert after a failed log still failed and the ingest still
+  # returned `{:error, :rollback}`. And Ash signals a data-layer error from
+  # inside a transaction by throwing `{DBConnection, ref, changeset}` rather
+  # than returning `{:error, reason}`, so the `catch` is what actually stops it.
   defp insert_log(system_result, raw, path) do
     sanitized = LogSanitizer.system_log(raw)
 
-    result =
-      SystemLog
-      |> Ash.Changeset.for_create(:create, %{
-        system_result_id: system_result.id,
-        body: sanitized.body,
-        byte_size: sanitized.byte_size,
-        truncated: sanitized.truncated
-      })
-      |> Ash.create(domain: @domain)
+    try do
+      Repo.query!("SAVEPOINT #{@log_savepoint}")
 
-    case result do
-      {:ok, _log} -> :ok
-      {:error, reason} -> Logger.warning("Could not store #{path}: #{inspect(reason)}")
+      case create_system_log(system_result, sanitized) do
+        {:ok, _log} ->
+          Repo.query!("RELEASE SAVEPOINT #{@log_savepoint}")
+
+        {:error, reason} ->
+          Logger.warning("Could not store #{path}: #{inspect(reason, limit: 3)}")
+          Repo.query!("ROLLBACK TO SAVEPOINT #{@log_savepoint}")
+          Repo.query!("RELEASE SAVEPOINT #{@log_savepoint}")
+      end
+    catch
+      kind, reason ->
+        Logger.warning("Could not store #{path}: #{inspect({kind, reason}, limit: 3)}")
     end
 
     :ok
+  end
+
+  defp create_system_log(system_result, sanitized) do
+    SystemLog
+    |> Ash.Changeset.for_create(:create, %{
+      system_result_id: system_result.id,
+      body: sanitized.body,
+      byte_size: sanitized.byte_size,
+      truncated: sanitized.truncated
+    })
+    |> Ash.create(domain: @domain)
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   # Move every content-addressed blob referenced by the manifests out of
