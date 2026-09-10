@@ -20,6 +20,8 @@ defmodule Portal.Catalog.LogSanitizer do
   doing it twice would show users `&lt;` where the log said `<`.
   """
 
+  alias Portal.Builder
+
   @head_bytes 400 * 1024
   @tail_bytes 400 * 1024
   @runner_bytes 16 * 1024
@@ -34,11 +36,15 @@ defmodule Portal.Catalog.LogSanitizer do
   # Carriage returns go too: they are progress-bar redraws and render as
   # garbage inside a <pre>.
   @controls ~r/[\x00-\x08\x0b-\x1f\x7f]/
-  # C1 controls, plus the bidi embeddings and isolates. U+202E reverses the
-  # visual order of everything after it — the Trojan Source trick — and this
-  # text is rendered on a public page. Codepoint ranges, so this needs the `u`
-  # modifier and cannot be folded into the byte-oriented sweep above.
-  @unicode_controls ~r/[\x{80}-\x{9f}\x{202a}-\x{202e}\x{2066}-\x{2069}]/u
+  # C1 controls, plus every invisible codepoint that can reorder or hide text.
+  # U+202E reverses the visual order of everything after it — the Trojan Source
+  # trick — and this text is rendered on a public page. The embeddings and
+  # isolates were covered from the start; the bidi *marks* (U+200E LRM, U+200F
+  # RLM, U+061C ALM) were not, and a mark is enough to flip the rendered order
+  # of a neutral run such as a file path. U+200B and U+FEFF are zero-width and
+  # can hide a word boundary inside an identifier. Codepoint ranges, so this
+  # needs the `u` modifier and cannot be folded into the byte-oriented sweep.
+  @unicode_controls ~r/[\x{80}-\x{9f}\x{061c}\x{200b}\x{200e}\x{200f}\x{202a}-\x{202e}\x{2066}-\x{2069}\x{feff}]/u
 
   @type system_log :: %{
           body: String.t(),
@@ -69,15 +75,15 @@ defmodule Portal.Catalog.LogSanitizer do
   short log makes the header part of the tail — and that header carries the
   full `docker run` argv and the host mount paths.
 
-  `scratch_root` is taken as an argument, defaulting to the builder's own, so
+  The host roots are taken as an argument, defaulting to the builder's own, so
   the masking can be tested without reaching into application config.
   """
-  @spec runner_excerpt(binary(), Path.t() | nil) :: String.t()
-  def runner_excerpt(raw, scratch_root \\ Portal.Builder.scratch_root()) when is_binary(raw) do
+  @spec runner_excerpt(binary(), Path.t() | nil | [Path.t() | nil]) :: String.t()
+  def runner_excerpt(raw, roots \\ default_roots()) when is_binary(raw) do
     raw
     |> scrub()
     |> strip_builder_header()
-    |> mask_scratch_root(scratch_root)
+    |> mask_roots(roots)
     |> strip_controls()
     |> truncate_tail(@runner_bytes)
   end
@@ -124,11 +130,26 @@ defmodule Portal.Catalog.LogSanitizer do
   # No credentials leak (`build_docker_args/4` passes none), but the host
   # filesystem layout and the account name it runs as are still not something to
   # publish.
-  defp mask_scratch_root(text, root) when is_binary(root) and root != "" do
-    String.replace(text, root, "<scratch>")
+  #
+  # Every bind source, not just the scratch root. `nerves_cache/0`,
+  # `hex_cache/0` and `build_cache/0` are siblings of `~/.ncc-scratch`, not
+  # children of it, so masking the scratch root alone still published the home
+  # directory — and the deploy account name — whenever the mount that failed
+  # was one of the caches.
+  defp default_roots do
+    [Builder.scratch_root(), Builder.nerves_cache(), Builder.hex_cache(), Builder.build_cache()]
   end
 
-  defp mask_scratch_root(text, _root), do: text
+  # Longest first: the roots can nest (a configured `build_cache` under the
+  # scratch root, say), and replacing the shorter one first would leave the
+  # longer one unmatched with `<host>` spliced into its middle.
+  defp mask_roots(text, roots) do
+    roots
+    |> List.wrap()
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.sort_by(&byte_size/1, :desc)
+    |> Enum.reduce(text, &String.replace(&2, &1, "<host>"))
+  end
 
   defp truncate_head_tail(text) do
     size = byte_size(text)

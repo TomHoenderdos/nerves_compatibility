@@ -179,7 +179,9 @@ defmodule Portal.Catalog.Ingestion do
       # `system_pkg` is a key from the worker's result.json, and /out is a
       # read-write bind mount in a container that runs untrusted package code.
       # Nothing today can steer this key, but the bytes at the path it builds
-      # become a publicly readable log body, so refuse to leave the logs dir.
+      # become a publicly readable log body, so refuse a key that could name a
+      # path outside the logs dir. This check covers the *name* only; the file
+      # it resolves to is checked in `read_and_insert_log/3`.
       Logger.warning("Refusing to read a build log for suspicious system #{inspect(system_pkg)}")
       :ok
     else
@@ -195,9 +197,20 @@ defmodule Portal.Catalog.Ingestion do
   defp read_and_insert_log(system_result, system_pkg, output_dir) do
     path = Path.join([output_dir, "logs", "#{system_pkg}.log"])
 
-    case File.read(path) do
-      {:ok, raw} ->
-        insert_log(system_result, raw, path)
+    # `lstat` before `read`, and only a regular file. Rejecting `..` in the key
+    # is not enough on its own: /out is a read-write bind mount and the
+    # container runs as the invoking host user (`--user $(id -u)`), so package
+    # code can leave `logs/<system>.log` as a symlink to any file that user can
+    # read — `File.read/1` follows it and the bytes become a publicly readable
+    # `SystemLog`. `lstat` does not follow, so a symlink reports `:symlink` and
+    # takes the warn-and-`:ok` branch with the ingest untouched.
+    with {:ok, %File.Stat{type: :regular}} <- File.lstat(path),
+         {:ok, raw} <- File.read(path) do
+      insert_log(system_result, raw, path)
+    else
+      {:ok, %File.Stat{type: type}} ->
+        Logger.warning("Refusing a non-regular build log at #{path} (#{type})")
+        :ok
 
       {:error, reason} ->
         # Never fail an ingest over a log. A failed ingest burns an Oban attempt
@@ -212,6 +225,11 @@ defmodule Portal.Catalog.Ingestion do
   # inside the ingest transaction, and in Postgres one failed statement aborts
   # the whole transaction — every later statement is refused until it ends — so
   # "never fail" needs more than an error branch.
+  #
+  # An ambient transaction is required, not optional: outside one, `SAVEPOINT`
+  # is itself an error, the `catch` below swallows it, and every log is silently
+  # dropped with a warning. The only caller is `ingest_system/4`, inside the
+  # transaction `ingest/2` opens.
   #
   # Nothing about the log's *content* can trigger that: the sanitizer guarantees
   # valid UTF-8 with no NUL bytes and caps the body at 800 KB, and
