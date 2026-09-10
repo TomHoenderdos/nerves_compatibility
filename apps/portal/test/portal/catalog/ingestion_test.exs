@@ -181,6 +181,32 @@ defmodule Portal.Catalog.IngestionTest do
     })
   end
 
+  describe "runner.log on the run row" do
+    test "a passing run stores no runner.log" do
+      # `catalog_runs.log` has no reader anywhere in the app, and passing runs
+      # were 97% of the bytes in it. The per-system logs are unaffected.
+      assert {:ok, run} = ingest_fixture(seed_output_dir(%{}))
+      assert run.overall_status == :pass
+      assert run.log == nil
+    end
+
+    test "a failing run keeps its runner.log" do
+      files_dir = seed_files_dir([])
+
+      {:ok, run} =
+        Ingestion.ingest(load_fixture() |> Map.put("forced_status", "fail"), %{
+          run_id: "rid-failed-log",
+          image_digest: "sha256:1",
+          files_dir: files_dir,
+          scan_request_id: nil,
+          log: "runner output"
+        })
+
+      assert run.overall_status == :fail
+      assert run.log == "runner output"
+    end
+  end
+
   describe "per-system log capture" do
     test "stores a log for the failed system and nothing for the passing ones" do
       output_dir =
