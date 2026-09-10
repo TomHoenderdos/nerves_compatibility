@@ -44,6 +44,16 @@ defmodule Portal.Catalog.LogSanitizerTest do
       refute body =~ "\u2066"
     end
 
+    # The embeddings and isolates were covered from the start; the *marks* were
+    # not. A single LRM/RLM/ALM is enough to flip the rendered order of a
+    # neutral run such as a path, and the zero-width characters hide a word
+    # boundary inside an identifier.
+    test "strips bidi marks and zero-width characters" do
+      raw = "a\u200Eb\u200Fc\u061Cd\u200Be\uFEFFf"
+
+      assert LogSanitizer.system_log(raw).body == "abcdef"
+    end
+
     test "strips C1 controls" do
       raw = "before" <> <<0x80::utf8>> <> <<0x9B::utf8>> <> <<0x9F::utf8>> <> "after"
 
@@ -163,22 +173,60 @@ defmodule Portal.Catalog.LogSanitizerTest do
 
       refute excerpt =~ root
       refute excerpt =~ "/Users/deploy"
-      assert excerpt =~ "<scratch>/pkg-1.0.0-123/work"
+      assert excerpt =~ "<host>/pkg-1.0.0-123/work"
       assert excerpt =~ "boom"
     end
 
     test "an unset scratch root leaves the text alone" do
       assert LogSanitizer.runner_excerpt("boom\n", nil) == "boom\n"
       assert LogSanitizer.runner_excerpt("boom\n", "") == "boom\n"
+      assert LogSanitizer.runner_excerpt("boom\n", [nil, ""]) == "boom\n"
     end
 
-    test "defaults the scratch root to the builder's own" do
-      raw = "bind source path does not exist: #{Portal.Builder.scratch_root()}/x/work\n"
+    # The caches are *siblings* of the scratch root, not children, so masking
+    # the scratch root alone left the home directory — and the deploy account
+    # name — in the body of any failure that named a cache mount. Every bind
+    # source the builder passes has to be masked, not just the first one.
+    test "masks every host root the builder mounts, not only the scratch root" do
+      roots = ["/Users/deploy/.ncc-scratch", "/Users/deploy/.ncc-nerves-cache"]
 
-      excerpt = LogSanitizer.runner_excerpt(raw)
+      raw = """
+      docker: Error response from daemon: invalid mount config for type bind:
+        bind source path does not exist: /Users/deploy/.ncc-nerves-cache/artifacts
+        while mounting /Users/deploy/.ncc-scratch/pkg-1.0.0-123/work
+      boom
+      """
 
-      refute excerpt =~ Portal.Builder.scratch_root()
-      assert excerpt =~ "<scratch>/x/work"
+      excerpt = LogSanitizer.runner_excerpt(raw, roots)
+
+      refute excerpt =~ "/Users/deploy"
+      assert excerpt =~ "<host>/artifacts"
+      assert excerpt =~ "<host>/pkg-1.0.0-123/work"
+      assert excerpt =~ "boom"
+    end
+
+    # A configured root can nest inside another. Replacing the shorter one first
+    # splices "<host>" into the middle of the longer one and leaves the rest of
+    # the host path published.
+    test "masks the longest matching root first" do
+      roots = ["/srv/ncc", "/srv/ncc/build-cache"]
+
+      excerpt = LogSanitizer.runner_excerpt("bind source: /srv/ncc/build-cache/x\n", roots)
+
+      assert excerpt == "bind source: <host>/x\n"
+    end
+
+    test "defaults the roots to the builder's own" do
+      for root <- [
+            Portal.Builder.scratch_root(),
+            Portal.Builder.nerves_cache(),
+            Portal.Builder.hex_cache()
+          ] do
+        excerpt = LogSanitizer.runner_excerpt("bind source path does not exist: #{root}/x\n")
+
+        refute excerpt =~ root
+        assert excerpt =~ "<host>/x"
+      end
     end
 
     test "keeps only the tail and reports byte counts" do

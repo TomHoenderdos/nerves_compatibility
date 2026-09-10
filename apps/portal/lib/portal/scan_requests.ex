@@ -85,10 +85,10 @@ defmodule Portal.ScanRequests do
   # inside a transaction, into a rollback throw, where the old full scan simply
   # found nothing — so the shape is checked before the query is built.
   def get_request(id) when is_binary(id) do
-    with {:ok, _uuid} <- Ecto.UUID.cast(id),
+    with {:ok, uuid} <- Ecto.UUID.cast(id),
          {:ok, %ScanRequest{} = request} <-
            ScanRequest
-           |> Ash.Query.filter(expr(id == ^id))
+           |> Ash.Query.filter(expr(id == ^uuid))
            |> Ash.read_one(domain: __MODULE__) do
       {:ok, request}
     else

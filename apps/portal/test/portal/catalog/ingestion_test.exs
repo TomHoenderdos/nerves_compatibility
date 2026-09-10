@@ -275,6 +275,37 @@ defmodule Portal.Catalog.IngestionTest do
       refute log =~ "host filesystem contents"
     end
 
+    # Rejecting `..` in the system name covers the name only. /out is a
+    # read-write bind mount and the container runs as the invoking host user,
+    # so package code can leave the log itself as a symlink to any file that
+    # user can read, and `File.read/1` would follow it into a public log body.
+    test "a build log that is a symlink is skipped" do
+      output_dir = seed_output_dir(%{})
+      secret = Path.join(output_dir, "secret.txt")
+      File.write!(secret, "host filesystem contents")
+      File.ln_s!(secret, Path.join([output_dir, "logs", "nerves_system_rpi4.log"]))
+
+      result =
+        load_fixture()
+        |> Map.put("systems", %{"nerves_system_rpi4" => %{"status" => "fail"}})
+
+      {ingest, log} =
+        with_log(fn ->
+          Ingestion.ingest(result, %{
+            run_id: "symlink-#{System.unique_integer([:positive])}",
+            image_digest: "sha256:deadbeef",
+            files_dir: seed_files_dir([]),
+            output_dir: output_dir,
+            log: "runner"
+          })
+        end)
+
+      assert {:ok, run} = ingest
+      assert logs_by_system(run.id) == %{}
+      assert log =~ "Refusing a non-regular build log"
+      refute log =~ "host filesystem contents"
+    end
+
     test "an ingest with no output_dir at all still succeeds" do
       sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
 

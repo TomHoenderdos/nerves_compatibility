@@ -49,8 +49,9 @@ defmodule PortalWeb.LogLive do
 
   # `phx-change` payloads are decoded by `Plug.Conn.Query`, so `filter[a]=b`
   # arrives as a map and `filter` can be missing entirely. Without this clause
-  # the crash remounts the view, which re-runs the queries and re-materialises a
-  # log body of tens of megabytes — an unauthenticated loop the caller controls.
+  # the crash remounts the view, which re-runs the queries and re-splits a log
+  # body of up to 800 KB into ~16k line tuples — an unauthenticated loop the
+  # caller controls.
   def handle_event("filter", _params, socket), do: {:noreply, socket}
 
   @impl true
