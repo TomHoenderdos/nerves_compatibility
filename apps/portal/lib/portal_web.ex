@@ -17,7 +17,9 @@ defmodule PortalWeb do
   those modules here.
   """
 
-  def static_paths, do: ~w(assets fonts images favicon.ico robots.txt)
+  # No `robots.txt`: it is served by `PortalWeb.SitemapController` so its
+  # `Sitemap:` directive can be built from the endpoint's host.
+  def static_paths, do: ~w(assets fonts images favicon.ico)
 
   def router do
     quote do
