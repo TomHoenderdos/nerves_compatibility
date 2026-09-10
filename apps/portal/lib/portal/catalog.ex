@@ -11,7 +11,7 @@ defmodule Portal.Catalog do
 
   require Ash.Query
 
-  alias Portal.Catalog.{Artifact, Package, PackageOverride, Run, SystemResult}
+  alias Portal.Catalog.{Artifact, Package, PackageOverride, Run, SystemLog, SystemResult}
 
   @statuses ~w(pass fail error skipped unknown)
 
@@ -53,6 +53,7 @@ defmodule Portal.Catalog do
     resource(Package)
     resource(Run)
     resource(SystemResult)
+    resource(SystemLog)
     resource(Artifact)
     resource(PackageOverride)
   end
