@@ -21,7 +21,7 @@ defmodule Portal.Catalog.Ingestion do
   require Logger
 
   alias Portal.ArtifactStore
-  alias Portal.Catalog.{Artifact, Package, Run, SystemResult}
+  alias Portal.Catalog.{Artifact, LogSanitizer, Package, Run, SystemLog, SystemResult}
   alias Portal.Repo
 
   @domain Portal.Catalog
@@ -35,6 +35,7 @@ defmodule Portal.Catalog.Ingestion do
           required(:run_id) => String.t(),
           required(:image_digest) => String.t(),
           required(:files_dir) => Path.t(),
+          optional(:output_dir) => Path.t() | nil,
           optional(:scan_request_id) => String.t() | nil,
           optional(:log) => String.t() | nil
         }
@@ -79,7 +80,8 @@ defmodule Portal.Catalog.Ingestion do
     with {:ok, package} <- upsert_package(package_name, package_info, finished_at),
          {:ok, run} <-
            create_run(result, opts, package.id, version, overall, finished_at),
-         :ok <- create_system_results(systems, run.id, version, staged) do
+         :ok <-
+           create_system_results(systems, run.id, version, staged, Map.get(opts, :output_dir)) do
       {:ok, run}
     end
   end
@@ -112,16 +114,16 @@ defmodule Portal.Catalog.Ingestion do
     |> Ash.create(domain: @domain)
   end
 
-  defp create_system_results(systems, run_id, version, staged) do
+  defp create_system_results(systems, run_id, version, staged, output_dir) do
     Enum.reduce_while(systems, :ok, fn {system_pkg, sys}, _acc ->
-      case create_system_result(system_pkg, sys, run_id, version, staged) do
+      case create_system_result(system_pkg, sys, run_id, version, staged, output_dir) do
         {:ok, _} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
 
-  defp create_system_result(system_pkg, sys, run_id, version, staged) do
+  defp create_system_result(system_pkg, sys, run_id, version, staged, output_dir) do
     status = Compatibility.Types.parse_status(sys["status"])
 
     result =
@@ -151,11 +153,63 @@ defmodule Portal.Catalog.Ingestion do
           |> Enum.map(&Map.put(&1, :system_result_id, system_result.id))
           |> upsert_artifacts()
 
+        :ok = maybe_store_log(system_result, system_pkg, status, output_dir)
+
         {:ok, system_result}
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # Logs are stored for failures only. Passing builds are 97% of the log bytes
+  # and almost none of the value; warnings from passing builds are phase 2 and
+  # are extracted per line rather than stored whole.
+  defp maybe_store_log(_system_result, _system_pkg, status, _output_dir)
+       when status not in [:fail, :error],
+       do: :ok
+
+  defp maybe_store_log(_system_result, _system_pkg, _status, nil), do: :ok
+
+  defp maybe_store_log(system_result, system_pkg, _status, output_dir) do
+    path = Path.join([output_dir, "logs", "#{system_pkg}.log"])
+
+    case File.read(path) do
+      {:ok, raw} ->
+        insert_log(system_result, raw, path)
+
+      {:error, reason} ->
+        # Never fail an ingest over a log. A failed ingest burns an Oban attempt
+        # and, at exhaustion, throws away a completed multi-gigabyte build.
+        Logger.warning("No build log at #{path} for #{system_pkg}: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  # This runs inside the ingest transaction, so a database error here would
+  # poison it. Nothing can realistically raise one: the body is scrubbed to
+  # valid UTF-8 and capped at 800 KB, and `system_result` was inserted moments
+  # ago, so the unique index cannot fire. Log and carry on rather than lose the
+  # build over the one row nobody is waiting for.
+  defp insert_log(system_result, raw, path) do
+    sanitized = LogSanitizer.system_log(raw)
+
+    result =
+      SystemLog
+      |> Ash.Changeset.for_create(:create, %{
+        system_result_id: system_result.id,
+        body: sanitized.body,
+        byte_size: sanitized.byte_size,
+        truncated: sanitized.truncated
+      })
+      |> Ash.create(domain: @domain)
+
+    case result do
+      {:ok, _log} -> :ok
+      {:error, reason} -> Logger.warning("Could not store #{path}: #{inspect(reason)}")
+    end
+
+    :ok
   end
 
   # Move every content-addressed blob referenced by the manifests out of

@@ -4,7 +4,7 @@ defmodule Portal.Catalog.IngestionTest do
   require Ash.Query
 
   alias Portal.ArtifactStore
-  alias Portal.Catalog.{Artifact, Ingestion, Package, SystemResult}
+  alias Portal.Catalog.{Artifact, Ingestion, Package, SystemLog, SystemResult}
   alias Portal.ScanRequests
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
@@ -143,5 +143,86 @@ defmodule Portal.Catalog.IngestionTest do
 
     packages = Ash.read!(Package, domain: Portal.Catalog)
     assert Enum.count(packages, &(&1.name == "jason")) == 1
+  end
+
+  # The worker writes one log per system under out/logs/<system_pkg>.log.
+  defp seed_output_dir(logs) do
+    dir = Path.join(System.tmp_dir!(), "ingest-out-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(dir, "logs"))
+
+    Enum.each(logs, fn {system, body} ->
+      File.write!(Path.join([dir, "logs", "#{system}.log"]), body)
+    end)
+
+    on_exit(fn -> File.rm_rf(dir) end)
+    dir
+  end
+
+  defp logs_by_system(run_id) do
+    SystemResult
+    |> Ash.Query.filter(run_id == ^run_id)
+    |> Ash.Query.load(:system_log)
+    |> Ash.read!(domain: Portal.Catalog)
+    |> Enum.filter(& &1.system_log)
+    |> Map.new(&{&1.system_pkg, &1.system_log})
+  end
+
+  defp ingest_fixture(output_dir) do
+    sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
+
+    Ingestion.ingest(load_fixture(), %{
+      run_id: "log-jason-#{System.unique_integer([:positive])}",
+      image_digest: "sha256:deadbeef",
+      files_dir: seed_files_dir([sha]),
+      output_dir: output_dir,
+      log: "runner"
+    })
+  end
+
+  describe "per-system log capture" do
+    test "stores a log for the failed system and nothing for the passing ones" do
+      output_dir =
+        seed_output_dir(%{
+          "nerves_system_rpi4" => "passing log",
+          "nerves_system_x86_64" => "== Compilation error in file lib/x.ex ==",
+          "host" => "host log"
+        })
+
+      {:ok, run} = ingest_fixture(output_dir)
+
+      logs = logs_by_system(run.id)
+
+      assert Map.keys(logs) == ["nerves_system_x86_64"]
+      assert logs["nerves_system_x86_64"].body =~ "Compilation error"
+      assert logs["nerves_system_x86_64"].byte_size == 40
+      refute logs["nerves_system_x86_64"].truncated
+    end
+
+    test "a log containing invalid UTF-8 ingests cleanly" do
+      output_dir =
+        seed_output_dir(%{"nerves_system_x86_64" => <<"boom ", 0xFF, " here">>})
+
+      assert {:ok, run} = ingest_fixture(output_dir)
+      assert logs_by_system(run.id)["nerves_system_x86_64"].body == "boom � here"
+    end
+
+    test "a missing log file ingests cleanly and creates no row" do
+      assert {:ok, run} = ingest_fixture(seed_output_dir(%{}))
+      assert logs_by_system(run.id) == %{}
+    end
+
+    test "an ingest with no output_dir at all still succeeds" do
+      sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
+
+      assert {:ok, run} =
+               Ingestion.ingest(load_fixture(), %{
+                 run_id: "no-out-#{System.unique_integer([:positive])}",
+                 image_digest: "sha256:deadbeef",
+                 files_dir: seed_files_dir([sha]),
+                 log: "runner"
+               })
+
+      assert logs_by_system(run.id) == %{}
+    end
   end
 end
