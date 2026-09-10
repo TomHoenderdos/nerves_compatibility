@@ -15,6 +15,9 @@ defmodule Portal.Builder do
 
   require Logger
 
+  # See `read_log/1`.
+  @log_tail_bytes 1024 * 1024
+
   @total_timeout_ms :timer.hours(2)
   @zero_digest "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -659,9 +662,36 @@ defmodule Portal.Builder do
     end
   end
 
+  # The tail, never the whole file. This runs on the ingest path, where the only
+  # two consumers are a 16 KB sanitized excerpt and a `catalog_runs.log` column
+  # nothing in the app reads — and `runner.log` is written by streaming docker's
+  # output, so its size is decided by a third-party build rather than by us. A
+  # package stuck in a retry loop can emit gigabytes; `File.read/1` allocated
+  # every byte of that inside the ingest transaction, three at a time on
+  # `ingest:3`, only for both consumers to throw nearly all of it away.
+  #
+  # 1 MB is far above any honest log — production averages ~41 KB per run — and
+  # it is the end that matters: whatever killed the runner is the last thing it
+  # printed.
+  #
+  # `lstat` before opening, so the file is refused rather than followed if it is
+  # a symlink. `/out` is a read-write bind mount and the container runs as the
+  # invoking host user, so package code can leave `runner.log` pointing at any
+  # file that user can read.
   defp read_log(log_file) do
-    case File.read(log_file) do
-      {:ok, content} -> content
+    with {:ok, %File.Stat{type: :regular, size: size}} <- File.lstat(log_file),
+         {:ok, fd} <- :file.open(log_file, [:read, :binary, :raw]) do
+      try do
+        offset = max(size - @log_tail_bytes, 0)
+
+        case :file.pread(fd, offset, min(size, @log_tail_bytes)) do
+          {:ok, content} -> content
+          _ -> ""
+        end
+      after
+        :file.close(fd)
+      end
+    else
       _ -> ""
     end
   end
