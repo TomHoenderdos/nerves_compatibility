@@ -27,8 +27,8 @@ defmodule Portal.Workers.LogRetention do
 
     * **The byte budget.** Reachability alone is not a bound. A package that
       fails on all fourteen Nerves systems stores fourteen logs, and there are
-      ~2500 packages; the worst case is tens of gigabytes inside a one-gigabyte
-      database. When the total exceeds the budget the oldest logs go first, so
+      ~2500 packages; the worst case is tens of gigabytes of build output nobody
+      asked for. When the total exceeds the budget the oldest logs go first, so
       the recently-built packages — the ones somebody is actually looking at —
       keep theirs. `PortalWeb.LogLive` already redirects with a flash when a log
       is missing, which is exactly what a reader of an evicted log sees.
@@ -71,7 +71,12 @@ defmodule Portal.Workers.LogRetention do
   # A policy choice, not a ceiling — see the moduledoc; nothing caps this
   # database. What the number decides is how much build-log history the viewer
   # keeps, so it is a product question, not a capacity one.
-  @default_budget_bytes 128 * 1024 * 1024
+  #
+  # 2 GB at up to 800 KB a log is roughly 2,600 logs, against the ~160 a 128 MB
+  # budget held. It is 1.3% of the 155 GB free on the host and still two orders
+  # of magnitude below the tens-of-gigabytes worst case, so it bounds the growth
+  # that actually matters without evicting logs a user might still want to read.
+  @default_budget_bytes 2 * 1024 * 1024 * 1024
 
   @type tally :: %{count: non_neg_integer(), bytes: non_neg_integer()}
   @type report :: %{unreachable: tally(), over_budget: tally(), run_logs: tally()}
