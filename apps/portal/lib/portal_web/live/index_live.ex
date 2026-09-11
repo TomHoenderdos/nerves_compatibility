@@ -105,18 +105,20 @@ defmodule PortalWeb.IndexLive do
         </div>
 
         <%!--
-        Scrolling to the bottom of the grid loads the next page. The button
-        below is not redundant: `phx-viewport-bottom` never fires when the whole
-        grid already fits on screen with more to come (a tall window, a short
-        page), and it needs JS, so the button is what keyboard and no-JS users
-        get. Throttled because the binding re-fires while the bottom stays in
-        view.
+        Scrolling to the bottom of the grid loads the next page. LiveView's
+        InfiniteScroll hook throttles this itself, at a hardcoded 500ms --
+        `phx-throttle` is not read on this path, so do not add one and expect it
+        to matter.
+
+        The button below is not redundant. The hook only fires from a scroll
+        event, so a window tall enough to show the whole page never triggers it,
+        and it needs JS at all; the button is what those cases and keyboard
+        users get.
         --%>
         <div
           id="packages"
           phx-update="stream"
           phx-viewport-bottom={@shown_count < @package_count && "load_more"}
-          phx-throttle="300"
           class="grid gap-3 sm:grid-cols-2"
         >
           <PortalWeb.UI.package_card
