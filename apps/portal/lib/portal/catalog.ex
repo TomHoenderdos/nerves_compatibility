@@ -11,7 +11,7 @@ defmodule Portal.Catalog do
 
   require Ash.Query
 
-  alias Portal.Catalog.{Artifact, Package, PackageOverride, Run, SystemResult}
+  alias Portal.Catalog.{Artifact, Package, PackageOverride, Run, SystemLog, SystemResult}
 
   @statuses ~w(pass fail error skipped unknown)
 
@@ -53,6 +53,7 @@ defmodule Portal.Catalog do
     resource(Package)
     resource(Run)
     resource(SystemResult)
+    resource(SystemLog)
     resource(Artifact)
     resource(PackageOverride)
   end
@@ -187,6 +188,35 @@ defmodule Portal.Catalog do
     |> Ash.Query.filter(sha256 == ^sha256)
     |> Ash.read!(domain: __MODULE__)
     |> List.first()
+  end
+
+  @doc """
+  The stored build log for one system of a package's latest run.
+
+  Resolves the same run the package page renders. Returns `:error` when the
+  package, the system, or the log is missing — logs exist for failures only,
+  and only for builds that ran after this feature shipped.
+  """
+  @spec system_log(String.t(), String.t()) :: {:ok, map()} | :error
+  def system_log(package_name, system_pkg) do
+    with [package] <- packages(package_name),
+         %{} = run <- Map.get(latest_runs([package]), package.id),
+         %{} = result <- system_result_for(run.id, system_pkg),
+         %{} = log <- log_for_system_result(result.id) do
+      {:ok,
+       %{
+         package_name: package_name,
+         system_pkg: system_pkg,
+         status: Atom.to_string(result.status),
+         run_id: run.run_id,
+         version_tested: run.version_tested,
+         body: log.body,
+         byte_size: log.byte_size,
+         truncated: log.truncated
+       }}
+    else
+      _ -> :error
+    end
   end
 
   @doc "Per-system pass counts over the latest run of every package."
@@ -410,6 +440,23 @@ defmodule Portal.Catalog do
     |> Ash.Query.filter(run_id in ^run_ids)
     |> Ash.Query.sort(system_pkg: :asc)
     |> Ash.read!(domain: __MODULE__)
+  end
+
+  # Named columns: this table carries the dependency_scans and beam_scan blobs
+  # and is the largest in the database, while this page renders neither. Note
+  # `system_results_for_runs/1` above still reads it unselected on the package
+  # page's own render path — a pre-existing gap, not a pattern to copy.
+  defp system_result_for(run_id, system_pkg) do
+    SystemResult
+    |> Ash.Query.filter(run_id == ^run_id and system_pkg == ^system_pkg)
+    |> Ash.Query.select([:id, :system_pkg, :status])
+    |> Ash.read_one!(domain: __MODULE__)
+  end
+
+  defp log_for_system_result(system_result_id) do
+    SystemLog
+    |> Ash.Query.filter(system_result_id == ^system_result_id)
+    |> Ash.read_one!(domain: __MODULE__)
   end
 
   defp artifacts_for_system_results([]), do: []

@@ -54,6 +54,7 @@ defmodule Portal.Workers.Ingest do
       run_id: run_id,
       image_digest: image_digest,
       files_dir: build.files_dir,
+      output_dir: build.output_dir,
       scan_request_id: scan_request_id,
       log: build.log
     }
