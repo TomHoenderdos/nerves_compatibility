@@ -61,11 +61,21 @@ defmodule PortalWeb.Layouts do
       <.flash kind={:info} flash={@flash} />
       <.flash kind={:error} flash={@flash} />
 
+      <%!--
+      `show/1` is scoped by selector, but the `JS.remove_attribute` piped onto it is
+      not: without a `to:` it targets the element carrying the binding. `hidden` is
+      the only thing hiding these toasts, so an unscoped removal un-hid *both* of
+      them on every disconnect -- a plain reload flashed "Something went wrong!"
+      alongside the connection notice. Both halves have to name the same selector.
+      --%>
       <.flash
         id="client-error"
         kind={:error}
         title="We can't find the internet"
-        phx-disconnected={show(".phx-client-error #client-error") |> JS.remove_attribute("hidden")}
+        phx-disconnected={
+          show(".phx-client-error #client-error")
+          |> JS.remove_attribute("hidden", to: ".phx-client-error #client-error")
+        }
         phx-connected={hide("#client-error") |> JS.set_attribute({"hidden", ""})}
         hidden
       >
@@ -77,7 +87,10 @@ defmodule PortalWeb.Layouts do
         id="server-error"
         kind={:error}
         title="Something went wrong!"
-        phx-disconnected={show(".phx-server-error #server-error") |> JS.remove_attribute("hidden")}
+        phx-disconnected={
+          show(".phx-server-error #server-error")
+          |> JS.remove_attribute("hidden", to: ".phx-server-error #server-error")
+        }
         phx-connected={hide("#server-error") |> JS.set_attribute({"hidden", ""})}
         hidden
       >
