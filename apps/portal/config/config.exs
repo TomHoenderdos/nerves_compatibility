@@ -72,9 +72,11 @@ config :portal, Oban,
 # How many bytes of stored per-system build logs the database may hold.
 # Runtime-overridable in config/runtime.exs (NCC_LOG_BUDGET_MB).
 #
-# The managed Postgres is 1 GB and `catalog_system_results` alone is 843 MB, so
-# this is a real ceiling rather than a formality: without it, a bad week of
-# failing builds across ~2500 packages could store tens of gigabytes of logs.
+# Nothing caps this database — it is a self-hosted container on a 244 GB disk
+# with 155 GB free, not the 1 GB managed instance an earlier comment here
+# claimed (see `Portal.Workers.LogRetention`). The budget exists because a bad
+# week of failing builds across ~2500 packages could store tens of gigabytes of
+# logs without anyone deciding to, which is a real risk at any disk size.
 config :portal, Portal.Workers.LogRetention, budget_bytes: 128 * 1024 * 1024
 
 # Host-side Docker invocation for worker builds.
