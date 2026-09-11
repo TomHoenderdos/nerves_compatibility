@@ -36,6 +36,7 @@ defmodule Portal.Workers.Build do
   require Logger
 
   alias Portal.Builder
+  alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Run
   alias Portal.Workers.{Ingest, Progress}
 
@@ -101,6 +102,10 @@ defmodule Portal.Workers.Build do
         # timeout). Treat as retryable.
         Logger.error("Builder failed for #{package} #{version}: #{inspect(reason)}")
 
+        # Read before cleanup: the scratch dir is about to go, and this excerpt
+        # is the only thing the requester will ever see about why.
+        error_log = excerpt_from_file(Builder.runner_log_path(run_id))
+
         # No ingest job will ever read this scratch dir, so this branch owns it.
         # Forgetting that leaked a full build tree per failure: a package that
         # times out three times left three multi-gigabyte trees behind, which is
@@ -111,7 +116,8 @@ defmodule Portal.Workers.Build do
           scan_request_id,
           attempt,
           max_attempts,
-          "builder error: #{inspect(reason)}"
+          "builder error: #{inspect(reason)}",
+          error_log
         )
 
         {:error, reason}
@@ -119,12 +125,16 @@ defmodule Portal.Workers.Build do
   end
 
   defp handle_outcome(:ingest, build, ctx) do
-    {_package, _version, image_digest, scan_request_id, run_id, _attempt, _max} = ctx
+    {_package, _version, image_digest, scan_request_id, run_id, attempt, max} = ctx
 
     case build.result do
       nil ->
-        # Exit 0 but no result.json — treat as runner error, retryable.
+        # Exit 0 but no result.json — treat as runner error, retryable. The
+        # request used to be left at `queued` here even after the last attempt;
+        # marking it keeps it consistent with every other retryable path.
+        error_log = excerpt_from(build.log)
         Builder.cleanup(run_id)
+        on_retry_or_exhaust(scan_request_id, attempt, max, "missing result.json", error_log)
         {:error, :missing_result_json}
 
       _result ->
@@ -146,8 +156,9 @@ defmodule Portal.Workers.Build do
     {package, version, _digest, scan_request_id, run_id, attempt, max} = ctx
     reason = "worker/runner exit #{build.exit_code}"
     Logger.warning("Build retry for #{package} #{version}: #{reason}")
+    error_log = excerpt_from(build.log)
     Builder.cleanup(run_id)
-    on_retry_or_exhaust(scan_request_id, attempt, max, reason)
+    on_retry_or_exhaust(scan_request_id, attempt, max, reason, error_log)
     {:error, reason}
   end
 
@@ -197,18 +208,38 @@ defmodule Portal.Workers.Build do
 
   # On the final attempt, a retryable failure becomes a permanent `error` on the
   # request; earlier attempts leave it queued so Oban can retry.
-  defp on_retry_or_exhaust(scan_request_id, attempt, max_attempts, reason) do
+  defp on_retry_or_exhaust(scan_request_id, attempt, max_attempts, reason, error_log) do
     if attempt >= max_attempts do
-      Progress.mark(scan_request_id, :error, error_reason: reason)
+      Progress.mark(scan_request_id, :error, error_reason: reason, error_log: error_log)
       Progress.broadcast(scan_request_id, :error, %{reason: reason})
     end
 
     :ok
   end
 
+  # The requester's only window into a failure that never produced a result.
+  # `nil` rather than `""` so `set_status/3` does not write an empty string that
+  # the request page would then render as an empty box.
+  defp excerpt_from(raw) when is_binary(raw) and raw != "" do
+    LogSanitizer.runner_excerpt(raw)
+  end
+
+  defp excerpt_from(_raw), do: nil
+
+  # The file is read a tail at a time. Everything here is a failure path, and
+  # one of them is the crash path, where the thing that crashed the build is
+  # often the disk being full — not a moment to pull a whole log into memory.
+  defp excerpt_from_file(path) do
+    case LogSanitizer.runner_excerpt_file(path) do
+      {:ok, ""} -> nil
+      {:ok, excerpt} -> excerpt
+      {:error, _reason} -> nil
+    end
+  end
+
   # Every cleanup path above is reached by *returning* a value, so an exception
   # skips all of them: the scratch dir is never removed and the linked request
-  # is stranded at `queued` forever, because `on_retry_or_exhaust/4` never runs.
+  # is stranded at `queued` forever, because `on_retry_or_exhaust/5` never runs.
   #
   # That is not hypothetical. A full disk made `IO.binwrite/2` raise `:enospc`
   # while streaming docker output, and the leak was self-reinforcing — each
@@ -232,13 +263,29 @@ defmodule Portal.Workers.Build do
   defp crash_cleanup(scan_request_id, run_id, attempt, max_attempts, reason) do
     Logger.error("Build crashed for run #{run_id}: #{reason}")
 
+    # Read the log before the cleanup that is about to delete it. Best-effort
+    # like everything else here: whatever crashed the build can crash this too,
+    # and raising would replace the real error with a misleading one.
+    error_log =
+      try do
+        excerpt_from_file(Builder.runner_log_path(run_id))
+      rescue
+        _ -> nil
+      end
+
     # Both steps are best-effort: whatever made the build crash (a full disk, a
     # dead database) can just as easily make the cleanup crash, and raising here
     # would replace the real error with a misleading one.
     safely("scratch cleanup", fn -> Builder.cleanup(run_id) end)
 
     safely("request status", fn ->
-      on_retry_or_exhaust(scan_request_id, attempt, max_attempts, "build crashed: #{reason}")
+      on_retry_or_exhaust(
+        scan_request_id,
+        attempt,
+        max_attempts,
+        "build crashed: #{reason}",
+        error_log
+      )
     end)
 
     :ok

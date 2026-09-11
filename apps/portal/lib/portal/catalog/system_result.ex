@@ -129,5 +129,11 @@ defmodule Portal.Catalog.SystemResult do
     has_many :artifacts, Portal.Catalog.Artifact do
       public?(true)
     end
+
+    # Failures only, and never selected by the dashboard/badge/JSON queries —
+    # those name their columns explicitly. Load it deliberately or not at all.
+    has_one :system_log, Portal.Catalog.SystemLog do
+      public?(true)
+    end
   end
 end
