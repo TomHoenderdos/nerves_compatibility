@@ -5,7 +5,10 @@ defmodule PortalWeb.FailureClustersLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, :clusters, Catalog.failure_clusters(50))}
+    {:ok,
+     socket
+     |> assign(:page_title, "Failure clusters")
+     |> assign(:clusters, Catalog.failure_clusters(50))}
   end
 
   @impl true
