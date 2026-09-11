@@ -77,7 +77,7 @@ config :portal, Oban,
 # claimed (see `Portal.Workers.LogRetention`). The budget exists because a bad
 # week of failing builds across ~2500 packages could store tens of gigabytes of
 # logs without anyone deciding to, which is a real risk at any disk size.
-config :portal, Portal.Workers.LogRetention, budget_bytes: 128 * 1024 * 1024
+config :portal, Portal.Workers.LogRetention, budget_bytes: 2 * 1024 * 1024 * 1024
 
 # Host-side Docker invocation for worker builds.
 # Runtime-overridable in config/runtime.exs.
