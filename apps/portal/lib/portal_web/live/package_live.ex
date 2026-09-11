@@ -17,6 +17,8 @@ defmodule PortalWeb.PackageLive do
         badge_url = "#{base}/badge/#{name}.svg"
         page_url = "#{base}/packages/#{name}"
 
+        hex_meta = Catalog.package_hex_meta(name) || %{links: %{}, owners: [], fetched_at: nil}
+
         {:ok,
          socket
          |> assign(:page_title, name)
@@ -27,6 +29,8 @@ defmodule PortalWeb.PackageLive do
          |> assign(:badge_alt, @badge_alt)
          |> assign(:hex_url, "https://hex.pm/packages/#{name}")
          |> assign(:docs_url, "https://hexdocs.pm/#{name}")
+         |> assign(:github_url, github_url(hex_meta.links))
+         |> assign(:owners, hex_meta.owners)
          |> assign(:badge_url, badge_url)
          |> assign(:badge_markdown, "[![#{@badge_alt}](#{badge_url})](#{page_url})")
          |> assign(
@@ -70,7 +74,25 @@ defmodule PortalWeb.PackageLive do
         <div class="flex flex-wrap items-center gap-2">
           <.upstream_link href={@hex_url} label="Hex" />
           <.upstream_link href={@docs_url} label="Docs" />
+          <.upstream_link :if={@github_url} href={@github_url} label="GitHub" />
         </div>
+
+        <%!--
+        Rendered only when hex.pm listed someone. An empty list is both "we
+        have not fetched this package yet" and "hex.pm returned no owners", and
+        neither is worth a line that says nobody maintains it.
+        --%>
+        <p :if={@owners != []} class="text-sm text-base-content/60">
+          Maintained on Hex by
+          <span :for={{owner, index} <- Enum.with_index(@owners)}>
+            <span :if={index > 0}>, </span><a
+              href={"https://hex.pm/users/#{owner}"}
+              target="_blank"
+              rel="noopener"
+              class="font-medium text-base-content/80 hover:text-primary hover:underline"
+            >{owner}</a>
+          </span>
+        </p>
 
         <div class="grid gap-3 sm:grid-cols-3">
           <PortalWeb.UI.stat_card label="Latest version" value={@package.latest_version || "unknown"} />
@@ -133,6 +155,28 @@ defmodule PortalWeb.PackageLive do
     </Layouts.app>
     """
   end
+
+  # The package author's declared links arrive as a free-form label-to-URL map,
+  # so the label is not dependable -- "GitHub", "Github", "Source", "Repo" and
+  # "repository" all occur in the wild. The host is, so that is what is matched.
+  #
+  # `Portal.HexPm.package_metadata/1` has already filtered these to absolute
+  # http/https URLs; this only picks one out.
+  defp github_url(links) when is_map(links) do
+    links
+    |> Enum.sort()
+    |> Enum.find_value(fn {_label, url} ->
+      case URI.new(url) do
+        {:ok, %URI{host: host}} when is_binary(host) ->
+          if host == "github.com" or String.ends_with?(host, ".github.com"), do: url
+
+        _ ->
+          nil
+      end
+    end)
+  end
+
+  defp github_url(_links), do: nil
 
   attr :href, :string, required: true
   attr :label, :string, required: true

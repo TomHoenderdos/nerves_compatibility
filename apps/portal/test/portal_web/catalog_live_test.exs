@@ -3,6 +3,8 @@ defmodule PortalWeb.CatalogLiveTest do
 
   import Phoenix.LiveViewTest
 
+  require Ash.Query
+
   alias Portal.Catalog.Ingestion
 
   @fixture Path.join([__DIR__, "..", "support", "fixtures", "result.json"])
@@ -142,6 +144,84 @@ defmodule PortalWeb.CatalogLiveTest do
       {:ok, view, _html} = live(conn, "/packages/jason")
 
       assert has_element?(view, ~s(input[readonly][value^="[!["]))
+    end
+  end
+
+  describe "hex.pm metadata on the package page" do
+    setup do
+      ingest_fixture()
+      :ok
+    end
+
+    defp set_hex_meta(name, attrs) do
+      package =
+        Portal.Catalog.Package
+        |> Ash.Query.filter(name == ^name)
+        |> Ash.read_one!(domain: Portal.Catalog)
+
+      {:ok, _} =
+        package
+        |> Ash.Changeset.for_update(:update_hex_meta, attrs)
+        |> Ash.update(domain: Portal.Catalog)
+
+      :ok
+    end
+
+    test "a github.com link in the package's hex metadata becomes a GitHub link", %{conn: conn} do
+      set_hex_meta("jason", %{
+        hex_links: %{"GitHub" => "https://github.com/michalmuskala/jason"}
+      })
+
+      {:ok, view, _html} = live(conn, "/packages/jason")
+
+      assert has_element?(view, ~s(a[href="https://github.com/michalmuskala/jason"]))
+    end
+
+    # The label a package author puts on their repo link is free-form --
+    # "GitHub", "Github", "Source", "Repo" and "repository" all occur upstream
+    # -- so the host is what decides, not the label.
+    test "the link is found by its host, not by its label", %{conn: conn} do
+      set_hex_meta("jason", %{hex_links: %{"Source" => "https://github.com/foo/bar"}})
+
+      {:ok, view, _html} = live(conn, "/packages/jason")
+
+      assert has_element?(view, ~s(a[href="https://github.com/foo/bar"]))
+    end
+
+    test "a package whose links point elsewhere gets no GitHub link", %{conn: conn} do
+      set_hex_meta("jason", %{hex_links: %{"Source" => "https://gitlab.com/foo/bar"}})
+
+      {:ok, view, _html} = live(conn, "/packages/jason")
+
+      refute has_element?(view, ~s(a[href*="github.com"]))
+      assert has_element?(view, ~s(a[href="https://hex.pm/packages/jason"]))
+    end
+
+    # Every package in the catalog starts here, before the backfill reaches it.
+    # The page has to render without the metadata, not fall over waiting for it.
+    test "a package nobody has fetched yet renders without a GitHub link", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/packages/jason")
+
+      refute has_element?(view, ~s(a[href*="github.com"]))
+      assert has_element?(view, ~s(a[href="https://hex.pm/packages/jason"]))
+    end
+
+    test "owners are listed and link to their hex.pm profiles", %{conn: conn} do
+      set_hex_meta("jason", %{hex_owners: ["michalmuskala", "ericmj"]})
+
+      {:ok, view, html} = live(conn, "/packages/jason")
+
+      assert html =~ "Maintained on Hex by"
+      assert has_element?(view, ~s(a[href="https://hex.pm/users/michalmuskala"]), "michalmuskala")
+      assert has_element?(view, ~s(a[href="https://hex.pm/users/ericmj"]), "ericmj")
+    end
+
+    # An empty list means both "not fetched yet" and "hex.pm listed nobody", and
+    # neither deserves a line announcing that the package is unmaintained.
+    test "no owners means no maintainers line at all", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/packages/jason")
+
+      refute html =~ "Maintained on Hex by"
     end
   end
 
