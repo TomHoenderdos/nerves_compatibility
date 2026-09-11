@@ -154,7 +154,7 @@ defmodule Portal.Catalog.Ingestion do
         phase_timings: sys["phase_timings"],
         hex_version_tested: version,
         beam_scan: sys["beam_scan"],
-        dependency_scans: sys["dependency_scans"],
+        dependency_scans: drop_file_manifests(sys["dependency_scans"]),
         log_path: nil,
         log_tail: sys["log_tail"],
         failure_category: Portal.Catalog.FailureClassifier.classify(sys)
@@ -177,6 +177,37 @@ defmodule Portal.Catalog.Ingestion do
         {:error, reason}
     end
   end
+
+  # Strip `footprint.file_manifest` out of every dependency scan before it is
+  # persisted.
+  #
+  # Each dependency's manifest lists every ebin and priv file it produced —
+  # path, mode, size and sha256 per file. Measured against production on
+  # 2026-09-10 that is 75% of the 1,501 MB this column holds, and it is largely
+  # the same list stored again and again: a given dependency version built for a
+  # given Nerves target yields the same manifest for every package that depends
+  # on it, which across the catalog is on the order of seventeen copies each.
+  #
+  # The manifest has exactly one consumer, `collect_shas/1`. That runs inside
+  # `stage_artifacts/2`, before the transaction opens, against the in-memory
+  # `result.json` — never against this column. Every sha it finds is already
+  # persisted as a `catalog_artifacts` row. Nothing in the portal reads
+  # `dependency_scans` back out of Postgres at all; the precompiled manifest API
+  # builds from `beam_scan`, which is the package's own files and stays whole.
+  #
+  # Everything else in a dependency scan is kept: flags, errors, evidence,
+  # languages, protocols, beam_count, start_modules, and the footprint totals.
+  defp drop_file_manifests(scans) when is_map(scans) do
+    Map.new(scans, fn
+      {dep, %{"footprint" => footprint} = scan} when is_map(footprint) ->
+        {dep, Map.put(scan, "footprint", Map.delete(footprint, "file_manifest"))}
+
+      {dep, scan} ->
+        {dep, scan}
+    end)
+  end
+
+  defp drop_file_manifests(other), do: other
 
   # Read and sanitize every failed system's log BEFORE the transaction opens,
   # for the same reason the artifact blobs are moved first: filesystem work does
