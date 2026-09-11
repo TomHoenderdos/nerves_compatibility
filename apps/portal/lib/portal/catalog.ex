@@ -17,11 +17,20 @@ defmodule Portal.Catalog do
   @statuses ~w(pass fail error skipped unknown)
 
   # The dashboard reads these tables whole, so every query on its path names the
-  # columns it needs. `catalog_system_results` is 304 MB, of which 275 MB is the
-  # `dependency_scans` jsonb and 10 MB the `beam_scan` jsonb; nothing the
-  # dashboard renders reads either. Loading them anyway decoded ~300 MB of blob
-  # into the heap on every call, several calls per render, which is what made a
-  # single page load cost gigabytes and run the node out of memory.
+  # columns it needs. `catalog_system_results` is the largest table in the
+  # database: 843 MB on disk as of 2026-09-10, of which 829 MB is TOAST, and
+  # 1,501 MB uncompressed once the `dependency_scans` jsonb is decoded, against
+  # 54 MB for `beam_scan`. Nothing the dashboard renders reads either. Loading
+  # them anyway decoded that blob into the heap on every call, several calls per
+  # render, which is what made a single page load cost gigabytes and run the
+  # node out of memory.
+  #
+  # `Portal.Catalog.Ingestion` no longer stores the `footprint.file_manifest`
+  # that was 75% of `dependency_scans`, and `Portal.Catalog.ManifestBackfill`
+  # removes it from rows written before that — so the figures above are an
+  # upper bound once the backfill has been run. Naming columns is not
+  # contingent on either: the remaining blob is still far larger than what
+  # these queries render.
   # Deliberately no `:log_tail`. The dashboard reads the system results of the
   # latest run of every package — 9,187 rows in production as of 2026-09-10,
   # carrying 29 MB of log tails that Postgres serialized and the node decoded
@@ -535,9 +544,9 @@ defmodule Portal.Catalog do
   end
 
   # Named columns: this table carries the dependency_scans and beam_scan blobs
-  # and is the largest in the database, while this page renders neither. Note
-  # `system_results_for_runs/1` above still reads it unselected on the package
-  # page's own render path — a pre-existing gap, not a pattern to copy.
+  # and is the largest in the database, while this page renders neither. Every
+  # other reader above does the same, so an unselected read of this table is now
+  # the exception worth explaining rather than the default.
   defp system_result_for(run_id, system_pkg) do
     SystemResult
     |> Ash.Query.filter(run_id == ^run_id and system_pkg == ^system_pkg)
