@@ -33,6 +33,7 @@ defmodule PortalWeb.Router do
       live "/", DashboardLive, :index
       live "/packages", IndexLive, :index
       live "/packages/:name", PackageLive, :show
+      live "/packages/:name/log/:system", LogLive, :show
       live "/requests/:id", RequestLive, :show
       live "/failure_clusters", FailureClustersLive, :index
       # /warnings stays unrouted: WarningsLive is a placeholder that renders

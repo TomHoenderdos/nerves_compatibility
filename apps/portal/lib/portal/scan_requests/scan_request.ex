@@ -56,6 +56,7 @@ defmodule Portal.ScanRequests.ScanRequest do
       accept([
         :status,
         :error_reason,
+        :error_log,
         :run_id
       ])
     end
@@ -106,6 +107,10 @@ defmodule Portal.ScanRequests.ScanRequest do
     end
 
     attribute :error_reason, :string do
+      public?(true)
+    end
+
+    attribute :error_log, :string do
       public?(true)
     end
 
