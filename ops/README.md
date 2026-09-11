@@ -32,6 +32,23 @@ for h in contabo.tompc.nl 100.106.217.14; do
 done
 ```
 
+## Nobody watches a deploy nobody runs
+
+`deploy.sh` is run by hand, per host, and nothing reports that a host has
+fallen behind. On 2026-09-11 both hosts were found sitting 40 commits behind
+main -- every deploy since the robots.txt change had aborted at `git pull`,
+because the release build rewrites the tracked digested assets under
+`apps/portal/priv/static` and leaves the checkout dirty. `deploy.sh` now
+restores that one directory before pulling, but the wider point stands: the
+script failing loudly into an empty terminal is indistinguishable from nobody
+having deployed. To check where a host actually is:
+
+```bash
+for h in contabo.tompc.nl 100.106.217.14; do
+  ssh "root@$h" 'cd /opt/nerves_compatibility/src && git log --oneline -1'
+done
+```
+
 ## Advisory audit
 
 `build-release.sh` runs `mix deps.audit` before the release build and prints
