@@ -12,6 +12,10 @@ config :portal, Portal.Repo,
 # Disable Oban queues + plugins during tests; jobs run inline via `Oban.Testing`.
 config :portal, Oban, testing: :manual
 
+# Tests must see their own writes, and a shared ETS table would leak derived
+# aggregates between them. 0 bypasses the cache entirely.
+config :portal, Portal.Catalog.Cache, ttl_ms: 0
+
 # Isolate Builder scratch + artifact store under tmp during tests.
 config :portal, Portal.Builder,
   docker_image: "ncc-worker:local",
