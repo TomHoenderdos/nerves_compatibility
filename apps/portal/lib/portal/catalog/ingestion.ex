@@ -112,12 +112,23 @@ defmodule Portal.Catalog.Ingestion do
       image_digest: opts.image_digest,
       overall_status: overall,
       footprint: get_in(result, ["package", "footprint"]),
-      log: Map.get(opts, :log),
+      log: run_log(overall, opts),
       finished_at: finished_at,
       scan_request_id: Map.get(opts, :scan_request_id)
     })
     |> Ash.create(domain: @domain)
   end
+
+  # A passing run's `runner.log` is 100 KB of "Generated <app> app" that nothing
+  # in this repo reads: `catalog_runs.log` has no reader on any page, API or
+  # query, and passing runs are 97% of the bytes stored there (262 MB of 270 MB
+  # in production). Failures keep theirs, because that is the one case where
+  # somebody eventually asks what the runner was doing.
+  #
+  # `Portal.Workers.LogRetention` clears what earlier ingests already stored.
+  defp run_log(:pass, _opts), do: nil
+
+  defp run_log(_overall, opts), do: Map.get(opts, :log)
 
   defp create_system_results(systems, run_id, version, staged, logs) do
     Enum.reduce_while(systems, :ok, fn {system_pkg, sys}, _acc ->
