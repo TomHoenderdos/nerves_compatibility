@@ -8,6 +8,11 @@ defmodule PortalWeb.FailureClustersLive do
     {:ok,
      socket
      |> assign(:page_title, "Failure clusters")
+     |> assign(
+       :page_description,
+       "Nerves build failures grouped by root cause, each with a sample log and a " <>
+         "hint for what actually fixes it."
+     )
      |> assign(:clusters, Catalog.failure_clusters(50))}
   end
 

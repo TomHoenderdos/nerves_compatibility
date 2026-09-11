@@ -26,6 +26,10 @@ defmodule PortalWeb.LogLive do
         {:ok,
          socket
          |> assign(:page_title, "#{name} build log — #{system}")
+         |> assign(
+           :page_description,
+           "Full Nerves firmware build log for #{name} on #{system}."
+         )
          |> assign(:name, name)
          |> assign(:log, log)
          |> assign(:filter, "")

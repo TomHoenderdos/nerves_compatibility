@@ -11,6 +11,72 @@ defmodule PortalWeb.Layouts do
   # and other static content.
   embed_templates "layouts/*"
 
+  @site_name "Nerves Compatibility"
+  @title_suffix " · " <> @site_name
+  @default_title "Catalog"
+
+  @default_description "Which Hex packages actually build on Nerves. Every package is " <>
+                         "built as real firmware against each Nerves system, with " <>
+                         "per-system results and the full build log for failures."
+
+  @doc """
+  The suffix every page title carries, and the title used when a page sets none.
+
+  Exposed as functions because `root.html.heex` passes them to `<.live_title>`
+  while `head_meta/1` needs the same strings to build `og:title`. A literal in
+  both places would drift.
+  """
+  def title_suffix, do: @title_suffix
+  def default_title, do: @default_title
+
+  @doc """
+  The `<head>` metadata that is not the title: description, canonical URL, and
+  Open Graph.
+
+  Every page here is public and listed in `sitemap.xml`, so what a crawler or a
+  chat client makes of a link is decided entirely by these tags. Without them a
+  search engine invents its own snippet and a Slack or Discord unfurl is blank.
+
+  The canonical URL is built from `conn.request_path`, which drops the query
+  string. That is deliberate and currently lossless: no LiveView in this app
+  implements `handle_params/3` or calls `push_patch/2`, so no page state lives
+  in the query string. What the query string *does* carry is tracking junk
+  (`utm_*`, `fbclid`) appended by whoever shared the link, and without a
+  canonical each variant is a separate, duplicate entry in the index. If a page
+  ever starts encoding real state in its query string, it has to set its own
+  canonical rather than inherit this one.
+
+  No `og:image`: the only brand asset is an SVG, and the major unfurlers
+  (Slack, Discord, Twitter, iMessage) either ignore SVG or fail the card
+  outright. A card with a title and a description beats a card with a broken
+  image.
+  """
+  attr :conn, Plug.Conn, required: true, doc: "the request, for the canonical URL"
+  attr :page_title, :string, default: nil, doc: "title without the site suffix"
+  attr :page_description, :string, default: nil, doc: "one-sentence page summary"
+
+  def head_meta(assigns) do
+    canonical = PortalWeb.Endpoint.url() <> assigns.conn.request_path
+
+    assigns =
+      assigns
+      |> assign(:title, (assigns.page_title || @default_title) <> @title_suffix)
+      |> assign(:description, assigns.page_description || @default_description)
+      |> assign(:canonical, canonical)
+      |> assign(:site_name, @site_name)
+
+    ~H"""
+    <meta name="description" content={@description} />
+    <link rel="canonical" href={@canonical} />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={@site_name} />
+    <meta property="og:title" content={@title} />
+    <meta property="og:description" content={@description} />
+    <meta property="og:url" content={@canonical} />
+    <meta name="twitter:card" content="summary" />
+    """
+  end
+
   @doc """
   Renders your app layout.
 
