@@ -151,6 +151,24 @@ if portal_available? do
     overrides -> config :portal, Portal.Builder, overrides
   end
 
+  # Megabytes are the human unit; `Portal.Workers.LogRetention` wants bytes. An
+  # unparseable or non-positive value leaves the compile-time default alone
+  # rather than becoming a budget of zero, which would evict every stored log on
+  # the next tick.
+  case System.get_env("NCC_LOG_BUDGET_MB") do
+    nil ->
+      :ok
+
+    raw ->
+      case Float.parse(raw) do
+        {mb, _rest} when mb > 0 ->
+          config :portal, Portal.Workers.LogRetention, budget_bytes: trunc(mb * 1024 * 1024)
+
+        _ ->
+          :ok
+      end
+  end
+
   if config_env() == :prod do
     secret_key_base =
       System.get_env("SECRET_KEY_BASE") ||
