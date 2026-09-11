@@ -65,6 +65,14 @@ defmodule PortalWeb.PackageLive do
                 <td class="px-5 py-4">
                   <div class="font-mono font-medium text-base-content">{system.system_pkg}</div>
                   <div class="text-base-content/50">{system.system_version || "host"}</div>
+                  <.link
+                    :if={system.status in ["fail", "error"]}
+                    id={"log-link-#{dom_id(system.system_pkg)}"}
+                    navigate={~p"/packages/#{@name}/log/#{system.system_pkg}"}
+                    class="mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                  >
+                    <.icon name="hero-document-text-mini" class="size-3.5" /> View log
+                  </.link>
                 </td>
                 <td class="px-5 py-4"><PortalWeb.UI.status_badge status={system.status} /></td>
                 <td class="px-5 py-4 font-mono text-base-content/70">

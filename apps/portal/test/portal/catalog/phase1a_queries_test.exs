@@ -56,4 +56,80 @@ defmodule Portal.Catalog.Phase1aQueriesTest do
     assert Enum.any?(cluster.entries, &(&1.package == "clusterpkg" and &1.arch_label == "arm64"))
     assert cluster.sample_log =~ "Exec format error"
   end
+
+  # `sample_log` is the one dashboard consumer of `log_tail`, and `log_tail` is
+  # deliberately no longer loaded onto the annotated rows the clusters are built
+  # from. These pin the behaviour the separate fetch has to reproduce.
+  describe "sample_log" do
+    test "picks the shortest non-empty log_tail in the cluster" do
+      ingest("longpkg", "1.0.0", %{
+        "nerves_system_rpi4" => %{
+          "status" => "fail",
+          "log_tail" => String.duplicate("noise\n", 50) <> "Exec format error, long one"
+        }
+      })
+
+      ingest("shortpkg", "1.0.0", %{
+        "nerves_system_rpi4" => %{
+          "status" => "fail",
+          "log_tail" => "Exec format error, short one"
+        }
+      })
+
+      [cluster | _] = Catalog.failure_clusters(10)
+      assert cluster.systems == 2
+      assert cluster.sample_log == "Exec format error, short one"
+    end
+
+    test "skips empty and missing log tails rather than returning them" do
+      # The `error` field is what puts all three in one cluster: the classifier
+      # reads it alongside `log_tail`, so two of them can land in the same
+      # category while carrying no tail of their own.
+      ingest("emptytail", "1.0.0", %{
+        "nerves_system_rpi4" => %{
+          "status" => "fail",
+          "error" => "Exec format error",
+          "log_tail" => ""
+        }
+      })
+
+      ingest("niltail", "1.0.0", %{
+        "nerves_system_rpi4" => %{"status" => "fail", "error" => "Exec format error"}
+      })
+
+      ingest("realtail", "1.0.0", %{
+        "nerves_system_rpi4" => %{
+          "status" => "fail",
+          "log_tail" => "sh: cannot execute binary file: Exec format error"
+        }
+      })
+
+      [cluster | _] = Catalog.failure_clusters(10)
+      assert cluster.systems == 3
+      assert cluster.sample_log == "sh: cannot execute binary file: Exec format error"
+    end
+
+    test "is nil when no system in the cluster carries a log tail" do
+      ingest("notail", "1.0.0", %{
+        "nerves_system_rpi4" => %{"status" => "fail", "log_tail" => ""}
+      })
+
+      [cluster | _] = Catalog.failure_clusters(10)
+      assert cluster.sample_log == nil
+    end
+
+    test "keeps only the last 40 lines of the chosen tail" do
+      body = Enum.map_join(1..100, "\n", &"line #{&1}") <> "\nExec format error"
+
+      ingest("longtail", "1.0.0", %{
+        "nerves_system_rpi4" => %{"status" => "fail", "log_tail" => body}
+      })
+
+      [cluster | _] = Catalog.failure_clusters(10)
+      lines = String.split(cluster.sample_log, "\n")
+      assert length(lines) == 40
+      assert List.first(lines) == "line 62"
+      assert List.last(lines) == "Exec format error"
+    end
+  end
 end
