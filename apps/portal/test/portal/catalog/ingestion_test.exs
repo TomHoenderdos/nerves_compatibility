@@ -147,6 +147,95 @@ defmodule Portal.Catalog.IngestionTest do
     assert Enum.count(packages, &(&1.name == "jason")) == 1
   end
 
+  # A dependency scan shaped the way the worker emits one: analysis keys, plus a
+  # footprint whose `file_manifest` names every file that dependency produced.
+  defp dep_scan(sha) do
+    %{
+      "flags" => ["nif"],
+      "beam_count" => 3,
+      "languages" => ["c"],
+      "protocols" => [],
+      "footprint" => %{
+        "total_bytes" => 12_345,
+        "file_manifest" => %{
+          "ebin" => [
+            %{"path" => "ebin/dep.beam", "mode" => 33_188, "size" => 347, "sha256" => sha}
+          ],
+          "priv" => []
+        }
+      }
+    }
+  end
+
+  defp ingest_with_dep_scans(scans, files_dir, run_id) do
+    result =
+      load_fixture()
+      |> update_in(["systems", "nerves_system_rpi4"], &Map.put(&1, "dependency_scans", scans))
+
+    {:ok, run} =
+      Ingestion.ingest(result, %{
+        run_id: run_id,
+        image_digest: "sha256:1",
+        files_dir: files_dir,
+        scan_request_id: nil
+      })
+
+    SystemResult
+    |> Ash.Query.filter(run_id == ^run.id and system_pkg == "nerves_system_rpi4")
+    |> Ash.read_one!(domain: Portal.Catalog)
+  end
+
+  describe "dependency_scans" do
+    test "keeps the analysis but drops the file manifest" do
+      sha = "bbbb000000000000000000000000000000000000000000000000000000000001"
+
+      system_result =
+        ingest_with_dep_scans(%{"jason" => dep_scan(sha)}, seed_files_dir([sha]), "rid-deps")
+
+      scan = system_result.dependency_scans["jason"]
+
+      assert scan["flags"] == ["nif"]
+      assert scan["beam_count"] == 3
+      assert scan["languages"] == ["c"]
+      assert scan["footprint"]["total_bytes"] == 12_345
+
+      refute Map.has_key?(scan["footprint"], "file_manifest")
+    end
+
+    test "still registers the artifacts that manifest named" do
+      # The manifest is dropped from the column, not from the ingest: its shas
+      # are staged into the artifact store before the transaction opens.
+      sha = "bbbb000000000000000000000000000000000000000000000000000000000002"
+      files_dir = seed_files_dir([sha])
+
+      ingest_with_dep_scans(%{"jason" => dep_scan(sha)}, files_dir, "rid-deps-artifacts")
+
+      artifacts = Ash.read!(Artifact, domain: Portal.Catalog)
+      assert Enum.any?(artifacts, &(&1.sha256 == sha))
+      assert File.exists?(ArtifactStore.blob_path(sha))
+      refute File.exists?(Path.join(files_dir, sha))
+    end
+
+    test "leaves a scan that carries no footprint untouched" do
+      scan = %{"flags" => [], "beam_count" => 0}
+
+      system_result =
+        ingest_with_dep_scans(%{"jason" => scan}, seed_files_dir([]), "rid-deps-nofootprint")
+
+      assert system_result.dependency_scans["jason"] == scan
+    end
+
+    test "leaves the error map the worker emits when the scan itself failed" do
+      # `analyze_dependency_beam_scans/2` returns `%{"__errors__" => [...]}` on
+      # failure, so the values are not always scan maps.
+      scans = %{"__errors__" => ["dependency beam scan failed: :enoent"]}
+
+      system_result = ingest_with_dep_scans(scans, seed_files_dir([]), "rid-deps-errors")
+
+      assert system_result.dependency_scans == scans
+    end
+  end
+
   # The worker writes one log per system under out/logs/<system_pkg>.log.
   defp seed_output_dir(logs) do
     dir = Path.join(System.tmp_dir!(), "ingest-out-#{System.unique_integer([:positive])}")
