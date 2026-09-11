@@ -24,13 +24,33 @@ defmodule PortalWeb.IndexLive do
        :page_description,
        "Search every Hex package built against Nerves systems and see, per system, " <>
          "whether it produces working firmware."
-     )
-     |> search("")}
+     )}
   end
 
+  # The search term lives in the URL so a filtered list can be linked, and so
+  # that returning from a package page lands back on the search that found it
+  # rather than on the unfiltered catalog.
+  #
+  # This is the only source of `q`: the form handler patches the URL and lets
+  # the patch come back through here, so a typed search and a pasted link take
+  # exactly the same path.
+  @impl true
+  def handle_params(params, _uri, socket) do
+    {:noreply, search(socket, params["q"] || "")}
+  end
+
+  # `replace: true`, not a new history entry. The form is `phx-change`, so this
+  # fires per keystroke (debounced 200ms) -- pushing would bury the page the
+  # user arrived from under one entry per letter typed, and make the back
+  # button spell the query out backwards.
+  #
+  # Replacing still leaves `?q=` in the address bar to copy, and still restores
+  # the search when the browser comes back to this entry from a package page,
+  # which is what "shareable" needs. The cost is that back no longer undoes a
+  # search in place; it leaves the page.
   @impl true
   def handle_event("search", %{"q" => q}, socket) do
-    {:noreply, search(socket, q)}
+    {:noreply, push_patch(socket, to: path_for(q), replace: true)}
   end
 
   # `entries/1` is re-derived rather than carried in the socket: the whole list
@@ -65,6 +85,9 @@ defmodule PortalWeb.IndexLive do
     |> assign(:shown_count, length(page))
     |> stream(:packages, page, reset: true)
   end
+
+  defp path_for(""), do: ~p"/packages"
+  defp path_for(q), do: ~p"/packages?#{[q: q]}"
 
   @impl true
   def render(assigns) do

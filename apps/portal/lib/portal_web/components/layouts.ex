@@ -38,13 +38,17 @@ defmodule PortalWeb.Layouts do
   search engine invents its own snippet and a Slack or Discord unfurl is blank.
 
   The canonical URL is built from `conn.request_path`, which drops the query
-  string. That is deliberate and currently lossless: no LiveView in this app
-  implements `handle_params/3` or calls `push_patch/2`, so no page state lives
-  in the query string. What the query string *does* carry is tracking junk
-  (`utm_*`, `fbclid`) appended by whoever shared the link, and without a
-  canonical each variant is a separate, duplicate entry in the index. If a page
-  ever starts encoding real state in its query string, it has to set its own
-  canonical rather than inherit this one.
+  string. Mostly what the query string carries is tracking junk (`utm_*`,
+  `fbclid`) appended by whoever shared the link, and without a canonical each
+  variant becomes a separate, duplicate entry in the index.
+
+  One page does put real state there: `PortalWeb.IndexLive` keeps its search
+  term in `?q=` so a filtered catalog can be linked. Stripping it is still
+  correct for that page -- `/packages?q=jason` is a view of `/packages`, not a
+  page of its own, and letting a crawler index one URL per search term is how a
+  2,500-package catalog turns into unbounded near-duplicate thin content. A
+  page that encodes state the crawler should see as distinct (a numbered pager,
+  say) has to set its own canonical rather than inherit this one.
 
   No `og:image`: the only brand asset is an SVG, and the major unfurlers
   (Slack, Discord, Twitter, iMessage) either ignore SVG or fail the card

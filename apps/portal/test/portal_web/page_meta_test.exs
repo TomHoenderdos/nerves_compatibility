@@ -83,6 +83,17 @@ defmodule PortalWeb.PageMetaTest do
     assert canonical(html) == PortalWeb.Endpoint.url() <> "/packages"
   end
 
+  # `/packages` keeps its search term in `?q=`, which makes a filtered list
+  # linkable but must not make it indexable: one indexed URL per search term
+  # turns a 2,500-package catalog into unbounded near-duplicate pages. The
+  # canonical is what stops that, so it is pinned here rather than left to the
+  # generic tracking-parameter case above.
+  test "a search does not become a page of its own", %{conn: conn} do
+    html = fetch(conn, "/packages?q=jason")
+
+    assert canonical(html) == PortalWeb.Endpoint.url() <> "/packages"
+  end
+
   describe "a package page" do
     defp ingest(name, version, systems, description) do
       dir = Path.join(System.tmp_dir!(), "meta-#{System.unique_integer([:positive])}")
