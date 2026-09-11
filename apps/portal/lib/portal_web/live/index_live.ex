@@ -4,10 +4,14 @@ defmodule PortalWeb.IndexLive do
   alias Portal.Catalog
   alias Portal.ScanRequests
 
+  # The catalog is ~2,500 packages. Streaming all of them rendered a 3.6 MB
+  # document, and because the search form is `phx-change`, every keystroke sent
+  # a full stream reset of the same 3.6 MB back down the socket. A page at a
+  # time keeps both the first paint and each search cheap.
+  @page_size 60
+
   @impl true
   def mount(_params, _session, socket) do
-    entries = entries("")
-
     {:ok,
      socket
      |> stream_configure(:packages,
@@ -15,20 +19,45 @@ defmodule PortalWeb.IndexLive do
          if entry.placeholder?, do: "placeholder-#{entry.name}", else: "package-#{entry.name}"
        end
      )
-     |> assign(:q, "")
-     |> assign(:package_count, length(entries))
-     |> stream(:packages, entries)}
+     |> search("")}
   end
 
   @impl true
   def handle_event("search", %{"q" => q}, socket) do
-    entries = entries(q)
+    {:noreply, search(socket, q)}
+  end
+
+  # `entries/1` is re-derived rather than carried in the socket: the whole list
+  # is megabytes, and holding it would cost that much per connected browser.
+  # The catalog read behind it is memoized, so re-deriving is cheap.
+  #
+  # Slicing by offset means a package added between two clicks can shift the
+  # window by one. The list is name-sorted and the memo has a 60s TTL, so the
+  # worst case is one entry arriving a page late; a repeat is idempotent,
+  # because the stream keys on the package name.
+  def handle_event("load_more", _params, socket) do
+    shown = socket.assigns.shown_count
+
+    next =
+      socket.assigns.q
+      |> entries()
+      |> Enum.slice(shown, @page_size)
 
     {:noreply,
      socket
-     |> assign(:q, q)
-     |> assign(:package_count, length(entries))
-     |> stream(:packages, entries, reset: true)}
+     |> assign(:shown_count, shown + length(next))
+     |> stream(:packages, next)}
+  end
+
+  defp search(socket, q) do
+    entries = entries(q)
+    page = Enum.take(entries, @page_size)
+
+    socket
+    |> assign(:q, q)
+    |> assign(:package_count, length(entries))
+    |> assign(:shown_count, length(page))
+    |> stream(:packages, page, reset: true)
   end
 
   @impl true
@@ -62,6 +91,7 @@ defmodule PortalWeb.IndexLive do
               name="q"
               value={@q}
               type="search"
+              phx-debounce="200"
               placeholder="Search packages — jason, vintage_net, circuits_gpio…"
               class="w-full rounded-2xl border border-base-300 bg-base-100 py-4 pl-12 pr-4 text-base-content shadow-sm outline-none transition placeholder:text-base-content/40 focus:border-primary focus:ring-4 focus:ring-primary/10"
             />
@@ -69,10 +99,26 @@ defmodule PortalWeb.IndexLive do
         </form>
 
         <div class="text-sm text-base-content/60">
-          Showing <span class="font-medium text-base-content/80">{@package_count}</span> packages
+          Showing <span class="font-medium text-base-content/80">{@shown_count}</span>
+          of <span class="font-medium text-base-content/80">{@package_count}</span>
+          packages
         </div>
 
-        <div id="packages" phx-update="stream" class="grid gap-3 sm:grid-cols-2">
+        <%!--
+        Scrolling to the bottom of the grid loads the next page. The button
+        below is not redundant: `phx-viewport-bottom` never fires when the whole
+        grid already fits on screen with more to come (a tall window, a short
+        page), and it needs JS, so the button is what keyboard and no-JS users
+        get. Throttled because the binding re-fires while the bottom stays in
+        view.
+        --%>
+        <div
+          id="packages"
+          phx-update="stream"
+          phx-viewport-bottom={@shown_count < @package_count && "load_more"}
+          phx-throttle="300"
+          class="grid gap-3 sm:grid-cols-2"
+        >
           <PortalWeb.UI.package_card
             :for={{id, item} <- @streams.packages}
             id={id}
@@ -84,6 +130,19 @@ defmodule PortalWeb.IndexLive do
             summary_status={item.summary_status}
             statuses={item.statuses}
           />
+        </div>
+
+        <div :if={@shown_count < @package_count} class="flex justify-center">
+          <button
+            type="button"
+            phx-click="load_more"
+            class="inline-flex items-center gap-2 rounded-xl border border-base-300 bg-base-100 px-5 py-3 text-sm font-semibold text-base-content shadow-sm transition hover:border-primary hover:text-primary"
+          >
+            Load more
+            <span class="text-base-content/50">
+              ({@package_count - @shown_count} left)
+            </span>
+          </button>
         </div>
       </section>
     </Layouts.app>

@@ -98,7 +98,21 @@ defmodule Portal.Catalog do
   @doc """
   Returns the schema-v2 `latest_by_pkg.json` shape from Catalog rows.
   """
-  def latest_by_pkg_json(package_name \\ nil) do
+  def latest_by_pkg_json(package_name \\ nil)
+
+  # Only the whole-catalog form is memoized. It is the expensive one -- every
+  # package, its latest run and that run's system results, folded in Elixir --
+  # and it is what `/packages` and the public JSON index both call. The
+  # single-package form is a filtered read of one row, and caching it would key
+  # the table by package name: the cache has no per-key eviction, so browsing
+  # the catalog would leave an entry per package behind forever.
+  def latest_by_pkg_json(nil) do
+    Cache.fetch(:latest_by_pkg_json, fn -> compute_latest_by_pkg_json(nil) end)
+  end
+
+  def latest_by_pkg_json(package_name), do: compute_latest_by_pkg_json(package_name)
+
+  defp compute_latest_by_pkg_json(package_name) do
     packages = packages(package_name)
     runs = latest_runs(packages)
 
