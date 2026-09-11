@@ -113,6 +113,12 @@ if portal_available? do
     config :portal, :artifact_store, path: store
   end
 
+  # Lets a separate deployment of this codebase send its bug reports to its own
+  # tracker rather than to whichever repo the compile-time default names.
+  if issues_url = System.get_env("NCC_ISSUES_URL") do
+    config :portal, :issues_url, issues_url
+  end
+
   # Every path here is handed to `docker run --mount source=`, so it is resolved
   # by the *host* daemon, not by this process. They must be host paths.
   #

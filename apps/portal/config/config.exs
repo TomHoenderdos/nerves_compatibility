@@ -102,6 +102,15 @@ config :portal, Portal.Builder,
   # docker wall clock plus an hour for the ingest handoff.
   scratch_max_age_ms: :timer.hours(3)
 
+# Where the "Open an issue" link in the UI points.
+#
+# This deployment is a fork of fhunleth/nerves_compatibility, and the template
+# it inherited hardcoded the upstream repo. Every bug report a visitor filed
+# therefore landed on the upstream maintainer's tracker instead of this one.
+# It lives in config so a fork of *this* repo does not repeat the mistake, and
+# `PortalWeb.IssueLinkTest` fails if a template hardcodes a repo URL again.
+config :portal, :issues_url, "https://github.com/TomHoenderdos/nerves_compatibility/issues/new"
+
 # Content-addressed artifact blob store (firmware, precompiled BEAM, etc).
 # The Build worker moves the worker's files_dir outputs here.
 config :portal, :artifact_store, path: Path.expand("~/.ncc-artifacts")
