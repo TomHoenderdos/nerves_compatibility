@@ -3,11 +3,19 @@ defmodule Portal.Workers.LogRetention do
   Oban worker (queue `:maintenance`) that keeps stored build logs inside a
   fixed budget.
 
-  The portal's database is capacity-limited, not disk-limited: it lives on a
-  1 GB managed Postgres that was already at 82% before a single build log was
-  stored. Every rule below exists because the log tables are the one part of
-  the schema whose growth is driven by third-party build output rather than by
-  the size of the package index.
+  The log tables are the one part of the schema whose growth is driven by
+  third-party build output rather than by the size of the package index: a bad
+  week of failing builds across ~2500 packages can store tens of gigabytes
+  without anyone having decided to. Every rule below bounds that.
+
+  What this is *not* is a capacity emergency. Production Postgres is a
+  self-hosted container on a 244 GB disk with 155 GB free (2026-09-11), shared
+  with unrelated apps — `autosift_prod` alone is 23 GB against `portal_prod`'s
+  1.0 GB. An earlier version of this docstring called it "a 1 GB managed
+  Postgres already at 82%"; that was a misread of `catalog_system_results`'
+  share *of the database* (843 MB of 1024 MB) as utilisation of a quota. No
+  quota exists, here or upstream, so the budget below is a policy choice about
+  unbounded third-party output rather than a ceiling someone else imposed.
 
   Three rules, cheapest first:
 
@@ -60,9 +68,9 @@ defmodule Portal.Workers.LogRetention do
 
   alias Portal.Repo
 
-  # Sized against the production database rather than against taste: 1 GB total,
-  # of which `catalog_system_results` already holds 843 MB. Clearing the passing
-  # runs' `runner.log` frees roughly 100 MB, and this spends most of it.
+  # A policy choice, not a ceiling — see the moduledoc; nothing caps this
+  # database. What the number decides is how much build-log history the viewer
+  # keeps, so it is a product question, not a capacity one.
   @default_budget_bytes 128 * 1024 * 1024
 
   @type tally :: %{count: non_neg_integer(), bytes: non_neg_integer()}
