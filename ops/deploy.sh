@@ -19,7 +19,37 @@ SRC=/opt/nerves_compatibility/src
 BIN=/opt/nerves_compatibility/portal/bin/portal
 
 cd "$SRC"
+
+# `mix assets.deploy` rewrites the digested copies of robots.txt, favicon.ico
+# and logo.svg under apps/portal/priv/static on every build, and unlike
+# priv/static/assets/ those files are tracked. So a normal deploy always leaves
+# the checkout dirty, and the next `git pull --ff-only` that happens to touch
+# one of them aborts with "local changes would be overwritten by merge" --
+# before anything else in this script runs.
+#
+# That is not hypothetical: on 2026-09-11 both hosts were found 40 commits
+# behind main, stuck since the commit that changed robots.txt, with the build
+# log viewer's migrations unapplied. The failure is loud but nobody is watching
+# a deploy nobody ran.
+#
+# The build regenerates these files a few lines below, so the working copy is
+# disposable and restoring it loses nothing. Deliberately scoped to
+# priv/static: a modification anywhere else in the tree is someone's hand-edit,
+# and that still must stop the deploy rather than be silently discarded.
+if ! git diff --quiet -- apps/portal/priv/static; then
+  echo "restoring build-generated assets under apps/portal/priv/static"
+  git checkout -- apps/portal/priv/static
+fi
+
+# Any other dirty tracked file is a human's, so fail loudly rather than lose it.
+if ! git diff --quiet; then
+  echo "refusing to deploy: uncommitted changes outside apps/portal/priv/static" >&2
+  git status --porcelain >&2
+  exit 1
+fi
+
 git pull --ff-only
+echo "deploying $(git log --oneline -1)"
 
 /opt/nerves_compatibility/build-release.sh
 
