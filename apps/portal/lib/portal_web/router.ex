@@ -63,6 +63,15 @@ defmodule PortalWeb.Router do
     post "/requests/anonymous", PageController, :anonymous_request
   end
 
+  # No pipeline on purpose. `:browser` starts with `plug :accepts, ["html"]`,
+  # which would 406 a crawler that asks for `application/xml`, and neither
+  # response needs a session, flash or CSRF token. `robots.txt` moved out of
+  # `PortalWeb.static_paths/0` to get here — see `SitemapController`.
+  scope "/", PortalWeb do
+    get "/sitemap.xml", SitemapController, :index
+    get "/robots.txt", SitemapController, :robots
+  end
+
   scope "/", PortalWeb do
     pipe_through :authenticated
 
