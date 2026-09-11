@@ -79,6 +79,13 @@ config :portal, Oban,
 # logs without anyone deciding to, which is a real risk at any disk size.
 config :portal, Portal.Workers.LogRetention, budget_bytes: 2 * 1024 * 1024 * 1024
 
+# The dashboard, stats and cluster pages fold every package, run and system
+# result in Elixir -- 655ms warm on production, paid twice per page view because
+# a LiveView mounts once for the static render and again on socket connect.
+# 60s of staleness on a build-results page costs nothing; see
+# `Portal.Catalog.Cache` for why this is a TTL and not invalidation on ingest.
+config :portal, Portal.Catalog.Cache, ttl_ms: :timer.seconds(60)
+
 # Host-side Docker invocation for worker builds.
 # Runtime-overridable in config/runtime.exs.
 config :portal, Portal.Builder,

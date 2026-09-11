@@ -11,7 +11,7 @@ defmodule Portal.Catalog do
 
   require Ash.Query
 
-  alias Portal.Catalog.{Artifact, Package, PackageOverride, Run, SystemLog, SystemResult}
+  alias Portal.Catalog.{Artifact, Cache, Package, PackageOverride, Run, SystemLog, SystemResult}
   alias Portal.Repo
 
   @statuses ~w(pass fail error skipped unknown)
@@ -128,6 +128,10 @@ defmodule Portal.Catalog do
   Returns the schema-v2 `stats.json` shape from Catalog rows.
   """
   def stats_json do
+    Cache.fetch(:stats_json, &compute_stats_json/0)
+  end
+
+  defp compute_stats_json do
     results =
       SystemResult
       |> Ash.Query.select(@stats_fields)
@@ -154,16 +158,24 @@ defmodule Portal.Catalog do
   a render to a single pass.
   """
   def dashboard(cluster_limit \\ 3, recent_limit \\ 10) do
+    Cache.fetch({:dashboard, cluster_limit, recent_limit}, fn ->
+      compute_dashboard(cluster_limit, recent_limit)
+    end)
+  end
+
+  defp compute_dashboard(cluster_limit, recent_limit) do
     annotated = latest_annotated_systems()
     runs = run_summaries()
+
+    pkgs = package_name_map()
 
     %{
       counts: package_status_counts(annotated),
       clusters: failure_clusters(annotated, cluster_limit),
       native: native_breakdown(),
       rates: pass_rate_per_system(annotated),
-      recent_pass: recent_runs(:pass, recent_limit, runs),
-      recent_fail: recent_runs(:fail, recent_limit, runs),
+      recent_pass: recent_runs(:pass, recent_limit, runs, pkgs),
+      recent_fail: recent_runs(:fail, recent_limit, runs, pkgs),
       last_run: last_finished_at(runs)
     }
   end
@@ -281,13 +293,18 @@ defmodule Portal.Catalog do
   def recent_runs(status, limit \\ 5), do: recent_runs(status, limit, run_summaries())
 
   @doc false
-  def recent_runs(status, limit, runs) do
+  def recent_runs(status, limit, runs), do: recent_runs(status, limit, runs, package_name_map())
+
+  # Two columns, not the row: this map is only ever asked for a name, and
+  # `catalog_packages` carries a description and a `native_components` jsonb
+  # blob that nothing here looks at.
+  #
+  # It arrives as an argument because `dashboard/2` needs both a passing and a
+  # failing list, and building it inside meant reading every package row twice
+  # per render to answer the same question.
+  @doc false
+  def recent_runs(status, limit, runs, pkgs) do
     wanted = if status == :pass, do: [:pass], else: [:fail, :error]
-    # Two columns, not the row. `dashboard/2` calls this twice, so the full
-    # read happened twice per render for a map that is only ever asked for a
-    # name — and `catalog_packages` carries a description and a
-    # `native_components` jsonb blob that nothing here looks at.
-    pkgs = package_names() |> Map.new(&{&1.id, &1.name})
 
     runs
     |> Enum.filter(&(&1.overall_status in wanted and not is_nil(&1.finished_at)))
@@ -327,7 +344,11 @@ defmodule Portal.Catalog do
   }
 
   @doc "One bucket per package via Rollup.overall_status over its latest run's systems."
-  def package_status_counts, do: package_status_counts(latest_annotated_systems())
+  def package_status_counts do
+    Cache.fetch(:package_status_counts, fn ->
+      package_status_counts(latest_annotated_systems())
+    end)
+  end
 
   @doc false
   def package_status_counts(annotated) do
@@ -349,7 +370,11 @@ defmodule Portal.Catalog do
   end
 
   @doc "Non-pass systems grouped by failure_category with occurrence + distinct-package counts."
-  def failure_clusters(limit \\ 10), do: failure_clusters(latest_annotated_systems(), limit)
+  def failure_clusters(limit \\ 10) do
+    Cache.fetch({:failure_clusters, limit}, fn ->
+      failure_clusters(latest_annotated_systems(), limit)
+    end)
+  end
 
   @doc false
   def failure_clusters(annotated, limit) do
@@ -474,6 +499,8 @@ defmodule Portal.Catalog do
     |> Ash.Query.sort(name: :asc)
     |> Ash.read!(domain: __MODULE__)
   end
+
+  defp package_name_map, do: package_names() |> Map.new(&{&1.id, &1.name})
 
   defp latest_runs([]), do: %{}
 
