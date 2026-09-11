@@ -9,6 +9,12 @@ defmodule PortalWeb.DashboardLive do
 
     {:ok,
      socket
+     |> assign(:page_title, "Dashboard")
+     |> assign(
+       :page_description,
+       "Live status of automated Nerves firmware builds across the Hex ecosystem: " <>
+         "how many packages build, how many fail, and the most common reasons."
+     )
      |> assign(:counts, data.counts)
      |> assign(:clusters, data.clusters)
      |> assign(:native, data.native)

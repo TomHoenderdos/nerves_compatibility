@@ -19,6 +19,12 @@ defmodule PortalWeb.IndexLive do
          if entry.placeholder?, do: "placeholder-#{entry.name}", else: "package-#{entry.name}"
        end
      )
+     |> assign(:page_title, "Packages")
+     |> assign(
+       :page_description,
+       "Search every Hex package built against Nerves systems and see, per system, " <>
+         "whether it produces working firmware."
+     )
      |> search("")}
   end
 

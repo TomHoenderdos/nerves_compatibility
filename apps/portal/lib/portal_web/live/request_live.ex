@@ -11,6 +11,8 @@ defmodule PortalWeb.RequestLive do
       {:ok, request} ->
         {:ok,
          socket
+         |> assign(:page_title, "Scan request")
+         |> assign(:page_description, "Live progress of a requested Nerves compatibility build.")
          |> assign(:id, id)
          |> assign(:request, request)
          |> assign(:stage, nil)
