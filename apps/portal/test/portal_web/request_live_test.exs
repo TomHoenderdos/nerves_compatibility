@@ -46,4 +46,24 @@ defmodule PortalWeb.RequestLiveTest do
     assert render(view) =~ "built"
     assert render(view) =~ "pass"
   end
+
+  test "request live displays error log when build fails", %{conn: conn} do
+    {:ok, request} =
+      ScanRequests.create_once(%{
+        package_name: "failing_package",
+        source: :anonymous_manual,
+        status: :pending
+      })
+
+    {:ok, _} =
+      ScanRequests.set_status(request.id, :error,
+        error_reason: "worker/runner exit 10",
+        error_log: "== Compilation error in file lib/x.ex ==\n"
+      )
+
+    {:ok, view, _html} = live(conn, ~p"/requests/#{request.id}")
+
+    assert has_element?(view, "#request-error-log", "Compilation error")
+    assert has_element?(view, "#request-error-log", "worker/runner exit 10")
+  end
 end

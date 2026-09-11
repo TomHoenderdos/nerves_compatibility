@@ -3,8 +3,10 @@ defmodule Portal.Catalog.IngestionTest do
 
   require Ash.Query
 
+  import ExUnit.CaptureLog, only: [with_log: 1]
+
   alias Portal.ArtifactStore
-  alias Portal.Catalog.{Artifact, Ingestion, Package, SystemResult}
+  alias Portal.Catalog.{Artifact, Ingestion, Package, Run, SystemResult}
   alias Portal.ScanRequests
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
@@ -143,5 +145,235 @@ defmodule Portal.Catalog.IngestionTest do
 
     packages = Ash.read!(Package, domain: Portal.Catalog)
     assert Enum.count(packages, &(&1.name == "jason")) == 1
+  end
+
+  # The worker writes one log per system under out/logs/<system_pkg>.log.
+  defp seed_output_dir(logs) do
+    dir = Path.join(System.tmp_dir!(), "ingest-out-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(dir, "logs"))
+
+    Enum.each(logs, fn {system, body} ->
+      File.write!(Path.join([dir, "logs", "#{system}.log"]), body)
+    end)
+
+    on_exit(fn -> File.rm_rf(dir) end)
+    dir
+  end
+
+  defp logs_by_system(run_id) do
+    SystemResult
+    |> Ash.Query.filter(run_id == ^run_id)
+    |> Ash.Query.load(:system_log)
+    |> Ash.read!(domain: Portal.Catalog)
+    |> Enum.filter(& &1.system_log)
+    |> Map.new(&{&1.system_pkg, &1.system_log})
+  end
+
+  defp ingest_fixture(output_dir) do
+    sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
+
+    Ingestion.ingest(load_fixture(), %{
+      run_id: "log-jason-#{System.unique_integer([:positive])}",
+      image_digest: "sha256:deadbeef",
+      files_dir: seed_files_dir([sha]),
+      output_dir: output_dir,
+      log: "runner"
+    })
+  end
+
+  describe "runner.log on the run row" do
+    test "a passing run stores no runner.log" do
+      # `catalog_runs.log` has no reader anywhere in the app, and passing runs
+      # were 97% of the bytes in it. The per-system logs are unaffected.
+      assert {:ok, run} = ingest_fixture(seed_output_dir(%{}))
+      assert run.overall_status == :pass
+      assert run.log == nil
+    end
+
+    test "a failing run keeps its runner.log" do
+      files_dir = seed_files_dir([])
+
+      {:ok, run} =
+        Ingestion.ingest(load_fixture() |> Map.put("forced_status", "fail"), %{
+          run_id: "rid-failed-log",
+          image_digest: "sha256:1",
+          files_dir: files_dir,
+          scan_request_id: nil,
+          log: "runner output"
+        })
+
+      assert run.overall_status == :fail
+      assert run.log == "runner output"
+    end
+  end
+
+  describe "per-system log capture" do
+    test "stores a log for the failed system and nothing for the passing ones" do
+      output_dir =
+        seed_output_dir(%{
+          "nerves_system_rpi4" => "passing log",
+          "nerves_system_x86_64" => "== Compilation error in file lib/x.ex ==",
+          "host" => "host log"
+        })
+
+      {:ok, run} = ingest_fixture(output_dir)
+
+      logs = logs_by_system(run.id)
+
+      assert Map.keys(logs) == ["nerves_system_x86_64"]
+      assert logs["nerves_system_x86_64"].body =~ "Compilation error"
+      assert logs["nerves_system_x86_64"].byte_size == 40
+      refute logs["nerves_system_x86_64"].truncated
+    end
+
+    test "a log containing invalid UTF-8 ingests cleanly" do
+      output_dir =
+        seed_output_dir(%{"nerves_system_x86_64" => <<"boom ", 0xFF, " here">>})
+
+      assert {:ok, run} = ingest_fixture(output_dir)
+      assert logs_by_system(run.id)["nerves_system_x86_64"].body == "boom � here"
+    end
+
+    test "a missing log file ingests cleanly and creates no row" do
+      assert {:ok, run} = ingest_fixture(seed_output_dir(%{}))
+      assert logs_by_system(run.id) == %{}
+    end
+
+    # The reviewer's reproduction: a database error on the log insert used to
+    # abort the whole ingest transaction, which burns an Oban attempt and, at
+    # exhaustion, discards the completed build. Fails without the SAVEPOINT in
+    # `insert_log/3` — the CHECK constraint stands in for the transport errors
+    # (pool timeout, dropped connection, statement timeout) that cause it in
+    # production, since no log *content* can reach Postgres badly formed.
+    test "a database error inserting the log still commits the run" do
+      Portal.Repo.query!(
+        "ALTER TABLE catalog_system_logs ADD CONSTRAINT ncc_probe_no_boom " <>
+          "CHECK (body NOT LIKE '%rejected-by-postgres%')"
+      )
+
+      output_dir =
+        seed_output_dir(%{"nerves_system_x86_64" => "rejected-by-postgres: build failed"})
+
+      {run, _log} = with_log(fn -> ingest_fixture(output_dir) end)
+
+      assert {:ok, run} = run
+
+      # The log row is the only casualty.
+      assert logs_by_system(run.id) == %{}
+
+      # The run and every system result are readable, so the transaction
+      # committed rather than rolling back.
+      assert %Run{} = Ash.get!(Run, run.id, domain: Portal.Catalog)
+
+      system_results =
+        SystemResult
+        |> Ash.Query.filter(run_id == ^run.id)
+        |> Ash.read!(domain: Portal.Catalog)
+
+      assert length(system_results) == 3
+    end
+
+    test "a system name that escapes the logs directory is skipped" do
+      output_dir = seed_output_dir(%{})
+      File.write!(Path.join(output_dir, "secret.log"), "host filesystem contents")
+
+      result =
+        load_fixture()
+        |> Map.put("systems", %{
+          "../../etc/passwd" => %{"status" => "fail"},
+          "../secret" => %{"status" => "fail"}
+        })
+
+      {ingest, log} =
+        with_log(fn ->
+          Ingestion.ingest(result, %{
+            run_id: "traversal-#{System.unique_integer([:positive])}",
+            image_digest: "sha256:deadbeef",
+            files_dir: seed_files_dir([]),
+            output_dir: output_dir,
+            log: "runner"
+          })
+        end)
+
+      assert {:ok, run} = ingest
+      assert logs_by_system(run.id) == %{}
+      assert log =~ "Refusing to read a build log"
+      refute log =~ "host filesystem contents"
+    end
+
+    # Rejecting `..` in the system name covers the name only. /out is a
+    # read-write bind mount and the container runs as the invoking host user,
+    # so package code can leave the log itself as a symlink to any file that
+    # user can read, and `File.read/1` would follow it into a public log body.
+    # `system_pkg` is a key from a result.json written inside a container that
+    # runs untrusted package code, and the bytes at the path it builds become a
+    # publicly readable log body. Nothing today can steer the key, but the guard
+    # is what keeps that true.
+    test "a build log for a traversing system name is never read" do
+      output_dir = seed_output_dir(%{})
+      secret = Path.join(output_dir, "secret.txt")
+      File.write!(secret, "host filesystem contents")
+
+      result =
+        load_fixture()
+        |> Map.put("systems", %{"../secret.txt" => %{"status" => "fail"}})
+
+      {ingest, log} =
+        with_log(fn ->
+          Ingestion.ingest(result, %{
+            run_id: "traversal-#{System.unique_integer([:positive])}",
+            image_digest: "sha256:deadbeef",
+            files_dir: seed_files_dir([]),
+            output_dir: output_dir,
+            log: "runner"
+          })
+        end)
+
+      assert {:ok, run} = ingest
+      assert logs_by_system(run.id) == %{}
+      assert log =~ "Refusing to read a build log for suspicious system"
+      refute log =~ "host filesystem contents"
+    end
+
+    test "a build log that is a symlink is skipped" do
+      output_dir = seed_output_dir(%{})
+      secret = Path.join(output_dir, "secret.txt")
+      File.write!(secret, "host filesystem contents")
+      File.ln_s!(secret, Path.join([output_dir, "logs", "nerves_system_rpi4.log"]))
+
+      result =
+        load_fixture()
+        |> Map.put("systems", %{"nerves_system_rpi4" => %{"status" => "fail"}})
+
+      {ingest, log} =
+        with_log(fn ->
+          Ingestion.ingest(result, %{
+            run_id: "symlink-#{System.unique_integer([:positive])}",
+            image_digest: "sha256:deadbeef",
+            files_dir: seed_files_dir([]),
+            output_dir: output_dir,
+            log: "runner"
+          })
+        end)
+
+      assert {:ok, run} = ingest
+      assert logs_by_system(run.id) == %{}
+      assert log =~ "Refusing a non-regular build log"
+      refute log =~ "host filesystem contents"
+    end
+
+    test "an ingest with no output_dir at all still succeeds" do
+      sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
+
+      assert {:ok, run} =
+               Ingestion.ingest(load_fixture(), %{
+                 run_id: "no-out-#{System.unique_integer([:positive])}",
+                 image_digest: "sha256:deadbeef",
+                 files_dir: seed_files_dir([sha]),
+                 log: "runner"
+               })
+
+      assert logs_by_system(run.id) == %{}
+    end
   end
 end
