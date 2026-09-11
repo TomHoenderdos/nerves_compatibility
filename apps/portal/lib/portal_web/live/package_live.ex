@@ -7,11 +7,15 @@ defmodule PortalWeb.PackageLive do
   def mount(%{"name" => name}, _session, socket) do
     case Catalog.latest_by_pkg_json(name) do
       %{packages: %{^name => package}} ->
+        systems = systems(package)
+
         {:ok,
          socket
+         |> assign(:page_title, name)
+         |> assign(:page_description, describe(name, package, systems))
          |> assign(:name, name)
          |> assign(:package, package)
-         |> assign(:systems, systems(package))}
+         |> assign(:systems, systems)}
 
       _ ->
         {:ok,
@@ -86,6 +90,50 @@ defmodule PortalWeb.PackageLive do
       </section>
     </Layouts.app>
     """
+  end
+
+  # This page is ~2,500 of the site's indexed URLs, so its description is the
+  # one that most affects what a search result actually says. A single shared
+  # sentence would make every package page look identical to a crawler; the
+  # counts and the version make each one specific.
+  #
+  # Capped at 155 characters because that is roughly where Google truncates,
+  # and a sentence cut mid-word reads worse than one that ends early.
+  @description_limit 155
+
+  defp describe(name, package, systems) do
+    version = package.latest_version
+
+    head =
+      case {length(systems), Enum.count(systems, &(&1.status == "pass"))} do
+        {0, _} ->
+          "#{name} has not been built against any Nerves system yet."
+
+        {total, total} ->
+          "#{name} #{version} builds on all #{total} tracked Nerves systems."
+
+        {total, 0} ->
+          "#{name} #{version} fails on all #{total} tracked Nerves systems."
+
+        {total, pass} ->
+          "#{name} #{version} builds on #{pass} of #{total} tracked Nerves systems."
+      end
+
+    case package.description do
+      blurb when is_binary(blurb) and blurb != "" -> truncate(head <> " " <> blurb)
+      _ -> head
+    end
+  end
+
+  defp truncate(text) do
+    if String.length(text) <= @description_limit do
+      text
+    else
+      text
+      |> String.slice(0, @description_limit)
+      |> String.replace(~r/\s+\S*$/u, "")
+      |> Kernel.<>("...")
+    end
   end
 
   defp systems(package) do

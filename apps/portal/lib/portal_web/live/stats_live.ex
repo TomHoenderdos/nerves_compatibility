@@ -10,6 +10,12 @@ defmodule PortalWeb.StatsLive do
 
     {:ok,
      socket
+     |> assign(:page_title, "Stats")
+     |> assign(
+       :page_description,
+       "Aggregate Nerves compatibility statistics: pass rates, failure categories, " <>
+         "and coverage across every tracked Nerves system."
+     )
      |> assign(:counts, Catalog.package_status_counts())
      |> assign(:by_system, by_system_rows(stats))
      |> assign(:last_run, stats[:last_run_finished_at])}
