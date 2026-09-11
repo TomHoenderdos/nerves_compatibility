@@ -26,6 +26,7 @@ defmodule Portal.Workers.Ingest do
 
   alias Portal.Builder
   alias Portal.Catalog.Ingestion
+  alias Portal.Workers.PackageMeta
   alias Portal.Workers.Progress
 
   @impl Oban.Worker
@@ -62,6 +63,7 @@ defmodule Portal.Workers.Ingest do
     case safe_ingest(build.result, ingest_opts) do
       {:ok, run} ->
         Builder.cleanup(run_id)
+        enqueue_package_meta(build.result)
         Progress.mark(scan_request_id, :built, run_id: run.id)
         Progress.broadcast(scan_request_id, :done, %{run_id: run.id, status: run.overall_status})
         :ok
@@ -79,6 +81,30 @@ defmodule Portal.Workers.Ingest do
         end
 
         {:error, reason}
+    end
+  end
+
+  # Every package that enters the catalog passes through here, which makes this
+  # the one place that keeps hex.pm metadata in step with the catalog without a
+  # scheduled sweep. The job is unique per package for a day, so a package
+  # rebuilt against six systems still costs one hex.pm request.
+  #
+  # Deliberately after the ingest commits and outside its transaction: metadata
+  # is decoration, and a hex.pm outage must not roll back a build result. A
+  # failed enqueue is logged and dropped for the same reason.
+  defp enqueue_package_meta(result) do
+    case get_in(result, ["package", "name"]) do
+      name when is_binary(name) and name != "" ->
+        case Oban.insert(PackageMeta.new(%{package: name})) do
+          {:ok, _job} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("PackageMeta enqueue failed for #{name}: #{inspect(reason)}")
+        end
+
+      _ ->
+        :ok
     end
   end
 
