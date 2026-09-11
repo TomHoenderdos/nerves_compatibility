@@ -74,4 +74,83 @@ defmodule PortalWeb.IndexPagingTest do
     refute html =~ ~s(id="placeholder-pkg001")
     refute html =~ "Load more"
   end
+
+  describe "the search term in the URL" do
+    test "a link carrying ?q= arrives already filtered", %{conn: conn} do
+      seed_many(3)
+      seed("needle")
+
+      {:ok, _view, html} = live(conn, ~p"/packages?q=needle")
+
+      assert html =~ ~s(id="placeholder-needle")
+      refute html =~ ~s(id="placeholder-pkg001")
+    end
+
+    test "the search box shows the term it was linked with", %{conn: conn} do
+      seed("needle")
+
+      {:ok, _view, html} = live(conn, ~p"/packages?q=needle")
+
+      assert html =~ ~r/<input[^>]*id="q"[^>]*value="needle"/
+    end
+
+    test "no ?q= is the unfiltered catalog", %{conn: conn} do
+      seed_many(3)
+
+      {:ok, _view, html} = live(conn, ~p"/packages")
+
+      assert cards(html) == 3
+    end
+
+    test "typing puts the term in the URL", %{conn: conn} do
+      seed("needle")
+
+      {:ok, view, _html} = live(conn, ~p"/packages")
+
+      view |> form("#package-search", %{"q" => "needle"}) |> render_change()
+
+      assert_patch(view, ~p"/packages?q=needle")
+    end
+
+    test "clearing the box takes ?q= back out of the URL", %{conn: conn} do
+      seed("needle")
+
+      {:ok, view, _html} = live(conn, ~p"/packages?q=needle")
+
+      view |> form("#package-search", %{"q" => ""}) |> render_change()
+
+      assert_patch(view, ~p"/packages")
+    end
+
+    # A term is user input on its way into a URL. `~p` escapes it; this fails if
+    # the path is ever built by interpolating the raw string.
+    test "a term needing escaping survives the round trip", %{conn: conn} do
+      seed("need le")
+
+      {:ok, view, _html} = live(conn, ~p"/packages")
+
+      view |> form("#package-search", %{"q" => "need le"}) |> render_change()
+
+      assert_patch(view, "/packages?q=need+le")
+      assert render(view) =~ ~s(id="placeholder-need le")
+    end
+
+    # Paging and the filter are separate pieces of state, and the filter now
+    # arrives from a different place than the pager does. This is the case where
+    # that could come apart: a deep-linked search that is longer than one page.
+    test "a linked search pages within its own matches", %{conn: conn} do
+      seed_many(@page_size + 1)
+      seed("needle")
+
+      {:ok, view, html} = live(conn, ~p"/packages?q=pkg")
+
+      assert cards(html) == @page_size
+      refute html =~ ~s(id="placeholder-needle")
+
+      html = view |> element("button", "Load more") |> render_click()
+
+      assert cards(html) == @page_size + 1
+      refute html =~ ~s(id="placeholder-needle")
+    end
+  end
 end
