@@ -14,14 +14,14 @@ defmodule Portal.Catalog.Ingestion do
   `overall_status` is derived from the per-system statuses (or a top-level
   `forced_status` when the worker emitted one).
 
-  Blobs are moved on disk *before* the transaction opens; only the row inserts
-  run inside it. See `ingest/2`.
+  Blobs are moved and build logs are read *before* the transaction opens; only
+  the row inserts run inside it. See `ingest/2`.
   """
 
   require Logger
 
   alias Portal.ArtifactStore
-  alias Portal.Catalog.{Artifact, Package, Run, SystemResult}
+  alias Portal.Catalog.{Artifact, LogSanitizer, Package, Run, SystemLog, SystemResult}
   alias Portal.Repo
 
   @domain Portal.Catalog
@@ -31,10 +31,14 @@ defmodule Portal.Catalog.Ingestion do
   # headroom for a loaded builder; 60s does, without hiding a real hang.
   @transaction_timeout 60_000
 
+  # Scopes a failed log insert to itself. See `insert_log/3`.
+  @log_savepoint "ncc_system_log"
+
   @type ingest_opts :: %{
           required(:run_id) => String.t(),
           required(:image_digest) => String.t(),
           required(:files_dir) => Path.t(),
+          optional(:output_dir) => Path.t() | nil,
           optional(:scan_request_id) => String.t() | nil,
           optional(:log) => String.t() | nil
         }
@@ -55,11 +59,13 @@ defmodule Portal.Catalog.Ingestion do
   """
   @spec ingest(map(), ingest_opts()) :: {:ok, Run.t()} | {:error, term()}
   def ingest(result, opts) when is_map(result) do
-    staged = stage_artifacts(Map.get(result, "systems", %{}), opts.files_dir)
+    systems = Map.get(result, "systems", %{})
+    staged = stage_artifacts(systems, opts.files_dir)
+    logs = stage_logs(systems, Map.get(opts, :output_dir))
 
     Repo.transaction(
       fn ->
-        case do_ingest(result, opts, staged) do
+        case do_ingest(result, opts, staged, logs) do
           {:ok, run} -> run
           {:error, reason} -> Repo.rollback(reason)
         end
@@ -68,7 +74,7 @@ defmodule Portal.Catalog.Ingestion do
     )
   end
 
-  defp do_ingest(result, opts, staged) do
+  defp do_ingest(result, opts, staged, logs) do
     package_info = Map.get(result, "package", %{})
     package_name = package_info["name"] || raise "result.json missing package.name"
     version = package_info["version"] || "unknown"
@@ -79,7 +85,8 @@ defmodule Portal.Catalog.Ingestion do
     with {:ok, package} <- upsert_package(package_name, package_info, finished_at),
          {:ok, run} <-
            create_run(result, opts, package.id, version, overall, finished_at),
-         :ok <- create_system_results(systems, run.id, version, staged) do
+         :ok <-
+           create_system_results(systems, run.id, version, staged, logs) do
       {:ok, run}
     end
   end
@@ -112,16 +119,16 @@ defmodule Portal.Catalog.Ingestion do
     |> Ash.create(domain: @domain)
   end
 
-  defp create_system_results(systems, run_id, version, staged) do
+  defp create_system_results(systems, run_id, version, staged, logs) do
     Enum.reduce_while(systems, :ok, fn {system_pkg, sys}, _acc ->
-      case create_system_result(system_pkg, sys, run_id, version, staged) do
+      case create_system_result(system_pkg, sys, run_id, version, staged, logs) do
         {:ok, _} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
 
-  defp create_system_result(system_pkg, sys, run_id, version, staged) do
+  defp create_system_result(system_pkg, sys, run_id, version, staged, logs) do
     status = Compatibility.Types.parse_status(sys["status"])
 
     result =
@@ -151,11 +158,146 @@ defmodule Portal.Catalog.Ingestion do
           |> Enum.map(&Map.put(&1, :system_result_id, system_result.id))
           |> upsert_artifacts()
 
+        :ok = maybe_store_log(system_result, system_pkg, Map.get(logs, system_pkg))
+
         {:ok, system_result}
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # Read and sanitize every failed system's log BEFORE the transaction opens,
+  # for the same reason the artifact blobs are moved first: filesystem work does
+  # not belong on a held database connection. Doing it inline meant an ingest
+  # whose logs were slow to read spent that time holding a connection out of a
+  # pool sized for row writes.
+  #
+  # Logs are stored for failures only. Passing builds are 97% of the log bytes
+  # and almost none of the value; warnings from passing builds are phase 2 and
+  # are extracted per line rather than stored whole.
+  defp stage_logs(_systems, nil), do: %{}
+
+  defp stage_logs(systems, output_dir) do
+    systems
+    |> Enum.filter(fn {_system_pkg, sys} ->
+      Compatibility.Types.parse_status(sys["status"]) in [:fail, :error]
+    end)
+    |> Enum.flat_map(fn {system_pkg, _sys} ->
+      case stage_log(system_pkg, output_dir) do
+        {:ok, log} -> [{system_pkg, log}]
+        :skip -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp stage_log(system_pkg, output_dir) do
+    if traversal?(system_pkg) do
+      # `system_pkg` is a key from the worker's result.json, and /out is a
+      # read-write bind mount in a container that runs untrusted package code.
+      # Nothing today can steer this key, but the bytes at the path it builds
+      # become a publicly readable log body, so refuse a key that could name a
+      # path outside the logs dir. This check covers the *name* only; the file
+      # it resolves to is checked by `LogSanitizer.system_log_file/1`.
+      Logger.warning("Refusing to read a build log for suspicious system #{inspect(system_pkg)}")
+      :skip
+    else
+      path = Path.join([output_dir, "logs", "#{system_pkg}.log"])
+      read_log(path, system_pkg)
+    end
+  end
+
+  defp read_log(path, system_pkg) do
+    case LogSanitizer.system_log_file(path) do
+      {:ok, log} ->
+        {:ok, log}
+
+      {:error, {:not_regular, type}} ->
+        Logger.warning("Refusing a non-regular build log at #{path} (#{type})")
+        :skip
+
+      {:error, reason} ->
+        # Never fail an ingest over a log. A failed ingest burns an Oban attempt
+        # and, at exhaustion, throws away a completed multi-gigabyte build.
+        Logger.warning("No build log at #{path} for #{system_pkg}: #{inspect(reason)}")
+        :skip
+    end
+  end
+
+  defp traversal?(system_pkg) when is_binary(system_pkg),
+    do: String.contains?(system_pkg, ["/", "\\", ".."])
+
+  defp traversal?(_system_pkg), do: true
+
+  defp maybe_store_log(_system_result, _system_pkg, nil), do: :ok
+
+  defp maybe_store_log(system_result, system_pkg, sanitized),
+    do: insert_log(system_result, system_pkg, sanitized)
+
+  # A log must never fail an ingest: a failed ingest burns an Oban attempt and,
+  # at exhaustion, discards a completed multi-gigabyte build. This insert runs
+  # inside the ingest transaction, and in Postgres one failed statement aborts
+  # the whole transaction — every later statement is refused until it ends — so
+  # "never fail" needs more than an error branch.
+  #
+  # An ambient transaction is required, not optional: outside one, `SAVEPOINT`
+  # is itself an error, the `catch` below swallows it, and every log is silently
+  # dropped with a warning. The only caller is `create_system_result/6`, inside
+  # the transaction `ingest/2` opens.
+  #
+  # Nothing about the log's *content* can trigger that: the sanitizer guarantees
+  # valid UTF-8 with no NUL bytes and caps the body at 800 KB, and
+  # `system_result` was inserted moments ago, so the unique index cannot fire.
+  # Its *transport* can: a pool checkout timeout, a connection dropped over the
+  # ~80ms tailnet link to Postgres, or a statement timeout all abort the
+  # statement the same way. Hence the SAVEPOINT, which scopes the damage to this
+  # one row.
+  #
+  # Two details are measured rather than assumed. A nested `Repo.transaction/1`
+  # is *not* a savepoint — DBConnection runs a nested transaction on the same
+  # connection and only marks it failed until the outermost call rolls back, so
+  # with one the insert after a failed log still failed and the ingest still
+  # returned `{:error, :rollback}`. And Ash signals a data-layer error from
+  # inside a transaction by throwing `{DBConnection, ref, changeset}` rather
+  # than returning `{:error, reason}`, so the `catch` is what actually stops it.
+  defp insert_log(system_result, system_pkg, sanitized) do
+    try do
+      Repo.query!("SAVEPOINT #{@log_savepoint}")
+
+      case create_system_log(system_result, sanitized) do
+        {:ok, _log} ->
+          Repo.query!("RELEASE SAVEPOINT #{@log_savepoint}")
+
+        {:error, reason} ->
+          Logger.warning(
+            "Could not store the log for #{system_pkg}: #{inspect(reason, limit: 3)}"
+          )
+
+          Repo.query!("ROLLBACK TO SAVEPOINT #{@log_savepoint}")
+          Repo.query!("RELEASE SAVEPOINT #{@log_savepoint}")
+      end
+    catch
+      kind, reason ->
+        Logger.warning(
+          "Could not store the log for #{system_pkg}: #{inspect({kind, reason}, limit: 3)}"
+        )
+    end
+
+    :ok
+  end
+
+  defp create_system_log(system_result, sanitized) do
+    SystemLog
+    |> Ash.Changeset.for_create(:create, %{
+      system_result_id: system_result.id,
+      body: sanitized.body,
+      byte_size: sanitized.byte_size,
+      truncated: sanitized.truncated
+    })
+    |> Ash.create(domain: @domain)
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   # Move every content-addressed blob referenced by the manifests out of

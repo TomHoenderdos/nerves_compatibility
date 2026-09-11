@@ -221,6 +221,23 @@ defmodule Portal.Builder do
   end
 
   @doc """
+  Where a run's `runner.log` lives. The file may not exist.
+
+  Failure paths that never got a `build` map still want the log, and it is about
+  to be deleted along with the scratch dir. A path rather than the bytes: the
+  only consumer keeps the last 16 KB, and one of its callers is the crash path,
+  where what crashed the build is often a full disk. `LogSanitizer` reads the
+  tail it needs and nothing else.
+  """
+  @spec runner_log_path(String.t()) :: Path.t()
+  def runner_log_path(run_id) do
+    scratch_root()
+    |> Path.join(safe_name(run_id))
+    |> Path.join("out")
+    |> Path.join("runner.log")
+  end
+
+  @doc """
   Resolve the digest for a (usually local) image via `docker inspect`.
 
   Local images have no RepoDigest, so we fall back to the image Id. Returns a
@@ -565,10 +582,18 @@ defmodule Portal.Builder do
   # prefix guarantees a valid leading char.
   defp container_name(run_id), do: "ncc-#{safe_name(run_id)}"
 
-  defp log_command(args, log_file) do
+  defp log_command(args, log_file), do: File.write!(log_file, command_log_header(args))
+
+  @doc false
+  # Public only so `Portal.Catalog.LogSanitizer`'s tests can assert against the
+  # real header instead of a hand-copied one. The sanitizer strips this block
+  # before the excerpt reaches the public request page, and it carries the full
+  # docker argv and the host mount paths.
+  @spec command_log_header([String.t()]) :: String.t()
+  def command_log_header(args) do
     timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
 
-    header = """
+    """
     ================================================================================
     Portal.Builder - Docker Execution Log
     Started: #{timestamp}
@@ -576,8 +601,6 @@ defmodule Portal.Builder do
     ================================================================================
 
     """
-
-    File.write!(log_file, header)
   end
 
   defp run_docker(args, log_file, container_name) do

@@ -21,9 +21,15 @@ defmodule Portal.Workers.BuildTest do
       send(self(), :stub_build_called)
 
       # Portal.Builder creates the scratch dir before it runs docker, so a
-      # failure returned from here still leaves one on disk.
+      # failure returned from here still leaves one on disk — including the
+      # runner.log the failure paths read before cleanup.
       if root = Process.get(:stub_scratch_root) do
-        File.mkdir_p!(Path.join(root, args.run_id))
+        out = Path.join([root, args.run_id, "out"])
+        File.mkdir_p!(out)
+
+        if log = Process.get(:stub_runner_log) do
+          File.write!(Path.join(out, "runner.log"), log)
+        end
       end
 
       case Process.get(:stub_build_response) do
@@ -429,6 +435,134 @@ defmodule Portal.Workers.BuildTest do
       # increments `attempt` even though it preserves the retry budget.
       assert Build.backoff(%Oban.Job{attempt: 30, max_attempts: 3}) == 3600
       assert Build.backoff(%Oban.Job{attempt: 1, max_attempts: 3}) < 3600
+    end
+  end
+
+  describe "runner.log capture on failure" do
+    @header """
+    ================================================================================
+    Portal.Builder - Docker Execution Log
+    Started: 2026-09-10T08:00:00Z
+    Command: docker run --rm -v /var/lib/ncc/scratch/x:/work ncc-worker:local
+    ================================================================================
+
+    """
+
+    defp scratch_root_for_test do
+      root = Path.join(System.tmp_dir!(), "build-scratch-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      previous = Application.get_env(:portal, Portal.Builder, [])
+      Application.put_env(:portal, Portal.Builder, Keyword.put(previous, :scratch_root, root))
+      Process.put(:stub_scratch_root, root)
+
+      on_exit(fn ->
+        Application.put_env(:portal, Portal.Builder, previous)
+        File.rm_rf(root)
+      end)
+
+      root
+    end
+
+    defp perform_final_attempt(request) do
+      Build.perform(%Oban.Job{
+        args: %{
+          "package" => "jason",
+          "version" => "1.0.0",
+          "scan_request_id" => request.id
+        },
+        attempt: 5,
+        max_attempts: 5
+      })
+    end
+
+    test "a worker-exit failure stores the sanitized excerpt from the build map" do
+      {:ok, request} =
+        ScanRequests.create_once(%{package_name: "jason", source: :hex_owner, status: :accepted})
+
+      scratch_root_for_test()
+
+      set_response(
+        {:ok,
+         %{
+           exit_code: 10,
+           result: nil,
+           files_dir: "/nonexistent",
+           output_dir: "/nonexistent",
+           log: @header <> "== Compilation error in file lib/x.ex ==\n"
+         }}
+      )
+
+      capture_log(fn -> perform_final_attempt(request) end)
+
+      {:ok, reloaded} = ScanRequests.get_request(request.id)
+
+      assert reloaded.status == :error
+      assert reloaded.error_log =~ "Compilation error"
+      refute reloaded.error_log =~ "docker run"
+      refute reloaded.error_log =~ "/var/lib/ncc/scratch"
+    end
+
+    test "a builder error reads runner.log off disk before cleanup" do
+      {:ok, request} =
+        ScanRequests.create_once(%{package_name: "jason", source: :hex_owner, status: :accepted})
+
+      root = scratch_root_for_test()
+      Process.put(:stub_runner_log, @header <> "docker: daemon not running\n")
+      set_response({:error, :docker_unavailable})
+
+      capture_log(fn -> perform_final_attempt(request) end)
+
+      {:ok, reloaded} = ScanRequests.get_request(request.id)
+
+      assert reloaded.status == :error
+      assert reloaded.error_log =~ "daemon not running"
+      refute reloaded.error_log =~ "docker run --rm"
+      # Read happened before cleanup, and cleanup still ran.
+      assert File.ls!(root) == []
+    end
+
+    test "a crash reads runner.log before cleanup" do
+      {:ok, request} =
+        ScanRequests.create_once(%{package_name: "jason", source: :hex_owner, status: :accepted})
+
+      root = scratch_root_for_test()
+      Process.put(:stub_runner_log, @header <> "** (File.Error) :enospc\n")
+      set_response({:raise, %RuntimeError{message: "boom"}})
+
+      capture_log(fn ->
+        assert_raise RuntimeError, fn -> perform_final_attempt(request) end
+      end)
+
+      {:ok, reloaded} = ScanRequests.get_request(request.id)
+
+      assert reloaded.status == :error
+      assert reloaded.error_log =~ ":enospc"
+      assert File.ls!(root) == []
+    end
+
+    test "exit 0 with no result.json stores the excerpt and marks the request" do
+      {:ok, request} =
+        ScanRequests.create_once(%{package_name: "jason", source: :hex_owner, status: :accepted})
+
+      scratch_root_for_test()
+
+      set_response(
+        {:ok,
+         %{
+           exit_code: 0,
+           result: nil,
+           files_dir: "/nonexistent",
+           output_dir: "/nonexistent",
+           log: @header <> "worker exited without writing result.json\n"
+         }}
+      )
+
+      capture_log(fn -> perform_final_attempt(request) end)
+
+      {:ok, reloaded} = ScanRequests.get_request(request.id)
+
+      assert reloaded.status == :error
+      assert reloaded.error_log =~ "without writing result.json"
     end
   end
 end
