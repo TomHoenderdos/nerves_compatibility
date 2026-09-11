@@ -3,11 +3,19 @@ defmodule PortalWeb.PackageLive do
 
   alias Portal.Catalog
 
+  # Both snippets and the on-page <img> must agree: this is the text that ends
+  # up in someone else's README, where a broken badge shows the alt and nothing
+  # else.
+  @badge_alt "Nerves compatibility"
+
   @impl true
   def mount(%{"name" => name}, _session, socket) do
     case Catalog.latest_by_pkg_json(name) do
       %{packages: %{^name => package}} ->
         systems = systems(package)
+        base = PortalWeb.Endpoint.url()
+        badge_url = "#{base}/badge/#{name}.svg"
+        page_url = "#{base}/packages/#{name}"
 
         {:ok,
          socket
@@ -15,7 +23,16 @@ defmodule PortalWeb.PackageLive do
          |> assign(:page_description, describe(name, package, systems))
          |> assign(:name, name)
          |> assign(:package, package)
-         |> assign(:systems, systems)}
+         |> assign(:systems, systems)
+         |> assign(:badge_alt, @badge_alt)
+         |> assign(:hex_url, "https://hex.pm/packages/#{name}")
+         |> assign(:docs_url, "https://hexdocs.pm/#{name}")
+         |> assign(:badge_url, badge_url)
+         |> assign(:badge_markdown, "[![#{@badge_alt}](#{badge_url})](#{page_url})")
+         |> assign(
+           :badge_html,
+           ~s(<a href="#{page_url}"><img src="#{badge_url}" alt="#{@badge_alt}"></a>)
+         )}
 
       _ ->
         {:ok,
@@ -40,9 +57,20 @@ defmodule PortalWeb.PackageLive do
         <PortalWeb.UI.page_header title={@name}>
           <:subtitle>{@package.description || "No description"}</:subtitle>
           <:actions>
-            <img src={"/badge/#{@name}.svg"} alt={"#{@name} Nerves compatibility badge"} class="h-6" />
+            <img src={@badge_url} alt={"#{@name} #{@badge_alt} badge"} class="h-6" />
           </:actions>
         </PortalWeb.UI.page_header>
+
+        <%!--
+        Both URLs are derived from the package name rather than stored, because
+        hex.pm and hexdocs.pm both mint them that way for every published
+        package. `rel="noopener"` on `target="_blank"`: without it the opened tab
+        gets a live `window.opener` handle back to this one.
+        --%>
+        <div class="flex flex-wrap items-center gap-2">
+          <.upstream_link href={@hex_url} label="Hex" />
+          <.upstream_link href={@docs_url} label="Docs" />
+        </div>
 
         <div class="grid gap-3 sm:grid-cols-3">
           <PortalWeb.UI.stat_card label="Latest version" value={@package.latest_version || "unknown"} />
@@ -87,8 +115,101 @@ defmodule PortalWeb.PackageLive do
             </tbody>
           </table>
         </div>
+
+        <div class="space-y-4 rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm">
+          <div>
+            <h2 class="text-sm font-semibold text-base-content">Add this badge to your README</h2>
+            <p class="mt-1 text-sm text-base-content/60">
+              It updates itself as {@name} is rebuilt against each Nerves system.
+            </p>
+          </div>
+
+          <img src={@badge_url} alt={"#{@name} #{@badge_alt} badge"} class="h-6" />
+
+          <.badge_snippet label="Markdown" snippet={@badge_markdown} />
+          <.badge_snippet label="HTML" snippet={@badge_html} />
+        </div>
       </section>
     </Layouts.app>
+    """
+  end
+
+  attr :href, :string, required: true
+  attr :label, :string, required: true
+
+  defp upstream_link(assigns) do
+    ~H"""
+    <a
+      href={@href}
+      target="_blank"
+      rel="noopener"
+      class="inline-flex items-center gap-1.5 rounded-lg border border-base-300 bg-base-100 px-3 py-1.5 text-sm font-medium text-base-content/70 transition hover:border-primary hover:text-primary"
+    >
+      {@label}
+      <.icon name="hero-arrow-top-right-on-square-mini" class="size-3.5" />
+    </a>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :snippet, :string, required: true
+
+  defp badge_snippet(assigns) do
+    ~H"""
+    <div class="space-y-1.5">
+      <div class="flex items-center justify-between gap-3">
+        <span class="text-xs font-medium uppercase tracking-wide text-base-content/50">
+          {@label}
+        </span>
+        <button
+          type="button"
+          phx-hook=".CopyToClipboard"
+          id={"copy-#{String.downcase(@label)}"}
+          data-copy={@snippet}
+          class="inline-flex items-center gap-1.5 rounded-lg border border-base-300 px-2.5 py-1 text-xs font-medium text-base-content/70 transition hover:border-primary hover:text-primary"
+        >
+          <span data-copy-label>Copy</span>
+        </button>
+      </div>
+      <%!--
+      `readonly` rather than a <pre>: it keeps the text selectable and
+      keyboard-copyable for anyone the clipboard hook cannot serve -- no JS, an
+      insecure context, or a denied clipboard permission.
+      --%>
+      <input
+        type="text"
+        readonly
+        value={@snippet}
+        onclick="this.select()"
+        class="w-full rounded-lg border border-base-300 bg-base-200/50 px-3 py-2 font-mono text-xs text-base-content/80 outline-none focus:border-primary"
+      />
+    </div>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyToClipboard">
+      export default {
+        mounted() {
+          const label = this.el.querySelector("[data-copy-label]")
+          const original = label.textContent
+
+          this.el.addEventListener("click", async () => {
+            try {
+              await navigator.clipboard.writeText(this.el.dataset.copy)
+              label.textContent = "Copied"
+            } catch {
+              // Insecure context, or the user denied clipboard access. The
+              // input beside the button is still selectable, so say what to do
+              // rather than failing silently.
+              label.textContent = "Select and copy"
+            }
+            clearTimeout(this.resetTimer)
+            this.resetTimer = setTimeout(() => (label.textContent = original), 2000)
+          })
+        },
+        destroyed() {
+          clearTimeout(this.resetTimer)
+        }
+      }
+    </script>
     """
   end
 
