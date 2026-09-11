@@ -9,6 +9,7 @@ defmodule PortalWeb.DashboardLive do
 
     {:ok,
      socket
+     |> assign(:page_title, "Dashboard")
      |> assign(:counts, data.counts)
      |> assign(:clusters, data.clusters)
      |> assign(:native, data.native)

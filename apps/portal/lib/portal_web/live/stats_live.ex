@@ -10,6 +10,7 @@ defmodule PortalWeb.StatsLive do
 
     {:ok,
      socket
+     |> assign(:page_title, "Stats")
      |> assign(:counts, Catalog.package_status_counts())
      |> assign(:by_system, by_system_rows(stats))
      |> assign(:last_run, stats[:last_run_finished_at])}

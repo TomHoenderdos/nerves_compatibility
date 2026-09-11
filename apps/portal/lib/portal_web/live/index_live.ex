@@ -19,6 +19,7 @@ defmodule PortalWeb.IndexLive do
          if entry.placeholder?, do: "placeholder-#{entry.name}", else: "package-#{entry.name}"
        end
      )
+     |> assign(:page_title, "Packages")
      |> search("")}
   end
 

@@ -9,6 +9,7 @@ defmodule PortalWeb.PackageLive do
       %{packages: %{^name => package}} ->
         {:ok,
          socket
+         |> assign(:page_title, name)
          |> assign(:name, name)
          |> assign(:package, package)
          |> assign(:systems, systems(package))}
