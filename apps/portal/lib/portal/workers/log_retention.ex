@@ -3,11 +3,19 @@ defmodule Portal.Workers.LogRetention do
   Oban worker (queue `:maintenance`) that keeps stored build logs inside a
   fixed budget.
 
-  The portal's database is capacity-limited, not disk-limited: it lives on a
-  1 GB managed Postgres that was already at 82% before a single build log was
-  stored. Every rule below exists because the log tables are the one part of
-  the schema whose growth is driven by third-party build output rather than by
-  the size of the package index.
+  The log tables are the one part of the schema whose growth is driven by
+  third-party build output rather than by the size of the package index: a bad
+  week of failing builds across ~2500 packages can store tens of gigabytes
+  without anyone having decided to. Every rule below bounds that.
+
+  What this is *not* is a capacity emergency. Production Postgres is a
+  self-hosted container on a 244 GB disk with 155 GB free (2026-09-11), shared
+  with unrelated apps — `autosift_prod` alone is 23 GB against `portal_prod`'s
+  1.0 GB. An earlier version of this docstring called it "a 1 GB managed
+  Postgres already at 82%"; that was a misread of `catalog_system_results`'
+  share *of the database* (843 MB of 1024 MB) as utilisation of a quota. No
+  quota exists, here or upstream, so the budget below is a policy choice about
+  unbounded third-party output rather than a ceiling someone else imposed.
 
   Three rules, cheapest first:
 
@@ -19,8 +27,8 @@ defmodule Portal.Workers.LogRetention do
 
     * **The byte budget.** Reachability alone is not a bound. A package that
       fails on all fourteen Nerves systems stores fourteen logs, and there are
-      ~2500 packages; the worst case is tens of gigabytes inside a one-gigabyte
-      database. When the total exceeds the budget the oldest logs go first, so
+      ~2500 packages; the worst case is tens of gigabytes of build output nobody
+      asked for. When the total exceeds the budget the oldest logs go first, so
       the recently-built packages — the ones somebody is actually looking at —
       keep theirs. `PortalWeb.LogLive` already redirects with a flash when a log
       is missing, which is exactly what a reader of an evicted log sees.
@@ -60,10 +68,15 @@ defmodule Portal.Workers.LogRetention do
 
   alias Portal.Repo
 
-  # Sized against the production database rather than against taste: 1 GB total,
-  # of which `catalog_system_results` already holds 843 MB. Clearing the passing
-  # runs' `runner.log` frees roughly 100 MB, and this spends most of it.
-  @default_budget_bytes 128 * 1024 * 1024
+  # A policy choice, not a ceiling — see the moduledoc; nothing caps this
+  # database. What the number decides is how much build-log history the viewer
+  # keeps, so it is a product question, not a capacity one.
+  #
+  # 2 GB at up to 800 KB a log is roughly 2,600 logs, against the ~160 a 128 MB
+  # budget held. It is 1.3% of the 155 GB free on the host and still two orders
+  # of magnitude below the tens-of-gigabytes worst case, so it bounds the growth
+  # that actually matters without evicting logs a user might still want to read.
+  @default_budget_bytes 2 * 1024 * 1024 * 1024
 
   @type tally :: %{count: non_neg_integer(), bytes: non_neg_integer()}
   @type report :: %{unreachable: tally(), over_budget: tally(), run_logs: tally()}
