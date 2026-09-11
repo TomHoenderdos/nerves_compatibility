@@ -289,6 +289,8 @@ defmodule PortalWeb.PageController do
 
     render(conn, :request_scan,
       page_title: "Request a scan",
+      page_description:
+        "Request a Nerves compatibility build for any Hex package and watch it run.",
       package: Keyword.get(assigns, :package, ""),
       packages: Keyword.get(assigns, :packages, []),
       hex_flow: Keyword.get(assigns, :hex_flow),
@@ -304,6 +306,11 @@ defmodule PortalWeb.PageController do
   defp render_auth(conn, template, assigns) do
     render(conn, template,
       page_title: if(template == :register, do: "Create an account", else: "Sign in"),
+      page_description:
+        if(template == :register,
+          do: "Create an account to request Nerves compatibility builds.",
+          else: "Sign in to request Nerves compatibility builds."
+        ),
       username: Keyword.get(assigns, :username, ""),
       current_user: current_user(conn)
     )
@@ -312,6 +319,7 @@ defmodule PortalWeb.PageController do
   defp render_settings(conn, user) do
     render(conn, :settings,
       page_title: "Settings",
+      page_description: "Account settings.",
       current_user: user,
       username: user.username
     )
@@ -356,6 +364,7 @@ defmodule PortalWeb.PageController do
   defp render_admin(conn, user) do
     render(conn, :admin,
       page_title: "Admin",
+      page_description: "Administration.",
       current_user: user,
       pending_anonymous_requests: Portal.ScanRequests.pending_anonymous_requests(),
       queue_requests: Portal.ScanRequests.queue_requests()
