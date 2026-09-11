@@ -12,6 +12,7 @@ defmodule Portal.Catalog do
   require Ash.Query
 
   alias Portal.Catalog.{Artifact, Package, PackageOverride, Run, SystemLog, SystemResult}
+  alias Portal.Repo
 
   @statuses ~w(pass fail error skipped unknown)
 
@@ -21,12 +22,18 @@ defmodule Portal.Catalog do
   # dashboard renders reads either. Loading them anyway decoded ~300 MB of blob
   # into the heap on every call, several calls per render, which is what made a
   # single page load cost gigabytes and run the node out of memory.
+  # Deliberately no `:log_tail`. The dashboard reads the system results of the
+  # latest run of every package — 9,187 rows in production as of 2026-09-10,
+  # carrying 29 MB of log tails that Postgres serialized and the node decoded
+  # into binaries on every render, so that `sample_log/1` could keep one of
+  # them per failure cluster. The id is carried instead, and the sample is
+  # fetched by id at the end.
   @annotated_fields [
+    :id,
     :run_id,
     :system_pkg,
     :status,
     :failure_category,
-    :log_tail,
     :hex_version_tested
   ]
   @stats_fields [:system_pkg, :system_version, :status]
@@ -267,7 +274,11 @@ defmodule Portal.Catalog do
   @doc false
   def recent_runs(status, limit, runs) do
     wanted = if status == :pass, do: [:pass], else: [:fail, :error]
-    pkgs = Package |> Ash.read!(domain: __MODULE__) |> Map.new(&{&1.id, &1})
+    # Two columns, not the row. `dashboard/2` calls this twice, so the full
+    # read happened twice per render for a map that is only ever asked for a
+    # name — and `catalog_packages` carries a description and a
+    # `native_components` jsonb blob that nothing here looks at.
+    pkgs = package_names() |> Map.new(&{&1.id, &1.name})
 
     runs
     |> Enum.filter(&(&1.overall_status in wanted and not is_nil(&1.finished_at)))
@@ -280,7 +291,7 @@ defmodule Portal.Catalog do
     |> Enum.take(limit)
     |> Enum.map(fn run ->
       %{
-        package: pkgs[run.package_id] && pkgs[run.package_id].name,
+        package: pkgs[run.package_id],
         version: run.version_tested,
         finished_at: run.finished_at,
         overall_status: run.overall_status
@@ -366,20 +377,42 @@ defmodule Portal.Catalog do
   end
 
   # Shortest non-empty log_tail in the cluster, last 40 lines.
+  #
+  # One row, chosen by Postgres. This used to fold over the log tails already
+  # loaded on every annotated row, which meant the dashboard paid for ~35,000
+  # of them to render at most ten. Sorting by length in the database sends one.
+  #
+  # Raw SQL because Ash has no first-class sort over `octet_length/1`, and
+  # `octet_length` rather than `String.length/1` because the two only disagree
+  # on multi-byte input, where the byte count is the better proxy for "least
+  # log to read" anyway.
+  defp sample_log([]), do: nil
+
   defp sample_log(rows) do
-    rows
-    |> Enum.map(& &1.log_tail)
-    |> Enum.reject(&(is_nil(&1) or &1 == ""))
-    |> Enum.min_by(&String.length/1, fn -> nil end)
-    |> case do
-      nil -> nil
-      log -> log |> String.split("\n") |> Enum.take(-40) |> Enum.join("\n")
+    ids = Enum.map(rows, &Ecto.UUID.dump!(&1.id))
+
+    %{rows: found} =
+      Repo.query!(
+        """
+        SELECT log_tail
+        FROM catalog_system_results
+        WHERE id = ANY($1) AND log_tail IS NOT NULL AND log_tail <> ''
+        ORDER BY octet_length(log_tail) ASC
+        LIMIT 1
+        """,
+        [ids]
+      )
+
+    case found do
+      [[log]] -> log |> String.split("\n") |> Enum.take(-40) |> Enum.join("\n")
+      [] -> nil
     end
   end
 
   @doc "Packages grouped by native implementation language (NIF + ports), plus a pure-Elixir bucket."
   def native_breakdown do
     Package
+    |> Ash.Query.select([:name, :native_components])
     |> Ash.read!(domain: __MODULE__)
     |> Enum.flat_map(fn pkg ->
       nc = pkg.native_components || %{}
@@ -405,6 +438,17 @@ defmodule Portal.Catalog do
   defp packages(name) do
     Package
     |> Ash.Query.filter(name == ^name)
+    |> Ash.read!(domain: __MODULE__)
+  end
+
+  # Two columns of the whole table, for the callers that only need to label a
+  # run with a package name. `packages(nil)` above stays wide because
+  # `latest_by_pkg_json/1` renders the full package row through
+  # `package_json/3`.
+  defp package_names do
+    Package
+    |> Ash.Query.select([:id, :name])
+    |> Ash.Query.sort(name: :asc)
     |> Ash.read!(domain: __MODULE__)
   end
 
@@ -592,7 +636,7 @@ defmodule Portal.Catalog do
 
   # Latest system results across all packages, annotated with the package name.
   defp latest_annotated_systems do
-    packages = packages(nil)
+    packages = package_names()
     runs = latest_runs(packages)
 
     run_to_pkg =
@@ -613,7 +657,7 @@ defmodule Portal.Catalog do
         system_pkg: sr.system_pkg,
         status: sr.status,
         failure_category: sr.failure_category,
-        log_tail: sr.log_tail,
+        id: sr.id,
         version: sr.hex_version_tested,
         nif_language: nil
       }
