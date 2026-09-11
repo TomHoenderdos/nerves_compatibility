@@ -15,6 +15,9 @@ defmodule Portal.Builder do
 
   require Logger
 
+  # See `read_log/1`.
+  @log_tail_bytes 1024 * 1024
+
   @total_timeout_ms :timer.hours(2)
   @zero_digest "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -218,6 +221,23 @@ defmodule Portal.Builder do
   def cleanup(run_id) do
     _ = File.rm_rf(Path.join(scratch_root(), safe_name(run_id)))
     :ok
+  end
+
+  @doc """
+  Where a run's `runner.log` lives. The file may not exist.
+
+  Failure paths that never got a `build` map still want the log, and it is about
+  to be deleted along with the scratch dir. A path rather than the bytes: the
+  only consumer keeps the last 16 KB, and one of its callers is the crash path,
+  where what crashed the build is often a full disk. `LogSanitizer` reads the
+  tail it needs and nothing else.
+  """
+  @spec runner_log_path(String.t()) :: Path.t()
+  def runner_log_path(run_id) do
+    scratch_root()
+    |> Path.join(safe_name(run_id))
+    |> Path.join("out")
+    |> Path.join("runner.log")
   end
 
   @doc """
@@ -565,10 +585,18 @@ defmodule Portal.Builder do
   # prefix guarantees a valid leading char.
   defp container_name(run_id), do: "ncc-#{safe_name(run_id)}"
 
-  defp log_command(args, log_file) do
+  defp log_command(args, log_file), do: File.write!(log_file, command_log_header(args))
+
+  @doc false
+  # Public only so `Portal.Catalog.LogSanitizer`'s tests can assert against the
+  # real header instead of a hand-copied one. The sanitizer strips this block
+  # before the excerpt reaches the public request page, and it carries the full
+  # docker argv and the host mount paths.
+  @spec command_log_header([String.t()]) :: String.t()
+  def command_log_header(args) do
     timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
 
-    header = """
+    """
     ================================================================================
     Portal.Builder - Docker Execution Log
     Started: #{timestamp}
@@ -576,8 +604,6 @@ defmodule Portal.Builder do
     ================================================================================
 
     """
-
-    File.write!(log_file, header)
   end
 
   defp run_docker(args, log_file, container_name) do
@@ -659,9 +685,36 @@ defmodule Portal.Builder do
     end
   end
 
+  # The tail, never the whole file. This runs on the ingest path, where the only
+  # two consumers are a 16 KB sanitized excerpt and a `catalog_runs.log` column
+  # nothing in the app reads — and `runner.log` is written by streaming docker's
+  # output, so its size is decided by a third-party build rather than by us. A
+  # package stuck in a retry loop can emit gigabytes; `File.read/1` allocated
+  # every byte of that inside the ingest transaction, three at a time on
+  # `ingest:3`, only for both consumers to throw nearly all of it away.
+  #
+  # 1 MB is far above any honest log — production averages ~41 KB per run — and
+  # it is the end that matters: whatever killed the runner is the last thing it
+  # printed.
+  #
+  # `lstat` before opening, so the file is refused rather than followed if it is
+  # a symlink. `/out` is a read-write bind mount and the container runs as the
+  # invoking host user, so package code can leave `runner.log` pointing at any
+  # file that user can read.
   defp read_log(log_file) do
-    case File.read(log_file) do
-      {:ok, content} -> content
+    with {:ok, %File.Stat{type: :regular, size: size}} <- File.lstat(log_file),
+         {:ok, fd} <- :file.open(log_file, [:read, :binary, :raw]) do
+      try do
+        offset = max(size - @log_tail_bytes, 0)
+
+        case :file.pread(fd, offset, min(size, @log_tail_bytes)) do
+          {:ok, content} -> content
+          _ -> ""
+        end
+      after
+        :file.close(fd)
+      end
+    else
       _ -> ""
     end
   end

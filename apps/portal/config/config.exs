@@ -56,8 +56,26 @@ config :portal, Oban,
     # the row it inserts carries `Sweep`'s own `:ingest` queue — which only the
     # build host runs — so it executes on the machine that actually has the
     # disks, whichever node holds leadership.
-    {Oban.Plugins.Cron, crontab: [{"23 * * * *", Portal.Workers.Sweep}]}
+    {Oban.Plugins.Cron,
+     crontab: [
+       {"23 * * * *", Portal.Workers.Sweep},
+       # Daily, well off the hour and off the sweep. Retention deletes rows
+       # rather than files, so it carries `:maintenance` — the web host's queue
+       # — while `Sweep` carries `:ingest` to land on the machine with the
+       # disks. Once a day is often enough: the budget is sized with a day of
+       # slack in it, and the deletes take an exclusive lock on rows a page may
+       # be reading.
+       {"41 3 * * *", Portal.Workers.LogRetention}
+     ]}
   ]
+
+# How many bytes of stored per-system build logs the database may hold.
+# Runtime-overridable in config/runtime.exs (NCC_LOG_BUDGET_MB).
+#
+# The managed Postgres is 1 GB and `catalog_system_results` alone is 843 MB, so
+# this is a real ceiling rather than a formality: without it, a bad week of
+# failing builds across ~2500 packages could store tens of gigabytes of logs.
+config :portal, Portal.Workers.LogRetention, budget_bytes: 128 * 1024 * 1024
 
 # Host-side Docker invocation for worker builds.
 # Runtime-overridable in config/runtime.exs.

@@ -50,6 +50,65 @@ defmodule Portal.BuilderTest do
     refute Enum.any?(args(), &String.starts_with?(&1, "MAKEFLAGS="))
   end
 
+  describe "load_run/1 log reading" do
+    # `read_log/1` is private; `load_run/1` is the reachable path through it,
+    # and it is the path that runs on `ingest:3` for every finished build.
+    defp seed_run do
+      root = Path.join(System.tmp_dir!(), "builder-log-#{System.unique_integer([:positive])}")
+      run_id = "pkg-1.0.0-#{System.unique_integer([:positive])}"
+      out = Path.join([root, run_id, "out"])
+      File.mkdir_p!(out)
+      File.write!(Path.join(out, "result.json"), ~s({"package":{"name":"pkg"}}))
+      on_exit(fn -> File.rm_rf(root) end)
+      {root, run_id, out}
+    end
+
+    test "reads a small runner.log whole", %{previous: previous} do
+      {root, run_id, out} = seed_run()
+      put_builder([scratch_root: root], previous)
+      File.write!(Path.join(out, "runner.log"), "short log\n")
+
+      assert {:ok, %{log: "short log\n"}} = Builder.load_run(run_id)
+    end
+
+    test "reads only the tail of a runner.log larger than the cap", %{previous: previous} do
+      # A build stuck in a retry loop can emit gigabytes into this file, and
+      # both consumers — a 16 KB sanitized excerpt and a column nothing reads —
+      # throw away all but the end of it. Reading it whole allocated every byte
+      # inside the ingest transaction.
+      {root, run_id, out} = seed_run()
+      put_builder([scratch_root: root], previous)
+
+      head = String.duplicate("x", 2 * 1024 * 1024)
+      File.write!(Path.join(out, "runner.log"), head <> "the end\n")
+
+      assert {:ok, %{log: log}} = Builder.load_run(run_id)
+      assert byte_size(log) == 1024 * 1024
+      assert String.ends_with?(log, "the end\n")
+    end
+
+    test "a runner.log that is a symlink reads as empty", %{previous: previous} do
+      # `/out` is a read-write bind mount the container writes as the invoking
+      # host user, so package code can point `runner.log` at any file that user
+      # can read.
+      {root, run_id, out} = seed_run()
+      put_builder([scratch_root: root], previous)
+
+      secret = Path.join(root, "secret")
+      File.write!(secret, "AWS_SECRET_ACCESS_KEY=hunter2")
+      File.ln_s!(secret, Path.join(out, "runner.log"))
+
+      assert {:ok, %{log: ""}} = Builder.load_run(run_id)
+    end
+
+    test "a missing runner.log reads as empty", %{previous: previous} do
+      {root, run_id, _out} = seed_run()
+      put_builder([scratch_root: root], previous)
+
+      assert {:ok, %{log: ""}} = Builder.load_run(run_id)
+    end
+  end
+
   describe "free-space preflight" do
     test "refuses to start a build when the scratch filesystem is nearly full", %{
       previous: previous

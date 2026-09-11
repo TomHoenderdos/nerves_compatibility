@@ -33,6 +33,7 @@ defmodule PortalWeb.Router do
       live "/", DashboardLive, :index
       live "/packages", IndexLive, :index
       live "/packages/:name", PackageLive, :show
+      live "/packages/:name/log/:system", LogLive, :show
       live "/requests/:id", RequestLive, :show
       live "/failure_clusters", FailureClustersLive, :index
       # /warnings stays unrouted: WarningsLive is a placeholder that renders
@@ -60,6 +61,15 @@ defmodule PortalWeb.Router do
     get "/auth/github/complete", PageController, :request_scan
     post "/auth/github/complete", PageController, :github_complete
     post "/requests/anonymous", PageController, :anonymous_request
+  end
+
+  # No pipeline on purpose. `:browser` starts with `plug :accepts, ["html"]`,
+  # which would 406 a crawler that asks for `application/xml`, and neither
+  # response needs a session, flash or CSRF token. `robots.txt` moved out of
+  # `PortalWeb.static_paths/0` to get here — see `SitemapController`.
+  scope "/", PortalWeb do
+    get "/sitemap.xml", SitemapController, :index
+    get "/robots.txt", SitemapController, :robots
   end
 
   scope "/", PortalWeb do
