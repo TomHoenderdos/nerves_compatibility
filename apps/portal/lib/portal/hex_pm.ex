@@ -123,6 +123,95 @@ defmodule Portal.HexPm do
 
   def latest_version(_package_name), do: {:error, :unknown_package}
 
+  # A package's `meta.links` is a free-form map the package author writes in
+  # their own mix.exs, and it arrives here as whatever they put there. Both
+  # halves of that are load-bearing:
+  #
+  #   * the values become `href`s on a public page, so a `javascript:` or
+  #     `data:` URL would be a stored XSS delivered through hex.pm
+  #   * there is no size limit upstream, so the caps below are what stop one
+  #     package from writing an unbounded blob into every row of our table
+  @max_links 20
+  @max_link_label 60
+  @max_url_bytes 300
+  @max_owners 25
+
+  @doc """
+  Public metadata for one package: its author-declared links and its owners.
+
+  Only the pieces this site renders, and deliberately not everything hex.pm
+  returns. `GET /api/packages/<name>` includes an `email` for every owner;
+  those are dropped here, at the boundary, so no caller can persist or display
+  one by accident. Only `username` leaves this function.
+
+  Links are filtered to absolute `http`/`https` URLs -- see the comment above.
+  """
+  @spec package_metadata(String.t()) ::
+          {:ok, %{links: %{String.t() => String.t()}, owners: [String.t()]}} | {:error, term()}
+  def package_metadata(package_name) when is_binary(package_name) do
+    case Req.get("#{@api_url}/packages/#{package_name}") do
+      {:ok, %{status: 200, body: package}} when is_map(package) ->
+        {:ok, metadata_from_body(package)}
+
+      {:ok, %{status: 404}} ->
+        {:error, :unknown_package}
+
+      {:ok, %{status: status, body: body}} ->
+        Logger.warning("Hex package metadata failed: HTTP #{status} #{inspect(body)}")
+        {:error, :hex_api_unavailable}
+
+      {:error, reason} ->
+        Logger.warning("Hex package metadata failed: #{inspect(reason)}")
+        {:error, :hex_api_unavailable}
+    end
+  end
+
+  def package_metadata(_package_name), do: {:error, :unknown_package}
+
+  @doc """
+  The metadata boundary itself, split out from the request so it can be tested
+  without one. Takes a decoded `GET /api/packages/<name>` body.
+  """
+  @spec metadata_from_body(map()) :: %{links: %{String.t() => String.t()}, owners: [String.t()]}
+  def metadata_from_body(package) when is_map(package) do
+    %{
+      links: sane_links(get_in(package, ["meta", "links"])),
+      owners:
+        package
+        |> Map.get("owners")
+        |> List.wrap()
+        |> Enum.flat_map(&owner_username/1)
+        |> Enum.uniq()
+        |> Enum.take(@max_owners)
+    }
+  end
+
+  def metadata_from_body(_package), do: %{links: %{}, owners: []}
+
+  defp sane_links(links) when is_map(links) do
+    links
+    |> Enum.filter(fn {label, url} -> is_binary(label) and label != "" and http_url?(url) end)
+    |> Enum.map(fn {label, url} -> {String.slice(label, 0, @max_link_label), url} end)
+    |> Enum.sort()
+    |> Enum.take(@max_links)
+    |> Map.new()
+  end
+
+  defp sane_links(_), do: %{}
+
+  defp http_url?(url) when is_binary(url) do
+    byte_size(url) <= @max_url_bytes and
+      case URI.new(url) do
+        {:ok, %URI{scheme: scheme, host: host}} ->
+          scheme in ["http", "https"] and is_binary(host) and host != ""
+
+        _ ->
+          false
+      end
+  end
+
+  defp http_url?(_), do: false
+
   defp poll_device_flow(device_code) when is_binary(device_code) do
     body =
       URI.encode_query(%{
