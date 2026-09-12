@@ -84,4 +84,30 @@ defmodule Portal.Catalog.DashboardQueriesTest do
     assert Enum.find(recent, &(&1.package == "repeat")).version == "1.0.2"
     assert Enum.any?(recent, &(&1.package == "other"))
   end
+
+  # A skipped package still has to carry one system entry, so the worker writes
+  # the synthetic `forced@admin@unknown`. It is not a Nerves system and cannot
+  # pass, so it has no place in a per-system pass rate -- in production it was
+  # 279 rows of permanent 0%.
+  test "the synthetic forced bucket is not a system" do
+    ingest(
+      "skipper",
+      "1.0.0",
+      %{"forced@admin@unknown" => %{"status" => "skipped"}},
+      nil,
+      "2026-07-04T10:00:00Z"
+    )
+
+    ingest(
+      "builder",
+      "1.0.0",
+      %{"nerves_system_rpi0" => %{"status" => "pass"}},
+      nil,
+      "2026-07-04T11:00:00Z"
+    )
+
+    rates = Catalog.pass_rate_per_system()
+
+    assert Enum.map(rates, & &1.system_pkg) == ["nerves_system_rpi0"]
+  end
 end
