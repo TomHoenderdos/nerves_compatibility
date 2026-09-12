@@ -99,6 +99,27 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert body =~ "2/3 passing"
   end
 
+  # The badge is embedded in other people's READMEs, so it is fetched once per
+  # reader of those pages rather than by a client polling for fresh data. The
+  # JSON endpoints keep their minute; this one is pinned separately because the
+  # two have opposite traffic shapes and a shared helper would silently couple
+  # them.
+  test "GET /badge/:name.svg is cached for an hour, not a minute", %{conn: conn} do
+    ingest_fixture()
+
+    conn = get(conn, "/badge/jason.svg")
+
+    assert ["public, max-age=3600" <> _] = get_resp_header(conn, "cache-control")
+  end
+
+  test "the JSON API is still cached by the minute", %{conn: conn} do
+    ingest_fixture()
+
+    conn = get(conn, "/api/packages/jason")
+
+    assert ["public, max-age=60"] = get_resp_header(conn, "cache-control")
+  end
+
   test "GET /api/precompiled/manifests/:package.json returns precompiled manifest", %{conn: conn} do
     sha = ingest_fixture_with_artifact()
 

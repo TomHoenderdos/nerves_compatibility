@@ -51,4 +51,101 @@ defmodule PortalWeb.CatalogLiveTest do
     assert html =~ "pass"
     assert html =~ "45678901"
   end
+
+  describe "upstream links" do
+    setup do
+      ingest_fixture()
+      :ok
+    end
+
+    test "the page links to the package on Hex and HexDocs", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/packages/jason")
+
+      assert has_element?(view, ~s(a[href="https://hex.pm/packages/jason"]))
+      assert has_element?(view, ~s(a[href="https://hexdocs.pm/jason"]))
+    end
+
+    # `target="_blank"` without `rel="noopener"` hands the opened tab a live
+    # `window.opener` handle back to this one. Both links are external, so this
+    # is asserted rather than assumed.
+    test "every link that opens a new tab severs the opener handle", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/packages/jason")
+
+      blank_tags = Regex.scan(~r/<a[^>]*target="_blank"[^>]*>/, html) |> List.flatten()
+
+      assert blank_tags != []
+
+      assert Enum.all?(blank_tags, &(&1 =~ "noopener")),
+             "missing rel=noopener: #{inspect(blank_tags)}"
+    end
+  end
+
+  describe "the badge embed" do
+    setup do
+      ingest_fixture()
+      :ok
+    end
+
+    # A README on github.com resolves a relative path against github.com, so a
+    # snippet is only usable if every URL in it is absolute. This is the whole
+    # point of the feature and the easiest thing to regress by switching to a
+    # `~p` sigil, which yields a path.
+    test "both snippets carry absolute URLs", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/packages/jason")
+
+      base = PortalWeb.Endpoint.url()
+
+      assert html =~
+               escaped(
+                 "[![Nerves compatibility](#{base}/badge/jason.svg)](#{base}/packages/jason)"
+               )
+
+      assert html =~
+               escaped(
+                 ~S|<a href="| <>
+                   "#{base}/packages/jason" <>
+                   ~S|"><img src="| <>
+                   "#{base}/badge/jason.svg" <> ~S|" alt="Nerves compatibility"></a>|
+               )
+    end
+
+    test "the badge shown on the page is the one the snippets embed", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/packages/jason")
+
+      src = "#{PortalWeb.Endpoint.url()}/badge/jason.svg"
+
+      assert has_element?(view, ~s(img[src="#{src}"]))
+    end
+
+    # Without the hook the button is inert, and the only sign of that in the
+    # rendered page is the missing attribute.
+    #
+    # The template writes `phx-hook=".CopyToClipboard"`. The leading dot means
+    # colocated, and the compiler expands it to the defining module's name --
+    # which is also the key `phoenix-colocated/portal` registers the hook under
+    # on the JS side. Asserting the expanded form is what ties the two halves
+    # together: a hook that stops being colocated stops matching here.
+    test "each snippet has a wired copy button", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/packages/jason")
+
+      hook = "PortalWeb.PackageLive.CopyToClipboard"
+
+      for id <- ~w(copy-markdown copy-html) do
+        assert has_element?(view, ~s(button##{id}[phx-hook="#{hook}"]))
+      end
+    end
+
+    # The clipboard hook needs a secure context and a granted permission. When
+    # it cannot run, the snippet still has to be selectable text on the page
+    # rather than something only the button could have produced.
+    test "a snippet is readable without the button", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/packages/jason")
+
+      assert has_element?(view, ~s(input[readonly][value^="[!["]))
+    end
+  end
+
+  # HEEx escapes attribute values, so a snippet containing quotes and angle
+  # brackets does not appear verbatim in the response body.
+  defp escaped(text), do: text |> Phoenix.HTML.html_escape() |> Phoenix.HTML.safe_to_string()
 end
