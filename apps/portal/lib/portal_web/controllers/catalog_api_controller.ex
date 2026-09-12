@@ -76,7 +76,7 @@ defmodule PortalWeb.CatalogApiController do
         {status, color} = badge_status(results)
 
         conn
-        |> put_cache_headers()
+        |> put_badge_cache_headers()
         |> put_resp_content_type("image/svg+xml")
         |> send_resp(200, svg(name, status, color))
     end
@@ -84,6 +84,19 @@ defmodule PortalWeb.CatalogApiController do
 
   defp put_cache_headers(conn) do
     put_resp_header(conn, "cache-control", "public, max-age=60")
+  end
+
+  # The badge is the one endpoint meant to be embedded in someone else's
+  # README, so it is fetched by every reader of that page rather than by a
+  # client polling for fresh data. A minute of caching is pointless there: a
+  # package's status changes when it is rebuilt, which is days apart, and
+  # GitHub proxies badges through camo anyway.
+  #
+  # `stale-while-revalidate` is what keeps the badge from ever being the slow
+  # part of someone's README -- past the hour a cache serves the old SVG
+  # immediately and refreshes behind the request.
+  defp put_badge_cache_headers(conn) do
+    put_resp_header(conn, "cache-control", "public, max-age=3600, stale-while-revalidate=86400")
   end
 
   defp badge_status([]), do: {"unknown", "#9ca3af"}
