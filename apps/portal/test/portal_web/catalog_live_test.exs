@@ -188,6 +188,25 @@ defmodule PortalWeb.CatalogLiveTest do
       assert has_element?(view, ~s(a[href="https://github.com/foo/bar"]))
     end
 
+    # Packages routinely declare several github.com links -- the repository, a
+    # changelog, an issues page -- and the labels give no reliable ordering
+    # ("Changelog" sorts before "GitHub"). The repository root is the one a
+    # reader wants, and its path is the shallowest.
+    test "the repository root wins over deeper github.com links", %{conn: conn} do
+      set_hex_meta("jason", %{
+        hex_links: %{
+          "Changelog" => "https://github.com/foo/bar/blob/main/CHANGELOG.md",
+          "GitHub" => "https://github.com/foo/bar",
+          "Issues" => "https://github.com/foo/bar/issues"
+        }
+      })
+
+      {:ok, view, _html} = live(conn, "/packages/jason")
+
+      assert has_element?(view, ~s(a[href="https://github.com/foo/bar"]))
+      refute has_element?(view, ~s(a[href*="CHANGELOG"]))
+    end
+
     test "a package whose links point elsewhere gets no GitHub link", %{conn: conn} do
       set_hex_meta("jason", %{hex_links: %{"Source" => "https://gitlab.com/foo/bar"}})
 
