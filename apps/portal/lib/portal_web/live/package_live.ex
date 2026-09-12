@@ -162,21 +162,38 @@ defmodule PortalWeb.PackageLive do
   #
   # `Portal.HexPm.package_metadata/1` has already filtered these to absolute
   # http/https URLs; this only picks one out.
+  #
+  # A package often declares several github.com links -- the repository, a
+  # changelog, an issues page. The shallowest path wins, because that is the
+  # repository root: `/owner/repo` beats `/owner/repo/blob/main/CHANGELOG.md`,
+  # whatever the author happened to label either of them.
   defp github_url(links) when is_map(links) do
     links
     |> Enum.sort()
-    |> Enum.find_value(fn {_label, url} ->
+    |> Enum.flat_map(fn {_label, url} ->
       case URI.new(url) do
-        {:ok, %URI{host: host}} when is_binary(host) ->
-          if host == "github.com" or String.ends_with?(host, ".github.com"), do: url
+        {:ok, %URI{host: host, path: path}} when is_binary(host) ->
+          if host == "github.com" or String.ends_with?(host, ".github.com"),
+            do: [{path_depth(path), String.length(url), url}],
+            else: []
 
         _ ->
-          nil
+          []
       end
     end)
+    |> case do
+      [] -> nil
+      candidates -> candidates |> Enum.min() |> elem(2)
+    end
   end
 
   defp github_url(_links), do: nil
+
+  defp path_depth(nil), do: 0
+
+  defp path_depth(path) do
+    path |> String.split("/", trim: true) |> length()
+  end
 
   attr :href, :string, required: true
   attr :label, :string, required: true
