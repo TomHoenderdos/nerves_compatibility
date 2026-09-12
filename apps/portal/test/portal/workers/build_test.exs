@@ -8,7 +8,7 @@ defmodule Portal.Workers.BuildTest do
 
   alias Portal.Catalog.{Package, Run}
   alias Portal.ScanRequests
-  alias Portal.Workers.{Build, Ingest}
+  alias Portal.Workers.{Build, Ingest, PackageMeta}
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
 
@@ -141,6 +141,38 @@ defmodule Portal.Workers.BuildTest do
       {:ok, updated} = ScanRequests.get_request(request.id)
       assert updated.status == :built
       assert updated.run_id == run.id
+    end
+
+    # Every package that enters the catalog passes through the ingest, which is
+    # what keeps hex.pm metadata in step without a scheduled sweep. Enqueued
+    # after the rows commit and outside their transaction, so a hex.pm problem
+    # can never roll back a finished build.
+    test "a successful ingest queues the package's hex.pm metadata refresh" do
+      files_dir =
+        files_dir_with(["aaaa000000000000000000000000000000000000000000000000000000000001"])
+
+      set_response(
+        {:ok,
+         %{
+           exit_code: 0,
+           result: fixture_result(),
+           files_dir: files_dir,
+           output_dir: files_dir,
+           log: "ok"
+         }}
+      )
+
+      assert :ok =
+               perform_job(Build, %{
+                 "package" => "jason",
+                 "version" => "1.4.1",
+                 "image_digest" => "sha256:deadbeef"
+               })
+
+      assert all_enqueued(worker: PackageMeta) == []
+      assert :ok = run_enqueued_ingest()
+
+      assert [%{args: %{"package" => "jason"}}] = all_enqueued(worker: PackageMeta)
     end
   end
 

@@ -211,6 +211,38 @@ defmodule Portal.Catalog do
   end
 
   @doc """
+  A package's hex.pm metadata: its author-declared links and its owners.
+
+  Read straight from the row rather than folded into `latest_by_pkg_json/1`,
+  for two reasons. That function's shape is the public JSON API, and this is
+  presentation data the API has never promised. And it is cached on a TTL,
+  which would mean a metadata refresh took up to the TTL to appear on the page
+  it exists to fill in -- for one indexed single-row read, that is a bad trade.
+
+  Returns `nil` for an unknown package, and `hex_meta_fetched_at: nil` for a
+  known one nobody has fetched yet. The page needs to tell those apart from a
+  package that genuinely declares no links.
+  """
+  @spec package_hex_meta(String.t()) :: map() | nil
+  def package_hex_meta(package_name) when is_binary(package_name) do
+    Package
+    |> Ash.Query.filter(name == ^package_name)
+    |> Ash.Query.select([:hex_links, :hex_owners, :hex_meta_fetched_at])
+    |> Ash.read_one!(domain: __MODULE__)
+    |> case do
+      nil ->
+        nil
+
+      package ->
+        %{
+          links: package.hex_links || %{},
+          owners: package.hex_owners || [],
+          fetched_at: package.hex_meta_fetched_at
+        }
+    end
+  end
+
+  @doc """
   Returns the precompiled package manifest shape for a package.
   """
   def precompiled_manifest(package_name) do
