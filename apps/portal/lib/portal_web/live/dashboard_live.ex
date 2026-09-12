@@ -68,9 +68,14 @@ defmodule PortalWeb.DashboardLive do
             <p :if={@rates == []} class="text-sm text-base-content/50">No system results yet.</p>
             <ul :if={@rates != []} class="space-y-2">
               <li :for={r <- @rates} class="space-y-1">
-                <div class="flex justify-between text-xs">
-                  <span class="font-mono text-base-content">{r.system_pkg}</span>
-                  <span class="text-base-content/50">
+                <div class="flex items-baseline justify-between gap-2 text-xs">
+                  <span
+                    class="min-w-0 truncate font-mono text-base-content"
+                    title={r.system_pkg}
+                  >
+                    {system_label(r.system_pkg)}
+                  </span>
+                  <span class="shrink-0 whitespace-nowrap text-base-content/50">
                     {r.pass}/{r.total} · {round(r.rate * 100)}%
                   </span>
                 </div>
@@ -95,6 +100,15 @@ defmodule PortalWeb.DashboardLive do
       </section>
     </Layouts.app>
     """
+  end
+
+  # Every row in this tile is a Nerves system, so the `nerves_system_` prefix
+  # they all share is 14 leading characters that distinguish nothing. Dropping
+  # it is what keeps the longest of them -- `nerves_system_mangopi_mq_pro` --
+  # on one line beside its counts inside a third-width tile. The full package
+  # name stays reachable as the `title` attribute.
+  defp system_label(system_pkg) do
+    String.replace_prefix(system_pkg, "nerves_system_", "")
   end
 
   attr :title, :string, required: true

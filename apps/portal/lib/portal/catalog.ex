@@ -320,6 +320,7 @@ defmodule Portal.Catalog do
   @doc false
   def pass_rate_per_system(annotated) do
     annotated
+    |> Enum.reject(&synthetic_system?(&1.system_pkg))
     |> Enum.group_by(& &1.system_pkg)
     |> Enum.map(fn {system_pkg, rows} ->
       total = length(rows)
@@ -333,6 +334,16 @@ defmodule Portal.Catalog do
       }
     end)
     |> Enum.sort_by(& &1.system_pkg)
+  end
+
+  # `forced@admin@unknown` is not a Nerves system. `NccWorker.Worker` emits it as
+  # a placeholder when a package is skipped administratively -- retired, or a
+  # language the builder will not attempt -- so that the run still carries one
+  # system entry. Counting it here would put a permanent 0/279 row in a list
+  # whose whole subject is how well each real system builds. The stats page
+  # already drops it for the same reason.
+  defp synthetic_system?(system_pkg) do
+    String.starts_with?(to_string(system_pkg), "forced")
   end
 
   @doc "Most recently finished passing (:pass) or failing (:fail/:error) runs."
