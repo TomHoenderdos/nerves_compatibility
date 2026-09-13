@@ -26,8 +26,25 @@ import {hooks as colocatedHooks} from "phoenix-colocated/portal"
 import topbar from "../vendor/topbar"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
+// `disconnectedTimeout` is how long a socket may be down before the
+// "We can't find the internet" toast in `PortalWeb.Layouts` is shown. It
+// exists to swallow reconnects fast enough that nobody needed to know about
+// them, and LiveView's 500ms default is not long enough for the one that
+// happens most often here.
+//
+// Firefox throttles timers in a background tab, so the 30s Phoenix heartbeat
+// never fires and the socket dies unnoticed. Refocusing the tab runs
+// `Socket.handleVisibilityChange`, which tears the dead socket down and opens
+// a new one -- a fresh TLS handshake plus a LiveView rejoin, round-tripping to
+// the VPS. That reliably takes longer than 500ms, so every return to a tab
+// left open flashed the toast for the split second before the rejoin landed.
+//
+// 2s covers that round trip with room to spare. The cost is that a genuinely
+// dead connection is announced 1.5s later than it used to be, which is well
+// inside the time it takes someone to notice the page has stopped responding.
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
+  disconnectedTimeout: 2000,
   params: {_csrf_token: csrfToken},
   hooks: {...colocatedHooks},
 })
