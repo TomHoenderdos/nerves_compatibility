@@ -4,7 +4,8 @@ defmodule Portal.Workers.Build do
   systems and hands the result to `Portal.Workers.Ingest`.
 
   Steps:
-    1. Dedupe — skip if a `Run` already exists for (package, version, image_digest).
+    1. Dedupe — skip if a `Run` already exists for (package, version, image_digest),
+       unless the job carries `"force" => true`.
     2. Run the build via `Portal.Builder.build/2`.
     3. Map the worker/runner exit code to an outcome (see `classify/1`).
     4. On success, enqueue `Portal.Workers.Ingest` and leave the scratch dir in
@@ -47,11 +48,22 @@ defmodule Portal.Workers.Build do
     image_digest = args["image_digest"] || Builder.docker_image() |> Builder.image_digest()
     scan_request_id = args["scan_request_id"]
 
+    # The dedup below is what keeps a catalogue-wide sweep from rebuilding
+    # everything it has already built, and it is deliberately blind to status:
+    # `run_exists?/3` asks whether a `Run` row exists, not whether it passed.
+    # That makes a failed build unrepeatable at the same image digest, which is
+    # correct for a sweep and wrong for a deliberate rebuild -- reproducing a
+    # failure to capture something the first attempt did not record has to be
+    # able to run again. `force` is that escape hatch, set only by callers that
+    # already know a run exists and want another one anyway
+    # (`Portal.LogBackfill`). It never comes from user input.
+    force = args["force"] == true
+
     run_id = run_id(package, version)
     Progress.broadcast(scan_request_id, :building, %{package: package, version: version})
 
     cond do
-      run_exists?(package, version, image_digest) ->
+      not force and run_exists?(package, version, image_digest) ->
         Logger.info("Build dedup: run already exists for #{package} #{version}")
         Progress.mark(scan_request_id, :built)
         Progress.broadcast(scan_request_id, :done, %{deduped: true})
