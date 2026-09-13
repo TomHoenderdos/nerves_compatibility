@@ -459,6 +459,50 @@ defmodule Portal.Workers.BuildTest do
 
       refute_received :stub_build_called
     end
+
+    # The dedup is blind to status on purpose, so a failed build cannot be
+    # repeated at the same image digest. That is right for a catalogue sweep and
+    # wrong for `Portal.LogBackfill`, whose whole job is to reproduce a failure
+    # in order to capture the log the first attempt did not store.
+    test "force runs the build even though a run already exists" do
+      package =
+        Package
+        |> Ash.Changeset.for_create(:create, %{name: "dup"})
+        |> Ash.create!(domain: Portal.Catalog)
+
+      Run
+      |> Ash.Changeset.for_create(:create, %{
+        run_id: "existing",
+        package_id: package.id,
+        version_tested: "1.0.0",
+        image_digest: "sha256:dup",
+        overall_status: :fail
+      })
+      |> Ash.create!(domain: Portal.Catalog)
+
+      files_dir = files_dir_with([])
+
+      set_response(
+        {:ok,
+         %{
+           exit_code: 0,
+           result: fixture_result(),
+           files_dir: files_dir,
+           output_dir: files_dir,
+           log: "ok"
+         }}
+      )
+
+      assert :ok =
+               perform_job(Build, %{
+                 "package" => "dup",
+                 "version" => "1.0.0",
+                 "image_digest" => "sha256:dup",
+                 "force" => true
+               })
+
+      assert_received :stub_build_called
+    end
   end
 
   describe "backoff/1" do
