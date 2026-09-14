@@ -100,6 +100,36 @@ defmodule PortalWeb.PageControllerTest do
     assert html_response(conn, 200) =~ "GitHub login is unavailable"
   end
 
+  test "signing in as an admin lands on the admin page", %{conn: conn} do
+    {:ok, admin} =
+      Portal.Accounts.seed_admin_user("landing_admin", "correct horse battery staple")
+
+    conn =
+      post(conn, ~p"/login", %{
+        "username" => admin.username,
+        "password" => "correct horse battery staple"
+      })
+
+    assert redirected_to(conn) == ~p"/admin"
+  end
+
+  test "signing in as an ordinary user still lands on the scan request form", %{conn: conn} do
+    # The other half of the branch, and the reason it is a separate test: a
+    # `landing_path/1` that ignored its argument and always returned `/admin`
+    # would satisfy the admin case above while sending every visitor to a page
+    # they are not allowed to see.
+    {:ok, _user} =
+      Portal.Accounts.register_user("landing_plain", "correct horse battery staple")
+
+    conn =
+      post(conn, ~p"/login", %{
+        "username" => "landing_plain",
+        "password" => "correct horse battery staple"
+      })
+
+    assert redirected_to(conn) == ~p"/request-scan"
+  end
+
   test "GET /admin redirects anonymous users", %{conn: conn} do
     conn = get(conn, ~p"/admin")
 
@@ -291,5 +321,103 @@ defmodule PortalWeb.PageControllerTest do
 
     assert {:ok, updated} = Portal.ScanRequests.get_request(request.id)
     assert updated.status == :queued
+  end
+
+  defp signed_in_admin(conn, username) do
+    {:ok, admin} = Portal.Accounts.seed_admin_user(username, "correct horse battery staple")
+    {init_test_session(conn, user_id: admin.id), admin}
+  end
+
+  # Every one of these routes takes an action on the queue. `RequireAdmin` is
+  # the only thing standing between them and the open internet, so each is
+  # checked for the gate as well as for the action.
+  test "the new admin routes are all closed to anonymous visitors", %{conn: conn} do
+    for path <- [
+          ~p"/admin/scan",
+          ~p"/admin/update-check",
+          ~p"/admin/requests/#{Ecto.UUID.generate()}/priority"
+        ] do
+      assert redirected_to(post(recycle(conn), path)) == ~p"/login"
+    end
+  end
+
+  test "POST /admin/scan queues a package at the front of the queue", %{conn: conn} do
+    {conn, _admin} = signed_in_admin(conn, "admin_scan")
+
+    conn = post(conn, ~p"/admin/scan", %{"package_name" => "admin_queued_pkg"})
+
+    assert html_response(conn, 200) =~ "Queued admin_queued_pkg"
+
+    request = Portal.ScanRequests.open_request_for_package("admin_queued_pkg")
+    assert request.source == :admin_manual
+    assert request.status == :queued
+  end
+
+  test "POST /admin/scan reports a name that cannot be a package", %{conn: conn} do
+    {conn, _admin} = signed_in_admin(conn, "admin_scan_bad")
+
+    conn = post(conn, ~p"/admin/scan", %{"package_name" => "not a package name"})
+
+    assert html_response(conn, 200) =~ "does not look like a hex.pm package name"
+    assert Portal.ScanRequests.open_request_for_package("not a package name") == nil
+  end
+
+  test "POST /admin/scan says which request is already open", %{conn: conn} do
+    {conn, admin} = signed_in_admin(conn, "admin_scan_dup")
+    {:ok, _} = Portal.Admin.queue_package("admin_dup_pkg", admin)
+
+    conn = post(conn, ~p"/admin/scan", %{"package_name" => "admin_dup_pkg"})
+
+    assert html_response(conn, 200) =~ "already has an open request"
+  end
+
+  test "POST /admin/requests/:id/priority moves the build down the queue", %{conn: conn} do
+    {conn, admin} = signed_in_admin(conn, "admin_priority")
+    {:ok, request} = Portal.Admin.queue_package("admin_priority_pkg", admin)
+
+    conn = post(conn, ~p"/admin/requests/#{request.id}/priority", %{"direction" => "down"})
+
+    assert html_response(conn, 200) =~ "Moved to priority 1"
+    assert Portal.Admin.queue_positions([request.id])[request.id].priority == 1
+  end
+
+  test "POST /admin/requests/:id/priority reports a request with no job", %{conn: conn} do
+    {conn, _admin} = signed_in_admin(conn, "admin_priority_none")
+
+    conn =
+      post(conn, ~p"/admin/requests/#{Ecto.UUID.generate()}/priority", %{"direction" => "up"})
+
+    assert html_response(conn, 200) =~ "nothing to reorder"
+  end
+
+  test "POST /admin/update-check queues a run, and says so", %{conn: conn} do
+    {conn, _admin} = signed_in_admin(conn, "admin_update_check")
+
+    conn = post(conn, ~p"/admin/update-check", %{})
+
+    assert html_response(conn, 200) =~ "Update check queued"
+    assert Portal.Admin.update_check_status().pending?
+  end
+
+  test "POST /admin/update-check with mode=dry_run queues nothing but a report", %{conn: conn} do
+    {conn, _admin} = signed_in_admin(conn, "admin_update_dry")
+
+    conn = post(conn, ~p"/admin/update-check", %{"mode" => "dry_run"})
+
+    assert html_response(conn, 200) =~ "queues nothing"
+  end
+
+  test "GET /admin carries the manual scan form and the update check panel", %{conn: conn} do
+    {conn, admin} = signed_in_admin(conn, "admin_panels")
+    # The queue table, and so its position column, only renders with a row in
+    # it -- an empty queue shows the empty state instead.
+    {:ok, _} = Portal.Admin.queue_package("admin_panel_pkg", admin)
+
+    html = html_response(get(conn, ~p"/admin"), 200)
+
+    assert html =~ ~s(action="/admin/scan")
+    assert html =~ ~s(action="/admin/update-check")
+    assert html =~ "hex.pm update check"
+    assert html =~ "Queue position"
   end
 end

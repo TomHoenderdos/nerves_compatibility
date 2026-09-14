@@ -31,7 +31,17 @@ defmodule Portal.Workers.Build do
   use Oban.Worker,
     queue: :builds,
     max_attempts: 3,
-    unique: [keys: [:package, :version, :image_digest]]
+    # `:force` is part of the key so that a deliberate rebuild is a distinct
+    # unit of work from an ordinary build of the same version. Oban compares
+    # keys by jsonb containment -- existing args must *contain* the new job's
+    # subset -- so without it a forced insert would match the plain job already
+    # queued, be discarded as a duplicate, and the flag would never reach a
+    # worker. That is the one case `force` exists for.
+    #
+    # It costs nothing in the other direction: an ordinary insert takes no
+    # `force` key, so its subset is what it always was, and every row already in
+    # the table deduplicates exactly as before.
+    unique: [keys: [:package, :version, :image_digest, :force]]
 
   require Ash.Query
   require Logger
@@ -56,7 +66,10 @@ defmodule Portal.Workers.Build do
     # failure to capture something the first attempt did not record has to be
     # able to run again. `force` is that escape hatch, set only by callers that
     # already know a run exists and want another one anyway
-    # (`Portal.LogBackfill`). It never comes from user input.
+    # (`Portal.LogBackfill`), or that are behind the admin gate
+    # (`Portal.Admin.queue_package/3`). It never comes from public input: an
+    # anonymous visitor who could set it would be able to spend a six-minute
+    # firmware build on a result we already have, as often as they liked.
     force = args["force"] == true
 
     run_id = run_id(package, version)

@@ -48,6 +48,9 @@ defmodule PortalWeb.Router do
     get "/admin/monitor", PageController, :oban_embed
     post "/admin/requests/:id/approve", PageController, :approve_anonymous_request
     post "/admin/requests/:id/reject", PageController, :reject_anonymous_request
+    post "/admin/requests/:id/priority", PageController, :reprioritise_request
+    post "/admin/scan", PageController, :admin_queue_package
+    post "/admin/update-check", PageController, :admin_update_check
     get "/register", PageController, :register
     post "/register", PageController, :create_account
     get "/login", PageController, :login
