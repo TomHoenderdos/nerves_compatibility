@@ -5,6 +5,7 @@ defmodule Portal.Workers.UpdateCheckTest do
   import Ecto.Query
 
   alias Portal.Catalog.Package
+  alias Portal.Catalog.Run
   alias Portal.Repo
   alias Portal.Workers.UpdateCheck
 
@@ -44,6 +45,31 @@ defmodule Portal.Workers.UpdateCheckTest do
       action: :create,
       domain: Portal.Catalog
     )
+  end
+
+  # The filter only skips a patch bump when the package's newest run passed, so
+  # most of these tests need a run on record. `package/2` deliberately creates
+  # none -- a package with no run reads as not-passing, and is rebuilt on any
+  # bump.
+  defp run(package, overall_status, opts \\ []) do
+    Ash.create!(
+      Run,
+      %{
+        run_id: "#{package.name}-#{System.unique_integer([:positive])}",
+        package_id: package.id,
+        version_tested: package.latest_version || "0.0.0",
+        overall_status: overall_status,
+        finished_at: Keyword.get(opts, :finished_at, DateTime.utc_now())
+      },
+      action: :create,
+      domain: Portal.Catalog
+    )
+  end
+
+  defp passing_package(name, latest_version) do
+    package = package(name, latest_version)
+    run(package, :pass)
+    package
   end
 
   defp backfill_jobs do
@@ -175,6 +201,174 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert_received {:asked_since, since}
       hours = DateTime.diff(DateTime.utc_now(), since, :second) / 3600
       assert_in_delta hours, 12, 0.1
+    end
+  end
+
+  describe "run/1 version filter" do
+    # 45% of the drift measured against the real catalogue is patch-only, and a
+    # patch release is the one least likely to move anything we measure.
+    test "a patch bump on a passing package is not queued" do
+      passing_package("alpha", "1.2.3")
+      hex_says([{"alpha", "1.2.4"}])
+
+      assert {:ok, %{seen: 1, moved: 0, enqueued: 0}} = UpdateCheck.run()
+      assert queued_packages() == []
+    end
+
+    # The exception that makes the filter safe to ship: a red badge has to be
+    # clearable, and a patch release on a failing package is usually the
+    # maintainer fixing exactly what we flagged.
+    test "a patch bump on a failing package is queued" do
+      package = package("alpha", "1.2.3")
+      run(package, :fail)
+      hex_says([{"alpha", "1.2.4"}])
+
+      assert {:ok, %{moved: 1, enqueued: 1}} = UpdateCheck.run()
+      assert queued_packages() == ["alpha"]
+    end
+
+    test "a patch bump on a skipped package is queued" do
+      package = package("alpha", "1.2.3")
+      run(package, :skipped)
+      hex_says([{"alpha", "1.2.4"}])
+
+      assert {:ok, %{moved: 1, enqueued: 1}} = UpdateCheck.run()
+      assert queued_packages() == ["alpha"]
+    end
+
+    test "a patch bump on a package with no run at all is queued" do
+      package("alpha", "1.2.3")
+      hex_says([{"alpha", "1.2.4"}])
+
+      assert {:ok, %{moved: 1, enqueued: 1}} = UpdateCheck.run()
+      assert queued_packages() == ["alpha"]
+    end
+
+    # Only the newest run decides. A package that failed once and has passed
+    # since is a passing package, and its patch releases are skipped like any
+    # other.
+    test "an older failing run does not override a newer passing one" do
+      package = package("alpha", "1.2.3")
+      run(package, :fail, finished_at: DateTime.add(DateTime.utc_now(), -2, :hour))
+      run(package, :pass)
+      hex_says([{"alpha", "1.2.4"}])
+
+      assert {:ok, %{moved: 0, enqueued: 0}} = UpdateCheck.run()
+      assert queued_packages() == []
+    end
+
+    test "0.1.1 -> 0.1.2 on a passing package is not queued" do
+      passing_package("alpha", "0.1.1")
+      hex_says([{"alpha", "0.1.2"}])
+
+      assert {:ok, %{moved: 0, enqueued: 0}} = UpdateCheck.run()
+      assert queued_packages() == []
+    end
+
+    test "0.1.0 -> 0.2.0 on a passing package is queued" do
+      passing_package("alpha", "0.1.0")
+      hex_says([{"alpha", "0.2.0"}])
+
+      assert {:ok, %{moved: 1, enqueued: 1}} = UpdateCheck.run()
+      assert queued_packages() == ["alpha"]
+    end
+
+    test "a major bump on a passing package is queued" do
+      passing_package("alpha", "1.2.3")
+      hex_says([{"alpha", "2.0.0"}])
+
+      assert {:ok, %{moved: 1, enqueued: 1}} = UpdateCheck.run()
+      assert queued_packages() == ["alpha"]
+    end
+
+    # Every number before the `-` is unchanged, so a naive major/minor/patch
+    # comparison calls this insignificant. It is the opposite: the stable
+    # release is the one worth measuring.
+    test "a prerelease graduating to stable is queued" do
+      passing_package("alpha", "0.19.0-beta.2")
+      hex_says([{"alpha", "0.19.0"}])
+
+      assert {:ok, %{moved: 1, enqueued: 1}} = UpdateCheck.run()
+      assert queued_packages() == ["alpha"]
+    end
+
+    test "prerelease churn inside one patch version is not queued" do
+      passing_package("alpha", "0.19.0-beta.2")
+      hex_says([{"alpha", "0.19.0-beta.3"}])
+
+      assert {:ok, %{moved: 0, enqueued: 0}} = UpdateCheck.run()
+      assert queued_packages() == []
+    end
+
+    test "a version we cannot parse is queued rather than silently skipped" do
+      passing_package("alpha", "2016d")
+      hex_says([{"alpha", "2016e"}])
+
+      assert {:ok, %{moved: 1, enqueued: 1}} = UpdateCheck.run()
+      assert queued_packages() == ["alpha"]
+    end
+
+    test "an unparseable version on the hex side is queued too" do
+      passing_package("alpha", "1.2.3")
+      hex_says([{"alpha", "not-a-version"}])
+
+      assert {:ok, %{moved: 1, enqueued: 1}} = UpdateCheck.run()
+      assert queued_packages() == ["alpha"]
+    end
+  end
+
+  describe "run/1 per-run cap" do
+    test "queues at most max_per_run and reports the rest as deferred" do
+      for n <- 1..4, do: passing_package("pkg#{n}", "1.0.0")
+      hex_says(for n <- 1..4, do: {"pkg#{n}", "1.1.0"})
+
+      assert {:ok, %{seen: 4, moved: 4, enqueued: 2, deferred: 2}} =
+               UpdateCheck.run(max_per_run: 2)
+
+      assert length(queued_packages()) == 2
+    end
+
+    # The ordering rule, and the reason the cap is safe. hex.pm hands back the
+    # newest update first, and the window is the only thing keeping a deferred
+    # package alive -- so the budget goes to the end of the list, the work
+    # closest to falling past the cutoff. Newest-first would starve exactly the
+    # packages about to disappear.
+    test "spends the budget oldest first" do
+      for name <- ["newest", "middle", "oldest"], do: passing_package(name, "1.0.0")
+      hex_says([{"newest", "1.1.0"}, {"middle", "1.1.0"}, {"oldest", "1.1.0"}])
+
+      assert {:ok, %{moved: 3, enqueued: 1, deferred: 2}} = UpdateCheck.run(max_per_run: 1)
+      assert queued_packages() == ["oldest"]
+    end
+
+    test "nothing is deferred when the cap does not bind" do
+      passing_package("alpha", "1.0.0")
+      hex_says([{"alpha", "1.1.0"}])
+
+      assert {:ok, %{moved: 1, enqueued: 1, deferred: 0}} = UpdateCheck.run(max_per_run: 5)
+      assert queued_packages() == ["alpha"]
+    end
+
+    test "honours a configured max_per_run" do
+      for n <- 1..3, do: passing_package("pkg#{n}", "1.0.0")
+      hex_says(for n <- 1..3, do: {"pkg#{n}", "1.1.0"})
+      Application.put_env(:portal, UpdateCheck, enabled: true, max_per_run: 1)
+
+      assert {:ok, %{moved: 3, enqueued: 1, deferred: 2}} = UpdateCheck.run()
+      assert length(queued_packages()) == 1
+    end
+
+    # The cap shapes what gets queued, not what gets counted: `moved` is the
+    # honest size of the backlog, and a caller watching it would otherwise see
+    # the cap as the work disappearing.
+    test "dry_run still reports the full moved count under a cap" do
+      for n <- 1..3, do: passing_package("pkg#{n}", "1.0.0")
+      hex_says(for n <- 1..3, do: {"pkg#{n}", "1.1.0"})
+
+      assert {:ok, %{moved: 3, enqueued: 0, deferred: 2}} =
+               UpdateCheck.run(max_per_run: 1, dry_run: true)
+
+      assert queued_packages() == []
     end
   end
 end

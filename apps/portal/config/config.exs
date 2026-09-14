@@ -101,6 +101,21 @@ config :portal, Portal.Workers.LogRetention, budget_bytes: 2 * 1024 * 1024 * 102
 # missed tick harmless. See `Portal.Workers.UpdateCheck`.
 config :portal, Portal.Workers.UpdateCheck,
   enabled: false,
+  # Ceiling on packages queued by a single run, so a burst on hex cannot hand
+  # the build host a day of work in one tick.
+  #
+  # Per *run* rather than per day, and that distinction is the whole safety
+  # argument. This check has no memory: a package is visible only while it sits
+  # inside the lookback window. A daily cap would drop everything over the limit
+  # on the floor, and the window would move past it before it was ever
+  # reconsidered -- silently skipping a release until the package's next one. A
+  # per-run cap defers instead, because the window re-offers the same package on
+  # every run until it expires: at an hourly schedule and a six-hour window,
+  # each update gets six chances, and `select/2` spends them oldest-first.
+  #
+  # Five an hour against a measured arrival of 9-15 a day means the cap does not
+  # bind in normal operation; it only shapes a burst.
+  max_per_run: 5,
   lookback_ms: 6 * 60 * 60 * 1000
 
 # The dashboard, stats and cluster pages fold every package, run and system

@@ -188,6 +188,20 @@ if portal_available? do
   # that replaces a stored watermark, so a value at or below the cron interval
   # would leave gaps whenever a tick is missed — an unparseable or too-small
   # value keeps the compile-time default rather than narrowing it.
+  case System.get_env("NCC_UPDATE_CHECK_MAX_PER_RUN") do
+    nil ->
+      :ok
+
+    raw ->
+      case Integer.parse(raw) do
+        {cap, _rest} when cap > 0 ->
+          config :portal, Portal.Workers.UpdateCheck, max_per_run: cap
+
+        _ ->
+          :ok
+      end
+  end
+
   case System.get_env("NCC_UPDATE_CHECK_LOOKBACK_HOURS") do
     nil ->
       :ok
