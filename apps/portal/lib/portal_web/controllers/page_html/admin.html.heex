@@ -23,6 +23,44 @@
         <div class="card-body">
           <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
+              <h2 class="card-title">Queue a scan</h2>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                Goes straight into the queue at the highest priority. No approval step.
+              </p>
+            </div>
+            <span class="badge badge-outline w-fit">Admin</span>
+          </div>
+
+          <form method="post" action={~p"/admin/scan"} class="mt-5 flex flex-col gap-3">
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <label class="form-control w-full sm:max-w-sm">
+                <span class="label-text">Package name</span>
+                <input
+                  type="text"
+                  name="package_name"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="nerves_system_rpi4"
+                  class="input input-bordered w-full font-mono"
+                />
+              </label>
+              <button type="submit" class="btn btn-primary">Queue scan</button>
+            </div>
+            <label class="flex items-center gap-2 text-sm text-base-content/70">
+              <input type="checkbox" name="force" value="true" class="checkbox checkbox-sm" />
+              <span>
+                Force a rebuild even if this version was already built. Costs a full firmware build.
+              </span>
+            </label>
+          </form>
+        </div>
+      </section>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
               <h2 class="card-title">Anonymous approvals</h2>
               <p class="mt-1 text-sm leading-6 text-base-content/70">
                 These requests need a human check before queue promotion.
@@ -101,6 +139,7 @@
                     <th>Status</th>
                     <th>Subject</th>
                     <th>Submitted</th>
+                    <th class="text-right">Queue position</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -114,11 +153,122 @@
                     </td>
                     <td>{request.subject || "-"}</td>
                     <td>{format_datetime(request.inserted_at)}</td>
+                    <td>
+                      <% position = @queue_positions[request.id] %>
+                      <%= if position do %>
+                        <div class="flex items-center justify-end gap-2">
+                          <span class="badge badge-ghost font-mono" title={position.state}>
+                            P{position.priority}
+                          </span>
+                          <form
+                            method="post"
+                            action={~p"/admin/requests/#{request.id}/priority"}
+                            class="contents"
+                          >
+                            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                            <input type="hidden" name="direction" value="up" />
+                            <button
+                              type="submit"
+                              class="btn btn-xs btn-ghost"
+                              disabled={not position.adjustable? or position.priority == 0}
+                              title="Run sooner"
+                            >
+                              &uarr;
+                            </button>
+                          </form>
+                          <form
+                            method="post"
+                            action={~p"/admin/requests/#{request.id}/priority"}
+                            class="contents"
+                          >
+                            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                            <input type="hidden" name="direction" value="down" />
+                            <button
+                              type="submit"
+                              class="btn btn-xs btn-ghost"
+                              disabled={not position.adjustable? or position.priority == 9}
+                              title="Run later"
+                            >
+                              &darr;
+                            </button>
+                          </form>
+                        </div>
+                      <% else %>
+                        <span class="text-sm text-base-content/50">building</span>
+                      <% end %>
+                    </td>
                   </tr>
                 </tbody>
               </table>
             </div>
           <% end %>
+        </div>
+      </section>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 class="card-title">hex.pm update check</h2>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                Runs hourly, compares the whole catalogue against the hex.pm registry, and queues a rebuild for up to {@update_check.max_per_run} drifted packages per run.
+              </p>
+            </div>
+            <span class={[
+              "badge w-fit",
+              if(@update_check.enabled?, do: "badge-success", else: "badge-error")
+            ]}>
+              {if @update_check.enabled?, do: "Scheduled", else: "Schedule off"}
+            </span>
+          </div>
+
+          <%= if @update_check.last_run do %>
+            <% meta = @update_check.last_run.meta %>
+            <div class="mt-5 grid gap-3 sm:grid-cols-4">
+              <PortalWeb.UI.stat_card label="On hex" value={to_string(meta["seen"])} />
+              <PortalWeb.UI.stat_card label="Worth rebuilding" value={to_string(meta["moved"])} />
+              <PortalWeb.UI.stat_card label="Queued" value={to_string(meta["enqueued"])} />
+              <PortalWeb.UI.stat_card
+                label="Held back by cap"
+                value={to_string(meta["deferred"])}
+              />
+            </div>
+            <p class="mt-3 text-sm leading-6 text-base-content/70">
+              Last run {format_datetime(@update_check.last_run.completed_at)}
+              <%= if meta["dry_run"] do %>
+                , as a dry run -- nothing was queued
+              <% end %>. "Held back by cap" is the backlog waiting for later runs, not a failure.
+            </p>
+          <% else %>
+            <p class="mt-5 text-sm leading-6 text-base-content/70">
+              No run has recorded any numbers yet.
+            </p>
+          <% end %>
+
+          <div class="mt-5 flex flex-wrap items-center gap-2">
+            <form method="post" action={~p"/admin/update-check"}>
+              <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+              <button
+                type="submit"
+                class="btn btn-sm btn-primary"
+                disabled={@update_check.pending?}
+              >
+                Run now
+              </button>
+            </form>
+            <form method="post" action={~p"/admin/update-check"}>
+              <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+              <input type="hidden" name="mode" value="dry_run" />
+              <button type="submit" class="btn btn-sm btn-ghost">Dry run</button>
+            </form>
+            <span class="text-sm text-base-content/60">
+              <%= if @update_check.pending? do %>
+                A check is already queued.
+              <% else %>
+                Either runs even while the schedule is off. A dry run queues nothing.
+              <% end %>
+            </span>
+          </div>
         </div>
       </section>
     </section>

@@ -32,6 +32,11 @@ defmodule Portal.ScanRequests do
     package_name = Map.fetch!(attrs, :package_name)
     requested_status = Map.get(attrs, :status, :accepted)
 
+    # Not an attribute of the request -- it is an instruction to the build job,
+    # so it is stripped here rather than handed to a changeset that would reject
+    # it. See `Portal.Workers.Build` for what it overrides and who may set it.
+    {force, attrs} = Map.pop(attrs, :force, false)
+
     request_result =
       case open_request_for_package(package_name) do
         nil ->
@@ -44,7 +49,7 @@ defmodule Portal.ScanRequests do
           {:ok, request}
       end
 
-    maybe_enqueue_accepted(request_result, requested_status)
+    maybe_enqueue_accepted(request_result, requested_status, force)
   end
 
   def open_request_for_package(package_name) when is_binary(package_name) do
@@ -61,7 +66,7 @@ defmodule Portal.ScanRequests do
     with {:ok, request} <- get_request(id),
          :ok <- ensure_pending_anonymous(request),
          {:ok, request} <- update_review(request, :accepted, nil),
-         {:ok, request} <- enqueue_build(request, :anonymous_manual, admin_user) do
+         {:ok, request} <- enqueue_build(request, :anonymous_manual, admin_user: admin_user) do
       {:ok, request}
     end
   end
@@ -156,17 +161,24 @@ defmodule Portal.ScanRequests do
     |> Ash.update(domain: __MODULE__)
   end
 
-  defp maybe_enqueue_accepted({:ok, %ScanRequest{} = request}, requested_status)
+  defp maybe_enqueue_accepted({:ok, %ScanRequest{} = request}, requested_status, force)
        when requested_status in [:accepted, :queued] do
-    enqueue_build(request, request.source)
+    enqueue_build(request, request.source, force: force)
   end
 
-  defp maybe_enqueue_accepted(result, _requested_status), do: result
+  defp maybe_enqueue_accepted(result, _requested_status, _force), do: result
 
-  defp enqueue_build(%ScanRequest{} = request, source, admin_user \\ nil) do
+  # Options:
+  #
+  #   * `:admin_user` - stamps the request as approved by that admin.
+  #   * `:force` - rebuild even when a result already exists for this version.
+  defp enqueue_build(%ScanRequest{} = request, source, opts) do
+    admin_user = Keyword.get(opts, :admin_user)
+    force = Keyword.get(opts, :force, false)
+
     case version_resolver().latest_version(request.package_name) do
       {:ok, version} ->
-        with {:ok, _job} <- insert_build_job(request, version, source),
+        with {:ok, _job} <- insert_build_job(request, version, source, force),
              {:ok, request} <- set_status(request, :queued) do
           maybe_mark_admin_approval(request, admin_user)
         end
@@ -186,12 +198,23 @@ defmodule Portal.ScanRequests do
     end
   end
 
-  defp insert_build_job(request, version, source) do
-    %{package: request.package_name, version: version, scan_request_id: request.id}
+  defp insert_build_job(request, version, source, force) do
+    # `force` is omitted rather than set to `false` so that an ordinary request
+    # produces byte-identical args to the ones every existing row already
+    # carries. `Build`'s uniqueness is keyed on package/version/image only, so
+    # this does not affect deduplication either way.
+    args = %{package: request.package_name, version: version, scan_request_id: request.id}
+    args = if force, do: Map.put(args, :force, true), else: args
+
+    args
     |> Build.new(priority: priority(source))
     |> Oban.insert()
   end
 
+  # An admin asking for a package by hand is the highest-signal request the
+  # system gets -- somebody with the whole queue in front of them decided this
+  # one matters -- so it goes to the front alongside a verified package owner.
+  defp priority(:admin_manual), do: 0
   defp priority(:hex_owner), do: 0
   defp priority(:github_repo), do: 1
   defp priority(:anonymous_turnstile), do: 3

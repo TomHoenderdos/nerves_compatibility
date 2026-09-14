@@ -218,6 +218,67 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert {:ok, %{enqueued: 1}} = perform_job(UpdateCheck, %{})
       assert queued_packages() == ["alpha"]
     end
+
+    # The gate exists to stop the *schedule* sending hex.pm traffic. An admin
+    # standing at the page and pressing the button is not the schedule, and a
+    # switched-off check they cannot run on purpose is a check they cannot
+    # diagnose.
+    test "a manual run happens even while the schedule is switched off" do
+      package("alpha", "1.0.0")
+      hex_says([{"alpha", "1.1.0"}])
+      Application.put_env(:portal, UpdateCheck, enabled: false)
+
+      assert {:ok, %{enqueued: 1}} = perform_job(UpdateCheck, %{"manual" => true})
+      assert queued_packages() == ["alpha"]
+    end
+
+    test "a manual dry run reports the drift and queues nothing" do
+      package("alpha", "1.0.0")
+      hex_says([{"alpha", "1.1.0"}])
+      Application.put_env(:portal, UpdateCheck, enabled: false)
+
+      assert {:ok, %{moved: 1, enqueued: 0}} =
+               perform_job(UpdateCheck, %{"manual" => true, "dry_run" => true})
+
+      assert queued_packages() == []
+    end
+
+    test "records the run's numbers on the job that produced them" do
+      package("alpha", "1.0.0")
+      hex_says([{"alpha", "1.1.0"}])
+      Application.put_env(:portal, UpdateCheck, enabled: true)
+
+      job = Oban.insert!(UpdateCheck.new(%{"manual" => true}))
+      assert {:ok, _summary} = UpdateCheck.perform(job)
+
+      meta = Repo.one(from(j in Oban.Job, where: j.id == ^job.id, select: j.meta))
+
+      assert meta["seen"] == 1
+      assert meta["moved"] == 1
+      assert meta["enqueued"] == 1
+      assert meta["dry_run"] == false
+
+      # String keys throughout. This round-trips through jsonb, so merging atom
+      # keys into what comes back would silently give the map two of everything.
+      assert Enum.all?(Map.keys(meta), &is_binary/1)
+    end
+
+    test "a dry run says so in what it recorded" do
+      package("alpha", "1.0.0")
+      hex_says([{"alpha", "1.1.0"}])
+      Application.put_env(:portal, UpdateCheck, enabled: true)
+
+      job = Oban.insert!(UpdateCheck.new(%{"manual" => true, "dry_run" => true}))
+      assert {:ok, _summary} = UpdateCheck.perform(job)
+
+      meta = Repo.one(from(j in Oban.Job, where: j.id == ^job.id, select: j.meta))
+
+      # Without this the panel would show "0 queued" for a dry run and for a
+      # run that found nothing to do, which are opposite situations.
+      assert meta["dry_run"] == true
+      assert meta["moved"] == 1
+      assert meta["enqueued"] == 0
+    end
   end
 
   describe "run/1 version filter" do

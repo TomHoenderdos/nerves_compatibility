@@ -35,6 +35,82 @@ defmodule PortalWeb.PageController do
     end
   end
 
+  def reprioritise_request(conn, %{"id" => id} = params) do
+    case require_admin(conn) do
+      {:ok, conn, user} ->
+        direction = if params["direction"] == "down", do: :down, else: :up
+
+        case Portal.Admin.reprioritise(id, direction) do
+          {:ok, priority} ->
+            conn
+            |> put_flash(:info, "Moved to priority #{priority}. Lower runs sooner.")
+            |> render_admin(user)
+
+          {:error, reason} ->
+            conn
+            |> put_flash(:error, admin_error_message(reason))
+            |> render_admin(user)
+        end
+
+      {:error, conn} ->
+        conn
+    end
+  end
+
+  def admin_queue_package(conn, params) do
+    case require_admin(conn) do
+      {:ok, conn, user} ->
+        force = params["force"] in ["true", "on", "1"]
+
+        case Portal.Admin.queue_package(params["package_name"] || "", user, force: force) do
+          {:ok, request} ->
+            conn
+            |> put_flash(:info, queued_message(request, force))
+            |> render_admin(user)
+
+          {:error, reason} ->
+            conn
+            |> put_flash(:error, admin_error_message(reason))
+            |> render_admin(user)
+        end
+
+      {:error, conn} ->
+        conn
+    end
+  end
+
+  def admin_update_check(conn, params) do
+    case require_admin(conn) do
+      {:ok, conn, user} ->
+        dry_run = params["mode"] == "dry_run"
+
+        case Portal.Admin.request_update_check(dry_run: dry_run) do
+          {:ok, _job} ->
+            conn
+            |> put_flash(:info, update_check_message(dry_run))
+            |> render_admin(user)
+
+          {:error, reason} ->
+            conn
+            |> put_flash(:error, admin_error_message(reason))
+            |> render_admin(user)
+        end
+
+      {:error, conn} ->
+        conn
+    end
+  end
+
+  defp queued_message(request, true),
+    do: "Queued a forced rebuild of #{request.package_name}."
+
+  defp queued_message(request, false), do: "Queued #{request.package_name}."
+
+  defp update_check_message(true),
+    do: "Dry run queued. It reports what it would rebuild and queues nothing."
+
+  defp update_check_message(false), do: "Update check queued."
+
   def register(conn, _params) do
     render_auth(conn, :register, username: "")
   end
@@ -64,7 +140,7 @@ defmodule PortalWeb.PageController do
         conn
         |> put_session(:user_id, user.id)
         |> put_flash(:info, "Signed in.")
-        |> redirect(to: ~p"/request-scan")
+        |> redirect(to: landing_path(user))
 
       {:error, reason} ->
         conn
@@ -361,13 +437,28 @@ defmodule PortalWeb.PageController do
   defp maybe_change_password(user, current_password, new_password),
     do: Portal.Accounts.change_password(user, current_password, new_password)
 
+  # Where signing in drops you. An admin signs in to administrate -- the queue,
+  # the pending approvals -- not to request a scan of somebody else's package,
+  # so sending them to the public request form is a detour every single time.
+  #
+  # This also repairs the one place the gate sends people nowhere useful:
+  # `RequireAdmin` bounces an unauthenticated visitor to `/login`, and before
+  # this they landed on `/request-scan` having asked for `/admin`.
+  defp landing_path(user) do
+    if Portal.Accounts.admin?(user), do: ~p"/admin", else: ~p"/request-scan"
+  end
+
   defp render_admin(conn, user) do
+    queue_requests = Portal.ScanRequests.queue_requests()
+
     render(conn, :admin,
       page_title: "Admin",
       page_description: "Administration.",
       current_user: user,
       pending_anonymous_requests: Portal.ScanRequests.pending_anonymous_requests(),
-      queue_requests: Portal.ScanRequests.queue_requests()
+      queue_requests: queue_requests,
+      queue_positions: Portal.Admin.queue_positions(Enum.map(queue_requests, & &1.id)),
+      update_check: Portal.Admin.update_check_status()
     )
   end
 
@@ -552,5 +643,27 @@ defmodule PortalWeb.PageController do
 
   defp admin_error_message(:not_found), do: "Request was not found."
   defp admin_error_message(:not_pending_anonymous), do: "Request is no longer pending review."
+  defp admin_error_message(:blank_package_name), do: "Enter a package name."
+
+  defp admin_error_message(:invalid_package_name),
+    do: "That does not look like a hex.pm package name."
+
+  defp admin_error_message({:already_open, request}),
+    do:
+      "#{request.package_name} already has an open request (#{request.status}). " <>
+        "Tick \"force a rebuild\" to queue another build anyway."
+
+  defp admin_error_message(:unknown_package), do: "hex.pm does not know that package."
+
+  defp admin_error_message(:unknown_package_version),
+    do: "hex.pm has no released version of that."
+
+  defp admin_error_message(:no_job), do: "No build job for that request -- nothing to reorder."
+
+  defp admin_error_message({:not_adjustable, state}),
+    do: "That build is already #{state}; its priority no longer affects anything."
+
+  defp admin_error_message(:already_at_limit), do: "Already at the end of the priority range."
+  defp admin_error_message(:already_queued), do: "An update check is already queued."
   defp admin_error_message(_), do: "Admin action failed."
 end

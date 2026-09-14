@@ -78,8 +78,20 @@ defmodule Portal.ScanRequests.ScanRequest do
       allow_nil?(false)
       public?(true)
 
+      # `:admin_manual` is an admin queueing a package from the admin page. It
+      # is deliberately distinct from `:anonymous_manual`, which is a stranger's
+      # submission waiting for review: the two have opposite trust and opposite
+      # priority, and folding them together would put admin requests into the
+      # approval list they are meant to bypass.
       constraints(
-        one_of: [:hex_owner, :github_repo, :anonymous_turnstile, :anonymous_manual, :backfill]
+        one_of: [
+          :hex_owner,
+          :github_repo,
+          :anonymous_turnstile,
+          :anonymous_manual,
+          :admin_manual,
+          :backfill
+        ]
       )
     end
 
