@@ -198,7 +198,10 @@ defmodule Portal.Workers.UpdateCheckTest do
       refute_received :asked_registry
     end
 
-    test "defaults to disabled when nothing is configured" do
+    # Not the shipped default, which is on -- this is the config block having
+    # gone missing altogether. The fallback stays `false` because the one thing
+    # a lost config must not do is start sending hex.pm traffic on its own.
+    test "sends nothing when the config block is absent entirely" do
       package("alpha", "1.0.0")
       hex_says([{"alpha", "1.1.0"}])
       Application.delete_env(:portal, UpdateCheck)

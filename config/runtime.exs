@@ -175,13 +175,23 @@ if portal_available? do
       end
   end
 
-  # Polling hex.pm for package updates. Off unless this says otherwise, because
-  # the traffic lands on somebody else's service — see
-  # `Portal.Workers.UpdateCheck`. Anything other than these three spellings
-  # leaves it off; there is no reading of a typo that should start sending
-  # requests.
-  if System.get_env("NCC_UPDATE_CHECK") in ["1", "true", "yes"] do
-    config :portal, Portal.Workers.UpdateCheck, enabled: true
+  # Polling hex.pm for package updates — see `Portal.Workers.UpdateCheck`. On by
+  # default; this is the kill switch, so that stopping the traffic to somebody
+  # else's service never requires a deploy.
+  #
+  # A typo leaves the compile-time default alone rather than guessing. That cuts
+  # the safer way in each direction: an unrecognised value cannot silently stop
+  # a check we mean to be running, and cannot silently start one we have
+  # deliberately switched off, because the deliberate `0` is still there to read.
+  case System.get_env("NCC_UPDATE_CHECK") do
+    v when v in ["1", "true", "yes"] ->
+      config :portal, Portal.Workers.UpdateCheck, enabled: true
+
+    v when v in ["0", "false", "no"] ->
+      config :portal, Portal.Workers.UpdateCheck, enabled: false
+
+    _ ->
+      :ok
   end
 
   # How many rebuilds a single run may queue. An unparseable or non-positive

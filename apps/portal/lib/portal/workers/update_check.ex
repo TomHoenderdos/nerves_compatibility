@@ -53,10 +53,9 @@ defmodule Portal.Workers.UpdateCheck do
 
   ## Enablement
 
-  Disabled unless `config :portal, #{inspect(__MODULE__)}, enabled: true`
-  (`NCC_UPDATE_CHECK=1` at runtime). The cron entry runs regardless and returns
-  immediately while disabled, which lets the schedule be verified in production
-  without sending hex.pm a single request.
+  On by default. `NCC_UPDATE_CHECK=0` switches it off at runtime without a
+  deploy, and the cron entry runs either way: while disabled the run returns
+  immediately, before any request to hex.pm.
   """
 
   use Oban.Worker,

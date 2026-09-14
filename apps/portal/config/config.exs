@@ -92,15 +92,19 @@ config :portal, Portal.Workers.LogRetention, budget_bytes: 2 * 1024 * 1024 * 102
 # Noticing when a tracked package publishes a new release, so results stop
 # silently ageing into a snapshot of whatever was current at the last build.
 #
-# Off by default, and it stays off until hex.pm agrees to the traffic: this
-# polls somebody else's service on a schedule, which is theirs to say yes to.
-# `NCC_UPDATE_CHECK=1` turns it on at runtime.
+# On. This polls somebody else's service on a schedule, so it shipped disabled
+# until hex.pm had a say; they answered by telling us where to poll, which is
+# what `repo.hex.pm` and the registry-v2 read are. Two CDN requests an hour.
+#
+# `NCC_UPDATE_CHECK=0` turns it off at runtime, without a deploy. That switch
+# matters more now that the default is on: if this ever misbehaves against
+# hex.pm, stopping it should not need a build.
 #
 # There is no window or watermark to configure: each run diffs the whole
 # catalogue against the whole registry, so a package stays visible until it is
 # actually rebuilt. See `Portal.Workers.UpdateCheck`.
 config :portal, Portal.Workers.UpdateCheck,
-  enabled: false,
+  enabled: true,
   # Ceiling on packages queued by a single run, so a burst on hex -- or the
   # backlog that exists the first time this runs -- cannot hand the build host a
   # week of work in one tick.

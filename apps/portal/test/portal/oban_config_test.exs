@@ -48,11 +48,13 @@ defmodule Portal.ObanConfigTest do
       assert Portal.Workers.UpdateCheck.__opts__()[:queue] == :intake
     end
 
-    test "ships disabled" do
-      # This polls somebody else's service on a schedule. It stays off until
-      # hex.pm has agreed to the traffic, and `NCC_UPDATE_CHECK=1` is what turns
-      # it on -- no code change, so the answer can be acted on the same day.
-      refute update_check_config()[:enabled]
+    test "ships enabled" do
+      # Asserted rather than assumed, because the failure is silent in both
+      # directions: shipped off, nothing ever notices a new release and the
+      # catalogue quietly ages; shipped on when it should not be, we send
+      # somebody else's service traffic they did not agree to. The runtime
+      # override (`NCC_UPDATE_CHECK`) exists so neither needs a deploy to fix.
+      assert update_check_config()[:enabled]
     end
 
     test "runs hourly, with a cap on what one run may queue" do
