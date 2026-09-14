@@ -64,7 +64,7 @@ defmodule PortalWeb.PageController do
         conn
         |> put_session(:user_id, user.id)
         |> put_flash(:info, "Signed in.")
-        |> redirect(to: ~p"/request-scan")
+        |> redirect(to: landing_path(user))
 
       {:error, reason} ->
         conn
@@ -360,6 +360,17 @@ defmodule PortalWeb.PageController do
 
   defp maybe_change_password(user, current_password, new_password),
     do: Portal.Accounts.change_password(user, current_password, new_password)
+
+  # Where signing in drops you. An admin signs in to administrate -- the queue,
+  # the pending approvals -- not to request a scan of somebody else's package,
+  # so sending them to the public request form is a detour every single time.
+  #
+  # This also repairs the one place the gate sends people nowhere useful:
+  # `RequireAdmin` bounces an unauthenticated visitor to `/login`, and before
+  # this they landed on `/request-scan` having asked for `/admin`.
+  defp landing_path(user) do
+    if Portal.Accounts.admin?(user), do: ~p"/admin", else: ~p"/request-scan"
+  end
 
   defp render_admin(conn, user) do
     render(conn, :admin,

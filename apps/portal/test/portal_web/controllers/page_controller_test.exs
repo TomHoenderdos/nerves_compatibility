@@ -100,6 +100,36 @@ defmodule PortalWeb.PageControllerTest do
     assert html_response(conn, 200) =~ "GitHub login is unavailable"
   end
 
+  test "signing in as an admin lands on the admin page", %{conn: conn} do
+    {:ok, admin} =
+      Portal.Accounts.seed_admin_user("landing_admin", "correct horse battery staple")
+
+    conn =
+      post(conn, ~p"/login", %{
+        "username" => admin.username,
+        "password" => "correct horse battery staple"
+      })
+
+    assert redirected_to(conn) == ~p"/admin"
+  end
+
+  test "signing in as an ordinary user still lands on the scan request form", %{conn: conn} do
+    # The other half of the branch, and the reason it is a separate test: a
+    # `landing_path/1` that ignored its argument and always returned `/admin`
+    # would satisfy the admin case above while sending every visitor to a page
+    # they are not allowed to see.
+    {:ok, _user} =
+      Portal.Accounts.register_user("landing_plain", "correct horse battery staple")
+
+    conn =
+      post(conn, ~p"/login", %{
+        "username" => "landing_plain",
+        "password" => "correct horse battery staple"
+      })
+
+    assert redirected_to(conn) == ~p"/request-scan"
+  end
+
   test "GET /admin redirects anonymous users", %{conn: conn} do
     conn = get(conn, ~p"/admin")
 
