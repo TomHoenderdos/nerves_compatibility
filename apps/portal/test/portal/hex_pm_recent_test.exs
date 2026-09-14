@@ -139,6 +139,18 @@ defmodule Portal.HexPmRecentTest do
       assert fetched() == [1]
     end
 
+    # Separate from the unparseable-string case above: a row with no `updated_at`
+    # key at all never reaches the parser, and falls to its own clause. Without
+    # this test that clause could return `true` -- treating a row we know nothing
+    # about as fresh, and paging on -- with the suite still green.
+    test "a row with no timestamp at all ends the walk" do
+      stub_page(1, [row("good", "1.0.0", 10), %{"name" => "no-timestamp"}])
+      stub_page(2, [row("unreached", "1.0.0", 1)])
+
+      assert {:ok, [%{name: "good"}]} = recently_updated(60)
+      assert fetched() == [1]
+    end
+
     test "an HTTP error is reported rather than returning a partial walk" do
       stub_raw(1, {:ok, %{status: 500, body: "boom"}})
 
