@@ -175,6 +175,41 @@ if portal_available? do
       end
   end
 
+  # Polling hex.pm for package updates — see `Portal.Workers.UpdateCheck`. On by
+  # default; this is the kill switch, so that stopping the traffic to somebody
+  # else's service never requires a deploy.
+  #
+  # A typo leaves the compile-time default alone rather than guessing. That cuts
+  # the safer way in each direction: an unrecognised value cannot silently stop
+  # a check we mean to be running, and cannot silently start one we have
+  # deliberately switched off, because the deliberate `0` is still there to read.
+  case System.get_env("NCC_UPDATE_CHECK") do
+    v when v in ["1", "true", "yes"] ->
+      config :portal, Portal.Workers.UpdateCheck, enabled: true
+
+    v when v in ["0", "false", "no"] ->
+      config :portal, Portal.Workers.UpdateCheck, enabled: false
+
+    _ ->
+      :ok
+  end
+
+  # How many rebuilds a single run may queue. An unparseable or non-positive
+  # value keeps the compile-time default rather than disabling the cap.
+  case System.get_env("NCC_UPDATE_CHECK_MAX_PER_RUN") do
+    nil ->
+      :ok
+
+    raw ->
+      case Integer.parse(raw) do
+        {cap, _rest} when cap > 0 ->
+          config :portal, Portal.Workers.UpdateCheck, max_per_run: cap
+
+        _ ->
+          :ok
+      end
+  end
+
   if config_env() == :prod do
     secret_key_base =
       System.get_env("SECRET_KEY_BASE") ||

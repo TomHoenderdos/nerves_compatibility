@@ -65,7 +65,17 @@ config :portal, Oban,
        # disks. Once a day is often enough: the budget is sized with a day of
        # slack in it, and the deletes take an exclusive lock on rows a page may
        # be reading.
-       {"41 3 * * *", Portal.Workers.LogRetention}
+       {"41 3 * * *", Portal.Workers.LogRetention},
+       # Hourly, off every other entry here. Carries `:intake` — the web host's
+       # queue — because this is an HTTP call to hex.pm, not a compile, and a
+       # registry-wide check has no business on the build box.
+       #
+       # The entry runs whether or not the check is enabled below; while
+       # disabled the worker returns immediately. That is deliberate: it lets
+       # the schedule be verified on production without sending hex.pm a single
+       # request, so switching on is an environment variable rather than a
+       # deploy.
+       {"7 * * * *", Portal.Workers.UpdateCheck}
      ]}
   ]
 
@@ -78,6 +88,36 @@ config :portal, Oban,
 # week of failing builds across ~2500 packages could store tens of gigabytes of
 # logs without anyone deciding to, which is a real risk at any disk size.
 config :portal, Portal.Workers.LogRetention, budget_bytes: 2 * 1024 * 1024 * 1024
+
+# Noticing when a tracked package publishes a new release, so results stop
+# silently ageing into a snapshot of whatever was current at the last build.
+#
+# On. This polls somebody else's service on a schedule, so it shipped disabled
+# until hex.pm had a say; they answered by telling us where to poll, which is
+# what `repo.hex.pm` and the registry-v2 read are. Two CDN requests an hour.
+#
+# `NCC_UPDATE_CHECK=0` turns it off at runtime, without a deploy. That switch
+# matters more now that the default is on: if this ever misbehaves against
+# hex.pm, stopping it should not need a build.
+#
+# There is no window or watermark to configure: each run diffs the whole
+# catalogue against the whole registry, so a package stays visible until it is
+# actually rebuilt. See `Portal.Workers.UpdateCheck`.
+config :portal, Portal.Workers.UpdateCheck,
+  enabled: true,
+  # Ceiling on packages queued by a single run, so a burst on hex -- or the
+  # backlog that exists the first time this runs -- cannot hand the build host a
+  # week of work in one tick.
+  #
+  # Per *run* rather than per day, and deferral rather than dropping. Nothing is
+  # lost when the cap binds: the next run sees the same drift, because the
+  # comparison is against what we have built, not against a clock. `select/2`
+  # spends the budget oldest-first, so a backlog drains in the order it
+  # accumulated instead of being crowded out by fresh releases.
+  #
+  # Five an hour against a measured arrival of 9-15 a day means the cap does not
+  # bind in normal operation; it shapes the initial backlog and any burst.
+  max_per_run: 5
 
 # The dashboard, stats and cluster pages fold every package, run and system
 # result in Elixir -- 655ms warm on production, paid twice per page view because
