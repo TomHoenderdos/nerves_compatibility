@@ -65,7 +65,17 @@ config :portal, Oban,
        # disks. Once a day is often enough: the budget is sized with a day of
        # slack in it, and the deletes take an exclusive lock on rows a page may
        # be reading.
-       {"41 3 * * *", Portal.Workers.LogRetention}
+       {"41 3 * * *", Portal.Workers.LogRetention},
+       # Hourly, off every other entry here. Carries `:intake` — the web host's
+       # queue — because this is an HTTP call to hex.pm, not a compile, and a
+       # registry-wide check has no business on the build box.
+       #
+       # The entry runs whether or not the check is enabled below; while
+       # disabled the worker returns immediately. That is deliberate: it lets
+       # the schedule be verified on production without sending hex.pm a single
+       # request, so switching on is an environment variable rather than a
+       # deploy.
+       {"7 * * * *", Portal.Workers.UpdateCheck}
      ]}
   ]
 
@@ -78,6 +88,20 @@ config :portal, Oban,
 # week of failing builds across ~2500 packages could store tens of gigabytes of
 # logs without anyone deciding to, which is a real risk at any disk size.
 config :portal, Portal.Workers.LogRetention, budget_bytes: 2 * 1024 * 1024 * 1024
+
+# Noticing when a tracked package publishes a new release, so results stop
+# silently ageing into a snapshot of whatever was current at the last build.
+#
+# Off by default, and it stays off until hex.pm agrees to the traffic: this
+# polls somebody else's service on a schedule, which is theirs to say yes to.
+# `NCC_UPDATE_CHECK=1` turns it on at runtime.
+#
+# `lookback_ms` must stay comfortably wider than the cron interval above — it is
+# the only thing standing in for a watermark, and the overlap is what makes a
+# missed tick harmless. See `Portal.Workers.UpdateCheck`.
+config :portal, Portal.Workers.UpdateCheck,
+  enabled: false,
+  lookback_ms: 6 * 60 * 60 * 1000
 
 # The dashboard, stats and cluster pages fold every package, run and system
 # result in Elixir -- 655ms warm on production, paid twice per page view because

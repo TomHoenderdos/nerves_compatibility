@@ -175,6 +175,33 @@ if portal_available? do
       end
   end
 
+  # Polling hex.pm for package updates. Off unless this says otherwise, because
+  # the traffic lands on somebody else's service — see
+  # `Portal.Workers.UpdateCheck`. Anything other than these three spellings
+  # leaves it off; there is no reading of a typo that should start sending
+  # requests.
+  if System.get_env("NCC_UPDATE_CHECK") in ["1", "true", "yes"] do
+    config :portal, Portal.Workers.UpdateCheck, enabled: true
+  end
+
+  # Hours are the human unit; the worker wants milliseconds. This is the window
+  # that replaces a stored watermark, so a value at or below the cron interval
+  # would leave gaps whenever a tick is missed — an unparseable or too-small
+  # value keeps the compile-time default rather than narrowing it.
+  case System.get_env("NCC_UPDATE_CHECK_LOOKBACK_HOURS") do
+    nil ->
+      :ok
+
+    raw ->
+      case Float.parse(raw) do
+        {hours, _rest} when hours >= 2 ->
+          config :portal, Portal.Workers.UpdateCheck, lookback_ms: trunc(hours * 60 * 60 * 1000)
+
+        _ ->
+          :ok
+      end
+  end
+
   if config_env() == :prod do
     secret_key_base =
       System.get_env("SECRET_KEY_BASE") ||
