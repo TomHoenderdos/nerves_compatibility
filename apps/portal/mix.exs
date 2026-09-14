@@ -69,6 +69,7 @@ defmodule Portal.MixProject do
       {:compatibility, in_umbrella: true},
       {:argon2_elixir, "~> 4.1"},
       {:req, "~> 0.7"},
+      {:hex_core, "~> 0.19"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"}
