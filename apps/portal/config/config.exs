@@ -96,27 +96,24 @@ config :portal, Portal.Workers.LogRetention, budget_bytes: 2 * 1024 * 1024 * 102
 # polls somebody else's service on a schedule, which is theirs to say yes to.
 # `NCC_UPDATE_CHECK=1` turns it on at runtime.
 #
-# `lookback_ms` must stay comfortably wider than the cron interval above — it is
-# the only thing standing in for a watermark, and the overlap is what makes a
-# missed tick harmless. See `Portal.Workers.UpdateCheck`.
+# There is no window or watermark to configure: each run diffs the whole
+# catalogue against the whole registry, so a package stays visible until it is
+# actually rebuilt. See `Portal.Workers.UpdateCheck`.
 config :portal, Portal.Workers.UpdateCheck,
   enabled: false,
-  # Ceiling on packages queued by a single run, so a burst on hex cannot hand
-  # the build host a day of work in one tick.
+  # Ceiling on packages queued by a single run, so a burst on hex -- or the
+  # backlog that exists the first time this runs -- cannot hand the build host a
+  # week of work in one tick.
   #
-  # Per *run* rather than per day, and that distinction is the whole safety
-  # argument. This check has no memory: a package is visible only while it sits
-  # inside the lookback window. A daily cap would drop everything over the limit
-  # on the floor, and the window would move past it before it was ever
-  # reconsidered -- silently skipping a release until the package's next one. A
-  # per-run cap defers instead, because the window re-offers the same package on
-  # every run until it expires: at an hourly schedule and a six-hour window,
-  # each update gets six chances, and `select/2` spends them oldest-first.
+  # Per *run* rather than per day, and deferral rather than dropping. Nothing is
+  # lost when the cap binds: the next run sees the same drift, because the
+  # comparison is against what we have built, not against a clock. `select/2`
+  # spends the budget oldest-first, so a backlog drains in the order it
+  # accumulated instead of being crowded out by fresh releases.
   #
   # Five an hour against a measured arrival of 9-15 a day means the cap does not
-  # bind in normal operation; it only shapes a burst.
-  max_per_run: 5,
-  lookback_ms: 6 * 60 * 60 * 1000
+  # bind in normal operation; it shapes the initial backlog and any burst.
+  max_per_run: 5
 
 # The dashboard, stats and cluster pages fold every package, run and system
 # result in Elixir -- 655ms warm on production, paid twice per page view because

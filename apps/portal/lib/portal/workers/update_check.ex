@@ -10,41 +10,45 @@ defmodule Portal.Workers.UpdateCheck do
   version *we tested*, written from the build result in
   `Portal.Catalog.Ingestion`, so it only moves when a build happens.
 
-  ## Why a window instead of a watermark
+  ## Stateless, and not a window
 
-  The obvious design remembers the timestamp of the last successful check and
-  asks for everything since. That needs somewhere durable to put one timestamp,
-  and there is no such store in this application -- it would mean a table, a
-  migration, and a new failure mode where a lost or corrupted watermark either
-  re-checks the whole registry or silently skips a day.
+  Each run compares our whole catalogue against the whole hex.pm registry, which
+  `Portal.HexRegistry` delivers in two CDN requests. There is no watermark to
+  store and no lookback to tune: a package that drifted last month is just as
+  visible as one that drifted an hour ago, so a missed tick, a restart, or a
+  deploy costs nothing.
 
-  Instead each run looks back a fixed window, wider than the interval it runs
-  on. At the default hourly schedule and six-hour window every update is seen
-  roughly six times before it falls out, so a missed tick, a restart, or a
-  deploy costs nothing and there is no state to lose. Repetition is free because
-  the work is idempotent three layers deep: this worker only acts on a version
-  that differs from the one on record, `Portal.Workers.Backfill` is unique per
-  package per day, `Portal.ScanRequests.create_once/1` is idempotent against an
-  already-open request, and `Portal.Workers.Build` is unique on
-  package/version/image.
+  That is worth spelling out because the obvious alternatives are both worse. A
+  stored watermark needs a table, a migration, and a new failure mode where
+  losing it either re-checks everything or silently skips a day. A fixed lookback
+  window needs no state but *drops* anything older than the cutoff -- which is
+  exactly the backlog that accumulated before this worker existed, and which it
+  would then never repair.
 
-  The window is the retention guarantee, so it must stay comfortably larger than
-  the cron interval. Widening it is cheap -- hex.pm sees on the order of 130
-  updates a day, so six hours is well under one 100-row page.
+  Re-offering the same package on every run is free because the work is
+  idempotent three layers deep: this worker only acts on a version that differs
+  from the one on record, `Portal.Workers.Backfill` is unique per package per
+  day, `Portal.ScanRequests.create_once/1` is idempotent against an already-open
+  request, and `Portal.Workers.Build` is unique on package/version/image.
+
+  ## What earns a rebuild
+
+  Not every release is worth a build. A version that differs from the one on
+  record is a candidate; `significant?/2` and the per-run cap decide what
+  actually gets queued, and both are documented where they are implemented.
 
   ## Scope
 
-  Only packages already in the catalogue. A package hex.pm updated that we have
-  never tested is not stale, it is absent, and seeding new packages belongs to
+  Only packages already in the catalogue. A registry package we have never
+  tested is not stale, it is absent, and seeding new packages belongs to
   `Portal.UpstreamBackfill`. Restricting it this way also bounds the work: we
-  track roughly a seventh of hex.pm, so a typical day is on the order of fifteen
-  rebuilds.
+  track roughly a ninth of hex.pm.
 
   ## Why queue `:intake`
 
-  The work here is one HTTP request to hex.pm and a handful of inserts, not a
-  compile. `:intake` runs on the web host, which keeps a registry-wide check off
-  the machine doing the builds it is queueing -- the same reasoning
+  The work here is two HTTP requests and a handful of inserts, not a compile.
+  `:intake` runs on the web host, which keeps a registry-wide check off the
+  machine doing the builds it is queueing -- the same reasoning
   `Portal.Workers.Backfill` documents.
 
   ## Enablement
@@ -52,14 +56,13 @@ defmodule Portal.Workers.UpdateCheck do
   Disabled unless `config :portal, #{inspect(__MODULE__)}, enabled: true`
   (`NCC_UPDATE_CHECK=1` at runtime). The cron entry runs regardless and returns
   immediately while disabled, which lets the schedule be verified in production
-  without sending hex.pm a single request -- this polls somebody else's service,
-  and that was worth asking permission for before switching on.
+  without sending hex.pm a single request.
   """
 
   use Oban.Worker,
     queue: :intake,
-    # A failed check waits for the next tick rather than hammering hex.pm: the
-    # next run's window still covers anything this one missed. Two attempts
+    # A failed check waits for the next tick rather than hammering hex.pm:
+    # nothing is lost, because the next run sees the same drift. Two attempts
     # cover a transient blip without turning an outage into a retry storm.
     max_attempts: 2,
     unique: [period: :infinity, states: :incomplete]
@@ -71,7 +74,6 @@ defmodule Portal.Workers.UpdateCheck do
   alias Portal.Catalog.Run
   alias Portal.Workers.Backfill
 
-  @default_lookback_ms :timer.hours(6)
   @default_max_per_run 5
 
   @impl Oban.Worker
@@ -84,39 +86,29 @@ defmodule Portal.Workers.UpdateCheck do
   end
 
   @doc """
-  Check hex.pm for updates and queue a rebuild for every package whose version
-  has moved.
+  Diff the catalogue against the hex.pm registry and queue rebuilds.
 
   Runs regardless of the `:enabled` flag -- that gate belongs to the scheduled
   path, not to a human at a console deciding to run one on purpose.
 
-  Options:
-
-    * `:lookback_ms` - how far back to ask (default six hours)
-    * `:dry_run` - report what would be queued without queueing it
-
   Returns `{:ok, %{seen: n, moved: n, enqueued: n, deferred: n}}`, where `seen`
-  counts packages hex.pm updated in the window, `moved` the subset we track that
-  is worth rebuilding, `enqueued` the jobs actually inserted -- lower than
-  `moved` when a package is already queued from an earlier run, or when the
-  per-run cap binds -- and `deferred` the ones the cap held back for a later run.
+  counts packages in the registry, `moved` the ones we track that are worth
+  rebuilding, `enqueued` the jobs actually inserted -- lower than `moved` when a
+  package is already queued from an earlier run, or when the per-run cap binds --
+  and `deferred` the ones the cap held back for a later run.
 
   Options:
 
-    * `:lookback_ms` - override the configured window.
     * `:max_per_run` - override the configured cap.
     * `:dry_run` - classify without inserting anything.
   """
   @spec run(keyword()) :: {:ok, map()} | {:error, term()}
   def run(opts \\ []) do
-    lookback_ms = Keyword.get(opts, :lookback_ms, lookback_ms())
-    since = DateTime.add(DateTime.utc_now(), -lookback_ms, :millisecond)
-
     max_per_run = Keyword.get(opts, :max_per_run, max_per_run())
 
-    case updates_source().recently_updated(since: since) do
-      {:ok, updates} ->
-        moved = moved(updates)
+    case registry_source().snapshot() do
+      {:ok, registry} ->
+        moved = moved(registry)
         {selected, deferred} = select(moved, max_per_run)
 
         enqueued =
@@ -133,12 +125,12 @@ defmodule Portal.Workers.UpdateCheck do
         end
 
         Logger.info(
-          "Update check: #{length(updates)} updated on hex, #{length(moved)} tracked and worth rebuilding, #{enqueued} queued"
+          "Update check: #{length(registry)} packages on hex, #{length(moved)} tracked and worth rebuilding, #{enqueued} queued"
         )
 
         {:ok,
          %{
-           seen: length(updates),
+           seen: length(registry),
            moved: length(moved),
            enqueued: enqueued,
            deferred: deferred
@@ -151,64 +143,79 @@ defmodule Portal.Workers.UpdateCheck do
 
   # Oldest first, then take the cap.
   #
-  # Ordering matters only when the cap binds, and then it matters a lot. The
-  # window is the only thing keeping a deferred package alive: it is re-offered
-  # on every run until it falls past the cutoff. So the right work to do first
-  # is the work closest to expiring. Taking the newest instead would starve
-  # exactly the packages about to drop out -- they would be skipped every hour
-  # by fresher arrivals and then be gone, and nothing would notice.
+  # Ordering only matters when the cap binds, and then it matters a lot. Without
+  # it the same fresh releases win the budget on every run while the oldest
+  # drift -- the packages whose published results are most wrong -- never gets a
+  # turn. Sorting by the registry's `updated_at` drains the backlog in the order
+  # it accumulated, so the queue makes progress instead of churning on the head.
+  #
+  # A package whose timestamp the registry did not carry sorts last rather than
+  # first: unknown is not the same as ancient, and treating it as ancient would
+  # hand it the whole budget.
   defp select(moved, max_per_run) do
-    selected = moved |> Enum.reverse() |> Enum.take(max_per_run)
+    selected =
+      moved
+      |> Enum.sort_by(fn entry ->
+        case entry.updated_at do
+          nil -> {1, 0}
+          at -> {0, DateTime.to_unix(at)}
+        end
+      end)
+      |> Enum.take(max_per_run)
+
     {selected, length(moved) - length(selected)}
   end
 
-  defp moved([]), do: []
+  defp moved(registry) do
+    by_name = Map.new(registry, &{&1.name, &1})
 
-  defp moved(updates) do
-    names = Enum.map(updates, & &1.name)
-
-    tracked =
+    # The whole catalogue, not a filtered subset. Passing ~22,000 registry names
+    # to the database as an `IN` list would be absurd; reading our own 2,500 rows
+    # and intersecting in memory is bounded by the size of the catalogue.
+    drifted =
       Package
-      |> Ash.Query.filter(name in ^names)
       |> Ash.Query.select([:id, :name, :latest_version])
       |> Ash.read!(domain: Portal.Catalog)
+      |> Enum.flat_map(fn package ->
+        case Map.fetch(by_name, package.name) do
+          {:ok, entry} when entry.latest_version != package.latest_version -> [{package, entry}]
+          _ -> []
+        end
+      end)
 
-    statuses = latest_run_statuses(Enum.map(tracked, & &1.id))
-    by_name = Map.new(tracked, &{&1.name, &1})
+    # Run statuses are only needed to decide the patch-release exception below,
+    # so they are read for the few hundred packages that actually drifted rather
+    # than for the whole catalogue.
+    statuses = latest_run_statuses(Enum.map(drifted, fn {package, _entry} -> package.id end))
 
-    Enum.filter(updates, fn update ->
-      case Map.fetch(by_name, update.name) do
-        {:ok, package} -> rebuild?(package, update, statuses)
-        :error -> false
-      end
-    end)
+    for {package, entry} <- drifted, rebuild?(package, entry, statuses), do: entry
   end
 
   # A tracked package with no version on record has never produced a build
   # result. That is as stale as a version that moved, and the same rebuild is
   # the fix, so it belongs here rather than in a special case.
-  defp rebuild?(%{latest_version: nil}, _update, _statuses), do: true
+  defp rebuild?(%{latest_version: nil}, _entry, _statuses), do: true
 
-  defp rebuild?(package, update, statuses) do
-    package.latest_version != update.latest_version and
-      (significant?(package.latest_version, update.latest_version) or
-         not passing?(package.id, statuses))
+  defp rebuild?(package, entry, statuses) do
+    significant?(package.latest_version, entry.latest_version) or
+      not passing?(package.id, statuses)
   end
 
   # Whether a version change is worth a rebuild on its own.
   #
-  # Patch releases are 45% of the drift in this catalogue and are the releases
-  # least likely to change what we measure -- compilation against a Nerves
-  # target, native components, footprint. Skipping them halves the rebuild
-  # volume for close to no loss of signal, and a maintainer who wants a patch
-  # verified can still ask for a scan by hand.
+  # Patch releases are 46% of the drift in this catalogue (178 of 388 measured
+  # against the live registry) and are the releases least likely to change what
+  # we measure -- compilation against a Nerves target, native components,
+  # footprint. Skipping them nearly halves the rebuild volume for close to no
+  # loss of signal, and a maintainer who wants a patch verified can still ask
+  # for a scan by hand.
   #
   # The exception is in `rebuild?/3` above rather than here: a package whose
   # last run did not pass is rebuilt on *any* version change. A patch release on
   # a failing package is the most informative event we can observe -- it is
   # usually the maintainer fixing the thing we flagged -- and refusing to look
   # would leave a red badge that no release can ever clear. It costs little:
-  # only 8 of the 175 patch-only drifts measured here were on failing packages.
+  # honouring it turns 170 skipped patch bumps into 178.
   defp significant?(from, to) do
     case {Version.parse(from), Version.parse(to)} do
       {{:ok, from}, {:ok, to}} ->
@@ -249,7 +256,7 @@ defmodule Portal.Workers.UpdateCheck do
   defp enqueue(%{name: name}) do
     case %{package: name} |> Backfill.new() |> Oban.insert() do
       # Already queued by an earlier run inside `Backfill`'s uniqueness period.
-      # Expected on every overlapping window, and not worth logging.
+      # Expected whenever the cap defers work, and not worth logging.
       {:ok, %Oban.Job{conflict?: true}} ->
         false
 
@@ -264,12 +271,10 @@ defmodule Portal.Workers.UpdateCheck do
 
   defp enabled?, do: Keyword.get(config(), :enabled, false) == true
 
-  defp lookback_ms, do: Keyword.get(config(), :lookback_ms, @default_lookback_ms)
-
   defp max_per_run, do: Keyword.get(config(), :max_per_run, @default_max_per_run)
 
   defp config, do: Application.get_env(:portal, __MODULE__, [])
 
-  defp updates_source,
-    do: Application.get_env(:portal, :hex_updates_source, Portal.HexPm)
+  defp registry_source,
+    do: Application.get_env(:portal, :hex_registry_source, Portal.HexRegistry)
 end

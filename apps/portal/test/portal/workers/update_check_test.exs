@@ -10,30 +10,42 @@ defmodule Portal.Workers.UpdateCheckTest do
   alias Portal.Workers.UpdateCheck
 
   setup do
-    Application.put_env(:portal, :hex_updates_source, __MODULE__.StubUpdates)
+    Application.put_env(:portal, :hex_registry_source, __MODULE__.StubRegistry)
 
     on_exit(fn ->
-      Application.delete_env(:portal, :hex_updates_source)
+      Application.delete_env(:portal, :hex_registry_source)
       Application.delete_env(:portal, UpdateCheck)
     end)
 
     :ok
   end
 
-  # Stands in for `Portal.HexPm`. The worker runs in the test process, so the
-  # canned answer can live in the process dictionary.
-  defmodule StubUpdates do
-    def recently_updated(opts) do
-      send(self(), {:asked_since, Keyword.fetch!(opts, :since)})
+  # Stands in for `Portal.HexRegistry`. The worker runs in the test process, so
+  # the canned answer can live in the process dictionary.
+  defmodule StubRegistry do
+    def snapshot do
+      send(self(), :asked_registry)
 
       case Process.get(:hex_answer, {:ok, []}) do
-        {:ok, rows} -> {:ok, Enum.map(rows, &normalise/1)}
+        {:ok, rows} -> {:ok, rows |> Enum.with_index() |> Enum.map(&normalise/1)}
         other -> other
       end
     end
 
-    defp normalise({name, version}),
-      do: %{name: name, latest_version: version, updated_at: DateTime.utc_now()}
+    # Timestamps descend with list position, so the first row written in a test
+    # is the newest package. The real registry carries no ordering at all and
+    # the worker sorts on `updated_at`; writing the rows newest-first here keeps
+    # the ordering tests honest rather than letting them pass on list order.
+    defp normalise({{name, version}, index}) do
+      %{
+        name: name,
+        latest_version: version,
+        updated_at: DateTime.add(DateTime.utc_now(), -index, :second)
+      }
+    end
+
+    defp normalise({{name, version, updated_at}, _index}),
+      do: %{name: name, latest_version: version, updated_at: updated_at}
   end
 
   defp hex_says(rows), do: Process.put(:hex_answer, {:ok, rows})
@@ -143,14 +155,26 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert queued_packages() == []
     end
 
-    test "asks hex for the configured window" do
-      hex_says([])
+    # The whole point of reading the registry rather than a window: a package
+    # that drifted long ago is still visible, so nothing has to be remembered
+    # between runs and a missed tick repairs itself.
+    test "queues a package whose drift is far older than any window would cover" do
+      package("ancient", "1.0.0")
+      hex_says([{"ancient", "2.0.0", ~U[2020-01-01 00:00:00Z]}])
 
-      assert {:ok, _} = UpdateCheck.run(lookback_ms: :timer.hours(6))
+      assert {:ok, %{moved: 1, enqueued: 1}} = UpdateCheck.run()
+      assert queued_packages() == ["ancient"]
+    end
 
-      assert_received {:asked_since, since}
-      hours = DateTime.diff(DateTime.utc_now(), since, :second) / 3600
-      assert_in_delta hours, 6, 0.1
+    # Tracked packages are looked up in the registry rather than the other way
+    # round, so a name hex no longer publishes must simply be absent from the
+    # comparison -- not crash, and not read as drift.
+    test "ignores a tracked package the registry does not carry" do
+      package("withdrawn", "1.0.0")
+      hex_says([{"other", "1.0.0"}])
+
+      assert {:ok, %{moved: 0, enqueued: 0}} = UpdateCheck.run()
+      assert queued_packages() == []
     end
 
     test "a hex failure is reported rather than counted as nothing to do" do
@@ -171,7 +195,7 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert :ok = perform_job(UpdateCheck, %{})
       assert queued_packages() == []
       # Disabled has to mean "sends hex.pm nothing", not "throws the answer away".
-      refute_received {:asked_since, _}
+      refute_received :asked_registry
     end
 
     test "defaults to disabled when nothing is configured" do
@@ -180,7 +204,7 @@ defmodule Portal.Workers.UpdateCheckTest do
       Application.delete_env(:portal, UpdateCheck)
 
       assert :ok = perform_job(UpdateCheck, %{})
-      refute_received {:asked_since, _}
+      refute_received :asked_registry
     end
 
     test "runs the check once enabled" do
@@ -190,17 +214,6 @@ defmodule Portal.Workers.UpdateCheckTest do
 
       assert {:ok, %{enqueued: 1}} = perform_job(UpdateCheck, %{})
       assert queued_packages() == ["alpha"]
-    end
-
-    test "uses the configured lookback window" do
-      hex_says([])
-      Application.put_env(:portal, UpdateCheck, enabled: true, lookback_ms: :timer.hours(12))
-
-      assert {:ok, _} = perform_job(UpdateCheck, %{})
-
-      assert_received {:asked_since, since}
-      hours = DateTime.diff(DateTime.utc_now(), since, :second) / 3600
-      assert_in_delta hours, 12, 0.1
     end
   end
 
@@ -328,17 +341,54 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert length(queued_packages()) == 2
     end
 
-    # The ordering rule, and the reason the cap is safe. hex.pm hands back the
-    # newest update first, and the window is the only thing keeping a deferred
-    # package alive -- so the budget goes to the end of the list, the work
-    # closest to falling past the cutoff. Newest-first would starve exactly the
-    # packages about to disappear.
+    # The ordering rule, and the reason the cap is safe. Without it the same
+    # fresh releases win the budget every hour while the oldest drift -- the
+    # results that have been wrong longest -- never gets a turn.
     test "spends the budget oldest first" do
       for name <- ["newest", "middle", "oldest"], do: passing_package(name, "1.0.0")
       hex_says([{"newest", "1.1.0"}, {"middle", "1.1.0"}, {"oldest", "1.1.0"}])
 
       assert {:ok, %{moved: 3, enqueued: 1, deferred: 2}} = UpdateCheck.run(max_per_run: 1)
       assert queued_packages() == ["oldest"]
+    end
+
+    # Two things at once, and the dates are chosen for both.
+    #
+    # Ordering must come from the timestamp rather than the order the registry
+    # happened to list things -- the registry has no meaningful order of its
+    # own, so listing `first` first must not give it the budget.
+    #
+    # And it must be a *chronological* comparison. `DateTime` structs do not
+    # sort chronologically under Erlang term ordering: a map compares by key
+    # name, so `day` is weighed before `month` or `year`. Across this new-year
+    # boundary the two orders disagree -- the older date has the larger `day` --
+    # so sorting the raw structs would queue the wrong package and every
+    # same-month pair of dates would fail to notice.
+    test "orders by timestamp, chronologically, not by registry position" do
+      for name <- ["first", "second"], do: passing_package(name, "1.0.0")
+
+      hex_says([
+        {"first", "1.1.0", ~U[2026-01-01 00:00:00Z]},
+        {"second", "1.1.0", ~U[2025-12-31 00:00:00Z]}
+      ])
+
+      assert {:ok, %{enqueued: 1, deferred: 1}} = UpdateCheck.run(max_per_run: 1)
+      assert queued_packages() == ["second"]
+    end
+
+    # `updated_at` is optional in the registry protobuf. An unknown timestamp
+    # must not sort as the beginning of time, or one such package would take the
+    # whole budget ahead of drift we can actually date.
+    test "a package with no timestamp sorts last rather than first" do
+      for name <- ["dated", "undated"], do: passing_package(name, "1.0.0")
+
+      hex_says([
+        {"undated", "1.1.0", nil},
+        {"dated", "1.1.0", ~U[2026-01-01 00:00:00Z]}
+      ])
+
+      assert {:ok, %{enqueued: 1, deferred: 1}} = UpdateCheck.run(max_per_run: 1)
+      assert queued_packages() == ["dated"]
     end
 
     test "nothing is deferred when the cap does not bind" do

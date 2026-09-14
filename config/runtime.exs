@@ -184,10 +184,8 @@ if portal_available? do
     config :portal, Portal.Workers.UpdateCheck, enabled: true
   end
 
-  # Hours are the human unit; the worker wants milliseconds. This is the window
-  # that replaces a stored watermark, so a value at or below the cron interval
-  # would leave gaps whenever a tick is missed — an unparseable or too-small
-  # value keeps the compile-time default rather than narrowing it.
+  # How many rebuilds a single run may queue. An unparseable or non-positive
+  # value keeps the compile-time default rather than disabling the cap.
   case System.get_env("NCC_UPDATE_CHECK_MAX_PER_RUN") do
     nil ->
       :ok
@@ -196,20 +194,6 @@ if portal_available? do
       case Integer.parse(raw) do
         {cap, _rest} when cap > 0 ->
           config :portal, Portal.Workers.UpdateCheck, max_per_run: cap
-
-        _ ->
-          :ok
-      end
-  end
-
-  case System.get_env("NCC_UPDATE_CHECK_LOOKBACK_HOURS") do
-    nil ->
-      :ok
-
-    raw ->
-      case Float.parse(raw) do
-        {hours, _rest} when hours >= 2 ->
-          config :portal, Portal.Workers.UpdateCheck, lookback_ms: trunc(hours * 60 * 60 * 1000)
 
         _ ->
           :ok

@@ -55,14 +55,16 @@ defmodule Portal.ObanConfigTest do
       refute update_check_config()[:enabled]
     end
 
-    test "the lookback window is wider than the interval it runs on" do
+    test "runs hourly, with a cap on what one run may queue" do
       {expr, _worker} = update_check_entry()
 
-      # There is no stored watermark: overlapping windows are the only thing
-      # making a missed tick harmless. A window at or below the interval
-      # silently loses every update that lands in a run that did not happen.
       assert expr =~ ~r/^\d+ \* \* \* \*$/, "expected an hourly schedule, got #{expr}"
-      assert update_check_config()[:lookback_ms] >= :timer.hours(2)
+
+      # Each run diffs the whole registry, so there is no window to keep wider
+      # than the interval and a missed tick loses nothing. What the schedule
+      # does need is the cap: without one, the first run after a quiet spell
+      # hands the build host the entire backlog at once.
+      assert update_check_config()[:max_per_run] > 0
     end
   end
 end

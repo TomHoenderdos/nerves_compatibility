@@ -8,7 +8,6 @@ defmodule Portal.HexPm do
   @client_id "78ea6566-89fd-481e-a1d6-7d9d78eacca8"
   @scope "api:read"
   @api_url "https://hex.pm/api"
-  @default_max_pages 10
 
   @doc """
   OAuth scope requested from Hex.pm.
@@ -123,108 +122,6 @@ defmodule Portal.HexPm do
   end
 
   def latest_version(_package_name), do: {:error, :unknown_package}
-
-  @doc """
-  Packages hex.pm has updated since `since`, newest first.
-
-  Walks `GET /api/packages?sort=updated_at`, which returns the whole registry
-  ordered by update time, 100 rows to a page. Each row already carries
-  `latest_version`, so one page answers "what changed today?" for every package
-  at once -- the alternative is `latest_version/1` per package, which for this
-  catalogue means ~2500 requests to learn that almost nothing moved.
-
-  Rows arrive newest first, so the walk stops at the first page containing
-  anything at or before `since`: every later page is older still.
-
-  Options:
-
-    * `:since` - required `DateTime` cutoff, exclusive.
-    * `:max_pages` - stop after this many pages even if the cutoff has not been
-      reached (default #{@default_max_pages}).
-    * `:client` - module answering `get/2` like `Req` does. An injection seam so
-      the paging and stop conditions can be tested without a network or a global
-      stub; nothing in the application passes it.
-
-  `:max_pages` is a guard against walking the entire registry, not a tuning
-  knob. hex.pm sees on the order of 130 updates a day, so a page and a half
-  covers a day and the cap is only reachable if `since` is wrong -- a clock
-  skewed weeks into the past, or a caller passing a year-old cutoff. Hitting it
-  logs and returns what was collected rather than continuing, because the
-  request budget matters more than completeness: anything missed is picked up by
-  the next run, and a run that quietly fetched 180 pages is the failure mode
-  worth preventing.
-  """
-  @spec recently_updated(keyword()) ::
-          {:ok, [%{name: String.t(), latest_version: String.t(), updated_at: DateTime.t()}]}
-          | {:error, :hex_api_unavailable}
-  def recently_updated(opts \\ []) do
-    since = Keyword.fetch!(opts, :since)
-    max_pages = Keyword.get(opts, :max_pages, @default_max_pages)
-    client = Keyword.get(opts, :client, Req)
-
-    fetch_recent_pages(client, since, max_pages, 1, [])
-  end
-
-  defp fetch_recent_pages(_client, _since, max_pages, page, acc) when page > max_pages do
-    Logger.warning(
-      "Hex recent-package walk stopped at the #{max_pages} page cap without reaching the cutoff"
-    )
-
-    {:ok, collected(acc)}
-  end
-
-  defp fetch_recent_pages(client, since, max_pages, page, acc) do
-    case client.get("#{@api_url}/packages", params: [sort: "updated_at", page: page]) do
-      {:ok, %{status: 200, body: packages}} when is_list(packages) ->
-        fresh = Enum.filter(packages, &updated_since?(&1, since))
-        acc = [Enum.flat_map(fresh, &recent_package/1) | acc]
-
-        # A short page means the cutoff landed inside it; an empty one means the
-        # registry ran out. Either way there is nothing newer further on, and
-        # the empty case has to be tested for on its own -- a page with no rows
-        # drops none, so the short-page test alone would page to the cap.
-        if packages == [] or length(fresh) < length(packages) do
-          {:ok, collected(acc)}
-        else
-          fetch_recent_pages(client, since, max_pages, page + 1, acc)
-        end
-
-      {:ok, %{status: status, body: body}} ->
-        Logger.warning("Hex recent-package walk failed: HTTP #{status} #{inspect(body)}")
-        {:error, :hex_api_unavailable}
-
-      {:error, reason} ->
-        Logger.warning("Hex recent-package walk failed: #{inspect(reason)}")
-        {:error, :hex_api_unavailable}
-    end
-  end
-
-  defp collected(acc), do: acc |> Enum.reverse() |> List.flatten()
-
-  defp updated_since?(%{"updated_at" => updated_at}, since) when is_binary(updated_at) do
-    case DateTime.from_iso8601(updated_at) do
-      {:ok, dt, _offset} -> DateTime.after?(dt, since)
-      _ -> false
-    end
-  end
-
-  # No parseable timestamp means we cannot tell whether this row is newer than
-  # the cutoff. Treating it as old ends the walk, which is the safe direction:
-  # the next run sees it again.
-  defp updated_since?(_package, _since), do: false
-
-  defp recent_package(%{"name" => name, "updated_at" => updated_at} = package)
-       when is_binary(name) and is_binary(updated_at) do
-    with version when is_binary(version) and version != "" <-
-           latest_version_from_package(package),
-         {:ok, dt, _offset} <- DateTime.from_iso8601(updated_at) do
-      [%{name: name, latest_version: version, updated_at: dt}]
-    else
-      _ -> []
-    end
-  end
-
-  defp recent_package(_package), do: []
 
   # A package's `meta.links` is a free-form map the package author writes in
   # their own mix.exs, and it arrives here as whatever they put there. Both
