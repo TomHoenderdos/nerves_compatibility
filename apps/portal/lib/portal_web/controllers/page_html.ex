@@ -12,6 +12,7 @@ defmodule PortalWeb.PageHTML do
   def verification_label(:github_repo), do: "GitHub repository"
   def verification_label(:anonymous_turnstile), do: "Anonymous"
   def verification_label(:anonymous_manual), do: "Manual review"
+  def verification_label(:admin_manual), do: "Admin"
   def verification_label(source), do: source |> to_string() |> String.replace("_", " ")
 
   def request_status_label(:pending), do: "Pending review"

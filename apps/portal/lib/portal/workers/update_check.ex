@@ -66,6 +66,8 @@ defmodule Portal.Workers.UpdateCheck do
     max_attempts: 2,
     unique: [period: :infinity, states: :incomplete]
 
+  import Ecto.Query, only: [from: 2]
+
   require Ash.Query
   require Logger
 
@@ -75,13 +77,57 @@ defmodule Portal.Workers.UpdateCheck do
 
   @default_max_per_run 5
 
+  @doc """
+  Args:
+
+    * `"manual"` - an admin asked for this run, so it ignores the `:enabled`
+      gate. That gate exists to stop the *schedule* sending hex.pm traffic, not
+      to stop a person who is looking at the page from checking on purpose.
+    * `"dry_run"` - classify and report without queueing anything.
+
+  The cron entry passes neither.
+  """
   @impl Oban.Worker
-  def perform(%Oban.Job{}) do
-    if enabled?() do
-      run()
+  def perform(%Oban.Job{args: args} = job) do
+    manual? = args["manual"] == true
+    dry_run? = args["dry_run"] == true
+
+    if manual? or enabled?() do
+      case run(dry_run: dry_run?) do
+        {:ok, summary} ->
+          record_summary(job, summary, dry_run?)
+          {:ok, summary}
+
+        other ->
+          other
+      end
     else
       :ok
     end
+  end
+
+  # The numbers a run produced, parked on the job row that produced them.
+  #
+  # Written here rather than to a table of our own because Oban already keeps
+  # exactly the row this belongs to, already timestamps it, and already prunes
+  # it. A run happens hourly, so "the last run" is never old enough for the
+  # pruner to have taken it, and nothing downstream needs the history.
+  #
+  # String keys, because this round-trips through jsonb and merging atom keys
+  # into what comes back would silently give the map two of everything.
+  defp record_summary(%Oban.Job{id: id, meta: meta}, summary, dry_run?) do
+    merged =
+      Map.merge(meta || %{}, %{
+        "seen" => summary.seen,
+        "moved" => summary.moved,
+        "enqueued" => summary.enqueued,
+        "deferred" => summary.deferred,
+        "dry_run" => dry_run?
+      })
+
+    Portal.Repo.update_all(from(j in Oban.Job, where: j.id == ^id), set: [meta: merged])
+
+    :ok
   end
 
   @doc """
@@ -268,9 +314,21 @@ defmodule Portal.Workers.UpdateCheck do
     end
   end
 
-  defp enabled?, do: Keyword.get(config(), :enabled, false) == true
+  @doc """
+  Whether the *scheduled* check is switched on.
 
-  defp max_per_run, do: Keyword.get(config(), :max_per_run, @default_max_per_run)
+  Public because the admin page reports it: a panel that showed a last-run
+  summary without saying whether more runs are coming would read the same
+  whether the check was healthy or switched off an hour ago.
+  """
+  @spec enabled?() :: boolean()
+  def enabled?, do: Keyword.get(config(), :enabled, false) == true
+
+  @doc """
+  The per-run ceiling on how many rebuilds a single check may queue.
+  """
+  @spec max_per_run() :: pos_integer()
+  def max_per_run, do: Keyword.get(config(), :max_per_run, @default_max_per_run)
 
   defp config, do: Application.get_env(:portal, __MODULE__, [])
 
