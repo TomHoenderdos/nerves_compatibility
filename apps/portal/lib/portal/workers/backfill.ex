@@ -10,7 +10,24 @@ defmodule Portal.Workers.Backfill do
   `Portal.ScanRequests.create_once/1` is idempotent against an already open
   request, and `Portal.Workers.Build` is unique on package/version/image, so
   re-running a sweep re-checks packages without duplicating work.
+
+  ## The `source` argument
+
+  Every caller funnels through here, but they are not equally urgent, and the
+  source they name is what decides the resulting build's Oban priority (see
+  `Portal.ScanRequests`). `Portal.Workers.UpdateCheck` passes `update_check`
+  because a new release of a package we already show is stale data on the site;
+  `Portal.CatalogSeed` passes `catalog_seed` because a package we have never
+  tested is merely absent. Omitting it keeps the historical `backfill`, which
+  is what `Portal.UpstreamBackfill` still wants.
+
+  Unknown values are rejected rather than defaulted: `create_once/1` would fail
+  the resource's `one_of` constraint on the insert, and a typo silently landing
+  everything at the default priority is exactly the failure this argument exists
+  to prevent.
   """
+
+  @sources ~w(backfill update_check catalog_seed)
 
   use Oban.Worker,
     queue: :intake,
@@ -24,8 +41,18 @@ defmodule Portal.Workers.Backfill do
   alias Portal.ScanRequests
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"package" => package}}) do
-    case ScanRequests.create_once(%{package_name: package, source: :backfill}) do
+  def perform(%Oban.Job{args: %{"package" => package} = args}) do
+    source = Map.get(args, "source", "backfill")
+
+    if source not in @sources do
+      {:cancel, {:unknown_source, source}}
+    else
+      build(package, String.to_existing_atom(source))
+    end
+  end
+
+  defp build(package, source) do
+    case ScanRequests.create_once(%{package_name: package, source: source}) do
       {:ok, _request} ->
         :ok
 

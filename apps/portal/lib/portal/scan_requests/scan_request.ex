@@ -90,7 +90,9 @@ defmodule Portal.ScanRequests.ScanRequest do
           :anonymous_turnstile,
           :anonymous_manual,
           :admin_manual,
-          :backfill
+          :backfill,
+          :update_check,
+          :catalog_seed
         ]
       )
     end
