@@ -219,9 +219,23 @@ defmodule Portal.ScanRequests do
   defp priority(:github_repo), do: 1
   defp priority(:anonymous_turnstile), do: 3
   defp priority(:anonymous_manual), do: 3
+  # A new release of a package we already track is real, dated work: the site is
+  # showing a result that went stale the moment it was published. It sits below
+  # every human request and above bulk seeding.
+  #
+  # The gap between this and `:catalog_seed` is the whole point. Oban's priority
+  # floor is 9, so if both sat there they would tie and fall back to insertion
+  # order -- and a seed of every untracked package inserts tens of thousands of
+  # rows ahead of any release published afterwards. At ~260 builds a day that is
+  # a months-long wait for work that is supposed to be timely, and it would make
+  # "are we keeping up with new releases?" unanswerable by construction.
+  defp priority(:update_check), do: 7
   # A sweep of the whole upstream catalogue must never delay a real request, so
   # it takes the lowest priority Oban offers.
   defp priority(:backfill), do: 9
+  # Seeding packages we have never tested is the least urgent work there is:
+  # nothing on the site is wrong while it waits.
+  defp priority(:catalog_seed), do: 9
   defp priority(_source), do: 6
 
   defp version_resolver do
