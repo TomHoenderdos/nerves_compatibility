@@ -17,7 +17,7 @@ defmodule NccWorker.LockPolicy do
 
     case File.read(lock_file) do
       {:ok, content} ->
-        case Code.eval_string(content) do
+        case eval_lock(content) do
           {lock, _} when is_map(lock) ->
             check_dependencies(lock)
 
@@ -29,6 +29,19 @@ defmodule NccWorker.LockPolicy do
         # No lock file yet - that's okay, deps.get hasn't run
         :ok
     end
+  end
+
+  # Mix writes `mix.lock` with quoted keys (`"jason": {:hex, ...}`), and every
+  # one of them makes the evaluator print "found quoted keyword ... but the
+  # quotes are not required". That is the lock's own generated syntax -- no
+  # package author can fix it -- so on a project with 60 dependencies it is 60
+  # lines of noise in a build log we now store and show to the person who asked
+  # for the scan. `with_diagnostics/1` collects the warnings instead of printing
+  # them; the evaluated value is unchanged, and a malformed lock still raises
+  # exactly as it did before.
+  defp eval_lock(content) do
+    {result, _diagnostics} = Code.with_diagnostics(fn -> Code.eval_string(content) end)
+    result
   end
 
   @spec check_dependencies(map()) :: :ok | {:error, :policy_violation}

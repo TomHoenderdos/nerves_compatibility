@@ -33,6 +33,19 @@ mix test apps/compatibility/test/
 mix format
 ```
 
+**Never run a `mix deps.*` task from inside `apps/*`.** The umbrella shares one
+`mix.lock` at the root, and a child app resolving deps rewrites that shared lock
+against only its own dependency list — silently pruning everything it does not
+declare. Root-only deps are the casualties: `mix_audit` is declared at
+`mix.exs` and is invisible to the children, and a child `deps.get` has already
+deleted it from the lock once. A pruned lock then audits clean because the
+auditor is gone from it.
+
+The usual way this bites is `cd apps/ncc_worker && mix test`, which fails with
+"the dependency is not locked" and tempts a `mix deps.get` right there. Run the
+test from the root instead: `mix test apps/ncc_worker/test/`. CI catches a
+pruned lock via the "mix.lock is current" step in `.github/workflows/audit.yml`.
+
 Portal commands:
 
 ```bash
