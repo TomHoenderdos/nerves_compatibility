@@ -41,6 +41,29 @@ defmodule NccWorker.LockPolicyTest do
       File.rm_rf!(tmp_dir)
     end
 
+    # Mix generates locks with quoted keys, and evaluating one used to print
+    # "found quoted keyword" once per dependency. Those lines ended up in the
+    # build log shown to whoever requested the scan, blaming the package for
+    # syntax Mix itself wrote.
+    test "evaluating a lock with quoted keys writes nothing to stderr" do
+      tmp_dir = System.tmp_dir!() |> Path.join("ncc_test_#{:rand.uniform(1_000_000)}")
+      File.mkdir_p!(tmp_dir)
+
+      lock_content = """
+      %{
+        "jason": {:hex, :jason, "1.4.1", "af1504e35f629ddcdd6addb3513c3853991f694921b1b9368b0bd32beb9f1b63", [:mix], [], "hexpm", "fbb01ecdfd565b56261302f7e1fcc27c4fb8f546d6c03f1e1e26fbd8a0e3000f"}
+      }
+      """
+
+      File.write!(Path.join(tmp_dir, "mix.lock"), lock_content)
+
+      assert ExUnit.CaptureIO.capture_io(:stderr, fn ->
+               assert :ok = LockPolicy.validate(tmp_dir)
+             end) == ""
+
+      File.rm_rf!(tmp_dir)
+    end
+
     test "returns ok when mix.lock does not exist" do
       tmp_dir = System.tmp_dir!() |> Path.join("ncc_test_#{:rand.uniform(1_000_000)}")
       File.mkdir_p!(tmp_dir)
