@@ -298,8 +298,12 @@ defmodule Portal.Workers.UpdateCheck do
     |> Enum.reduce(%{}, fn run, acc -> Map.put_new(acc, run.package_id, run.overall_status) end)
   end
 
+  # `source: update_check` is what separates these from a bulk catalogue seed.
+  # Both land in `Backfill`, but a stale result on a package we already display
+  # outranks a package we have never tested -- see `Portal.ScanRequests` for the
+  # priority table and why the two must not share a number.
   defp enqueue(%{name: name}) do
-    case %{package: name} |> Backfill.new() |> Oban.insert() do
+    case %{package: name, source: "update_check"} |> Backfill.new() |> Oban.insert() do
       # Already queued by an earlier run inside `Backfill`'s uniqueness period.
       # Expected whenever the cap defers work, and not worth logging.
       {:ok, %Oban.Job{conflict?: true}} ->
