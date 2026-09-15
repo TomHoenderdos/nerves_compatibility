@@ -49,6 +49,24 @@ jobs:
 
       - run: mix deps.get
 
+      # `mix deps.get` run from inside `apps/portal` or `apps/ncc_worker`
+      # rewrites the *shared root* `mix.lock` and prunes every dependency the
+      # child app does not declare -- which includes mix_audit, since an
+      # umbrella root's own deps are invisible to its children. That has already
+      # dropped mix_audit out of the lock once, and a pruned lock audits clean
+      # for the worst possible reason: the auditor is no longer in it.
+      #
+      # `deps.get` above re-adds anything missing, so by the time this step runs
+      # the symptom has healed itself -- which is exactly what makes it a good
+      # check. If the committed lock was pruned (or is merely stale), `deps.get`
+      # just repaired it in the working tree and the diff is non-empty.
+      - name: mix.lock is current
+        run: |
+          git diff --exit-code mix.lock || {
+            echo "::error::mix.lock changed after 'mix deps.get'. Most likely a mix deps task was run from inside apps/* -- that rewrites the shared root lock and prunes root-only deps such as mix_audit. Re-run 'mix deps.get' from the repo root and commit the result."
+            exit 1
+          }
+
       # `deps.audit` reads mix.lock, but the task itself lives in mix_audit,
       # whose yaml_elixir dependency is only put on the code path by
       # `deps.loadpaths`. Running `mix deps.audit` alone dies with

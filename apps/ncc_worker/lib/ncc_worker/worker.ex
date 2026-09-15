@@ -122,7 +122,7 @@ defmodule NccWorker.Worker do
              release_version: release_version,
              build_tools: tools
            }} ->
-            {desc, gh, release, retired, release_version, tools || []}
+            {desc, gh, release, retired, release_version, tools}
 
           {:error, reason} ->
             IO.puts(:stderr, "Warning: Failed to fetch Hex metadata: #{inspect(reason)}")
@@ -990,7 +990,7 @@ defmodule NccWorker.Worker do
 
       case File.read(lock_file) do
         {:ok, content} ->
-          case Code.eval_string(content) do
+          case eval_lock(content) do
             {lock, _} when is_map(lock) ->
               package_atom = String.to_atom(package.name)
 
@@ -1007,6 +1007,18 @@ defmodule NccWorker.Worker do
           "unknown"
       end
     end
+  end
+
+  # Mix writes `mix.lock` with quoted keys (`"jason": {:hex, ...}`), and the
+  # evaluator prints "found quoted keyword ... but the quotes are not required"
+  # for every one of them. That is the lock's own generated syntax, so the
+  # package being scanned can do nothing about it -- and the noise lands in the
+  # build log we store and show to whoever asked for the scan, one line per
+  # dependency. `with_diagnostics/1` collects the warnings instead of printing
+  # them; the evaluated value is unchanged. Mirrors `NccWorker.LockPolicy`.
+  defp eval_lock(content) do
+    {result, _diagnostics} = Code.with_diagnostics(fn -> Code.eval_string(content) end)
+    result
   end
 
   @spec extract_system_version(String.t(), String.t()) :: String.t() | nil
@@ -1100,8 +1112,6 @@ defmodule NccWorker.Worker do
       binary_part(message, offset, max_bytes)
     end
   end
-
-  defp truncate_tail(message, _max_bytes), do: to_string(message)
 
   defp format_retired_reason(retired) when is_map(retired) do
     reason_code = Map.get(retired, "reason") || Map.get(retired, :reason)
