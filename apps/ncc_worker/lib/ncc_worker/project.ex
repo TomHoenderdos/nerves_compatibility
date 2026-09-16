@@ -13,18 +13,19 @@ defmodule NccWorker.Project do
 
   ## Parameters
     - work_dir: Base working directory
-    - package: Package information map
     - systems_override: Optional map of system package names to version requirements
+    - targets: Nerves target names to generate system deps for, from
+      `NccWorker.Systems.targets/1`
 
   ## Returns
     - {:ok, project_dir} - Path to the created project
     - {:error, reason} - Creation failed
   """
-  @spec create(String.t(), map(), map() | nil) :: {:ok, String.t()} | {:error, term()}
-  def create(work_dir, package, systems_override \\ nil) do
+  @spec create(String.t(), map() | nil, [String.t()]) :: {:ok, String.t()} | {:error, term()}
+  def create(work_dir, systems_override, targets) do
     project_dir = Path.join(work_dir, "proj")
 
-    with :ok <- create_nerves_project(project_dir, package.name),
+    with :ok <- create_nerves_project(project_dir, targets),
          :ok <- maybe_apply_systems_override(project_dir, systems_override) do
       {:ok, project_dir}
     end
@@ -107,18 +108,18 @@ defmodule NccWorker.Project do
     end
   end
 
-  @spec create_nerves_project(String.t(), String.t()) :: :ok | {:error, term()}
-  defp create_nerves_project(project_dir, _package_name) do
+  @spec create_nerves_project(String.t(), [String.t()]) :: :ok | {:error, term()}
+  defp create_nerves_project(project_dir, targets) do
     # Create the project directory
     File.mkdir_p!(project_dir)
 
+    # Targets are named explicitly. Called bare, `mix nerves.new` falls back to
+    # nerves_bootstrap's own `@default_targets` -- eleven systems, only three of
+    # which we build, and which omits trellis entirely. A system missing from
+    # mix.exs does not fail visibly; it fails that target on every package with
+    # an unresolvable dependency, which reads like the package being broken.
     # Create the test project
-    case System.cmd(
-           "mix",
-           ["nerves.new", ".", "--app", "nerves_compatibility_test", "--no-nerves-pack"],
-           cd: project_dir,
-           stderr_to_stdout: true
-         ) do
+    case System.cmd("mix", nerves_new_args(targets), cd: project_dir, stderr_to_stdout: true) do
       {_, 0} ->
         :ok
 
@@ -142,6 +143,13 @@ defmodule NccWorker.Project do
       {:error, reason} ->
         {:error, {:cannot_read_mix_exs, reason}}
     end
+  end
+
+  @doc false
+  @spec nerves_new_args([String.t()]) :: [String.t()]
+  def nerves_new_args(targets) do
+    ["nerves.new", ".", "--app", "nerves_compatibility_test", "--no-nerves-pack"] ++
+      Enum.flat_map(targets, &["--target", &1])
   end
 
   @spec apply_overrides(String.t(), map()) :: String.t()

@@ -11,7 +11,8 @@ defmodule NccWorker.Worker do
     HexMetadata,
     LockPolicy,
     Project,
-    Scanner
+    Scanner,
+    Systems
   }
 
   @forced_skip_system "forced@admin@unknown"
@@ -165,12 +166,19 @@ defmodule NccWorker.Worker do
 
         {:ok, result}
       else
+        # Resolved before the project exists, not after: the targets decide
+        # which `nerves_system_*` deps `mix nerves.new` writes into mix.exs, so
+        # picking systems afterwards can only ever pick ones already generated.
+        systems = Systems.select(input[:systems_filter])
+
         with {:ok, project_dir} <-
-               Project.create(paths.work_dir, input.package, input[:systems_override]),
+               Project.create(
+                 paths.work_dir,
+                 input[:systems_override],
+                 Systems.targets(systems)
+               ),
              {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
              :ok <- LockPolicy.validate(project_dir) do
-          systems = discover_systems(project_dir, input[:systems_filter])
-
           if retired_info do
             reason = format_retired_reason(retired_info)
 
@@ -373,40 +381,6 @@ defmodule NccWorker.Worker do
        mix: mix_version,
        nerves_bootstrap: nerves_bootstrap_version
      }}
-  end
-
-  @spec discover_systems(String.t(), [String.t()] | nil) :: [
-          %{name: String.t(), target: String.t()}
-        ]
-  defp discover_systems(_project_dir, systems_filter) when is_list(systems_filter) do
-    # All available systems
-    all_systems = [
-      %{name: "nerves_system_rpi0", target: "rpi0"},
-      %{name: "nerves_system_rpi4", target: "rpi4"},
-      %{name: "nerves_system_rpi5", target: "rpi5"},
-      %{name: "nerves_system_qemu_aarch64", target: "qemu_aarch64"},
-      %{name: "nerves_system_mangopi_mq_pro", target: "mangopi_mq_pro"},
-      %{name: "nerves_system_grisp2", target: "grisp2"},
-      %{name: "nerves_system_x86_64", target: "x86_64"},
-      %{name: "nerves_system_bbb", target: "bbb"}
-    ]
-
-    # Filter to only the systems in the filter list
-    Enum.filter(all_systems, fn system -> system.name in systems_filter end)
-  end
-
-  defp discover_systems(_project_dir, nil) do
-    # Default systems when no filter is provided
-    [
-      # %{name: "nerves_system_rpi0", target: "rpi0"},
-      %{name: "nerves_system_rpi4", target: "rpi4"},
-      # %{name: "nerves_system_rpi5", target: "rpi5"},
-      # %{name: "nerves_system_qemu_aarch64", target: "qemu_aarch64"},
-      %{name: "nerves_system_mangopi_mq_pro", target: "mangopi_mq_pro"},
-      # %{name: "nerves_system_grisp2", target: "grisp2"},
-      %{name: "nerves_system_x86_64", target: "x86_64"}
-      # %{name: "nerves_system_bbb", target: "bbb"}
-    ]
   end
 
   @spec build_all_systems(String.t(), list(), String.t(), integer(), integer(), String.t()) ::
