@@ -10,6 +10,7 @@ defmodule Portal.Catalog.RollupTest do
     assert Architecture.label("nerves_system_grisp2") == "arm32"
     assert Architecture.label("nerves_system_rpi") == "arm32"
     assert Architecture.label("nerves_system_rpi0_2") == "arm64"
+    assert Architecture.label("nerves_system_trellis") == "arm32"
     assert Architecture.label("nerves_system_newthing") == "newthing"
     assert Architecture.label("forced@x") == "forced"
     assert Architecture.label("forcedxyz") == "forced"

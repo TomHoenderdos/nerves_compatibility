@@ -16,7 +16,7 @@ Both follow `main` and share one Postgres. The only difference between them is
 
 | Host | Role | `OBAN_QUEUES` |
 | --- | --- | --- |
-| `contabo.tompc.nl` | public site (`nerves.tomhoenderdos.nl`) | `intake:5,maintenance:1` |
+| `contabo.tompc.nl` | public site (`compatibility.nerves-project.org`; old `nerves.tomhoenderdos.nl` 301s to it) | `intake:5,maintenance:1` |
 | `vmi3525942` (tailscale `100.106.217.14`) | builds; owns the scratch and cache disks | `builds:3,ingest:3` |
 
 ## Installing a change

@@ -10,6 +10,7 @@ defmodule Portal.Catalog.Architecture do
     "nerves_system_rpi3a" => "arm32",
     "nerves_system_rpi4" => "arm64",
     "nerves_system_rpi5" => "arm64",
+    "nerves_system_trellis" => "arm32",
     "nerves_system_qemu_aarch64" => "arm64",
     "nerves_system_mangopi_mq_pro" => "riscv64",
     "nerves_system_grisp2" => "arm32",
