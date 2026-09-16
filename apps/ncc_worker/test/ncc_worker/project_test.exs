@@ -22,6 +22,41 @@ defmodule NccWorker.ProjectTest do
   end
   """
 
+  describe "nerves_new_args/1" do
+    test "names every target explicitly" do
+      args = Project.nerves_new_args(["rpi4", "trellis"])
+
+      assert args == [
+               "nerves.new",
+               ".",
+               "--app",
+               "nerves_compatibility_test",
+               "--no-nerves-pack",
+               "--target",
+               "rpi4",
+               "--target",
+               "trellis"
+             ]
+    end
+
+    test "passes a --target flag for each system we build" do
+      # Non-vacuous: called with no --target at all, mix nerves.new emits
+      # nerves_bootstrap's @default_targets, which does not include trellis.
+      # A project generated that way has no nerves_system_trellis dep and
+      # fails every trellis build with an unresolvable dependency.
+      targets = NccWorker.Systems.targets(NccWorker.Systems.default())
+      args = Project.nerves_new_args(targets)
+
+      assert Enum.count(args, &(&1 == "--target")) == length(targets)
+
+      for target <- targets do
+        assert target in args
+      end
+
+      assert "trellis" in args
+    end
+  end
+
   describe "add_package/2" do
     setup do
       tmp = Path.join(System.tmp_dir!(), "project_test_#{System.unique_integer([:positive])}")

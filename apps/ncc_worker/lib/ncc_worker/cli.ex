@@ -14,6 +14,7 @@ defmodule NccWorker.CLI do
   alias NccWorker.Worker
   alias NccWorker.JsonWriter
   alias NccWorker.Project
+  alias NccWorker.Systems
   alias NccWorker.FileArchiver
 
   @spec main(list(String.t())) :: no_return()
@@ -61,7 +62,8 @@ defmodule NccWorker.CLI do
          {:ok, input} <- read_input(input_path),
          {:ok, work_dir} <- get_work_dir(input),
          {:ok, package} <- get_package(input),
-         {:ok, project_dir} <- Project.create(work_dir, package, nil),
+         {:ok, project_dir} <-
+           Project.create(work_dir, nil, Systems.targets(Systems.default())),
          {:ok, _} <-
            Project.add_package(project_dir, package, [
              {"MIX_BUILD_PATH", Path.join([project_dir, "_build", "host"])},
