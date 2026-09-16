@@ -126,7 +126,11 @@ defmodule Portal.Catalog.SystemResult do
       public?(true)
     end
 
-    has_many :artifacts, Portal.Catalog.Artifact do
+    # Which stored blobs this system's manifest publishes. Points at the join
+    # table, not at `Portal.Catalog.Artifact`: a blob is shared by every system
+    # that produced those exact bytes, so the artifact registry has no owner
+    # column to hang a `has_many` on.
+    has_many :artifact_memberships, Portal.Catalog.ArtifactMembership do
       public?(true)
     end
 
