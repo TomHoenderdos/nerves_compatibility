@@ -25,6 +25,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
     :ok
   end
 
+  defp result_fixture, do: @fixture |> File.read!() |> Jason.decode!()
+
   defp ingest_fixture_with_artifact do
     sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
     _ = File.rm(ArtifactStore.blob_path(sha))
@@ -131,6 +133,58 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert %{"nerves_system_rpi4" => rpi4} = version
     assert [%{"path" => "ebin/jason.beam", "sha256" => ^sha}] = rpi4["ebin"]
     assert rpi4["priv"] == []
+  end
+
+  # The bug this guards: a `.beam` is routinely byte-identical across targets,
+  # and `catalog_artifacts` is keyed by sha alone. When ownership lived on that
+  # table, the second system to be ingested recorded nothing and published an
+  # empty manifest. Measured on production before the fix, that was 72% of all
+  # stored manifest entries.
+  #
+  # Non-vacuity: both systems must list the file. Reverting the membership
+  # lookup in `Portal.Catalog.manifest_shas_for_system_results/1` leaves
+  # whichever system ingested second with `ebin == []`.
+  test "a blob shared by two systems is published for both", %{conn: conn} do
+    sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
+    _ = File.rm(ArtifactStore.blob_path(sha))
+    dir = Path.join(System.tmp_dir!(), "catalog-api-shared-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, sha), "precompiled-beam")
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    result =
+      @fixture
+      |> File.read!()
+      |> Jason.decode!()
+      |> update_in(["systems", "nerves_system_x86_64"], fn sys ->
+        sys
+        |> Map.put("status", "pass")
+        |> Map.put(
+          "beam_scan",
+          get_in(result_fixture(), ["systems", "nerves_system_rpi4", "beam_scan"])
+        )
+      end)
+
+    {:ok, _run} =
+      Ingestion.ingest(result, %{
+        run_id: "catalog-api-shared-jason-1.4.1",
+        image_digest: "sha256:shared",
+        files_dir: dir,
+        scan_request_id: nil,
+        log: "api log"
+      })
+
+    body =
+      conn
+      |> get("/api/precompiled/manifests/jason.json")
+      |> json_response(200)
+
+    assert %{"1.4.1" => version} = body["versions"]
+
+    for system <- ["nerves_system_rpi4", "nerves_system_x86_64"] do
+      assert %{^system => manifest} = version
+      assert [%{"path" => "ebin/jason.beam", "sha256" => ^sha}] = manifest["ebin"]
+    end
   end
 
   test "GET /api/precompiled/files/:sha256 serves artifact blob", %{conn: conn} do

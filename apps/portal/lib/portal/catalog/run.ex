@@ -30,6 +30,7 @@ defmodule Portal.Catalog.Run do
         :image_digest,
         :overall_status,
         :footprint,
+        :toolchain,
         :log,
         :started_at,
         :finished_at,
@@ -41,6 +42,7 @@ defmodule Portal.Catalog.Run do
       accept([
         :overall_status,
         :footprint,
+        :toolchain,
         :log,
         :started_at,
         :finished_at,
@@ -76,6 +78,15 @@ defmodule Portal.Catalog.Run do
     end
 
     attribute :footprint, :map do
+      public?(true)
+    end
+
+    # The Elixir and OTP versions the worker ran under, as reported by
+    # `NccWorker.Worker.detect_toolchain/0`. A stored `.beam` is only safely
+    # reusable against a matching OTP major, so anything that hands these blobs
+    # to a consumer has to be able to state what they were built with. The
+    # worker has always emitted this; it was simply dropped on ingest.
+    attribute :toolchain, :map do
       public?(true)
     end
 
