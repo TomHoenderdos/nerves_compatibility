@@ -11,7 +11,7 @@ The API consists of:
 
 ## Base URL
 
-`https://compatibility.embedded-elixir.com/`
+`https://compatibility.nerves-project.org/`
 
 ## Endpoints
 
@@ -86,8 +86,24 @@ Status codes:
 
 Files are content-addressed, so identical files across packages, versions, or systems share a single artifact blob.
 
+A `.beam` is very often byte-identical across Nerves targets, which makes this
+sharing the common case rather than the exception. Storage and publication are
+therefore two separate records: `catalog_artifacts` holds one row per distinct
+SHA256 saying the bytes are on disk, and `catalog_artifact_memberships` holds one
+row per (system result, SHA256) saying that system's build produced that file.
+The same `sha256` will legitimately appear under several systems in one manifest,
+and `GET /api/precompiled/files/{sha256}` serves the one shared blob for all of
+them.
+
 ## Limitations
 
 - Only packages built after artifact archiving was enabled have manifests.
 - Not every Nerves system is available for every package.
 - Artifacts come only from successful builds with BEAM scan manifests.
+- Manifests list the package's own files. Its dependencies' blobs are stored but
+  are not published, because their per-file manifests are deliberately not
+  retained.
+- Manifests do not yet state the Elixir/OTP versions the files were compiled
+  against. A `.beam` is only safely reusable against a matching OTP major, so
+  this has to be published before anything consumes these files automatically.
+  Runs record it as of 2026-09-16; earlier runs have no toolchain stored.

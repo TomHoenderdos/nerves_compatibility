@@ -1,7 +1,13 @@
 defmodule Portal.Catalog.Artifact do
   @moduledoc """
-  Content-addressed build artifact (firmware, precompiled BEAM, etc).
-  Blob lives on disk at `disk_path`; the database stores metadata only.
+  Registry of content-addressed build artifacts (precompiled BEAM, NIFs, priv
+  files). Blob lives on disk at `disk_path`; the database stores metadata only.
+
+  One row per distinct sha256, and nothing more: a blob is shared by every
+  system result that produced those exact bytes, so ownership does not belong
+  here. `Portal.Catalog.ArtifactMembership` records which system results
+  reference it, and explains what went wrong while this table tried to carry
+  both.
   """
 
   use Ash.Resource,
@@ -11,21 +17,17 @@ defmodule Portal.Catalog.Artifact do
   postgres do
     table("catalog_artifacts")
     repo(Portal.Repo)
-
-    custom_indexes do
-      index([:system_result_id])
-    end
   end
 
   actions do
     defaults([:read, :destroy])
 
     create :create do
-      accept([:sha256, :byte_size, :disk_path, :system_result_id])
+      accept([:sha256, :byte_size, :disk_path])
     end
 
     create :upsert do
-      accept([:sha256, :byte_size, :disk_path, :system_result_id])
+      accept([:sha256, :byte_size, :disk_path])
       upsert?(true)
       upsert_identity(:unique_sha256)
       upsert_fields([:byte_size, :disk_path])
@@ -59,12 +61,5 @@ defmodule Portal.Catalog.Artifact do
 
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
-  end
-
-  relationships do
-    belongs_to :system_result, Portal.Catalog.SystemResult do
-      allow_nil?(false)
-      public?(true)
-    end
   end
 end

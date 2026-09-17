@@ -11,7 +11,17 @@ defmodule Portal.Catalog do
 
   require Ash.Query
 
-  alias Portal.Catalog.{Artifact, Cache, Package, PackageOverride, Run, SystemLog, SystemResult}
+  alias Portal.Catalog.{
+    Artifact,
+    ArtifactMembership,
+    Cache,
+    Package,
+    PackageOverride,
+    Run,
+    SystemLog,
+    SystemResult
+  }
+
   alias Portal.Repo
 
   @statuses ~w(pass fail error skipped unknown)
@@ -92,6 +102,7 @@ defmodule Portal.Catalog do
     resource(SystemResult)
     resource(SystemLog)
     resource(Artifact)
+    resource(ArtifactMembership)
     resource(PackageOverride)
   end
 
@@ -249,13 +260,12 @@ defmodule Portal.Catalog do
     with [package] <- packages(package_name),
          runs when runs != [] <- runs_for_package(package.id),
          results when results != [] <- manifest_results_for_runs(Enum.map(runs, & &1.id)) do
-      artifacts_by_system_result_id =
+      shas_by_system_result_id =
         results
         |> Enum.map(& &1.id)
-        |> artifacts_for_system_results()
-        |> Enum.group_by(& &1.system_result_id)
+        |> manifest_shas_for_system_results()
 
-      versions = precompiled_versions(runs, results, artifacts_by_system_result_id)
+      versions = precompiled_versions(runs, results, shas_by_system_result_id)
 
       if versions == %{} do
         nil
@@ -644,12 +654,23 @@ defmodule Portal.Catalog do
     |> Ash.read_one!(domain: __MODULE__)
   end
 
-  defp artifacts_for_system_results([]), do: []
+  # Which stored blobs each system result's manifest may publish, as a sha set
+  # per system result id.
+  #
+  # This reads `catalog_artifact_memberships`, not `catalog_artifacts`. The
+  # artifact table is a registry keyed by sha alone, so asking it "which blobs
+  # belong to this system result?" can only ever return the ones that happened
+  # to be ingested first — which silently emptied 72% of published manifests.
+  # See `Portal.Catalog.ArtifactMembership`.
+  defp manifest_shas_for_system_results([]), do: %{}
 
-  defp artifacts_for_system_results(system_result_ids) do
-    Artifact
+  defp manifest_shas_for_system_results(system_result_ids) do
+    ArtifactMembership
     |> Ash.Query.filter(system_result_id in ^system_result_ids)
+    |> Ash.Query.select([:system_result_id, :sha256])
     |> Ash.read!(domain: __MODULE__)
+    |> Enum.group_by(& &1.system_result_id, & &1.sha256)
+    |> Map.new(fn {id, shas} -> {id, MapSet.new(shas)} end)
   end
 
   defp package_json(package, run, system_results) do
@@ -677,16 +698,13 @@ defmodule Portal.Catalog do
     }
   end
 
-  defp precompiled_versions(runs, results, artifacts_by_system_result_id) do
+  defp precompiled_versions(runs, results, shas_by_system_result_id) do
     Enum.reduce(runs, %{}, fn run, acc ->
       run_results = Enum.filter(results, &(&1.run_id == run.id and &1.system_pkg != "host"))
 
       systems =
         Enum.reduce(run_results, %{}, fn result, system_acc ->
-          stored_shas =
-            artifacts_by_system_result_id
-            |> Map.get(result.id, [])
-            |> MapSet.new(& &1.sha256)
+          stored_shas = Map.get(shas_by_system_result_id, result.id, MapSet.new())
 
           case file_manifest(result, stored_shas) do
             nil -> system_acc

@@ -21,7 +21,17 @@ defmodule Portal.Catalog.Ingestion do
   require Logger
 
   alias Portal.ArtifactStore
-  alias Portal.Catalog.{Artifact, LogSanitizer, Package, Run, SystemLog, SystemResult}
+
+  alias Portal.Catalog.{
+    Artifact,
+    ArtifactMembership,
+    LogSanitizer,
+    Package,
+    Run,
+    SystemLog,
+    SystemResult
+  }
+
   alias Portal.Repo
 
   @domain Portal.Catalog
@@ -112,6 +122,7 @@ defmodule Portal.Catalog.Ingestion do
       image_digest: opts.image_digest,
       overall_status: overall,
       footprint: get_in(result, ["package", "footprint"]),
+      toolchain: result["toolchain"],
       log: run_log(overall, opts),
       finished_at: finished_at,
       scan_request_id: Map.get(opts, :scan_request_id)
@@ -163,11 +174,10 @@ defmodule Portal.Catalog.Ingestion do
 
     case result do
       {:ok, system_result} ->
-        :ok =
-          staged
-          |> Map.get(system_pkg, [])
-          |> Enum.map(&Map.put(&1, :system_result_id, system_result.id))
-          |> upsert_artifacts()
+        staged_blobs = Map.get(staged, system_pkg, [])
+
+        :ok = upsert_artifacts(staged_blobs)
+        :ok = upsert_memberships(system_result.id, sys, staged_blobs)
 
         :ok = maybe_store_log(system_result, system_pkg, Map.get(logs, system_pkg))
 
@@ -381,6 +391,51 @@ defmodule Portal.Catalog.Ingestion do
   # transaction, which blew the same 15s checkout limit that `ingest/2`
   # describes. The blobs themselves are ~15MB total, so the cost was never
   # volume, only the number of round trips.
+  # Record which of this system's *own* manifest files are now in the store.
+  #
+  # Scoped to `beam_scan` on purpose. `stage_artifacts/2` also stores the blobs
+  # of the package's dependencies, but their per-file manifests are stripped
+  # before persisting (`drop_file_manifests/1`), so there is nothing to publish
+  # them against — those blobs stay in the registry without a membership row.
+  # The precompiled API builds from `beam_scan`, which is exactly this set.
+  #
+  # Intersected with what was actually staged, so a membership can never point
+  # at a blob the store does not hold, and de-duplicated because a single
+  # INSERT cannot touch the same conflict target twice.
+  defp upsert_memberships(system_result_id, sys, staged) do
+    stored = MapSet.new(staged, & &1.sha256)
+
+    sys["beam_scan"]
+    |> shas_from_scan()
+    |> Enum.uniq()
+    |> Enum.filter(&MapSet.member?(stored, &1))
+    |> Enum.map(&%{sha256: &1, system_result_id: system_result_id})
+    |> insert_memberships()
+  end
+
+  defp insert_memberships([]), do: :ok
+
+  defp insert_memberships(entries) do
+    entries
+    |> Ash.bulk_create(ArtifactMembership, :upsert,
+      domain: @domain,
+      upsert?: true,
+      upsert_identity: :unique_system_result_sha256,
+      upsert_fields: [:sha256],
+      return_errors?: true,
+      stop_on_error?: false,
+      transaction: false
+    )
+    |> case do
+      %Ash.BulkResult{status: :success} ->
+        :ok
+
+      %Ash.BulkResult{errors: errors} ->
+        Logger.warning("Artifact membership insert failed: #{inspect(errors)}")
+        :ok
+    end
+  end
+
   defp upsert_artifacts([]), do: :ok
 
   defp upsert_artifacts(entries) do
