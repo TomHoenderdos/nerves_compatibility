@@ -7,6 +7,9 @@ defmodule Portal.Accounts do
 
   resources do
     resource(Portal.Accounts.User)
+    resource(Portal.Accounts.Passkey)
+    resource(Portal.Accounts.TotpSecret)
+    resource(Portal.Accounts.RecoveryCode)
   end
 
   @username_regex ~r/^[a-zA-Z0-9_][a-zA-Z0-9_.-]{2,39}$/
