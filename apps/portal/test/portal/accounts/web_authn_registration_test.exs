@@ -143,4 +143,57 @@ defmodule Portal.Accounts.WebAuthnRegistrationTest do
 
     assert WebAuthn.register(user, params, challenge) == {:error, :malformed_request}
   end
+
+  test "an attestation whose COSE key carries a non-bytes CBOR tag is an error, not a crash" do
+    user = user_fixture()
+    {challenge, _} = WebAuthn.registration_challenge(user)
+    authenticator = SoftwareAuthenticator.new(@rp_id)
+
+    # `wax_`'s CBOR decoder unwraps only `%CBOR.Tag{tag: :bytes}`. Any other tag
+    # number reaches an `Enum.reduce/3` over the bare struct and raises
+    # `Protocol.UndefinedError`. Everything else about this attestation is
+    # valid, so it gets all the way past origin, rp_id and challenge checks.
+    response =
+      SoftwareAuthenticator.create(authenticator, challenge.bytes, @origin,
+        extra_cose_entries: %{-4 => %CBOR.Tag{tag: 30, value: "poison"}}
+      )
+
+    assert WebAuthn.register(user, registration_params(response), challenge) ==
+             {:error, :malformed_attestation}
+
+    assert Passkeys.count_for_user(user) == 0
+  end
+
+  test "losing the duplicate race returns the sentinel, not a raw Ash error" do
+    user = user_fixture()
+    stranger = user_fixture()
+    authenticator = SoftwareAuthenticator.new(@rp_id)
+
+    {challenge, _} = WebAuthn.registration_challenge(user)
+    response = SoftwareAuthenticator.create(authenticator, challenge.bytes, @origin)
+    {:ok, _} = WebAuthn.register(user, registration_params(response), challenge)
+
+    # A true race cannot be forced inside the sandbox transaction, so this
+    # drives the same code path the loser of a race takes: the row already
+    # exists by the time the insert runs, and the unique index rejects it. It
+    # covers the error *mapping*, not wire-level concurrency.
+    assert {:error, :already_registered} =
+             WebAuthn.normalize_create_error(
+               Passkeys.create(stranger, %{
+                 credential_id: authenticator.credential_id,
+                 public_key: :erlang.term_to_binary(%{1 => 2}),
+                 sign_count: 0,
+                 aaguid: nil,
+                 transports: [],
+                 nickname: "loser"
+               })
+             )
+  end
+
+  test "the challenge payload timeout is derived from opts, not re-littered" do
+    user = user_fixture()
+    {_challenge, payload} = WebAuthn.registration_challenge(user)
+
+    assert payload.timeout == Keyword.fetch!(WebAuthn.opts(), :timeout)
+  end
 end
