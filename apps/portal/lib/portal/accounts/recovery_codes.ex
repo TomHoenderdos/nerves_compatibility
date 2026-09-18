@@ -44,24 +44,31 @@ defmodule Portal.Accounts.RecoveryCodes do
 
   @doc """
   Spends a code. Accepts it in any case, with or without the display dashes.
+
+  The match-and-stamp happens as a single atomic `UPDATE ... WHERE used_at IS
+  NULL` (via `Ash.bulk_update/4` with `strategy: :atomic`), not a read
+  followed by a separate write. Two concurrent callers racing on the same
+  code therefore cannot both win: Postgres serialises the two `UPDATE`s on
+  the row, and whichever commits second re-evaluates the `WHERE` clause
+  against the now-committed row and finds `used_at` no longer `NULL`, so it
+  updates zero rows instead of raising or double-spending the code. The same
+  query also can't raise if a concurrent `generate/1` destroys the row
+  first — zero rows matched is just another `{:error, :invalid_code}`.
   """
   @spec consume(User.t(), String.t()) :: :ok | {:error, :invalid_code}
-  def consume(%User{} = user, input) when is_binary(input) do
+  def consume(%User{id: user_id}, input) when is_binary(input) do
     hashed = input |> normalize() |> hash()
 
-    user
-    |> all_for_user()
-    |> Enum.find(fn code -> is_nil(code.used_at) and code.code_hash == hashed end)
+    RecoveryCode
+    |> Ash.Query.filter(user_id == ^user_id and code_hash == ^hashed and is_nil(used_at))
+    |> Ash.bulk_update(:consume, %{used_at: DateTime.utc_now()},
+      domain: Portal.Accounts,
+      strategy: :atomic,
+      return_records?: true
+    )
     |> case do
-      nil ->
-        {:error, :invalid_code}
-
-      code ->
-        code
-        |> Ash.Changeset.for_update(:consume, %{used_at: DateTime.utc_now()})
-        |> Ash.update!(domain: Portal.Accounts)
-
-        :ok
+      %Ash.BulkResult{records: [_ | _]} -> :ok
+      _ -> {:error, :invalid_code}
     end
   end
 

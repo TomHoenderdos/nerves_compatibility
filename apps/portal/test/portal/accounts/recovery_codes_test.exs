@@ -77,4 +77,24 @@ defmodule Portal.Accounts.RecoveryCodesTest do
     assert RecoveryCodes.consume(user, "") == {:error, :invalid_code}
     assert RecoveryCodes.consume(user, "not-a-real-code") == {:error, :invalid_code}
   end
+
+  test "concurrent consume calls on the same code let exactly one win" do
+    user = user_fixture()
+    {:ok, [code | _]} = RecoveryCodes.generate(user)
+
+    parent = self()
+
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          Ecto.Adapters.SQL.Sandbox.allow(Portal.Repo, parent, self())
+          RecoveryCodes.consume(user, code)
+        end)
+      end
+
+    results = Task.await_many(tasks)
+
+    assert Enum.count(results, &(&1 == :ok)) == 1
+    assert Enum.count(results, &(&1 == {:error, :invalid_code})) == 1
+  end
 end
