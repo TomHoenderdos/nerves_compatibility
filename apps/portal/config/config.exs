@@ -191,4 +191,13 @@ config :logger, :default_formatter, format: "$time $metadata[$level] $message\n"
 
 config :phoenix, :json_library, Jason
 
+# WebAuthn relying party. Explicit, never derived from request: Host
+# header is attacker-supplied, and portal learns scheme from
+# X-Forwarded-Proto behind Apache, so derived origin fails closed the moment
+# the header is misconfigured. `config/runtime.exs` overrides both in prod.
+# localhost is a secure context without TLS, so this makes dev work.
+config :portal, Portal.Accounts.WebAuthn,
+  rp_id: "localhost",
+  origin: "http://localhost:4001"
+
 import_config "#{config_env()}.exs"

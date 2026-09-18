@@ -220,6 +220,15 @@ if portal_available? do
 
     host = System.get_env("PHX_HOST") || "example.com"
 
+    # relying party id registrable domain passkey bound to.
+    # Changing it invalidates every registered passkey, so it tracks PHX_HOST
+    # rather than a second thing to keep in sync.
+    webauthn_rp_id = System.get_env("NCC_WEBAUTHN_RP_ID") || host
+
+    config :portal, Portal.Accounts.WebAuthn,
+      rp_id: webauthn_rp_id,
+      origin: System.get_env("NCC_WEBAUTHN_ORIGIN") || "https://#{webauthn_rp_id}"
+
     config :portal, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
     # Self-hosted Umami: cookieless, no consent banner needed. The site id is
