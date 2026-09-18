@@ -3,26 +3,27 @@ defmodule Portal.Accounts.WebAuthnTest do
 
   alias Portal.Accounts.WebAuthn
 
-  test "sets security-relevant defaults for WebAuthn challenge options" do
+  test "base options come from config and pin the security-relevant values" do
     opts = WebAuthn.opts()
 
+    assert opts[:rp_id] == "localhost"
     assert opts[:origin] == "http://localhost:4001"
-    assert opts[:timeout] == 300
     assert opts[:user_verification] == "required"
     assert opts[:attestation] == "none"
-  end
-
-  test "includes allow_credentials as empty list in base options" do
-    opts = WebAuthn.opts()
-
-    assert Keyword.has_key?(opts, :allow_credentials)
-  end
-
-  test "merges caller-supplied options over defaults" do
-    opts = WebAuthn.opts(allow_credentials: 60)
-
-    assert opts[:allow_credentials] == 60
     assert opts[:timeout] == 300
+  end
+
+  test "never supplies its own challenge bytes" do
+    # wax_'s security notes call a caller-supplied challenge a replay window.
+    refute Keyword.has_key?(WebAuthn.opts(), :bytes)
+    refute Keyword.has_key?(WebAuthn.opts(allow_credentials: []), :bytes)
+  end
+
+  test "extra options merge over the defaults" do
+    opts = WebAuthn.opts(allow_credentials: [], timeout: 60)
+
+    assert opts[:allow_credentials] == []
+    assert opts[:timeout] == 60
     assert opts[:rp_id] == "localhost"
   end
 end
