@@ -13,10 +13,17 @@ defmodule Portal.Accounts.WebAuthn do
   without local Bluetooth or NFC.
   """
 
+  require Logger
+
   alias Portal.Accounts.{Passkey, Passkeys, User}
 
   @rp_name "Nerves Compatibility Tracker"
   @max_nickname_length 60
+
+  # The Postgres unique index behind `Passkey`'s `:unique_credential_id`
+  # identity. Matched by name rather than by message text so a phrasing change
+  # in Ash cannot silently turn the duplicate contract back into a raw error.
+  @credential_id_constraint "portal_passkeys_unique_credential_id_index"
 
   @spec opts(keyword()) :: keyword()
   def opts(extra \\ []) do
@@ -45,7 +52,8 @@ defmodule Portal.Accounts.WebAuthn do
   """
   @spec registration_challenge(User.t()) :: {Wax.Challenge.t(), map()}
   def registration_challenge(%User{} = user) do
-    challenge = Wax.new_registration_challenge(opts())
+    challenge_opts = opts()
+    challenge = Wax.new_registration_challenge(challenge_opts)
 
     payload = %{
       challenge: b64(challenge.bytes),
@@ -56,7 +64,9 @@ defmodule Portal.Accounts.WebAuthn do
       # login time to say who is signing in.
       user_handle: b64(Ecto.UUID.dump!(user.id)),
       user_name: user.username,
-      timeout: 300,
+      # Derived, never re-littered: `opts/1` is the single source of truth for
+      # timeout, user verification and attestation.
+      timeout: Keyword.fetch!(challenge_opts, :timeout),
       exclude_credentials: Enum.map(Passkeys.list_for_user(user), &b64(&1.credential_id))
     }
 
@@ -71,10 +81,11 @@ defmodule Portal.Accounts.WebAuthn do
     with {:ok, attestation_object} <- decode(params["attestation_object"]),
          {:ok, client_data_json} <- decode(params["client_data_json"]),
          {:ok, {auth_data, _attestation}} <-
-           Wax.register(attestation_object, client_data_json, challenge),
+           verify_attestation(attestation_object, client_data_json, challenge),
          credential_data = auth_data.attested_credential_data,
          :ok <- ensure_unregistered(credential_data.credential_id) do
-      Passkeys.create(user, %{
+      user
+      |> Passkeys.create(%{
         credential_id: credential_data.credential_id,
         public_key: :erlang.term_to_binary(credential_data.credential_public_key),
         sign_count: auth_data.sign_count,
@@ -82,7 +93,42 @@ defmodule Portal.Accounts.WebAuthn do
         transports: transports(params["transports"]),
         nickname: nickname(params["nickname"])
       })
+      |> normalize_create_error()
     end
+  end
+
+  # `wax_`'s CBOR decoder only unwraps `%CBOR.Tag{tag: :bytes}`; any other tag
+  # number nested in the attested credential data reaches an `Enum.reduce/3`
+  # over the bare `%CBOR.Tag{}` struct and raises `Protocol.UndefinedError`.
+  # `attestation_object` is fully attacker-controlled, so that raise is
+  # reachable by any authenticated user posting a hand-built payload. `with`
+  # matches return values and does not catch exceptions, so the crash would
+  # escape `register/3` and take the request with it.
+  #
+  # The rescue is deliberately wrapped around this one call rather than the
+  # function body, so bugs in our own decoding, storage or validation still
+  # surface as crashes instead of being laundered into a validation error.
+  defp verify_attestation(attestation_object, client_data_json, challenge) do
+    Wax.register(attestation_object, client_data_json, challenge)
+  rescue
+    exception ->
+      log_attestation_crash(inspect(exception.__struct__), Exception.message(exception))
+      {:error, :malformed_attestation}
+  catch
+    # Throws only. An `:exit` is a process-level signal — a lost database
+    # connection, a shutdown — and converting one into "your passkey is
+    # malformed" would blame the user for our outage and hide the real fault.
+    :throw, value ->
+      log_attestation_crash("throw", inspect(value))
+      {:error, :malformed_attestation}
+  end
+
+  defp log_attestation_crash(kind, detail) do
+    Logger.warning(
+      "WebAuthn attestation verification crashed inside wax_ (#{kind}): #{detail}. " <>
+        "Returning :malformed_attestation. If this is not a hand-crafted payload, " <>
+        "it is a bug in the decode path rather than bad user input."
+    )
   end
 
   defp ensure_unregistered(credential_id) do
@@ -91,6 +137,35 @@ defmodule Portal.Accounts.WebAuthn do
       :error -> :ok
     end
   end
+
+  # `ensure_unregistered/1` is a read-then-write and therefore racy; the unique
+  # index is what actually enforces one-registration-per-credential. When the
+  # race is lost the database speaks instead of the guard, and without this the
+  # caller would get a raw `%Ash.Error.Invalid{}` where every other path on this
+  # branch returns the `:already_registered` sentinel.
+  #
+  # Public only so the regression test can drive the constraint path directly:
+  # a genuine race cannot be forced inside the sandbox transaction, and the
+  # guard above intercepts every duplicate that is reachable single-threaded.
+  @doc false
+  def normalize_create_error({:ok, passkey}), do: {:ok, passkey}
+
+  def normalize_create_error({:error, %Ash.Error.Invalid{errors: errors} = error}) do
+    if Enum.any?(errors, &credential_id_taken?/1) do
+      {:error, :already_registered}
+    else
+      {:error, error}
+    end
+  end
+
+  def normalize_create_error({:error, error}), do: {:error, error}
+
+  defp credential_id_taken?(%{private_vars: private_vars}) when is_list(private_vars) do
+    Keyword.get(private_vars, :constraint_type) == :unique and
+      Keyword.get(private_vars, :constraint) == @credential_id_constraint
+  end
+
+  defp credential_id_taken?(_), do: false
 
   defp transports(list) when is_list(list), do: Enum.filter(list, &is_binary/1)
   defp transports(_), do: []

@@ -37,15 +37,25 @@ defmodule Portal.Test.SoftwareAuthenticator do
 
   @doc """
   What `navigator.credentials.create` would hand back.
+
+  `:extra_cose_entries` injects additional entries into the COSE key map. A
+  real authenticator would never send them; it exists so tests can build the
+  hostile payloads an attacker can, since `attestation_object` arrives from the
+  client and nothing stops it carrying whatever CBOR its author likes. With the
+  default empty map the emitted bytes are identical to a plain `create/3`.
   """
-  def create(%__MODULE__{} = auth, challenge_bytes, origin) do
+  def create(%__MODULE__{} = auth, challenge_bytes, origin, opts \\ []) do
     client_data_json = client_data("webauthn.create", challenge_bytes, origin)
+    extra_cose_entries = Keyword.get(opts, :extra_cose_entries, %{})
 
     attestation_object =
       CBOR.encode(%{
         "fmt" => "none",
         "attStmt" => %{},
-        "authData" => %CBOR.Tag{tag: :bytes, value: authenticator_data(auth, @up ||| @uv ||| @at)}
+        "authData" => %CBOR.Tag{
+          tag: :bytes,
+          value: authenticator_data(auth, @up ||| @uv ||| @at, extra_cose_entries)
+        }
       })
 
     %{
@@ -65,7 +75,7 @@ defmodule Portal.Test.SoftwareAuthenticator do
     auth = %{auth | sign_count: Keyword.get(opts, :sign_count, auth.sign_count)}
 
     client_data_json = client_data("webauthn.get", challenge_bytes, origin)
-    auth_data = authenticator_data(auth, @up ||| @uv)
+    auth_data = authenticator_data(auth, @up ||| @uv, %{})
 
     signature =
       :public_key.sign(
@@ -92,7 +102,7 @@ defmodule Portal.Test.SoftwareAuthenticator do
   end
 
   # rpIdHash(32) || flags(1) || signCount(4, big endian) [|| attested credential data]
-  defp authenticator_data(%__MODULE__{} = auth, flags) do
+  defp authenticator_data(%__MODULE__{} = auth, flags, extra_cose_entries) do
     head =
       :crypto.hash(:sha256, auth.rp_id) <>
         <<flags::unsigned-8, auth.sign_count::unsigned-big-32>>
@@ -104,25 +114,30 @@ defmodule Portal.Test.SoftwareAuthenticator do
         @aaguid <>
         <<byte_size(auth.credential_id)::unsigned-big-16>> <>
         auth.credential_id <>
-        cose_key(auth)
+        cose_key(auth, extra_cose_entries)
     end
   end
 
   # COSE_Key for an EC2 P-256 public key:
   #   1 (kty) => 2 (EC2), 3 (alg) => -7 (ES256), -1 (crv) => 1 (P-256),
   #   -2 => x, -3 => y
-  defp cose_key(%__MODULE__{private_key: key}) do
+  defp cose_key(%__MODULE__{private_key: key}, extra_cose_entries) do
     # An OTP ECPrivateKey record: {:ECPrivateKey, version, privateKey,
     # parameters, publicKey, attributes}. The public key is an uncompressed
     # point, 0x04 followed by the two 32-byte coordinates.
     <<4, x::binary-size(32), y::binary-size(32)>> = elem(key, 4)
 
-    CBOR.encode(%{
-      1 => 2,
-      3 => -7,
-      -1 => 1,
-      -2 => %CBOR.Tag{tag: :bytes, value: x},
-      -3 => %CBOR.Tag{tag: :bytes, value: y}
-    })
+    CBOR.encode(
+      Map.merge(
+        %{
+          1 => 2,
+          3 => -7,
+          -1 => 1,
+          -2 => %CBOR.Tag{tag: :bytes, value: x},
+          -3 => %CBOR.Tag{tag: :bytes, value: y}
+        },
+        extra_cose_entries
+      )
+    )
   end
 end
