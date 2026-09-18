@@ -8,7 +8,7 @@ defmodule Portal.Accounts.WebAuthn do
   fails closed the moment that header is misconfigured.
 
   The `wax_` library generates all challenge bytes; we never pass `bytes:` to
-  avoid collision risks. User verification is required; attestation is none
+  avoid a replay window. User verification is required; attestation is none
   (BYOD passkey attestation, no verification). A 5-minute timeout helps users
   without local Bluetooth or NFC.
   """
@@ -22,8 +22,7 @@ defmodule Portal.Accounts.WebAuthn do
       origin: Keyword.fetch!(config, :origin),
       user_verification: "required",
       attestation: "none",
-      timeout: 300,
-      allow_credentials: []
+      timeout: 300
     ]
     |> Keyword.merge(extra)
   end
