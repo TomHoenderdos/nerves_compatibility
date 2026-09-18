@@ -9,16 +9,33 @@ defmodule Portal.Accounts.Totp do
 
   TOTP never satisfies the admin passkey requirement. See
   `Portal.Accounts.Mfa`.
+
+  ## Concurrency
+
+  `confirm/3` and `verify/3` each do one read (to get the secret bytes needed
+  for the HMAC check, which only Elixir can compute) followed by one write.
+  Two concurrent calls can both read the same row before either writes, so
+  every write that must not double-apply is a compare-and-swap: it carries an
+  extra `WHERE` clause (via `Ash.Changeset.filter/2`) tied to the exact
+  condition that made the write valid in the first place, and a write that
+  loses the race matches zero rows instead of silently overwriting. Increments
+  (`failed_attempts`) are computed as a database-side expression
+  (`failed_attempts + 1`) instead of read-modify-written from the struct, so
+  concurrent failures can't stomp each other.
   """
 
+  require Ash.Expr
   require Ash.Query
   require Logger
 
+  alias Ash.Error.Changes.StaleRecord
   alias Portal.Accounts.{TotpSecret, User}
 
   @max_failures 5
   @lockout_seconds 15 * 60
   @issuer "Nerves Compatibility Tracker"
+  # Must match NimbleTOTP's own default `:period` (we never override it).
+  @period_seconds 30
 
   @doc """
   Mints a new secret for `user`, replacing any existing one, and returns it
@@ -45,7 +62,9 @@ defmodule Portal.Accounts.Totp do
   Turns an enrolled-but-unconfirmed secret into a real factor.
 
   Stamps `last_used_at` so the confirming code cannot immediately be replayed
-  as a login.
+  as a login. The write is guarded by `is_nil(confirmed_at)` so two concurrent
+  confirmations of the same secret can't both succeed — the second finds the
+  row no longer unconfirmed and loses.
   """
   @spec confirm(User.t(), String.t(), DateTime.t()) ::
           :ok | {:error, :not_enrolled | :invalid_code}
@@ -58,9 +77,12 @@ defmodule Portal.Accounts.Totp do
         last_used_at: now,
         failed_attempts: 0
       })
-      |> Ash.update!(domain: Portal.Accounts)
-
-      :ok
+      |> Ash.Changeset.filter(Ash.Expr.expr(is_nil(confirmed_at)))
+      |> Ash.update(domain: Portal.Accounts)
+      |> case do
+        {:ok, _updated} -> :ok
+        {:error, error} -> if stale?(error), do: {:error, :invalid_code}, else: raise(error)
+      end
     else
       :error -> {:error, :not_enrolled}
       false -> {:error, :invalid_code}
@@ -76,7 +98,7 @@ defmodule Portal.Accounts.Totp do
     with {:ok, secret} <- confirmed_secret(user),
          :ok <- check_lock(secret, now) do
       if valid_code?(secret, code, now) do
-        record_success(secret, now)
+        claim_window(secret, user, now)
       else
         record_failure(secret, user, now)
       end
@@ -130,37 +152,94 @@ defmodule Portal.Accounts.Totp do
     if DateTime.compare(now, until) == :lt, do: {:error, {:locked, until}}, else: :ok
   end
 
-  defp record_success(secret, now) do
+  # Claims the 30-second window `now` falls in as spent, but only if nobody
+  # has already claimed it (`last_used_at` is still nil, or still in an
+  # earlier window). This is the actual replay guard: `valid_code?/3` already
+  # rejected the code once `last_used_at` reflects the current window, but
+  # that check reads a struct fetched at the top of `verify/3` — two
+  # concurrent callers both read the same stale row and both pass it. The
+  # `WHERE` clause below is what turns "reject a used code" into "at most one
+  # of two simultaneous winners", because a write that arrives second is
+  # evaluated against the *other* caller's now-committed row, not the stale
+  # one either of them started with.
+  defp claim_window(secret, user, now) do
+    boundary = step_start(now)
+
     secret
     |> Ash.Changeset.for_update(:record_success, %{
       last_used_at: now,
       failed_attempts: 0,
       locked_until: nil
     })
-    |> Ash.update!(domain: Portal.Accounts)
+    |> Ash.Changeset.filter(Ash.Expr.expr(is_nil(last_used_at) or last_used_at < ^boundary))
+    |> Ash.update(domain: Portal.Accounts)
+    |> case do
+      {:ok, _updated} ->
+        :ok
 
-    :ok
+      {:error, error} ->
+        if stale?(error), do: record_failure(secret, user, now), else: raise(error)
+    end
   end
 
+  defp step_start(now) do
+    unix = DateTime.to_unix(now)
+    DateTime.from_unix!(div(unix, @period_seconds) * @period_seconds)
+  end
+
+  # `failed_attempts + 1` is a database-side expression, not a value computed
+  # from `secret.failed_attempts` in this process — two concurrent failures
+  # each issue their own `SET failed_attempts = failed_attempts + 1`, and
+  # Postgres serialises the two `UPDATE`s on the row so neither's increment is
+  # lost to the other's stale read.
   defp record_failure(secret, user, now) do
-    attempts = secret.failed_attempts + 1
-
-    if attempts >= @max_failures do
-      until = DateTime.add(now, @lockout_seconds, :second)
-
+    updated =
       secret
-      |> Ash.Changeset.for_update(:record_failure, %{failed_attempts: 0, locked_until: until})
+      |> Ash.Changeset.for_update(:record_failure, %{})
+      |> Ash.Changeset.atomic_update(:failed_attempts, Ash.Expr.expr(failed_attempts + 1))
       |> Ash.update!(domain: Portal.Accounts)
 
-      Logger.warning("TOTP locked for user #{user.username} until #{DateTime.to_iso8601(until)}")
-
-      {:error, {:locked, until}}
+    if updated.failed_attempts >= @max_failures do
+      lock(updated, user, now)
     else
-      secret
-      |> Ash.Changeset.for_update(:record_failure, %{failed_attempts: attempts})
-      |> Ash.update!(domain: Portal.Accounts)
-
       {:error, :invalid_code}
     end
   end
+
+  # Second, separately-guarded write: only locks if the row is still at or
+  # above the threshold at write time. If a concurrent success reset the
+  # counter, or a concurrent failure already locked it, this write matches
+  # zero rows and we fall back to reporting this attempt as merely invalid —
+  # the account either isn't over threshold anymore, or is already locked by
+  # the other writer.
+  defp lock(secret, user, now) do
+    until = DateTime.add(now, @lockout_seconds, :second)
+
+    secret
+    |> Ash.Changeset.for_update(:record_failure, %{failed_attempts: 0, locked_until: until})
+    |> Ash.Changeset.filter(Ash.Expr.expr(failed_attempts >= ^@max_failures))
+    |> Ash.update(domain: Portal.Accounts)
+    |> case do
+      {:ok, _updated} ->
+        Logger.warning(
+          "TOTP locked for user #{user.username} until #{DateTime.to_iso8601(until)}"
+        )
+
+        {:error, {:locked, until}}
+
+      {:error, error} ->
+        if stale?(error), do: {:error, :invalid_code}, else: raise(error)
+    end
+  end
+
+  # `Ash.update/2` wraps a lost compare-and-swap as `%Ash.Error.Invalid{errors:
+  # [%Ash.Error.Changes.StaleRecord{} | _]}`, not a bare `StaleRecord` — this
+  # unwraps it so callers can tell "the row didn't match our WHERE clause"
+  # (expected, means we lost the race) apart from any other write failure
+  # (unexpected, should surface loudly).
+  defp stale?(%Ash.Error.Invalid{errors: errors}) do
+    Enum.any?(errors, &match?(%StaleRecord{}, &1))
+  end
+
+  defp stale?(_error), do: false
 end

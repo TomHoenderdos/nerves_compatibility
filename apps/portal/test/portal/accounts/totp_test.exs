@@ -141,4 +141,47 @@ defmodule Portal.Accounts.TotpTest do
     refute Totp.confirmed?(user)
     assert Totp.get_secret(user) == :error
   end
+
+  test "two concurrent verifications of the same code let exactly one win" do
+    user = user_fixture()
+    secret = enrol(user)
+    later = DateTime.add(@t0, 60, :second)
+    code = NimbleTOTP.verification_code(secret, time: later)
+
+    parent = self()
+
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          Ecto.Adapters.SQL.Sandbox.allow(Portal.Repo, parent, self())
+          Totp.verify(user, code, later)
+        end)
+      end
+
+    results = Task.await_many(tasks)
+
+    assert Enum.count(results, &(&1 == :ok)) == 1
+    assert Enum.count(results, &(&1 == {:error, :invalid_code})) == 1
+  end
+
+  test "two concurrent failed verifications both count toward the lockout" do
+    user = user_fixture()
+    enrol(user)
+    later = DateTime.add(@t0, 60, :second)
+
+    parent = self()
+
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          Ecto.Adapters.SQL.Sandbox.allow(Portal.Repo, parent, self())
+          Totp.verify(user, "000000", later)
+        end)
+      end
+
+    Task.await_many(tasks)
+
+    {:ok, stored} = Totp.get_secret(user)
+    assert stored.failed_attempts == 2
+  end
 end
