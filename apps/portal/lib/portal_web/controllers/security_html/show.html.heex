@@ -15,7 +15,8 @@
       <div :if={@current_user.is_admin and not @admin_satisfied} class="alert alert-warning">
         <.icon name="hero-shield-exclamation-mini" class="size-5" />
         <span>
-          Admin accounts need a passkey. Add one below to keep reaching <code>/admin</code>.
+          Admin accounts need a passkey to reach <code>/admin</code>.
+          An authenticator app does not substitute: a passkey cannot be phished, and a code can.
         </span>
       </div>
 

@@ -124,6 +124,10 @@ defmodule PortalWeb.SecurityControllerTest do
     |> LazyHTML.text()
   end
 
+  defp reloaded_body(conn) do
+    conn |> recycle([]) |> get(~p"/settings/security") |> html_response(200)
+  end
+
   test "the page lists factors and is reachable without a fresh re-auth", %{conn: conn} do
     user = user_fixture(%{password: @password})
     add_passkey(user)
@@ -133,6 +137,21 @@ defmodule PortalWeb.SecurityControllerTest do
     body = html_response(conn, 200)
     assert body =~ "laptop"
     assert body =~ "Security"
+  end
+
+  test "an unsatisfied admin is told why an authenticator app will not do", %{conn: conn} do
+    admin = admin_fixture(%{password: @password})
+    add_totp(admin)
+
+    body =
+      conn |> stale_sign_in(admin, :totp) |> get(~p"/settings/security") |> html_response(200)
+
+    # The only place a human ever meets the passkeys-only-for-admin rule. Without
+    # the reason it reads as an arbitrary requirement, and the predictable next
+    # move is someone "fixing" `Mfa.admin_satisfied?/1` to accept TOTP.
+    assert body =~ "Admin accounts need a passkey to reach"
+    assert body =~ "An authenticator app does not substitute:"
+    assert body =~ "a passkey cannot be phished, and a code can."
   end
 
   test "signing out of the window blocks a factor change", %{conn: conn} do
@@ -169,7 +188,7 @@ defmodule PortalWeb.SecurityControllerTest do
       |> stale_sign_in(user, :passkey)
       |> post(~p"/settings/security/reauth", %{"method" => "password", "credential" => @password})
 
-    assert html_response(conn, 200) =~ "passkey"
+    assert html_response(conn, 200) =~ "Your password no longer authorises changes here."
     refute get_session(conn, :reauth_method) == :password
   end
 
@@ -205,6 +224,25 @@ defmodule PortalWeb.SecurityControllerTest do
 
     assert redirected_to(conn) == ~p"/settings/security"
     assert get_session(conn, :reauth_method) == :totp
+  end
+
+  test "a locked-out authenticator says so instead of blaming the typing", %{conn: conn} do
+    user = user_fixture(%{password: @password})
+    add_totp(user)
+
+    wrong_code = fn conn ->
+      post(conn, ~p"/settings/security/reauth", %{"method" => "totp", "credential" => "000000"})
+    end
+
+    # Five wrong codes is the lockout threshold, and the fifth is the attempt
+    # that reports it. `recycle/1` carries the session cookie between posts; the
+    # first conn has no response to recycle yet.
+    conn = conn |> sign_in(user, :totp) |> wrong_code.()
+    conn = Enum.reduce(2..5, conn, fn _i, conn -> conn |> recycle() |> wrong_code.() end)
+
+    body = html_response(conn, 200)
+    assert body =~ "Too many wrong codes."
+    refute body =~ "That did not match."
   end
 
   test "the browser's Accept header is honoured on the JSON routes", %{conn: conn} do
@@ -313,12 +351,88 @@ defmodule PortalWeb.SecurityControllerTest do
 
     {:ok, stored} = Totp.get_secret(user)
 
+    # A typo must not cost the secret: the URI comes back with the error, so the
+    # code field and the QR code the user already scanned are still there.
+    retry = post(recycle(conn), ~p"/settings/security/totp/confirm", %{"code" => "000000"})
+    retry_body = html_response(retry, 200)
+    assert retry_body =~ "otpauth://totp/"
+    assert retry_body =~ "That code did not match."
+    assert {:ok, ^stored} = Totp.get_secret(user)
+
     conn =
       post(recycle(conn), ~p"/settings/security/totp/confirm", %{
         "code" => NimbleTOTP.verification_code(stored.secret)
       })
 
     assert redirected_to(conn) == ~p"/settings/security"
+    assert Totp.confirmed?(user)
+
+    # The window that authorised this enrolment was opened with the password,
+    # which stops being accepted the moment a factor lands. Confirming the
+    # factor is proof of the factor, so the recovery codes stay reachable.
+    conn = post(recycle(conn), ~p"/settings/security/recovery-codes")
+
+    assert conn |> html_response(200) |> shown_codes() |> then(&Regex.scan(@code, &1)) |> length() ==
+             10
+  end
+
+  test "a first passkey opens the window that mints the first recovery codes", %{conn: conn} do
+    user = user_fixture(%{password: @password})
+    authenticator = SoftwareAuthenticator.new(@rp_id)
+
+    # Bootstrap: no factors at all, so the password is the only credential that
+    # can open the window.
+    conn =
+      conn
+      |> stale_sign_in(user)
+      |> post(~p"/settings/security/reauth", %{"method" => "password", "credential" => @password})
+
+    assert redirected_to(conn) == ~p"/settings/security"
+
+    conn =
+      conn
+      |> recycle([])
+      |> asks_for_json()
+      |> post(~p"/settings/security/passkeys/challenge")
+
+    challenge = stashed_challenge(conn)
+    created = SoftwareAuthenticator.create(authenticator, challenge.bytes, @origin)
+
+    conn =
+      post(recycle(conn), ~p"/settings/security/passkeys", %{
+        "nickname" => "laptop",
+        "attestation_object" => WebAuthn.b64(created.attestation_object),
+        "client_data_json" => WebAuthn.b64(created.client_data_json),
+        "transports" => []
+      })
+
+    assert json_response(conn, 200)["ok"]
+
+    # `recycle([])` drops the JSON Accept header the four fetch routes need;
+    # carrying it into this GET would 406 in the browser pipeline. This is the
+    # `window.location.reload()` the JS does after registering.
+    reloaded = get(recycle(conn, []), ~p"/settings/security")
+    body = html_response(reloaded, 200)
+
+    assert body =~ "You have no recovery codes"
+    assert body =~ ~p"/settings/security/recovery-codes"
+
+    conn = post(recycle(reloaded), ~p"/settings/security/recovery-codes")
+
+    assert conn |> html_response(200) |> shown_codes() |> then(&Regex.scan(@code, &1)) |> length() ==
+             10
+
+    assert RecoveryCodes.remaining(user) == 10
+  end
+
+  test "starting TOTP enrolment again does not destroy a confirmed one", %{conn: conn} do
+    user = user_fixture(%{password: @password})
+    add_totp(user)
+
+    conn = conn |> sign_in(user, :totp) |> post(~p"/settings/security/totp/start")
+
+    assert redirected_to(conn) == ~p"/settings/security"
+    assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "Remove the current authenticator app"
     assert Totp.confirmed?(user)
   end
 
@@ -357,11 +471,16 @@ defmodule PortalWeb.SecurityControllerTest do
     conn = conn |> sign_in(user, :passkey) |> post(~p"/settings/security/recovery-codes")
 
     body = html_response(conn, 200)
-    assert body |> shown_codes() |> then(&Regex.scan(@code, &1)) |> length() == 10
+    codes = body |> shown_codes() |> then(&Regex.scan(@code, &1)) |> List.flatten()
+    assert length(codes) == 10
     assert RecoveryCodes.remaining(user) == 10
 
-    reloaded = get(recycle(conn), ~p"/settings/security")
-    refute reloaded |> html_response(200) |> shown_codes() |> then(&Regex.match?(@code, &1))
+    # Against the whole page, not the one list that renders them: `#new-recovery-codes`
+    # does not exist without the assign, so scoping the refute there would ask
+    # whether an absent element contains codes and answer "no" unconditionally.
+    reloaded = reloaded_body(conn)
+    assert reloaded =~ "10 unused codes"
+    for code <- codes, do: refute(reloaded =~ code)
   end
 
   test "an anonymous visitor is sent to the login page", %{conn: conn} do

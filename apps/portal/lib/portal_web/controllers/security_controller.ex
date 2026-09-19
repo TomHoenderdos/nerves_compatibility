@@ -60,18 +60,24 @@ defmodule PortalWeb.SecurityController do
     user = conn.assigns.current_user
     method = parse_method(method)
 
-    cond do
-      method not in Mfa.accepted_reauth_methods(user) ->
-        render_page(conn, error: reauth_message(user))
+    if method in Mfa.accepted_reauth_methods(user) do
+      case prove(user, method, credential) do
+        :ok ->
+          conn
+          |> UserAuth.mark_reauth(method)
+          |> put_flash(:info, "Confirmed. You have #{window_minutes()} minutes to make changes.")
+          |> redirect(to: ~p"/settings/security")
 
-      proven?(user, method, credential) ->
-        conn
-        |> UserAuth.mark_reauth(method)
-        |> put_flash(:info, "Confirmed. You have #{window_minutes()} minutes to make changes.")
-        |> redirect(to: ~p"/settings/security")
+        # Mirrors `MfaController`: fifteen minutes of "that did not match" would
+        # have the user retyping codes that cannot be accepted whatever they type.
+        {:error, {:locked, _until}} ->
+          render_page(conn, error: "Too many wrong codes. Try again in 15 minutes.")
 
-      true ->
-        render_page(conn, error: "That did not match. Try again.")
+        :error ->
+          render_page(conn, error: "That did not match. Try again.")
+      end
+    else
+      render_page(conn, error: reauth_message(user))
     end
   end
 
@@ -143,7 +149,10 @@ defmodule PortalWeb.SecurityController do
     case WebAuthn.register(user, params, challenge) do
       {:ok, passkey} ->
         Logger.warning("Passkey #{passkey.nickname} registered for #{user.username}")
-        json(conn, %{ok: true})
+
+        conn
+        |> mark_new_factor(user, :passkey)
+        |> json(%{ok: true})
 
       {:error, :already_registered} ->
         json_error(conn, :unprocessable_entity, "That security key is already registered.")
@@ -177,9 +186,21 @@ defmodule PortalWeb.SecurityController do
   # --- TOTP ------------------------------------------------------------------
 
   def start_totp(conn, _params) do
-    {:ok, %{uri: uri}} = Totp.start_enrolment(conn.assigns.current_user)
+    user = conn.assigns.current_user
 
-    render_page(conn, totp_uri: uri)
+    # `Totp.start_enrolment/1` opens with `disable/1`, so reaching this action
+    # with a confirmed authenticator would silently drop the account to one
+    # factor -- a back-button resubmit or a stale tab is enough. The template
+    # already hides the button; the controller must not be more permissive.
+    if Totp.confirmed?(user) do
+      conn
+      |> put_flash(:error, "Remove the current authenticator app before setting up a new one.")
+      |> redirect(to: ~p"/settings/security")
+    else
+      {:ok, %{uri: uri}} = Totp.start_enrolment(user)
+
+      render_page(conn, totp_uri: uri)
+    end
   end
 
   def confirm_totp(conn, %{"code" => code}) do
@@ -190,17 +211,24 @@ defmodule PortalWeb.SecurityController do
         Logger.warning("TOTP confirmed for #{user.username}")
 
         conn
+        |> mark_new_factor(user, :totp)
         |> put_flash(:info, "Authenticator app confirmed.")
         |> redirect(to: ~p"/settings/security")
 
       {:error, _reason} ->
-        render_page(conn, error: "That code did not match. Check the clock on the device.")
+        # The URI goes back with the error: dropping it would leave "set up an
+        # authenticator app" as the only way forward, which mints a fresh
+        # secret and forces a re-scan over a single mistyped digit.
+        render_page(conn,
+          error: "That code did not match. Check the clock on the device.",
+          totp_uri: enrolment_uri(user)
+        )
     end
   end
 
   def delete_totp(conn, _params) do
     user = conn.assigns.current_user
-    :ok = Totp.disable(user)
+    Totp.disable(user)
     Logger.warning("TOTP removed for #{user.username}")
 
     conn
@@ -233,7 +261,7 @@ defmodule PortalWeb.SecurityController do
   end
 
   defp refuse(conn, message) do
-    if conn.private[:phoenix_action] in @json_actions do
+    if action_name(conn) in @json_actions do
       json_error(conn, :forbidden, message)
     else
       conn
@@ -263,19 +291,54 @@ defmodule PortalWeb.SecurityController do
   defp parse_method("recovery_code"), do: :recovery_code
   defp parse_method(_other), do: :unknown
 
-  defp proven?(user, :password, credential) when is_binary(credential) do
-    match?({:ok, _user}, Portal.Accounts.authenticate_user(user.username, credential))
+  # `:error` is "that credential did not check out", and is deliberately the
+  # answer for a malformed `credential` param too -- the `is_binary` guards send
+  # `credential[]=x` here rather than raising.
+  @spec prove(Portal.Accounts.User.t(), Mfa.method(), term()) ::
+          :ok | :error | {:error, {:locked, DateTime.t()}}
+  defp prove(user, :password, credential) when is_binary(credential) do
+    if match?({:ok, _user}, Portal.Accounts.authenticate_user(user.username, credential)),
+      do: :ok,
+      else: :error
   end
 
-  defp proven?(user, :totp, credential) when is_binary(credential) do
-    Totp.verify(user, credential) == :ok
+  defp prove(user, :totp, credential) when is_binary(credential) do
+    case Totp.verify(user, credential) do
+      :ok -> :ok
+      {:error, {:locked, until}} -> {:error, {:locked, until}}
+      {:error, _reason} -> :error
+    end
   end
 
-  defp proven?(user, :recovery_code, credential) when is_binary(credential) do
-    RecoveryCodes.consume(user, credential) == :ok
+  defp prove(user, :recovery_code, credential) when is_binary(credential) do
+    if RecoveryCodes.consume(user, credential) == :ok, do: :ok, else: :error
   end
 
-  defp proven?(_user, _method, _credential), do: false
+  defp prove(_user, _method, _credential), do: :error
+
+  # Proving possession of a factor you have just enrolled *is* an
+  # authentication with that factor, and the bootstrap path depends on saying
+  # so: enrolling a first passkey flips `accepted_reauth_methods/1` away from
+  # `[:password]`, which would otherwise close the window the person opened to
+  # enrol it and leave them staring at a "generate recovery codes" banner whose
+  # button has vanished. Stamping is conditional on the method still being
+  # accepted, so confirming TOTP on an account that already holds a passkey
+  # leaves an existing `:passkey` window alone rather than overwriting it with a
+  # marker `Mfa.reauth_fresh?/4` will refuse.
+  defp mark_new_factor(conn, user, method) do
+    if method in Mfa.accepted_reauth_methods(user) do
+      UserAuth.mark_reauth(conn, method)
+    else
+      conn
+    end
+  end
+
+  defp enrolment_uri(user) do
+    case Totp.enrolment_uri(user) do
+      {:ok, uri} -> uri
+      :error -> nil
+    end
+  end
 
   defp json_error(conn, status, message) do
     conn |> put_status(status) |> json(%{error: message})
