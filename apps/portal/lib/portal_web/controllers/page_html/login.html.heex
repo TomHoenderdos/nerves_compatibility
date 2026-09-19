@@ -49,6 +49,15 @@
             </button>
           </form>
 
+          <div class="divider">or</div>
+
+          <div data-passkey-block class="space-y-2">
+            <button id="passkey-login" type="button" class="btn btn-outline w-full">
+              <.icon name="hero-finger-print-mini" class="size-5" /> Sign in with a passkey
+            </button>
+            <p id="passkey-login-status" class="text-sm text-error" aria-live="polite"></p>
+          </div>
+
           <p class="text-sm leading-6 text-base-content/70">
             No account yet? <a
               href={~p"/register"}

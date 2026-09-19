@@ -24,6 +24,7 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/portal"
 import topbar from "../vendor/topbar"
+import {initWebAuthn} from "./webauthn"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 // `disconnectedTimeout` is how long a socket may be down before the
@@ -56,6 +57,8 @@ window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 
 // connect if there are any LiveViews on the page
 liveSocket.connect()
+
+initWebAuthn()
 
 // expose liveSocket on window for web console debug logs and latency simulation:
 // >> liveSocket.enableDebug()
