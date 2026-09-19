@@ -194,9 +194,29 @@
 
           <div :if={@totp_uri} class="space-y-3">
             <p class="text-sm leading-6 text-base-content/70">
-              Add this to your authenticator app, then confirm one code to finish.
+              Scan this with your authenticator app, then confirm one code to finish.
             </p>
-            <p class="break-all bg-base-200 p-3 font-mono text-xs">{@totp_uri}</p>
+
+            <div
+              id="totp-qr"
+              role="img"
+              aria-label="QR code for this authenticator enrolment"
+              class="flex justify-center rounded-lg bg-white p-4"
+            >
+              {totp_qr(@totp_uri)}
+            </div>
+
+            <div :if={@totp_secret} class="space-y-1">
+              <p class="text-sm leading-6 text-base-content/70">
+                Can't scan? Enter this key by hand instead.
+              </p>
+              <p
+                id="totp-manual-key"
+                class="select-all break-all rounded bg-base-200 p-3 font-mono text-sm tracking-wider"
+              >
+                {totp_manual_key(@totp_secret)}
+              </p>
+            </div>
             <form
               id="totp-confirm-form"
               method="post"
