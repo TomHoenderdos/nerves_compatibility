@@ -1,0 +1,265 @@
+<Layouts.flash_group flash={@flash} />
+
+<main class="min-h-screen bg-base-100 text-base-content">
+  <.site_nav current_user={@current_user} />
+
+  <div class="mx-auto max-w-2xl px-4 py-10 sm:px-6 lg:px-8">
+    <section class="space-y-8">
+      <PortalWeb.UI.page_header kicker="Account" title="Security">
+        <:subtitle>
+          Passkeys sign you in without a password and cannot be phished.
+          An authenticator app adds a second step to password sign-ins.
+        </:subtitle>
+      </PortalWeb.UI.page_header>
+
+      <div :if={@current_user.is_admin and not @admin_satisfied} class="alert alert-warning">
+        <.icon name="hero-shield-exclamation-mini" class="size-5" />
+        <span>
+          Admin accounts need a passkey. Add one below to keep reaching <code>/admin</code>.
+        </span>
+      </div>
+
+      <div :if={@enrolled and @recovery_remaining == 0} class="alert alert-error">
+        <.icon name="hero-lifebuoy-mini" class="size-5" />
+        <span>
+          You have no recovery codes. Generate a set now, before you lose the device.
+        </span>
+      </div>
+
+      <div
+        :if={@enrolled and @recovery_remaining > 0 and @recovery_low}
+        class="alert alert-warning"
+      >
+        <.icon name="hero-lifebuoy-mini" class="size-5" />
+        <span>{@recovery_remaining} recovery codes left. Generate a fresh set.</span>
+      </div>
+
+      <section
+        :if={@new_recovery_codes}
+        class="card border-2 border-primary bg-base-100 shadow-sm"
+      >
+        <div class="card-body gap-4">
+          <h2 class="text-lg font-semibold tracking-tight">Your recovery codes</h2>
+          <p class="text-sm leading-6 text-base-content/70">
+            Save these now. Each works once, and this page will not show them again.
+          </p>
+          <ul id="new-recovery-codes" class="grid grid-cols-2 gap-2 font-mono text-sm">
+            <li :for={code <- @new_recovery_codes} class="rounded bg-base-200 px-3 py-2">
+              {code}
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <section :if={not @reauth_fresh} class="card border border-warning bg-base-100 shadow-sm">
+        <div class="card-body gap-4">
+          <h2 class="text-lg font-semibold tracking-tight">Confirm it is you</h2>
+          <p class="text-sm leading-6 text-base-content/70">
+            Changing sign-in settings needs a confirmation, good for {@window_minutes} minutes.
+          </p>
+
+          <form
+            :if={:password in @accepted_methods}
+            id="reauth-password-form"
+            method="post"
+            action={~p"/settings/security/reauth"}
+            class="space-y-3"
+          >
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <input type="hidden" name="method" value="password" />
+            <input
+              id="reauth-password"
+              name="credential"
+              type="password"
+              autocomplete="current-password"
+              required
+              placeholder="Password"
+              class="input input-bordered w-full"
+            />
+            <button type="submit" class="btn btn-primary w-full">Confirm</button>
+          </form>
+
+          <form
+            :if={:totp in @accepted_methods}
+            id="reauth-totp-form"
+            method="post"
+            action={~p"/settings/security/reauth"}
+            class="space-y-3"
+          >
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <input type="hidden" name="method" value="totp" />
+            <input
+              id="reauth-totp"
+              name="credential"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              required
+              placeholder="Six-digit code"
+              class="input input-bordered w-full font-mono"
+            />
+            <button type="submit" class="btn btn-primary w-full">Confirm</button>
+          </form>
+
+          <div :if={:passkey in @accepted_methods} data-passkey-block class="space-y-2">
+            <button id="passkey-reauth" type="button" class="btn btn-outline w-full">
+              <.icon name="hero-finger-print-mini" class="size-5" /> Confirm with a passkey
+            </button>
+            <p id="passkey-reauth-status" class="text-sm text-error" aria-live="polite"></p>
+          </div>
+
+          <form
+            :if={:recovery_code in @accepted_methods}
+            id="reauth-recovery-form"
+            method="post"
+            action={~p"/settings/security/reauth"}
+            class="space-y-3"
+          >
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <input type="hidden" name="method" value="recovery_code" />
+            <input
+              id="reauth-recovery-code"
+              name="credential"
+              inputmode="text"
+              required
+              placeholder="Recovery code"
+              class="input input-bordered w-full font-mono"
+            />
+            <button type="submit" class="btn btn-outline w-full">Use a recovery code</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-4">
+          <h2 class="text-lg font-semibold tracking-tight">Passkeys</h2>
+
+          <p :if={@passkeys == []} class="text-sm leading-6 text-base-content/70">
+            No passkeys yet. A passkey is a key held by this device or your password manager,
+            unlocked with a fingerprint, face or PIN.
+          </p>
+
+          <ul :if={@passkeys != []} id="passkeys" class="divide-y divide-base-300">
+            <li
+              :for={passkey <- @passkeys}
+              id={"passkey-#{passkey.id}"}
+              class="flex items-center justify-between gap-4 py-3"
+            >
+              <div>
+                <p class="font-semibold">{passkey.nickname}</p>
+                <p class="text-sm text-base-content/60">
+                  Added {Calendar.strftime(passkey.inserted_at, "%Y-%m-%d")}
+                  <span :if={passkey.last_used_at}>
+                    · last used {Calendar.strftime(passkey.last_used_at, "%Y-%m-%d")}
+                  </span>
+                </p>
+              </div>
+              <form
+                :if={@reauth_fresh}
+                method="post"
+                action={~p"/settings/security/passkeys/#{passkey.id}/delete"}
+              >
+                <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                <button type="submit" class="btn btn-sm btn-ghost text-error">Remove</button>
+              </form>
+            </li>
+          </ul>
+
+          <div :if={@reauth_fresh} data-passkey-block class="space-y-3">
+            <input
+              id="passkey-nickname"
+              placeholder="Name this device"
+              maxlength="60"
+              class="input input-bordered w-full"
+            />
+            <button id="passkey-register" type="button" class="btn btn-primary w-full">
+              <.icon name="hero-plus-mini" class="size-5" /> Add a passkey
+            </button>
+            <p id="passkey-register-status" class="text-sm text-error" aria-live="polite"></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-4">
+          <h2 class="text-lg font-semibold tracking-tight">Authenticator app</h2>
+
+          <p class="text-sm leading-6 text-base-content/70">
+            <span :if={@totp_confirmed}>Enabled. Password sign-ins ask for a code.</span>
+            <span :if={not @totp_confirmed}>
+              Not set up. An app such as 1Password, Aegis or Google Authenticator generates
+              a fresh six-digit code every thirty seconds.
+            </span>
+          </p>
+
+          <div :if={@totp_uri} class="space-y-3">
+            <p class="text-sm leading-6 text-base-content/70">
+              Add this to your authenticator app, then confirm one code to finish.
+            </p>
+            <p class="break-all bg-base-200 p-3 font-mono text-xs">{@totp_uri}</p>
+            <form
+              id="totp-confirm-form"
+              method="post"
+              action={~p"/settings/security/totp/confirm"}
+              class="space-y-3"
+            >
+              <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+              <input
+                id="totp-code"
+                name="code"
+                inputmode="numeric"
+                autocomplete="one-time-code"
+                required
+                placeholder="Six-digit code"
+                class="input input-bordered w-full font-mono"
+              />
+              <button type="submit" class="btn btn-primary w-full">Confirm</button>
+            </form>
+          </div>
+
+          <form
+            :if={@reauth_fresh and not @totp_confirmed and is_nil(@totp_uri)}
+            method="post"
+            action={~p"/settings/security/totp/start"}
+          >
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <button type="submit" class="btn btn-outline w-full">Set up an app</button>
+          </form>
+
+          <form
+            :if={@reauth_fresh and @totp_confirmed}
+            method="post"
+            action={~p"/settings/security/totp/delete"}
+          >
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <button type="submit" class="btn btn-ghost w-full text-error">Remove the app</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-4">
+          <h2 class="text-lg font-semibold tracking-tight">Recovery codes</h2>
+          <p class="text-sm leading-6 text-base-content/70">
+            {@recovery_remaining} unused codes. Each one works once, and gets you back in when
+            every other factor is gone.
+          </p>
+
+          <form
+            :if={@reauth_fresh}
+            method="post"
+            action={~p"/settings/security/recovery-codes"}
+          >
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <button type="submit" class="btn btn-outline w-full">
+              <.icon name="hero-lifebuoy-mini" class="size-5" /> Generate new codes
+            </button>
+          </form>
+
+          <p :if={@recovery_remaining > 0} class="text-sm text-base-content/60">
+            Generating replaces every existing code.
+          </p>
+        </div>
+      </section>
+    </section>
+  </div>
+</main>
