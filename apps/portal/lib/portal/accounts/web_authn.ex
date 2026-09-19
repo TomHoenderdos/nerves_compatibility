@@ -39,9 +39,6 @@ defmodule Portal.Accounts.WebAuthn do
     |> Keyword.merge(extra)
   end
 
-  @spec rp_name() :: String.t()
-  def rp_name, do: @rp_name
-
   @doc """
   A registration challenge plus the JSON-ready payload the browser needs.
 
@@ -352,13 +349,20 @@ defmodule Portal.Accounts.WebAuthn do
   defp transports(_), do: []
 
   defp nickname(value) when is_binary(value) do
-    case value |> String.trim() |> String.slice(0, @max_nickname_length) do
+    case value |> strip_control() |> String.trim() |> String.slice(0, @max_nickname_length) do
       "" -> "Passkey"
       trimmed -> trimmed
     end
   end
 
   defp nickname(_), do: "Passkey"
+  # `String.trim/1` only takes whitespace off the ends, so an interior newline
+  # survives it. The result is interpolated into `Logger.warning` when a
+  # passkey is registered, and that log is this feature's only audit record --
+  # a nickname carrying a newline would forge a line in it. Bidi format
+  # characters go too: they reorder the rendered text of a line without
+  # changing its bytes, which is the same forgery by another route.
+  defp strip_control(value), do: String.replace(value, ~r/[\p{Cc}\p{Cf}]/u, "")
 
   @doc false
   def b64(bin), do: Base.url_encode64(bin, padding: false)

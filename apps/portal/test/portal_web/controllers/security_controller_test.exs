@@ -599,6 +599,22 @@ defmodule PortalWeb.SecurityControllerTest do
     assert get_resp_header(conn, "cache-control") == ["no-store"]
   end
 
+  # `reauth/2` next door has a fallback clause and
+  # `MfaController.totp_verify/2` reads the param with a default. This matched
+  # `%{"code" => code}` alone, so a POST without it raised
+  # `Phoenix.ActionClauseError` -- a 500 where the page should say the code
+  # did not match.
+  test "confirming TOTP without a code renders the error instead of raising", %{conn: conn} do
+    user = user_fixture(%{password: @password})
+
+    conn = conn |> sign_in(user) |> post(~p"/settings/security/totp/start")
+
+    retry = post(recycle(conn), ~p"/settings/security/totp/confirm", %{})
+
+    assert html_response(retry, 200) =~ "That code did not match."
+    refute Totp.confirmed?(user)
+  end
+
   test "the security page itself is not storable", %{conn: conn} do
     user = user_fixture(%{password: @password})
 

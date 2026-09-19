@@ -56,6 +56,35 @@ defmodule Portal.Accounts.PasskeysTest do
     assert Passkeys.count_for_user(owner) == 0
   end
 
+  # Counted in Postgres rather than by loading every row -- COSE public keys
+  # included -- and calling `length/1`. This runs on every `/admin` request
+  # through `RequireAdmin.check/2` and twice per `/settings/security` render.
+  test "counting is scoped to the owner and correct" do
+    owner = user_fixture()
+    stranger = user_fixture()
+
+    assert Passkeys.count_for_user(owner) == 0
+
+    for n <- 1..3 do
+      {:ok, _} =
+        Passkeys.create(owner, %{
+          credential_id: <<200, n>>,
+          public_key: :erlang.term_to_binary(%{3 => -7}),
+          nickname: "key #{n}"
+        })
+    end
+
+    {:ok, _} =
+      Passkeys.create(stranger, %{
+        credential_id: <<201>>,
+        public_key: <<0>>,
+        nickname: "theirs"
+      })
+
+    assert Passkeys.count_for_user(owner) == 3
+    assert Passkeys.count_for_user(stranger) == 1
+  end
+
   test "a TOTP secret is unique per user and starts unconfirmed" do
     user = user_fixture()
 

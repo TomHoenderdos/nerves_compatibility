@@ -130,6 +130,43 @@ defmodule Portal.Accounts.WebAuthnRegistrationTest do
     assert String.length(long.nickname) == 60
   end
 
+  # The registration log line is this feature's only audit record per the
+  # spec's Deferred section, and the nickname is interpolated into it.
+  # `String.trim/1` only takes whitespace off the ends, so an interior newline
+  # survived it and forged a second line in that log.
+  test "a nickname cannot forge a log line" do
+    user = user_fixture()
+
+    {challenge, _} = WebAuthn.registration_challenge(user)
+
+    response =
+      SoftwareAuthenticator.create(SoftwareAuthenticator.new(@rp_id), challenge.bytes, @origin)
+
+    forgery = "laptop\n12:00:00.000 [warning] Passkey admin registered for root"
+
+    {:ok, passkey} =
+      WebAuthn.register(user, registration_params(response, %{"nickname" => forgery}), challenge)
+
+    refute passkey.nickname =~ "\n"
+    refute passkey.nickname =~ "\r"
+
+    # And bidi overrides, which reorder a rendered line without changing a
+    # byte of it.
+    {challenge2, _} = WebAuthn.registration_challenge(user)
+
+    response2 =
+      SoftwareAuthenticator.create(SoftwareAuthenticator.new(@rp_id), challenge2.bytes, @origin)
+
+    {:ok, bidi} =
+      WebAuthn.register(
+        user,
+        registration_params(response2, %{"nickname" => "lap\u202Etop"}),
+        challenge2
+      )
+
+    assert bidi.nickname == "laptop"
+  end
+
   test "malformed base64 is an error, not a crash" do
     user = user_fixture()
     {challenge, _} = WebAuthn.registration_challenge(user)

@@ -73,6 +73,15 @@ defmodule Portal.Accounts.TotpSecret do
   end
 
   relationships do
+    # No `on_delete:` on this foreign key. That is safe today only because
+    # `Portal.Accounts.User` has no destroy action: nothing can delete a user,
+    # so nothing can hit the constraint. Adding one means adding
+    # `on_delete: :delete_all` (via `reference` in the `postgres` block, and a
+    # migration to alter the constraint) first -- otherwise the delete fails on
+    # an FK violation, and an admin trying to remove an account gets an
+    # Ecto.ConstraintError instead. The same note is on
+    # `Portal.Accounts.Passkey` and `Portal.Accounts.RecoveryCode`, which
+    # share the constraint and the fate.
     belongs_to :user, Portal.Accounts.User do
       allow_nil?(false)
       public?(true)
