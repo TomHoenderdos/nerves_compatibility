@@ -403,6 +403,7 @@ defmodule PortalWeb.SecurityController do
       recovery_low: RecoveryCodes.low?(user),
       enrolled: Mfa.enrolled?(user),
       admin_satisfied: Mfa.admin_satisfied?(user),
+      login_method: UserAuth.login_method(conn),
       accepted_methods: accepted,
       reauth_fresh:
         Mfa.reauth_fresh?(user, UserAuth.reauth_method(conn), UserAuth.reauth_at(conn)),

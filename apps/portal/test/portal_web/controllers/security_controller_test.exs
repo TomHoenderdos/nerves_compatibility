@@ -599,6 +599,38 @@ defmodule PortalWeb.SecurityControllerTest do
     assert get_resp_header(conn, "cache-control") == ["no-store"]
   end
 
+  # An enrolled admin who signs in with a password is redirected here by
+  # `landing_path/2`, and the "you need a passkey" banner above does not fire
+  # for them -- they have one. Without a second banner they arrive with no
+  # explanation at all.
+  test "an enrolled admin on a password session is told to sign in with the passkey", %{
+    conn: conn
+  } do
+    admin = admin_fixture(%{password: @password})
+    add_passkey(admin)
+
+    conn =
+      conn
+      |> sign_in(admin)
+      |> put_session(:login_method, :password)
+      |> get(~p"/settings/security")
+
+    body = html_response(conn, 200)
+    assert body =~ "needs a session you opened with your passkey"
+
+    # And it is gone once the session was opened with one.
+    passkey_body =
+      conn
+      |> recycle()
+      |> init_test_session(%{})
+      |> put_session(:user_id, admin.id)
+      |> put_session(:login_method, :passkey)
+      |> get(~p"/settings/security")
+      |> html_response(200)
+
+    refute passkey_body =~ "needs a session you opened with your passkey"
+  end
+
   # `reauth/2` next door has a fallback clause and
   # `MfaController.totp_verify/2` reads the param with a default. This matched
   # `%{"code" => code}` alone, so a POST without it raised
