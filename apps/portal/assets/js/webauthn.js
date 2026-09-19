@@ -121,6 +121,35 @@ export async function registerPasskey(nickname) {
   window.location.reload()
 }
 
+// The step-up on /settings/security: proving a passkey you already hold, to
+// open the ten-minute window in which factors can be added or removed. Same
+// ceremony as loginWithPasskey, different endpoints and no redirect -- the
+// page is reloaded so the server re-renders it with the window open.
+export async function reauthWithPasskey() {
+  const options = await postJSON("/settings/security/reauth/passkey/challenge", {})
+
+  const assertion = await navigator.credentials.get({
+    publicKey: {
+      challenge: b64urlToBuf(options.challenge),
+      rpId: options.rp_id,
+      timeout: options.timeout * 1000,
+      userVerification: "required"
+    }
+  })
+
+  await postJSON("/settings/security/reauth/passkey", {
+    credential_id: bufToB64url(assertion.rawId),
+    authenticator_data: bufToB64url(assertion.response.authenticatorData),
+    signature: bufToB64url(assertion.response.signature),
+    client_data_json: bufToB64url(assertion.response.clientDataJSON),
+    user_handle: assertion.response.userHandle
+      ? bufToB64url(assertion.response.userHandle)
+      : null
+  })
+
+  window.location.reload()
+}
+
 const run = async (button, statusEl, work) => {
   button.disabled = true
   if (statusEl) { statusEl.textContent = "" }
@@ -151,6 +180,20 @@ export function initWebAuthn() {
       loginButton.addEventListener("click", (event) => {
         event.preventDefault()
         run(loginButton, status, loginWithPasskey)
+      })
+    }
+  }
+
+  const reauthButton = document.getElementById("passkey-reauth")
+  if (reauthButton) {
+    const block = reauthButton.closest("[data-passkey-block]")
+    if (!supported && block) {
+      block.hidden = true
+    } else {
+      const status = document.getElementById("passkey-reauth-status")
+      reauthButton.addEventListener("click", (event) => {
+        event.preventDefault()
+        run(reauthButton, status, reauthWithPasskey)
       })
     }
   }

@@ -46,6 +46,23 @@ defmodule PortalWeb.Router do
     plug PortalWeb.Plugs.RequireLogin
   end
 
+  # `:browser_json` for signed-in callers. Same reasoning as above: the four
+  # `/settings/security` endpoints `webauthn.js` reaches with `fetch` answer
+  # JSON, and `:authenticated` opens with `:browser`'s `plug :accepts,
+  # ["html"]`, which raises `Phoenix.NotAcceptableError` on the `accept:
+  # application/json` those calls send, before the controller ever runs.
+  # `RequireLogin` is safe here only because `:fetch_live_flash` is above it —
+  # it announces the bounce to `/login` with `put_flash/3`, which raises
+  # without a fetched flash.
+  pipeline :authenticated_json do
+    plug :accepts, ["json"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+    plug PortalWeb.Plugs.RequireLogin
+  end
+
   scope "/", PortalWeb do
     pipe_through :browser
 
@@ -109,6 +126,26 @@ defmodule PortalWeb.Router do
 
     get "/settings", PageController, :settings
     post "/settings", PageController, :update_settings
+
+    # POST rather than DELETE for removals, matching the
+    # `post "/admin/requests/:id/approve"` convention above: plain forms, no
+    # `data-method` JavaScript.
+    get "/settings/security", SecurityController, :show
+    post "/settings/security/reauth", SecurityController, :reauth
+    post "/settings/security/passkeys/:id/delete", SecurityController, :delete_passkey
+    post "/settings/security/totp/start", SecurityController, :start_totp
+    post "/settings/security/totp/confirm", SecurityController, :confirm_totp
+    post "/settings/security/totp/delete", SecurityController, :delete_totp
+    post "/settings/security/recovery-codes", SecurityController, :regenerate_recovery_codes
+  end
+
+  scope "/", PortalWeb do
+    pipe_through :authenticated_json
+
+    post "/settings/security/reauth/passkey/challenge", SecurityController, :reauth_challenge
+    post "/settings/security/reauth/passkey", SecurityController, :reauth_passkey
+    post "/settings/security/passkeys/challenge", SecurityController, :registration_challenge
+    post "/settings/security/passkeys", SecurityController, :create_passkey
   end
 
   scope "/admin" do
