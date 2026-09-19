@@ -57,7 +57,7 @@ defmodule PortalWeb.MfaController do
     |> UserAuth.complete_login(user, method)
     |> maybe_warn_low_codes(user, method)
     |> put_flash(:info, "Signed in.")
-    |> redirect(to: UserAuth.landing_path(user))
+    |> redirect(to: UserAuth.landing_path(user, method))
   end
 
   defp maybe_warn_low_codes(conn, user, :recovery_code) do

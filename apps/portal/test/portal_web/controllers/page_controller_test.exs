@@ -106,7 +106,12 @@ defmodule PortalWeb.PageControllerTest do
     assert html_response(conn, 200) =~ "GitHub login is unavailable"
   end
 
-  test "signing in as an admin lands on the admin page", %{conn: conn} do
+  # An enrolled admin who signed in with a password does not land on `/admin`,
+  # because `RequireAdmin` would refuse that session the moment it arrived --
+  # a redirect, a second redirect and an error flash. The passkey landing is
+  # pinned in `PortalWeb.PasskeyControllerTest` instead, on the path that can
+  # actually reach it.
+  test "signing in with a password does not land an enrolled admin on /admin", %{conn: conn} do
     {:ok, admin} =
       Portal.Accounts.seed_admin_user("landing_admin", "correct horse battery staple")
 
@@ -118,7 +123,8 @@ defmodule PortalWeb.PageControllerTest do
         "password" => "correct horse battery staple"
       })
 
-    assert redirected_to(conn) == ~p"/admin"
+    assert redirected_to(conn) == ~p"/settings/security"
+    assert get_session(conn, :login_method) == :password
   end
 
   test "an admin without a passkey lands on security settings instead", %{conn: conn} do
@@ -168,7 +174,7 @@ defmodule PortalWeb.PageControllerTest do
 
     conn =
       conn
-      |> init_test_session(user_id: admin.id)
+      |> init_test_session(user_id: admin.id, login_method: :passkey)
       |> post(~p"/requests/anonymous", %{"packages" => "admin_anon_review"})
 
     conn = get(recycle(conn), ~p"/admin")
@@ -342,7 +348,7 @@ defmodule PortalWeb.PageControllerTest do
 
     conn =
       conn
-      |> init_test_session(user_id: admin.id)
+      |> init_test_session(user_id: admin.id, login_method: :passkey)
       |> post(~p"/admin/requests/#{request.id}/approve")
 
     assert html_response(conn, 200) =~ "Approved anonymous request for jason"
@@ -353,7 +359,7 @@ defmodule PortalWeb.PageControllerTest do
 
   defp signed_in_admin(conn, username) do
     {:ok, admin} = Portal.Accounts.seed_admin_user(username, "correct horse battery staple")
-    {init_test_session(conn, user_id: add_test_passkey(admin).id), admin}
+    {init_test_session(conn, user_id: add_test_passkey(admin).id, login_method: :passkey), admin}
   end
 
   # Every one of these routes takes an action on the queue. `RequireAdmin` is

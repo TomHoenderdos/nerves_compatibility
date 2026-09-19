@@ -38,6 +38,7 @@ defmodule PortalWeb.AdminObanRouteTest do
         conn
         |> init_test_session(%{})
         |> put_session(:user_id, admin.id)
+        |> put_session(:login_method, :passkey)
         |> get(~p"/admin/oban")
 
       refute redirected_to(conn) in [~p"/login", ~p"/request-scan", ~p"/settings/security"]

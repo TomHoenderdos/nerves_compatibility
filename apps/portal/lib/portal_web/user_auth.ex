@@ -42,9 +42,21 @@ defmodule PortalWeb.UserAuth do
     # the day nobody will remember to add it.
     |> configure_session(renew: true)
     |> put_session(:user_id, user.id)
+    # How this session was *established*, as opposed to `:reauth_method`,
+    # which records the most recent step-up and is overwritten on every one.
+    # `PortalWeb.Plugs.RequireAdmin` needs the former: a recovery-code step-up
+    # at `/settings/security` must not revoke admin access mid-session, and a
+    # password login must not gain it.
+    |> put_session(:login_method, method)
     |> mark_reauth(method)
     |> drop_pending()
   end
+
+  @doc """
+  The credential this session was signed in with, if any.
+  """
+  @spec login_method(Plug.Conn.t()) :: atom() | nil
+  def login_method(conn), do: get_session(conn, :login_method)
 
   @doc """
   Records that `method` was proven just now, starting a fresh step-up window.
@@ -69,6 +81,7 @@ defmodule PortalWeb.UserAuth do
   def start_pending(conn, %User{} = user) do
     conn
     |> delete_session(:user_id)
+    |> delete_session(:login_method)
     |> delete_session(:reauth_method)
     |> delete_session(:reauth_at)
     |> put_session(:pending_user_id, user.id)
@@ -112,11 +125,17 @@ defmodule PortalWeb.UserAuth do
   # one. Sending them to `/admin` means a redirect, a second redirect and an
   # error flash on every single login, forever -- which reads as a failure
   # rather than the prompt it is. They go straight to the page that fixes it.
-  @spec landing_path(User.t()) :: String.t()
-  def landing_path(user) do
+  #
+  # An enrolled admin who signed in with something other than the passkey is a
+  # fourth case, and for the same reason: `RequireAdmin` now refuses that
+  # session, so routing it to `/admin` would be the same bounce-and-flash loop.
+  # They go to `/settings/security`, where the passkey sign-in prompt is.
+  @spec landing_path(User.t(), atom() | nil) :: String.t()
+  def landing_path(user, method) do
     cond do
       not Portal.Accounts.admin?(user) -> ~p"/request-scan"
-      Portal.Accounts.Mfa.admin_satisfied?(user) -> ~p"/admin"
+      not Portal.Accounts.Mfa.admin_satisfied?(user) -> ~p"/settings/security"
+      method == :passkey -> ~p"/admin"
       true -> ~p"/settings/security"
     end
   end

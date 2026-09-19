@@ -1,7 +1,7 @@
 defmodule PortalWeb.Plugs.RequireAdmin do
   @moduledoc """
   Halts the connection unless the current session belongs to an admin user
-  who holds a passkey.
+  who holds a passkey and signed in with it.
 
   Three entry points, one decision. `check/1` is the decision and takes a user
   (or `nil`); `call/2` gates the `:admin` pipeline, `authorise/1` serves
@@ -61,7 +61,7 @@ defmodule PortalWeb.Plugs.RequireAdmin do
     conn
     |> get_session(:user_id)
     |> load_user()
-    |> check()
+    |> check(get_session(conn, :login_method))
     |> case do
       {:ok, user} ->
         {:ok, conn, user}
@@ -85,7 +85,7 @@ defmodule PortalWeb.Plugs.RequireAdmin do
     session
     |> Map.get("user_id")
     |> load_user()
-    |> check()
+    |> check(Map.get(session, "login_method"))
     |> case do
       {:ok, _user} ->
         {:cont, socket}
@@ -102,15 +102,27 @@ defmodule PortalWeb.Plugs.RequireAdmin do
   Whether this user may exercise admin capability, and where to send them if
   not.
 
-  Takes a user rather than a conn or a socket because three entry points need
-  the same answer in three different shapes.
+  Takes a user and the credential the session was established with, rather
+  than a conn or a socket, because three entry points need the same answer in
+  three different shapes.
+
+  `login_method` is the second half of the policy and not a refinement of the
+  first. Enrolment is a database fact: it says a passkey exists, never that
+  one was used. Without this argument a phished password opens `/admin` on any
+  admin who has enrolled, which is the single attack the spec's Problem
+  section names. `:login_method` is written once by
+  `PortalWeb.UserAuth.complete_login/3` and never rewritten; `:reauth_method`
+  deliberately is not reused here, because `mark_reauth/2` fires on every
+  step-up and a recovery-code re-auth would silently revoke admin mid-session.
   """
-  @spec check(User.t() | nil) :: {:ok, User.t()} | {:error, refusal()}
-  def check(nil) do
+  @spec check(User.t() | nil, atom() | nil) :: {:ok, User.t()} | {:error, refusal()}
+  def check(user, login_method \\ nil)
+
+  def check(nil, _login_method) do
     {:error, %{to: ~p"/login", flash: "Sign in with an admin account."}}
   end
 
-  def check(%User{} = user) do
+  def check(%User{} = user, login_method) do
     cond do
       # `admin?/1` restates the scope `Mfa.admin_satisfied?/1` also enforces
       # (`mfa.ex:45` answers true for a non-admin), so removing either alone is
@@ -123,6 +135,17 @@ defmodule PortalWeb.Plugs.RequireAdmin do
          %{
            to: ~p"/settings/security",
            flash: "Admin access needs a passkey. Add one to continue."
+         }}
+
+      # Enrolled, but this session was not opened with the passkey. The
+      # enrolled admin who signed in with a password is exactly the phished
+      # case, so they get the same door as the unenrolled one, with the
+      # message that matches what they have to do about it.
+      Portal.Accounts.admin?(user) and login_method != :passkey ->
+        {:error,
+         %{
+           to: ~p"/settings/security",
+           flash: "Admin access needs a passkey sign-in. Sign in with your passkey to continue."
          }}
 
       Portal.Accounts.admin?(user) ->
