@@ -3,10 +3,11 @@ defmodule PortalWeb.Plugs.RequireAdmin do
   Halts the connection unless the current session belongs to an admin user
   who holds a passkey and signed in with it.
 
-  Three entry points, one decision. `check/1` is the decision and takes a user
-  (or `nil`); `call/2` gates the `:admin` pipeline, `authorise/1` serves
+  Three entry points, one decision. `check/2` is the decision and takes a user
+  (or `nil`) and the method that session authenticated with (or `nil`);
+  `call/2` gates the `:admin` pipeline, `authorise/1` serves
   `PortalWeb.PageController`'s in-action admin checks, and `on_mount/4`
-  re-runs it when a LiveView connects. They share `check/1` on purpose: the
+  re-runs it when a LiveView connects. They share `check/2` on purpose: the
   Oban dashboard and the buttons that approve scan requests, reorder the queue
   and start update checks are the same privilege, so a second hand-maintained
   copy of this policy would be a second place for it to rot.

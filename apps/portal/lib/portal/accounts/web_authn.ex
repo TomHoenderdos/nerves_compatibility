@@ -361,8 +361,11 @@ defmodule Portal.Accounts.WebAuthn do
   # passkey is registered, and that log is this feature's only audit record --
   # a nickname carrying a newline would forge a line in it. Bidi format
   # characters go too: they reorder the rendered text of a line without
-  # changing its bytes, which is the same forgery by another route.
-  defp strip_control(value), do: String.replace(value, ~r/[\p{Cc}\p{Cf}]/u, "")
+  # changing its bytes, which is the same forgery by another route. So do the
+  # line and paragraph separators, U+2028 and U+2029 -- Unicode line breaks
+  # that sit in categories Zl and Zp rather than Cc, so the control-character
+  # class alone lets them through.
+  defp strip_control(value), do: String.replace(value, ~r/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u, "")
 
   @doc false
   def b64(bin), do: Base.url_encode64(bin, padding: false)

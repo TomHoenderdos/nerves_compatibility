@@ -165,6 +165,23 @@ defmodule Portal.Accounts.WebAuthnRegistrationTest do
       )
 
     assert bidi.nickname == "laptop"
+
+    # And U+2028, a Unicode line break that sits in category Zl rather than Cc,
+    # so it breaks a rendered log line while slipping past a control-character
+    # class that only covers Cc and Cf.
+    {challenge3, _} = WebAuthn.registration_challenge(user)
+
+    response3 =
+      SoftwareAuthenticator.create(SoftwareAuthenticator.new(@rp_id), challenge3.bytes, @origin)
+
+    {:ok, separator} =
+      WebAuthn.register(
+        user,
+        registration_params(response3, %{"nickname" => "lap\u2028top"}),
+        challenge3
+      )
+
+    assert separator.nickname == "laptop"
   end
 
   test "malformed base64 is an error, not a crash" do
