@@ -95,6 +95,17 @@ defmodule Portal.Accounts.MfaTest do
     refute Mfa.reauth_fresh?(keyed, :password, @now, @now)
   end
 
+  test "the ten-minute window is a constant callers can read, and it is the default clock" do
+    assert Mfa.reauth_window_seconds() == 600
+
+    user = with_passkey(user_fixture())
+    now = System.system_time(:second)
+
+    # No `now` argument, so the default clock is exercised rather than a literal.
+    assert Mfa.reauth_fresh?(user, :passkey, now)
+    refute Mfa.reauth_fresh?(user, :passkey, now - Mfa.reauth_window_seconds() - 1)
+  end
+
   test "a timestamp from the future is not fresh" do
     user = user_fixture()
     refute Mfa.reauth_fresh?(user, :password, @now + 60, @now)
