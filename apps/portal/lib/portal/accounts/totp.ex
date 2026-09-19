@@ -57,18 +57,25 @@ defmodule Portal.Accounts.Totp do
   end
 
   @doc """
-  The `otpauth://` URI for an enrolment still waiting on its first code.
+  The secret and `otpauth://` URI for an enrolment still waiting on its first
+  code.
 
-  Lets a mistyped confirmation be re-rendered against the same QR code instead
-  of costing the secret. A confirmed secret answers `:error`: there is no
-  enrolment in flight, and re-displaying it would put a live factor's seed back
-  on screen.
+  Lets a mistyped confirmation be re-rendered against the same QR code and the
+  same manual key instead of costing the secret. A confirmed secret answers
+  `:error`: there is no enrolment in flight, and re-displaying it would put a
+  live factor's seed back on screen.
+
+  Returns the secret as well as the URI because the page shows both -- no
+  authenticator accepts a whole `otpauth://` URI in its manual-entry field.
   """
-  @spec enrolment_uri(User.t()) :: {:ok, String.t()} | :error
-  def enrolment_uri(%User{} = user) do
+  @spec enrolment(User.t()) :: {:ok, %{secret: binary(), uri: String.t()}} | :error
+  def enrolment(%User{} = user) do
     case get_secret(user) do
-      {:ok, %TotpSecret{confirmed_at: nil, secret: secret}} -> {:ok, otpauth_uri(user, secret)}
-      _ -> :error
+      {:ok, %TotpSecret{confirmed_at: nil, secret: secret}} ->
+        {:ok, %{secret: secret, uri: otpauth_uri(user, secret)}}
+
+      _ ->
+        :error
     end
   end
 

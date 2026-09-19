@@ -207,9 +207,9 @@ defmodule PortalWeb.SecurityController do
       |> put_flash(:error, "Remove the current authenticator app before setting up a new one.")
       |> redirect(to: ~p"/settings/security")
     else
-      {:ok, %{uri: uri}} = Totp.start_enrolment(user)
+      {:ok, %{secret: secret, uri: uri}} = Totp.start_enrolment(user)
 
-      render_page(conn, totp_uri: uri)
+      render_page(conn, totp_uri: uri, totp_secret: secret)
     end
   end
 
@@ -229,9 +229,12 @@ defmodule PortalWeb.SecurityController do
         # The URI goes back with the error: dropping it would leave "set up an
         # authenticator app" as the only way forward, which mints a fresh
         # secret and forces a re-scan over a single mistyped digit.
+        {uri, secret} = enrolment(user)
+
         render_page(conn,
           error: "That code did not match. Check the clock on the device.",
-          totp_uri: enrolment_uri(user)
+          totp_uri: uri,
+          totp_secret: secret
         )
     end
   end
@@ -343,10 +346,10 @@ defmodule PortalWeb.SecurityController do
     end
   end
 
-  defp enrolment_uri(user) do
-    case Totp.enrolment_uri(user) do
-      {:ok, uri} -> uri
-      :error -> nil
+  defp enrolment(user) do
+    case Totp.enrolment(user) do
+      {:ok, %{secret: secret, uri: uri}} -> {uri, secret}
+      :error -> {nil, nil}
     end
   end
 
@@ -380,6 +383,7 @@ defmodule PortalWeb.SecurityController do
         Mfa.reauth_fresh?(user, UserAuth.reauth_method(conn), UserAuth.reauth_at(conn)),
       window_minutes: window_minutes(),
       totp_uri: Keyword.get(extra, :totp_uri),
+      totp_secret: Keyword.get(extra, :totp_secret),
       new_recovery_codes: Keyword.get(extra, :new_recovery_codes)
     )
   end

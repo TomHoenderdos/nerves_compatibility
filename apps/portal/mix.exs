@@ -70,6 +70,7 @@ defmodule Portal.MixProject do
       {:argon2_elixir, "~> 4.1"},
       {:wax_, "~> 0.7"},
       {:nimble_totp, "~> 1.0"},
+      {:eqrcode, "~> 0.2"},
       {:req, "~> 0.7"},
       {:hex_core, "~> 0.19"},
       {:jason, "~> 1.2"},

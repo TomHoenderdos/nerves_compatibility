@@ -391,22 +391,60 @@ defmodule PortalWeb.SecurityControllerTest do
     refute fresh_reauth?(conn, user)
   end
 
+  # The spec, the plan and `Totp.start_enrolment/1`'s own docstring all ask for
+  # a QR code plus a manual key. A raw `otpauth://` URI printed as text is
+  # neither: no authenticator can scan a string, and none accepts a whole URI
+  # in its manual-entry field -- that wants the bare base32 secret, which the
+  # URI buries in a query parameter.
+  test "TOTP enrolment renders a scannable QR code and a manual key", %{conn: conn} do
+    user = user_fixture(%{password: @password})
+
+    conn = conn |> sign_in(user) |> post(~p"/settings/security/totp/start")
+    body = html_response(conn, 200)
+
+    {:ok, stored} = Totp.get_secret(user)
+
+    # Matched textually rather than through `LazyHTML`: lexbor parses this as a
+    # fragment in HTML context, where `<svg>` is foreign content -- every
+    # `svg`/`rect` selector answers zero on markup that is plainly there, and
+    # the mis-nesting swallows the siblings that follow it too.
+    assert body =~ ~s(id="totp-qr")
+    assert body =~ "<svg "
+    assert body =~ "<rect "
+
+    # The manual key is the bare base32 secret -- what an authenticator's
+    # manual-entry field accepts -- and not the URI, which buries it in a
+    # query parameter.
+    assert body =~ ~s(id="totp-manual-key")
+    assert body =~ PortalWeb.SecurityHTML.totp_manual_key(stored.secret)
+
+    assert PortalWeb.SecurityHTML.totp_manual_key(stored.secret) |> String.replace(" ", "") ==
+             Base.encode32(stored.secret, padding: false)
+
+    # And the URI is no longer dumped as text where the key used to hide.
+    refute body =~ "otpauth://totp/"
+  end
+
   test "TOTP enrolment needs one working code before it counts", %{conn: conn} do
     user = user_fixture(%{password: @password})
 
     conn = conn |> sign_in(user) |> post(~p"/settings/security/totp/start")
     body = html_response(conn, 200)
-    assert body =~ "otpauth://totp/"
 
     refute Totp.confirmed?(user)
 
     {:ok, stored} = Totp.get_secret(user)
 
-    # A typo must not cost the secret: the URI comes back with the error, so the
-    # code field and the QR code the user already scanned are still there.
+    assert body =~ ~s(id="totp-qr")
+    assert body =~ PortalWeb.SecurityHTML.totp_manual_key(stored.secret)
+
+    # A typo must not cost the secret: the enrolment comes back with the error,
+    # so the code field, the QR code the user already scanned and the manual
+    # key are all still there.
     retry = post(recycle(conn), ~p"/settings/security/totp/confirm", %{"code" => "000000"})
     retry_body = html_response(retry, 200)
-    assert retry_body =~ "otpauth://totp/"
+    assert retry_body =~ ~s(id="totp-qr")
+    assert retry_body =~ PortalWeb.SecurityHTML.totp_manual_key(stored.secret)
     assert retry_body =~ "That code did not match."
     assert {:ok, ^stored} = Totp.get_secret(user)
 
