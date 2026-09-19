@@ -1,6 +1,12 @@
 defmodule PortalWeb.PageControllerTest do
   use PortalWeb.ConnCase
 
+  # `add_test_passkey/1`: an admin without one is bounced to
+  # `/settings/security` by `PortalWeb.Plugs.RequireAdmin`, so every admin
+  # here that means to reach an admin page carries one. The gate itself is
+  # covered in `PortalWeb.Plugs.RequireAdminTest`.
+  import Portal.Test.AccountsFixtures, only: [add_test_passkey: 1]
+
   defmodule StubVersions do
     def latest_version(_package), do: {:ok, "1.0.0"}
   end
@@ -139,6 +145,8 @@ defmodule PortalWeb.PageControllerTest do
   test "GET /admin shows queue and anonymous approvals for admins", %{conn: conn} do
     {:ok, admin} =
       Portal.Accounts.seed_admin_user("admin_queue", "correct horse battery staple")
+
+    add_test_passkey(admin)
 
     conn =
       conn
@@ -301,6 +309,8 @@ defmodule PortalWeb.PageControllerTest do
     {:ok, admin} =
       Portal.Accounts.seed_admin_user("admin_review", "correct horse battery staple")
 
+    add_test_passkey(admin)
+
     request =
       Portal.ScanRequests.ScanRequest
       |> Ash.Changeset.for_create(:create, %{
@@ -325,7 +335,7 @@ defmodule PortalWeb.PageControllerTest do
 
   defp signed_in_admin(conn, username) do
     {:ok, admin} = Portal.Accounts.seed_admin_user(username, "correct horse battery staple")
-    {init_test_session(conn, user_id: admin.id), admin}
+    {init_test_session(conn, user_id: add_test_passkey(admin).id), admin}
   end
 
   # Every one of these routes takes an action on the queue. `RequireAdmin` is
