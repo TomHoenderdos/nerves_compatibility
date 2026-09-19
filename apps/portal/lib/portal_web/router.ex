@@ -16,6 +16,26 @@ defmodule PortalWeb.Router do
     plug :accepts, ["json"]
   end
 
+  # For endpoints a browser calls with `fetch`, not by navigating: they need a
+  # session and a CSRF check like any other browser route, but they answer
+  # JSON. `:browser` cannot serve them -- it opens with `plug :accepts,
+  # ["html"]`, which 406s the `accept: application/json` that `webauthn.js`
+  # sends, before the controller runs. Same hazard as the sitemap scope below,
+  # opposite direction. Adding "json" to `:browser` instead would teach every
+  # HTML route in the app to negotiate JSON, which is not a trade worth making
+  # for two endpoints.
+  pipeline :browser_json do
+    plug :accepts, ["json"]
+    plug :fetch_session
+    # `PasskeyController` sets a flash for the page the browser navigates to
+    # next, and `put_flash/3` raises "flash not fetched" without this. It is
+    # `:fetch_live_flash` rather than `:fetch_flash` so the value lands in the
+    # same session key `:browser` reads back.
+    plug :fetch_live_flash
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+  end
+
   pipeline :admin do
     plug :browser
     plug PortalWeb.Plugs.RequireAdmin
@@ -57,8 +77,6 @@ defmodule PortalWeb.Router do
     post "/login", PageController, :create_session
     get "/login/totp", MfaController, :totp_challenge
     post "/login/totp", MfaController, :totp_verify
-    post "/auth/passkey/challenge", PasskeyController, :login_challenge
-    post "/auth/passkey/verify", PasskeyController, :login_verify
     post "/logout", PageController, :logout
     get "/auth/hex/start", PageController, :request_scan
     post "/auth/hex/start", PageController, :hex_start
@@ -68,6 +86,13 @@ defmodule PortalWeb.Router do
     get "/auth/github/complete", PageController, :request_scan
     post "/auth/github/complete", PageController, :github_complete
     post "/requests/anonymous", PageController, :anonymous_request
+  end
+
+  scope "/", PortalWeb do
+    pipe_through :browser_json
+
+    post "/auth/passkey/challenge", PasskeyController, :login_challenge
+    post "/auth/passkey/verify", PasskeyController, :login_verify
   end
 
   # No pipeline on purpose. `:browser` starts with `plug :accepts, ["html"]`,
