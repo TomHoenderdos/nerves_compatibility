@@ -57,6 +57,20 @@ defmodule PortalWeb.SecurityControllerTest do
     secret
   end
 
+  # A code for the controller to check against *its* clock. `SecurityController`
+  # calls the two-arity `Totp.verify/2` and `Totp.confirm/2`, which read
+  # `DateTime.utc_now()` themselves, so a code minted in the last moment of a
+  # 30-second step is checked against the next one and fails. Wait the step out
+  # rather than thread an injectable clock through an HTTP-facing controller.
+  defp live_totp_code(secret) do
+    case 30 - rem(System.system_time(:second), 30) do
+      left when left <= 2 -> Process.sleep(left * 1000)
+      _ -> :ok
+    end
+
+    NimbleTOTP.verification_code(secret)
+  end
+
   # The session carries only a 16-byte id; the challenge itself lives in
   # `WebAuthnSession`'s ETS table. Read it rather than `take/2`, which would
   # consume the challenge this test still needs.
@@ -219,7 +233,7 @@ defmodule PortalWeb.SecurityControllerTest do
       |> stale_sign_in(user, :totp)
       |> post(~p"/settings/security/reauth", %{
         "method" => "totp",
-        "credential" => NimbleTOTP.verification_code(secret)
+        "credential" => live_totp_code(secret)
       })
 
     assert redirected_to(conn) == ~p"/settings/security"
@@ -361,7 +375,7 @@ defmodule PortalWeb.SecurityControllerTest do
 
     conn =
       post(recycle(conn), ~p"/settings/security/totp/confirm", %{
-        "code" => NimbleTOTP.verification_code(stored.secret)
+        "code" => live_totp_code(stored.secret)
       })
 
     assert redirected_to(conn) == ~p"/settings/security"
