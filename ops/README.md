@@ -69,6 +69,51 @@ Advisory Database, `hex.audit` asks hex.pm, which carries EEF-issued CVEs the
 mirror can lag on. If `hex.audit` says only `No retired packages found`, your
 Hex is too old to be checking advisories -- `mix local.hex --force`.
 
+## WebAuthn environment
+
+`/etc/ncc-portal/portal.env` on the web host carries two settings that decide
+the origin passkeys are bound to:
+
+```bash
+NCC_WEBAUTHN_RP_ID=compatibility.nerves-project.org
+NCC_WEBAUTHN_ORIGIN=https://compatibility.nerves-project.org
+```
+
+Both are optional — unset, they fall back to `PHX_HOST` and `https://` plus
+`PHX_HOST`, which gives the same answer today. Set them explicitly anyway,
+because the fallback goes wrong silently: a passkey registered under one RP ID
+cannot be used under another, and every existing passkey stops working the
+moment the value changes. If the site ever moves domain, every user re-enrols.
+
+Neither value is secret. They live in the env file where the rest of the
+portal's configuration lives, not because they need protecting.
+
+## Locked out of admin
+
+Symptom: the only admin has lost every passkey, has no authenticator app, and
+has no recovery codes. `/admin` redirects to `/settings/security` and nothing
+can be changed there, because changing a factor needs a factor.
+
+On the web host:
+
+```bash
+cd /opt/nerves_compatibility/portal
+bin/portal eval 'Portal.Accounts.Recovery.clear_factors!("tomhoenderdos")'
+```
+
+This deletes every passkey on the account, removes the authenticator app,
+invalidates all outstanding recovery codes, and prints ten new ones. Copy them
+out of the terminal before you close it — they are shown once and stored only
+as SHA-256 hashes.
+
+Then sign in at `/login` with the password, use one of the printed codes when
+asked for a second factor, and register a passkey at `/settings/security`.
+`/admin` stays closed until a passkey exists.
+
+This call runs against the live database and needs no downtime. It is not a
+backdoor worth worrying about: anyone who can run it already has root on the
+host holding `/etc/ncc-portal/portal.env`'s database credentials.
+
 ## Not tracked here
 
 `builder-run.sh` and `run-tests.sh` exist on the web host only and are still
