@@ -180,6 +180,28 @@ defmodule Portal.Accounts.WebAuthnAuthenticationTest do
     assert WebAuthn.authenticate(params, challenge) == {:error, :malformed_assertion}
   end
 
+  test "a corrupt stored public key crashes instead of reading as a bad assertion" do
+    {user, authenticator, passkey} = enrolled_user()
+    {challenge, _} = WebAuthn.authentication_challenge()
+    response = SoftwareAuthenticator.get(authenticator, challenge.bytes, @origin, sign_count: 1)
+
+    # This is our column, not the client's payload. `Passkeys.cose_key/1` runs
+    # `binary_to_term(bin, [:safe])` over it and raises on anything that is not
+    # a term. That read sits outside the rescue around `Wax.authenticate/6` on
+    # purpose: silent storage corruption on the credential set that gates
+    # /admin must not spend forever in the logs as `:malformed_assertion`
+    # under a line blaming a hand-crafted payload.
+    Ecto.Adapters.SQL.query!(
+      Portal.Repo,
+      "UPDATE portal_passkeys SET public_key = $1 WHERE id = $2",
+      ["not an erlang term", Ecto.UUID.dump!(passkey.id)]
+    )
+
+    assert_raise ArgumentError, fn ->
+      WebAuthn.authenticate(assertion_params(user, response), challenge)
+    end
+  end
+
   test "sign count: zero stays zero, which is what iCloud Keychain does" do
     assert WebAuthn.check_sign_count(0, 0) == :ok
     assert WebAuthn.check_sign_count(0, 5) == :ok
