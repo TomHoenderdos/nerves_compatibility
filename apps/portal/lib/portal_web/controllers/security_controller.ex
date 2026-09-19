@@ -218,7 +218,11 @@ defmodule PortalWeb.SecurityController do
     end
   end
 
-  def confirm_totp(conn, %{"code" => code}) do
+  # Matches on the whole params map, like `reauth/2` next door and
+  # `MfaController.totp_verify/2`: a POST without the param should render
+  # "that code did not match", not raise `Phoenix.ActionClauseError`.
+  def confirm_totp(conn, params) do
+    code = params |> Map.get("code", "") |> to_string()
     user = conn.assigns.current_user
 
     case Totp.confirm(user, code) do

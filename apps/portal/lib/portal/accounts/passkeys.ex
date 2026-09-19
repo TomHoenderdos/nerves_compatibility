@@ -18,8 +18,21 @@ defmodule Portal.Accounts.Passkeys do
     |> Ash.read!(domain: Portal.Accounts)
   end
 
+  @doc """
+  How many passkeys `user` holds.
+
+  Counted in Postgres rather than by `length(list_for_user(user))`, which
+  loaded every column -- including the COSE `public_key` binaries -- only to
+  throw them away. This runs on every `/admin` request through
+  `PortalWeb.Plugs.RequireAdmin.check/2` and twice per `/settings/security`
+  render, and the spec budgeted one indexed count for it.
+  """
   @spec count_for_user(User.t()) :: non_neg_integer()
-  def count_for_user(%User{} = user), do: length(list_for_user(user))
+  def count_for_user(%User{id: user_id}) do
+    Passkey
+    |> Ash.Query.filter(user_id == ^user_id)
+    |> Ash.count!(domain: Portal.Accounts)
+  end
 
   @spec get_by_credential_id(binary()) :: {:ok, Passkey.t()} | :error
   def get_by_credential_id(credential_id) when is_binary(credential_id) do
