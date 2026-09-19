@@ -50,9 +50,14 @@ defmodule Portal.Accounts.Recovery do
 
     #{Enum.map_join(codes, "\n", &("  " <> &1))}
 
-    Sign in at /login with the password, use one of these codes when asked for a
-    second factor, then enrol a passkey at /settings/security. Admin access
-    stays closed until a passkey is registered.
+    Sign in at /login with the password. Nothing will ask for a second factor:
+    this account no longer has one. Then enrol a passkey at /settings/security.
+
+    Keep these codes. They are not needed to sign in right now, but the moment
+    a passkey exists they become an accepted re-authentication method -- the
+    way back in if that passkey is lost too.
+
+    Admin access stays closed until a passkey is registered.
     """)
 
     codes

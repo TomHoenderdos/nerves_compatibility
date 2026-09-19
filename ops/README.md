@@ -110,9 +110,19 @@ invalidates all outstanding recovery codes, and prints ten new ones. Copy them
 out of the terminal before you close it — they are shown once and stored only
 as SHA-256 hashes.
 
-Then sign in at `/login` with the password, use one of the printed codes when
-asked for a second factor, and register a passkey at `/settings/security`.
-`/admin` stays closed until a passkey exists.
+Then sign in at `/login` with the password. **No second factor will be asked
+for** — the account no longer has one, so the login completes on the password
+alone. Do not wait for a prompt; there is not one. Register a passkey at
+`/settings/security`.
+
+Keep the printed codes anyway. They are not needed for that first sign-in, but
+once a passkey exists they become an accepted re-authentication method at
+`/login` and `/settings/security` — the way back in if that passkey is lost
+too.
+
+`/admin` stays closed until a passkey exists, and until you sign in with it:
+enrolling one upgrades the session you enrol it from, so the first visit works
+without signing out.
 
 This call runs against the live database and needs no downtime. It is not a
 backdoor worth worrying about: anyone who can run it already has root on the

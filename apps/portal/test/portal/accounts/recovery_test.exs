@@ -58,6 +58,37 @@ defmodule Portal.Accounts.RecoveryTest do
     assert length(codes) == 10
   end
 
+  # The two claims the runbook makes, pinned so the prose cannot drift from the
+  # code again. The old text told the operator to "use one of these codes when
+  # asked for a second factor" -- a prompt that cannot appear, read under
+  # pressure by someone who has just lost their only passkey, who would look
+  # for it, not find it, and conclude the reset had failed.
+  test "the reset account is asked for no second factor" do
+    user = user_fixture()
+    add_passkey(user, "laptop")
+    {:ok, %{secret: secret}} = Totp.start_enrolment(user)
+    :ok = Totp.confirm(user, NimbleTOTP.verification_code(secret))
+
+    _codes = Recovery.clear_factors!(user.username)
+
+    refute Mfa.second_factor_required?(user)
+  end
+
+  test "the new codes become a re-auth method once a passkey exists" do
+    user = user_fixture()
+
+    [code | _] = Recovery.clear_factors!(user.username)
+
+    # Unusable only in the window between the reset and enrolment: with no
+    # factor at all the password is the accepted re-auth credential.
+    assert Mfa.accepted_reauth_methods(user) == [:password]
+
+    add_passkey(user, "the replacement")
+
+    assert :recovery_code in Mfa.accepted_reauth_methods(user)
+    assert RecoveryCodes.consume(user, code) == :ok
+  end
+
   test "an unknown username raises" do
     assert_raise RuntimeError, ~r/nobody/, fn ->
       Recovery.clear_factors!("nobody")
