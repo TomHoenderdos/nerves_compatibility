@@ -53,9 +53,23 @@ defmodule Portal.Accounts.Totp do
     |> Ash.Changeset.for_create(:create, %{secret: secret, user_id: user_id})
     |> Ash.create!(domain: Portal.Accounts)
 
-    uri = NimbleTOTP.otpauth_uri("#{@issuer}:#{user.username}", secret, issuer: @issuer)
+    {:ok, %{secret: secret, uri: otpauth_uri(user, secret)}}
+  end
 
-    {:ok, %{secret: secret, uri: uri}}
+  @doc """
+  The `otpauth://` URI for an enrolment still waiting on its first code.
+
+  Lets a mistyped confirmation be re-rendered against the same QR code instead
+  of costing the secret. A confirmed secret answers `:error`: there is no
+  enrolment in flight, and re-displaying it would put a live factor's seed back
+  on screen.
+  """
+  @spec enrolment_uri(User.t()) :: {:ok, String.t()} | :error
+  def enrolment_uri(%User{} = user) do
+    case get_secret(user) do
+      {:ok, %TotpSecret{confirmed_at: nil, secret: secret}} -> {:ok, otpauth_uri(user, secret)}
+      _ -> :error
+    end
   end
 
   @doc """
@@ -127,6 +141,10 @@ defmodule Portal.Accounts.Totp do
     end
 
     :ok
+  end
+
+  defp otpauth_uri(%User{} = user, secret) do
+    NimbleTOTP.otpauth_uri("#{@issuer}:#{user.username}", secret, issuer: @issuer)
   end
 
   defp confirmed_secret(user) do
