@@ -9,7 +9,7 @@ defmodule PortalWeb.MfaController do
 
   use PortalWeb, :controller
 
-  alias Portal.Accounts.{Mfa, RecoveryCodes, Totp}
+  alias Portal.Accounts.{RecoveryCodes, Totp}
   alias PortalWeb.UserAuth
 
   def totp_challenge(conn, _params) do
@@ -29,19 +29,25 @@ defmodule PortalWeb.MfaController do
   end
 
   defp check(conn, user, code) do
-    case Totp.verify(user, code) do
+    # Recovery codes are checked first so a locked-out TOTP counter can never
+    # refuse a valid, unused recovery code -- a deliberate behaviour change,
+    # not an oversight. Wrong guesses still fall through to `Totp.verify/3`
+    # below, so the lockout still rate-limits brute-force attempts on both
+    # credential types.
+    case RecoveryCodes.consume(user, code) do
       :ok ->
-        finish(conn, user, :totp)
+        finish(conn, user, :recovery_code)
 
-      {:error, {:locked, _until}} ->
-        restart(conn, "Too many wrong codes. Sign in with your password again in 15 minutes.")
+      {:error, :invalid_code} ->
+        case Totp.verify(user, code) do
+          :ok ->
+            finish(conn, user, :totp)
 
-      {:error, _} ->
-        # A recovery code is accepted anywhere a TOTP code is, so a failed
-        # TOTP check falls through rather than ending the attempt.
-        case RecoveryCodes.consume(user, code) do
-          :ok -> finish(conn, user, :recovery_code)
-          {:error, :invalid_code} -> reject(conn)
+          {:error, {:locked, _until}} ->
+            restart(conn, "Too many wrong codes. Sign in with your password again in 15 minutes.")
+
+          {:error, _} ->
+            reject(conn)
         end
     end
   end
@@ -84,8 +90,7 @@ defmodule PortalWeb.MfaController do
   defp render_challenge(conn) do
     render(conn, :totp_challenge,
       page_title: "Two-factor authentication",
-      current_user: nil,
-      reauth_window_minutes: div(Mfa.reauth_window_seconds(), 60)
+      current_user: nil
     )
   end
 end

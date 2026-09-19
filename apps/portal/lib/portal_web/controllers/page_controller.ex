@@ -119,7 +119,7 @@ defmodule PortalWeb.PageController do
     case Portal.Accounts.register_user(username, password) do
       {:ok, user} ->
         conn
-        |> put_session(:user_id, user.id)
+        |> PortalWeb.UserAuth.complete_login(user, :password)
         |> put_flash(:info, "Account created.")
         |> redirect(to: ~p"/request-scan")
 
@@ -153,6 +153,7 @@ defmodule PortalWeb.PageController do
 
       {:error, reason} ->
         conn
+        |> PortalWeb.UserAuth.drop_pending()
         |> put_flash(:error, account_error_message(reason))
         |> render_auth(:login, username: username)
     end

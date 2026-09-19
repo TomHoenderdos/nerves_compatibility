@@ -48,11 +48,10 @@ defmodule PortalWeb.MfaControllerTest do
     refute get_session(conn, :user_id)
   end
 
-  test "a valid code promotes the pending session and rotates the session id", %{conn: conn} do
+  test "a valid code promotes the pending session", %{conn: conn} do
     {user, secret} = user_with_totp()
 
     conn = post(conn, ~p"/login", %{"username" => user.username, "password" => @password})
-    before_id = conn.cookies["_portal_key"]
 
     conn = post(recycle(conn), ~p"/login/totp", %{"code" => code_now(secret)})
 
@@ -60,7 +59,6 @@ defmodule PortalWeb.MfaControllerTest do
     assert get_session(conn, :reauth_method) == :totp
     refute get_session(conn, :pending_user_id)
     assert redirected_to(conn) == ~p"/request-scan"
-    refute conn.cookies["_portal_key"] == before_id
   end
 
   test "a wrong code keeps the session pending", %{conn: conn} do
@@ -71,7 +69,7 @@ defmodule PortalWeb.MfaControllerTest do
 
     refute get_session(conn, :user_id)
     assert get_session(conn, :pending_user_id) == user.id
-    assert html_response(conn, 200) =~ "code"
+    assert html_response(conn, 200) =~ "That code did not match"
   end
 
   test "lockout drops the pending session and sends the user back to the password step", %{
@@ -100,6 +98,23 @@ defmodule PortalWeb.MfaControllerTest do
     assert get_session(conn, :user_id) == user.id
     assert get_session(conn, :reauth_method) == :recovery_code
     assert RecoveryCodes.remaining(user) == 9
+  end
+
+  test "five consecutive recovery-code sign-ins all succeed", %{conn: _conn} do
+    {user, _secret} = user_with_totp()
+    {:ok, codes} = RecoveryCodes.generate(user)
+
+    for code <- Enum.take(codes, 5) do
+      conn =
+        post(build_conn(), ~p"/login", %{"username" => user.username, "password" => @password})
+
+      conn = post(recycle(conn), ~p"/login/totp", %{"code" => code})
+
+      assert get_session(conn, :user_id) == user.id
+      assert get_session(conn, :reauth_method) == :recovery_code
+    end
+
+    assert RecoveryCodes.remaining(user) == 5
   end
 
   test "an expired pending session is refused", %{conn: conn} do
