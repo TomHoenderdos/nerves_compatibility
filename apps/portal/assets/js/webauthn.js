@@ -34,8 +34,17 @@ const postJSON = async (url, body) => {
     body: JSON.stringify(body || {})
   })
 
-  const data = await response.json()
-  if (!response.ok) { throw new Error(data.error || "Request failed") }
+  // A 403 from an expired CSRF token, a 500, or a proxy error page all arrive
+  // as HTML. Parsing those as JSON throws a SyntaxError whose message ends up
+  // in front of the user reading like a stack trace, so only parse what says
+  // it is JSON and fall back to the generic message.
+  const isJSON = (response.headers.get("content-type") || "").includes("application/json")
+  const data = isJSON ? await response.json().catch(() => ({})) : {}
+
+  if (!response.ok) {
+    throw new Error(data.error || "Sign-in is unavailable right now. Please try again.")
+  }
+
   return data
 }
 

@@ -45,8 +45,8 @@ defmodule Portal.Accounts.WebAuthn do
   @doc """
   A registration challenge plus the JSON-ready payload the browser needs.
 
-  The caller stashes the `Wax.Challenge` in the signed session and sends the
-  payload. `exclude_credentials` carries the ids the account already holds so
+  The caller stashes the `Wax.Challenge` with `PortalWeb.WebAuthnSession` and
+  sends the payload. `exclude_credentials` carries the ids the account already holds so
   the same authenticator cannot be enrolled twice; it is advisory — the
   duplicate check in `register/3` is what actually enforces it.
   """
@@ -180,12 +180,14 @@ defmodule Portal.Accounts.WebAuthn do
   there is no account to narrow the list to. The authenticator picks a
   discoverable credential and returns a `userHandle` naming its owner.
 
-  The caller stashes the `Wax.Challenge` in the signed session and must delete
-  it *before* calling `authenticate/2`, never after. Single use of the
-  challenge is the only thing that stops a captured assertion being replayed —
-  `check_sign_count/2` below is a cloned-authenticator heuristic and cannot
-  stand in for it. Verify first and delete afterwards and any assertion that
-  leaks stays good for the whole five-minute window.
+  The caller stashes the `Wax.Challenge` with `PortalWeb.WebAuthnSession` and
+  must consume it *before* calling `authenticate/2`, never after. Single use of
+  the challenge is the only thing that stops a captured assertion being
+  replayed — `check_sign_count/2` below is a cloned-authenticator heuristic and
+  cannot stand in for it. That is why the challenge is held server-side rather
+  than in the signed session: deleting a cookie only binds a client that
+  chooses to send the new one. Verify first and consume afterwards and any
+  assertion that leaks stays good for the whole five-minute window.
   """
   @spec authentication_challenge() :: {Wax.Challenge.t(), map()}
   def authentication_challenge do
