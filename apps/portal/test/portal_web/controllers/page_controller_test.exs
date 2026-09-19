@@ -110,6 +110,8 @@ defmodule PortalWeb.PageControllerTest do
     {:ok, admin} =
       Portal.Accounts.seed_admin_user("landing_admin", "correct horse battery staple")
 
+    add_test_passkey(admin)
+
     conn =
       post(conn, ~p"/login", %{
         "username" => admin.username,
@@ -117,6 +119,22 @@ defmodule PortalWeb.PageControllerTest do
       })
 
     assert redirected_to(conn) == ~p"/admin"
+  end
+
+  test "an admin without a passkey lands on security settings instead", %{conn: conn} do
+    # Otherwise every login is a redirect to `/admin`, an immediate second
+    # redirect back out and an error flash -- the enrolment prompt reading as
+    # a failure, on every login, forever.
+    {:ok, _admin} =
+      Portal.Accounts.seed_admin_user("landing_unenrolled", "correct horse battery staple")
+
+    conn =
+      post(conn, ~p"/login", %{
+        "username" => "landing_unenrolled",
+        "password" => "correct horse battery staple"
+      })
+
+    assert redirected_to(conn) == ~p"/settings/security"
   end
 
   test "signing in as an ordinary user still lands on the scan request form", %{conn: conn} do

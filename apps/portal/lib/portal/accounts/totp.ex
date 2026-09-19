@@ -155,6 +155,12 @@ defmodule Portal.Accounts.Totp do
     end
   end
 
+  # Known gap, recorded rather than fixed here: only the current 30-second step
+  # is accepted. RFC 6238 §5.2 recommends also accepting one step backward, to
+  # cover a phone clock a second fast and a user who finishes typing just after
+  # a boundary; both get "That code did not match." today. Closing it means a
+  # wider `claim_window/3` guard too, or the extra step reopens the replay
+  # window the CAS above shuts — out of scope for the task that found it.
   defp valid_code?(%TotpSecret{} = secret, code, now) when is_binary(code) do
     NimbleTOTP.valid?(secret.secret, String.trim(code),
       time: now,

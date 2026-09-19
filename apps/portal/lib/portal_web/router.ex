@@ -151,7 +151,14 @@ defmodule PortalWeb.Router do
   scope "/admin" do
     pipe_through [:admin]
 
-    oban_dashboard("/oban")
+    # `:on_mount` is not redundant with the `:admin` pipeline. The pipeline
+    # runs on the initial HTTP request only; a LiveView reconnect is
+    # authenticated by the signed session token from that dead render, which
+    # LiveView honours for up to 14 days. Without the hook, an admin who had
+    # this dashboard open before the passkey requirement shipped keeps
+    # reconnecting to it. `Oban.Web.Router.__options__/2` appends its own
+    # `Oban.Web.Authentication` after ours, so ours decides first.
+    oban_dashboard("/oban", on_mount: [{PortalWeb.Plugs.RequireAdmin, :require_admin_passkey}])
   end
 
   scope "/api", PortalWeb do
