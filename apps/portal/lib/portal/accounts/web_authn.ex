@@ -112,21 +112,27 @@ defmodule Portal.Accounts.WebAuthn do
     Wax.register(attestation_object, client_data_json, challenge)
   rescue
     exception ->
-      log_attestation_crash(inspect(exception.__struct__), Exception.message(exception))
+      log_wax_crash("attestation", :malformed_attestation, exception)
       {:error, :malformed_attestation}
   catch
     # Throws only. An `:exit` is a process-level signal — a lost database
     # connection, a shutdown — and converting one into "your passkey is
     # malformed" would blame the user for our outage and hide the real fault.
     :throw, value ->
-      log_attestation_crash("throw", inspect(value))
+      log_wax_crash("attestation", :malformed_attestation, {:throw, value})
       {:error, :malformed_attestation}
   end
 
-  defp log_attestation_crash(kind, detail) do
+  defp log_wax_crash(stage, sentinel, thrown_or_raised) do
+    {kind, detail} =
+      case thrown_or_raised do
+        {:throw, value} -> {"throw", inspect(value)}
+        exception -> {inspect(exception.__struct__), Exception.message(exception)}
+      end
+
     Logger.warning(
-      "WebAuthn attestation verification crashed inside wax_ (#{kind}): #{detail}. " <>
-        "Returning :malformed_attestation. If this is not a hand-crafted payload, " <>
+      "WebAuthn #{stage} verification crashed inside wax_ (#{kind}): #{detail}. " <>
+        "Returning #{inspect(sentinel)}. If this is not a hand-crafted payload, " <>
         "it is a bug in the decode path rather than bad user input."
     )
   end
@@ -166,6 +172,168 @@ defmodule Portal.Accounts.WebAuthn do
   end
 
   defp credential_id_taken?(_), do: false
+
+  @doc """
+  An authentication challenge for a passwordless sign-in.
+
+  Deliberately omits `allow_credentials`: nobody has typed a username yet, so
+  there is no account to narrow the list to. The authenticator picks a
+  discoverable credential and returns a `userHandle` naming its owner.
+
+  The caller stashes the `Wax.Challenge` in the signed session and must delete
+  it *before* calling `authenticate/2`, never after. Single use of the
+  challenge is the only thing that stops a captured assertion being replayed —
+  `check_sign_count/2` below is a cloned-authenticator heuristic and cannot
+  stand in for it. Verify first and delete afterwards and any assertion that
+  leaks stays good for the whole five-minute window.
+  """
+  @spec authentication_challenge() :: {Wax.Challenge.t(), map()}
+  def authentication_challenge do
+    challenge_opts = opts()
+    challenge = Wax.new_authentication_challenge(challenge_opts)
+
+    payload = %{
+      challenge: b64(challenge.bytes),
+      rp_id: challenge.rp_id,
+      # Derived, never re-littered: `opts/1` is the single source of truth for
+      # the timeout, exactly as in `registration_challenge/1`.
+      timeout: Keyword.fetch!(challenge_opts, :timeout)
+    }
+
+    {challenge, payload}
+  end
+
+  @doc """
+  Verifies an assertion and returns the account it belongs to.
+
+  Expects the challenge to have been consumed already — see
+  `authentication_challenge/0`. This function verifies, it does not de-duplicate.
+  """
+  @spec authenticate(map(), Wax.Challenge.t()) ::
+          {:ok, %{user: User.t(), passkey: Passkey.t()}} | {:error, term()}
+  def authenticate(params, %Wax.Challenge{} = challenge) do
+    with {:ok, credential_id} <- decode(params["credential_id"]),
+         {:ok, auth_data_bin} <- decode(params["authenticator_data"]),
+         {:ok, signature} <- decode(params["signature"]),
+         {:ok, client_data_json} <- decode(params["client_data_json"]),
+         {:ok, user} <- user_from_handle(params["user_handle"]),
+         {:ok, passkey} <- passkey_for(user, credential_id),
+         {:ok, auth_data} <-
+           verify_assertion(
+             credential_id,
+             auth_data_bin,
+             signature,
+             client_data_json,
+             challenge,
+             passkey
+           ),
+         :ok <- verify_sign_count(passkey, auth_data.sign_count),
+         {:ok, passkey} <- Passkeys.record_use(passkey, auth_data.sign_count) do
+      {:ok, %{user: user, passkey: passkey}}
+    end
+  end
+
+  # The same hazard as `verify_attestation/3`, and the same shape of fix.
+  # `auth_data_bin` and `client_data_json` arrive from the client and are
+  # parsed before anything checks the signature, so a hand-built pair reaches
+  # `wax_`'s decoders on the strength of a valid credential id alone. Two
+  # raises are reachable there, neither of them ours:
+  #
+  #   * `Wax.ClientData.parse_raw_json/1` `case`s on the JSON's "type" with no
+  #     catch-all clause, so any string other than the two it knows raises
+  #     `CaseClauseError`, and it calls `Base.url_decode64!/2` on "challenge".
+  #   * authenticator data carrying the extension-data flag runs the same
+  #     `Enum.reduce/3` over a bare `%CBOR.Tag{}` that bites registration.
+  #
+  # `with` matches return values and does not catch exceptions, so either one
+  # would escape `authenticate/2` and take the request with it. Wrapped around
+  # this one call rather than the function body, so bugs in our own lookup,
+  # policy or storage still surface as crashes instead of being laundered into
+  # a validation error. `:exit` is deliberately not caught, for the reason
+  # given on `verify_attestation/3`.
+  defp verify_assertion(
+         credential_id,
+         auth_data_bin,
+         signature,
+         client_data_json,
+         challenge,
+         %Passkey{} = passkey
+       ) do
+    Wax.authenticate(
+      credential_id,
+      auth_data_bin,
+      signature,
+      client_data_json,
+      challenge,
+      [{passkey.credential_id, Passkeys.cose_key(passkey)}]
+    )
+  rescue
+    exception ->
+      log_wax_crash("assertion", :malformed_assertion, exception)
+      {:error, :malformed_assertion}
+  catch
+    :throw, value ->
+      log_wax_crash("assertion", :malformed_assertion, {:throw, value})
+      {:error, :malformed_assertion}
+  end
+
+  @doc """
+  The clone-detection rule.
+
+  A stored count of zero means there is no baseline to compare against —
+  either the credential has never been used, or the authenticator does not
+  keep a counter at all. Apple's iCloud Keychain passkeys always report zero,
+  and they are the authenticator most people will reach for first, so a naive
+  "must increase" check would reject exactly the common case.
+
+  Once a non-zero baseline exists the standard requires the counter to
+  advance, so anything that does not is treated as a clone. The spec suggests
+  flagging such an assertion; we refuse it, because this credential gates
+  `/admin` and a flag nobody reads is not a control.
+  """
+  @spec check_sign_count(non_neg_integer(), non_neg_integer()) ::
+          :ok | {:error, :sign_count_regression}
+  def check_sign_count(0, _incoming), do: :ok
+  def check_sign_count(stored, incoming) when incoming > stored, do: :ok
+  def check_sign_count(_stored, _incoming), do: {:error, :sign_count_regression}
+
+  defp verify_sign_count(%Passkey{} = passkey, incoming) do
+    case check_sign_count(passkey.sign_count, incoming) do
+      :ok ->
+        :ok
+
+      {:error, :sign_count_regression} = error ->
+        Logger.warning(
+          "Passkey sign count regression for credential #{b64(passkey.credential_id)}: " <>
+            "stored #{passkey.sign_count}, presented #{incoming}. Assertion refused."
+        )
+
+        error
+    end
+  end
+
+  defp user_from_handle(handle) when is_binary(handle) do
+    with {:ok, raw} <- decode(handle),
+         {:ok, uuid} <- Ecto.UUID.load(raw),
+         # `get_user/1` answers `{:ok, nil}` for an id that matches nobody, and
+         # the user handle is as attacker-controlled as the rest of the
+         # assertion. Matching `%User{}` is what keeps that nil out of
+         # `passkey_for/2`, whose head would raise `FunctionClauseError` on it.
+         {:ok, %User{} = user} <- Portal.Accounts.get_user(uuid) do
+      {:ok, user}
+    else
+      _ -> {:error, :unknown_credential}
+    end
+  end
+
+  defp user_from_handle(_), do: {:error, :missing_user_handle}
+
+  defp passkey_for(%User{id: user_id}, credential_id) do
+    case Passkeys.get_by_credential_id(credential_id) do
+      {:ok, %Passkey{user_id: ^user_id} = passkey} -> {:ok, passkey}
+      _ -> {:error, :unknown_credential}
+    end
+  end
 
   defp transports(list) when is_list(list), do: Enum.filter(list, &is_binary/1)
   defp transports(_), do: []
