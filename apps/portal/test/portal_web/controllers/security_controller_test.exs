@@ -404,19 +404,20 @@ defmodule PortalWeb.SecurityControllerTest do
 
     {:ok, stored} = Totp.get_secret(user)
 
-    # Matched textually rather than through `LazyHTML`: lexbor parses this as a
-    # fragment in HTML context, where `<svg>` is foreign content -- every
-    # `svg`/`rect` selector answers zero on markup that is plainly there, and
-    # the mis-nesting swallows the siblings that follow it too.
-    assert body =~ ~s(id="totp-qr")
-    assert body =~ "<svg "
-    assert body =~ "<rect "
+    # `query/2` rather than `filter/2`, for the reason given on `shown_codes/1`
+    # above. lexbor parses the inline SVG correctly -- the selectors below all
+    # match -- but `filter/2` narrows the current node set and answers zero for
+    # any descendant, which would make every assertion here vacuous.
+    doc = LazyHTML.from_document(body)
+
+    assert [_] = doc |> LazyHTML.query("#totp-qr svg") |> Enum.to_list()
+    refute doc |> LazyHTML.query("#totp-qr svg rect") |> Enum.to_list() == []
 
     # The manual key is the bare base32 secret -- what an authenticator's
     # manual-entry field accepts -- and not the URI, which buries it in a
     # query parameter.
-    assert body =~ ~s(id="totp-manual-key")
-    assert body =~ PortalWeb.SecurityHTML.totp_manual_key(stored.secret)
+    assert doc |> LazyHTML.query("#totp-manual-key") |> LazyHTML.text() |> String.trim() ==
+             PortalWeb.SecurityHTML.totp_manual_key(stored.secret)
 
     assert PortalWeb.SecurityHTML.totp_manual_key(stored.secret) |> String.replace(" ", "") ==
              Base.encode32(stored.secret, padding: false)

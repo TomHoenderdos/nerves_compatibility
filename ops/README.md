@@ -117,8 +117,11 @@ alone. Do not wait for a prompt; there is not one. Register a passkey at
 
 Keep the printed codes anyway. They are not needed for that first sign-in, but
 once a passkey exists they become an accepted re-authentication method at
-`/login` and `/settings/security` — the way back in if that passkey is lost
-too.
+`/settings/security` — the way back in if that passkey is lost too. Sign in
+with the password as above, then spend a code when the security page asks you
+to re-authenticate. `/login` itself never asks for one: the recovery-code field
+only appears behind the authenticator-app challenge, and this account has no
+authenticator app.
 
 `/admin` stays closed until a passkey exists, and until you sign in with it:
 enrolling one upgrades the session you enrol it from, so the first visit works
