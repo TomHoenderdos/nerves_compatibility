@@ -137,10 +137,19 @@ defmodule PortalWeb.PageController do
   def create_session(conn, %{"username" => username, "password" => password}) do
     case Portal.Accounts.authenticate_user(username, password) do
       {:ok, user} ->
-        conn
-        |> put_session(:user_id, user.id)
-        |> put_flash(:info, "Signed in.")
-        |> redirect(to: landing_path(user))
+        # The password alone no longer produces a session. A confirmed TOTP
+        # means the user is parked under `:pending_user_id`, which grants
+        # nothing, until they clear `/login/totp`.
+        if Portal.Accounts.Mfa.second_factor_required?(user) do
+          conn
+          |> PortalWeb.UserAuth.start_pending(user)
+          |> redirect(to: ~p"/login/totp")
+        else
+          conn
+          |> PortalWeb.UserAuth.complete_login(user, :password)
+          |> put_flash(:info, "Signed in.")
+          |> redirect(to: PortalWeb.UserAuth.landing_path(user))
+        end
 
       {:error, reason} ->
         conn
@@ -436,17 +445,6 @@ defmodule PortalWeb.PageController do
 
   defp maybe_change_password(user, current_password, new_password),
     do: Portal.Accounts.change_password(user, current_password, new_password)
-
-  # Where signing in drops you. An admin signs in to administrate -- the queue,
-  # the pending approvals -- not to request a scan of somebody else's package,
-  # so sending them to the public request form is a detour every single time.
-  #
-  # This also repairs the one place the gate sends people nowhere useful:
-  # `RequireAdmin` bounces an unauthenticated visitor to `/login`, and before
-  # this they landed on `/request-scan` having asked for `/admin`.
-  defp landing_path(user) do
-    if Portal.Accounts.admin?(user), do: ~p"/admin", else: ~p"/request-scan"
-  end
 
   defp render_admin(conn, user) do
     queue_requests = Portal.ScanRequests.queue_requests()

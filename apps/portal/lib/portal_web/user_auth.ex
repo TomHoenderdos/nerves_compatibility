@@ -1,17 +1,106 @@
 defmodule PortalWeb.UserAuth do
   @moduledoc """
-  LiveView `on_mount` hooks for assigning auth-derived state.
+  Session handling for logins, and the LiveView `on_mount` hook that assigns
+  auth-derived state.
 
   Controllers derive `current_user` from `get_session(conn, :user_id)` via
   `Portal.Accounts.get_user/1`. LiveViews mounted outside a controller need
   the same assign so `<Layouts.app current_user={@current_user} ...>` shows
   the signed-in nav state instead of always rendering Login/Register.
+
+  A half-finished login lives under `:pending_user_id`, never `:user_id`, so
+  it grants nothing anywhere: every plug and hook reads `:user_id` alone.
   """
 
+  use PortalWeb, :verified_routes
+
   import Phoenix.Component, only: [assign: 3]
+  import Plug.Conn, except: [assign: 3]
+
+  alias Portal.Accounts.User
+
+  @pending_ttl_seconds 300
 
   def on_mount(:assign_current_user, _params, session, socket) do
     {:cont, assign(socket, :current_user, current_user_from_session(session))}
+  end
+
+  @doc """
+  Signs `user` in, having proven `method`.
+
+  `configure_session(renew: true)` rotates the session id so a cookie fixated
+  before the login is worthless afterwards.
+  """
+  @spec complete_login(Plug.Conn.t(), User.t(), atom()) :: Plug.Conn.t()
+  def complete_login(conn, %User{} = user, method) do
+    conn
+    |> configure_session(renew: true)
+    |> put_session(:user_id, user.id)
+    |> mark_reauth(method)
+    |> drop_pending()
+  end
+
+  @doc """
+  Records that `method` was proven just now, starting a fresh step-up window.
+  """
+  @spec mark_reauth(Plug.Conn.t(), atom()) :: Plug.Conn.t()
+  def mark_reauth(conn, method) when is_atom(method) do
+    conn
+    |> put_session(:reauth_method, method)
+    |> put_session(:reauth_at, System.system_time(:second))
+  end
+
+  @spec reauth_method(Plug.Conn.t()) :: atom() | nil
+  def reauth_method(conn), do: get_session(conn, :reauth_method)
+
+  @spec reauth_at(Plug.Conn.t()) :: integer() | nil
+  def reauth_at(conn), do: get_session(conn, :reauth_at)
+
+  @doc """
+  Parks a password-authenticated user until they clear the second step.
+  """
+  @spec start_pending(Plug.Conn.t(), User.t()) :: Plug.Conn.t()
+  def start_pending(conn, %User{} = user) do
+    conn
+    |> put_session(:pending_user_id, user.id)
+    |> put_session(:pending_started_at, System.system_time(:second))
+  end
+
+  @spec drop_pending(Plug.Conn.t()) :: Plug.Conn.t()
+  def drop_pending(conn) do
+    conn
+    |> delete_session(:pending_user_id)
+    |> delete_session(:pending_started_at)
+  end
+
+  @doc """
+  The user waiting on a second factor, if the pending session is still valid.
+
+  Expiry is checked here rather than at the call sites so there is one place
+  for the five-minute rule to live.
+  """
+  @spec pending_user(Plug.Conn.t()) :: {:ok, User.t()} | :error
+  def pending_user(conn) do
+    with user_id when is_binary(user_id) <- get_session(conn, :pending_user_id),
+         started when is_integer(started) <- get_session(conn, :pending_started_at),
+         true <- System.system_time(:second) - started <= @pending_ttl_seconds,
+         {:ok, %User{} = user} <- Portal.Accounts.get_user(user_id) do
+      {:ok, user}
+    else
+      _ -> :error
+    end
+  end
+
+  # Where signing in drops you. An admin signs in to administrate -- the queue,
+  # the pending approvals -- not to request a scan of somebody else's package,
+  # so sending them to the public request form is a detour every single time.
+  #
+  # This also repairs the one place the gate sends people nowhere useful:
+  # `RequireAdmin` bounces an unauthenticated visitor to `/login`, and before
+  # this they landed on `/request-scan` having asked for `/admin`.
+  @spec landing_path(User.t()) :: String.t()
+  def landing_path(user) do
+    if Portal.Accounts.admin?(user), do: ~p"/admin", else: ~p"/request-scan"
   end
 
   defp current_user_from_session(%{"user_id" => user_id}) when is_binary(user_id) do
