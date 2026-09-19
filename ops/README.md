@@ -94,11 +94,15 @@ Symptom: the only admin has lost every passkey, has no authenticator app, and
 has no recovery codes. `/admin` redirects to `/settings/security` and nothing
 can be changed there, because changing a factor needs a factor.
 
-On the web host:
+On the web host, as root. Running `bin/portal eval` on its own starts with no
+database: `DATABASE_URL` lives in `/etc/ncc-portal/portal.env`, which systemd
+loads for the running service but a plain shell does not, so the release must
+be run as `ncc` with that file sourced first, the same way `ops/deploy.sh`
+sources it to run migrations:
 
 ```bash
-cd /opt/nerves_compatibility/portal
-bin/portal eval 'Portal.Accounts.Recovery.clear_factors!("tomhoenderdos")'
+sudo -u ncc bash -c "cd /var/lib/ncc && set -a && . /etc/ncc-portal/portal.env && set +a && \
+  /opt/nerves_compatibility/portal/bin/portal eval 'Portal.Accounts.Recovery.clear_factors!(\"tomhoenderdos\")'"
 ```
 
 This deletes every passkey on the account, removes the authenticator app,
