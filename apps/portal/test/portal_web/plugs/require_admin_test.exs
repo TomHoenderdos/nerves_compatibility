@@ -20,30 +20,30 @@ defmodule PortalWeb.Plugs.RequireAdminTest do
     conn |> init_test_session(%{}) |> put_session(:user_id, user.id)
   end
 
-  # Every route the admin policy guards, minus `/admin/oban`: the dashboard
-  # LiveView needs `Oban.Met`, which `Oban, testing: :manual` does not start,
-  # so it can only be checked on the refusal path where the gate answers
-  # before the mount. The `POST`s all take an action on the build queue —
-  # approving a scan request, reordering it, starting an update check — which
-  # is why each one is swept here rather than trusting `/admin` to stand in
-  # for the set.
+  # Derived from the router, never written out. These seven are gated by an
+  # in-action `case require_admin(conn)` convention rather than by a pipeline,
+  # so nothing structural forces an eighth admin action to be gated. A literal
+  # list here would miss that route twice over: it would ship ungated, and the
+  # sweep built to catch exactly that would not look at it.
   defp guarded_routes do
     id = Ecto.UUID.generate()
 
-    [
-      {:get, ~p"/admin"},
-      {:get, ~p"/admin/monitor"},
-      {:post, ~p"/admin/scan"},
-      {:post, ~p"/admin/update-check"},
-      {:post, ~p"/admin/requests/#{id}/approve"},
-      {:post, ~p"/admin/requests/#{id}/reject"},
-      {:post, ~p"/admin/requests/#{id}/priority"}
-    ]
+    PortalWeb.Router.__routes__()
+    |> Enum.filter(&(&1.path == "/admin" or String.starts_with?(&1.path, "/admin/")))
+    # `/admin/oban` is the one deliberate exception, and it is short and
+    # stable: the dashboard LiveView needs `Oban.Met`, which `Oban, testing:
+    # :manual` does not start, so it can only be exercised on the refusal path
+    # where the gate answers before the mount. Covered separately, both on
+    # that path and at `on_mount/4`.
+    |> Enum.reject(&String.starts_with?(&1.path, "/admin/oban"))
+    |> Enum.map(&{&1.verb, String.replace(&1.path, ":id", id)})
   end
 
-  # A fresh conn per route: `init_test_session/2` writes the session on the
-  # conn rather than into a cookie, so `recycle/1` would drop it and every
-  # sweep below would pass as an anonymous redirect to `/login`.
+  # A fresh conn per route. `recycle/1` carries the session only through a conn
+  # that has already been dispatched — `Plug.Session` writes it into
+  # `resp_cookies` on the way out. Recycling the not-yet-sent signed-in conn
+  # finds no cookie, so every sweep below would silently run as an anonymous
+  # redirect to `/login`.
   defp request(user, :get, path), do: build_conn() |> sign_in(user) |> get(path)
   defp request(user, :post, path), do: build_conn() |> sign_in(user) |> post(path, %{})
 
@@ -96,6 +96,18 @@ defmodule PortalWeb.Plugs.RequireAdminTest do
     assert redirected_to(conn) == ~p"/settings/security"
   end
 
+  # Without this, a `guarded_routes/0` that derived nothing — a router filter
+  # that stopped matching, a rename — would make all three sweeps below pass
+  # over an empty list and assert nothing at all.
+  test "the derived route list really is the admin surface" do
+    routes = guarded_routes()
+
+    assert length(routes) >= 7
+    assert {:get, "/admin"} in routes
+    assert Enum.all?(routes, fn {_verb, path} -> String.starts_with?(path, "/admin") end)
+    refute Enum.any?(routes, fn {_verb, path} -> String.contains?(path, "oban") end)
+  end
+
   # The dashboard is not the prize. `/admin` and the queue endpoints below are
   # gated by `PageController.require_admin/1`, a separate call site into the
   # same policy, so each one is checked directly rather than inferred from the
@@ -112,8 +124,7 @@ defmodule PortalWeb.Plugs.RequireAdminTest do
   end
 
   test "every admin action opens once the admin holds a passkey" do
-    admin = admin_fixture()
-    add_passkey(admin)
+    admin = admin_with_passkey_fixture()
 
     for {verb, path} <- guarded_routes() do
       conn = request(admin, verb, path)
@@ -128,8 +139,59 @@ defmodule PortalWeb.Plugs.RequireAdminTest do
     for {verb, path} <- guarded_routes() do
       conn = request(user, verb, path)
 
-      assert redirected_to(conn) == ~p"/request-scan"
-      refute Phoenix.Flash.get(conn.assigns.flash, :error) =~ "passkey"
+      assert redirected_to(conn) == ~p"/request-scan",
+             "#{verb} #{path} sent a non-admin somewhere other than the scan form"
+
+      refute Phoenix.Flash.get(conn.assigns.flash, :error) =~ "passkey",
+             "#{verb} #{path} nagged a non-admin about passkeys"
     end
+  end
+
+  # `on_mount/4`: the same decision on the path a router pipeline never sees.
+  # A pipeline runs on the initial HTTP request only; a LiveView reconnect is
+  # authenticated by the signed session token from that dead render, so
+  # without this hook an admin who had `/admin/oban` open before the passkey
+  # requirement shipped keeps reconnecting to it for the token's 14-day life.
+  # Driven directly rather than through `live/2`, because the dead render that
+  # `live/2` performs is refused by the `:admin` pipeline first and would
+  # prove the pipeline rather than the hook.
+  defp mount(user_id) do
+    session = if user_id, do: %{"user_id" => user_id}, else: %{}
+
+    # LiveView populates `:flash` before it runs `on_mount` hooks, which is why
+    # a hook may `put_flash/3`; a bare `%Socket{}` has not been through that,
+    # so the assign is seeded here rather than the hook learning to cope
+    # without it.
+    socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}, flash: %{}}}
+
+    PortalWeb.Plugs.RequireAdmin.on_mount(:require_admin_passkey, %{}, session, socket)
+  end
+
+  test "a passkey-less admin cannot mount the dashboard, only fail to GET it" do
+    admin = admin_fixture()
+
+    assert {:halt, socket} = mount(admin.id)
+    assert socket.redirected == {:redirect, %{to: ~p"/settings/security", status: 302}}
+    assert Phoenix.Flash.get(socket.assigns.flash, :error) =~ "passkey"
+  end
+
+  test "an admin with a passkey mounts the dashboard" do
+    admin = admin_with_passkey_fixture()
+
+    assert {:cont, socket} = mount(admin.id)
+    refute socket.redirected
+  end
+
+  test "a non-admin mount is sent away without a passkey nag" do
+    user = user_fixture()
+
+    assert {:halt, socket} = mount(user.id)
+    assert socket.redirected == {:redirect, %{to: ~p"/request-scan", status: 302}}
+    refute Phoenix.Flash.get(socket.assigns.flash, :error) =~ "passkey"
+  end
+
+  test "an anonymous mount is sent to the login page" do
+    assert {:halt, socket} = mount(nil)
+    assert socket.redirected == {:redirect, %{to: ~p"/login", status: 302}}
   end
 end

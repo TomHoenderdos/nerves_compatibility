@@ -108,9 +108,17 @@ defmodule PortalWeb.UserAuth do
   # This also repairs the one place the gate sends people nowhere useful:
   # `RequireAdmin` bounces an unauthenticated visitor to `/login`, and before
   # this they landed on `/request-scan` having asked for `/admin`.
+  # An admin who has not enrolled a passkey is a third case, not the first
+  # one. Sending them to `/admin` means a redirect, a second redirect and an
+  # error flash on every single login, forever -- which reads as a failure
+  # rather than the prompt it is. They go straight to the page that fixes it.
   @spec landing_path(User.t()) :: String.t()
   def landing_path(user) do
-    if Portal.Accounts.admin?(user), do: ~p"/admin", else: ~p"/request-scan"
+    cond do
+      not Portal.Accounts.admin?(user) -> ~p"/request-scan"
+      Portal.Accounts.Mfa.admin_satisfied?(user) -> ~p"/admin"
+      true -> ~p"/settings/security"
+    end
   end
 
   defp current_user_from_session(%{"user_id" => user_id}) when is_binary(user_id) do
