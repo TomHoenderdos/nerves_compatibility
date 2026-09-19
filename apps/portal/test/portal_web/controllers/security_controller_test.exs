@@ -575,4 +575,35 @@ defmodule PortalWeb.SecurityControllerTest do
   test "an anonymous visitor is sent to the login page", %{conn: conn} do
     assert redirected_to(get(conn, ~p"/settings/security")) == ~p"/login"
   end
+
+  # "Exactly one rendered response" is a claim about the server. Without a
+  # cache directive the response carrying ten plaintext recovery codes sits in
+  # the browser's disk cache and comes back with the back button, which is
+  # where the threat model's shared machine lives.
+  # `put_secure_browser_headers/2` sets no `Cache-Control` of its own.
+  test "the response carrying plaintext recovery codes is not storable", %{conn: conn} do
+    user = user_fixture(%{password: @password})
+    add_passkey(user)
+
+    conn = conn |> sign_in(user, :passkey) |> post(~p"/settings/security/recovery-codes")
+
+    assert get_resp_header(conn, "cache-control") == ["no-store"]
+    assert get_resp_header(conn, "pragma") == ["no-cache"]
+  end
+
+  test "the response carrying the TOTP seed is not storable", %{conn: conn} do
+    user = user_fixture(%{password: @password})
+
+    conn = conn |> sign_in(user) |> post(~p"/settings/security/totp/start")
+
+    assert get_resp_header(conn, "cache-control") == ["no-store"]
+  end
+
+  test "the security page itself is not storable", %{conn: conn} do
+    user = user_fixture(%{password: @password})
+
+    conn = conn |> sign_in(user) |> get(~p"/settings/security")
+
+    assert get_resp_header(conn, "cache-control") == ["no-store"]
+  end
 end

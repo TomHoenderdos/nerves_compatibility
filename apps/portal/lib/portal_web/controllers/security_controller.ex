@@ -48,6 +48,11 @@ defmodule PortalWeb.SecurityController do
   # page, and to start a re-authentication, without already holding one.
   plug :require_fresh_reauth when action in @guarded_actions
 
+  # Every action, not just the two that carry plaintext. `:show` renders the
+  # page those two redirect back to, and the cheapest correct rule for a
+  # settings page nobody caches on purpose is "never store any of it".
+  plug :no_store
+
   # One message for every passkey failure. Telling "no such credential" apart
   # from "bad signature" would confirm which credential ids are real.
   @passkey_denied "That passkey could not be verified."
@@ -351,6 +356,22 @@ defmodule PortalWeb.SecurityController do
       {:ok, %{secret: secret, uri: uri}} -> {uri, secret}
       :error -> {nil, nil}
     end
+  end
+
+  # `put_secure_browser_headers/2` sets no `Cache-Control`. Without this the
+  # response carrying ten plaintext recovery codes, and the one carrying the
+  # `otpauth://` seed, are both storable in the browser's disk cache and
+  # restorable with the back button. The module doc above reasons that the
+  # plaintext "must reach exactly one rendered response" and rejects two
+  # workable designs on that basis; that claim is true of the server and false
+  # of the client until this header exists. The shared machine is in the
+  # threat model, and browser-local is exactly where that case lives.
+  defp no_store(conn, _opts) do
+    conn
+    |> put_resp_header("cache-control", "no-store")
+    # For the HTTP/1.0 intermediaries and older clients that ignore
+    # `Cache-Control` but honour this.
+    |> put_resp_header("pragma", "no-cache")
   end
 
   defp json_error(conn, status, message) do
