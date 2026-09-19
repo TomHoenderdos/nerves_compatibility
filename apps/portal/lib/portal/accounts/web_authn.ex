@@ -218,6 +218,12 @@ defmodule Portal.Accounts.WebAuthn do
          {:ok, client_data_json} <- decode(params["client_data_json"]),
          {:ok, user} <- user_from_handle(params["user_handle"]),
          {:ok, passkey} <- passkey_for(user, credential_id),
+         # Read the stored key out here, deliberately outside the rescue in
+         # `verify_assertion/6`. `Passkeys.cose_key/1` is a `binary_to_term/2`
+         # over a column we wrote; if it raises, our storage is corrupt and the
+         # crash belongs in the logs as a crash, not laundered into
+         # `:malformed_assertion` under a line blaming a hand-crafted payload.
+         credentials = [{passkey.credential_id, Passkeys.cose_key(passkey)}],
          {:ok, auth_data} <-
            verify_assertion(
              credential_id,
@@ -225,7 +231,7 @@ defmodule Portal.Accounts.WebAuthn do
              signature,
              client_data_json,
              challenge,
-             passkey
+             credentials
            ),
          :ok <- verify_sign_count(passkey, auth_data.sign_count),
          {:ok, passkey} <- Passkeys.record_use(passkey, auth_data.sign_count) do
@@ -246,26 +252,31 @@ defmodule Portal.Accounts.WebAuthn do
   #     `Enum.reduce/3` over a bare `%CBOR.Tag{}` that bites registration.
   #
   # `with` matches return values and does not catch exceptions, so either one
-  # would escape `authenticate/2` and take the request with it. Wrapped around
-  # this one call rather than the function body, so bugs in our own lookup,
-  # policy or storage still surface as crashes instead of being laundered into
-  # a validation error. `:exit` is deliberately not caught, for the reason
-  # given on `verify_attestation/3`.
+  # would escape `authenticate/2` and take the request with it.
+  #
+  # A function-level `rescue` covers the whole body, so the body is nothing but
+  # the one call and every argument is computed by the caller. That is what
+  # keeps bugs in our own lookup, policy or storage crashing instead of being
+  # laundered into a validation error — `credentials` in particular carries a
+  # `binary_to_term/2` read of a column we wrote, and is built in
+  # `authenticate/2` for exactly this reason. `:exit` is deliberately not
+  # caught, for the reason given on `verify_attestation/3`.
   defp verify_assertion(
          credential_id,
          auth_data_bin,
          signature,
          client_data_json,
          challenge,
-         %Passkey{} = passkey
-       ) do
+         credentials
+       )
+       when is_list(credentials) do
     Wax.authenticate(
       credential_id,
       auth_data_bin,
       signature,
       client_data_json,
       challenge,
-      [{passkey.credential_id, Passkeys.cose_key(passkey)}]
+      credentials
     )
   rescue
     exception ->
