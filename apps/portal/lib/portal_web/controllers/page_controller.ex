@@ -489,26 +489,12 @@ defmodule PortalWeb.PageController do
     end
   end
 
-  defp require_admin(conn) do
-    user = current_user(conn)
-
-    cond do
-      is_nil(user) ->
-        conn
-        |> put_flash(:error, "Sign in with an admin account.")
-        |> redirect(to: ~p"/login")
-        |> then(&{:error, &1})
-
-      Portal.Accounts.admin?(user) ->
-        {:ok, conn, user}
-
-      true ->
-        conn
-        |> put_flash(:error, "Admin access is required.")
-        |> redirect(to: ~p"/request-scan")
-        |> then(&{:error, &1})
-    end
-  end
+  # These seven actions carry the same privilege as the Oban dashboard behind
+  # `PortalWeb.Plugs.RequireAdmin`, so they answer to the same policy rather
+  # than a copy of it. They are routed through `:browser` and not `:admin`
+  # because they render this controller's own admin page, which the plug's
+  # scope has no alias for.
+  defp require_admin(conn), do: PortalWeb.Plugs.RequireAdmin.authorise(conn)
 
   defp current_user(conn) do
     conn

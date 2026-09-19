@@ -23,6 +23,10 @@ defmodule PortalWeb.AdminObanRouteTest do
     {:ok, admin} =
       Portal.Accounts.seed_admin_user("oban_admin_user", "correct horse battery staple")
 
+    # An admin without a passkey is redirected to `/settings/security`, which
+    # would slip past the `refute` below without ever reaching the dashboard.
+    Portal.Test.AccountsFixtures.add_test_passkey(admin)
+
     # Oban Web's dashboard LiveView requires Oban.Met to be running, which is
     # disabled under `Oban, testing: :manual`. We only care here that admin
     # auth lets the request through — we don't try to render the dashboard.
@@ -33,7 +37,7 @@ defmodule PortalWeb.AdminObanRouteTest do
         |> put_session(:user_id, admin.id)
         |> get(~p"/admin/oban")
 
-      refute redirected_to(conn) in [~p"/login", ~p"/request-scan"]
+      refute redirected_to(conn) in [~p"/login", ~p"/request-scan", ~p"/settings/security"]
     rescue
       RuntimeError -> :ok
     end
