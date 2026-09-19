@@ -1,0 +1,51 @@
+<Layouts.flash_group flash={@flash} />
+
+<main class="min-h-screen bg-base-100 text-base-content">
+  <.site_nav current_user={@current_user} />
+
+  <div class="mx-auto max-w-md px-4 py-10 sm:px-6 lg:px-8">
+    <section class="space-y-8">
+      <PortalWeb.UI.page_header kicker="Account" title="Two-factor authentication">
+        <:subtitle>
+          Enter the six-digit code from your authenticator app, or one of your recovery codes.
+        </:subtitle>
+      </PortalWeb.UI.page_header>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-6">
+          <form method="post" action={~p"/login/totp"} class="space-y-4">
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+
+            <div class="form-control">
+              <span class="label">
+                <span class="label-text font-semibold">Code</span>
+              </span>
+              <input
+                id="code"
+                name="code"
+                inputmode="text"
+                autocomplete="one-time-code"
+                autofocus
+                required
+                class="input input-bordered w-full font-mono"
+              />
+              <span class="label">
+                <span class="label-text-alt text-base-content/60">
+                  Six digits, or a recovery code like <code>k3mq-7x2p-9vhd-t4rs</code>.
+                </span>
+              </span>
+            </div>
+
+            <button type="submit" class="btn btn-primary w-full">
+              <.icon name="hero-lock-open-mini" class="size-5" /> Continue
+            </button>
+          </form>
+
+          <p class="text-sm leading-6 text-base-content/70">
+            Lost your device and your recovery codes? Ask an operator to reset your factors.
+          </p>
+        </div>
+      </section>
+    </section>
+  </div>
+</main>

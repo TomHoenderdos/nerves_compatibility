@@ -55,6 +55,8 @@ defmodule PortalWeb.Router do
     post "/register", PageController, :create_account
     get "/login", PageController, :login
     post "/login", PageController, :create_session
+    get "/login/totp", MfaController, :totp_challenge
+    post "/login/totp", MfaController, :totp_verify
     post "/logout", PageController, :logout
     get "/auth/hex/start", PageController, :request_scan
     post "/auth/hex/start", PageController, :hex_start
