@@ -36,7 +36,7 @@ defmodule PortalWeb.PasskeyController do
         conn
         |> UserAuth.complete_login(user, :passkey)
         |> put_flash(:info, "Signed in.")
-        |> json(%{redirect_to: UserAuth.landing_path(user)})
+        |> json(%{redirect_to: UserAuth.landing_path(user, :passkey)})
 
       {:error, reason} ->
         deny(conn, reason)

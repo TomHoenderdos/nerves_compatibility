@@ -116,6 +116,9 @@ defmodule PortalWeb.PasskeyControllerTest do
 
     assert json_response(conn, 200)["redirect_to"] == ~p"/admin"
     assert get_session(conn, :user_id) == admin.id
+    # The half of the admin gate that enrolment cannot supply. Flip this to
+    # any other method and `RequireAdmin` refuses the session.
+    assert get_session(conn, :login_method) == :passkey
   end
 
   test "a challenge works exactly once", %{conn: conn} do

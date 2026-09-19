@@ -148,7 +148,7 @@ defmodule PortalWeb.PageController do
           conn
           |> PortalWeb.UserAuth.complete_login(user, :password)
           |> put_flash(:info, "Signed in.")
-          |> redirect(to: PortalWeb.UserAuth.landing_path(user))
+          |> redirect(to: PortalWeb.UserAuth.landing_path(user, :password))
         end
 
       {:error, reason} ->

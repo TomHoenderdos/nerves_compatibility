@@ -152,6 +152,16 @@ defmodule PortalWeb.SecurityController do
 
         conn
         |> mark_new_factor(user, :passkey)
+        # Closes the bootstrap loop. `RequireAdmin` wants a session opened
+        # with a passkey, and registration is a `user_verification: "required"`
+        # possession ceremony -- the same argument `mark_new_factor/3` already
+        # makes below. Without this, an admin who has just break-glassed and
+        # enrolled a fresh passkey is stuck at `/settings/security` until they
+        # sign out and back in. It cannot be used as a bypass: once an account
+        # holds any passkey, `Mfa.accepted_reauth_methods/1` drops `:password`,
+        # so a phished password cannot reach this action at all. Only the
+        # zero-factor break-glass account can, which is the case we want.
+        |> put_session(:login_method, :passkey)
         |> json(%{ok: true})
 
       {:error, :already_registered} ->

@@ -16,8 +16,15 @@ defmodule PortalWeb.Plugs.RequireAdminTest do
     :ok
   end
 
-  defp sign_in(conn, user) do
-    conn |> init_test_session(%{}) |> put_session(:user_id, user.id)
+  # `:login_method` defaults to `:passkey` so the sweeps below keep meaning
+  # what their names say: "every admin action opens once the admin holds a
+  # passkey" is about enrolment, and would otherwise be silently testing the
+  # login method as well. The other methods are asserted explicitly instead.
+  defp sign_in(conn, user, login_method \\ :passkey) do
+    conn
+    |> init_test_session(%{})
+    |> put_session(:user_id, user.id)
+    |> put_session(:login_method, login_method)
   end
 
   # Derived from the router, never written out. These seven are gated by an
@@ -44,8 +51,13 @@ defmodule PortalWeb.Plugs.RequireAdminTest do
   # `resp_cookies` on the way out. Recycling the not-yet-sent signed-in conn
   # finds no cookie, so every sweep below would silently run as an anonymous
   # redirect to `/login`.
-  defp request(user, :get, path), do: build_conn() |> sign_in(user) |> get(path)
-  defp request(user, :post, path), do: build_conn() |> sign_in(user) |> post(path, %{})
+  defp request(user, verb, path, login_method \\ :passkey)
+
+  defp request(user, :get, path, method),
+    do: build_conn() |> sign_in(user, method) |> get(path)
+
+  defp request(user, :post, path, method),
+    do: build_conn() |> sign_in(user, method) |> post(path, %{})
 
   test "an admin with a passkey reaches the admin page", %{conn: conn} do
     admin = admin_fixture()
@@ -155,8 +167,9 @@ defmodule PortalWeb.Plugs.RequireAdminTest do
   # Driven directly rather than through `live/2`, because the dead render that
   # `live/2` performs is refused by the `:admin` pipeline first and would
   # prove the pipeline rather than the hook.
-  defp mount(user_id) do
-    session = if user_id, do: %{"user_id" => user_id}, else: %{}
+  defp mount(user_id, login_method \\ :passkey) do
+    session =
+      if user_id, do: %{"user_id" => user_id, "login_method" => login_method}, else: %{}
 
     # LiveView populates `:flash` before it runs `on_mount` hooks, which is why
     # a hook may `put_flash/3`; a bare `%Socket{}` has not been through that,
@@ -193,5 +206,88 @@ defmodule PortalWeb.Plugs.RequireAdminTest do
   test "an anonymous mount is sent to the login page" do
     assert {:halt, socket} = mount(nil)
     assert socket.redirected == {:redirect, %{to: ~p"/login", status: 302}}
+  end
+
+  # Enrolment is a database fact: it says a passkey exists, never that one was
+  # used. Without the `:login_method` half of the policy a phished password is
+  # full control of the build pipeline for any admin who has enrolled -- the
+  # attack this whole branch exists to stop.
+  test "a password session does not open the admin page for an enrolled admin", %{conn: conn} do
+    admin = admin_with_passkey_fixture()
+
+    conn = conn |> sign_in(admin, :password) |> get(~p"/admin")
+
+    assert redirected_to(conn) == ~p"/settings/security"
+    assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "passkey"
+  end
+
+  test "a TOTP session does not open the admin page for an enrolled admin", %{conn: conn} do
+    admin = admin_with_passkey_fixture()
+
+    conn = conn |> sign_in(admin, :totp) |> get(~p"/admin")
+
+    assert redirected_to(conn) == ~p"/settings/security"
+  end
+
+  # A session minted before this shipped carries no `:login_method` at all and
+  # is still inside the cookie's life.
+  test "a legacy session with no recorded login method is refused", %{conn: conn} do
+    admin = admin_with_passkey_fixture()
+
+    conn =
+      conn
+      |> init_test_session(%{})
+      |> put_session(:user_id, admin.id)
+      |> get(~p"/admin")
+
+    assert redirected_to(conn) == ~p"/settings/security"
+  end
+
+  test "no admin action opens for a password session" do
+    admin = admin_with_passkey_fixture()
+
+    for {verb, path} <- guarded_routes() do
+      conn = request(admin, verb, path, :password)
+
+      assert redirected_to(conn) == ~p"/settings/security",
+             "#{verb} #{path} let a password session through"
+    end
+  end
+
+  test "no admin action opens for a recovery-code session" do
+    admin = admin_with_passkey_fixture()
+
+    for {verb, path} <- guarded_routes() do
+      conn = request(admin, verb, path, :recovery_code)
+
+      assert redirected_to(conn) == ~p"/settings/security",
+             "#{verb} #{path} let a recovery-code session through"
+    end
+  end
+
+  # The plug and the hook are separate doors, and the hook is the only gate a
+  # LiveView reconnect passes through.
+  test "a password session cannot mount the dashboard either" do
+    admin = admin_with_passkey_fixture()
+
+    assert {:halt, socket} = mount(admin.id, :password)
+    assert socket.redirected == {:redirect, %{to: ~p"/settings/security", status: 302}}
+    assert Phoenix.Flash.get(socket.assigns.flash, :error) =~ "passkey"
+  end
+
+  test "a legacy session with no recorded login method cannot mount either" do
+    admin = admin_with_passkey_fixture()
+
+    socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}, flash: %{}}}
+
+    assert {:halt, socket} =
+             PortalWeb.Plugs.RequireAdmin.on_mount(
+               :require_admin_passkey,
+               %{},
+               %{"user_id" => admin.id},
+               socket
+             )
+
+    assert socket.redirected == {:redirect, %{to: ~p"/settings/security", status: 302}}
   end
 end

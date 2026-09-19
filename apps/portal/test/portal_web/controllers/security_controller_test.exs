@@ -302,6 +302,43 @@ defmodule PortalWeb.SecurityControllerTest do
     assert Passkeys.count_for_user(user) == 1
   end
 
+  # The break-glass loop. After `Recovery.clear_factors!/1` the admin holds no
+  # factor, so they sign in with the password alone -- a session `RequireAdmin`
+  # refuses. Registration is a `user_verification: "required"` possession
+  # ceremony, so it upgrades the session in place; without that the admin is
+  # stuck at `/settings/security` until they sign out and back in.
+  test "registering a passkey upgrades the session's login method", %{conn: conn} do
+    admin = admin_fixture(%{password: @password})
+    authenticator = SoftwareAuthenticator.new(@rp_id)
+
+    conn =
+      conn
+      |> sign_in(admin)
+      |> put_session(:login_method, :password)
+      |> asks_for_json()
+      |> post(~p"/settings/security/passkeys/challenge")
+
+    challenge = stashed_challenge(conn)
+    response = SoftwareAuthenticator.create(authenticator, challenge.bytes, @origin)
+
+    conn =
+      post(recycle(conn), ~p"/settings/security/passkeys", %{
+        "nickname" => "yubikey",
+        "attestation_object" => WebAuthn.b64(response.attestation_object),
+        "client_data_json" => WebAuthn.b64(response.client_data_json),
+        "transports" => ["usb"]
+      })
+
+    assert json_response(conn, 200)["ok"]
+    assert get_session(conn, :login_method) == :passkey
+
+    # And the gate agrees, on the same session. The `accept` header is dropped
+    # because `recycle/1` carries the JSON one forward and `/admin` is HTML.
+    admin_conn = conn |> recycle() |> delete_req_header("accept") |> get(~p"/admin")
+
+    assert admin_conn.status == 200
+  end
+
   test "the registration challenge is refused without a fresh re-auth", %{conn: conn} do
     user = user_fixture(%{password: @password})
     add_passkey(user)
