@@ -8,9 +8,12 @@ defmodule Portal.Accounts.Recovery do
   holds the database credentials in `/etc/ncc-portal/portal.env`, so this
   grants no access an attacker at that level does not already have.
 
-      bin/portal eval 'Portal.Accounts.Recovery.clear_factors!("tomhoenderdos")'
+  The expression to run:
 
-  Documented in `ops/README.md`.
+      Portal.Accounts.Recovery.clear_factors!("tomhoenderdos")
+
+  For the runnable command, including the environment sourcing this needs to
+  reach the database, see `ops/README.md`.
   """
 
   require Logger
@@ -48,7 +51,8 @@ defmodule Portal.Accounts.Recovery do
     #{Enum.map_join(codes, "\n", &("  " <> &1))}
 
     Sign in at /login with the password, use one of these codes when asked for a
-    second factor, then enrol a passkey at /settings/security.
+    second factor, then enrol a passkey at /settings/security. Admin access
+    stays closed until a passkey is registered.
     """)
 
     codes
