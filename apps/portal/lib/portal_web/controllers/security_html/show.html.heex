@@ -20,6 +20,25 @@
         </span>
       </div>
 
+      <%!-- Enrolled, but this session was not opened with the passkey. Without
+      this, an admin who signs in with a password is redirected here with no
+      explanation: the banner above does not fire, because they *do* hold a
+      passkey. --%>
+      <div
+        :if={@current_user.is_admin and @admin_satisfied and @login_method != :passkey}
+        class="alert alert-warning"
+      >
+        <.icon name="hero-finger-print-mini" class="size-5" />
+        <span>
+          <code>/admin</code>
+          needs a session you opened with your passkey, not just an account that has one.
+          <.link href={~p"/logout"} method="post" class="link font-semibold">
+            Sign out
+          </.link>
+          and choose "Sign in with a passkey".
+        </span>
+      </div>
+
       <div :if={@enrolled and @recovery_remaining == 0} class="alert alert-error">
         <.icon name="hero-lifebuoy-mini" class="size-5" />
         <span>
