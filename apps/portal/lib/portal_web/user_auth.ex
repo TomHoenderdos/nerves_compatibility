@@ -27,13 +27,19 @@ defmodule PortalWeb.UserAuth do
 
   @doc """
   Signs `user` in, having proven `method`.
-
-  `configure_session(renew: true)` rotates the session id so a cookie fixated
-  before the login is worthless afterwards.
   """
   @spec complete_login(Plug.Conn.t(), User.t(), atom()) :: Plug.Conn.t()
   def complete_login(conn, %User{} = user, method) do
     conn
+    # `configure_session(renew: true)` rotates the session id. Under this app's
+    # `store: :cookie` (see `endpoint.ex`) that is a no-op: the session *is* the
+    # signed cookie value, `Plug.Session.COOKIE.delete/3` does nothing, and the
+    # emitted cookie is a pure function of session contents either way. A
+    # cookie fixated before login is inert here because of the store, not
+    # because of this line. No test guards this call, and none can -- removing
+    # it changes no observable behaviour. It is kept as defence in depth: it
+    # becomes load-bearing the day the store becomes server-side, precisely
+    # the day nobody will remember to add it.
     |> configure_session(renew: true)
     |> put_session(:user_id, user.id)
     |> mark_reauth(method)
@@ -62,6 +68,9 @@ defmodule PortalWeb.UserAuth do
   @spec start_pending(Plug.Conn.t(), User.t()) :: Plug.Conn.t()
   def start_pending(conn, %User{} = user) do
     conn
+    |> delete_session(:user_id)
+    |> delete_session(:reauth_method)
+    |> delete_session(:reauth_at)
     |> put_session(:pending_user_id, user.id)
     |> put_session(:pending_started_at, System.system_time(:second))
   end
@@ -83,7 +92,8 @@ defmodule PortalWeb.UserAuth do
   def pending_user(conn) do
     with user_id when is_binary(user_id) <- get_session(conn, :pending_user_id),
          started when is_integer(started) <- get_session(conn, :pending_started_at),
-         true <- System.system_time(:second) - started <= @pending_ttl_seconds,
+         elapsed = System.system_time(:second) - started,
+         true <- elapsed >= 0 and elapsed <= @pending_ttl_seconds,
          {:ok, %User{} = user} <- Portal.Accounts.get_user(user_id) do
       {:ok, user}
     else
