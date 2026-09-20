@@ -8,9 +8,15 @@ defmodule Portal.Accounts.Recovery do
   holds the database credentials in `/etc/ncc-portal/portal.env`, so this
   grants no access an attacker at that level does not already have.
 
-  The expression to run:
+  The expression to run, naming the locked-out account:
 
-      Portal.Accounts.Recovery.clear_factors!("tomhoenderdos")
+      Portal.Accounts.Recovery.clear_factors!("tom")
+
+  Pass the username that holds `is_admin`, which is not always the one that
+  looks like the operator's own name -- this project's admin is `tom` while a
+  separate non-admin `tomhoenderdos` account also exists, and clearing factors
+  on the wrong one restores no access at all. `ops/README.md` opens with the
+  query that settles it.
 
   For the runnable command, including the environment sourcing this needs to
   reach the database, see `ops/README.md`.
