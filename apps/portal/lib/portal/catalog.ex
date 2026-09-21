@@ -703,14 +703,7 @@ defmodule Portal.Catalog do
       run_results = Enum.filter(results, &(&1.run_id == run.id and &1.system_pkg != "host"))
 
       systems =
-        Enum.reduce(run_results, %{}, fn result, system_acc ->
-          stored_shas = Map.get(shas_by_system_result_id, result.id, MapSet.new())
-
-          case file_manifest(result, stored_shas) do
-            nil -> system_acc
-            manifest -> Map.put(system_acc, result.system_pkg, manifest)
-          end
-        end)
+        precompiled_systems(run_results, shas_by_system_result_id)
 
       if systems == %{} do
         acc
@@ -794,4 +787,15 @@ defmodule Portal.Catalog do
   defp generated_at, do: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
   defp iso8601(nil), do: nil
   defp iso8601(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+
+  defp precompiled_systems(run_results, shas_by_system_result_id) do
+    Enum.reduce(run_results, %{}, fn result, system_acc ->
+      stored_shas = Map.get(shas_by_system_result_id, result.id, MapSet.new())
+
+      case file_manifest(result, stored_shas) do
+        nil -> system_acc
+        manifest -> Map.put(system_acc, result.system_pkg, manifest)
+      end
+    end)
+  end
 end

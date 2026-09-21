@@ -203,11 +203,13 @@ defmodule Compatibility.Index.LatestByPackage do
   Loads and validates a latest_by_pkg.json file.
   """
   @spec load(Path.t()) :: {:ok, t()} | {:error, term()}
+  # Local-file loader for operator-selected index/metadata paths. No HTTP route calls this API.
+  # Callers accepting web input must validate paths before invoking this loader.
+  # sobelow_skip ["Traversal.FileModule"]
   def load(path) do
     with {:ok, content} <- File.read(path),
-         {:ok, data} <- JSON.decode(content),
-         {:ok, index} <- parse(data) do
-      {:ok, index}
+         {:ok, data} <- JSON.decode(content) do
+      parse(data)
     end
   end
 
@@ -268,10 +270,7 @@ defmodule Compatibility.Index.LatestByPackage do
       end
 
     beam_scan =
-      case parse_beam_scan(Map.get(pkg_data, "beam_scan")) do
-        {:ok, scan} -> scan
-        _ -> nil
-      end
+      package_beam_scan(pkg_data)
 
     # Extract package_name and version if available (schema 3)
     package_name = Map.get(pkg_data, "package_name")
@@ -338,8 +337,12 @@ defmodule Compatibility.Index.LatestByPackage do
   defp parse_native_components(_), do: nil
 
   defp atomize_lang(nil), do: nil
-  defp atomize_lang(s) when is_binary(s), do: String.to_atom(s)
-  defp atomize_lang(a) when is_atom(a), do: a
+  @native_languages [:c, :cpp, :rust, :zig, :go, :shell, :python, :ruby]
+  defp atomize_lang(s) when is_binary(s),
+    do: Enum.find(@native_languages, &(Atom.to_string(&1) == s))
+
+  defp atomize_lang(a) when a in @native_languages, do: a
+  defp atomize_lang(_), do: nil
 
   # Directories whose contents are tool-owned build scratch (rebar3's
   # _build, elixir_ls cache, etc.) rather than source — filtering here on
@@ -527,21 +530,7 @@ defmodule Compatibility.Index.LatestByPackage do
           []
       end
 
-    per_system =
-      case Map.get(fp, "per_system") do
-        %{} = ps_map ->
-          ps_map
-          |> Enum.map(fn {sys, val} ->
-            case parse_footprint(val) do
-              {:ok, parsed} -> {sys, parsed}
-              _ -> {sys, %Package.Footprint{file_count: 0, total_bytes: 0}}
-            end
-          end)
-          |> Map.new()
-
-        _ ->
-          %{}
-      end
+    per_system = footprints_by_system(fp)
 
     {:ok,
      %Package.Footprint{
@@ -639,4 +628,25 @@ defmodule Compatibility.Index.LatestByPackage do
   end
 
   defp parse_system_result(_), do: {:error, :invalid_system_result}
+
+  defp package_beam_scan(pkg_data) do
+    case parse_beam_scan(Map.get(pkg_data, "beam_scan")) do
+      {:ok, scan} -> scan
+      _ -> nil
+    end
+  end
+
+  defp footprints_by_system(fp) do
+    case Map.get(fp, "per_system") do
+      %{} = ps_map -> Map.new(ps_map, fn {sys, val} -> {sys, footprint_or_empty(val)} end)
+      _ -> %{}
+    end
+  end
+
+  defp footprint_or_empty(val) do
+    case parse_footprint(val) do
+      {:ok, parsed} -> parsed
+      _ -> %Package.Footprint{file_count: 0, total_bytes: 0}
+    end
+  end
 end

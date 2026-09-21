@@ -196,13 +196,7 @@ defmodule BeamScanner.Analyzer do
     Enum.reduce(app_files, {[], []}, fn file, {mods, errors} ->
       case :file.consult(String.to_charlist(file)) do
         {:ok, [{:application, _name, properties}]} ->
-          case Keyword.get(properties, :mod) do
-            {module, _args} ->
-              {[module | mods], errors}
-
-            _ ->
-              {mods, errors}
-          end
+          app_start_module(properties, mods, errors)
 
         {:error, reason} ->
           {mods, [format_app_error(file, reason) | errors]}
@@ -215,26 +209,26 @@ defmodule BeamScanner.Analyzer do
   end
 
   defp scan_beam(path) do
-    with {:ok, {module, chunks}} <-
-           :beam_lib.chunks(String.to_charlist(path), [:imports, :abstract_code, :attributes]) do
-      chunk_map = Map.new(chunks)
+    case :beam_lib.chunks(String.to_charlist(path), [:imports, :abstract_code, :attributes]) do
+      {:ok, {module, chunks}} ->
+        chunk_map = Map.new(chunks)
 
-      imports = Map.get(chunk_map, :imports, [])
+        imports = Map.get(chunk_map, :imports, [])
 
-      import_mfas =
-        imports
-        |> Enum.map(fn {m, f, a} -> {m, f, a} end)
-        |> MapSet.new()
+        import_mfas =
+          imports
+          |> Enum.map(fn {m, f, a} -> {m, f, a} end)
+          |> MapSet.new()
 
-      abstract_mfas = collect_from_abstract(Map.get(chunk_map, :abstract_code))
+        abstract_mfas = collect_from_abstract(Map.get(chunk_map, :abstract_code))
 
-      attrs =
-        chunk_map
-        |> Map.get(:attributes, [])
-        |> Map.new()
+        attrs =
+          chunk_map
+          |> Map.get(:attributes, [])
+          |> Map.new()
 
-      {module, path, MapSet.union(import_mfas, abstract_mfas), attrs, []}
-    else
+        {module, path, MapSet.union(import_mfas, abstract_mfas), attrs, []}
+
       {:error, beam, reason} ->
         {nil, path, MapSet.new(), %{}, [format_beam_error(beam, reason)]}
     end
@@ -356,20 +350,7 @@ defmodule BeamScanner.Analyzer do
         :gleam
 
       true ->
-        case source_path(attrs) do
-          {:ok, source} ->
-            case Path.extname(source) do
-              ".ex" -> :elixir
-              ".exs" -> :elixir
-              ".erl" -> :erlang
-              ".gleam" -> :gleam
-              ".lfe" -> :lfe
-              _ -> classify_from_module(beam_mod)
-            end
-
-          _ ->
-            classify_from_module(beam_mod)
-        end
+        classify_from_source(attrs, beam_mod)
     end
   end
 
@@ -377,10 +358,7 @@ defmodule BeamScanner.Analyzer do
     mod_str = Atom.to_string(mod)
 
     # Treat non-Elixir modules without compiler metadata as Erlang by default.
-    cond do
-      String.starts_with?(mod_str, "Elixir.") -> :elixir
-      true -> :erlang
-    end
+    if String.starts_with?(mod_str, "Elixir."), do: :elixir, else: :erlang
   end
 
   defp source_path(attrs) do
@@ -438,31 +416,15 @@ defmodule BeamScanner.Analyzer do
       |> Path.wildcard(match_dot: true)
       |> Enum.filter(&File.regular?/1)
       |> Enum.map(fn file ->
-        relative_path = Path.relative_to(file, root_dir)
-
-        case File.stat(file) do
-          {:ok, %{size: size}} ->
-            sha256 = compute_sha256(file)
-
-            %{
-              path: relative_path,
-              size: size,
-              sha256: sha256
-            }
-
-          _ ->
-            %{
-              path: relative_path,
-              size: 0,
-              sha256: ""
-            }
-        end
+        file_metadata(file, root_dir)
       end)
     else
       []
     end
   end
 
+  # Read-only inspection of compiled files discovered inside the worker container.
+  # sobelow_skip ["Traversal.FileModule"]
   defp compute_sha256(file) do
     case File.read(file) do
       {:ok, content} ->
@@ -485,16 +447,69 @@ defmodule BeamScanner.Analyzer do
       total_bytes =
         files
         |> Enum.map(fn file ->
-          case File.stat(file) do
-            {:ok, %{size: size}} -> size
-            _ -> 0
-          end
+          file_size(file)
         end)
         |> Enum.sum()
 
       %{file_count: length(files), total_bytes: total_bytes}
     else
       %{file_count: 0, total_bytes: 0}
+    end
+  end
+
+  defp app_start_module(properties, mods, errors) do
+    case Keyword.get(properties, :mod) do
+      {module, _args} ->
+        {[module | mods], errors}
+
+      _ ->
+        {mods, errors}
+    end
+  end
+
+  defp classify_from_source(attrs, beam_mod) do
+    case source_path(attrs) do
+      {:ok, source} ->
+        case Path.extname(source) do
+          ".ex" -> :elixir
+          ".exs" -> :elixir
+          ".erl" -> :erlang
+          ".gleam" -> :gleam
+          ".lfe" -> :lfe
+          _ -> classify_from_module(beam_mod)
+        end
+
+      _ ->
+        classify_from_module(beam_mod)
+    end
+  end
+
+  defp file_metadata(file, root_dir) do
+    relative_path = Path.relative_to(file, root_dir)
+
+    case File.stat(file) do
+      {:ok, %{size: size}} ->
+        sha256 = compute_sha256(file)
+
+        %{
+          path: relative_path,
+          size: size,
+          sha256: sha256
+        }
+
+      _ ->
+        %{
+          path: relative_path,
+          size: 0,
+          sha256: ""
+        }
+    end
+  end
+
+  defp file_size(file) do
+    case File.stat(file) do
+      {:ok, %{size: size}} -> size
+      _ -> 0
     end
   end
 end

@@ -12,6 +12,8 @@ defmodule NccWorker.LockPolicy do
   Returns {:error, :policy_violation} if any git/path deps are found.
   """
   @spec validate(String.t()) :: :ok | {:error, :policy_violation}
+  # Reads the generated project mix.lock inside the disposable worker, not on the portal host.
+  # sobelow_skip ["Traversal.FileModule"]
   def validate(project_dir) do
     lock_file = Path.join(project_dir, "mix.lock")
 
@@ -39,6 +41,10 @@ defmodule NccWorker.LockPolicy do
   # for the scan. `with_diagnostics/1` collects the warnings instead of printing
   # them; the evaluated value is unchanged, and a malformed lock still raises
   # exactly as it did before.
+  # Intentional Mix lock evaluation inside the disposable build container, after deps.get
+  # has already executed package build code. Never call this on the portal host;
+  # container isolation, not this evaluator, is the boundary for package execution.
+  # sobelow_skip ["RCE.CodeModule"]
   defp eval_lock(content) do
     {result, _diagnostics} = Code.with_diagnostics(fn -> Code.eval_string(content) end)
     result
@@ -48,7 +54,7 @@ defmodule NccWorker.LockPolicy do
   defp check_dependencies(lock) do
     violations =
       lock
-      |> Enum.filter(fn {_name, dep} -> !is_hex_dep?(dep) end)
+      |> Enum.filter(fn {_name, dep} -> !hex_dep?(dep) end)
       |> Enum.map(fn {name, _} -> name end)
 
     if Enum.empty?(violations) do
@@ -59,7 +65,7 @@ defmodule NccWorker.LockPolicy do
     end
   end
 
-  @spec is_hex_dep?(tuple()) :: boolean()
-  defp is_hex_dep?({:hex, _, _, _, _, _, _, _}), do: true
-  defp is_hex_dep?(_), do: false
+  @spec hex_dep?(tuple()) :: boolean()
+  defp hex_dep?({:hex, _, _, _, _, _, _, _}), do: true
+  defp hex_dep?(_), do: false
 end

@@ -84,13 +84,13 @@ defmodule NccWorker.JsonWriterTest do
           footprint: %{
             file_count: 2,
             total_bytes: 1000,
-            firmware_bytes: 50000,
+            firmware_bytes: 50_000,
             file_manifest: %{
               ebin: [
-                %{path: "ebin/test.beam", sha256: "abc123", size: 500, mode: 33188}
+                %{path: "ebin/test.beam", sha256: "abc123", size: 500, mode: 33_188}
               ],
               priv: [
-                %{path: "priv/data.txt", sha256: "def456", size: 500, mode: 33188}
+                %{path: "priv/data.txt", sha256: "def456", size: 500, mode: 33_188}
               ]
             }
           }
@@ -116,11 +116,16 @@ defmodule NccWorker.JsonWriterTest do
       decoded = JSON.decode!(content)
 
       assert decoded["package"]["footprint"]["file_manifest"]["ebin"] == [
-               %{"path" => "ebin/test.beam", "sha256" => "abc123", "size" => 500, "mode" => 33188}
+               %{
+                 "path" => "ebin/test.beam",
+                 "sha256" => "abc123",
+                 "size" => 500,
+                 "mode" => 33_188
+               }
              ]
 
       assert decoded["package"]["footprint"]["file_manifest"]["priv"] == [
-               %{"path" => "priv/data.txt", "sha256" => "def456", "size" => 500, "mode" => 33188}
+               %{"path" => "priv/data.txt", "sha256" => "def456", "size" => 500, "mode" => 33_188}
              ]
 
       File.rm_rf!(tmp_dir)

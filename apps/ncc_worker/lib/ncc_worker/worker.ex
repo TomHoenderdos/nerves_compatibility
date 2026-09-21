@@ -109,199 +109,236 @@ defmodule NccWorker.Worker do
     with :ok <- validate_input(input),
          {:ok, paths} <- setup_paths(input),
          {:ok, toolchain} <- detect_toolchain() do
-      timeout = get_in(input, [:limits, :per_system_timeout_sec]) || @default_timeout_sec
-      log_tail_bytes = get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes
-
       {description, github_url, release_info, retired_info, metadata_version, build_tools} =
-        case HexMetadata.fetch(input.package.name, input.package[:version]) do
-          {:ok,
-           %{
-             description: desc,
-             github_url: gh,
-             dependencies: release,
-             retired: retired,
-             release_version: release_version,
-             build_tools: tools
-           }} ->
-            {desc, gh, release, retired, release_version, tools}
+        fetch_metadata(input)
 
-          {:error, reason} ->
-            IO.puts(:stderr, "Warning: Failed to fetch Hex metadata: #{inspect(reason)}")
-            {"Package #{input.package.name}", nil, nil, nil, nil, []}
-        end
+      context = %{
+        input: input,
+        paths: paths,
+        toolchain: toolchain,
+        timeout: get_in(input, [:limits, :per_system_timeout_sec]) || @default_timeout_sec,
+        log_tail_bytes: get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes,
+        description: description,
+        github_url: github_url,
+        release_info: release_info,
+        retired_info: retired_info,
+        package_version_hint: metadata_version || input.package[:version],
+        build_tools: build_tools
+      }
 
-      package_version_hint = metadata_version || input.package[:version]
+      if gleam_build_tool?(build_tools),
+        do: skipped_gleam(context),
+        else: prepare_project(context)
+    end
+  end
 
-      if gleam_build_tool?(build_tools) do
-        skip_reason = gleam_skip_reason(build_tools)
+  defp fetch_metadata(input) do
+    case HexMetadata.fetch(input.package.name, input.package[:version]) do
+      {:ok,
+       %{
+         description: desc,
+         github_url: gh,
+         dependencies: release,
+         retired: retired,
+         release_version: release_version,
+         build_tools: tools
+       }} ->
+        {desc, gh, release, retired, release_version, tools}
 
-        dependencies =
-          case release_info do
-            release when is_map(release) -> HexMetadata.parse_dependencies(release, [])
-            _ -> []
-          end
+      {:error, reason} ->
+        IO.puts(:stderr, "Warning: Failed to fetch Hex metadata: #{inspect(reason)}")
+        {"Package #{input.package.name}", nil, nil, nil, nil, []}
+    end
+  end
 
-        beam_scan = build_skipped_beam_scan(build_tools)
+  defp skipped_gleam(%{
+         input: input,
+         paths: paths,
+         toolchain: toolchain,
+         log_tail_bytes: log_tail_bytes,
+         description: description,
+         github_url: github_url,
+         release_info: release_info,
+         package_version_hint: package_version_hint,
+         build_tools: build_tools
+       }) do
+    skip_reason = gleam_skip_reason(build_tools)
 
-        system_results =
-          build_forced_skip_system(paths.output_dir, skip_reason, log_tail_bytes, beam_scan)
+    dependencies =
+      case release_info do
+        release when is_map(release) -> HexMetadata.parse_dependencies(release, [])
+        _ -> []
+      end
 
-        footprint = empty_footprint()
+    beam_scan = build_skipped_beam_scan(build_tools)
 
-        result = %{
-          run_id: input.run_id,
-          package: %{
-            name: input.package.name,
-            version: package_version_hint || "unknown",
-            description: description,
-            github_url: github_url,
-            dependencies: dependencies,
-            footprint: footprint
-          },
-          image: input.image,
-          toolchain: toolchain,
-          systems: system_results,
-          finished_at: DateTime.utc_now() |> DateTime.to_iso8601()
-        }
+    system_results =
+      build_forced_skip_system(paths.output_dir, skip_reason, log_tail_bytes, beam_scan)
 
-        {:ok, result}
+    footprint = empty_footprint()
+
+    result = %{
+      run_id: input.run_id,
+      package: %{
+        name: input.package.name,
+        version: package_version_hint || "unknown",
+        description: description,
+        github_url: github_url,
+        dependencies: dependencies,
+        footprint: footprint
+      },
+      image: input.image,
+      toolchain: toolchain,
+      systems: system_results,
+      finished_at: DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    {:ok, result}
+  end
+
+  defp skipped_retired(%{
+         input: input,
+         paths: paths,
+         toolchain: toolchain,
+         log_tail_bytes: log_tail_bytes,
+         description: description,
+         github_url: github_url,
+         retired_info: retired_info,
+         package_version_hint: package_version_hint
+       }) do
+    reason = format_retired_reason(retired_info)
+
+    system_results =
+      build_forced_skip_system(paths.output_dir, reason, log_tail_bytes, nil)
+
+    footprint = empty_footprint()
+
+    result = %{
+      run_id: input.run_id,
+      package: %{
+        name: input.package.name,
+        version: package_version_hint || "unknown",
+        description: description,
+        github_url: github_url,
+        dependencies: [],
+        footprint: footprint
+      },
+      image: input.image,
+      toolchain: toolchain,
+      systems: system_results,
+      finished_at: DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    {:ok, result}
+  end
+
+  defp prepare_project(%{input: input, paths: paths, retired_info: retired_info} = context) do
+    systems = Systems.select(input[:systems_filter])
+
+    with {:ok, project_dir} <-
+           Project.create(paths.work_dir, input[:systems_override], Systems.targets(systems)),
+         {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
+         :ok <- LockPolicy.validate(project_dir) do
+      if retired_info do
+        skipped_retired(context)
       else
-        # Resolved before the project exists, not after: the targets decide
-        # which `nerves_system_*` deps `mix nerves.new` writes into mix.exs, so
-        # picking systems afterwards can only ever pick ones already generated.
-        systems = Systems.select(input[:systems_filter])
-
-        with {:ok, project_dir} <-
-               Project.create(
-                 paths.work_dir,
-                 input[:systems_override],
-                 Systems.targets(systems)
-               ),
-             {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
-             :ok <- LockPolicy.validate(project_dir) do
-          if retired_info do
-            reason = format_retired_reason(retired_info)
-
-            system_results =
-              build_forced_skip_system(paths.output_dir, reason, log_tail_bytes, nil)
-
-            footprint = empty_footprint()
-
-            result = %{
-              run_id: input.run_id,
-              package: %{
-                name: input.package.name,
-                version: package_version_hint || "unknown",
-                description: description,
-                github_url: github_url,
-                dependencies: [],
-                footprint: footprint
-              },
-              image: input.image,
-              toolchain: toolchain,
-              systems: system_results,
-              finished_at: DateTime.utc_now() |> DateTime.to_iso8601()
-            }
-
-            {:ok, result}
-          else
-            # Source-dir snapshot: taken after `mix deps.get` populated
-            # `deps/<pkg>/` but before any firmware or host compile runs.
-            # Compared with a second snapshot taken after all builds so we
-            # can flag packages that write artifacts back into source (bad
-            # news when switching MIX_TARGET between builds).
-            pkg_source_dir = Path.join([project_dir, "deps", input.package.name])
-
-            {:ok, source_before} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
-
-            host_result =
-              compile_host(project_dir, paths.output_dir, log_tail_bytes, input.package.name)
-
-            system_results =
-              build_all_systems(
-                project_dir,
-                systems,
-                paths.output_dir,
-                timeout,
-                log_tail_bytes,
-                input.package.name
-              )
-              |> Map.merge(%{"host" => host_result})
-
-            {:ok, source_after} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
-            source_changes = NccWorker.SourceScanner.diff(source_before, source_after)
-
-            package_version =
-              case get_package_version(project_dir, input.package) do
-                "unknown" when is_binary(package_version_hint) ->
-                  package_version_hint
-
-                version ->
-                  version
-              end
-
-            runtime_apps =
-              case NccWorker.AppFile.find_app_file(project_dir, input.package.name) do
-                {:ok, app_file_path} ->
-                  case NccWorker.AppFile.read_applications(app_file_path) do
-                    {:ok, apps} ->
-                      apps
-
-                    {:error, reason} ->
-                      IO.puts(:stderr, "Warning: Failed to read .app file: #{inspect(reason)}")
-                      []
-                  end
-
-                {:error, reason} ->
-                  IO.puts(:stderr, "Warning: Failed to find .app file: #{inspect(reason)}")
-                  []
-              end
-
-            {final_description, dependencies} =
-              case release_info do
-                release when is_map(release) ->
-                  deps = HexMetadata.parse_dependencies(release, runtime_apps)
-                  {description, deps}
-
-                _ ->
-                  {description, []}
-              end
-
-            footprint =
-              case Footprint.calculate(project_dir, input.package.name, systems) do
-                {:ok, stats} ->
-                  stats
-
-                {:error, reason} ->
-                  IO.puts(:stderr, "Warning: Failed to calculate footprint: #{inspect(reason)}")
-                  empty_footprint()
-              end
-
-            native_components = NccWorker.NativeLang.detect(project_dir, input.package.name)
-
-            result = %{
-              run_id: input.run_id,
-              package: %{
-                name: input.package.name,
-                version: package_version,
-                description: final_description,
-                github_url: github_url,
-                dependencies: dependencies,
-                native_components: native_components,
-                source_changes: source_changes,
-                footprint: footprint
-              },
-              image: input.image,
-              toolchain: toolchain,
-              systems: system_results,
-              finished_at: DateTime.utc_now() |> DateTime.to_iso8601()
-            }
-
-            {:ok, result}
-          end
-        end
+        context |> Map.merge(%{project_dir: project_dir, systems: systems}) |> evaluate_project()
       end
     end
+  end
+
+  defp evaluate_project(%{
+         input: input,
+         paths: paths,
+         toolchain: toolchain,
+         project_dir: project_dir,
+         systems: systems,
+         timeout: timeout,
+         log_tail_bytes: log_tail_bytes,
+         description: description,
+         github_url: github_url,
+         release_info: release_info,
+         package_version_hint: package_version_hint
+       }) do
+    # Source-dir snapshot: taken after `mix deps.get` populated
+    # `deps/<pkg>/` but before any firmware or host compile runs.
+    # Compared with a second snapshot taken after all builds so we
+    # can flag packages that write artifacts back into source (bad
+    # news when switching MIX_TARGET between builds).
+    pkg_source_dir = Path.join([project_dir, "deps", input.package.name])
+
+    {:ok, source_before} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
+
+    host_result =
+      compile_host(project_dir, paths.output_dir, log_tail_bytes, input.package.name)
+
+    system_results =
+      build_all_systems(
+        project_dir,
+        systems,
+        paths.output_dir,
+        timeout,
+        log_tail_bytes,
+        input.package.name
+      )
+      |> Map.merge(%{"host" => host_result})
+
+    {:ok, source_after} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
+    source_changes = NccWorker.SourceScanner.diff(source_before, source_after)
+
+    package_version =
+      case get_package_version(project_dir, input.package) do
+        "unknown" when is_binary(package_version_hint) ->
+          package_version_hint
+
+        version ->
+          version
+      end
+
+    runtime_apps =
+      runtime_applications(project_dir, input)
+
+    {final_description, dependencies} =
+      case release_info do
+        release when is_map(release) ->
+          deps = HexMetadata.parse_dependencies(release, runtime_apps)
+          {description, deps}
+
+        _ ->
+          {description, []}
+      end
+
+    footprint =
+      case Footprint.calculate(project_dir, input.package.name, systems) do
+        {:ok, stats} ->
+          stats
+
+        {:error, reason} ->
+          IO.puts(:stderr, "Warning: Failed to calculate footprint: #{inspect(reason)}")
+          empty_footprint()
+      end
+
+    native_components = NccWorker.NativeLang.detect(project_dir, input.package.name)
+
+    result = %{
+      run_id: input.run_id,
+      package: %{
+        name: input.package.name,
+        version: package_version,
+        description: final_description,
+        github_url: github_url,
+        dependencies: dependencies,
+        native_components: native_components,
+        source_changes: source_changes,
+        footprint: footprint
+      },
+      image: input.image,
+      toolchain: toolchain,
+      systems: system_results,
+      finished_at: DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    {:ok, result}
   end
 
   @spec validate_input(input()) :: :ok | {:error, term()}
@@ -331,6 +368,8 @@ defmodule NccWorker.Worker do
   end
 
   @spec setup_paths(input()) :: {:ok, map()} | {:error, term()}
+  # Paths are supplied by the runner/CLI operator for the disposable build container.
+  # sobelow_skip ["Traversal.FileModule"]
   defp setup_paths(input) do
     work_dir = get_in(input, [:paths, :work_dir]) || "/work"
     output_dir = get_in(input, [:paths, :output_dir]) || "/out"
@@ -445,6 +484,8 @@ defmodule NccWorker.Worker do
   # the project root: two targets doing that at once would race on it. This
   # phase is serial by construction, so they cannot.
   @spec prepare_system(String.t(), map(), String.t(), String.t()) :: map()
+  # output_dir is the worker output mount and system names come from Systems.select/1.
+  # sobelow_skip ["Traversal.FileModule"]
   defp prepare_system(project_dir, system, output_dir, package_name) do
     log_file = Path.join([output_dir, "logs", "#{system.name}.log"])
     build_path = Path.join([project_dir, "_build", system.target])
@@ -658,6 +699,8 @@ defmodule NccWorker.Worker do
   # and kills it with "could not find an app file at
   # _build/<target>/lib/<pkg>/ebin/<pkg>.app". Removing our own directory is
   # what the task would have done for us anyway.
+  # Deletes build artifacts inside the disposable container for the determinism rebuild.
+  # sobelow_skip ["Traversal.FileModule"]
   defp clean_package_build(build_path, package_name) do
     case build_path |> Path.join("lib/#{package_name}") |> File.rm_rf() do
       {:ok, _} -> :ok
@@ -697,6 +740,9 @@ defmodule NccWorker.Worker do
     run_cmd("mix", ["release"], project_dir, env, log_file)
   end
 
+  # Private callers choose mix or the resolved fakeroot executable and literal argument lists.
+  # System.cmd passes argv directly (no shell); log_file is a worker-generated output path.
+  # sobelow_skip ["CI.System", "Traversal.FileModule"]
   defp run_cmd(command, args, project_dir, env, log_file) do
     case System.cmd(command, args,
            cd: project_dir,
@@ -730,30 +776,23 @@ defmodule NccWorker.Worker do
   end
 
   defp find_package_lib_dir_in_rel(rel_root, package_name) do
-    apps = File.ls!(rel_root)
-
-    apps
-    |> Enum.find_value(fn app_dir ->
-      lib_dir = Path.join([rel_root, app_dir, "lib"])
-
-      if File.dir?(lib_dir) do
-        case File.ls(lib_dir) do
-          {:ok, entries} ->
-            Enum.find_value(entries, fn entry ->
-              if String.starts_with?(entry, package_name <> "-") do
-                Path.join(lib_dir, entry)
-              end
-            end)
-
-          _ ->
-            nil
-        end
-      else
-        nil
-      end
-    end)
+    rel_root
+    |> File.ls!()
+    |> Enum.find_value(&find_package_in_lib(Path.join([rel_root, &1, "lib"]), package_name))
   end
 
+  defp find_package_in_lib(lib_dir, package_name) do
+    with {:ok, entries} <- File.ls(lib_dir),
+         entry when is_binary(entry) <-
+           Enum.find(entries, &String.starts_with?(&1, package_name <> "-")) do
+      Path.join(lib_dir, entry)
+    else
+      _ -> nil
+    end
+  end
+
+  # Read-only hashing of ebin/priv files discovered in the worker release tree.
+  # sobelow_skip ["Traversal.FileModule"]
   defp compute_hashes(package_lib_dir) do
     dirs = [Path.join(package_lib_dir, "ebin"), Path.join(package_lib_dir, "priv")]
 
@@ -771,11 +810,13 @@ defmodule NccWorker.Worker do
     hashes =
       files
       |> Enum.map(fn {abs, rel} ->
-        with {:ok, content} <- File.read(abs) do
-          hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
-          {rel, hash}
-        else
-          _ -> {rel, :error}
+        case File.read(abs) do
+          {:ok, content} ->
+            hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+            {rel, hash}
+
+          _ ->
+            {rel, :error}
         end
       end)
       |> Enum.reject(fn {_rel, hash} -> hash == :error end)
@@ -937,6 +978,8 @@ defmodule NccWorker.Worker do
   end
 
   @spec read_log_tail(String.t(), integer()) :: String.t()
+  # Reads a log created by this worker in the configured output mount.
+  # sobelow_skip ["Traversal.FileModule"]
   defp read_log_tail(log_file, max_bytes) do
     case File.read(log_file) do
       {:ok, content} ->
@@ -954,32 +997,19 @@ defmodule NccWorker.Worker do
   end
 
   @spec get_package_version(String.t(), map()) :: String.t()
+  defp get_package_version(_project_dir, %{version: version}) when version not in [nil, false],
+    do: version
+
+  # Reads the generated project mix.lock inside the disposable worker.
+  # sobelow_skip ["Traversal.FileModule"]
   defp get_package_version(project_dir, package) do
-    # If exact version was specified, use it
-    if package[:version] do
-      package.version
+    with {:ok, content} <- File.read(Path.join(project_dir, "mix.lock")),
+         {lock, _} when is_map(lock) <- eval_lock(content),
+         {_name, {:hex, _, version, _, _, _, _, _}} <-
+           Enum.find(lock, fn {name, _} -> to_string(name) == package.name end) do
+      version
     else
-      # Read from mix.lock
-      lock_file = Path.join(project_dir, "mix.lock")
-
-      case File.read(lock_file) do
-        {:ok, content} ->
-          case eval_lock(content) do
-            {lock, _} when is_map(lock) ->
-              package_atom = String.to_atom(package.name)
-
-              case lock[package_atom] do
-                {:hex, _, version, _, _, _, _, _} -> version
-                _ -> "unknown"
-              end
-
-            _ ->
-              "unknown"
-          end
-
-        _ ->
-          "unknown"
-      end
+      _ -> "unknown"
     end
   end
 
@@ -990,12 +1020,18 @@ defmodule NccWorker.Worker do
   # build log we store and show to whoever asked for the scan, one line per
   # dependency. `with_diagnostics/1` collects the warnings instead of printing
   # them; the evaluated value is unchanged. Mirrors `NccWorker.LockPolicy`.
+  # Intentional Mix lock evaluation inside the disposable build container, after deps.get
+  # has already executed package build code. Never call this on the portal host;
+  # container isolation, not this evaluator, is the boundary for package execution.
+  # sobelow_skip ["RCE.CodeModule"]
   defp eval_lock(content) do
     {result, _diagnostics} = Code.with_diagnostics(fn -> Code.eval_string(content) end)
     result
   end
 
   @spec extract_system_version(String.t(), String.t()) :: String.t() | nil
+  # Reads a worker-generated per-system log in the configured output mount.
+  # sobelow_skip ["Traversal.FileModule"]
   defp extract_system_version(log_file, system_name) do
     case File.read(log_file) do
       {:ok, content} ->
@@ -1019,7 +1055,7 @@ defmodule NccWorker.Worker do
   end
 
   defp gleam_skip_reason(build_tools) do
-    tools = build_tools |> Enum.map(&to_string/1) |> Enum.join(", ")
+    tools = Enum.map_join(build_tools, ", ", &to_string/1)
 
     if tools == "" do
       "Package uses gleam build tool"
@@ -1059,6 +1095,8 @@ defmodule NccWorker.Worker do
     }
   end
 
+  # Writes a fixed forced-skip log name beneath the runner-configured output mount.
+  # sobelow_skip ["Traversal.FileModule"]
   defp build_forced_skip_system(output_dir, reason, log_tail_bytes, beam_scan) do
     log_file = Path.join([output_dir, "logs", "#{@forced_skip_system}.log"])
     :ok = File.write!(log_file, reason <> "\n")
@@ -1138,5 +1176,23 @@ defmodule NccWorker.Worker do
     %{
       file_manifest: %{ebin: [], priv: []}
     }
+  end
+
+  defp runtime_applications(project_dir, input) do
+    case NccWorker.AppFile.find_app_file(project_dir, input.package.name) do
+      {:ok, app_file_path} ->
+        case NccWorker.AppFile.read_applications(app_file_path) do
+          {:ok, apps} ->
+            apps
+
+          {:error, reason} ->
+            IO.puts(:stderr, "Warning: Failed to read .app file: #{inspect(reason)}")
+            []
+        end
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Warning: Failed to find .app file: #{inspect(reason)}")
+        []
+    end
   end
 end
