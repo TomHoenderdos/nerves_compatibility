@@ -27,11 +27,13 @@ defmodule NervesCompatibility.MixProject do
   # Dependencies listed here are available only for this umbrella root project
   # and cannot be accessed from applications inside the apps/ folder.
   #
-  # `mix_audit` belongs here rather than in a child app: it reads the shared
-  # umbrella `mix.lock`, so one copy at the root audits every app at once.
+  # Analysis tools belong here so they can run from the umbrella root without
+  # adding runtime dependencies to either the portal or worker release.
   defp deps do
     [
-      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:sobelow, "~> 0.15.0", only: [:dev, :test], runtime: false}
     ]
   end
 end
