@@ -83,11 +83,13 @@ defmodule Compatibility.Index.Stats do
   Loads and validates a stats.json file.
   """
   @spec load(Path.t()) :: {:ok, t()} | {:error, term()}
+  # Local-file loader for operator-selected index/metadata paths. No HTTP route calls this API.
+  # Callers accepting web input must validate paths before invoking this loader.
+  # sobelow_skip ["Traversal.FileModule"]
   def load(path) do
     with {:ok, content} <- File.read(path),
-         {:ok, data} <- JSON.decode(content),
-         {:ok, index} <- parse(data) do
-      {:ok, index}
+         {:ok, data} <- JSON.decode(content) do
+      parse(data)
     end
   end
 

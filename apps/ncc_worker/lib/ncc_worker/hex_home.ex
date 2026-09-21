@@ -49,6 +49,8 @@ defmodule NccWorker.HexHome do
   keep whatever `HEX_HOME` it already has.
   """
   @spec prepare(String.t(), String.t()) :: String.t() | nil
+  # project_dir is the generated worker project; name is host or a target from Systems.select/1.
+  # sobelow_skip ["Traversal.FileModule"]
   def prepare(project_dir, name) do
     with shared when is_binary(shared) <- shared_root(),
          dir = Path.join([project_dir, ".hex", name]),
@@ -70,21 +72,19 @@ defmodule NccWorker.HexHome do
   @spec publish(String.t() | nil) :: :ok
   def publish(nil), do: :ok
 
+  # dir is a private HEX_HOME returned by prepare/2; shared root comes from the worker environment.
+  # sobelow_skip ["Traversal.FileModule"]
   def publish(dir) do
     with shared when is_binary(shared) <- shared_root(),
          src = Path.join(dir, @registry),
          true <- File.regular?(src) do
       tmp = Path.join(shared, ".#{@registry}.#{:erlang.unique_integer([:positive])}")
 
-      case File.cp(src, tmp) do
-        :ok ->
-          case File.rename(tmp, Path.join(shared, @registry)) do
-            :ok -> :ok
-            _ -> File.rm(tmp)
-          end
-
-        _ ->
-          File.rm(tmp)
+      with :ok <- File.cp(src, tmp),
+           :ok <- File.rename(tmp, Path.join(shared, @registry)) do
+        :ok
+      else
+        _ -> File.rm(tmp)
       end
     end
 
@@ -103,6 +103,8 @@ defmodule NccWorker.HexHome do
     end
   end
 
+  # Both roots are from prepare/2; the intentional link exposes only the mounted package cache.
+  # sobelow_skip ["Traversal.FileModule"]
   defp link_packages(shared, dir) do
     target = Path.join(shared, "packages")
     link = Path.join(dir, "packages")
@@ -115,6 +117,8 @@ defmodule NccWorker.HexHome do
     end
   end
 
+  # Called by prepare/2 with fixed cache.ets/hex.config names and worker-owned cache directories.
+  # sobelow_skip ["Traversal.FileModule"]
   defp seed(shared, dir, name) do
     src = Path.join(shared, name)
     dest = Path.join(dir, name)

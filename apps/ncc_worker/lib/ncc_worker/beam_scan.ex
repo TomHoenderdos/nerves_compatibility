@@ -11,8 +11,6 @@ defmodule NccWorker.BeamScan do
     with {:ok, package_dir} <- find_package_dir(build_path, package_name) do
       scan = BeamScanner.analyze(package_dir)
       {:ok, normalize(scan)}
-    else
-      {:error, reason} -> {:error, reason}
     end
   rescue
     error -> {:error, {:beam_scan_failed, Exception.message(error)}}
@@ -31,8 +29,6 @@ defmodule NccWorker.BeamScan do
         |> Map.new()
 
       {:ok, scans}
-    else
-      {:error, reason} -> {:error, reason}
     end
   rescue
     error -> {:error, {:dependency_beam_scan_failed, Exception.message(error)}}
@@ -89,12 +85,7 @@ defmodule NccWorker.BeamScan do
       {:ok, entries} ->
         entries
         |> Enum.flat_map(fn entry ->
-          dir = Path.join(root, entry)
-
-          case {File.dir?(dir), parse_app_version(entry)} do
-            {true, {app, vsn}} -> [{app, vsn, dir}]
-            _ -> []
-          end
+          app_from_entry(root, entry)
         end)
 
       _ ->
@@ -235,7 +226,7 @@ defmodule NccWorker.BeamScan do
         "path" => to_string_safe(entry[:path]),
         "size" => entry[:size] || 0,
         "sha256" => to_string_safe(entry[:sha256]),
-        "mode" => entry[:mode] || 33188
+        "mode" => entry[:mode] || 33_188
       }
     end)
   end
@@ -262,4 +253,13 @@ defmodule NccWorker.BeamScan do
 
   defp safe_bool(true), do: true
   defp safe_bool(_), do: false
+
+  defp app_from_entry(root, entry) do
+    dir = Path.join(root, entry)
+
+    case {File.dir?(dir), parse_app_version(entry)} do
+      {true, {app, vsn}} -> [{app, vsn, dir}]
+      _ -> []
+    end
+  end
 end

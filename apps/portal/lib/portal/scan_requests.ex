@@ -104,17 +104,15 @@ defmodule Portal.ScanRequests do
   def approve_anonymous_request(id, admin_user) do
     with {:ok, request} <- get_request(id),
          :ok <- ensure_pending_anonymous(request),
-         {:ok, request} <- update_review(request, :accepted, nil),
-         {:ok, request} <- enqueue_build(request, :anonymous_manual, admin_user: admin_user) do
-      {:ok, request}
+         {:ok, request} <- update_review(request, :accepted, nil) do
+      enqueue_build(request, :anonymous_manual, admin_user: admin_user)
     end
   end
 
   def reject_anonymous_request(id, admin_user) do
     with {:ok, request} <- get_request(id),
-         :ok <- ensure_pending_anonymous(request),
-         {:ok, request} <- update_review(request, :rejected, "Rejected by #{admin_user.username}") do
-      {:ok, request}
+         :ok <- ensure_pending_anonymous(request) do
+      update_review(request, :rejected, "Rejected by #{admin_user.username}")
     end
   end
 

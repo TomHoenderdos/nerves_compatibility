@@ -42,16 +42,7 @@ defmodule Portal.UpstreamBackfill do
         names
         |> Enum.with_index()
         |> Enum.reduce(0, fn {name, index}, acc ->
-          job = Backfill.new(%{package: name}, schedule_in: div(index * stagger_ms, 1000))
-
-          case Oban.insert(job) do
-            {:ok, _job} ->
-              acc + 1
-
-            {:error, reason} ->
-              Logger.warning("Backfill enqueue failed for #{name}: #{inspect(reason)}")
-              acc
-          end
+          enqueue_package(name, index, stagger_ms, acc)
         end)
 
       Logger.info("Upstream backfill: #{enqueued} of #{length(names)} packages enqueued")
@@ -111,4 +102,17 @@ defmodule Portal.UpstreamBackfill do
 
   defp maybe_limit(names, nil), do: names
   defp maybe_limit(names, limit) when is_integer(limit), do: Enum.take(names, limit)
+
+  defp enqueue_package(name, index, stagger_ms, acc) do
+    job = Backfill.new(%{package: name}, schedule_in: div(index * stagger_ms, 1000))
+
+    case Oban.insert(job) do
+      {:ok, _job} ->
+        acc + 1
+
+      {:error, reason} ->
+        Logger.warning("Backfill enqueue failed for #{name}: #{inspect(reason)}")
+        acc
+    end
+  end
 end

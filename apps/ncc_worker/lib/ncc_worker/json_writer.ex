@@ -20,6 +20,8 @@ defmodule NccWorker.JsonWriter do
     - {:error, reason} - Write failed
   """
   @spec write_result(String.t(), map()) :: :ok | {:error, term()}
+  # The runner supplies output_dir as its container mount; result.json and its temp name are fixed.
+  # sobelow_skip ["Traversal.FileModule"]
   def write_result(output_dir, result) do
     result_file = Path.join(output_dir, "result.json")
     temp_file = "#{result_file}.tmp"

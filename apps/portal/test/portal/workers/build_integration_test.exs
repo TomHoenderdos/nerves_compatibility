@@ -88,7 +88,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
       |> Ash.Query.filter(run_id == ^run.id)
       |> Ash.read!(domain: Portal.Catalog)
 
-    assert length(system_results) >= 1
+    assert system_results != []
 
     # Request marked built and linked to the run
     {:ok, updated} = ScanRequests.get_request(request.id)

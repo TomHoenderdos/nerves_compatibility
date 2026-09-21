@@ -26,6 +26,8 @@ defmodule NccWorker.FileArchiver do
   """
   @spec archive_manifest_files(String.t(), map(), String.t()) ::
           {:ok, map()} | {:error, term()}
+  # files_dir is the runner-configured output mount in the disposable worker.
+  # sobelow_skip ["Traversal.FileModule"]
   def archive_manifest_files(files_dir, result, work_dir) do
     File.mkdir_p!(files_dir)
 
@@ -68,128 +70,61 @@ defmodule NccWorker.FileArchiver do
 
   @spec collect_manifests_from_system(map(), String.t(), String.t()) ::
           [{String.t(), map()}]
+  defp collect_manifests_from_system(_system_result, _project_dir, "host"), do: []
+
   defp collect_manifests_from_system(system_result, project_dir, system_name) do
-    # Skip non-build systems (like "host")
-    if system_name == "host" do
+    # The system_name is like "nerves_system_rpi4" but the build directory is "rpi4"
+    # We need to find the actual build directory
+    build_path = find_build_path(project_dir, system_name)
+
+    if is_nil(build_path) do
+      Logger.warning("Could not find build directory for system: #{system_name}")
       []
     else
-      # The system_name is like "nerves_system_rpi4" but the build directory is "rpi4"
-      # We need to find the actual build directory
-      build_path = find_build_path(project_dir, system_name)
+      Logger.debug("Collecting manifests for #{system_name} from build_path: #{build_path}")
 
-      if is_nil(build_path) do
-        Logger.warning("Could not find build directory for system: #{system_name}")
-        []
-      else
-        Logger.debug("Collecting manifests for #{system_name} from build_path: #{build_path}")
+      index = build_rel_index(build_path)
 
-        index = build_rel_index(build_path)
+      # Get the package's own beam_scan
+      package_files = collect_manifest_entries(system_result[:beam_scan], index, "package")
 
-        # Get the package's own beam_scan
-        package_files = collect_manifest_entries(system_result[:beam_scan], index, "package")
+      # Get all dependency scans
+      dependency_files =
+        dependency_files(system_result, index)
 
-        # Get all dependency scans
-        dependency_files =
-          case system_result[:dependency_scans] do
-            nil ->
-              []
-
-            deps when is_map(deps) ->
-              deps
-              |> Enum.flat_map(fn {app_version, dep_scan} ->
-                collect_manifest_entries(dep_scan, index, app_version)
-              end)
-
-            _ ->
-              []
-          end
-
-        all_files = package_files ++ dependency_files
-        Logger.debug("Found #{length(all_files)} files to archive for #{system_name}")
-        all_files
-      end
+      all_files = package_files ++ dependency_files
+      Logger.debug("Found #{length(all_files)} files to archive for #{system_name}")
+      all_files
     end
   end
 
   @spec find_build_path(String.t(), String.t()) :: String.t() | nil
   defp find_build_path(project_dir, system_name) do
     build_dir = Path.join(project_dir, "_build")
+    target_suffix = String.replace_prefix(system_name, "nerves_system_", "")
+    candidate = Path.join(build_dir, target_suffix)
 
-    if File.dir?(build_dir) do
-      # Look for a directory that might match this system
-      # Try common patterns: rpi4, mangopi_mq_pro, x86_64, etc.
-      # The system_name is like "nerves_system_rpi4", extract the suffix
-      target_suffix =
-        system_name
-        |> String.replace_prefix("nerves_system_", "")
+    if File.dir?(candidate), do: candidate, else: matching_build_path(build_dir, system_name)
+  end
 
-      candidate = Path.join(build_dir, target_suffix)
-
-      if File.dir?(candidate) do
-        candidate
-      else
-        # Fall back to finding any directory in _build
-        case File.ls(build_dir) do
-          {:ok, dirs} ->
-            # Look for directories that exist and might be a target
-            dirs
-            |> Enum.find_value(fn dir ->
-              path = Path.join(build_dir, dir)
-              if File.dir?(path) && String.contains?(system_name, dir), do: path
-            end)
-
-          _ ->
-            nil
-        end
-      end
-    else
-      nil
+  defp matching_build_path(build_dir, system_name) do
+    case File.ls(build_dir) do
+      {:ok, dirs} -> Enum.find_value(dirs, &matching_target(build_dir, system_name, &1))
+      _ -> nil
     end
+  end
+
+  defp matching_target(build_dir, system_name, dir) do
+    path = Path.join(build_dir, dir)
+    if File.dir?(path) and String.contains?(system_name, dir), do: path
   end
 
   @spec collect_manifest_entries(map() | nil, %{String.t() => String.t()}, String.t()) ::
           [{String.t(), map()}]
   defp collect_manifest_entries(nil, _index, _source), do: []
 
-  defp collect_manifest_entries(scan, index, source) do
-    # The manifest is in footprint.file_manifest with ebin/priv keys
-    # Try footprint.file_manifest first (current structure)
-    footprint = get_in(scan, ["footprint"]) || get_in(scan, [:footprint])
-
-    entries =
-      if footprint do
-        file_manifest = footprint["file_manifest"] || footprint[:file_manifest]
-
-        if file_manifest do
-          ebin = file_manifest["ebin"] || file_manifest[:ebin] || []
-          priv = file_manifest["priv"] || file_manifest[:priv] || []
-          Logger.debug("#{source}: Found #{length(ebin)} ebin files, #{length(priv)} priv files")
-
-          ebin ++ priv
-        else
-          # Fall back to old structure (footprint.manifest - single list)
-          manifest = footprint["manifest"] || footprint[:manifest] || []
-          Logger.debug("#{source}: Using old manifest structure with #{length(manifest)} files")
-          manifest
-        end
-      else
-        # Try top-level file_manifest (if structure changes)
-        file_manifest = get_in(scan, ["file_manifest"]) || get_in(scan, [:file_manifest])
-
-        if file_manifest do
-          ebin = file_manifest["ebin"] || file_manifest[:ebin] || []
-          priv = file_manifest["priv"] || file_manifest[:priv] || []
-
-          Logger.debug(
-            "#{source}: Found #{length(ebin)} ebin files, #{length(priv)} priv files (top-level)"
-          )
-
-          ebin ++ priv
-        else
-          Logger.debug("#{source}: No manifest found in scan")
-          []
-        end
-      end
+  defp collect_manifest_entries(scan, index, _source) do
+    entries = manifest_entries(scan)
 
     # Map each manifest entry to {source_path, entry}
     entries
@@ -229,13 +164,7 @@ defmodule NccWorker.FileArchiver do
       rel_dir
       |> walk_files()
       |> Enum.reduce(acc, fn path, inner ->
-        path
-        |> Path.relative_to(rel_dir)
-        |> Path.split()
-        |> path_suffixes()
-        |> Enum.reduce(inner, fn suffix, map ->
-          Map.update(map, suffix, path, &min(&1, path))
-        end)
+        index_file(path, rel_dir, inner)
       end)
     end)
   end
@@ -252,13 +181,7 @@ defmodule NccWorker.FileArchiver do
     case File.ls(dir) do
       {:ok, entries} ->
         Enum.flat_map(entries, fn entry ->
-          path = Path.join(dir, entry)
-
-          cond do
-            File.dir?(path) -> walk_files(path)
-            File.regular?(path) -> [path]
-            true -> []
-          end
+          walk_entry(dir, entry)
         end)
 
       {:error, _} ->
@@ -280,20 +203,83 @@ defmodule NccWorker.FileArchiver do
       if File.exists?(dest_path) do
         {:ok, :skipped}
       else
-        # Copy the file to the archive
-        case File.cp(source_path, dest_path) do
-          :ok ->
-            # Normalize non-executable permissions on all files
-            File.chmod!(dest_path, 0o644)
-
-            # Return the size
-            %{size: size} = File.stat!(dest_path)
-            {:ok, :archived, size}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
+        copy_archive_file(source_path, dest_path)
       end
+    end
+  end
+
+  defp dependency_files(system_result, index) do
+    case system_result[:dependency_scans] do
+      nil ->
+        []
+
+      deps when is_map(deps) ->
+        deps
+        |> Enum.flat_map(fn {app_version, dep_scan} ->
+          collect_manifest_entries(dep_scan, index, app_version)
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp manifest_entries(scan) do
+    case field(scan, :footprint) do
+      nil ->
+        split_manifest(field(scan, :file_manifest))
+
+      footprint ->
+        case field(footprint, :file_manifest) do
+          nil -> field(footprint, :manifest) || []
+          manifest -> split_manifest(manifest)
+        end
+    end
+  end
+
+  defp split_manifest(nil), do: []
+
+  defp split_manifest(manifest),
+    do: (field(manifest, :ebin) || []) ++ (field(manifest, :priv) || [])
+
+  defp field(map, key), do: map[Atom.to_string(key)] || map[key]
+
+  defp index_file(path, rel_dir, inner) do
+    path
+    |> Path.relative_to(rel_dir)
+    |> Path.split()
+    |> path_suffixes()
+    |> Enum.reduce(inner, fn suffix, map ->
+      Map.update(map, suffix, path, &min(&1, path))
+    end)
+  end
+
+  defp walk_entry(dir, entry) do
+    path = Path.join(dir, entry)
+
+    cond do
+      File.dir?(path) -> walk_files(path)
+      File.regular?(path) -> [path]
+      true -> []
+    end
+  end
+
+  # Called with release files indexed by build_rel_index/1 and locally computed SHA256 names.
+  # These operations run inside the worker; host ingestion validates blob names separately.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp copy_archive_file(source_path, dest_path) do
+    # Copy the file to the archive
+    case File.cp(source_path, dest_path) do
+      :ok ->
+        # Normalize non-executable permissions on all files
+        File.chmod!(dest_path, 0o644)
+
+        # Return the size
+        %{size: size} = File.stat!(dest_path)
+        {:ok, :archived, size}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 end

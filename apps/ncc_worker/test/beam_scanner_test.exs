@@ -54,8 +54,8 @@ defmodule BeamScannerTest do
     assert result.halt_calls? == false
     assert result.errors == []
 
-    assert result.footprint.ebin == %{file_count: 9, total_bytes: 38218}
-    assert result.footprint.priv == %{file_count: 1, total_bytes: 76848}
+    assert result.footprint.ebin == %{file_count: 9, total_bytes: 38_218}
+    assert result.footprint.priv == %{file_count: 1, total_bytes: 76_848}
     assert result.footprint.file_count == 10
     assert result.footprint.total_bytes == 115_066
     assert is_list(result.footprint.manifest)
@@ -98,7 +98,7 @@ defmodule BeamScannerTest do
 
     assert result.errors == []
 
-    assert result.footprint.ebin == %{file_count: 9, total_bytes: 29551}
+    assert result.footprint.ebin == %{file_count: 9, total_bytes: 29_551}
     assert result.footprint.priv == %{file_count: 1, total_bytes: 209_688}
     assert result.footprint.file_count == 10
     assert result.footprint.total_bytes == 239_239

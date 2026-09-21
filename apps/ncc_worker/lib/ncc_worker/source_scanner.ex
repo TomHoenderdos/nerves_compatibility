@@ -40,33 +40,24 @@ defmodule NccWorker.SourceScanner do
   """
   @spec snapshot(Path.t()) :: {:ok, snapshot()} | {:error, term()}
   def snapshot(dir) do
-    cond do
-      not File.dir?(dir) ->
-        {:ok, %{}}
+    entries =
+      dir
+      |> Path.join("**/*")
+      |> Path.wildcard(match_dot: true)
+      |> Enum.filter(&File.regular?/1)
+      |> Enum.reject(&ignored?(Path.relative_to(&1, dir)))
+      |> Enum.reduce(%{}, &snapshot_file(&1, &2, dir))
 
-      true ->
-        entries =
-          dir
-          |> Path.join("**/*")
-          |> Path.wildcard(match_dot: true)
-          |> Enum.filter(&File.regular?/1)
-          |> Enum.reduce(%{}, fn path, acc ->
-            rel = Path.relative_to(path, dir)
+    {:ok, entries}
+  end
 
-            if ignored?(rel) do
-              acc
-            else
-              case File.stat(path, time: :posix) do
-                {:ok, %{mtime: mtime, size: size}} ->
-                  Map.put(acc, rel, {mtime, size})
+  defp snapshot_file(path, acc, dir) do
+    case File.stat(path, time: :posix) do
+      {:ok, %{mtime: mtime, size: size}} ->
+        Map.put(acc, Path.relative_to(path, dir), {mtime, size})
 
-                _ ->
-                  acc
-              end
-            end
-          end)
-
-        {:ok, entries}
+      _ ->
+        acc
     end
   end
 

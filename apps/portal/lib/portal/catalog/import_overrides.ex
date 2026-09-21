@@ -10,6 +10,8 @@ defmodule Portal.Catalog.ImportOverrides do
   @doc """
   Import overrides from a package metadata JSON file.
   """
+  # Operator-only import API: the caller deliberately supplies a local file, never HTTP params.
+  # sobelow_skip ["Traversal.FileModule"]
   def import_file(path) when is_binary(path) do
     with {:ok, raw} <- File.read(path),
          {:ok, data} <- Jason.decode(raw) do

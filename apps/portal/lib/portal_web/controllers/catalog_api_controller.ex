@@ -45,20 +45,22 @@ defmodule PortalWeb.CatalogApiController do
     end
   end
 
+  # The request supplies only a validated digest; the path is derived from the
+  # configured blob store, never taken from request params or stored disk_path.
+  # lstat also rejects a symlink before serving a worker-produced artifact.
+  # sobelow_skip ["Traversal.SendFile"]
   def precompiled_file(conn, %{"sha256" => sha256}) do
-    case Catalog.artifact_by_sha256(sha256) do
-      nil ->
-        send_resp(conn, 404, "Not Found")
-
-      artifact ->
-        if File.regular?(artifact.disk_path) do
-          conn
-          |> put_cache_headers()
-          |> put_resp_content_type("application/octet-stream")
-          |> send_file(200, artifact.disk_path)
-        else
-          send_resp(conn, 404, "Not Found")
-        end
+    with true <- Portal.ArtifactStore.valid_sha256?(sha256),
+         artifact when not is_nil(artifact) <- Catalog.artifact_by_sha256(sha256),
+         path = Portal.ArtifactStore.blob_path(sha256),
+         {:ok, %File.Stat{type: :regular}} <- File.lstat(path) do
+      conn
+      |> put_cache_headers()
+      |> put_resp_content_type("application/octet-stream")
+      |> put_resp_header("x-content-type-options", "nosniff")
+      |> send_file(200, path)
+    else
+      _ -> send_resp(conn, 404, "Not Found")
     end
   end
 

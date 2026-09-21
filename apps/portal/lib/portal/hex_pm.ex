@@ -224,9 +224,11 @@ defmodule Portal.HexPm do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         {:ok, body}
 
-      {:ok, %{status: 400, body: %{"error" => error}}}
-      when error in ["authorization_pending", "slow_down"] ->
-        {:pending, String.to_atom(error)}
+      {:ok, %{status: 400, body: %{"error" => "authorization_pending"}}} ->
+        {:pending, :authorization_pending}
+
+      {:ok, %{status: 400, body: %{"error" => "slow_down"}}} ->
+        {:pending, :slow_down}
 
       {:ok, %{status: 400, body: %{"error" => "expired_token"}}} ->
         {:error, :expired_token}

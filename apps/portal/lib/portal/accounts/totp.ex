@@ -102,7 +102,7 @@ defmodule Portal.Accounts.Totp do
       |> Ash.update(domain: Portal.Accounts)
       |> case do
         {:ok, _updated} -> :ok
-        {:error, error} -> if stale?(error), do: {:error, :invalid_code}, else: raise(error)
+        {:error, error} -> confirmation_error(error)
       end
     else
       :error -> {:error, :not_enrolled}
@@ -273,4 +273,8 @@ defmodule Portal.Accounts.Totp do
   end
 
   defp stale?(_error), do: false
+
+  defp confirmation_error(error) do
+    if stale?(error), do: {:error, :invalid_code}, else: raise(error)
+  end
 end

@@ -423,9 +423,8 @@ defmodule PortalWeb.PageController do
     if username == "" and current_password == "" and new_password == "" do
       {:error, :no_changes}
     else
-      with {:ok, user} <- maybe_change_username(user, username),
-           {:ok, user} <- maybe_change_password(user, current_password, new_password) do
-        {:ok, user}
+      with {:ok, user} <- maybe_change_username(user, username) do
+        maybe_change_password(user, current_password, new_password)
       end
     end
   end

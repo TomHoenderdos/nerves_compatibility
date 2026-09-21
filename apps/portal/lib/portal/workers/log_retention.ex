@@ -232,6 +232,9 @@ defmodule Portal.Workers.LogRetention do
   # serves all three, and `:dry_run` swaps the statement for the SELECT that
   # measures the same set. A rule that raises is logged and counted as zero:
   # one broken statement must not cost the database the other two rules.
+  # Only the three private retention rules supply SQL literals; the budget uses $1 params.
+  # No job args or request values are interpolated into a statement.
+  # sobelow_skip ["SQL.Query"]
   defp execute(opts, statement, params, dry_statement) do
     sql = if Keyword.get(opts, :dry_run, false), do: dry_statement, else: statement
 

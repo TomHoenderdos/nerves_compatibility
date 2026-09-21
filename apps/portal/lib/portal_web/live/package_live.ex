@@ -171,15 +171,7 @@ defmodule PortalWeb.PackageLive do
     links
     |> Enum.sort()
     |> Enum.flat_map(fn {_label, url} ->
-      case URI.new(url) do
-        {:ok, %URI{host: host, path: path}} when is_binary(host) ->
-          if host == "github.com" or String.ends_with?(host, ".github.com"),
-            do: [{path_depth(path), String.length(url), url}],
-            else: []
-
-        _ ->
-          []
-      end
+      github_candidate(url)
     end)
     |> case do
       [] -> nil
@@ -348,6 +340,18 @@ defmodule PortalWeb.PackageLive do
       diff < 86_400 -> "#{div(diff, 3600)} hr ago"
       diff < 2_592_000 -> "#{div(diff, 86_400)} days ago"
       true -> Calendar.strftime(dt, "%b %-d, %Y")
+    end
+  end
+
+  defp github_candidate(url) do
+    case URI.new(url) do
+      {:ok, %URI{host: host, path: path}} when is_binary(host) ->
+        if host == "github.com" or String.ends_with?(host, ".github.com"),
+          do: [{path_depth(path), String.length(url), url}],
+          else: []
+
+      _ ->
+        []
     end
   end
 end

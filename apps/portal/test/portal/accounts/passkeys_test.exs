@@ -5,6 +5,22 @@ defmodule Portal.Accounts.PasskeysTest do
 
   alias Portal.Accounts.Passkeys
 
+  describe "cose_key/1" do
+    test "decodes a COSE map" do
+      key = %{1 => 2, 3 => -7, -1 => 1, -2 => <<1, 2>>, -3 => <<3, 4>>}
+      passkey = %Portal.Accounts.Passkey{public_key: :erlang.term_to_binary(key)}
+      assert Passkeys.cose_key(passkey) == key
+    end
+
+    test "rejects executable terms nested in a stored key" do
+      passkey = %Portal.Accounts.Passkey{
+        public_key: :erlang.term_to_binary(%{1 => fn -> :ok end})
+      }
+
+      assert_raise ArgumentError, fn -> Passkeys.cose_key(passkey) end
+    end
+  end
+
   test "stores a credential and finds it by credential id" do
     user = user_fixture()
 

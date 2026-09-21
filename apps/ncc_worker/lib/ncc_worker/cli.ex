@@ -123,6 +123,8 @@ defmodule NccWorker.CLI do
   end
 
   @spec read_input(String.t()) :: {:ok, map()} | {:error, term()}
+  # NCC_INPUT is set by the operator/runner to its mounted input.json, not by a web request.
+  # sobelow_skip ["Traversal.FileModule"]
   defp read_input(path) do
     case File.read(path) do
       {:ok, content} ->
@@ -138,11 +140,14 @@ defmodule NccWorker.CLI do
     end
   end
 
+  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter systems_override)a
+  @input_key_map Map.new(@input_keys, &{Atom.to_string(&1), &1})
+
   @spec atomize_keys(map()) :: map()
   defp atomize_keys(map) when is_map(map) do
     map
     |> Enum.map(fn {k, v} ->
-      key = if is_binary(k), do: String.to_atom(k), else: k
+      key = Map.get(@input_key_map, k, k)
       value = if is_map(v), do: atomize_keys(v), else: v
       {key, value}
     end)

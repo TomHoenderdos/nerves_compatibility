@@ -51,68 +51,11 @@ defmodule NccWorker.Footprint do
         target_stats =
           release_dirs
           |> Enum.map(fn {target, release_dir} ->
-            with {:ok, package_lib_dir} <- find_package_in_release(release_dir, package_name) do
-              ebin_dir = Path.join(package_lib_dir, "ebin")
-              priv_dir = Path.join(package_lib_dir, "priv")
-
-              ebin_manifest = list_files_with_hash(ebin_dir, package_lib_dir)
-              priv_manifest = list_files_with_hash(priv_dir, package_lib_dir)
-
-              # Calculate stats from manifest
-              ebin_bytes = Enum.sum(Enum.map(ebin_manifest, & &1.size))
-              priv_bytes = Enum.sum(Enum.map(priv_manifest, & &1.size))
-              ebin_count = length(ebin_manifest)
-              priv_count = length(priv_manifest)
-
-              system_name = Map.get(system_name_by_target, target, target)
-
-              %{
-                target: target,
-                system_name: system_name,
-                file_manifest: %{
-                  ebin: ebin_manifest,
-                  priv: priv_manifest
-                },
-                total_bytes: ebin_bytes + priv_bytes,
-                file_count: ebin_count + priv_count,
-                firmware_bytes: Map.get(firmware_sizes, target)
-              }
-            else
-              {:error, _} ->
-                nil
-            end
+            target_stats(target, release_dir, package_name, system_name_by_target, firmware_sizes)
           end)
           |> Enum.reject(&is_nil/1)
 
-        if length(target_stats) > 0 do
-          per_system =
-            target_stats
-            |> Enum.map(fn stats ->
-              # TODO: remove target-name fallback once all packages are rerun with system mapping present
-              key = stats.system_name
-
-              {key,
-               %{
-                 file_count: stats.file_count,
-                 total_bytes: stats.total_bytes,
-                 firmware_bytes: stats.firmware_bytes,
-                 file_manifest: stats.file_manifest
-               }}
-            end)
-            |> Map.new()
-
-          # Use first system's manifest as representative (files should be same across systems)
-          first_manifest = hd(target_stats).file_manifest
-
-          total_stats = %{
-            file_manifest: first_manifest,
-            per_system: per_system
-          }
-
-          {:ok, total_stats}
-        else
-          {:error, :package_not_in_release}
-        end
+        summarize_targets(target_stats)
 
       {:ok, []} ->
         {:error, :no_release_dirs_found}
@@ -124,33 +67,21 @@ defmodule NccWorker.Footprint do
 
   @spec find_all_release_dirs(String.t()) :: {:ok, [{String.t(), String.t()}]} | {:error, term()}
   defp find_all_release_dirs(build_dir) do
-    # Look for _build/<target>/rel/<app_name>/lib for all targets
     case File.ls(build_dir) do
-      {:ok, entries} ->
-        # Find all target directories (e.g., rpi4, x86_64, mangopi_mq_pro)
-        release_dirs =
-          entries
-          |> Enum.flat_map(fn entry ->
-            rel_path = Path.join([build_dir, entry, "rel"])
+      {:ok, entries} -> {:ok, Enum.flat_map(entries, &release_dirs_for_target(build_dir, &1))}
+      _ -> {:error, :build_dir_not_found}
+    end
+  end
 
-            if File.dir?(rel_path) do
-              case File.ls(rel_path) do
-                {:ok, [app_name | _]} ->
-                  lib_dir = Path.join([rel_path, app_name, "lib"])
-                  if File.dir?(lib_dir), do: [{entry, lib_dir}], else: []
+  defp release_dirs_for_target(build_dir, target) do
+    rel_path = Path.join([build_dir, target, "rel"])
 
-                _ ->
-                  []
-              end
-            else
-              []
-            end
-          end)
-
-        {:ok, release_dirs}
-
-      _ ->
-        {:error, :build_dir_not_found}
+    with {:ok, [app_name | _]} <- File.ls(rel_path),
+         lib_dir = Path.join([rel_path, app_name, "lib"]),
+         true <- File.dir?(lib_dir) do
+      [{target, lib_dir}]
+    else
+      _ -> []
     end
   end
 
@@ -161,11 +92,9 @@ defmodule NccWorker.Footprint do
       {:ok, entries} ->
         # Find directory that starts with package_name-
         package_dir =
-          Enum.find_value(entries, fn entry ->
-            if String.starts_with?(entry, package_name <> "-") do
-              Path.join(release_lib_dir, entry)
-            end
-          end)
+          entries
+          |> Enum.find(&String.starts_with?(&1, package_name <> "-"))
+          |> package_dir(release_lib_dir)
 
         if package_dir && File.dir?(package_dir) do
           {:ok, package_dir}
@@ -180,38 +109,21 @@ defmodule NccWorker.Footprint do
 
   @spec find_firmware_sizes(String.t()) :: %{optional(String.t()) => integer()}
   defp find_firmware_sizes(build_dir) do
-    # MIX_BUILD_PATH is set to _build/<target>, so firmware lands at
-    # _build/<target>/nerves/images/ (no dev/ subdirectory in this layout).
     case File.ls(build_dir) do
-      {:ok, entries} ->
-        entries
-        |> Enum.map(fn entry ->
-          images_dir = Path.join([build_dir, entry, "nerves", "images"])
+      {:ok, entries} -> entries |> Enum.flat_map(&firmware_size(build_dir, &1)) |> Map.new()
+      _ -> %{}
+    end
+  end
 
-          if File.dir?(images_dir) do
-            case File.ls(images_dir) do
-              {:ok, files} ->
-                fw_file = Enum.find(files, &String.ends_with?(&1, ".fw"))
+  defp firmware_size(build_dir, target) do
+    images_dir = Path.join([build_dir, target, "nerves", "images"])
 
-                if fw_file do
-                  fw_path = Path.join(images_dir, fw_file)
-
-                  case File.stat(fw_path) do
-                    {:ok, %{size: size}} -> {entry, size}
-                    _ -> nil
-                  end
-                end
-
-              _ ->
-                nil
-            end
-          end
-        end)
-        |> Enum.reject(&is_nil/1)
-        |> Map.new()
-
-      _ ->
-        %{}
+    with {:ok, files} <- File.ls(images_dir),
+         fw_file when is_binary(fw_file) <- Enum.find(files, &String.ends_with?(&1, ".fw")),
+         {:ok, %{size: size}} <- File.stat(Path.join(images_dir, fw_file)) do
+      [{target, size}]
+    else
+      _ -> []
     end
   end
 
@@ -237,15 +149,7 @@ defmodule NccWorker.Footprint do
 
         File.regular?(path) ->
           # Compute SHA256 and get file info
-          case compute_file_hash(path) do
-            {:ok, sha256, size, mode} ->
-              # Make path relative to base_dir for cleaner output
-              relative_path = Path.relative_to(path, base_dir)
-              [%{path: relative_path, sha256: sha256, size: size, mode: mode}]
-
-            _ ->
-              []
-          end
+          file_manifest_entry(path, base_dir)
 
         true ->
           # Skip symlinks and other file types
@@ -259,11 +163,94 @@ defmodule NccWorker.Footprint do
 
   @spec compute_file_hash(String.t()) ::
           {:ok, String.t(), integer(), integer()} | {:error, term()}
+  # Read-only hashing of files discovered in the worker release tree.
+  # sobelow_skip ["Traversal.FileModule"]
   defp compute_file_hash(path) do
     with {:ok, content} <- File.read(path),
          {:ok, %{size: size, mode: mode}} <- File.stat(path) do
       hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
       {:ok, hash, size, mode}
+    end
+  end
+
+  defp target_stats(target, release_dir, package_name, system_name_by_target, firmware_sizes) do
+    case find_package_in_release(release_dir, package_name) do
+      {:ok, package_lib_dir} ->
+        ebin_dir = Path.join(package_lib_dir, "ebin")
+        priv_dir = Path.join(package_lib_dir, "priv")
+
+        ebin_manifest = list_files_with_hash(ebin_dir, package_lib_dir)
+        priv_manifest = list_files_with_hash(priv_dir, package_lib_dir)
+
+        # Calculate stats from manifest
+        ebin_bytes = Enum.sum(Enum.map(ebin_manifest, & &1.size))
+        priv_bytes = Enum.sum(Enum.map(priv_manifest, & &1.size))
+        ebin_count = length(ebin_manifest)
+        priv_count = length(priv_manifest)
+
+        system_name = Map.get(system_name_by_target, target, target)
+
+        %{
+          target: target,
+          system_name: system_name,
+          file_manifest: %{
+            ebin: ebin_manifest,
+            priv: priv_manifest
+          },
+          total_bytes: ebin_bytes + priv_bytes,
+          file_count: ebin_count + priv_count,
+          firmware_bytes: Map.get(firmware_sizes, target)
+        }
+
+      {:error, _} ->
+        nil
+    end
+  end
+
+  defp summarize_targets(target_stats) do
+    if target_stats != [] do
+      per_system =
+        target_stats
+        |> Enum.map(fn stats ->
+          # Keep the target-name fallback until older packages have system mappings.
+          key = stats.system_name
+
+          {key,
+           %{
+             file_count: stats.file_count,
+             total_bytes: stats.total_bytes,
+             firmware_bytes: stats.firmware_bytes,
+             file_manifest: stats.file_manifest
+           }}
+        end)
+        |> Map.new()
+
+      # Use first system's manifest as representative (files should be same across systems)
+      first_manifest = hd(target_stats).file_manifest
+
+      total_stats = %{
+        file_manifest: first_manifest,
+        per_system: per_system
+      }
+
+      {:ok, total_stats}
+    else
+      {:error, :package_not_in_release}
+    end
+  end
+
+  defp package_dir(nil, _root), do: nil
+  defp package_dir(entry, root), do: Path.join(root, entry)
+
+  defp file_manifest_entry(path, base_dir) do
+    case compute_file_hash(path) do
+      {:ok, sha256, size, mode} ->
+        # Make path relative to base_dir for cleaner output
+        relative_path = Path.relative_to(path, base_dir)
+        [%{path: relative_path, sha256: sha256, size: size, mode: mode}]
+
+      _ ->
+        []
     end
   end
 end

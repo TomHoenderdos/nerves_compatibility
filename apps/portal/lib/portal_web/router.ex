@@ -9,7 +9,10 @@ defmodule PortalWeb.Router do
     plug :fetch_live_flash
     plug :put_root_layout, html: {PortalWeb.Layouts, :root}
     plug :protect_from_forgery
-    plug :put_secure_browser_headers
+
+    plug :put_secure_browser_headers, %{
+      "content-security-policy" => "base-uri 'self'; object-src 'none'; frame-ancestors 'self'"
+    }
   end
 
   pipeline :api do
@@ -33,7 +36,10 @@ defmodule PortalWeb.Router do
     # same session key `:browser` reads back.
     plug :fetch_live_flash
     plug :protect_from_forgery
-    plug :put_secure_browser_headers
+
+    plug :put_secure_browser_headers, %{
+      "content-security-policy" => "base-uri 'self'; object-src 'none'; frame-ancestors 'self'"
+    }
   end
 
   pipeline :admin do
@@ -59,7 +65,11 @@ defmodule PortalWeb.Router do
     plug :fetch_session
     plug :fetch_live_flash
     plug :protect_from_forgery
-    plug :put_secure_browser_headers
+
+    plug :put_secure_browser_headers, %{
+      "content-security-policy" => "base-uri 'self'; object-src 'none'; frame-ancestors 'self'"
+    }
+
     plug PortalWeb.Plugs.RequireLogin
   end
 

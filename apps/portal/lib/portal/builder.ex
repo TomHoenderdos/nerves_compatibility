@@ -218,6 +218,8 @@ defmodule Portal.Builder do
   Remove a run's scratch directory. Best-effort.
   """
   @spec cleanup(String.t()) :: :ok
+  # Only service-generated run IDs reach this helper; safe_name rejects path components.
+  # sobelow_skip ["Traversal.FileModule"]
   def cleanup(run_id) do
     _ = File.rm_rf(Path.join(scratch_root(), safe_name(run_id)))
     :ok
@@ -308,7 +310,7 @@ defmodule Portal.Builder do
   deletes the live cache. One function, one regex.
   """
   @spec cache_slug(String.t()) :: String.t()
-  def cache_slug(digest), do: String.replace(digest, ~r/[^A-Za-z0-9._-]/, "_")
+  def cache_slug(digest), do: safe_name(digest)
 
   @doc """
   Scratch directory name for a run id.
@@ -317,10 +319,15 @@ defmodule Portal.Builder do
   the `run_id` in an Oban job's args, and must use this exact transform to do it.
   """
   @spec safe_name(String.t()) :: String.t()
+  def safe_name(run_id) when run_id in ["", ".", ".."],
+    do: raise(ArgumentError, "invalid directory name")
+
   def safe_name(run_id), do: String.replace(run_id, ~r/[^A-Za-z0-9_.\-]/, "_")
 
   # ── Internals ──────────────────────────────────────────────────────────────
 
+  # Directories are constructed by build/2 from operator configuration and the run ID.
+  # sobelow_skip ["Traversal.FileModule"]
   defp ensure_directories(dirs) do
     Enum.each(dirs, &File.mkdir_p!/1)
     :ok
@@ -356,6 +363,8 @@ defmodule Portal.Builder do
     if File.dir?(path), do: path, else: existing_ancestor(Path.dirname(path))
   end
 
+  # work_dir is the run scratch directory constructed by build/2; input.json is fixed.
+  # sobelow_skip ["Traversal.FileModule"]
   defp write_worker_input(job, work_dir) do
     input =
       %{
@@ -469,6 +478,8 @@ defmodule Portal.Builder do
   # its name is not known until a build runs. A failure to create it disables the
   # cache for that build instead of failing it, since a cache that cannot be
   # written is a slowdown and not an error.
+  # The operator owns the cache root; image_slug maps the image digest to one component.
+  # sobelow_skip ["Traversal.FileModule"]
   defp build_cache_dir(job) do
     case build_cache() do
       nil ->
@@ -585,6 +596,8 @@ defmodule Portal.Builder do
   # prefix guarantees a valid leading char.
   defp container_name(run_id), do: "ncc-#{safe_name(run_id)}"
 
+  # log_file is the fixed runner.log path under the run scratch directory from build/2.
+  # sobelow_skip ["Traversal.FileModule"]
   defp log_command(args, log_file), do: File.write!(log_file, command_log_header(args))
 
   @doc false
@@ -606,6 +619,8 @@ defmodule Portal.Builder do
     """
   end
 
+  # Only run_container/5 calls this with the runner.log path constructed by build/2.
+  # sobelow_skip ["Traversal.FileModule"]
   defp run_docker(args, log_file, container_name) do
     log_device = File.open!(log_file, [:append])
     deadline = System.monotonic_time(:millisecond) + @total_timeout_ms
@@ -673,10 +688,13 @@ defmodule Portal.Builder do
     :ok
   end
 
+  # output_dir is constructed from the configured scratch root and a sanitized run ID.
+  # Refuse a symlink result left by package code before reading it on the host.
+  # sobelow_skip ["Traversal.FileModule"]
   defp read_result_json(output_dir) do
     path = Path.join(output_dir, "result.json")
 
-    with true <- File.exists?(path),
+    with {:ok, %File.Stat{type: :regular}} <- File.lstat(path),
          {:ok, content} <- File.read(path),
          {:ok, parsed} <- Jason.decode(content) do
       parsed
