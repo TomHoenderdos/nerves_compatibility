@@ -2,6 +2,7 @@ defmodule PortalWeb.IndexPagingTest do
   use PortalWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Portal.PackageListingFixtures
 
   alias Portal.ScanRequests.ScanRequest
 
@@ -39,6 +40,30 @@ defmodule PortalWeb.IndexPagingTest do
     assert html =~ "Load more"
   end
 
+  test "the first page does not fetch the entire request queue", %{conn: conn} do
+    seed_many(@page_size + 1)
+    handler = {__MODULE__, make_ref()}
+
+    :telemetry.attach(handler, [:portal, :repo, :query], &__MODULE__.capture_queue_read/4, self())
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    {:ok, view, _html} = live(conn, ~p"/packages")
+    assert has_element?(view, "#placeholder-pkg001")
+
+    assert_receive {:queue_rows, rows, _}
+    assert rows <= @page_size
+    refute_received {:queue_rows, _, true}
+  end
+
+  def capture_queue_read(_event, _measurements, metadata, test_pid) do
+    if String.contains?(metadata.query, "portal_scan_requests") do
+      case metadata.result do
+        {:ok, %{num_rows: rows}} -> send(test_pid, {:queue_rows, rows, rows > @page_size})
+        _ -> :ok
+      end
+    end
+  end
+
   test "load more appends the next page and then retires the button", %{conn: conn} do
     seed_many(@page_size + 1)
 
@@ -48,6 +73,31 @@ defmodule PortalWeb.IndexPagingTest do
 
     assert html =~ ~s(id="placeholder-pkg061")
     refute html =~ "Load more"
+  end
+
+  test "catalog cards and placeholders share ordering, paging, and counts", %{conn: conn} do
+    seed_many(@page_size + 1)
+    package_fixture("pkg002")
+    package_fixture("aaa")
+    request_fixture("pkg001")
+
+    {:ok, view, _html} = live(conn, ~p"/packages")
+
+    assert has_element?(view, "#packages > :first-child#package-aaa")
+    assert has_element?(view, "#package-pkg002")
+    refute has_element?(view, "#placeholder-pkg002")
+    assert has_element?(view, "#placeholder-pkg059")
+    refute has_element?(view, "#placeholder-pkg060")
+    assert has_element?(view, "button[phx-click=load_more]", "2 left")
+
+    view |> element("button[phx-click=load_more]") |> render_click()
+
+    assert has_element?(view, "#placeholder-pkg061")
+    refute has_element?(view, "button[phx-click=load_more]")
+
+    view |> form("#package-search", %{"q" => "PKG002"}) |> render_change()
+    assert has_element?(view, "#package-pkg002")
+    refute has_element?(view, "#placeholder-pkg001")
   end
 
   test "the count line reports the page and the total separately", %{conn: conn} do

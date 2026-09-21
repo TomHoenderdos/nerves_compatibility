@@ -5,6 +5,7 @@ defmodule Portal.ScanRequests do
 
   use Ash.Domain
   import Ash.Expr
+  import Ecto.Query, only: [from: 2, subquery: 1]
   require Ash.Query
 
   resources do
@@ -26,6 +27,44 @@ defmodule Portal.ScanRequests do
     |> Ash.Query.filter(expr(status in [:accepted, :queued]))
     |> Ash.Query.sort(inserted_at: :asc)
     |> Ash.read!(domain: __MODULE__)
+  end
+
+  @doc """
+  A name-sorted prefix of queued packages missing from the displayed catalog,
+  plus the total number of matches. Only ids and names cross the database
+  boundary; request logs and verification metadata are not needed by cards.
+
+  The caller merges this prefix with catalog cards before slicing its page.
+  Exclusions come from that same catalog snapshot so cache staleness cannot
+  hide a package from both lists. Duplicate requests link to the oldest one.
+  """
+  def queue_placeholders(q, catalog_names, limit) do
+    matching =
+      from(r in "portal_scan_requests",
+        where: r.status in ["accepted", "queued"],
+        where: r.package_name not in ^catalog_names,
+        where: fragment("strpos(?, ?) > 0", r.package_name, ^q)
+      )
+
+    count =
+      from(r in matching, select: count(r.package_name, :distinct))
+      |> Portal.Repo.one!()
+
+    oldest =
+      from(r in matching,
+        distinct: r.package_name,
+        order_by: [r.package_name, r.inserted_at, r.id],
+        select: %{id: type(r.id, Ecto.UUID), package_name: r.package_name}
+      )
+
+    entries =
+      from(r in subquery(oldest),
+        order_by: fragment("? COLLATE \"C\"", r.package_name),
+        limit: ^limit
+      )
+      |> Portal.Repo.all()
+
+    %{entries: entries, count: count}
   end
 
   def create_once(attrs) when is_map(attrs) do
