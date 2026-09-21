@@ -60,4 +60,6 @@ Pull requests should summarize behavior changes, list commands run, and call out
 
 ## Agent-Specific Instructions
 
+For security-relevant changes and vulnerability reports, read and follow [SECURITY.md](SECURITY.md).
+
 Prefer existing Makefile and Mix tasks over ad hoc scripts. Do not relax the worker dependency policy for git/path deps or change documented exit codes without updating the relevant docs and tests. For portal work, read `apps/portal/AGENTS.md` and run `mix precommit` when finishing.
