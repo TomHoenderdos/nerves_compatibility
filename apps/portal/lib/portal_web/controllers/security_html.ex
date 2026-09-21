@@ -23,6 +23,9 @@ defmodule PortalWeb.SecurityHTML do
   standalone SVG document and a bogus comment inside an HTML body.
   """
   @spec totp_qr(String.t()) :: Phoenix.HTML.safe()
+  # EQRCode.svg emits a bit matrix of rectangles with fixed attributes, not the input URI.
+  # See the function documentation and SecurityHTMLTest for the rendering boundary.
+  # sobelow_skip ["XSS.Raw"]
   def totp_qr(uri) when is_binary(uri) do
     uri
     |> EQRCode.encode()

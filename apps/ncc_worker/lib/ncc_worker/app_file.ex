@@ -14,6 +14,8 @@ defmodule NccWorker.AppFile do
     - {:error, reason} - Failed to read or parse the .app file
   """
   @spec read_applications(String.t()) :: {:ok, [atom()]} | {:error, term()}
+  # Read-only inspection of a release .app file in the isolated build container.
+  # sobelow_skip ["Traversal.FileModule"]
   def read_applications(app_file_path) do
     with {:ok, content} <- File.read(app_file_path),
          {:ok, tokens, _} <- :erl_scan.string(String.to_charlist(content)),
@@ -55,15 +57,11 @@ defmodule NccWorker.AppFile do
     Enum.reduce_while(targets, {:error, :not_found}, fn target, _acc ->
       rel_dir = Path.join([build_dir, target, "rel"])
 
-      case File.ls(rel_dir) do
-        {:ok, apps} ->
-          case find_app_in_releases(rel_dir, apps, package_name) do
-            {:ok, path} -> {:halt, {:ok, path}}
-            {:error, _} -> {:cont, {:error, :not_found}}
-          end
-
-        {:error, _} ->
-          {:cont, {:error, :not_found}}
+      with {:ok, apps} <- File.ls(rel_dir),
+           {:ok, path} <- find_app_in_releases(rel_dir, apps, package_name) do
+        {:halt, {:ok, path}}
+      else
+        {:error, _} -> {:cont, {:error, :not_found}}
       end
     end)
   end
@@ -72,28 +70,14 @@ defmodule NccWorker.AppFile do
     Enum.reduce_while(apps, {:error, :not_found}, fn app, _acc ->
       lib_dir = Path.join([rel_dir, app, "lib"])
 
-      case File.ls(lib_dir) do
-        {:ok, packages} ->
-          # Find package directory matching package_name-version pattern
-          package_dir =
-            Enum.find(packages, fn pkg ->
-              String.starts_with?(pkg, "#{package_name}-")
-            end)
-
-          if package_dir do
-            app_file = Path.join([lib_dir, package_dir, "ebin", "#{package_name}.app"])
-
-            if File.exists?(app_file) do
-              {:halt, {:ok, app_file}}
-            else
-              {:cont, {:error, :not_found}}
-            end
-          else
-            {:cont, {:error, :not_found}}
-          end
-
-        {:error, _} ->
-          {:cont, {:error, :not_found}}
+      with {:ok, packages} <- File.ls(lib_dir),
+           package_dir when is_binary(package_dir) <-
+             Enum.find(packages, &String.starts_with?(&1, "#{package_name}-")),
+           app_file = Path.join([lib_dir, package_dir, "ebin", "#{package_name}.app"]),
+           true <- File.exists?(app_file) do
+        {:halt, {:ok, app_file}}
+      else
+        _ -> {:cont, {:error, :not_found}}
       end
     end)
   end

@@ -326,7 +326,7 @@ defmodule Portal.Workers.Sweep do
 
       # Each deletion stands alone: one EACCES must not stop the sweep from
       # reclaiming everything else, which is the entire point of running it.
-      case if(dry_run?, do: :ok, else: rm(path)) do
+      case maybe_remove(path, dry_run?) do
         :ok ->
           Logger.info("Sweep removed #{label} #{Path.basename(path)} (#{mb(bytes)} MB)")
           %{count: acc.count + 1, bytes: acc.bytes + bytes}
@@ -338,6 +338,9 @@ defmodule Portal.Workers.Sweep do
     end)
   end
 
+  # Paths come from listing configured scratch/cache roots after liveness and retention checks.
+  # File.rm_rf removes a symlink itself; it does not recurse into the symlink target.
+  # sobelow_skip ["Traversal.FileModule"]
   defp rm(path) do
     case File.rm_rf(path) do
       {:ok, _removed} -> :ok
@@ -391,4 +394,6 @@ defmodule Portal.Workers.Sweep do
   defp empty, do: %{count: 0, bytes: 0}
 
   defp mb(bytes), do: Float.round(bytes / 1024 / 1024, 1)
+  defp maybe_remove(_path, true), do: :ok
+  defp maybe_remove(path, false), do: rm(path)
 end

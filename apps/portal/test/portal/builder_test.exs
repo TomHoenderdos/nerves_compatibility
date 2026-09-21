@@ -50,6 +50,15 @@ defmodule Portal.BuilderTest do
     refute Enum.any?(args(), &String.starts_with?(&1, "MAKEFLAGS="))
   end
 
+  test "scratch and cache names cannot refer to a parent or root directory" do
+    for input <- ["", ".", ".."] do
+      assert_raise ArgumentError, fn -> Builder.safe_name(input) end
+      assert_raise ArgumentError, fn -> Builder.cache_slug(input) end
+    end
+
+    assert Builder.safe_name("a/b") == "a_b"
+  end
+
   describe "load_run/1 log reading" do
     # `read_log/1` is private; `load_run/1` is the reachable path through it,
     # and it is the path that runs on `ingest:3` for every finished build.
@@ -61,6 +70,16 @@ defmodule Portal.BuilderTest do
       File.write!(Path.join(out, "result.json"), ~s({"package":{"name":"pkg"}}))
       on_exit(fn -> File.rm_rf(root) end)
       {root, run_id, out}
+    end
+
+    test "rejects a symlink result.json", %{previous: previous} do
+      {root, run_id, out} = seed_run()
+      put_builder([scratch_root: root], previous)
+      result = Path.join(out, "result.json")
+      target = Path.join(root, "other.json")
+      File.rename!(result, target)
+      File.ln_s!(target, result)
+      assert {:error, :missing_result_json} = Builder.load_run(run_id)
     end
 
     test "reads a small runner.log whole", %{previous: previous} do

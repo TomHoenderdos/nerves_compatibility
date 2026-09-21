@@ -37,6 +37,9 @@ defmodule Compatibility.PackageMetadata do
       {:error, :enoent}
   """
   @spec load(Path.t()) :: {:ok, t()} | {:error, term()}
+  # Local-file loader for operator-selected index/metadata paths. No HTTP route calls this API.
+  # Callers accepting web input must validate paths before invoking this loader.
+  # sobelow_skip ["Traversal.FileModule"]
   def load(path) do
     with {:ok, content} <- File.read(path),
          {:ok, data} <- JSON.decode(content),

@@ -75,17 +75,15 @@ defmodule Portal.Workers.Build do
     run_id = run_id(package, version)
     Progress.broadcast(scan_request_id, :building, %{package: package, version: version})
 
-    cond do
-      not force and run_exists?(package, version, image_digest) ->
-        Logger.info("Build dedup: run already exists for #{package} #{version}")
-        Progress.mark(scan_request_id, :built)
-        Progress.broadcast(scan_request_id, :done, %{deduped: true})
-        :ok
-
-      true ->
-        with_crash_cleanup(scan_request_id, run_id, attempt, max_attempts, fn ->
-          do_build(package, version, image_digest, scan_request_id, run_id, attempt, max_attempts)
-        end)
+    if not force and run_exists?(package, version, image_digest) do
+      Logger.info("Build dedup: run already exists for #{package} #{version}")
+      Progress.mark(scan_request_id, :built)
+      Progress.broadcast(scan_request_id, :done, %{deduped: true})
+      :ok
+    else
+      with_crash_cleanup(scan_request_id, run_id, attempt, max_attempts, fn ->
+        do_build(package, version, image_digest, scan_request_id, run_id, attempt, max_attempts)
+      end)
     end
   end
 

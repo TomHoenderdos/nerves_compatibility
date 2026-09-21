@@ -85,13 +85,7 @@ defmodule NccWorker.HexMetadata do
           if version do
             body
           else
-            # Get latest stable release from releases array
-            releases = body["releases"] || []
-            # Find the latest non-alpha/beta/rc release
-            Enum.find(releases, List.first(releases), fn rel ->
-              version = rel["version"]
-              !String.contains?(version, ["-alpha", "-beta", "-rc"])
-            end)
+            latest_stable_release(body)
           end
 
         if release_info do
@@ -168,5 +162,15 @@ defmodule NccWorker.HexMetadata do
       }
     end)
     |> Enum.sort_by(& &1.name)
+  end
+
+  defp latest_stable_release(body) do
+    # Get latest stable release from releases array
+    releases = body["releases"] || []
+    # Find the latest non-alpha/beta/rc release
+    Enum.find(releases, List.first(releases), fn rel ->
+      version = rel["version"]
+      !String.contains?(version, ["-alpha", "-beta", "-rc"])
+    end)
   end
 end

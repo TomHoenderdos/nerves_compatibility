@@ -144,10 +144,18 @@ reports, or change production.
 
   ```sh
   mix credo
-  mix sobelow --root apps/portal --private --strict --exit low
-  mix sobelow --root apps/ncc_worker --no-router --private --strict --exit low
-  mix sobelow --root apps/compatibility --no-router --private --strict --exit low
+  mix sobelow --root apps/portal --private --skip --strict --exit low
+  mix sobelow --root apps/ncc_worker --no-router --private --skip --strict --exit low
+  mix sobelow --root apps/compatibility --no-router --private --skip --strict --exit low
   ```
+
+  `--skip` honors function-specific `sobelow_skip` comments. Each exception
+  must name the exact rule and document the reviewed caller, validation, or
+  execution boundary. Re-review it when a caller or trust boundary changes.
+  Worker package execution is intentionally confined to disposable containers;
+  worker evaluation helpers must never be reused by the portal host. The CSP
+  currently restricts base URLs, plugins, and framing; it does not restrict
+  script sources and is not a complete XSS defense.
 
   Preserve failing scan status and review the findings. Do not describe an
   uploaded report as a clean scan or suppress findings merely to make CI green.

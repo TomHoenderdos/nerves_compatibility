@@ -55,16 +55,16 @@ defmodule NccWorker.NativeLang do
     mix_exs = read_file(Path.join(pkg_dir, "mix.exs"))
 
     cond do
-      mix_exs && String.match?(mix_exs, ~r/:rustler_precompiled\b/) ->
+      String.match?(mix_exs, ~r/:rustler_precompiled\b/) ->
         {:rust, ["mix.exs uses :rustler_precompiled" | evidence]}
 
-      mix_exs && String.match?(mix_exs, ~r/:rustler\b/) ->
+      String.match?(mix_exs, ~r/:rustler\b/) ->
         {:rust, ["mix.exs uses :rustler" | evidence]}
 
-      mix_exs && String.match?(mix_exs, ~r/:zigler_precompiled\b/) ->
+      String.match?(mix_exs, ~r/:zigler_precompiled\b/) ->
         {:zig, ["mix.exs uses :zigler_precompiled" | evidence]}
 
-      mix_exs && String.match?(mix_exs, ~r/:zigler\b/) ->
+      String.match?(mix_exs, ~r/:zigler\b/) ->
         {:zig, ["mix.exs uses :zigler" | evidence]}
 
       has_rust_sources?(pkg_dir) ->
@@ -95,7 +95,7 @@ defmodule NccWorker.NativeLang do
 
   defp has_c_nif_sources?(pkg_dir, mix_exs) do
     c_src_glob = [pkg_dir, "c_src", "**", "*.{c,cc,cpp,cxx}"] |> Path.join() |> Path.wildcard()
-    uses_make? = mix_exs && String.match?(mix_exs, ~r/:elixir_make\b/)
+    uses_make? = String.match?(mix_exs, ~r/:elixir_make\b/)
 
     has_makefile? =
       File.exists?(Path.join(pkg_dir, "Makefile")) or
@@ -166,6 +166,8 @@ defmodule NccWorker.NativeLang do
     end
   end
 
+  # Read-only four-byte inspection of files discovered under the worker package priv directory.
+  # sobelow_skip ["Traversal.FileModule"]
   defp elf_or_macho?(path) do
     case File.open(path, [:read, :binary], fn handle -> IO.binread(handle, 4) end) do
       {:ok, <<0x7F, "ELF">>} -> true
@@ -177,10 +179,12 @@ defmodule NccWorker.NativeLang do
     end
   end
 
+  # Read-only inspection of mix.exs inside the worker dependency tree.
+  # sobelow_skip ["Traversal.FileModule"]
   defp read_file(path) do
     case File.read(path) do
       {:ok, content} -> content
-      _ -> nil
+      _ -> ""
     end
   end
 end

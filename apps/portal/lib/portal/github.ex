@@ -98,9 +98,11 @@ defmodule Portal.GitHub do
         {:ok, %{status: 200, body: %{"access_token" => _access_token} = body}} ->
           {:ok, body}
 
-        {:ok, %{status: 200, body: %{"error" => error}}}
-        when error in ["authorization_pending", "slow_down"] ->
-          {:pending, String.to_atom(error)}
+        {:ok, %{status: 200, body: %{"error" => "authorization_pending"}}} ->
+          {:pending, :authorization_pending}
+
+        {:ok, %{status: 200, body: %{"error" => "slow_down"}}} ->
+          {:pending, :slow_down}
 
         {:ok, %{status: 200, body: %{"error" => "expired_token"}}} ->
           {:error, :expired_token}

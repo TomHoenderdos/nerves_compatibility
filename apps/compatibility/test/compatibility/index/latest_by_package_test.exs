@@ -63,4 +63,31 @@ defmodule Compatibility.Index.LatestByPackageTest do
       assert {:error, :invalid_schema} = LatestByPackage.parse(%{"schema" => "wrong"})
     end
   end
+
+  test "native language names use a finite vocabulary" do
+    data = %{
+      "schema" => 2,
+      "generated_at" => "2026-09-21T00:00:00Z",
+      "packages" => %{
+        "pkg" => %{
+          "description" => "fixture",
+          "latest_version" => "1.0.0",
+          "last_run_at" => "2026-09-21T00:00:00Z",
+          "systems" => %{},
+          "native_components" => %{
+            "nif_language" => "rust",
+            "port_languages" => ["shell", "unrecognized-language", %{}]
+          }
+        }
+      }
+    }
+
+    assert {:ok, index} = LatestByPackage.parse(data)
+
+    assert index.packages["pkg"].native_components == %{
+             nif_language: :rust,
+             port_languages: [:shell],
+             evidence: []
+           }
+  end
 end

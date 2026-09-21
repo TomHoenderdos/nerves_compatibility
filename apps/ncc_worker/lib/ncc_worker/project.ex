@@ -62,6 +62,8 @@ defmodule NccWorker.Project do
     - {:error, reason} - Failed to add package
   """
   @spec add_package(String.t(), map(), keyword() | list()) :: {:ok, :added} | {:error, term()}
+  # Edits only the generated worker project mix.exs; the worker deliberately builds package code.
+  # sobelow_skip ["Traversal.FileModule"]
   def add_package(project_dir, package, env) do
     mix_exs_path = Path.join(project_dir, "mix.exs")
 
@@ -109,6 +111,8 @@ defmodule NccWorker.Project do
   end
 
   @spec create_nerves_project(String.t(), [String.t()]) :: :ok | {:error, term()}
+  # project_dir is the runner-configured work mount plus the fixed proj directory.
+  # sobelow_skip ["Traversal.FileModule"]
   defp create_nerves_project(project_dir, targets) do
     # Create the project directory
     File.mkdir_p!(project_dir)
@@ -131,6 +135,8 @@ defmodule NccWorker.Project do
   @spec maybe_apply_systems_override(String.t(), map() | nil) :: :ok | {:error, term()}
   defp maybe_apply_systems_override(_project_dir, nil), do: :ok
 
+  # Edits the fixed mix.exs in the generated container project; overrides are operator inputs.
+  # sobelow_skip ["Traversal.FileModule"]
   defp maybe_apply_systems_override(project_dir, systems_override)
        when is_map(systems_override) do
     mix_exs_path = Path.join(project_dir, "mix.exs")

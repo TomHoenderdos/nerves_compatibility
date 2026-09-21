@@ -212,6 +212,8 @@ defmodule NccWorker.BuildCache do
     end)
   end
 
+  # The destination is the configured worker cache root plus key_for/5 SHA256 and a random suffix.
+  # sobelow_skip ["Traversal.FileModule"]
   defp store_entry(dir, target) do
     staging = target <> ".tmp." <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
@@ -228,6 +230,8 @@ defmodule NccWorker.BuildCache do
   # `cp -a` rather than `File.cp_r/2`: it is a single process instead of one
   # syscall storm per file, and it keeps permissions and symlinks, which beam
   # directories do contain.
+  # Called only for worker build/cache trees; the disposable container is the package-code boundary.
+  # sobelow_skip ["Traversal.FileModule"]
   defp copy_tree(source, dest) do
     with :ok <- File.mkdir_p(dest),
          {_, 0} <- System.cmd("cp", ["-a", Path.join(source, "."), dest], stderr_to_stdout: true) do
@@ -251,6 +255,10 @@ defmodule NccWorker.BuildCache do
 
   # The lock is the only place with an exact version and content hash per
   # dependency. `Code.eval_file/1` is how Mix itself reads it.
+  # Intentional Mix lock evaluation inside the disposable build container, after deps.get
+  # has already executed package build code. Never call this on the portal host;
+  # container isolation, not this evaluator, is the boundary for package execution.
+  # sobelow_skip ["RCE.CodeModule"]
   defp read_lock(project_dir) do
     path = Path.join(project_dir, "mix.lock")
 
@@ -280,6 +288,8 @@ defmodule NccWorker.BuildCache do
   # `--format dot` over `--format plain`: the edge list is unambiguous, while
   # the plain tree encodes depth as box-drawing indentation that has to be
   # counted back out.
+  # deps_tree.dot is a fixed filename in the generated worker project; no host-side evaluation.
+  # sobelow_skip ["Traversal.FileModule"]
   defp dep_graph(project_dir, env) do
     dot_file = Path.join(project_dir, "deps_tree.dot")
 
@@ -360,6 +370,8 @@ defmodule NccWorker.BuildCache do
       mentions?(Path.join(dir, "rebar.config"), @rebar_native)
   end
 
+  # Read-only inspection of mix.exs/rebar.config in the worker dependency tree.
+  # sobelow_skip ["Traversal.FileModule"]
   defp mentions?(path, needles) do
     case File.read(path) do
       {:ok, contents} -> Enum.any?(needles, &String.contains?(contents, &1))

@@ -196,4 +196,31 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert content_type =~ "application/octet-stream"
     assert response(conn, 200) == "precompiled-beam"
   end
+
+  test "artifact download refuses symlinks", %{conn: conn} do
+    sha = ingest_fixture_with_artifact()
+    path = ArtifactStore.blob_path(sha)
+    target = path <> ".target"
+    File.rename!(path, target)
+    File.ln_s!(target, path)
+
+    on_exit(fn ->
+      File.rm(path)
+      File.rm(target)
+    end)
+
+    assert conn |> get("/api/precompiled/files/#{sha}") |> response(404) == "Not Found"
+  end
+
+  test "invalid blob names return 404", %{conn: conn} do
+    assert conn |> get("/api/precompiled/files/not-a-digest") |> response(404) == "Not Found"
+  end
+
+  test "browser pages restrict embedding and base URL changes", %{conn: conn} do
+    conn = get(conn, "/packages")
+    assert [policy] = get_resp_header(conn, "content-security-policy")
+    assert policy =~ "base-uri 'self'"
+    assert policy =~ "object-src 'none'"
+    assert policy =~ "frame-ancestors 'self'"
+  end
 end

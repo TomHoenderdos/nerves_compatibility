@@ -44,10 +44,10 @@ defmodule Portal.Workers.Backfill do
   def perform(%Oban.Job{args: %{"package" => package} = args}) do
     source = Map.get(args, "source", "backfill")
 
-    if source not in @sources do
-      {:cancel, {:unknown_source, source}}
-    else
+    if source in @sources do
       build(package, String.to_existing_atom(source))
+    else
+      {:cancel, {:unknown_source, source}}
     end
   end
 

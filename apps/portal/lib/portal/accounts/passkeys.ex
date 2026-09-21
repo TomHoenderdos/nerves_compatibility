@@ -78,10 +78,11 @@ defmodule Portal.Accounts.Passkeys do
   end
 
   @doc """
-  The COSE key as `wax_` wants it. `[:safe]` because the bytes came back out of
-  the database and a bare `binary_to_term/1` on stored input is a remote code
-  execution primitive if that storage is ever tampered with.
+  The COSE key as `wax_` wants it. Reject executable terms as well as new
+  atoms when decoding the bytes stored in the database. The `[:safe]` option
+  alone prevents new atoms but still permits executable terms.
   """
   @spec cose_key(Passkey.t()) :: map()
-  def cose_key(%Passkey{public_key: bin}), do: :erlang.binary_to_term(bin, [:safe])
+  def cose_key(%Passkey{public_key: bin}),
+    do: Plug.Crypto.non_executable_binary_to_term(bin, [:safe])
 end

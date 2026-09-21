@@ -56,12 +56,12 @@ defmodule PortalWeb.AdminObanRouteTest do
   test "every /admin/oban live route re-checks the policy on mount" do
     live_routes =
       PortalWeb.Router.__routes__()
-      |> Enum.filter(&String.starts_with?(&1.path, "/admin/oban"))
       |> Enum.filter(
-        &match?(
-          {_view, _action, _opts, %{extra: %{on_mount: _}}},
-          &1.metadata[:phoenix_live_view]
-        )
+        &(String.starts_with?(&1.path, "/admin/oban") and
+            match?(
+              {_view, _action, _opts, %{extra: %{on_mount: _}}},
+              &1.metadata[:phoenix_live_view]
+            ))
       )
 
     assert live_routes != []
