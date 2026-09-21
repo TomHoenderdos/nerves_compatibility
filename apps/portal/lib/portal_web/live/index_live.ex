@@ -53,9 +53,9 @@ defmodule PortalWeb.IndexLive do
     {:noreply, push_patch(socket, to: path_for(q), replace: true)}
   end
 
-  # `entries/1` is re-derived rather than carried in the socket: the whole list
-  # is megabytes, and holding it would cost that much per connected browser.
-  # The catalog read behind it is memoized, so re-deriving is cheap.
+  # The catalog read is memoized; placeholders are a bounded database prefix.
+  # Fetching through the end of the next page is sufficient to merge the two
+  # name-sorted lists without materializing the entire scan-request queue.
   #
   # Slicing by offset means a package added between two clicks can shift the
   # window by one. The list is name-sorted and the memo has a 60s TTL, so the
@@ -64,24 +64,23 @@ defmodule PortalWeb.IndexLive do
   def handle_event("load_more", _params, socket) do
     shown = socket.assigns.shown_count
 
-    next =
-      socket.assigns.q
-      |> entries()
-      |> Enum.slice(shown, @page_size)
+    {entries, count} = entries(socket.assigns.q, shown + @page_size)
+    next = Enum.slice(entries, shown, @page_size)
 
     {:noreply,
      socket
+     |> assign(:package_count, count)
      |> assign(:shown_count, shown + length(next))
      |> stream(:packages, next)}
   end
 
   defp search(socket, q) do
-    entries = entries(q)
+    {entries, count} = entries(q, @page_size)
     page = Enum.take(entries, @page_size)
 
     socket
     |> assign(:q, q)
-    |> assign(:package_count, length(entries))
+    |> assign(:package_count, count)
     |> assign(:shown_count, length(page))
     |> stream(:packages, page, reset: true)
   end
@@ -182,13 +181,16 @@ defmodule PortalWeb.IndexLive do
 
   # -- entries ---------------------------------------------------------------
 
-  defp entries(q) do
+  defp entries(q, limit) do
     q = q |> to_string() |> String.downcase()
     catalog = catalog_entries(q)
-    names = MapSet.new(catalog, & &1.name)
+    placeholders = ScanRequests.queue_placeholders(q, Enum.map(catalog, & &1.name), limit)
 
-    (catalog ++ placeholder_entries(q, names))
-    |> Enum.sort_by(& &1.name)
+    entries =
+      (catalog ++ placeholder_entries(placeholders.entries))
+      |> Enum.sort_by(& &1.name)
+
+    {entries, length(catalog) + placeholders.count}
   end
 
   defp catalog_entries(q) do
@@ -212,12 +214,8 @@ defmodule PortalWeb.IndexLive do
     end)
   end
 
-  defp placeholder_entries(q, catalog_names) do
-    ScanRequests.queue_requests()
-    |> Enum.reject(&MapSet.member?(catalog_names, &1.package_name))
-    |> Enum.filter(fn req -> q == "" or String.contains?(req.package_name, q) end)
-    |> Enum.uniq_by(& &1.package_name)
-    |> Enum.map(fn req ->
+  defp placeholder_entries(requests) do
+    Enum.map(requests, fn req ->
       %{
         name: req.package_name,
         description: "Awaiting first scan.",
