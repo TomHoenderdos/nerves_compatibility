@@ -49,6 +49,10 @@ jobs:
           git diff --exit-code mix.lock
       - run: mix format --check-formatted
       - run: mix compile --warnings-as-errors
+      - name: Prepare test database
+        run: |
+          mix ecto.create
+          mix ecto.migrate
       - name: Run umbrella tests
         # Docker-backed firmware builds remain an explicit operator check.
         run: make test
