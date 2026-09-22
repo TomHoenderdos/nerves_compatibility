@@ -9,12 +9,12 @@ defmodule PortalWeb.CatalogLiveTest do
 
   @fixture Path.join([__DIR__, "..", "support", "fixtures", "result.json"])
 
-  defp ingest_fixture do
+  defp ingest_fixture(transform \\ &Function.identity/1) do
     dir = Path.join(System.tmp_dir!(), "catalog-live-files-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf(dir) end)
 
-    result = @fixture |> File.read!() |> Jason.decode!()
+    result = @fixture |> File.read!() |> Jason.decode!() |> transform.()
 
     {:ok, _run} =
       Ingestion.ingest(result, %{
@@ -52,6 +52,28 @@ defmodule PortalWeb.CatalogLiveTest do
     assert html =~ "nerves_system_rpi4"
     assert html =~ "pass"
     assert html =~ "45678901"
+  end
+
+  test "pure Elixir assessment is distinguished from tested firmware", %{conn: conn} do
+    ingest_fixture(fn result ->
+      result
+      |> put_in(["package", "native_components"], %{"compatibility_basis" => "pure_elixir"})
+      |> Map.put("systems", %{
+        "host" => result["systems"]["host"],
+        "pure_elixir" => %{"status" => "pass", "duration_sec" => 0.0}
+      })
+    end)
+
+    {:ok, view, _html} = live(conn, "/packages/jason")
+    assert has_element?(view, "#compatibility-assumption", "No firmware targets were built")
+    assert has_element?(view, "#system-pure-elixir", "Assumed compatible")
+    refute has_element?(view, "#system-nerves-system-rpi4")
+
+    %{packages: %{"jason" => package}} = Portal.Catalog.latest_by_pkg_json("jason")
+    assert package.native_components["compatibility_basis"] == "pure_elixir"
+    assert Enum.all?(Map.values(package.systems), &(&1.system_pkg in ["host", "pure_elixir"]))
+    assert Portal.Catalog.precompiled_manifest("jason") == nil
+    assert conn |> get("/badge/jason.svg") |> response(200) =~ "assumed compatible"
   end
 
   describe "upstream links" do
