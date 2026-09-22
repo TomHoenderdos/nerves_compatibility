@@ -9,14 +9,13 @@
 # GitHub Actions invokes this on the web host with the exact tested main SHA.
 # Operators can still run it by hand (optionally passing a main SHA).
 #
-# The worker image is NOT rebuilt here: it only changes when apps/ncc_worker,
-# apps/compatibility or the Dockerfile change, and a --no-cache rebuild is a
-# ~15 minute job. Run `make build` by hand for that, with DOCKER_HOST pointed
-# at ncc's rootless daemon.
+# Builder mode pauses new work, waits for active jobs and prepares a worker
+# image with the existing Makefile and Docker cache before restarting.
 set -euo pipefail
 
-if [[ $# -gt 1 || ( $# -eq 1 && ! "$1" =~ ^[0-9a-f]{40}$ ) ]]; then
-  echo "usage: $0 [40-character main commit SHA]" >&2
+if [[ $# -gt 2 || ( $# -ge 1 && ! "$1" =~ ^[0-9a-f]{40}$ ) ||
+      ( $# -eq 2 && "$2" != builder ) ]]; then
+  echo "usage: $0 [40-character main commit SHA [builder]]" >&2
   exit 1
 fi
 
@@ -79,6 +78,13 @@ tar -czf /opt/nerves_compatibility/portal-previous.tar.gz.tmp \
 mv /opt/nerves_compatibility/portal-previous.tar.gz.tmp \
   /opt/nerves_compatibility/portal-previous.tar.gz
 
+if [[ ${2:-portal} == builder ]]; then
+  # shellcheck source=ops/builder-deploy.sh
+  source "$SRC/ops/builder-deploy.sh"
+  builder_prepare
+  builder_build_image
+fi
+
 /opt/nerves_compatibility/build-release.sh
 
 # Migrations run through `eval`, which starts the repo but no applications.
@@ -86,6 +92,10 @@ mv /opt/nerves_compatibility/portal-previous.tar.gz.tmp \
 # whether the service is currently up.
 sudo -u ncc bash -c "cd /var/lib/ncc && set -a && . /etc/ncc-portal/portal.env && set +a && \
   $BIN eval 'Ecto.Migrator.with_repo(Portal.Repo, &Ecto.Migrator.run(&1, :up, all: true))'"
+
+if [[ ${2:-portal} == builder ]]; then
+  builder_activate_image
+fi
 
 systemctl restart ncc-portal
 
