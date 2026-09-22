@@ -57,16 +57,10 @@ defmodule Portal.ObanConfigTest do
       assert update_check_config()[:enabled]
     end
 
-    test "runs hourly, with a cap on what one run may queue" do
+    test "runs hourly" do
       {expr, _worker} = update_check_entry()
 
       assert expr =~ ~r/^\d+ \* \* \* \*$/, "expected an hourly schedule, got #{expr}"
-
-      # Each run diffs the whole registry, so there is no window to keep wider
-      # than the interval and a missed tick loses nothing. What the schedule
-      # does need is the cap: without one, the first run after a quiet spell
-      # hands the build host the entire backlog at once.
-      assert update_check_config()[:max_per_run] > 0
     end
   end
 end

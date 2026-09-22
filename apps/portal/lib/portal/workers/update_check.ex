@@ -34,8 +34,9 @@ defmodule Portal.Workers.UpdateCheck do
   ## What earns a rebuild
 
   Not every release is worth a build. A version that differs from the one on
-  record is a candidate; `significant?/2` and the per-run cap decide what
-  actually gets queued, and both are documented where they are implemented.
+  record is a candidate; `significant?/2` decides which updates earn a
+  rebuild. Every eligible update is offered to the queue; existing job and
+  request uniqueness prevents duplicate builds.
 
   ## Scope
 
@@ -74,8 +75,6 @@ defmodule Portal.Workers.UpdateCheck do
   alias Portal.Catalog.Package
   alias Portal.Catalog.Run
   alias Portal.Workers.Backfill
-
-  @default_max_per_run 5
 
   @doc """
   Args:
@@ -121,7 +120,6 @@ defmodule Portal.Workers.UpdateCheck do
         "seen" => summary.seen,
         "moved" => summary.moved,
         "enqueued" => summary.enqueued,
-        "deferred" => summary.deferred,
         "dry_run" => dry_run?
       })
 
@@ -136,38 +134,30 @@ defmodule Portal.Workers.UpdateCheck do
   Runs regardless of the `:enabled` flag -- that gate belongs to the scheduled
   path, not to a human at a console deciding to run one on purpose.
 
-  Returns `{:ok, %{seen: n, moved: n, enqueued: n, deferred: n}}`, where `seen`
-  counts packages in the registry, `moved` the ones we track that are worth
-  rebuilding, `enqueued` the jobs actually inserted -- lower than `moved` when a
-  package is already queued from an earlier run, or when the per-run cap binds --
-  and `deferred` the ones the cap held back for a later run.
+  Returns `{:ok, %{seen: n, moved: n, enqueued: n}}`, where `seen` counts
+  registry packages, `moved` counts tracked packages worth rebuilding, and
+  `enqueued` counts newly inserted jobs. Existing jobs do not prevent other
+  eligible updates from being queued.
+
+  Metadata lookup jobs are scheduled one second apart, oldest updates first.
+  Build concurrency and firmware selection are handled by the builder.
 
   Options:
 
-    * `:max_per_run` - override the configured cap.
     * `:dry_run` - classify without inserting anything.
   """
   @spec run(keyword()) :: {:ok, map()} | {:error, term()}
   def run(opts \\ []) do
-    max_per_run = Keyword.get(opts, :max_per_run, max_per_run())
-
     case registry_source().snapshot() do
       {:ok, registry} ->
         moved = moved(registry)
-        {selected, deferred} = select(moved, max_per_run)
 
         enqueued =
           if Keyword.get(opts, :dry_run, false) do
             0
           else
-            Enum.count(selected, &enqueue/1)
+            moved |> oldest_first() |> Enum.with_index() |> Enum.count(&enqueue/1)
           end
-
-        if deferred > 0 do
-          Logger.info(
-            "Update check deferred #{deferred} package(s) over the #{max_per_run} per-run cap"
-          )
-        end
 
         Logger.info(
           "Update check: #{length(registry)} packages on hex, #{length(moved)} tracked and worth rebuilding, #{enqueued} queued"
@@ -177,8 +167,7 @@ defmodule Portal.Workers.UpdateCheck do
          %{
            seen: length(registry),
            moved: length(moved),
-           enqueued: enqueued,
-           deferred: deferred
+           enqueued: enqueued
          }}
 
       {:error, reason} ->
@@ -186,29 +175,15 @@ defmodule Portal.Workers.UpdateCheck do
     end
   end
 
-  # Oldest first, then take the cap.
-  #
-  # Ordering only matters when the cap binds, and then it matters a lot. Without
-  # it the same fresh releases win the budget on every run while the oldest
-  # drift -- the packages whose published results are most wrong -- never gets a
-  # turn. Sorting by the registry's `updated_at` drains the backlog in the order
-  # it accumulated, so the queue makes progress instead of churning on the head.
-  #
-  # A package whose timestamp the registry did not carry sorts last rather than
-  # first: unknown is not the same as ancient, and treating it as ancient would
-  # hand it the whole budget.
-  defp select(moved, max_per_run) do
-    selected =
-      moved
-      |> Enum.sort_by(fn entry ->
-        case entry.updated_at do
-          nil -> {1, 0}
-          at -> {0, DateTime.to_unix(at)}
-        end
-      end)
-      |> Enum.take(max_per_run)
-
-    {selected, length(moved) - length(selected)}
+  # DateTime structs do not sort chronologically under Erlang term ordering.
+  # Missing timestamps sort last so known older updates are processed first.
+  defp oldest_first(moved) do
+    Enum.sort_by(moved, fn entry ->
+      case entry.updated_at do
+        nil -> {1, 0}
+        at -> {0, DateTime.to_unix(at)}
+      end
+    end)
   end
 
   defp moved(registry) do
@@ -302,10 +277,12 @@ defmodule Portal.Workers.UpdateCheck do
   # Both land in `Backfill`, but a stale result on a package we already display
   # outranks a package we have never tested -- see `Portal.ScanRequests` for the
   # priority table and why the two must not share a number.
-  defp enqueue(%{name: name}) do
-    case %{package: name, source: "update_check"} |> Backfill.new() |> Oban.insert() do
+  defp enqueue({%{name: name}, delay}) do
+    case %{package: name, source: "update_check"}
+         |> Backfill.new(schedule_in: delay)
+         |> Oban.insert() do
       # Already queued by an earlier run inside `Backfill`'s uniqueness period.
-      # Expected whenever the cap defers work, and not worth logging.
+      # Continue offering the remaining updates even when one already exists.
       {:ok, %Oban.Job{conflict?: true}} ->
         false
 
@@ -327,12 +304,6 @@ defmodule Portal.Workers.UpdateCheck do
   """
   @spec enabled?() :: boolean()
   def enabled?, do: Keyword.get(config(), :enabled, false) == true
-
-  @doc """
-  The per-run ceiling on how many rebuilds a single check may queue.
-  """
-  @spec max_per_run() :: pos_integer()
-  def max_per_run, do: Keyword.get(config(), :max_per_run, @default_max_per_run)
 
   defp config, do: Application.get_env(:portal, __MODULE__, [])
 

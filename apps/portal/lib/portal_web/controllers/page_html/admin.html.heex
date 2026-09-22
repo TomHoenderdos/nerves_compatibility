@@ -242,7 +242,7 @@
             <div>
               <h2 class="card-title">hex.pm update check</h2>
               <p class="mt-1 text-sm leading-6 text-base-content/70">
-                Runs hourly, compares the whole catalogue against the hex.pm registry, and queues a rebuild for up to {@update_check.max_per_run} drifted packages per run.
+                Runs hourly, compares tracked packages against the hex.pm registry, and queues every eligible update. Pure-Elixir packages skip firmware builds after host checks.
               </p>
             </div>
             <span class={[
@@ -255,20 +255,16 @@
 
           <%= if @update_check.last_run do %>
             <% meta = @update_check.last_run.meta %>
-            <div class="mt-5 grid gap-3 sm:grid-cols-4">
+            <div class="mt-5 grid gap-3 sm:grid-cols-3">
               <PortalWeb.UI.stat_card label="On hex" value={to_string(meta["seen"])} />
               <PortalWeb.UI.stat_card label="Worth rebuilding" value={to_string(meta["moved"])} />
               <PortalWeb.UI.stat_card label="Queued" value={to_string(meta["enqueued"])} />
-              <PortalWeb.UI.stat_card
-                label="Held back by cap"
-                value={to_string(meta["deferred"])}
-              />
             </div>
             <p class="mt-3 text-sm leading-6 text-base-content/70">
               Last run {format_datetime(@update_check.last_run.completed_at)}
               <%= if meta["dry_run"] do %>
                 , as a dry run -- nothing was queued
-              <% end %>. "Held back by cap" is the backlog waiting for later runs, not a failure.
+              <% end %>.
             </p>
           <% else %>
             <p class="mt-5 text-sm leading-6 text-base-content/70">

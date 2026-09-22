@@ -162,14 +162,13 @@ defmodule Portal.Admin do
 
   @doc """
   What the admin page shows about the hex.pm update check: whether the schedule
-  is on, the per-run cap, the numbers from the last run that produced any, and
+  is on, the numbers from the last run that produced any, and
   whether another run is already waiting.
   """
   @spec update_check_status() :: map()
   def update_check_status do
     %{
       enabled?: UpdateCheck.enabled?(),
-      max_per_run: UpdateCheck.max_per_run(),
       last_run: last_update_check_run(),
       pending?: update_check_pending?()
     }

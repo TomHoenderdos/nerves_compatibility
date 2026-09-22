@@ -194,22 +194,6 @@ if portal_available? do
       :ok
   end
 
-  # How many rebuilds a single run may queue. An unparseable or non-positive
-  # value keeps the compile-time default rather than disabling the cap.
-  case System.get_env("NCC_UPDATE_CHECK_MAX_PER_RUN") do
-    nil ->
-      :ok
-
-    raw ->
-      case Integer.parse(raw) do
-        {cap, _rest} when cap > 0 ->
-          config :portal, Portal.Workers.UpdateCheck, max_per_run: cap
-
-        _ ->
-          :ok
-      end
-  end
-
   if config_env() == :prod do
     secret_key_base =
       System.get_env("SECRET_KEY_BASE") ||
