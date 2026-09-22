@@ -1,0 +1,119 @@
+name: Test and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (umbrella)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: test-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      MIX_ENV: test
+      PORTAL_PG_HOST: localhost
+      PORTAL_PG_USER: postgres
+      PORTAL_PG_PASSWORD: postgres
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "28"
+      - name: Install dependencies
+        run: |
+          mix deps.get
+          git diff --exit-code mix.lock
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+      - name: Prepare test database
+        run: |
+          mix ecto.create
+          mix ecto.migrate
+      - name: Run umbrella tests
+        # Docker-backed firmware builds remain an explicit operator check.
+        run: make test
+      - name: Validate deployment scripts
+        run: |
+          bash -n ops/deploy.sh ops/wait-for-checks.sh
+          shellcheck ops/deploy.sh ops/wait-for-checks.sh
+          python3 -m unittest discover -s ops -p 'test_*.py'
+
+  deploy:
+    name: Deploy portal
+    needs: test
+    # PRs (including same-repository PRs), forks and non-main manual runs
+    # never get deployment credentials or access the production environment.
+    if: >-
+      vars.PORTAL_AUTO_DEPLOY == 'true' &&
+      github.repository == 'TomHoenderdos/nerves_compatibility' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment:
+      name: production
+      url: https://compatibility.nerves-project.org
+    concurrency:
+      group: production-portal
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Wait for security checks on this exact commit
+        id: checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash ops/wait-for-checks.sh
+      - name: Deploy checked commit over SSH
+        if: steps.checks.outputs.deploy == 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$RUNNER_TEMP/ncc-deploy-key"
+          trap 'rm -f "$key"' EXIT
+          test -n "$DEPLOY_SSH_KEY"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key"
+          unset DEPLOY_SSH_KEY
+          ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$GITHUB_WORKSPACE/ops/deploy-known-hosts" \
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            root@contabo.tompc.nl /opt/nerves_compatibility/deploy.sh "$GITHUB_SHA"
+      - name: Verify public site
+        if: steps.checks.outputs.deploy == 'true'
+        run: |
+          curl --fail --silent --show-error --max-time 30 \
+            --retry 5 --retry-delay 5 --retry-all-errors \
+            --output /dev/null https://compatibility.nerves-project.org/packages
+          printf 'Deployed `%s` to [production](https://compatibility.nerves-project.org).\n' \
+            "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
