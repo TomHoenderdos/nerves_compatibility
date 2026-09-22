@@ -66,14 +66,14 @@ defmodule PortalWeb.CatalogLiveTest do
 
     {:ok, view, _html} = live(conn, "/packages/jason")
     assert has_element?(view, "#compatibility-assumption", "No firmware targets were built")
-    assert has_element?(view, "#system-pure-elixir", "Assumed compatible")
+    assert has_element?(view, "#system-pure-elixir td:nth-child(2) span", "pass")
     refute has_element?(view, "#system-nerves-system-rpi4")
 
     %{packages: %{"jason" => package}} = Portal.Catalog.latest_by_pkg_json("jason")
     assert package.native_components["compatibility_basis"] == "pure_elixir"
     assert Enum.all?(Map.values(package.systems), &(&1.system_pkg in ["host", "pure_elixir"]))
     assert Portal.Catalog.precompiled_manifest("jason") == nil
-    assert conn |> get("/badge/jason.svg") |> response(200) =~ "assumed compatible"
+    assert conn |> get("/badge/jason.svg") |> response(200) =~ ~s(aria-label="nerves: passing")
   end
 
   describe "upstream links" do

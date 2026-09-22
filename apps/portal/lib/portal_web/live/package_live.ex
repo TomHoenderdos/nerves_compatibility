@@ -142,11 +142,7 @@ defmodule PortalWeb.PackageLive do
                   </.link>
                 </td>
                 <td class="px-5 py-4">
-                  <span :if={system.system_pkg == "pure_elixir"}>Assumed compatible</span>
-                  <PortalWeb.UI.status_badge
-                    :if={system.system_pkg != "pure_elixir"}
-                    status={system.status}
-                  />
+                  <PortalWeb.UI.status_badge status={system.status} />
                 </td>
                 <td class="px-5 py-4 font-mono text-base-content/70">
                   {system.firmware_size_bytes || "—"}
