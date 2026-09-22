@@ -103,21 +103,7 @@ config :portal, Portal.Workers.LogRetention, budget_bytes: 2 * 1024 * 1024 * 102
 # There is no window or watermark to configure: each run diffs the whole
 # catalogue against the whole registry, so a package stays visible until it is
 # actually rebuilt. See `Portal.Workers.UpdateCheck`.
-config :portal, Portal.Workers.UpdateCheck,
-  enabled: true,
-  # Ceiling on packages queued by a single run, so a burst on hex -- or the
-  # backlog that exists the first time this runs -- cannot hand the build host a
-  # week of work in one tick.
-  #
-  # Per *run* rather than per day, and deferral rather than dropping. Nothing is
-  # lost when the cap binds: the next run sees the same drift, because the
-  # comparison is against what we have built, not against a clock. `select/2`
-  # spends the budget oldest-first, so a backlog drains in the order it
-  # accumulated instead of being crowded out by fresh releases.
-  #
-  # Five an hour against a measured arrival of 9-15 a day means the cap does not
-  # bind in normal operation; it shapes the initial backlog and any burst.
-  max_per_run: 5
+config :portal, Portal.Workers.UpdateCheck, enabled: true
 
 # The dashboard, stats and cluster pages fold every package, run and system
 # result in Elixir -- 655ms warm on production, paid twice per page view because

@@ -173,7 +173,6 @@ defmodule Portal.AdminTest do
     test "reports the configured schedule" do
       status = Admin.update_check_status()
       assert is_boolean(status.enabled?)
-      assert is_integer(status.max_per_run)
     end
 
     test "a run that recorded nothing is not the last run" do
@@ -189,11 +188,11 @@ defmodule Portal.AdminTest do
 
       Portal.Repo.update_all(
         from(j in Oban.Job, where: j.id == ^job.id),
-        set: [meta: %{"seen" => 22_000, "moved" => 217, "enqueued" => 5, "deferred" => 212}]
+        set: [meta: %{"seen" => 22_000, "moved" => 217, "enqueued" => 217}]
       )
 
       assert %{last_run: %Oban.Job{meta: meta}, pending?: true} = Admin.update_check_status()
-      assert meta["deferred"] == 212
+      assert meta["enqueued"] == 217
     end
   end
 

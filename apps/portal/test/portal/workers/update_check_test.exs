@@ -394,94 +394,67 @@ defmodule Portal.Workers.UpdateCheckTest do
     end
   end
 
-  describe "run/1 per-run cap" do
-    test "queues at most max_per_run and reports the rest as deferred" do
-      for n <- 1..4, do: passing_package("pkg#{n}", "1.0.0")
-      hex_says(for n <- 1..4, do: {"pkg#{n}", "1.1.0"})
+  describe "run/1 without a per-run cap" do
+    test "queues every eligible update, including more than the old five-package limit" do
+      for n <- 1..8, do: passing_package("pkg#{n}", "1.0.0")
+      hex_says(for n <- 1..8, do: {"pkg#{n}", "1.1.0"})
 
-      assert {:ok, %{seen: 4, moved: 4, enqueued: 2, deferred: 2}} =
-               UpdateCheck.run(max_per_run: 2)
-
-      assert length(queued_packages()) == 2
+      assert {:ok, %{seen: 8, moved: 8, enqueued: 8}} = UpdateCheck.run()
+      assert length(queued_packages()) == 8
     end
 
-    # The ordering rule, and the reason the cap is safe. Without it the same
-    # fresh releases win the budget every hour while the oldest drift -- the
-    # results that have been wrong longest -- never gets a turn.
-    test "spends the budget oldest first" do
+    test "already queued candidates do not prevent other updates from being queued" do
+      for n <- 1..8, do: passing_package("pkg#{n}", "1.0.0")
+      hex_says(for n <- 1..5, do: {"pkg#{n}", "1.1.0"})
+      assert {:ok, %{enqueued: 5}} = UpdateCheck.run()
+
+      now = DateTime.utc_now()
+      hex_says(for n <- 1..8, do: {"pkg#{n}", "1.1.0", DateTime.add(now, n - 100, :second)})
+      assert {:ok, %{moved: 8, enqueued: 3}} = UpdateCheck.run()
+      assert length(queued_packages()) == 8
+    end
+
+    test "schedules every update oldest first, with metadata lookups one second apart" do
       for name <- ["newest", "middle", "oldest"], do: passing_package(name, "1.0.0")
       hex_says([{"newest", "1.1.0"}, {"middle", "1.1.0"}, {"oldest", "1.1.0"}])
 
-      assert {:ok, %{moved: 3, enqueued: 1, deferred: 2}} = UpdateCheck.run(max_per_run: 1)
-      assert queued_packages() == ["oldest"]
+      assert {:ok, %{enqueued: 3}} = UpdateCheck.run()
+      jobs = Enum.sort_by(backfill_jobs(), & &1.id)
+      assert Enum.map(jobs, & &1.args["package"]) == ["oldest", "middle", "newest"]
+
+      for [first, second] <- Enum.chunk_every(jobs, 2, 1, :discard) do
+        assert DateTime.diff(second.scheduled_at, first.scheduled_at, :millisecond) >= 1_000
+      end
     end
 
-    # Two things at once, and the dates are chosen for both.
-    #
-    # Ordering must come from the timestamp rather than the order the registry
-    # happened to list things -- the registry has no meaningful order of its
-    # own, so listing `first` first must not give it the budget.
-    #
-    # And it must be a *chronological* comparison. `DateTime` structs do not
-    # sort chronologically under Erlang term ordering: a map compares by key
-    # name, so `day` is weighed before `month` or `year`. Across this new-year
-    # boundary the two orders disagree -- the older date has the larger `day` --
-    # so sorting the raw structs would queue the wrong package and every
-    # same-month pair of dates would fail to notice.
-    test "orders by timestamp, chronologically, not by registry position" do
-      for name <- ["first", "second"], do: passing_package(name, "1.0.0")
+    test "orders dated updates chronologically and undated updates last" do
+      for name <- ["first", "second", "undated"], do: passing_package(name, "1.0.0")
 
       hex_says([
+        {"undated", "1.1.0", nil},
         {"first", "1.1.0", ~U[2026-01-01 00:00:00Z]},
         {"second", "1.1.0", ~U[2025-12-31 00:00:00Z]}
       ])
 
-      assert {:ok, %{enqueued: 1, deferred: 1}} = UpdateCheck.run(max_per_run: 1)
-      assert queued_packages() == ["second"]
+      assert {:ok, %{enqueued: 3}} = UpdateCheck.run()
+
+      assert backfill_jobs() |> Enum.sort_by(& &1.id) |> Enum.map(& &1.args["package"]) ==
+               ["second", "first", "undated"]
     end
 
-    # `updated_at` is optional in the registry protobuf. An unknown timestamp
-    # must not sort as the beginning of time, or one such package would take the
-    # whole budget ahead of drift we can actually date.
-    test "a package with no timestamp sorts last rather than first" do
-      for name <- ["dated", "undated"], do: passing_package(name, "1.0.0")
-
-      hex_says([
-        {"undated", "1.1.0", nil},
-        {"dated", "1.1.0", ~U[2026-01-01 00:00:00Z]}
-      ])
-
-      assert {:ok, %{enqueued: 1, deferred: 1}} = UpdateCheck.run(max_per_run: 1)
-      assert queued_packages() == ["dated"]
-    end
-
-    test "nothing is deferred when the cap does not bind" do
-      passing_package("alpha", "1.0.0")
-      hex_says([{"alpha", "1.1.0"}])
-
-      assert {:ok, %{moved: 1, enqueued: 1, deferred: 0}} = UpdateCheck.run(max_per_run: 5)
-      assert queued_packages() == ["alpha"]
-    end
-
-    test "honours a configured max_per_run" do
-      for n <- 1..3, do: passing_package("pkg#{n}", "1.0.0")
-      hex_says(for n <- 1..3, do: {"pkg#{n}", "1.1.0"})
+    test "a leftover cap setting does not suppress updates" do
+      for n <- 1..8, do: passing_package("pkg#{n}", "1.0.0")
+      hex_says(for n <- 1..8, do: {"pkg#{n}", "1.1.0"})
       Application.put_env(:portal, UpdateCheck, enabled: true, max_per_run: 1)
 
-      assert {:ok, %{moved: 3, enqueued: 1, deferred: 2}} = UpdateCheck.run()
-      assert length(queued_packages()) == 1
+      assert {:ok, %{moved: 8, enqueued: 8}} = UpdateCheck.run()
     end
 
-    # The cap shapes what gets queued, not what gets counted: `moved` is the
-    # honest size of the backlog, and a caller watching it would otherwise see
-    # the cap as the work disappearing.
-    test "dry_run still reports the full moved count under a cap" do
-      for n <- 1..3, do: passing_package("pkg#{n}", "1.0.0")
-      hex_says(for n <- 1..3, do: {"pkg#{n}", "1.1.0"})
+    test "dry_run reports every eligible update without queueing any" do
+      for n <- 1..8, do: passing_package("pkg#{n}", "1.0.0")
+      hex_says(for n <- 1..8, do: {"pkg#{n}", "1.1.0"})
 
-      assert {:ok, %{moved: 3, enqueued: 0, deferred: 2}} =
-               UpdateCheck.run(max_per_run: 1, dry_run: true)
-
+      assert {:ok, %{moved: 8, enqueued: 0}} = UpdateCheck.run(dry_run: true)
       assert queued_packages() == []
     end
   end
