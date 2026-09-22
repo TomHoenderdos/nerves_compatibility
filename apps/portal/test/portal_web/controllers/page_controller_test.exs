@@ -407,12 +407,27 @@ defmodule PortalWeb.PageControllerTest do
 
   test "POST /admin/requests/:id/priority moves the build down the queue", %{conn: conn} do
     {conn, admin} = signed_in_admin(conn, "admin_priority")
+    for i <- 1..50, do: Portal.PackageListingFixtures.request_fixture("earlier_#{i}")
     {:ok, request} = Portal.Admin.queue_package("admin_priority_pkg", admin)
 
-    conn = post(conn, ~p"/admin/requests/#{request.id}/priority", %{"direction" => "down"})
+    conn =
+      post(conn, ~p"/admin/requests/#{request.id}/priority", %{
+        "direction" => "down",
+        "queue_page" => "2"
+      })
 
     assert html_response(conn, 200) =~ "Moved to priority 1"
     assert Portal.Admin.queue_positions([request.id])[request.id].priority == 1
+
+    doc = conn |> html_response(200) |> LazyHTML.from_document()
+    assert [_] = doc |> LazyHTML.query("#queue tbody tr") |> Enum.to_list()
+    assert doc |> LazyHTML.query("#queue tbody") |> LazyHTML.text() =~ "admin_priority_pkg"
+
+    assert ["2"] =
+             doc
+             |> LazyHTML.query("#queue input[name=queue_page]")
+             |> LazyHTML.attribute("value")
+             |> Enum.uniq()
   end
 
   test "POST /admin/requests/:id/priority reports a request with no job", %{conn: conn} do

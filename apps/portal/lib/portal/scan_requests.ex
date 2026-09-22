@@ -15,19 +15,49 @@ defmodule Portal.ScanRequests do
   alias Portal.ScanRequests.ScanRequest
   alias Portal.Workers.Build
 
-  def pending_anonymous_requests do
+  @admin_page_size 50
+
+  @doc "A bounded page of anonymous requests awaiting review, with the total count."
+  def pending_anonymous_page(page \\ 1) do
     ScanRequest
     |> Ash.Query.filter(expr(source == :anonymous_manual and status == :pending))
-    |> Ash.Query.sort(inserted_at: :asc)
-    |> Ash.read!(domain: __MODULE__)
+    |> admin_page(page)
   end
 
-  def queue_requests do
+  @doc "A bounded page of accepted or queued requests, oldest first, with the total count."
+  def queue_page(page \\ 1) do
     ScanRequest
     |> Ash.Query.filter(expr(status in [:accepted, :queued]))
-    |> Ash.Query.sort(inserted_at: :asc)
-    |> Ash.read!(domain: __MODULE__)
+    |> admin_page(page)
   end
+
+  defp admin_page(query, requested_page) do
+    total = Ash.count!(query, domain: __MODULE__)
+    total_pages = Kernel.max(1, div(total + @admin_page_size - 1, @admin_page_size))
+    page = requested_page |> page_number() |> Kernel.min(total_pages)
+    offset = (page - 1) * @admin_page_size
+
+    entries =
+      query
+      |> Ash.Query.select([:id, :package_name, :source, :status, :subject, :inserted_at])
+      |> Ash.Query.sort(inserted_at: :asc, id: :asc)
+      |> Ash.Query.limit(@admin_page_size)
+      |> Ash.Query.offset(offset)
+      |> Ash.read!(domain: __MODULE__)
+
+    %{entries: entries, total: total, page: page, total_pages: total_pages, offset: offset}
+  end
+
+  defp page_number(page) when is_integer(page) and page > 0, do: page
+
+  defp page_number(page) when is_binary(page) do
+    case Integer.parse(page) do
+      {number, ""} when number > 0 -> number
+      _ -> 1
+    end
+  end
+
+  defp page_number(_page), do: 1
 
   @doc """
   A name-sorted prefix of queued packages missing from the displayed catalog,
