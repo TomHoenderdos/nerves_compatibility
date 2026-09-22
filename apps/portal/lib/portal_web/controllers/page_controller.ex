@@ -447,15 +447,19 @@ defmodule PortalWeb.PageController do
     do: Portal.Accounts.change_password(user, current_password, new_password)
 
   defp render_admin(conn, user) do
-    queue_requests = Portal.ScanRequests.queue_requests()
+    queue_page = Portal.ScanRequests.queue_page(conn.params["queue_page"])
+    review_page = Portal.ScanRequests.pending_anonymous_page(conn.params["review_page"])
 
     render(conn, :admin,
       page_title: "Admin",
       page_description: "Administration.",
       current_user: user,
-      pending_anonymous_requests: Portal.ScanRequests.pending_anonymous_requests(),
-      queue_requests: queue_requests,
-      queue_positions: Portal.Admin.queue_positions(Enum.map(queue_requests, & &1.id)),
+      pending_anonymous_requests: review_page.entries,
+      queue_requests: queue_page.entries,
+      queue_page: queue_page,
+      review_page: review_page,
+      page_params: %{queue_page: queue_page.page, review_page: review_page.page},
+      queue_positions: Portal.Admin.queue_positions(Enum.map(queue_page.entries, & &1.id)),
       update_check: Portal.Admin.update_check_status()
     )
   end
