@@ -64,6 +64,7 @@ jobs:
     # PRs (including same-repository PRs), forks and non-main manual runs
     # never get deployment credentials or access the production environment.
     if: >-
+      vars.PORTAL_AUTO_DEPLOY == 'true' &&
       github.repository == 'TomHoenderdos/nerves_compatibility' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
