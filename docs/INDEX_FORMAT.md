@@ -225,6 +225,18 @@ Aggregate statistics about test results.
 
 ## Status Enum
 
+### Pure-Elixir compatibility assessment
+
+Packages that pass host compilation and whose resolved dependency closure is
+identified as pure Elixir may have a `pure_elixir` system entry with `status: "pass"`.
+This means **assumed compatible**, not a successful firmware build. The entry has
+no system version, firmware size, or precompiled artifacts; the separate `host`
+entry records the actual compile result. Package metadata exposes
+`native_components.compatibility_basis: "pure_elixir"` for these assessments.
+Native code, Nerves-specific packages, failed host compiles, and incomplete
+inspection retain the firmware build path. Existing queued requests use the same
+selection when processed.
+
 All test results include a `status` field with one of these values:
 
 - **pass**: Test completed successfully
