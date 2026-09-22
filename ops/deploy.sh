@@ -6,8 +6,8 @@
 # only per-host difference is /etc/ncc-portal/portal.env, which decides the
 # Oban queues the node runs.
 #
-# CI does not deploy. GitHub Actions audits the lock
-# (.github/workflows/audit.yml); shipping is this script, run by hand.
+# GitHub Actions invokes this on the web host with the exact tested main SHA.
+# Operators can still run it by hand (optionally passing a main SHA).
 #
 # The worker image is NOT rebuilt here: it only changes when apps/ncc_worker,
 # apps/compatibility or the Dockerfile change, and a --no-cache rebuild is a
@@ -15,10 +15,24 @@
 # at ncc's rootless daemon.
 set -euo pipefail
 
+if [[ $# -gt 1 || ( $# -eq 1 && ! "$1" =~ ^[0-9a-f]{40}$ ) ]]; then
+  echo "usage: $0 [40-character main commit SHA]" >&2
+  exit 1
+fi
+
 SRC=/opt/nerves_compatibility/src
 BIN=/opt/nerves_compatibility/portal/bin/portal
 
+# Serialize manual and automated deploys as well as separate Actions runs.
+exec 9>/opt/nerves_compatibility/deploy.lock
+flock -n 9 || { echo 'another deployment is running' >&2; exit 1; }
+
 cd "$SRC"
+
+if [[ $(git branch --show-current) != main ]] || ! git diff --cached --quiet; then
+  echo 'refusing to deploy: checkout must be on main with no staged edits' >&2
+  exit 1
+fi
 
 # `mix assets.deploy` rewrites the digested copies of robots.txt, favicon.ico
 # and logo.svg under apps/portal/priv/static on every build, and unlike
@@ -48,8 +62,22 @@ if ! git diff --quiet; then
   exit 1
 fi
 
-git pull --ff-only
+git fetch origin main
+target=${1:-$(git rev-parse origin/main)}
+if [[ "$target" != "$(git rev-parse origin/main)" ]]; then
+  echo 'refusing to deploy: requested commit is no longer the head of main' >&2
+  exit 1
+fi
+git merge --ff-only "$target"
+test "$(git rev-parse HEAD)" = "$target"
 echo "deploying $(git log --oneline -1)"
+
+# Preserve the previous release before build-release.sh replaces it. This is
+# an operator rollback artifact; database migrations are not reversed here.
+tar -czf /opt/nerves_compatibility/portal-previous.tar.gz.tmp \
+  -C /opt/nerves_compatibility portal
+mv /opt/nerves_compatibility/portal-previous.tar.gz.tmp \
+  /opt/nerves_compatibility/portal-previous.tar.gz
 
 /opt/nerves_compatibility/build-release.sh
 
@@ -63,7 +91,7 @@ systemctl restart ncc-portal
 
 sleep_until_up() {
   for _ in $(seq 1 30); do
-    if curl -sf -o /dev/null http://127.0.0.1:4002/; then
+    if curl -sf --max-time 10 -o /dev/null http://127.0.0.1:4002/packages; then
       echo "portal is up"
       return 0
     fi
