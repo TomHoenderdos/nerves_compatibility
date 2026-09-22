@@ -110,9 +110,17 @@ defmodule PortalWeb.CatalogApiController do
     error_count = Enum.count(results, &(&1.status == :error))
 
     cond do
-      pass_count == total -> {"passing", "#22c55e"}
-      fail_count > 0 or error_count > 0 -> {"#{pass_count}/#{total} passing", "#f97316"}
-      true -> {"#{pass_count}/#{total} passing", "#eab308"}
+      pass_count == total and Enum.any?(results, &(&1.system_pkg == "pure_elixir")) ->
+        {"assumed compatible", "#22c55e"}
+
+      pass_count == total ->
+        {"passing", "#22c55e"}
+
+      fail_count > 0 or error_count > 0 ->
+        {"#{pass_count}/#{total} passing", "#f97316"}
+
+      true ->
+        {"#{pass_count}/#{total} passing", "#eab308"}
     end
   end
 

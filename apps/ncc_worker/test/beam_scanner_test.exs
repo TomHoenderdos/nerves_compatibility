@@ -2,6 +2,34 @@ defmodule BeamScannerTest do
   use ExUnit.Case
   doctest BeamScanner
 
+  @tag :tmp_dir
+  test "scans remote calls in unstripped abstract code", %{tmp_dir: root} do
+    forms = [
+      {:attribute, 1, :module, :ncc_test_abstract_nif},
+      {:attribute, 1, :export, [load: 0]},
+      {:function, 1, :load, 0,
+       [
+         {:clause, 1, [], [],
+          [
+            {:call, 1, {:remote, 1, {:atom, 1, :erlang}, {:atom, 1, :load_nif}},
+             [{:string, 1, ~c"test_nif"}, {:integer, 1, 0}]}
+          ]}
+       ]}
+    ]
+
+    {:ok, module, binary} = :compile.forms(forms, [:binary, :debug_info])
+
+    assert {:ok, {^module, [abstract_code: {:raw_abstract_v1, _}]}} =
+             :beam_lib.chunks(binary, [:abstract_code])
+
+    File.mkdir_p!(Path.join(root, "ebin"))
+    File.write!(Path.join([root, "ebin", "#{module}.beam"]), binary)
+
+    result = BeamScanner.analyze(root)
+    assert result.nif_calls?
+    assert result.errors == []
+  end
+
   test "analyzes circuits_gpio fixture" do
     result = BeamScanner.analyze("test/fixture/circuits_gpio-2.1.3")
 

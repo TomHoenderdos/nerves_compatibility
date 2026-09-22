@@ -27,7 +27,7 @@ defmodule NccWorker.AppFile do
   end
 
   @doc """
-  Finds the .app file for a package in the release directory.
+  Finds the .app file in a release, falling back to a host-only compile.
 
   ## Parameters
     - project_dir: Root directory of the Mix project
@@ -45,11 +45,19 @@ defmodule NccWorker.AppFile do
 
     case File.ls(build_dir) do
       {:ok, targets} ->
-        find_app_in_targets(build_dir, targets, package_name)
+        case find_app_in_targets(build_dir, targets, package_name) do
+          {:ok, path} -> {:ok, path}
+          {:error, _} -> find_host_app(build_dir, package_name)
+        end
 
       {:error, reason} ->
         {:error, {:build_dir_error, reason}}
     end
+  end
+
+  defp find_host_app(build_dir, package_name) do
+    path = Path.join([build_dir, "host", "lib", package_name, "ebin", "#{package_name}.app"])
+    if File.regular?(path), do: {:ok, path}, else: {:error, :not_found}
   end
 
   defp find_app_in_targets(build_dir, targets, package_name) do

@@ -97,14 +97,23 @@ defmodule PortalWeb.PackageLive do
         <div class="grid gap-3 sm:grid-cols-3">
           <PortalWeb.UI.stat_card label="Latest version" value={@package.latest_version || "unknown"} />
           <PortalWeb.UI.stat_card label="Last run" value={format_last_run(@package.last_run_at)} />
-          <PortalWeb.UI.stat_card label="Systems" value={to_string(length(@systems))} />
+          <PortalWeb.UI.stat_card label="Checks" value={to_string(length(@systems))} />
         </div>
+
+        <p
+          :if={Enum.any?(@systems, &(&1.system_pkg == "pure_elixir"))}
+          id="compatibility-assumption"
+          class="rounded-xl border border-base-300 bg-base-200/50 p-4 text-sm text-base-content/80"
+        >
+          Assumed compatible: this package and its resolved dependencies passed host compilation
+          and were identified as pure Elixir. No firmware targets were built.
+        </p>
 
         <div class="overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm">
           <table class="w-full text-left text-sm">
             <thead class="border-b border-base-300 bg-base-200/60 text-xs uppercase tracking-wide text-base-content/60">
               <tr>
-                <th class="px-5 py-3">System</th>
+                <th class="px-5 py-3">Target / check</th>
                 <th class="px-5 py-3">Status</th>
                 <th class="px-5 py-3">Firmware size</th>
                 <th class="px-5 py-3">Run</th>
@@ -117,8 +126,12 @@ defmodule PortalWeb.PackageLive do
                 class="transition hover:bg-base-200/40"
               >
                 <td class="px-5 py-4">
-                  <div class="font-mono font-medium text-base-content">{system.system_pkg}</div>
-                  <div class="text-base-content/50">{system.system_version || "host"}</div>
+                  <div class="font-mono font-medium text-base-content">
+                    {if system.system_pkg == "pure_elixir", do: "Pure Elixir", else: system.system_pkg}
+                  </div>
+                  <div :if={system.system_pkg != "pure_elixir"} class="text-base-content/50">
+                    {system.system_version || "host"}
+                  </div>
                   <.link
                     :if={system.status in ["fail", "error"]}
                     id={"log-link-#{dom_id(system.system_pkg)}"}
@@ -128,7 +141,13 @@ defmodule PortalWeb.PackageLive do
                     <.icon name="hero-document-text-mini" class="size-3.5" /> View log
                   </.link>
                 </td>
-                <td class="px-5 py-4"><PortalWeb.UI.status_badge status={system.status} /></td>
+                <td class="px-5 py-4">
+                  <span :if={system.system_pkg == "pure_elixir"}>Assumed compatible</span>
+                  <PortalWeb.UI.status_badge
+                    :if={system.system_pkg != "pure_elixir"}
+                    status={system.status}
+                  />
+                </td>
                 <td class="px-5 py-4 font-mono text-base-content/70">
                   {system.firmware_size_bytes || "—"}
                 </td>
@@ -142,7 +161,7 @@ defmodule PortalWeb.PackageLive do
           <div>
             <h2 class="text-sm font-semibold text-base-content">Add this badge to your README</h2>
             <p class="mt-1 text-sm text-base-content/60">
-              It updates itself as {@name} is rebuilt against each Nerves system.
+              It updates itself as {@name}'s compatibility is reassessed.
             </p>
           </div>
 
@@ -279,17 +298,21 @@ defmodule PortalWeb.PackageLive do
     version = package.latest_version
 
     head =
-      case {length(systems), Enum.count(systems, &(&1.status == "pass"))} do
-        {0, _} ->
+      case {Enum.any?(systems, &(&1.system_pkg == "pure_elixir")), length(systems),
+            Enum.count(systems, &(&1.status == "pass"))} do
+        {true, _, _} ->
+          "#{name} #{version} is assumed Nerves-compatible after pure-Elixir inspection and host compilation."
+
+        {false, 0, _} ->
           "#{name} has not been built against any Nerves system yet."
 
-        {total, total} ->
+        {false, total, total} ->
           "#{name} #{version} builds on all #{total} tracked Nerves systems."
 
-        {total, 0} ->
+        {false, total, 0} ->
           "#{name} #{version} fails on all #{total} tracked Nerves systems."
 
-        {total, pass} ->
+        {false, total, pass} ->
           "#{name} #{version} builds on #{pass} of #{total} tracked Nerves systems."
       end
 

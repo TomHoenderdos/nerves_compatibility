@@ -34,7 +34,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
     :ok
   end
 
-  test "builds jason against nerves_system_x86_64 and ingests into Postgres" do
+  test "classifies pure Elixir jason without firmware and ingests into Postgres" do
     {:ok, request} =
       ScanRequests.create_once(%{
         package_name: "jason",
@@ -70,6 +70,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
     packages = Ash.read!(Package, domain: Portal.Catalog)
     package = Enum.find(packages, &(&1.name == "jason"))
     assert package, "expected a Package row for jason"
+    assert package.native_components["compatibility_basis"] == "pure_elixir"
 
     # Run row with a non-error overall status
     runs =
@@ -79,8 +80,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
 
     assert [run | _] = runs
 
-    assert run.overall_status in [:pass, :fail, :skipped, :unknown],
-           "overall_status should not be :error, got #{inspect(run.overall_status)}"
+    assert run.overall_status == :pass
 
     # ≥1 SystemResult rows
     system_results =
@@ -88,7 +88,8 @@ defmodule Portal.Workers.BuildIntegrationTest do
       |> Ash.Query.filter(run_id == ^run.id)
       |> Ash.read!(domain: Portal.Catalog)
 
-    assert system_results != []
+    assert Enum.sort(Enum.map(system_results, & &1.system_pkg)) == ["host", "pure_elixir"]
+    assert Enum.all?(system_results, &is_nil(&1.firmware_size_bytes))
 
     # Request marked built and linked to the run
     {:ok, updated} = ScanRequests.get_request(request.id)

@@ -6,6 +6,7 @@ defmodule NccWorker.Worker do
   alias NccWorker.{
     BeamScan,
     BuildCache,
+    BuildSelection,
     Footprint,
     HexHome,
     HexMetadata,
@@ -272,16 +273,31 @@ defmodule NccWorker.Worker do
     host_result =
       compile_host(project_dir, paths.output_dir, log_tail_bytes, input.package.name)
 
-    system_results =
-      build_all_systems(
+    selection =
+      BuildSelection.select(
         project_dir,
-        systems,
-        paths.output_dir,
-        timeout,
-        log_tail_bytes,
-        input.package.name
+        input.package.name,
+        description,
+        host_result,
+        host_env(project_dir)
       )
-      |> Map.merge(%{"host" => host_result})
+
+    system_results =
+      case selection do
+        :pure_elixir ->
+          %{"pure_elixir" => assumed_compatible_result()}
+
+        :firmware ->
+          build_all_systems(
+            project_dir,
+            systems,
+            paths.output_dir,
+            timeout,
+            log_tail_bytes,
+            input.package.name
+          )
+      end
+      |> Map.put("host", host_result)
 
     {:ok, source_after} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
     source_changes = NccWorker.SourceScanner.diff(source_before, source_after)
@@ -308,17 +324,11 @@ defmodule NccWorker.Worker do
           {description, []}
       end
 
-    footprint =
-      case Footprint.calculate(project_dir, input.package.name, systems) do
-        {:ok, stats} ->
-          stats
+    footprint = package_footprint(selection, project_dir, input.package.name, systems)
 
-        {:error, reason} ->
-          IO.puts(:stderr, "Warning: Failed to calculate footprint: #{inspect(reason)}")
-          empty_footprint()
-      end
-
-    native_components = NccWorker.NativeLang.detect(project_dir, input.package.name)
+    native_components =
+      (NccWorker.NativeLang.detect(project_dir, input.package.name) || %{})
+      |> Map.put(:compatibility_basis, Atom.to_string(selection))
 
     result = %{
       run_id: input.run_id,
@@ -339,6 +349,31 @@ defmodule NccWorker.Worker do
     }
 
     {:ok, result}
+  end
+
+  defp assumed_compatible_result do
+    %{
+      status: :pass,
+      duration_sec: 0.0,
+      firmware_size_bytes: nil,
+      log_tail:
+        "Assumed compatible: host compilation passed and the resolved package and " <>
+          "its dependencies contain only pure Elixir. No firmware targets were built.",
+      error: nil
+    }
+  end
+
+  defp package_footprint(:pure_elixir, _project, _package, _systems), do: empty_footprint()
+
+  defp package_footprint(:firmware, project, package, systems) do
+    case Footprint.calculate(project, package, systems) do
+      {:ok, stats} ->
+        stats
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Warning: Failed to calculate footprint: #{inspect(reason)}")
+        empty_footprint()
+    end
   end
 
   @spec validate_input(input()) :: :ok | {:error, term()}

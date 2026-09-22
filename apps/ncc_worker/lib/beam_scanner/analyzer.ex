@@ -244,9 +244,7 @@ defmodule BeamScanner.Analyzer do
          {:call, _, {:remote, _, {:atom, _, mod}, {:atom, _, fun}}, args} = form,
          acc
        ) do
-    acc
-    |> MapSet.put({mod, fun, length(args)})
-    |> collect_children(form)
+    collect_children(form, MapSet.put(acc, {mod, fun, length(args)}))
   end
 
   defp collect_from_form(term, acc), do: collect_children(term, acc)

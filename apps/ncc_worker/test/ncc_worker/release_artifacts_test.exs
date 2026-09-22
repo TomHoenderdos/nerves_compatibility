@@ -63,6 +63,14 @@ defmodule NccWorker.ReleaseArtifactsTest do
     assert {:error, :package_not_in_release} = Footprint.calculate(project, "missing")
   end
 
+  test "host-only assessments retain runtime dependency metadata", %{project: project} do
+    path = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.app"])
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "{application, plain, [{applications, [kernel, stdlib, jason]}]}.")
+    assert {:ok, ^path} = AppFile.find_app_file(project, "plain")
+    assert {:ok, [:kernel, :stdlib, :jason]} = AppFile.read_applications(path)
+  end
+
   test "source snapshots exclude build scratch and accept missing directories", %{tmp_dir: dir} do
     source = Path.join(dir, "source")
     File.mkdir_p!(Path.join(source, "_build"))

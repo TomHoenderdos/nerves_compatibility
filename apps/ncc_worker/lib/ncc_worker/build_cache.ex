@@ -290,7 +290,8 @@ defmodule NccWorker.BuildCache do
   # counted back out.
   # deps_tree.dot is a fixed filename in the generated worker project; no host-side evaluation.
   # sobelow_skip ["Traversal.FileModule"]
-  defp dep_graph(project_dir, env) do
+  @doc false
+  def dep_graph(project_dir, env) do
     dot_file = Path.join(project_dir, "deps_tree.dot")
 
     try do
