@@ -122,6 +122,7 @@ defmodule PortalWeb.CatalogApiController do
   end
 
   defp svg(package_name, status, color) do
+    package_name = package_name |> Phoenix.HTML.html_escape() |> Phoenix.HTML.safe_to_string()
     label = "nerves"
     label_width = String.length(label) * 6 + 10
     status_width = String.length(status) * 6 + 10

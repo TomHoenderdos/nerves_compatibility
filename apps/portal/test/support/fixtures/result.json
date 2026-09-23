@@ -31,7 +31,7 @@
         "footprint": {
           "file_manifest": {
             "ebin": [
-              {"path": "ebin/jason.beam", "sha256": "aaaa000000000000000000000000000000000000000000000000000000000001"}
+              {"path": "ebin/jason.beam", "sha256": "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"}
             ],
             "priv": []
           }

@@ -20,6 +20,40 @@ defmodule Portal.ScanRequests.ScanRequestTest do
     :ok
   end
 
+  test "a completed build does not swallow a new request inside the uniqueness window" do
+    attrs = %{package_name: "completed_dedup", source: :hex_owner}
+    {:ok, first} = Portal.ScanRequests.create_once(attrs)
+    [job] = all_enqueued(worker: Portal.Workers.Build)
+
+    job
+    |> Ecto.Changeset.change(state: "completed", completed_at: DateTime.utc_now())
+    |> Repo.update!()
+
+    {:ok, _} = Portal.ScanRequests.set_status(first, :built)
+
+    assert {:ok, second} = Portal.ScanRequests.create_once(attrs)
+    assert second.id != first.id
+    assert second.status == :queued
+    assert_enqueued(worker: Portal.Workers.Build, args: %{scan_request_id: second.id})
+  end
+
+  test "each request has a completion job even when another request's build is active" do
+    %{package: "active_dedup", version: "9.9.9", scan_request_id: Ecto.UUID.generate()}
+    |> Portal.Workers.Build.new()
+    |> Oban.insert!()
+
+    assert {:ok, request} =
+             Portal.ScanRequests.create_once(%{package_name: "active_dedup", source: :hex_owner})
+
+    assert_enqueued(worker: Portal.Workers.Build, args: %{scan_request_id: request.id})
+
+    assert {:ok, same} =
+             Portal.ScanRequests.create_once(%{package_name: "active_dedup", source: :hex_owner})
+
+    assert same.id == request.id
+    assert length(all_enqueued(worker: Portal.Workers.Build)) == 2
+  end
+
   test "records verified Hex owner requests" do
     user =
       Portal.Accounts.User

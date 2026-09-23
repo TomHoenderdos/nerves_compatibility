@@ -267,9 +267,9 @@ defmodule Portal.ScanRequests do
 
   defp insert_build_job(request, version, source, force) do
     # `force` is omitted rather than set to `false` so that an ordinary request
-    # produces byte-identical args to the ones every existing row already
-    # carries. `Build`'s uniqueness is keyed on package/version/image only, so
-    # this does not affect deduplication either way.
+    # remains deduplicated against a forced job for the same request. The
+    # request id is also a uniqueness key: another request's job cannot deliver
+    # this request's completion notification.
     args = %{package: request.package_name, version: version, scan_request_id: request.id}
     args = if force, do: Map.put(args, :force, true), else: args
 
