@@ -28,8 +28,9 @@ defmodule Portal.ArtifactStore do
 
   @doc """
   Move a content-addressed file from `source_path` into the store under
-  `sha256`. Idempotent: if the blob already exists, the source is removed and
-  the existing blob is kept (content-addressed, so identical by definition).
+  `sha256`. Bytes are copied to a private staging file, verified, then atomically
+  published. Retries with an already moved source verify the stored blob.
+  A digest mismatch returns `{:error, :checksum_mismatch}`.
 
   Returns `{:ok, %{sha256:, disk_path:, byte_size:}}` or `{:error, reason}`.
   """
@@ -51,30 +52,58 @@ defmodule Portal.ArtifactStore do
       symlink?(dest) or symlink?(source_path) ->
         {:error, :invalid_source}
 
-      File.regular?(dest) ->
-        _ = File.rm(source_path)
-        {:ok, %{sha256: sha256, disk_path: dest, byte_size: file_size(dest)}}
-
       File.regular?(source_path) ->
-        case File.rename(source_path, dest) do
-          :ok ->
-            _ = File.chmod(dest, 0o644)
-            {:ok, %{sha256: sha256, disk_path: dest, byte_size: file_size(dest)}}
+        publish(sha256, source_path, dest)
 
-          {:error, :exdev} ->
-            # Cross-device: fall back to copy + delete.
-            File.cp!(source_path, dest)
-            _ = File.chmod(dest, 0o644)
-            _ = File.rm(source_path)
-            {:ok, %{sha256: sha256, disk_path: dest, byte_size: file_size(dest)}}
-
-          {:error, reason} ->
-            {:error, reason}
+      File.regular?(dest) ->
+        with :ok <- verify_digest(dest, sha256) do
+          {:ok, %{sha256: sha256, disk_path: dest, byte_size: file_size(dest)}}
         end
 
       true ->
         {:error, :source_missing}
     end
+  end
+
+  # Staging lives on the store filesystem, so publication is one atomic rename
+  # even when worker scratch is on another device. Concurrent readers never see
+  # a partial copy, and concurrent publishers can only publish verified bytes.
+  # Both paths are constructed from the configured store and a validated digest;
+  # source_path was checked by put_blob/2 after the worker container stopped.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp publish(sha256, source_path, dest) do
+    suffix = :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+    staged = Path.join(path(), ".#{sha256}-#{suffix}")
+
+    try do
+      with :ok <- File.cp(source_path, staged),
+           :ok <- verify_digest(staged, sha256),
+           :ok <- File.chmod(staged, 0o644),
+           :ok <- File.rename(staged, dest) do
+        _ = File.rm(source_path)
+        {:ok, %{sha256: sha256, disk_path: dest, byte_size: file_size(dest)}}
+      end
+    after
+      File.rm(staged)
+    end
+  end
+
+  # Hash in bounded chunks: native artifacts need not fit in the portal heap.
+  # Only store paths constructed in put_blob/2 and publish/3 reach this helper.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp verify_digest(file, expected) do
+    actual =
+      file
+      |> File.stream!(64 * 1024)
+      |> Enum.reduce(:crypto.hash_init(:sha256), fn chunk, hash ->
+        :crypto.hash_update(hash, chunk)
+      end)
+      |> :crypto.hash_final()
+      |> Base.encode16(case: :lower)
+
+    if actual == expected, do: :ok, else: {:error, :checksum_mismatch}
+  rescue
+    error in File.Error -> {:error, error.reason}
   end
 
   defp symlink?(path) do

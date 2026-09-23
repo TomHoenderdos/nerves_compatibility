@@ -27,8 +27,22 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
   defp result_fixture, do: @fixture |> File.read!() |> Jason.decode!()
 
+  test "unknown badge names are escaped as XML text", %{conn: conn} do
+    name = "</title><script>window.badge_marker=1</script><title>&"
+    path = "/badge/" <> URI.encode(name, &URI.char_unreserved?/1)
+    conn = get(conn, path)
+    body = response(conn, 404)
+
+    assert get_resp_header(conn, "content-type") == ["image/svg+xml; charset=utf-8"]
+
+    assert body =~
+             "&lt;/title&gt;&lt;script&gt;window.badge_marker=1&lt;/script&gt;&lt;title&gt;&amp;"
+
+    refute body =~ "<script>"
+  end
+
   defp ingest_fixture_with_artifact do
-    sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
     _ = File.rm(ArtifactStore.blob_path(sha))
     dir = Path.join(System.tmp_dir!(), "catalog-api-files-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
@@ -145,7 +159,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
   # lookup in `Portal.Catalog.manifest_shas_for_system_results/1` leaves
   # whichever system ingested second with `ebin == []`.
   test "a blob shared by two systems is published for both", %{conn: conn} do
-    sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
     _ = File.rm(ArtifactStore.blob_path(sha))
     dir = Path.join(System.tmp_dir!(), "catalog-api-shared-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)

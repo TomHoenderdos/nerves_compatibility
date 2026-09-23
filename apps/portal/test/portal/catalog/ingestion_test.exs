@@ -20,14 +20,19 @@ defmodule Portal.Catalog.IngestionTest do
   defp seed_files_dir(shas) do
     dir = Path.join(System.tmp_dir!(), "ingest-files-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
-    Enum.each(shas, fn sha -> File.write!(Path.join(dir, sha), "blob-#{sha}") end)
+
+    Enum.each(shas, fn
+      {sha, bytes} -> File.write!(Path.join(dir, sha), bytes)
+      sha -> File.write!(Path.join(dir, sha), "precompiled-beam")
+    end)
+
     on_exit(fn -> File.rm_rf(dir) end)
     dir
   end
 
   test "ingests a result.json into Package + Run + SystemResults + Artifacts" do
     result = load_fixture()
-    sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
     files_dir = seed_files_dir([sha])
 
     {:ok, run} =
@@ -187,10 +192,14 @@ defmodule Portal.Catalog.IngestionTest do
 
   describe "dependency_scans" do
     test "keeps the analysis but drops the file manifest" do
-      sha = "bbbb000000000000000000000000000000000000000000000000000000000001"
+      sha = :crypto.hash(:sha256, "dependency-beam") |> Base.encode16(case: :lower)
 
       system_result =
-        ingest_with_dep_scans(%{"jason" => dep_scan(sha)}, seed_files_dir([sha]), "rid-deps")
+        ingest_with_dep_scans(
+          %{"jason" => dep_scan(sha)},
+          seed_files_dir([{sha, "dependency-beam"}]),
+          "rid-deps"
+        )
 
       scan = system_result.dependency_scans["jason"]
 
@@ -205,8 +214,8 @@ defmodule Portal.Catalog.IngestionTest do
     test "still registers the artifacts that manifest named" do
       # The manifest is dropped from the column, not from the ingest: its shas
       # are staged into the artifact store before the transaction opens.
-      sha = "bbbb000000000000000000000000000000000000000000000000000000000002"
-      files_dir = seed_files_dir([sha])
+      sha = :crypto.hash(:sha256, "dependency-beam") |> Base.encode16(case: :lower)
+      files_dir = seed_files_dir([{sha, "dependency-beam"}])
 
       ingest_with_dep_scans(%{"jason" => dep_scan(sha)}, files_dir, "rid-deps-artifacts")
 
@@ -259,7 +268,7 @@ defmodule Portal.Catalog.IngestionTest do
   end
 
   defp ingest_fixture(output_dir) do
-    sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
 
     Ingestion.ingest(load_fixture(), %{
       run_id: "log-jason-#{System.unique_integer([:positive])}",
@@ -452,7 +461,7 @@ defmodule Portal.Catalog.IngestionTest do
     end
 
     test "an ingest with no output_dir at all still succeeds" do
-      sha = "aaaa000000000000000000000000000000000000000000000000000000000001"
+      sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
 
       assert {:ok, run} =
                Ingestion.ingest(load_fixture(), %{

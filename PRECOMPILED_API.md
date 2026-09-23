@@ -86,6 +86,12 @@ Status codes:
 
 Files are content-addressed, so identical files across packages, versions, or systems share a single artifact blob.
 
+The portal verifies each uploaded blob's SHA256 before atomically publishing it.
+Mismatched blobs are rejected and are not registered for that build's manifest.
+When ingestion retries after a source file has been moved, the stored blob is
+verified before it is reused. This does not retroactively audit existing files;
+clients should also verify downloaded bytes against the manifest digest.
+
 A `.beam` is very often byte-identical across Nerves targets, which makes this
 sharing the common case rather than the exception. Storage and publication are
 therefore two separate records: `catalog_artifacts` holds one row per distinct

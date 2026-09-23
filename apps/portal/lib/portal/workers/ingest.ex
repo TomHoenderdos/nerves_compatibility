@@ -35,6 +35,15 @@ defmodule Portal.Workers.Ingest do
     image_digest = args["image_digest"]
     scan_request_id = args["scan_request_id"]
 
+    with {:ok, run} <- Portal.Catalog.committed_run(run_id) do
+      case run do
+        nil -> load_and_ingest(run_id, image_digest, scan_request_id, attempt, max_attempts)
+        run -> complete(run, scan_request_id, run.package.name)
+      end
+    end
+  end
+
+  defp load_and_ingest(run_id, image_digest, scan_request_id, attempt, max_attempts) do
     case builder().load_run(run_id) do
       {:ok, build} ->
         ingest(build, run_id, image_digest, scan_request_id, attempt, max_attempts)
@@ -62,11 +71,7 @@ defmodule Portal.Workers.Ingest do
 
     case safe_ingest(build.result, ingest_opts) do
       {:ok, run} ->
-        Builder.cleanup(run_id)
-        enqueue_package_meta(build.result)
-        Progress.mark(scan_request_id, :built, run_id: run.id)
-        Progress.broadcast(scan_request_id, :done, %{run_id: run.id, status: run.overall_status})
-        :ok
+        complete(run, scan_request_id, get_in(build.result, ["package", "name"]))
 
       {:error, reason} ->
         Logger.error("Ingestion failed for #{run_id}: #{inspect(reason)}")
@@ -84,6 +89,27 @@ defmodule Portal.Workers.Ingest do
     end
   end
 
+  # Once the transaction commits, the run is the durable source of truth. A
+  # retry must finish these steps even after scratch cleanup. Unlike the
+  # best-effort Progress.mark/3, a failed request update must retry this job.
+  defp complete(run, scan_request_id, package) do
+    with :ok <- mark_built(scan_request_id, run.id) do
+      enqueue_package_meta(package)
+      Builder.cleanup(run.run_id)
+      Progress.broadcast(scan_request_id, :done, %{run_id: run.id, status: run.overall_status})
+      :ok
+    end
+  end
+
+  defp mark_built(nil, _run_id), do: :ok
+
+  defp mark_built(scan_request_id, run_id) do
+    case Portal.ScanRequests.set_status(scan_request_id, :built, run_id: run_id) do
+      {:ok, _request} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   # Every package that enters the catalog passes through here, which makes this
   # the one place that keeps hex.pm metadata in step with the catalog without a
   # scheduled sweep. The job is unique per package for a day, so a package
@@ -92,8 +118,8 @@ defmodule Portal.Workers.Ingest do
   # Deliberately after the ingest commits and outside its transaction: metadata
   # is decoration, and a hex.pm outage must not roll back a build result. A
   # failed enqueue is logged and dropped for the same reason.
-  defp enqueue_package_meta(result) do
-    case get_in(result, ["package", "name"]) do
+  defp enqueue_package_meta(package) do
+    case package do
       name when is_binary(name) and name != "" ->
         case Oban.insert(PackageMeta.new(%{package: name})) do
           {:ok, _job} ->

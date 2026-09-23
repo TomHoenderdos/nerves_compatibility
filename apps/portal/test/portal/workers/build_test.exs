@@ -76,7 +76,7 @@ defmodule Portal.Workers.BuildTest do
   defp files_dir_with(shas) do
     dir = Path.join(System.tmp_dir!(), "build-files-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
-    Enum.each(shas, fn sha -> File.write!(Path.join(dir, sha), "blob") end)
+    Enum.each(shas, fn sha -> File.write!(Path.join(dir, sha), "precompiled-beam") end)
     on_exit(fn -> File.rm_rf(dir) end)
     dir
   end
@@ -106,7 +106,7 @@ defmodule Portal.Workers.BuildTest do
         ScanRequests.create_once(%{package_name: "jason", source: :hex_owner, status: :accepted})
 
       files_dir =
-        files_dir_with(["aaaa000000000000000000000000000000000000000000000000000000000001"])
+        files_dir_with(["ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"])
 
       set_response(
         {:ok,
@@ -149,7 +149,7 @@ defmodule Portal.Workers.BuildTest do
     # can never roll back a finished build.
     test "a successful ingest queues the package's hex.pm metadata refresh" do
       files_dir =
-        files_dir_with(["aaaa000000000000000000000000000000000000000000000000000000000001"])
+        files_dir_with(["ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"])
 
       set_response(
         {:ok,
@@ -177,6 +177,61 @@ defmodule Portal.Workers.BuildTest do
   end
 
   describe "ingest retries" do
+    test "a request completion error remains retryable after the run commits" do
+      {:ok, run} =
+        Portal.Catalog.Ingestion.ingest(fixture_result(), %{
+          run_id: "completion-error",
+          image_digest: "sha256:retry",
+          files_dir: files_dir_with([])
+        })
+
+      set_response({:error, :missing_result_json})
+
+      assert {:error, :not_found} =
+               perform_job(Ingest, %{
+                 run_id: run.run_id,
+                 scan_request_id: Ecto.UUID.generate()
+               })
+
+      assert [%{id: id}] = Ash.read!(Run, domain: Portal.Catalog)
+      assert id == run.id
+    end
+
+    for scratch_present? <- [true, false] do
+      test "a committed ingest resumes completion with scratch present: #{scratch_present?}" do
+        {:ok, request} = ScanRequests.create_once(%{package_name: "jason", source: :hex_owner})
+        files_dir = files_dir_with([])
+        run_id = "committed-retry"
+
+        {:ok, run} =
+          Portal.Catalog.Ingestion.ingest(fixture_result(), %{
+            run_id: run_id,
+            image_digest: "sha256:retry",
+            files_dir: files_dir,
+            scan_request_id: request.id
+          })
+
+        if unquote(scratch_present?) do
+          set_response(
+            {:ok,
+             %{result: fixture_result(), files_dir: files_dir, output_dir: files_dir, log: "ok"}}
+          )
+        else
+          set_response({:error, :missing_result_json})
+        end
+
+        args = %{run_id: run_id, image_digest: "sha256:retry", scan_request_id: request.id}
+        assert :ok = perform_job(Ingest, args)
+        assert :ok = perform_job(Ingest, args)
+        assert [%{id: id}] = Ash.read!(Run, domain: Portal.Catalog)
+        assert id == run.id
+        assert {:ok, updated} = ScanRequests.get_request(request.id)
+        assert updated.status == :built
+        assert updated.run_id == run.id
+        assert_enqueued(worker: PackageMeta, args: %{package: "jason"})
+      end
+    end
+
     test "a failed ingest retries on its own without touching the build" do
       files_dir = files_dir_with([])
 

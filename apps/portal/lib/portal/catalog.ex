@@ -221,6 +221,15 @@ defmodule Portal.Catalog do
     end
   end
 
+  @doc "Fetches the committed run and package name needed to resume ingest completion."
+  def committed_run(run_id) do
+    Run
+    |> Ash.Query.filter(run_id == ^run_id)
+    |> Ash.Query.select([:id, :run_id, :overall_status, :package_id])
+    |> Ash.Query.load(package: [:name])
+    |> Ash.read_one(domain: __MODULE__)
+  end
+
   @doc """
   A package's hex.pm metadata: its author-declared links and its owners.
 

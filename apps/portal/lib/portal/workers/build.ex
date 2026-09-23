@@ -31,17 +31,15 @@ defmodule Portal.Workers.Build do
   use Oban.Worker,
     queue: :builds,
     max_attempts: 3,
-    # `:force` is part of the key so that a deliberate rebuild is a distinct
-    # unit of work from an ordinary build of the same version. Oban compares
-    # keys by jsonb containment -- existing args must *contain* the new job's
-    # subset -- so without it a forced insert would match the plain job already
-    # queued, be discarded as a duplicate, and the flag would never reach a
-    # worker. That is the one case `force` exists for.
-    #
-    # It costs nothing in the other direction: an ordinary insert takes no
-    # `force` key, so its subset is what it always was, and every row already in
-    # the table deduplicates exactly as before.
-    unique: [keys: [:package, :version, :image_digest, :force]]
+    # Forced rebuilds and separate requests need distinct completion jobs.
+    # Oban compares the supplied args by containment, so an omitted `force`
+    # still matches a forced job for the same request. The catalog check below
+    # avoids rebuilding results that have already been ingested.
+    unique: [
+      period: 60,
+      fields: [:worker, :queue, :args],
+      keys: [:package, :version, :image_digest, :force, :scan_request_id]
+    ]
 
   require Ash.Query
   require Logger
