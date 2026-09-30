@@ -128,6 +128,16 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert body =~ "2/3 passing"
   end
 
+  test "GET /badge/:name.svg shows a registry-assessed package as passing", %{conn: conn} do
+    {:ok, _run} = Portal.Catalog.RegistryAssessment.record("tiny_pure", "1.2.0", nil)
+
+    conn = get(conn, "/badge/tiny_pure.svg")
+
+    body = response(conn, 200)
+    assert body =~ ">passing<"
+    assert body =~ "#22c55e"
+  end
+
   # The badge is embedded in other people's READMEs, so it is fetched once per
   # reader of those pages rather than by a client polling for fresh data. The
   # JSON endpoints keep their minute; this one is pinned separately because the
