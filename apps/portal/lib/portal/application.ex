@@ -13,6 +13,9 @@ defmodule Portal.Application do
       Portal.Repo,
       # Must precede the endpoint: it owns the ETS table the catalog reads from.
       Portal.Catalog.Cache,
+      # Owns the ETS table of decoded per-package registry resources that
+      # `Portal.NativeClosure` walks; see `Portal.HexDeps`.
+      Portal.HexDeps,
       # Also precedes the endpoint: it owns the ETS table holding in-flight
       # WebAuthn challenges.
       PortalWeb.WebAuthnSession,
