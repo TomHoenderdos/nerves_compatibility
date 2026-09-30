@@ -702,7 +702,8 @@ defmodule Portal.NativeClosure do
   @doc """
   Classifies each name at its newest live release and writes nothing.
 
-  For `bin/portal eval` on production, to size a sweep before switching the
+  For a remote console on production (`bin/portal remote`; not `eval`, which
+  starts no applications -- see the spec's "Operating it"), to size a sweep before switching the
   filter on. `reasons` counts native verdicts by the reason's first element.
   """
   @spec dry_run([String.t()], keyword()) :: %{

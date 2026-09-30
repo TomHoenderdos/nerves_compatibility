@@ -124,8 +124,14 @@ returns `{:error, :hex_registry_unavailable}` and the caller retries.
 
 `dry_run(names)` classifies each name at its latest version, writes nothing,
 and returns `%{pure: n, native: n, errors: n, reasons: %{reason_kind => n}}`.
-Intended for `bin/portal eval` on production against the rejected names, to
-size the effect and to supply numbers for the talk.
+Intended for a remote console on production (`bin/portal remote`) against the
+rejected names, to size the effect and to supply numbers for the talk. It logs
+running counts every 500 names.
+
+`classify/3` always reads the root package's registry resource fresh
+(`cache: false`); only dependencies come from the one-hour cache. An
+`update_check` hands over a release it has just seen, and a cached root
+resource might predate it.
 
 ### `Portal.Catalog.RegistryAssessment`
 
@@ -196,13 +202,40 @@ variable is set.
 ## Operating it (after review, not part of this change)
 
 1. Deploy with the flag off. Nothing changes.
-2. `bin/portal eval 'Portal.NativeClosure.dry_run(<rejected names>)'`; review
-   the pure/native split and the reason counts.
-3. Set `NCC_QUEUE_FILTER=1`, restart.
-4. Re-run `Portal.CatalogSeed.run()`. The rejected rows are not open requests,
+2. Size the effect from a remote console on the running node:
+
+   ```bash
+   bin/portal remote
+   iex> Portal.NativeClosure.dry_run(rejected_names)
+   ```
+
+   Not `bin/portal eval`: `eval` starts the VM without the applications, so
+   the `Portal.HexDeps` ETS table, Req/Finch and `Portal.Repo` are not running
+   and the call crashes (see DEPLOY.md on `eval` vs `rpc`). `bin/portal rpc`
+   does run inside the node, but ~18.5k names take roughly 20-40 minutes, which
+   is longer than an rpc call is comfortable holding open (its timeout has to
+   be considered, and a dropped connection loses the result), so prefer the
+   remote console. Progress is logged every 500 names with running counts.
+   Review the pure/native split and the reason counts.
+
+   `dry_run` picks "latest" from the registry itself (newest stable
+   non-retired release), whereas `Portal.Workers.Backfill` resolves the version
+   with `Portal.HexPm.latest_version/1`, so the counts may differ slightly from
+   what the seed will actually do.
+3. Set `NCC_QUEUE_FILTER=1` in `/etc/ncc-portal/portal.env` on the web host
+   (the same file that carries `NCC_UPDATE_CHECK`), restart.
+4. Before the full re-seed, run a limited one first:
+   `bin/portal rpc 'Portal.CatalogSeed.run(limit: 500) |> IO.inspect()'`.
+   Watch dashboard and API timings (`/`, `/api/packages`, the dashboard,
+   `/stats`) and BEAM memory. The catalogue grows from ~3.6k to ~20k packages,
+   and those pages fold the whole catalogue on every (cache-missing) render.
+5. Re-run `Portal.CatalogSeed.run()`. The rejected rows are not open requests,
    so new requests are created. Pure packages land in the catalogue within the
    seed's one-per-second stagger (~5 hours for 18.5k); native ones queue at
    priority 9 as before.
+6. No `Portal.HexMetaBackfill` run is needed for the new registry packages:
+   each fresh registry record enqueues `Portal.Workers.PackageMeta` for its
+   package, as a real build's ingest does.
 
 ## Testing
 
@@ -210,19 +243,27 @@ TDD throughout.
 
 - `HexDeps`: decodes a locally signed package resource; bad signature is
   `:hex_registry_undecodable`; HTTP 500 is `:hex_registry_unavailable`; a second
-  call inside the TTL does not hit the client; errors are not cached.
+  call inside the TTL does not hit the client; errors are not cached; the
+  periodic sweep removes expired rows and keeps fresh ones.
 - `NativeClosure`: pure closure; direct marker; marker three levels down;
   optional marker ignored; `nerves*` root and dependency; newest matching
   release chosen over a newer non-matching one; retired release skipped when a
   live one matches; cycle terminates; unparseable or unsatisfiable requirement
   is native; non-hexpm repository is native; size cap is native; unavailable
-  registry is `{:error, _}`, not native.
+  registry is `{:error, _}`, not native; the root resource is read fresh while
+  dependencies use the cache; `dry_run` logs progress every 500 names.
 - `Backfill`: flag on + `catalog_seed` + pure writes a `registry_deps` pass run
   and inserts no `Build` job; native inserts a `Build` job; `admin_manual` never
   classifies; flag off is today's behaviour; unavailable registry returns an
   error and inserts no `Build` job; `update_check` on a registry-assessed
   package re-classifies; `update_check` on a Docker-built package enqueues a
-  build.
+  build; `backfill` and `catalog_seed` on a Docker-built (including failing)
+  package enqueue a build and leave its result, description and
+  `native_components` untouched; a real run ingested after a registry run wins
+  and ends classification.
 - `RegistryAssessment`: the ingested run appears in `Portal.Catalog` reads, the
-  badge is passing, and the API exposes `compatibility_basis: "registry_deps"`.
+  badge is passing, and the API exposes `compatibility_basis: "registry_deps"`;
+  a fresh record enqueues `PackageMeta`.
+- Stats: `registry_deps` and `pure_elixir` appear in neither the dashboard's
+  pass rate per system nor `/stats` / `/api/stats` `by_system`.
 - `PackageLive`: renders the label and summary.
