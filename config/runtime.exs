@@ -194,6 +194,18 @@ if portal_available? do
       :ok
   end
 
+  # Same parsing, and the same reasoning about typos, as `NCC_UPDATE_CHECK`.
+  case System.get_env("NCC_QUEUE_FILTER") do
+    v when v in ["1", "true", "yes"] ->
+      config :portal, :queue_filter, enabled: true
+
+    v when v in ["0", "false", "no"] ->
+      config :portal, :queue_filter, enabled: false
+
+    _ ->
+      :ok
+  end
+
   if config_env() == :prod do
     secret_key_base =
       System.get_env("SECRET_KEY_BASE") ||

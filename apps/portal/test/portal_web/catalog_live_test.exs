@@ -76,6 +76,21 @@ defmodule PortalWeb.CatalogLiveTest do
     assert conn |> get("/badge/jason.svg") |> response(200) =~ ~s(aria-label="nerves: passing")
   end
 
+  test "registry assessment says nothing was compiled", %{conn: conn} do
+    {:ok, _run} = Portal.Catalog.RegistryAssessment.record("tiny_pure", "1.2.0", nil)
+
+    {:ok, view, html} = live(conn, "/packages/tiny_pure")
+
+    assert has_element?(view, "#compatibility-assumption", "Nothing was compiled")
+    assert has_element?(view, "#system-registry-deps", "Pure Elixir (dependency check)")
+    assert has_element?(view, "#system-registry-deps td:nth-child(2) span", "pass")
+    refute has_element?(view, "#system-registry-deps", "host")
+    assert html =~ "no native code in its dependency closure on hex.pm"
+
+    assert conn |> get("/badge/tiny_pure.svg") |> response(200) =~
+             ~s(aria-label="nerves: passing")
+  end
+
   describe "upstream links" do
     setup do
       ingest_fixture()

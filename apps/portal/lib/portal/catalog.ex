@@ -166,8 +166,11 @@ defmodule Portal.Catalog do
       schema: 2,
       generated_at: generated_at(),
       counts: counts(results),
+      # Assessments are verdicts, not systems; `counts` above still includes
+      # them, as it always has for `host`.
       by_system:
         results
+        |> Enum.reject(&assessment_system?(&1.system_pkg))
         |> Enum.group_by(&system_key/1)
         |> Map.new(fn {key, rows} -> {key, counts(rows, false)} end),
       last_run_finished_at: last_finished_at(run_summaries())
@@ -333,13 +336,36 @@ defmodule Portal.Catalog do
     end
   end
 
+  # System entries that are verdicts rather than builds: `NccWorker.Worker`'s
+  # `pure_elixir` (host compile + inspection) and
+  # `Portal.Catalog.RegistryAssessment`'s `registry_deps` (registry data only).
+  # Neither is a Nerves system, and both are always `pass`, so any per-system
+  # figure that counted them would show a phantom system at ~100%.
+  @assessment_systems ~w(pure_elixir registry_deps)
+
+  @doc """
+  Whether `system_pkg` names an assessment (a compatibility verdict with no
+  firmware build behind it) rather than a Nerves system.
+  """
+  @spec assessment_system?(String.t() | atom()) :: boolean()
+  def assessment_system?(system_pkg), do: to_string(system_pkg) in @assessment_systems
+
+  @doc """
+  Whether `system_pkg` belongs in a per-system breakdown. False for
+  assessments and for the synthetic `forced@...` placeholder.
+  """
+  @spec real_system?(String.t() | atom()) :: boolean()
+  def real_system?(system_pkg) do
+    not (synthetic_system?(system_pkg) or assessment_system?(system_pkg))
+  end
+
   @doc "Per-system pass counts over the latest run of every package."
   def pass_rate_per_system, do: pass_rate_per_system(latest_annotated_systems())
 
   @doc false
   def pass_rate_per_system(annotated) do
     annotated
-    |> Enum.reject(&synthetic_system?(&1.system_pkg))
+    |> Enum.filter(&real_system?(&1.system_pkg))
     |> Enum.group_by(& &1.system_pkg)
     |> Enum.map(fn {system_pkg, rows} ->
       total = length(rows)

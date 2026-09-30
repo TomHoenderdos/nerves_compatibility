@@ -24,4 +24,11 @@ defmodule PortalWeb.StatsLiveTest do
     assert html =~ "arm64"
     assert html =~ "Unique Packages"
   end
+
+  test "assessments are not listed as systems", %{conn: conn} do
+    {:ok, _} = Portal.Catalog.RegistryAssessment.record("tiny_pure", "1.2.0", nil)
+
+    {:ok, _v, html} = live(conn, ~p"/stats")
+    refute html =~ "registry_deps"
+  end
 end

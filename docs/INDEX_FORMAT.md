@@ -191,6 +191,8 @@ Aggregate statistics about test results.
   - **unknown**: Number of tests with unknown status
 - **by_system**: Map of system key to counts for that system
   - **Key format**: `"<system_pkg>@<system_version>"`
+  - Assessment entries (`pure_elixir`, `registry_deps`; see below) are not
+    Nerves systems and are omitted here. They still count in **counts**.
   - **pass, fail, error, skipped, unknown**: Counts per status
 - **last_run_finished_at**: Timestamp of the most recently completed test
 
@@ -236,6 +238,17 @@ entry records the actual compile result. Package metadata exposes
 Native code, Nerves-specific packages, failed host compiles, and incomplete
 inspection retain the firmware build path. Existing queued requests use the same
 selection when processed.
+
+### Registry dependency assessment
+
+Packages seeded in bulk may instead carry a single `registry_deps` system entry
+with `status: "pass"`. This means **assumed compatible from registry data
+alone**: no package in the release's transitive dependency closure on hex.pm
+depends on native build tooling (`elixir_make`, `rustler`,
+`rustler_precompiled`, `zigler`, `cc_precompiler`, `unifex`, `bundlex`) or is a
+`nerves*` package. Nothing was compiled, not even on the host. Package metadata
+exposes `native_components.compatibility_basis: "registry_deps"`. A requested
+scan of the package replaces the assessment with a real build.
 
 All test results include a `status` field with one of these values:
 
