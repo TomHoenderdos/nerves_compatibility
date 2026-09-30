@@ -144,7 +144,9 @@ read it like any other run.
 
 ### `Portal.Workers.Backfill` (modified)
 
-When `NCC_QUEUE_FILTER` is on and the source is `catalog_seed` or `backfill`:
+When `NCC_QUEUE_FILTER` is on, the source is `catalog_seed` or `backfill`, and
+the package has never been built (no run, or not in the catalogue) or its
+latest run has `image_digest == "registry"`:
 
 1. Resolve the version via `Portal.HexPm` (as `create_once` does today).
 2. `NativeClosure.classify(name, version)`:
@@ -159,6 +161,13 @@ registry-assessed package is re-classified, and only goes to Docker if it gained
 native code. Packages with any real build keep today's `update_check`
 behaviour. Without this, ~18k newly tracked packages would feed every minor and
 major release into Docker through `UpdateCheck`.
+
+A package whose latest run is a real build is never classified, whatever the
+source. `Portal.UpstreamBackfill` enqueues `backfill` for ~2,850 names that are
+mostly already tracked with real Docker builds, and a human may build a package
+during a seed's stagger; a registry run recorded on top would supersede the
+real result (a failing package would flip green) and overwrite the package's
+description and `native_components`.
 
 All other sources, and every source when the flag is off, behave exactly as
 today.

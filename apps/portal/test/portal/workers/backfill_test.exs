@@ -101,6 +101,53 @@ defmodule Portal.Workers.BackfillTest do
       )
     end
 
+    defp registry_run_count(package) do
+      Portal.Repo.one!(
+        from(r in "catalog_runs",
+          join: p in "catalog_packages",
+          on: p.id == r.package_id,
+          where: p.name == ^package and r.image_digest == "registry",
+          select: count(r.id)
+        )
+      )
+    end
+
+    # A Docker-built run as `Portal.Workers.Ingest` would record it: a real
+    # system, a description and native components from the worker.
+    defp docker_run(package, version, status, digest \\ "sha256:abc", opts \\ []) do
+      finished_at =
+        opts |> Keyword.get(:finished_at, DateTime.utc_now()) |> DateTime.to_iso8601()
+
+      result = %{
+        "package" => %{
+          "name" => package,
+          "version" => version,
+          "description" => "A real package",
+          "native_components" => %{"nifs" => ["#{package}_nif"]}
+        },
+        "started_at" => finished_at,
+        "finished_at" => finished_at,
+        "systems" => %{
+          "nerves_system_rpi4" => %{
+            "system_version" => "1.26.1",
+            "status" => status,
+            "duration_sec" => 10.0,
+            "log_tail" => "built"
+          }
+        }
+      }
+
+      {:ok, run} =
+        Portal.Catalog.Ingestion.ingest(result, %{
+          run_id: "#{package}-docker-#{version}",
+          image_digest: digest,
+          files_dir: System.tmp_dir!(),
+          scan_request_id: nil
+        })
+
+      run
+    end
+
     defp request_count(package) do
       Portal.Repo.one!(
         from(r in "portal_scan_requests",
@@ -223,6 +270,93 @@ defmodule Portal.Workers.BackfillTest do
 
       assert :ok = perform_job(Backfill, %{package: "real_pkg", source: "update_check"})
       assert build_priority("real_pkg") == 7
+    end
+
+    test "a backfill of a docker-built package builds and writes no registry run" do
+      closure("tracked_pkg", :pure)
+      docker_run("tracked_pkg", "1.0.0", "pass")
+
+      assert :ok = perform_job(Backfill, %{package: "tracked_pkg", source: "backfill"})
+
+      assert build_priority("tracked_pkg") == 9
+      assert registry_run_count("tracked_pkg") == 0
+    end
+
+    test "a catalog_seed of a docker-built package builds and writes no registry run" do
+      closure("tracked_pkg", :pure)
+      docker_run("tracked_pkg", "1.0.0", "pass")
+
+      assert :ok = perform_job(Backfill, %{package: "tracked_pkg", source: "catalog_seed"})
+
+      assert build_priority("tracked_pkg") == 9
+      assert registry_run_count("tracked_pkg") == 0
+    end
+
+    # The failure the eligibility check exists for: a pure verdict recorded on
+    # top of a real failing build would flip the package green and blank the
+    # description the real run wrote.
+    test "a failing docker-built package is not superseded by a bulk sweep" do
+      closure("broken_pkg", :pure)
+      docker_run("broken_pkg", "1.0.0", "fail")
+
+      for source <- ~w(backfill catalog_seed) do
+        assert :ok = perform_job(Backfill, %{package: "broken_pkg", source: source})
+      end
+
+      assert registry_run_count("broken_pkg") == 0
+
+      %{packages: %{"broken_pkg" => package}} = Portal.Catalog.latest_by_pkg_json("broken_pkg")
+      assert package.description == "A real package"
+      assert package.native_components == %{"nifs" => ["broken_pkg_nif"]}
+      assert [system] = Map.values(package.systems)
+      assert system.system_pkg == "nerves_system_rpi4"
+      assert system.status == "fail"
+      assert system.run_id == "broken_pkg-docker-1.0.0"
+    end
+
+    # Runs imported from before the portal have no digest at all. They are
+    # real results, not "never built".
+    test "a run with no digest is not treated as never built" do
+      closure("legacy_pkg", :pure)
+      docker_run("legacy_pkg", "1.0.0", "pass", nil)
+
+      assert :ok = perform_job(Backfill, %{package: "legacy_pkg", source: "catalog_seed"})
+
+      assert build_priority("legacy_pkg") == 9
+      assert registry_run_count("legacy_pkg") == 0
+    end
+
+    test "a never-built package is still classified" do
+      closure("never_built", :pure)
+
+      assert :ok = perform_job(Backfill, %{package: "never_built", source: "backfill"})
+
+      refute_enqueued(worker: Build)
+      assert registry_run_count("never_built") == 1
+    end
+
+    # End to end: a human-requested real build lands after the registry
+    # assessment. From then on the real result is what the catalogue shows,
+    # and the package has left the registry path for good.
+    test "a real build after a registry assessment wins and ends classification" do
+      closure("promoted_pkg", :pure)
+      {:ok, _} = Portal.Catalog.RegistryAssessment.record("promoted_pkg", "1.0.0", nil)
+
+      docker_run("promoted_pkg", "1.0.0", "fail", "sha256:abc",
+        finished_at: DateTime.add(DateTime.utc_now(), 60, :second)
+      )
+
+      %{packages: %{"promoted_pkg" => package}} =
+        Portal.Catalog.latest_by_pkg_json("promoted_pkg")
+
+      assert [system] = Map.values(package.systems)
+      assert system.system_pkg == "nerves_system_rpi4"
+      assert system.status == "fail"
+      assert package.native_components == %{"nifs" => ["promoted_pkg_nif"]}
+
+      assert :ok = perform_job(Backfill, %{package: "promoted_pkg", source: "update_check"})
+      assert build_priority("promoted_pkg") == 7
+      assert registry_run_count("promoted_pkg") == 1
     end
 
     test "the flag off keeps today's behaviour" do

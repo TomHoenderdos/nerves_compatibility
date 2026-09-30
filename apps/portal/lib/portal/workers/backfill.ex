@@ -29,7 +29,10 @@ defmodule Portal.Workers.Backfill do
   ## The queue filter
 
   With `NCC_QUEUE_FILTER` on, bulk sources (`catalog_seed`, `backfill`) are
-  classified from registry data before any build is queued. A package with no
+  classified from registry data before any build is queued, provided the
+  package has never been built or its latest run was itself a registry
+  assessment. A package with a real (Docker) run is never classified from any
+  source: a registry verdict would supersede that result. A package with no
   native code in its dependency closure (`Portal.NativeClosure`) is recorded as
   a `registry_deps` pass (`Portal.Catalog.RegistryAssessment`) and never reaches
   Docker. Everything else takes the ordinary path.
@@ -104,8 +107,25 @@ defmodule Portal.Workers.Backfill do
       is_nil(ScanRequests.open_request_for_package(package))
   end
 
-  defp eligible?(_package, source) when source in [:catalog_seed, :backfill], do: true
-  defp eligible?(package, :update_check), do: registry_assessed?(package)
+  # A registry verdict may only ever replace another registry verdict, or fill
+  # a gap. `Portal.UpstreamBackfill` sweeps ~2,850 names that are mostly
+  # already tracked with real Docker builds, and a human can build a package
+  # during a seed's stagger; recording a newer `registry-...` run on top of
+  # either would supersede the real result (a failing package would flip
+  # green) and blank the package's description. So a real build history
+  # always keeps the package on the build path, whatever the source.
+  #
+  # Bulk sources additionally classify a package with no run at all -- that is
+  # what a seed is for. `update_check` only ever sees packages we already
+  # show, so for it an absent run is not a registry assessment either.
+  defp eligible?(package, source) when source in [:catalog_seed, :backfill] do
+    latest_run_digest(package) in [nil, RegistryAssessment.image_digest()]
+  end
+
+  defp eligible?(package, :update_check) do
+    latest_run_digest(package) == RegistryAssessment.image_digest()
+  end
+
   defp eligible?(_package, _source), do: false
 
   defp classify(package, source) do
@@ -173,22 +193,24 @@ defmodule Portal.Workers.Backfill do
     end
   end
 
-  # Two columns from the newest run, not the Ash resource: the run row carries
+  # One column from the newest run, not the Ash resource: the run row carries
   # the full runner log, and this only needs to know where the run came from.
-  defp registry_assessed?(package) do
-    digest =
-      Portal.Repo.one(
-        from(r in "catalog_runs",
-          join: p in "catalog_packages",
-          on: p.id == r.package_id,
-          where: p.name == ^package,
-          order_by: [desc_nulls_last: r.finished_at, desc: r.inserted_at],
-          limit: 1,
-          select: r.image_digest
-        )
+  # `nil` when the package has no run (or is not in the catalogue at all).
+  #
+  # The column is nullable and runs imported from before the portal carry no
+  # digest, so a run's NULL is read as `""`: a real run that happens to lack a
+  # digest must not look like "never built" and be classified over.
+  defp latest_run_digest(package) do
+    Portal.Repo.one(
+      from(r in "catalog_runs",
+        join: p in "catalog_packages",
+        on: p.id == r.package_id,
+        where: p.name == ^package,
+        order_by: [desc_nulls_last: r.finished_at, desc: r.inserted_at],
+        limit: 1,
+        select: fragment("coalesce(?, '')", r.image_digest)
       )
-
-    digest == RegistryAssessment.image_digest()
+    )
   end
 
   defp filter_enabled? do
