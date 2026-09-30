@@ -133,14 +133,19 @@ size the effect and to supply numbers for the talk.
 passes it to `Portal.Catalog.Ingestion.ingest/2`:
 
 - `package`: name, version, `description: nil` (the registry resource carries
-  none; `Portal.HexMetaBackfill` fills links and owners later as for any
-  package), `native_components: %{"compatibility_basis" => "registry_deps"}`;
+  none), `native_components: %{"compatibility_basis" => "registry_deps"}`;
 - `systems`: `%{"registry_deps" => %{"status" => "pass", "log_tail" => "Assumed compatible: no native code in the dependency closure on hex.pm. Nothing was compiled."}}`;
 - opts: `run_id: "registry-<name>-<version>"`, `image_digest: "registry"`,
   `files_dir` an empty scratch dir, no `output_dir`.
 
 No blobs, no logs, one transaction. Package pages, badges and the schema-v2 API
 read it like any other run.
+
+Because this bypasses `Portal.Workers.Ingest.complete/3`, a fresh record (not
+the already-recorded path) enqueues `Portal.Workers.PackageMeta` for the package
+itself, after the ingest commits, so links and owners are fetched as for any
+built package. A failed enqueue is logged and dropped; metadata never fails the
+record.
 
 ### `Portal.Workers.Backfill` (modified)
 

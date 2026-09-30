@@ -1,7 +1,9 @@
 defmodule Portal.Catalog.RegistryAssessmentTest do
   use Portal.DataCase, async: false
+  use Oban.Testing, repo: Portal.Repo
 
   alias Portal.Catalog.RegistryAssessment
+  alias Portal.Workers.PackageMeta
 
   test "records a registry_deps pass the catalog reads like any run" do
     assert {:ok, run} = RegistryAssessment.record("tiny_pure", "1.2.0", nil)
@@ -36,5 +38,20 @@ defmodule Portal.Catalog.RegistryAssessmentTest do
 
     %{packages: %{"tiny_pure" => package}} = Portal.Catalog.latest_by_pkg_json("tiny_pure")
     assert package.latest_version == "1.3.0"
+  end
+
+  # `Portal.Workers.Ingest` is where hex.pm metadata gets queued after a real
+  # build; a registry record bypasses it and must queue its own.
+  test "a fresh record enqueues PackageMeta for the package" do
+    assert {:ok, _run} = RegistryAssessment.record("tiny_pure", "1.2.0", nil)
+    assert_enqueued(worker: PackageMeta, args: %{"package" => "tiny_pure"})
+  end
+
+  test "an already-recorded version enqueues nothing new" do
+    assert {:ok, _run} = RegistryAssessment.record("tiny_pure", "1.2.0", nil)
+    Portal.Repo.delete_all(Oban.Job)
+
+    assert {:ok, _run} = RegistryAssessment.record("tiny_pure", "1.2.0", nil)
+    refute_enqueued(worker: PackageMeta)
   end
 end

@@ -15,10 +15,18 @@ defmodule Portal.Catalog.RegistryAssessment do
   `image_digest` is the fixed string `"registry"` rather than a worker image
   digest, which is how `Portal.Workers.Backfill` recognises a package whose
   latest run came from here.
+
+  A fresh record enqueues `Portal.Workers.PackageMeta` for the package, as
+  `Portal.Workers.Ingest` does after a real build: this path bypasses that
+  worker, and without it a registry-assessed package would never get hex.pm
+  links or owners.
   """
+
+  require Logger
 
   alias Portal.Catalog
   alias Portal.Catalog.Ingestion
+  alias Portal.Workers.PackageMeta
 
   @image_digest "registry"
 
@@ -66,11 +74,28 @@ defmodule Portal.Catalog.RegistryAssessment do
 
     # No blobs and no logs: `files_dir` is never read because the system
     # carries no scans, and `output_dir` is omitted so no log is staged.
-    Ingestion.ingest(result, %{
-      run_id: run_id,
-      image_digest: @image_digest,
-      files_dir: System.tmp_dir!(),
-      scan_request_id: scan_request_id
-    })
+    with {:ok, run} <-
+           Ingestion.ingest(result, %{
+             run_id: run_id,
+             image_digest: @image_digest,
+             files_dir: System.tmp_dir!(),
+             scan_request_id: scan_request_id
+           }) do
+      enqueue_package_meta(name)
+      {:ok, run}
+    end
+  end
+
+  # After the ingest commits and outside its transaction, as in
+  # `Portal.Workers.Ingest`: metadata is decoration, so a failed enqueue is
+  # logged and dropped rather than failing the record.
+  defp enqueue_package_meta(name) do
+    case Oban.insert(PackageMeta.new(%{package: name})) do
+      {:ok, _job} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("PackageMeta enqueue failed for #{name}: #{inspect(reason)}")
+    end
   end
 end
