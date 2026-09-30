@@ -109,6 +109,15 @@ defmodule PortalWeb.PackageLive do
           and were identified as pure Elixir. No firmware targets were built.
         </p>
 
+        <p
+          :if={Enum.any?(@systems, &(&1.system_pkg == "registry_deps"))}
+          id="compatibility-assumption"
+          class="rounded-xl border border-base-300 bg-base-200/50 p-4 text-sm text-base-content/80"
+        >
+          Assumed compatible: no package in this release's dependency closure on hex.pm uses
+          native code. Nothing was compiled.
+        </p>
+
         <div class="overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm">
           <table class="w-full text-left text-sm">
             <thead class="border-b border-base-300 bg-base-200/60 text-xs uppercase tracking-wide text-base-content/60">
@@ -127,9 +136,9 @@ defmodule PortalWeb.PackageLive do
               >
                 <td class="px-5 py-4">
                   <div class="font-mono font-medium text-base-content">
-                    {if system.system_pkg == "pure_elixir", do: "Pure Elixir", else: system.system_pkg}
+                    {system_label(system.system_pkg)}
                   </div>
-                  <div :if={system.system_pkg != "pure_elixir"} class="text-base-content/50">
+                  <div :if={not assessment?(system.system_pkg)} class="text-base-content/50">
                     {system.system_version || "host"}
                   </div>
                   <.link
@@ -294,21 +303,23 @@ defmodule PortalWeb.PackageLive do
     version = package.latest_version
 
     head =
-      case {Enum.any?(systems, &(&1.system_pkg == "pure_elixir")), length(systems),
-            Enum.count(systems, &(&1.status == "pass"))} do
-        {true, _, _} ->
+      case {basis(systems), length(systems), Enum.count(systems, &(&1.status == "pass"))} do
+        {"registry_deps", _, _} ->
+          "#{name} #{version} is assumed Nerves-compatible: no native code in its dependency closure on hex.pm; not compiled."
+
+        {"pure_elixir", _, _} ->
           "#{name} #{version} is assumed Nerves-compatible after pure-Elixir inspection and host compilation."
 
-        {false, 0, _} ->
+        {nil, 0, _} ->
           "#{name} has not been built against any Nerves system yet."
 
-        {false, total, total} ->
+        {nil, total, total} ->
           "#{name} #{version} builds on all #{total} tracked Nerves systems."
 
-        {false, total, 0} ->
+        {nil, total, 0} ->
           "#{name} #{version} fails on all #{total} tracked Nerves systems."
 
-        {false, total, pass} ->
+        {nil, total, pass} ->
           "#{name} #{version} builds on #{pass} of #{total} tracked Nerves systems."
       end
 
@@ -317,6 +328,20 @@ defmodule PortalWeb.PackageLive do
       _ -> head
     end
   end
+
+  defp basis(systems) do
+    Enum.find_value(systems, fn system ->
+      if assessment?(system.system_pkg), do: system.system_pkg
+    end)
+  end
+
+  # Checks that are verdicts rather than builds: they have no system version to
+  # show and read differently in the summary.
+  defp assessment?(system_pkg), do: system_pkg in ["pure_elixir", "registry_deps"]
+
+  defp system_label("pure_elixir"), do: "Pure Elixir"
+  defp system_label("registry_deps"), do: "Pure Elixir (dependency check)"
+  defp system_label(system_pkg), do: system_pkg
 
   defp truncate(text) do
     if String.length(text) <= @description_limit do

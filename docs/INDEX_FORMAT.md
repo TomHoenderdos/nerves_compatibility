@@ -237,6 +237,17 @@ Native code, Nerves-specific packages, failed host compiles, and incomplete
 inspection retain the firmware build path. Existing queued requests use the same
 selection when processed.
 
+### Registry dependency assessment
+
+Packages seeded in bulk may instead carry a single `registry_deps` system entry
+with `status: "pass"`. This means **assumed compatible from registry data
+alone**: no package in the release's transitive dependency closure on hex.pm
+depends on native build tooling (`elixir_make`, `rustler`,
+`rustler_precompiled`, `zigler`, `cc_precompiler`, `unifex`, `bundlex`) or is a
+`nerves*` package. Nothing was compiled, not even on the host. Package metadata
+exposes `native_components.compatibility_basis: "registry_deps"`. A requested
+scan of the package replaces the assessment with a real build.
+
 All test results include a `status` field with one of these values:
 
 - **pass**: Test completed successfully
