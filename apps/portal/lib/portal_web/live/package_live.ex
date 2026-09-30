@@ -337,7 +337,7 @@ defmodule PortalWeb.PackageLive do
 
   # Checks that are verdicts rather than builds: they have no system version to
   # show and read differently in the summary.
-  defp assessment?(system_pkg), do: system_pkg in ["pure_elixir", "registry_deps"]
+  defp assessment?(system_pkg), do: Catalog.assessment_system?(system_pkg)
 
   defp system_label("pure_elixir"), do: "Pure Elixir"
   defp system_label("registry_deps"), do: "Pure Elixir (dependency check)"

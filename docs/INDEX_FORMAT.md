@@ -191,6 +191,8 @@ Aggregate statistics about test results.
   - **unknown**: Number of tests with unknown status
 - **by_system**: Map of system key to counts for that system
   - **Key format**: `"<system_pkg>@<system_version>"`
+  - Assessment entries (`pure_elixir`, `registry_deps`; see below) are not
+    Nerves systems and are omitted here. They still count in **counts**.
   - **pass, fail, error, skipped, unknown**: Counts per status
 - **last_run_finished_at**: Timestamp of the most recently completed test
 
