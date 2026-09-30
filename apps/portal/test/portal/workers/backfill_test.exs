@@ -64,6 +64,19 @@ defmodule Portal.Workers.BackfillTest do
     end
   end
 
+  # Simulates the window between `classify?/2`'s open-request check and
+  # `record/3`'s `create_once/1` call: an admin request for the same package
+  # opens *during* classification, the way a real hex.pm + registry-closure
+  # round trip leaves seconds for a human request to land in.
+  defmodule RacingClosure do
+    def classify(package, _version) do
+      {:ok, _request} =
+        Portal.ScanRequests.create_once(%{package_name: package, source: :admin_manual})
+
+      :pure
+    end
+  end
+
   describe "perform/1 with the queue filter" do
     setup do
       Application.put_env(:portal, :native_closure, StubClosure)
@@ -84,6 +97,15 @@ defmodule Portal.Workers.BackfillTest do
         from(r in "portal_scan_requests",
           where: r.package_name == ^package,
           select: %{status: r.status, run_id: r.run_id}
+        )
+      )
+    end
+
+    defp request_count(package) do
+      Portal.Repo.one!(
+        from(r in "portal_scan_requests",
+          where: r.package_name == ^package,
+          select: count(r.id)
         )
       )
     end
@@ -126,13 +148,34 @@ defmodule Portal.Workers.BackfillTest do
     test "an already open request is left to its build" do
       closure("queued_pkg", :pure)
 
-      {:ok, _} =
+      {:ok, existing} =
         Portal.ScanRequests.create_once(%{package_name: "queued_pkg", source: :admin_manual})
 
       assert :ok = perform_job(Backfill, %{package: "queued_pkg", source: "catalog_seed"})
 
       assert %{packages: packages} = Portal.Catalog.latest_by_pkg_json("queued_pkg")
       refute Map.has_key?(packages, "queued_pkg")
+
+      assert request_count("queued_pkg") == 1
+      assert %{status: status, run_id: nil} = request("queued_pkg")
+      assert status == to_string(existing.status)
+    end
+
+    # `classify?/2` finds no open request, but the hex.pm + registry-closure
+    # round trip in `classify/2` takes real time, and an admin or anonymous
+    # request can open in that window. `record/3` must not attach the registry
+    # run to it or stomp its status -- that would silently close a queued
+    # admin build (or skip anonymous review) that this job knows nothing about.
+    test "a request that opens mid-classification wins the race" do
+      Application.put_env(:portal, :native_closure, RacingClosure)
+
+      assert :ok = perform_job(Backfill, %{package: "raced_pkg", source: "catalog_seed"})
+
+      assert request_count("raced_pkg") == 1
+      assert %{status: "queued", run_id: nil} = request("raced_pkg")
+
+      assert %{packages: packages} = Portal.Catalog.latest_by_pkg_json("raced_pkg")
+      refute Map.has_key?(packages, "raced_pkg")
     end
 
     test "update_check re-classifies a registry-assessed package" do

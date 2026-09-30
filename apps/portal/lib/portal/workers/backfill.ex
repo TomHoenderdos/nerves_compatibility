@@ -59,6 +59,7 @@ defmodule Portal.Workers.Backfill do
 
   alias Portal.Catalog.RegistryAssessment
   alias Portal.ScanRequests
+  alias Portal.ScanRequests.ScanRequest
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"package" => package} = args}) do
@@ -134,17 +135,41 @@ defmodule Portal.Workers.Backfill do
   # The request is created already `built` so `create_once/1` queues nothing,
   # then linked to the run once it exists -- the same end state an ordinary
   # build reaches through `Portal.Workers.Ingest`.
+  #
+  # `create_once/1` returns whatever open request already exists for the
+  # package rather than creating a second one. `classify?/2` checked for that
+  # before the hex.pm round trips above, but a human or anonymous request can
+  # open in the seconds it takes to resolve the version and classify the
+  # closure. If that happened, `create_once/1` hands back that other request
+  # here instead of a fresh `:built` one, and recording on top of it would
+  # close a queued admin build or skip anonymous review out from under it. So
+  # only a request this call itself created (status `:built`, its only
+  # possible status straight out of `create_once/1` with that argument) is
+  # recorded against; anything else means the race was lost, and this leaves
+  # the other request alone.
   defp record(package, version, source) do
-    with {:ok, request} <-
-           ScanRequests.create_once(%{
-             package_name: package,
-             version: version,
-             source: source,
-             status: :built
-           }),
-         {:ok, run} <- RegistryAssessment.record(package, version, request.id),
-         {:ok, _request} <- ScanRequests.set_status(request, :built, run_id: run.id) do
-      :ok
+    case ScanRequests.create_once(%{
+           package_name: package,
+           version: version,
+           source: source,
+           status: :built
+         }) do
+      {:ok, %ScanRequest{status: :built} = request} ->
+        with {:ok, run} <- RegistryAssessment.record(package, version, request.id),
+             {:ok, _request} <- ScanRequests.set_status(request, :built, run_id: run.id) do
+          :ok
+        end
+
+      {:ok, %ScanRequest{} = request} ->
+        Logger.info(
+          "Queue filter: #{package} gained an open request " <>
+            "(#{request.status}) while classifying; leaving it to its own build"
+        )
+
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -157,7 +182,7 @@ defmodule Portal.Workers.Backfill do
           join: p in "catalog_packages",
           on: p.id == r.package_id,
           where: p.name == ^package,
-          order_by: [desc: r.finished_at, desc: r.inserted_at],
+          order_by: [desc_nulls_last: r.finished_at, desc: r.inserted_at],
           limit: 1,
           select: r.image_digest
         )
