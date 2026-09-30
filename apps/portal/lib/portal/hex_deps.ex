@@ -15,9 +15,11 @@ defmodule Portal.HexDeps do
   `Portal.NativeClosure` walks a dependency closure per package. Across a sweep
   of thousands of packages the same few hundred dependencies (`jason`,
   `telemetry`, `plug`, ...) recur in almost every closure. Decoded answers are
-  kept for an hour -- the resource's own `cache-control` -- so a sweep costs one
-  request per distinct package, not one per edge. Errors are never cached: a
-  CDN hiccup must not be remembered for an hour.
+  kept for an hour -- the resource's own `cache-control` -- reducing repeated
+  fetches. Sequential walks and staggered seed jobs make repeats rare; when
+  concurrent callers miss the same cache key, each may fetch once, and that is
+  accepted because the only cost is an extra CDN request, never a wrong answer.
+  Errors are never cached: a CDN hiccup must not be remembered for an hour.
 
   The table is node-local and owned by this process, like
   `PortalWeb.WebAuthnSession`'s.
