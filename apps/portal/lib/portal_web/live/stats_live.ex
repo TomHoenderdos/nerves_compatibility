@@ -79,10 +79,13 @@ defmodule PortalWeb.StatsLive do
   end
 
   # stats_json().by_system is keyed "<system_pkg>@<system_version>" -> counts map.
-  # Drop synthetic forced@ rows; label by architecture; sort by system name.
+  # Drop synthetic forced@ rows and assessments; label by architecture; sort by
+  # system name.
   defp by_system_rows(stats) do
     (stats[:by_system] || %{})
-    |> Enum.reject(fn {key, _} -> String.starts_with?(to_string(key), "forced") end)
+    |> Enum.filter(fn {key, _} ->
+      key |> to_string() |> String.split("@") |> hd() |> Catalog.real_system?()
+    end)
     |> Enum.map(fn {key, counts} ->
       system = key |> to_string() |> String.split("@") |> hd()
       c = normalize_counts(counts)

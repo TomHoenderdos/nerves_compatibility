@@ -103,6 +103,19 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert is_binary(body["last_run_finished_at"])
   end
 
+  test "GET /api/stats does not list assessments as systems", %{conn: conn} do
+    ingest_fixture()
+    {:ok, _run} = Portal.Catalog.RegistryAssessment.record("tiny_pure", "1.2.0", nil)
+
+    body = conn |> get("/api/stats") |> json_response(200)
+
+    systems = body["by_system"] |> Map.keys() |> Enum.map(&(&1 |> String.split("@") |> hd()))
+    refute "registry_deps" in systems
+    assert "nerves_system_x86_64" in systems
+    # The global counts still include it: it is a result, just not a system.
+    assert body["counts"]["total"] == 4
+  end
+
   test "GET /badge/:name.svg returns an SVG badge from latest system results", %{conn: conn} do
     ingest_fixture()
 
@@ -113,6 +126,16 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert body =~ ~s(<svg)
     assert body =~ "jason Nerves compatibility"
     assert body =~ "2/3 passing"
+  end
+
+  test "GET /badge/:name.svg shows a registry-assessed package as passing", %{conn: conn} do
+    {:ok, _run} = Portal.Catalog.RegistryAssessment.record("tiny_pure", "1.2.0", nil)
+
+    conn = get(conn, "/badge/tiny_pure.svg")
+
+    body = response(conn, 200)
+    assert body =~ ">passing<"
+    assert body =~ "#22c55e"
   end
 
   # The badge is embedded in other people's READMEs, so it is fetched once per

@@ -105,6 +105,12 @@ config :portal, Portal.Workers.LogRetention, budget_bytes: 2 * 1024 * 1024 * 102
 # actually rebuilt. See `Portal.Workers.UpdateCheck`.
 config :portal, Portal.Workers.UpdateCheck, enabled: true
 
+# Registry-based native-code filter for bulk intake (`catalog_seed`,
+# `backfill`). Off by default so a deploy changes nothing until
+# `NCC_QUEUE_FILTER=1` is set. See `Portal.Workers.Backfill` and
+# `Portal.NativeClosure`.
+config :portal, :queue_filter, enabled: false
+
 # The dashboard, stats and cluster pages fold every package, run and system
 # result in Elixir -- 655ms warm on production, paid twice per page view because
 # a LiveView mounts once for the static render and again on socket connect.

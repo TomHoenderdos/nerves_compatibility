@@ -110,4 +110,32 @@ defmodule Portal.Catalog.DashboardQueriesTest do
 
     assert Enum.map(rates, & &1.system_pkg) == ["nerves_system_rpi0"]
   end
+
+  # `pure_elixir` and `registry_deps` are verdicts, not Nerves systems, and are
+  # always `pass`: counted per system they would be a phantom row at 100%.
+  test "assessments are not systems" do
+    {:ok, _} = Portal.Catalog.RegistryAssessment.record("seeded", "1.0.0", nil)
+
+    ingest(
+      "inspected",
+      "1.0.0",
+      %{"pure_elixir" => %{"status" => "pass"}, "host" => %{"status" => "pass"}},
+      nil,
+      "2026-07-04T10:00:00Z"
+    )
+
+    ingest(
+      "builder",
+      "1.0.0",
+      %{"nerves_system_rpi0" => %{"status" => "pass"}},
+      nil,
+      "2026-07-04T11:00:00Z"
+    )
+
+    systems = Enum.map(Catalog.pass_rate_per_system(), & &1.system_pkg)
+
+    refute "registry_deps" in systems
+    refute "pure_elixir" in systems
+    assert "nerves_system_rpi0" in systems
+  end
 end
