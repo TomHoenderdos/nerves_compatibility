@@ -23,6 +23,11 @@ defmodule Portal.HexDeps do
 
   The table is node-local and owned by this process, like
   `PortalWeb.WebAuthnSession`'s.
+
+  Reads ignore an expired entry, but only the sweep removes it: once per TTL
+  the process deletes every row whose expiry has passed. Without it a
+  full-registry seed would leave every package it touched -- on the order of
+  150-250 MB -- resident for the life of the node.
   """
 
   use GenServer
@@ -78,8 +83,24 @@ defmodule Portal.HexDeps do
   @impl true
   def init(_opts) do
     :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+    schedule_sweep()
     {:ok, nil}
   end
+
+  @impl true
+  def handle_info(:sweep, state) do
+    sweep()
+    schedule_sweep()
+    {:noreply, state}
+  end
+
+  # Rows are `{name, releases, expires_at}`; delete every one that has expired.
+  defp sweep do
+    now = now()
+    :ets.select_delete(@table, [{{:_, :_, :"$1"}, [{:"=<", :"$1", now}], [true]}])
+  end
+
+  defp schedule_sweep, do: Process.send_after(self(), :sweep, :timer.seconds(@ttl_seconds))
 
   defp cached(name) do
     now = now()

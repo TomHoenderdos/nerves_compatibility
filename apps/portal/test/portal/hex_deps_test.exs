@@ -12,6 +12,9 @@ defmodule Portal.HexDepsTest do
 
   alias Portal.HexDeps
 
+  # Several tests exercise failure paths that log a warning by design.
+  @moduletag :capture_log
+
   setup_all do
     private = :public_key.generate_key({:rsa, 2048, 65_537})
     public = {:RSAPublicKey, elem(private, 2), elem(private, 3)}
@@ -136,5 +139,22 @@ defmodule Portal.HexDepsTest do
     assert {:ok, _} = releases("jason", context, cache: false)
     assert_received {:fetched, "/packages/jason"}
     assert_received {:fetched, "/packages/jason"}
+  end
+
+  # Reads skip an expired row but never remove it; the periodic sweep does.
+  # Rows are inserted directly because an expired one cannot be produced
+  # through `releases/2` without waiting out the TTL.
+  test "the sweep removes expired entries and keeps fresh ones" do
+    now = System.system_time(:second)
+    :ets.insert(HexDeps, {"stale", [], now - 1})
+    :ets.insert(HexDeps, {"fresh", [], now + 3600})
+
+    pid = Process.whereis(HexDeps)
+    send(pid, :sweep)
+    # A synchronous call behind the message guarantees it has been handled.
+    :sys.get_state(pid)
+
+    assert :ets.lookup(HexDeps, "stale") == []
+    assert [{"fresh", [], _}] = :ets.lookup(HexDeps, "fresh")
   end
 end
