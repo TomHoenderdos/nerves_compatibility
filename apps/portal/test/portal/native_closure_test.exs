@@ -164,6 +164,23 @@ defmodule Portal.NativeClosureTest do
     assert classify("pre", "1.0.0", context) == :pure
   end
 
+  test "a later edge to an already-resolved package still has its requirement checked", context do
+    registry(
+      %{
+        "app" => [{"1.0.0", [{"lib", ">= 1.0.0"}, {"foo", "~> 1.0"}]}],
+        "foo" => [{"1.0.0", [{"lib", "~> 1.0"}]}],
+        # `lib`'s first edge (`>= 1.0.0`) resolves to 2.0.0, which is pure; if
+        # that resolution were reused unchecked for `foo`'s `~> 1.0` edge, this
+        # closure would come back :pure even though Mix would pick 1.x for
+        # that edge, and 1.x depends on a marker.
+        "lib" => [{"1.0.0", [{"elixir_make", "~> 0.8"}]}, {"2.0.0", []}]
+      },
+      context
+    )
+
+    assert classify("app", "1.0.0", context) == {:native, {:unsatisfiable, "lib", "~> 1.0"}}
+  end
+
   test "cycles terminate", context do
     registry(
       %{
@@ -203,6 +220,16 @@ defmodule Portal.NativeClosureTest do
     assert classify("unsat", "5.0.0", context) == {:native, {:unknown_version, "unsat", "5.0.0"}}
   end
 
+  test "a closure of exactly the size cap is pure", context do
+    chain =
+      for i <- 0..499, into: %{} do
+        {"p#{i}", [{"1.0.0", if(i < 499, do: [{"p#{i + 1}", "~> 1.0"}], else: [])}]}
+      end
+
+    registry(chain, context)
+    assert classify("p0", "1.0.0", context) == :pure
+  end
+
   test "a closure over the size cap is native", context do
     chain =
       for i <- 0..501, into: %{} do
@@ -213,6 +240,7 @@ defmodule Portal.NativeClosureTest do
     assert classify("p0", "1.0.0", context) == {:native, :closure_too_large}
   end
 
+  @tag :capture_log
   test "an unavailable registry is an error, not a classification", context do
     registry(%{"app" => [{"1.0.0", [{"lib", "~> 1.0"}]}]}, context)
     Process.put({:body, "/packages/lib"}, {:status, 503})
@@ -220,6 +248,7 @@ defmodule Portal.NativeClosureTest do
     assert classify("app", "1.0.0", context) == {:error, :hex_registry_unavailable}
   end
 
+  @tag :capture_log
   test "dry_run counts pure, native and errors at each package's newest live release", context do
     registry(
       %{

@@ -52,7 +52,7 @@ defmodule Portal.NativeClosure do
     else
       with {:ok, releases} <- releases(name, opts),
            {:ok, release} <- exact(name, version, releases) do
-        walk(release.deps, MapSet.new([name]), opts)
+        walk(release.deps, %{name => version}, opts)
       end
     end
   end
@@ -101,26 +101,50 @@ defmodule Portal.NativeClosure do
   end
 
   # Breadth-first: `rest ++ deps` keeps a shallow marker from waiting behind a
-  # deep pure subtree. Visited by name, so cycles terminate and each package is
-  # resolved once, as Mix resolves one version per package.
+  # deep pure subtree. `seen` maps each visited package to the version it was
+  # resolved to, so cycles terminate and each package is resolved once, as Mix
+  # resolves one version per package -- but a later edge to an already-resolved
+  # package still has its requirement checked against that version, instead of
+  # being skipped outright, so a dependency Mix would have pinned to a
+  # different (native) release cannot be waved through as pure.
   defp walk([], _seen, _opts), do: :pure
 
   defp walk([dep | rest], seen, opts) do
     cond do
       dep.optional -> walk(rest, seen, opts)
-      MapSet.member?(seen, dep.package) -> walk(rest, seen, opts)
       dep.repository != "hexpm" -> {:native, {:repository, dep.package, dep.repository}}
+      Map.has_key?(seen, dep.package) -> recheck(dep, rest, seen, opts)
       dep.package in @markers -> {:native, {:marker, dep.package}}
       nerves?(dep.package) -> {:native, {:nerves, dep.package}}
-      MapSet.size(seen) >= @max_closure -> {:native, :closure_too_large}
+      map_size(seen) >= @max_closure -> {:native, :closure_too_large}
       true -> descend(dep, rest, seen, opts)
+    end
+  end
+
+  # A second edge to an already-resolved package doesn't get a second
+  # resolution -- Mix picks one version per package -- but its requirement
+  # must still hold against the version already chosen, or the closure that
+  # picked it is not the one Mix would actually build.
+  defp recheck(dep, rest, seen, opts) do
+    version = Map.fetch!(seen, dep.package)
+
+    case Version.parse_requirement(dep.requirement) do
+      {:ok, requirement} ->
+        if matches?(version, requirement) do
+          walk(rest, seen, opts)
+        else
+          {:native, {:unsatisfiable, dep.package, dep.requirement}}
+        end
+
+      :error ->
+        {:native, {:bad_requirement, dep.package, dep.requirement}}
     end
   end
 
   defp descend(dep, rest, seen, opts) do
     with {:ok, releases} <- releases(dep.package, opts),
          {:ok, release} <- resolve(dep, releases) do
-      walk(rest ++ release.deps, MapSet.put(seen, dep.package), opts)
+      walk(rest ++ release.deps, Map.put(seen, dep.package, release.version), opts)
     end
   end
 
