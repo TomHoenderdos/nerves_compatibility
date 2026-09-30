@@ -29,8 +29,11 @@ defmodule Portal.NativeClosure do
   caller to retry.
   """
 
+  require Logger
+
   alias Portal.HexDeps
 
+  @progress_every 500
   @markers ~w(elixir_make rustler rustler_precompiled zigler cc_precompiler unifex bundlex)
   @max_closure 500
 
@@ -44,24 +47,48 @@ defmodule Portal.NativeClosure do
           | {:registry, String.t(), :hex_registry_undecodable | :not_found}
           | :closure_too_large
 
+  @doc """
+  Classifies `name` at `version` from its registry dependency closure.
+
+  The root package's releases are always fetched fresh (`cache: false`),
+  whatever `opts` say: `Portal.Workers.UpdateCheck` hands over a release it has
+  only just seen, and a copy of the resource cached up to an hour earlier would
+  not list it, turning a pure package into `{:unknown_version, ...}` and a
+  needless build. Dependencies use the cache as `opts` direct.
+  """
   @spec classify(String.t(), String.t(), keyword()) ::
           :pure | {:native, reason()} | {:error, :hex_registry_unavailable}
   def classify(name, version, opts \\ []) do
     if nerves?(name) do
       {:native, {:nerves, name}}
     else
-      with {:ok, releases} <- releases(name, opts),
-           {:ok, release} <- exact(name, version, releases) do
-        walk(release.deps, %{name => version}, opts)
+      with {:ok, releases} <- releases(name, Keyword.put(opts, :cache, false)) do
+        classify_release(name, version, releases, opts)
       end
+    end
+  end
+
+  defp classify_release(name, version, releases, opts) do
+    with {:ok, release} <- exact(name, version, releases) do
+      walk(release.deps, %{name => version}, opts)
     end
   end
 
   @doc """
   Classifies each name at its newest live release and writes nothing.
 
-  For `bin/portal eval` on production, to size a sweep before switching the
-  filter on. `reasons` counts native verdicts by the reason's first element.
+  For a remote console on production (`bin/portal remote`), to size a sweep
+  before switching the filter on. Not `bin/portal eval`: `eval` starts no
+  applications, so the `Portal.HexDeps` table and the HTTP client this needs
+  are not running and the call crashes. A full run over ~18.5k names takes
+  roughly 20-40 minutes, longer than a `bin/portal rpc` call is comfortable
+  holding open, so prefer the remote console. Progress is logged every 500
+  names.
+
+  `reasons` counts native verdicts by the reason's first element. "Latest"
+  here is the newest stable non-retired release in the registry, whereas
+  `Portal.Workers.Backfill` asks `Portal.HexPm.latest_version/1`, so the
+  counts can differ slightly from what a seed would do.
   """
   @spec dry_run([String.t()], keyword()) :: %{
           pure: non_neg_integer(),
@@ -70,12 +97,33 @@ defmodule Portal.NativeClosure do
           reasons: %{atom() => non_neg_integer()}
         }
   def dry_run(names, opts \\ []) do
-    Enum.reduce(names, %{pure: 0, native: 0, errors: 0, reasons: %{}}, fn name, acc ->
-      case latest(name, opts) do
-        {:ok, version} -> tally(acc, classify(name, version, opts))
-        other -> tally(acc, other)
-      end
+    names
+    |> Enum.with_index(1)
+    |> Enum.reduce(%{pure: 0, native: 0, errors: 0, reasons: %{}}, fn {name, n}, acc ->
+      acc = tally(acc, dry_classify(name, opts))
+      if rem(n, @progress_every) == 0, do: log_progress(n, acc)
+      acc
     end)
+  end
+
+  # The root resource is fetched once, fresh, and reused for both the
+  # latest-version pick and the classification.
+  defp dry_classify(name, opts) do
+    if nerves?(name) do
+      {:native, {:nerves, name}}
+    else
+      with {:ok, releases} <- releases(name, Keyword.put(opts, :cache, false)),
+           {:ok, version} <- latest(name, releases) do
+        classify_release(name, version, releases, opts)
+      end
+    end
+  end
+
+  defp log_progress(n, acc) do
+    Logger.info(
+      "NativeClosure.dry_run: #{n} classified " <>
+        "(pure #{acc.pure}, native #{acc.native}, errors #{acc.errors})"
+    )
   end
 
   defp tally(acc, :pure), do: Map.update!(acc, :pure, &(&1 + 1))
@@ -89,14 +137,12 @@ defmodule Portal.NativeClosure do
     |> Map.update!(:reasons, &Map.update(&1, kind, 1, fn n -> n + 1 end))
   end
 
-  defp latest(name, opts) do
-    with {:ok, releases} <- releases(name, opts) do
-      stable = Enum.filter(releases, &(not &1.retired? and stable?(&1.version)))
+  defp latest(name, releases) do
+    stable = Enum.filter(releases, &(not &1.retired? and stable?(&1.version)))
 
-      case newest(stable) || newest(releases) do
-        nil -> {:native, {:unknown_version, name, "latest"}}
-        release -> {:ok, release.version}
-      end
+    case newest(stable) || newest(releases) do
+      nil -> {:native, {:unknown_version, name, "latest"}}
+      release -> {:ok, release.version}
     end
   end
 
