@@ -303,29 +303,29 @@ defmodule PortalWeb.PackageLive do
     version = package.latest_version
 
     head =
-      case {basis(systems), length(systems), Enum.count(systems, &(&1.status == "pass"))} do
-        {"registry_deps", _, _} ->
+      case basis(systems) do
+        "registry_deps" ->
           "#{name} #{version} is assumed Nerves-compatible: no native code in its dependency closure on hex.pm; not compiled."
 
-        {"pure_elixir", _, _} ->
+        "pure_elixir" ->
           "#{name} #{version} is assumed Nerves-compatible after pure-Elixir inspection and host compilation."
 
-        {nil, 0, _} ->
-          "#{name} has not been built against any Nerves system yet."
-
-        {nil, total, total} ->
-          "#{name} #{version} builds on all #{total} tracked Nerves systems."
-
-        {nil, total, 0} ->
-          "#{name} #{version} fails on all #{total} tracked Nerves systems."
-
-        {nil, total, pass} ->
-          "#{name} #{version} builds on #{pass} of #{total} tracked Nerves systems."
+        nil ->
+          build_summary(name, version, systems)
       end
 
     case package.description do
       blurb when is_binary(blurb) and blurb != "" -> truncate(head <> " " <> blurb)
       _ -> head
+    end
+  end
+
+  defp build_summary(name, version, systems) do
+    case {length(systems), Enum.count(systems, &(&1.status == "pass"))} do
+      {0, _} -> "#{name} has not been built against any Nerves system yet."
+      {total, total} -> "#{name} #{version} builds on all #{total} tracked Nerves systems."
+      {total, 0} -> "#{name} #{version} fails on all #{total} tracked Nerves systems."
+      {total, pass} -> "#{name} #{version} builds on #{pass} of #{total} tracked Nerves systems."
     end
   end
 

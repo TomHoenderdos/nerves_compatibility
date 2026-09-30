@@ -60,14 +60,15 @@ defmodule Portal.HexDeps do
     cache? = Keyword.get(opts, :cache, true)
 
     case cache? && cached(name) do
-      {:ok, releases} ->
-        {:ok, releases}
+      {:ok, releases} -> {:ok, releases}
+      _ -> fetch_and_store(name, opts, cache?)
+    end
+  end
 
-      _ ->
-        with {:ok, releases} <- fetch(name, opts) do
-          if cache?, do: :ets.insert(@table, {name, releases, now() + @ttl_seconds})
-          {:ok, releases}
-        end
+  defp fetch_and_store(name, opts, cache?) do
+    with {:ok, releases} <- fetch(name, opts) do
+      if cache?, do: :ets.insert(@table, {name, releases, now() + @ttl_seconds})
+      {:ok, releases}
     end
   end
 
