@@ -95,4 +95,21 @@ defmodule NccWorker.BuildSelectionTest do
     File.write!(path, binary)
     assert BuildSelection.classify(root, "sample", "", %{"root" => ["sample"]}) == :pure_elixir
   end
+
+  test "looking up an executable on the PATH requires firmware", %{root: root} do
+    package(root, "sample")
+
+    [{module, binary}] =
+      Code.compile_quoted(
+        quote do
+          defmodule NccWorker.TestCompiledFindExecutable do
+            def ffmpeg, do: System.find_executable("ffmpeg")
+          end
+        end
+      )
+
+    path = Path.join([root, "_build", "host", "lib", "sample", "ebin", "#{module}.beam"])
+    File.write!(path, binary)
+    assert BuildSelection.classify(root, "sample", "", %{"root" => ["sample"]}) == :firmware
+  end
 end

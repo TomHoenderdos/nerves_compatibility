@@ -32,6 +32,8 @@ defmodule BeamScanner.Analyzer do
           os_env_evidence: [evidence()],
           os_exec_calls?: boolean(),
           os_exec_evidence: [evidence()],
+          executable_lookup_calls?: boolean(),
+          executable_lookup_evidence: [evidence()],
           halt_calls?: boolean(),
           halt_evidence: [evidence()],
           protocols_defined: [protocol_def()],
@@ -93,6 +95,14 @@ defmodule BeamScanner.Analyzer do
                      {System, :shell, 2}
                    ])
 
+  # Looking a program up on the PATH, which a Nerves image rarely carries even
+  # when nothing here runs it directly.
+  @executable_lookup_targets MapSet.new([
+                               {System, :find_executable, 1},
+                               {:os, :find_executable, 1},
+                               {:os, :find_executable, 2}
+                             ])
+
   @halt_targets MapSet.new([
                   {System, :halt, 0},
                   {System, :halt, 1},
@@ -107,6 +117,7 @@ defmodule BeamScanner.Analyzer do
     {:app_env, @app_env_targets},
     {:os_env, @os_env_targets},
     {:os_exec, @os_exec_targets},
+    {:executable_lookup, @executable_lookup_targets},
     {:halt, @halt_targets}
   ]
 
@@ -151,6 +162,8 @@ defmodule BeamScanner.Analyzer do
       os_env_evidence: Map.fetch!(sorted_evidence, :os_env),
       os_exec_calls?: evidence_present?(:os_exec, sorted_evidence),
       os_exec_evidence: Map.fetch!(sorted_evidence, :os_exec),
+      executable_lookup_calls?: evidence_present?(:executable_lookup, sorted_evidence),
+      executable_lookup_evidence: Map.fetch!(sorted_evidence, :executable_lookup),
       halt_calls?: evidence_present?(:halt, sorted_evidence),
       halt_evidence: Map.fetch!(sorted_evidence, :halt),
       protocols_defined: sorted_protocol_defs,

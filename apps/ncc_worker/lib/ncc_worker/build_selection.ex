@@ -52,6 +52,7 @@ defmodule NccWorker.BuildSelection do
          nif_calls?: false,
          shell_calls?: false,
          os_exec_calls?: false,
+         executable_lookup_calls?: false,
          footprint: %{priv: %{file_count: 0}}
        })
        when count > 0,
