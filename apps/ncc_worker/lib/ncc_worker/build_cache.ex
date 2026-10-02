@@ -102,7 +102,7 @@ defmodule NccWorker.BuildCache do
   @cache_env "NCC_BUILD_CACHE"
   @key_version "v2"
 
-  @type entry :: %{name: String.t(), key: String.t(), dir: String.t()}
+  @type entry :: %{name: String.t(), key: String.t(), dir: String.t(), shared: boolean()}
   @type plan :: %{root: String.t(), entries: [entry()]}
 
   @doc """
@@ -131,11 +131,13 @@ defmodule NccWorker.BuildCache do
         |> Enum.reject(&MapSet.member?(excluded, &1))
         |> Enum.map(fn name ->
           closure = closure(graph, name)
+          component = target_component(name, closure, target, agnostic)
 
           %{
             name: name,
-            key: key_for(name, target_component(name, closure, target, agnostic), closure, lock),
-            dir: Path.join([build_path, "lib", name])
+            key: key_for(name, component, closure, lock),
+            dir: Path.join([build_path, "lib", name]),
+            shared: component == "any"
           }
         end)
 
@@ -191,6 +193,22 @@ defmodule NccWorker.BuildCache do
       end)
 
     {restored, length(entries)}
+  end
+
+  @doc """
+  Counts the target-independent entries the cache does not have yet.
+
+  Each of these is compiled by every target that cannot restore it, so this is
+  the work that building one target first, and letting the rest restore what it
+  stored, would save.
+  """
+  @spec missing_shared(plan() | :disabled) :: non_neg_integer()
+  def missing_shared(:disabled), do: 0
+
+  def missing_shared(%{root: root, entries: entries}) do
+    Enum.count(entries, fn entry ->
+      Map.get(entry, :shared, false) and not File.dir?(Path.join(root, entry.key))
+    end)
   end
 
   @doc """
