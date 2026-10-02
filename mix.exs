@@ -7,7 +7,8 @@ defmodule NervesCompatibility.MixProject do
       version: "0.1.0",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      releases: releases()
+      releases: releases(),
+      listeners: [Phoenix.CodeReloader]
     ]
   end
 
