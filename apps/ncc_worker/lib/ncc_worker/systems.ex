@@ -46,20 +46,30 @@ defmodule NccWorker.Systems do
 
   # What every build runs when the caller does not ask for something specific.
   #
-  # Chosen for architecture spread rather than popularity: each entry is the
-  # only representative of its ABI, so a precompiled-NIF gap shows up exactly
-  # once instead of four times. rpi4 covers arm64, x86_64 covers x86_64,
-  # mangopi_mq_pro covers riscv64, and trellis covers arm32 — the last of which
-  # went untested until trellis was added, despite being the architecture most
-  # likely to be missing from a package's precompiled artifacts.
+  # Originally one system per ABI, so a precompiled-NIF gap showed up exactly
+  # once: rpi4 for arm64, x86_64, mangopi_mq_pro for riscv64 and trellis for
+  # arm32. The set now also covers the boards people actually deploy -- bbb,
+  # rpi0, rpi5 and qemu_aarch64 -- so a board-specific failure is visible too.
+  # rpi0 is the one addition that brings a new ABI: armv6, which precompiled
+  # artifacts skip most often. The others mostly repeat an architecture already
+  # covered, and each costs about one more full build per package.
+  #
+  # grisp2 stays out: 0.18.0 requires `nerves ~> 1.11`, and since every
+  # default target's system lands in the same generated mix.exs, it would fail
+  # dependency resolution for the whole run on Nerves 2, not just its own
+  # target. Its main branch already accepts 2.0; add it once that is released.
   #
   # trellis is also the Nerves Starter Kit board, so it is the configuration
   # newcomers actually hit first.
   @default [
-    "nerves_system_rpi4",
+    "nerves_system_bbb",
     "nerves_system_mangopi_mq_pro",
-    "nerves_system_x86_64",
-    "nerves_system_trellis"
+    "nerves_system_qemu_aarch64",
+    "nerves_system_rpi0",
+    "nerves_system_rpi4",
+    "nerves_system_rpi5",
+    "nerves_system_trellis",
+    "nerves_system_x86_64"
   ]
 
   @doc "Every system this worker can build, in result order."

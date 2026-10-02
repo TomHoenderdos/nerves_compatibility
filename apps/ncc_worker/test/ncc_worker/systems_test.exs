@@ -9,21 +9,35 @@ defmodule NccWorker.SystemsTest do
     # portal, and this test is about the worker's own choice of systems rather
     # than about how the portal labels them.
     @arch %{
-      "nerves_system_rpi4" => "arm64",
+      "nerves_system_bbb" => "arm32",
       "nerves_system_mangopi_mq_pro" => "riscv64",
-      "nerves_system_x86_64" => "x86_64",
-      "nerves_system_trellis" => "arm32"
+      "nerves_system_qemu_aarch64" => "arm64",
+      "nerves_system_rpi0" => "arm32",
+      "nerves_system_rpi4" => "arm64",
+      "nerves_system_rpi5" => "arm64",
+      "nerves_system_trellis" => "arm32",
+      "nerves_system_x86_64" => "x86_64"
     }
 
-    test "covers each architecture exactly once" do
-      # The point of the default set is ABI spread, not board popularity: a
-      # package missing a precompiled NIF for one architecture should show up
-      # once, not be masked by three boards that share an ABI. Adding a system
-      # that duplicates an architecture fails here, so the cost is deliberate.
+    test "covers every architecture" do
+      # A package missing a precompiled NIF for one architecture has to show up
+      # somewhere. Dropping the last system of an architecture fails here.
       arches = Enum.map(Systems.default(), &Map.fetch!(@arch, &1.name))
 
-      assert Enum.sort(arches) == ["arm32", "arm64", "riscv64", "x86_64"]
-      assert length(Enum.uniq(arches)) == length(arches)
+      assert Enum.sort(Enum.uniq(arches)) == ["arm32", "arm64", "riscv64", "x86_64"]
+    end
+
+    test "includes rpi0, the only armv6 system" do
+      names = Enum.map(Systems.default(), & &1.name)
+      assert "nerves_system_rpi0" in names
+    end
+
+    test "leaves out grisp2 while its release still rejects Nerves 2" do
+      # nerves_system_grisp2 0.18.0 requires `nerves ~> 1.11`. Every default
+      # system shares one generated mix.exs, so it would break resolution for
+      # the whole run, not just the grisp2 target.
+      names = Enum.map(Systems.default(), & &1.name)
+      refute "nerves_system_grisp2" in names
     end
 
     test "includes trellis, the Nerves Starter Kit board" do

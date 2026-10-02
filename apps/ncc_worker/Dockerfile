@@ -2,7 +2,7 @@
 # moved to OTP 29, and nerves refuses to build when host and target majors differ,
 # so this tag and the Elixir build below must stay on the same major.
 # nerves_system_br 1.34.1 ships Erlang 29.0.4.
-FROM ghcr.io/nerves-project/nerves_system_br:1.34.1
+FROM ghcr.io/nerves-project/nerves_system_br:latest
 
 # Install Elixir from GitHub releases
 RUN wget https://repo.hex.pm/builds/elixir/v1.20.3-otp-29.zip && \

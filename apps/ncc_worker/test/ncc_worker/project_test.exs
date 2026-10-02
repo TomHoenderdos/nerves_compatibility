@@ -57,6 +57,92 @@ defmodule NccWorker.ProjectTest do
     end
   end
 
+  describe "nerves_2_mix_exs/1" do
+    @release_mix_exs """
+    def project do
+      [
+        app: @app,
+        deps: deps()
+      ]
+    end
+
+    defp deps do
+      [
+        {:nerves, "~> 1.13", runtime: false},
+        {:shoehorn, "~> 0.9.1"},
+        {:ring_logger, "~> 0.11.0"}
+      ]
+    end
+
+    def release do
+      [
+        include_erts: &Nerves.Release.erts/0,
+        steps: [&Nerves.Release.init/1, :assemble]
+      ]
+    end
+    """
+
+    test "pins the nerves requirement to the prerelease" do
+      assert {:ok, migrated} = Project.nerves_2_mix_exs(@release_mix_exs)
+
+      assert migrated =~ ~s[{:nerves, "== 2.0.0-pre.2", runtime: false}]
+      refute migrated =~ "~> 1.13"
+    end
+
+    test "drops shoehorn and leaves the other deps" do
+      assert {:ok, migrated} = Project.nerves_2_mix_exs(@release_mix_exs)
+
+      refute migrated =~ "shoehorn"
+
+      assert migrated =~
+               ~s[{:nerves, "== 2.0.0-pre.2", runtime: false},\n    {:ring_logger]
+    end
+
+    test "moves the release hooks off the deprecated Nerves.Release" do
+      assert {:ok, migrated} = Project.nerves_2_mix_exs(@release_mix_exs)
+
+      assert migrated =~ "include_erts: &Nerves.erts/0"
+      assert migrated =~ "steps: [&Nerves.init_release/1, :assemble]"
+      refute migrated =~ "Nerves.Release"
+    end
+
+    test "supplies TARGET_CPU for x86_64, which its system does not declare" do
+      assert {:ok, migrated} = Project.nerves_2_mix_exs(@release_mix_exs)
+
+      assert migrated =~
+               ~s|    app: @app,\n    nerves: if(Mix.target() == :x86_64, do: [env: [{"TARGET_CPU", "x86_64"}]], else: []),\n|
+    end
+
+    test "leaves nerves_* packages alone" do
+      content =
+        ~s[app: @app,\n{:nerves_runtime, "~> 0.13.0"},\n{:nerves, "~> 1.13", runtime: false}]
+
+      assert {:ok, migrated} = Project.nerves_2_mix_exs(content)
+      assert migrated =~ ~s[{:nerves_runtime, "~> 0.13.0"}]
+    end
+
+    test "errors when the template has no nerves dep" do
+      assert {:error, {:nerves_2_migration_failed, _}} =
+               Project.nerves_2_mix_exs("app: @app,\ndefp deps, do: []")
+    end
+
+    test "errors when the template has no project app line" do
+      assert {:error, {:nerves_2_migration_failed, _}} =
+               Project.nerves_2_mix_exs(~s[{:nerves, "~> 1.13", runtime: false}])
+    end
+  end
+
+  describe "nerves_2_target_config/1" do
+    test "moves the shoehorn start order to nerves application_sort" do
+      content =
+        "config :logger, backends: [RingLogger]\n\nconfig :shoehorn, init: [:nerves_runtime]\n"
+
+      assert Project.nerves_2_target_config(content) ==
+               "config :logger, backends: [RingLogger]\n\n" <>
+                 "config :nerves, application_sort: [init: [:nerves_runtime]]\n"
+    end
+  end
+
   describe "add_package/2" do
     setup do
       tmp = Path.join(System.tmp_dir!(), "project_test_#{System.unique_integer([:positive])}")

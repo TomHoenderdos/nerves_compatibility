@@ -21,11 +21,30 @@ defmodule NccWorker.Project do
     - {:ok, project_dir} - Path to the created project
     - {:error, reason} - Creation failed
   """
+  # Workaround until `mix nerves.new` can generate a project on a Nerves
+  # prerelease: the archive template emits a stable `~> 1.x` requirement, and Hex
+  # never picks a prerelease for a requirement that does not name one. Every
+  # system we build already accepts `~> 2.0.0-dev`, so the systems stay as
+  # generated. The template is also a Nerves 1 project, so it gets the migration
+  # `Nerves.Release` documents: Nerves 2 does Shoehorn's app ordering itself.
+  # Drop this, `migrate_to_nerves_2/1` and its helpers once nerves.new grows the
+  # flag.
+  @nerves_requirement "== 2.0.0-pre.2"
+
+  # Nerves 2 refuses to build a target whose plan lacks TARGET_CPU, and
+  # nerves_system_x86_64 (1.34.2 and main) never declared one -- every other
+  # system we build does. The project's own `:nerves` env is merged into the
+  # same plan, so it can fill the gap. The value follows the other systems'
+  # convention of the gcc CPU name with `-` as `_`; x86_64 builds with
+  # `-march=x86-64`. Drop once the system declares it.
+  @x86_64_target_cpu ~S|nerves: if(Mix.target() == :x86_64, do: [env: [{"TARGET_CPU", "x86_64"}]], else: []),|
+
   @spec create(String.t(), map() | nil, [String.t()]) :: {:ok, String.t()} | {:error, term()}
   def create(work_dir, systems_override, targets) do
     project_dir = Path.join(work_dir, "proj")
 
     with :ok <- create_nerves_project(project_dir, targets),
+         :ok <- migrate_to_nerves_2(project_dir),
          :ok <- maybe_apply_systems_override(project_dir, systems_override) do
       {:ok, project_dir}
     end
@@ -149,6 +168,57 @@ defmodule NccWorker.Project do
       {:error, reason} ->
         {:error, {:cannot_read_mix_exs, reason}}
     end
+  end
+
+  # Edits the fixed mix.exs and config in the generated container project.
+  # sobelow_skip ["Traversal.FileModule"]
+  @spec migrate_to_nerves_2(String.t()) :: :ok | {:error, term()}
+  defp migrate_to_nerves_2(project_dir) do
+    mix_exs_path = Path.join(project_dir, "mix.exs")
+    target_config_path = Path.join([project_dir, "config", "target.exs"])
+
+    with {:ok, mix_exs} <- File.read(mix_exs_path),
+         {:ok, migrated} <- nerves_2_mix_exs(mix_exs),
+         :ok <- File.write(mix_exs_path, migrated),
+         {:ok, target_config} <- File.read(target_config_path) do
+      File.write(target_config_path, nerves_2_target_config(target_config))
+    end
+  end
+
+  @doc false
+  # Fails rather than passing through when the `:nerves` dep or the project's
+  # `app:` line is missing: a template change that moved either would otherwise
+  # silently put every build back on stable Nerves, or every x86_64 build into
+  # a missing-TARGET_CPU failure. The release hooks only matter for tidiness --
+  # Nerves 2 still accepts the 1.x ones with a deprecation warning.
+  @spec nerves_2_mix_exs(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def nerves_2_mix_exs(content) do
+    nerves_dep = ~r/(\{:nerves\s*,\s*)"[^"]*"/
+    project_app = ~r/^([ \t]*)app: @app,\n/m
+
+    if Regex.match?(nerves_dep, content) and Regex.match?(project_app, content) do
+      {:ok,
+       content
+       |> String.replace(nerves_dep, "\\1\"#{@nerves_requirement}\"")
+       |> String.replace(project_app, "\\0\\1#{@x86_64_target_cpu}\n", global: false)
+       |> String.replace(~r/^\s*\{:shoehorn\s*,[^}]*\},?\n/m, "")
+       |> String.replace("&Nerves.Release.erts/0", "&Nerves.erts/0")
+       |> String.replace("&Nerves.Release.init/1", "&Nerves.init_release/1")}
+    else
+      {:error, {:nerves_2_migration_failed, content}}
+    end
+  end
+
+  @doc false
+  # With `:shoehorn` gone from the deps, its config would otherwise point at an
+  # app that is not there. The start order moves over unchanged.
+  @spec nerves_2_target_config(String.t()) :: String.t()
+  def nerves_2_target_config(content) do
+    String.replace(
+      content,
+      ~r/config :shoehorn,\s*init:\s*(\[[^\]]*\])/,
+      "config :nerves, application_sort: [init: \\1]"
+    )
   end
 
   @doc false
