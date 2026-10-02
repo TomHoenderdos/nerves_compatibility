@@ -225,4 +225,32 @@ defmodule NccWorker.BuildCacheTest do
       assert File.ls!(ctx.root) == []
     end
   end
+
+  describe "missing_shared/1" do
+    setup do
+      root = Path.join(System.tmp_dir!(), "ncc-cache-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf(root) end)
+      {:ok, root: root}
+    end
+
+    test "counts only shared entries the cache does not hold", ctx do
+      File.mkdir_p!(Path.join(ctx.root, "held"))
+
+      plan = %{
+        root: ctx.root,
+        entries: [
+          %{name: "a", key: "held", dir: "/x/a", shared: true},
+          %{name: "b", key: "absent1", dir: "/x/b", shared: true},
+          %{name: "c", key: "absent2", dir: "/x/c", shared: false}
+        ]
+      }
+
+      assert BuildCache.missing_shared(plan) == 1
+    end
+
+    test "is zero when disabled" do
+      assert BuildCache.missing_shared(:disabled) == 0
+    end
+  end
 end

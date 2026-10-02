@@ -90,6 +90,10 @@ defmodule NccWorker.Worker do
   @default_log_tail_bytes 4096
   @max_build_concurrency 4
 
+  # How many target-independent dependencies must be missing from the build
+  # cache before one target builds alone to seed it. See build_all_systems/6.
+  @seed_min_missing_shared 10
+
   # The generated wrapper application, from `Project.new_project/2`. It is not a
   # dependency of anything and is rewritten for every package, so caching its
   # build would be both wrong and pointless.
@@ -472,18 +476,51 @@ defmodule NccWorker.Worker do
     # `MIX_DEPS_PATH` too costs a little disk and unpack time, and keeps deps
     # that compile inside their own source tree (anything on elixir_make) from
     # clobbering each other across targets.
+    #
+    # Most of a dependency tree is target-independent and one build of it can
+    # serve every target (see `NccWorker.BuildCache`). But the cache only gets
+    # those builds once a target finishes, and with every target starting at
+    # once on a cold cache none of them can use another's: phoenix_kit_ai
+    # compiled 67 shareable dependencies eight times over, an hour in all. So
+    # when enough of them are missing, one target builds alone first and the
+    # rest restore from it just before they compile. On a warm cache that would
+    # only cost a wave of parallel firmware assembly, so it is skipped.
+    concurrency = build_concurrency()
+
     prepared =
       Enum.map(systems, fn system ->
         {system, prepare_system(project_dir, system, output_dir, package_name)}
       end)
 
-    prepared
+    {seed, rest} = split_seed(prepared, concurrency)
+
+    (build_batch(seed, 1, log_tail_bytes, package_name) ++
+       build_batch(rest, concurrency, log_tail_bytes, package_name))
+    |> Map.new()
+  end
+
+  defp split_seed(prepared, concurrency) when concurrency > 1 and length(prepared) > 1 do
+    case Enum.split_with(prepared, fn {_system, prep} -> prep.deps == :ok end) do
+      {[{_system, prep} = first | ok], failed} ->
+        if BuildCache.missing_shared(prep.cache_plan) >= @seed_min_missing_shared,
+          do: {[first], ok ++ failed},
+          else: {[], prepared}
+
+      _ ->
+        {[], prepared}
+    end
+  end
+
+  defp split_seed(prepared, _concurrency), do: {[], prepared}
+
+  defp build_batch(batch, concurrency, log_tail_bytes, package_name) do
+    batch
     |> Task.async_stream(
       fn {system, prep} -> build_system(system, prep, log_tail_bytes, package_name) end,
-      max_concurrency: build_concurrency(),
+      max_concurrency: concurrency,
       timeout: :infinity
     )
-    |> Enum.zip(prepared)
+    |> Enum.zip(batch)
     |> Enum.map(fn
       {{:ok, result}, {system, _prep}} ->
         {system.name, result}
@@ -491,7 +528,6 @@ defmodule NccWorker.Worker do
       {{:exit, reason}, {system, prep}} ->
         {system.name, task_crash_result(prep, log_tail_bytes, reason)}
     end)
-    |> Map.new()
   end
 
   # How many targets may build at once. One is the historical serial behaviour
@@ -583,11 +619,27 @@ defmodule NccWorker.Worker do
     {plan, %{cache_restored: restored * 1.0, cache_candidates: total * 1.0}}
   end
 
+  # The restore in prepare_system/4 runs for every target before any of them
+  # has compiled, so it never sees what an earlier target in this same run
+  # stored. Restoring again right before the compile picks that up. It only
+  # fills directories that are still missing, so nothing restored or built
+  # already is touched.
+  defp restore_again(%{cache_plan: plan} = prep) do
+    {restored, _total} = BuildCache.restore(plan)
+
+    update_in(
+      prep.cache_stats,
+      &Map.update(&1, :cache_restored, restored * 1.0, fn n -> n + restored end)
+    )
+  end
+
   @spec build_system(map(), map(), integer(), String.t()) :: map()
   defp build_system(system, prep, log_tail_bytes, package_name) do
     result =
       case prep.deps do
         :ok ->
+          prep = restore_again(prep)
+
           prep
           |> run_firmware(log_tail_bytes, package_name)
           |> store_cache(prep)
