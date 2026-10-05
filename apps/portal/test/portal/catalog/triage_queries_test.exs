@@ -34,6 +34,21 @@ defmodule Portal.Catalog.TriageQueriesTest do
     assert Enum.count(all, & &1.stale?) == 1
   end
 
+  test "a newer run where argus did not run leaves findings current" do
+    ingest("1.0.0", ok([finding()]), 1)
+    ingest("1.1.0", %{"status" => "skipped"}, 2)
+    ingest("1.2.0", %{"status" => "error", "findings" => [], "error" => "timeout"}, 3)
+    ingest("1.3.0", :absent, 4)
+
+    assert [%{stale?: false}] = Catalog.triage_list(%{})
+    assert Catalog.triage_counts().new == 1
+  end
+
+  test "the list is capped and reports the total" do
+    ingest("1.0.0", ok(for(i <- 1..3, do: finding(%{"detail" => "d#{i}"}))), 1)
+    assert {[_, _], 3} = Catalog.triage_page(%{}, 2)
+  end
+
   test "counts ignore stale rows" do
     ingest("1.0.0", ok([finding(), finding(%{"detail" => "gone later"})]), 1)
     ingest("1.1.0", ok([finding()]), 2)

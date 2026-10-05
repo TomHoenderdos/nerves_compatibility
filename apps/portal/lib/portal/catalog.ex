@@ -11,6 +11,8 @@ defmodule Portal.Catalog do
 
   require Ash.Query
 
+  import Ecto.Query, only: [from: 2, subquery: 1]
+
   alias Portal.Catalog.{
     Artifact,
     ArtifactMembership,
@@ -256,12 +258,40 @@ defmodule Portal.Catalog do
   @triage_status_order %{new: 0, confirmed: 1, reported: 2, false_positive: 3}
   @triage_severity_order %{"error" => 0, "warning" => 1, "info" => 2}
 
+  # Everything the list renders except the `finding` jsonb, which is loaded
+  # only for the rows that end up on the page.
+  @triage_list_fields [
+    :id,
+    :package_name,
+    :analysis,
+    :severity,
+    :title,
+    :file,
+    :line,
+    :status,
+    :note,
+    :first_seen_version,
+    :last_seen_version,
+    :last_seen_run_id,
+    :updated_by
+  ]
+
   @doc """
   argus findings for the admin triage list, each with `stale?`: true when the
-  package's latest run no longer reports it. See `@triage_defaults` for the
-  filters and their defaults.
+  package's latest run *in which argus ran* no longer reports it. A newer run
+  where argus was skipped or failed says nothing about a finding. See
+  `@triage_defaults` for the filters and their defaults.
   """
   def triage_list(filters \\ %{}) do
+    {rows, _total} = triage_page(filters, nil)
+    rows
+  end
+
+  @doc """
+  `triage_list/1` capped at `limit` rows (nil for all), with the number of rows
+  that matched before the cap.
+  """
+  def triage_page(filters, limit) do
     f = Map.merge(@triage_defaults, filters)
 
     rows =
@@ -275,30 +305,46 @@ defmodule Portal.Catalog do
           do: q,
           else: Ash.Query.filter(q, contains(package_name, ^f.package))
       end)
+      |> Ash.Query.select(@triage_list_fields)
       |> Ash.read!(domain: __MODULE__)
 
-    latest = latest_run_ids(rows |> Enum.map(& &1.package_name) |> Enum.uniq())
+    latest = latest_argus_run_ids(rows |> Enum.map(& &1.package_name) |> Enum.uniq())
 
-    rows
-    |> Enum.map(&%{triage: &1, stale?: Map.get(latest, &1.package_name) != &1.last_seen_run_id})
-    |> Enum.filter(&(f.include_stale or not &1.stale?))
-    |> Enum.sort_by(fn %{triage: t} ->
-      {@triage_status_order[t.status], @triage_severity_order[t.severity], t.package_name,
-       t.title}
-    end)
+    matched =
+      rows
+      |> Enum.map(&%{triage: &1, stale?: Map.get(latest, &1.package_name) != &1.last_seen_run_id})
+      |> Enum.filter(&(f.include_stale or not &1.stale?))
+      |> Enum.sort_by(fn %{triage: t} ->
+        {@triage_status_order[t.status], @triage_severity_order[t.severity], t.package_name,
+         t.title}
+      end)
+
+    page = if limit, do: Enum.take(matched, limit), else: matched
+    {with_findings(page), length(matched)}
   end
 
-  @doc "Non-stale triage rows per status."
+  @doc "Whether one triage row's package has a newer argus run that no longer reports it."
+  def triage_stale?(%FindingTriage{package_name: name, last_seen_run_id: run_id}) do
+    Map.get(latest_argus_run_ids([name]), name) != run_id
+  end
+
+  @doc "Non-stale triage rows per status, counted in Postgres."
   def triage_counts do
     counts =
-      %{
-        status: Map.keys(@triage_status_order),
-        severity: Map.keys(@triage_severity_order)
-      }
-      |> triage_list()
-      |> Enum.frequencies_by(& &1.triage.status)
+      from(t in "catalog_finding_triage",
+        join: p in "catalog_packages",
+        on: p.name == t.package_name,
+        join: l in subquery(latest_argus_runs()),
+        on: l.package_id == p.id and l.id == t.last_seen_run_id,
+        group_by: t.status,
+        select: {t.status, count(t.id)}
+      )
+      |> Repo.all()
+      |> Map.new()
 
-    Map.new(Map.keys(@triage_status_order), &{&1, Map.get(counts, &1, 0)})
+    Map.new(@triage_status_order, fn {status, _} ->
+      {status, Map.get(counts, Atom.to_string(status), 0)}
+    end)
   end
 
   @doc "Sets an admin's verdict on one finding."
@@ -313,12 +359,45 @@ defmodule Portal.Catalog do
     |> Ash.update!(domain: __MODULE__)
   end
 
-  defp latest_run_ids([]), do: %{}
+  defp with_findings([]), do: []
 
-  defp latest_run_ids(names) do
-    packages = Package |> Ash.Query.filter(name in ^names) |> Ash.read!(domain: __MODULE__)
-    runs = latest_runs(packages)
-    Map.new(packages, &{&1.name, runs |> Map.get(&1.id, %{}) |> Map.get(:id)})
+  defp with_findings(page) do
+    ids = Enum.map(page, & &1.triage.id)
+
+    findings =
+      FindingTriage
+      |> Ash.Query.filter(id in ^ids)
+      |> Ash.Query.select([:id, :finding])
+      |> Ash.read!(domain: __MODULE__)
+      |> Map.new(&{&1.id, &1.finding})
+
+    Enum.map(page, fn %{triage: t} = row ->
+      %{row | triage: %{t | finding: Map.get(findings, t.id)}}
+    end)
+  end
+
+  # Per package, the newest run whose argus result is `ok`. DISTINCT ON keeps
+  # it to one row per package in Postgres instead of loading run history.
+  defp latest_argus_runs do
+    from(r in "catalog_runs",
+      where: fragment("?->>'status' = 'ok'", r.argus),
+      distinct: r.package_id,
+      order_by: [asc: r.package_id, desc: r.finished_at, desc: r.inserted_at],
+      select: %{package_id: r.package_id, id: r.id}
+    )
+  end
+
+  defp latest_argus_run_ids([]), do: %{}
+
+  defp latest_argus_run_ids(names) do
+    from(l in subquery(latest_argus_runs()),
+      join: p in "catalog_packages",
+      on: p.id == l.package_id,
+      where: p.name in ^names,
+      select: {p.name, l.id}
+    )
+    |> Repo.all()
+    |> Map.new(fn {name, id} -> {name, Ecto.UUID.load!(id)} end)
   end
 
   @doc "Fetches the committed run and package name needed to resume ingest completion."

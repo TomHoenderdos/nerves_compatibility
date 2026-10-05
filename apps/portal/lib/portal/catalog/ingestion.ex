@@ -37,6 +37,9 @@ defmodule Portal.Catalog.Ingestion do
 
   @domain Portal.Catalog
 
+  # The worker caps argus findings at 200, so one batch covers a whole run.
+  @max_triage_batch 200
+
   # An ingest writes a handful of rows, but each one crosses a ~80ms tailnet
   # link from the build box to Postgres. DBConnection's 15s default leaves no
   # headroom for a loaded builder; 60s does, without hiding a real hang.
@@ -103,34 +106,59 @@ defmodule Portal.Catalog.Ingestion do
     end
   end
 
-  # One FindingTriage row per finding of an `ok` argus run. Only findings with
-  # string analysis and title and a known severity are recorded: anything else
-  # is skipped here rather than handed to Postgres, where an insert error would
-  # abort the whole ingest transaction.
+  # One FindingTriage row per finding of an `ok` argus run, written as a single
+  # multi-row upsert: every statement here crosses the build box's ~80ms link
+  # to Postgres inside the ingest transaction. Only findings with string
+  # analysis and title and a known severity are recorded -- anything else is
+  # skipped here rather than handed to Postgres, where an insert error would
+  # abort the whole ingest -- and duplicates are collapsed first, because one
+  # INSERT ... ON CONFLICT cannot touch the same row twice.
   defp record_triage(package_name, version, run_id, %{"status" => "ok", "findings" => findings})
        when is_list(findings) do
-    findings
-    |> Enum.filter(&triageable?/1)
-    |> Enum.each(fn finding ->
-      FindingTriage
-      |> Ash.Changeset.for_create(:sighting, %{
-        fingerprint: FindingTriage.fingerprint(package_name, finding),
-        package_name: package_name,
-        analysis: finding["analysis"],
-        severity: finding["severity"],
-        title: finding["title"],
-        file: if(is_binary(finding["file"]), do: finding["file"]),
-        line: if(is_integer(finding["line"]), do: finding["line"]),
-        finding: finding,
-        first_seen_version: version,
-        last_seen_version: version,
-        last_seen_run_id: run_id
-      })
-      |> Ash.create!(domain: @domain)
-    end)
+    inputs =
+      findings
+      |> Enum.filter(&triageable?/1)
+      |> Enum.map(&sighting(package_name, version, run_id, &1))
+      |> Enum.reverse()
+      |> Enum.uniq_by(& &1.fingerprint)
+
+    case inputs do
+      [] ->
+        :ok
+
+      _ ->
+        %Ash.BulkResult{status: :success} =
+          Ash.bulk_create(inputs, FindingTriage, :sighting,
+            domain: @domain,
+            batch_size: @max_triage_batch,
+            upsert?: true,
+            upsert_identity: :unique_fingerprint,
+            upsert_fields: [:severity, :line, :finding, :last_seen_version, :last_seen_run_id],
+            return_errors?: true,
+            stop_on_error?: true
+          )
+
+        :ok
+    end
   end
 
   defp record_triage(_package_name, _version, _run_id, _argus), do: :ok
+
+  defp sighting(package_name, version, run_id, finding) do
+    %{
+      fingerprint: FindingTriage.fingerprint(package_name, finding),
+      package_name: package_name,
+      analysis: finding["analysis"],
+      severity: finding["severity"],
+      title: finding["title"],
+      file: if(is_binary(finding["file"]), do: finding["file"]),
+      line: if(is_integer(finding["line"]), do: finding["line"]),
+      finding: finding,
+      first_seen_version: version,
+      last_seen_version: version,
+      last_seen_run_id: run_id
+    }
+  end
 
   defp triageable?(%{"analysis" => a, "severity" => s, "title" => t})
        when is_binary(a) and is_binary(t) and s in ["error", "warning", "info"],
