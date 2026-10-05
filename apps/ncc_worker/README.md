@@ -10,7 +10,11 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
 2. Generates a fresh Nerves project and adds the target package.
 3. Rejects the run if `mix.lock` contains any non-Hex deps (exit 11).
 4. Builds firmware for each Nerves system, capturing status, size, and a log tail.
-5. Writes atomic `/out/result.json` plus per-system logs under `/out/logs/`.
+5. When `NCC_INPUT` carries `argus` (`{"analyses": ["default", "exposure"], "scope": "firmware", "timeout_seconds": 300}`),
+   runs the argus_beam escript over the host-compiled beams (`NccWorker.Argus`) and writes its findings to
+   `result.json` as `argus`. `scope: "firmware"` limits this to packages that build firmware. Advisory: it never
+   changes a status or the exit code. Without the key, `argus.status` is `"skipped"`.
+6. Writes atomic `/out/result.json` plus per-system logs under `/out/logs/`.
 
 See `examples/input.json` and `examples/result.json` for the wire format.
 

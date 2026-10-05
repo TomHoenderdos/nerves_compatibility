@@ -130,5 +130,31 @@ defmodule NccWorker.JsonWriterTest do
 
       File.rm_rf!(tmp_dir)
     end
+
+    test "writes the argus result, and null when absent" do
+      tmp_dir = System.tmp_dir!() |> Path.join("ncc_test_#{:rand.uniform(1_000_000)}")
+      File.mkdir_p!(tmp_dir)
+      on_exit(fn -> File.rm_rf!(tmp_dir) end)
+
+      base = %{
+        run_id: "r",
+        package: %{name: "p", version: "1"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{},
+        finished_at: "2026-10-03T00:00:00Z"
+      }
+
+      argus = %{NccWorker.Argus.skipped() | status: :ok, findings: [%{"title" => "t"}]}
+      assert :ok = JsonWriter.write_result(tmp_dir, Map.put(base, :argus, argus))
+      decoded = tmp_dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      assert decoded["argus"]["status"] == "ok"
+      assert decoded["argus"]["findings"] == [%{"title" => "t"}]
+
+      assert :ok = JsonWriter.write_result(tmp_dir, base)
+      decoded = tmp_dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      assert Map.has_key?(decoded, "argus")
+      assert decoded["argus"] == nil
+    end
   end
 end

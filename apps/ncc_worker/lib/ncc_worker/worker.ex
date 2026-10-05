@@ -4,6 +4,7 @@ defmodule NccWorker.Worker do
   """
 
   alias NccWorker.{
+    Argus,
     BeamScan,
     BuildCache,
     BuildSelection,
@@ -31,6 +32,11 @@ defmodule NccWorker.Worker do
           },
           optional(:systems_override) => %{String.t() => String.t()},
           optional(:systems_filter) => [String.t()],
+          optional(:argus) => %{
+            optional(:analyses) => [String.t()],
+            optional(:scope) => String.t(),
+            optional(:timeout_seconds) => integer()
+          },
           optional(:paths) => %{
             optional(:work_dir) => String.t(),
             optional(:output_dir) => String.t()
@@ -83,7 +89,8 @@ defmodule NccWorker.Worker do
               error: String.t() | nil
             }
           },
-          finished_at: String.t()
+          finished_at: String.t(),
+          argus: NccWorker.Argus.result()
         }
 
   @default_timeout_sec 600
@@ -195,6 +202,7 @@ defmodule NccWorker.Worker do
       image: input.image,
       toolchain: toolchain,
       systems: system_results,
+      argus: Argus.skipped(),
       finished_at: DateTime.utc_now() |> DateTime.to_iso8601()
     }
 
@@ -231,6 +239,7 @@ defmodule NccWorker.Worker do
       image: input.image,
       toolchain: toolchain,
       systems: system_results,
+      argus: Argus.skipped(),
       finished_at: DateTime.utc_now() |> DateTime.to_iso8601()
     }
 
@@ -306,6 +315,11 @@ defmodule NccWorker.Worker do
     {:ok, source_after} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
     source_changes = NccWorker.SourceScanner.diff(source_before, source_after)
 
+    # Advisory: argus reads the host beams once for every system. Its result
+    # never feeds a system status.
+    argus =
+      Argus.run(project_dir, input.package.name, input[:argus], selection, host_result)
+
     package_version =
       case get_package_version(project_dir, input.package) do
         "unknown" when is_binary(package_version_hint) ->
@@ -349,6 +363,7 @@ defmodule NccWorker.Worker do
       image: input.image,
       toolchain: toolchain,
       systems: system_results,
+      argus: argus,
       finished_at: DateTime.utc_now() |> DateTime.to_iso8601()
     }
 
