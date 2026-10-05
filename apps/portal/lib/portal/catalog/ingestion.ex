@@ -113,6 +113,11 @@ defmodule Portal.Catalog.Ingestion do
     |> Ash.create(domain: @domain)
   end
 
+  # A worker that predates argus sends nothing; anything that is not a map is
+  # not something the package page can read either, and must not fail ingest.
+  defp argus_map(%{} = argus), do: argus
+  defp argus_map(_), do: nil
+
   defp create_run(result, opts, package_id, version, overall, finished_at) do
     Run
     |> Ash.Changeset.for_create(:create, %{
@@ -123,6 +128,7 @@ defmodule Portal.Catalog.Ingestion do
       overall_status: overall,
       footprint: get_in(result, ["package", "footprint"]),
       toolchain: result["toolchain"],
+      argus: argus_map(result["argus"]),
       log: run_log(overall, opts),
       finished_at: finished_at,
       scan_request_id: Map.get(opts, :scan_request_id)

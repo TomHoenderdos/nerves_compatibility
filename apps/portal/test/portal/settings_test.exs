@@ -12,9 +12,9 @@ defmodule Portal.SettingsTest do
     assert setting.argus_timeout_seconds == 300
   end
 
-  test "update stores a single row and get reads it back" do
+  test "save stores a single row and get reads it back" do
     assert {:ok, _} =
-             Settings.update(%{
+             Settings.save(%{
                argus_enabled: false,
                argus_analyses: ["otp", "security"],
                argus_scope: "all",
@@ -22,7 +22,7 @@ defmodule Portal.SettingsTest do
                argus_timeout_seconds: 600
              })
 
-    assert {:ok, _} = Settings.update(%{argus_timeout_seconds: 900})
+    assert {:ok, _} = Settings.save(%{argus_timeout_seconds: 900})
 
     setting = Settings.get()
     assert setting.argus_enabled == false
@@ -34,21 +34,21 @@ defmodule Portal.SettingsTest do
   end
 
   test "rejects an unknown analysis" do
-    assert {:error, _} = Settings.update(%{argus_analyses: ["default", "not_an_analysis"]})
+    assert {:error, _} = Settings.save(%{argus_analyses: ["default", "not_an_analysis"]})
   end
 
   test "rejects an empty analysis list" do
-    assert {:error, _} = Settings.update(%{argus_analyses: []})
+    assert {:error, _} = Settings.save(%{argus_analyses: []})
   end
 
   test "rejects a timeout outside 30..1800" do
-    assert {:error, _} = Settings.update(%{argus_timeout_seconds: 29})
-    assert {:error, _} = Settings.update(%{argus_timeout_seconds: 1801})
+    assert {:error, _} = Settings.save(%{argus_timeout_seconds: 29})
+    assert {:error, _} = Settings.save(%{argus_timeout_seconds: 1801})
   end
 
   test "rejects an unknown scope and severity" do
-    assert {:error, _} = Settings.update(%{argus_scope: "everything"})
-    assert {:error, _} = Settings.update(%{argus_min_severity: "fatal"})
+    assert {:error, _} = Settings.save(%{argus_scope: "everything"})
+    assert {:error, _} = Settings.save(%{argus_min_severity: "fatal"})
   end
 
   test "worker_argus is nil when disabled and the worker map otherwise" do
@@ -58,7 +58,7 @@ defmodule Portal.SettingsTest do
              "timeout_seconds" => 300
            }
 
-    {:ok, _} = Settings.update(%{argus_enabled: false})
+    {:ok, _} = Settings.save(%{argus_enabled: false})
     assert Settings.worker_argus(Settings.get()) == nil
   end
 end

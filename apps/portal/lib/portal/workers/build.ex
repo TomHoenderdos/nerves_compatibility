@@ -90,7 +90,9 @@ defmodule Portal.Workers.Build do
       package: package,
       version: version,
       run_id: run_id,
-      image_digest: image_digest
+      image_digest: image_digest,
+      # Read per build, so an admin change applies from the next build on.
+      argus: Portal.Settings.worker_argus(Portal.Settings.get())
     }
 
     case builder().build(build_args) do

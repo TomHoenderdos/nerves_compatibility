@@ -40,8 +40,8 @@ defmodule Portal.Settings do
   Saves `params` over the current settings. Unspecified fields keep their
   current value, so a partial update never resets the rest to defaults.
   """
-  @spec update(map()) :: {:ok, Setting.t()} | {:error, term()}
-  def update(params) do
+  @spec save(map()) :: {:ok, Setting.t()} | {:error, term()}
+  def save(params) do
     current = get() |> Map.take(Map.keys(@defaults))
 
     Setting

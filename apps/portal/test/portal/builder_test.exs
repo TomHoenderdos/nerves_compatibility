@@ -193,4 +193,24 @@ defmodule Portal.BuilderTest do
       assert File.dir?(Path.join(cache, Builder.cache_slug(@job.image_digest)))
     end
   end
+
+  describe "worker_input/1" do
+    @input_job %{
+      run_id: "r1",
+      image_name: "ncc-worker",
+      image_digest: "sha256:x",
+      package: %{"name" => "jason", "version" => "1.4.4", "source" => "hex"},
+      systems_filter: nil
+    }
+
+    test "carries the argus config when given" do
+      argus = %{"analyses" => ["default"], "scope" => "all", "timeout_seconds" => 60}
+      assert Builder.worker_input(Map.put(@input_job, :argus, argus))["argus"] == argus
+    end
+
+    test "omits argus when off" do
+      refute Map.has_key?(Builder.worker_input(Map.put(@input_job, :argus, nil)), "argus")
+      refute Map.has_key?(Builder.worker_input(@input_job), "argus")
+    end
+  end
 end

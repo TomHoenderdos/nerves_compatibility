@@ -224,6 +224,26 @@ defmodule Portal.Catalog do
     end
   end
 
+  @doc """
+  The argus result of the package's latest run, or nil. Its own query because
+  `@run_fields` leaves `argus` out: every other reader of runs would otherwise
+  load the findings for nothing.
+  """
+  def latest_argus(package_name) do
+    with [package] <- packages(package_name),
+         [run] <-
+           Run
+           |> Ash.Query.filter(package_id == ^package.id)
+           |> Ash.Query.sort(finished_at: :desc, inserted_at: :desc)
+           |> Ash.Query.select([:id, :argus])
+           |> Ash.Query.limit(1)
+           |> Ash.read!(domain: __MODULE__) do
+      run.argus
+    else
+      _ -> nil
+    end
+  end
+
   @doc "Fetches the committed run and package name needed to resume ingest completion."
   def committed_run(run_id) do
     Run

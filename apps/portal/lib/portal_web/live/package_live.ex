@@ -31,6 +31,9 @@ defmodule PortalWeb.PackageLive do
          |> assign(:docs_url, "https://hexdocs.pm/#{name}")
          |> assign(:github_url, github_url(hex_meta.links))
          |> assign(:owners, hex_meta.owners)
+         |> assign(:argus, argus_view(Catalog.latest_argus(name)))
+         |> assign(:argus_floor, Portal.Settings.get().argus_min_severity)
+         |> assign(:admin?, Portal.Accounts.admin?(socket.assigns[:current_user]))
          |> assign(:badge_url, badge_url)
          |> assign(:badge_markdown, "[![#{@badge_alt}](#{badge_url})](#{page_url})")
          |> assign(
@@ -161,6 +164,79 @@ defmodule PortalWeb.PackageLive do
             </tbody>
           </table>
         </div>
+
+        <section
+          :if={@argus}
+          id="argus"
+          class="space-y-4 rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm"
+        >
+          <div>
+            <h2 class="text-sm font-semibold text-base-content">OTP analysis</h2>
+            <p class="mt-1 text-sm text-base-content/60">
+              Static analysis of the compiled beams, advisory — by <a
+                href="https://hex.pm/packages/argus_beam"
+                target="_blank"
+                rel="noopener"
+                class="link"
+              >
+                argus_beam {@argus["version"]}
+              </a>. It does not affect the compatibility result.
+            </p>
+          </div>
+
+          <%= if @argus["status"] == "error" do %>
+            <p class="text-sm text-base-content/70">Analysis could not run for this version.</p>
+            <p :if={@admin?} class="font-mono text-xs text-base-content/50">{@argus["error"]}</p>
+          <% else %>
+            <% visible = visible_findings(@argus["findings"], @argus_floor) %>
+            <p :if={visible == []} class="text-sm text-base-content/70">
+              No findings at {@argus_floor} or above for: {Enum.join(
+                List.wrap(@argus["analyses"]),
+                ", "
+              )}
+            </p>
+            <ul :if={visible != []} class="divide-y divide-base-200">
+              <li
+                :for={{finding, i} <- Enum.with_index(visible)}
+                id={"argus-finding-#{i}"}
+                class="py-3"
+              >
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class={["badge badge-sm", severity_class(finding["severity"])]}>
+                    {finding["severity"]}
+                  </span>
+                  <span class="font-medium text-base-content">{finding["title"]}</span>
+                  <span class="badge badge-sm badge-outline font-mono">{finding["analysis"]}</span>
+                </div>
+                <div
+                  :if={finding_location(finding)}
+                  class="mt-1 font-mono text-xs text-base-content/60"
+                >
+                  {finding_location(finding)}
+                </div>
+                <details class="mt-1 text-sm text-base-content/70">
+                  <summary class="cursor-pointer text-xs">Details</summary>
+                  <p :if={finding["at_label"]}>{finding["at_label"]}</p>
+                  <p :if={finding["detail"]} class="mt-1">{finding["detail"]}</p>
+                  <ul :if={finding["help"] not in [nil, []]} class="mt-1 list-disc pl-5">
+                    <li :for={hint <- List.wrap(finding["help"])}>{hint}</li>
+                  </ul>
+                  <ul
+                    :if={is_list(finding["related"]) and finding["related"] != []}
+                    class="mt-1 font-mono text-xs"
+                  >
+                    <li :for={rel <- finding["related"]}>
+                      {rel["label"]} — {finding_location(rel)}
+                    </li>
+                  </ul>
+                </details>
+              </li>
+            </ul>
+            <p :if={@argus["truncated"]} class="text-xs text-base-content/50">
+              Showing the first 200 findings argus reported.
+            </p>
+          <% end %>
+        </section>
 
         <div class="space-y-4 rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm">
           <div>
@@ -398,4 +474,33 @@ defmodule PortalWeb.PackageLive do
         []
     end
   end
+
+  @severity_rank %{"error" => 3, "warning" => 2, "info" => 1}
+
+  # Only well-formed `ok` and `error` results render. Anything else -- skipped,
+  # a run from before argus, a map missing its findings -- renders nothing.
+  defp argus_view(%{"status" => "ok", "findings" => findings} = argus) when is_list(findings),
+    do: argus
+
+  defp argus_view(%{"status" => "error"} = argus), do: argus
+  defp argus_view(_), do: nil
+
+  defp visible_findings(findings, floor) do
+    min = Map.fetch!(@severity_rank, Atom.to_string(floor))
+
+    findings
+    |> Enum.filter(&(is_map(&1) and Map.get(@severity_rank, &1["severity"], 0) >= min))
+    |> Enum.sort_by(&(-Map.get(@severity_rank, &1["severity"], 0)))
+  end
+
+  defp finding_location(%{"file" => file, "line" => line})
+       when is_binary(file) and is_integer(line),
+       do: "#{file}:#{line}"
+
+  defp finding_location(%{"file" => file}) when is_binary(file), do: file
+  defp finding_location(_), do: nil
+
+  defp severity_class("error"), do: "badge-error"
+  defp severity_class("warning"), do: "badge-warning"
+  defp severity_class(_), do: "badge-ghost"
 end
