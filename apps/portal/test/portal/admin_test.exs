@@ -219,4 +219,35 @@ defmodule Portal.AdminTest do
       assert {:error, :already_queued} = Admin.request_update_check()
     end
   end
+
+  describe "update_argus_settings/1" do
+    test "maps the form params onto the settings" do
+      assert {:ok, setting} =
+               Admin.update_argus_settings(%{
+                 "enabled" => "false",
+                 "analyses" => ["otp", "exposure"],
+                 "scope" => "all",
+                 "min_severity" => "info",
+                 "timeout_seconds" => "120"
+               })
+
+      assert setting.argus_enabled == false
+      assert setting.argus_analyses == [:otp, :exposure]
+      assert setting.argus_scope == :all
+      assert setting.argus_min_severity == :info
+      assert setting.argus_timeout_seconds == 120
+    end
+
+    test "no ticked analysis is an error, not an empty list" do
+      params = %{
+        "enabled" => "true",
+        "scope" => "firmware",
+        "min_severity" => "warning",
+        "timeout_seconds" => "300"
+      }
+
+      assert {:error, :invalid_argus_settings} = Admin.update_argus_settings(params)
+      assert Portal.Settings.get().argus_analyses == [:default, :exposure]
+    end
+  end
 end

@@ -101,6 +101,26 @@ defmodule PortalWeb.PageController do
     end
   end
 
+  def admin_argus_settings(conn, params) do
+    case require_admin(conn) do
+      {:ok, conn, user} ->
+        case Portal.Admin.update_argus_settings(params["argus"] || %{}) do
+          {:ok, _setting} ->
+            conn
+            |> put_flash(:info, "Saved argus settings.")
+            |> render_admin(user)
+
+          {:error, reason} ->
+            conn
+            |> put_flash(:error, admin_error_message(reason))
+            |> render_admin(user)
+        end
+
+      {:error, conn} ->
+        conn
+    end
+  end
+
   defp queued_message(request, true),
     do: "Queued a forced rebuild of #{request.package_name}."
 
@@ -460,7 +480,9 @@ defmodule PortalWeb.PageController do
       review_page: review_page,
       page_params: %{queue_page: queue_page.page, review_page: review_page.page},
       queue_positions: Portal.Admin.queue_positions(Enum.map(queue_page.entries, & &1.id)),
-      update_check: Portal.Admin.update_check_status()
+      update_check: Portal.Admin.update_check_status(),
+      argus: Portal.Settings.get(),
+      argus_analysis_names: Portal.Settings.Setting.analysis_names()
     )
   end
 
@@ -653,5 +675,9 @@ defmodule PortalWeb.PageController do
 
   defp admin_error_message(:already_at_limit), do: "Already at the end of the priority range."
   defp admin_error_message(:already_queued), do: "An update check is already queued."
+
+  defp admin_error_message(:invalid_argus_settings),
+    do: "Tick at least one analysis and keep the timeout between 30 and 1800 seconds."
+
   defp admin_error_message(_), do: "Admin action failed."
 end

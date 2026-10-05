@@ -98,6 +98,7 @@ defmodule PortalWeb.Router do
     post "/admin/requests/:id/priority", PageController, :reprioritise_request
     post "/admin/scan", PageController, :admin_queue_package
     post "/admin/update-check", PageController, :admin_update_check
+    post "/admin/argus", PageController, :admin_argus_settings
     get "/register", PageController, :register
     post "/register", PageController, :create_account
     get "/login", PageController, :login

@@ -175,6 +175,28 @@ defmodule Portal.Admin do
   end
 
   @doc """
+  Save the argus card of `/admin`. `params` are the `argus[...]` form fields:
+  an unticked checkbox sends nothing, so a missing `analyses` is an empty
+  selection and is refused rather than stored.
+  """
+  @spec update_argus_settings(map()) ::
+          {:ok, Portal.Settings.Setting.t()} | {:error, :invalid_argus_settings}
+  def update_argus_settings(params) do
+    attrs = %{
+      argus_enabled: params["enabled"] == "true",
+      argus_analyses: params["analyses"] || [],
+      argus_scope: params["scope"],
+      argus_min_severity: params["min_severity"],
+      argus_timeout_seconds: params["timeout_seconds"]
+    }
+
+    case Portal.Settings.update(attrs) do
+      {:ok, setting} -> {:ok, setting}
+      {:error, _} -> {:error, :invalid_argus_settings}
+    end
+  end
+
+  @doc """
   Ask for an update check now.
 
   Marked `manual` so the run happens even while the schedule is switched off --
