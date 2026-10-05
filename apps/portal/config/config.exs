@@ -18,7 +18,7 @@ config :ash, :default_string_length_count, :codepoints
 config :ash, :missed_notifications, :ignore
 
 config :portal,
-  ash_domains: [Portal.Accounts, Portal.ScanRequests, Portal.Catalog],
+  ash_domains: [Portal.Accounts, Portal.ScanRequests, Portal.Catalog, Portal.Settings],
   ecto_repos: [Portal.Repo],
   generators: [timestamp_type: :utc_datetime]
 
