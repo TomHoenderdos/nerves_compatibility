@@ -56,6 +56,10 @@ defmodule NccWorker.Argus do
 
   def run(_project, _package, %{scope: "firmware"}, :pure_elixir, _host, _opts), do: skipped()
 
+  # The executable is fixed (`sh` running the pinned escript at `@bin`) and every
+  # argument goes through argv, never a shell string; package code runs only
+  # inside the disposable container, which is the boundary.
+  # sobelow_skip ["CI.System"]
   def run(project, package, config, _selection, _host, opts) do
     cmd = Keyword.get(opts, :cmd, &System.cmd/3)
     bin = Keyword.get(opts, :bin, @bin)
@@ -171,6 +175,8 @@ defmodule NccWorker.Argus do
   # The reason lands in result.json, whose encoder raises on invalid UTF-8 --
   # which would turn an advisory failure into a worker crash -- and in a
   # database column, so it is made valid and kept short.
+  # `file` is the fixed `.argus-stderr` name inside the generated worker project.
+  # sobelow_skip ["Traversal.FileModule"]
   defp last_line(file) do
     with {:ok, body} <- File.read(file),
          [_ | _] = lines <- String.split(body, "\n", trim: true) do
