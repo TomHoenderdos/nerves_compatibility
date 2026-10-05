@@ -5,6 +5,16 @@ defmodule PortalWeb.PackageArgusTest do
 
   alias Portal.Catalog.Ingestion
 
+  # The section is internal for now: only an admin signed in with a passkey,
+  # the same gate as /admin, sees it. Every rendering test below runs as one.
+  setup %{conn: conn} do
+    {:ok, admin} = Portal.Accounts.seed_admin_user("argus_admin", "correct horse battery staple")
+    Portal.Test.AccountsFixtures.add_test_passkey(admin)
+    %{conn: init_test_session(conn, user_id: admin.id, login_method: :passkey), admin: admin}
+  end
+
+  defp visitor(_conn), do: build_conn()
+
   defp finding(severity, title, extra \\ %{}) do
     Map.merge(
       %{
@@ -141,7 +151,7 @@ defmodule PortalWeb.PackageArgusTest do
     refute has_element?(view, "#argus", "Bad severity")
   end
 
-  test "an error says it could not run and hides the reason from visitors", %{conn: conn} do
+  test "an error says it could not run, with the reason", %{conn: conn} do
     seed(%{
       "status" => "error",
       "version" => "0.20.1",
@@ -151,7 +161,28 @@ defmodule PortalWeb.PackageArgusTest do
 
     {:ok, view, _} = live(conn, ~p"/packages/argpkg")
     assert has_element?(view, "#argus", "Analysis could not run for this version.")
-    refute has_element?(view, "#argus", "timeout after 300s")
+    assert has_element?(view, "#argus", "timeout after 300s")
+  end
+
+  test "visitors never see the section", %{conn: conn} do
+    seed(ok([finding("error", "Deadlock")]))
+    {:ok, view, _} = live(visitor(conn), ~p"/packages/argpkg")
+    refute has_element?(view, "#argus")
+  end
+
+  test "an admin who did not sign in with a passkey does not see it", %{conn: conn, admin: admin} do
+    seed(ok([finding("error", "Deadlock")]))
+    conn = conn |> visitor() |> init_test_session(user_id: admin.id, login_method: :password)
+    {:ok, view, _} = live(conn, ~p"/packages/argpkg")
+    refute has_element?(view, "#argus")
+  end
+
+  test "a signed-in non-admin does not see it", %{conn: conn} do
+    {:ok, user} = Portal.Accounts.register_user("argus_viewer", "correct horse battery staple")
+    seed(ok([finding("error", "Deadlock")]))
+    conn = conn |> visitor() |> init_test_session(user_id: user.id, login_method: :password)
+    {:ok, view, _} = live(conn, ~p"/packages/argpkg")
+    refute has_element?(view, "#argus")
   end
 
   test "skipped, absent and malformed argus render no section", %{conn: conn} do

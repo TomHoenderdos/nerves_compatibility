@@ -2,6 +2,7 @@ defmodule PortalWeb.PackageLive do
   use PortalWeb, :live_view
 
   alias Portal.Catalog
+  alias PortalWeb.Plugs.RequireAdmin
 
   # Both snippets and the on-page <img> must agree: this is the text that ends
   # up in someone else's README, where a broken badge shows the alt and nothing
@@ -9,7 +10,7 @@ defmodule PortalWeb.PackageLive do
   @badge_alt "Nerves compatibility"
 
   @impl true
-  def mount(%{"name" => name}, _session, socket) do
+  def mount(%{"name" => name}, session, socket) do
     case Catalog.latest_by_pkg_json(name) do
       %{packages: %{^name => package}} ->
         systems = systems(package)
@@ -31,9 +32,7 @@ defmodule PortalWeb.PackageLive do
          |> assign(:docs_url, "https://hexdocs.pm/#{name}")
          |> assign(:github_url, github_url(hex_meta.links))
          |> assign(:owners, hex_meta.owners)
-         |> assign(:argus, argus_view(Catalog.latest_argus(name)))
-         |> assign(:argus_floor, Portal.Settings.get().argus_min_severity)
-         |> assign(:admin?, Portal.Accounts.admin?(socket.assigns[:current_user]))
+         |> assign_argus(name, session)
          |> assign(:badge_url, badge_url)
          |> assign(:badge_markdown, "[![#{@badge_alt}](#{badge_url})](#{page_url})")
          |> assign(
@@ -171,22 +170,25 @@ defmodule PortalWeb.PackageLive do
           class="space-y-4 rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm"
         >
           <div>
-            <h2 class="text-sm font-semibold text-base-content">OTP analysis</h2>
+            <div class="flex items-center gap-2">
+              <h2 class="text-sm font-semibold text-base-content">OTP analysis</h2>
+              <span class="badge badge-sm badge-ghost">admins only</span>
+            </div>
+            <%!-- One line per text node: a line break inside the <a> renders as a space before the full stop. --%>
             <p class="mt-1 text-sm text-base-content/60">
               Static analysis of the compiled beams, advisory — by <a
                 href="https://hex.pm/packages/argus_beam"
                 target="_blank"
                 rel="noopener"
                 class="link"
-              >
-                argus_beam {@argus["version"]}
-              </a>. It does not affect the compatibility result.
+              >argus_beam {@argus["version"]}</a>.
+              It does not affect the compatibility result.
             </p>
           </div>
 
           <%= if @argus["status"] == "error" do %>
             <p class="text-sm text-base-content/70">Analysis could not run for this version.</p>
-            <p :if={@admin?} class="font-mono text-xs text-base-content/50">{@argus["error"]}</p>
+            <p class="font-mono text-xs text-base-content/50">{@argus["error"]}</p>
           <% else %>
             <% visible = visible_findings(@argus["findings"], @argus_floor) %>
             <p :if={visible == []} class="text-sm text-base-content/70">
@@ -476,6 +478,21 @@ defmodule PortalWeb.PackageLive do
   end
 
   @severity_rank %{"error" => 3, "warning" => 2, "info" => 1}
+
+  # argus findings are internal for now: only an admin signed in with a
+  # passkey -- the /admin gate, `RequireAdmin.check/2` -- sees the section, and
+  # nobody else pays for the queries behind it.
+  defp assign_argus(socket, name, session) do
+    case RequireAdmin.check(socket.assigns[:current_user], session["login_method"]) do
+      {:ok, _admin} ->
+        socket
+        |> assign(:argus, argus_view(Catalog.latest_argus(name)))
+        |> assign(:argus_floor, Portal.Settings.get().argus_min_severity)
+
+      {:error, _} ->
+        assign(socket, argus: nil, argus_floor: nil)
+    end
+  end
 
   # Only well-formed `ok` and `error` results render. Anything else -- skipped,
   # a run from before argus, a map missing its findings -- renders nothing.

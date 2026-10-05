@@ -306,9 +306,9 @@
           <div>
             <h2 class="card-title">Static analysis (argus)</h2>
             <p class="mt-1 text-sm leading-6 text-base-content/70">
-              argus_beam runs over each package's host beams and its findings show on the
-              package page as advisory. Changes apply to builds started afterwards; the
-              severity floor applies to the page immediately.
+              argus_beam runs over each package's host beams. Its findings are internal for
+              now: they show on the package page to admins only. Changes apply to builds
+              started afterwards; the severity floor applies to the page immediately.
             </p>
           </div>
 
@@ -370,7 +370,7 @@
 
             <div class="flex flex-wrap gap-5">
               <label class="text-sm">
-                <span class="font-semibold">Public severity floor</span>
+                <span class="font-semibold">Severity floor</span>
                 <select name="argus[min_severity]" class="select select-sm mt-1 block">
                   <option
                     :for={s <- [:info, :warning, :error]}
