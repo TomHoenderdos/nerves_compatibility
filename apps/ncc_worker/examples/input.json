@@ -16,6 +16,11 @@
     "work_dir": "/work",
     "output_dir": "/out"
   },
+  "argus": {
+    "analyses": ["default", "exposure"],
+    "scope": "firmware",
+    "timeout_seconds": 300
+  },
   "limits": {
     "per_system_timeout_sec": 600,
     "log_tail_bytes": 4096

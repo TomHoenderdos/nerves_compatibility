@@ -59,7 +59,8 @@ defmodule NccWorker.JsonWriter do
           {system_name, convert_system_result(system_result)}
         end)
         |> Map.new(),
-      finished_at: result.finished_at
+      finished_at: result.finished_at,
+      argus: Map.get(result, :argus)
     }
   end
 
