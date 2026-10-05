@@ -246,6 +246,81 @@ defmodule Portal.Catalog do
     end
   end
 
+  @triage_defaults %{
+    status: [:new, :confirmed],
+    severity: ["error", "warning", "info"],
+    analysis: nil,
+    package: nil,
+    include_stale: false
+  }
+  @triage_status_order %{new: 0, confirmed: 1, reported: 2, false_positive: 3}
+  @triage_severity_order %{"error" => 0, "warning" => 1, "info" => 2}
+
+  @doc """
+  argus findings for the admin triage list, each with `stale?`: true when the
+  package's latest run no longer reports it. See `@triage_defaults` for the
+  filters and their defaults.
+  """
+  def triage_list(filters \\ %{}) do
+    f = Map.merge(@triage_defaults, filters)
+
+    rows =
+      FindingTriage
+      |> Ash.Query.filter(status in ^f.status and severity in ^f.severity)
+      |> then(fn q ->
+        if f.analysis, do: Ash.Query.filter(q, analysis == ^f.analysis), else: q
+      end)
+      |> then(fn q ->
+        if f.package in [nil, ""],
+          do: q,
+          else: Ash.Query.filter(q, contains(package_name, ^f.package))
+      end)
+      |> Ash.read!(domain: __MODULE__)
+
+    latest = latest_run_ids(rows |> Enum.map(& &1.package_name) |> Enum.uniq())
+
+    rows
+    |> Enum.map(&%{triage: &1, stale?: Map.get(latest, &1.package_name) != &1.last_seen_run_id})
+    |> Enum.filter(&(f.include_stale or not &1.stale?))
+    |> Enum.sort_by(fn %{triage: t} ->
+      {@triage_status_order[t.status], @triage_severity_order[t.severity], t.package_name,
+       t.title}
+    end)
+  end
+
+  @doc "Non-stale triage rows per status."
+  def triage_counts do
+    counts =
+      %{
+        status: Map.keys(@triage_status_order),
+        severity: Map.keys(@triage_severity_order)
+      }
+      |> triage_list()
+      |> Enum.frequencies_by(& &1.triage.status)
+
+    Map.new(Map.keys(@triage_status_order), &{&1, Map.get(counts, &1, 0)})
+  end
+
+  @doc "Sets an admin's verdict on one finding."
+  def triage!(id, attrs, admin) do
+    FindingTriage
+    |> Ash.get!(id, domain: __MODULE__)
+    |> Ash.Changeset.for_update(:triage, %{
+      status: attrs[:status],
+      note: attrs[:note],
+      updated_by: admin.username
+    })
+    |> Ash.update!(domain: __MODULE__)
+  end
+
+  defp latest_run_ids([]), do: %{}
+
+  defp latest_run_ids(names) do
+    packages = Package |> Ash.Query.filter(name in ^names) |> Ash.read!(domain: __MODULE__)
+    runs = latest_runs(packages)
+    Map.new(packages, &{&1.name, runs |> Map.get(&1.id, %{}) |> Map.get(:id)})
+  end
+
   @doc "Fetches the committed run and package name needed to resume ingest completion."
   def committed_run(run_id) do
     Run
