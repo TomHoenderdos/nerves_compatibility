@@ -25,6 +25,39 @@ RUN sudo apt-get update && \
     sudo apt-get install -y --no-install-recommends fakeroot && \
     sudo rm -rf /var/lib/apt/lists/*
 
+# Souffle evaluates argus's Datalog rules. Upstream ships only an x86_64 .deb;
+# arm64 (local Docker on Apple silicon) builds the same tag from source. mcpp is
+# the preprocessor souffle runs over every .dl file.
+ARG SOUFFLE_VERSION=2.5
+RUN set -eux; \
+    sudo apt-get update; \
+    if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      deb="x86_64-ubuntu-2404-souffle-${SOUFFLE_VERSION}-Linux.deb"; \
+      wget -q "https://github.com/souffle-lang/souffle/releases/download/${SOUFFLE_VERSION}/${deb}" -O "/tmp/${deb}"; \
+      echo "6b86e554f6aa5abf8a8b55d8312ae37c0957c5bd6c9edeea89246db9406f645ec5e600b84fe6636b1c163da556f0da6c3d2dad46c1083413f2fcf4f95b9ac62c  /tmp/${deb}" | sha512sum -c -; \
+      sudo apt-get install -y --no-install-recommends "/tmp/${deb}"; \
+      rm -f "/tmp/${deb}"; \
+    else \
+      sudo apt-get install -y --no-install-recommends bison flex cmake g++ make mcpp \
+        libffi-dev libsqlite3-dev zlib1g-dev libncurses-dev; \
+      wget -q "https://github.com/souffle-lang/souffle/archive/refs/tags/${SOUFFLE_VERSION}.tar.gz" -O /tmp/souffle.tar.gz; \
+      echo "5d009ad6c74ccec10207d865c059716afac625759bff7c8070e529bd80385067  /tmp/souffle.tar.gz" | sha256sum -c -; \
+      tar xzf /tmp/souffle.tar.gz -C /tmp; \
+      cmake -S "/tmp/souffle-${SOUFFLE_VERSION}" -B /tmp/souffle-build -DSOUFFLE_ENABLE_TESTING=OFF -DSOUFFLE_GIT=OFF -DPACKAGE_VERSION="${SOUFFLE_VERSION}"; \
+      cmake --build /tmp/souffle-build -j"$(nproc)"; \
+      sudo cmake --install /tmp/souffle-build; \
+      rm -rf /tmp/souffle*; \
+    fi; \
+    sudo rm -rf /var/lib/apt/lists/*; \
+    souffle --version
+
+# argus_beam's escript, pinned. The worker calls it by absolute path, so PATH
+# under an arbitrary --user uid does not matter. `argus version` fails the image
+# build when souffle is missing or broken.
+ARG ARGUS_VERSION=0.20.1
+RUN mix escript.install hex argus_beam ${ARGUS_VERSION} --force && \
+    /home/nerves/.mix/escripts/argus version
+
 # Create mount points
 RUN sudo mkdir -p /work /out /hex-cache /home/nerves/.nerves
 
