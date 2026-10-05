@@ -26,8 +26,12 @@ on the package page, is an extra service to package authors.
 - **Advisory only.** Findings never change a system's status, the run's
   `overall_status`, the badge, or worker exit codes (`0`/`10`/`11`). An argus
   failure is recorded and otherwise ignored.
-- **Public**, on the package page, labelled advisory, filtered by an
-  admin-configured severity floor.
+- **Internal for now** (changed 2026-10-05; originally public): the section
+  on the package page renders only for an admin signed in with a passkey
+  (`RequireAdmin.check/2`, the `/admin` gate), labelled "admins only" and
+  filtered by an admin-configured severity floor. Going public later is a
+  one-line change in `PortalWeb.PackageLive.assign_argus/3`. Emailing owners
+  is on hold until agreed with the Nerves maintainers.
 - **In the worker**, against the host compile, once per run (bytecode is
   target-independent, so one run covers every system). No separate job or
   container.
