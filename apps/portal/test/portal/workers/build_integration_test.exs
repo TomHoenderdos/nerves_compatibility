@@ -35,52 +35,13 @@ defmodule Portal.Workers.BuildIntegrationTest do
   end
 
   test "classifies pure Elixir jason without firmware and ingests into Postgres" do
-    {:ok, request} =
-      ScanRequests.create_once(%{
-        package_name: "jason",
-        version: "1.4.4",
-        source: :hex_owner,
-        status: :accepted
-      })
+    {request, package, run} = build_and_ingest("jason", "1.4.4")
 
-    image_digest = Builder.image_digest(@image)
-
-    # Call perform/1 directly (not perform_job) so the ingestion transaction
-    # runs in the test process, which owns the sandbox DB connection.
-    job = %Oban.Job{
-      args: %{
-        "package" => "jason",
-        "version" => "1.4.4",
-        "image_digest" => image_digest,
-        "scan_request_id" => request.id
-      },
-      attempt: 1,
-      max_attempts: 3
-    }
-
-    assert :ok = Build.perform(job)
-
-    # The build hands off to the ingest job; run it here for the same reason.
-    assert [ingest_job] = all_enqueued(worker: Ingest)
-
-    assert :ok =
-             Ingest.perform(%Oban.Job{args: ingest_job.args, attempt: 1, max_attempts: 5})
-
-    # Package row
-    packages = Ash.read!(Package, domain: Portal.Catalog)
-    package = Enum.find(packages, &(&1.name == "jason"))
-    assert package, "expected a Package row for jason"
     assert package.native_components["compatibility_basis"] == "pure_elixir"
-
-    # Run row with a non-error overall status
-    runs =
-      Run
-      |> Ash.Query.filter(package_id == ^package.id)
-      |> Ash.read!(domain: Portal.Catalog)
-
-    assert [run | _] = runs
-
     assert run.overall_status == :pass
+
+    # The default argus scope is firmware packages only, and jason is pure Elixir.
+    assert run.argus["status"] == "skipped"
 
     # ≥1 SystemResult rows
     system_results =
@@ -95,6 +56,59 @@ defmodule Portal.Workers.BuildIntegrationTest do
     {:ok, updated} = ScanRequests.get_request(request.id)
     assert updated.status == :built
     assert updated.run_id == run.id
+  end
+
+  test "runs argus over the host beams when the scope covers the package" do
+    {:ok, _} = Portal.Settings.save(%{argus_scope: "all"})
+
+    # A different version from the test above, so the (package, version,
+    # digest) dedupe never skips this build.
+    {_request, _package, run} = build_and_ingest("jason", "1.4.3")
+
+    assert run.argus["status"] == "ok", inspect(run.argus)
+    assert run.argus["version"] == "0.20.1"
+    assert is_list(run.argus["findings"])
+  end
+
+  defp build_and_ingest(name, version) do
+    {:ok, request} =
+      ScanRequests.create_once(%{
+        package_name: name,
+        version: version,
+        source: :hex_owner,
+        status: :accepted
+      })
+
+    # Call perform/1 directly (not perform_job) so the ingestion transaction
+    # runs in the test process, which owns the sandbox DB connection.
+    job = %Oban.Job{
+      args: %{
+        "package" => name,
+        "version" => version,
+        "image_digest" => Builder.image_digest(@image),
+        "scan_request_id" => request.id
+      },
+      attempt: 1,
+      max_attempts: 3
+    }
+
+    assert :ok = Build.perform(job)
+
+    # The build hands off to the ingest job; run it here for the same reason.
+    assert [ingest_job] = all_enqueued(worker: Ingest)
+
+    assert :ok =
+             Ingest.perform(%Oban.Job{args: ingest_job.args, attempt: 1, max_attempts: 5})
+
+    package = Enum.find(Ash.read!(Package, domain: Portal.Catalog), &(&1.name == name))
+    assert package, "expected a Package row for #{name}"
+
+    assert [run | _] =
+             Run
+             |> Ash.Query.filter(package_id == ^package.id and version_tested == ^version)
+             |> Ash.read!(domain: Portal.Catalog)
+
+    {request, package, run}
   end
 
   defp docker_running? do

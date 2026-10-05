@@ -68,7 +68,7 @@ The integration test is `apps/portal/test/portal/workers/build_integration_test.
    - `/files` → content-addressed artifact staging
    - `/home/nerves/.nerves` → shared Nerves cache (`~/.ncc-nerves-cache`)
    - `/hex-cache` → shared Hex cache (`~/.ncc-hex-cache`)
-4. `NccWorker.Worker` inside the container reads `NCC_INPUT`, creates a fresh Nerves project, enforces `NccWorker.LockPolicy`, builds firmware per Nerves system, captures status/firmware size/log tail/BEAM scan/footprint, archives files by SHA256, and writes atomic `result.json`.
+4. `NccWorker.Worker` inside the container reads `NCC_INPUT`, creates a fresh Nerves project, enforces `NccWorker.LockPolicy`, builds firmware per Nerves system, runs the advisory argus_beam analysis over the host beams (`NccWorker.Argus`), captures status/firmware size/log tail/BEAM scan/footprint, archives files by SHA256, and writes atomic `result.json`.
 5. `Portal.Catalog.Ingestion` ingests the result into Postgres: `Package`, `Run`, `SystemResult`, and `Artifact` rows, with blobs moved into `Portal.ArtifactStore`.
 6. `Portal.Workers.Build` updates the linked `ScanRequest` and broadcasts progress over `Portal.PubSub` topic `request:<id>`.
 7. Phoenix serves the dynamic site, badge endpoint, schema-v2 JSON API, and precompiled manifest/blob API directly from Catalog.
@@ -108,6 +108,8 @@ Portal maps these into Oban outcomes in `Portal.Workers.Build`: success ingests,
 - `/home/nerves` and `/app` are chmod'd `a+rwX` in the Dockerfile so arbitrary uids can use the baked-in Mix archives and Elixir install.
 - `~/.ncc-nerves-cache` and `~/.ncc-hex-cache` persist across runs and speed up repeated tests.
 - `make build` uses `--no-cache`. For faster Dockerfile iteration, run `docker build` manually without `--no-cache`.
+- The image carries Souffle 2.5 and the argus_beam escript at `/home/nerves/.mix/escripts/argus`. amd64 installs Souffle's upstream `.deb`; arm64 builds it from source, so a local `make build` on Apple silicon takes noticeably longer.
+- argus is configured from `/admin` (`Portal.Settings`) and passed through `NCC_INPUT.argus`. Its findings are advisory and never change a status.
 
 ## Dependency Policy
 

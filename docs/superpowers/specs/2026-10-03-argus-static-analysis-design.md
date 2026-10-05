@@ -76,8 +76,10 @@ Out:
 
 `apps/ncc_worker/Dockerfile`:
 
-- Install Souffle from its GitHub release `.deb` (pinned version and SHA256),
-  after the existing apt layer. Souffle must be on `PATH`.
+- Install Souffle 2.5 after the existing apt layer. amd64 installs the
+  upstream `.deb` (SHA-512 pinned); arm64 builds the same tag from source
+  (SHA-256 pinned), since upstream ships no arm64 package and Ubuntu 24.04 has
+  none. Souffle must be on `PATH`.
 - `mix escript.install hex argus_beam 0.20.1 --force` as the `nerves` user,
   with `/home/nerves/.mix/escripts` on `PATH`. The existing `a+rwX` chmod on
   `/home/nerves` keeps it usable under `--user $(id -u):$(id -g)`.
@@ -130,18 +132,19 @@ argus --project beams \
   --format json --color never
 ```
 
-- `<dep>` is every name in `BuildCache.closure(graph, package)` whose
-  `_build/host/lib/<dep>/ebin` exists. Deps are context for the whole-program
-  analysis; without `--include-deps` argus reports findings only for the
-  package's own modules, so no filtering is needed on our side.
-- Env: `ARGUS_CACHE_DIR=/work/argus-cache` (per-run scratch, never the shared
-  caches), `TYPESAFE_API_KEY` unset.
-- `--state-dir /work/argus-state` so the manifest does not land in the project.
-- Wall-clock timeout `timeout_seconds` (default 300), via a Task around
-  `System.cmd` with `Task.yield/2` and `Task.shutdown(:brutal_kill)`, and the
-  OS process killed on timeout.
-- The command runner is injectable (application env, as the worker's other
-  shell-outs are) so unit tests do not need souffle.
+- `<dep>` is every `_build/host/lib/*/ebin` except the package and the
+  generated wrapper app `nerves_compatibility_test` — a superset of the
+  closure, which saves a second `mix deps.tree`. Deps are context for the
+  whole-program analysis; without `--include-deps` argus reports findings only
+  for the package's own modules, so no filtering is needed on our side.
+- Env: `ARGUS_CACHE_DIR=<project>/.argus-cache` (per-run scratch under `/work`,
+  never the shared caches), `TYPESAFE_API_KEY` unset.
+- `--state-dir <project>/.argus-state`, also per-run scratch.
+- Wall-clock timeout `timeout_seconds` (default 300) via coreutils
+  `timeout -k 10`, which kills the OS process; exit 124/137 is a timeout.
+  stderr is redirected to a file so stdout stays the JSON document.
+- The command runner is injectable (an option to `NccWorker.Argus.run/6`) so
+  unit tests do not need souffle.
 
 Outcome mapping:
 
@@ -213,7 +216,7 @@ Code interface:
 
 - `Portal.Settings.get/0` returns the row, or an unsaved struct with the
   defaults when no row exists. Reading never fails a build.
-- `Portal.Settings.update/1` upserts the single row.
+- `Portal.Settings.save/1` upserts the single row (not `update/1`: `Ash.Domain` already defines a deprecated one).
 
 ### Admin
 
