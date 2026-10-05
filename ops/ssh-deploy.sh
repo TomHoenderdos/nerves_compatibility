@@ -51,6 +51,23 @@ Host builder
   ProxyJump portal
 EOF
   set -- "$@" builder
+
+  # The builder is reached through the web host over the tailnet, right after
+  # the portal step has compiled a release on that same host. With both hosts
+  # loaded, the jumped handshake has missed the 15s ConnectTimeout twice in a
+  # row ("Connection timed out during banner exchange"). Probe with a longer
+  # timeout and a few attempts first; the deploy itself still runs exactly
+  # once, so a retry can never start a second deploy.
+  attempt=1
+  until ssh -F "$ssh_dir/config" -o ConnectTimeout=60 builder true; do
+    if (( attempt >= 4 )); then
+      echo "builder unreachable after $attempt attempts" >&2
+      exit 255
+    fi
+    echo "builder connection attempt $attempt failed; retrying in $((attempt * 20))s" >&2
+    sleep $((attempt * 20))
+    attempt=$((attempt + 1))
+  done
 fi
 
 ssh -F "$ssh_dir/config" "$role" "$@"
