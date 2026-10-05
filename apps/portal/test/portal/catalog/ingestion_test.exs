@@ -474,4 +474,46 @@ defmodule Portal.Catalog.IngestionTest do
       assert logs_by_system(run.id) == %{}
     end
   end
+
+  test "stores the argus result on the run, and nil when the worker sent none" do
+    argus = %{"status" => "ok", "version" => "0.20.1", "findings" => [%{"title" => "t"}]}
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+
+    {:ok, run} =
+      Ingestion.ingest(load_fixture() |> Map.put("argus", argus), %{
+        run_id: "argus-1",
+        image_digest: "sha256:argus",
+        files_dir: seed_files_dir([sha]),
+        scan_request_id: nil,
+        log: "build log"
+      })
+
+    assert run.argus == argus
+
+    {:ok, old} =
+      Ingestion.ingest(load_fixture(), %{
+        run_id: "argus-2",
+        image_digest: "sha256:argus2",
+        files_dir: seed_files_dir([sha]),
+        scan_request_id: nil,
+        log: "build log"
+      })
+
+    assert old.argus == nil
+  end
+
+  test "a non-map argus field is dropped rather than failing the ingest" do
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+
+    {:ok, run} =
+      Ingestion.ingest(load_fixture() |> Map.put("argus", "garbage"), %{
+        run_id: "argus-3",
+        image_digest: "sha256:argus3",
+        files_dir: seed_files_dir([sha]),
+        scan_request_id: nil,
+        log: "build log"
+      })
+
+    assert run.argus == nil
+  end
 end

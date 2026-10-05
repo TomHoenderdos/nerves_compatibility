@@ -27,7 +27,8 @@ defmodule Portal.Builder do
           required(:run_id) => String.t(),
           optional(:image) => String.t(),
           optional(:image_digest) => String.t(),
-          optional(:systems_filter) => [String.t()] | nil
+          optional(:systems_filter) => [String.t()] | nil,
+          optional(:argus) => map() | nil
         }
 
   @type build_result :: %{
@@ -153,7 +154,8 @@ defmodule Portal.Builder do
         "version" => Map.fetch!(args, :version),
         "source" => "hex"
       },
-      systems_filter: Map.get(args, :systems_filter)
+      systems_filter: Map.get(args, :systems_filter),
+      argus: Map.get(args, :argus)
     }
 
     # Free space first: it is the cheapest check in the chain, and it is the
@@ -363,23 +365,27 @@ defmodule Portal.Builder do
     if File.dir?(path), do: path, else: existing_ancestor(Path.dirname(path))
   end
 
+  @doc "The `NCC_INPUT` document for `job`. Pure, so tests need no Docker."
+  @spec worker_input(map()) :: map()
+  def worker_input(job) do
+    %{
+      "run_id" => job.run_id,
+      "image" => %{"name" => job.image_name, "digest" => job.image_digest},
+      "package" => job.package,
+      "paths" => %{
+        "work_dir" => "/work",
+        "output_dir" => "/out",
+        "files_dir" => "/files"
+      }
+    }
+    |> maybe_put("systems_filter", job.systems_filter)
+    |> maybe_put("argus", Map.get(job, :argus))
+  end
+
   # work_dir is the run scratch directory constructed by build/2; input.json is fixed.
   # sobelow_skip ["Traversal.FileModule"]
   defp write_worker_input(job, work_dir) do
-    input =
-      %{
-        "run_id" => job.run_id,
-        "image" => %{"name" => job.image_name, "digest" => job.image_digest},
-        "package" => job.package,
-        "paths" => %{
-          "work_dir" => "/work",
-          "output_dir" => "/out",
-          "files_dir" => "/files"
-        }
-      }
-      |> maybe_put("systems_filter", job.systems_filter)
-
-    File.write!(Path.join(work_dir, "input.json"), Jason.encode_to_iodata!(input))
+    File.write!(Path.join(work_dir, "input.json"), Jason.encode_to_iodata!(worker_input(job)))
     :ok
   rescue
     e -> {:error, {:input_write_failed, Exception.message(e)}}

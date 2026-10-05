@@ -31,6 +31,7 @@ defmodule Portal.Catalog.Run do
         :overall_status,
         :footprint,
         :toolchain,
+        :argus,
         :log,
         :started_at,
         :finished_at,
@@ -87,6 +88,12 @@ defmodule Portal.Catalog.Run do
     # to a consumer has to be able to state what they were built with. The
     # worker has always emitted this; it was simply dropped on ingest.
     attribute :toolchain, :map do
+      public?(true)
+    end
+
+    # The worker's advisory argus_beam result (`NccWorker.Argus`), verbatim.
+    # Nil for runs from images before argus, and never read by any status.
+    attribute :argus, :map do
       public?(true)
     end
 

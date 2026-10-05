@@ -190,7 +190,7 @@ defmodule Portal.Admin do
       argus_timeout_seconds: params["timeout_seconds"]
     }
 
-    case Portal.Settings.update(attrs) do
+    case Portal.Settings.save(attrs) do
       {:ok, setting} -> {:ok, setting}
       {:error, _} -> {:error, :invalid_argus_settings}
     end
