@@ -58,6 +58,26 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
     refute has_element?(view, "#findings", "Catch-all")
   end
 
+  test "status and severity are checkbox groups that show every choice", %{conn: conn} do
+    ingest("1.0.0", ok([finding()]), 1)
+    [%{triage: row}] = Portal.Catalog.triage_list(%{})
+    Portal.Catalog.triage!(row.id, %{status: "false_positive", note: nil}, %{username: "tom"})
+
+    {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+    assert has_element?(view, "#filter-status-new[checked]")
+    refute has_element?(view, "#filter-status-false_positive[checked]")
+    assert has_element?(view, "#filter-severity-info[checked]")
+    refute has_element?(view, "#findings", "Catch-all")
+
+    view
+    |> form("#triage-filters", f: %{status: ["new", "confirmed", "false_positive"]})
+    |> render_change()
+
+    assert_patch(view, ~p"/admin/argus/findings?#{%{status: ~w(new confirmed false_positive)}}")
+    assert has_element?(view, "#filter-status-false_positive[checked]")
+    assert has_element?(view, "#findings", "Catch-all")
+  end
+
   test "stale findings show only with the filter", %{conn: conn} do
     ingest("1.0.0", ok([finding(), finding(%{"detail" => "gone later", "title" => "Gone"})]), 1)
     ingest("1.1.0", ok([finding()]), 2)
