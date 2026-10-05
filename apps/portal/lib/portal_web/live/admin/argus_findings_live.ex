@@ -149,22 +149,36 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           for={@filter_form}
           id="triage-filters"
           phx-change="filter"
-          class="grid items-end gap-3 sm:grid-cols-5"
+          class="grid items-start gap-4 sm:grid-cols-5"
         >
-          <.input
-            field={@filter_form[:status]}
-            type="select"
-            multiple
-            label="Status"
-            options={@status_options}
-          />
-          <.input
-            field={@filter_form[:severity]}
-            type="select"
-            multiple
-            label="Severity"
-            options={@severities}
-          />
+          <%!-- Checkbox groups rather than multi-selects: a select box clips its
+          options, so a selected status can sit out of sight. --%>
+          <fieldset>
+            <legend class="label mb-1">Status</legend>
+            <label :for={{atom, label} <- @statuses} class="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                id={"filter-status-#{atom}"}
+                name="f[status][]"
+                value={atom}
+                checked={Atom.to_string(atom) in @filter_form[:status].value}
+                class="checkbox checkbox-sm"
+              /> {label}
+            </label>
+          </fieldset>
+          <fieldset>
+            <legend class="label mb-1">Severity</legend>
+            <label :for={severity <- @severities} class="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                id={"filter-severity-#{severity}"}
+                name="f[severity][]"
+                value={severity}
+                checked={severity in @filter_form[:severity].value}
+                class="checkbox checkbox-sm"
+              /> {severity}
+            </label>
+          </fieldset>
           <.input field={@filter_form[:analysis]} type="text" label="Analysis" phx-debounce="300" />
           <.input field={@filter_form[:package]} type="text" label="Package" phx-debounce="300" />
           <.input field={@filter_form[:stale]} type="checkbox" label="Include no longer seen" />
