@@ -369,6 +369,7 @@ defmodule PortalWeb.PageControllerTest do
     for path <- [
           ~p"/admin/scan",
           ~p"/admin/update-check",
+          ~p"/admin/argus",
           ~p"/admin/requests/#{Ecto.UUID.generate()}/priority"
         ] do
       assert redirected_to(post(recycle(conn), path)) == ~p"/login"
@@ -468,5 +469,41 @@ defmodule PortalWeb.PageControllerTest do
     assert html =~ ~s(action="/admin/update-check")
     assert html =~ "hex.pm update check"
     assert html =~ "Queue position"
+  end
+
+  test "POST /admin/argus saves the settings and shows them", %{conn: conn} do
+    {conn, _admin} = signed_in_admin(conn, "admin_argus")
+
+    conn =
+      post(conn, ~p"/admin/argus", %{
+        "argus" => %{
+          "enabled" => "true",
+          "analyses" => ["default", "unsafe_input"],
+          "scope" => "all",
+          "min_severity" => "error",
+          "timeout_seconds" => "600"
+        }
+      })
+
+    html = html_response(conn, 200)
+    assert html =~ "Static analysis (argus)"
+    assert html =~ "Saved argus settings."
+    assert Portal.Settings.get().argus_analyses == [:default, :unsafe_input]
+  end
+
+  test "POST /admin/argus with no analyses flashes an error", %{conn: conn} do
+    {conn, _admin} = signed_in_admin(conn, "admin_argus_bad")
+
+    conn =
+      post(conn, ~p"/admin/argus", %{
+        "argus" => %{
+          "enabled" => "true",
+          "scope" => "firmware",
+          "min_severity" => "warning",
+          "timeout_seconds" => "300"
+        }
+      })
+
+    assert html_response(conn, 200) =~ "Tick at least one analysis"
   end
 end
