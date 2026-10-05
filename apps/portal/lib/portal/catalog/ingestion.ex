@@ -25,6 +25,7 @@ defmodule Portal.Catalog.Ingestion do
   alias Portal.Catalog.{
     Artifact,
     ArtifactMembership,
+    FindingTriage,
     LogSanitizer,
     Package,
     Run,
@@ -96,10 +97,46 @@ defmodule Portal.Catalog.Ingestion do
          {:ok, run} <-
            create_run(result, opts, package.id, version, overall, finished_at),
          :ok <-
-           create_system_results(systems, run.id, version, staged, logs) do
+           create_system_results(systems, run.id, version, staged, logs),
+         :ok <- record_triage(package_name, version, run.id, result["argus"]) do
       {:ok, run}
     end
   end
+
+  # One FindingTriage row per finding of an `ok` argus run. Only findings with
+  # string analysis and title and a known severity are recorded: anything else
+  # is skipped here rather than handed to Postgres, where an insert error would
+  # abort the whole ingest transaction.
+  defp record_triage(package_name, version, run_id, %{"status" => "ok", "findings" => findings})
+       when is_list(findings) do
+    findings
+    |> Enum.filter(&triageable?/1)
+    |> Enum.each(fn finding ->
+      FindingTriage
+      |> Ash.Changeset.for_create(:sighting, %{
+        fingerprint: FindingTriage.fingerprint(package_name, finding),
+        package_name: package_name,
+        analysis: finding["analysis"],
+        severity: finding["severity"],
+        title: finding["title"],
+        file: if(is_binary(finding["file"]), do: finding["file"]),
+        line: if(is_integer(finding["line"]), do: finding["line"]),
+        finding: finding,
+        first_seen_version: version,
+        last_seen_version: version,
+        last_seen_run_id: run_id
+      })
+      |> Ash.create!(domain: @domain)
+    end)
+  end
+
+  defp record_triage(_package_name, _version, _run_id, _argus), do: :ok
+
+  defp triageable?(%{"analysis" => a, "severity" => s, "title" => t})
+       when is_binary(a) and is_binary(t) and s in ["error", "warning", "info"],
+       do: true
+
+  defp triageable?(_), do: false
 
   defp upsert_package(name, info, last_run_at) do
     Package
