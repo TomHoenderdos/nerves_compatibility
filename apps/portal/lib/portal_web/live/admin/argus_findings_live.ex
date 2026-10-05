@@ -30,15 +30,15 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   @impl true
   def handle_params(params, _uri, socket) do
     filters = filters(params)
+    {rows, total} = Catalog.triage_page(filters, page_limit())
 
     {:noreply,
      socket
      |> assign(:filter_form, to_form(filter_params(filters), as: :f))
      |> assign(:counts, Catalog.triage_counts())
-     |> stream(:findings, Catalog.triage_list(filters),
-       reset: true,
-       dom_id: &"finding-#{&1.triage.id}"
-     )}
+     |> assign(:shown, length(rows))
+     |> assign(:total, total)
+     |> stream(:findings, rows, reset: true, dom_id: &"finding-#{&1.triage.id}")}
   end
 
   @impl true
@@ -65,15 +65,10 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
         socket.assigns.current_user
       )
 
-    stale? =
-      %{include_stale: true, status: [row.status], severity: @severities}
-      |> Catalog.triage_list()
-      |> Enum.any?(&(&1.triage.id == row.id and &1.stale?))
-
     {:noreply,
      socket
      |> assign(:counts, Catalog.triage_counts())
-     |> stream_insert(:findings, %{triage: row, stale?: stale?})
+     |> stream_insert(:findings, %{triage: row, stale?: Catalog.triage_stale?(row)})
      |> put_flash(:info, "Saved.")}
   end
 
@@ -82,6 +77,12 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   defp default?("status", value), do: Enum.sort(value) == ["confirmed", "new"]
   defp default?("severity", value), do: Enum.sort(value) == Enum.sort(@severities)
   defp default?(_key, _value), do: false
+
+  # Rows rendered at once. Each carries two inputs, so a page of every finding
+  # in the catalogue would be slow to diff; narrow the filters to see more.
+  defp page_limit do
+    :portal |> Application.get_env(__MODULE__, []) |> Keyword.get(:page_limit, 500)
+  end
 
   defp filters(params) do
     %{}
@@ -144,6 +145,10 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             {Map.get(@counts, status, 0)} {label}
           </span>
         </div>
+
+        <p :if={@total > @shown} id="triage-shown" class="text-sm text-base-content/60">
+          Showing {@shown} of {@total}. Narrow the filters to see the rest.
+        </p>
 
         <.form
           for={@filter_form}

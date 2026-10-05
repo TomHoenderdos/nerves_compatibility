@@ -35,6 +35,31 @@ defmodule Portal.Catalog.FindingTriageIngestTest do
     assert row.line == 42
   end
 
+  test "the same finding twice in one run is one row" do
+    ingest("1.0.0", ok([finding(), finding(%{"line" => 99})]), 1)
+    assert [_] = rows()
+  end
+
+  test "all sightings of a run are written in one statement" do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:portal, :repo, :query]])
+
+    ingest("1.0.0", ok(for(i <- 1..5, do: finding(%{"detail" => "d#{i}"}))), 1)
+
+    inserts =
+      Stream.repeatedly(fn ->
+        receive do
+          {[:portal, :repo, :query], ^ref, _measurements, %{query: query}} -> query
+        after
+          0 -> nil
+        end
+      end)
+      |> Enum.take_while(& &1)
+      |> Enum.count(&String.contains?(&1, ~s(INSERT INTO "catalog_finding_triage")))
+
+    assert inserts == 1
+    assert length(rows()) == 5
+  end
+
   test "error, skipped and absent argus record nothing" do
     ingest("1.0.0", %{"status" => "error", "findings" => [], "error" => "x"}, 1)
     ingest("1.0.1", %{"status" => "skipped"}, 2)

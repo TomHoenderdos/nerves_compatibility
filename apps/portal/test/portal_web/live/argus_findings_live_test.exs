@@ -78,6 +78,16 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
     assert has_element?(view, "#findings", "Catch-all")
   end
 
+  test "a list longer than the cap says how many it shows", %{conn: conn} do
+    ingest("1.0.0", ok(for(i <- 1..3, do: finding(%{"detail" => "d#{i}"}))), 1)
+    previous = Application.get_env(:portal, PortalWeb.Admin.ArgusFindingsLive, [])
+    Application.put_env(:portal, PortalWeb.Admin.ArgusFindingsLive, page_limit: 2)
+    on_exit(fn -> Application.put_env(:portal, PortalWeb.Admin.ArgusFindingsLive, previous) end)
+
+    {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+    assert has_element?(view, "#triage-shown", "Showing 2 of 3")
+  end
+
   test "stale findings show only with the filter", %{conn: conn} do
     ingest("1.0.0", ok([finding(), finding(%{"detail" => "gone later", "title" => "Gone"})]), 1)
     ingest("1.1.0", ok([finding()]), 2)
