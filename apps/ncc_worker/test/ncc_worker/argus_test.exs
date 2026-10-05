@@ -139,6 +139,25 @@ defmodule NccWorker.ArgusTest do
     assert result.truncated
   end
 
+  test "exit 3 with JSON keeps the findings of the analyses that finished", %{root: root} do
+    out = JSON.encode!([finding("deps/pkg/lib/a.ex")])
+    cmd = cmd(out, 3, "warning: analysis blocking degraded: souffle timed out\n")
+    result = Argus.run(root, "pkg", @config, :firmware, @pass, cmd: cmd)
+
+    assert result.status == :ok
+    assert [%{"file" => "lib/a.ex"}] = result.findings
+    assert result.error == "degraded: warning: analysis blocking degraded: souffle timed out"
+  end
+
+  test "stderr that is not UTF-8 or is huge still yields a JSON-safe reason", %{root: root} do
+    cmd = cmd("", 2, "ok line\n" <> <<0xFF, 0xFE>> <> String.duplicate("x", 2_000) <> "\n")
+    result = Argus.run(root, "pkg", @config, :firmware, @pass, cmd: cmd)
+
+    assert String.valid?(result.error)
+    assert byte_size(result.error) <= 600
+    assert is_binary(JSON.encode!(result))
+  end
+
   for status <- [2, 3, 127] do
     test "exit #{status} is an error with the last stderr line", %{root: root} do
       cmd = cmd("", unquote(status), "first\nsouffle not found on PATH\n")

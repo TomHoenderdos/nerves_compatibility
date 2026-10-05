@@ -479,11 +479,49 @@ defmodule PortalWeb.PackageLive do
 
   # Only well-formed `ok` and `error` results render. Anything else -- skipped,
   # a run from before argus, a map missing its findings -- renders nothing.
-  defp argus_view(%{"status" => "ok", "findings" => findings} = argus) when is_list(findings),
-    do: argus
+  defp argus_view(%{"status" => "ok", "findings" => findings} = argus) when is_list(findings) do
+    %{
+      argus
+      | "findings" =>
+          for(%{"severity" => s} = f <- findings, Map.has_key?(@severity_rank, s), do: finding(f))
+    }
+    |> Map.put(
+      "analyses",
+      argus |> Map.get("analyses") |> List.wrap() |> Enum.filter(&is_binary/1)
+    )
+  end
 
   defp argus_view(%{"status" => "error"} = argus), do: argus
   defp argus_view(_), do: nil
+
+  # Stored findings outlive the argus version that wrote them, so every field
+  # the template prints is narrowed to the type it expects. Anything else is
+  # dropped rather than allowed to raise during render.
+  defp finding(f) do
+    %{
+      "severity" => f["severity"],
+      "analysis" => text(f["analysis"]),
+      "title" => text(f["title"]),
+      "at_label" => text(f["at_label"]),
+      "detail" => text(f["detail"]),
+      "file" => text(f["file"]),
+      "line" => if(is_integer(f["line"]), do: f["line"]),
+      "help" => f["help"] |> List.wrap() |> Enum.filter(&is_binary/1),
+      "related" =>
+        for(
+          %{} = r <- List.wrap(f["related"]),
+          do: %{
+            "label" => text(r["label"]),
+            "file" => text(r["file"]),
+            "line" => if(is_integer(r["line"]), do: r["line"])
+          }
+        )
+    }
+  end
+
+  defp text(value) when is_binary(value), do: value
+  defp text(value) when is_integer(value), do: Integer.to_string(value)
+  defp text(_), do: nil
 
   defp visible_findings(findings, floor) do
     min = Map.fetch!(@severity_rank, Atom.to_string(floor))
