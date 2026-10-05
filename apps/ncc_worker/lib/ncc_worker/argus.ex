@@ -10,6 +10,7 @@ defmodule NccWorker.Argus do
 
   @bin "/home/nerves/.mix/escripts/argus"
   @max_findings 200
+  @max_reason 500
   @default_timeout_seconds 300
   @default_analyses ["default", "exposure"]
 
@@ -130,17 +131,19 @@ defmodule NccWorker.Argus do
   end
 
   defp outcome(status, stdout, _timeout, _stderr_file, package) when status in [0, 1] do
-    case JSON.decode(String.trim(stdout)) do
-      {:ok, findings} when is_list(findings) ->
-        %{
-          status: :ok,
-          findings: findings |> Enum.take(@max_findings) |> Enum.map(&relativize(&1, package)),
-          truncated: length(findings) > @max_findings,
-          error: nil
-        }
+    case findings(stdout, package) do
+      {:ok, found} -> Map.put(found, :error, nil)
+      :error -> %{status: :error, error: "invalid json"}
+    end
+  end
 
-      _ ->
-        %{status: :error, error: "invalid json"}
+  # argus prints the full report and then exits 3 when any one analysis
+  # degraded (a souffle timeout, a points-to budget). The other analyses'
+  # findings are still valid, so they are kept and the degradation noted.
+  defp outcome(3, stdout, _timeout, stderr_file, package) do
+    case findings(stdout, package) do
+      {:ok, found} -> Map.put(found, :error, "degraded" <> last_line(stderr_file))
+      :error -> %{status: :error, error: "argus exited with status 3" <> last_line(stderr_file)}
     end
   end
 
@@ -150,10 +153,28 @@ defmodule NccWorker.Argus do
   defp outcome(status, _stdout, _timeout, stderr_file, _package),
     do: %{status: :error, error: "argus exited with status #{status}" <> last_line(stderr_file)}
 
+  defp findings(stdout, package) do
+    case JSON.decode(String.trim(stdout)) do
+      {:ok, findings} when is_list(findings) ->
+        {:ok,
+         %{
+           status: :ok,
+           findings: findings |> Enum.take(@max_findings) |> Enum.map(&relativize(&1, package)),
+           truncated: length(findings) > @max_findings
+         }}
+
+      _ ->
+        :error
+    end
+  end
+
+  # The reason lands in result.json, whose encoder raises on invalid UTF-8 --
+  # which would turn an advisory failure into a worker crash -- and in a
+  # database column, so it is made valid and kept short.
   defp last_line(file) do
     with {:ok, body} <- File.read(file),
          [_ | _] = lines <- String.split(body, "\n", trim: true) do
-      ": " <> List.last(lines)
+      ": " <> (lines |> List.last() |> String.replace_invalid() |> String.slice(0, @max_reason))
     else
       _ -> ""
     end

@@ -122,6 +122,25 @@ defmodule PortalWeb.PackageArgusTest do
     assert has_element?(view, "#argus", "Floating")
   end
 
+  test "mistyped finding fields render what they can instead of crashing", %{conn: conn} do
+    seed(
+      ok([
+        finding("error", "Kept", %{"detail" => %{"x" => 1}, "related" => ["x", %{"label" => 3}]}),
+        finding("warning", "Retitled", %{
+          "title" => %{"not" => "a title"},
+          "help" => [%{"x" => 1}, "real hint"]
+        }),
+        finding(["error"], "Bad severity")
+      ])
+    )
+
+    {:ok, view, _} = live(conn, ~p"/packages/argpkg")
+
+    assert has_element?(view, "#argus", "Kept")
+    assert has_element?(view, "#argus", "real hint")
+    refute has_element?(view, "#argus", "Bad severity")
+  end
+
   test "an error says it could not run and hides the reason from visitors", %{conn: conn} do
     seed(%{
       "status" => "error",
