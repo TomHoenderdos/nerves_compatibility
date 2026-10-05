@@ -310,6 +310,12 @@
               now: they show on the package page to admins only. Changes apply to builds
               started afterwards; the severity floor applies to the page immediately.
             </p>
+            <.link
+              navigate={~p"/admin/argus/findings"}
+              class="link mt-2 inline-block text-sm font-medium"
+            >
+              Triage findings →
+            </.link>
           </div>
 
           <form method="post" action={~p"/admin/argus"} class="mt-5 space-y-5">

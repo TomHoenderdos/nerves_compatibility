@@ -170,6 +170,16 @@ defmodule PortalWeb.Router do
     # reconnecting to it. `Oban.Web.Router.__options__/2` appends its own
     # `Oban.Web.Authentication` after ours, so ours decides first.
     oban_dashboard("/oban", on_mount: [{PortalWeb.Plugs.RequireAdmin, :require_admin_passkey}])
+
+    # Same reasoning as the Oban dashboard: the pipeline guards the first HTTP
+    # request, the on_mount guards every LiveView reconnect after it.
+    live_session :admin,
+      on_mount: [
+        {PortalWeb.UserAuth, :assign_current_user},
+        {PortalWeb.Plugs.RequireAdmin, :require_admin_passkey}
+      ] do
+      live "/argus/findings", PortalWeb.Admin.ArgusFindingsLive, :index
+    end
   end
 
   scope "/api", PortalWeb do
