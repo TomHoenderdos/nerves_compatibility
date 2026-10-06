@@ -92,6 +92,11 @@ defmodule PortalWeb.Router do
     get "/badge/:name", CatalogApiController, :badge
     get "/request-scan", PageController, :request_scan
     get "/admin", PageController, :admin
+    get "/admin/queue", PageController, :admin_queue
+    get "/admin/users", PageController, :admin_users
+    get "/admin/failures", PageController, :admin_failures
+    get "/admin/argus", PageController, :admin_argus
+    get "/admin/maintenance", PageController, :admin_maintenance
     get "/admin/monitor", PageController, :oban_embed
     post "/admin/requests/:id/approve", PageController, :approve_anonymous_request
     post "/admin/requests/:id/reject", PageController, :reject_anonymous_request

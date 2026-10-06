@@ -177,9 +177,9 @@ defmodule PortalWeb.PageControllerTest do
       |> init_test_session(user_id: admin.id, login_method: :passkey)
       |> post(~p"/requests/anonymous", %{"packages" => "admin_anon_review"})
 
-    conn = get(recycle(conn), ~p"/admin")
+    conn = get(recycle(conn), ~p"/admin/queue")
 
-    assert html_response(conn, 200) =~ "Scan request operations"
+    assert html_response(conn, 200) =~ "Queue a scan"
     assert html_response(conn, 200) =~ "Anonymous approvals"
     assert html_response(conn, 200) =~ "admin_anon_review"
     assert html_response(conn, 200) =~ "Approve"
@@ -457,18 +457,20 @@ defmodule PortalWeb.PageControllerTest do
     assert html_response(conn, 200) =~ "queues nothing"
   end
 
-  test "GET /admin carries the manual scan form and the update check panel", %{conn: conn} do
+  test "the queue and maintenance sections carry the scan form and the update check",
+       %{conn: conn} do
     {conn, admin} = signed_in_admin(conn, "admin_panels")
     # The queue table, and so its position column, only renders with a row in
     # it -- an empty queue shows the empty state instead.
     {:ok, _} = Portal.Admin.queue_package("admin_panel_pkg", admin)
 
-    html = html_response(get(conn, ~p"/admin"), 200)
+    queue = html_response(get(conn, ~p"/admin/queue"), 200)
+    assert queue =~ ~s(action="/admin/scan")
+    assert queue =~ "Queue position"
 
-    assert html =~ ~s(action="/admin/scan")
-    assert html =~ ~s(action="/admin/update-check")
-    assert html =~ "hex.pm update check"
-    assert html =~ "Queue position"
+    maintenance = html_response(get(conn, ~p"/admin/maintenance"), 200)
+    assert maintenance =~ ~s(action="/admin/update-check")
+    assert maintenance =~ "hex.pm update check"
   end
 
   test "POST /admin/argus saves the settings and shows them", %{conn: conn} do

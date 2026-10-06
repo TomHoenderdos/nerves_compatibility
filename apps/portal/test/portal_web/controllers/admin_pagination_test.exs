@@ -26,7 +26,7 @@ defmodule PortalWeb.AdminPaginationTest do
 
       on_exit(fn -> :telemetry.detach(handler) end)
 
-      first = document(get(conn, ~p"/admin"))
+      first = document(get(conn, ~p"/admin/queue"))
       assert length(rows(first, "queue")) == 50
       assert length(rows(first, "approvals")) == 50
       assert text(first, "#queue-pagination") =~ "1–50 of 51"
@@ -34,7 +34,7 @@ defmodule PortalWeb.AdminPaginationTest do
       assert_receive {:request_read, _, _}
       refute_received {:request_read, _, true}
 
-      second = document(get(conn, ~p"/admin?queue_page=2&review_page=2"))
+      second = document(get(conn, ~p"/admin/queue?queue_page=2&review_page=2"))
       assert length(rows(second, "queue")) == 1
       assert length(rows(second, "approvals")) == 1
       assert text(second, "#queue tbody") =~ "queued_51"
@@ -57,11 +57,11 @@ defmodule PortalWeb.AdminPaginationTest do
       for i <- 1..51, do: request_fixture("queued_#{i}")
 
       for value <- ["0", "-1", "oops", "2oops", ["2"], %{"page" => "2"}] do
-        doc = document(get(conn, ~p"/admin", %{"queue_page" => value}))
+        doc = document(get(conn, ~p"/admin/queue", %{"queue_page" => value}))
         assert length(rows(doc, "queue")) == 50
       end
 
-      last = document(get(conn, ~p"/admin?queue_page=99999999999999999999"))
+      last = document(get(conn, ~p"/admin/queue?queue_page=99999999999999999999"))
       assert length(rows(last, "queue")) == 1
       assert text(last, "#queue tbody") =~ "queued_51"
     end

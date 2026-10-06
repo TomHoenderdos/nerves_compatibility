@@ -1,0 +1,96 @@
+<.admin_layout flash={@flash} current_user={@current_user} section={:users} title="Users">
+  <:subtitle>Every account, with admin access and password resets.</:subtitle>
+  <section id="admin-users" class="card border border-base-300 bg-base-100 shadow-sm">
+    <div class="card-body">
+      <p class="text-sm leading-6 text-base-content/70">
+        Granting, revoking and resetting need a passkey confirmed in the last {div(
+          Portal.Accounts.Mfa.reauth_window_seconds(),
+          60
+        )} minutes on <.link navigate={~p"/settings/security"} class="link">your security settings</.link>.
+        A new admin can only open the admin pages once they have added a passkey. A
+        reset sets a random temporary password, shown once; pass it on yourself, and the
+        user chooses a new one when they sign in. Second factors stay.
+      </p>
+
+      <div
+        :if={@temporary_password}
+        id="temporary-password"
+        class="mt-4 rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm"
+      >
+        Temporary password for <span class="font-semibold">{@temporary_password.username}</span>
+        (shown only now): <code
+          id="temporary-password-value"
+          class="ml-1 select-all rounded bg-base-100 px-2 py-0.5 font-mono"
+          phx-no-format
+        >{@temporary_password.password}</code>
+      </div>
+
+      <div class="mt-4 overflow-x-auto">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Accounts</th>
+              <th>Status</th>
+              <th class="text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :for={user <- @users} id={"user-#{user.id}"}>
+              <td>
+                <div class="font-medium">{user.username}</div>
+                <div class="text-xs text-base-content/50">
+                  joined {format_datetime(user.joined)}
+                </div>
+              </td>
+              <td class="text-sm text-base-content/70">
+                <div :if={user.hex_username}>hex {user.hex_username}</div>
+                <div :if={user.github_username}>github {user.github_username}</div>
+                <div :if={!user.hex_username and !user.github_username}>-</div>
+              </td>
+              <td>
+                <div class="flex flex-wrap gap-1">
+                  <span :if={user.admin?} class="badge badge-sm badge-primary">admin</span>
+                  <span :if={user.admin? and !user.passkey?} class="badge badge-sm badge-warning">
+                    needs a passkey
+                  </span>
+                  <span :if={user.password_reset_required?} class="badge badge-sm badge-ghost">
+                    temporary password
+                  </span>
+                </div>
+              </td>
+              <td>
+                <div :if={user.id != @current_user.id} class="flex justify-end gap-1">
+                  <form :if={!user.admin?} method="post" action={~p"/admin/admins"}>
+                    <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                    <input type="hidden" name="username" value={user.username} />
+                    <button type="submit" class="btn btn-xs btn-ghost">Make admin</button>
+                  </form>
+                  <form
+                    :if={user.admin?}
+                    method="post"
+                    action={~p"/admin/admins/#{user.id}/revoke"}
+                  >
+                    <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                    <button type="submit" class="btn btn-xs btn-ghost">Revoke admin</button>
+                  </form>
+                  <form method="post" action={~p"/admin/users/reset-password"}>
+                    <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                    <input type="hidden" name="username" value={user.username} />
+                    <button type="submit" class="btn btn-xs btn-warning">Reset password</button>
+                  </form>
+                </div>
+                <div
+                  :if={user.id == @current_user.id}
+                  class="text-right text-xs text-base-content/50"
+                >
+                  you
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</.admin_layout>

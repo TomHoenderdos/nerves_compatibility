@@ -213,6 +213,30 @@ defmodule Portal.Admin do
   defp not_self(_user, _actor), do: :ok
 
   @doc """
+  Every account for the admin users page, admins first, then by username, with
+  what an admin acts on: admin flag, passkey, and a pending temporary password.
+  """
+  @spec list_users() :: [map()]
+  def list_users do
+    Portal.Accounts.User
+    |> Ash.Query.sort(is_admin: :desc, username: :asc)
+    |> Ash.Query.limit(500)
+    |> Ash.read!(domain: Portal.Accounts)
+    |> Enum.map(fn user ->
+      %{
+        id: user.id,
+        username: user.username,
+        hex_username: user.hex_username,
+        github_username: user.github_username,
+        admin?: user.is_admin,
+        passkey?: Portal.Accounts.Mfa.factors(user).passkeys > 0,
+        password_reset_required?: user.password_reset_required,
+        joined: user.inserted_at
+      }
+    end)
+  end
+
+  @doc """
   Every admin, with whether they hold a passkey. An admin without one cannot
   open `/admin` yet (`PortalWeb.Plugs.RequireAdmin`), so the card says so.
   """

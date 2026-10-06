@@ -1,0 +1,105 @@
+<.admin_layout flash={@flash} current_user={@current_user} section={:argus} title="Argus">
+  <:subtitle>Static analysis settings. Findings stay internal to admins.</:subtitle>
+  <section id="argus-settings" class="card border border-base-300 bg-base-100 shadow-sm">
+    <div class="card-body">
+      <div>
+        <h2 class="card-title">Static analysis (argus)</h2>
+        <p class="mt-1 text-sm leading-6 text-base-content/70">
+          argus_beam runs over each package's host beams. Its findings are internal for
+          now: they show on the package page to admins only. Changes apply to builds
+          started afterwards; the severity floor applies to the page immediately.
+        </p>
+        <.link
+          navigate={~p"/admin/argus/findings"}
+          class="link mt-2 inline-block text-sm font-medium"
+        >
+          Triage findings ({@triage_counts.new} new, {@triage_counts.confirmed} confirmed) →
+        </.link>
+      </div>
+
+      <form method="post" action={~p"/admin/argus"} class="mt-5 space-y-5">
+        <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+
+        <input type="hidden" name="argus[enabled]" value="false" />
+        <label class="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            name="argus[enabled]"
+            value="true"
+            checked={@argus.argus_enabled}
+            class="checkbox checkbox-sm"
+          /> Run argus on new builds
+        </label>
+
+        <fieldset>
+          <legend class="text-sm font-semibold">Analyses</legend>
+          <div class="mt-2 grid gap-2 sm:grid-cols-3">
+            <label
+              :for={name <- @argus_analysis_names}
+              class="flex items-center gap-2 text-sm"
+            >
+              <input
+                type="checkbox"
+                name="argus[analyses][]"
+                value={name}
+                checked={name in @argus.argus_analyses}
+                class="checkbox checkbox-sm"
+              />
+              <span class="font-mono">{name}</span>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend class="text-sm font-semibold">Scope</legend>
+          <label class="mt-2 flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="argus[scope]"
+              value="firmware"
+              checked={@argus.argus_scope == :firmware}
+              class="radio radio-sm"
+            /> Firmware packages only
+          </label>
+          <label class="mt-1 flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="argus[scope]"
+              value="all"
+              checked={@argus.argus_scope == :all}
+              class="radio radio-sm"
+            /> All packages
+          </label>
+        </fieldset>
+
+        <div class="flex flex-wrap gap-5">
+          <label class="text-sm">
+            <span class="font-semibold">Severity floor</span>
+            <select name="argus[min_severity]" class="select select-sm mt-1 block">
+              <option
+                :for={s <- [:info, :warning, :error]}
+                value={s}
+                selected={@argus.argus_min_severity == s}
+              >
+                {s}
+              </option>
+            </select>
+          </label>
+          <label class="text-sm">
+            <span class="font-semibold">Timeout (seconds)</span>
+            <input
+              type="number"
+              name="argus[timeout_seconds]"
+              min="30"
+              max="1800"
+              value={@argus.argus_timeout_seconds}
+              class="input input-sm mt-1 block w-32"
+            />
+          </label>
+        </div>
+
+        <button type="submit" class="btn btn-sm btn-primary">Save</button>
+      </form>
+    </div>
+  </section>
+</.admin_layout>

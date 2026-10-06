@@ -1,0 +1,224 @@
+<.admin_layout flash={@flash} current_user={@current_user} section={:queue} title="Queue">
+  <:subtitle>Queue a scan, review anonymous submissions and reorder accepted requests.</:subtitle>
+  <div class="grid gap-3 sm:grid-cols-2">
+    <PortalWeb.UI.stat_card label="Needs review" value={to_string(@review_page.total)} />
+    <PortalWeb.UI.stat_card label="Current queue" value={to_string(@queue_page.total)} />
+  </div>
+
+  <section class="card border border-base-300 bg-base-100 shadow-sm">
+    <div class="card-body">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 class="card-title">Queue a scan</h2>
+          <p class="mt-1 text-sm leading-6 text-base-content/70">
+            Goes straight into the queue at the highest priority. No approval step.
+          </p>
+        </div>
+        <span class="badge badge-outline w-fit">Admin</span>
+      </div>
+
+      <form method="post" action={~p"/admin/scan"} class="mt-5 flex flex-col gap-3">
+        <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+        <.admin_page_fields queue_page={@queue_page.page} review_page={@review_page.page} />
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <label class="form-control w-full sm:max-w-sm">
+            <span class="label-text">Package name</span>
+            <input
+              type="text"
+              name="package_name"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="nerves_system_rpi4"
+              class="input input-bordered w-full font-mono"
+            />
+          </label>
+          <button type="submit" class="btn btn-primary">Queue scan</button>
+        </div>
+        <label class="flex items-center gap-2 text-sm text-base-content/70">
+          <input type="checkbox" name="force" value="true" class="checkbox checkbox-sm" />
+          <span>
+            Force a rebuild even if this version was already built. Costs a full firmware build.
+          </span>
+        </label>
+      </form>
+    </div>
+  </section>
+
+  <section class="card border border-base-300 bg-base-100 shadow-sm">
+    <div class="card-body">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 class="card-title">Anonymous approvals</h2>
+          <p class="mt-1 text-sm leading-6 text-base-content/70">
+            These requests need a human check before queue promotion.
+          </p>
+        </div>
+        <span class="badge badge-outline w-fit">Manual review</span>
+      </div>
+
+      <%= if @pending_anonymous_requests == [] do %>
+        <p class="mt-5 text-sm leading-6 text-base-content/70">
+          No anonymous requests are waiting for approval.
+        </p>
+      <% else %>
+        <div class="mt-5 overflow-x-auto">
+          <table id="approvals" class="table">
+            <thead>
+              <tr>
+                <th>Package</th>
+                <th>Requested by</th>
+                <th>Submitted</th>
+                <th class="text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={request <- @pending_anonymous_requests}>
+                <td class="font-mono">{request.package_name}</td>
+                <td>{request.subject || "anonymous"}</td>
+                <td>{format_datetime(request.inserted_at)}</td>
+                <td>
+                  <div class="flex justify-end gap-2">
+                    <form method="post" action={~p"/admin/requests/#{request.id}/reject"}>
+                      <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                      <.admin_page_fields
+                        queue_page={@queue_page.page}
+                        review_page={@review_page.page}
+                      />
+                      <button type="submit" class="btn btn-sm btn-ghost text-error">
+                        Reject
+                      </button>
+                    </form>
+                    <form method="post" action={~p"/admin/requests/#{request.id}/approve"}>
+                      <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                      <.admin_page_fields
+                        queue_page={@queue_page.page}
+                        review_page={@review_page.page}
+                      />
+                      <button type="submit" class="btn btn-sm btn-primary">
+                        Approve
+                      </button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      <% end %>
+      <.admin_pagination
+        id="approvals-pagination"
+        label="Anonymous approvals pages"
+        page={@review_page}
+        params={@page_params}
+        param={:review_page}
+      />
+    </div>
+  </section>
+
+  <section class="card border border-base-300 bg-base-100 shadow-sm">
+    <div class="card-body">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 class="card-title">Current queue</h2>
+          <p class="mt-1 text-sm leading-6 text-base-content/70">
+            Accepted portal requests are shown oldest first. Pending anonymous requests stay out of this list until approved.
+          </p>
+        </div>
+        <span class="badge badge-primary w-fit">Accepted</span>
+      </div>
+
+      <%= if @queue_requests == [] do %>
+        <p class="mt-5 text-sm leading-6 text-base-content/70">
+          No accepted portal requests are currently queued.
+        </p>
+      <% else %>
+        <div class="mt-5 overflow-x-auto">
+          <table id="queue" class="table">
+            <thead>
+              <tr>
+                <th>Package</th>
+                <th>Verification</th>
+                <th>Status</th>
+                <th>Subject</th>
+                <th>Submitted</th>
+                <th class="text-right">Queue position</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={request <- @queue_requests}>
+                <td class="font-mono">{request.package_name}</td>
+                <td>{verification_label(request.source)}</td>
+                <td>
+                  <span class="badge badge-outline">
+                    {request_status_label(request.status)}
+                  </span>
+                </td>
+                <td>{request.subject || "-"}</td>
+                <td>{format_datetime(request.inserted_at)}</td>
+                <td>
+                  <% position = @queue_positions[request.id] %>
+                  <%= if position do %>
+                    <div class="flex items-center justify-end gap-2">
+                      <span class="badge badge-ghost font-mono" title={position.state}>
+                        P{position.priority}
+                      </span>
+                      <form
+                        method="post"
+                        action={~p"/admin/requests/#{request.id}/priority"}
+                        class="contents"
+                      >
+                        <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                        <.admin_page_fields
+                          queue_page={@queue_page.page}
+                          review_page={@review_page.page}
+                        />
+                        <input type="hidden" name="direction" value="up" />
+                        <button
+                          type="submit"
+                          class="btn btn-xs btn-ghost"
+                          disabled={not position.adjustable? or position.priority == 0}
+                          title="Run sooner"
+                        >
+                          &uarr;
+                        </button>
+                      </form>
+                      <form
+                        method="post"
+                        action={~p"/admin/requests/#{request.id}/priority"}
+                        class="contents"
+                      >
+                        <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                        <.admin_page_fields
+                          queue_page={@queue_page.page}
+                          review_page={@review_page.page}
+                        />
+                        <input type="hidden" name="direction" value="down" />
+                        <button
+                          type="submit"
+                          class="btn btn-xs btn-ghost"
+                          disabled={not position.adjustable? or position.priority == 9}
+                          title="Run later"
+                        >
+                          &darr;
+                        </button>
+                      </form>
+                    </div>
+                  <% else %>
+                    <span class="text-sm text-base-content/50">building</span>
+                  <% end %>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      <% end %>
+      <.admin_pagination
+        id="queue-pagination"
+        label="Current queue pages"
+        page={@queue_page}
+        params={@page_params}
+        param={:queue_page}
+      />
+    </div>
+  </section>
+</.admin_layout>

@@ -31,8 +31,8 @@ defmodule PortalWeb.AdminRolesControllerTest do
     {conn, _admin} = signed_in_admin(conn, "ctl_actor")
     {:ok, _} = Portal.Accounts.seed_admin_user("ctl_nopasskey", @pw)
 
-    html = html_response(get(conn, ~p"/admin"), 200)
-    assert html =~ ~s(id="admins")
+    html = html_response(get(conn, ~p"/admin/users"), 200)
+    assert html =~ ~s(id="admin-users")
     assert html =~ "ctl_actor"
     assert html =~ "ctl_nopasskey"
     assert html =~ "needs a passkey"

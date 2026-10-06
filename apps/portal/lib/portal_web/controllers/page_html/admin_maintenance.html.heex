@@ -1,0 +1,72 @@
+<.admin_layout
+  flash={@flash}
+  current_user={@current_user}
+  section={:maintenance}
+  title="Maintenance"
+>
+  <:subtitle>
+    Scheduled jobs. Every job is also visible on the <.link href={~p"/admin/oban"} class="link">Oban dashboard</.link>.
+  </:subtitle>
+  <section class="card border border-base-300 bg-base-100 shadow-sm">
+    <div class="card-body">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 class="card-title">hex.pm update check</h2>
+          <p class="mt-1 text-sm leading-6 text-base-content/70">
+            Runs hourly, compares tracked packages against the hex.pm registry, and queues every eligible update. Pure-Elixir packages skip firmware builds after host checks.
+          </p>
+        </div>
+        <span class={[
+          "badge w-fit",
+          if(@update_check.enabled?, do: "badge-success", else: "badge-error")
+        ]}>
+          {if @update_check.enabled?, do: "Scheduled", else: "Schedule off"}
+        </span>
+      </div>
+
+      <%= if @update_check.last_run do %>
+        <% meta = @update_check.last_run.meta %>
+        <div class="mt-5 grid gap-3 sm:grid-cols-3">
+          <PortalWeb.UI.stat_card label="On hex" value={to_string(meta["seen"])} />
+          <PortalWeb.UI.stat_card label="Worth rebuilding" value={to_string(meta["moved"])} />
+          <PortalWeb.UI.stat_card label="Queued" value={to_string(meta["enqueued"])} />
+        </div>
+        <p class="mt-3 text-sm leading-6 text-base-content/70">
+          Last run {format_datetime(@update_check.last_run.completed_at)}
+          <%= if meta["dry_run"] do %>
+            , as a dry run -- nothing was queued
+          <% end %>.
+        </p>
+      <% else %>
+        <p class="mt-5 text-sm leading-6 text-base-content/70">
+          No run has recorded any numbers yet.
+        </p>
+      <% end %>
+
+      <div class="mt-5 flex flex-wrap items-center gap-2">
+        <form method="post" action={~p"/admin/update-check"}>
+          <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+          <button
+            type="submit"
+            class="btn btn-sm btn-primary"
+            disabled={@update_check.pending?}
+          >
+            Run now
+          </button>
+        </form>
+        <form method="post" action={~p"/admin/update-check"}>
+          <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+          <input type="hidden" name="mode" value="dry_run" />
+          <button type="submit" class="btn btn-sm btn-ghost">Dry run</button>
+        </form>
+        <span class="text-sm text-base-content/60">
+          <%= if @update_check.pending? do %>
+            A check is already queued.
+          <% else %>
+            Either runs even while the schedule is off. A dry run queues nothing.
+          <% end %>
+        </span>
+      </div>
+    </div>
+  </section>
+</.admin_layout>
