@@ -81,7 +81,6 @@ defmodule PortalWeb.Router do
       live "/packages", IndexLive, :index
       live "/packages/:name", PackageLive, :show
       live "/packages/:name/log/:system", LogLive, :show
-      live "/requests/:id", RequestLive, :show
       live "/failure_clusters", FailureClustersLive, :index
       # /warnings stays unrouted: WarningsLive is a placeholder that renders
       # "coming soon" and nothing else. Re-add this route and the nav link in
@@ -90,6 +89,7 @@ defmodule PortalWeb.Router do
     end
 
     get "/badge/:name", CatalogApiController, :badge
+    get "/requests/:id", RequestRedirectController, :show
     get "/request-scan", PageController, :request_scan
     get "/admin", PageController, :admin
     get "/admin/queue", PageController, :admin_queue

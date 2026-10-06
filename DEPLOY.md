@@ -315,7 +315,7 @@ must be refused with `SSH_ORIGINAL_COMMAND does not run rsync`.
 
 - `/` — package browser
 - `/packages/:name` — package details
-- `/requests/:id` — live request/build status
+- `/requests/:id` — redirects to the package page
 - `/badge/:name.svg` — SVG badge
 - `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
 - `/api/precompiled/manifests/:package.json` — precompiled package manifest

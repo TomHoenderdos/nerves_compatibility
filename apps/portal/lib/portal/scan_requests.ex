@@ -263,8 +263,8 @@ defmodule Portal.ScanRequests do
   end
 
   # This used to read every row and filter in Elixir. It is called from
-  # `RequestLive.mount/3` on a public route, again on every progress broadcast,
-  # and up to four times per build from `Progress.mark/3` — against a table that
+  # `RequestRedirectController.show/2` on a public route, and up to four times
+  # per build from `Progress.mark/3` — against a table that
   # grows one row per Hex release discovered across the catalog, and whose rows
   # now carry up to 16 KB of `error_log` each.
   #

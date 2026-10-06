@@ -30,7 +30,10 @@
       <p :if={@failures == []} class="mt-2 text-sm text-base-content/60">No failed requests.</p>
       <ul :if={@failures != []} class="mt-2 divide-y divide-base-200">
         <li :for={failure <- @failures} class="flex flex-wrap items-center gap-2 py-2 text-sm">
-          <.link navigate={~p"/requests/#{failure.id}"} class="link font-mono font-medium">
+          <.link
+            navigate={~p"/packages/#{failure.package_name}"}
+            class="link font-mono font-medium"
+          >
             {failure.package_name}
           </.link>
           <span class="text-base-content/60">{failure.error_reason}</span>

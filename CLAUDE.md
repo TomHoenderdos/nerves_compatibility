@@ -76,8 +76,8 @@ The integration test is `apps/portal/test/portal/workers/build_integration_test.
 ## Public Routes
 
 - `/` — package browser
-- `/packages/:name` — package detail: latest run and per-system results
-- `/requests/:id` — live request/build status
+- `/packages/:name` — package detail: latest run, per-system results, and live status of its newest build
+- `/requests/:id` — redirects to the package page
 - `/badge/:name.svg` — SVG badge
 - `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
 - `/api/precompiled/manifests/:package.json`, `/api/precompiled/files/:sha256` — precompiled API
