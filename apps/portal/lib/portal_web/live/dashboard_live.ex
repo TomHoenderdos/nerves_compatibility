@@ -47,9 +47,11 @@ defmodule PortalWeb.DashboardLive do
               No failures recorded yet.
             </p>
             <ul :if={@clusters != []} class="space-y-2">
-              <li :for={c <- @clusters} class="flex items-center justify-between text-sm">
-                <span class="truncate text-base-content">{c.title}</span>
-                <span class="font-mono text-base-content/50">{c.systems} / {c.packages} pkg</span>
+              <li :for={c <- @clusters} class="flex items-center justify-between gap-3 text-sm">
+                <span class="min-w-0 truncate text-base-content" title={c.title}>{c.title}</span>
+                <span class="shrink-0 whitespace-nowrap font-mono text-base-content/50">
+                  {c.systems} / {c.packages} pkg
+                </span>
               </li>
             </ul>
           </.tile>
