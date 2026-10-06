@@ -1085,13 +1085,7 @@ defmodule NccWorker.Worker do
   defp read_log_tail(log_file, max_bytes) do
     case File.read(log_file) do
       {:ok, content} ->
-        if byte_size(content) <= max_bytes do
-          content
-        else
-          # Take the last max_bytes
-          offset = byte_size(content) - max_bytes
-          binary_part(content, offset, max_bytes)
-        end
+        NccWorker.LogTail.tail(content, max_bytes)
 
       {:error, _} ->
         ""
@@ -1218,14 +1212,8 @@ defmodule NccWorker.Worker do
     }
   end
 
-  defp truncate_tail(message, max_bytes) when is_binary(message) do
-    if byte_size(message) <= max_bytes do
-      message
-    else
-      offset = byte_size(message) - max_bytes
-      binary_part(message, offset, max_bytes)
-    end
-  end
+  defp truncate_tail(message, max_bytes) when is_binary(message),
+    do: NccWorker.LogTail.tail(message, max_bytes)
 
   defp format_retired_reason(retired) when is_map(retired) do
     reason_code = Map.get(retired, "reason") || Map.get(retired, :reason)
