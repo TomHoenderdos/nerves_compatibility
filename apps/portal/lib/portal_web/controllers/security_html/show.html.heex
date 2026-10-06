@@ -146,6 +146,67 @@
             />
             <button type="submit" class="btn btn-outline w-full">Use a recovery code</button>
           </form>
+
+          <form
+            :for={provider <- Enum.filter(@accepted_methods, &(&1 in [:hex, :github]))}
+            method="post"
+            action={~p"/settings/providers/#{provider}/confirm"}
+          >
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <button type="submit" class="btn btn-outline w-full">
+              Confirm with {if provider == :hex, do: "Hex.pm", else: "GitHub"}
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <section id="sign-in-methods" class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-4">
+          <h2 class="text-lg font-semibold tracking-tight">Sign-in methods</h2>
+
+          <div class="flex items-center justify-between gap-3">
+            <span>Password</span>
+            <span class="text-sm text-base-content/70">
+              {if @current_user.password_set, do: "Set", else: "Not set"}
+            </span>
+          </div>
+
+          <div
+            :for={
+              {provider, label, linked, name} <- [
+                {:hex, "Hex.pm", @hex_linked, @current_user.hex_username},
+                {:github, "GitHub", @github_linked, @current_user.github_username}
+              ]
+            }
+            id={"sign-in-#{provider}"}
+            class="flex items-center justify-between gap-3"
+          >
+            <span>
+              {label}
+              <span :if={linked} class="font-mono text-sm text-base-content/70">{name}</span>
+            </span>
+            <form
+              :if={@reauth_fresh}
+              method="post"
+              action={
+                if linked,
+                  do: ~p"/settings/providers/#{provider}/unlink",
+                  else: ~p"/settings/providers/#{provider}/link"
+              }
+            >
+              <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+              <button
+                type="submit"
+                class="btn btn-sm btn-outline whitespace-nowrap"
+                disabled={linked and @ways_in -- [provider] == []}
+              >
+                {if linked, do: "Unlink #{label}", else: "Link #{label}"}
+              </button>
+            </form>
+            <span :if={not @reauth_fresh} class="text-sm text-base-content/60">
+              {if linked, do: "Linked", else: "Not linked"}
+            </span>
+          </div>
         </div>
       </section>
 
