@@ -66,4 +66,52 @@ defmodule PortalWeb.RequestLiveTest do
     assert has_element?(view, "#request-error-log", "Compilation error")
     assert has_element?(view, "#request-error-log", "worker/runner exit 10")
   end
+
+  test "a failed request leads with why it failed and opens the log at its end",
+       %{conn: conn} do
+    {:ok, request} =
+      ScanRequests.create_once(%{
+        package_name: "crashing_package",
+        source: :anonymous_manual,
+        status: :pending
+      })
+
+    log =
+      String.duplicate("    warning: found quoted keyword \"x\"\n", 50) <>
+        "** (ErlangError) Erlang error: {:invalid_byte, 130}\n" <>
+        "    (stdlib 8.1) json.erl:543: :json.invalid_byte/2\n"
+
+    {:ok, _} =
+      ScanRequests.set_status(request.id, :error,
+        error_reason: "worker/runner exit 1",
+        error_log: log
+      )
+
+    {:ok, view, _html} = live(conn, ~p"/requests/#{request.id}")
+
+    assert has_element?(view, "#request-failure-summary", "invalid_byte, 130")
+    refute has_element?(view, "#request-failure-summary", "quoted keyword")
+    # The scroller is reversed, so the browser starts it at the bottom.
+    assert has_element?(view, "#request-error-log [data-starts-at-end]")
+  end
+
+  test "a failure without a recognisable cause shows only the log", %{conn: conn} do
+    {:ok, request} =
+      ScanRequests.create_once(%{
+        package_name: "quiet_package",
+        source: :anonymous_manual,
+        status: :pending
+      })
+
+    {:ok, _} =
+      ScanRequests.set_status(request.id, :error,
+        error_reason: "worker/runner exit 20",
+        error_log: "nothing to see\n"
+      )
+
+    {:ok, view, _html} = live(conn, ~p"/requests/#{request.id}")
+
+    refute has_element?(view, "#request-failure-summary")
+    assert has_element?(view, "#request-error-log", "nothing to see")
+  end
 end

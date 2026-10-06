@@ -543,6 +543,7 @@ defmodule PortalWeb.PageController do
       update_check: Portal.Admin.update_check_status(),
       argus: Portal.Settings.get(),
       admins: Portal.Admin.list_admins(),
+      recent_failures: Portal.ScanRequests.recent_failures(10),
       argus_analysis_names: Portal.Settings.Setting.analysis_names()
     )
   end

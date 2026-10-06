@@ -106,7 +106,21 @@ defmodule PortalWeb.RequestLive do
           <div class="border-b border-base-300 px-4 py-2.5 font-mono text-xs text-base-content/60">
             build failed: {@request.error_reason}
           </div>
-          <pre class="max-h-96 overflow-auto p-4 font-mono text-xs leading-relaxed text-base-content/80">{@request.error_log}</pre>
+          <div
+            :if={failure_summary(@request)}
+            id="request-failure-summary"
+            class="border-b border-base-300 bg-error/5 px-4 py-3"
+          >
+            <div class="text-xs font-semibold uppercase tracking-wide text-error">
+              Why it failed
+            </div>
+            <pre class="mt-1 overflow-x-auto font-mono text-xs leading-relaxed text-base-content">{failure_summary(@request)}</pre>
+          </div>
+          <%!-- The cause of a failure is at the end of the log, so the scroller is
+          reversed: a column-reverse flex box starts scrolled to its bottom. --%>
+          <div data-starts-at-end class="flex max-h-96 flex-col-reverse overflow-auto">
+            <pre class="p-4 font-mono text-xs leading-relaxed text-base-content/80">{@request.error_log}</pre>
+          </div>
         </div>
 
         <div
@@ -167,4 +181,7 @@ defmodule PortalWeb.RequestLive do
       true -> :queued
     end
   end
+
+  defp failure_summary(request),
+    do: Portal.ScanRequests.FailureSummary.from_log(request.error_log)
 end
