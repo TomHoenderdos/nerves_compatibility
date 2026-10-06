@@ -53,7 +53,9 @@ defmodule Portal.HexDeps do
 
   Options: `:client` (module exposing `get/2`, default `Req`), `:public_key`
   (default hex.pm's), `:cache` (default `true`). The first two exist for tests,
-  as in `Portal.HexRegistry.snapshot/1`.
+  as in `Portal.HexRegistry.snapshot/1`. `:receive_timeout` (default 30 s) and
+  `:retry` (default Req's) pass through to the request, for a caller with
+  someone waiting on the answer.
   """
   @spec releases(String.t(), keyword()) :: {:ok, [release()]} | {:error, error()}
   def releases(name, opts \\ []) when is_binary(name) do
@@ -118,11 +120,13 @@ defmodule Portal.HexDeps do
 
     # `compressed: false` and `decode_body: false` for the reason documented in
     # `Portal.HexRegistry`: `:hex_core` gunzips the body itself.
-    case client.get("#{@repo_url}/packages/#{name}",
-           compressed: false,
-           decode_body: false,
-           receive_timeout: 30_000
-         ) do
+    request_opts =
+      Keyword.merge(
+        [compressed: false, decode_body: false, receive_timeout: 30_000],
+        Keyword.take(opts, [:receive_timeout, :retry])
+      )
+
+    case client.get("#{@repo_url}/packages/#{name}", request_opts) do
       {:ok, %{status: 200, body: body}} when is_binary(body) ->
         unpack(name, body, key)
 
