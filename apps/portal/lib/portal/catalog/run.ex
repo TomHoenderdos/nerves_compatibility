@@ -13,7 +13,6 @@ defmodule Portal.Catalog.Run do
     repo(Portal.Repo)
 
     custom_indexes do
-      index([:package_id])
       index([:scan_request_id])
       index([:finished_at])
 
@@ -21,6 +20,9 @@ defmodule Portal.Catalog.Run do
       # package_id, finished_at DESC, inserted_at DESC`, which `/packages` asks
       # per page. Matching the sort lets Postgres read the first entry per
       # package instead of sorting each package's history.
+      #
+      # It also replaces the plain `package_id` index, of which it is a strict
+      # prefix: lookups by package, and the foreign key, use it just as well.
       index([:package_id, {:desc, :finished_at}, {:desc, :inserted_at}],
         name: "catalog_runs_package_latest_index"
       )
