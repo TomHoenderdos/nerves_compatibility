@@ -1,6 +1,6 @@
 # Sign in with Hex.pm and GitHub, and linked logins
 
-Status: draft for review, not implemented.
+Status: implemented.
 Date: 2026-10-06.
 
 ## Problem
@@ -51,8 +51,9 @@ else can then register.
 - **GitHub** identities are matched on the **numeric user id**, new column
   `github_id`. The login name is kept for display and refreshed on every
   sign-in. Existing rows are backfilled from the stored `github_profile`
-  JSON (`"id"`); a row whose profile has no id is matched by login once, on
-  its next GitHub flow, and gets its id then.
+  JSON (`"id"`) by the migration; a row whose profile carries no id never
+  gets one and is never matched by login on a later sign-in — matching is
+  id-only, with no login-name fallback at any point.
 - Matching only ever uses a stored, verified link. The username fallback in
   `Portal.HexPm` is removed.
 - Existing links stay. Production has seven accounts; their links are listed on
@@ -69,9 +70,11 @@ polls until done (the scan-request pages already work this way).
 After the provider confirms the identity:
 
 1. **Linked account exists**: sign in as that account with method `:hex` or
-   `:github`. If the account has a second factor (TOTP or passkey), the same
-   second step as a password sign-in follows (`Mfa.second_factor_required?`,
-   the pending-session flow). The `last_*_login_at` timestamp updates.
+   `:github`. The same second step as a password sign-in follows, decided by
+   `Mfa.second_factor_required?/1`: only a confirmed TOTP adds a step. A
+   passkey is an alternative way in, not a second factor, so holding one
+   (with no TOTP) does not add a step here either -- same rule as password
+   sign-in. The `last_*_login_at` timestamp updates.
 2. **No linked account, provider username free locally**: create an account
    with that username, linked to the identity, and sign in.
 3. **No linked account, username taken**: show "Choose a username" with the
@@ -89,8 +92,13 @@ Accounts created by a provider (today's scan-request accounts included) have a
 random password hash nobody knows. A new `password_set` flag (false for those,
 true for registered accounts) lets settings show **Set a password** instead of
 **Change password** (no current password asked). Setting one requires a
-fresh sign-in (the existing 10-minute step-up window); for such accounts the
-provider sign-in counts as the step-up method.
+fresh sign-in (the existing 10-minute step-up window). An account with no
+passkey and no confirmed TOTP can step up with a linked provider ("Confirm
+with Hex.pm" / "Confirm with GitHub"), the same bootstrap exception already
+made for the password; once any factor exists, a provider sign-in never
+counts as step-up again, for the reason `Mfa.accepted_reauth_methods/1`
+gives for the password case: accepting it forever would make the passkey
+requirement decorative.
 
 ### Linking and unlinking
 
@@ -110,8 +118,11 @@ with their state.
 The owner and repo flows keep verifying exactly what they verify today. Their
 account handling changes to the same rules:
 
-- signed in: link the identity to the current account if it is not linked
-  elsewhere;
+- signed in: the request is the current user's; the identity is never linked
+  here. Linking is an account change, and it only ever happens in Settings
+  behind step-up -- without that boundary, a stolen session cookie running a
+  scan would turn a provider's one-time say-so into a permanent login for the
+  account, which is exactly what step-up on linking exists to prevent;
 - not signed in, linked account exists: use it;
 - not signed in, no linked account: create one only if the provider username is
   free; otherwise create the request with no account attached (`user_id` nil),
@@ -150,8 +161,9 @@ Migration on `portal_users`:
 - Link from settings: refused without step-up; refused when the identity is
   linked elsewhere. Unlink refused when it would leave no way in.
 - Set a password on a provider-created account.
-- Scan-request flows: link when signed in; no account attached on a username
-  collision; owner and repo checks unchanged.
+- Scan-request flows: signed in, nothing is linked and the request stays the
+  current user's; no account attached on a username collision when signed
+  out; owner and repo checks unchanged.
 - Device-flow failures (denied, expired, provider down) show a message and
   create nothing.
 
