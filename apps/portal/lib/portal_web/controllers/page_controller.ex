@@ -138,23 +138,26 @@ defmodule PortalWeb.PageController do
   end
 
   defp with_admin_step_up(conn, fun) do
-    with {:ok, conn, user} <- require_admin(conn) do
-      if Portal.Accounts.Mfa.reauth_fresh?(
-           user,
-           PortalWeb.UserAuth.reauth_method(conn),
-           PortalWeb.UserAuth.reauth_at(conn)
-         ) do
-        fun.(conn, user)
-      else
-        conn
-        |> put_flash(
-          :error,
-          "Confirm your passkey on this page first, then come back to change admins."
-        )
-        |> redirect(to: ~p"/settings/security")
-      end
-    else
+    case require_admin(conn) do
+      {:ok, conn, user} -> if_stepped_up(conn, user, fun)
       {:error, conn} -> conn
+    end
+  end
+
+  defp if_stepped_up(conn, user, fun) do
+    if Portal.Accounts.Mfa.reauth_fresh?(
+         user,
+         PortalWeb.UserAuth.reauth_method(conn),
+         PortalWeb.UserAuth.reauth_at(conn)
+       ) do
+      fun.(conn, user)
+    else
+      conn
+      |> put_flash(
+        :error,
+        "Confirm your passkey on this page first, then come back to change admins."
+      )
+      |> redirect(to: ~p"/settings/security")
     end
   end
 
