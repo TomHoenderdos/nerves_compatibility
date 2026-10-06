@@ -11,10 +11,13 @@ RUN wget https://repo.hex.pm/builds/elixir/v1.20.3-otp-29.zip && \
 
 ENV PATH="/home/nerves/.elixir/bin:${PATH}"
 
-# Install Hex, Rebar, Nerves Bootstrap, and Igniter archives
+# Install Hex, Rebar, Nerves Bootstrap, and Igniter archives. nerves_bootstrap
+# is pinned: its `mix nerves.new` template is the project every package is
+# built in, and 1.17.3 is the first with `--prerelease` (NccWorker.Project).
+ARG NERVES_BOOTSTRAP_VERSION=1.17.3
 RUN mix local.hex --force && \
     mix local.rebar --force && \
-    mix archive.install hex nerves_bootstrap --force && \
+    mix archive.install hex nerves_bootstrap ${NERVES_BOOTSTRAP_VERSION} --force && \
     mix archive.install hex igniter_new --force
 
 # mksquashfs sets ownership on the rootfs entries while assembling a firmware
