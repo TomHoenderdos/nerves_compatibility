@@ -8,7 +8,12 @@
       <PortalWeb.UI.page_header kicker="Account" title="Choose a username">
         <:subtitle>
           {@provider_label} confirmed you as <span class="font-mono">{@suggested}</span>,
-          but that username is already used here. Pick another one for your new account.
+          <%= if @reason == :invalid do %>
+            but that can't be used as a username here.
+          <% else %>
+            but that username is already used here.
+          <% end %>
+          Pick another one for your new account.
         </:subtitle>
       </PortalWeb.UI.page_header>
 

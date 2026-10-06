@@ -116,8 +116,17 @@ defmodule PortalWeb.ProviderAuthController do
       current_user: conn.assigns[:current_user],
       provider_label: provider_label(identity.provider),
       suggested: identity.username,
+      reason: choose_reason(identity),
       username: username
     )
+  end
+
+  # Why the provider name could not simply become the username: the page
+  # should not claim a name is taken when it was never usable here at all.
+  defp choose_reason(identity) do
+    if Portal.Accounts.valid_username?(String.downcase(identity.username)),
+      do: :taken,
+      else: :invalid
   end
 
   defp expired(conn) do
