@@ -64,6 +64,41 @@ defmodule PortalWeb.IndexPlaceholdersTest do
     refute html =~ ~s(id="placeholder-dualpkg")
   end
 
+  test "a failed request with no build stays listed, marked build failed", %{conn: conn} do
+    req = seed_request("failedpkg", :error)
+
+    {:ok, _view, html} = live(conn, ~p"/packages")
+    assert html =~ ~s(id="placeholder-failedpkg")
+    assert html =~ "build failed"
+    assert html =~ ~p"/packages/failedpkg"
+    refute html =~ ~p"/requests/#{req.id}"
+  end
+
+  test "rejected requests are not listed", %{conn: conn} do
+    seed_request("rejectedpkg", :rejected)
+
+    {:ok, _view, html} = live(conn, ~p"/packages")
+    refute html =~ "rejectedpkg"
+  end
+
+  test "a failed request yields to a real build of the same package", %{conn: conn} do
+    ingest("rebuiltpkg")
+    seed_request("rebuiltpkg", :error)
+
+    {:ok, _view, html} = live(conn, ~p"/packages")
+    assert html =~ ~s(id="package-rebuiltpkg")
+    refute html =~ ~s(id="placeholder-rebuiltpkg")
+  end
+
+  test "an open request wins over an older failed one for the same package", %{conn: conn} do
+    seed_request("retrypkg", :error)
+    seed_request("retrypkg", :queued)
+
+    {:ok, _view, html} = live(conn, ~p"/packages")
+    assert html =~ "in queue"
+    refute html =~ "build failed"
+  end
+
   test "search filters placeholders", %{conn: conn} do
     seed_request("findme", :accepted)
     seed_request("otherpkg", :accepted)

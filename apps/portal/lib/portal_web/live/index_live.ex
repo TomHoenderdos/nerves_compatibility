@@ -215,17 +215,30 @@ defmodule PortalWeb.IndexLive do
   end
 
   defp placeholder_entries(requests) do
-    Enum.map(requests, fn req ->
-      %{
-        name: req.package_name,
-        description: "Awaiting first scan.",
-        version: nil,
-        href: ~p"/requests/#{req.id}",
-        summary: "in queue",
-        summary_status: "queued",
-        statuses: [],
-        placeholder?: true
-      }
+    Enum.map(requests, fn
+      %{status: "error"} = req ->
+        %{
+          name: req.package_name,
+          description: "First scan failed.",
+          version: nil,
+          href: ~p"/packages/#{req.package_name}",
+          summary: "build failed",
+          summary_status: "error",
+          statuses: [],
+          placeholder?: true
+        }
+
+      req ->
+        %{
+          name: req.package_name,
+          description: "Awaiting first scan.",
+          version: nil,
+          href: ~p"/requests/#{req.id}",
+          summary: "in queue",
+          summary_status: "queued",
+          statuses: [],
+          placeholder?: true
+        }
     end)
   end
 

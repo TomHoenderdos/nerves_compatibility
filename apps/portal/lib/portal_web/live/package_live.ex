@@ -41,14 +41,100 @@ defmodule PortalWeb.PackageLive do
          )}
 
       _ ->
+        mount_without_build(name, socket)
+    end
+  end
+
+  # A package someone asked for but that has no build yet still gets a page, so
+  # a link shared the moment it was requested is not a "Package not found".
+  defp mount_without_build(name, socket) do
+    case Portal.ScanRequests.package_progress(name) do
+      nil ->
         {:ok,
          socket
          |> put_flash(:error, "Package not found")
          |> push_navigate(to: ~p"/packages")}
+
+      progress ->
+        {:ok,
+         socket
+         |> assign(:page_title, name)
+         |> assign(:page_description, pending_description(name, progress.state))
+         |> assign(:name, name)
+         |> assign(:pending, progress)
+         |> assign(:hex_url, "https://hex.pm/packages/#{name}")}
     end
   end
 
+  defp pending_description(name, :failed),
+    do: "The first Nerves compatibility build of #{name} failed."
+
+  defp pending_description(name, _state),
+    do: "#{name} is waiting for its first Nerves compatibility build."
+
+  defp pending_label(:queued), do: "Queued"
+  defp pending_label(:building), do: "Building"
+  defp pending_label(:failed), do: "Build failed"
+
+  defp pending_explanation(:queued),
+    do: "It is in the build queue. Its results appear here once the first build finishes."
+
+  defp pending_explanation(:building),
+    do: "Its firmware is being built right now. Results appear here when it finishes."
+
+  defp pending_explanation(:failed),
+    do: "The first build did not produce a result, so there is nothing to show yet."
+
   @impl true
+  def render(%{pending: _} = assigns) do
+    ~H"""
+    <Layouts.app flash={@flash} active={:packages} current_user={@current_user}>
+      <section id="package-pending" class="space-y-8">
+        <a
+          href={~p"/packages"}
+          class="inline-flex items-center gap-1.5 text-sm font-medium text-base-content/60 transition hover:text-base-content"
+        >
+          <.icon name="hero-chevron-left-mini" class="size-4" /> All packages
+        </a>
+
+        <PortalWeb.UI.page_header title={@name}>
+          <:subtitle>No build results yet.</:subtitle>
+        </PortalWeb.UI.page_header>
+
+        <div class="space-y-3 rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm">
+          <div class="flex items-center gap-2">
+            <span class={[
+              "rounded-full px-2.5 py-1 text-xs font-semibold ring-1",
+              if(@pending.state == :failed,
+                do: PortalWeb.UI.status_pill_class("error"),
+                else: "bg-base-200 text-base-content/70 ring-base-300"
+              )
+            ]}>
+              {pending_label(@pending.state)}
+            </span>
+          </div>
+          <p class="text-sm text-base-content/70">{pending_explanation(@pending.state)}</p>
+          <pre
+            :if={@pending.summary}
+            class="overflow-x-auto rounded-xl bg-base-300/30 p-3 font-mono text-xs leading-relaxed text-base-content/80"
+          >{@pending.summary}</pre>
+          <div class="flex flex-wrap gap-2 pt-1">
+            <.link
+              navigate={~p"/requests/#{@pending.request_id}"}
+              class="btn btn-sm btn-outline"
+            >
+              Build progress
+            </.link>
+            <a href={@hex_url} target="_blank" rel="noopener" class="btn btn-sm btn-ghost">
+              Hex
+            </a>
+          </div>
+        </div>
+      </section>
+    </Layouts.app>
+    """
+  end
+
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} active={:packages} current_user={@current_user}>
