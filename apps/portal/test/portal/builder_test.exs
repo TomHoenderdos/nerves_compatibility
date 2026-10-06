@@ -33,13 +33,19 @@ defmodule Portal.BuilderTest do
     # busy-waits through a quota it does not have.
     assert "ERL_FLAGS=+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none" in args()
     assert "ELIXIR_ERL_OPTIONS=+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none" in args()
-    assert "MAKEFLAGS=-j2" in args()
+  end
+
+  # Not passed for now: a plain `mix compile` runs make serially, so a parallel
+  # make fails builds on Makefiles that are not -j safe -- failures no user
+  # ever sees (circuits_spi 2.1.0 on rpi4). Restore once those are fixed.
+  test "make runs serially, as it does for a user", %{previous: previous} do
+    put_builder([cpus: "2"], previous)
+    refute Enum.any?(args(), &String.starts_with?(&1, "MAKEFLAGS="))
   end
 
   test "a fractional cap still gets one whole scheduler", %{previous: previous} do
     put_builder([cpus: "1.5"], previous)
 
-    assert "MAKEFLAGS=-j1" in args()
     assert "ERL_FLAGS=+S 1:1 +sbwt none +sbwtdcpu none +sbwtdio none" in args()
   end
 
