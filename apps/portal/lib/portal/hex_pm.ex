@@ -3,6 +3,8 @@ defmodule Portal.HexPm do
   Hex.pm OAuth device flow and package ownership checks.
   """
 
+  @behaviour Portal.Accounts.IdentityProvider
+
   require Logger
 
   @client_id "78ea6566-89fd-481e-a1d6-7d9d78eacca8"
@@ -20,6 +22,7 @@ defmodule Portal.HexPm do
   """
   def scope, do: @scope
 
+  @impl true
   def start_device_flow do
     body =
       URI.encode_query(%{client_id: @client_id, scope: scope(), name: "Nerves Compatibility"})
@@ -46,29 +49,47 @@ defmodule Portal.HexPm do
     end
   end
 
-  def complete_owner_request(package_name, device_code) do
-    case complete_owner_requests([package_name], device_code) do
-      {:ok, [request]} -> {:ok, request}
-      {:ok, []} -> {:error, :missing_package}
+  @impl true
+  def verify_device(device_code) do
+    with {:ok, token} <- poll_device_flow(device_code),
+         access_token when is_binary(access_token) <- token["access_token"],
+         {:ok, profile} <- current_user(access_token) do
+      identity_from_profile(profile)
+    else
+      nil -> {:error, :missing_access_token}
       other -> other
     end
   end
 
-  def complete_owner_requests(package_names, device_code) when is_list(package_names) do
+  @doc """
+  The identity Hex.pm vouched for. Only the username is kept: `users/me`
+  also returns the email, which never enters our database.
+  """
+  def identity_from_profile(%{"username" => username})
+      when is_binary(username) and username != "" do
+    {:ok,
+     %Portal.Accounts.Identity{
+       provider: :hex,
+       uid: username,
+       username: username,
+       profile: %{"username" => username}
+     }}
+  end
+
+  def identity_from_profile(_), do: {:error, :hex_api_unavailable}
+
+  def complete_owner_requests(package_names, device_code, current_user)
+      when is_list(package_names) do
     package_names = package_names |> Enum.reject(&is_nil/1) |> Enum.uniq()
 
-    with {:ok, token} <- poll_device_flow(device_code),
-         access_token when is_binary(access_token) <- token["access_token"],
-         {:ok, %{"username" => username} = hex_profile} <- current_user(access_token),
-         {:ok, user} <- upsert_hex_user(hex_profile),
-         {:ok, requests} <- create_owner_requests(package_names, username, user) do
-      {:ok, requests}
-    else
-      {:pending, reason} -> {:pending, reason}
-      nil -> {:error, :missing_access_token}
-      {:error, reason} -> {:error, reason}
+    with {:ok, identity} <- verify_device(device_code),
+         {:ok, user} <- Portal.Accounts.Identities.for_scan_request(identity, current_user) do
+      create_owner_requests(package_names, identity.uid, user)
     end
   end
+
+  def complete_owner_requests(_package_names, _device_code, _current_user),
+    do: {:error, :missing_package}
 
   def search_packages(query) when is_binary(query) do
     query = String.trim(query)
@@ -318,65 +339,12 @@ defmodule Portal.HexPm do
     )
   end
 
-  defp upsert_hex_user(%{"username" => username} = hex_profile) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
-
-    case get_hex_user(username) do
-      {:ok, nil} ->
-        Portal.Accounts.User
-        |> Ash.Changeset.for_create(:create, %{
-          username: username,
-          hex_username: username,
-          hex_profile: encode_profile(hex_profile),
-          password_hash: hash_generated_password(),
-          last_hex_login_at: now
-        })
-        |> Ash.create(domain: Portal.Accounts)
-
-      {:ok, user} ->
-        user
-        |> Ash.Changeset.for_update(:record_hex_login, %{
-          hex_username: username,
-          hex_profile: encode_profile(hex_profile),
-          last_hex_login_at: now
-        })
-        |> Ash.update(domain: Portal.Accounts)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp get_user_by_hex_username(username) do
-    with {:ok, users} <- Ash.read(Portal.Accounts.User, domain: Portal.Accounts) do
-      {:ok, Enum.find(users, &(&1.hex_username == username))}
-    end
-  end
-
-  defp get_hex_user(username) do
-    case get_user_by_hex_username(username) do
-      {:ok, nil} -> Portal.Accounts.get_user_by_username(username)
-      result -> result
-    end
-  end
-
-  defp hash_generated_password do
-    32
-    |> :crypto.strong_rand_bytes()
-    |> Base.url_encode64(padding: false)
-    |> Argon2.hash_pwd_salt()
-  end
-
-  defp encode_profile(profile) do
-    Jason.encode!(profile)
-  end
-
   defp create_owner_requests(package_names, username, user) do
     package_names
     |> Enum.reduce_while({:ok, []}, fn package_name, {:ok, requests} ->
       with {:ok, owners} <- package_owners(package_name),
            true <- username in owners,
-           {:ok, request} <- create_scan_request(package_name, user) do
+           {:ok, request} <- create_scan_request(package_name, username, user) do
         {:cont, {:ok, [request | requests]}}
       else
         false -> {:halt, {:error, {:not_package_owner, package_name}}}
@@ -389,13 +357,13 @@ defmodule Portal.HexPm do
     end
   end
 
-  defp create_scan_request(package_name, user) do
+  defp create_scan_request(package_name, username, user) do
     %{
       package_name: package_name,
       source: :hex_owner,
       status: :accepted,
-      user_id: user.id,
-      subject: user.hex_username,
+      user_id: user && user.id,
+      subject: username,
       verification_provider: "hex_pm_oauth_device"
     }
     |> Portal.ScanRequests.create_once()

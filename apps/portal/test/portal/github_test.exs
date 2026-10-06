@@ -44,4 +44,25 @@ defmodule Portal.GitHubTest do
       refute GitHub.writable_permission?(nil)
     end
   end
+
+  describe "identity_from_profile/2" do
+    test "the numeric id is the link, the login only a name" do
+      assert {:ok,
+              %Portal.Accounts.Identity{
+                provider: :github,
+                uid: 583_231,
+                username: "octocat",
+                access_token: "t"
+              }} =
+               GitHub.identity_from_profile(%{"id" => 583_231, "login" => "octocat"}, "t")
+    end
+
+    test "a body without a numeric id is no identity" do
+      assert {:error, :github_api_unavailable} =
+               GitHub.identity_from_profile(%{"login" => "octocat"}, "t")
+
+      assert {:error, :github_api_unavailable} =
+               GitHub.identity_from_profile(%{"id" => "1", "login" => "x"}, "t")
+    end
+  end
 end

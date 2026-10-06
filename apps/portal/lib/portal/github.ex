@@ -3,6 +3,8 @@ defmodule Portal.GitHub do
   GitHub OAuth device flow and repository permission checks.
   """
 
+  @behaviour Portal.Accounts.IdentityProvider
+
   require Logger
 
   @github_url "https://github.com"
@@ -19,6 +21,7 @@ defmodule Portal.GitHub do
   @scope ""
   @writable_permissions ~w(admin maintain push)
 
+  @impl true
   def start_device_flow do
     with {:ok, client_id} <- client_id() do
       body = URI.encode_query(device_flow_params(client_id))
@@ -45,23 +48,48 @@ defmodule Portal.GitHub do
     end
   end
 
-  def complete_repo_requests(package_names, device_code) when is_list(package_names) do
-    package_names = package_names |> Enum.reject(&is_nil/1) |> Enum.uniq()
-
+  @impl true
+  def verify_device(device_code) do
     with {:ok, token} <- poll_device_flow(device_code),
          access_token when is_binary(access_token) <- token["access_token"],
-         {:ok, %{"login" => login} = github_profile} <- current_user(access_token),
-         {:ok, user} <- upsert_github_user(github_profile),
-         {:ok, requests} <- create_repo_requests(package_names, login, access_token, user) do
-      {:ok, requests}
+         {:ok, profile} <- current_user(access_token) do
+      identity_from_profile(profile, access_token)
     else
-      {:pending, reason} -> {:pending, reason}
       nil -> {:error, :missing_access_token}
-      {:error, reason} -> {:error, reason}
+      other -> other
     end
   end
 
-  def complete_repo_requests(_package_names, _device_code), do: {:error, :missing_package}
+  @doc """
+  The identity GitHub vouched for. The numeric id is the link; the login is
+  only a display name, because a login can be renamed and re-registered.
+  """
+  def identity_from_profile(%{"id" => id, "login" => login}, access_token)
+      when is_integer(id) and is_binary(login) do
+    {:ok,
+     %Portal.Accounts.Identity{
+       provider: :github,
+       uid: id,
+       username: login,
+       profile: %{"id" => id, "login" => login},
+       access_token: access_token
+     }}
+  end
+
+  def identity_from_profile(_profile, _access_token), do: {:error, :github_api_unavailable}
+
+  def complete_repo_requests(package_names, device_code, current_user)
+      when is_list(package_names) do
+    package_names = package_names |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+    with {:ok, identity} <- verify_device(device_code),
+         {:ok, user} <- Portal.Accounts.Identities.for_scan_request(identity, current_user) do
+      create_repo_requests(package_names, identity, user)
+    end
+  end
+
+  def complete_repo_requests(_package_names, _device_code, _current_user),
+    do: {:error, :missing_package}
 
   @doc """
   OAuth scope requested from GitHub. Empty on purpose; see `@scope`.
@@ -141,13 +169,13 @@ defmodule Portal.GitHub do
     end
   end
 
-  defp create_repo_requests(package_names, login, access_token, user) do
+  defp create_repo_requests(package_names, identity, user) do
     package_names
     |> Enum.reduce_while({:ok, []}, fn package_name, {:ok, requests} ->
       with {:ok, repo} <- package_github_repo(package_name),
-           {:ok, permissions} <- repo_permission(repo, login, access_token),
+           {:ok, permissions} <- repo_permission(repo, identity.username, identity.access_token),
            true <- writable_permission?(permissions),
-           {:ok, request} <- create_scan_request(package_name, repo, user) do
+           {:ok, request} <- create_scan_request(package_name, repo, identity.username, user) do
         {:cont, {:ok, [request | requests]}}
       else
         false -> {:halt, {:error, {:not_repo_maintainer, package_name}}}
@@ -291,59 +319,13 @@ defmodule Portal.GitHub do
 
   defp json_headers, do: [{"accept", "application/json"}]
 
-  defp upsert_github_user(%{"login" => login} = github_profile) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
-
-    case get_github_user(login) do
-      {:ok, nil} ->
-        Portal.Accounts.User
-        |> Ash.Changeset.for_create(:create, %{
-          username: login,
-          github_username: login,
-          github_profile: encode_profile(github_profile),
-          password_hash: hash_generated_password(),
-          last_github_login_at: now
-        })
-        |> Ash.create(domain: Portal.Accounts)
-
-      {:ok, user} ->
-        user
-        |> Ash.Changeset.for_update(:record_github_login, %{
-          github_username: login,
-          github_profile: encode_profile(github_profile),
-          last_github_login_at: now
-        })
-        |> Ash.update(domain: Portal.Accounts)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp get_github_user(login) do
-    with {:ok, users} <- Ash.read(Portal.Accounts.User, domain: Portal.Accounts) do
-      {:ok, Enum.find(users, &(&1.github_username == login))}
-    end
-  end
-
-  defp hash_generated_password do
-    32
-    |> :crypto.strong_rand_bytes()
-    |> Base.url_encode64(padding: false)
-    |> Argon2.hash_pwd_salt()
-  end
-
-  defp encode_profile(profile) do
-    Jason.encode!(profile)
-  end
-
-  defp create_scan_request(package_name, repo, user) do
+  defp create_scan_request(package_name, repo, login, user) do
     %{
       package_name: package_name,
       source: :github_repo,
       status: :accepted,
-      user_id: user.id,
-      subject: "#{user.github_username}:#{repo.full_name}",
+      user_id: user && user.id,
+      subject: "#{login}:#{repo.full_name}",
       verification_provider: "github_oauth_device"
     }
     |> Portal.ScanRequests.create_once()
