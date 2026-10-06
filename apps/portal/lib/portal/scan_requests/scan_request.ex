@@ -15,6 +15,12 @@ defmodule Portal.ScanRequests.ScanRequest do
       index([:package_name, :status], name: "portal_scan_requests_package_status_index")
       index([:status])
       index([:source])
+
+      # Placeholder search on `/packages`; see `Portal.Catalog.Browse`.
+      index(["package_name gin_trgm_ops"],
+        name: "portal_scan_requests_package_name_trgm_index",
+        using: "gin"
+      )
     end
   end
 
