@@ -138,36 +138,72 @@ defmodule Portal.ScanRequests do
   end
 
   @doc """
-  Where a package without a build stands, from its newest visible request:
-  `%{request_id:, state: :queued | :building | :failed, summary:}`, or nil.
+  The build a package's page should show, from its newest request worth
+  showing, or nil:
 
-  Pending (unreviewed anonymous) and rejected requests are not visible: the
-  first has not been accepted, the second is not a package we build.
+      %{request_id:, state:, summary:, error_log:, error_reason:, version:}
+
+  `state` is `:review` (an anonymous request nobody has approved yet),
+  `:queued`, `:building` or `:failed`. Rejected requests never show -- the
+  package is not one we build -- and neither do built ones, whose result is the
+  page itself.
+
+  A failure only shows if it happened after the package's latest run. An older
+  one is superseded by results the page already has; a newer one is a rebuild
+  that broke, which the page must not hide behind the last good result.
   """
   @spec package_progress(String.t()) :: map() | nil
   def package_progress(package_name) when is_binary(package_name) do
+    failed_since = latest_run_at(package_name)
+
     from(r in "portal_scan_requests",
       where: r.package_name == ^package_name,
-      where: r.status in ["accepted", "queued", "error"],
+      where:
+        r.status in ["pending", "accepted", "queued"] or
+          (r.status == "error" and
+             (is_nil(type(^failed_since, :utc_datetime_usec)) or
+                r.updated_at > type(^failed_since, :utc_datetime_usec))),
       order_by: [desc: r.inserted_at, desc: r.id],
       limit: 1,
-      select: %{id: type(r.id, Ecto.UUID), status: r.status, error_log: r.error_log}
+      select: %{
+        id: type(r.id, Ecto.UUID),
+        status: r.status,
+        version: r.version,
+        error_reason: r.error_reason,
+        error_log: r.error_log
+      }
     )
     |> Portal.Repo.one()
-    |> case do
-      nil ->
-        nil
+    |> progress()
+  end
 
-      %{status: "error"} = request ->
-        %{
-          request_id: request.id,
-          state: :failed,
-          summary: Portal.ScanRequests.FailureSummary.from_log(request.error_log)
-        }
+  defp progress(nil), do: nil
 
-      request ->
-        %{request_id: request.id, state: open_state(request.id), summary: nil}
-    end
+  defp progress(request) do
+    %{
+      request_id: request.id,
+      state: progress_state(request),
+      summary: Portal.ScanRequests.FailureSummary.from_log(request.error_log),
+      error_log: request.error_log,
+      error_reason: request.error_reason,
+      version: request.version
+    }
+  end
+
+  defp progress_state(%{status: "pending"}), do: :review
+  defp progress_state(%{status: "error"}), do: :failed
+  defp progress_state(%{id: id}), do: open_state(id)
+
+  # Run rows are timestamped by ingestion, the moment their results became what
+  # the page shows; `finished_at` is the worker's clock and can lag that.
+  defp latest_run_at(package_name) do
+    from(r in "catalog_runs",
+      join: p in "catalog_packages",
+      on: p.id == r.package_id,
+      where: p.name == ^package_name,
+      select: type(max(r.inserted_at), :utc_datetime_usec)
+    )
+    |> Portal.Repo.one()
   end
 
   defp open_state(request_id) do

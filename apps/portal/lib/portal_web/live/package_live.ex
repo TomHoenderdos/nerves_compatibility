@@ -33,6 +33,7 @@ defmodule PortalWeb.PackageLive do
          |> assign(:docs_url, "https://hexdocs.pm/#{name}")
          |> assign(:github_url, github_url(hex_meta.links))
          |> assign(:owners, hex_meta.owners)
+         |> assign_progress(Portal.ScanRequests.package_progress(name))
          |> assign_argus(name, session)
          |> assign(:badge_url, badge_url)
          |> assign(:badge_markdown, "[![#{@badge_alt}](#{badge_url})](#{page_url})")
@@ -62,7 +63,8 @@ defmodule PortalWeb.PackageLive do
          |> assign(:page_title, name)
          |> assign(:page_description, pending_description(name, progress.state))
          |> assign(:name, name)
-         |> assign(:pending, progress)
+         |> assign(:package, nil)
+         |> assign_progress(progress)
          |> assign(:hex_url, "https://hex.pm/packages/#{name}")}
     end
   end
@@ -70,24 +72,71 @@ defmodule PortalWeb.PackageLive do
   defp pending_description(name, :failed),
     do: "The first Nerves compatibility build of #{name} failed."
 
+  defp pending_description(name, :review),
+    do: "#{name} is waiting for review before its first Nerves compatibility build."
+
   defp pending_description(name, _state),
     do: "#{name} is waiting for its first Nerves compatibility build."
 
-  defp pending_label(:queued), do: "Queued"
-  defp pending_label(:building), do: "Building"
-  defp pending_label(:failed), do: "Build failed"
+  # The build pipeline announces each stage on `request:<id>`
+  # (`Portal.Workers.Progress`). Only the shown request is followed: it is the
+  # one whose progress the page renders.
+  defp assign_progress(socket, progress) do
+    socket
+    |> assign(:progress, progress)
+    |> assign_new(:live_stage, fn -> nil end)
+    |> watch(progress && progress.request_id)
+  end
 
-  defp pending_explanation(:queued),
-    do: "It is in the build queue. Its results appear here once the first build finishes."
+  defp watch(%{assigns: %{watching: id}} = socket, id), do: socket
 
-  defp pending_explanation(:building),
-    do: "Its firmware is being built right now. Results appear here when it finishes."
+  defp watch(socket, id) do
+    if connected?(socket), do: resubscribe(socket.assigns[:watching], id)
+    assign(socket, :watching, id)
+  end
 
-  defp pending_explanation(:failed),
-    do: "The first build did not produce a result, so there is nothing to show yet."
+  defp resubscribe(old, new) do
+    if old, do: Phoenix.PubSub.unsubscribe(Portal.PubSub, "request:#{old}")
+    if new, do: Phoenix.PubSub.subscribe(Portal.PubSub, "request:#{new}")
+  end
 
   @impl true
-  def render(%{pending: _} = assigns) do
+  # The build's results are now the page, so it is loaded again from the top
+  # rather than patched in piece by piece.
+  def handle_info({:build_progress, :done, _payload}, socket) do
+    {:noreply, push_navigate(socket, to: ~p"/packages/#{socket.assigns.name}")}
+  end
+
+  def handle_info({:build_progress, stage, _payload}, socket) do
+    live_stage =
+      if PortalWeb.BuildProgress.staged?(stage), do: stage, else: socket.assigns.live_stage
+
+    case Portal.ScanRequests.package_progress(socket.assigns.name) do
+      # Rejected, or otherwise gone: let mount decide what the page is now.
+      nil when is_nil(socket.assigns.package) ->
+        {:noreply, push_navigate(socket, to: ~p"/packages/#{socket.assigns.name}")}
+
+      progress ->
+        {:noreply,
+         socket
+         |> assign(:live_stage, live_stage)
+         |> assign_progress(advance(progress, live_stage))}
+    end
+  end
+
+  # The row says `queued` from approval until ingestion finishes, and the build
+  # job's state cannot tell ingesting from done. The broadcast stage can, so it
+  # moves the stage list on -- forward only, and only for a build still open.
+  defp advance(%{state: state} = progress, stage) when not is_nil(stage) do
+    if PortalWeb.BuildProgress.staged?(state),
+      do: %{progress | state: PortalWeb.BuildProgress.later_stage(state, stage)},
+      else: progress
+  end
+
+  defp advance(progress, _stage), do: progress
+
+  @impl true
+  def render(%{package: nil} = assigns) do
     ~H"""
     <Layouts.app flash={@flash} active={:packages} current_user={@current_user}>
       <section id="package-pending" class="space-y-8">
@@ -100,36 +149,13 @@ defmodule PortalWeb.PackageLive do
 
         <PortalWeb.UI.page_header title={@name}>
           <:subtitle>No build results yet.</:subtitle>
+          <:actions>
+            <.upstream_link href={@hex_url} label="Hex" />
+          </:actions>
         </PortalWeb.UI.page_header>
 
-        <div class="space-y-3 rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm">
-          <div class="flex items-center gap-2">
-            <span class={[
-              "rounded-full px-2.5 py-1 text-xs font-semibold ring-1",
-              if(@pending.state == :failed,
-                do: PortalWeb.UI.status_pill_class("error"),
-                else: "bg-base-200 text-base-content/70 ring-base-300"
-              )
-            ]}>
-              {pending_label(@pending.state)}
-            </span>
-          </div>
-          <p class="text-sm text-base-content/70">{pending_explanation(@pending.state)}</p>
-          <pre
-            :if={@pending.summary}
-            class="overflow-x-auto rounded-xl bg-base-300/30 p-3 font-mono text-xs leading-relaxed text-base-content/80"
-          >{@pending.summary}</pre>
-          <div class="flex flex-wrap gap-2 pt-1">
-            <.link
-              navigate={~p"/requests/#{@pending.request_id}"}
-              class="btn btn-sm btn-outline"
-            >
-              Build progress
-            </.link>
-            <a href={@hex_url} target="_blank" rel="noopener" class="btn btn-sm btn-ghost">
-              Hex
-            </a>
-          </div>
+        <div class="rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm">
+          <PortalWeb.BuildProgress.build_progress progress={@progress} />
         </div>
       </section>
     </Layouts.app>
@@ -183,6 +209,15 @@ defmodule PortalWeb.PackageLive do
           </span>
         </p>
 
+        <section
+          :if={@progress}
+          id="package-new-build"
+          class="space-y-4 rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm"
+        >
+          <h2 class="text-sm font-semibold text-base-content">New build</h2>
+          <PortalWeb.BuildProgress.build_progress progress={@progress} first_build?={false} />
+        </section>
+
         <div class="grid gap-3 sm:grid-cols-3">
           <PortalWeb.UI.stat_card label="Latest version" value={@package.latest_version || "unknown"} />
           <PortalWeb.UI.stat_card label="Last run" value={format_last_run(@package.last_run_at)} />
@@ -207,7 +242,10 @@ defmodule PortalWeb.PackageLive do
           native code. Nothing was compiled.
         </p>
 
-        <div class="overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm">
+        <div
+          id="package-results"
+          class="overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm"
+        >
           <table class="w-full text-left text-sm">
             <thead class="border-b border-base-300 bg-base-200/60 text-xs uppercase tracking-wide text-base-content/60">
               <tr>
