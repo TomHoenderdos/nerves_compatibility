@@ -146,6 +146,45 @@ defmodule PortalWeb.ProviderLinkControllerTest do
     assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "not the"
   end
 
+  test "an account with a passkey cannot confirm with its linked Hex.pm", %{conn: conn} do
+    # A passkey is the only step-up such an account accepts; a provider
+    # approval, even of the right account, must not stand in for it.
+    {:ok, user} = Identities.link(add_test_passkey(user_fixture()), hex("keyed"))
+
+    conn =
+      conn |> signed_in(user, fresh: false) |> post(~p"/settings/providers/hex/confirm")
+
+    assert redirected_to(conn) == ~p"/settings/security"
+    assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "another way"
+    refute get_session(conn, :provider_flow)
+
+    # Even with a reauth flow already in the session and the matching
+    # identity approved, completing it grants nothing.
+    approve(hex("keyed"))
+
+    flow = %{
+      "provider" => "hex",
+      "purpose" => "reauth",
+      "device_code" => "dev",
+      "user_code" => "ABCD-1234",
+      "verification_uri" => "https://example.test/device",
+      "verification_uri_complete" => nil
+    }
+
+    conn =
+      build_conn()
+      |> init_test_session(%{
+        user_id: user.id,
+        login_method: :password,
+        provider_flow: flow
+      })
+      |> post(~p"/settings/providers/hex/confirm/complete")
+
+    assert redirected_to(conn) == ~p"/settings/security"
+    refute get_session(conn, :reauth_at)
+    refute get_session(conn, :reauth_method)
+  end
+
   test "a provider account sets a password after step-up", %{conn: conn} do
     # "pw" alone is below the 3-character username minimum
     # (`Portal.Accounts.valid_username?/1`), which would route `sign_in/1` to
