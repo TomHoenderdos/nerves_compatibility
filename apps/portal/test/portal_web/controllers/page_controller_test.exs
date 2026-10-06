@@ -160,6 +160,31 @@ defmodule PortalWeb.PageControllerTest do
     assert redirected_to(conn) == ~p"/request-scan"
   end
 
+  test "a password login clears a stale pending provider identity", %{conn: conn} do
+    # A provider sign-in abandoned at choose-username must not survive a
+    # login by another route and later create an account from this session.
+    {:ok, user} = Portal.Accounts.register_user("stale_pending", "correct horse battery staple")
+
+    stale = %{
+      "provider" => "hex",
+      "uid" => "someone-else",
+      "username" => "someone-else",
+      "profile" => %{},
+      "at" => System.system_time(:second)
+    }
+
+    conn =
+      conn
+      |> init_test_session(%{pending_identity: stale})
+      |> post(~p"/login", %{
+        "username" => "stale_pending",
+        "password" => "correct horse battery staple"
+      })
+
+    assert get_session(conn, :user_id) == user.id
+    refute get_session(conn, :pending_identity)
+  end
+
   test "GET /admin redirects anonymous users", %{conn: conn} do
     conn = get(conn, ~p"/admin")
 

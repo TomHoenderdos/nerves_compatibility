@@ -51,7 +51,8 @@ defmodule PortalWeb.ProviderAuthController do
   # Same fork as the password sign-in in `PageController.create_session/2`.
   # Also clears `:pending_identity` -- a stray submit to `/auth/choose-username`
   # replaying an old cookie must not be able to create a second account once
-  # this identity has already signed somebody in.
+  # this identity has already signed somebody in. `UserAuth.complete_login/3`
+  # clears it too, but the second-factor branch never reaches that.
   defp finish_login(conn, user, method) do
     conn = delete_session(conn, :pending_identity)
 
@@ -81,9 +82,7 @@ defmodule PortalWeb.ProviderAuthController do
       {:ok, identity} ->
         case Identities.create_with_username(identity, username) do
           {:ok, user} ->
-            conn
-            |> delete_session(:pending_identity)
-            |> finish_login(user, identity.provider)
+            finish_login(conn, user, identity.provider)
 
           {:error, :identity_taken} ->
             conn |> delete_session(:pending_identity) |> expired()
