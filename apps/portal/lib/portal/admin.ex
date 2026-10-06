@@ -231,15 +231,33 @@ defmodule Portal.Admin do
 
   Refuses to revoke the actor themself and to revoke the last admin, either
   of which could leave `/admin` with nobody able to open it.
+
+  The checks and the write run in one transaction holding a row lock on every
+  admin. Without it, two admins revoking each other at the same moment would
+  both count two admins and both succeed, leaving none. Inside the lock the
+  actor is re-read too: an actor demoted a moment ago cannot revoke anyone.
   """
   @spec revoke_admin(String.t(), Portal.Accounts.User.t()) ::
           {:ok, Portal.Accounts.User.t()}
-          | {:error, :self | :last_admin | :not_admin | :unknown_user | term()}
+          | {:error, :self | :last_admin | :not_admin | :actor_not_admin | :unknown_user | term()}
   def revoke_admin(user_id, actor) do
-    with {:ok, %Portal.Accounts.User{} = user} <- fetch_user(user_id),
-         :ok <- revocable(user, actor) do
-      set_admin_flag(user, false, actor)
-    end
+    Repo.transaction(fn ->
+      admin_ids =
+        from(u in "portal_users",
+          where: u.is_admin == true,
+          lock: "FOR UPDATE",
+          select: type(u.id, Ecto.UUID)
+        )
+        |> Repo.all()
+
+      with {:ok, %Portal.Accounts.User{} = user} <- fetch_user(user_id),
+           :ok <- revocable(user, actor, admin_ids),
+           {:ok, revoked} <- set_admin_flag(user, false, actor) do
+        revoked
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
   end
 
   defp fetch_user(user_id) do
@@ -255,11 +273,15 @@ defmodule Portal.Admin do
     end
   end
 
-  defp revocable(%{id: id}, %{id: id}), do: {:error, :self}
-  defp revocable(%{is_admin: false}, _actor), do: {:error, :not_admin}
+  defp revocable(%{id: id}, %{id: id}, _admin_ids), do: {:error, :self}
 
-  defp revocable(_user, _actor) do
-    if length(list_admins()) <= 1, do: {:error, :last_admin}, else: :ok
+  defp revocable(user, actor, admin_ids) do
+    cond do
+      actor.id not in admin_ids -> {:error, :actor_not_admin}
+      user.id not in admin_ids -> {:error, :not_admin}
+      length(admin_ids) <= 1 -> {:error, :last_admin}
+      true -> :ok
+    end
   end
 
   defp set_admin_flag(user, is_admin, actor) do

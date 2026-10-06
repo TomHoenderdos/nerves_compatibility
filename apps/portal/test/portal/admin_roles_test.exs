@@ -64,14 +64,27 @@ defmodule Portal.AdminRolesTest do
       assert {:error, :self} = Admin.revoke_admin(actor.id, actor)
     end
 
-    test "refuses to revoke the last admin" do
+    # Two admins revoking each other must leave one. Run concurrently, the row
+    # lock in revoke_admin/2 serialises them into exactly this sequence; the SQL
+    # sandbox shares one connection, so the race itself cannot be staged here.
+    test "two admins revoking each other leave one admin" do
+      a = admin("roles_a")
+      b = admin("roles_b")
+
+      assert {:ok, _} = Admin.revoke_admin(b.id, a)
+      assert {:error, :actor_not_admin} = Admin.revoke_admin(a.id, b)
+      assert [%{username: "roles_a"}] = Admin.list_admins()
+    end
+
+    test "refuses an actor who has lost admin in the meantime" do
       actor = admin("roles_actor")
       other = admin("roles_other")
-      {:ok, _} = Admin.revoke_admin(other.id, actor)
+      third = admin("roles_third")
+      {:ok, _} = Admin.revoke_admin(actor.id, other)
 
-      # `actor` is now the only admin; revoking them is both self and last,
-      # so check last-admin through a user who is not an admin themself.
-      assert {:error, :last_admin} = Admin.revoke_admin(actor.id, other)
+      # `actor` still holds a struct saying is_admin: true.
+      assert {:error, :actor_not_admin} = Admin.revoke_admin(third.id, actor)
+      assert {:ok, %{is_admin: true}} = Portal.Accounts.get_user_by_username("roles_third")
     end
 
     test "refuses a user who is not an admin" do
