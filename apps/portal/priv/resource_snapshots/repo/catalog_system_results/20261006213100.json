@@ -21,7 +21,19 @@
       "references": null,
       "scale": null,
       "size": null,
-      "source": "run_id",
+      "source": "system_pkg",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "system_version",
       "type": "text"
     },
     {
@@ -33,7 +45,7 @@
       "references": null,
       "scale": null,
       "size": null,
-      "source": "version_tested",
+      "source": "status",
       "type": "text"
     },
     {
@@ -45,8 +57,8 @@
       "references": null,
       "scale": null,
       "size": null,
-      "source": "image_digest",
-      "type": "text"
+      "source": "firmware_size_bytes",
+      "type": "bigint"
     },
     {
       "allow_nil?": true,
@@ -57,8 +69,8 @@
       "references": null,
       "scale": null,
       "size": null,
-      "source": "overall_status",
-      "type": "text"
+      "source": "duration_sec",
+      "type": "float"
     },
     {
       "allow_nil?": true,
@@ -69,7 +81,7 @@
       "references": null,
       "scale": null,
       "size": null,
-      "source": "footprint",
+      "source": "phase_timings",
       "type": "map"
     },
     {
@@ -81,31 +93,7 @@
       "references": null,
       "scale": null,
       "size": null,
-      "source": "toolchain",
-      "type": "map"
-    },
-    {
-      "allow_nil?": true,
-      "default": "nil",
-      "generated?": false,
-      "precision": null,
-      "primary_key?": false,
-      "references": null,
-      "scale": null,
-      "size": null,
-      "source": "argus",
-      "type": "map"
-    },
-    {
-      "allow_nil?": true,
-      "default": "nil",
-      "generated?": false,
-      "precision": null,
-      "primary_key?": false,
-      "references": null,
-      "scale": null,
-      "size": null,
-      "source": "log",
+      "source": "hex_version_tested",
       "type": "text"
     },
     {
@@ -117,8 +105,8 @@
       "references": null,
       "scale": null,
       "size": null,
-      "source": "started_at",
-      "type": "utc_datetime_usec"
+      "source": "beam_scan",
+      "type": "map"
     },
     {
       "allow_nil?": true,
@@ -129,8 +117,44 @@
       "references": null,
       "scale": null,
       "size": null,
-      "source": "finished_at",
-      "type": "utc_datetime_usec"
+      "source": "dependency_scans",
+      "type": "map"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "log_path",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "log_tail",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "failure_category",
+      "type": "text"
     },
     {
       "allow_nil?": false,
@@ -177,49 +201,16 @@
           "global": null,
           "strategy": null
         },
-        "name": "catalog_runs_package_id_fkey",
+        "name": "catalog_system_results_run_id_fkey",
         "on_delete": null,
         "on_update": null,
         "primary_key?": true,
         "schema": "public",
-        "table": "catalog_packages"
+        "table": "catalog_runs"
       },
       "scale": null,
       "size": null,
-      "source": "package_id",
-      "type": "uuid"
-    },
-    {
-      "allow_nil?": true,
-      "default": "nil",
-      "generated?": false,
-      "precision": null,
-      "primary_key?": false,
-      "references": {
-        "deferrable": false,
-        "destination_attribute": "id",
-        "destination_attribute_default": null,
-        "destination_attribute_generated": null,
-        "index?": false,
-        "index_where": null,
-        "match_tenant?": false,
-        "match_type": null,
-        "match_with": null,
-        "multitenancy": {
-          "attribute": null,
-          "global": null,
-          "strategy": null
-        },
-        "name": "catalog_runs_scan_request_id_fkey",
-        "on_delete": null,
-        "on_update": null,
-        "primary_key?": true,
-        "schema": "public",
-        "table": "portal_scan_requests"
-      },
-      "scale": null,
-      "size": null,
-      "source": "scan_request_id",
+      "source": "run_id",
       "type": "uuid"
     }
   ],
@@ -231,12 +222,12 @@
       "all_tenants?": false,
       "concurrently": false,
       "error_fields": [
-        "package_id"
+        "run_id"
       ],
       "fields": [
         {
           "type": "atom",
-          "value": "package_id"
+          "value": "run_id"
         }
       ],
       "include": null,
@@ -254,76 +245,28 @@
       "all_tenants?": false,
       "concurrently": false,
       "error_fields": [
-        "scan_request_id"
+        "system_pkg",
+        "system_version",
+        "status"
       ],
       "fields": [
         {
           "type": "atom",
-          "value": "scan_request_id"
-        }
-      ],
-      "include": null,
-      "include_base_filter?": true,
-      "message": null,
-      "name": null,
-      "nulls_distinct": true,
-      "prefix": null,
-      "table": null,
-      "unique": false,
-      "using": null,
-      "where": null
-    },
-    {
-      "all_tenants?": false,
-      "concurrently": false,
-      "error_fields": [
-        "finished_at"
-      ],
-      "fields": [
-        {
-          "type": "atom",
-          "value": "finished_at"
-        }
-      ],
-      "include": null,
-      "include_base_filter?": true,
-      "message": null,
-      "name": null,
-      "nulls_distinct": true,
-      "prefix": null,
-      "table": null,
-      "unique": false,
-      "using": null,
-      "where": null
-    },
-    {
-      "all_tenants?": false,
-      "concurrently": false,
-      "error_fields": [
-        "package_id",
-        "finished_at",
-        "inserted_at"
-      ],
-      "fields": [
-        {
-          "type": "atom",
-          "value": "package_id"
+          "value": "system_pkg"
         },
         {
-          "order": "desc",
-          "type": "directed",
-          "value": "finished_at"
+          "type": "atom",
+          "value": "system_version"
         },
         {
-          "order": "desc",
-          "type": "directed",
-          "value": "inserted_at"
+          "type": "atom",
+          "value": "status"
         }
       ],
       "include": null,
       "include_base_filter?": true,
       "message": null,
-      "name": "catalog_runs_package_latest_index",
+      "name": "catalog_system_results_stats_index",
       "nulls_distinct": true,
       "prefix": null,
       "table": null,
@@ -334,23 +277,8 @@
   ],
   "custom_statements": [],
   "has_create_action": true,
-  "hash": "AC19A41D7096E4E774F7A656EB2CC5181326E480A2DF5FDCD8CF4B1367DA1F70",
-  "identities": [
-    {
-      "all_tenants?": false,
-      "base_filter": null,
-      "index_name": "catalog_runs_unique_run_id_index",
-      "keys": [
-        {
-          "type": "atom",
-          "value": "run_id"
-        }
-      ],
-      "name": "unique_run_id",
-      "nils_distinct?": true,
-      "where": null
-    }
-  ],
+  "hash": "137A26110470A9DAAD565470FD9FDBB8D7F3380E9904E781FB5CB7DB3D3FEB0C",
+  "identities": [],
   "multitenancy": {
     "attribute": null,
     "global": null,
@@ -358,5 +286,5 @@
   },
   "repo": "Elixir.Portal.Repo",
   "schema": null,
-  "table": "catalog_runs"
+  "table": "catalog_system_results"
 }

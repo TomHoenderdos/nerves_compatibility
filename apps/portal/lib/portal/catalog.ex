@@ -116,8 +116,10 @@ defmodule Portal.Catalog do
 
   # Only the whole-catalog form is memoized. It is the expensive one -- every
   # package, its latest run and that run's system results, folded in Elixir --
-  # and the public JSON index calls it. (`/packages` used to as well; it now
-  # reads a page at a time through `Portal.Catalog.Browse`.) The
+  # and nothing routed calls it any more: `/packages` reads a page at a time
+  # through `Portal.Catalog.Browse`, and `/api/packages` was disabled on
+  # 2026-10-06. It is kept, with `PortalWeb.CatalogApiController`, so that API
+  # can come back. The
   # single-package form is a filtered read of one row, and caching it would key
   # the table by package name: the cache has no per-key eviction, so browsing
   # the catalog would leave an entry per package behind forever.
@@ -160,8 +162,19 @@ defmodule Portal.Catalog do
   47,455 rows on production on 2026-10-06 -- and fold them in Elixir, and a
   cold `GET /api/stats` took 15.1s. Grouped, the same answer is a few dozen
   rows.
+
+  Still cached. The grouping touches every row of `catalog_system_results`,
+  the widest table in the database: a plain scan of it takes ~70ms on
+  production, and every `StatsLive` mount asks (as did `/api/stats` until it
+  was disabled on 2026-10-06). `catalog_system_results_stats_index` covers the three grouped columns
+  so the count can be an index-only scan, and the cache keeps even that off
+  the request path.
   """
   def stats_json do
+    Cache.fetch(:stats_json, &compute_stats_json/0)
+  end
+
+  defp compute_stats_json do
     groups =
       from(s in "catalog_system_results",
         group_by: [s.system_pkg, s.system_version, s.status],

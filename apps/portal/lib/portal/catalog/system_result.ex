@@ -14,7 +14,13 @@ defmodule Portal.Catalog.SystemResult do
 
     custom_indexes do
       index([:run_id])
-      index([:system_pkg, :status])
+      # Covers `Portal.Catalog.stats_json/0`'s GROUP BY, so counting every
+      # result is an index-only scan rather than a pass over the blob-heavy
+      # heap. It replaces an index on `(system_pkg, status)` that no query
+      # filtered or grouped by.
+      index([:system_pkg, :system_version, :status],
+        name: "catalog_system_results_stats_index"
+      )
     end
   end
 
