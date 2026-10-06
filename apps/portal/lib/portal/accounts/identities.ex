@@ -36,7 +36,8 @@ defmodule Portal.Accounts.Identities do
   end
 
   @spec create_with_username(Identity.t(), String.t()) ::
-          {:ok, User.t()} | {:error, :invalid_username | :username_taken | :identity_taken}
+          {:ok, User.t()}
+          | {:error, :invalid_username | :username_taken | :identity_taken | term()}
   def create_with_username(%Identity{} = identity, username) do
     username = username |> to_string() |> String.trim() |> String.downcase()
 
@@ -47,7 +48,7 @@ defmodule Portal.Accounts.Identities do
       match?({:ok, %User{}}, find_user(identity)) ->
         {:error, :identity_taken}
 
-      match?({:ok, %User{}}, Portal.Accounts.get_user_by_username(username)) ->
+      Portal.Accounts.username_taken?(username) ->
         {:error, :username_taken}
 
       true ->
@@ -56,7 +57,7 @@ defmodule Portal.Accounts.Identities do
   end
 
   @spec link(User.t(), Identity.t()) ::
-          {:ok, User.t()} | {:error, :linked_elsewhere | :provider_already_linked}
+          {:ok, User.t()} | {:error, :linked_elsewhere | :provider_already_linked | term()}
   def link(%User{} = user, %Identity{} = identity) do
     cond do
       matches?(user, identity) ->
@@ -77,7 +78,7 @@ defmodule Portal.Accounts.Identities do
   end
 
   @spec unlink(User.t(), Identity.provider()) ::
-          {:ok, User.t()} | {:error, :not_linked | :last_way_in}
+          {:ok, User.t()} | {:error, :not_linked | :last_way_in | term()}
   def unlink(%User{} = user, provider) when provider in [:hex, :github] do
     cond do
       not linked?(user, provider) ->
@@ -138,7 +139,7 @@ defmodule Portal.Accounts.Identities do
     username = String.downcase(identity.username)
 
     if Portal.Accounts.valid_username?(username) and
-         match?({:ok, nil}, Portal.Accounts.get_user_by_username(username)) do
+         not Portal.Accounts.username_taken?(username) do
       create(identity, username)
     else
       {:error, :choose_username}

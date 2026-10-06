@@ -29,7 +29,7 @@ defmodule Portal.Accounts do
       not valid_password?(password) ->
         {:error, :invalid_password}
 
-      match?({:ok, %Portal.Accounts.User{}}, get_user_by_username(username)) ->
+      username_taken?(username) ->
         {:error, :username_taken}
 
       true ->
@@ -69,15 +69,33 @@ defmodule Portal.Accounts do
 
   def get_user(_), do: {:ok, nil}
 
-  # Case-insensitive: the old provider flows stored a Hex/GitHub login
-  # verbatim ("TomHoenderdos"), so a lower-cased lookup from a new identity
-  # must still find it -- otherwise `Identities.sign_in/1` would think the
-  # name is free and create a twin account.
   def get_user_by_username(username) do
     username = normalize_username(username)
 
     with {:ok, users} <- Ash.read(Portal.Accounts.User, domain: __MODULE__) do
-      {:ok, Enum.find(users, &(String.downcase(&1.username) == username))}
+      {:ok, Enum.find(users, &(&1.username == username))}
+    end
+  end
+
+  @doc """
+  Whether any account already holds `username`, case-insensitively.
+
+  Exists alongside `get_user_by_username/1` (exact match, used to log
+  someone in or resolve an admin by name) because the two questions are not
+  the same: the old provider flows stored a login verbatim ("TomHoenderdos"),
+  so "is this name free for a new account or a rename" has to see that
+  legacy row even though a plain lookup for "tomhoenderdos" must not silently
+  return it -- `get_user_by_username/1` returning the wrong account under the
+  unique index's nose, rather than this function returning a boolean, is what
+  could grant admin to or sign in as the wrong person.
+  """
+  @spec username_taken?(String.t()) :: boolean()
+  def username_taken?(username) do
+    username = normalize_username(username)
+
+    case Ash.read(Portal.Accounts.User, domain: __MODULE__) do
+      {:ok, users} -> Enum.any?(users, &(String.downcase(&1.username) == username))
+      {:error, _} -> false
     end
   end
 
