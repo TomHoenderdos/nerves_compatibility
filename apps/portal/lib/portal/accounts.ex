@@ -14,11 +14,16 @@ defmodule Portal.Accounts do
 
   @username_regex ~r/^[a-zA-Z0-9_][a-zA-Z0-9_.-]{2,39}$/
 
+  def valid_username?(username) when is_binary(username),
+    do: Regex.match?(@username_regex, username)
+
+  def valid_username?(_), do: false
+
   def register_user(username, password) do
     username = normalize_username(username)
 
     cond do
-      not Regex.match?(@username_regex, username) ->
+      not valid_username?(username) ->
         {:error, :invalid_username}
 
       not valid_password?(password) ->
@@ -64,11 +69,15 @@ defmodule Portal.Accounts do
 
   def get_user(_), do: {:ok, nil}
 
+  # Case-insensitive: the old provider flows stored a Hex/GitHub login
+  # verbatim ("TomHoenderdos"), so a lower-cased lookup from a new identity
+  # must still find it -- otherwise `Identities.sign_in/1` would think the
+  # name is free and create a twin account.
   def get_user_by_username(username) do
     username = normalize_username(username)
 
     with {:ok, users} <- Ash.read(Portal.Accounts.User, domain: __MODULE__) do
-      {:ok, Enum.find(users, &(&1.username == username))}
+      {:ok, Enum.find(users, &(String.downcase(&1.username) == username))}
     end
   end
 
@@ -113,7 +122,8 @@ defmodule Portal.Accounts do
     with {:ok, updated} <-
            update_profile(user, %{
              password_hash: Argon2.hash_pwd_salt(temp),
-             password_reset_required: true
+             password_reset_required: true,
+             password_set: true
            }) do
       {:ok, updated, temp}
     end
@@ -145,8 +155,27 @@ defmodule Portal.Accounts do
       true ->
         update_profile(user, %{
           password_hash: Argon2.hash_pwd_salt(new_password),
-          password_reset_required: false
+          password_reset_required: false,
+          password_set: true
         })
+    end
+  end
+
+  @doc """
+  Gives a password to an account that has none anyone knows. The caller
+  enforces the step-up check; there is no current password to ask for.
+  """
+  @spec set_password(Portal.Accounts.User.t(), String.t()) ::
+          {:ok, Portal.Accounts.User.t()} | {:error, :invalid_password}
+  def set_password(%Portal.Accounts.User{} = user, new_password) do
+    if valid_password?(new_password) do
+      update_profile(user, %{
+        password_hash: Argon2.hash_pwd_salt(new_password),
+        password_set: true,
+        password_reset_required: false
+      })
+    else
+      {:error, :invalid_password}
     end
   end
 

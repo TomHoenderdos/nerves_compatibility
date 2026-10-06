@@ -296,15 +296,18 @@ defmodule PortalWeb.SecurityController do
 
   defp reauth_message(user) do
     case Mfa.accepted_reauth_methods(user) do
-      [:password] ->
-        "Confirm your password first."
-
       [:passkey, :recovery_code] ->
         "Confirm with your passkey or a recovery code first. #{@no_longer_the_password}"
 
       [:totp, :recovery_code] ->
         "Confirm with a code from your authenticator app, or a recovery code, first. " <>
           @no_longer_the_password
+
+      [:password | _] ->
+        "Confirm your password first."
+
+      _ ->
+        "Confirm it is you with Hex.pm or GitHub first."
     end
   end
 

@@ -13,7 +13,7 @@ defmodule Portal.Accounts.Mfa do
 
   @reauth_window_seconds 600
 
-  @type method :: :password | :passkey | :totp | :recovery_code
+  @type method :: :password | :passkey | :totp | :recovery_code | :hex | :github
 
   @spec reauth_window_seconds() :: pos_integer()
   def reauth_window_seconds, do: @reauth_window_seconds
@@ -62,14 +62,29 @@ defmodule Portal.Accounts.Mfa do
   forever would make the admin passkey requirement decorative: a phished
   password would let an attacker enrol their own passkey and walk into
   `/admin`, which is the precise attack passkeys were chosen to stop.
+
+  A linked provider (Hex.pm or GitHub) counts for the same reason and under
+  the same limit: it authorises only while no factor exists yet.
   """
   @spec accepted_reauth_methods(User.t()) :: [method()]
   def accepted_reauth_methods(%User{} = user) do
     case factors(user) do
       %{passkeys: n} when n > 0 -> [:passkey, :recovery_code]
       %{totp: true} -> [:totp, :recovery_code]
-      _ -> [:password]
+      # No factor yet: whatever the account can sign in with. A provider
+      # counts only while no factor exists, for the same reason the password
+      # does -- see the moduledoc above.
+      _ -> without_factor(user)
     end
+  end
+
+  defp without_factor(user) do
+    [
+      user.password_set && :password,
+      is_binary(user.hex_username) && :hex,
+      is_integer(user.github_id) && :github
+    ]
+    |> Enum.filter(& &1)
   end
 
   @doc """
