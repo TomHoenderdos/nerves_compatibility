@@ -24,6 +24,30 @@ defmodule Portal.ScanRequests do
     |> admin_page(page)
   end
 
+  @doc """
+  The newest `limit` requests that ended in `error`, each with the lines of its
+  runner excerpt that say why (`Portal.ScanRequests.FailureSummary`). A failed
+  request leaves the queue, so without this the admin page has no way back to
+  its log.
+  """
+  def recent_failures(limit \\ 10) do
+    ScanRequest
+    |> Ash.Query.filter(expr(status == :error))
+    |> Ash.Query.sort(updated_at: :desc)
+    |> Ash.Query.limit(limit)
+    |> Ash.read!(domain: __MODULE__)
+    |> Enum.map(fn request ->
+      %{
+        id: request.id,
+        package_name: request.package_name,
+        version: request.version,
+        error_reason: request.error_reason,
+        failed_at: request.updated_at,
+        summary: Portal.ScanRequests.FailureSummary.from_log(request.error_log)
+      }
+    end)
+  end
+
   @doc "A bounded page of accepted or queued requests, oldest first, with the total count."
   def queue_page(page \\ 1) do
     ScanRequest
