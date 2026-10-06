@@ -32,6 +32,36 @@ defmodule Portal.Repo.Migrations.AddLinkedLogins do
         OR (github_username IS NOT NULL AND lower(username) = lower(github_username) AND last_github_login_at IS NOT NULL)
     """)
 
+    # The old provider flows stored the login verbatim ("TomHoenderdos"), but
+    # password sign-in lowercases its input and looks the name up exactly, so
+    # a password set on such an account could never be used. Lowercase every
+    # such name unless that would collide with another account's; a row with
+    # a case-twin stays as it is and is sorted out by hand.
+    execute("""
+    UPDATE portal_users u
+       SET username = lower(u.username)
+     WHERE u.username <> lower(u.username)
+       AND NOT EXISTS (
+             SELECT 1 FROM portal_users o
+              WHERE o.id <> u.id AND lower(o.username) = lower(u.username)
+           )
+    """)
+
+    # The old Hex flow stored the whole `users/me` body, email included. Keep
+    # only what the app reads -- the username -- and drop profiles left behind
+    # by a Hex link that no longer exists.
+    execute("""
+    UPDATE portal_users
+       SET hex_profile = jsonb_build_object('username', hex_username)::text
+     WHERE hex_username IS NOT NULL
+    """)
+
+    execute("""
+    UPDATE portal_users
+       SET hex_profile = '{}'
+     WHERE hex_username IS NULL AND hex_profile <> '{}'
+    """)
+
     drop_if_exists(index(:portal_users, [:hex_username]))
 
     create(index(:portal_users, [:hex_username], unique: true, where: "hex_username IS NOT NULL"))
