@@ -38,12 +38,12 @@ defmodule PortalWeb.IndexPlaceholdersTest do
   test "accepted request not in catalog shows a placeholder linking to its progress", %{
     conn: conn
   } do
-    req = seed_request("queuedpkg", :accepted)
+    seed_request("queuedpkg", :accepted)
 
     {:ok, _view, html} = live(conn, ~p"/packages")
     assert html =~ ~s(id="placeholder-queuedpkg")
     assert html =~ "in queue"
-    assert html =~ ~p"/requests/#{req.id}"
+    assert html =~ ~s(href="/packages/queuedpkg")
   end
 
   test "pending (unapproved) request is not shown", %{conn: conn} do

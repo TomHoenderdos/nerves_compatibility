@@ -32,7 +32,7 @@ mix format
 
 - `/` — package browser
 - `/packages/:name` — package details and latest system results
-- `/requests/:id` — live scan-request/build status
+- `/requests/:id` — redirects to the package page
 - `/badge/:name.svg` — SVG compatibility badge
 - `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
 - `/api/precompiled/manifests/:package.json`, `/api/precompiled/files/:sha256` — precompiled artifact API

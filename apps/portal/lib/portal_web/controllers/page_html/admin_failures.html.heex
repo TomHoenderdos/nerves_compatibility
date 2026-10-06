@@ -15,7 +15,10 @@
       <ul :if={@recent_failures != []} class="mt-3 divide-y divide-base-200">
         <li :for={failure <- @recent_failures} id={"failure-#{failure.id}"} class="py-3">
           <div class="flex flex-wrap items-center gap-2 text-sm">
-            <.link navigate={~p"/requests/#{failure.id}"} class="link font-mono font-medium">
+            <.link
+              navigate={~p"/packages/#{failure.package_name}"}
+              class="link font-mono font-medium"
+            >
               {failure.package_name}{if failure.version, do: " #{failure.version}"}
             </.link>
             <span class="text-base-content/60">{failure.error_reason}</span>

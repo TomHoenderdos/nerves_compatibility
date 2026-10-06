@@ -233,7 +233,7 @@ defmodule PortalWeb.IndexLive do
           name: req.package_name,
           description: "Awaiting first scan.",
           version: nil,
-          href: ~p"/requests/#{req.id}",
+          href: ~p"/packages/#{req.package_name}",
           summary: "in queue",
           summary_status: "queued",
           statuses: [],

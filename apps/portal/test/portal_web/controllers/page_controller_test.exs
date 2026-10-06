@@ -135,8 +135,8 @@ defmodule PortalWeb.PageControllerTest do
     assert body =~ "track progress"
     assert body =~ "coolpkg"
 
-    # a /requests/<uuid> link is present
-    assert body =~ ~r/\/requests\/[0-9a-f-]{36}/
+    # the package page is where its progress is shown
+    assert body =~ ~s(href="/packages/coolpkg")
   end
 
   test "POST /auth/github/start reports unavailable without a configured GitHub client", %{

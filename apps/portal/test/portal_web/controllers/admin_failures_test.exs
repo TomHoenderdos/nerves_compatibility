@@ -43,13 +43,13 @@ defmodule PortalWeb.AdminFailuresTest do
   end
 
   test "the admin page shows recent failures linked to their request", %{conn: conn} do
-    request = failed("max_31856", "** (ErlangError) {:invalid_byte, 130}\n")
+    failed("max_31856", "** (ErlangError) {:invalid_byte, 130}\n")
 
     html = conn |> signed_in_admin() |> get(~p"/admin/failures") |> html_response(200)
 
     assert html =~ ~s(id="recent-failures")
     assert html =~ "max_31856"
     assert html =~ "invalid_byte, 130"
-    assert html =~ ~s(href="/requests/#{request.id}")
+    assert html =~ ~s(href="/packages/max_31856")
   end
 end
