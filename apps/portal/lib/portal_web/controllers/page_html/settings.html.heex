@@ -72,6 +72,15 @@
             </p>
           </div>
 
+          <div
+            :if={@current_user.password_reset_required}
+            id="password-reset-required"
+            class="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm"
+          >
+            You signed in with a temporary password from an admin. Choose your own password
+            below; the temporary one is your current password.
+          </div>
+
           <form id="password-form" method="post" action={~p"/settings"} class="space-y-4">
             <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
 
