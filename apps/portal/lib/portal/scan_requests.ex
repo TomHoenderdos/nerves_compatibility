@@ -84,18 +84,25 @@ defmodule Portal.ScanRequests do
   defp page_number(_page), do: 1
 
   @doc """
-  A name-sorted prefix of queued packages missing from the displayed catalog,
-  plus the total number of matches. Only ids and names cross the database
-  boundary; request logs and verification metadata are not needed by cards.
+  A name-sorted prefix of requested packages missing from the displayed
+  catalog, plus the total number of matches. Only ids, names and statuses cross
+  the database boundary; request logs and verification metadata are not needed
+  by cards.
+
+  Covers open requests and failed ones: a package whose first build failed has
+  no catalog row, and dropping it from the list would leave someone who asked
+  for it with nothing to find. An open request wins over a failed one for the
+  same package (a rebuild is under way); among open requests the oldest is
+  linked, as before.
 
   The caller merges this prefix with catalog cards before slicing its page.
   Exclusions come from that same catalog snapshot so cache staleness cannot
-  hide a package from both lists. Duplicate requests link to the oldest one.
+  hide a package from both lists.
   """
   def queue_placeholders(q, catalog_names, limit) do
     matching =
       from(r in "portal_scan_requests",
-        where: r.status in ["accepted", "queued"],
+        where: r.status in ["accepted", "queued", "error"],
         where: r.package_name not in ^catalog_names,
         where: fragment("strpos(?, ?) > 0", r.package_name, ^q)
       )
@@ -107,8 +114,17 @@ defmodule Portal.ScanRequests do
     oldest =
       from(r in matching,
         distinct: r.package_name,
-        order_by: [r.package_name, r.inserted_at, r.id],
-        select: %{id: type(r.id, Ecto.UUID), package_name: r.package_name}
+        order_by: [
+          r.package_name,
+          fragment("CASE WHEN ? = 'error' THEN 1 ELSE 0 END", r.status),
+          r.inserted_at,
+          r.id
+        ],
+        select: %{
+          id: type(r.id, Ecto.UUID),
+          package_name: r.package_name,
+          status: r.status
+        }
       )
 
     entries =
@@ -119,6 +135,46 @@ defmodule Portal.ScanRequests do
       |> Portal.Repo.all()
 
     %{entries: entries, count: count}
+  end
+
+  @doc """
+  Where a package without a build stands, from its newest visible request:
+  `%{request_id:, state: :queued | :building | :failed, summary:}`, or nil.
+
+  Pending (unreviewed anonymous) and rejected requests are not visible: the
+  first has not been accepted, the second is not a package we build.
+  """
+  @spec package_progress(String.t()) :: map() | nil
+  def package_progress(package_name) when is_binary(package_name) do
+    from(r in "portal_scan_requests",
+      where: r.package_name == ^package_name,
+      where: r.status in ["accepted", "queued", "error"],
+      order_by: [desc: r.inserted_at, desc: r.id],
+      limit: 1,
+      select: %{id: type(r.id, Ecto.UUID), status: r.status, error_log: r.error_log}
+    )
+    |> Portal.Repo.one()
+    |> case do
+      nil ->
+        nil
+
+      %{status: "error"} = request ->
+        %{
+          request_id: request.id,
+          state: :failed,
+          summary: Portal.ScanRequests.FailureSummary.from_log(request.error_log)
+        }
+
+      request ->
+        %{request_id: request.id, state: open_state(request.id), summary: nil}
+    end
+  end
+
+  defp open_state(request_id) do
+    case Portal.Admin.queue_positions([request_id]) do
+      %{^request_id => %{state: "executing"}} -> :building
+      _ -> :queued
+    end
   end
 
   def create_once(attrs) when is_map(attrs) do
