@@ -100,4 +100,22 @@ defmodule Portal.HexPmTest do
       assert HexPm.metadata_from_body("nope") == %{links: %{}, owners: []}
     end
   end
+
+  describe "identity_from_profile/1" do
+    test "the Hex username is the link" do
+      assert {:ok, %Portal.Accounts.Identity{provider: :hex, uid: "frank", username: "frank"}} =
+               HexPm.identity_from_profile(%{"username" => "frank", "email" => "f@example.com"})
+    end
+
+    test "the profile we keep carries no email" do
+      {:ok, identity} =
+        HexPm.identity_from_profile(%{"username" => "frank", "email" => "f@example.com"})
+
+      refute inspect(identity.profile) =~ "example.com"
+    end
+
+    test "no username is no identity" do
+      assert {:error, :hex_api_unavailable} = HexPm.identity_from_profile(%{})
+    end
+  end
 end

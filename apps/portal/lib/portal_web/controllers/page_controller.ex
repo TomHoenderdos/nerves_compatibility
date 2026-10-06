@@ -347,7 +347,7 @@ defmodule PortalWeb.PageController do
     packages = get_session(conn, :hex_packages) || legacy_session_package(conn)
     device_code = get_session(conn, :hex_device_code)
 
-    case Portal.HexPm.complete_owner_requests(packages, device_code) do
+    case Portal.HexPm.complete_owner_requests(packages, device_code, current_user(conn)) do
       {:ok, requests} ->
         count = length(requests)
 
@@ -410,7 +410,7 @@ defmodule PortalWeb.PageController do
     packages = get_session(conn, :github_packages) || []
     device_code = get_session(conn, :github_device_code)
 
-    case Portal.GitHub.complete_repo_requests(packages, device_code) do
+    case Portal.GitHub.complete_repo_requests(packages, device_code, current_user(conn)) do
       {:ok, requests} ->
         count = length(requests)
 

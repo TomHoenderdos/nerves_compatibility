@@ -25,6 +25,12 @@ config :portal, Portal.Builder,
 
 config :portal, :artifact_store, path: Path.join(System.tmp_dir!(), "ncc-test-artifacts")
 
+# Controller tests drive the whole sign-in flow without hex.pm or github.com.
+config :portal, :identity_providers, %{
+  hex: Portal.Test.FakeProvider,
+  github: Portal.Test.FakeProvider
+}
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :portal, PortalWeb.Endpoint,
