@@ -58,7 +58,6 @@ defmodule Portal.Catalog do
     :failure_category,
     :hex_version_tested
   ]
-  @stats_fields [:system_pkg, :system_version, :status]
   @run_fields [
     :id,
     :run_id,
@@ -117,7 +116,8 @@ defmodule Portal.Catalog do
 
   # Only the whole-catalog form is memoized. It is the expensive one -- every
   # package, its latest run and that run's system results, folded in Elixir --
-  # and it is what `/packages` and the public JSON index both call. The
+  # and the public JSON index calls it. (`/packages` used to as well; it now
+  # reads a page at a time through `Portal.Catalog.Browse`.) The
   # single-package form is a filtered read of one row, and caching it would key
   # the table by package name: the cache has no per-key eviction, so browsing
   # the catalog would leave an entry per package behind forever.
@@ -155,29 +155,36 @@ defmodule Portal.Catalog do
 
   @doc """
   Returns the schema-v2 `stats.json` shape from Catalog rows.
+
+  Counted in Postgres. This used to read every system result through Ash --
+  47,455 rows on production on 2026-10-06 -- and fold them in Elixir, and a
+  cold `GET /api/stats` took 15.1s. Grouped, the same answer is a few dozen
+  rows.
   """
   def stats_json do
-    Cache.fetch(:stats_json, &compute_stats_json/0)
-  end
+    groups =
+      from(s in "catalog_system_results",
+        group_by: [s.system_pkg, s.system_version, s.status],
+        select: {s.system_pkg, s.system_version, s.status, count()}
+      )
+      |> Repo.all()
 
-  defp compute_stats_json do
-    results =
-      SystemResult
-      |> Ash.Query.select(@stats_fields)
-      |> Ash.read!(domain: __MODULE__)
+    last_finished_at =
+      from(r in "catalog_runs", select: type(max(r.finished_at), :utc_datetime_usec))
+      |> Repo.one()
 
     %{
       schema: 2,
       generated_at: generated_at(),
-      counts: counts(results),
+      counts: counts(groups),
       # Assessments are verdicts, not systems; `counts` above still includes
       # them, as it always has for `host`.
       by_system:
-        results
-        |> Enum.reject(&assessment_system?(&1.system_pkg))
-        |> Enum.group_by(&system_key/1)
+        groups
+        |> Enum.reject(fn {system_pkg, _, _, _} -> assessment_system?(system_pkg) end)
+        |> Enum.group_by(fn {system_pkg, version, _, _} -> "#{system_pkg}@#{version}" end)
         |> Map.new(fn {key, rows} -> {key, counts(rows, false)} end),
-      last_run_finished_at: last_finished_at(run_summaries())
+      last_run_finished_at: iso8601(last_finished_at)
     }
   end
 
@@ -1097,15 +1104,18 @@ defmodule Portal.Catalog do
     end)
   end
 
-  defp counts(results, include_total? \\ true) do
+  # Over `{system_pkg, system_version, status, count}` groups.
+  defp counts(groups, include_total? \\ true) do
     base = Map.new(@statuses, &{&1, 0})
 
     counted =
-      Enum.reduce(results, base, fn result, acc ->
-        Map.update!(acc, Atom.to_string(result.status), &(&1 + 1))
+      Enum.reduce(groups, base, fn {_, _, status, n}, acc ->
+        Map.update!(acc, status, &(&1 + n))
       end)
 
-    if include_total?, do: Map.put(counted, "total", length(results)), else: counted
+    if include_total?,
+      do: Map.put(counted, "total", Enum.sum_by(groups, &elem(&1, 3))),
+      else: counted
   end
 
   defp last_finished_at(runs) do
