@@ -317,7 +317,7 @@ must be refused with `SSH_ORIGINAL_COMMAND does not run rsync`.
 - `/packages/:name` — package details
 - `/requests/:id` — redirects to the package page
 - `/badge/:name.svg` — SVG badge
-- `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
+- `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API, **disabled 2026-10-06** (routes removed, return 404; controller kept)
 - `/api/precompiled/manifests/:package.json` — precompiled package manifest
 - `/api/precompiled/files/:sha256` — content-addressed artifact blob
 - `/admin/oban` — Oban Web dashboard behind admin auth
@@ -337,5 +337,4 @@ Then boot the portal and check:
 - `/admin`
 - `/admin/oban`
 - `/badge/jason.svg` after catalog data exists
-- `/api/packages`
 - `/api/precompiled/manifests/<package>.json` after artifact data exists
