@@ -101,6 +101,63 @@ defmodule PortalWeb.PageController do
     end
   end
 
+  # Granting or revoking admin changes who can do everything on this page, so
+  # it also needs the step-up the security settings use: a passkey (or other
+  # accepted factor) confirmed within `Mfa.reauth_window_seconds/0`. Without
+  # it, a stolen admin session could quietly hand out admin.
+  def admin_grant_admin(conn, params) do
+    with_admin_step_up(conn, fn conn, user ->
+      case Portal.Admin.grant_admin(params["username"] || "", user) do
+        {:ok, granted} ->
+          conn
+          |> put_flash(:info, "#{granted.username} is now an admin.")
+          |> render_admin(user)
+
+        {:error, reason} ->
+          conn
+          |> put_flash(:error, admin_error_message(reason))
+          |> render_admin(user)
+      end
+    end)
+  end
+
+  def admin_revoke_admin(conn, %{"id" => id}) do
+    with_admin_step_up(conn, fn conn, user ->
+      case Portal.Admin.revoke_admin(id, user) do
+        {:ok, revoked} ->
+          conn
+          |> put_flash(:info, "#{revoked.username} is no longer an admin.")
+          |> render_admin(user)
+
+        {:error, reason} ->
+          conn
+          |> put_flash(:error, admin_error_message(reason))
+          |> render_admin(user)
+      end
+    end)
+  end
+
+  defp with_admin_step_up(conn, fun) do
+    with {:ok, conn, user} <- require_admin(conn) do
+      if Portal.Accounts.Mfa.reauth_fresh?(
+           user,
+           PortalWeb.UserAuth.reauth_method(conn),
+           PortalWeb.UserAuth.reauth_at(conn)
+         ) do
+        fun.(conn, user)
+      else
+        conn
+        |> put_flash(
+          :error,
+          "Confirm your passkey on this page first, then come back to change admins."
+        )
+        |> redirect(to: ~p"/settings/security")
+      end
+    else
+      {:error, conn} -> conn
+    end
+  end
+
   def admin_argus_settings(conn, params) do
     case require_admin(conn) do
       {:ok, conn, user} ->
@@ -482,6 +539,7 @@ defmodule PortalWeb.PageController do
       queue_positions: Portal.Admin.queue_positions(Enum.map(queue_page.entries, & &1.id)),
       update_check: Portal.Admin.update_check_status(),
       argus: Portal.Settings.get(),
+      admins: Portal.Admin.list_admins(),
       argus_analysis_names: Portal.Settings.Setting.analysis_names()
     )
   end
@@ -678,6 +736,15 @@ defmodule PortalWeb.PageController do
 
   defp admin_error_message(:invalid_argus_settings),
     do: "Tick at least one analysis and keep the timeout between 30 and 1800 seconds."
+
+  defp admin_error_message(:blank_username), do: "Enter a username."
+
+  defp admin_error_message(:unknown_user),
+    do: "No account with that username. They need to register first."
+
+  defp admin_error_message(:self), do: "You cannot remove your own admin access."
+  defp admin_error_message(:last_admin), do: "That is the last admin; grant someone else first."
+  defp admin_error_message(:not_admin), do: "That account is not an admin."
 
   defp admin_error_message(_), do: "Admin action failed."
 end

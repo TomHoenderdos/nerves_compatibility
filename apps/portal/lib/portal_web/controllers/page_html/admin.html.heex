@@ -301,6 +301,66 @@
         </div>
       </section>
 
+      <section id="admins" class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body">
+          <div>
+            <h2 class="card-title">Admins</h2>
+            <p class="mt-1 text-sm leading-6 text-base-content/70">
+              Granting or revoking needs a passkey confirmed in the last {div(
+                Portal.Accounts.Mfa.reauth_window_seconds(),
+                60
+              )} minutes on <.link navigate={~p"/settings/security"} class="link">your security settings</.link>.
+              A new admin can only open this page once they have added a passkey.
+            </p>
+          </div>
+
+          <ul class="mt-4 divide-y divide-base-200">
+            <li
+              :for={admin <- @admins}
+              id={"admin-#{admin.id}"}
+              class="flex items-center justify-between gap-3 py-2"
+            >
+              <div class="text-sm">
+                <span class="font-medium">{admin.username}</span>
+                <span :if={admin.hex_username} class="text-base-content/60">
+                  · hex {admin.hex_username}
+                </span>
+                <span :if={!admin.passkey?} class="badge badge-sm badge-warning ml-2">
+                  needs a passkey
+                </span>
+              </div>
+              <form
+                :if={admin.id != @current_user.id}
+                method="post"
+                action={~p"/admin/admins/#{admin.id}/revoke"}
+              >
+                <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                <button type="submit" class="btn btn-xs btn-ghost">Revoke</button>
+              </form>
+            </li>
+          </ul>
+
+          <form
+            method="post"
+            action={~p"/admin/admins"}
+            class="mt-4 flex flex-wrap items-end gap-2"
+          >
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <label class="text-sm">
+              <span class="font-semibold">Grant admin to username</span>
+              <input
+                type="text"
+                name="username"
+                required
+                autocomplete="off"
+                class="input input-sm mt-1 block w-64"
+              />
+            </label>
+            <button type="submit" class="btn btn-sm btn-primary">Grant admin</button>
+          </form>
+        </div>
+      </section>
+
       <section id="argus-settings" class="card border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body">
           <div>
