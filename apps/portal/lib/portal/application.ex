@@ -27,6 +27,13 @@ defmodule Portal.Application do
       PortalWeb.Endpoint
     ]
 
+    # After the endpoint, so the warm-up never delays serving; the Repo and the
+    # Cache it fills are both up by then.
+    children =
+      if Portal.Catalog.Warmup.enabled?(),
+        do: children ++ [Portal.Catalog.Warmup],
+        else: children
+
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Portal.Supervisor]
