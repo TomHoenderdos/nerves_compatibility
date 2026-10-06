@@ -34,7 +34,7 @@ mix format
 - `/packages/:name` — package details and latest system results
 - `/requests/:id` — redirects to the package page
 - `/badge/:name.svg` — SVG compatibility badge
-- `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
+- `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API, **disabled 2026-10-06** (routes removed, return 404; controller kept)
 - `/api/precompiled/manifests/:package.json`, `/api/precompiled/files/:sha256` — precompiled artifact API
 
 ## Docs
