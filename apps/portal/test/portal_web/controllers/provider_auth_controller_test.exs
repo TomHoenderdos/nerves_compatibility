@@ -96,6 +96,29 @@ defmodule PortalWeb.ProviderAuthControllerTest do
     refute get_session(conn, :pending_identity)
   end
 
+  test "choose-username says the provider name is taken when it is", %{conn: conn} do
+    user_fixture(%{username: "taken-name"})
+    approve(hex("taken-name"))
+    conn = conn |> start_login() |> finish()
+
+    page = conn |> recycle() |> get(~p"/auth/choose-username") |> html_response(200)
+    assert page =~ "that username is already used here"
+    refute page =~ "be used as a username here"
+  end
+
+  test "choose-username says the provider name cannot be used when it is invalid", %{
+    conn: conn
+  } do
+    # Two characters: below the three-character minimum, and nobody holds it.
+    approve(hex("ab"))
+    conn = conn |> start_login() |> finish()
+    assert redirected_to(conn) == ~p"/auth/choose-username"
+
+    page = conn |> recycle() |> get(~p"/auth/choose-username") |> html_response(200)
+    assert page =~ "be used as a username here"
+    refute page =~ "already used here"
+  end
+
   test "the pending identity is single use", %{conn: conn} do
     user_fixture(%{username: "tom"})
     approve(hex("tom"))
