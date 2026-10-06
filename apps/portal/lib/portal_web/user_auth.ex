@@ -50,6 +50,10 @@ defmodule PortalWeb.UserAuth do
     |> put_session(:login_method, method)
     |> mark_reauth(method)
     |> drop_pending()
+    # A provider sign-in abandoned at choose-username leaves its identity in
+    # the session. Whatever route this login took, that identity must not
+    # outlive it and later mint an account from this session.
+    |> delete_session(:pending_identity)
   end
 
   @doc """
