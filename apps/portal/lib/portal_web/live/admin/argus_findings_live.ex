@@ -146,6 +146,16 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           </span>
         </div>
 
+        <div id="triage-export" class="flex flex-wrap items-center gap-2 text-sm">
+          <span class="text-base-content/60">Export (NDJSON, one run per line):</span>
+          <a href={~p"/admin/argus/export.ndjson"} class="btn btn-xs btn-outline">
+            latest run per package
+          </a>
+          <a href={~p"/admin/argus/export.ndjson?scope=all"} class="btn btn-xs btn-outline">
+            every run
+          </a>
+        </div>
+
         <p :if={@total > @shown} id="triage-shown" class="text-sm text-base-content/60">
           Showing {@shown} of {@total}. Narrow the filters to see the rest.
         </p>

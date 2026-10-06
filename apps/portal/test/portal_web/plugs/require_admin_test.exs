@@ -59,6 +59,22 @@ defmodule PortalWeb.Plugs.RequireAdminTest do
   defp request(user, :post, path, method),
     do: build_conn() |> sign_in(user, method) |> post(path, %{})
 
+  # Granting and revoking admin add a second gate on top of this one: a fresh
+  # step-up (`Mfa.reauth_fresh?/3`). The sweep that proves enrolment opens every
+  # action therefore signs in with one, so it measures this gate and not that.
+  defp request_with_step_up(user, verb, path) do
+    conn =
+      build_conn()
+      |> sign_in(user)
+      |> put_session(:reauth_method, :passkey)
+      |> put_session(:reauth_at, System.system_time(:second))
+
+    case verb do
+      :get -> get(conn, path)
+      :post -> post(conn, path, %{})
+    end
+  end
+
   test "an admin with a passkey reaches the admin page", %{conn: conn} do
     admin = admin_fixture()
     add_passkey(admin)
@@ -139,7 +155,7 @@ defmodule PortalWeb.Plugs.RequireAdminTest do
     admin = admin_with_passkey_fixture()
 
     for {verb, path} <- guarded_routes() do
-      conn = request(admin, verb, path)
+      conn = request_with_step_up(admin, verb, path)
 
       assert conn.status == 200, "#{verb} #{path} refused an enrolled admin"
     end
