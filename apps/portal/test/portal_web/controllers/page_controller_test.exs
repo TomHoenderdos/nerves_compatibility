@@ -69,6 +69,47 @@ defmodule PortalWeb.PageControllerTest do
     assert "anon_four" in package_names
   end
 
+  defp stored_request_names do
+    Portal.ScanRequests.ScanRequest
+    |> Ash.read!(domain: Portal.ScanRequests)
+    |> Enum.map(& &1.package_name)
+  end
+
+  test "POST /requests/anonymous refuses names hex.pm does not know, storing nothing", %{
+    conn: conn
+  } do
+    Process.put({:fake_hex_package, "not_on_hex"}, {:ok, false})
+    Process.put({:fake_hex_package, "also_missing"}, {:ok, false})
+
+    conn =
+      post(conn, ~p"/requests/anonymous", %{
+        "packages" => "real_pkg not_on_hex also_missing"
+      })
+
+    assert html_response(conn, 200) =~ "Not a Hex package: not_on_hex, also_missing."
+    assert stored_request_names() == []
+  end
+
+  test "POST /requests/anonymous stores nothing when hex.pm cannot be reached", %{conn: conn} do
+    Process.put({:fake_hex_package, "flaky_pkg"}, {:error, :hex_api_unavailable})
+
+    conn = post(conn, ~p"/requests/anonymous", %{"packages" => "real_pkg flaky_pkg"})
+
+    assert html_response(conn, 200) =~
+             "Could not reach hex.pm to check the package names. Try again in a moment."
+
+    assert stored_request_names() == []
+  end
+
+  test "POST /requests/anonymous accepts a name hex.pm knows", %{conn: conn} do
+    Process.put({:fake_hex_package, "known_pkg"}, {:ok, true})
+
+    conn = post(conn, ~p"/requests/anonymous", %{"packages" => "known_pkg"})
+
+    assert html_response(conn, 200) =~ "pending human review"
+    assert stored_request_names() == ["known_pkg"]
+  end
+
   test "POST /requests/anonymous deduplicates open package requests", %{conn: conn} do
     _conn = post(conn, ~p"/requests/anonymous", %{"packages" => "anon_dedupe anon_dedupe"})
     _conn = post(conn, ~p"/requests/anonymous", %{"packages" => "anon_dedupe"})

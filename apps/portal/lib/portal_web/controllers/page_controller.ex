@@ -492,23 +492,71 @@ defmodule PortalWeb.PageController do
         |> render_request_scan()
 
       true ->
-        case create_anonymous_requests(conn, packages) do
-          {:ok, requests} ->
-            conn
-            |> put_flash(
-              :info,
-              "Accepted anonymous #{pluralize(length(requests), "request")}; pending human review."
-            )
-            |> render_request_scan(
-              packages: Enum.map(requests, & &1.package_name),
-              submitted_requests: requests
-            )
+        submit_anonymous_requests(conn, packages)
+    end
+  end
 
-          {:error, _reason} ->
-            conn
-            |> put_flash(:error, "Anonymous request failed.")
-            |> render_request_scan(packages: packages)
-        end
+  # A name that only looks like a package -- a typo, something from another
+  # ecosystem -- used to become a pending request an admin had to read and
+  # reject by hand, and a public package page in the meantime. The whole
+  # submission is refused, as for a malformed name, so nobody ends up with half
+  # their list requested and the other half silently dropped.
+  defp submit_anonymous_requests(conn, packages) do
+    case unknown_hex_packages(packages) do
+      {:ok, []} ->
+        create_and_render_anonymous_requests(conn, packages)
+
+      {:ok, unknown} ->
+        conn
+        |> put_flash(:error, "Not a Hex package: #{Enum.join(unknown, ", ")}.")
+        |> render_request_scan(packages: packages)
+
+      {:error, :hex_api_unavailable} ->
+        conn
+        |> put_flash(
+          :error,
+          "Could not reach hex.pm to check the package names. Try again in a moment."
+        )
+        |> render_request_scan(packages: packages)
+    end
+  end
+
+  defp create_and_render_anonymous_requests(conn, packages) do
+    case create_anonymous_requests(conn, packages) do
+      {:ok, requests} ->
+        conn
+        |> put_flash(
+          :info,
+          "Accepted anonymous #{pluralize(length(requests), "request")}; pending human review."
+        )
+        |> render_request_scan(
+          packages: Enum.map(requests, & &1.package_name),
+          submitted_requests: requests
+        )
+
+      {:error, _reason} ->
+        conn
+        |> put_flash(:error, "Anonymous request failed.")
+        |> render_request_scan(packages: packages)
+    end
+  end
+
+  # Sequential, and stops at the first lookup that fails: one unreachable answer
+  # already decides the outcome, so asking about the rest only adds waiting.
+  defp unknown_hex_packages(packages) do
+    lookup = Application.get_env(:portal, :hex_package_lookup, Portal.HexPm)
+
+    packages
+    |> Enum.reduce_while({:ok, []}, fn package, {:ok, unknown} ->
+      case lookup.package_exists?(package) do
+        {:ok, true} -> {:cont, {:ok, unknown}}
+        {:ok, false} -> {:cont, {:ok, [package | unknown]}}
+        {:error, _reason} -> {:halt, {:error, :hex_api_unavailable}}
+      end
+    end)
+    |> case do
+      {:ok, unknown} -> {:ok, Enum.reverse(unknown)}
+      error -> error
     end
   end
 

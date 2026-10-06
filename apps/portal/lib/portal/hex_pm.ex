@@ -119,6 +119,32 @@ defmodule Portal.HexPm do
 
   def search_packages(_query), do: {:ok, []}
 
+  @doc """
+  Whether hex.pm has a package by this name.
+
+  `{:error, :hex_api_unavailable}` is "we could not find out", which is not the
+  same answer as `{:ok, false}`: a caller refusing a name on it would tell
+  someone their real package does not exist because hex.pm hiccuped.
+  """
+  @spec package_exists?(String.t()) :: {:ok, boolean()} | {:error, :hex_api_unavailable}
+  def package_exists?(package_name) when is_binary(package_name) do
+    case Req.get("#{@api_url}/packages/#{URI.encode_www_form(package_name)}") do
+      {:ok, %{status: 200}} ->
+        {:ok, true}
+
+      {:ok, %{status: 404}} ->
+        {:ok, false}
+
+      {:ok, %{status: status}} ->
+        Logger.warning("Hex package lookup failed: HTTP #{status}")
+        {:error, :hex_api_unavailable}
+
+      {:error, reason} ->
+        Logger.warning("Hex package lookup failed: #{inspect(reason)}")
+        {:error, :hex_api_unavailable}
+    end
+  end
+
   def latest_version(package_name) when is_binary(package_name) do
     case Req.get("#{@api_url}/packages/#{package_name}") do
       {:ok, %{status: 200, body: package}} when is_map(package) ->
