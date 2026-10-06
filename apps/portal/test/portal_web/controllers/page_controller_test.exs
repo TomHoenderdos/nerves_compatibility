@@ -101,6 +101,28 @@ defmodule PortalWeb.PageControllerTest do
     assert stored_request_names() == []
   end
 
+  test "POST /requests/anonymous refuses more than 25 names before looking any up", %{
+    conn: conn
+  } do
+    names = Enum.map(1..26, &"capped_#{&1}")
+    # Were any of them looked up, this answer would refuse the submission with
+    # a different message.
+    for name <- names, do: Process.put({:fake_hex_package, name}, {:ok, false})
+
+    conn = post(conn, ~p"/requests/anonymous", %{"packages" => Enum.join(names, " ")})
+
+    assert html_response(conn, 200) =~ "Request at most 25 packages at a time."
+    assert stored_request_names() == []
+  end
+
+  test "POST /requests/anonymous accepts exactly 25 names", %{conn: conn} do
+    names = Enum.map(1..25, &"capped_#{&1}")
+
+    conn = post(conn, ~p"/requests/anonymous", %{"packages" => Enum.join(names, " ")})
+
+    assert html_response(conn, 200) =~ "Accepted anonymous 25 requests"
+  end
+
   test "POST /requests/anonymous accepts a name hex.pm knows", %{conn: conn} do
     Process.put({:fake_hex_package, "known_pkg"}, {:ok, true})
 

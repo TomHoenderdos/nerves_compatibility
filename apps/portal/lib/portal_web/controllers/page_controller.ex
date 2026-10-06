@@ -2,6 +2,7 @@ defmodule PortalWeb.PageController do
   use PortalWeb, :controller
 
   @package_regex ~r/^[a-z][a-z0-9_]*$/
+  @max_anonymous_packages 25
 
   def request_scan(conn, _params) do
     render_request_scan(conn)
@@ -491,6 +492,13 @@ defmodule PortalWeb.PageController do
         |> put_flash(:error, "Enter at least one Hex package name.")
         |> render_request_scan()
 
+      # Each name may cost a CDN request, so the list is bounded before any
+      # lookup runs.
+      length(packages) > @max_anonymous_packages ->
+        conn
+        |> put_flash(:error, "Request at most #{@max_anonymous_packages} packages at a time.")
+        |> render_request_scan(packages: packages)
+
       true ->
         submit_anonymous_requests(conn, packages)
     end
@@ -544,7 +552,7 @@ defmodule PortalWeb.PageController do
   # Sequential, and stops at the first lookup that fails: one unreachable answer
   # already decides the outcome, so asking about the rest only adds waiting.
   defp unknown_hex_packages(packages) do
-    lookup = Application.get_env(:portal, :hex_package_lookup, Portal.HexPm)
+    lookup = Application.get_env(:portal, :hex_package_lookup, Portal.HexPackageLookup)
 
     packages
     |> Enum.reduce_while({:ok, []}, fn package, {:ok, unknown} ->
