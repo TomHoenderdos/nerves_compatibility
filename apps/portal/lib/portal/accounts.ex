@@ -107,14 +107,15 @@ defmodule Portal.Accounts do
   Changes the username of an existing user.
 
   The candidate is normalized like registration input and must match the shared
-  username format. Keeping the current username is allowed; any other user
-  already holding the name rejects the change.
+  username format. Keeping the current username, or changing only its case, is
+  allowed; any other user holding the name in any case rejects the change, so
+  a rename cannot create a case-twin of a legacy mixed-case name.
   """
   def change_username(%Portal.Accounts.User{} = user, username) do
     username = normalize_username(username)
 
     cond do
-      not Regex.match?(@username_regex, username) ->
+      not valid_username?(username) ->
         {:error, :invalid_username}
 
       username_taken_by_other?(user, username) ->
@@ -250,10 +251,15 @@ defmodule Portal.Accounts do
     end
   end
 
+  # Case-insensitive for the same reason as `username_taken?/1`, but the
+  # user's own row does not count against them.
   defp username_taken_by_other?(%Portal.Accounts.User{id: id}, username) do
-    case get_user_by_username(username) do
-      {:ok, %Portal.Accounts.User{id: existing_id}} -> existing_id != id
-      _other -> false
+    case Ash.read(Portal.Accounts.User, domain: __MODULE__) do
+      {:ok, users} ->
+        Enum.any?(users, &(&1.id != id and String.downcase(&1.username) == username))
+
+      {:error, _} ->
+        false
     end
   end
 
