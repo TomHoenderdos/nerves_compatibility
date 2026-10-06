@@ -122,6 +122,11 @@ defmodule PortalWeb.Router do
     get "/auth/github/complete", PageController, :request_scan
     post "/auth/github/complete", PageController, :github_complete
     post "/requests/anonymous", PageController, :anonymous_request
+
+    post "/auth/:provider/login", ProviderAuthController, :start_login
+    post "/auth/:provider/login/complete", ProviderAuthController, :complete_login
+    get "/auth/choose-username", ProviderAuthController, :choose_username
+    post "/auth/choose-username", ProviderAuthController, :create_with_username
   end
 
   scope "/", PortalWeb do

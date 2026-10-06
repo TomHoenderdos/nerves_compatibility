@@ -1,0 +1,47 @@
+<Layouts.flash_group flash={@flash} />
+
+<main class="min-h-screen bg-base-100 text-base-content">
+  <.site_nav current_user={@current_user} />
+
+  <div class="mx-auto max-w-md px-4 py-10 sm:px-6 lg:px-8">
+    <section class="space-y-8">
+      <PortalWeb.UI.page_header kicker="Account" title={"Confirm with #{@provider_label}"}>
+        <:subtitle>
+          Open {@provider_label}, enter the code below and approve. Then come back here.
+        </:subtitle>
+      </PortalWeb.UI.page_header>
+
+      <section id="provider-flow" class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-6">
+          <p
+            class="text-center font-mono text-3xl font-semibold tracking-widest"
+            id="device-user-code"
+          >
+            {@flow["user_code"]}
+          </p>
+
+          <a
+            href={@flow["verification_uri_complete"] || @flow["verification_uri"]}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="btn btn-outline w-full"
+          >
+            <.icon name="hero-arrow-top-right-on-square-mini" class="size-5" />
+            Open {@provider_label}
+          </a>
+
+          <p :if={@polling?} class="text-sm text-base-content/70">
+            Not approved yet. Approve it on {@provider_label}, then check again.
+          </p>
+
+          <form method="post" action={@complete_path}>
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <button type="submit" class="btn btn-primary w-full">
+              {if @polling?, do: "Check again", else: "I approved it"}
+            </button>
+          </form>
+        </div>
+      </section>
+    </section>
+  </div>
+</main>
