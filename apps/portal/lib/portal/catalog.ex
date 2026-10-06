@@ -11,7 +11,7 @@ defmodule Portal.Catalog do
 
   require Ash.Query
 
-  import Ecto.Query, only: [from: 2, subquery: 1]
+  import Ecto.Query, only: [from: 2, subquery: 1, where: 3]
 
   alias Portal.Catalog.{
     Artifact,
@@ -262,6 +262,7 @@ defmodule Portal.Catalog do
   # only for the rows that end up on the page.
   @triage_list_fields [
     :id,
+    :fingerprint,
     :package_name,
     :analysis,
     :severity,
@@ -398,6 +399,147 @@ defmodule Portal.Catalog do
     )
     |> Repo.all()
     |> Map.new(fn {name, id} -> {name, Ecto.UUID.load!(id)} end)
+  end
+
+  @export_batch 200
+
+  @doc """
+  argus results as a lazy stream of string-keyed maps, one per run, for the
+  admin NDJSON export.
+
+  Options:
+
+    * `:scope` -- `:latest` (default) is each package's newest run whose argus
+      result is `ok`; `:all` is every run that carries an argus result,
+      including `error` and `skipped`, so failure rates are visible.
+    * `:since` -- a `DateTime`; only runs finished at or after it.
+    * `:batch_size` -- rows per query (default #{@export_batch}).
+
+  Pages by `(finished_at, id)` keyset rather than `Repo.stream/2`, which would
+  hold one transaction open for the whole download. Each finding carries its
+  `fingerprint` and the admin's current `triage` verdict, so the export is
+  enough to compute false-positive rates per analysis and per argus version.
+  """
+  def argus_export(opts \\ []) do
+    scope = Keyword.get(opts, :scope, :latest)
+    since = Keyword.get(opts, :since)
+    batch = Keyword.get(opts, :batch_size, @export_batch)
+
+    Stream.resource(
+      fn -> nil end,
+      fn
+        :done ->
+          {:halt, :done}
+
+        cursor ->
+          case export_batch(scope, since, cursor, batch) do
+            [] ->
+              {:halt, :done}
+
+            rows ->
+              last = List.last(rows)
+              next = if length(rows) < batch, do: :done, else: {last.sort_at, last.id}
+              {export_lines(rows), next}
+          end
+      end,
+      fn _ -> :ok end
+    )
+  end
+
+  defp export_batch(scope, since, cursor, batch) do
+    from(r in "catalog_runs",
+      join: p in "catalog_packages",
+      on: p.id == r.package_id,
+      where: not is_nil(r.argus),
+      order_by: [asc: coalesce(r.finished_at, r.inserted_at), asc: r.id],
+      limit: ^batch,
+      select: %{
+        id: type(r.id, Ecto.UUID),
+        sort_at: type(coalesce(r.finished_at, r.inserted_at), :utc_datetime_usec),
+        run_id: r.run_id,
+        version: r.version_tested,
+        finished_at: type(r.finished_at, :utc_datetime_usec),
+        image_digest: r.image_digest,
+        argus: r.argus,
+        package: p.name
+      }
+    )
+    |> export_scope(scope)
+    |> then(fn q ->
+      if since, do: where(q, [r], r.finished_at >= ^since), else: q
+    end)
+    |> then(fn
+      q when is_nil(cursor) ->
+        q
+
+      q ->
+        {at, id} = cursor
+
+        where(
+          q,
+          [r],
+          fragment(
+            "(coalesce(?, ?), ?) > (?, ?)",
+            r.finished_at,
+            r.inserted_at,
+            r.id,
+            ^at,
+            type(^id, Ecto.UUID)
+          )
+        )
+    end)
+    |> Repo.all()
+  end
+
+  defp export_scope(query, :all), do: query
+
+  defp export_scope(query, :latest) do
+    from([r, _p] in query,
+      join: l in subquery(latest_argus_runs()),
+      on: l.id == r.id
+    )
+  end
+
+  defp export_lines(rows) do
+    findings =
+      Enum.flat_map(rows, fn row ->
+        row.argus |> Map.get("findings") |> List.wrap() |> Enum.map(&{row.package, &1})
+      end)
+
+    fingerprints =
+      for {package, %{} = f} <- findings, do: FindingTriage.fingerprint(package, f)
+
+    triage =
+      from(t in "catalog_finding_triage",
+        where: t.fingerprint in ^Enum.uniq(fingerprints),
+        select:
+          {t.fingerprint, %{"status" => t.status, "note" => t.note, "updated_by" => t.updated_by}}
+      )
+      |> Repo.all()
+      |> Map.new()
+
+    Enum.map(rows, fn row ->
+      %{
+        "package" => row.package,
+        "package_version" => row.version,
+        "run_id" => row.run_id,
+        "finished_at" => row.finished_at && DateTime.to_iso8601(row.finished_at),
+        "image_digest" => row.image_digest,
+        "argus" => Map.drop(row.argus, ["findings"]),
+        "findings" =>
+          row.argus
+          |> Map.get("findings")
+          |> List.wrap()
+          |> Enum.map(fn
+            %{} = f ->
+              fp = FindingTriage.fingerprint(row.package, f)
+              Map.merge(f, %{"fingerprint" => fp, "triage" => Map.get(triage, fp)})
+
+            other ->
+              other
+          end)
+      }
+    end)
   end
 
   @doc "Fetches the committed run and package name needed to resume ingest completion."

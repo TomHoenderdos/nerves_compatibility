@@ -175,6 +175,8 @@ defmodule PortalWeb.Router do
 
     # Same reasoning as the Oban dashboard: the pipeline guards the first HTTP
     # request, the on_mount guards every LiveView reconnect after it.
+    get "/argus/export.ndjson", PortalWeb.ArgusExportController, :export
+
     live_session :admin,
       on_mount: [
         {PortalWeb.UserAuth, :assign_current_user},
