@@ -5,7 +5,7 @@ defmodule Portal.ScanRequests do
 
   use Ash.Domain
   import Ash.Expr
-  import Ecto.Query, only: [from: 2, subquery: 1]
+  import Ecto.Query, only: [from: 2]
   require Ash.Query
 
   resources do
@@ -82,60 +82,6 @@ defmodule Portal.ScanRequests do
   end
 
   defp page_number(_page), do: 1
-
-  @doc """
-  A name-sorted prefix of requested packages missing from the displayed
-  catalog, plus the total number of matches. Only ids, names and statuses cross
-  the database boundary; request logs and verification metadata are not needed
-  by cards.
-
-  Covers open requests and failed ones: a package whose first build failed has
-  no catalog row, and dropping it from the list would leave someone who asked
-  for it with nothing to find. An open request wins over a failed one for the
-  same package (a rebuild is under way); among open requests the oldest is
-  linked, as before.
-
-  The caller merges this prefix with catalog cards before slicing its page.
-  Exclusions come from that same catalog snapshot so cache staleness cannot
-  hide a package from both lists.
-  """
-  def queue_placeholders(q, catalog_names, limit) do
-    matching =
-      from(r in "portal_scan_requests",
-        where: r.status in ["accepted", "queued", "error"],
-        where: r.package_name not in ^catalog_names,
-        where: fragment("strpos(?, ?) > 0", r.package_name, ^q)
-      )
-
-    count =
-      from(r in matching, select: count(r.package_name, :distinct))
-      |> Portal.Repo.one!()
-
-    oldest =
-      from(r in matching,
-        distinct: r.package_name,
-        order_by: [
-          r.package_name,
-          fragment("CASE WHEN ? = 'error' THEN 1 ELSE 0 END", r.status),
-          r.inserted_at,
-          r.id
-        ],
-        select: %{
-          id: type(r.id, Ecto.UUID),
-          package_name: r.package_name,
-          status: r.status
-        }
-      )
-
-    entries =
-      from(r in subquery(oldest),
-        order_by: fragment("? COLLATE \"C\"", r.package_name),
-        limit: ^limit
-      )
-      |> Portal.Repo.all()
-
-    %{entries: entries, count: count}
-  end
 
   @doc """
   The build a package's page should show, from its newest request worth

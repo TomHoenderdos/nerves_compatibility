@@ -1,10 +1,9 @@
 defmodule PortalWeb.IndexLive do
   use PortalWeb, :live_view
 
-  alias Portal.Catalog
-  alias Portal.ScanRequests
+  alias Portal.Catalog.Browse
 
-  # The catalog is ~2,500 packages. Streaming all of them rendered a 3.6 MB
+  # The catalog was ~2,500 packages. Streaming all of them rendered a 3.6 MB
   # document, and because the search form is `phx-change`, every keystroke sent
   # a full stream reset of the same 3.6 MB back down the socket. A page at a
   # time keeps both the first paint and each search cheap.
@@ -53,19 +52,15 @@ defmodule PortalWeb.IndexLive do
     {:noreply, push_patch(socket, to: path_for(q), replace: true)}
   end
 
-  # The catalog read is memoized; placeholders are a bounded database prefix.
-  # Fetching through the end of the next page is sufficient to merge the two
-  # name-sorted lists without materializing the entire scan-request queue.
+  # One page from Postgres per click; see `Portal.Catalog.Browse`.
   #
-  # Slicing by offset means a package added between two clicks can shift the
-  # window by one. The list is name-sorted and the memo has a 60s TTL, so the
-  # worst case is one entry arriving a page late; a repeat is idempotent,
-  # because the stream keys on the package name.
+  # Paging by offset means a package added ahead of the window between two
+  # clicks shifts it by one, so the last card already shown comes back. That
+  # repeat is idempotent, because the stream keys on the package name. A
+  # placeholder whose build lands keeps its name, and so its position.
   def handle_event("load_more", _params, socket) do
     shown = socket.assigns.shown_count
-
-    {entries, count} = entries(socket.assigns.q, shown + @page_size)
-    next = Enum.slice(entries, shown, @page_size)
+    {next, count} = entries(socket.assigns.q, shown)
 
     {:noreply,
      socket
@@ -75,8 +70,7 @@ defmodule PortalWeb.IndexLive do
   end
 
   defp search(socket, q) do
-    {entries, count} = entries(q, @page_size)
-    page = Enum.take(entries, @page_size)
+    {page, count} = entries(q, 0)
 
     socket
     |> assign(:q, q)
@@ -181,83 +175,8 @@ defmodule PortalWeb.IndexLive do
 
   # -- entries ---------------------------------------------------------------
 
-  defp entries(q, limit) do
-    q = q |> to_string() |> String.downcase()
-    catalog = catalog_entries(q)
-    placeholders = ScanRequests.queue_placeholders(q, Enum.map(catalog, & &1.name), limit)
-
-    entries =
-      (catalog ++ placeholder_entries(placeholders.entries))
-      |> Enum.sort_by(& &1.name)
-
-    {entries, length(catalog) + placeholders.count}
-  end
-
-  defp catalog_entries(q) do
-    Catalog.latest_by_pkg_json().packages
-    |> Enum.map(fn {name, data} -> Map.put(data, :name, name) end)
-    |> Enum.filter(fn package -> q == "" or String.contains?(package.name, q) end)
-    |> Enum.map(fn package ->
-      statuses = system_statuses(package)
-      {summary, summary_status} = summarize(statuses)
-
-      %{
-        name: package.name,
-        description: package.description,
-        version: package.latest_version && "v#{package.latest_version}",
-        href: ~p"/packages/#{package.name}",
-        summary: summary,
-        summary_status: summary_status,
-        statuses: statuses,
-        placeholder?: false
-      }
-    end)
-  end
-
-  defp placeholder_entries(requests) do
-    Enum.map(requests, fn
-      %{status: "error"} = req ->
-        %{
-          name: req.package_name,
-          description: "First scan failed.",
-          version: nil,
-          href: ~p"/packages/#{req.package_name}",
-          summary: "build failed",
-          summary_status: "error",
-          statuses: [],
-          placeholder?: true
-        }
-
-      req ->
-        %{
-          name: req.package_name,
-          description: "Awaiting first scan.",
-          version: nil,
-          href: ~p"/packages/#{req.package_name}",
-          summary: "in queue",
-          summary_status: "queued",
-          statuses: [],
-          placeholder?: true
-        }
-    end)
-  end
-
-  defp system_statuses(package) do
-    package |> Map.get(:systems, %{}) |> Map.values() |> Enum.map(&to_string(&1.status))
-  end
-
-  defp summarize(statuses) do
-    cond do
-      statuses == [] -> {"not run", "skipped"}
-      "error" in statuses -> {tally(statuses), "error"}
-      "fail" in statuses -> {tally(statuses), "fail"}
-      Enum.all?(statuses, &(&1 == "pass")) -> {tally(statuses), "pass"}
-      true -> {tally(statuses), "skipped"}
-    end
-  end
-
-  defp tally(statuses) do
-    pass = Enum.count(statuses, &(&1 == "pass"))
-    "#{pass}/#{length(statuses)} pass"
+  defp entries(q, offset) do
+    {entries, count} = Browse.page(q, offset, @page_size)
+    {Enum.map(entries, &Map.put(&1, :href, ~p"/packages/#{&1.name}")), count}
   end
 end
