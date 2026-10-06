@@ -16,6 +16,14 @@ defmodule Portal.Catalog.Run do
       index([:package_id])
       index([:scan_request_id])
       index([:finished_at])
+
+      # The latest run of a package: `DISTINCT ON (package_id) ORDER BY
+      # package_id, finished_at DESC, inserted_at DESC`, which `/packages` asks
+      # per page. Matching the sort lets Postgres read the first entry per
+      # package instead of sorting each package's history.
+      index([:package_id, {:desc, :finished_at}, {:desc, :inserted_at}],
+        name: "catalog_runs_package_latest_index"
+      )
     end
   end
 

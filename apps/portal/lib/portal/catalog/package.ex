@@ -11,8 +11,14 @@ defmodule Portal.Catalog.Package do
     table("catalog_packages")
     repo(Portal.Repo)
 
+    # No plain unique index on `name` here: the `:unique_name` identity below
+    # already creates `catalog_packages_unique_name_index`, and declaring one
+    # here as well kept a second, identical btree that every insert paid for.
     custom_indexes do
-      index([:name], unique: true)
+      # Serves `/packages` search, `name LIKE '%term%'` (see
+      # `Portal.Catalog.Browse`), which no btree can. Needs `pg_trgm`; the
+      # migration that adds this index creates the extension.
+      index(["name gin_trgm_ops"], name: "catalog_packages_name_trgm_index", using: "gin")
     end
   end
 
