@@ -32,6 +32,7 @@ defmodule NccWorker.ProjectTest do
                "--app",
                "nerves_compatibility_test",
                "--no-nerves-pack",
+               "--prerelease",
                "--target",
                "rpi4",
                "--target",
@@ -57,89 +58,44 @@ defmodule NccWorker.ProjectTest do
     end
   end
 
-  describe "nerves_2_mix_exs/1" do
-    @release_mix_exs """
-    def project do
-      [
-        app: @app,
-        deps: deps()
-      ]
-    end
-
+  describe "pin_nerves/1" do
+    # What `mix nerves.new --prerelease` (nerves_bootstrap 1.17.3) generates.
+    @prerelease_mix_exs """
     defp deps do
       [
-        {:nerves, "~> 1.13", runtime: false},
-        {:shoehorn, "~> 0.9.1"},
-        {:ring_logger, "~> 0.11.0"}
-      ]
-    end
+        # Dependencies for all targets
+        {:nerves, "~> 2.0.0-pre.3", runtime: false},
 
-    def release do
-      [
-        include_erts: &Nerves.Release.erts/0,
-        steps: [&Nerves.Release.init/1, :assemble]
+        {:logger_backends, "~> 1.0"},
+        {:nerves_runtime, "~> 0.13.0"},
+        {:nerves_system_rpi4, "~> 1.24", runtime: false, targets: :rpi4}
       ]
     end
     """
 
-    test "pins the nerves requirement to the prerelease" do
-      assert {:ok, migrated} = Project.nerves_2_mix_exs(@release_mix_exs)
+    test "pins the template's floating prerelease requirement exactly" do
+      assert {:ok, pinned} = Project.pin_nerves(@prerelease_mix_exs)
 
-      assert migrated =~ ~s[{:nerves, "== 2.0.0-pre.2", runtime: false}]
-      refute migrated =~ "~> 1.13"
-    end
-
-    test "drops shoehorn and leaves the other deps" do
-      assert {:ok, migrated} = Project.nerves_2_mix_exs(@release_mix_exs)
-
-      refute migrated =~ "shoehorn"
-
-      assert migrated =~
-               ~s[{:nerves, "== 2.0.0-pre.2", runtime: false},\n    {:ring_logger]
-    end
-
-    test "moves the release hooks off the deprecated Nerves.Release" do
-      assert {:ok, migrated} = Project.nerves_2_mix_exs(@release_mix_exs)
-
-      assert migrated =~ "include_erts: &Nerves.erts/0"
-      assert migrated =~ "steps: [&Nerves.init_release/1, :assemble]"
-      refute migrated =~ "Nerves.Release"
-    end
-
-    test "supplies TARGET_CPU for x86_64, which its system does not declare" do
-      assert {:ok, migrated} = Project.nerves_2_mix_exs(@release_mix_exs)
-
-      assert migrated =~
-               ~s|    app: @app,\n    nerves: if(Mix.target() == :x86_64, do: [env: [{"TARGET_CPU", "x86_64"}]], else: []),\n|
+      assert pinned =~ ~s[{:nerves, "== 2.0.0-pre.3", runtime: false}]
+      refute pinned =~ "~> 2.0.0-pre.3"
     end
 
     test "leaves nerves_* packages alone" do
-      content =
-        ~s[app: @app,\n{:nerves_runtime, "~> 0.13.0"},\n{:nerves, "~> 1.13", runtime: false}]
+      assert {:ok, pinned} = Project.pin_nerves(@prerelease_mix_exs)
 
-      assert {:ok, migrated} = Project.nerves_2_mix_exs(content)
-      assert migrated =~ ~s[{:nerves_runtime, "~> 0.13.0"}]
+      assert pinned =~ ~s[{:nerves_runtime, "~> 0.13.0"}]
+      assert pinned =~ ~s[{:nerves_system_rpi4, "~> 1.24", runtime: false, targets: :rpi4}]
     end
 
+    # A template that dropped --prerelease, or moved the dep, must not quietly
+    # put every build back on stable Nerves.
     test "errors when the template has no nerves dep" do
-      assert {:error, {:nerves_2_migration_failed, _}} =
-               Project.nerves_2_mix_exs("app: @app,\ndefp deps, do: []")
+      assert {:error, {:nerves_pin_failed, _}} = Project.pin_nerves("defp deps, do: []")
     end
 
-    test "errors when the template has no project app line" do
-      assert {:error, {:nerves_2_migration_failed, _}} =
-               Project.nerves_2_mix_exs(~s[{:nerves, "~> 1.13", runtime: false}])
-    end
-  end
-
-  describe "nerves_2_target_config/1" do
-    test "moves the shoehorn start order to nerves application_sort" do
-      content =
-        "config :logger, backends: [RingLogger]\n\nconfig :shoehorn, init: [:nerves_runtime]\n"
-
-      assert Project.nerves_2_target_config(content) ==
-               "config :logger, backends: [RingLogger]\n\n" <>
-                 "config :nerves, application_sort: [init: [:nerves_runtime]]\n"
+    test "errors when the template generated a stable Nerves" do
+      assert {:error, {:nerves_pin_failed, _}} =
+               Project.pin_nerves(~s[{:nerves, "~> 1.15", runtime: false}])
     end
   end
 
