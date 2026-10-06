@@ -91,12 +91,18 @@ defmodule PortalWeb.BuildProgress do
         </li>
       </ol>
 
+      <%!-- A failure can arrive with a reason and no log (a crash before the
+      runner wrote one), so each part shows on its own. --%>
       <div
-        :if={@progress.state == :failed and @progress.error_log}
-        id="request-error-log"
+        :if={@progress.state == :failed and (@progress.error_reason || @progress.error_log)}
+        id="request-failure"
         class="overflow-hidden rounded-xl border border-error/40 bg-base-300/30"
       >
-        <div class="border-b border-base-300 px-4 py-2.5 font-mono text-xs text-base-content/60">
+        <div
+          :if={@progress.error_reason}
+          id="request-error-reason"
+          class="border-b border-base-300 px-4 py-2.5 font-mono text-xs text-base-content/60"
+        >
           build failed: {@progress.error_reason}
         </div>
         <div
@@ -111,8 +117,10 @@ defmodule PortalWeb.BuildProgress do
         </div>
         <%!-- The cause of a failure is at the end of the log, so the scroller is
         reversed: a column-reverse flex box starts scrolled to its bottom. --%>
-        <div data-starts-at-end class="flex max-h-96 flex-col-reverse overflow-auto">
-          <pre class="p-4 font-mono text-xs leading-relaxed text-base-content/80">{@progress.error_log}</pre>
+        <div :if={@progress.error_log} id="request-error-log">
+          <div data-starts-at-end class="flex max-h-96 flex-col-reverse overflow-auto">
+            <pre class="p-4 font-mono text-xs leading-relaxed text-base-content/80">{@progress.error_log}</pre>
+          </div>
         </div>
       </div>
     </div>

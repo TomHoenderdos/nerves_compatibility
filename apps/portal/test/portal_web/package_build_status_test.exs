@@ -8,6 +8,10 @@ defmodule PortalWeb.PackageBuildStatusTest do
   alias Portal.ScanRequests
   alias Portal.ScanRequests.ScanRequest
 
+  defmodule StubVersions do
+    def latest_version(_package), do: {:ok, "1.0.0"}
+  end
+
   defp seed_request(name, status, attrs \\ %{}) do
     {:ok, req} =
       ScanRequest
@@ -46,13 +50,19 @@ defmodule PortalWeb.PackageBuildStatusTest do
       )
   end
 
-  # `Portal.Admin.queue_positions/1` reads the build job's Oban state; a test
-  # has no queue running, so the job is put into `executing` by hand.
-  defp start_building(req) do
+  defp enqueue_build(req) do
     {:ok, job} =
       %{package: req.package_name, version: "1.0.0", scan_request_id: req.id}
       |> Portal.Workers.Build.new()
       |> Oban.insert()
+
+    job
+  end
+
+  # `Portal.Admin.queue_positions/1` reads the build job's Oban state; a test
+  # has no queue running, so the job is put into `executing` by hand.
+  defp start_building(req) do
+    job = enqueue_build(req)
 
     Portal.Repo.update_all(from(j in Oban.Job, where: j.id == ^job.id),
       set: [state: "executing"]
@@ -118,7 +128,7 @@ defmodule PortalWeb.PackageBuildStatusTest do
       assert has_element?(view, "#request-status", "Build failed")
       assert has_element?(view, "#request-failure-summary", "invalid_byte, 130")
       refute has_element?(view, "#request-failure-summary", "quoted keyword")
-      assert has_element?(view, "#request-error-log", "worker/runner exit 1")
+      assert has_element?(view, "#request-error-reason", "worker/runner exit 1")
       # The scroller is reversed, so the browser starts it at the bottom.
       assert has_element?(view, "#request-error-log [data-starts-at-end]")
     end
@@ -130,6 +140,16 @@ defmodule PortalWeb.PackageBuildStatusTest do
 
       refute has_element?(view, "#request-failure-summary")
       assert has_element?(view, "#request-error-log", "nothing to see")
+    end
+
+    test "a failure with a reason but no log still says why", %{conn: conn} do
+      req = seed_request("nologpkg", :pending)
+      {:ok, _} = ScanRequests.set_status(req.id, :error, error_reason: "worker/runner exit 10")
+
+      {:ok, view, _html} = live(conn, ~p"/packages/nologpkg")
+
+      assert has_element?(view, "#request-error-reason", "build failed: worker/runner exit 10")
+      refute has_element?(view, "#request-error-log")
     end
 
     test "the newest request decides the status", %{conn: conn} do
@@ -155,7 +175,7 @@ defmodule PortalWeb.PackageBuildStatusTest do
   describe "a package with results" do
     test "a newer open request shows a New build card above the results", %{conn: conn} do
       ingest("rebuiltpkg")
-      seed_request("rebuiltpkg", :queued)
+      "rebuiltpkg" |> seed_request(:queued) |> enqueue_build()
 
       {:ok, view, html} = live(conn, ~p"/packages/rebuiltpkg")
 
@@ -165,6 +185,27 @@ defmodule PortalWeb.PackageBuildStatusTest do
       {new_build, _} = :binary.match(html, ~s(id="package-new-build"))
       {results, _} = :binary.match(html, ~s(id="package-results"))
       assert new_build < results
+    end
+
+    # A row left `accepted` or `queued` with no job behind it will never move;
+    # over results it would read as a build that is forever about to start.
+    test "an open request with no build job shows no card", %{conn: conn} do
+      ingest("strandedpkg")
+      seed_request("strandedpkg", :accepted)
+
+      {:ok, view, _html} = live(conn, ~p"/packages/strandedpkg")
+
+      assert has_element?(view, "#package-results")
+      refute has_element?(view, "#package-new-build")
+    end
+
+    test "an open request with a build job shows the card", %{conn: conn} do
+      ingest("jobbedpkg")
+      "jobbedpkg" |> seed_request(:accepted) |> enqueue_build()
+
+      {:ok, view, _html} = live(conn, ~p"/packages/jobbedpkg")
+
+      assert has_element?(view, "#package-new-build #request-status", "Queued")
     end
 
     test "a failure older than the latest run is not shown", %{conn: conn} do
@@ -231,6 +272,66 @@ defmodule PortalWeb.PackageBuildStatusTest do
       )
 
       assert_redirect(view, ~p"/packages/finishingpkg")
+    end
+
+    test "a stage from one request does not carry over to the next", %{conn: conn} do
+      first = seed_request("switchpkg", :queued)
+
+      {:ok, view, _html} = live(conn, ~p"/packages/switchpkg")
+
+      Phoenix.PubSub.broadcast(
+        Portal.PubSub,
+        "request:#{first.id}",
+        {:build_progress, :ingesting, %{run_id: "r"}}
+      )
+
+      assert stage(view, "ingesting", "active")
+
+      # The first build fails and a newer request takes its place.
+      fail(first, "worker/runner exit 10", "boom\n")
+      seed_request("switchpkg", :queued)
+
+      Phoenix.PubSub.broadcast(
+        Portal.PubSub,
+        "request:#{first.id}",
+        {:build_progress, :error, %{reason: "worker/runner exit 10"}}
+      )
+
+      assert has_element?(view, "#request-status", "Queued")
+      assert stage(view, "queued", "active")
+      assert stage(view, "ingesting", "pending")
+    end
+
+    test "approval moves a waiting page to queued", %{conn: conn} do
+      Application.put_env(:portal, :package_version_resolver, __MODULE__.StubVersions)
+      on_exit(fn -> Application.delete_env(:portal, :package_version_resolver) end)
+
+      {:ok, admin} =
+        Portal.Accounts.seed_admin_user("pkgapprover", "correct horse battery staple")
+
+      req = seed_request("approvedpkg", :pending)
+
+      {:ok, view, _html} = live(conn, ~p"/packages/approvedpkg")
+      assert has_element?(view, "#request-status", "Waiting for review")
+
+      {:ok, _} = ScanRequests.approve_anonymous_request(req.id, admin)
+
+      assert has_element?(view, "#request-status", "Queued")
+    end
+
+    test "rejection sends a waiting page back to the package list", %{conn: conn} do
+      {:ok, admin} =
+        Portal.Accounts.seed_admin_user("pkgrejecter", "correct horse battery staple")
+
+      req = seed_request("refusedpkg", :pending)
+
+      {:ok, view, _html} = live(conn, ~p"/packages/refusedpkg")
+
+      {:ok, _} = ScanRequests.reject_anonymous_request(req.id, admin)
+
+      {path, flash} = assert_redirect(view)
+      assert path == "/packages"
+      assert flash["error"] == "This request was not accepted."
     end
 
     test "an error broadcast shows the failure", %{conn: conn} do
