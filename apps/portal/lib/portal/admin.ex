@@ -231,6 +231,7 @@ defmodule Portal.Admin do
         admin?: user.is_admin,
         passkey?: Portal.Accounts.Mfa.factors(user).passkeys > 0,
         password_reset_required?: user.password_reset_required,
+        password_set: user.password_set,
         joined: user.inserted_at
       }
     end)
