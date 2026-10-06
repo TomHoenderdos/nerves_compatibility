@@ -147,11 +147,12 @@ defmodule Portal.Accounts.IdentitiesTest do
   end
 
   describe "for_scan_request/2" do
-    test "signed in: links the identity to the current account" do
+    test "signed in: the request is the current user's and nothing is linked" do
       user = user_fixture()
       assert {:ok, same} = Identities.for_scan_request(hex("owner"), user)
       assert same.id == user.id
-      assert same.hex_username == "owner"
+      refute same.hex_username
+      assert {:ok, nil} = Identities.find_user(hex("owner"))
     end
 
     test "signed in, identity linked elsewhere: request still belongs to the current user, no move" do
