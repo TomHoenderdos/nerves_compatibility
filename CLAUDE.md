@@ -82,6 +82,8 @@ The integration test is `apps/portal/test/portal/workers/build_integration_test.
 - `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
 - `/api/precompiled/manifests/:package.json`, `/api/precompiled/files/:sha256` — precompiled API
 - `/admin`, `/admin/oban` — admin UI and Oban Web dashboard
+- `/auth/:provider/login`, `/auth/choose-username` — sign in with Hex.pm or GitHub
+- `/settings/providers/:provider/...` — link, unlink, confirm a provider from Settings
 
 ## Exit Code Conventions
 
