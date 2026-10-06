@@ -102,14 +102,15 @@ defmodule Portal.Accounts.Identities do
   def matches?(%User{github_id: linked}, %Identity{provider: :github, uid: uid}),
     do: is_integer(linked) and linked == uid
 
-  @spec for_scan_request(Identity.t(), User.t() | nil) :: {:ok, User.t() | nil}
-  def for_scan_request(%Identity{} = identity, %User{} = current_user) do
-    case link(current_user, identity) do
-      {:ok, user} -> {:ok, user}
-      # Linked elsewhere, or this account already has another one: the request
-      # is still this signed-in user's; the identity just stays where it is.
-      {:error, _} -> {:ok, current_user}
-    end
+  @spec for_scan_request(Identity.t(), User.t() | nil) :: {:ok, User.t() | nil} | {:error, term()}
+  def for_scan_request(%Identity{} = _identity, %User{} = current_user) do
+    # A scan request never links. Linking is an account change and belongs
+    # behind step-up in Settings; without this, a stolen session cookie could
+    # turn a provider's say-so into a permanent login for this account just by
+    # running a scan. The identity only verifies *this* request -- it stays
+    # the signed-in user's regardless of where (or whether) the identity is
+    # linked.
+    {:ok, current_user}
   end
 
   def for_scan_request(%Identity{} = identity, nil) do
