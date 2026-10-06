@@ -429,23 +429,23 @@ defmodule Portal.Catalog do
 
     Stream.resource(
       fn -> nil end,
-      fn
-        :done ->
-          {:halt, :done}
-
-        cursor ->
-          case export_batch(scope, since, cursor, batch) do
-            [] ->
-              {:halt, :done}
-
-            rows ->
-              last = List.last(rows)
-              next = if length(rows) < batch, do: :done, else: {last.sort_at, last.id}
-              {export_lines(rows), next}
-          end
-      end,
+      &export_page(&1, scope, since, batch),
       fn _ -> :ok end
     )
+  end
+
+  defp export_page(:done, _scope, _since, _batch), do: {:halt, :done}
+
+  defp export_page(cursor, scope, since, batch) do
+    case export_batch(scope, since, cursor, batch) do
+      [] ->
+        {:halt, :done}
+
+      rows ->
+        last = List.last(rows)
+        next = if length(rows) < batch, do: :done, else: {last.sort_at, last.id}
+        {export_lines(rows), next}
+    end
   end
 
   defp export_batch(scope, since, cursor, batch) do
