@@ -18,6 +18,9 @@ defmodule Portal.Admin do
 
   import Ecto.Query, only: [from: 2]
 
+  require Ash.Query
+  require Logger
+
   alias Portal.Repo
   alias Portal.ScanRequests
   alias Portal.ScanRequests.ScanRequest
@@ -172,6 +175,104 @@ defmodule Portal.Admin do
       last_run: last_update_check_run(),
       pending?: update_check_pending?()
     }
+  end
+
+  @doc """
+  Every admin, with whether they hold a passkey. An admin without one cannot
+  open `/admin` yet (`PortalWeb.Plugs.RequireAdmin`), so the card says so.
+  """
+  @spec list_admins() :: [
+          %{
+            id: String.t(),
+            username: String.t(),
+            hex_username: String.t() | nil,
+            passkey?: boolean()
+          }
+        ]
+  def list_admins do
+    Portal.Accounts.User
+    |> Ash.Query.filter(is_admin == true)
+    |> Ash.Query.sort(username: :asc)
+    |> Ash.read!(domain: Portal.Accounts)
+    |> Enum.map(fn user ->
+      %{
+        id: user.id,
+        username: user.username,
+        hex_username: user.hex_username,
+        passkey?: Portal.Accounts.Mfa.admin_satisfied?(user)
+      }
+    end)
+  end
+
+  @doc """
+  Make the existing account `username` an admin, on behalf of `actor`.
+
+  Never creates an account: someone who should become an admin registers
+  first. Granting to an existing admin is a no-op success.
+  """
+  @spec grant_admin(String.t(), Portal.Accounts.User.t()) ::
+          {:ok, Portal.Accounts.User.t()} | {:error, :blank_username | :unknown_user | term()}
+  def grant_admin(username, actor) do
+    case username |> to_string() |> String.trim() do
+      "" ->
+        {:error, :blank_username}
+
+      name ->
+        case Portal.Accounts.get_user_by_username(name) do
+          {:ok, nil} -> {:error, :unknown_user}
+          {:ok, user} -> set_admin_flag(user, true, actor)
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  @doc """
+  Take admin away from the user with `user_id`, on behalf of `actor`.
+
+  Refuses to revoke the actor themself and to revoke the last admin, either
+  of which could leave `/admin` with nobody able to open it.
+  """
+  @spec revoke_admin(String.t(), Portal.Accounts.User.t()) ::
+          {:ok, Portal.Accounts.User.t()}
+          | {:error, :self | :last_admin | :not_admin | :unknown_user | term()}
+  def revoke_admin(user_id, actor) do
+    with {:ok, %Portal.Accounts.User{} = user} <- fetch_user(user_id),
+         :ok <- revocable(user, actor) do
+      set_admin_flag(user, false, actor)
+    end
+  end
+
+  defp fetch_user(user_id) do
+    case Ecto.UUID.cast(user_id) do
+      {:ok, id} ->
+        case Ash.get(Portal.Accounts.User, id, domain: Portal.Accounts) do
+          {:ok, user} -> {:ok, user}
+          {:error, _} -> {:error, :unknown_user}
+        end
+
+      :error ->
+        {:error, :unknown_user}
+    end
+  end
+
+  defp revocable(%{id: id}, %{id: id}), do: {:error, :self}
+  defp revocable(%{is_admin: false}, _actor), do: {:error, :not_admin}
+
+  defp revocable(_user, _actor) do
+    if length(list_admins()) <= 1, do: {:error, :last_admin}, else: :ok
+  end
+
+  defp set_admin_flag(user, is_admin, actor) do
+    result =
+      user
+      |> Ash.Changeset.for_update(:set_admin, %{is_admin: is_admin})
+      |> Ash.update(domain: Portal.Accounts)
+
+    with {:ok, updated} <- result do
+      verb = if is_admin, do: "granted to", else: "revoked from"
+      Logger.warning("Admin #{verb} #{updated.username} by #{actor.username}")
+      {:ok, updated}
+    end
   end
 
   @doc """
