@@ -2,6 +2,7 @@ defmodule PortalWeb.PackageLive do
   use PortalWeb, :live_view
 
   alias Portal.Catalog
+  alias Portal.Catalog.FindingTriage
   alias PortalWeb.Plugs.RequireAdmin
 
   # Both snippets and the on-page <img> must agree: this is the text that ends
@@ -283,43 +284,26 @@ defmodule PortalWeb.PackageLive do
                 ", "
               )}
             </p>
-            <ul :if={visible != []} class="divide-y divide-base-200">
-              <li
-                :for={{finding, i} <- Enum.with_index(visible)}
+            <% {ignored, shown} = Enum.split_with(visible, & &1["ignored?"]) %>
+            <ul :if={shown != []} class="divide-y divide-base-200">
+              <.argus_finding
+                :for={{finding, i} <- Enum.with_index(shown)}
                 id={"argus-finding-#{i}"}
-                class="py-3"
-              >
-                <div class="flex flex-wrap items-center gap-2">
-                  <span class={["badge badge-sm", severity_class(finding["severity"])]}>
-                    {finding["severity"]}
-                  </span>
-                  <span class="font-medium text-base-content">{finding["title"]}</span>
-                  <span class="badge badge-sm badge-outline font-mono">{finding["analysis"]}</span>
-                </div>
-                <div
-                  :if={finding_location(finding)}
-                  class="mt-1 font-mono text-xs text-base-content/60"
-                >
-                  {finding_location(finding)}
-                </div>
-                <details class="mt-1 text-sm text-base-content/70">
-                  <summary class="cursor-pointer text-xs">Details</summary>
-                  <p :if={finding["at_label"]}>{finding["at_label"]}</p>
-                  <p :if={finding["detail"]} class="mt-1">{finding["detail"]}</p>
-                  <ul :if={finding["help"] not in [nil, []]} class="mt-1 list-disc pl-5">
-                    <li :for={hint <- List.wrap(finding["help"])}>{hint}</li>
-                  </ul>
-                  <ul
-                    :if={is_list(finding["related"]) and finding["related"] != []}
-                    class="mt-1 font-mono text-xs"
-                  >
-                    <li :for={rel <- finding["related"]}>
-                      {rel["label"]} — {finding_location(rel)}
-                    </li>
-                  </ul>
-                </details>
-              </li>
+                finding={finding}
+              />
             </ul>
+            <details :if={ignored != []} id="argus-ignored" class="text-sm">
+              <summary class="cursor-pointer text-xs text-base-content/50">
+                {length(ignored)} ignored
+              </summary>
+              <ul class="divide-y divide-base-200 opacity-60">
+                <.argus_finding
+                  :for={{finding, i} <- Enum.with_index(ignored)}
+                  id={"argus-ignored-#{i}"}
+                  finding={finding}
+                />
+              </ul>
+            </details>
             <p :if={@argus["truncated"]} class="text-xs text-base-content/50">
               Showing the first 200 findings argus reported.
             </p>
@@ -373,6 +357,48 @@ defmodule PortalWeb.PackageLive do
 
   defp path_depth(path) do
     path |> String.split("/", trim: true) |> length()
+  end
+
+  attr :id, :string, required: true
+  attr :finding, :map, required: true
+
+  defp argus_finding(assigns) do
+    ~H"""
+    <li
+      id={@id}
+      class="py-3"
+    >
+      <div class="flex flex-wrap items-center gap-2">
+        <span class={["badge badge-sm", severity_class(@finding["severity"])]}>
+          {@finding["severity"]}
+        </span>
+        <span class="font-medium text-base-content">{@finding["title"]}</span>
+        <span class="badge badge-sm badge-outline font-mono">{@finding["analysis"]}</span>
+      </div>
+      <div
+        :if={finding_location(@finding)}
+        class="mt-1 font-mono text-xs text-base-content/60"
+      >
+        {finding_location(@finding)}
+      </div>
+      <details class="mt-1 text-sm text-base-content/70">
+        <summary class="cursor-pointer text-xs">Details</summary>
+        <p :if={@finding["at_label"]}>{@finding["at_label"]}</p>
+        <p :if={@finding["detail"]} class="mt-1">{@finding["detail"]}</p>
+        <ul :if={@finding["help"] not in [nil, []]} class="mt-1 list-disc pl-5">
+          <li :for={hint <- List.wrap(@finding["help"])}>{hint}</li>
+        </ul>
+        <ul
+          :if={is_list(@finding["related"]) and @finding["related"] != []}
+          class="mt-1 font-mono text-xs"
+        >
+          <li :for={rel <- @finding["related"]}>
+            {rel["label"]} — {finding_location(rel)}
+          </li>
+        </ul>
+      </details>
+    </li>
+    """
   end
 
   attr :href, :string, required: true
@@ -572,7 +598,10 @@ defmodule PortalWeb.PackageLive do
     case RequireAdmin.check(socket.assigns[:current_user], session["login_method"]) do
       {:ok, _admin} ->
         socket
-        |> assign(:argus, argus_view(Catalog.latest_argus(name)))
+        |> assign(
+          :argus,
+          argus_view(Catalog.latest_argus(name), name, Catalog.ignored_fingerprints(name))
+        )
         |> assign(:argus_floor, Portal.Settings.get().argus_min_severity)
 
       {:error, _} ->
@@ -582,11 +611,20 @@ defmodule PortalWeb.PackageLive do
 
   # Only well-formed `ok` and `error` results render. Anything else -- skipped,
   # a run from before argus, a map missing its findings -- renders nothing.
-  defp argus_view(%{"status" => "ok", "findings" => findings} = argus) when is_list(findings) do
+  # Findings triaged as ignored are flagged so the template can tuck them away.
+  defp argus_view(%{"status" => "ok", "findings" => findings} = argus, name, ignored)
+       when is_list(findings) do
     %{
       argus
       | "findings" =>
-          for(%{"severity" => s} = f <- findings, Map.has_key?(@severity_rank, s), do: finding(f))
+          for(
+            %{"severity" => s} = f <- findings,
+            Map.has_key?(@severity_rank, s),
+            do:
+              f
+              |> finding()
+              |> Map.put("ignored?", MapSet.member?(ignored, FindingTriage.fingerprint(name, f)))
+          )
     }
     |> Map.put(
       "analyses",
@@ -594,8 +632,8 @@ defmodule PortalWeb.PackageLive do
     )
   end
 
-  defp argus_view(%{"status" => "error"} = argus), do: argus
-  defp argus_view(_), do: nil
+  defp argus_view(%{"status" => "error"} = argus, _name, _ignored), do: argus
+  defp argus_view(_, _name, _ignored), do: nil
 
   # Stored findings outlive the argus version that wrote them, so every field
   # the template prints is narrowed to the type it expects. Anything else is
