@@ -59,7 +59,7 @@ defmodule Portal.Accounts.User do
     end
 
     update :update_profile do
-      accept([:username, :password_hash])
+      accept([:username, :password_hash, :password_reset_required])
     end
   end
 
@@ -95,6 +95,14 @@ defmodule Portal.Accounts.User do
     end
 
     attribute :is_admin, :boolean do
+      allow_nil?(false)
+      default(false)
+      public?(true)
+    end
+
+    # Set when an admin hands out a temporary password; cleared when the user
+    # chooses their own. Login sends such a user straight to settings.
+    attribute :password_reset_required, :boolean do
       allow_nil?(false)
       default(false)
       public?(true)

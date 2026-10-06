@@ -133,6 +133,7 @@ defmodule PortalWeb.UserAuth do
   @spec landing_path(User.t(), atom() | nil) :: String.t()
   def landing_path(user, method) do
     cond do
+      user.password_reset_required -> ~p"/settings"
       not Portal.Accounts.admin?(user) -> ~p"/request-scan"
       not Portal.Accounts.Mfa.admin_satisfied?(user) -> ~p"/settings/security"
       method == :passkey -> ~p"/admin"

@@ -100,6 +100,7 @@ defmodule PortalWeb.Router do
     post "/admin/update-check", PageController, :admin_update_check
     post "/admin/argus", PageController, :admin_argus_settings
     post "/admin/admins", PageController, :admin_grant_admin
+    post "/admin/users/reset-password", PageController, :admin_reset_password
     post "/admin/admins/:id/revoke", PageController, :admin_revoke_admin
     get "/register", PageController, :register
     post "/register", PageController, :create_account

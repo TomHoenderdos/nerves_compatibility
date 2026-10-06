@@ -178,6 +178,41 @@ defmodule Portal.Admin do
   end
 
   @doc """
+  Give the account `username` a fresh temporary password, on behalf of `actor`,
+  and return it so the admin can pass it on. The user must choose a new one at
+  their next login. Second factors are left alone: a reset never bypasses them.
+
+  Refuses the actor's own account, which settings already covers.
+  """
+  @spec reset_password(String.t(), Portal.Accounts.User.t()) ::
+          {:ok, Portal.Accounts.User.t(), String.t()}
+          | {:error, :blank_username | :unknown_user | :own_password | term()}
+  def reset_password(username, actor) do
+    with {:ok, user} <- existing_user(username),
+         :ok <- not_self(user, actor),
+         {:ok, updated, temp} <- Portal.Accounts.set_temporary_password(user) do
+      Logger.warning("Temporary password set for #{updated.username} by #{actor.username}")
+      {:ok, updated, temp}
+    end
+  end
+
+  defp existing_user(username) do
+    case username |> to_string() |> String.trim() do
+      "" ->
+        {:error, :blank_username}
+
+      name ->
+        case Portal.Accounts.get_user_by_username(name) do
+          {:ok, nil} -> {:error, :unknown_user}
+          other -> other
+        end
+    end
+  end
+
+  defp not_self(%{id: id}, %{id: id}), do: {:error, :own_password}
+  defp not_self(_user, _actor), do: :ok
+
+  @doc """
   Every admin, with whether they hold a passkey. An admin without one cannot
   open `/admin` yet (`PortalWeb.Plugs.RequireAdmin`), so the card says so.
   """

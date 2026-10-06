@@ -121,6 +121,27 @@ defmodule PortalWeb.PageController do
     end)
   end
 
+  # The temporary password is rendered into this one response and nowhere else:
+  # not the flash, whose cookie is signed but readable, and not the log.
+  def admin_reset_password(conn, params) do
+    with_admin_step_up(conn, fn conn, user ->
+      case Portal.Admin.reset_password(params["username"] || "", user) do
+        {:ok, target, temp} ->
+          conn
+          |> put_flash(
+            :info,
+            "#{target.username} has a temporary password. They must choose a new one when they sign in."
+          )
+          |> render_admin(user, temporary_password: %{username: target.username, password: temp})
+
+        {:error, reason} ->
+          conn
+          |> put_flash(:error, admin_error_message(reason))
+          |> render_admin(user)
+      end
+    end)
+  end
+
   def admin_revoke_admin(conn, %{"id" => id}) do
     with_admin_step_up(conn, fn conn, user ->
       case Portal.Admin.revoke_admin(id, user) do
@@ -526,7 +547,7 @@ defmodule PortalWeb.PageController do
   defp maybe_change_password(user, current_password, new_password),
     do: Portal.Accounts.change_password(user, current_password, new_password)
 
-  defp render_admin(conn, user) do
+  defp render_admin(conn, user, extra \\ []) do
     queue_page = Portal.ScanRequests.queue_page(conn.params["queue_page"])
     review_page = Portal.ScanRequests.pending_anonymous_page(conn.params["review_page"])
 
@@ -544,6 +565,7 @@ defmodule PortalWeb.PageController do
       argus: Portal.Settings.get(),
       admins: Portal.Admin.list_admins(),
       recent_failures: Portal.ScanRequests.recent_failures(10),
+      temporary_password: Keyword.get(extra, :temporary_password),
       argus_analysis_names: Portal.Settings.Setting.analysis_names()
     )
   end
@@ -747,6 +769,10 @@ defmodule PortalWeb.PageController do
     do: "No account with that username. They need to register first."
 
   defp admin_error_message(:self), do: "You cannot remove your own admin access."
+
+  defp admin_error_message(:own_password),
+    do: "Change your own password on the settings page."
+
   defp admin_error_message(:last_admin), do: "That is the last admin; grant someone else first."
   defp admin_error_message(:not_admin), do: "That account is not an admin."
 

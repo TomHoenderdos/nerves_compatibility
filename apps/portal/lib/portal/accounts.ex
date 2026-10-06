@@ -99,6 +99,39 @@ defmodule Portal.Accounts do
   end
 
   @doc """
+  Replaces `user`'s password with a random one and returns it, marking the
+  account so the next login asks for a new password. For an admin handing a
+  locked-out user a way back in: there is no email to send a reset link to.
+
+  The password is only ever returned, never stored or logged in clear.
+  """
+  @spec set_temporary_password(Portal.Accounts.User.t()) ::
+          {:ok, Portal.Accounts.User.t(), String.t()} | {:error, term()}
+  def set_temporary_password(%Portal.Accounts.User{} = user) do
+    temp = temporary_password()
+
+    with {:ok, updated} <-
+           update_profile(user, %{
+             password_hash: Argon2.hash_pwd_salt(temp),
+             password_reset_required: true
+           }) do
+      {:ok, updated, temp}
+    end
+  end
+
+  # Four groups of five base32 characters: 100 bits, easy to read aloud or
+  # paste, and long enough to pass valid_password?/1.
+  defp temporary_password do
+    20
+    |> :crypto.strong_rand_bytes()
+    |> Base.encode32(case: :lower, padding: false)
+    |> binary_part(0, 20)
+    |> String.graphemes()
+    |> Enum.chunk_every(5)
+    |> Enum.map_join("-", &Enum.join/1)
+  end
+
+  @doc """
   Replaces a user's password after verifying the current one with Argon2.
   """
   def change_password(%Portal.Accounts.User{} = user, current_password, new_password) do
@@ -110,7 +143,10 @@ defmodule Portal.Accounts do
         {:error, :invalid_password}
 
       true ->
-        update_profile(user, %{password_hash: Argon2.hash_pwd_salt(new_password)})
+        update_profile(user, %{
+          password_hash: Argon2.hash_pwd_salt(new_password),
+          password_reset_required: false
+        })
     end
   end
 
