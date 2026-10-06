@@ -31,6 +31,7 @@
             <tr>
               <th>User</th>
               <th>Accounts</th>
+              <th>Password</th>
               <th>Status</th>
               <th class="text-right">Actions</th>
             </tr>
@@ -47,6 +48,9 @@
                 <div :if={user.hex_username}>hex {user.hex_username}</div>
                 <div :if={user.github_username}>github {user.github_username}</div>
                 <div :if={!user.hex_username and !user.github_username}>-</div>
+              </td>
+              <td class="whitespace-nowrap text-sm text-base-content/70">
+                {if user.password_set, do: "Set", else: "No password"}
               </td>
               <td>
                 <div class="flex flex-wrap gap-1">

@@ -70,6 +70,19 @@ defmodule PortalWeb.AdminSectionsTest do
     assert html =~ "needs a passkey"
   end
 
+  test "the users table says whether a password is set", %{conn: conn} do
+    {:ok, _} =
+      Portal.Accounts.Identities.sign_in(%Portal.Accounts.Identity{
+        provider: :hex,
+        uid: "nopw",
+        username: "nopw",
+        profile: %{}
+      })
+
+    body = conn |> get(~p"/admin/users") |> html_response(200)
+    assert body =~ ~r/id="user-[^"]+"[\s\S]*nopw[\s\S]*No password/
+  end
+
   test "resetting from the users page shows the password there", %{conn: conn} do
     {:ok, _} = Portal.Accounts.register_user("sec_frank", @pw)
 
