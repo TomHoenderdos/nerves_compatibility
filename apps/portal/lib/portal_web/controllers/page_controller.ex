@@ -316,6 +316,11 @@ defmodule PortalWeb.PageController do
             conn
             |> put_flash(:error, "Use at least 12 characters.")
             |> redirect(to: ~p"/settings")
+
+          {:error, _} ->
+            conn
+            |> put_flash(:error, "Setting the password failed. Try again.")
+            |> redirect(to: ~p"/settings")
         end
     end
   end

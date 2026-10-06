@@ -183,9 +183,18 @@ defmodule Portal.Accounts do
   @doc """
   Gives a password to an account that has none anyone knows. The caller
   enforces the step-up check; there is no current password to ask for.
+
+  An account that already has a password is refused here as well as in the
+  controller: this path skips the current-password check, so it must never
+  replace a password someone knows.
   """
   @spec set_password(Portal.Accounts.User.t(), String.t()) ::
-          {:ok, Portal.Accounts.User.t()} | {:error, :invalid_password}
+          {:ok, Portal.Accounts.User.t()}
+          | {:error, :password_already_set | :invalid_password}
+          | {:error, term()}
+  def set_password(%Portal.Accounts.User{password_set: true}, _new_password),
+    do: {:error, :password_already_set}
+
   def set_password(%Portal.Accounts.User{} = user, new_password) do
     if valid_password?(new_password) do
       update_profile(user, %{
