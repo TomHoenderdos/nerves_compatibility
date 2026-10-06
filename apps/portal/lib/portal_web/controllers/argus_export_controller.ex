@@ -53,7 +53,9 @@ defmodule PortalWeb.ArgusExportController do
     |> Enum.reduce_while(conn, fn lines, conn ->
       case chunk(conn, lines) do
         {:ok, conn} -> {:cont, conn}
-        {:error, :closed} -> {:halt, conn}
+        # Bandit reports a dropped client as {:error, :closed} and other
+        # transport failures as other reasons; either way, stop streaming.
+        {:error, _reason} -> {:halt, conn}
       end
     end)
   end

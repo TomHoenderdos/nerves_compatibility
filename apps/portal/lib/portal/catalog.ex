@@ -377,13 +377,15 @@ defmodule Portal.Catalog do
     end)
   end
 
-  # Per package, the newest run whose argus result is `ok`. DISTINCT ON keeps
+  # Per package, the newest run whose argus result is `ok`; a run without a
+  # finished_at sorts after every finished one (Postgres puts NULLs first under
+  # DESC otherwise). DISTINCT ON keeps
   # it to one row per package in Postgres instead of loading run history.
   defp latest_argus_runs do
     from(r in "catalog_runs",
       where: fragment("?->>'status' = 'ok'", r.argus),
       distinct: r.package_id,
-      order_by: [asc: r.package_id, desc: r.finished_at, desc: r.inserted_at],
+      order_by: [asc: r.package_id, desc_nulls_last: r.finished_at, desc: r.inserted_at],
       select: %{package_id: r.package_id, id: r.id}
     )
   end

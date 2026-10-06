@@ -37,11 +37,21 @@ defmodule Portal.Test.ArgusFixtures do
     result =
       %{
         "package" => %{"name" => package, "version" => version},
-        "finished_at" =>
-          DateTime.add(~U[2026-10-01 10:00:00Z], n, :hour) |> DateTime.to_iso8601(),
         "systems" => %{"nerves_system_rpi4" => %{"status" => "pass"}}
       }
       |> then(&if(argus == :absent, do: &1, else: Map.put(&1, "argus", argus)))
+      # `n: :unfinished` ingests a run with no finished_at, as a worker result
+      # without one does.
+      |> then(fn result ->
+        if n == :unfinished,
+          do: result,
+          else:
+            Map.put(
+              result,
+              "finished_at",
+              DateTime.add(~U[2026-10-01 10:00:00Z], n, :hour) |> DateTime.to_iso8601()
+            )
+      end)
 
     {:ok, run} =
       Ingestion.ingest(result, %{

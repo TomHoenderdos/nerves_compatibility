@@ -27,6 +27,14 @@ defmodule Portal.Catalog.ArgusExportTest do
     refute Map.has_key?(tripkg["argus"], "findings")
   end
 
+  test "a run without finished_at never counts as the latest" do
+    ingest("1.0.0", ok([finding(%{"detail" => "from the unfinished run"})]), :unfinished)
+    ingest("1.1.0", ok([finding()]), 2)
+
+    assert [%{"package_version" => "1.1.0"}] = export()
+    assert [%{stale?: false, triage: %{last_seen_version: "1.1.0"}}] = Catalog.triage_list(%{})
+  end
+
   test "all scope includes every run with argus, failures too" do
     ingest("1.0.0", ok([finding()]), 1)
     ingest("1.1.0", %{"status" => "error", "findings" => [], "error" => "timeout after 300s"}, 2)
