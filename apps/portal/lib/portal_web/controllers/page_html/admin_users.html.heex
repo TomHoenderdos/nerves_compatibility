@@ -39,11 +39,11 @@
             <tr :for={user <- @users} id={"user-#{user.id}"}>
               <td>
                 <div class="font-medium">{user.username}</div>
-                <div class="text-xs text-base-content/50">
+                <div class="whitespace-nowrap text-xs text-base-content/50">
                   joined {format_datetime(user.joined)}
                 </div>
               </td>
-              <td class="text-sm text-base-content/70">
+              <td class="whitespace-nowrap text-sm text-base-content/70">
                 <div :if={user.hex_username}>hex {user.hex_username}</div>
                 <div :if={user.github_username}>github {user.github_username}</div>
                 <div :if={!user.hex_username and !user.github_username}>-</div>
@@ -59,12 +59,14 @@
                   </span>
                 </div>
               </td>
-              <td>
-                <div :if={user.id != @current_user.id} class="flex justify-end gap-1">
+              <td class="whitespace-nowrap">
+                <div :if={user.id != @current_user.id} class="flex flex-nowrap justify-end gap-1">
                   <form :if={!user.admin?} method="post" action={~p"/admin/admins"}>
                     <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
                     <input type="hidden" name="username" value={user.username} />
-                    <button type="submit" class="btn btn-xs btn-ghost">Make admin</button>
+                    <button type="submit" class="btn btn-xs btn-ghost whitespace-nowrap">
+                      Make admin
+                    </button>
                   </form>
                   <form
                     :if={user.admin?}
@@ -72,12 +74,16 @@
                     action={~p"/admin/admins/#{user.id}/revoke"}
                   >
                     <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
-                    <button type="submit" class="btn btn-xs btn-ghost">Revoke admin</button>
+                    <button type="submit" class="btn btn-xs btn-ghost whitespace-nowrap">
+                      Revoke admin
+                    </button>
                   </form>
                   <form method="post" action={~p"/admin/users/reset-password"}>
                     <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
                     <input type="hidden" name="username" value={user.username} />
-                    <button type="submit" class="btn btn-xs btn-warning">Reset password</button>
+                    <button type="submit" class="btn btn-xs btn-warning whitespace-nowrap">
+                      Reset password
+                    </button>
                   </form>
                 </div>
                 <div
