@@ -71,7 +71,7 @@ defmodule Portal.Catalog.FindingTriage do
       allow_nil?(false)
       default(:new)
       public?(true)
-      constraints(one_of: [:new, :confirmed, :false_positive, :reported])
+      constraints(one_of: [:new, :confirmed, :false_positive, :reported, :ignored])
     end
 
     attribute(:note, :string, public?: true)

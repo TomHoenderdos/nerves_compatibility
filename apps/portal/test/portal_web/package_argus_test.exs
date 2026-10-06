@@ -100,6 +100,20 @@ defmodule PortalWeb.PackageArgusTest do
     refute has_element?(view, "#argus", "Minor thing")
   end
 
+  test "ignored findings sink into a collapsed block at the bottom", %{conn: conn, admin: admin} do
+    seed(ok([finding("error", "Deadlock"), finding("warning", "Leaked task")]))
+
+    [row] = Portal.Catalog.triage_list(%{package: "argpkg", severity: ["error"]})
+    Portal.Catalog.triage!(row.triage.id, %{status: "ignored", note: nil}, admin)
+
+    {:ok, view, _} = live(conn, ~p"/packages/argpkg")
+
+    assert has_element?(view, "#argus-finding-0", "Leaked task")
+    refute has_element?(view, "#argus-finding-1")
+    assert has_element?(view, "#argus-ignored summary", "1 ignored")
+    assert has_element?(view, "#argus-ignored #argus-ignored-0", "Deadlock")
+  end
+
   test "the floor follows the admin setting", %{conn: conn} do
     {:ok, _} = Portal.Settings.save(%{argus_min_severity: "error"})
     seed(ok([finding("error", "Deadlock"), finding("warning", "Leaked task")]))

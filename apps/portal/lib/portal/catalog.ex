@@ -248,6 +248,16 @@ defmodule Portal.Catalog do
     end
   end
 
+  @doc "Fingerprints of `package_name`'s findings an admin has triaged as ignored."
+  def ignored_fingerprints(package_name) do
+    from(t in "catalog_finding_triage",
+      where: t.package_name == ^package_name and t.status == "ignored",
+      select: t.fingerprint
+    )
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
   @triage_defaults %{
     status: [:new, :confirmed],
     severity: ["error", "warning", "info"],
@@ -255,7 +265,7 @@ defmodule Portal.Catalog do
     package: nil,
     include_stale: false
   }
-  @triage_status_order %{new: 0, confirmed: 1, reported: 2, false_positive: 3}
+  @triage_status_order %{new: 0, confirmed: 1, reported: 2, false_positive: 3, ignored: 4}
   @triage_severity_order %{"error" => 0, "warning" => 1, "info" => 2}
 
   # Everything the list renders except the `finding` jsonb, which is loaded

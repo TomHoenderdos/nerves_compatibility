@@ -11,7 +11,8 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     {:new, "new"},
     {:confirmed, "confirmed"},
     {:false_positive, "false positive"},
-    {:reported, "reported"}
+    {:reported, "reported"},
+    {:ignored, "ignored"}
   ]
   @severities ~w(error warning info)
 

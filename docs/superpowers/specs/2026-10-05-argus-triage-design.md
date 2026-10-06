@@ -17,12 +17,15 @@ to be reviewed and sorted into real issues and false positives, with notes.
 - **Internal only.** A LiveView under `/admin`, behind the same `:admin`
   pipeline and `RequireAdmin` passkey `on_mount` as `/admin/oban`.
 - **Triage status per finding**, set by an admin:
-  `new | confirmed | false_positive | reported`, plus a free-text note.
+  `new | confirmed | false_positive | reported | ignored`, plus a free-text
+  note.
 - **Statuses survive rebuilds.** A finding is identified by a fingerprint that
   ignores line numbers, so a new version of the package with shifted lines keeps
   the status an admin set.
 - **No email, no Jev, no public effect.** `false_positive` does not hide
-  anything on the package page; that is a separate later decision.
+  anything on the package page. `ignored` does, for admins only: those
+  findings move out of the list into a collapsed "N ignored" block at the
+  bottom of the package page's OTP analysis section.
 - **No backfill.** Nothing is in production yet; rows are created by ingestion
   from the first argus run on.
 
@@ -40,7 +43,7 @@ New resource `Portal.Catalog.FindingTriage`, table `catalog_finding_triage`.
 | `file` | string, nullable | |
 | `line` | integer, nullable | from the latest sighting |
 | `finding` | map | the latest finding verbatim, for the details view |
-| `status` | atom | `:new` (default), `:confirmed`, `:false_positive`, `:reported` |
+| `status` | atom | `:new` (default), `:confirmed`, `:false_positive`, `:reported`, `:ignored` |
 | `note` | string, nullable | |
 | `first_seen_version` | string | |
 | `last_seen_version` | string | |
@@ -84,7 +87,7 @@ Order: status (`new` first), severity (`error`, `warning`, `info`), package
 name, title.
 
 `Portal.Catalog.triage_counts/0` returns `%{new: n, confirmed: n,
-false_positive: n, reported: n}` over non-stale rows.
+false_positive: n, reported: n, ignored: n}` over non-stale rows.
 
 `Portal.Catalog.triage!(id, %{status:, note:}, admin)` applies `:triage` with
 `updated_by: admin.username`.

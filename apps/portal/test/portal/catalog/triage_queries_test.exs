@@ -52,7 +52,14 @@ defmodule Portal.Catalog.TriageQueriesTest do
   test "counts ignore stale rows" do
     ingest("1.0.0", ok([finding(), finding(%{"detail" => "gone later"})]), 1)
     ingest("1.1.0", ok([finding()]), 2)
-    assert Catalog.triage_counts() == %{new: 1, confirmed: 0, false_positive: 0, reported: 0}
+
+    assert Catalog.triage_counts() == %{
+             new: 1,
+             confirmed: 0,
+             false_positive: 0,
+             reported: 0,
+             ignored: 0
+           }
   end
 
   test "triage! records status, note and the admin" do
