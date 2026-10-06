@@ -63,7 +63,55 @@
         </div>
       </section>
 
-      <section class="card border border-base-300 bg-base-100 shadow-sm">
+      <section
+        :if={not @current_user.password_set}
+        id="set-password"
+        class="card border border-base-300 bg-base-100 shadow-sm"
+      >
+        <div class="card-body gap-6">
+          <div class="space-y-1">
+            <h2 class="text-lg font-semibold tracking-tight">Set a password</h2>
+            <p class="text-sm leading-6 text-base-content/70">
+              You sign in with Hex.pm or GitHub. A password gives you another way in.
+              You may be asked to confirm it is you first.
+            </p>
+          </div>
+
+          <form
+            id="set-password-form"
+            method="post"
+            action={~p"/settings/password/set"}
+            class="space-y-4"
+          >
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <div class="form-control">
+              <span class="label">
+                <span class="label-text font-semibold">New password</span>
+              </span>
+              <input
+                id="set_new_password"
+                name="new_password"
+                type="password"
+                autocomplete="new-password"
+                minlength="12"
+                required
+                class="input input-bordered w-full"
+              />
+              <span class="label">
+                <span class="label-text-alt text-base-content/60">At least 12 characters.</span>
+              </span>
+            </div>
+            <button type="submit" class="btn btn-primary w-full">
+              <.icon name="hero-key-mini" class="size-5" /> Set password
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <section
+        :if={@current_user.password_set}
+        class="card border border-base-300 bg-base-100 shadow-sm"
+      >
         <div class="card-body gap-6">
           <div class="space-y-1">
             <h2 class="text-lg font-semibold tracking-tight">Change password</h2>

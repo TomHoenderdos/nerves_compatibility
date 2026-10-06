@@ -289,6 +289,37 @@ defmodule PortalWeb.PageController do
     end
   end
 
+  def set_password(conn, params) do
+    user = settings_user(conn)
+
+    cond do
+      user.password_set ->
+        conn
+        |> put_flash(:error, "Change your password with your current one.")
+        |> redirect(to: ~p"/settings")
+
+      not Portal.Accounts.Mfa.reauth_fresh?(
+        user,
+        PortalWeb.UserAuth.reauth_method(conn),
+        PortalWeb.UserAuth.reauth_at(conn)
+      ) ->
+        conn
+        |> put_flash(:error, "Confirm it is you first.")
+        |> redirect(to: ~p"/settings/security")
+
+      true ->
+        case Portal.Accounts.set_password(user, string_param(params, "new_password")) do
+          {:ok, _} ->
+            conn |> put_flash(:info, "Password set.") |> redirect(to: ~p"/settings")
+
+          {:error, :invalid_password} ->
+            conn
+            |> put_flash(:error, "Use at least 12 characters.")
+            |> redirect(to: ~p"/settings")
+        end
+    end
+  end
+
   def logout(conn, _params) do
     conn
     |> clear_session()

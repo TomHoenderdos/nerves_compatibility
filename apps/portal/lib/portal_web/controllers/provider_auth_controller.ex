@@ -135,6 +135,132 @@ defmodule PortalWeb.ProviderAuthController do
 
   defp username_error(_reason), do: "Creating the account failed. Try again."
 
+  # --- Link, unlink, confirm (signed in) -------------------------------------
+
+  defp security, do: ~p"/settings/security"
+
+  def start_link(conn, %{"provider" => provider}) do
+    with_provider(conn, provider, fn provider ->
+      with_step_up(conn, fn -> start_flow(conn, provider, "link", security()) end)
+    end)
+  end
+
+  def complete_link(conn, %{"provider" => provider}) do
+    with_provider(conn, provider, fn provider ->
+      with_step_up(conn, fn -> finish_link(conn, provider) end)
+    end)
+  end
+
+  defp finish_link(conn, provider) do
+    case verify_flow(conn, provider, "link", security()) do
+      {:ok, identity, conn} -> link(conn, identity)
+      {:render, conn} -> conn
+    end
+  end
+
+  defp link(conn, identity) do
+    label = provider_label(identity.provider)
+
+    message =
+      case Identities.link(conn.assigns.current_user, identity) do
+        {:ok, _} ->
+          {:info, "#{label} linked. You can sign in with it now."}
+
+        {:error, :linked_elsewhere} ->
+          {:error, "This #{label} account is linked to another user."}
+
+        {:error, :provider_already_linked} ->
+          {:error, "Unlink your current #{label} account first."}
+
+        {:error, _} ->
+          {:error, "Linking #{label} failed. Try again."}
+      end
+
+    {kind, text} = message
+    conn |> put_flash(kind, text) |> redirect(to: security())
+  end
+
+  def unlink(conn, %{"provider" => provider}) do
+    with_provider(conn, provider, fn provider ->
+      with_step_up(conn, fn -> finish_unlink(conn, provider) end)
+    end)
+  end
+
+  defp finish_unlink(conn, provider) do
+    label = provider_label(provider)
+
+    {kind, text} =
+      case Identities.unlink(conn.assigns.current_user, provider) do
+        {:ok, _} ->
+          {:info, "#{label} unlinked."}
+
+        {:error, :last_way_in} ->
+          {:error, "#{label} is your only way to sign in. Set a password or add a passkey first."}
+
+        {:error, :not_linked} ->
+          {:error, "#{label} is not linked."}
+
+        {:error, _} ->
+          {:error, "Unlinking #{label} failed. Try again."}
+      end
+
+    conn |> put_flash(kind, text) |> redirect(to: security())
+  end
+
+  # Step-up for accounts with no passkey or TOTP: prove it again with the
+  # provider that is linked. The identity must be *the* linked one -- anyone
+  # can approve a device code with an account of their own.
+  def start_confirm(conn, %{"provider" => provider}) do
+    with_provider(conn, provider, fn provider ->
+      if provider in Mfa.accepted_reauth_methods(conn.assigns.current_user) do
+        start_flow(conn, provider, "reauth", security())
+      else
+        conn |> put_flash(:error, "Confirm another way.") |> redirect(to: security())
+      end
+    end)
+  end
+
+  def complete_confirm(conn, %{"provider" => provider}) do
+    with_provider(conn, provider, fn provider -> finish_confirm(conn, provider) end)
+  end
+
+  defp finish_confirm(conn, provider) do
+    user = conn.assigns.current_user
+
+    case verify_flow(conn, provider, "reauth", security()) do
+      {:ok, identity, conn} -> confirm_result(conn, provider, user, identity)
+      {:render, conn} -> conn
+    end
+  end
+
+  defp confirm_result(conn, provider, user, identity) do
+    if provider in Mfa.accepted_reauth_methods(user) and Identities.matches?(user, identity) do
+      conn
+      |> UserAuth.mark_reauth(provider)
+      |> put_flash(
+        :info,
+        "Confirmed. You have #{div(Mfa.reauth_window_seconds(), 60)} minutes to make changes."
+      )
+      |> redirect(to: security())
+    else
+      conn
+      |> put_flash(:error, "That is not the #{provider_label(provider)} account linked here.")
+      |> redirect(to: security())
+    end
+  end
+
+  defp with_step_up(conn, fun) do
+    user = conn.assigns.current_user
+
+    if Mfa.reauth_fresh?(user, UserAuth.reauth_method(conn), UserAuth.reauth_at(conn)) do
+      fun.()
+    else
+      conn
+      |> put_flash(:error, "Confirm it is you first.")
+      |> redirect(to: security())
+    end
+  end
+
   # --- Device flow, shared by every purpose ----------------------------------
 
   defp with_provider(_conn, provider, fun) do
@@ -213,6 +339,8 @@ defmodule PortalWeb.ProviderAuthController do
   end
 
   defp complete_path(provider, "login"), do: ~p"/auth/#{provider}/login/complete"
+  defp complete_path(provider, "link"), do: ~p"/settings/providers/#{provider}/link/complete"
+  defp complete_path(provider, "reauth"), do: ~p"/settings/providers/#{provider}/confirm/complete"
 
   defp flow_error(provider, :access_denied),
     do: "You denied the request at #{provider_label(provider)}."

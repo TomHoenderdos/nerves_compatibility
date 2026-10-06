@@ -24,7 +24,7 @@ defmodule PortalWeb.SecurityController do
 
   require Logger
 
-  alias Portal.Accounts.{Mfa, Passkeys, RecoveryCodes, Totp, WebAuthn}
+  alias Portal.Accounts.{Identities, Mfa, Passkeys, RecoveryCodes, Totp, WebAuthn}
   alias PortalWeb.{UserAuth, WebAuthnSession}
 
   # Two keys, side by side: enrolling a passkey and proving one you already
@@ -408,6 +408,9 @@ defmodule PortalWeb.SecurityController do
       admin_satisfied: Mfa.admin_satisfied?(user),
       login_method: UserAuth.login_method(conn),
       accepted_methods: accepted,
+      ways_in: Identities.ways_in(user),
+      hex_linked: Identities.linked?(user, :hex),
+      github_linked: Identities.linked?(user, :github),
       reauth_fresh:
         Mfa.reauth_fresh?(user, UserAuth.reauth_method(conn), UserAuth.reauth_at(conn)),
       window_minutes: window_minutes(),

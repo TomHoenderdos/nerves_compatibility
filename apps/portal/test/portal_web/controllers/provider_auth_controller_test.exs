@@ -159,4 +159,31 @@ defmodule PortalWeb.ProviderAuthControllerTest do
     conn = get(recycle(conn), ~p"/admin")
     refute conn.status == 200
   end
+
+  test "a login flow started at hex cannot be completed at the github login endpoint", %{
+    conn: conn
+  } do
+    approve(hex("x"))
+    conn = conn |> start_login("hex")
+    conn = post(recycle(conn), ~p"/auth/github/login/complete")
+
+    assert redirected_to(conn) == ~p"/login"
+    refute get_session(conn, :user_id)
+  end
+
+  test "a stale pending identity is removed after an unrelated successful login", %{conn: conn} do
+    {:ok, user} = Identities.link(user_fixture(), hex("frank"))
+    approve(hex("frank"))
+
+    stale = Map.put(Identity.to_session(hex("someone-else")), "at", System.system_time(:second))
+
+    conn =
+      conn
+      |> init_test_session(%{pending_identity: stale})
+      |> start_login()
+      |> finish()
+
+    assert get_session(conn, :user_id) == user.id
+    refute get_session(conn, :pending_identity)
+  end
 end

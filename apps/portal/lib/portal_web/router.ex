@@ -150,6 +150,17 @@ defmodule PortalWeb.Router do
 
     get "/settings", PageController, :settings
     post "/settings", PageController, :update_settings
+    post "/settings/password/set", PageController, :set_password
+
+    post "/settings/providers/:provider/link", ProviderAuthController, :start_link
+    post "/settings/providers/:provider/link/complete", ProviderAuthController, :complete_link
+    post "/settings/providers/:provider/confirm", ProviderAuthController, :start_confirm
+
+    post "/settings/providers/:provider/confirm/complete",
+         ProviderAuthController,
+         :complete_confirm
+
+    post "/settings/providers/:provider/unlink", ProviderAuthController, :unlink
 
     # POST rather than DELETE for removals, matching the
     # `post "/admin/requests/:id/approve"` convention above: plain forms, no
