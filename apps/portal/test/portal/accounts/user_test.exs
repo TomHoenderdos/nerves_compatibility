@@ -92,6 +92,48 @@ defmodule Portal.Accounts.UserTest do
              Portal.Accounts.register_user("DUPLICATE", "another correct password")
   end
 
+  # The username unique index is case-sensitive, and legacy rows created by
+  # the old provider flows can carry a login verbatim ("Tom"). A lookup for
+  # one specific account must stay exact -- it feeds login and admin
+  # grant/revoke, where returning the wrong one of two case-twins would be a
+  # real takeover, not just a cosmetic mismatch.
+  test "get_user_by_username/1 stays exact when case-twins exist" do
+    verbatim =
+      User
+      |> Ash.Changeset.for_create(:create, %{
+        username: "Tom",
+        password_hash: Argon2.hash_pwd_salt("correct horse battery staple")
+      })
+      |> Ash.create!(domain: Portal.Accounts)
+
+    lower =
+      User
+      |> Ash.Changeset.for_create(:create, %{
+        username: "tom",
+        password_hash: Argon2.hash_pwd_salt("correct horse battery staple")
+      })
+      |> Ash.create!(domain: Portal.Accounts)
+
+    assert {:ok, %User{id: id}} = Portal.Accounts.get_user_by_username("tom")
+    assert id == lower.id
+    refute id == verbatim.id
+  end
+
+  # Registration itself still must not create a case-twin of a legacy
+  # verbatim-cased row: `username_taken?/1` is what `register_user/2` checks,
+  # case-insensitively, precisely so this does not happen.
+  test "registration refuses a name that only differs in case from a legacy row" do
+    User
+    |> Ash.Changeset.for_create(:create, %{
+      username: "MixedCase",
+      password_hash: Argon2.hash_pwd_salt("correct horse battery staple")
+    })
+    |> Ash.create!(domain: Portal.Accounts)
+
+    assert {:error, :username_taken} =
+             Portal.Accounts.register_user("mixedcase", "correct horse battery staple")
+  end
+
   test "seeds admin accounts and promotes existing users" do
     {:ok, admin} =
       Portal.Accounts.seed_admin_user("SeedAdmin", "correct horse battery staple")
