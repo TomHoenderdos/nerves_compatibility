@@ -1,0 +1,48 @@
+<Layouts.flash_group flash={@flash} />
+
+<main class="min-h-screen bg-base-100 text-base-content">
+  <.site_nav current_user={@current_user} />
+
+  <div class="mx-auto max-w-md px-4 py-10 sm:px-6 lg:px-8">
+    <section class="space-y-8">
+      <PortalWeb.UI.page_header kicker="Account" title="Choose a username">
+        <:subtitle>
+          {@provider_label} confirmed you as <span class="font-mono">{@suggested}</span>,
+          but that username is already used here. Pick another one for your new account.
+        </:subtitle>
+      </PortalWeb.UI.page_header>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-6">
+          <form
+            id="choose-username-form"
+            method="post"
+            action={~p"/auth/choose-username"}
+            class="space-y-4"
+          >
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <div class="form-control">
+              <span class="label"><span class="label-text font-semibold">Username</span></span>
+              <input
+                id="username"
+                name="username"
+                value={@username}
+                autocomplete="username"
+                required
+                class="input input-bordered w-full font-mono"
+              />
+            </div>
+            <button type="submit" class="btn btn-primary w-full">Create account</button>
+          </form>
+
+          <p class="text-sm leading-6 text-base-content/70">
+            Already have an account here? Sign in with it and link {@provider_label} under <a
+              href={~p"/settings/security"}
+              class="font-semibold text-primary hover:underline"
+            >Settings</a>.
+          </p>
+        </div>
+      </section>
+    </section>
+  </div>
+</main>

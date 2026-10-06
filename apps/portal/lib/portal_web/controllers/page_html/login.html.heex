@@ -7,7 +7,7 @@
     <section class="space-y-8">
       <PortalWeb.UI.page_header kicker="Account" title="Sign in">
         <:subtitle>
-          Use your portal account. Hex.pm owner verification still happens separately per package.
+          Use your portal account, Hex.pm or GitHub.
         </:subtitle>
       </PortalWeb.UI.page_header>
 
@@ -56,6 +56,17 @@
               <.icon name="hero-finger-print-mini" class="size-5" /> Sign in with a passkey
             </button>
             <p id="passkey-login-status" class="text-sm text-error" aria-live="polite"></p>
+          </div>
+
+          <div id="provider-login" class="grid gap-2">
+            <form method="post" action={~p"/auth/hex/login"}>
+              <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+              <button type="submit" class="btn btn-outline w-full">Sign in with Hex.pm</button>
+            </form>
+            <form method="post" action={~p"/auth/github/login"}>
+              <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+              <button type="submit" class="btn btn-outline w-full">Sign in with GitHub</button>
+            </form>
           </div>
 
           <p class="text-sm leading-6 text-base-content/70">
