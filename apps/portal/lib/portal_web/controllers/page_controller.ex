@@ -14,9 +14,16 @@ defmodule PortalWeb.PageController do
     end
   end
 
-  def admin(conn, _params) do
+  def admin(conn, _params), do: admin_section(conn, :overview)
+  def admin_queue(conn, _params), do: admin_section(conn, :queue)
+  def admin_users(conn, _params), do: admin_section(conn, :users)
+  def admin_failures(conn, _params), do: admin_section(conn, :failures)
+  def admin_argus(conn, _params), do: admin_section(conn, :argus)
+  def admin_maintenance(conn, _params), do: admin_section(conn, :maintenance)
+
+  defp admin_section(conn, section) do
     case require_admin(conn) do
-      {:ok, conn, user} -> render_admin(conn, user)
+      {:ok, conn, user} -> render_admin(conn, user, section)
       {:error, conn} -> conn
     end
   end
@@ -44,12 +51,12 @@ defmodule PortalWeb.PageController do
           {:ok, priority} ->
             conn
             |> put_flash(:info, "Moved to priority #{priority}. Lower runs sooner.")
-            |> render_admin(user)
+            |> render_admin(user, :queue)
 
           {:error, reason} ->
             conn
             |> put_flash(:error, admin_error_message(reason))
-            |> render_admin(user)
+            |> render_admin(user, :queue)
         end
 
       {:error, conn} ->
@@ -66,12 +73,12 @@ defmodule PortalWeb.PageController do
           {:ok, request} ->
             conn
             |> put_flash(:info, queued_message(request, force))
-            |> render_admin(user)
+            |> render_admin(user, :queue)
 
           {:error, reason} ->
             conn
             |> put_flash(:error, admin_error_message(reason))
-            |> render_admin(user)
+            |> render_admin(user, :queue)
         end
 
       {:error, conn} ->
@@ -88,12 +95,12 @@ defmodule PortalWeb.PageController do
           {:ok, _job} ->
             conn
             |> put_flash(:info, update_check_message(dry_run))
-            |> render_admin(user)
+            |> render_admin(user, :maintenance)
 
           {:error, reason} ->
             conn
             |> put_flash(:error, admin_error_message(reason))
-            |> render_admin(user)
+            |> render_admin(user, :maintenance)
         end
 
       {:error, conn} ->
@@ -111,12 +118,12 @@ defmodule PortalWeb.PageController do
         {:ok, granted} ->
           conn
           |> put_flash(:info, "#{granted.username} is now an admin.")
-          |> render_admin(user)
+          |> render_admin(user, :users)
 
         {:error, reason} ->
           conn
           |> put_flash(:error, admin_error_message(reason))
-          |> render_admin(user)
+          |> render_admin(user, :users)
       end
     end)
   end
@@ -132,12 +139,14 @@ defmodule PortalWeb.PageController do
             :info,
             "#{target.username} has a temporary password. They must choose a new one when they sign in."
           )
-          |> render_admin(user, temporary_password: %{username: target.username, password: temp})
+          |> render_admin(user, :users,
+            temporary_password: %{username: target.username, password: temp}
+          )
 
         {:error, reason} ->
           conn
           |> put_flash(:error, admin_error_message(reason))
-          |> render_admin(user)
+          |> render_admin(user, :users)
       end
     end)
   end
@@ -148,12 +157,12 @@ defmodule PortalWeb.PageController do
         {:ok, revoked} ->
           conn
           |> put_flash(:info, "#{revoked.username} is no longer an admin.")
-          |> render_admin(user)
+          |> render_admin(user, :users)
 
         {:error, reason} ->
           conn
           |> put_flash(:error, admin_error_message(reason))
-          |> render_admin(user)
+          |> render_admin(user, :users)
       end
     end)
   end
@@ -189,12 +198,12 @@ defmodule PortalWeb.PageController do
           {:ok, _setting} ->
             conn
             |> put_flash(:info, "Saved argus settings.")
-            |> render_admin(user)
+            |> render_admin(user, :argus)
 
           {:error, reason} ->
             conn
             |> put_flash(:error, admin_error_message(reason))
-            |> render_admin(user)
+            |> render_admin(user, :argus)
         end
 
       {:error, conn} ->
@@ -547,27 +556,72 @@ defmodule PortalWeb.PageController do
   defp maybe_change_password(user, current_password, new_password),
     do: Portal.Accounts.change_password(user, current_password, new_password)
 
-  defp render_admin(conn, user, extra \\ []) do
+  # One template per admin section, each loading only what it shows. The
+  # section's id doubles as the active tab.
+  defp render_admin(conn, user, section, extra \\ []) do
+    conn
+    |> render(
+      admin_template(section),
+      [
+        page_title: "Admin",
+        page_description: "Administration.",
+        current_user: user,
+        admin_section: section
+      ] ++ admin_assigns(conn, section, extra)
+    )
+  end
+
+  defp admin_template(:overview), do: :admin
+  defp admin_template(:queue), do: :admin_queue
+  defp admin_template(:users), do: :admin_users
+  defp admin_template(:failures), do: :admin_failures
+  defp admin_template(:argus), do: :admin_argus
+  defp admin_template(:maintenance), do: :admin_maintenance
+
+  defp admin_assigns(conn, :queue, _extra) do
     queue_page = Portal.ScanRequests.queue_page(conn.params["queue_page"])
     review_page = Portal.ScanRequests.pending_anonymous_page(conn.params["review_page"])
 
-    render(conn, :admin,
-      page_title: "Admin",
-      page_description: "Administration.",
-      current_user: user,
+    [
       pending_anonymous_requests: review_page.entries,
       queue_requests: queue_page.entries,
       queue_page: queue_page,
       review_page: review_page,
       page_params: %{queue_page: queue_page.page, review_page: review_page.page},
-      queue_positions: Portal.Admin.queue_positions(Enum.map(queue_page.entries, & &1.id)),
-      update_check: Portal.Admin.update_check_status(),
+      queue_positions: Portal.Admin.queue_positions(Enum.map(queue_page.entries, & &1.id))
+    ]
+  end
+
+  defp admin_assigns(_conn, :users, extra) do
+    [
+      users: Portal.Admin.list_users(),
+      temporary_password: Keyword.get(extra, :temporary_password)
+    ]
+  end
+
+  defp admin_assigns(_conn, :failures, _extra),
+    do: [recent_failures: Portal.ScanRequests.recent_failures(50)]
+
+  defp admin_assigns(_conn, :argus, _extra) do
+    [
       argus: Portal.Settings.get(),
-      admins: Portal.Admin.list_admins(),
-      recent_failures: Portal.ScanRequests.recent_failures(10),
-      temporary_password: Keyword.get(extra, :temporary_password),
-      argus_analysis_names: Portal.Settings.Setting.analysis_names()
-    )
+      argus_analysis_names: Portal.Settings.Setting.analysis_names(),
+      triage_counts: Portal.Catalog.triage_counts()
+    ]
+  end
+
+  defp admin_assigns(_conn, :maintenance, _extra),
+    do: [update_check: Portal.Admin.update_check_status()]
+
+  defp admin_assigns(_conn, :overview, _extra) do
+    [
+      review_total: Portal.ScanRequests.pending_anonymous_page(1).total,
+      queue_total: Portal.ScanRequests.queue_page(1).total,
+      failures: Portal.ScanRequests.recent_failures(5),
+      triage_counts: Portal.Catalog.triage_counts(),
+      update_check: Portal.Admin.update_check_status(),
+      admin_count: length(Portal.Admin.list_admins())
+    ]
   end
 
   defp review_anonymous_request(conn, user, id, :approve) do
@@ -575,12 +629,12 @@ defmodule PortalWeb.PageController do
       {:ok, request} ->
         conn
         |> put_flash(:info, "Approved anonymous request for #{request.package_name}.")
-        |> render_admin(user)
+        |> render_admin(user, :queue)
 
       {:error, reason} ->
         conn
         |> put_flash(:error, admin_error_message(reason))
-        |> render_admin(user)
+        |> render_admin(user, :queue)
     end
   end
 
@@ -589,12 +643,12 @@ defmodule PortalWeb.PageController do
       {:ok, request} ->
         conn
         |> put_flash(:info, "Rejected anonymous request for #{request.package_name}.")
-        |> render_admin(user)
+        |> render_admin(user, :queue)
 
       {:error, reason} ->
         conn
         |> put_flash(:error, admin_error_message(reason))
-        |> render_admin(user)
+        |> render_admin(user, :queue)
     end
   end
 
