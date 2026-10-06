@@ -28,8 +28,8 @@ defmodule Portal.Repo.Migrations.AddLinkedLogins do
     execute("""
     UPDATE portal_users
        SET password_set = false
-     WHERE (hex_username IS NOT NULL AND username = lower(hex_username) AND last_hex_login_at IS NOT NULL)
-        OR (github_username IS NOT NULL AND username = lower(github_username) AND last_github_login_at IS NOT NULL)
+     WHERE (hex_username IS NOT NULL AND lower(username) = lower(hex_username) AND last_hex_login_at IS NOT NULL)
+        OR (github_username IS NOT NULL AND lower(username) = lower(github_username) AND last_github_login_at IS NOT NULL)
     """)
 
     drop_if_exists(index(:portal_users, [:hex_username]))
