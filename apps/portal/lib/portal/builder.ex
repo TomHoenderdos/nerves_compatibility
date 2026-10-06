@@ -513,7 +513,16 @@ defmodule Portal.Builder do
   #
   # ERL_FLAGS covers the worker's own VM and any `erl` it starts; mix and elixir
   # read ELIXIR_ERL_OPTIONS instead, and that is where the compile parallelism
-  # lives. MAKEFLAGS caps the C builds that NIF-carrying deps kick off.
+  # lives.
+  #
+  # MAKEFLAGS is deliberately not set. It never capped anything: elixir_make
+  # passes no -j, so a NIF's C code builds serially by default, and
+  # `MAKEFLAGS=-jN` *raised* that to N for a few seconds saved per NIF package.
+  # The price was false failures on Makefiles that are not parallel-safe, which
+  # no user hits because their `mix compile` runs make serially -- circuits_spi
+  # 2.1.0 failed on rpi4 creating obj/ while compiling into it. Frank Hunleth is
+  # fixing the elixir-circuits Makefiles; `MAKEFLAGS=-j#{quota}` can come back
+  # once that has shipped, if the seconds are worth it.
   defp cpu_env do
     case cpu_quota() do
       nil ->
@@ -526,9 +535,7 @@ defmodule Portal.Builder do
           "-e",
           "ERL_FLAGS=#{beam_flags}",
           "-e",
-          "ELIXIR_ERL_OPTIONS=#{beam_flags}",
-          "-e",
-          "MAKEFLAGS=-j#{quota}"
+          "ELIXIR_ERL_OPTIONS=#{beam_flags}"
         ]
     end
   end
