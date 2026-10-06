@@ -90,9 +90,10 @@ defmodule PortalWeb.PackageLive do
 
   defp watch(%{assigns: %{watching: id}} = socket, id), do: socket
 
+  # A stage heard from the previous request says nothing about the new one.
   defp watch(socket, id) do
     if connected?(socket), do: resubscribe(socket.assigns[:watching], id)
-    assign(socket, :watching, id)
+    assign(socket, watching: id, live_stage: nil)
   end
 
   defp resubscribe(old, new) do
@@ -107,20 +108,32 @@ defmodule PortalWeb.PackageLive do
     {:noreply, push_navigate(socket, to: ~p"/packages/#{socket.assigns.name}")}
   end
 
-  def handle_info({:build_progress, stage, _payload}, socket) do
-    live_stage =
-      if PortalWeb.BuildProgress.staged?(stage), do: stage, else: socket.assigns.live_stage
+  # Without results the request was the whole page, and it is gone. A package
+  # with results keeps its page; the refresh below drops the card.
+  def handle_info({:build_progress, :rejected, _payload}, %{assigns: %{package: nil}} = socket) do
+    {:noreply,
+     socket
+     |> put_flash(:error, "This request was not accepted.")
+     |> push_navigate(to: ~p"/packages")}
+  end
 
+  def handle_info({:build_progress, stage, _payload}, socket) do
     case Portal.ScanRequests.package_progress(socket.assigns.name) do
-      # Rejected, or otherwise gone: let mount decide what the page is now.
+      # Gone for some other reason: let mount decide what the page is now.
       nil when is_nil(socket.assigns.package) ->
         {:noreply, push_navigate(socket, to: ~p"/packages/#{socket.assigns.name}")}
 
       progress ->
-        {:noreply,
-         socket
-         |> assign(:live_stage, live_stage)
-         |> assign_progress(advance(progress, live_stage))}
+        heard_from = socket.assigns.watching
+        socket = assign_progress(socket, progress)
+
+        # Only the request the message came from may move the stage list.
+        socket =
+          if socket.assigns.watching == heard_from and PortalWeb.BuildProgress.staged?(stage),
+            do: assign(socket, :live_stage, stage),
+            else: socket
+
+        {:noreply, assign(socket, :progress, advance(progress, socket.assigns.live_stage))}
     end
   end
 

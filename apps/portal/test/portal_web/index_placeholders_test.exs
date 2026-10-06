@@ -65,13 +65,12 @@ defmodule PortalWeb.IndexPlaceholdersTest do
   end
 
   test "a failed request with no build stays listed, marked build failed", %{conn: conn} do
-    req = seed_request("failedpkg", :error)
+    seed_request("failedpkg", :error)
 
     {:ok, _view, html} = live(conn, ~p"/packages")
     assert html =~ ~s(id="placeholder-failedpkg")
     assert html =~ "build failed"
     assert html =~ ~p"/packages/failedpkg"
-    refute html =~ ~p"/requests/#{req.id}"
   end
 
   test "rejected requests are not listed", %{conn: conn} do

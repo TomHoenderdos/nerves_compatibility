@@ -13,7 +13,7 @@ defmodule Portal.ScanRequests do
   end
 
   alias Portal.ScanRequests.ScanRequest
-  alias Portal.Workers.Build
+  alias Portal.Workers.{Build, Progress}
 
   @admin_page_size 50
 
@@ -151,6 +151,11 @@ defmodule Portal.ScanRequests do
   A failure only shows if it happened after the package's latest run. An older
   one is superseded by results the page already has; a newer one is a rebuild
   that broke, which the page must not hide behind the last good result.
+
+  Over existing results an `accepted` or `queued` request only shows while a
+  build job for it is alive. A row stranded without one never moves, and would
+  otherwise sit above the results as a build forever about to start. A package
+  with no results still shows it: there the request is all the page has.
   """
   @spec package_progress(String.t()) :: map() | nil
   def package_progress(package_name) when is_binary(package_name) do
@@ -174,25 +179,31 @@ defmodule Portal.ScanRequests do
       }
     )
     |> Portal.Repo.one()
-    |> progress()
+    |> progress(not is_nil(failed_since))
   end
 
-  defp progress(nil), do: nil
+  defp progress(nil, _results?), do: nil
 
-  defp progress(request) do
-    %{
-      request_id: request.id,
-      state: progress_state(request),
-      summary: Portal.ScanRequests.FailureSummary.from_log(request.error_log),
-      error_log: request.error_log,
-      error_reason: request.error_reason,
-      version: request.version
-    }
+  defp progress(request, results?) do
+    case progress_state(request, results?) do
+      nil ->
+        nil
+
+      state ->
+        %{
+          request_id: request.id,
+          state: state,
+          summary: Portal.ScanRequests.FailureSummary.from_log(request.error_log),
+          error_log: request.error_log,
+          error_reason: request.error_reason,
+          version: request.version
+        }
+    end
   end
 
-  defp progress_state(%{status: "pending"}), do: :review
-  defp progress_state(%{status: "error"}), do: :failed
-  defp progress_state(%{id: id}), do: open_state(id)
+  defp progress_state(%{status: "pending"}, _results?), do: :review
+  defp progress_state(%{status: "error"}, _results?), do: :failed
+  defp progress_state(%{id: id}, results?), do: open_state(id, results?)
 
   # Run rows are timestamped by ingestion, the moment their results became what
   # the page shows; `finished_at` is the worker's clock and can lag that.
@@ -206,10 +217,14 @@ defmodule Portal.ScanRequests do
     |> Portal.Repo.one()
   end
 
-  defp open_state(request_id) do
+  @dead_job_states ["discarded", "cancelled"]
+
+  defp open_state(request_id, results?) do
     case Portal.Admin.queue_positions([request_id]) do
       %{^request_id => %{state: "executing"}} -> :building
-      _ -> :queued
+      %{^request_id => %{state: state}} when state not in @dead_job_states -> :queued
+      _no_live_job when results? -> nil
+      _no_live_job -> :queued
     end
   end
 
@@ -251,16 +266,38 @@ defmodule Portal.ScanRequests do
     with {:ok, request} <- get_request(id),
          :ok <- ensure_pending_anonymous(request),
          {:ok, request} <- update_review(request, :accepted, nil) do
-      enqueue_build(request, :anonymous_manual, admin_user: admin_user)
+      request
+      |> enqueue_build(:anonymous_manual, admin_user: admin_user)
+      |> announce_review(request.id)
     end
   end
 
   def reject_anonymous_request(id, admin_user) do
     with {:ok, request} <- get_request(id),
          :ok <- ensure_pending_anonymous(request) do
-      update_review(request, :rejected, "Rejected by #{admin_user.username}")
+      request
+      |> update_review(:rejected, "Rejected by #{admin_user.username}")
+      |> announce_review(request.id)
     end
   end
+
+  # A package page showing "Waiting for review" follows `request:<id>`, the
+  # same topic the build pipeline reports on, so a review is announced there
+  # too. Approval of a name hex.pm turns out not to know closes the request
+  # (see `enqueue_build/3`), which the page hears as a rejection.
+  defp announce_review({:ok, %ScanRequest{status: status}} = result, id)
+       when status in [:queued, :rejected] do
+    Progress.broadcast(id, status, %{})
+    result
+  end
+
+  defp announce_review({:error, reason} = result, id)
+       when reason in [:unknown_package, :unknown_package_version] do
+    Progress.broadcast(id, :rejected, %{})
+    result
+  end
+
+  defp announce_review(result, _id), do: result
 
   # This used to read every row and filter in Elixir. It is called from
   # `RequestRedirectController.show/2` on a public route, and up to four times

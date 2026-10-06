@@ -153,6 +153,40 @@ defmodule Portal.ScanRequests.ScanRequestTest do
     )
   end
 
+  # A package page waiting on review follows `request:<id>`; without these it
+  # would say "Waiting for review" until reloaded.
+  test "approving and rejecting announce it on the request's topic" do
+    {:ok, admin} =
+      Portal.Accounts.seed_admin_user("review_announce", "correct horse battery staple")
+
+    {:ok, approved} =
+      ScanRequest
+      |> Ash.Changeset.for_create(:create, %{
+        package_name: "announce_ok",
+        source: :anonymous_manual,
+        status: :pending
+      })
+      |> Ash.create(domain: Portal.ScanRequests)
+
+    {:ok, rejected} =
+      ScanRequest
+      |> Ash.Changeset.for_create(:create, %{
+        package_name: "announce_no",
+        source: :anonymous_manual,
+        status: :pending
+      })
+      |> Ash.create(domain: Portal.ScanRequests)
+
+    Phoenix.PubSub.subscribe(Portal.PubSub, "request:#{approved.id}")
+    Phoenix.PubSub.subscribe(Portal.PubSub, "request:#{rejected.id}")
+
+    {:ok, _} = Portal.ScanRequests.approve_anonymous_request(approved.id, admin)
+    assert_receive {:build_progress, :queued, %{}}
+
+    {:ok, _} = Portal.ScanRequests.reject_anonymous_request(rejected.id, admin)
+    assert_receive {:build_progress, :rejected, %{}}
+  end
+
   test "closes the request when hex has never heard of the package" do
     Application.put_env(:portal, :package_version_resolver, MissingVersions)
 
