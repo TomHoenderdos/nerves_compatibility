@@ -2,10 +2,17 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   @moduledoc """
   Internal triage of argus findings across packages. Admin (passkey) only;
   see `Portal.Catalog.FindingTriage`. Nothing here is public or sent anywhere.
+
+  Two views, both in the URL: by check (the default), one row per analysis,
+  title and severity with a group action, and by finding (`?view=findings`),
+  one row per finding with bulk selection. Both take `?sort=` and keyboard
+  shortcuts (see the `.TriageKeys` hook), which push the same events as the
+  forms do.
   """
   use PortalWeb, :live_view
 
   alias Portal.Catalog
+  alias Portal.Catalog.FindingTriage
 
   @statuses [
     {:new, "new"},
@@ -16,46 +23,101 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   ]
   @severities ~w(error warning info)
 
+  # Explicit string-to-atom whitelists: `?sort=` and `?view=` come from the URL.
+  @list_sorts [
+    {"severity", :severity, "Severity"},
+    {"package", :package, "Package"},
+    {"analysis", :analysis, "Analysis"},
+    {"confidence", :confidence, "Confidence"},
+    {"newest", :newest, "Recently changed"}
+  ]
+  @check_sorts [{"count", :count, "Most findings"} | @list_sorts]
+  @views %{"checks" => :checks, "findings" => :findings}
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
-     assign(socket,
+     socket
+     |> assign(
        page_title: "argus findings",
        page_description: "Internal triage of argus findings.",
        statuses: @statuses,
        status_options: Enum.map(@statuses, fn {atom, label} -> {label, atom} end),
-       severities: @severities
-     )}
+       severities: @severities,
+       selected: MapSet.new(),
+       expanded: MapSet.new(),
+       shown_ids: [],
+       shown: 0,
+       total: 0
+     )
+     |> stream_configure(:checks, dom_id: &"check-#{&1.id}")
+     |> stream_configure(:findings, dom_id: &"finding-#{&1.triage.id}")
+     |> stream(:checks, [])
+     |> stream(:findings, [])}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
+    view = Map.get(@views, params["view"], :checks)
     filters = filters(params)
-    {rows, total} = Catalog.triage_page(filters, page_limit())
 
     {:noreply,
      socket
+     |> assign(view: view, sort: sort(view, params["sort"]), filters: filters)
      |> assign(:filter_form, to_form(filter_params(filters), as: :f))
      |> assign(:counts, Catalog.triage_counts())
-     |> assign(:shown, length(rows))
-     |> assign(:total, total)
-     |> stream(:findings, rows, reset: true, dom_id: &"finding-#{&1.triage.id}")}
+     |> load()}
   end
 
   @impl true
   def handle_event("filter", %{"f" => f}, socket) do
-    query =
-      %{
-        "status" => f |> Map.get("status") |> List.wrap() |> Enum.reject(&(&1 == "")),
-        "severity" => f |> Map.get("severity") |> List.wrap() |> Enum.reject(&(&1 == "")),
+    filters =
+      filters(%{
+        "status" => f["status"],
+        "severity" => f["severity"],
         "analysis" => f["analysis"],
         "package" => f["package"],
-        "stale" => if(f["stale"] == "true", do: "true")
-      }
-      |> Enum.reject(fn {key, value} -> value in [nil, "", []] or default?(key, value) end)
-      |> Map.new()
+        "stale" => f["stale"]
+      })
 
-    {:noreply, push_patch(socket, to: ~p"/admin/argus/findings?#{query}")}
+    %{view: view, sort: sort} = socket.assigns
+    {:noreply, push_patch(socket, to: triage_path(filters, view, sort))}
+  end
+
+  def handle_event("sort", %{"sort" => sort}, socket) do
+    %{filters: filters, view: view} = socket.assigns
+    {:noreply, push_patch(socket, to: triage_path(filters, view, sort(view, sort)))}
+  end
+
+  def handle_event("toggle_check", params, socket) do
+    check = check_ident(params)
+    key = check_key(check)
+
+    expanded =
+      if MapSet.member?(socket.assigns.expanded, key),
+        do: MapSet.delete(socket.assigns.expanded, key),
+        else: MapSet.put(socket.assigns.expanded, key)
+
+    {:noreply, socket |> assign(:expanded, expanded) |> refresh_check(check)}
+  end
+
+  def handle_event("triage_check", %{"check" => params}, socket) do
+    case status_atom(params["status"]) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Choose a status.")}
+
+      status ->
+        changed =
+          Catalog.triage_check!(
+            socket.assigns.filters,
+            check_ident(params),
+            if(params["scope"] == "new", do: :new, else: :all),
+            %{status: status, note: blank_to_nil(params["note"])},
+            socket.assigns.current_user
+          )
+
+        {:noreply, socket |> reload() |> put_flash(:info, "Set #{findings(changed)}.")}
+    end
   end
 
   def handle_event("triage", %{"finding_id" => id, "triage" => triage}, socket) do
@@ -66,18 +128,186 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
         socket.assigns.current_user
       )
 
-    {:noreply,
-     socket
-     |> assign(:counts, Catalog.triage_counts())
-     |> stream_insert(:findings, %{triage: row, stale?: Catalog.triage_stale?(row)})
-     |> put_flash(:info, "Saved.")}
+    {:noreply, socket |> row_changed(row) |> put_flash(:info, "Saved.")}
   end
 
-  # A selection equal to the default stays out of the URL, so a shared link
-  # only says what was actually narrowed.
+  # From the keyboard: a status only, so the note is kept.
+  def handle_event("set_status", %{"id" => id, "status" => status}, socket) do
+    with status when not is_nil(status) <- status_atom(status),
+         %{triage: row} <- Catalog.triage_row(id) do
+      row = Catalog.triage!(row.id, %{status: status}, socket.assigns.current_user)
+      {:noreply, row_changed(socket, row)}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  # Only rows on the page can be selected, so a stale or forged id never
+  # reaches the bulk action.
+  def handle_event("toggle_select", %{"id" => id}, socket) do
+    if socket.assigns.view == :findings and id in socket.assigns.shown_ids do
+      selected = socket.assigns.selected
+
+      selected =
+        if MapSet.member?(selected, id),
+          do: MapSet.delete(selected, id),
+          else: MapSet.put(selected, id)
+
+      {:noreply, socket |> assign(:selected, selected) |> insert_row(Catalog.triage_row(id))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("select_all", _params, socket) do
+    %{selected: selected, shown_ids: shown} = socket.assigns
+    all? = shown != [] and MapSet.size(selected) == length(shown)
+    selected = if all?, do: MapSet.new(), else: MapSet.new(shown)
+    {:noreply, socket |> assign(:selected, selected) |> load()}
+  end
+
+  def handle_event("bulk", %{"bulk" => params}, socket) do
+    case status_atom(params["status"]) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Choose a status.")}
+
+      status ->
+        changed =
+          Catalog.triage_many!(
+            MapSet.to_list(socket.assigns.selected),
+            %{status: status, note: blank_to_nil(params["note"])},
+            socket.assigns.current_user
+          )
+
+        {:noreply,
+         socket
+         |> assign(:selected, MapSet.new())
+         |> reload()
+         |> put_flash(:info, "Set #{findings(changed)}.")}
+    end
+  end
+
+  @doc "A short stable id for a check (analysis, title and severity), used in DOM ids."
+  def check_key(%{analysis: analysis, title: title, severity: severity}) do
+    :sha256
+    |> :crypto.hash([analysis, 0, title, 0, severity])
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 16)
+  end
+
+  defp reload(socket), do: socket |> assign(:counts, Catalog.triage_counts()) |> load()
+
+  defp load(%{assigns: %{view: :findings} = assigns} = socket) do
+    {rows, total} =
+      Catalog.triage_page(Map.put(assigns.filters, :sort, assigns.sort), page_limit())
+
+    shown_ids = Enum.map(rows, & &1.triage.id)
+
+    socket
+    |> assign(shown_ids: shown_ids, shown: length(rows), total: total)
+    |> assign(:selected, MapSet.intersection(assigns.selected, MapSet.new(shown_ids)))
+    |> stream(:findings, rows, reset: true)
+  end
+
+  defp load(%{assigns: assigns} = socket) do
+    checks =
+      assigns.filters
+      |> Map.put(:sort, assigns.sort)
+      |> Catalog.triage_checks()
+      |> Enum.map(&check_item(&1, assigns))
+
+    socket
+    |> assign(shown_ids: [], selected: MapSet.new())
+    |> stream(:checks, checks, reset: true)
+  end
+
+  defp check_item(check, assigns) do
+    key = check_key(check)
+
+    rows =
+      if MapSet.member?(assigns.expanded, key) do
+        assigns.filters
+        |> Map.merge(%{check: check_ident(check), sort: :package})
+        |> Catalog.triage_page(page_limit())
+      end
+
+    %{id: key, check: check, rows: rows}
+  end
+
+  defp refresh_check(socket, check) do
+    filters = Map.put(socket.assigns.filters, :check, check)
+
+    case Catalog.triage_checks(filters) do
+      [row] -> stream_insert(socket, :checks, check_item(row, socket.assigns))
+      [] -> stream_delete_by_dom_id(socket, :checks, "check-#{check_key(check)}")
+    end
+  end
+
+  defp row_changed(socket, row) do
+    socket = assign(socket, :counts, Catalog.triage_counts())
+
+    case socket.assigns.view do
+      :findings -> insert_row(socket, %{triage: row, stale?: Catalog.triage_stale?(row)})
+      :checks -> refresh_check(socket, check_ident(row))
+    end
+  end
+
+  defp insert_row(socket, nil), do: socket
+  defp insert_row(socket, row), do: stream_insert(socket, :findings, row)
+
+  defp check_ident(%{analysis: analysis, title: title, severity: severity}),
+    do: %{analysis: analysis, title: title, severity: severity}
+
+  defp check_ident(params) do
+    %{
+      analysis: to_string(params["analysis"]),
+      title: to_string(params["title"]),
+      severity: to_string(params["severity"])
+    }
+  end
+
+  defp triage_path(filters, view, sort),
+    do: ~p"/admin/argus/findings?#{query(filters, view, sort)}"
+
+  # The URL for the current state: a value equal to its default stays out, so
+  # a shared link only says what was actually narrowed.
+  defp query(filters, view, sort) do
+    %{
+      "status" => filters |> Map.get(:status, []) |> Enum.map(&Atom.to_string/1),
+      "severity" => Map.get(filters, :severity, []),
+      "analysis" => filters.analysis,
+      "package" => filters.package,
+      "stale" => if(filters.include_stale, do: "true"),
+      "view" => if(view == :findings, do: "findings"),
+      "sort" => if(sort != default_sort(view), do: Atom.to_string(sort))
+    }
+    |> Enum.reject(fn {key, value} -> value in [nil, "", []] or default?(key, value) end)
+    |> Map.new()
+  end
+
   defp default?("status", value), do: Enum.sort(value) == ["confirmed", "new"]
   defp default?("severity", value), do: Enum.sort(value) == Enum.sort(@severities)
   defp default?(_key, _value), do: false
+
+  defp sorts(:checks), do: @check_sorts
+  defp sorts(:findings), do: @list_sorts
+
+  defp default_sort(view), do: view |> sorts() |> hd() |> elem(1)
+
+  defp sort(view, value) do
+    Enum.find_value(sorts(view), default_sort(view), fn {string, atom, _label} ->
+      string == value && atom
+    end)
+  end
+
+  # A sort carries over to the other view when that view has it.
+  defp switch_path(filters, sort, view) do
+    sort = if Enum.any?(sorts(view), &(elem(&1, 1) == sort)), do: sort, else: default_sort(view)
+    triage_path(filters, view, sort)
+  end
+
+  defp status_path(filters, view, sort, status),
+    do: triage_path(Map.put(filters, :status, [status]), view, sort)
 
   # Rows rendered at once. Each carries two inputs, so a page of every finding
   # in the catalogue would be slow to diff; narrow the filters to see more.
@@ -118,12 +348,40 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   defp blank_to_nil(value) when value in [nil, ""], do: nil
   defp blank_to_nil(value), do: value
 
+  defp findings(1), do: "1 finding"
+  defp findings(n), do: "#{n} findings"
+
+  defp packages(1), do: "1 package"
+  defp packages(n), do: "#{n} packages"
+
+  defp breakdown(by_status) do
+    @statuses
+    |> Enum.filter(fn {status, _label} -> Map.get(by_status, status, 0) > 0 end)
+    |> Enum.map_join(" · ", fn {status, label} -> "#{by_status[status]} #{label}" end)
+  end
+
+  defp by_package(rows), do: Enum.chunk_by(rows, & &1.triage.package_name)
+
   defp text(value) when is_binary(value), do: value
+  defp text(value) when is_number(value), do: to_string(value)
   defp text(_), do: nil
+
+  defp texts(value), do: value |> List.wrap() |> Enum.map(&text/1) |> Enum.filter(& &1)
 
   defp hints(finding), do: finding |> Map.get("help") |> List.wrap() |> Enum.filter(&is_binary/1)
 
+  # Stored findings outlive the argus version that wrote them, so `related` is
+  # narrowed to the strings and integers the template prints.
+  defp related(finding) do
+    for %{} = r <- List.wrap(finding["related"]) do
+      %{label: text(r["label"]), file: text(r["file"]), line: text(r["line"])}
+    end
+  end
+
   defp location(%{file: file, line: line}) when is_binary(file) and is_integer(line),
+    do: "#{file}:#{line}"
+
+  defp location(%{file: file, line: line}) when is_binary(file) and is_binary(line),
     do: "#{file}:#{line}"
 
   defp location(%{file: file}), do: file
@@ -142,9 +400,14 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
         </PortalWeb.UI.page_header>
 
         <div id="triage-counts" class="flex flex-wrap gap-2">
-          <span :for={{status, label} <- @statuses} class="badge badge-lg badge-outline">
+          <.link
+            :for={{status, label} <- @statuses}
+            id={"triage-count-#{status}"}
+            patch={status_path(@filters, @view, @sort, status)}
+            class="badge badge-lg badge-outline transition hover:border-primary hover:text-primary"
+          >
             {Map.get(@counts, status, 0)} {label}
-          </span>
+          </.link>
         </div>
 
         <div id="triage-export" class="flex flex-wrap items-center gap-2 text-sm">
@@ -156,10 +419,6 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             every run
           </a>
         </div>
-
-        <p :if={@total > @shown} id="triage-shown" class="text-sm text-base-content/60">
-          Showing {@shown} of {@total}. Narrow the filters to see the rest.
-        </p>
 
         <.form
           for={@filter_form}
@@ -196,80 +455,482 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             </label>
           </fieldset>
           <.input field={@filter_form[:analysis]} type="text" label="Analysis" phx-debounce="300" />
-          <.input field={@filter_form[:package]} type="text" label="Package" phx-debounce="300" />
+          <.input
+            field={@filter_form[:package]}
+            type="text"
+            label="Package"
+            phx-debounce="300"
+            data-triage-search
+          />
           <.input field={@filter_form[:stale]} type="checkbox" label="Include no longer seen" />
         </.form>
 
-        <div class="overflow-x-auto rounded-2xl border border-base-300 bg-base-100 shadow-sm">
-          <table class="w-full text-sm">
-            <thead class="bg-base-200/60 text-left text-xs uppercase tracking-wide text-base-content/60">
-              <tr>
-                <th class="px-4 py-3">Finding</th>
-                <th class="px-4 py-3">Versions</th>
-                <th class="px-4 py-3">Triage</th>
-              </tr>
-            </thead>
-            <tbody id="findings" phx-update="stream" class="divide-y divide-base-200">
-              <tr :for={{dom_id, %{triage: t, stale?: stale?}} <- @streams.findings} id={dom_id}>
-                <td class="px-4 py-3 align-top">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <span class={["badge badge-sm", severity_class(t.severity)]}>{t.severity}</span>
-                    <.link navigate={~p"/packages/#{t.package_name}"} class="link font-mono">
-                      {t.package_name}
-                    </.link>
-                    <span class="badge badge-sm badge-outline font-mono">{t.analysis}</span>
-                    <span :if={stale?} class="badge badge-sm badge-ghost">no longer seen</span>
-                  </div>
-                  <div class="mt-1 font-medium text-base-content">{t.title}</div>
-                  <div :if={location(t)} class="font-mono text-xs text-base-content/60">
-                    {location(t)}
-                  </div>
-                  <details class="mt-1 text-base-content/70">
-                    <summary class="cursor-pointer text-xs">Details</summary>
-                    <p :if={text(t.finding["detail"])}>{text(t.finding["detail"])}</p>
-                    <ul class="list-disc pl-5">
-                      <li :for={hint <- hints(t.finding)}>{hint}</li>
-                    </ul>
-                  </details>
-                </td>
-                <td class="px-4 py-3 align-top font-mono text-xs text-base-content/60">
-                  {t.first_seen_version} → {t.last_seen_version}
-                </td>
-                <td class="w-64 px-4 py-3 align-top">
-                  <.form
-                    for={
-                      to_form(%{"status" => Atom.to_string(t.status), "note" => t.note}, as: :triage)
-                    }
-                    id={"triage-form-#{t.id}"}
-                    phx-change="triage"
+        <div class="flex flex-wrap items-end justify-between gap-3">
+          <div id="triage-view" class="join">
+            <.link
+              id="view-checks"
+              patch={switch_path(@filters, @sort, :checks)}
+              class={["btn btn-sm join-item", @view == :checks && "btn-active"]}
+            >
+              By check
+            </.link>
+            <.link
+              id="view-findings"
+              patch={switch_path(@filters, @sort, :findings)}
+              class={["btn btn-sm join-item", @view == :findings && "btn-active"]}
+            >
+              By finding
+            </.link>
+          </div>
+          <form id="triage-sort" phx-change="sort" class="flex items-center gap-2 text-sm">
+            <label for="triage-sort-select" class="text-base-content/60">Sort</label>
+            <select id="triage-sort-select" name="sort" class="select select-sm w-44">
+              <option
+                :for={{value, atom, label} <- sorts(@view)}
+                value={value}
+                selected={atom == @sort}
+              >
+                {label}
+              </option>
+            </select>
+          </form>
+          <button
+            type="button"
+            id="triage-shortcuts-toggle"
+            phx-click={JS.toggle(to: "#triage-shortcuts")}
+            class="btn btn-sm btn-ghost"
+          >
+            <.icon name="hero-command-line-mini" class="size-4" /> Shortcuts
+            <kbd class="kbd kbd-xs">?</kbd>
+          </button>
+        </div>
+
+        <div
+          id="triage-shortcuts"
+          class="hidden rounded-2xl border border-base-300 bg-base-100 p-4 text-sm shadow-sm"
+        >
+          <dl class="grid gap-x-6 gap-y-1 sm:grid-cols-3">
+            <div>
+              <dt class="inline">
+                <kbd class="kbd kbd-xs">j</kbd> <kbd class="kbd kbd-xs">k</kbd> / arrows
+              </dt>
+
+              <dd class="inline text-base-content/60">next / previous finding</dd>
+            </div>
+            <div>
+              <dt class="inline"><kbd class="kbd kbd-xs">c</kbd></dt>
+
+              <dd class="inline text-base-content/60">confirmed</dd>
+            </div>
+            <div>
+              <dt class="inline"><kbd class="kbd kbd-xs">f</kbd></dt>
+
+              <dd class="inline text-base-content/60">false positive</dd>
+            </div>
+            <div>
+              <dt class="inline"><kbd class="kbd kbd-xs">r</kbd></dt>
+
+              <dd class="inline text-base-content/60">reported</dd>
+            </div>
+            <div>
+              <dt class="inline"><kbd class="kbd kbd-xs">i</kbd></dt>
+
+              <dd class="inline text-base-content/60">ignored</dd>
+            </div>
+            <div>
+              <dt class="inline"><kbd class="kbd kbd-xs">n</kbd></dt>
+
+              <dd class="inline text-base-content/60">new</dd>
+            </div>
+            <div>
+              <dt class="inline"><kbd class="kbd kbd-xs">x</kbd></dt>
+
+              <dd class="inline text-base-content/60">select (by finding)</dd>
+            </div>
+            <div>
+              <dt class="inline"><kbd class="kbd kbd-xs">/</kbd></dt>
+
+              <dd class="inline text-base-content/60">search packages</dd>
+            </div>
+            <div>
+              <dt class="inline"><kbd class="kbd kbd-xs">?</kbd></dt>
+
+              <dd class="inline text-base-content/60">this panel</dd>
+            </div>
+          </dl>
+          <p class="mt-2 text-xs text-base-content/50">
+            Expand a check to triage its findings from the keyboard. Setting a status moves to the next finding.
+          </p>
+        </div>
+
+        <div id="triage-list" phx-hook=".TriageKeys">
+          <%= if @view == :findings do %>
+            <p :if={@total > @shown} id="triage-shown" class="mb-2 text-sm text-base-content/60">
+              Showing {@shown} of {@total}. Narrow the filters to see the rest.
+            </p>
+
+            <.form
+              for={to_form(%{}, as: :bulk)}
+              id="bulk-form"
+              phx-submit="bulk"
+              class="mb-3 flex flex-wrap items-end gap-3 rounded-2xl border border-base-300 bg-base-200/40 px-4 py-3 text-sm"
+            >
+              <label class="flex items-center gap-2 self-center">
+                <input
+                  type="checkbox"
+                  id="select-all"
+                  phx-click="select_all"
+                  checked={@shown_ids != [] and MapSet.size(@selected) == length(@shown_ids)}
+                  class="checkbox checkbox-sm"
+                /> Select all shown
+              </label>
+              <span class="self-center font-medium">{MapSet.size(@selected)} selected</span>
+              <.input
+                id="bulk-status"
+                name="bulk[status]"
+                type="select"
+                value=""
+                prompt="Set status…"
+                options={@status_options}
+                class="select select-sm w-44"
+              />
+              <.input
+                id="bulk-note"
+                name="bulk[note]"
+                type="text"
+                value=""
+                placeholder="Note (optional)"
+                class="input input-sm w-56"
+              />
+              <button
+                type="submit"
+                class="btn btn-sm btn-primary mb-2"
+                disabled={MapSet.size(@selected) == 0}
+                data-confirm={"Set the status of #{findings(MapSet.size(@selected))}?"}
+              >
+                Apply to selected
+              </button>
+            </.form>
+
+            <div
+              id="findings"
+              phx-update="stream"
+              class="divide-y divide-base-200 overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm"
+            >
+              <div
+                id="findings-empty"
+                class="hidden px-4 py-6 text-sm text-base-content/60 only:block"
+              >
+                No findings match these filters.
+              </div>
+              <.finding_row
+                :for={{dom_id, %{triage: t, stale?: stale?}} <- @streams.findings}
+                id={dom_id}
+                t={t}
+                stale?={stale?}
+                selected={MapSet.member?(@selected, t.id)}
+                selectable
+                status_options={@status_options}
+              />
+            </div>
+          <% else %>
+            <div id="checks" phx-update="stream" class="space-y-3">
+              <div
+                id="checks-empty"
+                class="hidden rounded-2xl border border-base-300 bg-base-100 px-4 py-6 text-sm text-base-content/60 only:block"
+              >
+                No findings match these filters.
+              </div>
+              <div
+                :for={{dom_id, %{id: key, check: c, rows: rows}} <- @streams.checks}
+                id={dom_id}
+                data-check
+                class="overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm"
+              >
+                <div class="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+                  <button
+                    type="button"
+                    id={"#{dom_id}-toggle"}
+                    phx-click="toggle_check"
+                    phx-value-analysis={c.analysis}
+                    phx-value-title={c.title}
+                    phx-value-severity={c.severity}
+                    aria-expanded={to_string(rows != nil)}
+                    class="min-w-0 flex-1 cursor-pointer text-left"
                   >
-                    <input type="hidden" name="finding_id" value={t.id} />
+                    <div class="flex flex-wrap items-center gap-2">
+                      <.icon
+                        name={if rows, do: "hero-chevron-down-mini", else: "hero-chevron-right-mini"}
+                        class="size-4 text-base-content/50"
+                      />
+                      <span class={["badge badge-sm", severity_class(c.severity)]}>
+                        {c.severity}
+                      </span>
+                      <span class="badge badge-sm badge-outline font-mono">{c.analysis}</span>
+                      <span class="font-medium text-base-content">{c.title}</span>
+                    </div>
+                    <div class="mt-1 pl-6 text-xs text-base-content/60">
+                      <span class="font-medium text-base-content/80">{findings(c.count)}</span>
+                      · {packages(c.packages)} · {breakdown(c.by_status)}
+                      <span :if={c.confidence}>· confidence up to {text(c.confidence)}</span>
+                    </div>
+                  </button>
+                  <.form
+                    for={to_form(%{}, as: :check)}
+                    id={"check-form-#{key}"}
+                    phx-submit="triage_check"
+                    class="flex flex-wrap items-end gap-2 text-sm"
+                  >
+                    <input type="hidden" name="check[analysis]" value={c.analysis} />
+                    <input type="hidden" name="check[title]" value={c.title} />
+                    <input type="hidden" name="check[severity]" value={c.severity} />
                     <.input
-                      id={"triage-status-#{t.id}"}
-                      name="triage[status]"
+                      id={"check-status-#{key}"}
+                      name="check[status]"
                       type="select"
-                      value={Atom.to_string(t.status)}
+                      value=""
+                      prompt="Set status…"
                       options={@status_options}
+                      class="select select-sm w-40"
                     />
                     <.input
-                      id={"triage-note-#{t.id}"}
-                      name="triage[note]"
-                      type="text"
-                      value={t.note}
-                      placeholder="Note"
-                      phx-debounce="500"
+                      id={"check-scope-#{key}"}
+                      name="check[scope]"
+                      type="select"
+                      value="new"
+                      options={[{"only new", "new"}, {"all matching", "all"}]}
+                      class="select select-sm w-32"
                     />
+                    <.input
+                      id={"check-note-#{key}"}
+                      name="check[note]"
+                      type="text"
+                      value=""
+                      placeholder="Note (optional)"
+                      class="input input-sm w-44"
+                    />
+                    <button
+                      type="submit"
+                      class="btn btn-sm btn-outline mb-2"
+                      data-confirm={"Set the status of up to #{findings(c.count)} of this check?"}
+                    >
+                      Apply
+                    </button>
                   </.form>
-                  <div :if={t.updated_by} class="text-xs text-base-content/50">
-                    by {t.updated_by}
+                </div>
+
+                <div :if={rows} id={"#{dom_id}-findings"} class="border-t border-base-200">
+                  <p
+                    :if={elem(rows, 1) > length(elem(rows, 0))}
+                    class="px-4 pt-2 text-xs text-base-content/60"
+                  >
+                    Showing {length(elem(rows, 0))} of {elem(rows, 1)}.
+                  </p>
+                  <div
+                    :for={[%{triage: first} | _] = group <- by_package(elem(rows, 0))}
+                    id={"#{dom_id}-package-#{first.package_name}"}
+                    class="border-t border-base-200 first:border-t-0"
+                  >
+                    <div class="bg-base-200/50 px-4 py-1.5 font-mono text-xs">
+                      <.link navigate={~p"/packages/#{first.package_name}"} class="link">
+                        {first.package_name}
+                      </.link>
+                      <span class="text-base-content/50">· {findings(length(group))}</span>
+                    </div>
+                    <div class="divide-y divide-base-200">
+                      <.finding_row
+                        :for={%{triage: t, stale?: stale?} <- group}
+                        id={"finding-#{t.id}"}
+                        t={t}
+                        stale?={stale?}
+                        status_options={@status_options}
+                      />
+                    </div>
                   </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                </div>
+              </div>
+            </div>
+          <% end %>
         </div>
       </section>
     </Layouts.app>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".TriageKeys">
+      // Keyboard triage over every [data-triage-row] in the list. Each key
+      // pushes the same server events the forms and checkboxes do, so this
+      // holds no state beyond which row has focus -- real DOM focus, which
+      // survives LiveView patches where a class set from here would not.
+      const STATUS_KEYS = {c: "confirmed", f: "false_positive", r: "reported", i: "ignored", n: "new"}
+
+      export default {
+        mounted() {
+          this.onKey = e => this.handleKey(e)
+          window.addEventListener("keydown", this.onKey)
+        },
+        destroyed() {
+          window.removeEventListener("keydown", this.onKey)
+        },
+        rows() {
+          return Array.from(this.el.querySelectorAll("[data-triage-row]"))
+        },
+        current() {
+          const active = document.activeElement
+          return active && active.closest ? active.closest("[data-triage-row]") : null
+        },
+        move(by) {
+          const rows = this.rows()
+          if (rows.length === 0) return
+          const at = rows.indexOf(this.current())
+          const next = at < 0 ? (by > 0 ? 0 : rows.length - 1) : Math.min(Math.max(at + by, 0), rows.length - 1)
+          rows[next].focus()
+          rows[next].scrollIntoView({block: "nearest"})
+        },
+        // Typing in a field is never a shortcut; a focused checkbox still is,
+        // since clicking one to select a row moves focus onto it.
+        typing(target) {
+          return target.closest && target.closest(
+            "textarea, select, [contenteditable], input:not([type=checkbox]):not([type=radio])"
+          )
+        },
+        handleKey(e) {
+          if (e.metaKey || e.ctrlKey || e.altKey || this.typing(e.target)) return
+          const row = this.current()
+
+          if (e.key === "j" || e.key === "ArrowDown") {
+            this.move(1)
+          } else if (e.key === "k" || e.key === "ArrowUp") {
+            this.move(-1)
+          } else if (e.key === "/") {
+            const search = document.querySelector("[data-triage-search]")
+            if (search) search.focus()
+          } else if (e.key === "?") {
+            const panel = document.getElementById("triage-shortcuts")
+            if (panel) this.js().toggle(panel)
+          } else if (STATUS_KEYS[e.key] && row) {
+            this.pushEvent("set_status", {id: row.dataset.id, status: STATUS_KEYS[e.key]})
+            this.move(1)
+          } else if (e.key === "x" && row) {
+            this.pushEvent("toggle_select", {id: row.dataset.id})
+          } else {
+            return
+          }
+          e.preventDefault()
+        }
+      }
+    </script>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :t, FindingTriage, required: true
+  attr :stale?, :boolean, default: false
+  attr :selectable, :boolean, default: false
+  attr :selected, :boolean, default: false
+  attr :status_options, :list, required: true
+
+  defp finding_row(assigns) do
+    assigns = assign(assigns, :source_url, FindingTriage.source_url(assigns.t))
+
+    ~H"""
+    <div
+      id={@id}
+      data-triage-row
+      data-id={@t.id}
+      tabindex="-1"
+      class={[
+        "grid gap-3 px-4 py-3 text-sm outline-none transition-colors sm:grid-cols-[minmax(0,1fr)_auto_16rem]",
+        "focus:bg-primary/10 focus:ring-2 focus:ring-inset focus:ring-primary",
+        @selected && "bg-primary/5"
+      ]}
+    >
+      <div class="flex min-w-0 gap-3">
+        <input
+          :if={@selectable}
+          type="checkbox"
+          id={"select-#{@t.id}"}
+          phx-click="toggle_select"
+          phx-value-id={@t.id}
+          checked={@selected}
+          aria-label="Select finding"
+          class="checkbox checkbox-sm mt-0.5"
+        />
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class={["badge badge-sm", severity_class(@t.severity)]}>{@t.severity}</span>
+            <.link navigate={~p"/packages/#{@t.package_name}"} class="link font-mono">
+              {@t.package_name}
+            </.link>
+            <span class="badge badge-sm badge-outline font-mono">{@t.analysis}</span>
+            <span :if={@stale?} class="badge badge-sm badge-ghost">no longer seen</span>
+          </div>
+          <div class="mt-1 font-medium text-base-content">{@t.title}</div>
+          <div class="flex flex-wrap items-center gap-2 font-mono text-xs text-base-content/60">
+            <span :if={location(@t)}>{location(@t)}</span>
+            <a
+              :if={@source_url}
+              id={"source-#{@t.id}"}
+              href={@source_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="link link-primary inline-flex items-center gap-0.5 font-sans"
+            >
+              view source <.icon name="hero-arrow-top-right-on-square-mini" class="size-3" />
+            </a>
+          </div>
+          <details class="mt-1 text-base-content/70">
+            <summary class="cursor-pointer text-xs">Details</summary>
+            <p :if={text(@t.finding["at_label"])}>{text(@t.finding["at_label"])}</p>
+            <p :if={text(@t.finding["detail"])}>{text(@t.finding["detail"])}</p>
+            <ul class="list-disc pl-5">
+              <li :for={hint <- hints(@t.finding)}>{hint}</li>
+            </ul>
+            <dl class="mt-1 grid grid-cols-[auto_1fr] gap-x-3 text-xs">
+              <dt :if={text(@t.finding["confidence"])} class="text-base-content/50">confidence</dt>
+              <dd :if={text(@t.finding["confidence"])}>{text(@t.finding["confidence"])}</dd>
+              <dt :if={texts(@t.finding["provenance"]) != []} class="text-base-content/50">
+                provenance
+              </dt>
+              <dd :if={texts(@t.finding["provenance"]) != []}>
+                {Enum.join(texts(@t.finding["provenance"]), ", ")}
+              </dd>
+            </dl>
+            <ul :if={related(@t.finding) != []} class="mt-1 font-mono text-xs">
+              <li :for={rel <- related(@t.finding)}>
+                {rel.label}<span :if={rel.label && location(rel)}> — </span>{location(rel)}
+              </li>
+            </ul>
+          </details>
+        </div>
+      </div>
+      <div class="font-mono text-xs text-base-content/60">
+        {@t.first_seen_version} → {@t.last_seen_version}
+      </div>
+      <div>
+        <.form
+          for={to_form(%{"status" => Atom.to_string(@t.status), "note" => @t.note}, as: :triage)}
+          id={"triage-form-#{@t.id}"}
+          phx-change="triage"
+        >
+          <input type="hidden" name="finding_id" value={@t.id} />
+          <.input
+            id={"triage-status-#{@t.id}"}
+            name="triage[status]"
+            type="select"
+            value={Atom.to_string(@t.status)}
+            options={@status_options}
+          />
+          <.input
+            id={"triage-note-#{@t.id}"}
+            name="triage[note]"
+            type="text"
+            value={@t.note}
+            placeholder="Note"
+            phx-debounce="500"
+          />
+        </.form>
+        <div :if={@t.updated_by} class="text-xs text-base-content/50">by {@t.updated_by}</div>
+      </div>
+    </div>
     """
   end
 end

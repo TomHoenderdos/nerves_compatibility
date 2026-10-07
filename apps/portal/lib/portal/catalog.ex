@@ -11,7 +11,17 @@ defmodule Portal.Catalog do
 
   require Ash.Query
 
-  import Ecto.Query, only: [from: 2, subquery: 1, where: 3]
+  import Ecto.Query,
+    only: [
+      dynamic: 2,
+      from: 2,
+      group_by: 3,
+      limit: 2,
+      order_by: 2,
+      select: 3,
+      subquery: 1,
+      where: 3
+    ]
 
   alias Portal.Catalog.{
     Artifact,
@@ -261,34 +271,39 @@ defmodule Portal.Catalog do
     |> MapSet.new()
   end
 
+  # error < warning < info, anything else last.
+  defmacrop severity_rank(severity) do
+    quote do
+      fragment(
+        "CASE ? WHEN 'error' THEN 0 WHEN 'warning' THEN 1 WHEN 'info' THEN 2 ELSE 3 END",
+        unquote(severity)
+      )
+    end
+  end
+
+  # `finding.confidence` as a float when it is a JSON number, else NULL, so a
+  # missing value or a label sorts last instead of failing the cast.
+  defmacrop confidence(finding) do
+    quote do
+      fragment(
+        "CASE WHEN jsonb_typeof(?->'confidence') = 'number' THEN (?->>'confidence')::float8 END",
+        unquote(finding),
+        unquote(finding)
+      )
+    end
+  end
+
   @triage_defaults %{
     status: [:new, :confirmed],
     severity: ["error", "warning", "info"],
     analysis: nil,
     package: nil,
-    include_stale: false
+    include_stale: false,
+    check: nil,
+    sort: nil
   }
+  @triage_statuses [:new, :confirmed, :false_positive, :reported, :ignored]
   @triage_status_order %{new: 0, confirmed: 1, reported: 2, false_positive: 3, ignored: 4}
-  @triage_severity_order %{"error" => 0, "warning" => 1, "info" => 2}
-
-  # Everything the list renders except the `finding` jsonb, which is loaded
-  # only for the rows that end up on the page.
-  @triage_list_fields [
-    :id,
-    :fingerprint,
-    :package_name,
-    :analysis,
-    :severity,
-    :title,
-    :file,
-    :line,
-    :status,
-    :note,
-    :first_seen_version,
-    :last_seen_version,
-    :last_seen_run_id,
-    :updated_by
-  ]
 
   @doc """
   argus findings for the admin triage list, each with `stale?`: true when the
@@ -303,38 +318,59 @@ defmodule Portal.Catalog do
 
   @doc """
   `triage_list/1` capped at `limit` rows (nil for all), with the number of rows
-  that matched before the cap.
+  that matched before the cap. Filtering, the stale check and the order all run
+  in Postgres; only the rows on the page are loaded, `finding` jsonb included.
+  `filters.sort` is `:severity` (the default), `:package`, `:analysis`,
+  `:confidence` or `:newest`.
   """
   def triage_page(filters, limit) do
     f = Map.merge(@triage_defaults, filters)
+    scope = triage_scope(f)
 
-    rows =
-      FindingTriage
-      |> Ash.Query.filter(status in ^f.status and severity in ^f.severity)
-      |> then(fn q ->
-        if f.analysis, do: Ash.Query.filter(q, analysis == ^f.analysis), else: q
-      end)
-      |> then(fn q ->
-        if f.package in [nil, ""],
-          do: q,
-          else: Ash.Query.filter(q, contains(package_name, ^f.package))
-      end)
-      |> Ash.Query.select(@triage_list_fields)
-      |> Ash.read!(domain: __MODULE__)
+    page =
+      scope
+      |> order_by(^triage_list_order(f.sort))
+      |> then(&if(limit, do: limit(&1, ^limit), else: &1))
+      |> select([t, l: l], {t.id, fragment("? IS DISTINCT FROM ?", l.id, t.last_seen_run_id)})
+      |> Repo.all()
+      |> Enum.map(fn {id, stale?} -> {Ecto.UUID.load!(id), stale?} end)
 
-    latest = latest_argus_run_ids(rows |> Enum.map(& &1.package_name) |> Enum.uniq())
+    total = if limit, do: Repo.aggregate(scope, :count), else: length(page)
+    {load_triage_rows(page), total}
+  end
 
-    matched =
-      rows
-      |> Enum.map(&%{triage: &1, stale?: Map.get(latest, &1.package_name) != &1.last_seen_run_id})
-      |> Enum.filter(&(f.include_stale or not &1.stale?))
-      |> Enum.sort_by(fn %{triage: t} ->
-        {@triage_status_order[t.status], @triage_severity_order[t.severity], t.package_name,
-         t.title}
-      end)
+  @doc """
+  One row per argus check -- analysis, title and severity -- among the findings
+  matching `filters`, counted in Postgres: findings, distinct packages, a
+  per-status breakdown, the highest numeric confidence and the latest change.
+  `filters.sort` is `:count` (the default), `:severity`, `:package` (first
+  package name), `:analysis`, `:confidence` or `:newest`.
+  """
+  def triage_checks(filters) do
+    f = Map.merge(@triage_defaults, filters)
 
-    page = if limit, do: Enum.take(matched, limit), else: matched
-    {with_findings(page), length(matched)}
+    f
+    |> triage_scope()
+    |> group_by([t], [t.analysis, t.title, t.severity])
+    |> order_by(^triage_check_order(f.sort))
+    |> select([t], %{
+      analysis: t.analysis,
+      title: t.title,
+      severity: t.severity,
+      count: count(t.id),
+      packages: count(t.package_name, :distinct),
+      confidence: max(confidence(t.finding)),
+      new: filter(count(t.id), t.status == "new"),
+      confirmed: filter(count(t.id), t.status == "confirmed"),
+      false_positive: filter(count(t.id), t.status == "false_positive"),
+      reported: filter(count(t.id), t.status == "reported"),
+      ignored: filter(count(t.id), t.status == "ignored")
+    })
+    |> Repo.all()
+    |> Enum.map(fn row ->
+      {by_status, rest} = Map.split(row, @triage_statuses)
+      Map.put(rest, :by_status, by_status)
+    end)
   end
 
   @doc "Whether one triage row's package has a newer argus run that no longer reports it."
@@ -361,33 +397,180 @@ defmodule Portal.Catalog do
     end)
   end
 
-  @doc "Sets an admin's verdict on one finding."
+  @doc """
+  Sets an admin's verdict on one finding. A `:note` key absent from `attrs`
+  leaves the note as it is, so a keyboard status change keeps what was written.
+  """
   def triage!(id, attrs, admin) do
     FindingTriage
     |> Ash.get!(id, domain: __MODULE__)
-    |> Ash.Changeset.for_update(:triage, %{
-      status: attrs[:status],
-      note: attrs[:note],
-      updated_by: admin.username
-    })
+    |> Ash.Changeset.for_update(
+      :triage,
+      attrs |> Map.take([:status, :note]) |> Map.put(:updated_by, admin.username)
+    )
     |> Ash.update!(domain: __MODULE__)
   end
 
-  defp with_findings([]), do: []
+  @doc "One triage row with its `finding` and `stale?`, or nil."
+  def triage_row(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} ->
+        FindingTriage
+        |> Ash.Query.filter(id == ^uuid)
+        |> Ash.read_one!(domain: __MODULE__)
+        |> then(&(&1 && %{triage: &1, stale?: triage_stale?(&1)}))
 
-  defp with_findings(page) do
-    ids = Enum.map(page, & &1.triage.id)
+      :error ->
+        nil
+    end
+  end
 
-    findings =
+  @doc """
+  Sets `attrs` on every finding of `check` (analysis, title and severity) that
+  matches `filters` -- or, with `scope` `:new`, only those still `new`. Returns
+  how many rows changed. A blank note leaves each row's note alone.
+  """
+  def triage_check!(filters, %{analysis: _, title: _, severity: _} = check, scope, attrs, admin)
+      when scope in [:all, :new] do
+    query = Map.merge(@triage_defaults, filters) |> Map.put(:check, check) |> triage_scope()
+    query = if scope == :new, do: where(query, [t], t.status == "new"), else: query
+
+    query
+    |> select([t], t.id)
+    |> Repo.all()
+    |> Enum.map(&Ecto.UUID.load!/1)
+    |> triage_many!(attrs, admin)
+  end
+
+  @doc """
+  Sets `attrs` on the findings with these ids. The ids come from the browser,
+  so anything that is not a UUID of an existing row is ignored. Returns how
+  many rows changed; an unknown status changes none.
+  """
+  def triage_many!(ids, attrs, admin) do
+    ids = ids |> List.wrap() |> Enum.flat_map(&uuid/1) |> Enum.uniq()
+    status = Enum.find(@triage_statuses, &(Atom.to_string(&1) == to_string(attrs[:status])))
+    triage_ids!(ids, status, attrs, admin)
+  end
+
+  defp triage_ids!([], _status, _attrs, _admin), do: 0
+  defp triage_ids!(_ids, nil, _attrs, _admin), do: 0
+
+  defp triage_ids!(ids, status, attrs, admin) do
+    input =
+      %{status: status, updated_by: admin.username}
+      |> then(&if(attrs[:note] in [nil, ""], do: &1, else: Map.put(&1, :note, attrs[:note])))
+
+    %Ash.BulkResult{status: :success, records: records} =
       FindingTriage
       |> Ash.Query.filter(id in ^ids)
-      |> Ash.Query.select([:id, :finding])
-      |> Ash.read!(domain: __MODULE__)
-      |> Map.new(&{&1.id, &1.finding})
+      |> Ash.bulk_update!(:triage, input,
+        domain: __MODULE__,
+        strategy: [:atomic, :stream],
+        return_records?: true,
+        select: [:id]
+      )
 
-    Enum.map(page, fn %{triage: t} = row ->
-      %{row | triage: %{t | finding: Map.get(findings, t.id)}}
-    end)
+    length(records)
+  end
+
+  defp uuid(value) when is_binary(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, uuid} -> [uuid]
+      :error -> []
+    end
+  end
+
+  defp uuid(_), do: []
+
+  # Every triage read shares this: the filters, plus a left join to each
+  # package's latest argus run that tells current findings from stale ones.
+  defp triage_scope(f) do
+    from(t in "catalog_finding_triage",
+      left_join: p in "catalog_packages",
+      on: p.name == t.package_name,
+      left_join: l in subquery(latest_argus_runs()),
+      as: :l,
+      on: l.package_id == p.id,
+      where: t.status in ^Enum.map(f.status, &Atom.to_string/1) and t.severity in ^f.severity
+    )
+    |> triage_where(:analysis, f.analysis)
+    |> triage_where(:package, f.package)
+    |> triage_where(:check, f.check)
+    |> triage_where(:include_stale, f.include_stale)
+  end
+
+  defp triage_where(query, _key, nil), do: query
+  defp triage_where(query, :package, ""), do: query
+  defp triage_where(query, :analysis, analysis), do: where(query, [t], t.analysis == ^analysis)
+
+  # strpos rather than LIKE so `%` and `_` in the search are literal.
+  defp triage_where(query, :package, package),
+    do: where(query, [t], fragment("strpos(?, ?) > 0", t.package_name, ^package))
+
+  defp triage_where(query, :check, %{analysis: analysis, title: title, severity: severity}) do
+    where(
+      query,
+      [t],
+      t.analysis == ^analysis and t.title == ^title and t.severity == ^severity
+    )
+  end
+
+  defp triage_where(query, :include_stale, true), do: query
+
+  defp triage_where(query, :include_stale, false),
+    do: where(query, [t, l: l], l.id == t.last_seen_run_id)
+
+  # Every order ends on the id so a page is stable between renders.
+  defp triage_list_order(sort) do
+    severity = dynamic([t], severity_rank(t.severity))
+
+    case sort do
+      :package ->
+        [asc: dynamic([t], t.package_name), asc: severity]
+
+      :analysis ->
+        [asc: dynamic([t], t.analysis), asc: severity, asc: dynamic([t], t.package_name)]
+
+      :confidence ->
+        [desc_nulls_last: dynamic([t], confidence(t.finding)), asc: severity]
+
+      :newest ->
+        [desc: dynamic([t], t.updated_at), desc: dynamic([t], t.inserted_at)]
+
+      _severity ->
+        [asc: severity, asc: dynamic([t], t.package_name)]
+    end
+    |> Kernel.++(asc: dynamic([t], t.title), asc: dynamic([t], t.id))
+  end
+
+  defp triage_check_order(sort) do
+    count = dynamic([t], count(t.id))
+    severity = dynamic([t], severity_rank(t.severity))
+
+    case sort do
+      :severity -> [asc: severity, desc: count]
+      :package -> [asc: dynamic([t], min(t.package_name)), desc: count]
+      :analysis -> [asc: dynamic([t], t.analysis)]
+      :confidence -> [desc_nulls_last: dynamic([t], max(confidence(t.finding))), desc: count]
+      :newest -> [desc: dynamic([t], max(t.updated_at))]
+      _count -> [desc: count, asc: severity]
+    end
+    |> Kernel.++(asc: dynamic([t], t.analysis), asc: dynamic([t], t.title), asc: severity)
+  end
+
+  defp load_triage_rows([]), do: []
+
+  defp load_triage_rows(page) do
+    ids = Enum.map(page, &elem(&1, 0))
+
+    rows =
+      FindingTriage
+      |> Ash.Query.filter(id in ^ids)
+      |> Ash.read!(domain: __MODULE__)
+      |> Map.new(&{&1.id, &1})
+
+    for {id, stale?} <- page, row = rows[id], do: %{triage: row, stale?: stale?}
   end
 
   # Per package, the newest run whose argus result is `ok`; a run without a
@@ -402,8 +585,6 @@ defmodule Portal.Catalog do
       select: %{package_id: r.package_id, id: r.id}
     )
   end
-
-  defp latest_argus_run_ids([]), do: %{}
 
   defp latest_argus_run_ids(names) do
     from(l in subquery(latest_argus_runs()),
