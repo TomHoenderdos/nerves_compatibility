@@ -343,8 +343,9 @@ defmodule Portal.Catalog do
 
   @doc """
   One row per argus check -- analysis, title and severity -- among the findings
-  matching `filters`, counted in Postgres: findings, distinct packages, a
-  per-status breakdown, the highest numeric confidence and the latest change.
+  matching `filters`, counted in Postgres: findings, distinct packages and
+  their names, a per-status breakdown, the highest numeric confidence and the
+  latest change.
   `filters.sort` is `:count` (the default), `:severity`, `:package` (first
   package name), `:analysis`, `:confidence` or `:newest`.
   """
@@ -361,6 +362,12 @@ defmodule Portal.Catalog do
       severity: t.severity,
       count: count(t.id),
       packages: count(t.package_name, :distinct),
+      package_names:
+        fragment(
+          "array_agg(DISTINCT ? COLLATE \"C\" ORDER BY ? COLLATE \"C\")",
+          t.package_name,
+          t.package_name
+        ),
       confidence: max(confidence(t.finding)),
       new: filter(count(t.id), t.status == "new"),
       confirmed: filter(count(t.id), t.status == "confirmed"),

@@ -363,6 +363,16 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   defp packages(1), do: "1 package"
   defp packages(n), do: "#{n} packages"
 
+  # A check can fire in many packages; the row names the first few and counts
+  # the rest, and expanding the check lists them all.
+  @shown_package_names 6
+  defp package_list(names) when length(names) > @shown_package_names do
+    {shown, rest} = Enum.split(names, @shown_package_names)
+    Enum.join(shown, ", ") <> " +#{length(rest)} more"
+  end
+
+  defp package_list(names), do: Enum.join(names, ", ")
+
   defp breakdown(by_status) do
     @statuses
     |> Enum.filter(fn {status, _label} -> Map.get(by_status, status, 0) > 0 end)
@@ -683,6 +693,12 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                       <span class="font-medium text-base-content/80">{findings(c.count)}</span>
                       · {packages(c.packages)} · {breakdown(c.by_status)}
                       <span :if={c.confidence}>· confidence up to {text(c.confidence)}</span>
+                    </div>
+                    <div
+                      data-check-packages
+                      class="mt-0.5 pl-6 font-mono text-xs text-base-content/70"
+                    >
+                      {package_list(c.package_names)}
                     </div>
                   </button>
                   <.form
