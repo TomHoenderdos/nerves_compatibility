@@ -4,11 +4,14 @@ defmodule Portal.Catalog.Warmup do
   first visitor after a deploy does not pay for them.
 
   `Portal.Catalog.Cache` makes only the first caller after a restart wait, and
-  that caller was a person. The dashboard's computations fold the latest run of
-  every package: on a local copy shaped like production on 2026-10-06 (22,141
-  packages, 23,344 runs, 47,455 system results) the comparable whole-catalog
-  fold took ~850ms warm, and production is slower -- a cold `/api/stats`,
-  built the same way before it moved to SQL, took 15.1s there. Running them here moves that wait off the
+  that caller was a person. The dashboard's computations aggregate the latest
+  run of every package. They used to fold it in Elixir, which on a local copy
+  shaped like production on 2026-10-06 (22,141 packages, 23,344 runs, 47,455
+  system results) took ~850ms warm, and production was slower -- a cold
+  `/api/stats`, built the same way before it moved to SQL, took 15.1s there.
+  Counted in Postgres since, a cold `dashboard(3, 10)` takes ~170ms on a
+  similar seeded catalog: smaller, but still a first visitor's wait, and still
+  a pooled connection while it runs. Running them here moves that wait off the
   request path. After this the entries go stale and refresh in the background
   as usual.
 

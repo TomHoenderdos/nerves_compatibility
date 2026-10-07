@@ -57,9 +57,9 @@ defmodule Portal.Catalog.Phase1aQueriesTest do
     assert cluster.sample_log =~ "Exec format error"
   end
 
-  # `sample_log` is the one dashboard consumer of `log_tail`, and `log_tail` is
-  # deliberately no longer loaded onto the annotated rows the clusters are built
-  # from. These pin the behaviour the separate fetch has to reproduce.
+  # `sample_log` is the one dashboard consumer of `log_tail`, and Postgres picks
+  # it, one row per cluster, rather than the node reading every tail. These pin
+  # the behaviour that query has to reproduce.
   describe "sample_log" do
     test "picks the shortest non-empty log_tail in the cluster" do
       ingest("longpkg", "1.0.0", %{
