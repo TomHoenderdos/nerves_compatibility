@@ -281,12 +281,14 @@ defmodule Portal.Catalog do
     end
   end
 
-  # `finding.confidence` as a float when it is a JSON number, else NULL, so a
-  # missing value or a label sorts last instead of failing the cast.
+  # `finding.confidence` as a numeric (a `Decimal`) when it is a JSON number,
+  # else NULL, so a missing value or a label sorts last instead of failing the
+  # cast. numeric rather than float8: a jsonb number can exceed a double's
+  # range, and that cast would raise "out of range" for the whole page.
   defmacrop confidence(finding) do
     quote do
       fragment(
-        "CASE WHEN jsonb_typeof(?->'confidence') = 'number' THEN (?->>'confidence')::float8 END",
+        "CASE WHEN jsonb_typeof(?->'confidence') = 'number' THEN (?->'confidence')::numeric END",
         unquote(finding),
         unquote(finding)
       )

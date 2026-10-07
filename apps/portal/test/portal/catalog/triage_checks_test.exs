@@ -5,6 +5,7 @@ defmodule Portal.Catalog.TriageChecksTest do
 
   alias Portal.Catalog
   alias Portal.Catalog.FindingTriage
+  alias Portal.Repo
 
   @admin %{username: "tom"}
   @every_status [:new, :confirmed, :false_positive, :reported, :ignored]
@@ -99,7 +100,20 @@ defmodule Portal.Catalog.TriageChecksTest do
         "beta"
       )
 
-      assert [%{confidence: 0.9}, %{confidence: nil}] = Catalog.triage_checks(%{})
+      assert [%{confidence: top}, %{confidence: nil}] = Catalog.triage_checks(%{})
+      assert Decimal.equal?(top, "0.9")
+    end
+
+    test "a confidence beyond a float's range sorts without raising" do
+      Repo.query!(
+        "UPDATE catalog_finding_triage SET finding = jsonb_set(finding, '{confidence}', '1e400'::jsonb) WHERE package_name = 'beta' AND title = 'Other'"
+      )
+
+      assert [%{title: "Other", confidence: huge} | _] =
+               Catalog.triage_checks(%{sort: :confidence})
+
+      assert Decimal.gt?(huge, "1e399")
+      assert [%{triage: %{title: "Other"}} | _] = Catalog.triage_list(%{sort: :confidence})
     end
   end
 
@@ -343,6 +357,8 @@ defmodule Portal.Catalog.TriageChecksTest do
       assert FindingTriage.source_url(%{base | file: nil}) == nil
       assert FindingTriage.source_url(%{base | file: ""}) == nil
       assert FindingTriage.source_url(%{base | file: "/work/deps/p/lib/a.ex"}) == nil
+      assert FindingTriage.source_url(%{base | file: "deps/other/lib/a.ex"}) == nil
+      assert FindingTriage.source_url(%{base | file: "_build/prod/lib/p/ebin/p.app"}) == nil
       assert FindingTriage.source_url(%{base | file: "lib/../../etc/passwd"}) == nil
     end
   end

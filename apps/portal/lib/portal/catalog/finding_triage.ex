@@ -108,15 +108,16 @@ defmodule Portal.Catalog.FindingTriage do
   each line into an `L<n>` id and scrolls to the one in the fragment.
 
   Only a path relative to the package can be linked: argus reports a file
-  outside the package's own directory as it found it, and `..` would point at
-  another package or nowhere.
+  outside the package's own directory as it found it -- absolute, or under
+  `deps/` or `_build/`, which belong to other packages or to build output --
+  and `..` would point at another package or nowhere.
   """
   @spec source_url(map()) :: String.t() | nil
   def source_url(%{package_name: name, last_seen_version: version, file: file} = row)
       when is_binary(name) and is_binary(version) and is_binary(file) do
     segments = String.split(file, "/")
 
-    if version != "" and file != "" and not String.starts_with?(file, "/") and
+    if version != "" and hd(segments) not in ["deps", "_build"] and
          Enum.all?(segments, &(&1 not in ["", ".", ".."])) do
       path = Enum.map_join(segments, "/", &encode/1)
       "https://hex.pm/packages/#{encode(name)}/#{encode(version)}/files/#{path}" <> anchor(row)
