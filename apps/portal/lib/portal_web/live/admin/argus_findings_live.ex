@@ -379,6 +379,50 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     |> Enum.map_join(" · ", fn {status, label} -> "#{by_status[status]} #{label}" end)
   end
 
+  # One quiet summary per check: what is new (or, with nothing new, where its
+  # findings stand), plus the totals only where they add something.
+  defp check_summary(%{by_status: by_status, count: count, packages: packages}) do
+    new = Map.get(by_status, :new, 0)
+
+    lead =
+      cond do
+        new > 0 and count != new -> ["#{new} new", findings(count)]
+        new > 0 -> ["#{new} new"]
+        true -> [breakdown(by_status)]
+      end
+
+    Enum.join(lead ++ if(packages > 1, do: [packages(packages)], else: []), " · ")
+  end
+
+  # The filters on one line, so they can stay folded away.
+  defp filter_summary(filters) do
+    statuses = Map.get(filters, :status, [:new, :confirmed])
+    severities = Map.get(filters, :severity, @severities)
+
+    [
+      if(length(statuses) == length(@statuses),
+        do: "all statuses",
+        else: Enum.map_join(statuses, ", ", &status_label/1)
+      ),
+      if(Enum.sort(severities) == Enum.sort(@severities),
+        do: "all severities",
+        else: Enum.join(severities, ", ")
+      ),
+      filters.analysis && "analysis: #{filters.analysis}",
+      filters.package && "package: #{filters.package}",
+      filters.include_stale && "including no longer seen"
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.join(" · ")
+    |> then(&("Showing " <> &1))
+  end
+
+  defp status_label(status), do: @statuses |> List.keyfind(status, 0) |> elem(1)
+
+  # Inside a check the title is the check's, so a row leads with argus's
+  # detail for that finding.
+  defp line_text(t), do: text(t.finding["detail"]) || t.title
+
   defp by_package(rows), do: Enum.chunk_by(rows, & &1.triage.package_name)
 
   defp text(value) when is_binary(value), do: value
@@ -414,122 +458,140 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
-      <section class="space-y-6">
+      <section class="space-y-5">
         <PortalWeb.UI.page_header kicker="Admin" title="argus findings">
           <:subtitle>Internal triage. Nothing here is public or sent to anyone.</:subtitle>
         </PortalWeb.UI.page_header>
 
         <PortalWeb.PageHTML.admin_tabs section={:triage} />
 
-        <div id="triage-counts" class="flex flex-wrap gap-2">
-          <.link
-            :for={{status, label} <- @statuses}
-            id={"triage-count-#{status}"}
-            patch={status_path(@view, @sort, status)}
-            class="badge badge-lg badge-outline transition hover:border-primary hover:text-primary"
-          >
-            {Map.get(@counts, status, 0)} {label}
-          </.link>
-        </div>
+        <p id="triage-counts" class="text-sm text-base-content/60">
+          <%= for {{status, label}, i} <- Enum.with_index(@statuses) do %>
+            <span :if={i > 0} aria-hidden="true"> · </span>
+            <.link
+              id={"triage-count-#{status}"}
+              patch={status_path(@view, @sort, status)}
+              class="transition hover:text-primary"
+            >
+              {Map.get(@counts, status, 0)} {label}
+            </.link>
+          <% end %>
+        </p>
 
-        <div id="triage-export" class="flex flex-wrap items-center gap-2 text-sm">
-          <span class="text-base-content/60">Export (NDJSON, one run per line):</span>
-          <a href={~p"/admin/argus/export.ndjson"} class="btn btn-xs btn-outline">
-            latest run per package
-          </a>
-          <a href={~p"/admin/argus/export.ndjson?scope=all"} class="btn btn-xs btn-outline">
-            every run
-          </a>
-        </div>
-
-        <.form
-          for={@filter_form}
-          id="triage-filters"
-          phx-change="filter"
-          class="grid items-start gap-4 sm:grid-cols-5"
-        >
-          <%!-- Checkbox groups rather than multi-selects: a select box clips its
-          options, so a selected status can sit out of sight. --%>
-          <fieldset>
-            <legend class="label mb-1">Status</legend>
-            <label :for={{atom, label} <- @statuses} class="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                id={"filter-status-#{atom}"}
-                name="f[status][]"
-                value={atom}
-                checked={Atom.to_string(atom) in @filter_form[:status].value}
-                class="checkbox checkbox-sm"
-              /> {label}
-            </label>
-          </fieldset>
-          <fieldset>
-            <legend class="label mb-1">Severity</legend>
-            <label :for={severity <- @severities} class="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                id={"filter-severity-#{severity}"}
-                name="f[severity][]"
-                value={severity}
-                checked={severity in @filter_form[:severity].value}
-                class="checkbox checkbox-sm"
-              /> {severity}
-            </label>
-          </fieldset>
-          <.input field={@filter_form[:analysis]} type="text" label="Analysis" phx-debounce="300" />
-          <.input
-            field={@filter_form[:package]}
-            type="text"
-            label="Package"
-            phx-debounce="300"
-            data-triage-search
-          />
-          <.input field={@filter_form[:stale]} type="checkbox" label="Include no longer seen" />
-        </.form>
-
-        <div class="flex flex-wrap items-end justify-between gap-3">
+        <div class="flex flex-wrap items-center justify-between gap-3">
           <div id="triage-view" class="join">
             <.link
               id="view-checks"
               patch={switch_path(@filters, @sort, :checks)}
-              class={["btn btn-sm join-item", @view == :checks && "btn-active"]}
+              class={["btn btn-xs join-item", @view == :checks && "btn-active"]}
             >
               By check
             </.link>
             <.link
               id="view-findings"
               patch={switch_path(@filters, @sort, :findings)}
-              class={["btn btn-sm join-item", @view == :findings && "btn-active"]}
+              class={["btn btn-xs join-item", @view == :findings && "btn-active"]}
             >
               By finding
             </.link>
           </div>
-          <form id="triage-sort" phx-change="sort" class="flex items-center gap-2 text-sm">
-            <label for="triage-sort-select" class="text-base-content/60">Sort</label>
-            <select id="triage-sort-select" name="sort" class="select select-sm w-44">
-              <option
-                :for={{value, atom, label} <- sorts(@view)}
-                value={value}
-                selected={atom == @sort}
-              >
-                {label}
-              </option>
-            </select>
-          </form>
-          <button
-            type="button"
-            id="triage-shortcuts-toggle"
-            phx-click={JS.toggle(to: "#triage-shortcuts")}
-            class="btn btn-sm btn-ghost"
-          >
-            <.icon name="hero-command-line-mini" class="size-4" /> Shortcuts
-            <kbd class="kbd kbd-xs">?</kbd>
-          </button>
+          <div class="flex items-center gap-2">
+            <form id="triage-sort" phx-change="sort" class="flex items-center gap-2 text-sm">
+              <label for="triage-sort-select" class="text-base-content/60">Sort</label>
+              <select id="triage-sort-select" name="sort" class="select select-xs w-40">
+                <option
+                  :for={{value, atom, label} <- sorts(@view)}
+                  value={value}
+                  selected={atom == @sort}
+                >
+                  {label}
+                </option>
+              </select>
+            </form>
+            <button
+              type="button"
+              id="triage-shortcuts-toggle"
+              phx-click={JS.toggle(to: "#triage-shortcuts")}
+              class="btn btn-xs btn-ghost"
+            >
+              Shortcuts <kbd class="kbd kbd-xs">?</kbd>
+            </button>
+          </div>
+        </div>
+
+        <div class="text-sm">
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              id="triage-filters-toggle"
+              phx-click={JS.toggle(to: "#triage-filters-panel")}
+              class="btn btn-xs btn-ghost"
+            >
+              <.icon name="hero-funnel-mini" class="size-3.5" /> Filters
+            </button>
+            <span id="triage-filter-summary" class="text-base-content/60">
+              {filter_summary(@filters)}
+            </span>
+          </div>
+
+          <%!-- Closed by default and on every load; the summary beside the
+          toggle says what is active. JS.toggle keeps it open across patches. --%>
+          <div id="triage-filters-panel" class="hidden pt-3">
+            <.form
+              for={@filter_form}
+              id="triage-filters"
+              phx-change="filter"
+              class="grid items-start gap-4 rounded-xl border border-base-300 p-4 sm:grid-cols-5"
+            >
+              <%!-- Checkbox groups rather than multi-selects: a select box clips its
+              options, so a selected status can sit out of sight. --%>
+              <fieldset>
+                <legend class="label mb-1">Status</legend>
+                <label :for={{atom, label} <- @statuses} class="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    id={"filter-status-#{atom}"}
+                    name="f[status][]"
+                    value={atom}
+                    checked={Atom.to_string(atom) in @filter_form[:status].value}
+                    class="checkbox checkbox-sm"
+                  /> {label}
+                </label>
+              </fieldset>
+              <fieldset>
+                <legend class="label mb-1">Severity</legend>
+                <label :for={severity <- @severities} class="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    id={"filter-severity-#{severity}"}
+                    name="f[severity][]"
+                    value={severity}
+                    checked={severity in @filter_form[:severity].value}
+                    class="checkbox checkbox-sm"
+                  /> {severity}
+                </label>
+              </fieldset>
+              <.input
+                field={@filter_form[:analysis]}
+                type="text"
+                label="Analysis"
+                phx-debounce="300"
+              />
+              <.input
+                field={@filter_form[:package]}
+                type="text"
+                label="Package"
+                phx-debounce="300"
+                data-triage-search
+              />
+              <.input field={@filter_form[:stale]} type="checkbox" label="Include no longer seen" />
+            </.form>
+          </div>
         </div>
 
         <div
           id="triage-shortcuts"
-          class="hidden rounded-2xl border border-base-300 bg-base-100 p-4 text-sm shadow-sm"
+          class="hidden rounded-xl border border-base-300 bg-base-100 p-4 text-sm"
         >
           <dl class="grid gap-x-6 gap-y-1 sm:grid-cols-3">
             <div>
@@ -596,61 +658,55 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
 
         <div id="triage-list" phx-hook=".TriageKeys">
           <%= if @view == :findings do %>
-            <p :if={@total > @shown} id="triage-shown" class="mb-2 text-sm text-base-content/60">
-              Showing {@shown} of {@total}. Narrow the filters to see the rest.
-            </p>
-
-            <.form
-              for={to_form(%{}, as: :bulk)}
-              id="bulk-form"
-              phx-submit="bulk"
-              class="mb-3 flex flex-wrap items-end gap-3 rounded-2xl border border-base-300 bg-base-200/40 px-4 py-3 text-sm"
-            >
-              <label class="flex items-center gap-2 self-center">
+            <div class="mb-2 flex flex-wrap items-center gap-3 text-sm text-base-content/60">
+              <label class="flex items-center gap-2">
                 <input
                   type="checkbox"
                   id="select-all"
                   phx-click="select_all"
                   checked={@shown_ids != [] and MapSet.size(@selected) == length(@shown_ids)}
-                  class="checkbox checkbox-sm"
+                  class="checkbox checkbox-xs"
                 /> Select all shown
               </label>
-              <span class="self-center font-medium">{MapSet.size(@selected)} selected</span>
-              <.input
-                id="bulk-status"
-                name="bulk[status]"
-                type="select"
-                value=""
-                prompt="Set status…"
-                options={@status_options}
-                class="select select-sm w-44"
-              />
-              <.input
+              <span :if={@total > @shown} id="triage-shown">
+                Showing {@shown} of {@total}. Narrow the filters to see the rest.
+              </span>
+            </div>
+
+            <%!-- Only once something is selected: until then it is noise. --%>
+            <.form
+              :if={MapSet.size(@selected) > 0}
+              for={to_form(%{}, as: :bulk)}
+              id="bulk-form"
+              phx-submit="bulk"
+              class="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-sm"
+            >
+              <span class="font-medium">{MapSet.size(@selected)} selected</span>
+              <select id="bulk-status" name="bulk[status]" class="select select-xs w-36">
+                <option value="">Set status…</option>
+                {Phoenix.HTML.Form.options_for_select(@status_options, nil)}
+              </select>
+              <input
                 id="bulk-note"
                 name="bulk[note]"
                 type="text"
                 value=""
                 placeholder="Note (optional)"
-                class="input input-sm w-56"
+                class="input input-xs w-48"
               />
               <button
                 type="submit"
-                class="btn btn-sm btn-primary mb-2"
-                disabled={MapSet.size(@selected) == 0}
+                class="btn btn-xs btn-primary"
                 data-confirm={"Set the status of #{findings(MapSet.size(@selected))}?"}
               >
                 Apply to selected
               </button>
             </.form>
 
-            <div
-              id="findings"
-              phx-update="stream"
-              class="divide-y divide-base-200 overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm"
-            >
+            <div id="findings" phx-update="stream" class="border-y border-base-200">
               <div
                 id="findings-empty"
-                class="hidden px-4 py-6 text-sm text-base-content/60 only:block"
+                class="hidden py-6 text-sm text-base-content/60 only:block"
               >
                 No findings match these filters.
               </div>
@@ -665,10 +721,10 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
               />
             </div>
           <% else %>
-            <div id="checks" phx-update="stream" class="space-y-3">
+            <div id="checks" phx-update="stream" class="border-t border-base-200">
               <div
                 id="checks-empty"
-                class="hidden rounded-2xl border border-base-300 bg-base-100 px-4 py-6 text-sm text-base-content/60 only:block"
+                class="hidden py-6 text-sm text-base-content/60 only:block"
               >
                 No findings match these filters.
               </div>
@@ -676,7 +732,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                 :for={{dom_id, %{id: key, check: c, rows: rows}} <- @streams.checks}
                 id={dom_id}
                 data-check
-                class="overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm"
+                class="border-b border-base-200"
               >
                 <%!-- The check's keyboard item: `.TriageKeys` reads its identity
                 and how many new findings a status key would set (0 when new is
@@ -691,7 +747,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                   data-new={if new_scope?(@filters, c), do: c.by_status.new, else: 0}
                   tabindex="-1"
                   class={[
-                    "flex flex-wrap items-start justify-between gap-3 px-4 py-3 outline-none transition-colors",
+                    "outline-none transition-colors hover:bg-base-200/40",
                     "focus:bg-primary/10 focus:ring-2 focus:ring-inset focus:ring-primary"
                   ]}
                 >
@@ -703,56 +759,63 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                     phx-value-title={c.title}
                     phx-value-severity={c.severity}
                     aria-expanded={to_string(rows != nil)}
-                    class="min-w-0 flex-1 cursor-pointer text-left"
+                    class="flex w-full cursor-pointer items-center gap-2 px-2 py-2 text-left text-sm"
                   >
-                    <div class="flex flex-wrap items-center gap-2">
-                      <.icon
-                        name={if rows, do: "hero-chevron-down-mini", else: "hero-chevron-right-mini"}
-                        class="size-4 text-base-content/50"
-                      />
-                      <span class={["badge badge-sm", severity_class(c.severity)]}>
-                        {c.severity}
+                    <.icon
+                      name={if rows, do: "hero-chevron-down-mini", else: "hero-chevron-right-mini"}
+                      class="size-4 shrink-0 text-base-content/40"
+                    />
+                    <span class={["badge badge-xs shrink-0", severity_class(c.severity)]}>
+                      {c.severity}
+                    </span>
+                    <span class="badge badge-xs badge-outline shrink-0 font-mono">
+                      {c.analysis}
+                    </span>
+                    <span class="min-w-0 flex-1 truncate text-base-content" title={c.title}>
+                      {c.title}
+                    </span>
+                    <span class="hidden shrink-0 text-xs text-base-content/60 sm:inline">
+                      <span data-check-summary>{check_summary(c)}</span>
+                      <span aria-hidden="true"> · </span>
+                      <span data-check-packages class="font-mono">
+                        {package_list(c.package_names)}
                       </span>
-                      <span class="badge badge-sm badge-outline font-mono">{c.analysis}</span>
-                      <span class="font-medium text-base-content">{c.title}</span>
-                    </div>
-                    <div class="mt-1 pl-6 text-xs text-base-content/60">
-                      <span class="font-medium text-base-content/80">{findings(c.count)}</span>
-                      · {packages(c.packages)} · {breakdown(c.by_status)}
-                      <span :if={c.confidence}>· confidence up to {text(c.confidence)}</span>
-                    </div>
-                    <div
-                      data-check-packages
-                      class="mt-0.5 pl-6 font-mono text-xs text-base-content/70"
-                    >
-                      {package_list(c.package_names)}
-                    </div>
+                    </span>
                   </button>
+                </div>
+
+                <div
+                  :if={rows}
+                  id={"#{dom_id}-findings"}
+                  class="mb-2 ml-8 border-l border-base-200 pl-3"
+                >
+                  <%!-- The group action lives with the findings it touches, so
+                  a collapsed check is one quiet line. --%>
                   <.form
                     for={to_form(%{}, as: :check)}
                     id={"check-form-#{key}"}
                     phx-submit="triage_check"
-                    class="flex flex-wrap items-end gap-2 text-sm"
+                    class="flex flex-wrap items-center gap-2 py-2 text-xs"
                   >
                     <input type="hidden" name="check[analysis]" value={c.analysis} />
                     <input type="hidden" name="check[title]" value={c.title} />
                     <input type="hidden" name="check[severity]" value={c.severity} />
-                    <.input
+                    <span class="text-base-content/60">Set the check:</span>
+                    <select
                       id={"check-status-#{key}"}
                       name="check[status]"
-                      type="select"
-                      value=""
-                      prompt="Set status…"
-                      options={@status_options}
-                      class="select select-sm w-40"
-                    />
-                    <.input
+                      class="select select-xs w-36"
+                    >
+                      <option value="">Set status…</option>
+                      {Phoenix.HTML.Form.options_for_select(@status_options, nil)}
+                    </select>
+                    <input
                       id={"check-note-#{key}"}
                       name="check[note]"
                       type="text"
                       value=""
                       placeholder="Note (optional)"
-                      class="input input-sm w-44"
+                      class="input input-xs w-40"
                     />
                     <%!-- One button per scope, so each confirm can name the
                     exact number it touches. "only new" is first, so Enter in
@@ -764,7 +827,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                       id={"check-apply-new-#{key}"}
                       name="check[scope]"
                       value="new"
-                      class="btn btn-sm btn-outline mb-2"
+                      class="btn btn-xs btn-outline"
                       data-confirm={"Set the status of #{c.by_status.new} new #{noun(c.by_status.new)} of this check?"}
                     >
                       Apply to {c.by_status.new} new
@@ -774,47 +837,51 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                       id={"check-apply-all-#{key}"}
                       name="check[scope]"
                       value="all"
-                      class="btn btn-sm btn-outline mb-2"
+                      class="btn btn-xs btn-ghost"
                       data-confirm={"Set the status of all #{findings(c.count)} of this check?"}
                     >
                       Apply to all {c.count}
                     </button>
+                    <span :if={c.confidence} class="text-base-content/50">
+                      confidence up to {text(c.confidence)}
+                    </span>
                   </.form>
-                </div>
-
-                <div :if={rows} id={"#{dom_id}-findings"} class="border-t border-base-200">
                   <p
                     :if={elem(rows, 1) > length(elem(rows, 0))}
-                    class="px-4 pt-2 text-xs text-base-content/60"
+                    class="pb-1 text-xs text-base-content/60"
                   >
                     Showing {length(elem(rows, 0))} of {elem(rows, 1)}.
                   </p>
                   <div
                     :for={[%{triage: first} | _] = group <- by_package(elem(rows, 0))}
                     id={"#{dom_id}-package-#{first.package_name}"}
-                    class="border-t border-base-200 first:border-t-0"
                   >
-                    <div class="bg-base-200/50 px-4 py-1.5 font-mono text-xs">
+                    <div class="pt-1 font-mono text-xs text-base-content/60">
                       <.link navigate={~p"/packages/#{first.package_name}"} class="link">
                         {first.package_name}
                       </.link>
-                      <span class="text-base-content/50">· {findings(length(group))}</span>
+                      <span>· {findings(length(group))}</span>
                     </div>
-                    <div class="divide-y divide-base-200">
-                      <.finding_row
-                        :for={%{triage: t, stale?: stale?} <- group}
-                        id={"finding-#{t.id}"}
-                        t={t}
-                        stale?={stale?}
-                        status_options={@status_options}
-                      />
-                    </div>
+                    <.finding_row
+                      :for={%{triage: t, stale?: stale?} <- group}
+                      id={"finding-#{t.id}"}
+                      t={t}
+                      stale?={stale?}
+                      in_check
+                      status_options={@status_options}
+                    />
                   </div>
                 </div>
               </div>
             </div>
           <% end %>
         </div>
+
+        <p id="triage-export" class="text-xs text-base-content/50">
+          Export NDJSON (one run per line):
+          <a href={~p"/admin/argus/export.ndjson"} class="link">latest run per package</a>
+          · <a href={~p"/admin/argus/export.ndjson?scope=all"} class="link">every run</a>
+        </p>
       </section>
     </Layouts.app>
 
@@ -982,8 +1049,13 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   attr :stale?, :boolean, default: false
   attr :selectable, :boolean, default: false
   attr :selected, :boolean, default: false
+  attr :in_check, :boolean, default: false, doc: "inside an expanded check, which names the check"
   attr :status_options, :list, required: true
 
+  # One line per finding: what and where, and its status. Everything else --
+  # the note, the source link, versions and argus's own details -- is behind
+  # "Details". The form wraps both so the note still saves with the status;
+  # the selection checkbox stays outside it, as it is not a triage field.
   defp finding_row(assigns) do
     assigns = assign(assigns, :source_url, FindingTriage.source_url(assigns.t))
 
@@ -994,53 +1066,102 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
       data-id={@t.id}
       tabindex="-1"
       class={[
-        "grid gap-3 px-4 py-3 text-sm outline-none transition-colors sm:grid-cols-[minmax(0,1fr)_auto_16rem]",
-        "focus:bg-primary/10 focus:ring-2 focus:ring-inset focus:ring-primary",
+        "flex items-start gap-2 border-b border-base-200 px-2 py-1.5 text-sm outline-none transition-colors last:border-b-0",
+        "hover:bg-base-200/40 focus:bg-primary/10 focus:ring-2 focus:ring-inset focus:ring-primary",
         @selected && "bg-primary/5"
       ]}
     >
-      <div class="flex min-w-0 gap-3">
-        <input
-          :if={@selectable}
-          type="checkbox"
-          id={"select-#{@t.id}"}
-          phx-click="toggle_select"
-          phx-value-id={@t.id}
-          checked={@selected}
-          aria-label="Select finding"
-          class="checkbox checkbox-sm mt-0.5"
-        />
-        <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-2">
-            <span class={["badge badge-sm", severity_class(@t.severity)]}>{@t.severity}</span>
-            <.link navigate={~p"/packages/#{@t.package_name}"} class="link font-mono">
-              {@t.package_name}
-            </.link>
-            <span class="badge badge-sm badge-outline font-mono">{@t.analysis}</span>
-            <span :if={@stale?} class="badge badge-sm badge-ghost">no longer seen</span>
+      <input
+        :if={@selectable}
+        type="checkbox"
+        id={"select-#{@t.id}"}
+        phx-click="toggle_select"
+        phx-value-id={@t.id}
+        checked={@selected}
+        aria-label="Select finding"
+        class="checkbox checkbox-xs mt-1"
+      />
+      <.form
+        for={to_form(%{"status" => Atom.to_string(@t.status), "note" => @t.note}, as: :triage)}
+        id={"triage-form-#{@t.id}"}
+        phx-change="triage"
+        class="min-w-0 flex-1"
+      >
+        <input type="hidden" name="finding_id" value={@t.id} />
+        <div class="flex items-center gap-2">
+          <div class="flex min-w-0 flex-1 items-center gap-2">
+            <%= if @in_check do %>
+              <span class="shrink-0 font-mono text-xs text-base-content/60">{location(@t)}</span>
+              <span class="min-w-0 truncate text-base-content/80" title={line_text(@t)}>
+                {line_text(@t)}
+              </span>
+            <% else %>
+              <span class={["badge badge-xs shrink-0", severity_class(@t.severity)]}>
+                {@t.severity}
+              </span>
+              <.link
+                navigate={~p"/packages/#{@t.package_name}"}
+                class="link shrink-0 font-mono text-xs"
+              >
+                {@t.package_name}
+              </.link>
+              <span class="min-w-0 truncate" title={@t.title}>{@t.title}</span>
+              <%!-- The location gives way before the title does. --%>
+              <span
+                class="hidden min-w-0 max-w-[35%] truncate font-mono text-xs text-base-content/50 md:inline"
+                title={location(@t)}
+              >
+                {location(@t)}
+              </span>
+            <% end %>
+            <span :if={@stale?} class="badge badge-xs badge-ghost shrink-0">no longer seen</span>
           </div>
-          <div class="mt-1 font-medium text-base-content">{@t.title}</div>
-          <div class="flex flex-wrap items-center gap-2 font-mono text-xs text-base-content/60">
-            <span :if={location(@t)}>{location(@t)}</span>
-            <a
-              :if={@source_url}
-              id={"source-#{@t.id}"}
-              href={@source_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              class="link link-primary inline-flex items-center gap-0.5 font-sans"
-            >
-              view source <.icon name="hero-arrow-top-right-on-square-mini" class="size-3" />
-            </a>
-          </div>
-          <details class="mt-1 text-base-content/70">
-            <summary class="cursor-pointer text-xs">Details</summary>
+          <span :if={@t.note} class="hidden max-w-40 truncate text-xs text-base-content/50 sm:inline">
+            {@t.note}
+          </span>
+          <select
+            id={"triage-status-#{@t.id}"}
+            name="triage[status]"
+            aria-label="Status"
+            class="select select-xs w-32 shrink-0"
+          >
+            {Phoenix.HTML.Form.options_for_select(@status_options, Atom.to_string(@t.status))}
+          </select>
+        </div>
+        <details class="text-xs text-base-content/70">
+          <summary class="cursor-pointer text-base-content/50">Details</summary>
+          <div class="space-y-1 py-1">
+            <div class="flex flex-wrap items-center gap-2">
+              <.input
+                id={"triage-note-#{@t.id}"}
+                name="triage[note]"
+                type="text"
+                value={@t.note}
+                placeholder="Note"
+                phx-debounce="500"
+                class="input input-xs w-64"
+              />
+              <a
+                :if={@source_url}
+                id={"source-#{@t.id}"}
+                href={@source_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="link link-primary inline-flex items-center gap-0.5"
+              >
+                view source <.icon name="hero-arrow-top-right-on-square-mini" class="size-3" />
+              </a>
+            </div>
+            <p :if={!@in_check} class="font-mono">{@t.analysis}</p>
+            <p :if={@in_check}>{@t.title}</p>
             <p :if={text(@t.finding["at_label"])}>{text(@t.finding["at_label"])}</p>
             <p :if={text(@t.finding["detail"])}>{text(@t.finding["detail"])}</p>
-            <ul class="list-disc pl-5">
+            <ul :if={hints(@t.finding) != []} class="list-disc pl-5">
               <li :for={hint <- hints(@t.finding)}>{hint}</li>
             </ul>
-            <dl class="mt-1 grid grid-cols-[auto_1fr] gap-x-3 text-xs">
+            <dl class="grid grid-cols-[auto_1fr] gap-x-3">
+              <dt class="text-base-content/50">versions</dt>
+              <dd class="font-mono">{@t.first_seen_version} → {@t.last_seen_version}</dd>
               <dt :if={text(@t.finding["confidence"])} class="text-base-content/50">confidence</dt>
               <dd :if={text(@t.finding["confidence"])}>{text(@t.finding["confidence"])}</dd>
               <dt :if={texts(@t.finding["provenance"]) != []} class="text-base-content/50">
@@ -1049,43 +1170,17 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
               <dd :if={texts(@t.finding["provenance"]) != []}>
                 {Enum.join(texts(@t.finding["provenance"]), ", ")}
               </dd>
+              <dt :if={@t.updated_by} class="text-base-content/50">triaged by</dt>
+              <dd :if={@t.updated_by}>{@t.updated_by}</dd>
             </dl>
-            <ul :if={related(@t.finding) != []} class="mt-1 font-mono text-xs">
+            <ul :if={related(@t.finding) != []} class="font-mono">
               <li :for={rel <- related(@t.finding)}>
                 {rel.label}<span :if={rel.label && location(rel)}> — </span>{location(rel)}
               </li>
             </ul>
-          </details>
-        </div>
-      </div>
-      <div class="font-mono text-xs text-base-content/60">
-        {@t.first_seen_version} → {@t.last_seen_version}
-      </div>
-      <div>
-        <.form
-          for={to_form(%{"status" => Atom.to_string(@t.status), "note" => @t.note}, as: :triage)}
-          id={"triage-form-#{@t.id}"}
-          phx-change="triage"
-        >
-          <input type="hidden" name="finding_id" value={@t.id} />
-          <.input
-            id={"triage-status-#{@t.id}"}
-            name="triage[status]"
-            type="select"
-            value={Atom.to_string(@t.status)}
-            options={@status_options}
-          />
-          <.input
-            id={"triage-note-#{@t.id}"}
-            name="triage[note]"
-            type="text"
-            value={@t.note}
-            placeholder="Note"
-            phx-debounce="500"
-          />
-        </.form>
-        <div :if={@t.updated_by} class="text-xs text-base-content/50">by {@t.updated_by}</div>
-      </div>
+          </div>
+        </details>
+      </.form>
     </div>
     """
   end
