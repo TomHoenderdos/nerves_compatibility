@@ -302,6 +302,7 @@ defmodule Portal.Catalog do
     package: nil,
     include_stale: false,
     check: nil,
+    package_name: nil,
     sort: nil
   }
   @triage_statuses [:new, :confirmed, :false_positive, :reported, :ignored]
@@ -466,7 +467,21 @@ defmodule Portal.Catalog do
   """
   def triage_check!(filters, %{analysis: _, title: _, severity: _} = check, scope, attrs, admin)
       when scope in [:all, :new] do
-    query = Map.merge(@triage_defaults, filters) |> Map.put(:check, check) |> triage_scope()
+    filters |> Map.put(:check, check) |> triage_matching!(scope, attrs, admin)
+  end
+
+  @doc """
+  `triage_check!/5` for one package: every finding of `package_name` (an
+  exact name, unlike the package search) that matches `filters`, or with
+  `scope` `:new` only the new ones.
+  """
+  def triage_package!(filters, package_name, scope, attrs, admin)
+      when is_binary(package_name) and scope in [:all, :new] do
+    filters |> Map.put(:package_name, package_name) |> triage_matching!(scope, attrs, admin)
+  end
+
+  defp triage_matching!(filters, scope, attrs, admin) do
+    query = @triage_defaults |> Map.merge(filters) |> triage_scope()
     query = if scope == :new, do: where(query, [t], t.status == "new"), else: query
 
     query
@@ -531,6 +546,7 @@ defmodule Portal.Catalog do
     |> triage_where(:analysis, f.analysis)
     |> triage_where(:package, f.package)
     |> triage_where(:check, f.check)
+    |> triage_where(:package_name, f.package_name)
     |> triage_where(:include_stale, f.include_stale)
   end
 
@@ -549,6 +565,9 @@ defmodule Portal.Catalog do
       t.analysis == ^analysis and t.title == ^title and t.severity == ^severity
     )
   end
+
+  defp triage_where(query, :package_name, name),
+    do: where(query, [t], t.package_name == ^name)
 
   defp triage_where(query, :include_stale, true), do: query
 
