@@ -34,6 +34,12 @@ defmodule PortalWeb.Plugs.RequireAdmin do
 
   alias Portal.Accounts.User
 
+  @passkey_required Application.compile_env(:portal, :admin_passkey_required, true)
+
+  @doc "Whether `/admin` demands a passkey sign-in. False only in local dev."
+  @spec passkey_required?() :: boolean()
+  def passkey_required?, do: @passkey_required
+
   @typedoc """
   Where a refused caller goes, and what they are told. Path and message rather
   than a conn or a socket, so the one decision can serve both.
@@ -116,14 +122,24 @@ defmodule PortalWeb.Plugs.RequireAdmin do
   deliberately is not reused here, because `mark_reauth/2` fires on every
   step-up and a recovery-code re-auth would silently revoke admin mid-session.
   """
-  @spec check(User.t() | nil, atom() | nil) :: {:ok, User.t()} | {:error, refusal()}
-  def check(user, login_method \\ nil)
+  @spec check(User.t() | nil, atom() | nil, boolean()) :: {:ok, User.t()} | {:error, refusal()}
+  def check(user, login_method \\ nil, passkey_required \\ passkey_required?())
 
-  def check(nil, _login_method) do
+  def check(nil, _login_method, _passkey_required) do
     {:error, %{to: ~p"/login", flash: "Sign in with an admin account."}}
   end
 
-  def check(%User{} = user, login_method) do
+  # Local development only: `config/dev.exs` turns the requirement off so an
+  # admin can sign in with a password on localhost. Read with `compile_env`, so
+  # a prod release -- which never loads dev.exs -- is compiled with it on and
+  # nothing at runtime can switch it off.
+  def check(%User{} = user, _login_method, false) do
+    if Portal.Accounts.admin?(user),
+      do: {:ok, user},
+      else: {:error, %{to: ~p"/request-scan", flash: "Admin access is required."}}
+  end
+
+  def check(%User{} = user, login_method, true) do
     cond do
       # `admin?/1` restates the scope `Mfa.admin_satisfied?/1` also enforces
       # (`mfa.ex:45` answers true for a non-admin), so removing either alone is

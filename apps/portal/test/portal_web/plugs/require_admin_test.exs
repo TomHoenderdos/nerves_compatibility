@@ -306,4 +306,24 @@ defmodule PortalWeb.Plugs.RequireAdminTest do
 
     assert socket.redirected == {:redirect, %{to: ~p"/settings/security", status: 302}}
   end
+
+  # The dev-only escape hatch is compiled in from `config/dev.exs`. Every other
+  # environment -- this one, and above all the prod release, which never loads
+  # dev.exs -- must keep the requirement; the gate tests above only mean
+  # anything while this holds.
+  test "the passkey requirement is on outside dev" do
+    assert PortalWeb.Plugs.RequireAdmin.passkey_required?()
+  end
+
+  test "with the requirement off, an admin with a password session gets in" do
+    admin = admin_fixture()
+
+    assert {:ok, %{id: id}} = PortalWeb.Plugs.RequireAdmin.check(admin, :password, false)
+    assert id == admin.id
+  end
+
+  test "with the requirement off, a non-admin is still refused" do
+    assert {:error, %{to: "/request-scan"}} =
+             PortalWeb.Plugs.RequireAdmin.check(user_fixture(), :password, false)
+  end
 end

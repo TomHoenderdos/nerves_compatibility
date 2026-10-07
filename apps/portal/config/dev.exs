@@ -12,6 +12,11 @@ config :portal, Portal.Repo,
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #
+# Local development only: admins reach /admin with a password sign-in, no
+# passkey. Compiled in (see `PortalWeb.Plugs.RequireAdmin`), so only a dev build
+# carries it; test and prod keep the requirement.
+config :portal, :admin_passkey_required, false
+
 # The watchers configuration can be used to run external
 # watchers to your application. For example, we can use it
 # to bundle .js and .css sources.
