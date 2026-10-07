@@ -27,12 +27,20 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   @list_sorts [
     {"severity", :severity, "Severity"},
     {"package", :package, "Package"},
-    {"analysis", :analysis, "Analysis"},
+    # "Type" is argus's analysis; the URL keeps the column's name.
+    {"analysis", :analysis, "Type"},
     {"confidence", :confidence, "Confidence"},
     {"newest", :newest, "Recently changed"}
   ]
   @check_sorts [{"count", :count, "Most findings"} | @list_sorts]
-  @views %{"checks" => :checks, "findings" => :findings}
+  # By package: which package comes first, and (Type) how findings order
+  # inside each one.
+  @package_sorts [
+    {"new", :package_new, "Most new"},
+    {"package", :package, "Package name"},
+    {"analysis", :package_type, "Type"}
+  ]
+  @views %{"checks" => :checks, "findings" => :findings, "packages" => :packages}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -50,8 +58,8 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
        shown: 0,
        total: 0
      )
-     |> stream_configure(:checks, dom_id: &"check-#{&1.id}")
-     |> stream_configure(:findings, dom_id: &"finding-#{&1.triage.id}")
+     |> stream_configure(:checks, dom_id: &check_dom_id/1)
+     |> stream_configure(:findings, dom_id: &finding_dom_id/1)
      |> stream(:checks, [])
      |> stream(:findings, [])}
   end
@@ -145,7 +153,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   # Only rows on the page can be selected, so a stale or forged id never
   # reaches the bulk action.
   def handle_event("toggle_select", %{"id" => id}, socket) do
-    if socket.assigns.view == :findings and id in socket.assigns.shown_ids do
+    if socket.assigns.view in [:findings, :packages] and id in socket.assigns.shown_ids do
       selected = socket.assigns.selected
 
       selected =
@@ -197,16 +205,19 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
 
   defp reload(socket), do: socket |> assign(:counts, Catalog.triage_counts()) |> load()
 
-  defp load(%{assigns: %{view: :findings} = assigns} = socket) do
+  # Both list views stream findings; by package, a header item opens each
+  # package's run of rows (the query already orders them by package).
+  defp load(%{assigns: %{view: view} = assigns} = socket) when view in [:findings, :packages] do
     {rows, total} =
       Catalog.triage_page(Map.put(assigns.filters, :sort, assigns.sort), page_limit())
 
     shown_ids = Enum.map(rows, & &1.triage.id)
+    items = if view == :packages, do: with_package_headers(rows, assigns.filters), else: rows
 
     socket
     |> assign(shown_ids: shown_ids, shown: length(rows), total: total)
     |> assign(:selected, MapSet.intersection(assigns.selected, MapSet.new(shown_ids)))
-    |> stream(:findings, rows, reset: true)
+    |> stream(:findings, items, reset: true)
   end
 
   defp load(%{assigns: assigns} = socket) do
@@ -216,10 +227,46 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
       |> Catalog.triage_checks()
       |> Enum.map(&check_item(&1, assigns))
 
+    checks = if assigns.sort == :analysis, do: with_type_headers(checks), else: checks
+
     socket
     |> assign(shown_ids: [], selected: MapSet.new())
     |> stream(:checks, checks, reset: true)
   end
+
+  defp with_package_headers(rows, filters) do
+    summaries = Catalog.triage_packages(filters)
+
+    rows
+    |> Enum.chunk_by(& &1.triage.package_name)
+    |> Enum.flat_map(fn [%{triage: %{package_name: name}} | _] = group ->
+      [package_header(name, summaries) | group]
+    end)
+  end
+
+  defp package_header(name, summaries),
+    do: %{header: name, summary: Map.get(summaries, name, %{count: 0, new: 0, version: nil})}
+
+  defp with_type_headers(checks) do
+    checks
+    |> Enum.chunk_by(& &1.check.analysis)
+    |> Enum.flat_map(fn [%{check: %{analysis: analysis}} | _] = group ->
+      [%{type_header: analysis} | group]
+    end)
+  end
+
+  defp finding_dom_id(%{header: name}), do: "package-#{name}"
+  defp finding_dom_id(%{triage: t}), do: "finding-#{t.id}"
+
+  # Analysis names are argus's own identifiers; anything else is hashed so
+  # the id stays a valid selector.
+  defp check_dom_id(%{type_header: analysis}) do
+    if analysis =~ ~r/\A[a-z0-9_]+\z/,
+      do: "type-#{analysis}",
+      else: "type-" <> Base.encode16(:crypto.hash(:sha256, analysis), case: :lower)
+  end
+
+  defp check_dom_id(%{id: key}), do: "check-#{key}"
 
   defp check_item(check, assigns) do
     key = check_key(check)
@@ -239,6 +286,8 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
 
     case Catalog.triage_checks(filters) do
       [row] -> stream_insert(socket, :checks, check_item(row, socket.assigns))
+      # The last check of a type takes its header with it, so rebuild.
+      [] when socket.assigns.sort == :analysis -> load(socket)
       [] -> stream_delete_by_dom_id(socket, :checks, "check-#{check_key(check)}")
     end
   end
@@ -247,8 +296,18 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     socket = assign(socket, :counts, Catalog.triage_counts())
 
     case socket.assigns.view do
-      :findings -> insert_row(socket, %{triage: row, stale?: Catalog.triage_stale?(row)})
-      :checks -> refresh_check(socket, check_ident(row))
+      :findings ->
+        insert_row(socket, %{triage: row, stale?: Catalog.triage_stale?(row)})
+
+      :packages ->
+        summaries = Catalog.triage_packages(socket.assigns.filters)
+
+        socket
+        |> insert_row(%{triage: row, stale?: Catalog.triage_stale?(row)})
+        |> stream_insert(:findings, package_header(row.package_name, summaries))
+
+      :checks ->
+        refresh_check(socket, check_ident(row))
     end
   end
 
@@ -278,7 +337,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
       "analysis" => filters.analysis,
       "package" => filters.package,
       "stale" => if(filters.include_stale, do: "true"),
-      "view" => if(view == :findings, do: "findings"),
+      "view" => if(view != :checks, do: Atom.to_string(view)),
       "sort" => if(sort != default_sort(view), do: Atom.to_string(sort))
     }
     |> Enum.reject(fn {key, value} -> value in [nil, "", []] or default?(key, value) end)
@@ -291,6 +350,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
 
   defp sorts(:checks), do: @check_sorts
   defp sorts(:findings), do: @list_sorts
+  defp sorts(:packages), do: @package_sorts
 
   defp default_sort(view), do: view |> sorts() |> hd() |> elem(1)
 
@@ -494,6 +554,13 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             >
               By finding
             </.link>
+            <.link
+              id="view-packages"
+              patch={switch_path(@filters, @sort, :packages)}
+              class={["btn btn-xs join-item", @view == :packages && "btn-active"]}
+            >
+              By package
+            </.link>
           </div>
           <div class="flex items-center gap-2">
             <form id="triage-sort" phx-change="sort" class="flex items-center gap-2 text-sm">
@@ -657,7 +724,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
         </div>
 
         <div id="triage-list" phx-hook=".TriageKeys">
-          <%= if @view == :findings do %>
+          <%= if @view in [:findings, :packages] do %>
             <div class="mb-2 flex flex-wrap items-center gap-3 text-sm text-base-content/60">
               <label class="flex items-center gap-2">
                 <input
@@ -710,15 +777,37 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
               >
                 No findings match these filters.
               </div>
-              <.finding_row
-                :for={{dom_id, %{triage: t, stale?: stale?}} <- @streams.findings}
-                id={dom_id}
-                t={t}
-                stale?={stale?}
-                selected={MapSet.member?(@selected, t.id)}
-                selectable
-                status_options={@status_options}
-              />
+              <%= for {dom_id, item} <- @streams.findings do %>
+                <%!-- By package: the package leads its findings. Not a
+                keyboard item, so j/k step over it. --%>
+                <div
+                  :if={item[:header]}
+                  id={dom_id}
+                  data-package-header
+                  class="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-2 pt-6 pb-2"
+                >
+                  <.link
+                    navigate={~p"/packages/#{item.header}"}
+                    class="font-mono text-lg font-semibold text-base-content hover:text-primary"
+                  >
+                    {item.header}
+                  </.link>
+                  <span class="text-xs text-base-content/60">
+                    {findings(item.summary.count)} · {item.summary.new} new
+                    <span :if={item.summary.version}>· {item.summary.version}</span>
+                  </span>
+                </div>
+                <.finding_row
+                  :if={!item[:header]}
+                  id={dom_id}
+                  t={item.triage}
+                  stale?={item.stale?}
+                  selected={MapSet.member?(@selected, item.triage.id)}
+                  selectable
+                  in_package={@view == :packages}
+                  status_options={@status_options}
+                />
+              <% end %>
             </div>
           <% else %>
             <div id="checks" phx-update="stream" class="border-t border-base-200">
@@ -728,151 +817,26 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
               >
                 No findings match these filters.
               </div>
-              <div
-                :for={{dom_id, %{id: key, check: c, rows: rows}} <- @streams.checks}
-                id={dom_id}
-                data-check
-                class="border-b border-base-200 even:bg-base-content/[0.05]"
-              >
-                <%!-- The check's keyboard item: `.TriageKeys` reads its identity
-                and how many new findings a status key would set (0 when new is
-                filtered out, so the key does nothing). --%>
+              <%= for {dom_id, item} <- @streams.checks do %>
+                <%!-- Sorted by type, each type opens with a quiet header. --%>
                 <div
-                  id={"#{dom_id}-item"}
-                  data-triage-row
-                  data-check-key={key}
-                  data-analysis={c.analysis}
-                  data-title={c.title}
-                  data-severity={c.severity}
-                  data-new={if new_scope?(@filters, c), do: c.by_status.new, else: 0}
-                  tabindex="-1"
-                  class={[
-                    "outline-none transition-colors hover:bg-base-200/40",
-                    "focus:bg-primary/10 focus:ring-2 focus:ring-inset focus:ring-primary"
-                  ]}
+                  :if={item[:type_header]}
+                  id={dom_id}
+                  data-type-header
+                  class="px-2 pt-4 pb-1 font-mono text-xs text-base-content/50"
                 >
-                  <button
-                    type="button"
-                    id={"#{dom_id}-toggle"}
-                    phx-click="toggle_check"
-                    phx-value-analysis={c.analysis}
-                    phx-value-title={c.title}
-                    phx-value-severity={c.severity}
-                    aria-expanded={to_string(rows != nil)}
-                    class="flex w-full cursor-pointer items-center gap-2 px-2 py-2 text-left text-sm"
-                  >
-                    <.icon
-                      name={if rows, do: "hero-chevron-down-mini", else: "hero-chevron-right-mini"}
-                      class="size-4 shrink-0 text-base-content/40"
-                    />
-                    <span class={["badge badge-xs shrink-0", severity_class(c.severity)]}>
-                      {c.severity}
-                    </span>
-                    <span class="badge badge-xs badge-outline shrink-0 font-mono">
-                      {c.analysis}
-                    </span>
-                    <span class="min-w-0 flex-1 truncate text-base-content" title={c.title}>
-                      {c.title}
-                    </span>
-                    <span class="hidden shrink-0 text-xs text-base-content/60 sm:inline">
-                      <span data-check-summary>{check_summary(c)}</span>
-                      <span aria-hidden="true"> · </span>
-                      <span data-check-packages class="font-mono">
-                        {package_list(c.package_names)}
-                      </span>
-                    </span>
-                  </button>
+                  {item.type_header}
                 </div>
-
-                <div
-                  :if={rows}
-                  id={"#{dom_id}-findings"}
-                  class="mb-2 ml-8 border-l border-base-200 pl-3"
-                >
-                  <%!-- The group action lives with the findings it touches, so
-                  a collapsed check is one quiet line. --%>
-                  <.form
-                    for={to_form(%{}, as: :check)}
-                    id={"check-form-#{key}"}
-                    phx-submit="triage_check"
-                    class="flex flex-wrap items-center gap-2 py-2 text-xs"
-                  >
-                    <input type="hidden" name="check[analysis]" value={c.analysis} />
-                    <input type="hidden" name="check[title]" value={c.title} />
-                    <input type="hidden" name="check[severity]" value={c.severity} />
-                    <span class="text-base-content/60">Set the check:</span>
-                    <select
-                      id={"check-status-#{key}"}
-                      name="check[status]"
-                      class="select select-xs w-36"
-                    >
-                      <option value="">Set status…</option>
-                      {Phoenix.HTML.Form.options_for_select(@status_options, nil)}
-                    </select>
-                    <input
-                      id={"check-note-#{key}"}
-                      name="check[note]"
-                      type="text"
-                      value=""
-                      placeholder="Note (optional)"
-                      class="input input-xs w-40"
-                    />
-                    <%!-- One button per scope, so each confirm can name the
-                    exact number it touches. "only new" is first, so Enter in
-                    the note takes the narrower one; it is absent when the
-                    filters or the check leave no new finding for it to set. --%>
-                    <button
-                      :if={new_scope?(@filters, c)}
-                      type="submit"
-                      id={"check-apply-new-#{key}"}
-                      name="check[scope]"
-                      value="new"
-                      class="btn btn-xs btn-outline"
-                      data-confirm={"Set the status of #{c.by_status.new} new #{noun(c.by_status.new)} of this check?"}
-                    >
-                      Apply to {c.by_status.new} new
-                    </button>
-                    <button
-                      type="submit"
-                      id={"check-apply-all-#{key}"}
-                      name="check[scope]"
-                      value="all"
-                      class="btn btn-xs btn-ghost"
-                      data-confirm={"Set the status of all #{findings(c.count)} of this check?"}
-                    >
-                      Apply to all {c.count}
-                    </button>
-                    <span :if={c.confidence} class="text-base-content/50">
-                      confidence up to {text(c.confidence)}
-                    </span>
-                  </.form>
-                  <p
-                    :if={elem(rows, 1) > length(elem(rows, 0))}
-                    class="pb-1 text-xs text-base-content/60"
-                  >
-                    Showing {length(elem(rows, 0))} of {elem(rows, 1)}.
-                  </p>
-                  <div
-                    :for={[%{triage: first} | _] = group <- by_package(elem(rows, 0))}
-                    id={"#{dom_id}-package-#{first.package_name}"}
-                  >
-                    <div class="pt-1 font-mono text-xs text-base-content/60">
-                      <.link navigate={~p"/packages/#{first.package_name}"} class="link">
-                        {first.package_name}
-                      </.link>
-                      <span>· {findings(length(group))}</span>
-                    </div>
-                    <.finding_row
-                      :for={%{triage: t, stale?: stale?} <- group}
-                      id={"finding-#{t.id}"}
-                      t={t}
-                      stale?={stale?}
-                      in_check
-                      status_options={@status_options}
-                    />
-                  </div>
-                </div>
-              </div>
+                <.check_row
+                  :if={!item[:type_header]}
+                  id={dom_id}
+                  key={item.id}
+                  c={item.check}
+                  rows={item.rows}
+                  filters={@filters}
+                  status_options={@status_options}
+                />
+              <% end %>
             </div>
           <% end %>
         </div>
@@ -1045,11 +1009,172 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   end
 
   attr :id, :string, required: true
+  attr :key, :string, required: true
+  attr :c, :map, required: true, doc: "the check, from `Catalog.triage_checks/1`"
+  attr :rows, :any, required: true, doc: "nil when collapsed, else `{rows, total}`"
+  attr :filters, :map, required: true
+  attr :status_options, :list, required: true
+
+  defp check_row(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      data-check
+      class="border-b border-base-200 even:bg-base-content/[0.05]"
+    >
+      <%!-- The check's keyboard item: `.TriageKeys` reads its identity
+      and how many new findings a status key would set (0 when new is
+      filtered out, so the key does nothing). --%>
+      <div
+        id={"#{@id}-item"}
+        data-triage-row
+        data-check-key={@key}
+        data-analysis={@c.analysis}
+        data-title={@c.title}
+        data-severity={@c.severity}
+        data-new={if new_scope?(@filters, @c), do: @c.by_status.new, else: 0}
+        tabindex="-1"
+        class={[
+          "outline-none transition-colors hover:bg-base-200/40",
+          "focus:bg-primary/10 focus:ring-2 focus:ring-inset focus:ring-primary"
+        ]}
+      >
+        <button
+          type="button"
+          id={"#{@id}-toggle"}
+          phx-click="toggle_check"
+          phx-value-analysis={@c.analysis}
+          phx-value-title={@c.title}
+          phx-value-severity={@c.severity}
+          aria-expanded={to_string(@rows != nil)}
+          class="flex w-full cursor-pointer items-center gap-2 px-2 py-3 text-left text-sm"
+        >
+          <.icon
+            name={if @rows, do: "hero-chevron-down-mini", else: "hero-chevron-right-mini"}
+            class="size-4 shrink-0 text-base-content/40"
+          />
+          <span class={["badge badge-xs shrink-0", severity_class(@c.severity)]}>
+            {@c.severity}
+          </span>
+          <span class="badge badge-xs badge-outline shrink-0 font-mono">
+            {@c.analysis}
+          </span>
+          <span class="min-w-0 flex-1 truncate text-base-content" title={@c.title}>
+            {@c.title}
+          </span>
+          <span class="hidden shrink-0 text-xs text-base-content/60 sm:inline">
+            <span data-check-summary>{check_summary(@c)}</span>
+            <span aria-hidden="true"> · </span>
+            <span data-check-packages class="font-mono">
+              {package_list(@c.package_names)}
+            </span>
+          </span>
+        </button>
+      </div>
+
+      <div
+        :if={@rows}
+        id={"#{@id}-findings"}
+        class="mb-2 ml-8 border-l border-base-200 pl-3"
+      >
+        <%!-- The group action lives with the findings it touches, so
+        a collapsed check is one quiet line. --%>
+        <.form
+          for={to_form(%{}, as: :check)}
+          id={"check-form-#{@key}"}
+          phx-submit="triage_check"
+          class="flex flex-wrap items-center gap-2 py-2 text-xs"
+        >
+          <input type="hidden" name="check[analysis]" value={@c.analysis} />
+          <input type="hidden" name="check[title]" value={@c.title} />
+          <input type="hidden" name="check[severity]" value={@c.severity} />
+          <span class="text-base-content/60">Set the check:</span>
+          <select
+            id={"check-status-#{@key}"}
+            name="check[status]"
+            class="select select-xs w-36"
+          >
+            <option value="">Set status…</option>
+            {Phoenix.HTML.Form.options_for_select(@status_options, nil)}
+          </select>
+          <input
+            id={"check-note-#{@key}"}
+            name="check[note]"
+            type="text"
+            value=""
+            placeholder="Note (optional)"
+            class="input input-xs w-40"
+          />
+          <%!-- One button per scope, so each confirm can name the
+          exact number it touches. "only new" is first, so Enter in
+          the note takes the narrower one; it is absent when the
+          filters or the check leave no new finding for it to set. --%>
+          <button
+            :if={new_scope?(@filters, @c)}
+            type="submit"
+            id={"check-apply-new-#{@key}"}
+            name="check[scope]"
+            value="new"
+            class="btn btn-xs btn-outline"
+            data-confirm={"Set the status of #{@c.by_status.new} new #{noun(@c.by_status.new)} of this check?"}
+          >
+            Apply to {@c.by_status.new} new
+          </button>
+          <button
+            type="submit"
+            id={"check-apply-all-#{@key}"}
+            name="check[scope]"
+            value="all"
+            class="btn btn-xs btn-ghost"
+            data-confirm={"Set the status of all #{findings(@c.count)} of this check?"}
+          >
+            Apply to all {@c.count}
+          </button>
+          <span :if={@c.confidence} class="text-base-content/50">
+            confidence up to {text(@c.confidence)}
+          </span>
+        </.form>
+        <p
+          :if={elem(@rows, 1) > length(elem(@rows, 0))}
+          class="pb-1 text-xs text-base-content/60"
+        >
+          Showing {length(elem(@rows, 0))} of {elem(@rows, 1)}.
+        </p>
+        <div
+          :for={[%{triage: first} | _] = group <- by_package(elem(@rows, 0))}
+          id={"#{@id}-package-#{first.package_name}"}
+        >
+          <div class="pt-1 font-mono text-xs text-base-content/60">
+            <.link navigate={~p"/packages/#{first.package_name}"} class="link">
+              {first.package_name}
+            </.link>
+            <span>· {findings(length(group))}</span>
+          </div>
+          <.finding_row
+            :for={%{triage: t, stale?: stale?} <- group}
+            id={"finding-#{t.id}"}
+            t={t}
+            stale?={stale?}
+            in_check
+            status_options={@status_options}
+          />
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
   attr :t, FindingTriage, required: true
   attr :stale?, :boolean, default: false
   attr :selectable, :boolean, default: false
   attr :selected, :boolean, default: false
   attr :in_check, :boolean, default: false, doc: "inside an expanded check, which names the check"
+
+  attr :in_package, :boolean,
+    default: false,
+    doc: "under a package header, which names the package"
+
   attr :status_options, :list, required: true
 
   # One line per finding: what and where, and its status. Everything else --
@@ -1067,7 +1192,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
       tabindex="-1"
       class={
         [
-          "flex items-start gap-2 border-b border-base-200 px-2 py-1.5 text-sm outline-none transition-colors last:border-b-0",
+          "flex items-start gap-2 border-b border-base-200 px-2 py-2.5 text-sm outline-none transition-colors last:border-b-0",
           "hover:bg-base-200/40 focus:bg-primary/10 focus:ring-2 focus:ring-inset focus:ring-primary",
           # Alternating rows: long lists of near-identical findings are easier to
           # follow across to their status select.
@@ -1104,11 +1229,15 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                 {@t.severity}
               </span>
               <.link
+                :if={!@in_package}
                 navigate={~p"/packages/#{@t.package_name}"}
                 class="link shrink-0 font-mono text-xs"
               >
                 {@t.package_name}
               </.link>
+              <span :if={@in_package} class="badge badge-xs badge-outline shrink-0 font-mono">
+                {@t.analysis}
+              </span>
               <span class="min-w-0 truncate" title={@t.title}>{@t.title}</span>
               <%!-- The location gives way before the title does. --%>
               <span
@@ -1132,7 +1261,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             {Phoenix.HTML.Form.options_for_select(@status_options, Atom.to_string(@t.status))}
           </select>
         </div>
-        <details class="text-xs text-base-content/70">
+        <details class="mt-1 text-xs text-base-content/70">
           <summary class="cursor-pointer text-base-content/50">Details</summary>
           <div class="space-y-1 py-1">
             <div class="flex flex-wrap items-center gap-2">
