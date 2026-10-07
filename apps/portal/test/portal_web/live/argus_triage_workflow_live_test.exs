@@ -468,6 +468,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
 
       assert view |> element("#triage-sort-select") |> render() =~ "Most new"
       assert has_element?(view, "#triage-sort-select option[value='package']", "Package name")
+      assert has_element?(view, "#triage-sort-select option[value='count']", "Most findings")
       assert has_element?(view, "#triage-sort-select option[value='analysis']", "Type")
 
       ids = Map.new(rows(), &{&1.title, "finding-#{&1.id}"})
