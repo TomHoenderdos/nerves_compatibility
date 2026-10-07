@@ -836,11 +836,18 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           this.index = null
           this.onKey = e => this.handleKey(e)
           this.onFocus = e => this.remember(e.target.closest && e.target.closest("[data-triage-row]"))
+          // A pointer press anywhere hands focus to the user: from then on a
+          // drop to <body> is theirs, not ours to take back. Pressing on a row
+          // focuses it (tabindex -1), which `focusin` remembers again.
+          this.onPointer = () => (this.focused = null)
           window.addEventListener("keydown", this.onKey)
+          document.addEventListener("pointerdown", this.onPointer, true)
           this.el.addEventListener("focusin", this.onFocus)
-          // A triaged row can leave the list (in the by-check view it drops
-          // out of the status filter), taking focus with it to <body>. Not
-          // every such patch reaches `updated()`, so watch the subtree too.
+          // A patch can take the focused row's focus with it to <body>: the
+          // row is removed (it left the filter), replaced, or moved by the
+          // DOM patch -- Chrome blurs a focused node that is moved even though
+          // it stays in the page. Not every such patch reaches `updated()`, so
+          // watch the subtree too.
           this.observer = new MutationObserver(() => this.restore())
           this.observer.observe(this.el, {childList: true, subtree: true})
         },
@@ -849,6 +856,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
         },
         destroyed() {
           window.removeEventListener("keydown", this.onKey)
+          document.removeEventListener("pointerdown", this.onPointer, true)
           this.observer.disconnect()
         },
         rows() {
@@ -871,12 +879,18 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           row.scrollIntoView({block: "nearest"})
           this.remember(row)
         },
-        // Only when the remembered row itself is gone: focus on <body> after a
-        // click elsewhere on the page is the user's, not ours to take back.
+        // Puts focus back on the row the keyboard last chose, after a patch
+        // dropped it to <body>: the same node if it is still in the page, else
+        // its re-rendered node by id, else whatever row now sits at its index.
         restore() {
           const active = document.activeElement
-          const lost = !active || active === document.body
-          if (lost && this.focused && !this.focused.isConnected && this.index !== null) {
+          if ((active && active !== document.body) || !this.focused) return
+          const same = this.focused.isConnected ? this.focused : document.getElementById(this.focused.id)
+
+          if (same && this.el.contains(same)) {
+            same.focus({preventScroll: true})
+            this.remember(same)
+          } else if (this.index !== null) {
             this.focusAt(this.index)
           }
         },
