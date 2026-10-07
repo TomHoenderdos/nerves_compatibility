@@ -56,6 +56,13 @@ defmodule Portal.Catalog.TriageChecksTest do
       assert %{title: "Other", count: 1, packages: 1} = other
     end
 
+    test "names the packages of each check, sorted, within the filters" do
+      assert [%{package_names: ["alpha", "beta"]}, %{package_names: ["beta"]}] =
+               Catalog.triage_checks(%{})
+
+      assert [%{package_names: ["alpha"]}] = Catalog.triage_checks(%{package: "alph"})
+    end
+
     test "applies the filters" do
       assert [%{count: 2, packages: 1}] = Catalog.triage_checks(%{package: "alph"})
       assert [%{title: "Other"}] = Catalog.triage_checks(%{severity: ["error"]})

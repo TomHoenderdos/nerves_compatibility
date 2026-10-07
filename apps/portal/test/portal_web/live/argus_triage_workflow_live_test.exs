@@ -52,6 +52,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
 
       assert has_element?(view, "#check-#{key}", "3 findings")
       assert has_element?(view, "#check-#{key}", "2 packages")
+      assert has_element?(view, "#check-#{key} [data-check-packages]", "alpha, beta")
       assert has_element?(view, "#check-#{key}", "2 new · 1 confirmed")
       assert has_element?(view, "#view-findings[href='/admin/argus/findings?view=findings']")
       refute has_element?(view, "#findings")
