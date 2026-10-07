@@ -535,7 +535,14 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                 <kbd class="kbd kbd-xs">j</kbd> <kbd class="kbd kbd-xs">k</kbd> / arrows
               </dt>
 
-              <dd class="inline text-base-content/60">next / previous finding</dd>
+              <dd class="inline text-base-content/60">next / previous row</dd>
+            </div>
+            <div>
+              <dt class="inline">
+                <kbd class="kbd kbd-xs">Enter</kbd> <kbd class="kbd kbd-xs">o</kbd>
+              </dt>
+
+              <dd class="inline text-base-content/60">expand or collapse a check</dd>
             </div>
             <div>
               <dt class="inline"><kbd class="kbd kbd-xs">c</kbd></dt>
@@ -579,7 +586,9 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             </div>
           </dl>
           <p class="mt-2 text-xs text-base-content/50">
-            Expand a check to triage its findings from the keyboard. Setting a status moves to the next finding.
+            On a finding, a status key sets that finding. On a check row it sets the check's
+            new findings within the filters, after a confirm; it does nothing when there are none.
+            Either way focus moves to the next row.
           </p>
         </div>
 
@@ -667,7 +676,23 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                 data-check
                 class="overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm"
               >
-                <div class="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+                <%!-- The check's keyboard item: `.TriageKeys` reads its identity
+                and how many new findings a status key would set (0 when new is
+                filtered out, so the key does nothing). --%>
+                <div
+                  id={"#{dom_id}-item"}
+                  data-triage-row
+                  data-check-key={key}
+                  data-analysis={c.analysis}
+                  data-title={c.title}
+                  data-severity={c.severity}
+                  data-new={if new_scope?(@filters, c), do: c.by_status.new, else: 0}
+                  tabindex="-1"
+                  class={[
+                    "flex flex-wrap items-start justify-between gap-3 px-4 py-3 outline-none transition-colors",
+                    "focus:bg-primary/10 focus:ring-2 focus:ring-inset focus:ring-primary"
+                  ]}
+                >
                   <button
                     type="button"
                     id={"#{dom_id}-toggle"}
@@ -797,6 +822,13 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
       // holds no state beyond which row has focus -- real DOM focus, which
       // survives LiveView patches where a class set from here would not.
       const STATUS_KEYS = {c: "confirmed", f: "false_positive", r: "reported", i: "ignored", n: "new"}
+      const STATUS_LABELS = {
+        confirmed: "confirmed",
+        false_positive: "false positive",
+        reported: "reported",
+        ignored: "ignored",
+        new: "new"
+      }
 
       export default {
         mounted() {
@@ -858,6 +890,22 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           const at = rows.indexOf(row)
           this.focusAt(at + 1 < rows.length ? at + 1 : at - 1)
         },
+        checkIdent(row) {
+          const {analysis, title, severity} = row.dataset
+          return {analysis, title, severity}
+        },
+        // A status key on a check row sets the check's new findings within the
+        // filters, through the same group action as its "Apply to N new"
+        // button. `data-new` is 0 when there are none or new is filtered out.
+        setCheckStatus(row, status) {
+          const count = parseInt(row.dataset.new, 10) || 0
+          if (count === 0) return
+          const noun = count === 1 ? "finding" : "findings"
+          const question = `Set the status of ${count} new ${noun} of this check to ${STATUS_LABELS[status]}?`
+          if (!window.confirm(question)) return
+          this.pushEvent("triage_check", {check: {...this.checkIdent(row), status, scope: "new", note: ""}})
+          this.advance(row)
+        },
         // Typing in a field is never a shortcut; a focused checkbox still is,
         // since clicking one to select a row moves focus onto it.
         typing(target) {
@@ -893,10 +941,15 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           } else if (e.key === "?") {
             const panel = document.getElementById("triage-shortcuts")
             if (panel) this.js().toggle(panel)
+          } else if (row && row.dataset.checkKey && (e.key === "o" || (e.key === "Enter" && e.target === row))) {
+            // Enter only on the row itself: on its buttons it still clicks them.
+            this.pushEvent("toggle_check", this.checkIdent(row))
+          } else if (STATUS_KEYS[e.key] && row && row.dataset.checkKey) {
+            this.setCheckStatus(row, STATUS_KEYS[e.key])
           } else if (STATUS_KEYS[e.key] && row) {
             this.pushEvent("set_status", {id: row.dataset.id, status: STATUS_KEYS[e.key]})
             this.advance(row)
-          } else if (e.key === "x" && row) {
+          } else if (e.key === "x" && row && row.dataset.id) {
             this.pushEvent("toggle_select", {id: row.dataset.id})
           } else {
             return
