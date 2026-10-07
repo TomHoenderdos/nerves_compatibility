@@ -44,19 +44,21 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 // dead connection is announced 1.5s later than it used to be, which is well
 // inside the time it takes someone to notice the page has stopped responding.
 //
-// WebSocket only: no `longPollFallbackMs`. With it, Phoenix (1.8.13,
-// `Socket.connectWithFallback`) switched to long-poll whenever the websocket
-// had not opened within 2.5s -- a deploy restart was enough -- and, if the
-// websocket had never passed a health check, memorised that in
-// sessionStorage as `phx:fallback:LongPoll`, so every later page in the tab
-// started on long-poll. Measured: one client made 1,409 `/live/longpoll`
-// requests against 32 websocket connects in a day, while websockets go
-// through Apache fine (101). Without the option the socket only ever uses
-// WebSocket and LiveView reconnects on its own with backoff.
+// `longPollFallbackMs: 5000`: if the websocket has not opened within 5s,
+// Phoenix (1.8.13, `Socket.connectWithFallback`) switches to long-poll. That
+// keeps the interactive parts working (load more, the log filter, flash
+// dismissal) for visitors whose network blocks websockets. It used to be
+// 2.5s, which a deploy restart was enough to exceed.
 //
-// The stored flag is only read when the option is set, so tabs that are
-// stuck recover on their next page load either way. It is cleared anyway so
-// that re-enabling the option later does not resurrect it.
+// The catch is that a fallback which connects before the websocket ever
+// passed a health check is memorised for the tab in sessionStorage as
+// `phx:fallback:LongPoll`, and every later page in the tab then starts on
+// long-poll without trying the websocket. Measured: one client made 1,409
+// `/live/longpoll` requests against 32 websocket connects in a day, while
+// websockets go through Apache fine (101). Clearing the flag at boot means a
+// tab that fell back once (say, during a restart) tries the websocket again
+// on its next page load; a network that really blocks websockets just falls
+// back again after 5s.
 try {
   sessionStorage.removeItem("phx:fallback:LongPoll")
 } catch (_e) {
@@ -64,6 +66,7 @@ try {
 }
 
 const liveSocket = new LiveSocket("/live", Socket, {
+  longPollFallbackMs: 5000,
   disconnectedTimeout: 2000,
   params: {_csrf_token: csrfToken},
   hooks: {...colocatedHooks},

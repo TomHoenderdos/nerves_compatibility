@@ -14,9 +14,9 @@ defmodule PortalWeb.AnalyticsTagTest do
     end
   end
 
-  # The tracker's `POST /api/send` to the self-hosted Umami took up to 2.1s on
-  # 2026-10-07. A `defer` script is part of the document's load, so the
-  # browser's load indicator kept spinning until it finished; `async` is not.
+  # `async` keeps the tracker from delaying DOMContentLoaded, and still lets it
+  # read its website id from `document.currentScript`. The attributes it needs
+  # (Rocket Loader opt-out, performance metrics, site id) must survive.
   test "the Umami tag loads async, not deferred", %{conn: conn} do
     Application.put_env(:portal, :umami_website_id, "site-id-123")
 

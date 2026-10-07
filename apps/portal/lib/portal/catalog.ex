@@ -1148,8 +1148,10 @@ defmodule Portal.Catalog do
   # The system results of every package's latest run, as `[s, r]`. Latest is
   # the rule `latest_runs/1` and `Portal.Catalog.Browse` apply -- newest
   # `finished_at`, then newest `inserted_at`; plain `DESC`, so an unfinished
-  # run sorts first -- and `catalog_runs_package_latest_index` is that sort,
-  # so Postgres reads one index entry per package rather than sorting history.
+  # run sorts first. Postgres 17 has no loose index scan for DISTINCT ON, so
+  # it does not skip through `catalog_runs_package_latest_index` one package at
+  # a time; on production-shaped data the planner reads `catalog_runs` with a
+  # seq scan and a small sort, ~3ms.
   defp latest_results do
     latest =
       from(r in "catalog_runs",

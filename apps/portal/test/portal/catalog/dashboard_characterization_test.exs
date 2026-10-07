@@ -190,6 +190,38 @@ defmodule Portal.Catalog.DashboardCharacterizationTest do
            }
   end
 
+  # The SQL CASE in `package_status_counts/0` restates
+  # `Portal.Catalog.Rollup.overall_status/1`. These mixes are where the order of
+  # its `cond` clauses decides the answer, so each is pinned to what Rollup
+  # itself returns.
+  for {statuses, bucket} <- [
+        {[:pass, :unknown], :partial},
+        {[:skipped, :unknown], :unknown},
+        {[:skipped, :skipped], :skipped}
+      ] do
+    test "a package with #{inspect(statuses)} counts as #{bucket}, as Rollup says" do
+      statuses = unquote(statuses)
+      bucket = unquote(bucket)
+      assert Portal.Catalog.Rollup.overall_status(statuses) == bucket
+
+      systems =
+        ["nerves_system_rpi4", "nerves_system_x86_64"]
+        |> Enum.zip(statuses)
+        |> Map.new(fn {system, status} -> {system, %{"status" => to_string(status)}} end)
+
+      ingest("mixed", "mixed-1", "2026-07-01T10:00:00Z", systems)
+
+      expected =
+        Map.put(
+          %{unique: 1, pass: 0, fail: 0, partial: 0, skipped: 0, unknown: 0},
+          bucket,
+          1
+        )
+
+      assert Catalog.package_status_counts() == expected
+    end
+  end
+
   test "failure_clusters ranks by systems, then by category name, and keeps every entry" do
     seed()
 
