@@ -408,6 +408,33 @@ defmodule Portal.Catalog do
     |> Map.new()
   end
 
+  @filter_option_limit 50
+
+  @doc """
+  The values the triage page's type and package pickers offer: each analysis
+  and each package with how many findings it has, most first, at most
+  #{@filter_option_limit} each. Each list applies every filter except its
+  own, so a count is what picking that value would show.
+  """
+  def triage_filter_options(filters) do
+    f = Map.merge(@triage_defaults, filters)
+
+    %{
+      analyses: filter_option_counts(%{f | analysis: nil}, :analysis),
+      packages: filter_option_counts(%{f | package: nil}, :package_name)
+    }
+  end
+
+  defp filter_option_counts(f, column) do
+    f
+    |> triage_scope()
+    |> group_by([t], field(t, ^column))
+    |> order_by(^[desc: dynamic([t], count(t.id)), asc: dynamic([t], field(t, ^column))])
+    |> limit(@filter_option_limit)
+    |> select([t], {field(t, ^column), count(t.id)})
+    |> Repo.all()
+  end
+
   @doc "Whether one triage row's package has a newer argus run that no longer reports it."
   def triage_stale?(%FindingTriage{package_name: name, last_seen_run_id: run_id}) do
     Map.get(latest_argus_run_ids([name]), name) != run_id
