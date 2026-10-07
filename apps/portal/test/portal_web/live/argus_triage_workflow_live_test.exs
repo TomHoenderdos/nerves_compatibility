@@ -233,6 +233,36 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       view |> form("#triage-filters", f: %{package: "a"}) |> render_change()
       assert_patch(view, ~p"/admin/argus/findings?#{%{package: "a", sort: "severity"}}")
     end
+
+    # A sort carries over by what the dropdown shows: "Type" and "Most
+    # findings" are offered by the check and package views alike, even
+    # though by package they order packages first.
+    test "switching views keeps a sort the other view offers under the same name",
+         %{conn: conn} do
+      cases = [
+        {"", "count", "#view-packages", "count"},
+        {"", "analysis", "#view-packages", "analysis"},
+        {"", "package", "#view-packages", "package"},
+        {"", "severity", "#view-packages", nil},
+        {"view=findings&", "analysis", "#view-packages", "analysis"},
+        {"view=packages&", "analysis", "#view-checks", "analysis"},
+        {"view=packages&", "analysis", "#view-findings", "analysis"},
+        {"view=packages&", "count", "#view-checks", nil},
+        {"view=packages&", "count", "#view-findings", nil},
+        {"view=packages&", "package", "#view-findings", "package"},
+        {"", "count", "#view-findings", nil}
+      ]
+
+      for {view_param, sort, link, carried} <- cases do
+        {:ok, view, _} = live(conn, "/admin/argus/findings?#{view_param}sort=#{sort}")
+        href = view |> element(link) |> render() |> LazyHTML.from_fragment()
+        href = href |> LazyHTML.attribute("href") |> hd()
+        query = href |> URI.parse() |> Map.get(:query) |> Kernel.||("") |> URI.decode_query()
+
+        assert query["sort"] == carried,
+               "#{view_param}sort=#{sort} -> #{link}: got #{inspect(query["sort"])}"
+      end
+    end
   end
 
   describe "bulk selection" do
