@@ -19,6 +19,7 @@ defmodule Portal.Catalog.Ingestion do
   """
 
   require Logger
+  require Ash.Query
 
   alias Portal.ArtifactStore
 
@@ -480,6 +481,7 @@ defmodule Portal.Catalog.Ingestion do
     |> shas_from_scan()
     |> Enum.uniq()
     |> Enum.filter(&MapSet.member?(stored, &1))
+    |> Enum.sort()
     |> Enum.map(&%{sha256: &1, system_result_id: system_result_id})
     |> insert_memberships()
   end
@@ -510,6 +512,29 @@ defmodule Portal.Catalog.Ingestion do
   defp upsert_artifacts([]), do: :ok
 
   defp upsert_artifacts(entries) do
+    entries
+    |> Enum.uniq_by(& &1.sha256)
+    |> reject_already_registered()
+    |> Enum.sort_by(& &1.sha256)
+    |> bulk_upsert_artifacts()
+  end
+
+  defp reject_already_registered(entries) do
+    shas = Enum.map(entries, & &1.sha256)
+
+    registered =
+      Artifact
+      |> Ash.Query.filter(sha256 in ^shas)
+      |> Ash.Query.select([:sha256])
+      |> Ash.read!(domain: @domain)
+      |> MapSet.new(& &1.sha256)
+
+    Enum.reject(entries, &MapSet.member?(registered, &1.sha256))
+  end
+
+  defp bulk_upsert_artifacts([]), do: :ok
+
+  defp bulk_upsert_artifacts(entries) do
     entries
     |> Ash.bulk_create(Artifact, :upsert,
       domain: @domain,
