@@ -6,7 +6,7 @@ defmodule Portal.Catalog.IngestionTest do
   import ExUnit.CaptureLog, only: [with_log: 1]
 
   alias Portal.ArtifactStore
-  alias Portal.Catalog.{Artifact, Ingestion, Package, Run, SystemResult}
+  alias Portal.Catalog.{Artifact, ArtifactMembership, Ingestion, Package, Run, SystemResult}
   alias Portal.ScanRequests
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
@@ -80,6 +80,51 @@ defmodule Portal.Catalog.IngestionTest do
     assert File.exists?(ArtifactStore.blob_path(sha))
     # source moved out of files_dir
     refute File.exists?(Path.join(files_dir, sha))
+  end
+
+  test "a blob that is already registered is left alone but still gets a membership" do
+    result = load_fixture()
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+
+    {:ok, run1} =
+      Ingestion.ingest(result, %{
+        run_id: "rid-shared-1",
+        image_digest: "sha256:1",
+        files_dir: seed_files_dir([sha]),
+        scan_request_id: nil
+      })
+
+    [before] =
+      Artifact
+      |> Ash.Query.filter(sha256 == ^sha)
+      |> Ash.read!(domain: Portal.Catalog)
+
+    {:ok, run2} =
+      Ingestion.ingest(result, %{
+        run_id: "rid-shared-2",
+        image_digest: "sha256:2",
+        files_dir: seed_files_dir([sha]),
+        scan_request_id: nil
+      })
+
+    [after_second] =
+      Artifact
+      |> Ash.Query.filter(sha256 == ^sha)
+      |> Ash.read!(domain: Portal.Catalog)
+
+    assert after_second.id == before.id
+    assert after_second.updated_at == before.updated_at
+
+    runs =
+      ArtifactMembership
+      |> Ash.Query.filter(sha256 == ^sha)
+      |> Ash.Query.load(:system_result)
+      |> Ash.read!(domain: Portal.Catalog)
+      |> Enum.map(& &1.system_result.run_id)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    assert runs == Enum.sort([run1.id, run2.id])
   end
 
   test "links the run to a scan_request when given" do
