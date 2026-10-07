@@ -616,6 +616,11 @@ defmodule Portal.Catalog do
       :package_new ->
         [desc: new_in_package(), asc: dynamic([t], t.package_name), asc: severity]
 
+      # Grouped by package, the package with the most findings (any status
+      # the filters keep) first.
+      :package_count ->
+        [desc: count_in_package(), asc: dynamic([t], t.package_name), asc: severity]
+
       :package_type ->
         [
           desc: new_in_package(),
@@ -647,6 +652,10 @@ defmodule Portal.Catalog do
         t.package_name
       )
     )
+  end
+
+  defp count_in_package do
+    dynamic([t], fragment("count(*) OVER (PARTITION BY ?)", t.package_name))
   end
 
   defp triage_check_order(sort) do

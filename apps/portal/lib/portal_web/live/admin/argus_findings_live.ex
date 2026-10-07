@@ -37,6 +37,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   # inside each one.
   @package_sorts [
     {"new", :package_new, "Most new"},
+    {"count", :package_count, "Most findings"},
     {"package", :package, "Package name"},
     {"analysis", :package_type, "Type"}
   ]

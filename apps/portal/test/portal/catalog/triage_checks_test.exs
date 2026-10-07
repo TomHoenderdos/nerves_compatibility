@@ -278,6 +278,18 @@ defmodule Portal.Catalog.TriageChecksTest do
                titles(Catalog.triage_list(%{sort: :package_new}))
     end
 
+    test "packages by most findings, whatever their status, then name" do
+      for %{triage: t} <- Catalog.triage_list(%{package: "many"}),
+          do: Catalog.triage!(t.id, %{status: "confirmed"}, @admin)
+
+      # "many" has no new findings left, so "Most new" puts it after "few"...
+      assert [{"few", _} | _] = titles(Catalog.triage_list(%{sort: :package_new}))
+
+      # ...while "Most findings" still leads with its three.
+      assert [{"many", _}, {"many", _}, {"many", _}, {"few", "S"}, {"none", "N"}] =
+               titles(Catalog.triage_list(%{sort: :package_count}))
+    end
+
     test "packages by most new, findings by type inside" do
       assert [{"many", "F"}, {"many", "F"}, {"many", "S"}, {"few", "S"}, {"none", "N"}] =
                titles(Catalog.triage_list(%{sort: :package_type}))
