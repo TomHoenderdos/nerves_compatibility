@@ -371,6 +371,58 @@ defmodule Portal.Catalog.TriageChecksTest do
     end
   end
 
+  describe "triage_package!/5" do
+    setup do
+      ingest(
+        "1.0.0",
+        ok([
+          finding(),
+          finding(%{"detail" => "two"}),
+          finding(%{"title" => "Info", "severity" => "info"})
+        ]),
+        1,
+        "few"
+      )
+
+      # A name containing "few": the package match must be exact.
+      ingest("1.0.0", ok([finding()]), 1, "fewer")
+      :ok
+    end
+
+    test "\"all\" sets the package's findings within the filters, and only that package" do
+      Catalog.triage!(row("few", "Info").id, %{status: "confirmed", note: "keep"}, @admin)
+
+      assert 2 ==
+               Catalog.triage_package!(
+                 %{severity: ["warning"]},
+                 "few",
+                 :all,
+                 %{status: "ignored", note: "noise"},
+                 %{username: "ann"}
+               )
+
+      assert [{"ignored", "noise", "ann"}, {"ignored", "noise", "ann"}] =
+               rows_of("few", "Catch-all rescue swallows exceptions")
+
+      assert %{status: :confirmed, note: "keep"} = row("few", "Info")
+      assert %{status: :new} = row("fewer", "Catch-all rescue swallows exceptions")
+    end
+
+    test "\"only new\" leaves triaged findings alone" do
+      Catalog.triage!(row("few", "Info").id, %{status: "confirmed"}, @admin)
+
+      assert 2 == Catalog.triage_package!(%{}, "few", :new, %{status: "reported"}, @admin)
+      assert %{status: :confirmed} = row("few", "Info")
+    end
+  end
+
+  defp rows_of(package, title) do
+    %{status: @every_status}
+    |> Catalog.triage_list()
+    |> Enum.filter(&(&1.triage.package_name == package and &1.triage.title == title))
+    |> Enum.map(&{Atom.to_string(&1.triage.status), &1.triage.note, &1.triage.updated_by})
+  end
+
   describe "triage_many!/3" do
     test "sets only the selected ids and ignores unknown ones" do
       ingest(

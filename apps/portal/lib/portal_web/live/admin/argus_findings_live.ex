@@ -128,6 +128,26 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     end
   end
 
+  # By package: the header's group action, the same as a check's but for
+  # every finding of one package within the filters.
+  def handle_event("triage_package", %{"package" => params}, socket) do
+    with status when not is_nil(status) <- status_atom(params["status"]),
+         name when is_binary(name) and name != "" <- params["name"] do
+      changed =
+        Catalog.triage_package!(
+          socket.assigns.filters,
+          name,
+          if(params["scope"] == "new", do: :new, else: :all),
+          %{status: status, note: blank_to_nil(params["note"])},
+          socket.assigns.current_user
+        )
+
+      {:noreply, socket |> reload() |> put_flash(:info, "Set #{findings(changed)}.")}
+    else
+      _ -> {:noreply, put_flash(socket, :error, "Choose a status.")}
+    end
+  end
+
   def handle_event("triage", %{"finding_id" => id, "triage" => triage}, socket) do
     row =
       Catalog.triage!(
@@ -419,6 +439,9 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   # findings through and this check has some.
   defp new_scope?(filters, check),
     do: :new in Map.get(filters, :status, [:new, :confirmed]) and check.by_status.new > 0
+
+  defp package_new_scope?(filters, summary),
+    do: :new in Map.get(filters, :status, [:new, :confirmed]) and summary.new > 0
 
   defp packages(1), do: "1 package"
   defp packages(n), do: "#{n} packages"
@@ -784,18 +807,68 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                   :if={item[:header]}
                   id={dom_id}
                   data-package-header
-                  class="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-2 pt-6 pb-2"
+                  class="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-2 pt-6 pb-2"
                 >
-                  <.link
-                    navigate={~p"/packages/#{item.header}"}
-                    class="font-mono text-lg font-semibold text-base-content hover:text-primary"
+                  <div class="flex flex-wrap items-baseline gap-x-3">
+                    <.link
+                      navigate={~p"/packages/#{item.header}"}
+                      class="font-mono text-lg font-semibold text-base-content hover:text-primary"
+                    >
+                      {item.header}
+                    </.link>
+                    <span class="text-xs text-base-content/60">
+                      {findings(item.summary.count)} · {item.summary.new} new
+                      <span :if={item.summary.version}>· {item.summary.version}</span>
+                    </span>
+                  </div>
+                  <%!-- The package's group action, as on an expanded check: one
+                  button per scope so each confirm names its exact count. --%>
+                  <.form
+                    for={to_form(%{}, as: :package)}
+                    id={"package-form-#{item.header}"}
+                    phx-submit="triage_package"
+                    class="flex flex-wrap items-center gap-2 text-xs"
                   >
-                    {item.header}
-                  </.link>
-                  <span class="text-xs text-base-content/60">
-                    {findings(item.summary.count)} · {item.summary.new} new
-                    <span :if={item.summary.version}>· {item.summary.version}</span>
-                  </span>
+                    <input type="hidden" name="package[name]" value={item.header} />
+                    <select
+                      id={"package-status-#{item.header}"}
+                      name="package[status]"
+                      aria-label="Status for the package"
+                      class="select select-xs w-36"
+                    >
+                      <option value="">Set package…</option>
+                      {Phoenix.HTML.Form.options_for_select(@status_options, nil)}
+                    </select>
+                    <input
+                      id={"package-note-#{item.header}"}
+                      name="package[note]"
+                      type="text"
+                      value=""
+                      placeholder="Note (optional)"
+                      class="input input-xs w-36"
+                    />
+                    <button
+                      :if={package_new_scope?(@filters, item.summary)}
+                      type="submit"
+                      id={"package-apply-new-#{item.header}"}
+                      name="package[scope]"
+                      value="new"
+                      class="btn btn-xs btn-outline"
+                      data-confirm={"Set the status of #{item.summary.new} new #{noun(item.summary.new)} in #{item.header}?"}
+                    >
+                      Apply to {item.summary.new} new
+                    </button>
+                    <button
+                      type="submit"
+                      id={"package-apply-all-#{item.header}"}
+                      name="package[scope]"
+                      value="all"
+                      class="btn btn-xs btn-ghost"
+                      data-confirm={"Set the status of all #{findings(item.summary.count)} in #{item.header}?"}
+                    >
+                      Apply to all {item.summary.count}
+                    </button>
+                  </.form>
                 </div>
                 <.finding_row
                   :if={!item[:header]}

@@ -501,6 +501,60 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       assert has_element?(view, "#package-many", "1 new")
       assert has_element?(view, "#triage-counts", "1 reported")
     end
+
+    test "each package header sets the status of its findings", %{conn: conn} do
+      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "tom"})
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
+
+      assert has_element?(
+               view,
+               "#package-apply-new-many[data-confirm='Set the status of 2 new findings in many?']"
+             )
+
+      assert has_element?(
+               view,
+               "#package-apply-all-many[data-confirm='Set the status of all 3 findings in many?']"
+             )
+
+      view
+      |> form("#package-form-many", package: %{status: "false_positive", note: "by design"})
+      |> put_submitter("#package-apply-new-many")
+      |> render_submit()
+
+      assert %{status: :false_positive, note: "by design", updated_by: "triage_admin"} =
+               row("many", "E")
+
+      assert %{status: :false_positive} = row("many", "W")
+      assert %{status: :confirmed, updated_by: "tom"} = row("many", "A")
+      assert %{status: :new} = row("few", "One")
+      assert has_element?(view, "#triage-counts", "2 false positive")
+
+      # Nothing new left: only "all" is offered, and it counts what the
+      # filters still show (the false positives have left them).
+      refute has_element?(view, "#package-apply-new-many")
+      assert has_element?(view, "#package-apply-all-many", "Apply to all 1")
+
+      view
+      |> form("#package-form-many", package: %{status: "reported", note: ""})
+      |> put_submitter("#package-apply-all-many")
+      |> render_submit()
+
+      assert %{status: :reported} = row("many", "A")
+      assert %{status: :false_positive, note: "by design"} = row("many", "E")
+    end
+
+    test "a package action uses the current filters", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages&severity[]=error")
+      assert has_element?(view, "#package-apply-all-many", "Apply to all 1")
+
+      view
+      |> form("#package-form-many", package: %{status: "ignored", note: ""})
+      |> put_submitter("#package-apply-all-many")
+      |> render_submit()
+
+      assert %{status: :ignored} = row("many", "E")
+      assert %{status: :new} = row("many", "A")
+    end
   end
 
   describe "layout" do
