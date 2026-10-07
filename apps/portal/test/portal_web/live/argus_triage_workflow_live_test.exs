@@ -249,6 +249,60 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
   end
 
   describe "keyboard events" do
+    test "each check row is a keyboard item carrying its identity and new count",
+         %{conn: conn} do
+      two_packages()
+      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "tom"})
+      key = ArgusFindingsLive.check_key(@check)
+
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+      item = "#check-#{key}-item[data-triage-row][tabindex='-1'][data-check-key='#{key}']"
+      assert has_element?(view, "#{item}[data-analysis='failure'][data-severity='warning']")
+      assert has_element?(view, "#{item}[data-title='#{@title}'][data-new='2']")
+
+      # New filtered out: the status keys have nothing to set.
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?#{%{status: ~w(confirmed)}}")
+      assert has_element?(view, "#check-#{key}-item[data-new='0']")
+    end
+
+    test "the hook's toggle_check and triage_check params expand and set only new findings",
+         %{conn: conn} do
+      two_packages()
+      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "tom"})
+      key = ArgusFindingsLive.check_key(@check)
+      ident = %{"analysis" => "failure", "title" => @title, "severity" => "warning"}
+
+      {:ok, view, _} =
+        live(conn, ~p"/admin/argus/findings?#{%{status: ~w(new confirmed reported)}}")
+
+      render_hook(view, "toggle_check", ident)
+      assert has_element?(view, "#check-#{key}-findings [data-triage-row][data-id]")
+
+      render_hook(view, "toggle_check", ident)
+      refute has_element?(view, "#check-#{key}-findings")
+
+      render_hook(
+        view,
+        "triage_check",
+        %{"check" => Map.merge(ident, %{"status" => "reported", "scope" => "new"})}
+      )
+
+      assert [{"alpha", :reported, "triage_admin"}, {"alpha", :reported, "triage_admin"}] =
+               rows()
+               |> Enum.filter(&(&1.title == @title and &1.package_name == "alpha"))
+               |> Enum.map(&{&1.package_name, &1.status, &1.updated_by})
+
+      assert %{status: :confirmed, updated_by: "tom"} = row("beta", @title)
+      assert %{status: :new} = row("beta", "Other")
+      assert has_element?(view, "#check-#{key}-item[data-new='0']")
+    end
+
+    test "the shortcut panel describes the check-row keys", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+      assert has_element?(view, "#triage-shortcuts", "expand or collapse a check")
+      assert has_element?(view, "#triage-shortcuts", "new findings")
+    end
+
     test "set_status updates the row and the counts, keeping the note", %{conn: conn} do
       ingest("1.0.0", ok([finding()]), 1)
       [a] = rows()
