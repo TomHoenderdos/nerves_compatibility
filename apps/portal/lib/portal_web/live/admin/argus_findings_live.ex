@@ -306,8 +306,10 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     triage_path(filters, view, sort)
   end
 
-  defp status_path(filters, view, sort, status),
-    do: triage_path(Map.put(filters, :status, [status]), view, sort)
+  # The badges count every current finding, so their links drop the other
+  # narrowing -- the list then matches the number clicked. View and sort stay.
+  defp status_path(view, sort, status),
+    do: triage_path(Map.put(filters(%{}), :status, [status]), view, sort)
 
   # Rows rendered at once. Each carries two inputs, so a page of every finding
   # in the catalogue would be slow to diff; narrow the filters to see more.
@@ -348,8 +350,15 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   defp blank_to_nil(value) when value in [nil, ""], do: nil
   defp blank_to_nil(value), do: value
 
-  defp findings(1), do: "1 finding"
-  defp findings(n), do: "#{n} findings"
+  defp findings(n), do: "#{n} #{noun(n)}"
+
+  defp noun(1), do: "finding"
+  defp noun(_n), do: "findings"
+
+  # "Only new" can only touch something when the status filter lets new
+  # findings through and this check has some.
+  defp new_scope?(filters, check),
+    do: :new in Map.get(filters, :status, [:new, :confirmed]) and check.by_status.new > 0
 
   defp packages(1), do: "1 package"
   defp packages(n), do: "#{n} packages"
@@ -364,6 +373,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
 
   defp text(value) when is_binary(value), do: value
   defp text(value) when is_number(value), do: to_string(value)
+  defp text(%Decimal{} = value), do: Decimal.to_string(value, :normal)
   defp text(_), do: nil
 
   defp texts(value), do: value |> List.wrap() |> Enum.map(&text/1) |> Enum.filter(& &1)
@@ -403,7 +413,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           <.link
             :for={{status, label} <- @statuses}
             id={"triage-count-#{status}"}
-            patch={status_path(@filters, @view, @sort, status)}
+            patch={status_path(@view, @sort, status)}
             class="badge badge-lg badge-outline transition hover:border-primary hover:text-primary"
           >
             {Map.get(@counts, status, 0)} {label}
@@ -694,14 +704,6 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                       class="select select-sm w-40"
                     />
                     <.input
-                      id={"check-scope-#{key}"}
-                      name="check[scope]"
-                      type="select"
-                      value="new"
-                      options={[{"only new", "new"}, {"all matching", "all"}]}
-                      class="select select-sm w-32"
-                    />
-                    <.input
                       id={"check-note-#{key}"}
                       name="check[note]"
                       type="text"
@@ -709,12 +711,30 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                       placeholder="Note (optional)"
                       class="input input-sm w-44"
                     />
+                    <%!-- One button per scope, so each confirm can name the
+                    exact number it touches. "only new" is first, so Enter in
+                    the note takes the narrower one; it is absent when the
+                    filters or the check leave no new finding for it to set. --%>
+                    <button
+                      :if={new_scope?(@filters, c)}
+                      type="submit"
+                      id={"check-apply-new-#{key}"}
+                      name="check[scope]"
+                      value="new"
+                      class="btn btn-sm btn-outline mb-2"
+                      data-confirm={"Set the status of #{c.by_status.new} new #{noun(c.by_status.new)} of this check?"}
+                    >
+                      Apply to {c.by_status.new} new
+                    </button>
                     <button
                       type="submit"
+                      id={"check-apply-all-#{key}"}
+                      name="check[scope]"
+                      value="all"
                       class="btn btn-sm btn-outline mb-2"
-                      data-confirm={"Set the status of up to #{findings(c.count)} of this check?"}
+                      data-confirm={"Set the status of all #{findings(c.count)} of this check?"}
                     >
-                      Apply
+                      Apply to all {c.count}
                     </button>
                   </.form>
                 </div>
@@ -764,11 +784,24 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
 
       export default {
         mounted() {
+          this.focused = null
+          this.index = null
           this.onKey = e => this.handleKey(e)
+          this.onFocus = e => this.remember(e.target.closest && e.target.closest("[data-triage-row]"))
           window.addEventListener("keydown", this.onKey)
+          this.el.addEventListener("focusin", this.onFocus)
+          // A triaged row can leave the list (in the by-check view it drops
+          // out of the status filter), taking focus with it to <body>. Not
+          // every such patch reaches `updated()`, so watch the subtree too.
+          this.observer = new MutationObserver(() => this.restore())
+          this.observer.observe(this.el, {childList: true, subtree: true})
+        },
+        updated() {
+          this.restore()
         },
         destroyed() {
           window.removeEventListener("keydown", this.onKey)
+          this.observer.disconnect()
         },
         rows() {
           return Array.from(this.el.querySelectorAll("[data-triage-row]"))
@@ -777,13 +810,37 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           const active = document.activeElement
           return active && active.closest ? active.closest("[data-triage-row]") : null
         },
-        move(by) {
+        remember(row) {
+          if (!row) return
+          this.focused = row
+          this.index = this.rows().indexOf(row)
+        },
+        focusAt(at) {
           const rows = this.rows()
           if (rows.length === 0) return
-          const at = rows.indexOf(this.current())
-          const next = at < 0 ? (by > 0 ? 0 : rows.length - 1) : Math.min(Math.max(at + by, 0), rows.length - 1)
-          rows[next].focus()
-          rows[next].scrollIntoView({block: "nearest"})
+          const row = rows[Math.min(Math.max(at, 0), rows.length - 1)]
+          row.focus()
+          row.scrollIntoView({block: "nearest"})
+          this.remember(row)
+        },
+        // Only when the remembered row itself is gone: focus on <body> after a
+        // click elsewhere on the page is the user's, not ours to take back.
+        restore() {
+          const active = document.activeElement
+          const lost = !active || active === document.body
+          if (lost && this.focused && !this.focused.isConnected && this.index !== null) {
+            this.focusAt(this.index)
+          }
+        },
+        move(by) {
+          const at = this.rows().indexOf(this.current())
+          this.focusAt(at < 0 ? (by > 0 ? 0 : this.rows().length - 1) : at + by)
+        },
+        // After a status: the next row, or the previous one from the last.
+        advance(row) {
+          const rows = this.rows()
+          const at = rows.indexOf(row)
+          this.focusAt(at + 1 < rows.length ? at + 1 : at - 1)
         },
         // Typing in a field is never a shortcut; a focused checkbox still is,
         // since clicking one to select a row moves focus onto it.
@@ -792,13 +849,27 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             "textarea, select, [contenteditable], input:not([type=checkbox]):not([type=radio])"
           )
         },
+        // Escape leaves a field for the list: the last row, or the first.
+        leaveField(target) {
+          target.blur()
+          if (this.focused && this.focused.isConnected) this.focused.focus()
+          else this.focusAt(this.index === null ? 0 : this.index)
+        },
         handleKey(e) {
-          if (e.metaKey || e.ctrlKey || e.altKey || this.typing(e.target)) return
+          if (e.metaKey || e.ctrlKey || e.altKey) return
+          if (this.typing(e.target)) {
+            if (e.key === "Escape") {
+              this.leaveField(e.target)
+              e.preventDefault()
+            }
+            return
+          }
           const row = this.current()
 
-          if (e.key === "j" || e.key === "ArrowDown") {
+          // Arrows scroll the page as usual unless a finding has focus.
+          if (e.key === "j" || (e.key === "ArrowDown" && row)) {
             this.move(1)
-          } else if (e.key === "k" || e.key === "ArrowUp") {
+          } else if (e.key === "k" || (e.key === "ArrowUp" && row)) {
             this.move(-1)
           } else if (e.key === "/") {
             const search = document.querySelector("[data-triage-search]")
@@ -808,7 +879,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             if (panel) this.js().toggle(panel)
           } else if (STATUS_KEYS[e.key] && row) {
             this.pushEvent("set_status", {id: row.dataset.id, status: STATUS_KEYS[e.key]})
-            this.move(1)
+            this.advance(row)
           } else if (e.key === "x" && row) {
             this.pushEvent("toggle_select", {id: row.dataset.id})
           } else {

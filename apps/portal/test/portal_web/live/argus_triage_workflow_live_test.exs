@@ -85,10 +85,21 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       key = ArgusFindingsLive.check_key(@check)
 
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?package=alph")
-      assert has_element?(view, "#check-form-#{key} [data-confirm]")
+
+      # alpha's two are new; alphabet's one is confirmed.
+      assert has_element?(
+               view,
+               "#check-apply-new-#{key}[data-confirm='Set the status of 2 new findings of this check?']"
+             )
+
+      assert has_element?(
+               view,
+               "#check-apply-all-#{key}[data-confirm='Set the status of all 3 findings of this check?']"
+             )
 
       view
-      |> form("#check-form-#{key}", check: %{status: "false_positive", note: "", scope: "new"})
+      |> form("#check-form-#{key}", check: %{status: "false_positive", note: ""})
+      |> put_submitter("#check-apply-new-#{key}")
       |> render_submit()
 
       assert %{status: :false_positive, updated_by: "triage_admin"} = row("alpha", @title)
@@ -106,13 +117,44 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
 
       view
-      |> form("#check-form-#{key}",
-        check: %{status: "reported", note: "upstream #3", scope: "all"}
-      )
+      |> form("#check-form-#{key}", check: %{status: "reported", note: "upstream #3"})
+      |> put_submitter("#check-apply-all-#{key}")
       |> render_submit()
 
       assert rows() |> Enum.filter(&(&1.title == @title)) |> Enum.map(&{&1.status, &1.note}) ==
                List.duplicate({:reported, "upstream #3"}, 3)
+    end
+
+    test "offers only \"all\" when new findings are filtered out", %{conn: conn} do
+      two_packages()
+      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "tom"})
+      key = ArgusFindingsLive.check_key(@check)
+
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?#{%{status: ~w(confirmed)}}")
+
+      refute has_element?(view, "#check-apply-new-#{key}")
+
+      assert has_element?(
+               view,
+               "#check-apply-all-#{key}[data-confirm='Set the status of all 1 finding of this check?']"
+             )
+
+      view
+      |> form("#check-form-#{key}", check: %{status: "reported", note: ""})
+      |> put_submitter("#check-apply-all-#{key}")
+      |> render_submit()
+
+      assert %{status: :reported} = row("beta", @title)
+    end
+
+    test "offers only \"all\" when the check has no new findings", %{conn: conn} do
+      ingest("1.0.0", ok([finding()]), 1)
+      Catalog.triage!(row("tripkg", @title).id, %{status: "confirmed"}, %{username: "tom"})
+      key = ArgusFindingsLive.check_key(@check)
+
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+      refute has_element?(view, "#check-apply-new-#{key}")
+      assert has_element?(view, "#check-apply-all-#{key}")
     end
   end
 
@@ -285,6 +327,19 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
 
       link = "#triage-count-false_positive"
       assert has_element?(view, "#{link}[href*='=false_positive'][href*='sort=package']")
+      assert has_element?(view, "#{link}[href*='view=findings']")
+
+      # The badge counts every current finding, so its link drops the narrowing.
+      {:ok, view, _} =
+        live(
+          conn,
+          ~p"/admin/argus/findings?#{%{package: "x", analysis: "y", severity: ~w(info), stale: "true", view: "findings"}}"
+        )
+
+      for narrowing <- ~w(package= analysis= severity stale=) do
+        refute has_element?(view, "#{link}[href*='#{narrowing}']")
+      end
+
       assert has_element?(view, "#{link}[href*='view=findings']")
 
       view |> element(link) |> render_click()
