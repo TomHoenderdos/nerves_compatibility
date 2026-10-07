@@ -50,18 +50,40 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
 
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
 
-      assert has_element?(view, "#check-#{key}", "3 findings")
-      assert has_element?(view, "#check-#{key}", "2 packages")
+      summary = "#check-#{key}-item [data-check-summary]"
+      assert has_element?(view, summary, "2 new · 3 findings · 2 packages")
       assert has_element?(view, "#check-#{key} [data-check-packages]", "alpha, beta")
-      assert has_element?(view, "#check-#{key}", "2 new · 1 confirmed")
       assert has_element?(view, "#view-findings[href='/admin/argus/findings?view=findings']")
       refute has_element?(view, "#findings")
+
+      # Collapsed, a check is one quiet line: no form controls.
+      refute has_element?(view, "#check-form-#{key}")
+      refute has_element?(view, "#check-#{key} select")
+    end
+
+    test "a check with nothing new shows its status breakdown instead", %{conn: conn} do
+      ingest("1.0.0", ok([finding(), finding(%{"detail" => "two"})]), 1)
+
+      for t <- rows(),
+          do: Catalog.triage!(t.id, %{status: "confirmed"}, %{username: "tom"})
+
+      key = ArgusFindingsLive.check_key(@check)
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+      summary = "#check-#{key}-item [data-check-summary]"
+      assert has_element?(view, summary, "2 confirmed")
+      refute has_element?(view, summary, "findings")
+      refute has_element?(view, summary, "new")
     end
 
     test "honours the filters", %{conn: conn} do
       two_packages()
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?package=alph")
-      assert has_element?(view, "#check-#{ArgusFindingsLive.check_key(@check)}", "2 findings")
+      summary = "#check-#{ArgusFindingsLive.check_key(@check)}-item [data-check-summary]"
+
+      # Every finding new and in one package: the counts would repeat "2 new".
+      assert has_element?(view, summary, "2 new")
+      refute has_element?(view, summary, "findings")
+      refute has_element?(view, summary, "1 package")
       refute has_element?(view, "#checks", "Other")
     end
 
@@ -86,6 +108,8 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       key = ArgusFindingsLive.check_key(@check)
 
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?package=alph")
+      view |> element("#check-#{key}-toggle") |> render_click()
+      assert has_element?(view, "#check-#{key}-findings #check-form-#{key}")
 
       # alpha's two are new; alphabet's one is confirmed.
       assert has_element?(
@@ -116,6 +140,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       key = ArgusFindingsLive.check_key(@check)
 
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+      view |> element("#check-#{key}-toggle") |> render_click()
 
       view
       |> form("#check-form-#{key}", check: %{status: "reported", note: "upstream #3"})
@@ -132,6 +157,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       key = ArgusFindingsLive.check_key(@check)
 
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?#{%{status: ~w(confirmed)}}")
+      view |> element("#check-#{key}-toggle") |> render_click()
 
       refute has_element?(view, "#check-apply-new-#{key}")
 
@@ -154,6 +180,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       key = ArgusFindingsLive.check_key(@check)
 
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+      view |> element("#check-#{key}-toggle") |> render_click()
       refute has_element?(view, "#check-apply-new-#{key}")
       assert has_element?(view, "#check-apply-all-#{key}")
     end
@@ -223,6 +250,8 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       [a, b, c] = Enum.sort_by(rows(), & &1.title)
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
 
+      # The bulk bar waits for a selection.
+      refute has_element?(view, "#bulk-form")
       view |> element("#select-#{a.id}") |> render_click()
       view |> element("#select-#{c.id}") |> render_click()
       render_hook(view, "toggle_select", %{"id" => Ecto.UUID.generate()})
@@ -341,6 +370,45 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
       assert has_element?(view, "#triage-list[phx-hook]")
       assert has_element?(view, "#triage-shortcuts")
+    end
+  end
+
+  describe "layout" do
+    test "filters sit behind a toggle under a one-line summary", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+      assert has_element?(view, "#triage-filter-summary", "new, confirmed")
+      assert has_element?(view, "#triage-filter-summary", "all severities")
+      assert has_element?(view, "#triage-filters-toggle")
+      assert has_element?(view, "#triage-filters-panel.hidden #triage-filters")
+
+      {:ok, view, _} =
+        live(
+          conn,
+          ~p"/admin/argus/findings?#{%{severity: ~w(error), package: "circ", stale: "true"}}"
+        )
+
+      assert has_element?(view, "#triage-filter-summary", "error")
+      assert has_element?(view, "#triage-filter-summary", "package: circ")
+      assert has_element?(view, "#triage-filter-summary", "including no longer seen")
+    end
+
+    test "status counts are one line of links and export sits at the bottom", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+      assert has_element?(view, "#triage-counts a#triage-count-new", "0 new")
+      refute has_element?(view, "#triage-counts .badge")
+      assert has_element?(view, "#triage-export a[href='/admin/argus/export.ndjson']")
+      assert has_element?(view, "#triage-export a[href='/admin/argus/export.ndjson?scope=all']")
+    end
+
+    test "a finding row keeps its note, source and details behind Details", %{conn: conn} do
+      ingest("1.0.0", ok([finding(%{"confidence" => 0.8})]), 1)
+      [a] = rows()
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
+
+      assert has_element?(view, "#finding-#{a.id} select#triage-status-#{a.id}")
+      assert has_element?(view, "#finding-#{a.id} details #triage-note-#{a.id}")
+      assert has_element?(view, "#finding-#{a.id} details #source-#{a.id}")
+      assert has_element?(view, "#finding-#{a.id} details", "0.8")
     end
   end
 
