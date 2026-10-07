@@ -44,9 +44,15 @@
            website id from, so every pageview would be dropped.
            data-performance="true" is opt-in per tag: without it the tracker
            never starts its PerformanceObserver, so ttfb/fcp/lcp/cls/inp stay
-           empty and the Performance view in Umami shows nothing. --%>
+           empty and the Performance view in Umami shows nothing.
+           async rather than defer: a deferred script is part of the
+           document's load, so the browser's loading indicator waited on it.
+           script.js itself is ~70 ms from Cloudflare, but the tracker's
+           POST /api/send to the self-hosted Umami took 0.13 / 0.47 / 2.1 s on
+           2026-10-07. Nothing on the page depends on the tracker, so it can
+           run whenever it arrives. --%>
       <script
-        defer
+        async
         data-cfasync="false"
         src="https://analytics.tomhoenderdos.nl/script.js"
         data-website-id={umami_id}
