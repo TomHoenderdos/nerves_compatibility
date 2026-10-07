@@ -70,6 +70,14 @@ const liveSocket = new LiveSocket("/live", Socket, {
   disconnectedTimeout: 2000,
   params: {_csrf_token: csrfToken},
   hooks: {...colocatedHooks},
+  // A <details> the user opened stays open when a patch re-renders it: the
+  // server never renders `open`, so without this saving a field inside one
+  // (the triage note) would fold it shut mid-typing.
+  dom: {
+    onBeforeElUpdated(from, to) {
+      if (from.tagName === "DETAILS" && from.open) to.setAttribute("open", "")
+    },
+  },
 })
 
 // Show progress bar on live navigation and form submits
