@@ -2,11 +2,14 @@ defmodule Portal.Catalog.Cache do
   @moduledoc """
   Short-lived memo for the catalog's derived aggregates.
 
-  The dashboard, stats and failure-cluster pages are all built by folding the
-  same three tables in Elixir -- every package, its latest run, and every system
-  result belonging to those runs. On 2026-09-11 that was 2,506 packages,
-  2,575 runs and 9,463 system results, and `Portal.Catalog.dashboard/2`
-  measured 655ms warm / 1850ms cold on production.
+  The dashboard, stats and failure-cluster pages are all built from the same
+  three tables -- every package, its latest run, and every system result
+  belonging to those runs. They were first folded in Elixir: on 2026-09-11
+  that was 2,506 packages, 2,575 runs and 9,463 system results, and
+  `Portal.Catalog.dashboard/2` measured 655ms warm / 1850ms cold on
+  production. Postgres aggregates them now, which on a seeded catalog nine
+  times that size takes ~170ms for the dashboard -- still a query over every
+  package per computation.
 
   A LiveView mounts twice: once to render the static HTML and again when the
   socket connects. Both mounts run `mount/3`, so every visitor paid that cost
@@ -34,9 +37,9 @@ defmodule Portal.Catalog.Cache do
   * A stale entry is served immediately and a refresh runs in the background.
     Only the very first caller after a restart ever waits for a computation.
   * Concurrent callers for the same key share one computation. This is the part
-    that matters under load: each computation holds a database connection and
-    materialises ~9,500 rows, so a stampede of them is how a slow page becomes
-    an outage.
+    that matters under load: each computation holds a database connection
+    while Postgres reads every package's latest results, so a stampede of them
+    is how a slow page becomes an outage.
   * `ttl_ms: 0` disables the cache completely and calls straight through. The
     test environment uses it, so tests observe their own writes and no state
     leaks between them through a shared ETS table.

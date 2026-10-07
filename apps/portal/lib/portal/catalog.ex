@@ -29,14 +29,13 @@ defmodule Portal.Catalog do
 
   @statuses ~w(pass fail error skipped unknown)
 
-  # The dashboard reads these tables whole, so every query on its path names the
-  # columns it needs. `catalog_system_results` is the largest table in the
-  # database: 843 MB on disk as of 2026-09-10, of which 829 MB is TOAST, and
-  # 1,501 MB uncompressed once the `dependency_scans` jsonb is decoded, against
-  # 54 MB for `beam_scan`. Nothing the dashboard renders reads either. Loading
-  # them anyway decoded that blob into the heap on every call, several calls per
-  # render, which is what made a single page load cost gigabytes and run the
-  # node out of memory.
+  # Every read here names the columns it needs. `catalog_system_results` is
+  # the largest table in the database: 843 MB on disk as of 2026-09-10, of
+  # which 829 MB is TOAST, and 1,501 MB uncompressed once the
+  # `dependency_scans` jsonb is decoded, against 54 MB for `beam_scan`. When
+  # the dashboard was still folded in Elixir it loaded those blobs it never
+  # rendered, decoding them into the heap several times per render, which is
+  # what made a single page load cost gigabytes and run the node out of memory.
   #
   # `Portal.Catalog.Ingestion` no longer stores the `footprint.file_manifest`
   # that was 75% of `dependency_scans`, and `Portal.Catalog.ManifestBackfill`
@@ -44,20 +43,6 @@ defmodule Portal.Catalog do
   # upper bound once the backfill has been run. Naming columns is not
   # contingent on either: the remaining blob is still far larger than what
   # these queries render.
-  # Deliberately no `:log_tail`. The dashboard reads the system results of the
-  # latest run of every package — 9,187 rows in production as of 2026-09-10,
-  # carrying 29 MB of log tails that Postgres serialized and the node decoded
-  # into binaries on every render, so that `sample_log/1` could keep one of
-  # them per failure cluster. The id is carried instead, and the sample is
-  # fetched by id at the end.
-  @annotated_fields [
-    :id,
-    :run_id,
-    :system_pkg,
-    :status,
-    :failure_category,
-    :hex_version_tested
-  ]
   @run_fields [
     :id,
     :run_id,
@@ -182,10 +167,6 @@ defmodule Portal.Catalog do
       )
       |> Repo.all()
 
-    last_finished_at =
-      from(r in "catalog_runs", select: type(max(r.finished_at), :utc_datetime_usec))
-      |> Repo.one()
-
     %{
       schema: 2,
       generated_at: generated_at(),
@@ -197,17 +178,24 @@ defmodule Portal.Catalog do
         |> Enum.reject(fn {system_pkg, _, _, _} -> assessment_system?(system_pkg) end)
         |> Enum.group_by(fn {system_pkg, version, _, _} -> "#{system_pkg}@#{version}" end)
         |> Map.new(fn {key, rows} -> {key, counts(rows, false)} end),
-      last_run_finished_at: iso8601(last_finished_at)
+      last_run_finished_at: iso8601(last_finished_at())
     }
   end
 
   @doc """
-  Everything the dashboard renders, from one pass over the catalog.
+  Everything the dashboard renders.
 
-  The functions below each derive their answer from `latest_annotated_systems/0`
-  and from the runs table. Called one by one, as the dashboard used to, they
-  repeat both loads per caller. Threading the loaded rows through instead keeps
-  a render to a single pass.
+  Each part is an aggregate Postgres computes over the latest run of every
+  package (`latest_results/0`) or over the runs table, and only the answer
+  crosses into the node. They used to be folded in Elixir from every package,
+  its latest run and that run's system results, and `/` took ~1s on
+  production while each rebuild held one of the pool's five connections.
+  With 22,000 packages, 23,295 runs and 46,590 system results seeded
+  locally, a cold `dashboard(3, 10)` went from ~1,380ms to ~170ms; most of
+  what is left is the cluster entries and sample logs.
+
+  Still cached: the page is mounted twice per visit and the numbers only move
+  when a build lands.
   """
   def dashboard(cluster_limit \\ 3, recent_limit \\ 10) do
     Cache.fetch({:dashboard, cluster_limit, recent_limit}, fn ->
@@ -216,19 +204,14 @@ defmodule Portal.Catalog do
   end
 
   defp compute_dashboard(cluster_limit, recent_limit) do
-    annotated = latest_annotated_systems()
-    runs = run_summaries()
-
-    pkgs = package_name_map()
-
     %{
-      counts: package_status_counts(annotated),
-      clusters: failure_clusters(annotated, cluster_limit),
+      counts: compute_package_status_counts(),
+      clusters: compute_failure_clusters(cluster_limit),
       native: native_breakdown(),
-      rates: pass_rate_per_system(annotated),
-      recent_pass: recent_runs(:pass, recent_limit, runs, pkgs),
-      recent_fail: recent_runs(:fail, recent_limit, runs, pkgs),
-      last_run: last_finished_at(runs)
+      rates: pass_rate_per_system(),
+      recent_pass: recent_runs(:pass, recent_limit),
+      recent_fail: recent_runs(:fail, recent_limit),
+      last_run: iso8601(last_finished_at())
     }
   end
 
@@ -710,23 +693,15 @@ defmodule Portal.Catalog do
   end
 
   @doc "Per-system pass counts over the latest run of every package."
-  def pass_rate_per_system, do: pass_rate_per_system(latest_annotated_systems())
-
-  @doc false
-  def pass_rate_per_system(annotated) do
-    annotated
-    |> Enum.filter(&real_system?(&1.system_pkg))
-    |> Enum.group_by(& &1.system_pkg)
-    |> Enum.map(fn {system_pkg, rows} ->
-      total = length(rows)
-      pass = Enum.count(rows, &(&1.status == :pass))
-
-      %{
-        system_pkg: system_pkg,
-        pass: pass,
-        total: total,
-        rate: if(total > 0, do: pass / total, else: 0.0)
-      }
+  def pass_rate_per_system do
+    from([s, _r] in latest_results(),
+      group_by: s.system_pkg,
+      select: {s.system_pkg, count(), filter(count(), s.status == "pass")}
+    )
+    |> Repo.all()
+    |> Enum.filter(fn {system_pkg, _, _} -> real_system?(system_pkg) end)
+    |> Enum.map(fn {system_pkg, total, pass} ->
+      %{system_pkg: system_pkg, pass: pass, total: total, rate: pass / total}
     end)
     |> Enum.sort_by(& &1.system_pkg)
   end
@@ -741,40 +716,44 @@ defmodule Portal.Catalog do
     String.starts_with?(to_string(system_pkg), "forced")
   end
 
-  @doc "Most recently finished passing (:pass) or failing (:fail/:error) runs."
-  def recent_runs(status, limit \\ 5), do: recent_runs(status, limit, run_summaries())
+  @doc """
+  Most recently finished passing (:pass) or failing (:fail/:error) runs.
 
-  @doc false
-  def recent_runs(status, limit, runs), do: recent_runs(status, limit, runs, package_name_map())
+  One row per package, at its newest qualifying run. A package that gets
+  re-checked often (jason, while the build pipeline was being tuned) would
+  otherwise fill the whole list with its own history and hide every other
+  package. Every run counts here, not only each package's latest.
+  """
+  def recent_runs(status, limit \\ 5) do
+    wanted = if status == :pass, do: ["pass"], else: ["fail", "error"]
 
-  # Two columns, not the row: this map is only ever asked for a name, and
-  # `catalog_packages` carries a description and a `native_components` jsonb
-  # blob that nothing here looks at.
-  #
-  # It arrives as an argument because `dashboard/2` needs both a passing and a
-  # failing list, and building it inside meant reading every package row twice
-  # per render to answer the same question.
-  @doc false
-  def recent_runs(status, limit, runs, pkgs) do
-    wanted = if status == :pass, do: [:pass], else: [:fail, :error]
+    newest_per_package =
+      from(r in "catalog_runs",
+        where: r.overall_status in ^wanted and not is_nil(r.finished_at),
+        distinct: r.package_id,
+        order_by: [asc: r.package_id, desc: r.finished_at, desc: r.inserted_at],
+        select: %{
+          package_id: r.package_id,
+          version: r.version_tested,
+          finished_at: r.finished_at,
+          overall_status: r.overall_status
+        }
+      )
 
-    runs
-    |> Enum.filter(&(&1.overall_status in wanted and not is_nil(&1.finished_at)))
-    |> Enum.sort_by(& &1.finished_at, {:desc, DateTime})
-    # One row per package. A package that gets re-checked often (jason, while
-    # the build pipeline was being tuned) would otherwise fill the whole list
-    # with its own history and hide every other package. Runs with no package
-    # keep their own key so they cannot collapse into each other.
-    |> Enum.uniq_by(&(&1.package_id || &1.id))
-    |> Enum.take(limit)
-    |> Enum.map(fn run ->
-      %{
-        package: pkgs[run.package_id],
-        version: run.version_tested,
-        finished_at: run.finished_at,
-        overall_status: run.overall_status
+    from(r in subquery(newest_per_package),
+      left_join: p in "catalog_packages",
+      on: p.id == r.package_id,
+      order_by: [desc: r.finished_at],
+      limit: ^limit,
+      select: %{
+        package: p.name,
+        version: r.version,
+        finished_at: type(r.finished_at, :utc_datetime_usec),
+        overall_status: r.overall_status
       }
-    end)
+    )
+    |> Repo.all()
+    |> Enum.map(&%{&1 | overall_status: String.to_existing_atom(&1.overall_status)})
   end
 
   @failure_meta %{
@@ -797,121 +776,180 @@ defmodule Portal.Catalog do
 
   @doc "One bucket per package via Rollup.overall_status over its latest run's systems."
   def package_status_counts do
-    Cache.fetch(:package_status_counts, fn ->
-      package_status_counts(latest_annotated_systems())
-    end)
+    Cache.fetch(:package_status_counts, &compute_package_status_counts/0)
   end
 
-  @doc false
-  def package_status_counts(annotated) do
-    by_pkg =
-      annotated
-      |> Enum.group_by(& &1.package)
-      |> Enum.map(fn {_pkg, rows} ->
-        Portal.Catalog.Rollup.overall_status(Enum.map(rows, & &1.status))
-      end)
+  # `Portal.Catalog.Rollup.overall_status/1` in SQL: the WHENs are its `cond`
+  # clauses, in the same order. A package whose latest run has no system
+  # results has no row here, and is not counted, as before.
+  defp compute_package_status_counts do
+    buckets =
+      from([s, r] in latest_results(),
+        group_by: r.package_id,
+        select: %{
+          bucket:
+            fragment(
+              """
+              CASE
+                WHEN bool_or(? IN ('fail', 'error')) THEN 'fail'
+                WHEN bool_and(? = 'pass') THEN 'pass'
+                WHEN bool_and(? = 'skipped') THEN 'skipped'
+                WHEN bool_or(? = 'pass') THEN 'partial'
+                ELSE 'unknown'
+              END
+              """,
+              s.status,
+              s.status,
+              s.status,
+              s.status
+            )
+        }
+      )
+
+    counted =
+      from(b in subquery(buckets), group_by: b.bucket, select: {b.bucket, count()})
+      |> Repo.all()
+      |> Map.new()
 
     %{
-      unique: length(by_pkg),
-      pass: Enum.count(by_pkg, &(&1 == :pass)),
-      fail: Enum.count(by_pkg, &(&1 == :fail)),
-      partial: Enum.count(by_pkg, &(&1 == :partial)),
-      skipped: Enum.count(by_pkg, &(&1 == :skipped)),
-      unknown: Enum.count(by_pkg, &(&1 == :unknown))
+      unique: counted |> Map.values() |> Enum.sum(),
+      pass: Map.get(counted, "pass", 0),
+      fail: Map.get(counted, "fail", 0),
+      partial: Map.get(counted, "partial", 0),
+      skipped: Map.get(counted, "skipped", 0),
+      unknown: Map.get(counted, "unknown", 0)
     }
   end
 
   @doc "Non-pass systems grouped by failure_category with occurrence + distinct-package counts."
   def failure_clusters(limit \\ 10) do
-    Cache.fetch({:failure_clusters, limit}, fn ->
-      failure_clusters(latest_annotated_systems(), limit)
-    end)
+    Cache.fetch({:failure_clusters, limit}, fn -> compute_failure_clusters(limit) end)
   end
 
-  @doc false
-  def failure_clusters(annotated, limit) do
-    annotated
-    |> Enum.filter(&(&1.status in [:fail, :error] and not is_nil(&1.failure_category)))
-    |> Enum.group_by(& &1.failure_category)
-    |> Enum.map(fn {category, rows} ->
+  # Three queries: the ranked categories, the entries of the ones that made the
+  # cut, and one sample log per category. A tie in `systems` goes to the
+  # category that sorts first by bytes, which is the order the Elixir fold
+  # this replaced gave (`Enum.group_by/2` into a small map, then a stable
+  # sort).
+  defp compute_failure_clusters(limit) do
+    ranked =
+      from([s, r] in failing_latest_results(),
+        group_by: s.failure_category,
+        order_by: [
+          desc: selected_as(:systems),
+          asc: fragment("? COLLATE \"C\"", s.failure_category)
+        ],
+        limit: ^limit,
+        select: %{
+          category: s.failure_category,
+          systems: selected_as(count(), :systems),
+          packages: count(r.package_id, :distinct)
+        }
+      )
+      |> Repo.all()
+
+    categories = Enum.map(ranked, & &1.category)
+    entries = cluster_entries(categories)
+    samples = sample_logs(categories)
+
+    Enum.map(ranked, fn %{category: category} = cluster ->
       {title, hint} =
         Map.get(@failure_meta, category, {category, "Build failures in this category."})
 
-      entries =
-        Enum.map(rows, fn r ->
-          %{
-            package: r.package,
-            version: r.version,
-            arch_label: Portal.Catalog.Architecture.label(r.system_pkg),
-            nif_language: r.nif_language,
-            detail: nil
-          }
-        end)
-
-      %{
-        category: category,
+      Map.merge(cluster, %{
         title: title,
         hint: hint,
-        systems: length(rows),
-        packages: rows |> Enum.map(& &1.package) |> Enum.uniq() |> length(),
-        entries: entries,
-        sample_log: sample_log(rows)
-      }
+        entries: Map.get(entries, category, []),
+        sample_log: Map.get(samples, category)
+      })
     end)
-    |> Enum.sort_by(& &1.systems, :desc)
-    |> Enum.take(limit)
   end
 
-  # Shortest non-empty log_tail in the cluster, last 40 lines.
+  defp failing_latest_results do
+    from([s, _r] in latest_results(),
+      where: s.status in ["fail", "error"] and not is_nil(s.failure_category)
+    )
+  end
+
+  defp cluster_entries([]), do: %{}
+
+  defp cluster_entries(categories) do
+    from([s, r] in failing_latest_results(),
+      join: p in "catalog_packages",
+      on: p.id == r.package_id,
+      where: s.failure_category in ^categories,
+      order_by: [asc: s.system_pkg, asc: p.name],
+      select: {s.failure_category, p.name, s.hex_version_tested, s.system_pkg}
+    )
+    |> Repo.all()
+    |> Enum.group_by(&elem(&1, 0), fn {_, package, version, system_pkg} ->
+      %{
+        package: package,
+        version: version,
+        arch_label: Portal.Catalog.Architecture.label(system_pkg),
+        nif_language: nil,
+        detail: nil
+      }
+    end)
+  end
+
+  # The shortest non-empty log_tail in each cluster, last 40 lines.
   #
-  # One row, chosen by Postgres. This used to fold over the log tails already
-  # loaded on every annotated row, which meant the dashboard paid for ~35,000
-  # of them to render at most ten. Sorting by length in the database sends one.
+  # Chosen by Postgres, one row per category: the latest runs carried 29 MB of
+  # log tails on production as of 2026-09-10, and a cluster shows one.
   #
-  # Raw SQL because Ash has no first-class sort over `octet_length/1`, and
   # `octet_length` rather than `String.length/1` because the two only disagree
   # on multi-byte input, where the byte count is the better proxy for "least
   # log to read" anyway.
-  defp sample_log([]), do: nil
+  defp sample_logs([]), do: %{}
 
-  defp sample_log(rows) do
-    ids = Enum.map(rows, &Ecto.UUID.dump!(&1.id))
-
-    %{rows: found} =
-      Repo.query!(
-        """
-        SELECT log_tail
-        FROM catalog_system_results
-        WHERE id = ANY($1) AND log_tail IS NOT NULL AND log_tail <> ''
-        ORDER BY octet_length(log_tail) ASC
-        LIMIT 1
-        """,
-        [ids]
-      )
-
-    case found do
-      [[log]] -> log |> String.split("\n") |> Enum.take(-40) |> Enum.join("\n")
-      [] -> nil
-    end
+  defp sample_logs(categories) do
+    from([s, _r] in failing_latest_results(),
+      where: s.failure_category in ^categories,
+      where: not is_nil(s.log_tail) and s.log_tail != "",
+      distinct: s.failure_category,
+      order_by: [asc: s.failure_category, asc: fragment("octet_length(?)", s.log_tail)],
+      select: {s.failure_category, s.log_tail}
+    )
+    |> Repo.all()
+    |> Map.new(fn {category, log} ->
+      {category, log |> String.split("\n") |> Enum.take(-40) |> Enum.join("\n")}
+    end)
   end
 
-  @doc "Packages grouped by native implementation language (NIF + ports), plus a pure-Elixir bucket."
-  def native_breakdown do
-    Package
-    |> Ash.Query.select([:name, :native_components])
-    |> Ash.read!(domain: __MODULE__)
-    |> Enum.flat_map(fn pkg ->
-      nc = pkg.native_components || %{}
-      langs = [nc["nif_language"] | nc["port_languages"] || []] |> Enum.reject(&is_nil/1)
+  @doc """
+  Packages grouped by native implementation language (NIF + ports), plus a
+  pure-Elixir bucket.
 
-      if langs == [],
-        do: [{"Pure Elixir / none", pkg.name}],
-        else: Enum.map(langs, &{&1, pkg.name})
-    end)
-    |> Enum.group_by(fn {lang, _} -> lang end, fn {_, name} -> name end)
-    |> Enum.map(fn {language, names} ->
-      %{language: language, packages: names |> Enum.uniq() |> length()}
-    end)
+  Counted in Postgres rather than by reading every package's
+  `native_components` blob into the node. A package lists its NIF language and
+  its port languages; nulls are dropped, a package with none left is pure
+  Elixir, and a package is counted once per language however often it lists
+  it. A `port_languages` that is not a list counts as empty.
+  """
+  def native_breakdown do
+    %{rows: rows} =
+      Repo.query!("""
+      SELECT coalesce(l.lang, 'Pure Elixir / none'), count(DISTINCT p.name)
+      FROM catalog_packages p
+      LEFT JOIN LATERAL (
+        SELECT p.native_components ->> 'nif_language' AS lang
+        UNION ALL
+        SELECT jsonb_array_elements_text(
+          CASE
+            WHEN jsonb_typeof(p.native_components -> 'port_languages') = 'array'
+            THEN p.native_components -> 'port_languages'
+          END
+        )
+      ) l ON l.lang IS NOT NULL
+      GROUP BY 1
+      """)
+
+    rows
+    |> Enum.map(fn [language, packages] -> %{language: language, packages: packages} end)
+    # Byte order, then a stable sort by count: how the Elixir fold this
+    # replaced ordered ties.
+    |> Enum.sort_by(& &1.language)
     |> Enum.sort_by(& &1.packages, :desc)
   end
 
@@ -941,19 +979,6 @@ defmodule Portal.Catalog do
     |> Ash.read!(domain: __MODULE__)
   end
 
-  # Two columns of the whole table, for the callers that only need to label a
-  # run with a package name. `packages(nil)` above stays wide because
-  # `latest_by_pkg_json/1` renders the full package row through
-  # `package_json/3`.
-  defp package_names do
-    Package
-    |> Ash.Query.select([:id, :name])
-    |> Ash.Query.sort(name: :asc)
-    |> Ash.read!(domain: __MODULE__)
-  end
-
-  defp package_name_map, do: package_names() |> Map.new(&{&1.id, &1.name})
-
   defp latest_runs([]), do: %{}
 
   defp latest_runs(packages) do
@@ -978,12 +1003,6 @@ defmodule Portal.Catalog do
     |> Ash.read!(domain: __MODULE__)
   end
 
-  defp run_summaries do
-    Run
-    |> Ash.Query.select(@run_fields)
-    |> Ash.read!(domain: __MODULE__)
-  end
-
   defp json_results_for_runs([]), do: []
 
   defp json_results_for_runs(run_ids) do
@@ -991,16 +1010,6 @@ defmodule Portal.Catalog do
     |> Ash.Query.filter(run_id in ^run_ids)
     |> Ash.Query.sort(system_pkg: :asc)
     |> Ash.Query.select(@json_fields)
-    |> Ash.read!(domain: __MODULE__)
-  end
-
-  defp annotated_results_for_runs([]), do: []
-
-  defp annotated_results_for_runs(run_ids) do
-    SystemResult
-    |> Ash.Query.filter(run_id in ^run_ids)
-    |> Ash.Query.sort(system_pkg: :asc)
-    |> Ash.Query.select(@annotated_fields)
     |> Ash.read!(domain: __MODULE__)
   end
 
@@ -1131,43 +1140,25 @@ defmodule Portal.Catalog do
       else: counted
   end
 
-  defp last_finished_at(runs) do
-    runs
-    |> Enum.map(& &1.finished_at)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.sort(DateTime)
-    |> List.last()
-    |> iso8601()
+  defp last_finished_at do
+    from(r in "catalog_runs", select: type(max(r.finished_at), :utc_datetime_usec))
+    |> Repo.one()
   end
 
-  # Latest system results across all packages, annotated with the package name.
-  defp latest_annotated_systems do
-    packages = package_names()
-    runs = latest_runs(packages)
+  # The system results of every package's latest run, as `[s, r]`. Latest is
+  # the rule `latest_runs/1` and `Portal.Catalog.Browse` apply -- newest
+  # `finished_at`, then newest `inserted_at`; plain `DESC`, so an unfinished
+  # run sorts first -- and `catalog_runs_package_latest_index` is that sort,
+  # so Postgres reads one index entry per package rather than sorting history.
+  defp latest_results do
+    latest =
+      from(r in "catalog_runs",
+        distinct: r.package_id,
+        order_by: [asc: r.package_id, desc: r.finished_at, desc: r.inserted_at],
+        select: %{id: r.id, package_id: r.package_id}
+      )
 
-    run_to_pkg =
-      packages
-      |> Enum.reduce(%{}, fn pkg, acc ->
-        case Map.get(runs, pkg.id) do
-          nil -> acc
-          run -> Map.put(acc, run.id, pkg.name)
-        end
-      end)
-
-    run_to_pkg
-    |> Map.keys()
-    |> annotated_results_for_runs()
-    |> Enum.map(fn sr ->
-      %{
-        package: Map.get(run_to_pkg, sr.run_id),
-        system_pkg: sr.system_pkg,
-        status: sr.status,
-        failure_category: sr.failure_category,
-        id: sr.id,
-        version: sr.hex_version_tested,
-        nif_language: nil
-      }
-    end)
+    from(s in "catalog_system_results", join: r in subquery(latest), on: r.id == s.run_id)
   end
 
   defp system_key(result), do: "#{result.system_pkg}@#{result.system_version}"
