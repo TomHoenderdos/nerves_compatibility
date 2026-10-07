@@ -622,7 +622,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
               phx-click={fold_all(false)}
               class="btn btn-xs btn-ghost"
             >
-              Collapse all
+              <.icon name="hero-chevron-double-up-mini" class="size-3.5" /> Collapse all
             </button>
             <button
               type="button"
@@ -630,7 +630,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
               phx-click={fold_all(true)}
               class="btn btn-xs btn-ghost"
             >
-              Expand all
+              <.icon name="hero-chevron-double-down-mini" class="size-3.5" /> Expand all
             </button>
           </div>
           <div class="flex items-center gap-2">
@@ -663,9 +663,10 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
               type="button"
               id="triage-filters-toggle"
               phx-click={JS.toggle(to: "#triage-filters-panel")}
-              class="btn btn-xs btn-ghost"
+              class="btn btn-xs btn-outline"
             >
               <.icon name="hero-funnel-mini" class="size-3.5" /> Filters
+              <.icon name="hero-chevron-down-mini" class="size-3.5" />
             </button>
             <span id="triage-filter-summary" class="text-base-content/60">
               {filter_summary(@filters)}
