@@ -225,6 +225,76 @@ defmodule Portal.Catalog.TriageChecksTest do
     end
   end
 
+  describe "by type and by package" do
+    setup do
+      # pkg "few": 1 new; pkg "many": 3 new; pkg "none": 1 confirmed.
+      ingest("1.0.0", ok([finding(%{"analysis" => "shutdown", "title" => "S"})]), 1, "few")
+
+      ingest(
+        "2.1.0",
+        ok([
+          finding(%{"analysis" => "shutdown", "title" => "S", "severity" => "error"}),
+          finding(%{"analysis" => "failure", "title" => "F"}),
+          finding(%{"analysis" => "failure", "title" => "F", "detail" => "two"})
+        ]),
+        1,
+        "many"
+      )
+
+      ingest("0.3.0", ok([finding(%{"analysis" => "failure", "title" => "N"})]), 1, "none")
+      Catalog.triage!(row("none", "N").id, %{status: "confirmed"}, @admin)
+      :ok
+    end
+
+    test "checks by type: analysis, then severity, then count" do
+      ingest(
+        "1.0.0",
+        ok([
+          finding(%{"analysis" => "failure", "title" => "F", "detail" => "three"}),
+          finding(%{"analysis" => "failure", "title" => "Z", "severity" => "error"}),
+          finding(%{"analysis" => "failure", "title" => "A"})
+        ]),
+        1,
+        "zzz"
+      )
+
+      # Z (error) before the warnings; F (3) before A and N (1 each) by count.
+      assert [
+               {"failure", "error", "Z"},
+               {"failure", "warning", "F"},
+               {"failure", "warning", "A"},
+               {"failure", "warning", "N"},
+               {"shutdown", "error", "S"},
+               {"shutdown", "warning", "S"}
+             ] =
+               Enum.map(
+                 Catalog.triage_checks(%{sort: :analysis}),
+                 &{&1.analysis, &1.severity, &1.title}
+               )
+    end
+
+    test "packages by most new, then name; findings by severity inside" do
+      assert [{"many", "S"}, {"many", "F"}, {"many", "F"}, {"few", "S"}, {"none", "N"}] =
+               titles(Catalog.triage_list(%{sort: :package_new}))
+    end
+
+    test "packages by most new, findings by type inside" do
+      assert [{"many", "F"}, {"many", "F"}, {"many", "S"}, {"few", "S"}, {"none", "N"}] =
+               titles(Catalog.triage_list(%{sort: :package_type}))
+    end
+
+    test "triage_packages/1 summarises each package within the filters" do
+      assert %{
+               "many" => %{count: 3, new: 3, version: "2.1.0"},
+               "few" => %{count: 1, new: 1, version: "1.0.0"},
+               "none" => %{count: 1, new: 0, version: "0.3.0"}
+             } = Catalog.triage_packages(%{})
+
+      assert %{"many" => %{count: 1}} = Catalog.triage_packages(%{severity: ["error"]})
+      refute Map.has_key?(Catalog.triage_packages(%{severity: ["error"]}), "few")
+    end
+  end
+
   describe "triage_check!/5" do
     @check %{
       analysis: "failure",

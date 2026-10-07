@@ -382,6 +382,31 @@ defmodule Portal.Catalog do
     end)
   end
 
+  @doc """
+  Per package among the findings matching `filters`: how many there are, how
+  many are new, and the version of the package's latest argus run -- or, for
+  a package whose findings are all stale, the newest version they were seen
+  in. One query, keyed by package name.
+  """
+  def triage_packages(filters) do
+    f = Map.merge(@triage_defaults, filters)
+
+    f
+    |> triage_scope()
+    |> group_by([t], t.package_name)
+    |> select(
+      [t, l: l],
+      {t.package_name,
+       %{
+         count: count(t.id),
+         new: filter(count(t.id), t.status == "new"),
+         version: coalesce(max(l.version), max(t.last_seen_version))
+       }}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
   @doc "Whether one triage row's package has a newer argus run that no longer reports it."
   def triage_stale?(%FindingTriage{package_name: name, last_seen_run_id: run_id}) do
     Map.get(latest_argus_run_ids([name]), name) != run_id
@@ -541,6 +566,18 @@ defmodule Portal.Catalog do
       :analysis ->
         [asc: dynamic([t], t.analysis), asc: severity, asc: dynamic([t], t.package_name)]
 
+      # Grouped by package, the package with the most new findings first.
+      :package_new ->
+        [desc: new_in_package(), asc: dynamic([t], t.package_name), asc: severity]
+
+      :package_type ->
+        [
+          desc: new_in_package(),
+          asc: dynamic([t], t.package_name),
+          asc: dynamic([t], t.analysis),
+          asc: severity
+        ]
+
       :confidence ->
         [desc_nulls_last: dynamic([t], confidence(t.finding)), asc: severity]
 
@@ -553,6 +590,19 @@ defmodule Portal.Catalog do
     |> Kernel.++(asc: dynamic([t], t.title), asc: dynamic([t], t.id))
   end
 
+  # New findings in the row's package, over the rows the filters keep: a
+  # window rather than a join, so the list stays one query.
+  defp new_in_package do
+    dynamic(
+      [t],
+      fragment(
+        "count(*) FILTER (WHERE ? = 'new') OVER (PARTITION BY ?)",
+        t.status,
+        t.package_name
+      )
+    )
+  end
+
   defp triage_check_order(sort) do
     count = dynamic([t], count(t.id))
     severity = dynamic([t], severity_rank(t.severity))
@@ -560,7 +610,7 @@ defmodule Portal.Catalog do
     case sort do
       :severity -> [asc: severity, desc: count]
       :package -> [asc: dynamic([t], min(t.package_name)), desc: count]
-      :analysis -> [asc: dynamic([t], t.analysis)]
+      :analysis -> [asc: dynamic([t], t.analysis), asc: severity, desc: count]
       :confidence -> [desc_nulls_last: dynamic([t], max(confidence(t.finding))), desc: count]
       :newest -> [desc: dynamic([t], max(t.updated_at))]
       _count -> [desc: count, asc: severity]
@@ -591,7 +641,7 @@ defmodule Portal.Catalog do
       where: fragment("?->>'status' = 'ok'", r.argus),
       distinct: r.package_id,
       order_by: [asc: r.package_id, desc_nulls_last: r.finished_at, desc: r.inserted_at],
-      select: %{package_id: r.package_id, id: r.id}
+      select: %{package_id: r.package_id, id: r.id, version: r.version_tested}
     )
   end
 

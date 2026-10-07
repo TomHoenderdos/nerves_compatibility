@@ -373,6 +373,136 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
     end
   end
 
+  describe "by type" do
+    setup do
+      ingest(
+        "1.0.0",
+        ok([
+          finding(%{"analysis" => "shutdown", "title" => "S"}),
+          finding(%{"analysis" => "failure", "title" => "F"}),
+          finding(%{"analysis" => "failure", "title" => "E", "severity" => "error"})
+        ]),
+        1
+      )
+
+      :ok
+    end
+
+    test "both views offer a sort labelled Type", %{conn: conn} do
+      for path <- [~p"/admin/argus/findings", ~p"/admin/argus/findings?view=findings"] do
+        {:ok, view, _} = live(conn, path)
+        assert has_element?(view, "#triage-sort-select option[value='analysis']", "Type")
+      end
+    end
+
+    test "the check view groups checks under a header per type", %{conn: conn} do
+      key = &ArgusFindingsLive.check_key(%{analysis: &1, title: &2, severity: &3})
+
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?sort=analysis")
+
+      assert dom_order(view, "#checks > [data-check], #checks > [data-type-header]") == [
+               "type-failure",
+               "check-" <> key.("failure", "E", "error"),
+               "check-" <> key.("failure", "F", "warning"),
+               "type-shutdown",
+               "check-" <> key.("shutdown", "S", "warning")
+             ]
+
+      assert has_element?(view, "#type-failure", "failure")
+      refute has_element?(view, "#type-failure[data-triage-row]")
+
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+      refute has_element?(view, "[data-type-header]")
+    end
+  end
+
+  describe "by package" do
+    setup do
+      ingest("1.0.0", ok([finding(%{"title" => "One"})]), 1, "few")
+
+      ingest(
+        "2.1.0",
+        ok([
+          finding(%{"title" => "W", "analysis" => "shutdown"}),
+          finding(%{"title" => "E", "severity" => "error", "analysis" => "zeta"}),
+          finding(%{"title" => "A", "analysis" => "alpha"})
+        ]),
+        1,
+        "many"
+      )
+
+      :ok
+    end
+
+    defp package_order(view),
+      do: dom_order(view, "#findings > [data-package-header], #findings > [data-triage-row]")
+
+    test "groups findings under a header per package, most new first", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
+      assert has_element?(view, "#view-packages.btn-active")
+
+      ids = Map.new(rows(), &{&1.title, "finding-#{&1.id}"})
+
+      assert package_order(view) == [
+               "package-many",
+               ids["E"],
+               ids["A"],
+               ids["W"],
+               "package-few",
+               ids["One"]
+             ]
+
+      header = "#package-many"
+      assert has_element?(view, "#{header} a[href='/packages/many']", "many")
+      assert has_element?(view, header, "3 findings · 3 new")
+      assert has_element?(view, header, "2.1.0")
+      refute has_element?(view, "#{header}[data-triage-row]")
+      assert has_element?(view, "##{ids["A"]}[data-triage-row][data-id]")
+      assert has_element?(view, "#select-#{row("many", "A").id}")
+    end
+
+    test "sorts by most new, package name or type", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
+
+      assert view |> element("#triage-sort-select") |> render() =~ "Most new"
+      assert has_element?(view, "#triage-sort-select option[value='package']", "Package name")
+      assert has_element?(view, "#triage-sort-select option[value='analysis']", "Type")
+
+      ids = Map.new(rows(), &{&1.title, "finding-#{&1.id}"})
+
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages&sort=package")
+      assert ["package-few", _, "package-many" | _] = package_order(view)
+
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages&sort=analysis")
+
+      assert package_order(view) == [
+               "package-many",
+               ids["A"],
+               ids["W"],
+               ids["E"],
+               "package-few",
+               ids["One"]
+             ]
+    end
+
+    test "bulk selection and keyboard status work, and the header counts follow",
+         %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
+      a = row("many", "A")
+      e = row("many", "E")
+
+      view |> element("#select-#{a.id}") |> render_click()
+      view |> form("#bulk-form", bulk: %{status: "confirmed", note: ""}) |> render_submit()
+      assert %{status: :confirmed} = row("many", "A")
+      assert has_element?(view, "#package-many", "3 findings · 2 new")
+
+      render_hook(view, "set_status", %{"id" => e.id, "status" => "reported"})
+      assert %{status: :reported} = row("many", "E")
+      assert has_element?(view, "#package-many", "1 new")
+      assert has_element?(view, "#triage-counts", "1 reported")
+    end
+  end
+
   describe "layout" do
     test "filters sit behind a toggle under a one-line summary", %{conn: conn} do
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
