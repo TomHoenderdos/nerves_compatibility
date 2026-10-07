@@ -397,10 +397,11 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     Enum.find_value(sorts(view), fn {string, atom, _label} -> atom == sort && string end)
   end
 
-  # A sort carries over to the other view when that view has it.
-  defp switch_path(filters, sort, view) do
-    sort = if Enum.any?(sorts(view), &(elem(&1, 1) == sort)), do: sort, else: default_sort(view)
-    triage_path(filters, view, sort)
+  # A sort carries over to the other view when that view offers it, matched
+  # by its URL value -- the same name in the dropdown -- since by package
+  # "Most findings" and "Type" are their own atoms.
+  defp switch_path(filters, sort, from, view) do
+    triage_path(filters, view, sort(view, sort_value(from, sort)))
   end
 
   # The badges count every current finding, so their links drop the other
@@ -602,21 +603,21 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           <div id="triage-view" class="join">
             <.link
               id="view-checks"
-              patch={switch_path(@filters, @sort, :checks)}
+              patch={switch_path(@filters, @sort, @view, :checks)}
               class={["btn btn-xs join-item", @view == :checks && "btn-active"]}
             >
               By check
             </.link>
             <.link
               id="view-findings"
-              patch={switch_path(@filters, @sort, :findings)}
+              patch={switch_path(@filters, @sort, @view, :findings)}
               class={["btn btn-xs join-item", @view == :findings && "btn-active"]}
             >
               By finding
             </.link>
             <.link
               id="view-packages"
-              patch={switch_path(@filters, @sort, :packages)}
+              patch={switch_path(@filters, @sort, @view, :packages)}
               class={["btn btn-xs join-item", @view == :packages && "btn-active"]}
             >
               By package
