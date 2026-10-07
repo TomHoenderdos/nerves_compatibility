@@ -55,6 +55,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
        selected: MapSet.new(),
        expanded: MapSet.new(),
        shown_ids: [],
+       filter_options: %{analyses: [], packages: []},
        shown: 0,
        total: 0
      )
@@ -225,9 +226,18 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
 
   defp reload(socket), do: socket |> assign(:counts, Catalog.triage_counts()) |> load()
 
+  # Every load refreshes the pickers' options with the list, so their counts
+  # follow both the filters and any triage just done.
+  defp load(socket) do
+    socket
+    |> assign(:filter_options, Catalog.triage_filter_options(socket.assigns.filters))
+    |> load_list()
+  end
+
   # Both list views stream findings; by package, a header item opens each
   # package's run of rows (the query already orders them by package).
-  defp load(%{assigns: %{view: view} = assigns} = socket) when view in [:findings, :packages] do
+  defp load_list(%{assigns: %{view: view} = assigns} = socket)
+       when view in [:findings, :packages] do
     {rows, total} =
       Catalog.triage_page(Map.put(assigns.filters, :sort, assigns.sort), page_limit())
 
@@ -240,7 +250,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     |> stream(:findings, items, reset: true)
   end
 
-  defp load(%{assigns: assigns} = socket) do
+  defp load_list(%{assigns: assigns} = socket) do
     checks =
       assigns.filters
       |> Map.put(:sort, assigns.sort)
@@ -699,19 +709,40 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                   /> {severity}
                 </label>
               </fieldset>
+              <%!-- Native datalists: searchable, keyboard-friendly, and still
+              free text, so the package search keeps matching substrings. The
+              value is the plain name; the label carries the count. --%>
               <.input
                 field={@filter_form[:analysis]}
                 type="text"
-                label="Analysis"
+                label="Type"
+                list="triage-type-options"
+                autocomplete="off"
                 phx-debounce="300"
               />
+              <datalist id="triage-type-options">
+                <option
+                  :for={{name, count} <- @filter_options.analyses}
+                  value={name}
+                  label={"#{name} (#{count})"}
+                />
+              </datalist>
               <.input
                 field={@filter_form[:package]}
                 type="text"
                 label="Package"
+                list="triage-package-options"
+                autocomplete="off"
                 phx-debounce="300"
                 data-triage-search
               />
+              <datalist id="triage-package-options">
+                <option
+                  :for={{name, count} <- @filter_options.packages}
+                  value={name}
+                  label={"#{name} (#{count})"}
+                />
+              </datalist>
               <.input field={@filter_form[:stale]} type="checkbox" label="Include no longer seen" />
             </.form>
           </div>
@@ -1110,6 +1141,17 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           this.pushEvent("triage_package", {package: {name, status, scope: "new", note: ""}})
           this.advance(row)
         },
+        // The package search lives in the folded filters panel: open it first
+        // (through its own toggle, so the panel's state stays LiveView's).
+        focusSearch() {
+          const search = document.querySelector("[data-triage-search]")
+          if (!search) return
+          if (search.offsetParent === null) {
+            const toggle = document.getElementById("triage-filters-toggle")
+            if (toggle) toggle.click()
+          }
+          requestAnimationFrame(() => search.focus())
+        },
         // Typing in a field is never a shortcut; a focused checkbox still is,
         // since clicking one to select a row moves focus onto it.
         typing(target) {
@@ -1140,8 +1182,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           } else if (e.key === "k" || (e.key === "ArrowUp" && row)) {
             this.move(-1)
           } else if (e.key === "/") {
-            const search = document.querySelector("[data-triage-search]")
-            if (search) search.focus()
+            this.focusSearch()
           } else if (e.key === "?") {
             const panel = document.getElementById("triage-shortcuts")
             if (panel) this.js().toggle(panel)

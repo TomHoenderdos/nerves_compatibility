@@ -620,6 +620,84 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
   defp attr(html, name),
     do: html |> LazyHTML.from_fragment() |> LazyHTML.attribute(name)
 
+  describe "type and package pickers" do
+    setup do
+      ingest(
+        "1.0.0",
+        ok([
+          finding(),
+          finding(%{"detail" => "two"}),
+          finding(%{"analysis" => "shutdown", "title" => "S", "severity" => "error"})
+        ]),
+        1,
+        "alpha"
+      )
+
+      ingest("1.0.0", ok([finding(%{"analysis" => "shutdown", "title" => "S"})]), 1, "beta")
+      :ok
+    end
+
+    test "offer every type and package with its count", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+
+      assert has_element?(view, "#triage-filters input#f_analysis[list='triage-type-options']")
+      assert has_element?(view, "#triage-filters input#f_package[list='triage-package-options']")
+      assert has_element?(view, "#f_package[data-triage-search]")
+
+      assert has_element?(
+               view,
+               "#triage-type-options option[value='failure'][label='failure (2)']"
+             )
+
+      assert has_element?(
+               view,
+               "#triage-type-options option[value='shutdown'][label='shutdown (2)']"
+             )
+
+      assert has_element?(
+               view,
+               "#triage-package-options option[value='alpha'][label='alpha (3)']"
+             )
+
+      assert has_element?(view, "#triage-package-options option[value='beta'][label='beta (1)']")
+    end
+
+    test "each list follows the other filters, and picking a value filters", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
+
+      view |> form("#triage-filters", f: %{analysis: "shutdown"}) |> render_change()
+      assert_patch(view, ~p"/admin/argus/findings?#{%{analysis: "shutdown", view: "findings"}}")
+
+      assert has_element?(
+               view,
+               "#triage-package-options option[value='alpha'][label='alpha (1)']"
+             )
+
+      assert has_element?(view, "#triage-package-options option[value='beta'][label='beta (1)']")
+
+      assert has_element?(
+               view,
+               "#triage-type-options option[value='failure'][label='failure (2)']"
+             )
+
+      assert length(dom_order(view, "#findings > [data-triage-row]")) == 2
+      refute has_element?(view, "#findings", "Catch-all")
+
+      view
+      |> form("#triage-filters", f: %{analysis: "shutdown", package: "beta"})
+      |> render_change()
+
+      assert length(dom_order(view, "#findings > [data-triage-row]")) == 1
+
+      assert has_element?(
+               view,
+               "#triage-type-options option[value='shutdown'][label='shutdown (1)']"
+             )
+
+      refute has_element?(view, "#triage-type-options option[value='failure']")
+    end
+  end
+
   describe "layout" do
     test "filters sit behind a toggle under a one-line summary", %{conn: conn} do
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")

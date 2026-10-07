@@ -371,6 +371,55 @@ defmodule Portal.Catalog.TriageChecksTest do
     end
   end
 
+  describe "triage_filter_options/1" do
+    setup do
+      ingest(
+        "1.0.0",
+        ok([
+          finding(),
+          finding(%{"detail" => "two"}),
+          finding(%{"analysis" => "shutdown", "title" => "S", "severity" => "error"})
+        ]),
+        1,
+        "alpha"
+      )
+
+      ingest("1.0.0", ok([finding(%{"analysis" => "shutdown", "title" => "S"})]), 1, "beta")
+      :ok
+    end
+
+    test "lists each type and package with its count, most first" do
+      assert %{
+               analyses: [{"failure", 2}, {"shutdown", 2}],
+               packages: [{"alpha", 3}, {"beta", 1}]
+             } = Catalog.triage_filter_options(%{})
+    end
+
+    test "each list respects the other filters but not its own" do
+      # Choosing a type narrows the packages, and the types list still offers
+      # every type for the package search.
+      assert %{analyses: [{"failure", 2}, {"shutdown", 2}], packages: [{"alpha", 1}, {"beta", 1}]} =
+               Catalog.triage_filter_options(%{analysis: "shutdown"})
+
+      assert %{analyses: [{"shutdown", 1}], packages: [{"alpha", 1}]} =
+               Catalog.triage_filter_options(%{severity: ["error"]})
+
+      assert %{analyses: [{"shutdown", 1}], packages: _} =
+               Catalog.triage_filter_options(%{package: "bet"})
+
+      Catalog.triage!(row("beta", "S").id, %{status: "ignored"}, @admin)
+      assert %{packages: [{"alpha", 3}]} = Catalog.triage_filter_options(%{})
+    end
+
+    test "leaves stale findings out unless asked" do
+      ingest("1.1.0", ok([finding()]), 2, "alpha")
+      assert %{packages: [{"alpha", 1}, {"beta", 1}]} = Catalog.triage_filter_options(%{})
+
+      assert %{packages: [{"alpha", 3}, {"beta", 1}]} =
+               Catalog.triage_filter_options(%{include_stale: true})
+    end
+  end
+
   describe "triage_package!/5" do
     setup do
       ingest(
