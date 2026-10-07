@@ -804,9 +804,14 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
               <dd class="inline text-base-content/60">search packages</dd>
             </div>
             <div>
-              <dt class="inline"><kbd class="kbd kbd-xs">?</kbd></dt>
+              <dt class="inline">
+                <kbd class="kbd kbd-xs">?</kbd>
+                <kbd class="kbd kbd-xs">Ctrl</kbd> <kbd class="kbd kbd-xs">?</kbd>
+              </dt>
 
-              <dd class="inline text-base-content/60">this panel</dd>
+              <dd class="inline text-base-content/60">
+                show or hide this panel (Ctrl+? also while typing)
+              </dd>
             </div>
           </dl>
           <p class="mt-2 text-xs text-base-content/50">
@@ -1166,7 +1171,19 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           if (this.focused && this.focused.isConnected) this.focused.focus()
           else this.focusAt(this.index === null ? 0 : this.index)
         },
+        toggleShortcuts() {
+          const panel = document.getElementById("triage-shortcuts")
+          if (panel) this.js().toggle(panel)
+        },
         handleKey(e) {
+          // Ctrl+? (Ctrl+Shift+/) toggles the panel from anywhere, even while
+          // typing in a filter. Ctrl rather than Cmd: Cmd+? is the browser's
+          // Help menu on macOS and never reaches the page.
+          if (e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "?" || (e.shiftKey && e.code === "Slash"))) {
+            this.toggleShortcuts()
+            e.preventDefault()
+            return
+          }
           if (e.metaKey || e.ctrlKey || e.altKey) return
           if (this.typing(e.target)) {
             if (e.key === "Escape") {
@@ -1185,8 +1202,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           } else if (e.key === "/") {
             this.focusSearch()
           } else if (e.key === "?") {
-            const panel = document.getElementById("triage-shortcuts")
-            if (panel) this.js().toggle(panel)
+            this.toggleShortcuts()
           } else if (row && row.dataset.checkKey && (e.key === "o" || (e.key === "Enter" && e.target === row))) {
             // Enter only on the row itself: on its buttons it still clicks them.
             this.pushEvent("toggle_check", this.checkIdent(row))
