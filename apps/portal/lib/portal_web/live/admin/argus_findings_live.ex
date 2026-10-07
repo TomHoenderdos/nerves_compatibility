@@ -825,7 +825,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           <p class="mt-2 text-xs text-base-content/50">
             On a finding, a status key sets that finding. On a check row it sets the check's
             new findings within the filters, after a confirm; it does nothing when there are none.
-            Either way focus moves to the next row.
+            Either way focus moves on: to the next row, or past a check's or package's findings.
           </p>
         </div>
 
@@ -1128,6 +1128,15 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           const at = rows.indexOf(row)
           this.focusAt(at + 1 < rows.length ? at + 1 : at - 1)
         },
+        // After a group key: the next row outside the group, so the next key
+        // lands on the next check or package, not on a finding just set (or
+        // on one that is about to leave the list with its header).
+        advancePast(row, inGroup) {
+          const rows = this.rows()
+          const at = rows.indexOf(row)
+          const next = rows.findIndex((r, i) => i > at && !inGroup(r))
+          this.focusAt(next >= 0 ? next : at - 1)
+        },
         checkIdent(row) {
           const {analysis, title, severity} = row.dataset
           return {analysis, title, severity}
@@ -1142,7 +1151,8 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           const question = `Set the status of ${count} new ${noun} of this check to ${STATUS_LABELS[status]}?`
           if (!window.confirm(question)) return
           this.pushEvent("triage_check", {check: {...this.checkIdent(row), status, scope: "new", note: ""}})
-          this.advance(row)
+          const check = row.closest("[data-check]")
+          this.advancePast(row, r => check.contains(r))
         },
         // The same on a package header, through its "Apply to N new".
         setPackageStatus(row, status) {
@@ -1153,7 +1163,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           const question = `Set the status of ${count} new ${noun} in ${name} to ${STATUS_LABELS[status]}?`
           if (!window.confirm(question)) return
           this.pushEvent("triage_package", {package: {name, status, scope: "new", note: ""}})
-          this.advance(row)
+          this.advancePast(row, r => r.dataset.packageRow === name)
         },
         // The package search lives in the folded filters panel: open it first
         // (through its own toggle, so the panel's state stays LiveView's).
