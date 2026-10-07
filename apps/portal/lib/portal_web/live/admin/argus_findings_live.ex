@@ -732,7 +732,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                 :for={{dom_id, %{id: key, check: c, rows: rows}} <- @streams.checks}
                 id={dom_id}
                 data-check
-                class="border-b border-base-200"
+                class="border-b border-base-200 even:bg-base-content/[0.05]"
               >
                 <%!-- The check's keyboard item: `.TriageKeys` reads its identity
                 and how many new findings a status key would set (0 when new is
@@ -1065,11 +1065,15 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
       data-triage-row
       data-id={@t.id}
       tabindex="-1"
-      class={[
-        "flex items-start gap-2 border-b border-base-200 px-2 py-1.5 text-sm outline-none transition-colors last:border-b-0",
-        "hover:bg-base-200/40 focus:bg-primary/10 focus:ring-2 focus:ring-inset focus:ring-primary",
-        @selected && "bg-primary/5"
-      ]}
+      class={
+        [
+          "flex items-start gap-2 border-b border-base-200 px-2 py-1.5 text-sm outline-none transition-colors last:border-b-0",
+          "hover:bg-base-200/40 focus:bg-primary/10 focus:ring-2 focus:ring-inset focus:ring-primary",
+          # Alternating rows: long lists of near-identical findings are easier to
+          # follow across to their status select.
+          if(@selected, do: "bg-primary/5", else: "even:bg-base-content/[0.05]")
+        ]
+      }
     >
       <input
         :if={@selectable}
