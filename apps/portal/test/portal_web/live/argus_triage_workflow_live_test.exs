@@ -456,7 +456,9 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       assert has_element?(view, "#{header} a[href='/packages/many']", "many")
       assert has_element?(view, header, "3 findings · 3 new")
       assert has_element?(view, header, "2.1.0")
-      refute has_element?(view, "#{header}[data-triage-row]")
+      # The header is a keyboard item of its own (Enter/o fold it), not a finding.
+      assert has_element?(view, "#{header}[data-triage-row][data-package-key='many']")
+      refute has_element?(view, "#{header}[data-id]")
       assert has_element?(view, "##{ids["A"]}[data-triage-row][data-id]")
       assert has_element?(view, "#select-#{row("many", "A").id}")
     end
@@ -555,7 +557,68 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       assert %{status: :ignored} = row("many", "E")
       assert %{status: :new} = row("many", "A")
     end
+
+    test "package groups start unfolded and fold on the client", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
+      a = row("many", "A")
+
+      # Every row of a package carries its name, and none starts hidden.
+      assert has_element?(view, "#finding-#{a.id}[data-package-row='many']")
+      refute has_element?(view, "[data-package-row][style*='none']")
+      refute has_element?(view, "[data-package-row].hidden")
+
+      toggle = "#package-toggle-many"
+      assert has_element?(view, "#{toggle}[aria-expanded='true']")
+      # The fold is a JS command on the client: it toggles that package's rows
+      # (as flex rows) and nobody else's, without a round trip.
+      [click] = view |> element(toggle) |> render() |> attr("phx-click")
+      assert click =~ ~s(data-package-row=\\"many\\")
+      assert click =~ "\"toggle\""
+      assert click =~ "flex"
+      refute click =~ "\"push\""
+
+      # The name still links to the package page, outside the toggle.
+      refute has_element?(view, "#{toggle} a")
+      assert has_element?(view, "#package-many a[href='/packages/many']")
+    end
+
+    test "collapse all and expand all fold every package on the client", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
+
+      [collapse] = view |> element("#packages-collapse-all") |> render() |> attr("phx-click")
+      [expand] = view |> element("#packages-expand-all") |> render() |> attr("phx-click")
+      assert collapse =~ "\"hide\"" and collapse =~ "[data-package-row]"
+      assert expand =~ "\"show\"" and expand =~ "[data-package-row]"
+
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
+      refute has_element?(view, "#packages-collapse-all")
+    end
+
+    test "a header's group action is on the header itself, so it works folded", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
+      assert has_element?(view, "#package-many #package-form-many #package-apply-all-many")
+      refute has_element?(view, "[data-package-row] #package-form-many")
+    end
+
+    test "a status key on a package header sets its new findings", %{conn: conn} do
+      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "tom"})
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
+      assert has_element?(view, "#package-many[data-new='2']")
+
+      render_hook(view, "triage_package", %{
+        "package" => %{"name" => "many", "status" => "reported", "scope" => "new", "note" => ""}
+      })
+
+      assert %{status: :reported} = row("many", "E")
+      assert %{status: :reported} = row("many", "W")
+      assert %{status: :confirmed} = row("many", "A")
+      assert %{status: :new} = row("few", "One")
+      assert has_element?(view, "#package-many[data-new='0']")
+    end
   end
+
+  defp attr(html, name),
+    do: html |> LazyHTML.from_fragment() |> LazyHTML.attribute(name)
 
   describe "layout" do
     test "filters sit behind a toggle under a one-line summary", %{conn: conn} do

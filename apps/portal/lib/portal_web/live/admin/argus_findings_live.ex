@@ -440,6 +440,26 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   defp new_scope?(filters, check),
     do: :new in Map.get(filters, :status, [:new, :confirmed]) and check.by_status.new > 0
 
+  # Folding a package hides its rows on the client. Rows are flex rows, so
+  # showing one must restore `flex`, not the default `block`.
+  defp fold_package(name) do
+    JS.toggle(to: ~s([data-package-row="#{name}"]), display: "flex")
+    |> JS.toggle_class("-rotate-90", to: "#package-chevron-#{name}")
+    |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#package-toggle-#{name}")
+  end
+
+  defp fold_all(expanded?) do
+    if expanded? do
+      JS.show(to: "[data-package-row]", display: "flex")
+      |> JS.remove_class("-rotate-90", to: "[data-package-chevron]")
+      |> JS.set_attribute({"aria-expanded", "true"}, to: "[data-package-toggle]")
+    else
+      JS.hide(to: "[data-package-row]")
+      |> JS.add_class("-rotate-90", to: "[data-package-chevron]")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "[data-package-toggle]")
+    end
+  end
+
   defp package_new_scope?(filters, summary),
     do: :new in Map.get(filters, :status, [:new, :confirmed]) and summary.new > 0
 
@@ -584,6 +604,24 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             >
               By package
             </.link>
+          </div>
+          <div :if={@view == :packages} class="flex items-center gap-1">
+            <button
+              type="button"
+              id="packages-collapse-all"
+              phx-click={fold_all(false)}
+              class="btn btn-xs btn-ghost"
+            >
+              Collapse all
+            </button>
+            <button
+              type="button"
+              id="packages-expand-all"
+              phx-click={fold_all(true)}
+              class="btn btn-xs btn-ghost"
+            >
+              Expand all
+            </button>
           </div>
           <div class="flex items-center gap-2">
             <form id="triage-sort" phx-change="sort" class="flex items-center gap-2 text-sm">
@@ -803,13 +841,44 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
               <%= for {dom_id, item} <- @streams.findings do %>
                 <%!-- By package: the package leads its findings. Not a
                 keyboard item, so j/k step over it. --%>
+                <%!-- A keyboard item like a check row: Enter/o fold it, a status
+                key sets its new findings. `data-new` is 0 when there are none
+                or new is filtered out. --%>
                 <div
                   :if={item[:header]}
                   id={dom_id}
                   data-package-header
-                  class="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-2 pt-6 pb-2"
+                  data-triage-row
+                  data-package-key={item.header}
+                  data-new={
+                    if package_new_scope?(@filters, item.summary), do: item.summary.new, else: 0
+                  }
+                  tabindex="-1"
+                  class={[
+                    "mt-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-2 py-2 outline-none transition-colors",
+                    "focus:bg-primary/10 focus:ring-2 focus:ring-inset focus:ring-primary"
+                  ]}
                 >
-                  <div class="flex flex-wrap items-baseline gap-x-3">
+                  <div class="flex flex-wrap items-center gap-x-2">
+                    <%!-- Folding is client-side: the rows are already on the
+                    page, and JS commands stay applied across patches. --%>
+                    <button
+                      type="button"
+                      id={"package-toggle-#{item.header}"}
+                      data-package-toggle
+                      phx-click={fold_package(item.header)}
+                      aria-expanded="true"
+                      aria-label={"Fold #{item.header}"}
+                      class="cursor-pointer rounded p-0.5 text-base-content/40 hover:text-base-content"
+                    >
+                      <span
+                        id={"package-chevron-#{item.header}"}
+                        data-package-chevron
+                        class="inline-flex transition-transform"
+                      >
+                        <.icon name="hero-chevron-down-mini" class="size-4" />
+                      </span>
+                    </button>
                     <.link
                       navigate={~p"/packages/#{item.header}"}
                       class="font-mono text-lg font-semibold text-base-content hover:text-primary"
@@ -878,6 +947,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                   selected={MapSet.member?(@selected, item.triage.id)}
                   selectable
                   in_package={@view == :packages}
+                  package_row={if @view == :packages, do: item.triage.package_name}
                   status_options={@status_options}
                 />
               <% end %>
@@ -965,8 +1035,11 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           document.removeEventListener("pointerdown", this.onPointer, true)
           this.observer.disconnect()
         },
+        // Rows of a folded package are hidden (display: none) and skipped.
         rows() {
-          return Array.from(this.el.querySelectorAll("[data-triage-row]"))
+          return Array.from(this.el.querySelectorAll("[data-triage-row]")).filter(
+            r => r.style.display !== "none"
+          )
         },
         current() {
           const active = document.activeElement
@@ -1026,6 +1099,17 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           this.pushEvent("triage_check", {check: {...this.checkIdent(row), status, scope: "new", note: ""}})
           this.advance(row)
         },
+        // The same on a package header, through its "Apply to N new".
+        setPackageStatus(row, status) {
+          const count = parseInt(row.dataset.new, 10) || 0
+          if (count === 0) return
+          const noun = count === 1 ? "finding" : "findings"
+          const name = row.dataset.packageKey
+          const question = `Set the status of ${count} new ${noun} in ${name} to ${STATUS_LABELS[status]}?`
+          if (!window.confirm(question)) return
+          this.pushEvent("triage_package", {package: {name, status, scope: "new", note: ""}})
+          this.advance(row)
+        },
         // Typing in a field is never a shortcut; a focused checkbox still is,
         // since clicking one to select a row moves focus onto it.
         typing(target) {
@@ -1064,6 +1148,12 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           } else if (row && row.dataset.checkKey && (e.key === "o" || (e.key === "Enter" && e.target === row))) {
             // Enter only on the row itself: on its buttons it still clicks them.
             this.pushEvent("toggle_check", this.checkIdent(row))
+          } else if (row && row.dataset.packageKey && (e.key === "o" || (e.key === "Enter" && e.target === row))) {
+            // Runs the toggle's own JS command, so the fold stays client-side.
+            const toggle = row.querySelector("[data-package-toggle]")
+            if (toggle) toggle.click()
+          } else if (STATUS_KEYS[e.key] && row && row.dataset.packageKey) {
+            this.setPackageStatus(row, STATUS_KEYS[e.key])
           } else if (STATUS_KEYS[e.key] && row && row.dataset.checkKey) {
             this.setCheckStatus(row, STATUS_KEYS[e.key])
           } else if (STATUS_KEYS[e.key] && row) {
@@ -1248,6 +1338,8 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     default: false,
     doc: "under a package header, which names the package"
 
+  attr :package_row, :string, default: nil, doc: "the package whose header folds this row"
+
   attr :status_options, :list, required: true
 
   # One line per finding: what and where, and its status. Everything else --
@@ -1262,6 +1354,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
       id={@id}
       data-triage-row
       data-id={@t.id}
+      data-package-row={@package_row}
       tabindex="-1"
       class={
         [
