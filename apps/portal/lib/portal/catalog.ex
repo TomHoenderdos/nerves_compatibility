@@ -281,6 +281,16 @@ defmodule Portal.Catalog do
     end
   end
 
+  # A name in byte order. Every name in the triage orders sorts this way, as
+  # the check rows' package lists do: under a locale collation (en_US.utf8 in
+  # production) underscores and case are ignored at first, so a check's
+  # first-listed package would not be the one it sorted by.
+  defmacrop c_order(name) do
+    quote do
+      fragment("? COLLATE \"C\"", unquote(name))
+    end
+  end
+
   # `finding.confidence` as a numeric (a `Decimal`) when it is a JSON number,
   # else NULL, so a missing value or a label sorts last instead of failing the
   # cast. numeric rather than float8: a jsonb number can exceed a double's
@@ -429,7 +439,7 @@ defmodule Portal.Catalog do
     f
     |> triage_scope()
     |> group_by([t], field(t, ^column))
-    |> order_by(^[desc: dynamic([t], count(t.id)), asc: dynamic([t], field(t, ^column))])
+    |> order_by(^[desc: dynamic([t], count(t.id)), asc: dynamic([t], c_order(field(t, ^column)))])
     |> limit(@filter_option_limit)
     |> select([t], {field(t, ^column), count(t.id)})
     |> Repo.all()
@@ -604,28 +614,30 @@ defmodule Portal.Catalog do
   # Every order ends on the id so a page is stable between renders.
   defp triage_list_order(sort) do
     severity = dynamic([t], severity_rank(t.severity))
+    package = dynamic([t], c_order(t.package_name))
+    analysis = dynamic([t], c_order(t.analysis))
 
     case sort do
       :package ->
-        [asc: dynamic([t], t.package_name), asc: severity]
+        [asc: package, asc: severity]
 
       :analysis ->
-        [asc: dynamic([t], t.analysis), asc: severity, asc: dynamic([t], t.package_name)]
+        [asc: analysis, asc: severity, asc: package]
 
       # Grouped by package, the package with the most new findings first.
       :package_new ->
-        [desc: new_in_package(), asc: dynamic([t], t.package_name), asc: severity]
+        [desc: new_in_package(), asc: package, asc: severity]
 
       # Grouped by package, the package with the most findings (any status
       # the filters keep) first.
       :package_count ->
-        [desc: count_in_package(), asc: dynamic([t], t.package_name), asc: severity]
+        [desc: count_in_package(), asc: package, asc: severity]
 
       :package_type ->
         [
           desc: new_in_package(),
-          asc: dynamic([t], t.package_name),
-          asc: dynamic([t], t.analysis),
+          asc: package,
+          asc: analysis,
           asc: severity
         ]
 
@@ -636,9 +648,9 @@ defmodule Portal.Catalog do
         [desc: dynamic([t], t.updated_at), desc: dynamic([t], t.inserted_at)]
 
       _severity ->
-        [asc: severity, asc: dynamic([t], t.package_name)]
+        [asc: severity, asc: package]
     end
-    |> Kernel.++(asc: dynamic([t], t.title), asc: dynamic([t], t.id))
+    |> Kernel.++(asc: dynamic([t], c_order(t.title)), asc: dynamic([t], t.id))
   end
 
   # New findings in the row's package, over the rows the filters keep: a
@@ -661,16 +673,17 @@ defmodule Portal.Catalog do
   defp triage_check_order(sort) do
     count = dynamic([t], count(t.id))
     severity = dynamic([t], severity_rank(t.severity))
+    analysis = dynamic([t], c_order(t.analysis))
 
     case sort do
       :severity -> [asc: severity, desc: count]
-      :package -> [asc: dynamic([t], min(t.package_name)), desc: count]
-      :analysis -> [asc: dynamic([t], t.analysis), asc: severity, desc: count]
+      :package -> [asc: dynamic([t], min(c_order(t.package_name))), desc: count]
+      :analysis -> [asc: analysis, asc: severity, desc: count]
       :confidence -> [desc_nulls_last: dynamic([t], max(confidence(t.finding))), desc: count]
       :newest -> [desc: dynamic([t], max(t.updated_at))]
       _count -> [desc: count, asc: severity]
     end
-    |> Kernel.++(asc: dynamic([t], t.analysis), asc: dynamic([t], t.title), asc: severity)
+    |> Kernel.++(asc: analysis, asc: dynamic([t], c_order(t.title)), asc: severity)
   end
 
   defp load_triage_rows([]), do: []
