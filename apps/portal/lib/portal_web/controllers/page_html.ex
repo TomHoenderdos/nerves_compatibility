@@ -14,6 +14,7 @@ defmodule PortalWeb.PageHTML do
     {:users, "Users", "/admin/users"},
     {:failures, "Failures", "/admin/failures"},
     {:argus, "Argus", "/admin/argus"},
+    {:triage, "Triage", "/admin/argus/findings"},
     {:maintenance, "Maintenance", "/admin/maintenance"}
   ]
 
@@ -29,8 +30,6 @@ defmodule PortalWeb.PageHTML do
   slot :inner_block, required: true
 
   def admin_layout(assigns) do
-    assigns = assign(assigns, :tabs, @admin_tabs)
-
     ~H"""
     <Layouts.flash_group flash={@flash} />
 
@@ -43,31 +42,46 @@ defmodule PortalWeb.PageHTML do
             <:subtitle :if={@subtitle != []}>{render_slot(@subtitle)}</:subtitle>
           </PortalWeb.UI.page_header>
 
-          <nav
-            id="admin-tabs"
-            aria-label="Admin sections"
-            class="-mt-2 flex flex-wrap gap-1 border-b border-base-300"
-          >
-            <.link
-              :for={{key, label, path} <- @tabs}
-              href={path}
-              aria-current={if key == @section, do: "page"}
-              class={[
-                "-mb-px border-b-2 px-3 py-2 text-sm font-medium transition",
-                if(key == @section,
-                  do: "border-primary text-base-content",
-                  else: "border-transparent text-base-content/60 hover:text-base-content"
-                )
-              ]}
-            >
-              {label}
-            </.link>
-          </nav>
+          <.admin_tabs section={@section} />
 
           {render_slot(@inner_block)}
         </section>
       </div>
     </main>
+    """
+  end
+
+  @doc """
+  The tab per admin section, with `section` marked current. Shared by
+  `admin_layout/1` and the admin LiveViews, which render inside
+  `Layouts.app` and so place it under their own page header.
+  """
+  attr :section, :atom, required: true
+
+  def admin_tabs(assigns) do
+    assigns = assign(assigns, :tabs, @admin_tabs)
+
+    ~H"""
+    <nav
+      id="admin-tabs"
+      aria-label="Admin sections"
+      class="-mt-2 flex flex-wrap gap-1 border-b border-base-300"
+    >
+      <.link
+        :for={{key, label, path} <- @tabs}
+        href={path}
+        aria-current={if key == @section, do: "page"}
+        class={[
+          "-mb-px border-b-2 px-3 py-2 text-sm font-medium transition",
+          if(key == @section,
+            do: "border-primary text-base-content",
+            else: "border-transparent text-base-content/60 hover:text-base-content"
+          )
+        ]}
+      >
+        {label}
+      </.link>
+    </nav>
     """
   end
 

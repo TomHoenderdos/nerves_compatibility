@@ -104,6 +104,26 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
     assert has_element?(view, "#findings", "no longer seen")
   end
 
+  test "the admin tab bar has a Triage tab, current only on this page", %{conn: conn} do
+    html = html_response(get(conn, ~p"/admin/argus"), 200)
+    doc = LazyHTML.from_document(html)
+    tab = LazyHTML.query(doc, "#admin-tabs a[href='/admin/argus/findings']")
+    assert LazyHTML.text(tab) =~ "Triage"
+    assert Enum.count(tab) == 1
+    assert LazyHTML.attribute(tab, "aria-current") == []
+
+    assert ["Argus", "Triage"] =
+             doc
+             |> LazyHTML.query("#admin-tabs a")
+             |> Enum.map(&String.trim(LazyHTML.text(&1)))
+             |> Enum.drop_while(&(&1 != "Argus"))
+             |> Enum.take(2)
+
+    {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+    assert has_element?(view, "#admin-tabs a[href='/admin/argus/findings'][aria-current='page']")
+    assert has_element?(view, "#admin-tabs a[href='/admin/argus']:not([aria-current])")
+  end
+
   test "the admin page links to the list", %{conn: conn} do
     assert html_response(get(conn, ~p"/admin"), 200) =~ ~s(href="/admin/argus/findings")
   end

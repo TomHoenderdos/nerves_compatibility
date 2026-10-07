@@ -419,6 +419,8 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           <:subtitle>Internal triage. Nothing here is public or sent to anyone.</:subtitle>
         </PortalWeb.UI.page_header>
 
+        <PortalWeb.PageHTML.admin_tabs section={:triage} />
+
         <div id="triage-counts" class="flex flex-wrap gap-2">
           <.link
             :for={{status, label} <- @statuses}
