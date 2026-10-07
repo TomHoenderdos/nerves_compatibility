@@ -27,7 +27,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
 
   test "lists findings with counts", %{conn: conn} do
     ingest("1.0.0", ok([finding()]), 1)
-    {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+    {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
     assert has_element?(view, "#findings", "Catch-all rescue swallows exceptions")
     assert has_element?(view, "#triage-counts", "1 new")
   end
@@ -35,7 +35,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
   test "changing a status saves it and updates the counts", %{conn: conn} do
     ingest("1.0.0", ok([finding()]), 1)
     [%{triage: row}] = Portal.Catalog.triage_list(%{})
-    {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+    {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
 
     view
     |> form("#triage-form-#{row.id}", triage: %{status: "confirmed", note: "real bug"})
@@ -55,7 +55,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
 
     view |> form("#triage-filters", f: %{package: "nope"}) |> render_change()
     assert_patch(view, ~p"/admin/argus/findings?#{%{package: "nope"}}")
-    refute has_element?(view, "#findings", "Catch-all")
+    refute has_element?(view, "#checks", "Catch-all")
   end
 
   test "status and severity are checkbox groups that show every choice", %{conn: conn} do
@@ -63,7 +63,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
     [%{triage: row}] = Portal.Catalog.triage_list(%{})
     Portal.Catalog.triage!(row.id, %{status: "false_positive", note: nil}, %{username: "tom"})
 
-    {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+    {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
     assert has_element?(view, "#filter-status-new[checked]")
     refute has_element?(view, "#filter-status-false_positive[checked]")
     assert has_element?(view, "#filter-severity-info[checked]")
@@ -73,7 +73,11 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
     |> form("#triage-filters", f: %{status: ["new", "confirmed", "false_positive"]})
     |> render_change()
 
-    assert_patch(view, ~p"/admin/argus/findings?#{%{status: ~w(new confirmed false_positive)}}")
+    assert_patch(
+      view,
+      ~p"/admin/argus/findings?#{%{status: ~w(new confirmed false_positive), view: "findings"}}"
+    )
+
     assert has_element?(view, "#filter-status-false_positive[checked]")
     assert has_element?(view, "#findings", "Catch-all")
   end
@@ -84,7 +88,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
     Application.put_env(:portal, PortalWeb.Admin.ArgusFindingsLive, page_limit: 2)
     on_exit(fn -> Application.put_env(:portal, PortalWeb.Admin.ArgusFindingsLive, previous) end)
 
-    {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+    {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
     assert has_element?(view, "#triage-shown", "Showing 2 of 3")
   end
 
@@ -92,10 +96,10 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
     ingest("1.0.0", ok([finding(), finding(%{"detail" => "gone later", "title" => "Gone"})]), 1)
     ingest("1.1.0", ok([finding()]), 2)
 
-    {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
+    {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
     refute has_element?(view, "#findings", "Gone")
 
-    {:ok, view, _} = live(conn, ~p"/admin/argus/findings?stale=true")
+    {:ok, view, _} = live(conn, ~p"/admin/argus/findings?stale=true&view=findings")
     assert has_element?(view, "#findings", "Gone")
     assert has_element?(view, "#findings", "no longer seen")
   end

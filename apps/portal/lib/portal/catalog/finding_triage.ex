@@ -99,6 +99,37 @@ defmodule Portal.Catalog.FindingTriage do
     |> Base.encode16(case: :lower)
   end
 
+  @doc """
+  The finding's file on hex.pm's source browser, at the version it was last
+  seen in and anchored to its line, or nil when there is no version or file.
+
+  `preview.hex.pm/preview/<pkg>/<version>/show/<file>` now answers with a 301
+  to this URL, so it is linked directly. hex.pm's `LineHighlight` hook turns
+  each line into an `L<n>` id and scrolls to the one in the fragment.
+
+  Only a path relative to the package can be linked: argus reports a file
+  outside the package's own directory as it found it, and `..` would point at
+  another package or nowhere.
+  """
+  @spec source_url(map()) :: String.t() | nil
+  def source_url(%{package_name: name, last_seen_version: version, file: file} = row)
+      when is_binary(name) and is_binary(version) and is_binary(file) do
+    segments = String.split(file, "/")
+
+    if version != "" and file != "" and not String.starts_with?(file, "/") and
+         Enum.all?(segments, &(&1 not in ["", ".", ".."])) do
+      path = Enum.map_join(segments, "/", &encode/1)
+      "https://hex.pm/packages/#{encode(name)}/#{encode(version)}/files/#{path}" <> anchor(row)
+    end
+  end
+
+  def source_url(_row), do: nil
+
+  defp anchor(%{line: line}) when is_integer(line) and line > 0, do: "#L#{line}"
+  defp anchor(_row), do: ""
+
+  defp encode(segment), do: URI.encode(segment, &URI.char_unreserved?/1)
+
   defp text(value) when is_binary(value), do: value
   defp text(_), do: ""
 end
