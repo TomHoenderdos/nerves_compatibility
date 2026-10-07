@@ -469,6 +469,14 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       assert view |> element("#triage-sort-select") |> render() =~ "Most new"
       assert has_element?(view, "#triage-sort-select option[value='package']", "Package name")
       assert has_element?(view, "#triage-sort-select option[value='count']", "Most findings")
+
+      # Choosing a sort writes its own URL value, so the next load applies it
+      # instead of falling back to the default.
+      for value <- ["count", "package", "analysis"] do
+        view |> element("#triage-sort") |> render_change(%{"sort" => value})
+        assert_patched(view, "/admin/argus/findings?sort=#{value}&view=packages")
+      end
+
       assert has_element?(view, "#triage-sort-select option[value='analysis']", "Type")
 
       ids = Map.new(rows(), &{&1.title, "finding-#{&1.id}"})

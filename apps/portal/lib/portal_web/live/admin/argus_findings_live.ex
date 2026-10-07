@@ -369,7 +369,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
       "package" => filters.package,
       "stale" => if(filters.include_stale, do: "true"),
       "view" => if(view != :checks, do: Atom.to_string(view)),
-      "sort" => if(sort != default_sort(view), do: Atom.to_string(sort))
+      "sort" => if(sort != default_sort(view), do: sort_value(view, sort))
     }
     |> Enum.reject(fn {key, value} -> value in [nil, "", []] or default?(key, value) end)
     |> Map.new()
@@ -389,6 +389,12 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     Enum.find_value(sorts(view), default_sort(view), fn {string, atom, _label} ->
       string == value && atom
     end)
+  end
+
+  # The URL value from the same table `sort/2` reads, never the atom's name:
+  # by package the atoms (`:package_count`) differ from their values ("count").
+  defp sort_value(view, sort) do
+    Enum.find_value(sorts(view), fn {string, atom, _label} -> atom == sort && string end)
   end
 
   # A sort carries over to the other view when that view has it.
