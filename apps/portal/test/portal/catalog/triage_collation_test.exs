@@ -22,7 +22,16 @@ defmodule Portal.Catalog.TriageCollationTest do
     end
 
     test "every finding sort orders and breaks ties on package name in byte order" do
-      for sort <- [:severity, :package, :analysis, :package_new, :package_count, :package_type] do
+      for sort <- [
+            :severity,
+            :package,
+            :analysis,
+            :package_new,
+            :package_count,
+            :package_type,
+            :type_new,
+            :type_count
+          ] do
         {rows, _} = Catalog.triage_page(%{sort: sort}, nil)
         assert packages(rows) == @c_order, "sort #{sort}"
       end
@@ -56,7 +65,7 @@ defmodule Portal.Catalog.TriageCollationTest do
     end
 
     test "finding sorts order type and title in byte order" do
-      for sort <- [:analysis, :package, :package_type, :severity] do
+      for sort <- [:analysis, :package, :package_type, :severity, :type_new, :type_count] do
         {rows, _} = Catalog.triage_page(%{sort: sort}, nil)
         assert Enum.map(rows, & &1.triage.analysis) == @c_order, "sort #{sort}"
       end
@@ -67,6 +76,10 @@ defmodule Portal.Catalog.TriageCollationTest do
         checks = Catalog.triage_checks(%{sort: sort})
         assert Enum.map(checks, & &1.analysis) == @c_order, "sort #{sort}"
       end
+    end
+
+    test "the by-type view's header summaries are keyed by each type" do
+      assert @c_order |> Enum.sort() == Catalog.triage_types(%{}) |> Map.keys() |> Enum.sort()
     end
 
     test "the type picker lists ties in byte order" do

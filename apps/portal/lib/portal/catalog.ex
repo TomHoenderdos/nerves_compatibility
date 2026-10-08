@@ -313,6 +313,7 @@ defmodule Portal.Catalog do
     include_stale: false,
     check: nil,
     package_name: nil,
+    type: nil,
     sort: nil
   }
   @triage_statuses [:new, :confirmed, :false_positive, :reported, :ignored]
@@ -334,7 +335,9 @@ defmodule Portal.Catalog do
   that matched before the cap. Filtering, the stale check and the order all run
   in Postgres; only the rows on the page are loaded, `finding` jsonb included.
   `filters.sort` is `:severity` (the default), `:package`, `:analysis`,
-  `:confidence` or `:newest`.
+  `:confidence` or `:newest`; or, grouped by package, `:package_new`,
+  `:package_count` or `:package_type`; or, grouped by type, `:type_new` or
+  `:type_count`.
   """
   def triage_page(filters, limit) do
     f = Map.merge(@triage_defaults, filters)
@@ -412,6 +415,30 @@ defmodule Portal.Catalog do
          count: count(t.id),
          new: filter(count(t.id), t.status == "new"),
          version: coalesce(max(l.version), max(t.last_seen_version))
+       }}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  @doc """
+  Per analysis (argus's type) among the findings matching `filters`: how many
+  there are, how many are new, and in how many packages. One query, keyed by
+  analysis.
+  """
+  def triage_types(filters) do
+    f = Map.merge(@triage_defaults, filters)
+
+    f
+    |> triage_scope()
+    |> group_by([t], t.analysis)
+    |> select(
+      [t],
+      {t.analysis,
+       %{
+         count: count(t.id),
+         new: filter(count(t.id), t.status == "new"),
+         packages: count(t.package_name, :distinct)
        }}
     )
     |> Repo.all()
@@ -517,6 +544,16 @@ defmodule Portal.Catalog do
     filters |> Map.put(:package_name, package_name) |> triage_matching!(scope, attrs, admin)
   end
 
+  @doc """
+  `triage_check!/5` for one type: every finding whose analysis is exactly
+  `analysis` and that matches `filters`, or with `scope` `:new` only the new
+  ones. The type is ANDed onto the filters, so a type filter still applies.
+  """
+  def triage_type!(filters, analysis, scope, attrs, admin)
+      when is_binary(analysis) and scope in [:all, :new] do
+    filters |> Map.put(:type, analysis) |> triage_matching!(scope, attrs, admin)
+  end
+
   defp triage_matching!(filters, scope, attrs, admin) do
     query = @triage_defaults |> Map.merge(filters) |> triage_scope()
     query = if scope == :new, do: where(query, [t], t.status == "new"), else: query
@@ -584,6 +621,7 @@ defmodule Portal.Catalog do
     |> triage_where(:package, f.package)
     |> triage_where(:check, f.check)
     |> triage_where(:package_name, f.package_name)
+    |> triage_where(:type, f.type)
     |> triage_where(:include_stale, f.include_stale)
   end
 
@@ -606,68 +644,65 @@ defmodule Portal.Catalog do
   defp triage_where(query, :package_name, name),
     do: where(query, [t], t.package_name == ^name)
 
+  # The by-type group action's type, kept apart from the `analysis` filter so
+  # the two AND rather than one replacing the other.
+  defp triage_where(query, :type, analysis), do: where(query, [t], t.analysis == ^analysis)
+
   defp triage_where(query, :include_stale, true), do: query
 
   defp triage_where(query, :include_stale, false),
     do: where(query, [t, l: l], l.id == t.last_seen_run_id)
 
+  # The grouped sorts (by package, by type): a window over the group first --
+  # its new findings or all of them -- then the order inside the groups.
+  @grouped_list_sorts %{
+    package_new: {:new, :package_name, :package},
+    package_count: {:count, :package_name, :package},
+    package_type: {:new, :package_name, :package_then_analysis},
+    type_new: {:new, :analysis, :analysis},
+    type_count: {:count, :analysis, :analysis}
+  }
+
   # Every order ends on the id so a page is stable between renders.
   defp triage_list_order(sort) do
+    case Map.fetch(@grouped_list_sorts, sort) do
+      {:ok, {:new, column, inner}} -> [desc: new_in(column)] ++ list_order(inner)
+      {:ok, {:count, column, inner}} -> [desc: count_in(column)] ++ list_order(inner)
+      :error -> list_order(sort)
+    end
+    |> Kernel.++(asc: dynamic([t], c_order(t.title)), asc: dynamic([t], t.id))
+  end
+
+  defp list_order(sort) do
     severity = dynamic([t], severity_rank(t.severity))
     package = dynamic([t], c_order(t.package_name))
     analysis = dynamic([t], c_order(t.analysis))
 
     case sort do
-      :package ->
-        [asc: package, asc: severity]
-
-      :analysis ->
-        [asc: analysis, asc: severity, asc: package]
-
-      # Grouped by package, the package with the most new findings first.
-      :package_new ->
-        [desc: new_in_package(), asc: package, asc: severity]
-
-      # Grouped by package, the package with the most findings (any status
-      # the filters keep) first.
-      :package_count ->
-        [desc: count_in_package(), asc: package, asc: severity]
-
-      :package_type ->
-        [
-          desc: new_in_package(),
-          asc: package,
-          asc: analysis,
-          asc: severity
-        ]
-
-      :confidence ->
-        [desc_nulls_last: dynamic([t], confidence(t.finding)), asc: severity]
-
-      :newest ->
-        [desc: dynamic([t], t.updated_at), desc: dynamic([t], t.inserted_at)]
-
-      _severity ->
-        [asc: severity, asc: package]
+      :package -> [asc: package, asc: severity]
+      :analysis -> [asc: analysis, asc: severity, asc: package]
+      :package_then_analysis -> [asc: package, asc: analysis, asc: severity]
+      :confidence -> [desc_nulls_last: dynamic([t], confidence(t.finding)), asc: severity]
+      :newest -> [desc: dynamic([t], t.updated_at), desc: dynamic([t], t.inserted_at)]
+      _severity -> [asc: severity, asc: package]
     end
-    |> Kernel.++(asc: dynamic([t], c_order(t.title)), asc: dynamic([t], t.id))
   end
 
-  # New findings in the row's package, over the rows the filters keep: a
-  # window rather than a join, so the list stays one query.
-  defp new_in_package do
+  # New findings in the row's group (its package or its type), over the rows
+  # the filters keep: a window rather than a join, so the list stays one query.
+  defp new_in(column) do
     dynamic(
       [t],
       fragment(
         "count(*) FILTER (WHERE ? = 'new') OVER (PARTITION BY ?)",
         t.status,
-        t.package_name
+        field(t, ^column)
       )
     )
   end
 
-  defp count_in_package do
-    dynamic([t], fragment("count(*) OVER (PARTITION BY ?)", t.package_name))
+  defp count_in(column) do
+    dynamic([t], fragment("count(*) OVER (PARTITION BY ?)", field(t, ^column)))
   end
 
   defp triage_check_order(sort) do
