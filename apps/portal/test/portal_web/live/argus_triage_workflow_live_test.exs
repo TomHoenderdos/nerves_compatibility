@@ -250,7 +250,20 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
         {"view=packages&", "count", "#view-checks", nil},
         {"view=packages&", "count", "#view-findings", nil},
         {"view=packages&", "package", "#view-findings", "package"},
-        {"", "count", "#view-findings", nil}
+        {"", "count", "#view-findings", nil},
+        {"", "count", "#view-types", "count"},
+        {"", "analysis", "#view-types", "analysis"},
+        {"", "severity", "#view-types", nil},
+        {"view=findings&", "analysis", "#view-types", "analysis"},
+        {"view=packages&", "count", "#view-types", "count"},
+        {"view=packages&", "package", "#view-types", nil},
+        # "Most findings" is the check view's default, so it stays out of the URL.
+        {"view=types&", "count", "#view-checks", nil},
+        {"view=types&", "count", "#view-packages", "count"},
+        {"view=types&", "count", "#view-findings", nil},
+        {"view=types&", "analysis", "#view-checks", "analysis"},
+        {"view=types&", "analysis", "#view-findings", "analysis"},
+        {"view=types&", "analysis", "#view-packages", "analysis"}
       ]
 
       for {view_param, sort, link, carried} <- cases do
@@ -359,6 +372,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
     test "the shortcut panel describes the check-row keys", %{conn: conn} do
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
       assert has_element?(view, "#triage-shortcuts", "expand or collapse a check")
+      assert has_element?(view, "#triage-shortcuts", "package or type")
       assert has_element?(view, "#triage-shortcuts", "new findings")
     end
 
@@ -602,16 +616,17 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       a = row("many", "A")
 
       # Every row of a package carries its name, and none starts hidden.
-      assert has_element?(view, "#finding-#{a.id}[data-package-row='many']")
-      refute has_element?(view, "[data-package-row][style*='none']")
-      refute has_element?(view, "[data-package-row].hidden")
+      assert has_element?(view, "#finding-#{a.id}[data-group-row='many']")
+      assert has_element?(view, "#package-many[data-group-key='many']")
+      refute has_element?(view, "[data-group-row][style*='none']")
+      refute has_element?(view, "[data-group-row].hidden")
 
       toggle = "#package-toggle-many"
       assert has_element?(view, "#{toggle}[aria-expanded='true']")
       # The fold is a JS command on the client: it toggles that package's rows
       # (as flex rows) and nobody else's, without a round trip.
       [click] = view |> element(toggle) |> render() |> attr("phx-click")
-      assert click =~ ~s(data-package-row=\\"many\\")
+      assert click =~ ~s(data-group-row=\\"many\\")
       assert click =~ "\"toggle\""
       assert click =~ "flex"
       refute click =~ "\"push\""
@@ -624,19 +639,21 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
     test "collapse all and expand all fold every package on the client", %{conn: conn} do
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
 
-      [collapse] = view |> element("#packages-collapse-all") |> render() |> attr("phx-click")
-      [expand] = view |> element("#packages-expand-all") |> render() |> attr("phx-click")
-      assert collapse =~ "\"hide\"" and collapse =~ "[data-package-row]"
-      assert expand =~ "\"show\"" and expand =~ "[data-package-row]"
+      [collapse] = view |> element("#groups-collapse-all") |> render() |> attr("phx-click")
+      [expand] = view |> element("#groups-expand-all") |> render() |> attr("phx-click")
+      assert collapse =~ "\"hide\"" and collapse =~ "[data-group-row]"
+      assert expand =~ "\"show\"" and expand =~ "[data-group-row]"
 
-      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
-      refute has_element?(view, "#packages-collapse-all")
+      for other <- ["findings", "checks"] do
+        {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=#{other}")
+        refute has_element?(view, "#groups-collapse-all")
+      end
     end
 
     test "a header's group action is on the header itself, so it works folded", %{conn: conn} do
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
       assert has_element?(view, "#package-many #package-form-many #package-apply-all-many")
-      refute has_element?(view, "[data-package-row] #package-form-many")
+      refute has_element?(view, "[data-group-row] #package-form-many")
     end
 
     test "a status key on a package header sets its new findings", %{conn: conn} do
@@ -653,6 +670,283 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       assert %{status: :confirmed} = row("many", "A")
       assert %{status: :new} = row("few", "One")
       assert has_element?(view, "#package-many[data-new='0']")
+    end
+  end
+
+  describe "the by-type view" do
+    # Type "failure": 3 new (many E error, few One, many A); "shutdown": 2 new
+    # (few S, many W); "alpha": 1 new (few X).
+    setup do
+      ingest(
+        "1.0.0",
+        ok([
+          finding(%{"title" => "One"}),
+          finding(%{"title" => "S", "analysis" => "shutdown"}),
+          finding(%{"title" => "X", "analysis" => "alpha"})
+        ]),
+        1,
+        "few"
+      )
+
+      ingest(
+        "2.1.0",
+        ok([
+          finding(%{"title" => "E", "severity" => "error"}),
+          finding(%{"title" => "A"}),
+          finding(%{"title" => "W", "analysis" => "shutdown"})
+        ]),
+        1,
+        "many"
+      )
+
+      :ok
+    end
+
+    defp type_order(view),
+      do: dom_order(view, "#findings > [data-type-group], #findings > [data-triage-row][data-id]")
+
+    test "is a fourth toggle, in the URL", %{conn: conn} do
+      # From by finding, whose default sort the type view does not offer.
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
+
+      assert dom_order(view, "#triage-view > a") ==
+               ~w(view-checks view-findings view-packages view-types)
+
+      assert has_element?(view, "#view-types", "By type")
+
+      view |> element("#view-types") |> render_click()
+      assert_patch(view, ~p"/admin/argus/findings?view=types")
+      assert has_element?(view, "#view-types.btn-active")
+      refute has_element?(view, "#view-packages.btn-active")
+    end
+
+    test "groups findings under a header per type, most new first", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types")
+      ids = Map.new(rows(), &{&1.title, "finding-#{&1.id}"})
+
+      # Inside a type: severity, then package, then title.
+      assert type_order(view) == [
+               "type-group-failure",
+               ids["E"],
+               ids["One"],
+               ids["A"],
+               "type-group-shutdown",
+               ids["S"],
+               ids["W"],
+               "type-group-alpha",
+               ids["X"]
+             ]
+
+      header = "#type-group-failure"
+      assert has_element?(view, header, "failure")
+      assert has_element?(view, header, "3 findings · 3 new · 2 packages")
+      assert has_element?(view, "#type-group-alpha", "1 finding · 1 new · 1 package")
+
+      # Its name narrows the Type filter, staying in this view.
+      assert has_element?(view, "#{header} a[href*='analysis=failure'][href*='view=types']")
+
+      # The finding rows are the compact ones, linking their package.
+      a = row("many", "A")
+      assert has_element?(view, "#finding-#{a.id} a[href='/packages/many']")
+      assert has_element?(view, "#finding-#{a.id} select#triage-status-#{a.id}")
+      assert has_element?(view, "#finding-#{a.id} details")
+    end
+
+    test "sorts by most new, most findings or type name", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types")
+
+      assert has_element?(view, "#triage-sort-select option[value='new'][selected]", "Most new")
+      assert has_element?(view, "#triage-sort-select option[value='count']", "Most findings")
+      assert has_element?(view, "#triage-sort-select option[value='analysis']", "Type name")
+
+      for value <- ["count", "analysis"] do
+        view |> element("#triage-sort") |> render_change(%{"sort" => value})
+        assert_patched(view, "/admin/argus/findings?sort=#{value}&view=types")
+        assert has_element?(view, "#triage-sort-select option[value='#{value}'][selected]")
+      end
+
+      view |> element("#triage-sort") |> render_change(%{"sort" => "new"})
+      assert_patched(view, "/admin/argus/findings?view=types")
+
+      # failure keeps 3 findings but only 1 new: each sort now orders the
+      # types differently.
+      for title <- ["E", "A"],
+          do: Catalog.triage!(row("many", title).id, %{status: "confirmed"}, %{username: "tom"})
+
+      headers = fn query ->
+        {:ok, view, _} = live(conn, "/admin/argus/findings?view=types#{query}")
+        dom_order(view, "#findings > [data-type-group]")
+      end
+
+      assert headers.("") == ~w(type-group-shutdown type-group-alpha type-group-failure)
+
+      assert headers.("&sort=count") ==
+               ~w(type-group-failure type-group-shutdown type-group-alpha)
+
+      assert headers.("&sort=analysis") ==
+               ~w(type-group-alpha type-group-failure type-group-shutdown)
+
+      assert headers.("&sort=drop%20table") == headers.("")
+    end
+
+    test "types start unfolded and fold on the client, like packages", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types")
+      a = row("many", "A")
+
+      assert has_element?(view, "#finding-#{a.id}[data-group-row='failure']")
+      refute has_element?(view, "[data-group-row][style*='none']")
+      assert has_element?(view, "#groups-collapse-all")
+      assert has_element?(view, "#groups-expand-all")
+
+      toggle = "#type-group-toggle-failure"
+      assert has_element?(view, "#{toggle}[aria-expanded='true']")
+      [click] = view |> element(toggle) |> render() |> attr("phx-click")
+      assert click =~ ~s(data-group-row=\\"failure\\")
+      assert click =~ "#type-group-chevron-failure"
+      assert click =~ "\"toggle\""
+      assert click =~ "flex"
+      refute click =~ "\"push\""
+    end
+
+    test "a header is a keyboard item carrying its type and new count", %{conn: conn} do
+      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "tom"})
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types")
+
+      header = "#type-group-failure[data-triage-row][tabindex='-1']"
+      assert has_element?(view, "#{header}[data-type-key='failure'][data-group-key='failure']")
+      assert has_element?(view, "#type-group-failure[data-new='2']")
+      refute has_element?(view, "#type-group-failure[data-id]")
+
+      {:ok, view, _} =
+        live(conn, ~p"/admin/argus/findings?#{%{view: "types", status: ~w(confirmed)}}")
+
+      assert has_element?(view, "#type-group-failure[data-new='0']")
+    end
+
+    test "an odd type name still makes valid ids, and its key is the name", %{conn: conn} do
+      ingest("1.0.0", ok([finding(%{"title" => "Q", "analysis" => "Odd \"type\""})]), 1, "odd")
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types")
+
+      [id] =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query(~s([data-type-key="Odd \\"type\\""]))
+        |> LazyHTML.attribute("id")
+
+      assert id =~ ~r/\Atype-group-[0-9a-f]+\z/
+      key = String.replace_prefix(id, "type-group-", "")
+      assert has_element?(view, "##{id}[data-group-key='#{key}']")
+      assert has_element?(view, "#finding-#{row("odd", "Q").id}[data-group-row='#{key}']")
+    end
+
+    test "each header sets the status of its type's findings", %{conn: conn} do
+      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "tom"})
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types")
+
+      assert has_element?(
+               view,
+               "#type-apply-new-failure[data-confirm='Set the status of 2 new findings of type failure?']"
+             )
+
+      assert has_element?(
+               view,
+               "#type-apply-all-failure[data-confirm='Set the status of all 3 findings of type failure?']"
+             )
+
+      assert has_element?(view, "#type-group-failure #type-form-failure")
+      refute has_element?(view, "[data-group-row] #type-form-failure")
+
+      view
+      |> form("#type-form-failure", type: %{status: "false_positive", note: "by design"})
+      |> put_submitter("#type-apply-new-failure")
+      |> render_submit()
+
+      assert %{status: :false_positive, note: "by design", updated_by: "triage_admin"} =
+               row("many", "E")
+
+      assert %{status: :false_positive} = row("few", "One")
+      assert %{status: :confirmed, updated_by: "tom"} = row("many", "A")
+      assert %{status: :new} = row("many", "W")
+      assert has_element?(view, "#triage-counts", "2 false positive")
+
+      refute has_element?(view, "#type-apply-new-failure")
+      assert has_element?(view, "#type-apply-all-failure", "Apply to all 1")
+      assert has_element?(view, "#type-group-failure", "1 finding · 0 new · 1 package")
+
+      view
+      |> form("#type-form-failure", type: %{status: "reported", note: ""})
+      |> put_submitter("#type-apply-all-failure")
+      |> render_submit()
+
+      assert %{status: :reported, updated_by: "triage_admin"} = row("many", "A")
+      assert %{status: :false_positive, note: "by design"} = row("many", "E")
+    end
+
+    test "a type action uses the current filters, and only new when new is shown",
+         %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types&severity[]=error")
+      assert has_element?(view, "#type-apply-all-failure", "Apply to all 1")
+
+      view
+      |> form("#type-form-failure", type: %{status: "ignored", note: ""})
+      |> put_submitter("#type-apply-all-failure")
+      |> render_submit()
+
+      assert %{status: :ignored} = row("many", "E")
+      assert %{status: :new} = row("many", "A")
+
+      {:ok, view, _} =
+        live(conn, ~p"/admin/argus/findings?#{%{view: "types", status: ~w(new reported)}}")
+
+      assert has_element?(view, "#type-apply-new-failure")
+
+      {:ok, view, _} =
+        live(conn, ~p"/admin/argus/findings?#{%{view: "types", status: ~w(confirmed ignored)}}")
+
+      assert has_element?(view, "#type-apply-all-failure")
+      refute has_element?(view, "[id^='type-apply-new-']")
+    end
+
+    test "the keyboard's triage_type sets only that type's new findings", %{conn: conn} do
+      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "tom"})
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types")
+
+      render_hook(view, "triage_type", %{
+        "type" => %{"name" => "failure", "status" => "reported", "scope" => "new", "note" => ""}
+      })
+
+      assert %{status: :reported} = row("many", "E")
+      assert %{status: :reported} = row("few", "One")
+      assert %{status: :confirmed} = row("many", "A")
+      assert %{status: :new} = row("few", "S")
+      assert has_element?(view, "#type-group-failure[data-new='0']")
+
+      # Without a status it does nothing.
+      render_hook(view, "triage_type", %{"type" => %{"name" => "shutdown", "scope" => "all"}})
+      assert %{status: :new} = row("few", "S")
+    end
+
+    test "bulk selection and keyboard status work, and the header counts follow",
+         %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types")
+      a = row("many", "A")
+      e = row("many", "E")
+
+      view |> element("#select-#{a.id}") |> render_click()
+      assert has_element?(view, "#bulk-form", "1 selected")
+      view |> form("#bulk-form", bulk: %{status: "confirmed", note: ""}) |> render_submit()
+      assert %{status: :confirmed, updated_by: "triage_admin"} = row("many", "A")
+      assert has_element?(view, "#type-group-failure", "3 findings · 2 new · 2 packages")
+
+      render_hook(view, "set_status", %{"id" => e.id, "status" => "reported"})
+      assert %{status: :reported} = row("many", "E")
+      assert has_element?(view, "#type-group-failure", "1 new")
+      assert has_element?(view, "#triage-counts", "1 reported")
+
+      # Select all reloads: E (reported) has left the default filters.
+      view |> element("#select-all") |> render_click()
+      assert has_element?(view, "#bulk-form", "5 selected")
     end
   end
 

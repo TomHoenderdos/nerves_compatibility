@@ -3,11 +3,13 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   Internal triage of argus findings across packages. Admin (passkey) only;
   see `Portal.Catalog.FindingTriage`. Nothing here is public or sent anywhere.
 
-  Two views, both in the URL: by check (the default), one row per analysis,
-  title and severity with a group action, and by finding (`?view=findings`),
-  one row per finding with bulk selection. Both take `?sort=` and keyboard
-  shortcuts (see the `.TriageKeys` hook), which push the same events as the
-  forms do.
+  Four views, all in the URL: by check (the default), one row per analysis,
+  title and severity with a group action; by finding (`?view=findings`), one
+  row per finding with bulk selection; and by package (`?view=packages`) and
+  by type (`?view=types`), the same finding rows under a folding header per
+  package or per analysis, each header with its own group action. All take
+  `?sort=` and keyboard shortcuts (see the `.TriageKeys` hook), which push the
+  same events as the forms do.
   """
   use PortalWeb, :live_view
 
@@ -41,7 +43,22 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     {"package", :package, "Package name"},
     {"analysis", :package_type, "Type"}
   ]
-  @views %{"checks" => :checks, "findings" => :findings, "packages" => :packages}
+  # By type: which type comes first. Inside each, the Type order of the
+  # finding list (severity, then package), which is also "Type name" -- so a
+  # Type sort carries over between views.
+  @type_sorts [
+    {"new", :type_new, "Most new"},
+    {"count", :type_count, "Most findings"},
+    {"analysis", :analysis, "Type name"}
+  ]
+  @views %{
+    "checks" => :checks,
+    "findings" => :findings,
+    "packages" => :packages,
+    "types" => :types
+  }
+  # The views listing finding rows, each selectable.
+  @list_views [:findings, :packages, :types]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -130,25 +147,13 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     end
   end
 
-  # By package: the header's group action, the same as a check's but for
-  # every finding of one package within the filters.
-  def handle_event("triage_package", %{"package" => params}, socket) do
-    with status when not is_nil(status) <- status_atom(params["status"]),
-         name when is_binary(name) and name != "" <- params["name"] do
-      changed =
-        Catalog.triage_package!(
-          socket.assigns.filters,
-          name,
-          if(params["scope"] == "new", do: :new, else: :all),
-          %{status: status, note: blank_to_nil(params["note"])},
-          socket.assigns.current_user
-        )
+  # By package and by type: the header's group action, the same as a check's
+  # but for every finding of one package or one type within the filters.
+  def handle_event("triage_package", %{"package" => params}, socket),
+    do: triage_group(socket, params, &Catalog.triage_package!/5)
 
-      {:noreply, socket |> reload() |> put_flash(:info, "Set #{findings(changed)}.")}
-    else
-      _ -> {:noreply, put_flash(socket, :error, "Choose a status.")}
-    end
-  end
+  def handle_event("triage_type", %{"type" => params}, socket),
+    do: triage_group(socket, params, &Catalog.triage_type!/5)
 
   def handle_event("triage", %{"finding_id" => id, "triage" => triage}, socket) do
     row =
@@ -175,7 +180,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   # Only rows on the page can be selected, so a stale or forged id never
   # reaches the bulk action.
   def handle_event("toggle_select", %{"id" => id}, socket) do
-    if socket.assigns.view in [:findings, :packages] and id in socket.assigns.shown_ids do
+    if socket.assigns.view in @list_views and id in socket.assigns.shown_ids do
       selected = socket.assigns.selected
 
       selected =
@@ -225,6 +230,24 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     |> binary_part(0, 16)
   end
 
+  defp triage_group(socket, params, triage!) do
+    with status when not is_nil(status) <- status_atom(params["status"]),
+         name when is_binary(name) and name != "" <- params["name"] do
+      changed =
+        triage!.(
+          socket.assigns.filters,
+          name,
+          if(params["scope"] == "new", do: :new, else: :all),
+          %{status: status, note: blank_to_nil(params["note"])},
+          socket.assigns.current_user
+        )
+
+      {:noreply, socket |> reload() |> put_flash(:info, "Set #{findings(changed)}.")}
+    else
+      _ -> {:noreply, put_flash(socket, :error, "Choose a status.")}
+    end
+  end
+
   defp reload(socket), do: socket |> assign(:counts, Catalog.triage_counts()) |> load()
 
   # Every load refreshes the pickers' options with the list, so their counts
@@ -235,15 +258,14 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     |> load_list()
   end
 
-  # Both list views stream findings; by package, a header item opens each
-  # package's run of rows (the query already orders them by package).
-  defp load_list(%{assigns: %{view: view} = assigns} = socket)
-       when view in [:findings, :packages] do
+  # The list views stream findings; by package or type, a header item opens
+  # each group's run of rows (the query already orders them by group).
+  defp load_list(%{assigns: %{view: view} = assigns} = socket) when view in @list_views do
     {rows, total} =
       Catalog.triage_page(Map.put(assigns.filters, :sort, assigns.sort), page_limit())
 
     shown_ids = Enum.map(rows, & &1.triage.id)
-    items = if view == :packages, do: with_package_headers(rows, assigns.filters), else: rows
+    items = with_group_headers(rows, view, assigns.filters)
 
     socket
     |> assign(shown_ids: shown_ids, shown: length(rows), total: total)
@@ -265,18 +287,40 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     |> stream(:checks, checks, reset: true)
   end
 
-  defp with_package_headers(rows, filters) do
-    summaries = Catalog.triage_packages(filters)
+  defp with_group_headers(rows, :findings, _filters), do: rows
+
+  defp with_group_headers(rows, view, filters) do
+    summaries = group_summaries(view, filters)
 
     rows
-    |> Enum.chunk_by(& &1.triage.package_name)
-    |> Enum.flat_map(fn [%{triage: %{package_name: name}} | _] = group ->
-      [package_header(name, summaries) | group]
+    |> Enum.chunk_by(&group_of(view, &1.triage))
+    |> Enum.flat_map(fn [%{triage: t} | _] = group ->
+      [group_header(view, group_of(view, t), summaries) | group]
     end)
   end
 
-  defp package_header(name, summaries),
+  defp group_of(:packages, t), do: t.package_name
+  defp group_of(:types, t), do: t.analysis
+
+  # One query for every header's counts.
+  defp group_summaries(:packages, filters), do: Catalog.triage_packages(filters)
+  defp group_summaries(:types, filters), do: Catalog.triage_types(filters)
+
+  defp group_header(:packages, name, summaries),
     do: %{header: name, summary: Map.get(summaries, name, %{count: 0, new: 0, version: nil})}
+
+  defp group_header(:types, analysis, summaries) do
+    %{
+      type_group: analysis,
+      key: type_key(analysis),
+      summary: Map.get(summaries, analysis, %{count: 0, new: 0, packages: 0})
+    }
+  end
+
+  # The value a finding row's `data-group-row` carries: its header's key.
+  defp group_row(:packages, t), do: t.package_name
+  defp group_row(:types, t), do: type_key(t.analysis)
+  defp group_row(_view, _t), do: nil
 
   defp with_type_headers(checks) do
     checks
@@ -287,17 +331,20 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   end
 
   defp finding_dom_id(%{header: name}), do: "package-#{name}"
+  defp finding_dom_id(%{type_group: _, key: key}), do: "type-group-#{key}"
   defp finding_dom_id(%{triage: t}), do: "finding-#{t.id}"
 
-  # Analysis names are argus's own identifiers; anything else is hashed so
-  # the id stays a valid selector.
-  defp check_dom_id(%{type_header: analysis}) do
-    if analysis =~ ~r/\A[a-z0-9_]+\z/,
-      do: "type-#{analysis}",
-      else: "type-" <> Base.encode16(:crypto.hash(:sha256, analysis), case: :lower)
-  end
+  defp check_dom_id(%{type_header: analysis}), do: "type-#{type_key(analysis)}"
 
   defp check_dom_id(%{id: key}), do: "check-#{key}"
+
+  # Analysis names are argus's own identifiers; anything else is hashed so
+  # ids and attribute selectors built from it stay valid.
+  defp type_key(analysis) do
+    if analysis =~ ~r/\A[a-z0-9_]+\z/,
+      do: analysis,
+      else: Base.encode16(:crypto.hash(:sha256, analysis), case: :lower)
+  end
 
   defp check_item(check, assigns) do
     key = check_key(check)
@@ -330,12 +377,12 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
       :findings ->
         insert_row(socket, %{triage: row, stale?: Catalog.triage_stale?(row)})
 
-      :packages ->
-        summaries = Catalog.triage_packages(socket.assigns.filters)
+      view when view in [:packages, :types] ->
+        summaries = group_summaries(view, socket.assigns.filters)
 
         socket
         |> insert_row(%{triage: row, stale?: Catalog.triage_stale?(row)})
-        |> stream_insert(:findings, package_header(row.package_name, summaries))
+        |> stream_insert(:findings, group_header(view, group_of(view, row), summaries))
 
       :checks ->
         refresh_check(socket, check_ident(row))
@@ -382,6 +429,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   defp sorts(:checks), do: @check_sorts
   defp sorts(:findings), do: @list_sorts
   defp sorts(:packages), do: @package_sorts
+  defp sorts(:types), do: @type_sorts
 
   defp default_sort(view), do: view |> sorts() |> hd() |> elem(1)
 
@@ -398,8 +446,8 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   end
 
   # A sort carries over to the other view when that view offers it, matched
-  # by its URL value -- the same name in the dropdown -- since by package
-  # "Most findings" and "Type" are their own atoms.
+  # by its URL value -- the same name in the dropdown -- since by package and
+  # by type "Most new", "Most findings" and "Type" are their own atoms.
   defp switch_path(filters, sort, from, view) do
     triage_path(filters, view, sort(view, sort_value(from, sort)))
   end
@@ -458,27 +506,28 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   defp new_scope?(filters, check),
     do: :new in Map.get(filters, :status, [:new, :confirmed]) and check.by_status.new > 0
 
-  # Folding a package hides its rows on the client. Rows are flex rows, so
-  # showing one must restore `flex`, not the default `block`.
-  defp fold_package(name) do
-    JS.toggle(to: ~s([data-package-row="#{name}"]), display: "flex")
-    |> JS.toggle_class("-rotate-90", to: "#package-chevron-#{name}")
-    |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#package-toggle-#{name}")
+  # Folding a package or type hides its rows on the client. Rows are flex
+  # rows, so showing one must restore `flex`, not the default `block`. `id` is
+  # the header's id prefix ("package", "type-group"), `key` its group key.
+  defp fold_group(id, key) do
+    JS.toggle(to: ~s([data-group-row="#{key}"]), display: "flex")
+    |> JS.toggle_class("-rotate-90", to: "##{id}-chevron-#{key}")
+    |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "##{id}-toggle-#{key}")
   end
 
   defp fold_all(expanded?) do
     if expanded? do
-      JS.show(to: "[data-package-row]", display: "flex")
-      |> JS.remove_class("-rotate-90", to: "[data-package-chevron]")
-      |> JS.set_attribute({"aria-expanded", "true"}, to: "[data-package-toggle]")
+      JS.show(to: "[data-group-row]", display: "flex")
+      |> JS.remove_class("-rotate-90", to: "[data-group-chevron]")
+      |> JS.set_attribute({"aria-expanded", "true"}, to: "[data-group-toggle]")
     else
-      JS.hide(to: "[data-package-row]")
-      |> JS.add_class("-rotate-90", to: "[data-package-chevron]")
-      |> JS.set_attribute({"aria-expanded", "false"}, to: "[data-package-toggle]")
+      JS.hide(to: "[data-group-row]")
+      |> JS.add_class("-rotate-90", to: "[data-group-chevron]")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "[data-group-toggle]")
     end
   end
 
-  defp package_new_scope?(filters, summary),
+  defp group_new_scope?(filters, summary),
     do: :new in Map.get(filters, :status, [:new, :confirmed]) and summary.new > 0
 
   defp packages(1), do: "1 package"
@@ -622,11 +671,18 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             >
               By package
             </.link>
+            <.link
+              id="view-types"
+              patch={switch_path(@filters, @sort, @view, :types)}
+              class={["btn btn-xs join-item", @view == :types && "btn-active"]}
+            >
+              By type
+            </.link>
           </div>
-          <div :if={@view == :packages} class="flex items-center gap-1">
+          <div :if={@view in [:packages, :types]} class="flex items-center gap-1">
             <button
               type="button"
-              id="packages-collapse-all"
+              id="groups-collapse-all"
               phx-click={fold_all(false)}
               class="btn btn-xs btn-ghost"
             >
@@ -634,7 +690,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             </button>
             <button
               type="button"
-              id="packages-expand-all"
+              id="groups-expand-all"
               phx-click={fold_all(true)}
               class="btn btn-xs btn-ghost"
             >
@@ -774,7 +830,9 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                 <kbd class="kbd kbd-xs">Enter</kbd> <kbd class="kbd kbd-xs">o</kbd>
               </dt>
 
-              <dd class="inline text-base-content/60">expand or collapse a check</dd>
+              <dd class="inline text-base-content/60">
+                expand or collapse a check, package or type
+              </dd>
             </div>
             <div>
               <dt class="inline"><kbd class="kbd kbd-xs">c</kbd></dt>
@@ -804,7 +862,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             <div>
               <dt class="inline"><kbd class="kbd kbd-xs">x</kbd></dt>
 
-              <dd class="inline text-base-content/60">select (by finding)</dd>
+              <dd class="inline text-base-content/60">select a finding</dd>
             </div>
             <div>
               <dt class="inline"><kbd class="kbd kbd-xs">/</kbd></dt>
@@ -823,14 +881,15 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
             </div>
           </dl>
           <p class="mt-2 text-xs text-base-content/50">
-            On a finding, a status key sets that finding. On a check row it sets the check's
-            new findings within the filters, after a confirm; it does nothing when there are none.
-            Either way focus moves on: to the next row, or past a check's or package's findings.
+            On a finding, a status key sets that finding. On a check row, or a package or type
+            header, it sets that group's new findings within the filters, after a confirm; it
+            does nothing when there are none. Either way focus moves on: to the next row, or
+            past the group's findings.
           </p>
         </div>
 
         <div id="triage-list" phx-hook=".TriageKeys">
-          <%= if @view in [:findings, :packages] do %>
+          <%= if @view in [:findings, :packages, :types] do %>
             <div class="mb-2 flex flex-wrap items-center gap-3 text-sm text-base-content/60">
               <label class="flex items-center gap-2">
                 <input
@@ -884,19 +943,19 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                 No findings match these filters.
               </div>
               <%= for {dom_id, item} <- @streams.findings do %>
-                <%!-- By package: the package leads its findings. Not a
-                keyboard item, so j/k step over it. --%>
-                <%!-- A keyboard item like a check row: Enter/o fold it, a status
-                key sets its new findings. `data-new` is 0 when there are none
-                or new is filtered out. --%>
+                <%!-- By package: the package leads its findings. A keyboard
+                item like a check row: Enter/o fold it, a status key sets its
+                new findings. `data-new` is 0 when there are none or new is
+                filtered out. --%>
                 <div
                   :if={item[:header]}
                   id={dom_id}
                   data-package-header
                   data-triage-row
                   data-package-key={item.header}
+                  data-group-key={item.header}
                   data-new={
-                    if package_new_scope?(@filters, item.summary), do: item.summary.new, else: 0
+                    if group_new_scope?(@filters, item.summary), do: item.summary.new, else: 0
                   }
                   tabindex="-1"
                   class={[
@@ -910,15 +969,15 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                     <button
                       type="button"
                       id={"package-toggle-#{item.header}"}
-                      data-package-toggle
-                      phx-click={fold_package(item.header)}
+                      data-group-toggle
+                      phx-click={fold_group("package", item.header)}
                       aria-expanded="true"
                       aria-label={"Fold #{item.header}"}
                       class="cursor-pointer rounded p-0.5 text-base-content/40 hover:text-base-content"
                     >
                       <span
                         id={"package-chevron-#{item.header}"}
-                        data-package-chevron
+                        data-group-chevron
                         class="inline-flex transition-transform"
                       >
                         <.icon name="hero-chevron-down-mini" class="size-4" />
@@ -962,7 +1021,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                       class="input input-xs w-36"
                     />
                     <button
-                      :if={package_new_scope?(@filters, item.summary)}
+                      :if={group_new_scope?(@filters, item.summary)}
                       type="submit"
                       id={"package-apply-new-#{item.header}"}
                       name="package[scope]"
@@ -984,15 +1043,23 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                     </button>
                   </.form>
                 </div>
+                <.type_header
+                  :if={item[:type_group]}
+                  id={dom_id}
+                  item={item}
+                  filters={@filters}
+                  sort={@sort}
+                  status_options={@status_options}
+                />
                 <.finding_row
-                  :if={!item[:header]}
+                  :if={item[:triage]}
                   id={dom_id}
                   t={item.triage}
                   stale?={item.stale?}
                   selected={MapSet.member?(@selected, item.triage.id)}
                   selectable
                   in_package={@view == :packages}
-                  package_row={if @view == :packages, do: item.triage.package_name}
+                  group_row={group_row(@view, item.triage)}
                   status_options={@status_options}
                 />
               <% end %>
@@ -1080,7 +1147,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           document.removeEventListener("pointerdown", this.onPointer, true)
           this.observer.disconnect()
         },
-        // Rows of a folded package are hidden (display: none) and skipped.
+        // Rows of a folded package or type are hidden (display: none) and skipped.
         rows() {
           return Array.from(this.el.querySelectorAll("[data-triage-row]")).filter(
             r => r.style.display !== "none"
@@ -1129,7 +1196,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           this.focusAt(at + 1 < rows.length ? at + 1 : at - 1)
         },
         // After a group key: the next row outside the group, so the next key
-        // lands on the next check or package, not on a finding just set (or
+        // lands on the next check or group, not on a finding just set (or
         // on one that is about to leave the list with its header).
         advancePast(row, inGroup) {
           const rows = this.rows()
@@ -1154,16 +1221,20 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           const check = row.closest("[data-check]")
           this.advancePast(row, r => check.contains(r))
         },
-        // The same on a package header, through its "Apply to N new".
-        setPackageStatus(row, status) {
+        // The same on a package or type header, through its "Apply to N new".
+        // Its rows carry the header's group key in `data-group-row`.
+        setGroupStatus(row, status) {
           const count = parseInt(row.dataset.new, 10) || 0
           if (count === 0) return
           const noun = count === 1 ? "finding" : "findings"
-          const name = row.dataset.packageKey
-          const question = `Set the status of ${count} new ${noun} in ${name} to ${STATUS_LABELS[status]}?`
+          const {packageKey, typeKey, groupKey} = row.dataset
+          const [event, param, name, where] = packageKey !== undefined
+            ? ["triage_package", "package", packageKey, `in ${packageKey}`]
+            : ["triage_type", "type", typeKey, `of type ${typeKey}`]
+          const question = `Set the status of ${count} new ${noun} ${where} to ${STATUS_LABELS[status]}?`
           if (!window.confirm(question)) return
-          this.pushEvent("triage_package", {package: {name, status, scope: "new", note: ""}})
-          this.advancePast(row, r => r.dataset.packageRow === name)
+          this.pushEvent(event, {[param]: {name, status, scope: "new", note: ""}})
+          this.advancePast(row, r => r.dataset.groupRow === groupKey)
         },
         // The package search lives in the folded filters panel: open it first
         // (through its own toggle, so the panel's state stays LiveView's).
@@ -1224,12 +1295,12 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           } else if (row && row.dataset.checkKey && (e.key === "o" || (e.key === "Enter" && e.target === row))) {
             // Enter only on the row itself: on its buttons it still clicks them.
             this.pushEvent("toggle_check", this.checkIdent(row))
-          } else if (row && row.dataset.packageKey && (e.key === "o" || (e.key === "Enter" && e.target === row))) {
+          } else if (row && row.dataset.groupKey && (e.key === "o" || (e.key === "Enter" && e.target === row))) {
             // Runs the toggle's own JS command, so the fold stays client-side.
-            const toggle = row.querySelector("[data-package-toggle]")
+            const toggle = row.querySelector("[data-group-toggle]")
             if (toggle) toggle.click()
-          } else if (STATUS_KEYS[e.key] && row && row.dataset.packageKey) {
-            this.setPackageStatus(row, STATUS_KEYS[e.key])
+          } else if (STATUS_KEYS[e.key] && row && row.dataset.groupKey) {
+            this.setGroupStatus(row, STATUS_KEYS[e.key])
           } else if (STATUS_KEYS[e.key] && row && row.dataset.checkKey) {
             this.setCheckStatus(row, STATUS_KEYS[e.key])
           } else if (STATUS_KEYS[e.key] && row) {
@@ -1404,6 +1475,119 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   end
 
   attr :id, :string, required: true
+  attr :item, :map, required: true, doc: "a type group: `type_group`, `key` and `summary`"
+  attr :filters, :map, required: true
+  attr :sort, :atom, required: true
+  attr :status_options, :list, required: true
+
+  # By type: the type leads its findings, as a package header does by
+  # package. A keyboard item: Enter/o fold it, a status key sets its new
+  # findings (`data-new` is 0 when there are none or new is filtered out).
+  # `data-type-key` is the name the group action sends; `data-group-key` the
+  # selector-safe key its rows carry.
+  defp type_header(assigns) do
+    assigns =
+      assign(assigns,
+        name: assigns.item.type_group,
+        key: assigns.item.key,
+        summary: assigns.item.summary
+      )
+
+    ~H"""
+    <div
+      id={@id}
+      data-type-group
+      data-triage-row
+      data-type-key={@name}
+      data-group-key={@key}
+      data-new={if group_new_scope?(@filters, @summary), do: @summary.new, else: 0}
+      tabindex="-1"
+      class={[
+        "mt-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-2 py-2 outline-none transition-colors",
+        "focus:bg-primary/10 focus:ring-2 focus:ring-inset focus:ring-primary"
+      ]}
+    >
+      <div class="flex flex-wrap items-center gap-x-2">
+        <button
+          type="button"
+          id={"type-group-toggle-#{@key}"}
+          data-group-toggle
+          phx-click={fold_group("type-group", @key)}
+          aria-expanded="true"
+          aria-label={"Fold #{@name}"}
+          class="cursor-pointer rounded p-0.5 text-base-content/40 hover:text-base-content"
+        >
+          <span
+            id={"type-group-chevron-#{@key}"}
+            data-group-chevron
+            class="inline-flex transition-transform"
+          >
+            <.icon name="hero-chevron-down-mini" class="size-4" />
+          </span>
+        </button>
+        <%!-- There is no page per type: the name narrows the Type filter. --%>
+        <.link
+          patch={triage_path(%{@filters | analysis: @name}, :types, @sort)}
+          title={"Show only #{@name}"}
+          class="font-mono text-lg font-semibold text-base-content hover:text-primary"
+        >
+          {@name}
+        </.link>
+        <span class="text-xs text-base-content/60">
+          {findings(@summary.count)} · {@summary.new} new · {packages(@summary.packages)}
+        </span>
+      </div>
+      <.form
+        for={to_form(%{}, as: :type)}
+        id={"type-form-#{@key}"}
+        phx-submit="triage_type"
+        class="flex flex-wrap items-center gap-2 text-xs"
+      >
+        <input type="hidden" name="type[name]" value={@name} />
+        <select
+          id={"type-status-#{@key}"}
+          name="type[status]"
+          aria-label="Status for the type"
+          class="select select-xs w-36"
+        >
+          <option value="">Set type…</option>
+          {Phoenix.HTML.Form.options_for_select(@status_options, nil)}
+        </select>
+        <input
+          id={"type-note-#{@key}"}
+          name="type[note]"
+          type="text"
+          value=""
+          placeholder="Note (optional)"
+          class="input input-xs w-36"
+        />
+        <button
+          :if={group_new_scope?(@filters, @summary)}
+          type="submit"
+          id={"type-apply-new-#{@key}"}
+          name="type[scope]"
+          value="new"
+          class="btn btn-xs btn-outline"
+          data-confirm={"Set the status of #{@summary.new} new #{noun(@summary.new)} of type #{@name}?"}
+        >
+          Apply to {@summary.new} new
+        </button>
+        <button
+          type="submit"
+          id={"type-apply-all-#{@key}"}
+          name="type[scope]"
+          value="all"
+          class="btn btn-xs btn-ghost"
+          data-confirm={"Set the status of all #{findings(@summary.count)} of type #{@name}?"}
+        >
+          Apply to all {@summary.count}
+        </button>
+      </.form>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
   attr :t, FindingTriage, required: true
   attr :stale?, :boolean, default: false
   attr :selectable, :boolean, default: false
@@ -1414,7 +1598,9 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     default: false,
     doc: "under a package header, which names the package"
 
-  attr :package_row, :string, default: nil, doc: "the package whose header folds this row"
+  attr :group_row, :string,
+    default: nil,
+    doc: "the key of the package or type header that folds this row"
 
   attr :status_options, :list, required: true
 
@@ -1430,7 +1616,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
       id={@id}
       data-triage-row
       data-id={@t.id}
-      data-package-row={@package_row}
+      data-group-row={@group_row}
       tabindex="-1"
       class={
         [

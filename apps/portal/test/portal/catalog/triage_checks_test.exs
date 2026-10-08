@@ -307,6 +307,214 @@ defmodule Portal.Catalog.TriageChecksTest do
     end
   end
 
+  describe "the by-type view" do
+    setup do
+      # Type "shutdown": 1 new in few, 1 new error in many (2 findings, 2 new).
+      # Type "failure": 2 new in many, 1 confirmed in none (3 findings, 2 new).
+      # Type "zz": 1 confirmed in few (1 finding, 0 new).
+      ingest(
+        "1.0.0",
+        ok([
+          finding(%{"analysis" => "shutdown", "title" => "S"}),
+          finding(%{"analysis" => "zz", "title" => "Z", "severity" => "info"})
+        ]),
+        1,
+        "few"
+      )
+
+      ingest(
+        "2.1.0",
+        ok([
+          finding(%{"analysis" => "shutdown", "title" => "S", "severity" => "error"}),
+          finding(%{"analysis" => "failure", "title" => "F"}),
+          finding(%{"analysis" => "failure", "title" => "F", "detail" => "two"})
+        ]),
+        1,
+        "many"
+      )
+
+      ingest("0.3.0", ok([finding(%{"analysis" => "failure", "title" => "N"})]), 1, "none")
+      Catalog.triage!(row("none", "N").id, %{status: "confirmed"}, @admin)
+      Catalog.triage!(row("few", "Z").id, %{status: "confirmed"}, @admin)
+      :ok
+    end
+
+    defp types(rows), do: Enum.map(rows, &{&1.triage.analysis, &1.triage.package_name})
+
+    test "types by most new, then name; findings by severity, then package inside" do
+      # shutdown and failure tie on 2 new: name order.
+      assert [
+               {"failure", "many"},
+               {"failure", "many"},
+               {"failure", "none"},
+               {"shutdown", "many"},
+               {"shutdown", "few"},
+               {"zz", "few"}
+             ] = types(Catalog.triage_list(%{sort: :type_new}))
+
+      Catalog.triage!(row("many", "S").id, %{status: "confirmed"}, @admin)
+
+      assert [{"failure", _}, {"failure", _}, {"failure", _}, {"shutdown", _} | _] =
+               types(Catalog.triage_list(%{sort: :type_new}))
+
+      Catalog.triage!(row("none", "N").id, %{status: "new"}, @admin)
+
+      for %{triage: t} <- Catalog.triage_list(%{analysis: "failure"}),
+          do: Catalog.triage!(t.id, %{status: "confirmed"}, @admin)
+
+      # failure has nothing new left; shutdown (1 new) now leads.
+      assert [{"shutdown", "many"}, {"shutdown", "few"} | _] =
+               types(Catalog.triage_list(%{sort: :type_new}))
+    end
+
+    test "types by most findings, whatever their status, then name" do
+      assert [
+               {"failure", "many"},
+               {"failure", "many"},
+               {"failure", "none"},
+               {"shutdown", "many"},
+               {"shutdown", "few"},
+               {"zz", "few"}
+             ] = types(Catalog.triage_list(%{sort: :type_count}))
+
+      # Three more zz findings, all confirmed: zz has the most, though none new.
+      ingest(
+        "2.2.0",
+        ok([
+          finding(%{"analysis" => "shutdown", "title" => "S", "severity" => "error"}),
+          finding(%{"analysis" => "failure", "title" => "F"}),
+          finding(%{"analysis" => "failure", "title" => "F", "detail" => "two"}),
+          finding(%{"analysis" => "zz", "title" => "Z1"}),
+          finding(%{"analysis" => "zz", "title" => "Z2"}),
+          finding(%{"analysis" => "zz", "title" => "Z3"})
+        ]),
+        2,
+        "many"
+      )
+
+      for %{triage: t} <- Catalog.triage_list(%{analysis: "zz"}),
+          do: Catalog.triage!(t.id, %{status: "confirmed"}, @admin)
+
+      assert [{"zz", "many"}, {"zz", "many"}, {"zz", "many"}, {"zz", "few"} | _] =
+               types(Catalog.triage_list(%{sort: :type_count}))
+
+      assert [{"failure", _} | _] = types(Catalog.triage_list(%{sort: :type_new}))
+    end
+
+    test "triage_types/1 counts findings, new ones and packages within the filters" do
+      assert %{
+               "failure" => %{count: 3, new: 2, packages: 2},
+               "shutdown" => %{count: 2, new: 2, packages: 2},
+               "zz" => %{count: 1, new: 0, packages: 1}
+             } == Catalog.triage_types(%{})
+
+      assert %{"shutdown" => %{count: 1, new: 1, packages: 1}} ==
+               Catalog.triage_types(%{severity: ["error"]})
+
+      assert %{"failure" => %{count: 2, new: 2, packages: 1}} ==
+               Catalog.triage_types(%{status: [:new], package: "man", analysis: "failure"})
+    end
+
+    test "triage_types/1 leaves stale findings out unless asked" do
+      ingest("2.2.0", ok([finding(%{"analysis" => "failure", "title" => "F"})]), 2, "many")
+
+      assert %{"failure" => %{count: 2, packages: 2}, "shutdown" => %{count: 1, packages: 1}} =
+               Catalog.triage_types(%{})
+
+      assert %{"failure" => %{count: 3, packages: 2}, "shutdown" => %{count: 2}} =
+               Catalog.triage_types(%{include_stale: true})
+    end
+  end
+
+  describe "triage_type!/5" do
+    @title_c "Catch-all rescue swallows exceptions"
+
+    setup do
+      ingest(
+        "1.0.0",
+        ok([
+          finding(),
+          finding(%{"detail" => "two", "severity" => "error"}),
+          finding(%{"analysis" => "failures", "title" => "Near"}),
+          finding(%{"analysis" => "shutdown", "title" => "S"})
+        ]),
+        1,
+        "alpha"
+      )
+
+      ingest("1.0.0", ok([finding()]), 1, "beta")
+      :ok
+    end
+
+    test "\"all\" sets every finding of that exact type within the filters" do
+      Catalog.triage!(row("beta", @title_c).id, %{status: "confirmed", note: "keep"}, @admin)
+
+      assert 2 ==
+               Catalog.triage_type!(
+                 %{severity: ["warning"]},
+                 "failure",
+                 :all,
+                 %{status: "ignored", note: "noise"},
+                 %{username: "ann"}
+               )
+
+      assert [{"ignored", "noise", "ann"}] = rows_of("alpha", @title_c, "warning")
+      assert [{"new", nil, nil}] = rows_of("alpha", @title_c, "error")
+      assert [{"ignored", "noise", "ann"}] = rows_of("beta", @title_c, "warning")
+      assert %{status: :new} = row("alpha", "Near")
+      assert %{status: :new} = row("alpha", "S")
+    end
+
+    test "\"only new\" leaves triaged findings and their notes alone" do
+      Catalog.triage!(row("beta", @title_c).id, %{status: "confirmed", note: "keep"}, @admin)
+
+      assert 2 == Catalog.triage_type!(%{}, "failure", :new, %{status: "reported"}, @admin)
+
+      assert %{status: :confirmed, note: "keep"} = row("beta", @title_c)
+      assert [{"reported", nil, "tom"}] = rows_of("alpha", @title_c, "warning")
+      assert [{"reported", nil, "tom"}] = rows_of("alpha", @title_c, "error")
+    end
+
+    test "ANDs the type onto the filters, never replacing the type filter" do
+      assert 0 ==
+               Catalog.triage_type!(
+                 %{analysis: "shutdown"},
+                 "failure",
+                 :all,
+                 %{status: "ignored"},
+                 @admin
+               )
+
+      assert 1 ==
+               Catalog.triage_type!(
+                 %{package: "bet"},
+                 "failure",
+                 :all,
+                 %{status: "ignored"},
+                 @admin
+               )
+
+      assert %{status: :ignored} = row("beta", @title_c)
+      assert [{"new", _, _}] = rows_of("alpha", @title_c, "warning")
+    end
+
+    test "skips stale findings unless the filters include them" do
+      ingest("1.1.0", ok([finding()]), 2, "alpha")
+
+      assert 2 == Catalog.triage_type!(%{}, "failure", :all, %{status: "ignored"}, @admin)
+
+      # The one left new is stale ("two" is gone from alpha's latest run).
+      assert 1 ==
+               Catalog.triage_type!(
+                 %{include_stale: true, status: @every_status},
+                 "failure",
+                 :new,
+                 %{status: "ignored"},
+                 @admin
+               )
+    end
+  end
+
   describe "triage_check!/5" do
     @check %{
       analysis: "failure",
@@ -475,6 +683,16 @@ defmodule Portal.Catalog.TriageChecksTest do
       assert 2 == Catalog.triage_package!(%{}, "few", :new, %{status: "reported"}, @admin)
       assert %{status: :confirmed} = row("few", "Info")
     end
+  end
+
+  defp rows_of(package, title, severity) do
+    %{status: @every_status}
+    |> Catalog.triage_list()
+    |> Enum.filter(
+      &(&1.triage.package_name == package and &1.triage.title == title and
+          &1.triage.severity == severity)
+    )
+    |> Enum.map(&{Atom.to_string(&1.triage.status), &1.triage.note, &1.triage.updated_by})
   end
 
   defp rows_of(package, title) do
