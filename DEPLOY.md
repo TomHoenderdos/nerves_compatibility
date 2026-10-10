@@ -317,7 +317,7 @@ must be refused with `SSH_ORIGINAL_COMMAND does not run rsync`.
 - `/packages/:name` — package details
 - `/requests/:id` — redirects to the package page
 - `/badge/:name.svg` — SVG badge
-- `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API, **disabled 2026-10-06** (routes removed, return 404; controller kept)
+- `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
 - `/api/precompiled/manifests/:package.json` — precompiled package manifest
 - `/api/precompiled/files/:sha256` — content-addressed artifact blob
 - `/admin/oban` — Oban Web dashboard behind admin auth
