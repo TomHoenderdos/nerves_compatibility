@@ -93,7 +93,7 @@ defmodule Portal.Accounts.UserTest do
   end
 
   # The username unique index is case-sensitive, and legacy rows created by
-  # the old provider flows can carry a login verbatim ("Tom"). A lookup for
+  # the old provider flows can carry a login verbatim ("Alice"). A lookup for
   # one specific account must stay exact -- it feeds login and admin
   # grant/revoke, where returning the wrong one of two case-twins would be a
   # real takeover, not just a cosmetic mismatch.
@@ -101,7 +101,7 @@ defmodule Portal.Accounts.UserTest do
     verbatim =
       User
       |> Ash.Changeset.for_create(:create, %{
-        username: "Tom",
+        username: "Alice",
         password_hash: Argon2.hash_pwd_salt("correct horse battery staple")
       })
       |> Ash.create!(domain: Portal.Accounts)
@@ -109,12 +109,12 @@ defmodule Portal.Accounts.UserTest do
     lower =
       User
       |> Ash.Changeset.for_create(:create, %{
-        username: "tom",
+        username: "alice",
         password_hash: Argon2.hash_pwd_salt("correct horse battery staple")
       })
       |> Ash.create!(domain: Portal.Accounts)
 
-    assert {:ok, %User{id: id}} = Portal.Accounts.get_user_by_username("tom")
+    assert {:ok, %User{id: id}} = Portal.Accounts.get_user_by_username("alice")
     assert id == lower.id
     refute id == verbatim.id
   end

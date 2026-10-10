@@ -82,9 +82,9 @@ defmodule Portal.Accounts do
 
   Exists alongside `get_user_by_username/1` (exact match, used to log
   someone in or resolve an admin by name) because the two questions are not
-  the same: the old provider flows stored a login verbatim ("TomHoenderdos"),
+  the same: the old provider flows stored a login verbatim ("JaneDoe"),
   so "is this name free for a new account or a rename" has to see that
-  legacy row even though a plain lookup for "tomhoenderdos" must not silently
+  legacy row even though a plain lookup for "janedoe" must not silently
   return it -- `get_user_by_username/1` returning the wrong account under the
   unique index's nose, rather than this function returning a boolean, is what
   could grant admin to or sign in as the wrong person.

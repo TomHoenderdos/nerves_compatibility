@@ -7,7 +7,7 @@ defmodule Portal.Catalog.TriageChecksTest do
   alias Portal.Catalog.FindingTriage
   alias Portal.Repo
 
-  @admin %{username: "tom"}
+  @admin %{username: "alice"}
   @every_status [:new, :confirmed, :false_positive, :reported, :ignored]
 
   defp row(package, title) do
@@ -471,8 +471,8 @@ defmodule Portal.Catalog.TriageChecksTest do
       assert 2 == Catalog.triage_type!(%{}, "failure", :new, %{status: "reported"}, @admin)
 
       assert %{status: :confirmed, note: "keep"} = row("beta", @title_c)
-      assert [{"reported", nil, "tom"}] = rows_of("alpha", @title_c, "warning")
-      assert [{"reported", nil, "tom"}] = rows_of("alpha", @title_c, "error")
+      assert [{"reported", nil, "alice"}] = rows_of("alpha", @title_c, "warning")
+      assert [{"reported", nil, "alice"}] = rows_of("alpha", @title_c, "error")
     end
 
     test "ANDs the type onto the filters, never replacing the type filter" do
@@ -549,7 +549,7 @@ defmodule Portal.Catalog.TriageChecksTest do
       assert %{status: :false_positive, note: "fp", updated_by: "ann"} =
                row("alpha", @check.title)
 
-      assert %{status: :confirmed, note: "keep", updated_by: "tom"} = row("beta", @check.title)
+      assert %{status: :confirmed, note: "keep", updated_by: "alice"} = row("beta", @check.title)
       assert %{status: :new, updated_by: nil} = row("alpha", "Other")
     end
 
@@ -569,7 +569,7 @@ defmodule Portal.Catalog.TriageChecksTest do
       assert statuses == [
                {"alpha", :reported, "ann"},
                {"alpha", :reported, "ann"},
-               {"beta", :confirmed, "tom"}
+               {"beta", :confirmed, "alice"}
              ]
 
       assert %{note: "keep"} = row("beta", @check.title)

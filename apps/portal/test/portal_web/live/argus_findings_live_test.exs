@@ -61,7 +61,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
   test "status and severity are checkbox groups that show every choice", %{conn: conn} do
     ingest("1.0.0", ok([finding()]), 1)
     [%{triage: row}] = Portal.Catalog.triage_list(%{})
-    Portal.Catalog.triage!(row.id, %{status: "false_positive", note: nil}, %{username: "tom"})
+    Portal.Catalog.triage!(row.id, %{status: "false_positive", note: nil}, %{username: "alice"})
 
     {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
     assert has_element?(view, "#filter-status-new[checked]")
