@@ -66,15 +66,15 @@ defmodule Portal.Catalog.Warmup do
   # The keys whose cold computation is the one a visitor would notice, with the
   # arguments their pages pass: `DashboardLive` asks for `dashboard(3, 10)`,
   # `FailureClustersLive` for `failure_clusters(50)`, `StatsLive` for the
-  # status counts and `stats_json/0`. Not `latest_by_pkg_json/0`: its only
-  # whole-catalog caller was `/api/packages`, disabled 2026-10-06, so warming
-  # it would load the catalog for nobody.
+  # status counts and `stats_json/0`, `/api/packages` for
+  # `latest_by_pkg_json/0` -- the slowest of them, a whole-catalog fold.
   defp keys do
     [
       {"dashboard", fn -> Catalog.dashboard(3, 10) end},
       {"package_status_counts", &Catalog.package_status_counts/0},
       {"failure_clusters", fn -> Catalog.failure_clusters(50) end},
-      {"stats_json", &Catalog.stats_json/0}
+      {"stats_json", &Catalog.stats_json/0},
+      {"latest_by_pkg_json", &Catalog.latest_by_pkg_json/0}
     ]
   end
 

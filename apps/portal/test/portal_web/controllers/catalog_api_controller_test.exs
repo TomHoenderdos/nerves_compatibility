@@ -4,10 +4,6 @@ defmodule PortalWeb.CatalogApiControllerTest do
   alias Portal.Catalog.Ingestion
   alias Portal.ArtifactStore
 
-  # Kept, not deleted, so the API can come back with its tests. The badge and
-  # precompiled tests in this module still run: those routes are live.
-  @api_disabled "schema-v2 catalog JSON API (/api/packages, /api/stats) disabled 2026-10-06; routes removed, controller kept"
-
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
 
   defp ingest_fixture do
@@ -67,7 +63,6 @@ defmodule PortalWeb.CatalogApiControllerTest do
     sha
   end
 
-  @tag skip: @api_disabled
   test "GET /api/packages returns schema-v2 latest_by_pkg shape", %{conn: conn} do
     ingest_fixture()
 
@@ -84,7 +79,6 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert rpi4["run_id"] == "catalog-api-jason-1.4.1"
   end
 
-  @tag skip: @api_disabled
   test "GET /api/packages/:name returns one package in the same schema-v2 shape", %{conn: conn} do
     ingest_fixture()
 
@@ -95,7 +89,6 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert Map.keys(body["packages"]) == ["jason"]
   end
 
-  @tag skip: @api_disabled
   test "GET /api/stats returns schema-v2 aggregate counts", %{conn: conn} do
     ingest_fixture()
 
@@ -110,7 +103,6 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert is_binary(body["last_run_finished_at"])
   end
 
-  @tag skip: @api_disabled
   test "GET /api/stats does not list assessments as systems", %{conn: conn} do
     ingest_fixture()
     {:ok, _run} = Portal.Catalog.RegistryAssessment.record("tiny_pure", "1.2.0", nil)
@@ -159,7 +151,6 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert ["public, max-age=3600" <> _] = get_resp_header(conn, "cache-control")
   end
 
-  @tag skip: @api_disabled
   test "the JSON API is still cached by the minute", %{conn: conn} do
     ingest_fixture()
 

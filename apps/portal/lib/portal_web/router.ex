@@ -215,11 +215,11 @@ defmodule PortalWeb.Router do
     get "/precompiled/manifests/:package", CatalogApiController, :precompiled_manifest
     get "/precompiled/files/:sha256", CatalogApiController, :precompiled_file
 
-    # The schema-v2 catalog JSON API, disabled 2026-10-06: nothing used it,
-    # and `/api/packages` was an unauthenticated full dump of the catalog, a
-    # DoS vector. The controller actions are kept so these can come back.
-    # get "/packages", CatalogApiController, :packages
-    # get "/packages/:name", CatalogApiController, :package
-    # get "/stats", CatalogApiController, :stats
+    # Schema-v2 catalog JSON API (docs/INDEX_FORMAT.md). `/packages` is the
+    # whole catalog; it is served from `Portal.Catalog.Cache`, so repeated hits
+    # share one computation a minute instead of each loading the catalog.
+    get "/packages", CatalogApiController, :packages
+    get "/packages/:name", CatalogApiController, :package
+    get "/stats", CatalogApiController, :stats
   end
 end

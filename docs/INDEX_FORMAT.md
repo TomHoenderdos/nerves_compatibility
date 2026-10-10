@@ -2,13 +2,8 @@
 
 This document describes the JSON schemas used by the Nerves Compatibility Tracker.
 
-> **Disabled 2026-10-06.** The JSON API that served these shapes
-> (`/api/packages`, `/api/packages/:name`, `/api/stats`) is switched off: nothing
-> used it, and `/api/packages` was an unauthenticated dump of the whole catalog.
-> The routes are commented out in `PortalWeb.Router` and answer 404;
-> `PortalWeb.CatalogApiController` and `Portal.Catalog.latest_by_pkg_json/1` /
-> `stats_json/0` are kept, so it can be re-enabled by restoring the routes. The
-> package page and the stats page still use the same functions internally.
+> Served live by the portal at `/api/packages`, `/api/packages/:name` and
+> `/api/stats` (`PortalWeb.CatalogApiController`).
 
 All index files use **schema version 2** and follow these conventions:
 - All timestamps are ISO 8601 strings (e.g., `"2025-12-23T10:30:00Z"`)

@@ -111,10 +111,9 @@ defmodule Portal.Catalog do
 
   # Only the whole-catalog form is memoized. It is the expensive one -- every
   # package, its latest run and that run's system results, folded in Elixir --
-  # and nothing routed calls it any more: `/packages` reads a page at a time
-  # through `Portal.Catalog.Browse`, and `/api/packages` was disabled on
-  # 2026-10-06. It is kept, with `PortalWeb.CatalogApiController`, so that API
-  # can come back. The
+  # and only `/api/packages` asks for it (`/packages` reads a page at a time
+  # through `Portal.Catalog.Browse`). The cache makes repeated hits share one
+  # computation a minute, and `Portal.Catalog.Warmup` fills it at boot. The
   # single-package form is a filtered read of one row, and caching it would key
   # the table by package name: the cache has no per-key eviction, so browsing
   # the catalog would leave an entry per package behind forever.
@@ -160,8 +159,8 @@ defmodule Portal.Catalog do
 
   Still cached. The grouping touches every row of `catalog_system_results`,
   the widest table in the database: a plain scan of it takes ~70ms on
-  production, and every `StatsLive` mount asks (as did `/api/stats` until it
-  was disabled on 2026-10-06). `catalog_system_results_stats_index` covers the three grouped columns
+  production, and every `StatsLive` mount and `/api/stats` hit asks.
+  `catalog_system_results_stats_index` covers the three grouped columns
   so the count can be an index-only scan, and the cache keeps even that off
   the request path.
   """

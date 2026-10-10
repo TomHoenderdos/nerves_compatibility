@@ -79,7 +79,7 @@ The integration test is `apps/portal/test/portal/workers/build_integration_test.
 - `/packages/:name` — package detail: latest run, per-system results, and live status of its newest build
 - `/requests/:id` — redirects to the package page
 - `/badge/:name.svg` — SVG badge
-- `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API, **disabled** (routes commented out in `router.ex`; unused and an unauthenticated DoS vector)
+- `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
 - `/api/precompiled/manifests/:package.json`, `/api/precompiled/files/:sha256` — precompiled API
 - `/admin`, `/admin/oban` — admin UI and Oban Web dashboard
 - `/auth/:provider/login`, `/auth/choose-username` — sign in with Hex.pm or GitHub
