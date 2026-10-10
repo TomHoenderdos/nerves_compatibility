@@ -19,7 +19,8 @@ defmodule Portal.Application do
       # Also precedes the endpoint: it owns the ETS table holding in-flight
       # WebAuthn challenges.
       PortalWeb.WebAuthnSession,
-      {Oban, Application.fetch_env!(:portal, Oban)},
+      # A build node also runs its own ingest queue; see `Portal.Workers.Ingest`.
+      {Oban, Portal.Workers.Ingest.with_local_queue(Application.fetch_env!(:portal, Oban))},
       {Phoenix.PubSub, name: Portal.PubSub},
       # Start a worker by calling: Portal.Worker.start_link(arg)
       # {Portal.Worker, arg},

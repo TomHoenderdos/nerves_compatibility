@@ -23,6 +23,11 @@ secrets.
 | web host | public site | `intake:5,maintenance:1` |
 | build host | builds; owns the scratch and cache disks | `builds:N,ingest:N` |
 
+Each build host also runs an ingest queue of its own, named after its node
+(`ingest_portal_<host>`), so a build is ingested on the host whose disk holds its
+scratch dir. It is added at boot and needs no entry in `OBAN_QUEUES`; give every
+build host a distinct node name.
+
 ## Installing a change
 
 `deploy.sh` and `build-release.sh` are not read from the checkout: they live at
