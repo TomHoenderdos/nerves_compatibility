@@ -2,7 +2,7 @@
 
 ## Overview
 
-The tracker now deploys as one Phoenix service plus Postgres and Docker on the host. Phoenix serves the public compatibility site, admin UI, Oban dashboard, schema-v2 JSON API, badges, and precompiled artifact API.
+The tracker deploys as one Phoenix release plus Postgres and Docker, on one host or split across a web node and a build node (see [Splitting the build host](#splitting-the-build-host)). Phoenix serves the public compatibility site, admin UI, Oban dashboard, schema-v2 JSON API, badges, and precompiled artifact API.
 
 The worker still runs in Docker as `ncc-worker:local`; the portal shells out to that image from `Portal.Builder` when Oban executes build jobs.
 
@@ -40,13 +40,21 @@ Configure these environment variables for the Phoenix service:
 | `SECRET_KEY_BASE` | Phoenix secret key base |
 | `DATABASE_URL` | Postgres URL for `Portal.Repo` |
 | `PORTAL_DATABASE_POOL_SIZE` | Optional DB pool size |
+| `PORTAL_DATABASE_TIMEOUT` | Optional query timeout in ms; default `60000` |
+| `PORTAL_DATABASE_QUEUE_TARGET`, `PORTAL_DATABASE_QUEUE_INTERVAL` | Optional DBConnection queue settings in ms; defaults `500` and `5000`, raised for a database across a slow link |
 | `ECTO_IPV6` | Set to `true` when the DB needs IPv6 socket options |
-| `GITHUB_CLIENT_ID` | Optional GitHub OAuth App client ID with device flow enabled |
+| `GITHUB_CLIENT_ID` | Optional GitHub OAuth App client ID with device flow enabled. Hex.pm sign-in needs no configuration |
+| `NCC_WEBAUTHN_RP_ID`, `NCC_WEBAUTHN_ORIGIN` | Passkey relying-party ID and origin; default to `PHX_HOST` and `https://` + that. Changing the RP ID invalidates every registered passkey |
 | `PORTAL_SEED_ADMINS` | Optional seed list, e.g. `alice,bob:temporary-password` |
 | `PORTAL_SEED_ADMIN_PASSWORD` | Optional shared password for seeded admins without `:password` |
-| `TURNSTILE_SECRET_KEY` | Optional server-side Turnstile verification secret |
 | `NCC_ARTIFACT_STORE` | Optional artifact blob store path; defaults to `~/.ncc-artifacts` |
-| `OBAN_QUEUES` | Which queues this node runs, e.g. `builds:1,ingest:2`. Unset means all of them. See [Splitting the build host](#splitting-the-build-host) |
+| `NCC_ISSUES_URL` | Optional target of the UI's "Open an issue" link |
+| `NCC_UPDATE_CHECK` | `0`/`1`: turn the hex.pm update poll off or on; on by default |
+| `NCC_QUEUE_FILTER` | `0`/`1`: classify bulk-intake packages from registry data instead of building them; off by default |
+| `NCC_LOG_BUDGET_MB` | Optional cap on stored build logs; default 2048 |
+| `UMAMI_WEBSITE_ID` | Analytics site id. Defaults to this project's own site id, so another deployment should set its own or an empty string to turn analytics off |
+| `DNS_CLUSTER_QUERY` | Optional DNS query for clustering nodes |
+| `OBAN_QUEUES` | Which queues this node runs, e.g. `builds:1,ingest:2`. Unset means `builds:1,ingest:2,intake:5,maintenance:1`. See [Splitting the build host](#splitting-the-build-host) |
 
 Build-host settings. Every path below is passed to `docker run --mount source=`, so it is
 resolved by the host daemon and must be a path the daemon can see:
@@ -60,6 +68,9 @@ resolved by the host daemon and must be a path the daemon can see:
 | `NCC_BUILD_CPUS` | Cap cores per build, e.g. `3`. Unset means unbounded |
 | `NCC_BUILD_MEMORY` | Cap memory per build, e.g. `4g`. Unset means unbounded |
 | `NCC_BUILD_USER` | `--user` for the build container. Unset means our own uid:gid. Set `0:0` on a rootless daemon, where our uid is already 0 inside the namespace |
+| `NCC_BUILD_CACHE` | Shared dependency build cache, one subdirectory per worker image. Unset means off |
+| `NCC_MIN_FREE_GB` | Refuse to start a build with less free space than this on the scratch filesystem; default `25` |
+| `NCC_SCRATCH_MAX_AGE_HOURS` | Age after which `Portal.Workers.Sweep` treats a scratch dir as orphaned; default `3` |
 | `NCC_BUILD_CONCURRENCY` | How many Nerves targets one build may compile at once. Unset means 1 (serial). Raise it together with `NCC_BUILD_CPUS`: the targets share that cap, and the win comes from overlapping the single-threaded stretches (release assembly, squashfs, fwup). Capped at 4 in code. See the note below |
 
 ### Picking a concurrency
@@ -71,7 +82,7 @@ correctness: `@max_build_concurrency` in `NccWorker.Worker` caps it at 4, and
 anything above that leaves a 6-core machine with nothing for the rest of its
 work.
 
-Measured on jason, warm caches, 6-core Contabo:
+Measured on jason, warm caches, a 6-core VPS:
 
 | config | wall clock |
 |---|---|
@@ -129,16 +140,6 @@ bin/portal rpc 'Portal.Seeds.seed_admins_from_env!()'
 `rpc` inherits the running node's environment, so `PORTAL_SEED_ADMINS` and
 `PORTAL_SEED_ADMIN_PASSWORD` belong in the service's env file, not on this
 command line, unless the node already has them.
-
-## Import package overrides
-
-`package_metadata.json` was imported during the Phase 6 cutover and removed from the repo. Future overrides are admin-managed in `Portal.Catalog.PackageOverride` rows.
-
-For one-time imports in another environment, run before removing the source file:
-
-```bash
-mix portal.import_overrides /path/to/package_metadata.json
-```
 
 ## Seeding the catalogue from upstream
 
@@ -211,6 +212,9 @@ ExecStop=/opt/nerves_compatibility/portal/bin/portal stop
 Restart=on-failure
 ```
 
+`/etc/ncc-portal/portal.env` and `/opt/nerves_compatibility` are the paths the
+scripts under `ops/` expect; change them there too if you pick others.
+
 `WorkingDirectory` must be a directory the service user can actually read. The
 release boots a VM there, and pointing it at a directory the user cannot enter
 produces a kernel-level crash during boot rather than a clear error.
@@ -260,7 +264,7 @@ server. `OBAN_QUEUES` lets one deploy run as two nodes against one database:
 | `OBAN_QUEUES` | `intake:5,maintenance:1` | `builds:1,ingest:2` |
 | `DATABASE_URL` | local Postgres | the same Postgres, over the private network |
 | Docker daemon | not used | runs the worker image |
-| Apache/TLS | yes | no, firewall it to the private interface |
+| Reverse proxy/TLS | yes | no, firewall it to the private interface |
 
 Both nodes run the same release. Oban coordinates through Postgres rows, not
 through BEAM distribution, so the nodes never need to see each other and no
@@ -286,7 +290,7 @@ local disk and the database keeps only metadata, so a build node fills its own
 are named by their SHA256 and therefore immutable, so a periodic pull is enough:
 
 ```bash
-rsync -a --ignore-existing -e ssh root@BUILD_HOST:/ /var/lib/ncc/artifacts/
+rsync -a --ignore-existing -e ssh root@BUILD_HOST:/ /path/to/artifacts/
 ```
 
 Run that *from* the web node, on a timer. Pulling rather than pushing keeps the
@@ -296,7 +300,7 @@ so it should never hold a key into the machine serving the site.
 Restrict the key it uses on the build host, in `~/.ssh/authorized_keys`:
 
 ```
-command="rrsync -ro /var/lib/ncc/artifacts",restrict ssh-rsa AAAA...
+command="rrsync -ro /path/to/artifacts",restrict ssh-rsa AAAA...
 ```
 
 `rrsync` ships with rsync and confines the connection to that one directory,
@@ -311,16 +315,37 @@ ssh root@BUILD_HOST id
 
 must be refused with `SSH_ORIGINAL_COMMAND does not run rsync`.
 
+## Continuous deployment
+
+`.github/workflows/deploy.yml` runs the umbrella tests on every push and pull
+request. For a push to `main` in the upstream repository, with the repository
+variable `PORTAL_AUTO_DEPLOY=true`, it then:
+
+1. waits until the audit, CodeQL, Credo and Sobelow workflows have passed on
+   that exact commit (`ops/wait-for-checks.sh`); a failure blocks the deploy,
+   and a newer commit on `main` supersedes it;
+2. runs `/opt/nerves_compatibility/deploy.sh <sha>` on the web host over SSH
+   (`ops/ssh-deploy.sh portal`) and checks the public site answers;
+3. with `BUILDER_AUTO_DEPLOY=true`, does the same on the build host, reached
+   through the web host, in builder mode: it pauses the `builds` and `ingest`
+   queues, waits for running jobs, builds a new worker image, and only then
+   swaps it in and restarts (`ops/builder-deploy.sh`).
+
+It needs the `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS` and, for the
+builder, `BUILDER_HOST` (and optionally `BUILDER_DEPLOY_SSH_KEY`) secrets in the
+`production` environment. `deploy.sh` can also be run by hand on a host; see
+`ops/README.md`.
+
 ## Public endpoints
 
-- `/` — package browser
+- `/` — dashboard; `/packages` — package browser
 - `/packages/:name` — package details
 - `/requests/:id` — redirects to the package page
 - `/badge/:name.svg` — SVG badge
 - `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
 - `/api/precompiled/manifests/:package.json` — precompiled package manifest
 - `/api/precompiled/files/:sha256` — content-addressed artifact blob
-- `/admin/oban` — Oban Web dashboard behind admin auth
+- `/admin/oban` — Oban Web dashboard behind admin auth (passkey sign-in)
 
 ## Verification after deploy
 

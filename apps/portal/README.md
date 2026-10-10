@@ -1,18 +1,18 @@
 # Portal
 
-To start your Phoenix server:
+The Phoenix web app of the Nerves Compatibility Tracker: package browser,
+scan requests, accounts and admin, Oban build queue, Catalog, badges, and the
+JSON and precompiled APIs. See the root `README.md` and `CLAUDE.md`.
 
-* Run `mix setup` to install and setup dependencies
-* Start Phoenix endpoint with `mix phx.server` or inside IEx with `iex -S mix phx.server`
+Run everything from the umbrella root, not from this directory: the umbrella
+shares one `mix.lock`, and `mix setup` / `mix precommit` here run dependency
+tasks that rewrite it.
 
-Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
+```bash
+mix deps.get
+mix ecto.create && mix ecto.migrate
+mix phx.server          # or: iex -S mix phx.server
+```
 
-Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).
-
-## Learn more
-
-* Official website: https://www.phoenixframework.org/
-* Guides: https://hexdocs.pm/phoenix/overview.html
-* Docs: https://hexdocs.pm/phoenix
-* Forum: https://elixirforum.com/c/phoenix-forum
-* Source: https://github.com/phoenixframework/phoenix
+Then visit [`localhost:4001`](http://localhost:4001). For production, see
+`DEPLOY.md`.

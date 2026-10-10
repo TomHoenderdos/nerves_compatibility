@@ -11,7 +11,6 @@ defmodule Portal.Catalog.SystemLog do
 
   One row per failed system result, enforced by a unique index. Passing builds
   store nothing: they are 97% of the log bytes and almost none of the value.
-  See `docs/superpowers/specs/2026-09-10-build-log-viewer-design.md`.
   """
 
   use Ash.Resource, domain: Portal.Catalog, data_layer: AshPostgres.DataLayer

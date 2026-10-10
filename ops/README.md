@@ -1,50 +1,48 @@
 # ops/
 
-The deploy path. There is no deploying CI: GitHub Actions audits the lock
-(`.github/workflows/audit.yml`), and shipping is `deploy.sh`, run by hand on
-each host.
+The deploy path. `.github/workflows/deploy.yml` deploys every push to `main`
+once the security workflows have passed on that commit (see `DEPLOY.md`,
+"Continuous deployment"). `deploy.sh` can still be run by hand on a host.
 
-These scripts used to live only at `/opt/nerves_compatibility/*.sh` on the two
-hosts, untracked and slowly diverging — the web host had an apt-mirror fix the
-build host did not. They are tracked here so a change is reviewable and lands
-on both machines identically.
+| Script | Runs | Purpose |
+| --- | --- | --- |
+| `wait-for-checks.sh` | in CI | waits for audit, CodeQL, Credo and Sobelow on the commit |
+| `ssh-deploy.sh` | in CI | runs `deploy.sh <sha>` on the web host, or `deploy.sh <sha> builder` on the build host through it |
+| `deploy.sh` | on a host | fast-forwards the checkout, builds the release, migrates, restarts |
+| `build-release.sh` | on a host | builds the release in a container matching the host's glibc |
+| `builder-deploy.sh` | on the build host | sourced by `deploy.sh`: drains the build queues and swaps the worker image |
 
 ## Hosts
 
-Both follow `main` and share one Postgres. The only difference between them is
-`/etc/ncc-portal/portal.env`, which is **not** in this repo and holds secrets.
+Two hosts follow `main` and share one Postgres. The only difference between
+them is `/etc/ncc-portal/portal.env`, which is **not** in this repo and holds
+secrets.
 
 | Host | Role | `OBAN_QUEUES` |
 | --- | --- | --- |
-| `contabo.tompc.nl` | public site (`compatibility.nerves-project.org`; old `nerves.tomhoenderdos.nl` 301s to it) | `intake:5,maintenance:1` |
-| `vmi3525942` (tailscale `100.106.217.14`) | builds; owns the scratch and cache disks | `builds:3,ingest:3` |
+| web host | public site | `intake:5,maintenance:1` |
+| build host | builds; owns the scratch and cache disks | `builds:N,ingest:N` |
 
 ## Installing a change
 
-These files are not read from the checkout — `deploy.sh` lives outside `$SRC`
-so that a deploy cannot swap the script out from under itself mid-run. After
-changing anything here, copy it to both hosts:
+`deploy.sh` and `build-release.sh` are not read from the checkout: they live at
+`/opt/nerves_compatibility/`, outside `$SRC`, so that a deploy cannot swap the
+script out from under itself mid-run. After changing either, copy it to both
+hosts:
 
 ```bash
-for h in contabo.tompc.nl 100.106.217.14; do
+for h in WEB_HOST BUILD_HOST; do
   scp ops/deploy.sh ops/build-release.sh "root@$h:/opt/nerves_compatibility/"
   ssh "root@$h" 'chmod +x /opt/nerves_compatibility/*.sh'
 done
 ```
 
-## Nobody watches a deploy nobody runs
+`builder-deploy.sh` is sourced from the checkout and needs no copying.
 
-`deploy.sh` is run by hand, per host, and nothing reports that a host has
-fallen behind. On 2026-09-11 both hosts were found sitting 40 commits behind
-main -- every deploy since the robots.txt change had aborted at `git pull`,
-because the release build rewrites the tracked digested assets under
-`apps/portal/priv/static` and leaves the checkout dirty. `deploy.sh` now
-restores that one directory before pulling, but the wider point stands: the
-script failing loudly into an empty terminal is indistinguishable from nobody
-having deployed. To check where a host actually is:
+To check which commit a host is on:
 
 ```bash
-for h in contabo.tompc.nl 100.106.217.14; do
+for h in WEB_HOST BUILD_HOST; do
   ssh "root@$h" 'cd /opt/nerves_compatibility/src && git log --oneline -1'
 done
 ```
@@ -99,7 +97,7 @@ column and nothing else, so the account to clear is whichever row says `t` —
 not necessarily the one whose name matches yours:
 
 ```bash
-docker exec shared-postgres psql -U postgres -d portal_prod -Atc \
+psql "$DATABASE_URL" -Atc \
   "select username, is_admin from portal_users where is_admin"
 ```
 
@@ -111,7 +109,7 @@ sources it to run migrations:
 
 ```bash
 sudo -u ncc bash -c "cd /var/lib/ncc && set -a && . /etc/ncc-portal/portal.env && set +a && \
-  /opt/nerves_compatibility/portal/bin/portal eval 'Portal.Accounts.Recovery.clear_factors!(\"tom\")'"
+  /opt/nerves_compatibility/portal/bin/portal eval 'Portal.Accounts.Recovery.clear_factors!(\"USERNAME\")'"
 ```
 
 This deletes every passkey on the account, removes the authenticator app,
