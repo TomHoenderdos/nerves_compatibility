@@ -12,6 +12,7 @@ defmodule NccWorker.Worker do
     HexHome,
     HexMetadata,
     LockPolicy,
+    PackageArtifacts,
     Project,
     Scanner,
     Systems
@@ -703,7 +704,8 @@ defmodule NccWorker.Worker do
       duration_sec: prep.deps_duration * 1.0,
       phase_timings: %{deps_sec: prep.deps_duration * 1.0},
       firmware_size_bytes: nil,
-      log_tail: read_log_tail(prep.log_file, log_tail_bytes),
+      log_tail:
+        prep.log_file |> read_log_tail(log_tail_bytes) |> PackageArtifacts.with_error(error),
       system_version: nil,
       beam_scan: nil,
       dependency_scans: nil,
@@ -774,7 +776,8 @@ defmodule NccWorker.Worker do
     else
       {:error, reason} ->
         duration = deps_duration + (System.monotonic_time(:second) - firmware_start)
-        log_tail = read_log_tail(log_file, log_tail_bytes)
+        error = format_error(reason)
+        log_tail = log_file |> read_log_tail(log_tail_bytes) |> PackageArtifacts.with_error(error)
 
         %{
           status: :fail,
@@ -784,7 +787,7 @@ defmodule NccWorker.Worker do
           log_tail: log_tail,
           beam_scan: nil,
           dependency_scans: nil,
-          error: format_error(reason)
+          error: error
         }
     end
   end
@@ -858,38 +861,11 @@ defmodule NccWorker.Worker do
   end
 
   defp hash_package_artifacts(build_path, package_name) do
-    with {:ok, lib_dir} <- find_package_lib_dir(build_path, package_name),
+    with {:ok, lib_dir} <- PackageArtifacts.lib_dir(build_path, package_name),
          {:ok, hashes} <- compute_hashes(lib_dir) do
       {:ok, hashes}
     else
       {:error, _} = error -> error
-    end
-  end
-
-  defp find_package_lib_dir(build_path, package_name) do
-    rel_roots =
-      [Path.join([build_path, "rel"]), Path.join([build_path, "dev", "rel"])]
-      |> Enum.filter(&File.dir?/1)
-
-    case Enum.find_value(rel_roots, &find_package_lib_dir_in_rel(&1, package_name)) do
-      nil -> {:error, :package_not_found}
-      path -> {:ok, path}
-    end
-  end
-
-  defp find_package_lib_dir_in_rel(rel_root, package_name) do
-    rel_root
-    |> File.ls!()
-    |> Enum.find_value(&find_package_in_lib(Path.join([rel_root, &1, "lib"]), package_name))
-  end
-
-  defp find_package_in_lib(lib_dir, package_name) do
-    with {:ok, entries} <- File.ls(lib_dir),
-         entry when is_binary(entry) <-
-           Enum.find(entries, &String.starts_with?(&1, package_name <> "-")) do
-      Path.join(lib_dir, entry)
-    else
-      _ -> nil
     end
   end
 
