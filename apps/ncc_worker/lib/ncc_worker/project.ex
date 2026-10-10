@@ -85,6 +85,31 @@ defmodule NccWorker.Project do
 
   @spec inject_dep(String.t(), map()) :: {:ok, String.t()} | {:error, term()}
   defp inject_dep(content, package) do
+    case repin_template_dep(content, package) do
+      {:ok, repinned} -> {:ok, repinned}
+      :not_in_template -> prepend_dep(content, package)
+    end
+  end
+
+  # The template already depends on some packages we test (nerves itself,
+  # shoehorn, nerves_runtime, ...). Adding a second entry makes Mix refuse the
+  # project ("the dependency :nerves is duplicated at the top level"), so the
+  # existing entry gets the tested requirement and keeps its own options, such
+  # as nerves' `runtime: false`.
+  @spec repin_template_dep(String.t(), map()) :: {:ok, String.t()} | :not_in_template
+  defp repin_template_dep(content, %{name: name} = package) do
+    # `{:nerves, "...",` or `{:nerves, "..."}` -- the comma or brace after the
+    # name keeps `{:nerves_runtime, ...}` from matching `nerves`.
+    entry = ~r/\{:#{Regex.escape(name)},\s*"[^"]*"/
+    requirement = dep_tuple(package) |> String.trim_trailing("}")
+
+    if Regex.match?(entry, content),
+      do: {:ok, Regex.replace(entry, content, requirement, global: false)},
+      else: :not_in_template
+  end
+
+  @spec prepend_dep(String.t(), map()) :: {:ok, String.t()} | {:error, term()}
+  defp prepend_dep(content, package) do
     dep_line = "      #{dep_tuple(package)},\n"
 
     # Insert the new dep as the first entry in the `defp deps do [...] end`
