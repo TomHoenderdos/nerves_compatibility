@@ -92,21 +92,31 @@ defmodule NccWorker.Project do
   end
 
   # The template already depends on some packages we test (nerves itself,
-  # shoehorn, nerves_runtime, ...). Adding a second entry makes Mix refuse the
-  # project ("the dependency :nerves is duplicated at the top level"), so the
-  # existing entry gets the tested requirement and keeps its own options, such
-  # as nerves' `runtime: false`.
+  # shoehorn, nerves_runtime, the nerves_system_* deps). Adding a second entry
+  # makes Mix refuse the project ("the dependency :nerves is duplicated at the
+  # top level"), so the existing entry gets the tested requirement and keeps its
+  # own options, such as nerves' `runtime: false` -- except `targets:`: a system
+  # dep is scoped to its own target, and the tested package has to be in every
+  # target's build, or the others would pass without having compiled it.
   @spec repin_template_dep(String.t(), map()) :: {:ok, String.t()} | :not_in_template
   defp repin_template_dep(content, %{name: name} = package) do
-    # `{:nerves, "...",` or `{:nerves, "..."}` -- the comma or brace after the
+    # The whole `{:name, "...", ...}` entry on one line. The comma after the
     # name keeps `{:nerves_runtime, ...}` from matching `nerves`.
-    entry = ~r/\{:#{Regex.escape(name)},\s*"[^"]*"/
+    entry = ~r/\{:#{Regex.escape(name)},\s*"[^"]*"(?<opts>[^}\n]*)\}/
     requirement = dep_tuple(package) |> String.trim_trailing("}")
 
+    # A function, not a replacement string: `\1` in a string replacement is a
+    # backreference, and the new entry must be written exactly as built.
+    repin = fn _whole, opts -> requirement <> drop_targets(opts) <> "}" end
+
     if Regex.match?(entry, content),
-      do: {:ok, Regex.replace(entry, content, requirement, global: false)},
+      do: {:ok, Regex.replace(entry, content, repin, global: false)},
       else: :not_in_template
   end
+
+  # `targets: :rpi4` or `targets: [:rpi3, :rpi4]`.
+  defp drop_targets(opts),
+    do: Regex.replace(~r/,\s*targets:\s*(\[[^\]]*\]|[^,]+)/, opts, "")
 
   @spec prepend_dep(String.t(), map()) :: {:ok, String.t()} | {:error, term()}
   defp prepend_dep(content, package) do

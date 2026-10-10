@@ -163,6 +163,49 @@ defmodule NccWorker.ProjectTest do
       assert length(Regex.scan(~r/\{:shoehorn,/, content)) == 1
     end
 
+    # A system dep is scoped to its own target. Keeping `targets: :rpi4` on the
+    # tested package would leave it out of every other target's build, which
+    # would then pass without having compiled it.
+    test "re-pinning drops a targets scope so every target builds the package", %{
+      project_dir: dir
+    } do
+      File.write!(Path.join(dir, "mix.exs"), """
+      defmodule Foo.MixProject do
+        defp deps do
+          [
+            {:nerves, "== 2.0.0-pre.3", runtime: false},
+            {:nerves_system_rpi4, "~> 1.24", runtime: false, targets: :rpi4},
+            {:nerves_system_bbb, "~> 2.19", runtime: false, targets: :bbb}
+          ]
+        end
+      end
+      """)
+
+      inject_dep_only(dir, %{name: "nerves_system_rpi4", version: "2.1.2"})
+      content = File.read!(Path.join(dir, "mix.exs"))
+
+      assert content =~ ~s[{:nerves_system_rpi4, "== 2.1.2", runtime: false},]
+      refute content =~ "targets: :rpi4"
+      assert content =~ ~s[{:nerves_system_bbb, "~> 2.19", runtime: false, targets: :bbb}]
+    end
+
+    test "re-pinning drops a list-form targets scope too", %{project_dir: dir} do
+      File.write!(Path.join(dir, "mix.exs"), """
+      defmodule Foo.MixProject do
+        defp deps do
+          [
+            {:nerves_pack, "~> 0.7", targets: [:rpi3, :rpi4], override: true}
+          ]
+        end
+      end
+      """)
+
+      inject_dep_only(dir, %{name: "nerves_pack", version: "0.7.1"})
+
+      assert File.read!(Path.join(dir, "mix.exs")) =~
+               ~s[{:nerves_pack, "== 0.7.1", override: true}\n]
+    end
+
     test "a template dep whose name is a prefix of the package is not touched", %{
       project_dir: dir
     } do
