@@ -52,7 +52,7 @@ defmodule Portal.Catalog.ArgusExportTest do
   test "findings carry their fingerprint and the admin's triage" do
     ingest("1.0.0", ok([finding()]), 1)
     [%{triage: row}] = Catalog.triage_list(%{})
-    Catalog.triage!(row.id, %{status: "false_positive", note: "deliberate"}, %{username: "tom"})
+    Catalog.triage!(row.id, %{status: "false_positive", note: "deliberate"}, %{username: "alice"})
 
     [%{"findings" => [f]}] = export()
 
@@ -62,7 +62,7 @@ defmodule Portal.Catalog.ArgusExportTest do
     assert f["triage"] == %{
              "status" => "false_positive",
              "note" => "deliberate",
-             "updated_by" => "tom"
+             "updated_by" => "alice"
            }
   end
 

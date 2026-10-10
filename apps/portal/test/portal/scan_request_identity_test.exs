@@ -23,9 +23,9 @@ defmodule Portal.ScanRequestIdentityTest do
 
   describe "the Hex scan flow's account step" do
     test "a Hex.pm identity named like a local account does not attach to it" do
-      local = user_fixture(%{username: "tom"})
+      local = user_fixture(%{username: "alice"})
 
-      {:ok, identity} = Portal.HexPm.identity_from_profile(%{"username" => "tom"})
+      {:ok, identity} = Portal.HexPm.identity_from_profile(%{"username" => "alice"})
 
       assert {:ok, nil} = Identities.for_scan_request(identity, nil)
 
@@ -45,9 +45,9 @@ defmodule Portal.ScanRequestIdentityTest do
 
   describe "the GitHub scan flow's account step" do
     test "a GitHub identity named like a local account does not attach to it" do
-      local = user_fixture(%{username: "tom"})
+      local = user_fixture(%{username: "alice"})
 
-      {:ok, identity} = Portal.GitHub.identity_from_profile(%{"id" => 7, "login" => "tom"}, "t")
+      {:ok, identity} = Portal.GitHub.identity_from_profile(%{"id" => 7, "login" => "alice"}, "t")
 
       assert {:ok, nil} = Identities.for_scan_request(identity, nil)
 

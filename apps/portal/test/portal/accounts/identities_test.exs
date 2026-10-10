@@ -34,9 +34,9 @@ defmodule Portal.Accounts.IdentitiesTest do
 
     # The takeover this whole feature had to fix first.
     test "a Hex.pm user named like a local account never signs in as it" do
-      local = user_fixture(%{username: "tom"})
-      assert {:error, :choose_username} = Identities.sign_in(hex("tom"))
-      assert {:ok, nil} = Identities.find_user(hex("tom"))
+      local = user_fixture(%{username: "alice"})
+      assert {:error, :choose_username} = Identities.sign_in(hex("alice"))
+      assert {:ok, nil} = Identities.find_user(hex("alice"))
       {:ok, reloaded} = Portal.Accounts.get_user(local.id)
       assert is_nil(reloaded.hex_username)
     end
@@ -70,8 +70,8 @@ defmodule Portal.Accounts.IdentitiesTest do
     end
 
     # The controller ruling this task also closes: legacy accounts created by
-    # the old provider flows stored the login verbatim ("TomHoenderdos"), so
-    # username lookup has to be case-insensitive or a new "tomhoenderdos"
+    # the old provider flows stored the login verbatim ("JaneDoe"), so
+    # username lookup has to be case-insensitive or a new "janedoe"
     # identity would think the name is free and create a twin account.
     test "a legacy mixed-case local username blocks a lower-case identity sign-in" do
       user_fixture(%{username: "MixedCase"})
@@ -81,22 +81,22 @@ defmodule Portal.Accounts.IdentitiesTest do
 
   describe "create_with_username/2" do
     test "creates the account with the chosen name and links the identity" do
-      user_fixture(%{username: "tom"})
-      assert {:ok, user} = Identities.create_with_username(hex("tom"), "tom-hex")
-      assert user.username == "tom-hex"
-      assert user.hex_username == "tom"
+      user_fixture(%{username: "alice"})
+      assert {:ok, user} = Identities.create_with_username(hex("alice"), "alice-hex")
+      assert user.username == "alice-hex"
+      assert user.hex_username == "alice"
       refute user.password_set
     end
 
     test "refuses a taken or invalid name" do
-      user_fixture(%{username: "tom"})
-      assert {:error, :username_taken} = Identities.create_with_username(hex("tom"), "TOM")
-      assert {:error, :invalid_username} = Identities.create_with_username(hex("tom"), "x")
+      user_fixture(%{username: "alice"})
+      assert {:error, :username_taken} = Identities.create_with_username(hex("alice"), "ALICE")
+      assert {:error, :invalid_username} = Identities.create_with_username(hex("alice"), "x")
     end
 
     test "refuses an identity that got linked meanwhile" do
-      {:ok, _} = Identities.link(user_fixture(), hex("tom"))
-      assert {:error, :identity_taken} = Identities.create_with_username(hex("tom"), "other")
+      {:ok, _} = Identities.link(user_fixture(), hex("alice"))
+      assert {:error, :identity_taken} = Identities.create_with_username(hex("alice"), "other")
     end
   end
 
@@ -165,8 +165,8 @@ defmodule Portal.Accounts.IdentitiesTest do
     end
 
     test "anonymous, name collides: no account" do
-      user_fixture(%{username: "tom"})
-      assert {:ok, nil} = Identities.for_scan_request(hex("tom"), nil)
+      user_fixture(%{username: "alice"})
+      assert {:ok, nil} = Identities.for_scan_request(hex("alice"), nil)
     end
 
     test "anonymous, linked: that account" do

@@ -14,8 +14,8 @@ defmodule Portal.Accounts.UserLinksTest do
   end
 
   test "a Hex.pm identity links to one account only" do
-    {:ok, _} = set_links(user_fixture(), %{hex_username: "tom"})
-    assert {:error, _} = set_links(user_fixture(), %{hex_username: "tom"})
+    {:ok, _} = set_links(user_fixture(), %{hex_username: "alice"})
+    assert {:error, _} = set_links(user_fixture(), %{hex_username: "alice"})
   end
 
   test "a GitHub id links to one account only" do

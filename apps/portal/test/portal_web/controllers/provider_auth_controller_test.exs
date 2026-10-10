@@ -76,8 +76,8 @@ defmodule PortalWeb.ProviderAuthControllerTest do
   end
 
   test "a taken name goes to choose-username, never to the local account", %{conn: conn} do
-    local = user_fixture(%{username: "tom"})
-    approve(hex("tom"))
+    local = user_fixture(%{username: "alice"})
+    approve(hex("alice"))
 
     conn = conn |> start_login() |> finish()
 
@@ -86,12 +86,12 @@ defmodule PortalWeb.ProviderAuthControllerTest do
     refute get_session(conn, :user_id)
 
     page = conn |> recycle() |> get(~p"/auth/choose-username") |> html_response(200)
-    assert page =~ "tom"
+    assert page =~ "alice"
     assert page =~ "Already have an account here?"
 
-    conn = post(recycle(conn), ~p"/auth/choose-username", %{"username" => "tom-hex"})
-    {:ok, created} = Portal.Accounts.get_user_by_username("tom-hex")
-    assert created.hex_username == "tom"
+    conn = post(recycle(conn), ~p"/auth/choose-username", %{"username" => "alice-hex"})
+    {:ok, created} = Portal.Accounts.get_user_by_username("alice-hex")
+    assert created.hex_username == "alice"
     assert get_session(conn, :user_id) == created.id
     refute get_session(conn, :pending_identity)
   end
@@ -120,22 +120,22 @@ defmodule PortalWeb.ProviderAuthControllerTest do
   end
 
   test "the pending identity is single use", %{conn: conn} do
-    user_fixture(%{username: "tom"})
-    approve(hex("tom"))
+    user_fixture(%{username: "alice"})
+    approve(hex("alice"))
     conn = conn |> start_login() |> finish()
-    conn = post(recycle(conn), ~p"/auth/choose-username", %{"username" => "tom-one"})
+    conn = post(recycle(conn), ~p"/auth/choose-username", %{"username" => "alice-one"})
 
     # Replaying the old cookie: the identity is linked now, so it cannot make a second account.
     conn =
       build_conn()
       |> init_test_session(%{
         pending_identity:
-          Map.put(Identity.to_session(hex("tom")), "at", System.system_time(:second))
+          Map.put(Identity.to_session(hex("alice")), "at", System.system_time(:second))
       })
-      |> post(~p"/auth/choose-username", %{"username" => "tom-two"})
+      |> post(~p"/auth/choose-username", %{"username" => "alice-two"})
 
     assert redirected_to(conn) == ~p"/login"
-    assert {:ok, nil} = Portal.Accounts.get_user_by_username("tom-two")
+    assert {:ok, nil} = Portal.Accounts.get_user_by_username("alice-two")
   end
 
   test "a pending identity older than ten minutes is refused", %{conn: conn} do
@@ -151,10 +151,10 @@ defmodule PortalWeb.ProviderAuthControllerTest do
   end
 
   test "a taken choice re-renders with an error", %{conn: conn} do
-    user_fixture(%{username: "tom"})
-    approve(hex("tom"))
+    user_fixture(%{username: "alice"})
+    approve(hex("alice"))
     conn = conn |> start_login() |> finish()
-    conn = post(recycle(conn), ~p"/auth/choose-username", %{"username" => "tom"})
+    conn = post(recycle(conn), ~p"/auth/choose-username", %{"username" => "alice"})
     assert html_response(conn, 200) =~ "taken"
   end
 

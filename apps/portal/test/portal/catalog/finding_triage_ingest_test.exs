@@ -20,7 +20,7 @@ defmodule Portal.Catalog.FindingTriageIngestTest do
     [row] = rows()
 
     row
-    |> Ash.Changeset.for_update(:triage, %{status: :confirmed, note: "real", updated_by: "tom"})
+    |> Ash.Changeset.for_update(:triage, %{status: :confirmed, note: "real", updated_by: "alice"})
     |> Ash.update!(domain: Portal.Catalog)
 
     run2 = ingest("1.1.0", ok([finding(%{"line" => 42})]), 2)
@@ -28,7 +28,7 @@ defmodule Portal.Catalog.FindingTriageIngestTest do
     assert [row] = rows()
     assert row.status == :confirmed
     assert row.note == "real"
-    assert row.updated_by == "tom"
+    assert row.updated_by == "alice"
     assert row.first_seen_version == "1.0.0"
     assert row.last_seen_version == "1.1.0"
     assert row.last_seen_run_id == run2.id

@@ -4,8 +4,8 @@ defmodule Portal.Accounts.Identities do
 
   Every rule here rests on one: an identity is matched only through a link
   stored after the provider vouched for it. A name that happens to equal a
-  local username proves nothing -- a Hex user called `tom` is not the local
-  admin `tom` -- so names are only ever suggestions for new accounts.
+  local username proves nothing -- a Hex user called `alice` is not the local
+  admin `alice` -- so names are only ever suggestions for new accounts.
   """
 
   require Ash.Query

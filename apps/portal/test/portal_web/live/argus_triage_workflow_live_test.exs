@@ -45,7 +45,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
   describe "by check" do
     test "is the default and shows counts and a status breakdown", %{conn: conn} do
       two_packages()
-      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "tom"})
+      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "alice"})
       key = ArgusFindingsLive.check_key(@check)
 
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
@@ -65,7 +65,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       ingest("1.0.0", ok([finding(), finding(%{"detail" => "two"})]), 1)
 
       for t <- rows(),
-          do: Catalog.triage!(t.id, %{status: "confirmed"}, %{username: "tom"})
+          do: Catalog.triage!(t.id, %{status: "confirmed"}, %{username: "alice"})
 
       key = ArgusFindingsLive.check_key(@check)
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
@@ -104,7 +104,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
          %{conn: conn} do
       two_packages()
       ingest("1.0.0", ok([finding()]), 1, "alphabet")
-      Catalog.triage!(row("alphabet", @title).id, %{status: "confirmed"}, %{username: "tom"})
+      Catalog.triage!(row("alphabet", @title).id, %{status: "confirmed"}, %{username: "alice"})
       key = ArgusFindingsLive.check_key(@check)
 
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?package=alph")
@@ -128,7 +128,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       |> render_submit()
 
       assert %{status: :false_positive, updated_by: "triage_admin"} = row("alpha", @title)
-      assert %{status: :confirmed, updated_by: "tom"} = row("alphabet", @title)
+      assert %{status: :confirmed, updated_by: "alice"} = row("alphabet", @title)
       assert %{status: :new} = row("beta", @title)
       assert %{status: :new} = row("beta", "Other")
       assert has_element?(view, "#triage-counts", "2 false positive")
@@ -136,7 +136,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
 
     test "the group action with \"all\" includes triaged findings", %{conn: conn} do
       two_packages()
-      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "tom"})
+      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "alice"})
       key = ArgusFindingsLive.check_key(@check)
 
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
@@ -153,7 +153,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
 
     test "offers only \"all\" when new findings are filtered out", %{conn: conn} do
       two_packages()
-      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "tom"})
+      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "alice"})
       key = ArgusFindingsLive.check_key(@check)
 
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?#{%{status: ~w(confirmed)}}")
@@ -176,7 +176,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
 
     test "offers only \"all\" when the check has no new findings", %{conn: conn} do
       ingest("1.0.0", ok([finding()]), 1)
-      Catalog.triage!(row("tripkg", @title).id, %{status: "confirmed"}, %{username: "tom"})
+      Catalog.triage!(row("tripkg", @title).id, %{status: "confirmed"}, %{username: "alice"})
       key = ArgusFindingsLive.check_key(@check)
 
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
@@ -324,7 +324,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
     test "each check row is a keyboard item carrying its identity and new count",
          %{conn: conn} do
       two_packages()
-      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "tom"})
+      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "alice"})
       key = ArgusFindingsLive.check_key(@check)
 
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
@@ -340,7 +340,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
     test "the hook's toggle_check and triage_check params expand and set only new findings",
          %{conn: conn} do
       two_packages()
-      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "tom"})
+      Catalog.triage!(row("beta", @title).id, %{status: "confirmed"}, %{username: "alice"})
       key = ArgusFindingsLive.check_key(@check)
       ident = %{"analysis" => "failure", "title" => @title, "severity" => "warning"}
 
@@ -364,7 +364,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
                |> Enum.filter(&(&1.title == @title and &1.package_name == "alpha"))
                |> Enum.map(&{&1.package_name, &1.status, &1.updated_by})
 
-      assert %{status: :confirmed, updated_by: "tom"} = row("beta", @title)
+      assert %{status: :confirmed, updated_by: "alice"} = row("beta", @title)
       assert %{status: :new} = row("beta", "Other")
       assert has_element?(view, "#check-#{key}-item[data-new='0']")
     end
@@ -379,7 +379,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
     test "set_status updates the row and the counts, keeping the note", %{conn: conn} do
       ingest("1.0.0", ok([finding()]), 1)
       [a] = rows()
-      Catalog.triage!(a.id, %{status: "new", note: "look"}, %{username: "tom"})
+      Catalog.triage!(a.id, %{status: "new", note: "look"}, %{username: "alice"})
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
 
       render_hook(view, "set_status", %{"id" => a.id, "status" => "false_positive"})
@@ -558,7 +558,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
     end
 
     test "each package header sets the status of its findings", %{conn: conn} do
-      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "tom"})
+      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "alice"})
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
 
       assert has_element?(
@@ -580,7 +580,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
                row("many", "E")
 
       assert %{status: :false_positive} = row("many", "W")
-      assert %{status: :confirmed, updated_by: "tom"} = row("many", "A")
+      assert %{status: :confirmed, updated_by: "alice"} = row("many", "A")
       assert %{status: :new} = row("few", "One")
       assert has_element?(view, "#triage-counts", "2 false positive")
 
@@ -657,7 +657,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
     end
 
     test "a status key on a package header sets its new findings", %{conn: conn} do
-      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "tom"})
+      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "alice"})
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
       assert has_element?(view, "#package-many[data-new='2']")
 
@@ -771,7 +771,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
       # failure keeps 3 findings but only 1 new: each sort now orders the
       # types differently.
       for title <- ["E", "A"],
-          do: Catalog.triage!(row("many", title).id, %{status: "confirmed"}, %{username: "tom"})
+          do: Catalog.triage!(row("many", title).id, %{status: "confirmed"}, %{username: "alice"})
 
       headers = fn query ->
         {:ok, view, _} = live(conn, "/admin/argus/findings?view=types#{query}")
@@ -809,7 +809,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
     end
 
     test "a header is a keyboard item carrying its type and new count", %{conn: conn} do
-      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "tom"})
+      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "alice"})
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types")
 
       header = "#type-group-failure[data-triage-row][tabindex='-1']"
@@ -841,7 +841,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
     end
 
     test "each header sets the status of its type's findings", %{conn: conn} do
-      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "tom"})
+      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "alice"})
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types")
 
       assert has_element?(
@@ -866,7 +866,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
                row("many", "E")
 
       assert %{status: :false_positive} = row("few", "One")
-      assert %{status: :confirmed, updated_by: "tom"} = row("many", "A")
+      assert %{status: :confirmed, updated_by: "alice"} = row("many", "A")
       assert %{status: :new} = row("many", "W")
       assert has_element?(view, "#triage-counts", "2 false positive")
 
@@ -909,7 +909,7 @@ defmodule PortalWeb.Admin.ArgusTriageWorkflowLiveTest do
     end
 
     test "the keyboard's triage_type sets only that type's new findings", %{conn: conn} do
-      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "tom"})
+      Catalog.triage!(row("many", "A").id, %{status: "confirmed"}, %{username: "alice"})
       {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types")
 
       render_hook(view, "triage_type", %{

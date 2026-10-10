@@ -7,17 +7,17 @@ defmodule Portal.Accounts.ChangeUsernameTest do
 
   test "a rename cannot take another account's name in a different case" do
     # A legacy provider account stored its login verbatim.
-    user_fixture(%{username: "TomHoenderdos"})
+    user_fixture(%{username: "JaneDoe"})
     user = user_fixture()
 
-    assert {:error, :username_taken} = Accounts.change_username(user, "tomhoenderdos")
+    assert {:error, :username_taken} = Accounts.change_username(user, "janedoe")
   end
 
   test "a user may change the case of their own name" do
-    user = user_fixture(%{username: "Tom-Case"})
+    user = user_fixture(%{username: "Alice-Case"})
 
-    assert {:ok, renamed} = Accounts.change_username(user, "tom-case")
-    assert renamed.username == "tom-case"
+    assert {:ok, renamed} = Accounts.change_username(user, "alice-case")
+    assert renamed.username == "alice-case"
   end
 
   test "an invalid name is refused" do

@@ -16,7 +16,7 @@ defmodule Portal.Catalog.TriageQueriesTest do
     info = finding(%{"severity" => "info", "analysis" => "mailbox", "detail" => "i"})
     ingest("1.0.0", ok([finding(), info]), 1)
     [%{triage: info_row}] = Catalog.triage_list(%{severity: ["info"]})
-    Catalog.triage!(info_row.id, %{status: "false_positive", note: nil}, %{username: "tom"})
+    Catalog.triage!(info_row.id, %{status: "false_positive", note: nil}, %{username: "alice"})
 
     assert [] = Catalog.triage_list(%{severity: ["info"]})
     assert [_] = Catalog.triage_list(%{status: [:false_positive]})
@@ -67,8 +67,8 @@ defmodule Portal.Catalog.TriageQueriesTest do
     [%{triage: row}] = Catalog.triage_list(%{})
 
     updated =
-      Catalog.triage!(row.id, %{status: "reported", note: "issue #12"}, %{username: "tom"})
+      Catalog.triage!(row.id, %{status: "reported", note: "issue #12"}, %{username: "alice"})
 
-    assert {updated.status, updated.note, updated.updated_by} == {:reported, "issue #12", "tom"}
+    assert {updated.status, updated.note, updated.updated_by} == {:reported, "issue #12", "alice"}
   end
 end
