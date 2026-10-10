@@ -14,34 +14,41 @@ builder_rpc() {
   ' -- "$1"
 }
 
+# The queues to drain, asked of the running release. One from before
+# `builder_queues/0` existed has no node-local ingest queue to drain.
+builder_queues='(if Code.ensure_loaded?(Portal.Workers.Ingest) and
+    function_exported?(Portal.Workers.Ingest, :builder_queues, 0),
+  do: Portal.Workers.Ingest.builder_queues(),
+  else: [:builds, :ingest])'
+
 builder_queues_available() {
-  builder_rpc 'IO.puts(Enum.all?([:builds, :ingest], fn queue ->
+  builder_rpc "IO.puts(Enum.all?($builder_queues, fn queue ->
     case Oban.check_queue(queue: queue) do
       %{paused: false} -> true
       _ -> false
     end
-  end))'
+  end))"
 }
 
 builder_pause() {
-  builder_rpc 'Enum.each([:builds, :ingest], fn queue ->
+  builder_rpc "Enum.each($builder_queues, fn queue ->
     :ok = Oban.pause_queue(queue: queue, local_only: true)
-  end)'
+  end)"
 }
 
 builder_queues_drained() {
-  builder_rpc 'IO.puts(Enum.all?([:builds, :ingest], fn queue ->
+  builder_rpc "IO.puts(Enum.all?($builder_queues, fn queue ->
     case Oban.check_queue(queue: queue) do
       %{paused: true, running: []} -> true
       _ -> false
     end
-  end))'
+  end))"
 }
 
 builder_resume() {
-  builder_rpc 'Enum.each([:builds, :ingest], fn queue ->
+  builder_rpc "Enum.each($builder_queues, fn queue ->
     :ok = Oban.resume_queue(queue: queue, local_only: true)
-  end)'
+  end)"
 }
 
 builder_cleanup() {

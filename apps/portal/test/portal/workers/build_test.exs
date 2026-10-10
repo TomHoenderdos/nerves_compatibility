@@ -97,6 +97,12 @@ defmodule Portal.Workers.BuildTest do
   # process, which owns the sandbox connection.
   defp run_enqueued_ingest do
     assert [job] = all_enqueued(worker: Ingest)
+
+    # The ingest reads the build's scratch dir off local disk, so it has to land
+    # on this node's own queue, not the shared `:ingest` one another build host
+    # could take it from.
+    assert job.queue == Ingest.local_queue()
+
     Ingest.perform(%Oban.Job{args: job.args, attempt: 1, max_attempts: 5})
   end
 

@@ -190,7 +190,8 @@ defmodule Portal.Workers.Build do
       %{"run_id" => run_id, "image_digest" => image_digest}
       |> maybe_put("scan_request_id", scan_request_id)
 
-    case args |> Ingest.new() |> Oban.insert() do
+    # This node's own queue: the scratch dir the ingest reads is on this disk.
+    case args |> Ingest.new(queue: Ingest.local_queue()) |> Oban.insert() do
       {:ok, _job} ->
         # Nothing after this point may raise. The ingest job now owns the
         # scratch dir, and `with_crash_cleanup/5` deletes it on the way out of

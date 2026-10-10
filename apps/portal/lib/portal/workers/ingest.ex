@@ -24,6 +24,82 @@ defmodule Portal.Workers.Ingest do
 
   require Logger
 
+  # The scratch dir is on the disk of the node that built it, so the ingest has
+  # to run there. With several build hosts sharing the `:ingest` queue, any of
+  # them could take it, find no `result.json` and give up: 19 of 42 builds on
+  # 2026-10-10 lost their result that way. `Portal.Workers.Build` enqueues on
+  # `local_queue/0` instead, and each build node runs that queue for itself
+  # only (`Portal.Application`). The shared `:ingest` queue still drains jobs
+  # enqueued before this, and keeps the cron jobs that live on it.
+  @default_local_limit 2
+
+  @doc "This node's own ingest queue."
+  @spec local_queue(node()) :: String.t()
+  def local_queue(node \\ node()) do
+    slug = node |> Atom.to_string() |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "_")
+    "ingest_" <> slug
+  end
+
+  @doc """
+  How wide this node's `local_queue/0` runs, given its Oban `queues`; nil when
+  the node runs no builds and so never has a scratch dir to ingest.
+  """
+  @spec local_queue_limit(keyword() | false | nil) :: pos_integer() | nil
+  def local_queue_limit(queues) when is_list(queues) do
+    if Keyword.get(queues, :builds, 0) > 0,
+      do: Keyword.get(queues, :ingest, @default_local_limit),
+      else: nil
+  end
+
+  def local_queue_limit(_queues), do: nil
+
+  @doc """
+  `oban_config` with `node`'s own ingest queue added when the node runs
+  builds. Oban wants queue names as keyword keys, so this makes one atom per
+  node, from the node's own name.
+  """
+  @spec with_local_queue(keyword(), node()) :: keyword()
+  # The atom comes from the node name the release was started with, not from
+  # any request: one per build host, created once at boot.
+  # sobelow_skip ["DOS.StringToAtom"]
+  def with_local_queue(oban_config, node \\ node()) do
+    queues = Keyword.get(oban_config, :queues)
+
+    case local_queue_limit(queues) do
+      nil ->
+        oban_config
+
+      limit ->
+        warn_if_unnamed(node)
+        name = node |> local_queue() |> String.to_atom()
+
+        queues =
+          if Keyword.has_key?(queues, name), do: queues, else: queues ++ [{name, limit}]
+
+        Keyword.put(oban_config, :queues, queues)
+    end
+  end
+
+  # A single unnamed node (dev, one-host installs) is fine. Several build hosts
+  # without names would all be `nonode@nohost` and share one "local" queue --
+  # the cross-host ingest this exists to prevent -- so say so at boot.
+  defp warn_if_unnamed(:nonode@nohost) do
+    Logger.warning(
+      "this node runs builds without a node name; its ingest queue " <>
+        "#{local_queue(:nonode@nohost)} is only node-local while it is the only build host"
+    )
+  end
+
+  defp warn_if_unnamed(_node), do: :ok
+
+  @doc """
+  The queues a builder deploy pauses and drains on `node` before restarting it
+  (`ops/builder-deploy.sh`): the builds, the shared ingest queue and the node's
+  own, where a build that finishes while draining puts its ingest.
+  """
+  @spec builder_queues(node()) :: [String.t()]
+  def builder_queues(node \\ node()), do: ["builds", "ingest", local_queue(node)]
+
   alias Portal.Builder
   alias Portal.Catalog.Ingestion
   alias Portal.Workers.PackageMeta

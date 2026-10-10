@@ -79,10 +79,11 @@ if portal_available? do
   # full set, so a single-node deploy needs nothing here.
   #
   # This is how the work splits across hosts: the web box runs the light queues,
-  # the build box runs `builds` and `ingest`, and Postgres is the only thing they
-  # share. `ingest` has to sit on the same host as `builds` because the two hand
-  # off through the run's scratch directory on local disk, not through the
-  # database.
+  # the build boxes run `builds` and `ingest`, and Postgres is the only thing they
+  # share. A build hands off to its ingest through the run's scratch directory
+  # on local disk, not through the database, so each build node also runs a
+  # queue of its own for those ingests (`Portal.Workers.Ingest.local_queue/0`),
+  # as wide as `ingest`. Nothing to list here for it.
   parsed_queues =
     case System.get_env("OBAN_QUEUES") do
       nil ->
