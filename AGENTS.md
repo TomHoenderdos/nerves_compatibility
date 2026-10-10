@@ -10,7 +10,7 @@ This repository is a **Mix umbrella** (top-level `mix.exs`) with three apps unde
 
 Other:
 
-- `docs/`, `PRECOMPILED_API.md`: contracts and operating docs.
+- `docs/`, `PRECOMPILED_API.md`: API and data contracts. `DEPLOY.md`, `ops/`: deployment and the CI deploy scripts.
 - `config/`: umbrella runtime/config guarded so the worker Docker image can build without portal files copied into the image.
 
 Do not commit generated paths such as `_build/`, `deps/`, `public/`, `compat_test_results/`, or `*.dets`.
@@ -19,7 +19,7 @@ Do not commit generated paths such as `_build/`, `deps/`, `public/`, `compat_tes
 
 Use the root `Makefile`:
 
-- `make build` builds the local worker image `ncc-worker:local`.
+- `make build` builds the local worker image `ncc-worker:local`; `make build-clean` does it with `--no-cache`.
 - `make dev` starts the Phoenix portal server.
 - `make test` runs the umbrella test suite.
 - `make test-integration` runs the Docker-backed Portal build integration test.
@@ -34,15 +34,16 @@ mix test apps/ncc_worker/test/ncc_worker/scanner_test.exs
 mix format
 ```
 
-Portal work:
+Portal work, also from the repo root:
 
 ```bash
-cd apps/portal
-mix setup
+mix ecto.create && mix ecto.migrate
 mix phx.server
-mix test
-mix precommit
+mix test apps/portal/test/
+mix compile --warnings-as-errors && mix format && mix test
 ```
+
+Never run a `mix deps.*` task, `mix setup` or `mix precommit` inside `apps/*`: they rewrite the shared root `mix.lock` and drop root-only deps such as `mix_audit`. The last line above is the portal `precommit` alias without its `deps.unlock --unused` step.
 
 ## Coding Style & Naming Conventions
 
@@ -62,4 +63,4 @@ Pull requests should summarize behavior changes, list commands run, and call out
 
 For security-relevant changes and vulnerability reports, read and follow [SECURITY.md](SECURITY.md).
 
-Prefer existing Makefile and Mix tasks over ad hoc scripts. Do not relax the worker dependency policy for git/path deps or change documented exit codes without updating the relevant docs and tests. For portal work, read `apps/portal/AGENTS.md` and run `mix precommit` when finishing.
+Prefer existing Makefile and Mix tasks over ad hoc scripts. Do not relax the worker dependency policy for git/path deps or change documented exit codes without updating the relevant docs and tests. For portal work, read `apps/portal/AGENTS.md` and run the precommit checks above from the root when finishing.

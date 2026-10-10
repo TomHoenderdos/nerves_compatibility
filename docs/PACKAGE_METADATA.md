@@ -1,10 +1,12 @@
 # Package Metadata / Overrides
 
-Package-specific metadata is now stored in Postgres as `Portal.Catalog.PackageOverride` rows and managed by the portal/admin surface. The legacy root `package_metadata.json` file was imported during Phase 6 and removed.
+Package-specific metadata is stored in Postgres as `Portal.Catalog.PackageOverride` rows. There is no admin page for them; rows are written with `mix portal.import_overrides` (below) or directly through the resource.
+
+> **Not applied yet.** Nothing in the build or ingest path reads these rows today: a forced status, a system allow/deny list or a skip rule stored here has no effect on results. The only forced status that takes effect is the one the worker writes into `result.json` itself (for a retired release or a Gleam package).
 
 ## What overrides are for
 
-Most packages do not need overrides. Add one when you need to:
+Most packages do not need overrides. They are meant to:
 
 1. Override automated testing with a forced status.
 2. Add user-facing notes about special requirements or caveats.

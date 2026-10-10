@@ -14,7 +14,8 @@ security backport branches.
 | Latest `main` | Supported |
 | Older commits, tags, and feature branches | Upgrade to latest `main` |
 
-A fix merged into `main` does not update running installations. Operators must
+The project's own deployment is updated from `main` by CI (see below). A fix
+merged into `main` does not update any other installation; its operators must
 rebuild and deploy affected portal releases and worker images. A passing
 compatibility result is not a security review or an endorsement of a Hex package
 or its precompiled artifacts.
@@ -40,8 +41,11 @@ or its precompiled artifacts.
   not check application authorization, business logic, or runtime configuration.
   Sobelow findings also need triage; static analysis can miss vulnerabilities
   and flag safe code.
-- These workflows report results; they do not deploy fixes. Requiring successful
-  checks before merging is a separate repository ruleset setting.
+- These workflows report results; they do not deploy anything themselves.
+  [Test and deploy](.github/workflows/deploy.yml) deploys a push to `main` only
+  after all four have passed on that exact commit (`ops/wait-for-checks.sh`), so
+  a failing check blocks the deploy. Requiring successful checks before merging
+  is a separate repository ruleset setting.
 
 ## Reporting a Vulnerability
 
