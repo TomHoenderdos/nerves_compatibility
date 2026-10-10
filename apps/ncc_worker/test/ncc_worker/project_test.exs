@@ -141,6 +141,38 @@ defmodule NccWorker.ProjectTest do
       assert File.read!(Path.join(dir, "mix.exs")) =~ ~s[{:jason, ">= 0.0.0"},]
     end
 
+    # Testing a package the template already depends on -- nerves itself,
+    # shoehorn, nerves_runtime -- must not add a second entry: Mix rejects a
+    # dependency declared twice with different requirements ("the dependency
+    # :nerves is duplicated at the top level").
+    test "re-pins a dep the template already declares instead of adding it again", %{
+      project_dir: dir
+    } do
+      inject_dep_only(dir, %{name: "nerves", version: "2.0.0-pre.3"})
+      content = File.read!(Path.join(dir, "mix.exs"))
+
+      assert content =~ ~s[{:nerves, "== 2.0.0-pre.3", runtime: false}]
+      assert length(Regex.scan(~r/\{:nerves,/, content)) == 1
+    end
+
+    test "re-pins a template dep that has no options", %{project_dir: dir} do
+      inject_dep_only(dir, %{name: "shoehorn", version: "0.9.2"})
+      content = File.read!(Path.join(dir, "mix.exs"))
+
+      assert content =~ ~s[{:shoehorn, "== 0.9.2"}]
+      assert length(Regex.scan(~r/\{:shoehorn,/, content)) == 1
+    end
+
+    test "a template dep whose name is a prefix of the package is not touched", %{
+      project_dir: dir
+    } do
+      inject_dep_only(dir, %{name: "nerves_runtime", version: "0.13.13"})
+      content = File.read!(Path.join(dir, "mix.exs"))
+
+      assert content =~ ~s[{:nerves_runtime, "== 0.13.13"},]
+      assert content =~ ~s[{:nerves, "~> 1.13", runtime: false}]
+    end
+
     test "fails gracefully if mix.exs has no recognizable deps block", %{project_dir: dir} do
       File.write!(Path.join(dir, "mix.exs"), "# a file with no deps list at all\n")
 
