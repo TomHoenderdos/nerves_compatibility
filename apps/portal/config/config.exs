@@ -75,7 +75,11 @@ config :portal, Oban,
        # the schedule be verified on production without sending hex.pm a single
        # request, so switching on is an environment variable rather than a
        # deploy.
-       {"7 * * * *", Portal.Workers.UpdateCheck}
+       {"7 * * * *", Portal.Workers.UpdateCheck},
+       # Every five minutes: a build cancelled in Oban Web otherwise leaves its
+       # request `queued` in the admin queue until this notices. Two indexed
+       # queries; carries `:maintenance`, the web host's queue.
+       {"*/5 * * * *", Portal.Workers.RequestSync}
      ]}
   ]
 
