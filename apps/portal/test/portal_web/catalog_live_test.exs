@@ -73,7 +73,8 @@ defmodule PortalWeb.CatalogLiveTest do
     assert package.native_components["compatibility_basis"] == "pure_elixir"
     assert Enum.all?(Map.values(package.systems), &(&1.system_pkg in ["host", "pure_elixir"]))
     assert Portal.Catalog.precompiled_manifest("jason") == nil
-    assert conn |> get("/badge/jason.svg") |> response(200) =~ ~s(aria-label="nerves: passing")
+    assert conn |> get("/badge/jason.svg") |> response(200) =~ ~s(aria-label="nerves: compatible")
+    refute has_element?(view, "#compatibility-verdict")
   end
 
   test "registry assessment says nothing was compiled", %{conn: conn} do
@@ -88,7 +89,63 @@ defmodule PortalWeb.CatalogLiveTest do
     assert html =~ "no native code in its dependency closure on hex.pm"
 
     assert conn |> get("/badge/tiny_pure.svg") |> response(200) =~
-             ~s(aria-label="nerves: passing")
+             ~s(aria-label="nerves: compatible")
+  end
+
+  describe "the compatibility verdict" do
+    test "a partial pass says it may still work", %{conn: conn} do
+      ingest_fixture()
+
+      {:ok, view, _html} = live(conn, "/packages/jason")
+
+      assert has_element?(
+               view,
+               "#compatibility-verdict",
+               "did not compile cleanly for all tested hardware"
+             )
+
+      assert has_element?(view, "#compatibility-verdict", "It may still work with Nerves")
+
+      assert has_element?(
+               view,
+               "#compatibility-explainer",
+               "What does Nerves compatibility mean?"
+             )
+    end
+
+    test "a clean run says it compiles for all tested hardware", %{conn: conn} do
+      ingest_fixture(fn result ->
+        Map.update!(result, "systems", fn systems ->
+          Map.new(systems, fn {name, sys} -> {name, Map.put(sys, "status", "pass")} end)
+        end)
+      end)
+
+      {:ok, view, _html} = live(conn, "/packages/jason")
+
+      assert has_element?(
+               view,
+               "#compatibility-verdict",
+               "compiles cleanly for all tested hardware using Nerves"
+             )
+
+      assert conn |> get("/badge/jason.svg") |> response(200) =~
+               ~s(aria-label="nerves: compatible")
+    end
+
+    test "Nerves tooling says it is not checked", %{conn: conn} do
+      {:ok, _run} = Portal.Catalog.ToolingSkip.record("nerves_system_rpi4", "2.1.2", nil)
+
+      {:ok, view, html} = live(conn, "/packages/nerves_system_rpi4")
+
+      assert has_element?(view, "#compatibility-verdict", "part of the Nerves tooling")
+      assert has_element?(view, "#system-nerves-tooling", "Nerves tooling")
+      assert has_element?(view, "#system-nerves-tooling td:nth-child(2) span", "skipped")
+      assert html =~ "not checked for Nerves compatibility"
+
+      body = conn |> get("/badge/nerves_system_rpi4.svg") |> response(200)
+      assert body =~ ~s(aria-label="nerves: not checked")
+      assert body =~ "#9ca3af"
+    end
   end
 
   describe "upstream links" do

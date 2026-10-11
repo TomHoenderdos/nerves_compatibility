@@ -28,6 +28,7 @@ defmodule PortalWeb.PackageLive do
          |> assign(:name, name)
          |> assign(:package, package)
          |> assign(:systems, systems)
+         |> assign(:verdict, verdict(systems))
          |> assign(:badge_alt, @badge_alt)
          |> assign(:hex_url, "https://hex.pm/packages/#{name}")
          |> assign(:docs_url, "https://hexdocs.pm/#{name}")
@@ -235,6 +236,46 @@ defmodule PortalWeb.PackageLive do
           <PortalWeb.UI.stat_card label="Latest version" value={@package.latest_version || "unknown"} />
           <PortalWeb.UI.stat_card label="Last run" value={format_last_run(@package.last_run_at)} />
           <PortalWeb.UI.stat_card label="Checks" value={to_string(length(@systems))} />
+        </div>
+
+        <%!--
+        Issue #42: someone arriving from a badge, who may not know Nerves or
+        this site, should learn in one sentence what the result means. Built
+        results only; the assessment paragraphs below already say what they
+        assumed, in their own words.
+        --%>
+        <div
+          :if={@verdict in [:compatible, :issues, :not_checked]}
+          id="compatibility-verdict"
+          class={[
+            "space-y-2 rounded-xl border p-4 text-sm",
+            @verdict == :compatible && "border-success/30 bg-success/5",
+            @verdict == :issues && "border-warning/30 bg-warning/5",
+            @verdict == :not_checked && "border-base-300 bg-base-200/50"
+          ]}
+        >
+          <p class="font-medium text-base-content">{verdict_text(@verdict, @systems)}</p>
+          <details id="compatibility-explainer" class="text-base-content/70">
+            <summary class="cursor-pointer text-xs font-medium text-base-content/60 hover:text-base-content">
+              What does Nerves compatibility mean?
+            </summary>
+            <div class="mt-2 space-y-2">
+              <p>
+                <a href="https://nerves-project.org" target="_blank" rel="noopener" class="link">
+                  Nerves
+                </a>
+                builds Elixir firmware for embedded devices such as the Raspberry Pi and
+                BeagleBone. This site adds each Hex package to a fresh Nerves project and builds
+                firmware for a set of common boards, the targets listed below.
+              </p>
+              <p>
+                A package that compiles for every target is very likely to work on a device. A
+                failure usually comes from native code (C, Rust or Zig) that does not
+                cross-compile, or from something the build expects on a desktop machine. It does
+                not prove the package is unusable: a fix may be a configuration change away.
+              </p>
+            </div>
+          </details>
         </div>
 
         <p
@@ -551,6 +592,9 @@ defmodule PortalWeb.PackageLive do
         "pure_elixir" ->
           "#{name} #{version} is assumed Nerves-compatible after pure-Elixir inspection and host compilation."
 
+        "nerves_tooling" ->
+          "#{name} is part of the Nerves tooling and is not checked for Nerves compatibility."
+
         nil ->
           build_summary(name, version, systems)
       end
@@ -582,6 +626,7 @@ defmodule PortalWeb.PackageLive do
 
   defp system_label("pure_elixir"), do: "Pure Elixir"
   defp system_label("registry_deps"), do: "Pure Elixir (dependency check)"
+  defp system_label("nerves_tooling"), do: "Nerves tooling"
   defp system_label(system_pkg), do: system_pkg
 
   defp truncate(text) do
@@ -593,6 +638,37 @@ defmodule PortalWeb.PackageLive do
       |> String.replace(~r/\s+\S*$/u, "")
       |> Kernel.<>("...")
     end
+  end
+
+  # Same three-way split as the badge (`PortalWeb.CatalogApiController`), so
+  # the page never contradicts the image at its top. `:assumed` covers the two
+  # assessments that pass without a firmware build; they have their own copy.
+  defp verdict(systems) do
+    statuses = Enum.map(systems, & &1.status)
+
+    cond do
+      statuses == [] -> :none
+      Enum.all?(statuses, &(&1 == "skipped")) -> :not_checked
+      basis(systems) in ["pure_elixir", "registry_deps"] -> :assumed
+      Enum.all?(statuses, &(&1 == "pass")) -> :compatible
+      true -> :issues
+    end
+  end
+
+  defp verdict_text(:compatible, _systems),
+    do: "This package compiles cleanly for all tested hardware using Nerves."
+
+  defp verdict_text(:issues, _systems),
+    do:
+      "This package did not compile cleanly for all tested hardware. " <>
+        "It may still work with Nerves. See the per-target results below."
+
+  defp verdict_text(:not_checked, systems) do
+    if basis(systems) == "nerves_tooling",
+      do:
+        "This package is part of the Nerves tooling, so it is not checked: building it " <>
+          "into a Nerves project for every board says nothing about whether it works.",
+      else: "This release was not checked. The result below says why."
   end
 
   defp systems(package) do
