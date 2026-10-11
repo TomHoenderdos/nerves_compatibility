@@ -35,6 +35,15 @@ defmodule Portal.BuilderTest do
     assert "ELIXIR_ERL_OPTIONS=+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none" in args()
   end
 
+  # sqfstar sees every host core as well, and started one thread each.
+  test "tells sqfstar how many processors it has", %{previous: previous} do
+    put_builder([cpus: "2"], previous)
+    assert "NCC_SQUASHFS_PROCESSORS=2" in args()
+
+    put_builder([cpus: nil], previous)
+    refute Enum.any?(args(), &String.starts_with?(&1, "NCC_SQUASHFS_PROCESSORS="))
+  end
+
   # Not passed for now: a plain `mix compile` runs make serially, so a parallel
   # make fails builds on Makefiles that are not -j safe -- failures no user
   # ever sees (circuits_spi 2.1.0 on rpi4). Restore once those are fixed.

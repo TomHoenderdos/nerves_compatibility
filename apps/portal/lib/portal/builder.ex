@@ -531,11 +531,15 @@ defmodule Portal.Builder do
       quota ->
         beam_flags = "+S #{quota}:#{quota} +sbwt none +sbwtdcpu none +sbwtdio none"
 
+        # sqfstar has the same blind spot and started a thread per host core
+        # for every rootfs; the worker turns this into `-processors`.
         [
           "-e",
           "ERL_FLAGS=#{beam_flags}",
           "-e",
-          "ELIXIR_ERL_OPTIONS=#{beam_flags}"
+          "ELIXIR_ERL_OPTIONS=#{beam_flags}",
+          "-e",
+          "NCC_SQUASHFS_PROCESSORS=#{quota}"
         ]
     end
   end

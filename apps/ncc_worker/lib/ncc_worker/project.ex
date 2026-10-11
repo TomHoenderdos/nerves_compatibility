@@ -34,8 +34,64 @@ defmodule NccWorker.Project do
 
     with :ok <- create_nerves_project(project_dir, targets),
          :ok <- pin_nerves_version(project_dir),
+         :ok <- cap_squashfs_threads(project_dir),
          :ok <- maybe_apply_systems_override(project_dir, systems_override) do
       {:ok, project_dir}
+    end
+  end
+
+  # Nerves' own defaults for `:squashfs`. Setting `rootfs_type` replaces them
+  # rather than adding to them, and they are what makes the image reproducible.
+  @squashfs_defaults ["-mkfs-time", "0", "-all-time", "0", "-no-xattrs", "-quiet"]
+
+  @doc """
+  `config_content` with sqfstar limited to `processors` threads, or unchanged
+  for `nil`.
+
+  sqfstar starts one thread per visible core, and a container's `--cpus` quota
+  hides none of them. In a 2-CPU container with 14 visible cores the rpi4
+  rootfs took 7.0 s and 13.8 CPU-seconds; with `-processors 2`, 3.9 s and 7.9,
+  for a byte-identical image. On a busy build host the surplus threads are also
+  the scheduler churn behind a third of its time going to the kernel.
+  """
+  @spec cap_squashfs(String.t(), pos_integer() | nil) :: String.t()
+  def cap_squashfs(config_content, nil), do: config_content
+
+  def cap_squashfs(config_content, processors) when is_integer(processors) and processors > 0 do
+    flags = @squashfs_defaults ++ ["-processors", Integer.to_string(processors)]
+
+    config_content <>
+      """
+
+      # Added by ncc_worker: limit sqfstar to the build's CPU quota.
+      config :nerves, :firmware, rootfs_type: {:squashfs, #{inspect(flags)}}
+      """
+  end
+
+  # `NCC_SQUASHFS_PROCESSORS` comes from `Portal.Builder`, derived from the same
+  # CPU quota it hands the BEAM. Unset (no quota) leaves sqfstar as it was.
+  # Edits only the generated worker project's config.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp cap_squashfs_threads(project_dir) do
+    case squashfs_processors() do
+      nil ->
+        :ok
+
+      processors ->
+        path = Path.join([project_dir, "config", "config.exs"])
+
+        with {:ok, content} <- File.read(path) do
+          File.write(path, cap_squashfs(content, processors))
+        end
+    end
+  end
+
+  defp squashfs_processors do
+    with value when is_binary(value) <- System.get_env("NCC_SQUASHFS_PROCESSORS"),
+         {n, ""} when n > 0 <- Integer.parse(value) do
+      n
+    else
+      _ -> nil
     end
   end
 

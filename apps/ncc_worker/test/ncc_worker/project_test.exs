@@ -22,6 +22,57 @@ defmodule NccWorker.ProjectTest do
   end
   """
 
+  describe "cap_squashfs/2" do
+    @sample_config """
+    import Config
+    config :nerves, :firmware, rootfs_overlay: "rootfs_overlay"
+    """
+
+    defp firmware_config(content) do
+      dir = Path.join(System.tmp_dir!(), "cfg_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      path = Path.join(dir, "config.exs")
+      File.write!(path, content)
+      path |> Config.Reader.read!() |> get_in([:nerves, :firmware])
+    end
+
+    # sqfstar starts one thread per visible core, and a --cpus quota hides
+    # none of them: 14 threads in a 2-CPU container took 7.0 s against 3.9 s
+    # with -processors 2, for byte-identical output.
+    test "limits sqfstar to the given number of processors" do
+      {:squashfs, flags} =
+        @sample_config
+        |> Project.cap_squashfs(2)
+        |> firmware_config()
+        |> Keyword.fetch!(:rootfs_type)
+
+      assert Enum.take(flags, -2) == ["-processors", "2"]
+    end
+
+    # Setting rootfs_type replaces Nerves' default flags rather than adding to
+    # them, and those defaults are what make the image reproducible.
+    test "keeps Nerves' default squashfs flags" do
+      {:squashfs, flags} =
+        @sample_config
+        |> Project.cap_squashfs(2)
+        |> firmware_config()
+        |> Keyword.fetch!(:rootfs_type)
+
+      assert ["-mkfs-time", "0", "-all-time", "0", "-no-xattrs", "-quiet" | _] = flags
+    end
+
+    test "keeps the template's other firmware settings" do
+      config = @sample_config |> Project.cap_squashfs(2) |> firmware_config()
+
+      assert config[:rootfs_overlay] == "rootfs_overlay"
+    end
+
+    test "leaves the config alone without a limit" do
+      assert Project.cap_squashfs(@sample_config, nil) == @sample_config
+    end
+  end
+
   describe "nerves_new_args/1" do
     test "names every target explicitly" do
       args = Project.nerves_new_args(["rpi4", "trellis"])
