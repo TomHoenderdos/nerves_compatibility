@@ -15,6 +15,7 @@ defmodule NccWorker.Worker do
     LogTail,
     Project,
     Scanner,
+    SeedGate,
     Systems
   }
 
@@ -308,7 +309,8 @@ defmodule NccWorker.Worker do
             paths.output_dir,
             timeout,
             log_tail_bytes,
-            input.package.name
+            input.package.name,
+            host_result
           )
       end
       |> Map.put("host", host_result)
@@ -477,8 +479,65 @@ defmodule NccWorker.Worker do
      }}
   end
 
-  @spec build_all_systems(String.t(), list(), String.t(), integer(), integer(), String.t()) ::
-          map()
+  @spec build_all_systems(
+          String.t(),
+          list(),
+          String.t(),
+          integer(),
+          integer(),
+          String.t(),
+          map() | nil
+        ) :: map()
+  defp build_all_systems(
+         project_dir,
+         [seed | rest] = systems,
+         output_dir,
+         timeout,
+         log_tail_bytes,
+         package_name,
+         host_result
+       )
+       when rest != [] do
+    if SeedGate.gate?(host_result) do
+      # See `NccWorker.SeedGate`. Only the seed is prepared up front: a run that
+      # stops after it skips seven `mix deps.get`s as well as seven builds.
+      seed_results =
+        build_batch(
+          [{seed, prepare_system(project_dir, seed, output_dir, package_name)}],
+          1,
+          log_tail_bytes,
+          package_name
+        )
+
+      [{_name, seed_result}] = seed_results
+
+      rest_results =
+        if SeedGate.skip_rest?(seed_result) do
+          Enum.map(rest, &{&1.name, SeedGate.skipped_result(seed.name)})
+        else
+          rest
+          |> Enum.map(&{&1, prepare_system(project_dir, &1, output_dir, package_name)})
+          |> build_batch(build_concurrency(), log_tail_bytes, package_name)
+        end
+
+      Map.new(seed_results ++ rest_results)
+    else
+      build_all_systems(project_dir, systems, output_dir, timeout, log_tail_bytes, package_name)
+    end
+  end
+
+  defp build_all_systems(
+         project_dir,
+         systems,
+         output_dir,
+         timeout,
+         log_tail_bytes,
+         package_name,
+         _host_result
+       ) do
+    build_all_systems(project_dir, systems, output_dir, timeout, log_tail_bytes, package_name)
+  end
+
   defp build_all_systems(project_dir, systems, output_dir, _timeout, log_tail_bytes, package_name) do
     # Two phases, deliberately.
     #
@@ -704,8 +763,7 @@ defmodule NccWorker.Worker do
       duration_sec: prep.deps_duration * 1.0,
       phase_timings: %{deps_sec: prep.deps_duration * 1.0},
       firmware_size_bytes: nil,
-      log_tail:
-        prep.log_file |> read_log_tail(log_tail_bytes) |> LogTail.with_error(error),
+      log_tail: prep.log_file |> read_log_tail(log_tail_bytes) |> LogTail.with_error(error),
       system_version: nil,
       beam_scan: nil,
       dependency_scans: nil,
@@ -769,9 +827,8 @@ defmodule NccWorker.Worker do
           error: nil
         }
 
-      {:error, reason} ->
+      {:error, error} ->
         duration = deps_duration + (System.monotonic_time(:second) - firmware_start)
-        error = format_error(reason)
         log_tail = log_file |> read_log_tail(log_tail_bytes) |> LogTail.with_error(error)
 
         %{
@@ -822,9 +879,6 @@ defmodule NccWorker.Worker do
       {_, exit_code} -> {:error, "mix command exited with code #{exit_code}"}
     end
   end
-
-  defp format_error(reason) when is_binary(reason), do: reason
-  defp format_error(reason), do: inspect(reason)
 
   # Shared with `Project.add_package/3`, and that sharing is the point. The first
   # `mix deps.get` already compiles the whole tree by way of nerves_bootstrap, so
