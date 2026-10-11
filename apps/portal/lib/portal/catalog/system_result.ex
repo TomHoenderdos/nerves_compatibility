@@ -93,7 +93,8 @@ defmodule Portal.Catalog.SystemResult do
     # `duration_sec` alone cannot say whether a shared build cache is worth
     # building: it lumps the dependency compile (cacheable) together with the
     # rootfs and image assembly (not cacheable). Keys: deps_sec, firmware_sec,
-    # release_sec, scan_sec. A failed system carries deps_sec only.
+    # scan_sec (release_sec on runs from before the determinism pass was
+    # dropped). A failed system carries deps_sec only.
     attribute :phase_timings, :map do
       public?(true)
     end

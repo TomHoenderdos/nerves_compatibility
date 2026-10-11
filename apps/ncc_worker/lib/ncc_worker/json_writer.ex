@@ -75,8 +75,6 @@ defmodule NccWorker.JsonWriter do
       system_version: Map.get(system_result, :system_version),
       beam_scan: Map.get(system_result, :beam_scan),
       dependency_scans: Map.get(system_result, :dependency_scans),
-      deterministic: Map.get(system_result, :deterministic),
-      determinism_changes: Map.get(system_result, :determinism_changes),
       error: system_result.error
     }
   end
