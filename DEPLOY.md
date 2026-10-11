@@ -65,7 +65,7 @@ resolved by the host daemon and must be a path the daemon can see:
 | `NCC_SCRATCH_ROOT` | Per-run scratch dirs; defaults to `~/.ncc-scratch` |
 | `NCC_NERVES_CACHE` | Shared Nerves cache; defaults to `~/.ncc-nerves-cache` |
 | `NCC_HEX_CACHE` | Shared Hex cache; defaults to `~/.ncc-hex-cache` |
-| `NCC_BUILD_CPUS` | Cap cores per build, e.g. `3`. Unset means unbounded |
+| `NCC_BUILD_CPUS` | Cap cores per build, e.g. `3`. Unset means unbounded. Also sizes the BEAM schedulers and sqfstar's `-processors` to the cap, since both otherwise start one per host core |
 | `NCC_BUILD_MEMORY` | Cap memory per build, e.g. `4g`. Unset means unbounded |
 | `NCC_BUILD_USER` | `--user` for the build container. Unset means our own uid:gid. Set `0:0` on a rootless daemon, where our uid is already 0 inside the namespace |
 | `NCC_BUILD_CACHE` | Shared dependency build cache, one subdirectory per worker image. Unset means off |
