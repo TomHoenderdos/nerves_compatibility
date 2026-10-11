@@ -12,7 +12,7 @@ defmodule NccWorker.Worker do
     HexHome,
     HexMetadata,
     LockPolicy,
-    PackageArtifacts,
+    LogTail,
     Project,
     Scanner,
     Systems
@@ -705,7 +705,7 @@ defmodule NccWorker.Worker do
       phase_timings: %{deps_sec: prep.deps_duration * 1.0},
       firmware_size_bytes: nil,
       log_tail:
-        prep.log_file |> read_log_tail(log_tail_bytes) |> PackageArtifacts.with_error(error),
+        prep.log_file |> read_log_tail(log_tail_bytes) |> LogTail.with_error(error),
       system_version: nil,
       beam_scan: nil,
       dependency_scans: nil,
@@ -739,45 +739,40 @@ defmodule NccWorker.Worker do
 
     firmware_start = System.monotonic_time(:second)
 
-    with :ok <- run_firmware_mix(project_dir, env, log_file),
-         firmware_sec = System.monotonic_time(:second) - firmware_start,
-         {:ok, hash1} <- hash_package_artifacts(build_path, package_name),
-         release_start = System.monotonic_time(:second),
-         :ok <- clean_package_build(build_path, package_name),
-         :ok <- run_release_mix(project_dir, env, log_file),
-         {:ok, hash2} <- hash_package_artifacts(build_path, package_name) do
-      release_sec = System.monotonic_time(:second) - release_start
-      scan_start = System.monotonic_time(:second)
-      firmware_info = Scanner.find_firmware(build_path)
-      log_tail = read_log_tail(log_file, log_tail_bytes)
-      beam_scan = analyze_beam_scan(build_path, package_name)
-      dependency_scans = analyze_dependency_beam_scans(build_path, package_name)
-      {deterministic, determinism_changes} = compare_hashes(hash1, hash2)
-      scan_sec = System.monotonic_time(:second) - scan_start
-      duration = deps_duration + (System.monotonic_time(:second) - firmware_start)
+    # No second build pass. A determinism check used to rebuild the package with
+    # `mix release` and compare hashes, at 20-36 s a target, but nothing outside
+    # the worker ever read its verdict; its one visible effect was failing
+    # targets whose package it could not locate.
+    case run_firmware_mix(project_dir, env, log_file) do
+      :ok ->
+        firmware_sec = System.monotonic_time(:second) - firmware_start
+        scan_start = System.monotonic_time(:second)
+        firmware_info = Scanner.find_firmware(build_path)
+        log_tail = read_log_tail(log_file, log_tail_bytes)
+        beam_scan = analyze_beam_scan(build_path, package_name)
+        dependency_scans = analyze_dependency_beam_scans(build_path, package_name)
+        scan_sec = System.monotonic_time(:second) - scan_start
+        duration = deps_duration + (System.monotonic_time(:second) - firmware_start)
 
-      %{
-        status: :pass,
-        duration_sec: duration * 1.0,
-        phase_timings: %{
-          deps_sec: deps_duration * 1.0,
-          firmware_sec: firmware_sec * 1.0,
-          release_sec: release_sec * 1.0,
-          scan_sec: scan_sec * 1.0
-        },
-        firmware_size_bytes: firmware_info[:size],
-        log_tail: log_tail,
-        beam_scan: beam_scan,
-        dependency_scans: dependency_scans,
-        deterministic: deterministic,
-        determinism_changes: determinism_changes,
-        error: nil
-      }
-    else
+        %{
+          status: :pass,
+          duration_sec: duration * 1.0,
+          phase_timings: %{
+            deps_sec: deps_duration * 1.0,
+            firmware_sec: firmware_sec * 1.0,
+            scan_sec: scan_sec * 1.0
+          },
+          firmware_size_bytes: firmware_info[:size],
+          log_tail: log_tail,
+          beam_scan: beam_scan,
+          dependency_scans: dependency_scans,
+          error: nil
+        }
+
       {:error, reason} ->
         duration = deps_duration + (System.monotonic_time(:second) - firmware_start)
         error = format_error(reason)
-        log_tail = log_file |> read_log_tail(log_tail_bytes) |> PackageArtifacts.with_error(error)
+        log_tail = log_file |> read_log_tail(log_tail_bytes) |> LogTail.with_error(error)
 
         %{
           status: :fail,
@@ -794,23 +789,6 @@ defmodule NccWorker.Worker do
 
   defp run_mix(args, project_dir, env, log_file) do
     run_cmd("mix", args, project_dir, env, log_file)
-  end
-
-  # Drop this target's compiled copy of the package so the second pass has to
-  # rebuild it. Deliberately not `mix deps.clean --build`: that task globs
-  # `Path.dirname(build_path)/*/lib/<app>`, so with every target's build dir
-  # under one `_build/` it wipes the package out of the *sibling* targets too.
-  # Concurrently, that lands between a sibling's compile and its release step
-  # and kills it with "could not find an app file at
-  # _build/<target>/lib/<pkg>/ebin/<pkg>.app". Removing our own directory is
-  # what the task would have done for us anyway.
-  # Deletes build artifacts inside the disposable container for the determinism rebuild.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp clean_package_build(build_path, package_name) do
-    case build_path |> Path.join("lib/#{package_name}") |> File.rm_rf() do
-      {:ok, _} -> :ok
-      {:error, reason, path} -> {:error, "could not clean #{path}: #{inspect(reason)}"}
-    end
   end
 
   # Assembling a firmware image runs mksquashfs, which sets ownership on the
@@ -830,21 +808,6 @@ defmodule NccWorker.Worker do
     end
   end
 
-  # Second pass of the determinism check. It only has to reproduce the
-  # package's own BEAM files, and `hash_package_artifacts/2` reads those from
-  # `<build_path>/rel`, which `mix release` populates on its own. Running the
-  # full `mix firmware` here rebuilt the rootfs, squashfs and .fw image as
-  # well, none of which the comparison looks at: about 40% of a target's wall
-  # clock spent producing an image that is immediately thrown away.
-  #
-  # `mix nerves.new` sets `overwrite: true` in the release config, so
-  # reassembling over the first pass's release directory needs no prompt.
-  # No fakeroot here: without the image step there is nothing left that wants
-  # to set ownership.
-  defp run_release_mix(project_dir, env, log_file) do
-    run_cmd("mix", ["release"], project_dir, env, log_file)
-  end
-
   # Private callers choose mix or the resolved fakeroot executable and literal argument lists.
   # System.cmd passes argv directly (no shell); log_file is a worker-generated output path.
   # sobelow_skip ["CI.System", "Traversal.FileModule"]
@@ -858,73 +821,6 @@ defmodule NccWorker.Worker do
       {_, 0} -> :ok
       {_, exit_code} -> {:error, "mix command exited with code #{exit_code}"}
     end
-  end
-
-  defp hash_package_artifacts(build_path, package_name) do
-    with {:ok, lib_dir} <- PackageArtifacts.lib_dir(build_path, package_name),
-         {:ok, hashes} <- compute_hashes(lib_dir) do
-      {:ok, hashes}
-    else
-      {:error, _} = error -> error
-    end
-  end
-
-  # Read-only hashing of ebin/priv files discovered in the worker release tree.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp compute_hashes(package_lib_dir) do
-    dirs = [Path.join(package_lib_dir, "ebin"), Path.join(package_lib_dir, "priv")]
-
-    files =
-      dirs
-      |> Enum.filter(&File.dir?/1)
-      |> Enum.flat_map(fn dir ->
-        dir
-        |> Path.join("**/*")
-        |> Path.wildcard(match_dot: true)
-        |> Enum.filter(&File.regular?/1)
-        |> Enum.map(fn path -> {path, Path.relative_to(path, package_lib_dir)} end)
-      end)
-
-    hashes =
-      files
-      |> Enum.map(fn {abs, rel} ->
-        case File.read(abs) do
-          {:ok, content} ->
-            hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
-            {rel, hash}
-
-          _ ->
-            {rel, :error}
-        end
-      end)
-      |> Enum.reject(fn {_rel, hash} -> hash == :error end)
-      |> Map.new()
-
-    {:ok, hashes}
-  end
-
-  defp compare_hashes(hash1, hash2) do
-    added = Map.keys(hash2) -- Map.keys(hash1)
-    removed = Map.keys(hash1) -- Map.keys(hash2)
-
-    changed =
-      hash1
-      |> Enum.flat_map(fn {path, val1} ->
-        case Map.get(hash2, path) do
-          nil -> []
-          val2 when val1 == val2 -> []
-          val2 -> [%{path: path, change: :changed, hash_before: val1, hash_after: val2}]
-        end
-      end)
-
-    additions = Enum.map(added, &%{path: &1, change: :added, hash_after: hash2[&1]})
-    removals = Enum.map(removed, &%{path: &1, change: :removed, hash_before: hash1[&1]})
-
-    diffs = changed ++ additions ++ removals
-
-    deterministic = diffs == []
-
-    {deterministic, diffs}
   end
 
   defp format_error(reason) when is_binary(reason), do: reason

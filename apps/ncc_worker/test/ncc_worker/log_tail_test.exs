@@ -27,4 +27,26 @@ defmodule NccWorker.LogTailTest do
   test "raw binary bytes inside a log are replaced, not passed through" do
     assert LogTail.tail(<<"ok ", 0xFF, 0xFE, " ok">>, 4096) |> String.valid?()
   end
+
+  describe "with_error/2" do
+    # The stored log tail is all a reader of a failed build sees; a failure the
+    # worker raises after the last build command has to say so there.
+    test "appends the worker's reason to the log tail" do
+      assert LogTail.with_error("Firmware built successfully!\n", ":package_not_found") ==
+               "Firmware built successfully!\n\n** ncc_worker: :package_not_found\n"
+    end
+
+    test "leaves the tail alone when there is no reason" do
+      assert LogTail.with_error("ok\n", nil) == "ok\n"
+    end
+
+    test "a reason that isn't a string is inspected, not interpolated" do
+      assert LogTail.with_error("x\n", {:deps_get_failed, "boom"}) ==
+               ~s[x\n\n** ncc_worker: {:deps_get_failed, "boom"}\n]
+    end
+
+    test "handles a missing tail" do
+      assert LogTail.with_error(nil, "boom") == "** ncc_worker: boom\n"
+    end
+  end
 end
