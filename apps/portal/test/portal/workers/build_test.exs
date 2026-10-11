@@ -730,6 +730,30 @@ defmodule Portal.Workers.BuildTest do
       assert updated.run_id == run.id
     end
 
+    # A blank version fails the run insert (Ash casts "" to nil on a required
+    # attribute), which stands in for any database failure here.
+    test "the last failed attempt marks the request errored" do
+      {:ok, request} =
+        ScanRequests.create_once(%{package_name: "nerves", source: :hex_owner, status: :accepted})
+
+      args = %{
+        "package" => "nerves",
+        "version" => "",
+        "image_digest" => "sha256:deadbeef",
+        "scan_request_id" => request.id
+      }
+
+      assert {:error, _} = perform_job(Build, args, attempt: 1, max_attempts: 3)
+      {:ok, still_open} = ScanRequests.get_request(request.id)
+      refute still_open.status == :error
+
+      assert {:error, _} = perform_job(Build, args, attempt: 3, max_attempts: 3)
+      {:ok, errored} = ScanRequests.get_request(request.id)
+      assert errored.status == :error
+      assert errored.error_reason =~ "tooling skip failed"
+      refute_received :stub_build_called
+    end
+
     # A failed run already on file at this version is what the skip replaces,
     # so the dedup must not stand in its way.
     test "skips even when a real run exists for the version" do

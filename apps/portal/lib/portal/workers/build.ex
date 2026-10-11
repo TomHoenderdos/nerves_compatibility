@@ -76,7 +76,7 @@ defmodule Portal.Workers.Build do
 
     cond do
       ToolingSkip.tooling?(package) ->
-        record_tooling_skip(package, version, scan_request_id)
+        record_tooling_skip(package, version, scan_request_id, attempt, max_attempts)
 
       not force and run_exists?(package, version, image_digest) ->
         Logger.info("Build dedup: run already exists for #{package} #{version}")
@@ -95,8 +95,10 @@ defmodule Portal.Workers.Build do
   # ahead of the dedup and regardless of `force`: an existing failed run for
   # the same version is exactly what this replaces, and no rebuild of a system
   # or toolchain can say anything new. An error retries like any database
-  # failure; nothing about it costs a firmware build.
-  defp record_tooling_skip(package, version, scan_request_id) do
+  # failure; nothing about it costs a firmware build. On the last attempt the
+  # request is marked errored like every other retryable path, or it would sit
+  # at `queued` forever.
+  defp record_tooling_skip(package, version, scan_request_id, attempt, max_attempts) do
     case ToolingSkip.record(package, version, scan_request_id) do
       {:ok, run} ->
         Progress.mark(scan_request_id, :built, run_id: run.id)
@@ -104,6 +106,8 @@ defmodule Portal.Workers.Build do
         :ok
 
       {:error, reason} ->
+        message = "tooling skip failed: #{inspect(reason)}"
+        on_retry_or_exhaust(scan_request_id, attempt, max_attempts, message, nil)
         {:error, reason}
     end
   end

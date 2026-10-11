@@ -1,5 +1,6 @@
 defmodule Portal.Catalog.ToolingSkipTest do
   use Portal.DataCase, async: false
+  use Oban.Testing, repo: Portal.Repo
 
   require Ash.Query
 
@@ -36,6 +37,15 @@ defmodule Portal.Catalog.ToolingSkipTest do
       assert [system] = Map.values(package.systems)
       assert system.system_pkg == "nerves_tooling"
       assert system.status == "skipped"
+    end
+
+    test "a fresh record enqueues PackageMeta for the package" do
+      assert {:ok, _run} = ToolingSkip.record("kiosk_system_rpi5", "2.1.2", nil)
+
+      assert_enqueued(
+        worker: Portal.Workers.PackageMeta,
+        args: %{"package" => "kiosk_system_rpi5"}
+      )
     end
 
     test "is idempotent per version" do
