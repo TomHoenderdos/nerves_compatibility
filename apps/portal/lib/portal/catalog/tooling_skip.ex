@@ -27,6 +27,7 @@ defmodule Portal.Catalog.ToolingSkip do
 
   alias Portal.Catalog
   alias Portal.Catalog.{Ingestion, Package}
+  alias Portal.Workers.PackageMeta
 
   @system "nerves_tooling"
   @image_digest "tooling"
@@ -121,12 +122,30 @@ defmodule Portal.Catalog.ToolingSkip do
       }
     }
 
-    Ingestion.ingest(result, %{
-      run_id: run_id,
-      image_digest: @image_digest,
-      files_dir: System.tmp_dir!(),
-      scan_request_id: scan_request_id
-    })
+    with {:ok, run} <-
+           Ingestion.ingest(result, %{
+             run_id: run_id,
+             image_digest: @image_digest,
+             files_dir: System.tmp_dir!(),
+             scan_request_id: scan_request_id
+           }) do
+      enqueue_package_meta(name)
+      {:ok, run}
+    end
+  end
+
+  # As in `Portal.Catalog.RegistryAssessment`: this path bypasses
+  # `Portal.Workers.Ingest`, which is what normally queues the hex.pm metadata
+  # fetch. Without it a tooling package seen here first would never get its
+  # owners or GitHub link. Decoration, so a failed enqueue is only logged.
+  defp enqueue_package_meta(name) do
+    case Oban.insert(PackageMeta.new(%{package: name})) do
+      {:ok, _job} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("PackageMeta enqueue failed for #{name}: #{inspect(reason)}")
+    end
   end
 
   defp stored_description(name) do
