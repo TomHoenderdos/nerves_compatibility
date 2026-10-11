@@ -1012,11 +1012,12 @@ defmodule Portal.Catalog do
   end
 
   # System entries that are verdicts rather than builds: `NccWorker.Worker`'s
-  # `pure_elixir` (host compile + inspection) and
-  # `Portal.Catalog.RegistryAssessment`'s `registry_deps` (registry data only).
-  # Neither is a Nerves system, and both are always `pass`, so any per-system
-  # figure that counted them would show a phantom system at ~100%.
-  @assessment_systems ~w(pure_elixir registry_deps)
+  # `pure_elixir` (host compile + inspection),
+  # `Portal.Catalog.RegistryAssessment`'s `registry_deps` (registry data only)
+  # and `Portal.Catalog.ToolingSkip`'s `nerves_tooling` (never built). None is a
+  # Nerves system, and each always carries the same status, so any per-system
+  # figure that counted them would show a phantom system at 100% or 0%.
+  @assessment_systems ~w(pure_elixir registry_deps nerves_tooling)
 
   @doc """
   Whether `system_pkg` names an assessment (a compatibility verdict with no
