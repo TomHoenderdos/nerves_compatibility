@@ -31,6 +31,17 @@ defmodule Portal.ObanConfigTest do
     assert Portal.Workers.Sweep.__opts__()[:queue] == :ingest
   end
 
+  test "request sync is scheduled, on the queue the web host runs" do
+    {_mod, opts} = plugin(Oban.Plugins.Cron)
+
+    assert {_expr, Portal.Workers.RequestSync} =
+             Enum.find(opts[:crontab], &match?({_e, Portal.Workers.RequestSync}, &1))
+
+    # Rows only, no disks: any node can run it, and the web host's queue keeps
+    # it off the build boxes.
+    assert Portal.Workers.RequestSync.__opts__()[:queue] == :maintenance
+  end
+
   describe "the hex.pm update check" do
     defp update_check_entry do
       {_mod, opts} = plugin(Oban.Plugins.Cron)
