@@ -125,16 +125,18 @@ defmodule PortalWeb.CatalogApiControllerTest do
     body = response(conn, 200)
     assert body =~ ~s(<svg)
     assert body =~ "jason Nerves compatibility"
-    assert body =~ "2/3 passing"
+    assert body =~ ">compatibility issues<"
+    assert body =~ "#eab308"
+    refute body =~ "passing"
   end
 
-  test "GET /badge/:name.svg shows a registry-assessed package as passing", %{conn: conn} do
+  test "GET /badge/:name.svg shows a registry-assessed package as compatible", %{conn: conn} do
     {:ok, _run} = Portal.Catalog.RegistryAssessment.record("tiny_pure", "1.2.0", nil)
 
     conn = get(conn, "/badge/tiny_pure.svg")
 
     body = response(conn, 200)
-    assert body =~ ">passing<"
+    assert body =~ ">compatible<"
     assert body =~ "#22c55e"
   end
 

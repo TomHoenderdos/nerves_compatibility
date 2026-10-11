@@ -3,6 +3,10 @@ defmodule PortalWeb.CatalogApiController do
 
   alias Portal.Catalog
 
+  @badge_grey "#9ca3af"
+  @badge_green "#22c55e"
+  @badge_yellow "#eab308"
+
   def packages(conn, _params) do
     conn
     |> put_cache_headers()
@@ -72,7 +76,7 @@ defmodule PortalWeb.CatalogApiController do
         conn
         |> put_status(:not_found)
         |> put_resp_content_type("image/svg+xml")
-        |> send_resp(404, svg(name, "unknown", "#9ca3af"))
+        |> send_resp(404, svg(name, "unknown", @badge_grey))
 
       results ->
         {status, color} = badge_status(results)
@@ -101,23 +105,23 @@ defmodule PortalWeb.CatalogApiController do
     put_resp_header(conn, "cache-control", "public, max-age=3600, stale-while-revalidate=86400")
   end
 
-  defp badge_status([]), do: {"unknown", "#9ca3af"}
+  # Wording from issue #41: "nerves: passing" left readers guessing what had
+  # passed. "compatible" and "compatibility issues" say what was checked; the
+  # per-target breakdown is one click away on the package page.
+  #
+  # Only a fully clean run is "compatible". A partial pass is still an issue
+  # worth surfacing, even when the unfinished targets were skipped rather than
+  # failed. A run that skipped everything (Nerves tooling, retired releases,
+  # gleam) checked nothing, so it says so instead of claiming either verdict.
+  defp badge_status([]), do: {"unknown", @badge_grey}
 
   defp badge_status(results) do
-    total = length(results)
-    pass_count = Enum.count(results, &(&1.status == :pass))
-    fail_count = Enum.count(results, &(&1.status == :fail))
-    error_count = Enum.count(results, &(&1.status == :error))
+    statuses = Enum.map(results, & &1.status)
 
     cond do
-      pass_count == total ->
-        {"passing", "#22c55e"}
-
-      fail_count > 0 or error_count > 0 ->
-        {"#{pass_count}/#{total} passing", "#f97316"}
-
-      true ->
-        {"#{pass_count}/#{total} passing", "#eab308"}
+      Enum.all?(statuses, &(&1 == :pass)) -> {"compatible", @badge_green}
+      Enum.all?(statuses, &(&1 == :skipped)) -> {"not checked", @badge_grey}
+      true -> {"compatibility issues", @badge_yellow}
     end
   end
 
