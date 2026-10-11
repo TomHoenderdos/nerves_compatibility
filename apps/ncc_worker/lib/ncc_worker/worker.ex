@@ -490,15 +490,16 @@ defmodule NccWorker.Worker do
         ) :: map()
   defp build_all_systems(
          project_dir,
-         [seed | rest] = systems,
+         [_, _ | _] = systems,
          output_dir,
          timeout,
          log_tail_bytes,
          package_name,
          host_result
-       )
-       when rest != [] do
+       ) do
     if SeedGate.gate?(host_result) do
+      {seed, rest} = SeedGate.split(systems)
+
       # See `NccWorker.SeedGate`. Only the seed is prepared up front: a run that
       # stops after it skips seven `mix deps.get`s as well as seven builds.
       seed_results =
