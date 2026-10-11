@@ -20,6 +20,27 @@ defmodule NccWorker.SeedGateTest do
     end
   end
 
+  describe "split/1" do
+    defp system(name), do: %{name: name, target: String.replace(name, "nerves_system_", "")}
+
+    # Picked from prod: of the packages that fail on the host but pass some
+    # target, rpi4 fails the fewest (4 of 46). bbb, first in result order,
+    # would have wrongly skipped 9.
+    test "seeds on rpi4 when it is among the systems" do
+      systems = Enum.map(~w(nerves_system_bbb nerves_system_rpi4 nerves_system_x86_64), &system/1)
+
+      assert {%{name: "nerves_system_rpi4"}, rest} = SeedGate.split(systems)
+      assert Enum.map(rest, & &1.name) == ~w(nerves_system_bbb nerves_system_x86_64)
+    end
+
+    test "falls back to the first system without rpi4" do
+      systems = Enum.map(~w(nerves_system_bbb nerves_system_x86_64), &system/1)
+
+      assert {%{name: "nerves_system_bbb"}, [%{name: "nerves_system_x86_64"}]} =
+               SeedGate.split(systems)
+    end
+  end
+
   describe "skip_rest?/1" do
     # Nerves-only packages (nerves_network, kiosk_system_*) cannot compile on the
     # host but build firmware fine: the seed passing is what keeps them whole.

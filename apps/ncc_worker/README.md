@@ -12,7 +12,7 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
 4. Compiles the package on the host. If that passes and the whole dependency closure is pure Elixir
    (`NccWorker.BuildSelection`), records an assumed-compatible `pure_elixir` result instead of building firmware.
    Otherwise builds firmware for each Nerves system (`NccWorker.Systems`), capturing status, size, and a log tail.
-   When the host compile failed, the first system builds alone; if it fails too, the rest are recorded as
+   When the host compile failed, rpi4 builds alone first; if it fails too, the rest are recorded as
    `skipped` ("host and <system> failed to compile") without being built (`NccWorker.SeedGate`).
 5. When `NCC_INPUT` carries `argus` (`{"analyses": ["default", "exposure"], "scope": "firmware", "timeout_seconds": 300}`),
    runs the argus_beam escript over the host-compiled beams (`NccWorker.Argus`) and writes its findings to
