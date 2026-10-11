@@ -102,8 +102,9 @@ Raising concurrency without raising `CPUS` buys nothing: the targets just split
 the same cap. At `CONCURRENCY=4`/`CPUS=5` on a 6-core host, load peaked at 7.7
 and the co-tenant site's slowest request was 0.64s.
 
-One historical trap, fixed but worth knowing if it comes back. The determinism
-check used to force a rebuild with `mix deps.clean --build <pkg>`, and that task
+One historical trap, worth knowing if anything per-target ever cleans a build
+again. The determinism check (removed since) used to force a rebuild with
+`mix deps.clean --build <pkg>`, and that task
 globs `Path.dirname(build_path)/*/lib/<app>` — with every target's build dir
 under one `_build/`, it deleted the package from the *sibling* targets as well.
 Concurrently that landed between a sibling's compile and its release step:
@@ -114,7 +115,7 @@ Unchecked dependencies for environment prod:
   could not find an app file at "_build/mangopi_mq_pro/lib/jason/ebin/jason.app"
 ```
 
-The worker now removes its own `<build_path>/lib/<pkg>` directly instead.
+Remove only the target's own `<build_path>/lib/<pkg>` instead.
 
 The root `config/runtime.exs` owns runtime config. Do not add child-app `runtime.exs` files under `apps/portal/config/`; they are not loaded in an umbrella.
 

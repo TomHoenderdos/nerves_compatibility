@@ -56,6 +56,7 @@ defmodule PortalWeb.StatsLive do
                   <th class="px-5 py-3">Pass</th>
                   <th class="px-5 py-3">Fail</th>
                   <th class="px-5 py-3">Error</th>
+                  <th class="px-5 py-3">Skipped</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-base-200">
@@ -66,6 +67,7 @@ defmodule PortalWeb.StatsLive do
                   <td class="px-5 py-3 text-emerald-600 dark:text-emerald-400">{row.pass}</td>
                   <td class="px-5 py-3 text-orange-600 dark:text-orange-400">{row.fail}</td>
                   <td class="px-5 py-3 text-red-600 dark:text-red-400">{row.error}</td>
+                  <td class="px-5 py-3 text-base-content/50" data-col="skipped">{row.skipped}</td>
                 </tr>
               </tbody>
             </table>
@@ -96,7 +98,8 @@ defmodule PortalWeb.StatsLive do
         total: c.total,
         pass: c.pass,
         fail: c.fail,
-        error: c.error
+        error: c.error,
+        skipped: c.skipped
       }
     end)
     |> Enum.sort_by(& &1.system)
@@ -107,7 +110,17 @@ defmodule PortalWeb.StatsLive do
     pass = get.([:pass, "pass"])
     fail = get.([:fail, "fail"])
     error = get.([:error, "error"])
-    # Total reconciles with the visible Pass/Fail/Error columns (skipped has no column).
-    %{pass: pass, fail: fail, error: error, total: pass + fail + error}
+    # Skipped is counted: the worker skips the other targets once the host and
+    # rpi4 have both failed, so leaving skips out would shrink every target's
+    # Total but rpi4's and make the rows incomparable.
+    skipped = get.([:skipped, "skipped"])
+
+    %{
+      pass: pass,
+      fail: fail,
+      error: error,
+      skipped: skipped,
+      total: pass + fail + error + skipped
+    }
   end
 end
