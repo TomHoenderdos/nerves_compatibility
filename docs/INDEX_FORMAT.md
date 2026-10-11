@@ -61,7 +61,7 @@ The latest test results for each package across all systems.
   - **systems**: Map of system key to the result of the package's latest run
     - **Key format**: `"<system_pkg>@<system_version>"`
     - **system_pkg**: Name of the Nerves system package, or an assessment
-      entry (`host`, `pure_elixir`, `registry_deps`)
+      entry (`host`, `pure_elixir`, `registry_deps`, `nerves_tooling`)
     - **system_version**: Version of the Nerves system
     - **status**: Test result status
     - **firmware_size_bytes**: Firmware image size, when one was built
@@ -139,7 +139,7 @@ Aggregate statistics over every stored system result.
   - **pass, fail, error, skipped, unknown**: Counts per status
 - **by_system**: Map of system key to counts for that system
   - **Key format**: `"<system_pkg>@<system_version>"`
-  - Assessment entries (`pure_elixir`, `registry_deps`; see below) are not
+  - Assessment entries (`pure_elixir`, `registry_deps`, `nerves_tooling`; see below) are not
     Nerves systems and are omitted here. They still count in **counts**.
   - **pass, fail, error, skipped, unknown**: Counts per status
 - **last_run_finished_at**: Timestamp of the most recently completed run
@@ -196,6 +196,16 @@ depends on native build tooling (`elixir_make`, `rustler`,
 `nerves*` package. Nothing was compiled, not even on the host. Package metadata
 exposes `native_components.compatibility_basis: "registry_deps"`. A requested
 scan of the package replaces the assessment with a real build.
+
+### Nerves tooling
+
+Nerves' own tooling is not checked: `nerves`, `nerves_bootstrap`,
+`nerves_systems`, and every `nerves_system_*`, `nerves_toolchain*` and
+`kiosk_system_*` package. Building these into a Nerves project for every target
+fails for reasons that say nothing about whether they work. Their runs carry a
+single `nerves_tooling` system entry with `status: "skipped"`, and package
+metadata exposes `native_components.compatibility_basis: "nerves_tooling"`.
+Their badge reads "not checked". A requested scan records the same skip again.
 
 ## Status values
 

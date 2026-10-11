@@ -702,4 +702,64 @@ defmodule Portal.Workers.BuildTest do
       assert reloaded.error_log =~ "without writing result.json"
     end
   end
+
+  describe "perform/1 Nerves tooling" do
+    # No stub response is set: a call to build/2 would crash on nil.
+    test "records a skip instead of building, and closes the request" do
+      {:ok, request} =
+        ScanRequests.create_once(%{
+          package_name: "nerves_system_rpi4",
+          source: :hex_owner,
+          status: :accepted
+        })
+
+      assert :ok =
+               perform_job(Build, %{
+                 "package" => "nerves_system_rpi4",
+                 "version" => "2.1.2",
+                 "image_digest" => "sha256:deadbeef",
+                 "scan_request_id" => request.id
+               })
+
+      refute_received :stub_build_called
+      assert [run] = Ash.read!(Run, domain: Portal.Catalog)
+      assert run.overall_status == :skipped
+
+      {:ok, updated} = ScanRequests.get_request(request.id)
+      assert updated.status == :built
+      assert updated.run_id == run.id
+    end
+
+    # A failed run already on file at this version is what the skip replaces,
+    # so the dedup must not stand in its way.
+    test "skips even when a real run exists for the version" do
+      package =
+        Package
+        |> Ash.Changeset.for_create(:create, %{name: "nerves"})
+        |> Ash.create!(domain: Portal.Catalog)
+
+      Run
+      |> Ash.Changeset.for_create(:create, %{
+        run_id: "existing",
+        package_id: package.id,
+        version_tested: "2.0.0",
+        image_digest: "sha256:dup",
+        overall_status: :fail
+      })
+      |> Ash.create!(domain: Portal.Catalog)
+
+      assert :ok =
+               perform_job(Build, %{
+                 "package" => "nerves",
+                 "version" => "2.0.0",
+                 "image_digest" => "sha256:dup"
+               })
+
+      refute_received :stub_build_called
+
+      assert Run
+             |> Ash.Query.filter(run_id == "tooling-nerves-2.0.0")
+             |> Ash.exists?(domain: Portal.Catalog)
+    end
+  end
 end

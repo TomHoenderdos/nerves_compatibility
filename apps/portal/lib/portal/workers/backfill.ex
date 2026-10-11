@@ -61,6 +61,7 @@ defmodule Portal.Workers.Backfill do
   import Ecto.Query, only: [from: 2]
 
   alias Portal.Catalog.RegistryAssessment
+  alias Portal.Catalog.ToolingSkip
   alias Portal.ScanRequests
   alias Portal.ScanRequests.ScanRequest
 
@@ -102,8 +103,12 @@ defmodule Portal.Workers.Backfill do
   # An open request means someone -- often a human -- already has a build on
   # the way. Classifying on top of it would attach a registry run to a queued
   # build, so it is left alone.
+  #
+  # Nerves tooling is left to `Portal.Workers.Build` as well, which records it
+  # as skipped (`Portal.Catalog.ToolingSkip`). A registry pass would claim a
+  # verdict on something the site deliberately does not check.
   defp classify?(package, source) do
-    filter_enabled?() and eligible?(package, source) and
+    filter_enabled?() and not ToolingSkip.tooling?(package) and eligible?(package, source) and
       is_nil(ScanRequests.open_request_for_package(package))
   end
 

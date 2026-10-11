@@ -66,7 +66,7 @@ The integration test is `apps/portal/test/portal/workers/build_integration_test.
 ## How a Package Gets Checked
 
 1. A trigger creates a `Portal.ScanRequests.ScanRequest` or a maintenance job discovers a Hex release.
-2. Portal enqueues `Portal.Workers.Build` on Oban's `:builds` queue with package/version/image digest and optional scan request id.
+2. Portal enqueues `Portal.Workers.Build` on Oban's `:builds` queue with package/version/image digest and optional scan request id. Nerves tooling (`Portal.Catalog.ToolingSkip`: `nerves`, systems, toolchains, kiosk systems) never reaches Docker: the worker records a `skipped` run instead.
 3. `Portal.Builder` runs `docker run ncc-worker:local` with the reproducibility mounts:
    - `/work` → per-run scratch
    - `/out` → outputs (`result.json`, logs, artifacts)

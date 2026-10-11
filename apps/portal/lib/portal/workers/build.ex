@@ -47,6 +47,7 @@ defmodule Portal.Workers.Build do
   alias Portal.Builder
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Run
+  alias Portal.Catalog.ToolingSkip
   alias Portal.Workers.{Ingest, Progress}
 
   @impl Oban.Worker
@@ -73,15 +74,37 @@ defmodule Portal.Workers.Build do
     run_id = run_id(package, version)
     Progress.broadcast(scan_request_id, :building, %{package: package, version: version})
 
-    if not force and run_exists?(package, version, image_digest) do
-      Logger.info("Build dedup: run already exists for #{package} #{version}")
-      Progress.mark(scan_request_id, :built)
-      Progress.broadcast(scan_request_id, :done, %{deduped: true})
-      :ok
-    else
-      with_crash_cleanup(scan_request_id, run_id, attempt, max_attempts, fn ->
-        do_build(package, version, image_digest, scan_request_id, run_id, attempt, max_attempts)
-      end)
+    cond do
+      ToolingSkip.tooling?(package) ->
+        record_tooling_skip(package, version, scan_request_id)
+
+      not force and run_exists?(package, version, image_digest) ->
+        Logger.info("Build dedup: run already exists for #{package} #{version}")
+        Progress.mark(scan_request_id, :built)
+        Progress.broadcast(scan_request_id, :done, %{deduped: true})
+        :ok
+
+      true ->
+        with_crash_cleanup(scan_request_id, run_id, attempt, max_attempts, fn ->
+          do_build(package, version, image_digest, scan_request_id, run_id, attempt, max_attempts)
+        end)
+    end
+  end
+
+  # Nerves' own tooling is never built (`Portal.Catalog.ToolingSkip`). Checked
+  # ahead of the dedup and regardless of `force`: an existing failed run for
+  # the same version is exactly what this replaces, and no rebuild of a system
+  # or toolchain can say anything new. An error retries like any database
+  # failure; nothing about it costs a firmware build.
+  defp record_tooling_skip(package, version, scan_request_id) do
+    case ToolingSkip.record(package, version, scan_request_id) do
+      {:ok, run} ->
+        Progress.mark(scan_request_id, :built, run_id: run.id)
+        Progress.broadcast(scan_request_id, :done, %{run_id: run.id, status: run.overall_status})
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
