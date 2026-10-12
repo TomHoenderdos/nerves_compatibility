@@ -21,6 +21,8 @@ defmodule Portal.Catalog.Ingestion do
   require Logger
   require Ash.Query
 
+  import Ecto.Query, only: [from: 2]
+
   alias Portal.ArtifactStore
 
   alias Portal.Catalog.{
@@ -95,13 +97,16 @@ defmodule Portal.Catalog.Ingestion do
     version = package_info["version"] || "unknown"
     systems = Map.get(result, "systems", %{})
     finished_at = parse_datetime(result["finished_at"])
-    overall = overall_status(result, systems)
+    # Read before the new run exists, which would otherwise be the latest.
+    carried = carry_candidates(result, package_name, version, systems)
+    overall = overall_status(result, Map.merge(carried_statuses(carried), systems))
 
     with {:ok, package} <- upsert_package(package_name, package_info, finished_at),
          {:ok, run} <-
-           create_run(result, opts, package.id, version, overall, finished_at),
+           create_run(result, opts, package.id, version, overall, finished_at, carried),
          :ok <-
            create_system_results(systems, run.id, version, staged, logs),
+         :ok <- copy_carried(carried, run.id),
          :ok <- record_triage(package_name, version, run.id, result["argus"]) do
       {:ok, run}
     end
@@ -184,7 +189,7 @@ defmodule Portal.Catalog.Ingestion do
   defp argus_map(%{} = argus), do: argus
   defp argus_map(_), do: nil
 
-  defp create_run(result, opts, package_id, version, overall, finished_at) do
+  defp create_run(result, opts, package_id, version, overall, finished_at, carried) do
     Run
     |> Ash.Changeset.for_create(:create, %{
       run_id: opts.run_id,
@@ -192,7 +197,7 @@ defmodule Portal.Catalog.Ingestion do
       version_tested: version,
       image_digest: opts.image_digest,
       overall_status: overall,
-      footprint: get_in(result, ["package", "footprint"]),
+      footprint: footprint_for(result, carried),
       toolchain: result["toolchain"],
       argus: argus_map(result["argus"]),
       log: run_log(overall, opts),
@@ -201,6 +206,134 @@ defmodule Portal.Catalog.Ingestion do
     })
     |> Ash.create(domain: @domain)
   end
+
+  # An argus-only run builds no firmware, and the worker reports that as an
+  # empty footprint with zero totals rather than none at all, so it is the
+  # scope that says the measurement is missing. A targets run built firmware
+  # and measured it, so it keeps its own.
+  defp footprint_for(%{"scope" => "argus_only"}, %{footprint: previous}), do: previous
+  defp footprint_for(result, _carried), do: get_in(result, ["package", "footprint"])
+
+  @partial_scopes ["targets", "argus_only"]
+
+  # A partial run rebuilt only some systems. The rest are copied from the
+  # package's previous run on the same version, so the latest run -- which
+  # every page, badge and API reads as the whole picture -- stays complete.
+  # Across versions nothing carries: an old version's target results say
+  # nothing about the new one.
+  defp carry_candidates(%{"scope" => scope}, package_name, version, systems)
+       when scope in @partial_scopes do
+    case previous_run(package_name) do
+      %{id: run_id, version_tested: ^version, footprint: footprint} ->
+        rows =
+          Repo.all(
+            from(s in "catalog_system_results",
+              where: s.run_id == type(^run_id, Ecto.UUID),
+              where: s.system_pkg not in type(^Map.keys(systems), {:array, :string}),
+              select: %{
+                id: type(s.id, Ecto.UUID),
+                system_pkg: s.system_pkg,
+                status: s.status,
+                carried_from_run_id: type(s.carried_from_run_id, Ecto.UUID)
+              }
+            )
+          )
+
+        %{run_id: run_id, footprint: footprint, rows: rows}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp carry_candidates(_result, _package_name, _version, _systems), do: nil
+
+  # The latest-run rule of `Portal.Catalog`: newest `finished_at`, then newest
+  # `inserted_at`, plain `DESC`. Carrying from any other run would copy rows
+  # the pages were not showing as current.
+  defp previous_run(package_name) do
+    Repo.one(
+      from(r in "catalog_runs",
+        join: p in "catalog_packages",
+        on: p.id == r.package_id,
+        where: p.name == ^package_name,
+        order_by: [desc: r.finished_at, desc: r.inserted_at],
+        limit: 1,
+        select: %{
+          id: type(r.id, Ecto.UUID),
+          version_tested: r.version_tested,
+          footprint: r.footprint
+        }
+      )
+    )
+  end
+
+  # Raw status strings, the shape `overall_status/2` parses from result.json.
+  defp carried_statuses(nil), do: %{}
+
+  defp carried_statuses(%{rows: rows}),
+    do: Map.new(rows, &{&1.system_pkg, %{"status" => &1.status}})
+
+  # Copies each carried row whole -- every column but id, run_id and
+  # timestamps -- plus its artifact memberships and stored log, so the
+  # precompiled API and the log page behave as if the row had been built in
+  # this run. `carried_from_run_id` keeps pointing at the run that built it,
+  # across any chain of partial runs.
+  #
+  # Three statements however many systems carry, each joined against the
+  # old-to-new id pairs: every statement crosses the build box's ~80ms link
+  # to Postgres inside the ingest transaction.
+  defp copy_carried(nil, _run_id), do: :ok
+  defp copy_carried(%{rows: []}, _run_id), do: :ok
+
+  defp copy_carried(%{run_id: from_run, rows: rows}, run_id) do
+    old_ids = Enum.map(rows, &dump(&1.id))
+    new_ids = Enum.map(rows, fn _ -> dump(Ecto.UUID.generate()) end)
+    built_in = Enum.map(rows, &dump(&1.carried_from_run_id || from_run))
+
+    Repo.query!(
+      """
+      INSERT INTO catalog_system_results
+        (id, run_id, system_pkg, system_version, status, firmware_size_bytes, duration_sec,
+         phase_timings, hex_version_tested, beam_scan, dependency_scans, log_path, log_tail,
+         failure_category, carried_from_run_id, inserted_at, updated_at)
+      SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
+             s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan,
+             s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
+             now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
+      FROM catalog_system_results s
+      JOIN unnest($2::uuid[], $3::uuid[], $4::uuid[]) AS m(old_id, new_id, built_in)
+        ON m.old_id = s.id
+      """,
+      [dump(run_id), old_ids, new_ids, built_in]
+    )
+
+    Repo.query!(
+      """
+      INSERT INTO catalog_artifact_memberships (id, system_result_id, sha256, inserted_at)
+      SELECT gen_random_uuid(), m.new_id, a.sha256, now() AT TIME ZONE 'utc'
+      FROM catalog_artifact_memberships a
+      JOIN unnest($1::uuid[], $2::uuid[]) AS m(old_id, new_id) ON m.old_id = a.system_result_id
+      """,
+      [old_ids, new_ids]
+    )
+
+    Repo.query!(
+      """
+      INSERT INTO catalog_system_logs
+        (id, system_result_id, body, byte_size, truncated, inserted_at, updated_at)
+      SELECT gen_random_uuid(), m.new_id, l.body, l.byte_size, l.truncated,
+             now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
+      FROM catalog_system_logs l
+      JOIN unnest($1::uuid[], $2::uuid[]) AS m(old_id, new_id) ON m.old_id = l.system_result_id
+      """,
+      [old_ids, new_ids]
+    )
+
+    :ok
+  end
+
+  defp dump(uuid), do: Ecto.UUID.dump!(uuid)
 
   # A passing run's `runner.log` is 100 KB of "Generated <app> app" that nothing
   # in this repo reads: `catalog_runs.log` has no reader on any page, API or
