@@ -1,0 +1,106 @@
+defmodule Portal.BulkRebuildTest do
+  use Portal.DataCase, async: false
+  use Oban.Testing, repo: Portal.Repo
+
+  alias Portal.BulkRebuild
+  alias Portal.Catalog.{Ingestion, RegistryAssessment}
+
+  defp docker_run!(name, opts \\ []) do
+    {:ok, _} =
+      Ingestion.ingest(
+        %{
+          "package" => %{"name" => name, "version" => "1.0.0"},
+          "finished_at" => Keyword.get(opts, :finished_at, "2026-10-10T10:00:00Z"),
+          "systems" => %{
+            "host" => %{"status" => "pass"},
+            "nerves_system_rpi4" => %{"status" => Keyword.get(opts, :status, "pass")}
+          }
+        },
+        %{
+          run_id: "bulk-#{System.unique_integer([:positive])}",
+          image_digest: "sha256:x",
+          files_dir: System.tmp_dir!()
+        }
+      )
+  end
+
+  defp swept_packages,
+    do:
+      all_enqueued(worker: Portal.Workers.Backfill)
+      |> Enum.map(& &1.args["package"])
+      |> Enum.sort()
+
+  test "selects packages with a real build, never registry-only assessments" do
+    docker_run!("built")
+    {:ok, _} = RegistryAssessment.record("registry_only", "1.0.0", nil)
+
+    {:ok, %{selected: 1, enqueued: 1}} = BulkRebuild.run(limit: 10)
+    assert swept_packages() == ["built"]
+  end
+
+  test "stalest first, up to the limit" do
+    docker_run!("old", finished_at: "2026-01-01T00:00:00Z")
+    docker_run!("new", finished_at: "2026-10-01T00:00:00Z")
+
+    {:ok, %{selected: 1}} = BulkRebuild.run(limit: 1, order: :stalest)
+    assert swept_packages() == ["old"]
+  end
+
+  test "filters on the latest run's status" do
+    docker_run!("passing")
+    docker_run!("failing", status: "fail")
+
+    {:ok, _} = BulkRebuild.run(limit: 10, status: :fail)
+    assert swept_packages() == ["failing"]
+  end
+
+  test "a dry run counts and queues nothing" do
+    docker_run!("dry")
+
+    assert {:ok, %{selected: 1, enqueued: 0, sweep_id: nil}} =
+             BulkRebuild.run(limit: 10, dry_run: true)
+
+    assert all_enqueued(worker: Portal.Workers.Backfill) == []
+  end
+
+  test "jobs carry force, the scope and the sweep id" do
+    docker_run!("scoped")
+    {:ok, %{sweep_id: id}} = BulkRebuild.run(limit: 10, what: {:targets, ["nerves_system_rpi4"]})
+
+    [job] = all_enqueued(worker: Portal.Workers.Backfill)
+    assert job.args["force"] == true
+    assert job.args["scope"] == "targets"
+    assert job.args["systems"] == ["nerves_system_rpi4"]
+    assert job.args["sweep_id"] == id
+    assert job.meta["sweep_id"] == id
+    assert job.args["source"] == "backfill"
+  end
+
+  test "status counts the sweep's jobs by stage, and cancel stops what is waiting" do
+    docker_run!("c1")
+    docker_run!("c2")
+    {:ok, %{sweep_id: id}} = BulkRebuild.run(limit: 10)
+
+    assert %{intake: 2} = BulkRebuild.status(id)
+    assert {:ok, 2} = BulkRebuild.cancel(id)
+    assert %{intake: 0, cancelled: 2} = BulkRebuild.status(id)
+    assert [%{id: ^id, cancelled_at: %DateTime{}}] = BulkRebuild.recent()
+  end
+
+  test "names override the selection" do
+    docker_run!("a")
+    docker_run!("b")
+    {:ok, %{selected: 1}} = BulkRebuild.run(limit: 10, names: ["b"])
+    assert swept_packages() == ["b"]
+  end
+
+  test "an unknown target is refused before anything is written" do
+    docker_run!("t")
+
+    assert {:error, {:unknown_systems, ["nerves_system_nope"]}} =
+             BulkRebuild.run(limit: 10, what: {:targets, ["nerves_system_nope"]})
+
+    assert BulkRebuild.recent() == []
+    assert all_enqueued(worker: Portal.Workers.Backfill) == []
+  end
+end
