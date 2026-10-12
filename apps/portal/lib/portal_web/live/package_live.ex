@@ -327,7 +327,7 @@ defmodule PortalWeb.PackageLive do
                     class="text-xs text-base-content/50"
                     title="This target was not rebuilt in the latest run; the result is from an earlier build of the same version."
                   >
-                    from an earlier build
+                    {carried_label(system.carried_at)}
                   </div>
                   <.link
                     :if={system.status in ["fail", "error"]}
@@ -682,6 +682,7 @@ defmodule PortalWeb.PackageLive do
   # (`Portal.Catalog.latest_by_pkg_json/1`), which does not carry
   # `carried_from_run_id` -- that column is only on `latest_system_results/1`,
   # read separately here so the public JSON API keeps its documented shape.
+  # The source runs' `finished_at` dates the carried rows, one query for all.
   defp systems(package, name) do
     carried_from =
       name
@@ -689,11 +690,31 @@ defmodule PortalWeb.PackageLive do
       |> List.wrap()
       |> Map.new(&{&1.system_pkg, &1.carried_from_run_id})
 
+    finished_at =
+      carried_from
+      |> Map.values()
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Catalog.runs_finished_at()
+
     package.systems
     |> Map.values()
-    |> Enum.map(&Map.put(&1, :carried_from_run_id, Map.get(carried_from, &1.system_pkg)))
+    |> Enum.map(fn system ->
+      source = Map.get(carried_from, system.system_pkg)
+
+      system
+      |> Map.put(:carried_from_run_id, source)
+      |> Map.put(:carried_at, Map.get(finished_at, source))
+    end)
     |> Enum.sort_by(& &1.system_pkg)
   end
+
+  # A calendar date, not `relative_time/1`: "from the 3 days ago build" does
+  # not read, and the date is what tells two carried results apart.
+  defp carried_label(%DateTime{} = dt),
+    do: "from the #{Calendar.strftime(dt, "%b %-d, %Y")} build"
+
+  defp carried_label(_unknown), do: "from an earlier build"
 
   defp dom_id(value), do: value |> String.replace("_", "-") |> String.replace("@", "-")
 

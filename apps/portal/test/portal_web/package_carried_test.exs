@@ -33,7 +33,9 @@ defmodule PortalWeb.PackageCarriedTest do
 
     {:ok, view, _html} = live(conn, ~p"/packages/carriedpage")
 
-    assert view |> element("#system-nerves-system-rpi4") |> render() =~ "from an earlier build"
-    refute view |> element("#system-host") |> render() =~ "from an earlier build"
+    assert view |> element("#system-nerves-system-rpi4") |> render() =~
+             "from the Oct 10, 2026 build"
+
+    refute view |> element("#system-host") |> render() =~ "from the Oct 10, 2026 build"
   end
 end

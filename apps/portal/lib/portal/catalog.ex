@@ -250,6 +250,20 @@ defmodule Portal.Catalog do
   end
 
   @doc """
+  When each of the given runs finished, as `%{run_id => finished_at}`. The
+  package page uses it to date results carried from an earlier run.
+  """
+  def runs_finished_at([]), do: %{}
+
+  def runs_finished_at(run_ids) when is_list(run_ids) do
+    Run
+    |> Ash.Query.filter(id in ^run_ids)
+    |> Ash.Query.select([:id, :finished_at])
+    |> Ash.read!(domain: __MODULE__)
+    |> Map.new(&{&1.id, &1.finished_at})
+  end
+
+  @doc """
   The argus result of the package's latest run, or nil. Its own query because
   `@run_fields` leaves `argus` out: every other reader of runs would otherwise
   load the findings for nothing.
