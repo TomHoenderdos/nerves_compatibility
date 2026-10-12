@@ -44,10 +44,13 @@ defmodule Portal.Workers.Build do
   require Ash.Query
   require Logger
 
+  import Ecto.Query, only: [from: 2]
+
   alias Portal.Builder
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Run
   alias Portal.Catalog.ToolingSkip
+  alias Portal.Repo
   alias Portal.Workers.{Ingest, Progress}
 
   @impl Oban.Worker
@@ -86,7 +89,16 @@ defmodule Portal.Workers.Build do
 
       true ->
         with_crash_cleanup(scan_request_id, run_id, attempt, max_attempts, fn ->
-          do_build(package, version, image_digest, scan_request_id, run_id, attempt, max_attempts)
+          do_build(
+            package,
+            version,
+            image_digest,
+            scan_request_id,
+            run_id,
+            attempt,
+            max_attempts,
+            args
+          )
         end)
     end
   end
@@ -112,15 +124,26 @@ defmodule Portal.Workers.Build do
     end
   end
 
-  defp do_build(package, version, image_digest, scan_request_id, run_id, attempt, max_attempts) do
-    build_args = %{
-      package: package,
-      version: version,
-      run_id: run_id,
-      image_digest: image_digest,
-      # Read per build, so an admin change applies from the next build on.
-      argus: Portal.Settings.worker_argus(Portal.Settings.get())
-    }
+  defp do_build(
+         package,
+         version,
+         image_digest,
+         scan_request_id,
+         run_id,
+         attempt,
+         max_attempts,
+         args
+       ) do
+    build_args =
+      %{
+        package: package,
+        version: version,
+        run_id: run_id,
+        image_digest: image_digest,
+        # Read per build, so an admin change applies from the next build on.
+        argus: Portal.Settings.worker_argus(Portal.Settings.get())
+      }
+      |> Map.merge(scope_args(package, version, args))
 
     case builder().build(build_args) do
       {:ok, %{exit_code: exit_code} = build} ->
@@ -241,6 +264,39 @@ defmodule Portal.Workers.Build do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  @doc false
+  # A partial scope only makes sense on top of a full run of the same version:
+  # ingestion carries the systems it leaves out from that run, and an older
+  # release's results say nothing about this one. Anything else builds in full.
+  @spec scope_args(String.t(), String.t(), map()) :: %{
+          systems_filter: [String.t()] | nil,
+          mode: String.t() | nil
+        }
+  def scope_args(package, version, args) do
+    case {args["scope"], args["systems"], latest_version_tested(package)} do
+      {"argus_only", _systems, ^version} -> %{systems_filter: nil, mode: "argus_only"}
+      {"targets", [_ | _] = systems, ^version} -> %{systems_filter: systems, mode: nil}
+      _ -> %{systems_filter: nil, mode: nil}
+    end
+  end
+
+  # Picks the run `Portal.Catalog.Ingestion` will carry from: newest
+  # `finished_at`, then newest `inserted_at`, plain `DESC` -- the same rule
+  # `Portal.Catalog.Ingestion.previous_run/1` and the pages use for "latest".
+  # A partial scope is only valid when both pick the same run.
+  defp latest_version_tested(package) do
+    Repo.one(
+      from(r in "catalog_runs",
+        join: p in "catalog_packages",
+        on: p.id == r.package_id,
+        where: p.name == ^package,
+        order_by: [desc: r.finished_at, desc: r.inserted_at],
+        limit: 1,
+        select: r.version_tested
+      )
+    )
+  end
 
   @doc """
   Map a worker/runner exit code to an outcome:

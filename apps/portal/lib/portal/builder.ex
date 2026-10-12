@@ -28,6 +28,7 @@ defmodule Portal.Builder do
           optional(:image) => String.t(),
           optional(:image_digest) => String.t(),
           optional(:systems_filter) => [String.t()] | nil,
+          optional(:mode) => String.t() | nil,
           optional(:argus) => map() | nil
         }
 
@@ -155,6 +156,7 @@ defmodule Portal.Builder do
         "source" => "hex"
       },
       systems_filter: Map.get(args, :systems_filter),
+      mode: Map.get(args, :mode),
       argus: Map.get(args, :argus)
     }
 
@@ -379,6 +381,7 @@ defmodule Portal.Builder do
       }
     }
     |> maybe_put("systems_filter", job.systems_filter)
+    |> maybe_put("mode", Map.get(job, :mode))
     |> maybe_put("argus", Map.get(job, :argus))
   end
 
