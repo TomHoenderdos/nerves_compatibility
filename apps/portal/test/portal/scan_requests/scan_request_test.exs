@@ -207,6 +207,32 @@ defmodule Portal.ScanRequests.ScanRequestTest do
     assert Portal.ScanRequests.open_request_for_package("no_such_package_at_all") == nil
   end
 
+  test "a sweep's build job carries its scope, force and sweep id" do
+    {:ok, request} =
+      Portal.ScanRequests.create_once(%{
+        package_name: "sweptpkg",
+        source: :backfill,
+        force: true,
+        scope: "targets",
+        systems: ["nerves_system_rpi4"],
+        sweep_id: "sweep-1"
+      })
+
+    [job] = all_enqueued(worker: Portal.Workers.Build)
+    assert job.args["scan_request_id"] == request.id
+    assert job.args["force"] == true
+    assert job.args["scope"] == "targets"
+    assert job.args["systems"] == ["nerves_system_rpi4"]
+    assert job.meta["sweep_id"] == "sweep-1"
+  end
+
+  test "an ordinary request's build job has no scope or sweep" do
+    {:ok, _} = Portal.ScanRequests.create_once(%{package_name: "plainpkg", source: :backfill})
+    [job] = all_enqueued(worker: Portal.Workers.Build)
+    refute Map.has_key?(job.args, "scope")
+    refute Map.has_key?(job.meta, "sweep_id")
+  end
+
   describe "get_request/1" do
     test "finds a request by id" do
       {:ok, request} =

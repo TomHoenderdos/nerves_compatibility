@@ -178,10 +178,11 @@ defmodule Portal.ScanRequests do
     package_name = Map.fetch!(attrs, :package_name)
     requested_status = Map.get(attrs, :status, :accepted)
 
-    # Not an attribute of the request -- it is an instruction to the build job,
-    # so it is stripped here rather than handed to a changeset that would reject
-    # it. See `Portal.Workers.Build` for what it overrides and who may set it.
-    {force, attrs} = Map.pop(attrs, :force, false)
+    # Not attributes of the request -- they are instructions to the build job,
+    # so they are stripped here rather than handed to a changeset that would
+    # reject them. See `Portal.Workers.Build` for what each one does, and
+    # `Portal.BulkRebuild` for the only caller that sets scope and sweep id.
+    {build_opts, attrs} = Map.split(attrs, [:force, :scope, :systems, :sweep_id])
 
     request_result =
       case open_request_for_package(package_name) do
@@ -195,7 +196,7 @@ defmodule Portal.ScanRequests do
           {:ok, request}
       end
 
-    maybe_enqueue_accepted(request_result, requested_status, force)
+    maybe_enqueue_accepted(request_result, requested_status, build_opts)
   end
 
   def open_request_for_package(package_name) when is_binary(package_name) do
@@ -327,24 +328,25 @@ defmodule Portal.ScanRequests do
     |> Ash.update(domain: __MODULE__)
   end
 
-  defp maybe_enqueue_accepted({:ok, %ScanRequest{} = request}, requested_status, force)
+  defp maybe_enqueue_accepted({:ok, %ScanRequest{} = request}, requested_status, build)
        when requested_status in [:accepted, :queued] do
-    enqueue_build(request, request.source, force: force)
+    enqueue_build(request, request.source, build: build)
   end
 
-  defp maybe_enqueue_accepted(result, _requested_status, _force), do: result
+  defp maybe_enqueue_accepted(result, _requested_status, _build), do: result
 
   # Options:
   #
   #   * `:admin_user` - stamps the request as approved by that admin.
-  #   * `:force` - rebuild even when a result already exists for this version.
+  #   * `:build` - a map of `:force`/`:scope`/`:systems`/`:sweep_id` instructions
+  #     for the build job. See `insert_build_job/4`.
   defp enqueue_build(%ScanRequest{} = request, source, opts) do
     admin_user = Keyword.get(opts, :admin_user)
-    force = Keyword.get(opts, :force, false)
+    build = Keyword.get(opts, :build, %{})
 
     case version_resolver().latest_version(request.package_name) do
       {:ok, version} ->
-        with {:ok, _job} <- insert_build_job(request, version, source, force),
+        with {:ok, _job} <- insert_build_job(request, version, source, build),
              {:ok, request} <- set_status(request, :queued) do
           maybe_mark_admin_approval(request, admin_user)
         end
@@ -364,18 +366,27 @@ defmodule Portal.ScanRequests do
     end
   end
 
-  defp insert_build_job(request, version, source, force) do
+  defp insert_build_job(request, version, source, build) do
     # `force` is omitted rather than set to `false` so that an ordinary request
     # remains deduplicated against a forced job for the same request. The
     # request id is also a uniqueness key: another request's job cannot deliver
     # this request's completion notification.
-    args = %{package: request.package_name, version: version, scan_request_id: request.id}
-    args = if force, do: Map.put(args, :force, true), else: args
+    args =
+      %{package: request.package_name, version: version, scan_request_id: request.id}
+      |> put_if(:force, build[:force] == true, true)
+      |> put_if(:scope, build[:scope] in ["targets", "argus_only"], build[:scope])
+      |> put_if(:systems, build[:scope] == "targets", build[:systems])
+
+    # Only a sweep names its jobs; an ordinary request's job carries no meta.
+    meta = if build[:sweep_id], do: %{sweep_id: build[:sweep_id]}, else: %{}
 
     args
-    |> Build.new(priority: priority(source))
+    |> Build.new(priority: priority(source), meta: meta)
     |> Oban.insert()
   end
+
+  defp put_if(map, _key, false, _value), do: map
+  defp put_if(map, key, true, value), do: Map.put(map, key, value)
 
   # An admin asking for a package by hand is the highest-signal request the
   # system gets -- somebody with the whole queue in front of them decided this
