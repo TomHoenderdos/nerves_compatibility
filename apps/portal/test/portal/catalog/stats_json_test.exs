@@ -65,6 +65,35 @@ defmodule Portal.Catalog.StatsJsonTest do
     assert stats.last_run_finished_at == "2026-07-03T09:30:00.654321Z"
   end
 
+  # A partial run copies the systems it did not build from the previous run;
+  # those copies were never built again, so they are not new results.
+  test "systems an argus-only run carried over are not counted again" do
+    ingest("carried", "c-1", "2026-07-01T10:00:00Z", %{
+      "host" => %{"status" => "pass"},
+      "nerves_system_rpi4" => %{"status" => "pass", "system_version" => "1.0.0"},
+      "nerves_system_bbb" => %{"status" => "fail", "system_version" => "1.0.0"}
+    })
+
+    before = Catalog.stats_json()
+
+    {:ok, _} =
+      Ingestion.ingest(
+        %{
+          "package" => %{"name" => "carried", "version" => "1.0.0"},
+          "finished_at" => "2026-07-02T10:00:00Z",
+          "scope" => "argus_only",
+          "systems" => %{"host" => %{"status" => "pass"}}
+        },
+        %{run_id: "c-2", image_digest: "sha256:x", files_dir: System.tmp_dir!()}
+      )
+
+    stats = Catalog.stats_json()
+
+    assert Map.delete(stats.by_system, "host@") == Map.delete(before.by_system, "host@")
+    assert stats.by_system["host@"]["pass"] == 2
+    assert stats.counts["total"] == before.counts["total"] + 1
+  end
+
   test "an empty catalog" do
     stats = Catalog.stats_json()
 

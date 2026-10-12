@@ -21,9 +21,11 @@ defmodule Portal.Catalog.SystemResult do
       # Covers `Portal.Catalog.stats_json/0`'s GROUP BY, so counting every
       # result is an index-only scan rather than a pass over the blob-heavy
       # heap. It replaces an index on `(system_pkg, status)` that no query
-      # filtered or grouped by.
+      # filtered or grouped by. Partial, like the query: carried copies are
+      # not counted.
       index([:system_pkg, :system_version, :status],
-        name: "catalog_system_results_stats_index"
+        name: "catalog_system_results_stats_index",
+        where: "carried_from_run_id IS NULL"
       )
     end
   end

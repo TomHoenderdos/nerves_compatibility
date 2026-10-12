@@ -166,6 +166,11 @@ defmodule Portal.Catalog do
   `catalog_system_results_stats_index` covers the three grouped columns
   so the count can be an index-only scan, and the cache keeps even that off
   the request path.
+
+  Carried results are left out: a partial run copies the systems it did not
+  rebuild from the previous run (`carried_from_run_id`), and counting those
+  copies would add a result for every build nobody ran. The index is partial
+  on the same condition, so the scan stays index-only.
   """
   def stats_json do
     Cache.fetch(:stats_json, &compute_stats_json/0)
@@ -174,6 +179,7 @@ defmodule Portal.Catalog do
   defp compute_stats_json do
     groups =
       from(s in "catalog_system_results",
+        where: is_nil(s.carried_from_run_id),
         group_by: [s.system_pkg, s.system_version, s.status],
         select: {s.system_pkg, s.system_version, s.status, count()}
       )
