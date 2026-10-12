@@ -302,27 +302,19 @@ defmodule NccWorker.Worker do
         host_env(project_dir)
       )
 
-    # An argus-only run compiles on the host for argus and stops there: the
-    # targets it leaves out are carried over from the previous run at ingest.
     system_results =
-      case {scope, selection} do
-        {:argus_only, _} ->
-          %{}
-
-        {_, :pure_elixir} ->
-          %{"pure_elixir" => assumed_compatible_result()}
-
-        {_, :firmware} ->
-          build_all_systems(
-            project_dir,
-            systems,
-            paths.output_dir,
-            timeout,
-            log_tail_bytes,
-            input.package.name,
-            host_result
-          )
-      end
+      scope
+      |> system_results_for(selection, fn ->
+        build_all_systems(
+          project_dir,
+          systems,
+          paths.output_dir,
+          timeout,
+          log_tail_bytes,
+          input.package.name,
+          host_result
+        )
+      end)
       |> Map.put("host", host_result)
 
     {:ok, source_after} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
@@ -361,10 +353,7 @@ defmodule NccWorker.Worker do
           {description, []}
       end
 
-    footprint =
-      if scope == :argus_only,
-        do: empty_footprint(),
-        else: package_footprint(selection, project_dir, input.package.name, systems)
+    footprint = footprint_for(scope, selection, project_dir, input.package.name, systems)
 
     native_components =
       (NccWorker.NativeLang.detect(project_dir, input.package.name) || %{})
@@ -392,6 +381,22 @@ defmodule NccWorker.Worker do
 
     {:ok, result}
   end
+
+  # An argus-only run compiles on the host for argus and stops there: the
+  # targets it leaves out are carried over from the previous run at ingest.
+  defp system_results_for(:argus_only, _selection, _build), do: %{}
+
+  defp system_results_for(_scope, :pure_elixir, _build),
+    do: %{"pure_elixir" => assumed_compatible_result()}
+
+  defp system_results_for(_scope, :firmware, build), do: build.()
+
+  # Nothing was built for the targets, so there is no firmware to measure.
+  defp footprint_for(:argus_only, _selection, _project, _package, _systems),
+    do: empty_footprint()
+
+  defp footprint_for(_scope, selection, project, package, systems),
+    do: package_footprint(selection, project, package, systems)
 
   defp assumed_compatible_result do
     %{
