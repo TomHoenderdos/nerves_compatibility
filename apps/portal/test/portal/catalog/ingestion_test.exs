@@ -561,4 +561,227 @@ defmodule Portal.Catalog.IngestionTest do
 
     assert run.argus == nil
   end
+
+  describe "partial runs" do
+    defp full_result(name, version, systems) do
+      %{
+        "package" => %{"name" => name, "version" => version},
+        "finished_at" => "2026-10-10T10:00:00Z",
+        "scope" => "full",
+        "systems" => systems
+      }
+    end
+
+    defp ingest!(result) do
+      {:ok, run} =
+        Ingestion.ingest(result, %{
+          run_id: "r-#{System.unique_integer([:positive])}",
+          image_digest: "sha256:x",
+          files_dir: System.tmp_dir!()
+        })
+
+      run
+    end
+
+    defp systems_of(run) do
+      SystemResult
+      |> Ash.Query.filter(run_id == ^run.id)
+      |> Ash.read!(domain: Portal.Catalog)
+      |> Map.new(&{&1.system_pkg, &1})
+    end
+
+    test "an argus-only run keeps every target result of the previous run" do
+      first =
+        ingest!(
+          full_result("carrypkg", "1.0.0", %{
+            "host" => %{"status" => "pass"},
+            "nerves_system_rpi4" => %{"status" => "pass", "firmware_size_bytes" => 123},
+            "nerves_system_bbb" => %{"status" => "fail", "log_tail" => "boom"}
+          })
+        )
+
+      second =
+        ingest!(%{
+          "package" => %{"name" => "carrypkg", "version" => "1.0.0"},
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "argus_only",
+          "systems" => %{"host" => %{"status" => "pass"}}
+        })
+
+      systems = systems_of(second)
+      assert Map.keys(systems) |> Enum.sort() == ~w(host nerves_system_bbb nerves_system_rpi4)
+      assert systems["host"].carried_from_run_id == nil
+      assert systems["nerves_system_rpi4"].carried_from_run_id == first.id
+      assert systems["nerves_system_rpi4"].firmware_size_bytes == 123
+      assert systems["nerves_system_bbb"].status == :fail
+      assert systems["nerves_system_bbb"].log_tail == "boom"
+      assert second.overall_status == :pass
+    end
+
+    test "an argus-only run keeps the previous run's footprint" do
+      first =
+        ingest!(%{
+          full_result("footpkg", "1.0.0", %{"nerves_system_rpi4" => %{"status" => "pass"}})
+          | "package" => %{
+              "name" => "footpkg",
+              "version" => "1.0.0",
+              "footprint" => %{"total_bytes" => 42}
+            }
+        })
+
+      # The worker's argus-only result carries an empty but non-nil footprint.
+      second =
+        ingest!(%{
+          "package" => %{
+            "name" => "footpkg",
+            "version" => "1.0.0",
+            "footprint" => %{"total_bytes" => 0}
+          },
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "argus_only",
+          "systems" => %{"host" => %{"status" => "pass"}}
+        })
+
+      assert first.footprint == %{"total_bytes" => 42}
+      assert second.footprint == first.footprint
+    end
+
+    test "a targets run keeps its own footprint" do
+      ingest!(%{
+        full_result("footpkg2", "1.0.0", %{"nerves_system_rpi4" => %{"status" => "pass"}})
+        | "package" => %{
+            "name" => "footpkg2",
+            "version" => "1.0.0",
+            "footprint" => %{"total_bytes" => 42}
+          }
+      })
+
+      second =
+        ingest!(%{
+          "package" => %{
+            "name" => "footpkg2",
+            "version" => "1.0.0",
+            "footprint" => %{"total_bytes" => 7}
+          },
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "targets",
+          "systems" => %{"nerves_system_rpi4" => %{"status" => "pass"}}
+        })
+
+      assert second.footprint == %{"total_bytes" => 7}
+    end
+
+    test "a targets run replaces only the targets it built" do
+      ingest!(
+        full_result("carrypkg2", "1.0.0", %{
+          "nerves_system_rpi4" => %{"status" => "fail"},
+          "nerves_system_bbb" => %{"status" => "pass"}
+        })
+      )
+
+      second =
+        ingest!(%{
+          "package" => %{"name" => "carrypkg2", "version" => "1.0.0"},
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "targets",
+          "systems" => %{"nerves_system_rpi4" => %{"status" => "pass"}}
+        })
+
+      systems = systems_of(second)
+      assert systems["nerves_system_rpi4"].status == :pass
+      assert systems["nerves_system_rpi4"].carried_from_run_id == nil
+      assert systems["nerves_system_bbb"].carried_from_run_id != nil
+    end
+
+    test "keeps the original provenance across a chain of partial runs" do
+      first =
+        ingest!(
+          full_result("chainpkg", "1.0.0", %{"nerves_system_rpi4" => %{"status" => "pass"}})
+        )
+
+      partial = fn ->
+        ingest!(%{
+          "package" => %{"name" => "chainpkg", "version" => "1.0.0"},
+          "finished_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+          "scope" => "argus_only",
+          "systems" => %{"host" => %{"status" => "pass"}}
+        })
+      end
+
+      partial.()
+      third = partial.()
+
+      assert systems_of(third)["nerves_system_rpi4"].carried_from_run_id == first.id
+    end
+
+    test "does not carry across versions" do
+      ingest!(full_result("verpkg", "1.0.0", %{"nerves_system_rpi4" => %{"status" => "pass"}}))
+
+      second =
+        ingest!(%{
+          "package" => %{"name" => "verpkg", "version" => "1.1.0"},
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "argus_only",
+          "systems" => %{"host" => %{"status" => "fail"}}
+        })
+
+      assert Map.keys(systems_of(second)) == ["host"]
+    end
+
+    test "with no previous run the partial run stands alone" do
+      run =
+        ingest!(%{
+          "package" => %{"name" => "freshpkg", "version" => "1.0.0"},
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "argus_only",
+          "systems" => %{"host" => %{"status" => "pass"}}
+        })
+
+      assert Map.keys(systems_of(run)) == ["host"]
+    end
+
+    test "a full run carries nothing" do
+      ingest!(full_result("fullpkg", "1.0.0", %{"nerves_system_rpi4" => %{"status" => "pass"}}))
+      second = ingest!(full_result("fullpkg", "1.0.0", %{"host" => %{"status" => "pass"}}))
+
+      assert Map.keys(systems_of(second)) == ["host"]
+    end
+
+    test "copies the stored log and artifact memberships of a carried system" do
+      first =
+        ingest!(full_result("logpkg", "1.0.0", %{"nerves_system_bbb" => %{"status" => "fail"}}))
+
+      [old] = Map.values(systems_of(first))
+      sha = String.duplicate("ab", 32)
+
+      Ash.create!(
+        Portal.Catalog.SystemLog,
+        %{system_result_id: old.id, body: "the log", byte_size: 7},
+        action: :create,
+        domain: Portal.Catalog
+      )
+
+      Ash.create!(ArtifactMembership, %{system_result_id: old.id, sha256: sha},
+        action: :create,
+        domain: Portal.Catalog
+      )
+
+      second =
+        ingest!(%{
+          "package" => %{"name" => "logpkg", "version" => "1.0.0"},
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "argus_only",
+          "systems" => %{"host" => %{"status" => "pass"}}
+        })
+
+      assert {:ok, %{body: "the log"}} = Portal.Catalog.system_log("logpkg", "nerves_system_bbb")
+
+      carried = systems_of(second)["nerves_system_bbb"]
+
+      assert [%{sha256: ^sha}] =
+               ArtifactMembership
+               |> Ash.Query.filter(system_result_id == ^carried.id)
+               |> Ash.read!(domain: Portal.Catalog)
+    end
+  end
 end
