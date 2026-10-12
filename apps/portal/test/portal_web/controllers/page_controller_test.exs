@@ -458,7 +458,9 @@ defmodule PortalWeb.PageControllerTest do
           ~p"/admin/scan",
           ~p"/admin/update-check",
           ~p"/admin/argus",
-          ~p"/admin/requests/#{Ecto.UUID.generate()}/priority"
+          ~p"/admin/requests/#{Ecto.UUID.generate()}/priority",
+          ~p"/admin/bulk-rebuild",
+          ~p"/admin/bulk-rebuild/#{Ecto.UUID.generate()}/cancel"
         ] do
       assert redirected_to(post(recycle(conn), path)) == ~p"/login"
     end
@@ -559,6 +561,61 @@ defmodule PortalWeb.PageControllerTest do
     maintenance = html_response(get(conn, ~p"/admin/maintenance"), 200)
     assert maintenance =~ ~s(action="/admin/update-check")
     assert maintenance =~ "hex.pm update check"
+  end
+
+  test "the maintenance page has the bulk rebuild form", %{conn: conn} do
+    {conn, _} = signed_in_admin(conn, "admin_bulk_form")
+    html = html_response(get(conn, ~p"/admin/maintenance"), 200)
+    assert html =~ ~s(action="/admin/bulk-rebuild")
+    assert html =~ "nerves_system_rpi4"
+  end
+
+  test "a bulk rebuild dry run says how many it would queue", %{conn: conn} do
+    {conn, _} = signed_in_admin(conn, "admin_bulk_dry")
+
+    conn =
+      post(conn, ~p"/admin/bulk-rebuild", %{
+        "limit" => "10",
+        "what" => "full",
+        "mode" => "dry_run"
+      })
+
+    assert html_response(conn, 200) =~ "would rebuild 0 packages"
+  end
+
+  test "starting a bulk rebuild lists the sweep with a cancel button", %{conn: conn} do
+    {conn, _} = signed_in_admin(conn, "admin_bulk_run")
+
+    {:ok, _} =
+      Portal.Catalog.Ingestion.ingest(
+        %{
+          "package" => %{"name" => "bulkweb", "version" => "1.0.0"},
+          "finished_at" => "2026-10-10T10:00:00Z",
+          "systems" => %{"host" => %{"status" => "pass"}}
+        },
+        %{run_id: "bw-1", image_digest: "sha256:x", files_dir: System.tmp_dir!()}
+      )
+
+    conn =
+      post(conn, ~p"/admin/bulk-rebuild", %{
+        "limit" => "10",
+        "what" => "argus_only",
+        "mode" => "run"
+      })
+
+    html = html_response(conn, 200)
+    assert html =~ "Bulk rebuild queued: 1 package"
+    assert html =~ "argus only"
+    assert html =~ ~r{action="/admin/bulk-rebuild/[0-9a-f-]+/cancel"}
+  end
+
+  test "targets without any system selected is refused", %{conn: conn} do
+    {conn, _} = signed_in_admin(conn, "admin_bulk_notargets")
+
+    conn =
+      post(conn, ~p"/admin/bulk-rebuild", %{"limit" => "10", "what" => "targets", "mode" => "run"})
+
+    assert html_response(conn, 200) =~ "Pick at least one target"
   end
 
   test "POST /admin/argus saves the settings and shows them", %{conn: conn} do

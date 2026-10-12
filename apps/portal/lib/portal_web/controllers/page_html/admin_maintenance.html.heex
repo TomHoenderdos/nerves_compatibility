@@ -69,4 +69,134 @@
       </div>
     </div>
   </section>
+
+  <section class="card mt-6 border border-base-300 bg-base-100 shadow-sm">
+    <div class="card-body">
+      <h2 class="card-title">Bulk rebuild</h2>
+      <p class="mt-1 text-sm leading-6 text-base-content/70">
+        Rebuilds packages that were built before, at the lowest priority. Use it after a worker
+        or argus change. Systems a partial rebuild leaves out keep their previous result.
+      </p>
+
+      <form method="post" action={~p"/admin/bulk-rebuild"} class="mt-5 space-y-4">
+        <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+
+        <div class="grid gap-4 sm:grid-cols-3">
+          <label class="flex flex-col gap-1 text-sm text-base-content/70">
+            Limit
+            <input
+              type="number"
+              name="limit"
+              value="100"
+              min="1"
+              max="20000"
+              class="input input-bordered input-sm"
+            />
+          </label>
+
+          <label class="flex flex-col gap-1 text-sm text-base-content/70">
+            Order
+            <select name="order" class="select select-bordered select-sm">
+              <option value="stalest">Stalest first</option>
+              <option value="catalog">Catalog order</option>
+            </select>
+          </label>
+
+          <label class="flex flex-col gap-1 text-sm text-base-content/70">
+            Result
+            <select name="status" class="select select-bordered select-sm">
+              <option value="">Any result</option>
+              <option value="pass">Passing</option>
+              <option value="fail">Failing</option>
+              <option value="error">Errored</option>
+            </select>
+          </label>
+        </div>
+
+        <fieldset class="space-y-2">
+          <legend class="text-sm text-base-content/70">What to rebuild</legend>
+          <label class="flex items-center gap-2 text-sm">
+            <input type="radio" name="what" value="full" checked class="radio radio-sm" />
+            All targets + argus
+          </label>
+          <label class="flex items-center gap-2 text-sm">
+            <input type="radio" name="what" value="argus_only" class="radio radio-sm" />
+            Argus only
+          </label>
+          <label class="flex items-center gap-2 text-sm">
+            <input type="radio" name="what" value="targets" class="radio radio-sm" />
+            Selected targets
+          </label>
+          <div class="ml-6 flex flex-wrap gap-3">
+            <label :for={target <- @bulk_targets} class="flex items-center gap-1.5 text-sm">
+              <input type="checkbox" name="systems[]" value={target} class="checkbox checkbox-sm" />
+              <span class="font-mono text-xs">{target}</span>
+            </label>
+          </div>
+        </fieldset>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="submit" name="mode" value="dry_run" class="btn btn-sm btn-ghost">
+            Dry run
+          </button>
+          <button type="submit" name="mode" value="run" class="btn btn-sm btn-primary">
+            Start
+          </button>
+        </div>
+      </form>
+
+      <div :if={@sweeps != []} class="mt-6 overflow-hidden rounded-xl border border-base-300">
+        <table class="w-full text-left text-sm">
+          <thead class="border-b border-base-300 bg-base-200/60 text-xs uppercase tracking-wide text-base-content/60">
+            <tr>
+              <th class="px-4 py-2">Started</th>
+              <th class="px-4 py-2">What</th>
+              <th class="px-4 py-2">Selected</th>
+              <th class="px-4 py-2">Intake</th>
+              <th class="px-4 py-2">Queued</th>
+              <th class="px-4 py-2">Building</th>
+              <th class="px-4 py-2">Done</th>
+              <th class="px-4 py-2">Failed</th>
+              <th class="px-4 py-2">Cancelled</th>
+              <th class="px-4 py-2"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-base-200">
+            <tr :for={{sweep, status} <- @sweeps}>
+              <td class="px-4 py-2 text-base-content/70">{format_datetime(sweep.inserted_at)}</td>
+              <td class="px-4 py-2">
+                <%= cond do %>
+                  <% sweep.what == "full" -> %>
+                    all targets
+                  <% sweep.what == "argus_only" -> %>
+                    argus only
+                  <% true -> %>
+                    {Enum.join(sweep.systems || [], ", ")}
+                <% end %>
+              </td>
+              <td class="px-4 py-2">{sweep.selected}</td>
+              <td class="px-4 py-2">{status.intake}</td>
+              <td class="px-4 py-2">{status.queued}</td>
+              <td class="px-4 py-2">{status.building}</td>
+              <td class="px-4 py-2">{status.done}</td>
+              <td class="px-4 py-2">{status.failed}</td>
+              <td class="px-4 py-2">{status.cancelled}</td>
+              <td class="px-4 py-2">
+                <%= if sweep.cancelled_at do %>
+                  <span class="text-base-content/50">Cancelled</span>
+                <% else %>
+                  <%= if status.intake + status.queued > 0 do %>
+                    <form method="post" action={~p"/admin/bulk-rebuild/#{sweep.id}/cancel"}>
+                      <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                      <button type="submit" class="btn btn-xs btn-ghost">Cancel</button>
+                    </form>
+                  <% end %>
+                <% end %>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
 </.admin_layout>
