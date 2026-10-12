@@ -76,9 +76,15 @@
       <p class="mt-1 text-sm leading-6 text-base-content/70">
         Rebuilds packages that were built before, at the lowest priority. Use it after a worker
         or argus change. Systems a partial rebuild leaves out keep their previous result.
+        Packages with a release newer than their last build are rebuilt in full.
       </p>
 
-      <form method="post" action={~p"/admin/bulk-rebuild"} class="mt-5 space-y-4">
+      <form
+        id="bulk-rebuild-form"
+        method="post"
+        action={~p"/admin/bulk-rebuild"}
+        class="mt-5 space-y-4"
+      >
         <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
 
         <div class="grid gap-4 sm:grid-cols-3">
@@ -139,7 +145,17 @@
           <button type="submit" name="mode" value="dry_run" class="btn btn-sm btn-ghost">
             Dry run
           </button>
-          <button type="submit" name="mode" value="run" class="btn btn-sm btn-primary">
+          <%!-- app.js rewrites the question from the form's current limit and
+               scope before phoenix_html asks it; this is the text without JS
+               changes, for the defaults. --%>
+          <button
+            type="submit"
+            name="mode"
+            value="run"
+            class="btn btn-sm btn-primary"
+            data-bulk-confirm
+            data-confirm="Queue forced Docker builds for up to 100 packages (All targets + argus)?"
+          >
             Start
           </button>
         </div>

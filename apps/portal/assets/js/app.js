@@ -90,6 +90,23 @@ liveSocket.connect()
 
 initWebAuthn()
 
+// The bulk rebuild Start button confirms through phoenix_html's
+// `data-confirm`, whose text is fixed when the page renders. Starting a sweep
+// queues forced Docker builds, so the question names the limit and scope the
+// form holds at the moment of the click. This capture listener runs before
+// phoenix_html's own click handler reads the attribute.
+window.addEventListener("click", e => {
+  const button = e.target.closest && e.target.closest("[data-bulk-confirm]")
+  if (!button || !button.form) return
+  const limit = button.form.elements.namedItem("limit").value
+  const what = button.form.querySelector("input[name='what']:checked")
+  const scope = what ? what.parentElement.textContent.trim() : "All targets + argus"
+  button.setAttribute(
+    "data-confirm",
+    `Queue forced Docker builds for up to ${limit} packages (${scope})?`
+  )
+}, true)
+
 // expose liveSocket on window for web console debug logs and latency simulation:
 // >> liveSocket.enableDebug()
 // >> liveSocket.enableLatencySim(1000)  // enabled for duration of browser session

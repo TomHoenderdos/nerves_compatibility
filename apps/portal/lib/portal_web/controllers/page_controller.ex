@@ -109,12 +109,15 @@ defmodule PortalWeb.PageController do
     end
   end
 
+  # Both bulk rebuild actions redirect rather than render: refreshing a
+  # rendered POST response re-sends the form, which here would start a second
+  # sweep of forced builds.
   def admin_bulk_rebuild(conn, params) do
     case require_admin(conn) do
       {:ok, conn, user} ->
         conn
         |> bulk_rebuild_flash(bulk_rebuild_opts(params, user))
-        |> render_admin(user, :maintenance)
+        |> redirect(to: ~p"/admin/maintenance")
 
       {:error, conn} ->
         conn
@@ -170,19 +173,19 @@ defmodule PortalWeb.PageController do
 
   def admin_cancel_sweep(conn, %{"id" => id}) do
     case require_admin(conn) do
-      {:ok, conn, user} ->
+      {:ok, conn, _user} ->
         case Ecto.UUID.cast(id) do
           {:ok, sweep_id} ->
             {:ok, n} = Portal.BulkRebuild.cancel(sweep_id)
 
             conn
             |> put_flash(:info, "Cancelled #{n} waiting jobs.")
-            |> render_admin(user, :maintenance)
+            |> redirect(to: ~p"/admin/maintenance")
 
           :error ->
             conn
             |> put_flash(:error, "That sweep id is not valid.")
-            |> render_admin(user, :maintenance)
+            |> redirect(to: ~p"/admin/maintenance")
         end
 
       {:error, conn} ->
