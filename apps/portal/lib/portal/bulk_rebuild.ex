@@ -45,7 +45,8 @@ defmodule Portal.BulkRebuild do
           building: non_neg_integer(),
           done: non_neg_integer(),
           failed: non_neg_integer(),
-          cancelled: non_neg_integer()
+          cancelled: non_neg_integer(),
+          remaining: non_neg_integer()
         }
 
   @doc "The systems a full rebuild builds: the worker's default list."
@@ -212,26 +213,43 @@ defmodule Portal.BulkRebuild do
 
   @doc """
   The sweep's jobs counted by stage: Backfill jobs not yet finished are
-  `intake`; Build jobs are `queued`, `building`, `done` or `failed`; either
-  kind cancelled is `cancelled`. Counts come from Oban, so they shrink once
-  Oban prunes finished jobs.
+  `intake`; Build jobs are `queued`, `building` or `done`; either kind
+  discarded is `failed` and either kind cancelled is `cancelled`.
+  `remaining` is intake + queued + building.
+
+  Counts come from Oban, whose Pruner deletes finished jobs (completed,
+  discarded, cancelled) once they are older than its `max_age`
+  (`config/config.exs`). `done`, `failed` and `cancelled` shrink when that
+  happens; `remaining` does not, because unfinished jobs are never pruned.
   """
   @spec status(String.t()) :: status()
   def status(sweep_id) do
     counts =
       Repo.all(
         from(j in "oban_jobs",
-          where: fragment("? ->> 'sweep_id'", j.meta) == ^sweep_id,
+          where: ^sweep_jobs(sweep_id),
           group_by: [j.worker, j.state],
           select: {j.worker, j.state, count()}
         )
       )
 
     empty = %{intake: 0, queued: 0, building: 0, done: 0, failed: 0, cancelled: 0}
-    Enum.reduce(counts, empty, fn {worker, state, n}, acc -> tally(acc, worker, state, n) end)
+
+    counts
+    |> Enum.reduce(empty, fn {worker, state, n}, acc -> tally(acc, worker, state, n) end)
+    |> then(&Map.put(&1, :remaining, &1.intake + &1.queued + &1.building))
   end
 
+  # JSONB containment rather than `meta ->> 'sweep_id'`: Oban's GIN index on
+  # `meta` (`oban_jobs_meta_index`) serves `@>`, not a text extraction.
+  defp sweep_jobs(sweep_id),
+    do: dynamic([j], fragment("? @> ?", j.meta, type(^%{"sweep_id" => sweep_id}, :map)))
+
   defp tally(acc, _worker, "cancelled", n), do: add(acc, :cancelled, n)
+
+  # A Backfill job discarded after its retries -- hex.pm unreachable, a
+  # request it could not open -- never became a build, but it is a failure.
+  defp tally(acc, _worker, "discarded", n), do: add(acc, :failed, n)
 
   defp tally(acc, "Portal.Workers.Backfill", state, n)
        when state in @waiting or state == "executing",
@@ -242,7 +260,6 @@ defmodule Portal.BulkRebuild do
 
   defp tally(acc, "Portal.Workers.Build", "executing", n), do: add(acc, :building, n)
   defp tally(acc, "Portal.Workers.Build", "completed", n), do: add(acc, :done, n)
-  defp tally(acc, "Portal.Workers.Build", "discarded", n), do: add(acc, :failed, n)
   defp tally(acc, _worker, _state, _n), do: acc
 
   defp add(acc, key, n), do: Map.update!(acc, key, &(&1 + n))
@@ -262,7 +279,7 @@ defmodule Portal.BulkRebuild do
     {:ok, n} =
       Oban.cancel_all_jobs(
         from(j in Oban.Job,
-          where: fragment("? ->> 'sweep_id'", j.meta) == ^sweep_id,
+          where: ^sweep_jobs(sweep_id),
           where: j.state in @waiting
         )
       )

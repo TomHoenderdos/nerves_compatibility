@@ -611,6 +611,8 @@ defmodule PortalWeb.PageControllerTest do
     html = html_response(get(conn, ~p"/admin/maintenance"), 200)
     assert html =~ "Bulk rebuild queued: 1 package"
     assert html =~ "argus only"
+    assert html =~ "Remaining"
+    assert html =~ "Cancelled also includes builds stopped"
     assert html =~ ~r{action="/admin/bulk-rebuild/[0-9a-f-]+/cancel"}
 
     [sweep] = Portal.BulkRebuild.recent()
