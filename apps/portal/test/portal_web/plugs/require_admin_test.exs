@@ -157,7 +157,14 @@ defmodule PortalWeb.Plugs.RequireAdminTest do
     for {verb, path} <- guarded_routes() do
       conn = request_with_step_up(admin, verb, path)
 
-      assert conn.status == 200, "#{verb} #{path} refused an enrolled admin"
+      # The bulk rebuild actions answer with a redirect back into admin (so a
+      # refresh cannot re-send them); a refusal goes to /login,
+      # /settings/security or /request-scan instead.
+      opened? =
+        conn.status == 200 or
+          (conn.status == 302 and String.starts_with?(redirected_to(conn), "/admin/"))
+
+      assert opened?, "#{verb} #{path} refused an enrolled admin"
     end
   end
 
