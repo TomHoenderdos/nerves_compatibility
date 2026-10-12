@@ -56,6 +56,30 @@ defmodule Portal.Workers.BackfillTest do
 
       refute_enqueued(worker: Build)
     end
+
+    test "passes a sweep's force, scope and id through to the build" do
+      assert :ok =
+               perform_job(Backfill, %{
+                 "package" => "bfsweep",
+                 "source" => "backfill",
+                 "force" => true,
+                 "scope" => "argus_only",
+                 "sweep_id" => "s1"
+               })
+
+      [job] = all_enqueued(worker: Build)
+      assert job.args["scope"] == "argus_only"
+      assert job.meta["sweep_id"] == "s1"
+    end
+
+    # Backfill is unique per package for a day so a re-run sweep is a no-op.
+    # A deliberate second bulk rebuild must not be swallowed by that.
+    test "a second sweep is not deduplicated against the first" do
+      {:ok, a} = Oban.insert(Backfill.new(%{"package" => "dup", "sweep_id" => "s1"}))
+      {:ok, b} = Oban.insert(Backfill.new(%{"package" => "dup", "sweep_id" => "s2"}))
+      refute b.conflict?
+      assert a.id != b.id
+    end
   end
 
   defmodule StubClosure do

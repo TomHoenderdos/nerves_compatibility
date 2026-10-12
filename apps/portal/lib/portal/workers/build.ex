@@ -35,10 +35,15 @@ defmodule Portal.Workers.Build do
     # Oban compares the supplied args by containment, so an omitted `force`
     # still matches a forced job for the same request. The catalog check below
     # avoids rebuilding results that have already been ingested.
+    #
+    # `scope`/`systems` are keys too: a re-enqueue of the same request with a
+    # different scope inside the 60 s window (e.g. a bulk rebuild's
+    # argus-only pass right after its targets pass) must not be coalesced
+    # into the first.
     unique: [
       period: 60,
       fields: [:worker, :queue, :args],
-      keys: [:package, :version, :image_digest, :force, :scan_request_id]
+      keys: [:package, :version, :image_digest, :force, :scan_request_id, :scope, :systems]
     ]
 
   require Ash.Query

@@ -54,7 +54,11 @@ defmodule Portal.Workers.Backfill do
     max_attempts: 5,
     # Long enough that a re-run inside the same sweep is a no-op, short enough
     # that a deliberate re-sweep tomorrow still goes through.
-    unique: [keys: [:package], period: 86_400]
+    #
+    # A bulk rebuild names its sweep, so a second sweep the same day is a new
+    # job; an ordinary sweep has no `sweep_id` and stays deduplicated per
+    # package per day.
+    unique: [keys: [:package, :sweep_id], period: 86_400]
 
   require Logger
 
@@ -69,23 +73,34 @@ defmodule Portal.Workers.Backfill do
   def perform(%Oban.Job{args: %{"package" => package} = args}) do
     source = Map.get(args, "source", "backfill")
 
+    # Instructions for the build job, not this one's own business -- a bulk
+    # rebuild (`Portal.BulkRebuild`) is the only caller that sets any of these.
+    build = %{
+      force: args["force"] == true,
+      scope: args["scope"],
+      systems: args["systems"],
+      sweep_id: args["sweep_id"]
+    }
+
     if source in @sources do
-      build(package, String.to_existing_atom(source))
+      build(package, String.to_existing_atom(source), build)
     else
       {:cancel, {:unknown_source, source}}
     end
   end
 
-  defp build(package, source) do
+  defp build(package, source, build) do
     if classify?(package, source) do
       classify(package, source)
     else
-      request(package, source)
+      request(package, source, build)
     end
   end
 
-  defp request(package, source) do
-    case ScanRequests.create_once(%{package_name: package, source: source}) do
+  defp request(package, source, build) do
+    attrs = Map.merge(%{package_name: package, source: source}, build)
+
+    case ScanRequests.create_once(attrs) do
       {:ok, _request} ->
         :ok
 
@@ -142,7 +157,9 @@ defmodule Portal.Workers.Backfill do
 
           {:native, reason} ->
             Logger.info("Queue filter: #{package} #{version} is native: #{inspect(reason)}")
-            request(package, source)
+            # The classify path never carries a bulk rebuild's force/scope/sweep
+            # id -- `classify?/2` never classifies a package a sweep selects.
+            request(package, source, %{})
 
           {:error, reason} ->
             {:error, reason}

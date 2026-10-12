@@ -632,6 +632,25 @@ defmodule Portal.Workers.BuildTest do
     end
   end
 
+  describe "unique/1" do
+    # A bulk rebuild's targets pass and argus-only pass for the same request
+    # land inside the same 60 s window; they must get distinct jobs.
+    test "two jobs for the same request differing only in scope are not coalesced" do
+      {:ok, first} =
+        Oban.insert(
+          Build.new(%{"package" => "scoped", "version" => "1.0.0", "scope" => "targets"})
+        )
+
+      {:ok, second} =
+        Oban.insert(
+          Build.new(%{"package" => "scoped", "version" => "1.0.0", "scope" => "argus_only"})
+        )
+
+      refute second.conflict?
+      assert first.id != second.id
+    end
+  end
+
   describe "backoff/1" do
     test "is capped so repeated snoozes cannot push a retry days out" do
       # Oban's default backoff is quartic in `attempt`, and every {:snooze, _}
