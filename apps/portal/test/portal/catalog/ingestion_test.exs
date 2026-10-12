@@ -672,12 +672,13 @@ defmodule Portal.Catalog.IngestionTest do
     end
 
     test "a targets run replaces only the targets it built" do
-      ingest!(
-        full_result("carrypkg2", "1.0.0", %{
-          "nerves_system_rpi4" => %{"status" => "fail"},
-          "nerves_system_bbb" => %{"status" => "pass"}
-        })
-      )
+      first =
+        ingest!(
+          full_result("carrypkg2", "1.0.0", %{
+            "nerves_system_rpi4" => %{"status" => "fail"},
+            "nerves_system_bbb" => %{"status" => "pass"}
+          })
+        )
 
       second =
         ingest!(%{
@@ -690,7 +691,8 @@ defmodule Portal.Catalog.IngestionTest do
       systems = systems_of(second)
       assert systems["nerves_system_rpi4"].status == :pass
       assert systems["nerves_system_rpi4"].carried_from_run_id == nil
-      assert systems["nerves_system_bbb"].carried_from_run_id != nil
+      assert systems["nerves_system_bbb"].carried_from_run_id == first.id
+      assert systems["nerves_system_bbb"].status == :pass
     end
 
     test "keeps the original provenance across a chain of partial runs" do
@@ -726,6 +728,8 @@ defmodule Portal.Catalog.IngestionTest do
         })
 
       assert Map.keys(systems_of(second)) == ["host"]
+      # Nothing to carry, so the host compile is the only verdict there is.
+      assert second.overall_status == :fail
     end
 
     test "with no previous run the partial run stands alone" do
@@ -738,6 +742,7 @@ defmodule Portal.Catalog.IngestionTest do
         })
 
       assert Map.keys(systems_of(run)) == ["host"]
+      assert run.overall_status == :pass
     end
 
     test "a full run carries nothing" do

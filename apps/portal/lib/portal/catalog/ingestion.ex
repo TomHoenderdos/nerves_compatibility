@@ -730,18 +730,31 @@ defmodule Portal.Catalog.Ingestion do
         Compatibility.Types.parse_status(s)
 
       _ ->
-        statuses =
-          systems
-          |> Map.delete("host")
-          |> Map.values()
-          |> Enum.map(fn sys -> Compatibility.Types.parse_status(sys["status"]) end)
+        {host, targets} = Map.pop(systems, "host")
+        statuses = Enum.map(Map.values(targets), &Compatibility.Types.parse_status(&1["status"]))
 
         cond do
-          :pass in statuses -> :pass
-          :fail in statuses -> :fail
-          :error in statuses -> :error
-          :skipped in statuses -> :skipped
-          true -> :unknown
+          # A partial run with nothing to carry -- no previous run of this
+          # version -- built no target at all; its host compile is the only
+          # verdict it has. A full run always builds its targets, so it keeps
+          # the rule below.
+          targets == %{} and is_map(host) and result["scope"] in @partial_scopes ->
+            Compatibility.Types.parse_status(host["status"])
+
+          :pass in statuses ->
+            :pass
+
+          :fail in statuses ->
+            :fail
+
+          :error in statuses ->
+            :error
+
+          :skipped in statuses ->
+            :skipped
+
+          true ->
+            :unknown
         end
     end
   end
