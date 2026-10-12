@@ -724,38 +724,23 @@ defmodule Portal.Catalog.Ingestion do
 
   # Derive the overall status. A top-level forced_status (gleam/retired) wins;
   # otherwise pass if any system passed, then fail/error/skipped, else unknown.
+  defp overall_status(%{"forced_status" => s}, _systems) when is_binary(s),
+    do: Compatibility.Types.parse_status(s)
+
   defp overall_status(result, systems) do
-    case result["forced_status"] do
-      s when is_binary(s) ->
-        Compatibility.Types.parse_status(s)
+    partial? = result["scope"] in @partial_scopes
 
-      _ ->
-        {host, targets} = Map.pop(systems, "host")
+    case Map.pop(systems, "host") do
+      # A partial run with nothing to carry -- no previous run of this
+      # version -- built no target at all; its host compile is the only
+      # verdict it has. A full run always builds its targets, so it keeps
+      # the rule below.
+      {%{} = host, targets} when partial? and targets == %{} ->
+        Compatibility.Types.parse_status(host["status"])
+
+      {_host, targets} ->
         statuses = Enum.map(Map.values(targets), &Compatibility.Types.parse_status(&1["status"]))
-
-        cond do
-          # A partial run with nothing to carry -- no previous run of this
-          # version -- built no target at all; its host compile is the only
-          # verdict it has. A full run always builds its targets, so it keeps
-          # the rule below.
-          targets == %{} and is_map(host) and result["scope"] in @partial_scopes ->
-            Compatibility.Types.parse_status(host["status"])
-
-          :pass in statuses ->
-            :pass
-
-          :fail in statuses ->
-            :fail
-
-          :error in statuses ->
-            :error
-
-          :skipped in statuses ->
-            :skipped
-
-          true ->
-            :unknown
-        end
+        Enum.find([:pass, :fail, :error, :skipped], :unknown, &(&1 in statuses))
     end
   end
 
