@@ -568,6 +568,7 @@ defmodule PortalWeb.PageControllerTest do
     html = html_response(get(conn, ~p"/admin/maintenance"), 200)
     assert html =~ ~s(action="/admin/bulk-rebuild")
     assert html =~ "nerves_system_rpi4"
+    assert html =~ ~r/data-confirm="[^"]*forced Docker builds/
   end
 
   test "a bulk rebuild dry run says how many it would queue", %{conn: conn} do
@@ -580,7 +581,8 @@ defmodule PortalWeb.PageControllerTest do
         "mode" => "dry_run"
       })
 
-    assert html_response(conn, 200) =~ "would rebuild 0 packages"
+    assert redirected_to(conn) == ~p"/admin/maintenance"
+    assert html_response(get(conn, ~p"/admin/maintenance"), 200) =~ "would rebuild 0 packages"
   end
 
   test "starting a bulk rebuild lists the sweep with a cancel button", %{conn: conn} do
@@ -603,10 +605,18 @@ defmodule PortalWeb.PageControllerTest do
         "mode" => "run"
       })
 
-    html = html_response(conn, 200)
+    # Redirected, so refreshing the page cannot start the sweep again.
+    assert redirected_to(conn) == ~p"/admin/maintenance"
+
+    html = html_response(get(conn, ~p"/admin/maintenance"), 200)
     assert html =~ "Bulk rebuild queued: 1 package"
     assert html =~ "argus only"
     assert html =~ ~r{action="/admin/bulk-rebuild/[0-9a-f-]+/cancel"}
+
+    [sweep] = Portal.BulkRebuild.recent()
+    conn = post(conn, ~p"/admin/bulk-rebuild/#{sweep.id}/cancel")
+    assert redirected_to(conn) == ~p"/admin/maintenance"
+    assert html_response(get(conn, ~p"/admin/maintenance"), 200) =~ "Cancelled 1 waiting jobs."
   end
 
   test "targets without any system selected is refused", %{conn: conn} do
@@ -615,7 +625,8 @@ defmodule PortalWeb.PageControllerTest do
     conn =
       post(conn, ~p"/admin/bulk-rebuild", %{"limit" => "10", "what" => "targets", "mode" => "run"})
 
-    assert html_response(conn, 200) =~ "Pick at least one target"
+    assert redirected_to(conn) == ~p"/admin/maintenance"
+    assert html_response(get(conn, ~p"/admin/maintenance"), 200) =~ "Pick at least one target"
   end
 
   test "POST /admin/argus saves the settings and shows them", %{conn: conn} do

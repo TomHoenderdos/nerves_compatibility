@@ -94,6 +94,27 @@ defmodule Portal.BulkRebuildTest do
     assert swept_packages() == ["b"]
   end
 
+  test "a package still waiting on an open request is not selected again" do
+    docker_run!("waiting")
+    docker_run!("free")
+
+    {:ok, _} =
+      Portal.ScanRequests.create_once(%{
+        package_name: "waiting",
+        source: :hex_owner,
+        status: :pending
+      })
+
+    {:ok, %{selected: 1}} = BulkRebuild.run(limit: 10)
+    assert swept_packages() == ["free"]
+  end
+
+  test "a name given twice is queued once" do
+    docker_run!("a")
+    {:ok, %{selected: 1, enqueued: 1}} = BulkRebuild.run(limit: 10, names: ["a", "a"])
+    assert swept_packages() == ["a"]
+  end
+
   test "an unknown target is refused before anything is written" do
     docker_run!("t")
 

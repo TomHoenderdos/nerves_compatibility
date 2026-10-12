@@ -78,7 +78,9 @@ defmodule Portal.BulkRebuild do
     limit = Keyword.fetch!(opts, :limit)
 
     with {:ok, what, systems} <- what(Keyword.get(opts, :what, :full)) do
-      names = Keyword.get(opts, :names) || selection(limit, opts)
+      # `Oban.insert_all/1` does not check `unique`, so a name given twice
+      # would be two jobs.
+      names = Enum.uniq(Keyword.get(opts, :names) || selection(limit, opts))
 
       cond do
         Keyword.get(opts, :dry_run, false) ->
@@ -116,6 +118,7 @@ defmodule Portal.BulkRebuild do
       )
 
     from(p in "catalog_packages",
+      as: :package,
       join: l in subquery(latest),
       as: :latest,
       on: l.package_id == p.id,
@@ -125,6 +128,18 @@ defmodule Portal.BulkRebuild do
         exists(
           from(s in "catalog_system_results",
             where: s.run_id == parent_as(:latest).id and s.system_pkg == "host",
+            select: 1
+          )
+        ),
+      # A package still waiting on an open request -- often from an earlier
+      # sweep that has not reached it -- is left to that request, so a second
+      # stalest-first sweep picks the next packages instead of the same ones.
+      where:
+        not exists(
+          from(r in "portal_scan_requests",
+            where:
+              r.package_name == parent_as(:package).name and
+                r.status in ["pending", "accepted", "queued"],
             select: 1
           )
         ),
