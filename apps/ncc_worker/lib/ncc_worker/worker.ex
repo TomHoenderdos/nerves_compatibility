@@ -14,6 +14,7 @@ defmodule NccWorker.Worker do
     LockPolicy,
     LogTail,
     Project,
+    RunScope,
     Scanner,
     SeedGate,
     Systems
@@ -34,6 +35,7 @@ defmodule NccWorker.Worker do
           },
           optional(:systems_override) => %{String.t() => String.t()},
           optional(:systems_filter) => [String.t()],
+          optional(:mode) => String.t(),
           optional(:argus) => %{
             optional(:analyses) => [String.t()],
             optional(:scope) => String.t(),
@@ -50,6 +52,7 @@ defmodule NccWorker.Worker do
         }
 
   @type result :: %{
+          optional(:scope) => String.t(),
           run_id: String.t(),
           package: %{
             name: String.t(),
@@ -288,6 +291,8 @@ defmodule NccWorker.Worker do
     host_result =
       compile_host(project_dir, paths.output_dir, log_tail_bytes, input.package.name)
 
+    scope = RunScope.from_input(input)
+
     selection =
       BuildSelection.select(
         project_dir,
@@ -297,12 +302,17 @@ defmodule NccWorker.Worker do
         host_env(project_dir)
       )
 
+    # An argus-only run compiles on the host for argus and stops there: the
+    # targets it leaves out are carried over from the previous run at ingest.
     system_results =
-      case selection do
-        :pure_elixir ->
+      case {scope, selection} do
+        {:argus_only, _} ->
+          %{}
+
+        {_, :pure_elixir} ->
           %{"pure_elixir" => assumed_compatible_result()}
 
-        :firmware ->
+        {_, :firmware} ->
           build_all_systems(
             project_dir,
             systems,
@@ -321,7 +331,13 @@ defmodule NccWorker.Worker do
     # Advisory: argus reads the host beams once for every system. Its result
     # never feeds a system status.
     argus =
-      Argus.run(project_dir, input.package.name, input[:argus], selection, host_result)
+      Argus.run(
+        project_dir,
+        input.package.name,
+        RunScope.argus_config(input[:argus], scope),
+        selection,
+        host_result
+      )
 
     package_version =
       case get_package_version(project_dir, input.package) do
@@ -345,7 +361,10 @@ defmodule NccWorker.Worker do
           {description, []}
       end
 
-    footprint = package_footprint(selection, project_dir, input.package.name, systems)
+    footprint =
+      if scope == :argus_only,
+        do: empty_footprint(),
+        else: package_footprint(selection, project_dir, input.package.name, systems)
 
     native_components =
       (NccWorker.NativeLang.detect(project_dir, input.package.name) || %{})
@@ -367,7 +386,8 @@ defmodule NccWorker.Worker do
       toolchain: toolchain,
       systems: system_results,
       argus: argus,
-      finished_at: DateTime.utc_now() |> DateTime.to_iso8601()
+      finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+      scope: RunScope.to_string(scope)
     }
 
     {:ok, result}

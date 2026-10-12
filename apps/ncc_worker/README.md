@@ -14,6 +14,9 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    Otherwise builds firmware for each Nerves system (`NccWorker.Systems`), capturing status, size, and a log tail.
    When the host compile failed, rpi4 builds alone first; if it fails too, the rest are recorded as
    `skipped` ("host and <system> failed to compile") without being built (`NccWorker.SeedGate`).
+   With `"mode": "argus_only"` in `NCC_INPUT` no firmware is built: the run compiles on the host, runs argus over
+   every package (whatever `argus.scope` says), and reports `"scope": "argus_only"`. A `systems_filter` run reports
+   `"scope": "targets"`. Ingestion copies the systems such a run left out from the previous run.
 5. When `NCC_INPUT` carries `argus` (`{"analyses": ["default", "exposure"], "scope": "firmware", "timeout_seconds": 300}`),
    runs the argus_beam escript over the host-compiled beams (`NccWorker.Argus`) and writes its findings to
    `result.json` as `argus`. `scope: "firmware"` limits this to packages that build firmware. Advisory: it never
