@@ -14,7 +14,7 @@ defmodule PortalWeb.PackageLive do
   def mount(%{"name" => name}, session, socket) do
     case Catalog.latest_by_pkg_json(name) do
       %{packages: %{^name => package}} ->
-        systems = systems(package)
+        systems = systems(package, name)
         base = PortalWeb.Endpoint.url()
         badge_url = "#{base}/badge/#{name}.svg"
         page_url = "#{base}/packages/#{name}"
@@ -321,6 +321,13 @@ defmodule PortalWeb.PackageLive do
                   </div>
                   <div :if={not assessment?(system.system_pkg)} class="text-base-content/50">
                     {system.system_version || "host"}
+                  </div>
+                  <div
+                    :if={system.carried_from_run_id}
+                    class="text-xs text-base-content/50"
+                    title="This target was not rebuilt in the latest run; the result is from an earlier build of the same version."
+                  >
+                    from an earlier build
                   </div>
                   <.link
                     :if={system.status in ["fail", "error"]}
@@ -671,9 +678,20 @@ defmodule PortalWeb.PackageLive do
       else: "This release was not checked. The result below says why."
   end
 
-  defp systems(package) do
+  # `package.systems` comes from the schema-v2 JSON shape
+  # (`Portal.Catalog.latest_by_pkg_json/1`), which does not carry
+  # `carried_from_run_id` -- that column is only on `latest_system_results/1`,
+  # read separately here so the public JSON API keeps its documented shape.
+  defp systems(package, name) do
+    carried_from =
+      name
+      |> Catalog.latest_system_results()
+      |> List.wrap()
+      |> Map.new(&{&1.system_pkg, &1.carried_from_run_id})
+
     package.systems
     |> Map.values()
+    |> Enum.map(&Map.put(&1, :carried_from_run_id, Map.get(carried_from, &1.system_pkg)))
     |> Enum.sort_by(& &1.system_pkg)
   end
 

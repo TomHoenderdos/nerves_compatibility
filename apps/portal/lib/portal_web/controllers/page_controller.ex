@@ -109,6 +109,87 @@ defmodule PortalWeb.PageController do
     end
   end
 
+  def admin_bulk_rebuild(conn, params) do
+    case require_admin(conn) do
+      {:ok, conn, user} ->
+        conn
+        |> bulk_rebuild_flash(bulk_rebuild_opts(params, user))
+        |> render_admin(user, :maintenance)
+
+      {:error, conn} ->
+        conn
+    end
+  end
+
+  defp bulk_rebuild_opts(params, user) do
+    limit =
+      params
+      |> Map.get("limit", "100")
+      |> Integer.parse()
+      |> case do
+        {n, _} when n in 1..20_000 -> n
+        _ -> 100
+      end
+
+    systems = Enum.filter(List.wrap(params["systems"]), &(&1 in Portal.BulkRebuild.targets()))
+
+    what =
+      case {params["what"], systems} do
+        {"argus_only", _} -> :argus_only
+        {"targets", []} -> :no_targets
+        {"targets", systems} -> {:targets, systems}
+        _ -> :full
+      end
+
+    [
+      limit: limit,
+      order: if(params["order"] == "catalog", do: :catalog, else: :stalest),
+      status: Map.get(%{"pass" => :pass, "fail" => :fail, "error" => :error}, params["status"]),
+      what: what,
+      dry_run: params["mode"] == "dry_run",
+      created_by: user.username
+    ]
+  end
+
+  defp bulk_rebuild_flash(conn, opts) do
+    if opts[:what] == :no_targets do
+      put_flash(conn, :error, "Pick at least one target, or choose all targets or argus only.")
+    else
+      case {opts[:dry_run], Portal.BulkRebuild.run(opts)} do
+        {true, {:ok, %{selected: n}}} ->
+          put_flash(conn, :info, "Dry run: would rebuild #{n} packages.")
+
+        {false, {:ok, %{selected: n}}} ->
+          put_flash(conn, :info, "Bulk rebuild queued: #{pluralize(n, "package")}.")
+
+        {_, {:error, reason}} ->
+          put_flash(conn, :error, admin_error_message(reason))
+      end
+    end
+  end
+
+  def admin_cancel_sweep(conn, %{"id" => id}) do
+    case require_admin(conn) do
+      {:ok, conn, user} ->
+        case Ecto.UUID.cast(id) do
+          {:ok, sweep_id} ->
+            {:ok, n} = Portal.BulkRebuild.cancel(sweep_id)
+
+            conn
+            |> put_flash(:info, "Cancelled #{n} waiting jobs.")
+            |> render_admin(user, :maintenance)
+
+          :error ->
+            conn
+            |> put_flash(:error, "That sweep id is not valid.")
+            |> render_admin(user, :maintenance)
+        end
+
+      {:error, conn} ->
+        conn
+    end
+  end
+
   # Granting or revoking admin changes who can do everything on this page, so
   # it also needs the step-up the security settings use: a passkey (or other
   # accepted factor) confirmed within `Mfa.reauth_window_seconds/0`. Without
@@ -702,8 +783,13 @@ defmodule PortalWeb.PageController do
     ]
   end
 
-  defp admin_assigns(_conn, :maintenance, _extra),
-    do: [update_check: Portal.Admin.update_check_status()]
+  defp admin_assigns(_conn, :maintenance, _extra) do
+    [
+      update_check: Portal.Admin.update_check_status(),
+      sweeps: Enum.map(Portal.BulkRebuild.recent(), &{&1, Portal.BulkRebuild.status(&1.id)}),
+      bulk_targets: Portal.BulkRebuild.targets()
+    ]
+  end
 
   defp admin_assigns(_conn, :overview, _extra) do
     [
