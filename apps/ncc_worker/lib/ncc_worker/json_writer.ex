@@ -60,7 +60,8 @@ defmodule NccWorker.JsonWriter do
         end)
         |> Map.new(),
       finished_at: result.finished_at,
-      argus: Map.get(result, :argus)
+      argus: Map.get(result, :argus),
+      scope: Map.get(result, :scope, "full")
     }
   end
 

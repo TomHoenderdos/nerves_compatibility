@@ -156,5 +156,31 @@ defmodule NccWorker.JsonWriterTest do
       assert Map.has_key?(decoded, "argus")
       assert decoded["argus"] == nil
     end
+
+    test "writes the run scope, so ingestion knows what the run left out" do
+      dir = Path.join(System.tmp_dir!(), "jw_scope_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      result = %{
+        run_id: "r1",
+        package: %{name: "jason", version: "1.4.4"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{},
+        finished_at: "2026-10-11T00:00:00Z",
+        argus: nil,
+        scope: "argus_only"
+      }
+
+      :ok = NccWorker.JsonWriter.write_result(dir, result)
+
+      assert dir
+             |> Path.join("result.json")
+             |> File.read!()
+             |> JSON.decode!()
+             |> Map.fetch!("scope") ==
+               "argus_only"
+    end
   end
 end
