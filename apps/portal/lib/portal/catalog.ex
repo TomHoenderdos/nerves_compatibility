@@ -78,7 +78,8 @@ defmodule Portal.Catalog do
     :hex_version_tested,
     :log_path,
     :log_tail,
-    :failure_category
+    :failure_category,
+    :carried_from_run_id
   ]
   # The precompiled manifest is the one caller that genuinely needs `beam_scan`
   # — the file manifest lives inside it — and needs nothing else wide.

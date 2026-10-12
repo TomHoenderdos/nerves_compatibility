@@ -12,6 +12,10 @@ defmodule Portal.Catalog.SystemResult do
     table("catalog_system_results")
     repo(Portal.Repo)
 
+    references do
+      reference(:carried_from_run, on_delete: :nilify)
+    end
+
     custom_indexes do
       index([:run_id])
       # Covers `Portal.Catalog.stats_json/0`'s GROUP BY, so counting every
@@ -41,7 +45,8 @@ defmodule Portal.Catalog.SystemResult do
         :dependency_scans,
         :log_path,
         :log_tail,
-        :failure_category
+        :failure_category,
+        :carried_from_run_id
       ])
     end
 
@@ -130,6 +135,16 @@ defmodule Portal.Catalog.SystemResult do
   relationships do
     belongs_to :run, Portal.Catalog.Run do
       allow_nil?(false)
+      public?(true)
+    end
+
+    # Set when a partial run (argus-only or a subset of targets) did not
+    # rebuild this system and ingestion copied the result from an earlier
+    # run. Points at the run that actually built it, so a chain of partial
+    # runs does not lose where a result came from.
+    belongs_to :carried_from_run, Portal.Catalog.Run do
+      attribute_type(:uuid)
+      allow_nil?(true)
       public?(true)
     end
 
