@@ -69,6 +69,11 @@ The latest test results for each package across all systems.
     - **run_id**: Identifier of the run that produced this result
     - **log_path**: Relative path to the test log file
 
+An entry may be carried from an earlier build of the same version: a
+partial run (argus only, or a subset of targets) rebuilds only some
+systems, and ingestion copies the rest from the previous run of that
+version. The copy belongs to the latest run, so its `run_id` is that run's.
+
 ### Example
 
 ```json
@@ -101,7 +106,9 @@ The latest test results for each package across all systems.
 
 ## Stats
 
-Aggregate statistics over every stored system result.
+Aggregate statistics over every stored system result, except results carried
+from an earlier build (see [Packages](#packages)): those are copies
+of a result already counted.
 
 ### Schema
 
