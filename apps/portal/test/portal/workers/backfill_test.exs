@@ -80,6 +80,19 @@ defmodule Portal.Workers.BackfillTest do
       refute b.conflict?
       assert a.id != b.id
     end
+
+    # Oban matches unique keys by JSONB containment, so an ordinary job's
+    # `%{"package" => p}` is contained in any sweep job's args for p. An update
+    # check the day after a sweep must still go through.
+    test "an ordinary job is not deduplicated against a sweep's job" do
+      {:ok, _} = Oban.insert(Backfill.new(%{"package" => "swept", "sweep_id" => "s1"}))
+      {:ok, ordinary} = Oban.insert(Backfill.new(%{package: "swept", source: "update_check"}))
+      refute ordinary.conflict?
+
+      {:ok, again} = Oban.insert(Backfill.new(%{package: "swept", source: "update_check"}))
+      assert again.conflict?
+      assert again.id == ordinary.id
+    end
   end
 
   defmodule StubClosure do
