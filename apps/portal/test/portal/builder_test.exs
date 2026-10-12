@@ -227,5 +227,17 @@ defmodule Portal.BuilderTest do
       refute Map.has_key?(Builder.worker_input(Map.put(@input_job, :argus, nil)), "argus")
       refute Map.has_key?(Builder.worker_input(@input_job), "argus")
     end
+
+    test "an argus-only build tells the worker so" do
+      input =
+        Builder.worker_input(Map.merge(@input_job, %{systems_filter: nil, mode: "argus_only"}))
+
+      assert input["mode"] == "argus_only"
+      refute Map.has_key?(input, "systems_filter")
+    end
+
+    test "a normal build sends no mode" do
+      refute Map.has_key?(Builder.worker_input(Map.put(@input_job, :mode, nil)), "mode")
+    end
   end
 end

@@ -73,12 +73,78 @@ defmodule Portal.Workers.BuildTest do
 
   defp set_response(resp), do: Process.put(:stub_build_response, resp)
 
+  defp previous_run!(name, version) do
+    {:ok, _} =
+      Portal.Catalog.Ingestion.ingest(
+        %{
+          "package" => %{"name" => name, "version" => version},
+          "finished_at" => "2026-10-10T10:00:00Z",
+          "systems" => %{"host" => %{"status" => "pass"}}
+        },
+        %{
+          run_id: "prev-#{System.unique_integer([:positive])}",
+          image_digest: "sha256:x",
+          files_dir: System.tmp_dir!()
+        }
+      )
+  end
+
   defp files_dir_with(shas) do
     dir = Path.join(System.tmp_dir!(), "build-files-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     Enum.each(shas, fn sha -> File.write!(Path.join(dir, sha), "precompiled-beam") end)
     on_exit(fn -> File.rm_rf(dir) end)
     dir
+  end
+
+  describe "scope_args/3" do
+    test "a full or missing scope builds everything" do
+      assert Build.scope_args("p", "1.0.0", %{}) == %{systems_filter: nil, mode: nil}
+
+      assert Build.scope_args("p", "1.0.0", %{"scope" => "full"}) == %{
+               systems_filter: nil,
+               mode: nil
+             }
+    end
+
+    test "a targets scope passes its systems when the latest run is on this version" do
+      previous_run!("scoped", "1.0.0")
+
+      assert Build.scope_args("scoped", "1.0.0", %{
+               "scope" => "targets",
+               "systems" => ["nerves_system_rpi4"]
+             }) ==
+               %{systems_filter: ["nerves_system_rpi4"], mode: nil}
+    end
+
+    test "argus-only passes the mode when the latest run is on this version" do
+      previous_run!("scoped2", "1.0.0")
+
+      assert Build.scope_args("scoped2", "1.0.0", %{"scope" => "argus_only"}) == %{
+               systems_filter: nil,
+               mode: "argus_only"
+             }
+    end
+
+    # A partial run only makes sense on top of a full one for the same
+    # version: there is nothing to carry from an older release.
+    test "a partial scope on a new version becomes a full build" do
+      previous_run!("scoped3", "1.0.0")
+
+      assert Build.scope_args("scoped3", "2.0.0", %{"scope" => "argus_only"}) == %{
+               systems_filter: nil,
+               mode: nil
+             }
+    end
+
+    test "a targets scope with no systems builds everything" do
+      previous_run!("scoped4", "1.0.0")
+
+      assert Build.scope_args("scoped4", "1.0.0", %{"scope" => "targets", "systems" => []}) == %{
+               systems_filter: nil,
+               mode: nil
+             }
+    end
   end
 
   describe "classify/1" do
