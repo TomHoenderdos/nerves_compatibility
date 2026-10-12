@@ -56,8 +56,8 @@ defmodule Portal.Workers.Backfill do
     # that a deliberate re-sweep tomorrow still goes through.
     #
     # A bulk rebuild names its sweep, so a second sweep the same day is a new
-    # job; an ordinary sweep has no `sweep_id` and stays deduplicated per
-    # package per day.
+    # job. Every other job carries `sweep_id: nil` (`new/2` below) and stays
+    # deduplicated per package per day against the other ordinary jobs.
     unique: [keys: [:package, :sweep_id], period: 86_400]
 
   require Logger
@@ -68,6 +68,20 @@ defmodule Portal.Workers.Backfill do
   alias Portal.Catalog.ToolingSkip
   alias Portal.ScanRequests
   alias Portal.ScanRequests.ScanRequest
+
+  # Oban compares unique keys by JSONB containment: the new job's
+  # `Map.take(args, keys)` must be contained in an existing job's args. An
+  # ordinary job without a `sweep_id` key takes just `%{"package" => p}`, which
+  # every sweep job for p contains, so for a day after a sweep the update check
+  # for p was dropped as a duplicate. An explicit null is not contained in a
+  # sweep's id, and two ordinary jobs still match each other.
+  @impl Oban.Worker
+  def new(args, opts) when is_map(args) and is_list(opts) do
+    args
+    |> Map.new(fn {key, value} -> {to_string(key), value} end)
+    |> Map.put_new("sweep_id", nil)
+    |> super(opts)
+  end
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"package" => package} = args}) do
