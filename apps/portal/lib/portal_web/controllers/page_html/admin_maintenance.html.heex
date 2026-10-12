@@ -168,6 +168,7 @@
               <th class="px-4 py-2">Started</th>
               <th class="px-4 py-2">What</th>
               <th class="px-4 py-2">Selected</th>
+              <th class="px-4 py-2 text-base-content">Remaining</th>
               <th class="px-4 py-2">Intake</th>
               <th class="px-4 py-2">Queued</th>
               <th class="px-4 py-2">Building</th>
@@ -191,6 +192,7 @@
                 <% end %>
               </td>
               <td class="px-4 py-2">{sweep.selected}</td>
+              <td class="px-4 py-2 font-semibold">{status.remaining}</td>
               <td class="px-4 py-2">{status.intake}</td>
               <td class="px-4 py-2">{status.queued}</td>
               <td class="px-4 py-2">{status.building}</td>
@@ -213,6 +215,11 @@
           </tbody>
         </table>
       </div>
+      <p :if={@sweeps != []} class="mt-2 text-xs leading-5 text-base-content/60">
+        Done, Failed and Cancelled count the finished jobs Oban still keeps, so they drop once
+        its pruner removes old jobs; Remaining is exact. Cancelled also includes builds stopped
+        by a policy violation and packages missing from hex.pm.
+      </p>
     </div>
   </section>
 </.admin_layout>

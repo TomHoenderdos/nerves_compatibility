@@ -87,6 +87,17 @@ defmodule Portal.BulkRebuildTest do
     assert [%{id: ^id, cancelled_at: %DateTime{}}] = BulkRebuild.recent()
   end
 
+  test "remaining counts what has not finished, and a discarded intake job is a failure" do
+    for name <- ~w(r1 r2 r3), do: docker_run!(name)
+    {:ok, %{sweep_id: id}} = BulkRebuild.run(limit: 10)
+
+    [first, second | _] = all_enqueued(worker: Portal.Workers.Backfill)
+    Repo.update!(Ecto.Changeset.change(first, state: "discarded"))
+    Repo.update!(Ecto.Changeset.change(second, state: "completed"))
+
+    assert %{intake: 1, failed: 1, remaining: 1} = BulkRebuild.status(id)
+  end
+
   test "names override the selection" do
     docker_run!("a")
     docker_run!("b")
