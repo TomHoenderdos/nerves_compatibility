@@ -26,6 +26,7 @@ defmodule Portal.Catalog do
   alias Portal.Catalog.{
     Artifact,
     ArtifactMembership,
+    BulkSweep,
     FindingTriage,
     Cache,
     Package,
@@ -103,6 +104,7 @@ defmodule Portal.Catalog do
     resource(ArtifactMembership)
     resource(PackageOverride)
     resource(FindingTriage)
+    resource(BulkSweep)
   end
 
   @doc """
