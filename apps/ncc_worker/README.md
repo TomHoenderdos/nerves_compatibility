@@ -14,13 +14,15 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    Otherwise builds firmware for each Nerves system (`NccWorker.Systems`), capturing status, size, and a log tail.
    When the host compile failed, rpi4 builds alone first; if it fails too, the rest are recorded as
    `skipped` ("host and <system> failed to compile") without being built (`NccWorker.SeedGate`).
-   With `"mode": "argus_only"` in `NCC_INPUT` no firmware is built: the run compiles on the host, runs argus over
-   every package (whatever `argus.scope` says), and reports `"scope": "argus_only"`. A `systems_filter` run reports
-   `"scope": "targets"`. Ingestion copies the systems such a run left out from the previous run.
+   A `systems_filter` in `NCC_INPUT` builds only those systems and reports `"scope": "targets"` in `result.json`;
+   otherwise the scope is `"full"`.
 5. When `NCC_INPUT` carries `argus` (`{"analyses": ["default", "exposure"], "scope": "firmware", "timeout_seconds": 300}`),
    runs the argus_beam escript over the host-compiled beams (`NccWorker.Argus`) and writes its findings to
    `result.json` as `argus`. `scope: "firmware"` limits this to packages that build firmware. Advisory: it never
    changes a status or the exit code. Without the key, `argus.status` is `"skipped"`.
+   With `"mode": "argus_only"` the run stops after the host compile and this step: no firmware is built, argus
+   covers every package (whatever `argus.scope` says), and `result.json` reports `"scope": "argus_only"`.
+   Ingestion copies the systems a partial run left out from the previous run of the same version.
 6. Writes atomic `/out/result.json` plus per-system logs under `/out/logs/`, and archives compiled files by SHA256 under `/files`.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.

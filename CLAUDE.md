@@ -74,8 +74,8 @@ The integration test is `apps/portal/test/portal/workers/build_integration_test.
    - `/home/nerves/.nerves` → shared Nerves cache (`~/.ncc-nerves-cache`)
    - `/hex-cache` → shared Hex cache (`~/.ncc-hex-cache`)
    - `/build-cache` → per-image dependency build cache, only when `NCC_BUILD_CACHE` is set
-4. `NccWorker.Worker` inside the container reads `NCC_INPUT`, creates a fresh Nerves project, enforces `NccWorker.LockPolicy`, compiles on the host, then either builds firmware per Nerves system or, for a pure-Elixir dependency closure, records an assumed-compatible `pure_elixir` result (`NccWorker.BuildSelection`). It runs the advisory argus_beam analysis over the host beams (`NccWorker.Argus`), captures status/firmware size/log tail/BEAM scan/footprint, archives files by SHA256, and writes atomic `result.json`.
-5. On success `Portal.Workers.Build` enqueues `Portal.Workers.Ingest` (queue `:ingest`, must run on the same host because they hand off through the scratch dir). It runs `Portal.Catalog.Ingestion` into Postgres: `Package`, `Run`, `SystemResult`, `SystemLog` (full logs of failed systems) and `Artifact` rows, with blobs moved into `Portal.ArtifactStore`.
+4. `NccWorker.Worker` inside the container reads `NCC_INPUT`, creates a fresh Nerves project, enforces `NccWorker.LockPolicy`, compiles on the host, then either builds firmware per Nerves system or, for a pure-Elixir dependency closure, records an assumed-compatible `pure_elixir` result (`NccWorker.BuildSelection`). It runs the advisory argus_beam analysis over the host beams (`NccWorker.Argus`), captures status/firmware size/log tail/BEAM scan/footprint, archives files by SHA256, and writes atomic `result.json`. A partial run builds less: `NCC_INPUT.systems_filter` builds only those targets, and `NCC_INPUT.mode: "argus_only"` builds none and only runs argus. `result.json` names which in `scope` (`full`, `targets`, `argus_only`).
+5. On success `Portal.Workers.Build` enqueues `Portal.Workers.Ingest` (queue `:ingest`, must run on the same host because they hand off through the scratch dir). It runs `Portal.Catalog.Ingestion` into Postgres: `Package`, `Run`, `SystemResult`, `SystemLog` (full logs of failed systems) and `Artifact` rows, with blobs moved into `Portal.ArtifactStore`. For a partial run it copies the systems the run left out from the previous run of the same version, marking each copy with `carried_from_run_id`; stats do not count the copies.
 6. Both workers update the linked `ScanRequest` and broadcast progress over `Portal.PubSub` topic `request:<id>` (`Portal.Workers.Progress`).
 7. Phoenix serves the dynamic site, badge endpoint, schema-v2 JSON API, and precompiled manifest/blob API directly from Catalog.
 
@@ -107,8 +107,8 @@ Portal maps these into Oban outcomes in `Portal.Workers.Build`: success enqueues
 
 ## Data Contracts
 
-- **Worker input**: `NCC_INPUT` JSON passed to the worker container. See `apps/ncc_worker/README.md`.
-- **Worker output**: `result.json` typespec at top of `apps/ncc_worker/lib/ncc_worker/worker.ex`. Status enum lives in `Compatibility.Types` — `pass | fail | error | skipped | unknown`.
+- **Worker input**: `NCC_INPUT` JSON passed to the worker container, including the optional `mode` (`argus_only`) and `systems_filter`. See `apps/ncc_worker/README.md`.
+- **Worker output**: `result.json` typespec at top of `apps/ncc_worker/lib/ncc_worker/worker.ex`, including `scope` (`full | targets | argus_only`). Status enum lives in `Compatibility.Types` — `pass | fail | error | skipped | unknown`.
 - **Catalog JSON API**: schema version 2, documented in `docs/INDEX_FORMAT.md`.
 - **Package overrides**: `Portal.Catalog.PackageOverride` rows, documented in `docs/PACKAGE_METADATA.md`. Nothing reads them yet, so they have no effect on results.
 - **Precompiled API**: manifests and content-addressed files served by portal, documented in `PRECOMPILED_API.md`.
