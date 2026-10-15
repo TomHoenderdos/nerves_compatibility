@@ -106,6 +106,40 @@ defmodule NccWorker.ArgusTest do
     assert {"ARGUS_CACHE_DIR", Path.join(root, ".argus-cache")} in opts[:env]
   end
 
+  # A build has no business reaching GitHub for argus's engines: the image
+  # carries them, and offline argus uses what is there or says it cannot.
+  test "runs offline against an engine cache inside the run's project", %{root: root} do
+    Argus.run(root, "pkg", @config, :firmware, @pass, cmd: cmd("[]", 0), flowlog_seed: nil)
+
+    assert_received {:argv, _argv, opts}
+    assert {"ARGUS_OFFLINE", "1"} in opts[:env]
+    assert {"ARGUS_FLOWLOG_DIR", Path.join(root, ".argus-flowlog")} in opts[:env]
+  end
+
+  # argus runs an engine only from a cache root the running user owns. The
+  # image's copy belongs to whoever built it, and builds run under another
+  # uid, so each run copies it into a directory of its own first.
+  test "seeds the run's engine cache from the image's copy", %{root: root} do
+    seed = Path.join(root, "seed")
+    File.mkdir_p!(Path.join([seed, "prebuilt", "abc"]))
+    File.write!(Path.join([seed, "prebuilt", "abc", "bundle.json"]), "{}")
+
+    Argus.run(root, "pkg", @config, :firmware, @pass, cmd: cmd("[]", 0), flowlog_seed: seed)
+
+    assert File.read!(Path.join([root, ".argus-flowlog", "prebuilt", "abc", "bundle.json"])) ==
+             "{}"
+  end
+
+  test "a missing seed leaves argus to say it has no engines", %{root: root} do
+    seed = Path.join(root, "no-such-seed")
+
+    result =
+      Argus.run(root, "pkg", @config, :firmware, @pass, cmd: cmd("[]", 0), flowlog_seed: seed)
+
+    assert result.status == :ok
+    refute File.exists?(Path.join(root, ".argus-flowlog"))
+  end
+
   test "exit 0 parses findings and strips the deps prefix", %{root: root} do
     out = JSON.encode!([finding("deps/pkg/lib/pkg/server.ex")])
     result = Argus.run(root, "pkg", @config, :firmware, @pass, cmd: cmd(out <> "\n", 0))

@@ -120,7 +120,7 @@ Portal maps these into Oban outcomes in `Portal.Workers.Build`: success enqueues
 - `/home/nerves` and `/app` are chmod'd `a+rwX` in the Dockerfile so arbitrary uids can use the baked-in Mix archives and Elixir install.
 - `~/.ncc-nerves-cache` and `~/.ncc-hex-cache` persist across runs and speed up repeated tests.
 - `make build` keeps Docker's layer cache; `make build-clean` adds `--no-cache` when the apt, Elixir and Hex-archive layers need refetching.
-- The image carries Souffle 2.5 and the argus_beam escript at `/home/nerves/.mix/escripts/argus`. amd64 installs Souffle's upstream `.deb`; arm64 builds it from source, so a local `make build` on Apple silicon takes noticeably longer.
+- The image carries the argus_beam escript at `/home/nerves/.mix/escripts/argus` and, under `/opt/argus-flowlog`, the prebuilt FlowLog engines it solves its rules with (downloaded once at image build). Each run copies them into its own project, because argus only runs engines from a cache its own uid owns, and runs argus with `ARGUS_OFFLINE=1`.
 - argus is configured from `/admin` (`Portal.Settings`) and passed through `NCC_INPUT.argus`. Its findings are advisory and never change a status.
 
 ## Deploy

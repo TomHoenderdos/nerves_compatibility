@@ -4,11 +4,13 @@ defmodule NccWorker.Argus do
   its findings for `result.json`.
 
   Advisory: nothing here changes a system's status or the worker's exit code.
-  Every failure, including a missing escript or souffle, becomes an `:error`
+  Every failure, including a missing escript or engine, becomes an `:error`
   result with a short reason.
   """
 
   @bin "/home/nerves/.mix/escripts/argus"
+  # Filled at image build (apps/ncc_worker/Dockerfile); see `seed_flowlog/2`.
+  @flowlog_seed "/opt/argus-flowlog"
   @max_findings 200
   @max_reason 500
   @default_timeout_seconds 300
@@ -65,10 +67,12 @@ defmodule NccWorker.Argus do
     bin = Keyword.get(opts, :bin, @bin)
     analyses = Map.get(config, :analyses) || @default_analyses
     timeout = Map.get(config, :timeout_seconds) || @default_timeout_seconds
+    seed = Keyword.get(opts, :flowlog_seed, @flowlog_seed)
     started = System.monotonic_time(:millisecond)
 
     outcome =
       try do
+        seed_flowlog(seed, project)
         analyze(cmd, bin, project, package, analyses, timeout)
       rescue
         e -> %{status: :error, error: Exception.message(e)}
@@ -115,6 +119,8 @@ defmodule NccWorker.Argus do
 
       env = [
         {"ARGUS_CACHE_DIR", Path.join(project, ".argus-cache")},
+        {"ARGUS_FLOWLOG_DIR", flowlog_dir(project)},
+        {"ARGUS_OFFLINE", "1"},
         {"ARGUS_STDERR_FILE", stderr_file},
         {"TYPESAFE_API_KEY", nil}
       ]
@@ -134,6 +140,30 @@ defmodule NccWorker.Argus do
     end
   end
 
+  defp flowlog_dir(project), do: Path.join(project, ".argus-flowlog")
+
+  # argus solves its rules in FlowLog engines (0.22 on), shipped as a prebuilt
+  # bundle of about 120 MB that it would otherwise download from GitHub on
+  # every run, in a fresh container. The image downloads it once, into
+  # `@flowlog_seed`. argus runs an engine only from a cache root the running
+  # user owns and no one else can write, and builds run under whatever uid
+  # the host passes (`--user`), so the image's copy cannot be used in place:
+  # each run copies it into its own project, owned by that uid. Without a
+  # seed argus, offline, reports that it has no engines, as an `:error`.
+  defp seed_flowlog(nil, _project), do: :ok
+
+  # Copies the image's own directory into the disposable run project.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp seed_flowlog(seed, project) do
+    if File.dir?(seed) do
+      dir = flowlog_dir(project)
+      {:ok, _} = File.cp_r(seed, dir)
+      File.chmod!(dir, 0o700)
+    end
+
+    :ok
+  end
+
   defp outcome(status, stdout, _timeout, _stderr_file, package) when status in [0, 1] do
     case findings(stdout, package) do
       {:ok, found} -> Map.put(found, :error, nil)
@@ -142,7 +172,7 @@ defmodule NccWorker.Argus do
   end
 
   # argus prints the full report and then exits 3 when any one analysis
-  # degraded (a souffle timeout, a points-to budget). The other analyses'
+  # degraded (an engine timeout, a points-to budget). The other analyses'
   # findings are still valid, so they are kept and the degradation noted.
   defp outcome(3, stdout, _timeout, stderr_file, package) do
     case findings(stdout, package) do
