@@ -154,6 +154,12 @@ config :portal, :artifact_store, path: Path.expand("~/.ncc-artifacts")
 config :portal, PortalWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
+  # HTTP/1.1 only. Requests arrive through Apache's mod_proxy_http, which
+  # never speaks HTTP/2 to us, so this costs nothing -- and it keeps Bandit's
+  # HTTP/2 stack, which carries EEF-CVE-2026-105659 in every release so far,
+  # unreachable whatever the proxy turns into. Config merges keyword lists,
+  # so each environment's `http:` adds its port and IP to this.
+  http: [http_2_options: [enabled: false]],
   render_errors: [
     formats: [html: PortalWeb.ErrorHTML, json: PortalWeb.ErrorJSON],
     layout: false

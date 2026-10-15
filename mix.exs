@@ -8,7 +8,17 @@ defmodule NervesCompatibility.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       releases: releases(),
-      listeners: [Phoenix.CodeReloader]
+      listeners: [Phoenix.CodeReloader],
+      hex: [
+        # Bandit's HTTP/2 stream deadlines reset on every WINDOW_UPDATE. No
+        # Bandit release fixes it yet (every version from 1.4.0 is affected).
+        # We do not serve HTTP/2: the endpoint turns it off
+        # (`http_2_options` in apps/portal/config/config.exs, pinned by
+        # PortalWeb.EndpointConfigTest), listens on loopback only, and is
+        # reached through Apache's mod_proxy_http over HTTP/1.1. Remove this
+        # once a fixed Bandit is out and the lock has it.
+        ignore_advisories: ["EEF-CVE-2026-105659"]
+      ]
     ]
   end
 
