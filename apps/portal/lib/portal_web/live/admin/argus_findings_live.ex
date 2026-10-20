@@ -73,6 +73,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
        selected: MapSet.new(),
        expanded: MapSet.new(),
        shown_ids: [],
+       group_shown: %{},
        filter_options: %{analyses: [], packages: []},
        shown: 0,
        total: 0
@@ -258,19 +259,38 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     |> load_list()
   end
 
-  # The list views stream findings; by package or type, a header item opens
-  # each group's run of rows (the query already orders them by group).
-  defp load_list(%{assigns: %{view: view} = assigns} = socket) when view in @list_views do
+  # The list views stream findings. By finding, one page of rows; by package
+  # or type, each group's run of rows behind a header item, every group with
+  # a matching finding, at most `group_cap/1` rows each.
+  defp load_list(%{assigns: %{view: :findings} = assigns} = socket) do
     {rows, total} =
       Catalog.triage_page(Map.put(assigns.filters, :sort, assigns.sort), page_limit())
 
-    shown_ids = Enum.map(rows, & &1.triage.id)
-    items = with_group_headers(rows, view, assigns.filters)
+    socket
+    |> assign(group_shown: %{})
+    |> show_rows(rows, rows, total)
+  end
+
+  defp load_list(%{assigns: %{view: view} = assigns} = socket) when view in [:packages, :types] do
+    summaries = group_summaries(view, assigns.filters)
+    cap = summaries |> Enum.map(fn {_name, s} -> s.count end) |> group_cap()
+
+    {rows, total} =
+      assigns.filters
+      |> Map.put(:sort, assigns.sort)
+      |> Catalog.triage_grouped_page(group_column(view), cap)
+
+    groups = Enum.chunk_by(rows, &group_of(view, &1.triage))
+    group_shown = Map.new(groups, fn [%{triage: t} | _] = g -> {group_of(view, t), length(g)} end)
+
+    items =
+      Enum.flat_map(groups, fn [%{triage: t} | _] = group ->
+        [group_header(view, group_of(view, t), summaries, group_shown) | group]
+      end)
 
     socket
-    |> assign(shown_ids: shown_ids, shown: length(rows), total: total)
-    |> assign(:selected, MapSet.intersection(assigns.selected, MapSet.new(shown_ids)))
-    |> stream(:findings, items, reset: true)
+    |> assign(group_shown: group_shown)
+    |> show_rows(rows, items, total)
   end
 
   defp load_list(%{assigns: assigns} = socket) do
@@ -287,17 +307,38 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     |> stream(:checks, checks, reset: true)
   end
 
-  defp with_group_headers(rows, :findings, _filters), do: rows
+  defp show_rows(socket, rows, items, total) do
+    shown_ids = Enum.map(rows, & &1.triage.id)
 
-  defp with_group_headers(rows, view, filters) do
-    summaries = group_summaries(view, filters)
-
-    rows
-    |> Enum.chunk_by(&group_of(view, &1.triage))
-    |> Enum.flat_map(fn [%{triage: t} | _] = group ->
-      [group_header(view, group_of(view, t), summaries) | group]
-    end)
+    socket
+    |> assign(shown_ids: shown_ids, shown: length(rows), total: total)
+    |> assign(:selected, MapSet.intersection(socket.assigns.selected, MapSet.new(shown_ids)))
+    |> stream(:findings, items, reset: true)
   end
+
+  # The most rows any one group shows: the largest cap under which all the
+  # groups together fit `page_limit/0` -- groups smaller than it show whole and
+  # leave their share to the bigger ones -- but never under `min_group_rows/0`,
+  # so with very many groups each still shows a few. Narrowed to one group,
+  # that group gets the whole page, which is what a header's "Showing" link
+  # is for.
+  defp group_cap(counts) do
+    groups = length(counts)
+
+    {cap, _budget, _left} =
+      counts
+      |> Enum.sort()
+      |> Enum.reduce_while({nil, page_limit(), groups}, fn count, {_cap, budget, left} ->
+        if count * left <= budget,
+          do: {:cont, {count, budget - count, left - 1}},
+          else: {:halt, {div(budget, left), budget, left}}
+      end)
+
+    max(cap || 1, min_group_rows())
+  end
+
+  defp group_column(:packages), do: :package_name
+  defp group_column(:types), do: :analysis
 
   defp group_of(:packages, t), do: t.package_name
   defp group_of(:types, t), do: t.analysis
@@ -306,14 +347,22 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   defp group_summaries(:packages, filters), do: Catalog.triage_packages(filters)
   defp group_summaries(:types, filters), do: Catalog.triage_types(filters)
 
-  defp group_header(:packages, name, summaries),
-    do: %{header: name, summary: Map.get(summaries, name, %{count: 0, new: 0, version: nil})}
+  # `shown` is how many of the group's rows are on the page, so a header can
+  # say when its group was cut off.
+  defp group_header(:packages, name, summaries, group_shown) do
+    %{
+      header: name,
+      summary: Map.get(summaries, name, %{count: 0, new: 0, version: nil}),
+      shown: Map.get(group_shown, name, 0)
+    }
+  end
 
-  defp group_header(:types, analysis, summaries) do
+  defp group_header(:types, analysis, summaries, group_shown) do
     %{
       type_group: analysis,
       key: type_key(analysis),
-      summary: Map.get(summaries, analysis, %{count: 0, new: 0, packages: 0})
+      summary: Map.get(summaries, analysis, %{count: 0, new: 0, packages: 0}),
+      shown: Map.get(group_shown, analysis, 0)
     }
   end
 
@@ -382,7 +431,10 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
 
         socket
         |> insert_row(%{triage: row, stale?: Catalog.triage_stale?(row)})
-        |> stream_insert(:findings, group_header(view, group_of(view, row), summaries))
+        |> stream_insert(
+          :findings,
+          group_header(view, group_of(view, row), summaries, socket.assigns.group_shown)
+        )
 
       :checks ->
         refresh_check(socket, check_ident(row))
@@ -459,9 +511,15 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
 
   # Rows rendered at once. Each carries two inputs, so a page of every finding
   # in the catalogue would be slow to diff; narrow the filters to see more.
-  defp page_limit do
-    :portal |> Application.get_env(__MODULE__, []) |> Keyword.get(:page_limit, 500)
-  end
+  defp page_limit, do: config(:page_limit, 500)
+
+  # By package or type, the fewest rows a cut-off group still shows; see
+  # `group_cap/1`. With more groups than the page holds at this many each,
+  # the page runs over `page_limit/0` rather than leave a group empty.
+  defp min_group_rows, do: config(:min_group_rows, 5)
+
+  defp config(key, default),
+    do: :portal |> Application.get_env(__MODULE__, []) |> Keyword.get(key, default)
 
   defp filters(params) do
     %{}
@@ -993,6 +1051,21 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
                       {findings(item.summary.count)} · {item.summary.new} new
                       <span :if={item.summary.version}>· {item.summary.version}</span>
                     </span>
+                    <%!-- A big package is cut off so the others still show;
+                    the package filter gives it the whole page. --%>
+                    <span
+                      :if={item.summary.count > item.shown}
+                      id={"package-shown-#{item.header}"}
+                      class="text-xs text-base-content/60"
+                    >
+                      · Showing {item.shown} of {item.summary.count}.
+                      <.link
+                        patch={triage_path(%{@filters | package: item.header}, :packages, @sort)}
+                        class="link"
+                      >
+                        Show only {item.header}
+                      </.link>
+                    </span>
                   </div>
                   <%!-- The package's group action, as on an expanded check: one
                   button per scope so each confirm names its exact count. --%>
@@ -1475,7 +1548,11 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   end
 
   attr :id, :string, required: true
-  attr :item, :map, required: true, doc: "a type group: `type_group`, `key` and `summary`"
+
+  attr :item, :map,
+    required: true,
+    doc: "a type group: `type_group`, `key`, `summary` and `shown`"
+
   attr :filters, :map, required: true
   attr :sort, :atom, required: true
   attr :status_options, :list, required: true
@@ -1535,6 +1612,18 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
         </.link>
         <span class="text-xs text-base-content/60">
           {findings(@summary.count)} · {@summary.new} new · {packages(@summary.packages)}
+        </span>
+        <%!-- A big type is cut off so the others still show; the Type filter
+        gives it the whole page. --%>
+        <span
+          :if={@summary.count > @item.shown}
+          id={"type-group-shown-#{@key}"}
+          class="text-xs text-base-content/60"
+        >
+          · Showing {@item.shown} of {@summary.count}.
+          <.link patch={triage_path(%{@filters | analysis: @name}, :types, @sort)} class="link">
+            Show only {@name}
+          </.link>
         </span>
       </div>
       <.form
