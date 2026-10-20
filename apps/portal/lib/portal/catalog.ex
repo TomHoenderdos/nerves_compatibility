@@ -84,7 +84,7 @@ defmodule Portal.Catalog do
   ]
   # The precompiled manifest is the one caller that genuinely needs `beam_scan`
   # — the file manifest lives inside it — and needs nothing else wide.
-  @manifest_fields [:id, :run_id, :system_pkg, :beam_scan]
+  @manifest_fields [:id, :run_id, :system_pkg, :system_version, :beam_scan]
   @json_fields [
     :run_id,
     :system_pkg,
@@ -968,7 +968,7 @@ defmodule Portal.Catalog do
   """
   def precompiled_manifest(package_name) do
     with [package] <- packages(package_name),
-         runs when runs != [] <- runs_for_package(package.id),
+         runs when runs != [] <- precompiled_runs(package.id),
          results when results != [] <- manifest_results_for_runs(Enum.map(runs, & &1.id)) do
       shas_by_system_result_id =
         results
@@ -1358,17 +1358,6 @@ defmodule Portal.Catalog do
     |> Enum.reduce(%{}, fn run, acc -> Map.put_new(acc, run.package_id, run) end)
   end
 
-  # Named columns, like every other read here. Unselected, this loaded
-  # `catalog_runs.log` — the whole `runner.log` of every run of the package —
-  # for a caller that reads `id`, `version_tested` and `finished_at`.
-  defp runs_for_package(package_id) do
-    Run
-    |> Ash.Query.filter(package_id == ^package_id)
-    |> Ash.Query.sort(finished_at: :desc, inserted_at: :desc)
-    |> Ash.Query.select(@run_fields)
-    |> Ash.read!(domain: __MODULE__)
-  end
-
   defp json_results_for_runs([]), do: []
 
   defp json_results_for_runs(run_ids) do
@@ -1458,19 +1447,53 @@ defmodule Portal.Catalog do
     }
   end
 
+  # Runs come newest first, and an entry is taken from the first run that has
+  # one: each (version, system) is published from exactly one build, its
+  # newest. Merging every run over the result made the oldest one win.
   defp precompiled_versions(runs, results, shas_by_system_result_id) do
     Enum.reduce(runs, %{}, fn run, acc ->
       run_results = Enum.filter(results, &(&1.run_id == run.id and &1.system_pkg != "host"))
 
       systems =
-        precompiled_systems(run_results, shas_by_system_result_id)
+        precompiled_systems(run, run_results, shas_by_system_result_id)
 
       if systems == %{} do
         acc
       else
-        Map.update(acc, run.version_tested, systems, &Map.merge(&1, systems))
+        Map.update(acc, run.version_tested, systems, &Map.merge(systems, &1))
       end
     end)
+  end
+
+  # The newest run first, with what a client needs to know about how it was
+  # built: a precompiled file is usable only with the exact Elixir, OTP and
+  # system it was built against.
+  defp precompiled_runs(package_id) do
+    Run
+    |> Ash.Query.filter(package_id == ^package_id)
+    |> Ash.Query.sort(finished_at: :desc, inserted_at: :desc)
+    |> Ash.Query.select([
+      :id,
+      :run_id,
+      :version_tested,
+      :finished_at,
+      :inserted_at,
+      :toolchain,
+      :image_digest
+    ])
+    |> Ash.read!(domain: __MODULE__)
+  end
+
+  defp build_inputs(run, result) do
+    toolchain = run.toolchain || %{}
+
+    %{
+      "elixir" => toolchain["elixir"],
+      "otp" => toolchain["erlang"],
+      "system_version" => result.system_version,
+      "run_id" => run.run_id,
+      "image_digest" => run.image_digest
+    }
   end
 
   defp file_manifest(result, stored_shas) do
@@ -1488,9 +1511,26 @@ defmodule Portal.Catalog do
 
   defp filter_manifest_entries(entries, stored_shas) do
     Enum.filter(entries, fn entry ->
-      is_map(entry) and MapSet.member?(stored_shas, entry["sha256"])
+      is_map(entry) and MapSet.member?(stored_shas, entry["sha256"]) and safe_path?(entry["path"]) and
+        safe_mode?(entry["mode"])
     end)
   end
+
+  # `path` and `mode` come from JSON the build container wrote, which the
+  # package under test can control, and a client writes each file at `path`
+  # with `mode`. Only plain files under the package's own ebin/ and priv/.
+  defp safe_path?(path) when is_binary(path) do
+    segments = String.split(path, "/")
+
+    hd(segments) in ["ebin", "priv"] and length(segments) > 1 and
+      Enum.all?(segments, &(&1 not in ["", ".", ".."])) and not String.contains?(path, <<0>>)
+  end
+
+  defp safe_path?(_path), do: false
+
+  # Regular files, rw-r--r-- or rwxr-xr-x: no setuid, setgid or world-write.
+  defp safe_mode?(nil), do: true
+  defp safe_mode?(mode), do: mode in [0o100644, 0o100755]
 
   # Over `{system_pkg, system_version, status, count}` groups.
   defp counts(groups, include_total? \\ true) do
@@ -1535,13 +1575,20 @@ defmodule Portal.Catalog do
   defp iso8601(nil), do: nil
   defp iso8601(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
 
-  defp precompiled_systems(run_results, shas_by_system_result_id) do
+  defp precompiled_systems(run, run_results, shas_by_system_result_id) do
     Enum.reduce(run_results, %{}, fn result, system_acc ->
       stored_shas = Map.get(shas_by_system_result_id, result.id, MapSet.new())
 
       case file_manifest(result, stored_shas) do
-        nil -> system_acc
-        manifest -> Map.put(system_acc, result.system_pkg, manifest)
+        nil ->
+          system_acc
+
+        manifest ->
+          Map.put(
+            system_acc,
+            result.system_pkg,
+            Map.put(manifest, "build", build_inputs(run, result))
+          )
       end
     end)
   end

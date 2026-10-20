@@ -174,6 +174,94 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert rpi4["priv"] == []
   end
 
+  # A client may use an entry only when it was built with exactly its own
+  # Elixir, OTP and Nerves system, so each entry names them, and the run and
+  # image that produced it.
+  test "each manifest entry says what it was built with", %{conn: conn} do
+    ingest_fixture_with_artifact()
+
+    body = conn |> get("/api/precompiled/manifests/jason.json") |> json_response(200)
+    rpi4 = body["versions"]["1.4.1"]["nerves_system_rpi4"]
+
+    assert rpi4["build"] == %{
+             "elixir" => "1.16.0",
+             "otp" => "26",
+             "system_version" => "1.24.0",
+             "run_id" => "catalog-api-precompiled-jason-1.4.1",
+             "image_digest" => "sha256:precompiled"
+           }
+  end
+
+  # Runs are read newest first; merging each older one over the result made
+  # the oldest build of a version win.
+  test "a version is published from its newest run", %{conn: conn} do
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+    _ = File.rm(ArtifactStore.blob_path(sha))
+
+    for {run_id, finished_at} <- [
+          {"old-run", "2026-01-01T00:00:00Z"},
+          {"new-run", "2026-06-01T00:00:00Z"}
+        ] do
+      dir =
+        Path.join(System.tmp_dir!(), "catalog-api-order-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, sha), "precompiled-beam")
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      result = result_fixture() |> Map.put("finished_at", finished_at)
+
+      {:ok, _} =
+        Ingestion.ingest(result, %{
+          run_id: run_id,
+          image_digest: "sha256:x",
+          files_dir: dir,
+          log: "l"
+        })
+    end
+
+    body = conn |> get("/api/precompiled/manifests/jason.json") |> json_response(200)
+    assert body["versions"]["1.4.1"]["nerves_system_rpi4"]["build"]["run_id"] == "new-run"
+  end
+
+  # `path` and `mode` come from JSON the build container wrote, so a package
+  # under test controls them. A client writes files at `path` with `mode`.
+  test "entries with unsafe paths or modes are not published", %{conn: conn} do
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+    _ = File.rm(ArtifactStore.blob_path(sha))
+    dir = Path.join(System.tmp_dir!(), "catalog-api-unsafe-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, sha), "precompiled-beam")
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    entries = [
+      %{"path" => "ebin/jason.beam", "sha256" => sha, "mode" => 0o100644},
+      %{"path" => "ebin/../../evil.beam", "sha256" => sha, "mode" => 0o100644},
+      %{"path" => "/etc/evil", "sha256" => sha, "mode" => 0o100644},
+      %{"path" => "lib/elsewhere.beam", "sha256" => sha, "mode" => 0o100644},
+      %{"path" => "priv/suid.so", "sha256" => sha, "mode" => 0o104755}
+    ]
+
+    result =
+      put_in(
+        result_fixture(),
+        ["systems", "nerves_system_rpi4", "beam_scan", "footprint", "file_manifest", "ebin"],
+        entries
+      )
+
+    {:ok, _} =
+      Ingestion.ingest(result, %{
+        run_id: "unsafe",
+        image_digest: "sha256:x",
+        files_dir: dir,
+        log: "l"
+      })
+
+    body = conn |> get("/api/precompiled/manifests/jason.json") |> json_response(200)
+    paths = Enum.map(body["versions"]["1.4.1"]["nerves_system_rpi4"]["ebin"], & &1["path"])
+    assert paths == ["ebin/jason.beam"]
+  end
+
   # The bug this guards: a `.beam` is routinely byte-identical across targets,
   # and `catalog_artifacts` is keyed by sha alone. When ownership lived on that
   # table, the second system to be ingested recorded nothing and published an
