@@ -93,7 +93,6 @@ defmodule PortalWeb.Router do
     get "/request-scan", PageController, :request_scan
     get "/admin", PageController, :admin
     get "/admin/queue", PageController, :admin_queue
-    get "/admin/users", PageController, :admin_users
     get "/admin/failures", PageController, :admin_failures
     get "/admin/argus", PageController, :admin_argus
     get "/admin/maintenance", PageController, :admin_maintenance
@@ -106,9 +105,6 @@ defmodule PortalWeb.Router do
     post "/admin/bulk-rebuild", PageController, :admin_bulk_rebuild
     post "/admin/bulk-rebuild/:id/cancel", PageController, :admin_cancel_sweep
     post "/admin/argus", PageController, :admin_argus_settings
-    post "/admin/admins", PageController, :admin_grant_admin
-    post "/admin/users/reset-password", PageController, :admin_reset_password
-    post "/admin/admins/:id/revoke", PageController, :admin_revoke_admin
     get "/register", PageController, :register
     post "/register", PageController, :create_account
     get "/login", PageController, :login
@@ -207,6 +203,7 @@ defmodule PortalWeb.Router do
         {PortalWeb.Plugs.RequireAdmin, :require_admin_passkey}
       ] do
       live "/argus/findings", PortalWeb.Admin.ArgusFindingsLive, :index
+      live "/users", PortalWeb.Admin.UsersLive, :index
     end
   end
 
