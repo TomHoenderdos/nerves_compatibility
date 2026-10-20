@@ -23,6 +23,8 @@ defmodule Portal.Catalog do
       where: 3
     ]
 
+  alias Portal.ArtifactStore
+
   alias Portal.Catalog.{
     Artifact,
     ArtifactMembership,
@@ -975,7 +977,13 @@ defmodule Portal.Catalog do
         |> Enum.map(& &1.id)
         |> manifest_shas_for_system_results()
 
-      versions = precompiled_versions(runs, results, shas_by_system_result_id)
+      versions =
+        precompiled_versions(
+          runs,
+          results,
+          shas_by_system_result_id,
+          present_shas(shas_by_system_result_id)
+        )
 
       if versions == %{} do
         nil
@@ -1449,13 +1457,15 @@ defmodule Portal.Catalog do
 
   # Runs come newest first, and an entry is taken from the first run that has
   # one: each (version, system) is published from exactly one build, its
-  # newest. Merging every run over the result made the oldest one win.
-  defp precompiled_versions(runs, results, shas_by_system_result_id) do
+  # newest. Merging every run over the result made the oldest one win. An
+  # entry whose files are not all on this host yet counts as none, so the
+  # version falls back to its newest build that a client can fetch whole.
+  defp precompiled_versions(runs, results, shas_by_system_result_id, present_shas) do
     Enum.reduce(runs, %{}, fn run, acc ->
       run_results = Enum.filter(results, &(&1.run_id == run.id and &1.system_pkg != "host"))
 
       systems =
-        precompiled_systems(run, run_results, shas_by_system_result_id)
+        precompiled_systems(run, run_results, shas_by_system_result_id, present_shas)
 
       if systems == %{} do
         acc
@@ -1496,7 +1506,7 @@ defmodule Portal.Catalog do
     }
   end
 
-  defp file_manifest(result, stored_shas) do
+  defp file_manifest(result, stored_shas, present_shas) do
     manifest = get_in(result.beam_scan || %{}, ["footprint", "file_manifest"])
 
     if manifest do
@@ -1505,8 +1515,25 @@ defmodule Portal.Catalog do
         "priv" => filter_manifest_entries(Map.get(manifest, "priv", []), stored_shas)
       }
 
-      if filtered["ebin"] == [] and filtered["priv"] == [], do: nil, else: filtered
+      files = filtered["ebin"] ++ filtered["priv"]
+
+      cond do
+        files == [] -> nil
+        Enum.all?(files, &MapSet.member?(present_shas, &1["sha256"])) -> filtered
+        true -> nil
+      end
     end
+  end
+
+  # Builders ingest into the shared database but keep blobs in their own store,
+  # and the web host pulls them minutes later, so a row can name a blob this
+  # host cannot serve yet. Each distinct sha is checked once per request, with
+  # the same test the file endpoint applies before it serves one.
+  defp present_shas(shas_by_system_result_id) do
+    shas_by_system_result_id
+    |> Map.values()
+    |> Enum.reduce(MapSet.new(), &MapSet.union/2)
+    |> MapSet.filter(&ArtifactStore.present?/1)
   end
 
   defp filter_manifest_entries(entries, stored_shas) do
@@ -1575,11 +1602,11 @@ defmodule Portal.Catalog do
   defp iso8601(nil), do: nil
   defp iso8601(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
 
-  defp precompiled_systems(run, run_results, shas_by_system_result_id) do
+  defp precompiled_systems(run, run_results, shas_by_system_result_id, present_shas) do
     Enum.reduce(run_results, %{}, fn result, system_acc ->
       stored_shas = Map.get(shas_by_system_result_id, result.id, MapSet.new())
 
-      case file_manifest(result, stored_shas) do
+      case file_manifest(result, stored_shas, present_shas) do
         nil ->
           system_acc
 

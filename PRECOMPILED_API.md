@@ -122,3 +122,7 @@ them.
   `build.elixir` and `build.otp` are `null` and a client should skip them.
 - Pure Elixir packages have `pure_elixir` entries only from runs after
   2026-10-20; earlier ones archived no files.
+- An entry appears only once every file it lists can be served from this host.
+  Builds run on other hosts whose blobs are copied here every few minutes, so a
+  fresh build can take that long to show up; until then the manifest keeps
+  offering that version's previous complete build, if it has one.

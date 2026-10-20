@@ -22,6 +22,17 @@ defmodule Portal.ArtifactStore do
       else: raise(ArgumentError, "invalid sha256")
   end
 
+  @doc """
+  Whether this host can serve the blob: a regular file in the store, not a
+  symlink. The file endpoint serves exactly these, and the precompiled manifest
+  lists only these, so the two cannot disagree.
+  """
+  @spec present?(String.t()) :: boolean()
+  def present?(sha256) do
+    valid_sha256?(sha256) and
+      match?({:ok, %File.Stat{type: :regular}}, File.lstat(blob_path(sha256)))
+  end
+
   @doc "Whether a blob name is a lowercase SHA256 digest, with no path components."
   def valid_sha256?(sha256) when is_binary(sha256), do: Regex.match?(~r/\A[0-9a-f]{64}\z/, sha256)
   def valid_sha256?(_), do: false
