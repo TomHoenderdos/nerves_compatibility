@@ -224,6 +224,101 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert body["versions"]["1.4.1"]["nerves_system_rpi4"]["build"]["run_id"] == "new-run"
   end
 
+  # Builders ingest into the shared database but keep blobs in their own
+  # store; the web host pulls them minutes later. Until then the file endpoint
+  # answers 404, and a client given the entry would install a partial package.
+  test "an entry whose blob is not in this host's store is not published", %{conn: conn} do
+    sha = ingest_fixture_with_artifact()
+    File.rm!(ArtifactStore.blob_path(sha))
+
+    assert conn |> get("/api/precompiled/files/#{sha}") |> response(404)
+    assert conn |> get("/api/precompiled/manifests/jason.json") |> json_response(404)
+  end
+
+  # A partial entry is worse than none, so one missing file drops the whole
+  # entry rather than just that file.
+  test "an entry with one of its files missing is not published", %{conn: conn} do
+    here = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+    pending = :crypto.hash(:sha256, "pending-beam") |> Base.encode16(case: :lower)
+
+    dir =
+      Path.join(System.tmp_dir!(), "catalog-api-partial-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    for {sha, bytes} <- [{here, "precompiled-beam"}, {pending, "pending-beam"}] do
+      _ = File.rm(ArtifactStore.blob_path(sha))
+      File.write!(Path.join(dir, sha), bytes)
+    end
+
+    result =
+      put_in(
+        result_fixture(),
+        ["systems", "nerves_system_rpi4", "beam_scan", "footprint", "file_manifest", "ebin"],
+        [
+          %{"path" => "ebin/jason.beam", "sha256" => here},
+          %{"path" => "ebin/Elixir.Jason.Pending.beam", "sha256" => pending}
+        ]
+      )
+
+    {:ok, _} =
+      Ingestion.ingest(result, %{
+        run_id: "partial",
+        image_digest: "sha256:x",
+        files_dir: dir,
+        log: "l"
+      })
+
+    File.rm!(ArtifactStore.blob_path(pending))
+
+    assert conn |> get("/api/precompiled/manifests/jason.json") |> json_response(404)
+  end
+
+  # Non-vacuity: the two runs must not share a blob, or deleting the newer
+  # one's file would take the older entry down with it.
+  test "a version falls back to its newest run whose files are all here", %{conn: conn} do
+    old_sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+    new_sha = :crypto.hash(:sha256, "newer-beam") |> Base.encode16(case: :lower)
+
+    for {run_id, finished_at, sha, bytes} <- [
+          {"old-run", "2026-01-01T00:00:00Z", old_sha, "precompiled-beam"},
+          {"new-run", "2026-06-01T00:00:00Z", new_sha, "newer-beam"}
+        ] do
+      _ = File.rm(ArtifactStore.blob_path(sha))
+
+      dir =
+        Path.join(System.tmp_dir!(), "catalog-api-pending-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, sha), bytes)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      result =
+        result_fixture()
+        |> Map.put("finished_at", finished_at)
+        |> put_in(
+          ["systems", "nerves_system_rpi4", "beam_scan", "footprint", "file_manifest", "ebin"],
+          [%{"path" => "ebin/jason.beam", "sha256" => sha}]
+        )
+
+      {:ok, _} =
+        Ingestion.ingest(result, %{
+          run_id: run_id,
+          image_digest: "sha256:x",
+          files_dir: dir,
+          log: "l"
+        })
+    end
+
+    File.rm!(ArtifactStore.blob_path(new_sha))
+
+    body = conn |> get("/api/precompiled/manifests/jason.json") |> json_response(200)
+    rpi4 = body["versions"]["1.4.1"]["nerves_system_rpi4"]
+    assert rpi4["build"]["run_id"] == "old-run"
+    assert [%{"sha256" => ^old_sha}] = rpi4["ebin"]
+  end
+
   # `path` and `mode` come from JSON the build container wrote, so a package
   # under test controls them. A client writes files at `path` with `mode`.
   test "entries with unsafe paths or modes are not published", %{conn: conn} do
