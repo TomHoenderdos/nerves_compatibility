@@ -92,6 +92,73 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
     assert has_element?(view, "#triage-shown", "Showing 2 of 3")
   end
 
+  describe "grouped views over the row budget" do
+    # A budget of 3 rows over a group of 5 and a group of 1: the small group
+    # takes its 1, which leaves 2 for the big one.
+    setup do
+      previous = Application.get_env(:portal, PortalWeb.Admin.ArgusFindingsLive, [])
+
+      Application.put_env(:portal, PortalWeb.Admin.ArgusFindingsLive,
+        page_limit: 3,
+        min_group_rows: 1
+      )
+
+      on_exit(fn -> Application.put_env(:portal, PortalWeb.Admin.ArgusFindingsLive, previous) end)
+    end
+
+    defp group_rows(view, key) do
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query(~s([data-group-row="#{key}"]))
+    end
+
+    test "by type, a big type does not push the others off the page", %{conn: conn} do
+      big = for i <- 1..5, do: finding(%{"detail" => "d#{i}"})
+      ingest("1.0.0", ok([finding(%{"analysis" => "shutdown", "title" => "S"}) | big]), 1)
+
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types")
+
+      assert has_element?(view, "#type-group-failure")
+      assert has_element?(view, "#type-group-shutdown")
+      assert Enum.count(group_rows(view, "failure")) == 2
+      assert Enum.count(group_rows(view, "shutdown")) == 1
+
+      note = "#type-group-shown-failure"
+      assert has_element?(view, note, "Showing 2 of 5")
+      assert has_element?(view, "#{note} a[href*='analysis=failure'][href*='view=types']")
+      refute has_element?(view, "#type-group-shown-shutdown")
+      assert has_element?(view, "#triage-shown", "Showing 3 of 6")
+    end
+
+    test "by package, a big package does not push the others off the page", %{conn: conn} do
+      ingest("1.0.0", ok(for(i <- 1..5, do: finding(%{"detail" => "d#{i}"}))), 1, "big")
+      ingest("1.0.0", ok([finding()]), 1, "small")
+
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=packages")
+
+      assert has_element?(view, "#package-big")
+      assert has_element?(view, "#package-small")
+      assert Enum.count(group_rows(view, "big")) == 2
+      assert Enum.count(group_rows(view, "small")) == 1
+
+      note = "#package-shown-big"
+      assert has_element?(view, note, "Showing 2 of 5")
+      assert has_element?(view, "#{note} a[href*='package=big'][href*='view=packages']")
+      refute has_element?(view, "#package-shown-small")
+    end
+
+    test "narrowed to one group, that group gets the whole budget", %{conn: conn} do
+      big = for i <- 1..5, do: finding(%{"detail" => "d#{i}"})
+      ingest("1.0.0", ok([finding(%{"analysis" => "shutdown", "title" => "S"}) | big]), 1)
+
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=types&analysis=failure")
+
+      assert Enum.count(group_rows(view, "failure")) == 3
+      assert has_element?(view, "#type-group-shown-failure", "Showing 3 of 5")
+    end
+  end
+
   test "stale findings show only with the filter", %{conn: conn} do
     ingest("1.0.0", ok([finding(), finding(%{"detail" => "gone later", "title" => "Gone"})]), 1)
     ingest("1.1.0", ok([finding()]), 2)

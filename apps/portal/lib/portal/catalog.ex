@@ -19,8 +19,10 @@ defmodule Portal.Catalog do
       limit: 2,
       order_by: 2,
       select: 3,
+      select_merge: 2,
       subquery: 1,
-      where: 3
+      where: 3,
+      windows: 3
     ]
 
   alias Portal.ArtifactStore
@@ -340,6 +342,16 @@ defmodule Portal.Catalog do
     type: nil,
     sort: nil
   }
+  # The grouped sorts (by package, by type): a window over the group first --
+  # its new findings or all of them -- then the order inside the groups.
+  @grouped_list_sorts %{
+    package_new: {:new, :package_name, :package},
+    package_count: {:count, :package_name, :package},
+    package_type: {:new, :package_name, :package_then_analysis},
+    type_new: {:new, :analysis, :analysis},
+    type_count: {:count, :analysis, :analysis}
+  }
+
   @triage_statuses [:new, :confirmed, :false_positive, :reported, :ignored]
   @triage_status_order %{new: 0, confirmed: 1, reported: 2, false_positive: 3, ignored: 4}
 
@@ -377,6 +389,62 @@ defmodule Portal.Catalog do
 
     total = if limit, do: Repo.aggregate(scope, :count), else: length(page)
     {load_triage_rows(page), total}
+  end
+
+  @doc """
+  `triage_page/2` for a list grouped by `group` (`:package_name` or
+  `:analysis`), capped at `per_group` rows *per group* rather than overall, so
+  one big group cannot fill the page and leave the others out: every group
+  with a matching finding keeps at least its first row. Groups and the rows
+  inside them come in the same order `triage_page/2` gives them for
+  `filters.sort`, which must be one of the grouped sorts or `:package` /
+  `:analysis` for the matching `group`. The total is every matching row.
+  """
+  def triage_grouped_page(filters, group, per_group)
+      when group in [:package_name, :analysis] and is_integer(per_group) and per_group > 0 do
+    f = Map.merge(@triage_defaults, filters)
+    scope = triage_scope(f)
+
+    # A window's own ORDER BY cannot hold another window, so the rank inside
+    # a group orders by the inner keys alone, and the group's weight (its new
+    # or all findings) is carried out beside it for the outer order.
+    {weight, inner} =
+      case Map.fetch(@grouped_list_sorts, f.sort) do
+        {:ok, {:new, ^group, inner}} -> {new_in(group), inner}
+        {:ok, {:count, ^group, inner}} -> {count_in(group), inner}
+        :error when f.sort in [:package, :analysis] -> {dynamic([t], fragment("0")), f.sort}
+      end
+
+    ranked =
+      scope
+      |> windows([t],
+        in_group: [
+          partition_by: ^[dynamic([t], field(t, ^group))],
+          order_by:
+            ^(list_order(inner) ++
+                [asc: dynamic([t], c_order(t.title)), asc: dynamic([t], t.id)])
+        ]
+      )
+      |> select([t, l: l], %{
+        id: t.id,
+        stale: fragment("? IS DISTINCT FROM ?", l.id, t.last_seen_run_id),
+        group: field(t, ^group),
+        rank: over(row_number(), :in_group)
+      })
+      |> select_merge(^%{weight: weight})
+
+    # Ties on the weight fall to the group's name, as the inner keys of every
+    # grouped sort lead with it; then the rank keeps each group's own order.
+    page =
+      from(r in subquery(ranked),
+        where: r.rank <= ^per_group,
+        order_by: [desc: r.weight, asc: c_order(r.group), asc: r.rank],
+        select: {r.id, r.stale}
+      )
+      |> Repo.all()
+      |> Enum.map(fn {id, stale?} -> {Ecto.UUID.load!(id), stale?} end)
+
+    {load_triage_rows(page), Repo.aggregate(scope, :count)}
   end
 
   @doc """
@@ -676,16 +744,6 @@ defmodule Portal.Catalog do
 
   defp triage_where(query, :include_stale, false),
     do: where(query, [t, l: l], l.id == t.last_seen_run_id)
-
-  # The grouped sorts (by package, by type): a window over the group first --
-  # its new findings or all of them -- then the order inside the groups.
-  @grouped_list_sorts %{
-    package_new: {:new, :package_name, :package},
-    package_count: {:count, :package_name, :package},
-    package_type: {:new, :package_name, :package_then_analysis},
-    type_new: {:new, :analysis, :analysis},
-    type_count: {:count, :analysis, :analysis}
-  }
 
   # Every order ends on the id so a page is stable between renders.
   defp triage_list_order(sort) do
