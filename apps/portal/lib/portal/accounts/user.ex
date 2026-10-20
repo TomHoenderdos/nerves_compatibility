@@ -145,4 +145,12 @@ defmodule Portal.Accounts.User do
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
   end
+
+  calculations do
+    # For the admin Users table, which flags an admin who cannot open
+    # `/admin` yet for want of a passkey.
+    calculate :passkey_count, :integer, Portal.Accounts.Calculations.PasskeyCount do
+      public?(true)
+    end
+  end
 end

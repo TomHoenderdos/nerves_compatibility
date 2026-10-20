@@ -50,53 +50,6 @@ defmodule PortalWeb.AdminSectionsTest do
     refute conn |> get(~p"/admin") |> html_response(200) =~ "Queue a scan"
   end
 
-  test "the users page lists every account with per-user actions", %{conn: conn, admin: admin} do
-    {:ok, frank} = Portal.Accounts.register_user("sec_frank", @pw)
-    {:ok, other} = Portal.Accounts.seed_admin_user("sec_other", @pw)
-
-    html = conn |> get(~p"/admin/users") |> html_response(200)
-
-    assert html =~ ~s(id="user-#{frank.id}")
-    assert html =~ ~s(id="user-#{other.id}")
-    assert html =~ ~s(id="user-#{admin.id}")
-
-    # A plain user can be made admin or get a temporary password.
-    assert html =~ ~r/id="user-#{frank.id}".*?name="username" value="sec_frank"/s
-    assert html =~ ~s(action="/admin/admins")
-    assert html =~ ~s(action="/admin/users/reset-password")
-    # Another admin can be revoked; you cannot revoke or reset yourself here.
-    assert html =~ ~s(action="/admin/admins/#{other.id}/revoke")
-    refute html =~ ~s(action="/admin/admins/#{admin.id}/revoke")
-    assert html =~ "needs a passkey"
-  end
-
-  test "the users table says whether a password is set", %{conn: conn} do
-    {:ok, _} =
-      Portal.Accounts.Identities.sign_in(%Portal.Accounts.Identity{
-        provider: :hex,
-        uid: "nopw",
-        username: "nopw",
-        profile: %{}
-      })
-
-    body = conn |> get(~p"/admin/users") |> html_response(200)
-    assert body =~ ~r/id="user-[^"]+"[\s\S]*nopw[\s\S]*No password/
-  end
-
-  test "resetting from the users page shows the password there", %{conn: conn} do
-    {:ok, _} = Portal.Accounts.register_user("sec_frank", @pw)
-
-    html =
-      conn
-      |> put_session(:reauth_method, :passkey)
-      |> put_session(:reauth_at, System.system_time(:second))
-      |> post(~p"/admin/users/reset-password", %{"username" => "sec_frank"})
-      |> html_response(200)
-
-    assert html =~ ~s(id="temporary-password")
-    assert html =~ ~s(id="admin-users")
-  end
-
   test "queue pagination links stay on the queue section", %{conn: conn} do
     for n <- 1..60 do
       {:ok, _} =

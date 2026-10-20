@@ -17,7 +17,6 @@ defmodule PortalWeb.PageController do
 
   def admin(conn, _params), do: admin_section(conn, :overview)
   def admin_queue(conn, _params), do: admin_section(conn, :queue)
-  def admin_users(conn, _params), do: admin_section(conn, :users)
   def admin_failures(conn, _params), do: admin_section(conn, :failures)
   def admin_argus(conn, _params), do: admin_section(conn, :argus)
   def admin_maintenance(conn, _params), do: admin_section(conn, :maintenance)
@@ -190,89 +189,6 @@ defmodule PortalWeb.PageController do
 
       {:error, conn} ->
         conn
-    end
-  end
-
-  # Granting or revoking admin changes who can do everything on this page, so
-  # it also needs the step-up the security settings use: a passkey (or other
-  # accepted factor) confirmed within `Mfa.reauth_window_seconds/0`. Without
-  # it, a stolen admin session could quietly hand out admin.
-  def admin_grant_admin(conn, params) do
-    with_admin_step_up(conn, fn conn, user ->
-      case Portal.Admin.grant_admin(params["username"] || "", user) do
-        {:ok, granted} ->
-          conn
-          |> put_flash(:info, "#{granted.username} is now an admin.")
-          |> render_admin(user, :users)
-
-        {:error, reason} ->
-          conn
-          |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
-          |> render_admin(user, :users)
-      end
-    end)
-  end
-
-  # The temporary password is rendered into this one response and nowhere else:
-  # not the flash, whose cookie is signed but readable, and not the log.
-  def admin_reset_password(conn, params) do
-    with_admin_step_up(conn, fn conn, user ->
-      case Portal.Admin.reset_password(params["username"] || "", user) do
-        {:ok, target, temp} ->
-          conn
-          |> put_flash(
-            :info,
-            "#{target.username} has a temporary password. They must choose a new one when they sign in."
-          )
-          |> render_admin(user, :users,
-            temporary_password: %{username: target.username, password: temp}
-          )
-
-        {:error, reason} ->
-          conn
-          |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
-          |> render_admin(user, :users)
-      end
-    end)
-  end
-
-  def admin_revoke_admin(conn, %{"id" => id}) do
-    with_admin_step_up(conn, fn conn, user ->
-      case Portal.Admin.revoke_admin(id, user) do
-        {:ok, revoked} ->
-          conn
-          |> put_flash(:info, "#{revoked.username} is no longer an admin.")
-          |> render_admin(user, :users)
-
-        {:error, reason} ->
-          conn
-          |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
-          |> render_admin(user, :users)
-      end
-    end)
-  end
-
-  defp with_admin_step_up(conn, fun) do
-    case require_admin(conn) do
-      {:ok, conn, user} -> if_stepped_up(conn, user, fun)
-      {:error, conn} -> conn
-    end
-  end
-
-  defp if_stepped_up(conn, user, fun) do
-    if Portal.Accounts.Mfa.reauth_fresh?(
-         user,
-         PortalWeb.UserAuth.reauth_method(conn),
-         PortalWeb.UserAuth.reauth_at(conn)
-       ) do
-      fun.(conn, user)
-    else
-      conn
-      |> put_flash(
-        :error,
-        "Confirm your passkey on this page first, then come back to change admins."
-      )
-      |> redirect(to: ~p"/settings/security")
     end
   end
 
@@ -734,7 +650,7 @@ defmodule PortalWeb.PageController do
 
   # One template per admin section, each loading only what it shows. The
   # section's id doubles as the active tab.
-  defp render_admin(conn, user, section, extra \\ []) do
+  defp render_admin(conn, user, section) do
     conn
     |> render(
       admin_template(section),
@@ -743,18 +659,17 @@ defmodule PortalWeb.PageController do
         page_description: "Administration.",
         current_user: user,
         admin_section: section
-      ] ++ admin_assigns(conn, section, extra)
+      ] ++ admin_assigns(conn, section)
     )
   end
 
   defp admin_template(:overview), do: :admin
   defp admin_template(:queue), do: :admin_queue
-  defp admin_template(:users), do: :admin_users
   defp admin_template(:failures), do: :admin_failures
   defp admin_template(:argus), do: :admin_argus
   defp admin_template(:maintenance), do: :admin_maintenance
 
-  defp admin_assigns(conn, :queue, _extra) do
+  defp admin_assigns(conn, :queue) do
     queue_page = Portal.ScanRequests.queue_page(conn.params["queue_page"])
     review_page = Portal.ScanRequests.pending_anonymous_page(conn.params["review_page"])
 
@@ -768,17 +683,10 @@ defmodule PortalWeb.PageController do
     ]
   end
 
-  defp admin_assigns(_conn, :users, extra) do
-    [
-      users: Portal.Admin.list_users(),
-      temporary_password: Keyword.get(extra, :temporary_password)
-    ]
-  end
-
-  defp admin_assigns(_conn, :failures, _extra),
+  defp admin_assigns(_conn, :failures),
     do: [recent_failures: Portal.ScanRequests.recent_failures(50)]
 
-  defp admin_assigns(_conn, :argus, _extra) do
+  defp admin_assigns(_conn, :argus) do
     [
       argus: Portal.Settings.get(),
       argus_analysis_names: Portal.Settings.Setting.analysis_names(),
@@ -786,7 +694,7 @@ defmodule PortalWeb.PageController do
     ]
   end
 
-  defp admin_assigns(_conn, :maintenance, _extra) do
+  defp admin_assigns(_conn, :maintenance) do
     [
       update_check: Portal.Admin.update_check_status(),
       sweeps: Enum.map(Portal.BulkRebuild.recent(), &{&1, Portal.BulkRebuild.status(&1.id)}),
@@ -794,7 +702,7 @@ defmodule PortalWeb.PageController do
     ]
   end
 
-  defp admin_assigns(_conn, :overview, _extra) do
+  defp admin_assigns(_conn, :overview) do
     [
       review_total: Portal.ScanRequests.pending_anonymous_page(1).total,
       queue_total: Portal.ScanRequests.queue_page(1).total,

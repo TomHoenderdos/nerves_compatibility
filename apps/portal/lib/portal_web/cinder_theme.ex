@@ -6,16 +6,16 @@ defmodule PortalWeb.CinderTheme do
   use Cinder.Theme
   extends :daisy_ui
 
-  # Plain `table`, not `daisy_ui`'s `table table-zebra`: the admin tables this
-  # replaces (e.g. admin_users.html.heex) don't zebra-stripe.
+  # Plain `table`, not `daisy_ui`'s `table table-zebra`: the hand-written
+  # admin tables these replace don't zebra-stripe.
   set :table_class, "table"
 
   # `daisy_ui`'s card-styled wrapper doesn't match the admin tables, which
   # wrap their `<table>` in a plain scroll container.
   set :table_wrapper_class, "overflow-x-auto"
 
-  # Empty, so header cells render as bare daisyUI `<th>`s, as in
-  # admin_users.html.heex, instead of `daisy_ui`'s bold/no-wrap styling.
+  # Empty, so header cells render as bare daisyUI `<th>`s, as in the
+  # hand-written admin tables, instead of `daisy_ui`'s bold/no-wrap styling.
   set :th_class, ""
 
   # Drop `daisy_ui`'s `bg-base-100` fill so pagination buttons match the
