@@ -188,8 +188,105 @@ defmodule PortalWeb.CatalogApiControllerTest do
              "otp" => "26",
              "system_version" => "1.24.0",
              "run_id" => "catalog-api-precompiled-jason-1.4.1",
-             "image_digest" => "sha256:precompiled"
+             "image_digest" => "sha256:precompiled",
+             "deps" => nil
            }
+  end
+
+  # Dependencies' macros are expanded into the package's BEAMs, so an entry is
+  # only reusable against the exact dependency tree it was built with.
+  test "each manifest entry names the dependency lock it was built against", %{conn: conn} do
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+    _ = File.rm(ArtifactStore.blob_path(sha))
+    dir = Path.join(System.tmp_dir!(), "catalog-api-deps-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, sha), "precompiled-beam")
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    deps_lock = %{"decimal" => %{"version" => "2.3.0", "checksum" => "abc"}}
+
+    {:ok, _} =
+      Ingestion.ingest(Map.put(result_fixture(), "deps_lock", deps_lock), %{
+        run_id: "deps",
+        image_digest: "sha256:deps",
+        files_dir: dir,
+        log: "l"
+      })
+
+    body = conn |> get("/api/precompiled/manifests/jason.json") |> json_response(200)
+    assert body["versions"]["1.4.1"]["nerves_system_rpi4"]["build"]["deps"] == deps_lock
+  end
+
+  # A partial run copies the systems it did not rebuild from the previous run.
+  # Those files were built by that earlier run, under its toolchain, image and
+  # dependency lock, so the entry has to describe that run and not the one that
+  # carried it.
+  test "a carried-forward entry describes the run that built it", %{conn: conn} do
+    old_sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+    new_sha = :crypto.hash(:sha256, "x86-beam") |> Base.encode16(case: :lower)
+    old_lock = %{"decimal" => %{"version" => "2.3.0", "checksum" => "old"}}
+    new_lock = %{"decimal" => %{"version" => "2.3.1", "checksum" => "new"}}
+
+    for sha <- [old_sha, new_sha] do
+      _ = File.rm(ArtifactStore.blob_path(sha))
+    end
+
+    first =
+      result_fixture()
+      |> Map.merge(%{"finished_at" => "2026-01-01T00:00:00Z", "deps_lock" => old_lock})
+
+    second =
+      result_fixture()
+      |> Map.merge(%{
+        "finished_at" => "2026-06-01T00:00:00Z",
+        "scope" => "targets",
+        "deps_lock" => new_lock,
+        "toolchain" => %{"elixir" => "1.18.4", "erlang" => "27"}
+      })
+      |> Map.put("systems", %{
+        "nerves_system_x86_64" =>
+          result_fixture()["systems"]["nerves_system_rpi4"]
+          |> put_in(
+            ["beam_scan", "footprint", "file_manifest", "ebin"],
+            [%{"path" => "ebin/jason.beam", "sha256" => new_sha}]
+          )
+      })
+
+    for {run_id, digest, result, sha, bytes} <- [
+          {"builder", "sha256:first", first, old_sha, "precompiled-beam"},
+          {"carrier", "sha256:second", second, new_sha, "x86-beam"}
+        ] do
+      dir =
+        Path.join(System.tmp_dir!(), "catalog-api-carry-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, sha), bytes)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, _} =
+        Ingestion.ingest(result, %{
+          run_id: run_id,
+          image_digest: digest,
+          files_dir: dir,
+          log: "l"
+        })
+    end
+
+    body = conn |> get("/api/precompiled/manifests/jason.json") |> json_response(200)
+    version = body["versions"]["1.4.1"]
+
+    assert version["nerves_system_rpi4"]["build"] == %{
+             "elixir" => "1.16.0",
+             "otp" => "26",
+             "system_version" => "1.24.0",
+             "run_id" => "builder",
+             "image_digest" => "sha256:first",
+             "deps" => old_lock
+           }
+
+    assert version["nerves_system_x86_64"]["build"]["run_id"] == "carrier"
+    assert version["nerves_system_x86_64"]["build"]["elixir"] == "1.18.4"
+    assert version["nerves_system_x86_64"]["build"]["deps"] == new_lock
   end
 
   # Runs are read newest first; merging each older one over the result made

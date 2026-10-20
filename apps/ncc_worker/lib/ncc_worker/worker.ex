@@ -8,6 +8,7 @@ defmodule NccWorker.Worker do
     BeamScan,
     BuildCache,
     BuildSelection,
+    DepsLock,
     Footprint,
     HexHome,
     HexMetadata,
@@ -53,6 +54,12 @@ defmodule NccWorker.Worker do
 
   @type result :: %{
           optional(:scope) => String.t(),
+          # The package's transitive dependency closure as locked for this
+          # build, itself excluded, keyed by name. Absent when the lock could
+          # not be read and for argus-only runs, which build no files.
+          optional(:deps_lock) => %{
+            String.t() => %{required(String.t()) => String.t()}
+          },
           run_id: String.t(),
           package: %{
             name: String.t(),
@@ -382,7 +389,20 @@ defmodule NccWorker.Worker do
       scope: RunScope.to_string(scope)
     }
 
-    {:ok, result}
+    {:ok, put_deps_lock(result, scope, project_dir, input.package.name)}
+  end
+
+  # The BEAMs a run publishes have their dependencies' macros expanded into
+  # them, so they are only reusable against the exact tree they were built
+  # with (`NccWorker.DepsLock`). An argus-only run publishes nothing, and a lock
+  # that cannot be read leaves the key out rather than failing a finished build.
+  defp put_deps_lock(result, :argus_only, _project_dir, _package), do: result
+
+  defp put_deps_lock(result, _scope, project_dir, package) do
+    case DepsLock.read(project_dir, package) do
+      nil -> result
+      deps_lock -> Map.put(result, :deps_lock, deps_lock)
+    end
   end
 
   # An argus-only run compiles on the host for argus and stops there: the

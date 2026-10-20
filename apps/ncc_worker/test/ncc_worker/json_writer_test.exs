@@ -157,6 +157,30 @@ defmodule NccWorker.JsonWriterTest do
       assert decoded["argus"] == nil
     end
 
+    test "writes the dependency lock, and omits it when the worker could not read one" do
+      dir = Path.join(System.tmp_dir!(), "jw_deps_lock_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      base = %{
+        run_id: "r",
+        package: %{name: "p", version: "1"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{},
+        finished_at: "2026-10-20T00:00:00Z"
+      }
+
+      deps_lock = %{"spark" => %{"version" => "2.7.8", "checksum" => "abc"}}
+      :ok = JsonWriter.write_result(dir, Map.put(base, :deps_lock, deps_lock))
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      assert decoded["deps_lock"] == deps_lock
+
+      :ok = JsonWriter.write_result(dir, base)
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      refute Map.has_key?(decoded, "deps_lock")
+    end
+
     test "writes the run scope, so ingestion knows what the run left out" do
       dir = Path.join(System.tmp_dir!(), "jw_scope_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)

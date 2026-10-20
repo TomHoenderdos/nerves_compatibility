@@ -48,7 +48,7 @@ defmodule NccWorker.JsonWriter do
 
   @spec convert_result_for_json(map()) :: map()
   defp convert_result_for_json(result) do
-    %{
+    json = %{
       run_id: result.run_id,
       package: result.package,
       image: result.image,
@@ -63,6 +63,13 @@ defmodule NccWorker.JsonWriter do
       argus: Map.get(result, :argus),
       scope: Map.get(result, :scope, "full")
     }
+
+    # Absent rather than null when the worker could not read the lock, the way
+    # a run from an image before lock recording looks too.
+    case Map.get(result, :deps_lock) do
+      nil -> json
+      deps_lock -> Map.put(json, :deps_lock, deps_lock)
+    end
   end
 
   @spec convert_system_result(map()) :: map()

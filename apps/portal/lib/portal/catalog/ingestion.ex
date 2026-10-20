@@ -189,6 +189,27 @@ defmodule Portal.Catalog.Ingestion do
   defp argus_map(%{} = argus), do: argus
   defp argus_map(_), do: nil
 
+  # All or nothing, like `NccWorker.DepsLock`. The manifest publishes this so a
+  # client can check its own lock against it, and a subset of the build's tree
+  # would let a client match a build it should not. The build container wrote
+  # it, and the package under test runs inside that container, so a malformed
+  # entry stores no lock at all rather than the well-formed rest. The ingest
+  # itself still succeeds: the run's results stand, its files just are not
+  # offered for lock matching. Extra keys inside a well-formed entry carry no
+  # meaning and are stripped.
+  defp deps_lock(%{} = deps_lock) do
+    Enum.reduce_while(deps_lock, %{}, fn
+      {name, %{"version" => version, "checksum" => checksum}}, acc
+      when is_binary(name) and is_binary(version) and is_binary(checksum) ->
+        {:cont, Map.put(acc, name, %{"version" => version, "checksum" => checksum})}
+
+      _entry, _acc ->
+        {:halt, nil}
+    end)
+  end
+
+  defp deps_lock(_), do: nil
+
   defp create_run(result, opts, package_id, version, overall, finished_at, carried) do
     Run
     |> Ash.Changeset.for_create(:create, %{
@@ -200,6 +221,7 @@ defmodule Portal.Catalog.Ingestion do
       footprint: footprint_for(result, carried),
       toolchain: result["toolchain"],
       argus: argus_map(result["argus"]),
+      deps_lock: deps_lock(result["deps_lock"]),
       log: run_log(overall, opts),
       finished_at: finished_at,
       scan_request_id: Map.get(opts, :scan_request_id)

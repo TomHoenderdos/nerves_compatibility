@@ -42,6 +42,11 @@ defmodule Portal.Workers.BuildIntegrationTest do
     # The default argus scope is firmware packages only, and jason is pure Elixir.
     assert run.argus["status"] == "skipped"
 
+    # jason's only dependency is an optional `decimal`, which nothing in the
+    # generated Nerves project resolves, so its closure is empty. Recorded as
+    # an empty lock rather than none: a client matches it against any project.
+    assert run.deps_lock == %{}
+
     # ≥1 SystemResult rows
     system_results =
       SystemResult
@@ -79,6 +84,10 @@ defmodule Portal.Workers.BuildIntegrationTest do
     assert systems["pure_elixir"].carried_from_run_id == first.id
     assert systems["host"].carried_from_run_id == nil
     assert second.argus["status"] in ["ok", "error"]
+
+    # An argus-only run builds nothing, so it has no lock of its own.
+    assert first.deps_lock == %{}
+    assert second.deps_lock == nil
     assert request.status == :built
   end
 

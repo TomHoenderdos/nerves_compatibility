@@ -43,7 +43,17 @@ Response:
             "size": 45678,
             "mode": 33261
           }
-        ]
+        ],
+        "build": {
+          "elixir": "1.18.4",
+          "otp": "27",
+          "system_version": "1.31.0",
+          "run_id": "...",
+          "image_digest": "sha256:...",
+          "deps": {
+            "elixir_make": {"version": "0.9.0", "checksum": "..."}
+          }
+        }
       }
     }
   },
@@ -79,6 +89,29 @@ Status codes:
     `run_id`, `image_digest`. A client should use an entry only when `elixir`
     and `otp` equal its own; `elixir` and `otp` are `null` for runs from before
     the toolchain was recorded.
+    - `deps` — the dependency tree the files were compiled against: every
+      package in the package's transitive dependency closure (the package
+      itself excluded), as `name => {"version", "checksum"}`, where `checksum`
+      is the outer Hex checksum, the last element of a `mix.lock` entry. `{}`
+      for a package with no dependencies.
+    - A carried-forward entry (a partial rebuild of the version that left this
+      system out) describes the run that actually built the files, so its
+      `run_id` can be older than the version's newest run.
+
+### Matching an entry to a project
+
+A BEAM file contains more than its package's own code: every macro it calls
+from a dependency was expanded into it at compile time, with whatever that
+dependency's version produced. Matching the platform (Elixir, OTP, Nerves
+system) is therefore not enough, the way it is for a Python wheel; the
+dependency tree has to match too. A client should use an entry only when:
+
+1. `build.elixir` and `build.otp` equal its own, and
+2. `build.deps` is not `null`, and every dependency it names is in the
+   client's `mix.lock` with the same version and the same outer checksum.
+
+Extra dependencies in the client's lock do not matter. A missing dependency,
+a different version or a different checksum means building from source.
 - `versions[version]["pure_elixir"]` — files of a package whose whole dependency
   closure is pure Elixir. No firmware is built for such a package; its files
   come from the host compile and are the same for every target, so a client
@@ -120,6 +153,8 @@ them.
   retained.
 - Entries from runs before 2026-09-16 have no toolchain stored, so their
   `build.elixir` and `build.otp` are `null` and a client should skip them.
+- Entries from runs before 2026-10-20 have no dependency lock stored, so their
+  `build.deps` is `null` and a client should skip them.
 - Pure Elixir packages have `pure_elixir` entries only from runs after
   2026-10-20; earlier ones archived no files.
 - An entry appears only once every file it lists can be served from this host.
