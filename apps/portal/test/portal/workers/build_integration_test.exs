@@ -1,8 +1,9 @@
 defmodule Portal.Workers.BuildIntegrationTest do
   @moduledoc """
   End-to-end test: enqueue/perform a real `Portal.Workers.Build` for a small Hex
-  package against the real `ncc-worker:local` container, then assert the Catalog
-  rows land in Postgres.
+  package against the real worker container (`Portal.Builder.docker_image/0`,
+  `ncc-worker:local` unless `NCC_DOCKER_IMAGE` names another), then assert the
+  Catalog rows land in Postgres.
 
   Replaces the standalone runner's `integration_test.exs` as the Docker-boundary
   gate. Excluded from `mix test` by default; run explicitly with:
@@ -26,11 +27,9 @@ defmodule Portal.Workers.BuildIntegrationTest do
   @moduletag :integration
   @moduletag timeout: :timer.minutes(30)
 
-  @image "ncc-worker:local"
-
   setup do
     assert docker_running?(), "docker daemon is not running"
-    assert image_built?(), "#{@image} not built — run: make build"
+    assert image_built?(), "#{Builder.docker_image()} not built — run: make build"
     :ok
   end
 
@@ -66,7 +65,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
     {_request, _package, run} = build_and_ingest("jason", "1.4.3")
 
     assert run.argus["status"] == "ok", inspect(run.argus)
-    assert run.argus["version"] == "0.20.1"
+    assert run.argus["version"] == "0.24.0"
     assert is_list(run.argus["findings"])
   end
 
@@ -96,7 +95,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
       %{
         "package" => name,
         "version" => version,
-        "image_digest" => Builder.image_digest(@image),
+        "image_digest" => Builder.image_digest(Builder.docker_image()),
         "scan_request_id" => request.id
       }
       |> maybe_put("force", opts[:force] && true)
@@ -161,6 +160,9 @@ defmodule Portal.Workers.BuildIntegrationTest do
   end
 
   defp image_built? do
-    match?({_, 0}, System.cmd("docker", ["image", "inspect", @image], stderr_to_stdout: true))
+    match?(
+      {_, 0},
+      System.cmd("docker", ["image", "inspect", Builder.docker_image()], stderr_to_stdout: true)
+    )
   end
 end

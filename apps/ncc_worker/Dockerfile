@@ -39,7 +39,7 @@ RUN sudo apt-get update && \
 # (argus runs an engine only from a cache its own uid owns) and runs argus
 # with ARGUS_OFFLINE=1. See NccWorker.Argus. The run fails the image build
 # when the bundle cannot be fetched or does not run here.
-ARG ARGUS_VERSION=0.23.1
+ARG ARGUS_VERSION=0.24.0
 RUN set -eux; \
     mix escript.install hex argus_beam ${ARGUS_VERSION} --force; \
     /home/nerves/.mix/escripts/argus version; \

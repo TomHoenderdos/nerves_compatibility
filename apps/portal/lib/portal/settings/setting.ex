@@ -9,7 +9,7 @@ defmodule Portal.Settings.Setting do
     domain: Portal.Settings,
     data_layer: AshPostgres.DataLayer
 
-  # argus_beam 0.20.1's named sets, then its analyses. Tied to the argus
+  # argus_beam 0.24.0's named sets, then its analyses. Tied to the argus
   # version pinned in apps/ncc_worker/Dockerfile: an unknown name makes argus
   # exit 2 on every build, so this list is updated together with that pin.
   @analysis_names [
