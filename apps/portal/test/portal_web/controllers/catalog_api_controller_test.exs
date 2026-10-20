@@ -262,6 +262,39 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert paths == ["ebin/jason.beam"]
   end
 
+  # A pure Elixir package builds no firmware; its host-built files fit every
+  # target and are published under `pure_elixir`, which clients fall back to.
+  test "a pure Elixir run publishes its host-built files under pure_elixir", %{conn: conn} do
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+    _ = File.rm(ArtifactStore.blob_path(sha))
+    dir = Path.join(System.tmp_dir!(), "catalog-api-pure-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, sha), "precompiled-beam")
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    fixture = result_fixture()
+    pure = Map.put(fixture["systems"]["nerves_system_rpi4"], "system_version", nil)
+
+    result =
+      Map.put(fixture, "systems", %{
+        "host" => fixture["systems"]["host"],
+        "pure_elixir" => pure
+      })
+
+    {:ok, _} =
+      Ingestion.ingest(result, %{
+        run_id: "pure",
+        image_digest: "sha256:x",
+        files_dir: dir,
+        log: "l"
+      })
+
+    body = conn |> get("/api/precompiled/manifests/jason.json") |> json_response(200)
+    assert %{"pure_elixir" => entry} = body["versions"]["1.4.1"]
+    assert [%{"path" => "ebin/jason.beam", "sha256" => ^sha}] = entry["ebin"]
+    assert entry["build"]["elixir"] == "1.16.0"
+  end
+
   # The bug this guards: a `.beam` is routinely byte-identical across targets,
   # and `catalog_artifacts` is keyed by sha alone. When ownership lived on that
   # table, the second system to be ingested recorded nothing and published an

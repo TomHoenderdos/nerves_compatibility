@@ -33,12 +33,17 @@ defmodule NccWorker.FileArchiver do
 
     stats = %{files_archived: 0, files_skipped: 0, bytes_archived: 0}
     project_dir = Path.join(work_dir, "proj")
+    package_name = get_in(result, [:package, :name])
 
     # Collect all manifests from all systems
     manifests =
       result.systems
-      |> Enum.flat_map(fn {system_name, system_result} ->
-        collect_manifests_from_system(system_result, project_dir, system_name)
+      |> Enum.flat_map(fn
+        {"pure_elixir", system_result} ->
+          collect_pure_elixir_manifest(system_result, project_dir, package_name)
+
+        {system_name, system_result} ->
+          collect_manifests_from_system(system_result, project_dir, system_name)
       end)
 
     # Archive each file
@@ -96,6 +101,23 @@ defmodule NccWorker.FileArchiver do
       Logger.debug("Found #{length(all_files)} files to archive for #{system_name}")
       all_files
     end
+  end
+
+  # A pure Elixir package builds no firmware, so its files come from the host
+  # compile instead: the same BEAMs for every target, which is what made the
+  # package pure in the first place. Only the package's own application, keyed
+  # by its path inside that application, like a release manifest entry.
+  defp collect_pure_elixir_manifest(_system_result, _project_dir, nil), do: []
+
+  defp collect_pure_elixir_manifest(system_result, project_dir, package_name) do
+    app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
+
+    index =
+      app_dir
+      |> walk_files()
+      |> Map.new(&{Path.relative_to(&1, app_dir), &1})
+
+    collect_manifest_entries(system_result[:beam_scan], index, "package")
   end
 
   @spec find_build_path(String.t(), String.t()) :: String.t() | nil
