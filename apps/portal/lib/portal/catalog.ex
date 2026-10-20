@@ -86,7 +86,7 @@ defmodule Portal.Catalog do
   ]
   # The precompiled manifest is the one caller that genuinely needs `beam_scan`
   # — the file manifest lives inside it — and needs nothing else wide.
-  @manifest_fields [:id, :run_id, :system_pkg, :system_version, :beam_scan]
+  @manifest_fields [:id, :run_id, :system_pkg, :system_version, :beam_scan, :carried_from_run_id]
   @json_fields [
     :run_id,
     :system_pkg,
@@ -1461,11 +1461,13 @@ defmodule Portal.Catalog do
   # entry whose files are not all on this host yet counts as none, so the
   # version falls back to its newest build that a client can fetch whole.
   defp precompiled_versions(runs, results, shas_by_system_result_id, present_shas) do
+    runs_by_id = Map.new(runs, &{&1.id, &1})
+
     Enum.reduce(runs, %{}, fn run, acc ->
       run_results = Enum.filter(results, &(&1.run_id == run.id and &1.system_pkg != "host"))
 
       systems =
-        precompiled_systems(run, run_results, shas_by_system_result_id, present_shas)
+        precompiled_systems(runs_by_id, run_results, shas_by_system_result_id, present_shas)
 
       if systems == %{} do
         acc
@@ -1489,11 +1491,15 @@ defmodule Portal.Catalog do
       :finished_at,
       :inserted_at,
       :toolchain,
-      :image_digest
+      :image_digest,
+      :deps_lock
     ])
     |> Ash.read!(domain: __MODULE__)
   end
 
+  # `deps` is the package's dependency closure as the build locked it: their
+  # macros are expanded into its BEAMs, so a client may use the entry only when
+  # its own lock has every one at the same version and checksum.
   defp build_inputs(run, result) do
     toolchain = run.toolchain || %{}
 
@@ -1502,8 +1508,18 @@ defmodule Portal.Catalog do
       "otp" => toolchain["erlang"],
       "system_version" => result.system_version,
       "run_id" => run.run_id,
-      "image_digest" => run.image_digest
+      "image_digest" => run.image_digest,
+      "deps" => run.deps_lock
     }
+  end
+
+  # A system result a partial run carried forward was built by an earlier run
+  # of the same package, under that run's toolchain, image and lock, so that is
+  # the run its entry has to describe. `precompiled_runs/1` reads every run of
+  # the package, so the builder is among them; the carrying run is only the
+  # fallback for a row whose builder has been deleted (the foreign key nils it).
+  defp built_by(runs_by_id, result) do
+    Map.get(runs_by_id, result.carried_from_run_id) || Map.fetch!(runs_by_id, result.run_id)
   end
 
   defp file_manifest(result, stored_shas, present_shas) do
@@ -1602,7 +1618,7 @@ defmodule Portal.Catalog do
   defp iso8601(nil), do: nil
   defp iso8601(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
 
-  defp precompiled_systems(run, run_results, shas_by_system_result_id, present_shas) do
+  defp precompiled_systems(runs_by_id, run_results, shas_by_system_result_id, present_shas) do
     Enum.reduce(run_results, %{}, fn result, system_acc ->
       stored_shas = Map.get(shas_by_system_result_id, result.id, MapSet.new())
 
@@ -1614,7 +1630,7 @@ defmodule Portal.Catalog do
           Map.put(
             system_acc,
             result.system_pkg,
-            Map.put(manifest, "build", build_inputs(run, result))
+            Map.put(manifest, "build", build_inputs(built_by(runs_by_id, result), result))
           )
       end
     end)

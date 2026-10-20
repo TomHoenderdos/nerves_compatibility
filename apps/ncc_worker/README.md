@@ -23,7 +23,12 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    With `"mode": "argus_only"` the run stops after the host compile and this step: no firmware is built, argus
    covers every package (whatever `argus.scope` says), and `result.json` reports `"scope": "argus_only"`.
    Ingestion copies the systems a partial run left out from the previous run of the same version.
-6. Writes atomic `/out/result.json` plus per-system logs under `/out/logs/`, and archives compiled files by SHA256 under `/files`.
+6. Records `deps_lock` in `result.json`: the package's transitive dependency closure from the project's `mix.lock`,
+   the package itself excluded, as `{"spark": {"version": "2.7.8", "checksum": "<outer Hex checksum>"}}`
+   (`NccWorker.DepsLock`). Dependencies' macros are compiled into the package's BEAMs, so the precompiled API
+   publishes this for clients to match against their own lock. The key is absent for argus-only runs, which build
+   nothing, and when the lock cannot be read.
+7. Writes atomic `/out/result.json` plus per-system logs under `/out/logs/`, and archives compiled files by SHA256 under `/files`.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 

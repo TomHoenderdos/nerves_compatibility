@@ -42,6 +42,7 @@ defmodule Portal.Catalog.Run do
         :footprint,
         :toolchain,
         :argus,
+        :deps_lock,
         :log,
         :started_at,
         :finished_at,
@@ -104,6 +105,16 @@ defmodule Portal.Catalog.Run do
     # The worker's advisory argus_beam result (`NccWorker.Argus`), verbatim.
     # Nil for runs from images before argus, and never read by any status.
     attribute :argus, :map do
+      public?(true)
+    end
+
+    # The package's transitive dependency closure as this run's build locked
+    # it, `%{name => %{"version" => v, "checksum" => outer}}`, itself excluded
+    # (`NccWorker.DepsLock`). Dependencies' macros are expanded into the
+    # package's BEAMs, so the precompiled manifest publishes this and a client
+    # reuses a build only when its own lock matches. Nil for runs from images
+    # before it was recorded and for argus-only runs, which build nothing.
+    attribute :deps_lock, :map do
       public?(true)
     end
 

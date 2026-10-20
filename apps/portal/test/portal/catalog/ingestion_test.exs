@@ -562,6 +562,69 @@ defmodule Portal.Catalog.IngestionTest do
     assert run.argus == nil
   end
 
+  describe "deps_lock" do
+    defp ingest_deps_lock(result) do
+      sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+
+      {:ok, run} =
+        Ingestion.ingest(result, %{
+          run_id: "deps-lock-#{System.unique_integer([:positive])}",
+          image_digest: "sha256:deps",
+          files_dir: seed_files_dir([sha]),
+          scan_request_id: nil,
+          log: "build log"
+        })
+
+      run
+    end
+
+    test "is stored on the run, and nil when the worker sent none" do
+      deps_lock = %{
+        "spark" => %{"version" => "2.7.8", "checksum" => "abc"},
+        "sourceror" => %{"version" => "1.10.0", "checksum" => "def"}
+      }
+
+      assert ingest_deps_lock(Map.put(load_fixture(), "deps_lock", deps_lock)).deps_lock ==
+               deps_lock
+
+      assert ingest_deps_lock(Map.put(load_fixture(), "deps_lock", %{})).deps_lock == %{}
+      assert ingest_deps_lock(load_fixture()).deps_lock == nil
+    end
+
+    # The worker writes the whole closure or no key at all, because a subset
+    # could let a client match a build it should not. A malformed entry means
+    # the container misbehaved, and dropping just that entry would publish
+    # exactly such a subset, so the whole lock goes instead.
+    test "any malformed entry drops the whole lock rather than failing the ingest" do
+      good = %{"spark" => %{"version" => "2.7.8", "checksum" => "abc"}}
+
+      for {name, entry} <- [
+            {"no_checksum", %{"version" => "1.0.0"}},
+            {"no_version", %{"checksum" => "x"}},
+            {"bad_version", %{"version" => 1, "checksum" => "x"}},
+            {"bad_checksum", %{"version" => "1.0.0", "checksum" => nil}},
+            {"not_a_map", "1.0.0"}
+          ] do
+        result = Map.put(load_fixture(), "deps_lock", Map.put(good, name, entry))
+        assert ingest_deps_lock(result).deps_lock == nil, name
+      end
+
+      # JSON keys are always strings, so a non-binary name can only reach the
+      # function from a caller that did not decode JSON.
+      bad_name = Map.put(good, 1, %{"version" => "1.0.0", "checksum" => "x"})
+      assert ingest_deps_lock(Map.put(load_fixture(), "deps_lock", bad_name)).deps_lock == nil
+
+      assert ingest_deps_lock(Map.put(load_fixture(), "deps_lock", ["spark"])).deps_lock == nil
+    end
+
+    test "strips extra keys from a well-formed entry" do
+      deps_lock = %{"extra" => %{"version" => "1.0.0", "checksum" => "y", "inner" => "z"}}
+
+      assert ingest_deps_lock(Map.put(load_fixture(), "deps_lock", deps_lock)).deps_lock ==
+               %{"extra" => %{"version" => "1.0.0", "checksum" => "y"}}
+    end
+  end
+
   describe "partial runs" do
     defp full_result(name, version, systems) do
       %{
