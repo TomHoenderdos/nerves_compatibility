@@ -56,7 +56,7 @@ defmodule PortalWeb.PageController do
 
           {:error, reason} ->
             conn
-            |> put_flash(:error, admin_error_message(reason))
+            |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
             |> render_admin(user, :queue)
         end
 
@@ -78,7 +78,7 @@ defmodule PortalWeb.PageController do
 
           {:error, reason} ->
             conn
-            |> put_flash(:error, admin_error_message(reason))
+            |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
             |> render_admin(user, :queue)
         end
 
@@ -100,7 +100,7 @@ defmodule PortalWeb.PageController do
 
           {:error, reason} ->
             conn
-            |> put_flash(:error, admin_error_message(reason))
+            |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
             |> render_admin(user, :maintenance)
         end
 
@@ -166,7 +166,7 @@ defmodule PortalWeb.PageController do
           put_flash(conn, :info, "Bulk rebuild queued: #{pluralize(n, "package")}.")
 
         {_, {:error, reason}} ->
-          put_flash(conn, :error, admin_error_message(reason))
+          put_flash(conn, :error, PortalWeb.AdminMessages.error(reason))
       end
     end
   end
@@ -207,7 +207,7 @@ defmodule PortalWeb.PageController do
 
         {:error, reason} ->
           conn
-          |> put_flash(:error, admin_error_message(reason))
+          |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
           |> render_admin(user, :users)
       end
     end)
@@ -230,7 +230,7 @@ defmodule PortalWeb.PageController do
 
         {:error, reason} ->
           conn
-          |> put_flash(:error, admin_error_message(reason))
+          |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
           |> render_admin(user, :users)
       end
     end)
@@ -246,7 +246,7 @@ defmodule PortalWeb.PageController do
 
         {:error, reason} ->
           conn
-          |> put_flash(:error, admin_error_message(reason))
+          |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
           |> render_admin(user, :users)
       end
     end)
@@ -287,7 +287,7 @@ defmodule PortalWeb.PageController do
 
           {:error, reason} ->
             conn
-            |> put_flash(:error, admin_error_message(reason))
+            |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
             |> render_admin(user, :argus)
         end
 
@@ -814,7 +814,7 @@ defmodule PortalWeb.PageController do
 
       {:error, reason} ->
         conn
-        |> put_flash(:error, admin_error_message(reason))
+        |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
         |> render_admin(user, :queue)
     end
   end
@@ -828,7 +828,7 @@ defmodule PortalWeb.PageController do
 
       {:error, reason} ->
         conn
-        |> put_flash(:error, admin_error_message(reason))
+        |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
         |> render_admin(user, :queue)
     end
   end
@@ -969,47 +969,4 @@ defmodule PortalWeb.PageController do
        do: account_error_message(reason)
 
   defp settings_error_message(_reason), do: "Account settings update failed."
-
-  defp admin_error_message(:not_found), do: "Request was not found."
-  defp admin_error_message(:not_pending_anonymous), do: "Request is no longer pending review."
-  defp admin_error_message(:blank_package_name), do: "Enter a package name."
-
-  defp admin_error_message(:invalid_package_name),
-    do: "That does not look like a hex.pm package name."
-
-  defp admin_error_message({:already_open, request}),
-    do:
-      "#{request.package_name} already has an open request (#{request.status}). " <>
-        "Tick \"force a rebuild\" to queue another build anyway."
-
-  defp admin_error_message(:unknown_package), do: "hex.pm does not know that package."
-
-  defp admin_error_message(:unknown_package_version),
-    do: "hex.pm has no released version of that."
-
-  defp admin_error_message(:no_job), do: "No build job for that request -- nothing to reorder."
-
-  defp admin_error_message({:not_adjustable, state}),
-    do: "That build is already #{state}; its priority no longer affects anything."
-
-  defp admin_error_message(:already_at_limit), do: "Already at the end of the priority range."
-  defp admin_error_message(:already_queued), do: "An update check is already queued."
-
-  defp admin_error_message(:invalid_argus_settings),
-    do: "Tick at least one analysis and keep the timeout between 30 and 1800 seconds."
-
-  defp admin_error_message(:blank_username), do: "Enter a username."
-
-  defp admin_error_message(:unknown_user),
-    do: "No account with that username. They need to register first."
-
-  defp admin_error_message(:self), do: "You cannot remove your own admin access."
-
-  defp admin_error_message(:own_password),
-    do: "Change your own password on the settings page."
-
-  defp admin_error_message(:last_admin), do: "That is the last admin; grant someone else first."
-  defp admin_error_message(:not_admin), do: "That account is not an admin."
-
-  defp admin_error_message(_), do: "Admin action failed."
 end

@@ -691,7 +691,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           <:subtitle>Internal triage. Nothing here is public or sent to anyone.</:subtitle>
         </PortalWeb.UI.page_header>
 
-        <PortalWeb.PageHTML.admin_tabs section={:triage} />
+        <PortalWeb.AdminComponents.admin_tabs section={:triage} />
 
         <p id="triage-counts" class="text-sm text-base-content/60">
           <%= for {{status, label}, i} <- Enum.with_index(@statuses) do %>
