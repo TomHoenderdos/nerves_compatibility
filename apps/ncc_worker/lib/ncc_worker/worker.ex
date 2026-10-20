@@ -304,17 +304,20 @@ defmodule NccWorker.Worker do
 
     system_results =
       scope
-      |> system_results_for(selection, fn ->
-        build_all_systems(
-          project_dir,
-          systems,
-          paths.output_dir,
-          timeout,
-          log_tail_bytes,
-          input.package.name,
-          host_result
-        )
-      end)
+      |> system_results_for(selection, %{
+        firmware: fn ->
+          build_all_systems(
+            project_dir,
+            systems,
+            paths.output_dir,
+            timeout,
+            log_tail_bytes,
+            input.package.name,
+            host_result
+          )
+        end,
+        pure_elixir: fn -> pure_elixir_result(project_dir, input.package.name) end
+      })
       |> Map.put("host", host_result)
 
     {:ok, source_after} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
@@ -386,10 +389,10 @@ defmodule NccWorker.Worker do
   # targets it leaves out are carried over from the previous run at ingest.
   defp system_results_for(:argus_only, _selection, _build), do: %{}
 
-  defp system_results_for(_scope, :pure_elixir, _build),
-    do: %{"pure_elixir" => assumed_compatible_result()}
+  defp system_results_for(_scope, :pure_elixir, %{pure_elixir: pure}),
+    do: %{"pure_elixir" => pure.()}
 
-  defp system_results_for(_scope, :firmware, build), do: build.()
+  defp system_results_for(_scope, :firmware, %{firmware: build}), do: build.()
 
   # Nothing was built for the targets, so there is no firmware to measure.
   defp footprint_for(:argus_only, _selection, _project, _package, _systems),
@@ -398,7 +401,20 @@ defmodule NccWorker.Worker do
   defp footprint_for(_scope, selection, project, package, systems),
     do: package_footprint(selection, project, package, systems)
 
-  defp assumed_compatible_result do
+  # The host compile's BEAMs are the package's files on every target, so they
+  # are scanned and archived like a firmware build's, and published as
+  # precompiled files that fit any system.
+  @doc false
+  @spec pure_elixir_result(String.t(), String.t()) :: map()
+  def pure_elixir_result(project_dir, package_name) do
+    app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
+
+    beam_scan =
+      case BeamScan.analyze_app_dir(app_dir) do
+        {:ok, scan} -> scan
+        {:error, reason} -> %{"errors" => ["beam scan failed: #{inspect(reason)}"]}
+      end
+
     %{
       status: :pass,
       duration_sec: 0.0,
@@ -406,6 +422,7 @@ defmodule NccWorker.Worker do
       log_tail:
         "Assumed compatible: host compilation passed and the resolved package and " <>
           "its dependencies contain only pure Elixir. No firmware targets were built.",
+      beam_scan: beam_scan,
       error: nil
     }
   end

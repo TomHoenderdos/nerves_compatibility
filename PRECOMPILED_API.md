@@ -75,6 +75,15 @@ Status codes:
 - `versions[version][system]` — file manifest for a specific version/system combination.
   - `ebin` — compiled BEAM files and app files.
   - `priv` — priv directory files such as NIFs/resources.
+  - `build` — what the files were built with: `elixir`, `otp`, `system_version`,
+    `run_id`, `image_digest`. A client should use an entry only when `elixir`
+    and `otp` equal its own; `elixir` and `otp` are `null` for runs from before
+    the toolchain was recorded.
+- `versions[version]["pure_elixir"]` — files of a package whose whole dependency
+  closure is pure Elixir. No firmware is built for such a package; its files
+  come from the host compile and are the same for every target, so a client
+  without an entry for its own system can use this one. `system_version` is
+  `null`.
 - Each file entry contains:
   - `path` — relative path within the package, e.g. `ebin/myapp.beam`.
   - `sha256` — lowercase hexadecimal SHA256 of the file.
@@ -109,7 +118,7 @@ them.
 - Manifests list the package's own files. Its dependencies' blobs are stored but
   are not published, because their per-file manifests are deliberately not
   retained.
-- Manifests do not yet state the Elixir/OTP versions the files were compiled
-  against. A `.beam` is only safely reusable against a matching OTP major, so
-  this has to be published before anything consumes these files automatically.
-  Runs record it as of 2026-09-16; earlier runs have no toolchain stored.
+- Entries from runs before 2026-09-16 have no toolchain stored, so their
+  `build.elixir` and `build.otp` are `null` and a client should skip them.
+- Pure Elixir packages have `pure_elixir` entries only from runs after
+  2026-10-20; earlier ones archived no files.

@@ -1,7 +1,7 @@
 defmodule NccWorker.ReleaseArtifactsTest do
   use ExUnit.Case, async: true
 
-  alias NccWorker.{AppFile, FileArchiver, Footprint, SourceScanner}
+  alias NccWorker.{AppFile, BeamScan, FileArchiver, Footprint, SourceScanner}
 
   @moduletag :tmp_dir
   @files %{
@@ -54,6 +54,50 @@ defmodule NccWorker.ReleaseArtifactsTest do
 
     assert {:ok, %{files_archived: 0, files_skipped: 2}} =
              FileArchiver.archive_manifest_files(archive, result, work_dir)
+  end
+
+  test "a pure Elixir result archives the package's files from the host build", %{
+    project: project,
+    archive: archive,
+    tmp_dir: work_dir
+  } do
+    host_lib = Path.join([project, "_build", "host", "lib"])
+    beam = "pure beam"
+
+    for {path, body} <- [{"plain/ebin/plain.beam", beam}, {"other/ebin/other.beam", "other"}] do
+      File.mkdir_p!(Path.dirname(Path.join(host_lib, path)))
+      File.write!(Path.join(host_lib, path), body)
+    end
+
+    assert {:ok, scan} = BeamScan.analyze_app_dir(Path.join(host_lib, "plain"))
+    assert [%{"path" => "ebin/plain.beam"}] = scan["footprint"]["file_manifest"]["ebin"]
+
+    result = %{
+      package: %{name: "plain"},
+      systems: %{"pure_elixir" => %{beam_scan: scan}, "host" => %{beam_scan: nil}}
+    }
+
+    assert {:ok, %{files_archived: 1}} =
+             FileArchiver.archive_manifest_files(archive, result, work_dir)
+
+    digest = :crypto.hash(:sha256, beam) |> Base.encode16(case: :lower)
+    assert File.ls!(archive) == [digest]
+    assert File.read!(Path.join(archive, digest)) == beam
+  end
+
+  test "a pure Elixir result carries the host build's file manifest", %{project: project} do
+    beam = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.beam"])
+    File.mkdir_p!(Path.dirname(beam))
+    File.write!(beam, "pure beam")
+
+    assert %{status: :pass, beam_scan: scan} =
+             NccWorker.Worker.pure_elixir_result(project, "plain")
+
+    assert [%{"path" => "ebin/plain.beam", "size" => 9}] =
+             scan["footprint"]["file_manifest"]["ebin"]
+
+    assert %{beam_scan: %{"errors" => [_]}} =
+             NccWorker.Worker.pure_elixir_result(project, "missing")
   end
 
   test "finds runtime applications and handles a missing package", %{project: project} do

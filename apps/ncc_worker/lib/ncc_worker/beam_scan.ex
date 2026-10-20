@@ -16,6 +16,16 @@ defmodule NccWorker.BeamScan do
     error -> {:error, {:beam_scan_failed, Exception.message(error)}}
   end
 
+  @doc "Scans one compiled application directory, such as `_build/host/lib/<app>`."
+  @spec analyze_app_dir(String.t()) :: {:ok, map()} | {:error, term()}
+  def analyze_app_dir(app_dir) do
+    if File.dir?(app_dir),
+      do: {:ok, normalize(BeamScanner.analyze(app_dir))},
+      else: {:error, :app_dir_not_found}
+  rescue
+    error -> {:error, {:beam_scan_failed, Exception.message(error)}}
+  end
+
   @spec analyze_dependencies(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def analyze_dependencies(build_path, _package_name) do
     with {:ok, release_paths} <- find_release_paths(build_path),
