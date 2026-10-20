@@ -75,7 +75,8 @@ defmodule Portal.MixProject do
       {:hex_core, "~> 0.20.1"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
-      {:bandit, "~> 1.5"}
+      {:bandit, "~> 1.5"},
+      {:cinder, "~> 0.17"}
     ]
   end
 

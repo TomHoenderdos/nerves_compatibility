@@ -6,6 +6,16 @@
 @source "../js";
 @source "../../lib/portal_web";
 
+/* Cinder's own Tailwind v4 wiring (its installer's `cinder.install` task
+   assumes a non-umbrella app at the repo root, so its hardcoded "../../deps"
+   is wrong here; this app is two levels deeper, at apps/portal). cinder.css
+   sources Cinder's own lib/ for the classes its components render; the
+   daisy_ui theme chunk sources lib/cinder/themes/daisy_ui.ex, the base theme
+   PortalWeb.CinderTheme extends, for the classes it contributes that this
+   theme doesn't override. */
+@import "../../../../deps/cinder/priv/cinder.css";
+@import "../../../../deps/cinder/priv/themes/daisy_ui.css";
+
 /* A Tailwind plugin that makes "hero-#{ICON}" classes available.
    The heroicons installation itself is managed by your mix.exs */
 @plugin "../vendor/heroicons";
