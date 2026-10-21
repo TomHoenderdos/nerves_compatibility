@@ -172,7 +172,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
              "elixir" => "1.16.0",
              "otp" => "26",
              "system_version" => "1.24.0",
-             "run_id" => "catalog-api-precompiled-jason-1.4.1",
+             "run_id" => "fixture-jason-1.4.1",
              "image_digest" => "sha256:precompiled",
              "deps" => nil,
              "compile_env" => nil,
@@ -606,6 +606,41 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
   test "invalid blob names return 404", %{conn: conn} do
     assert conn |> get("/api/precompiled/files/not-a-digest") |> response(404) == "Not Found"
+  end
+
+  test "revoking the newest run falls back to the previous run", %{conn: conn} do
+    first = ingest_with_artifact()
+    name = first["package"]["name"]
+    second = first |> Map.put("run_id", "run-2") |> Map.put("finished_at", "2026-10-21T12:00:00Z")
+    ingest_with_artifact(second)
+    body = conn |> get("/api/precompiled/manifests/#{name}.json") |> json_response(200)
+
+    assert get_in(body, [
+             "versions",
+             first["package"]["version"],
+             "nerves_system_rpi4",
+             "build",
+             "run_id"
+           ]) == "run-2"
+
+    assert {:ok, _} = Portal.Catalog.revoke_run("run-2")
+    body = conn |> get("/api/precompiled/manifests/#{name}.json") |> json_response(200)
+
+    assert get_in(body, [
+             "versions",
+             first["package"]["version"],
+             "nerves_system_rpi4",
+             "build",
+             "run_id"
+           ]) == first["run_id"]
+
+    assert {:ok, _} = Portal.Catalog.revoke_run(first["run_id"])
+    assert conn |> get("/api/precompiled/manifests/#{name}.json") |> json_response(404)
+    refute name in Portal.Catalog.packages_with_precompiled_files()
+  end
+
+  test "revoking an unknown run is not_found" do
+    assert {:error, :not_found} = Portal.Catalog.revoke_run("nope")
   end
 
   test "browser pages restrict embedding and base URL changes", %{conn: conn} do

@@ -62,6 +62,10 @@ defmodule Portal.Catalog.Run do
         :scan_request_id
       ])
     end
+
+    update :revoke do
+      change(set_attribute(:revoked_at, &DateTime.utc_now/0))
+    end
   end
 
   identities do
@@ -136,6 +140,13 @@ defmodule Portal.Catalog.Run do
     end
 
     attribute :finished_at, :utc_datetime_usec do
+      public?(true)
+    end
+
+    # Set by an admin to pull the run's files from precompiled publication.
+    # Manifests and batches skip revoked runs; the next batch makes it take
+    # effect for every client.
+    attribute :revoked_at, :utc_datetime_usec do
       public?(true)
     end
 

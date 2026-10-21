@@ -23,7 +23,7 @@ defmodule Portal.PrecompiledFixtures do
 
     {:ok, _run} =
       Ingestion.ingest(result, %{
-        run_id: "catalog-api-precompiled-jason-1.4.1",
+        run_id: result["run_id"],
         image_digest: "sha256:precompiled",
         files_dir: dir,
         scan_request_id: nil,
