@@ -37,6 +37,19 @@ defmodule NccWorker.HexHomeTest do
     assert File.read!(Path.join(b, "cache.ets")) == "registry-v1"
   end
 
+  test "does not create a `.hex` entry in the project directory", c do
+    # typedstruct 0.5.4's mix.exs reads `<deps_path>/../.hex` as a file to
+    # learn its own version, and `File.read!/1` on a directory raises, so a
+    # `.hex` directory next to `deps/` fails every project that depends on it.
+    File.write!(Path.join(c.shared, "cache.ets"), "registry")
+
+    dir = HexHome.prepare(c.project, "host")
+
+    assert is_binary(dir)
+    refute File.exists?(Path.join(c.project, ".hex"))
+    assert String.starts_with?(dir, c.project)
+  end
+
   test "shares the tarball directory by symlink", c do
     dir = HexHome.prepare(c.project, "rpi4")
     link = Path.join(dir, "packages")
