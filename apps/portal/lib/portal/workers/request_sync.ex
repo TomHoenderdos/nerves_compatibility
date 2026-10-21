@@ -34,6 +34,7 @@ defmodule Portal.Workers.RequestSync do
 
   require Logger
 
+  alias Portal.AdminEvents
   alias Portal.Repo
 
   @system_sources ~w(backfill catalog_seed update_check)
@@ -83,6 +84,8 @@ defmodule Portal.Workers.RequestSync do
     {deleted, _} =
       orphans |> where([r], r.source in ^@system_sources) |> Repo.delete_all()
 
+    announce_if_changed(deleted)
+
     {closed, _} =
       orphans
       |> where([r], r.source not in ^@system_sources)
@@ -93,6 +96,8 @@ defmodule Portal.Workers.RequestSync do
           updated_at: NaiveDateTime.utc_now()
         ]
       )
+
+    announce_if_changed(closed)
 
     {deleted, closed}
   end
@@ -118,7 +123,15 @@ defmodule Portal.Workers.RequestSync do
       deleted
     end)
     |> case do
-      {:ok, deleted} -> deleted
+      {:ok, deleted} ->
+        announce_if_changed(deleted)
+        deleted
     end
   end
+
+  # A sync that touched nothing has nothing to tell an open admin queue page;
+  # one that did announces it once per write, which `AdminEvents.throttle/3`
+  # collapses on the reading side when several land in the same tick.
+  defp announce_if_changed(0), do: :ok
+  defp announce_if_changed(_count), do: AdminEvents.broadcast(:queue)
 end

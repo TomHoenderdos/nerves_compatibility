@@ -82,6 +82,28 @@ defmodule Portal.Workers.RequestSyncTest do
       assert status(live) == :queued
     end
 
+    test "closing an orphan announces the admin queue" do
+      :ok = Portal.AdminEvents.subscribe(:queue)
+      orphan = request(:admin_manual, :queued)
+      job("Portal.Workers.Build", orphan, "discarded")
+
+      sync()
+
+      assert_receive {:admin_changed, :queue}
+    end
+
+    # A sync that touches no rows (every open request still has a live job)
+    # has nothing to tell the admin queue.
+    test "a sync with nothing to close announces nothing" do
+      :ok = Portal.AdminEvents.subscribe(:queue)
+      live = request(:backfill, :queued)
+      job("Portal.Workers.Build", live, "available")
+
+      sync()
+
+      refute_receive {:admin_changed, :queue}
+    end
+
     # The build finished and handed over to ingest; the request only turns
     # `built` when ingest completes.
     test "one with a live ingest is left alone" do
@@ -130,6 +152,15 @@ defmodule Portal.Workers.RequestSyncTest do
       sync()
 
       assert exists?(kept)
+    end
+
+    test "deleting finished requests announces the admin queue" do
+      :ok = Portal.AdminEvents.subscribe(:queue)
+      request(:backfill, :built, age_minutes: 25 * 60)
+
+      sync()
+
+      assert_receive {:admin_changed, :queue}
     end
 
     test "a run that pointed at a deleted request keeps its row" do
