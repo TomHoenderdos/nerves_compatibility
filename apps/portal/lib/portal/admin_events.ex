@@ -24,17 +24,26 @@ defmodule Portal.AdminEvents do
 
   Callers include Oban workers (`Portal.Workers.RequestSync`) for whom this
   is a side note on a write that already committed, not the point of the job
-  -- so a `Phoenix.PubSub` hiccup here is logged and swallowed rather than
-  raised, and never turns a successful sync into a failed/retried job.
+  -- so a `Phoenix.PubSub` hiccup is logged and swallowed rather than raised,
+  and never turns a successful sync into a failed/retried job. An unknown
+  `topic` is a programmer error, not a PubSub hiccup, so `Map.fetch!/2` runs
+  outside the rescue and still raises `KeyError`.
   """
   @spec broadcast(topic()) :: :ok
   def broadcast(topic) do
-    Phoenix.PubSub.broadcast(Portal.PubSub, Map.fetch!(@topics, topic), {:admin_changed, topic})
-    :ok
-  rescue
-    error ->
-      Logger.warning("Portal.AdminEvents.broadcast(#{inspect(topic)}) failed: #{inspect(error)}")
+    pubsub_topic = Map.fetch!(@topics, topic)
+
+    try do
+      Phoenix.PubSub.broadcast(Portal.PubSub, pubsub_topic, {:admin_changed, topic})
       :ok
+    rescue
+      error ->
+        Logger.warning(
+          "Portal.AdminEvents.broadcast(#{inspect(topic)}) failed: #{inspect(error)}"
+        )
+
+        :ok
+    end
   end
 
   @doc """

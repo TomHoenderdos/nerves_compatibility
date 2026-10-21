@@ -10,6 +10,10 @@ defmodule Portal.AdminEventsTest do
     refute_receive {:admin_changed, :sweeps}
   end
 
+  test "an unknown topic raises instead of being swallowed as a PubSub failure" do
+    assert_raise KeyError, fn -> AdminEvents.broadcast(:nope) end
+  end
+
   test "a burst refreshes once now and once at the end of the window" do
     # A window wide enough that 500 trivial map/reduce calls land inside it
     # even when the test suite's other async cases are contending for the
