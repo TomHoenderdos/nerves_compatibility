@@ -133,6 +133,48 @@ defmodule Portal.Admin do
     end
   end
 
+  @typedoc "What a bulk action did: how many requests it changed, and why each other one refused."
+  @type bulk_result :: %{ok: non_neg_integer(), failed: [{String.t(), term()}]}
+
+  @doc """
+  Bulk forms of the per-request admin actions, called by the Queue page's
+  Cinder bulk bar with a query for the selected rows and `actor:` in `opts`.
+  Each request goes through the same single-request function, so every one
+  still gets its own build job and progress broadcast; a request that refuses
+  does not stop the rest.
+  """
+  @spec bulk_approve(Ash.Query.t(), keyword()) :: {:ok, bulk_result()}
+  def bulk_approve(query, opts),
+    do: each_request(query, &ScanRequests.approve_anonymous_request(&1.id, opts[:actor]))
+
+  @doc "See `bulk_approve/2`."
+  @spec bulk_reject(Ash.Query.t(), keyword()) :: {:ok, bulk_result()}
+  def bulk_reject(query, opts),
+    do: each_request(query, &ScanRequests.reject_anonymous_request(&1.id, opts[:actor]))
+
+  @doc "See `bulk_approve/2`."
+  @spec bulk_move_up(Ash.Query.t(), keyword()) :: {:ok, bulk_result()}
+  def bulk_move_up(query, _opts), do: each_request(query, &reprioritise(&1.id, :up))
+
+  @doc "See `bulk_approve/2`."
+  @spec bulk_move_down(Ash.Query.t(), keyword()) :: {:ok, bulk_result()}
+  def bulk_move_down(query, _opts), do: each_request(query, &reprioritise(&1.id, :down))
+
+  # Oldest first, the order the page lists them in, so a bulk action does
+  # what the same clicks row by row would have done.
+  defp each_request(query, fun) do
+    query
+    |> Ash.Query.sort(inserted_at: :asc, id: :asc)
+    |> Ash.read!(domain: ScanRequests)
+    |> Enum.reduce(%{ok: 0, failed: []}, fn request, acc ->
+      case fun.(request) do
+        {:ok, _} -> %{acc | ok: acc.ok + 1}
+        {:error, reason} -> %{acc | failed: [{request.id, reason} | acc.failed]}
+      end
+    end)
+    |> then(&{:ok, %{&1 | failed: Enum.reverse(&1.failed)}})
+  end
+
   @doc """
   Queue position for each of `scan_request_ids`, as a map keyed by request id.
 

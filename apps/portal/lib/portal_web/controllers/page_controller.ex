@@ -16,7 +16,6 @@ defmodule PortalWeb.PageController do
   end
 
   def admin(conn, _params), do: admin_section(conn, :overview)
-  def admin_queue(conn, _params), do: admin_section(conn, :queue)
   def admin_failures(conn, _params), do: admin_section(conn, :failures)
   def admin_argus(conn, _params), do: admin_section(conn, :argus)
   def admin_maintenance(conn, _params), do: admin_section(conn, :maintenance)
@@ -25,64 +24,6 @@ defmodule PortalWeb.PageController do
     case require_admin(conn) do
       {:ok, conn, user} -> render_admin(conn, user, section)
       {:error, conn} -> conn
-    end
-  end
-
-  def approve_anonymous_request(conn, %{"id" => id}) do
-    case require_admin(conn) do
-      {:ok, conn, user} -> review_anonymous_request(conn, user, id, :approve)
-      {:error, conn} -> conn
-    end
-  end
-
-  def reject_anonymous_request(conn, %{"id" => id}) do
-    case require_admin(conn) do
-      {:ok, conn, user} -> review_anonymous_request(conn, user, id, :reject)
-      {:error, conn} -> conn
-    end
-  end
-
-  def reprioritise_request(conn, %{"id" => id} = params) do
-    case require_admin(conn) do
-      {:ok, conn, user} ->
-        direction = if params["direction"] == "down", do: :down, else: :up
-
-        case Portal.Admin.reprioritise(id, direction) do
-          {:ok, priority} ->
-            conn
-            |> put_flash(:info, "Moved to priority #{priority}. Lower runs sooner.")
-            |> render_admin(user, :queue)
-
-          {:error, reason} ->
-            conn
-            |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
-            |> render_admin(user, :queue)
-        end
-
-      {:error, conn} ->
-        conn
-    end
-  end
-
-  def admin_queue_package(conn, params) do
-    case require_admin(conn) do
-      {:ok, conn, user} ->
-        force = params["force"] in ["true", "on", "1"]
-
-        case Portal.Admin.queue_package(params["package_name"] || "", user, force: force) do
-          {:ok, request} ->
-            conn
-            |> put_flash(:info, queued_message(request, force))
-            |> render_admin(user, :queue)
-
-          {:error, reason} ->
-            conn
-            |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
-            |> render_admin(user, :queue)
-        end
-
-      {:error, conn} ->
-        conn
     end
   end
 
@@ -211,11 +152,6 @@ defmodule PortalWeb.PageController do
         conn
     end
   end
-
-  defp queued_message(request, true),
-    do: "Queued a forced rebuild of #{request.package_name}."
-
-  defp queued_message(request, false), do: "Queued #{request.package_name}."
 
   defp update_check_message(true),
     do: "Dry run queued. It reports what it would rebuild and queues nothing."
@@ -659,38 +595,23 @@ defmodule PortalWeb.PageController do
         page_description: "Administration.",
         current_user: user,
         admin_section: section
-      ] ++ admin_assigns(conn, section)
+      ] ++ admin_assigns(section)
     )
   end
 
   defp admin_template(:overview), do: :admin
-  defp admin_template(:queue), do: :admin_queue
   defp admin_template(:failures), do: :admin_failures
   defp admin_template(:argus), do: :admin_argus
   defp admin_template(:maintenance), do: :admin_maintenance
 
-  defp admin_assigns(conn, :queue) do
-    queue_page = Portal.ScanRequests.queue_page(conn.params["queue_page"])
-    review_page = Portal.ScanRequests.pending_anonymous_page(conn.params["review_page"])
-
-    [
-      pending_anonymous_requests: review_page.entries,
-      queue_requests: queue_page.entries,
-      queue_page: queue_page,
-      review_page: review_page,
-      page_params: %{queue_page: queue_page.page, review_page: review_page.page},
-      queue_positions: Portal.Admin.queue_positions(Enum.map(queue_page.entries, & &1.id))
-    ]
-  end
-
-  defp admin_assigns(_conn, :failures) do
+  defp admin_assigns(:failures) do
     [
       recent_failures: Portal.ScanRequests.recent_failures(50),
       version_streaks: Portal.Catalog.failing_version_streaks()
     ]
   end
 
-  defp admin_assigns(_conn, :argus) do
+  defp admin_assigns(:argus) do
     [
       argus: Portal.Settings.get(),
       argus_analysis_names: Portal.Settings.Setting.analysis_names(),
@@ -698,7 +619,7 @@ defmodule PortalWeb.PageController do
     ]
   end
 
-  defp admin_assigns(_conn, :maintenance) do
+  defp admin_assigns(:maintenance) do
     [
       update_check: Portal.Admin.update_check_status(),
       sweeps: Enum.map(Portal.BulkRebuild.recent(), &{&1, Portal.BulkRebuild.status(&1.id)}),
@@ -706,7 +627,7 @@ defmodule PortalWeb.PageController do
     ]
   end
 
-  defp admin_assigns(_conn, :overview) do
+  defp admin_assigns(:overview) do
     [
       review_total: Portal.ScanRequests.pending_anonymous_page(1).total,
       queue_total: Portal.ScanRequests.queue_page(1).total,
@@ -717,35 +638,7 @@ defmodule PortalWeb.PageController do
     ]
   end
 
-  defp review_anonymous_request(conn, user, id, :approve) do
-    case Portal.ScanRequests.approve_anonymous_request(id, user) do
-      {:ok, request} ->
-        conn
-        |> put_flash(:info, "Approved anonymous request for #{request.package_name}.")
-        |> render_admin(user, :queue)
-
-      {:error, reason} ->
-        conn
-        |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
-        |> render_admin(user, :queue)
-    end
-  end
-
-  defp review_anonymous_request(conn, user, id, :reject) do
-    case Portal.ScanRequests.reject_anonymous_request(id, user) do
-      {:ok, request} ->
-        conn
-        |> put_flash(:info, "Rejected anonymous request for #{request.package_name}.")
-        |> render_admin(user, :queue)
-
-      {:error, reason} ->
-        conn
-        |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
-        |> render_admin(user, :queue)
-    end
-  end
-
-  # These seven actions carry the same privilege as the Oban dashboard behind
+  # These admin actions carry the same privilege as the Oban dashboard behind
   # `PortalWeb.Plugs.RequireAdmin`, so they answer to the same policy rather
   # than a copy of it. They are routed through `:browser` and not `:admin`
   # because they render this controller's own admin page, which the plug's

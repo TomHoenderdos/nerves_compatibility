@@ -254,25 +254,6 @@ defmodule PortalWeb.PageControllerTest do
     assert redirected_to(conn) == ~p"/login"
   end
 
-  test "GET /admin shows queue and anonymous approvals for admins", %{conn: conn} do
-    {:ok, admin} =
-      Portal.Accounts.seed_admin_user("admin_queue", "correct horse battery staple")
-
-    add_test_passkey(admin)
-
-    conn =
-      conn
-      |> init_test_session(user_id: admin.id, login_method: :passkey)
-      |> post(~p"/requests/anonymous", %{"packages" => "admin_anon_review"})
-
-    conn = get(recycle(conn), ~p"/admin/queue")
-
-    assert html_response(conn, 200) =~ "Queue a scan"
-    assert html_response(conn, 200) =~ "Anonymous approvals"
-    assert html_response(conn, 200) =~ "admin_anon_review"
-    assert html_response(conn, 200) =~ "Approve"
-  end
-
   test "GET /settings redirects anonymous users", %{conn: conn} do
     conn = get(conn, ~p"/settings")
 
@@ -417,34 +398,6 @@ defmodule PortalWeb.PageControllerTest do
     assert html_response(conn, 200) =~ ~s(href="/settings">Settings)
   end
 
-  test "POST /admin/requests/:id/approve accepts pending anonymous request", %{conn: conn} do
-    {:ok, admin} =
-      Portal.Accounts.seed_admin_user("admin_review", "correct horse battery staple")
-
-    add_test_passkey(admin)
-
-    request =
-      Portal.ScanRequests.ScanRequest
-      |> Ash.Changeset.for_create(:create, %{
-        package_name: "jason",
-        source: :anonymous_manual,
-        status: :pending,
-        subject: "anonymous",
-        verification_provider: "manual_review"
-      })
-      |> Ash.create!(domain: Portal.ScanRequests)
-
-    conn =
-      conn
-      |> init_test_session(user_id: admin.id, login_method: :passkey)
-      |> post(~p"/admin/requests/#{request.id}/approve")
-
-    assert html_response(conn, 200) =~ "Approved anonymous request for jason"
-
-    assert {:ok, updated} = Portal.ScanRequests.get_request(request.id)
-    assert updated.status == :queued
-  end
-
   defp signed_in_admin(conn, username) do
     {:ok, admin} = Portal.Accounts.seed_admin_user(username, "correct horse battery staple")
     {init_test_session(conn, user_id: add_test_passkey(admin).id, login_method: :passkey), admin}
@@ -455,79 +408,13 @@ defmodule PortalWeb.PageControllerTest do
   # checked for the gate as well as for the action.
   test "the new admin routes are all closed to anonymous visitors", %{conn: conn} do
     for path <- [
-          ~p"/admin/scan",
           ~p"/admin/update-check",
           ~p"/admin/argus",
-          ~p"/admin/requests/#{Ecto.UUID.generate()}/priority",
           ~p"/admin/bulk-rebuild",
           ~p"/admin/bulk-rebuild/#{Ecto.UUID.generate()}/cancel"
         ] do
       assert redirected_to(post(recycle(conn), path)) == ~p"/login"
     end
-  end
-
-  test "POST /admin/scan queues a package at the front of the queue", %{conn: conn} do
-    {conn, _admin} = signed_in_admin(conn, "admin_scan")
-
-    conn = post(conn, ~p"/admin/scan", %{"package_name" => "admin_queued_pkg"})
-
-    assert html_response(conn, 200) =~ "Queued admin_queued_pkg"
-
-    request = Portal.ScanRequests.open_request_for_package("admin_queued_pkg")
-    assert request.source == :admin_manual
-    assert request.status == :queued
-  end
-
-  test "POST /admin/scan reports a name that cannot be a package", %{conn: conn} do
-    {conn, _admin} = signed_in_admin(conn, "admin_scan_bad")
-
-    conn = post(conn, ~p"/admin/scan", %{"package_name" => "not a package name"})
-
-    assert html_response(conn, 200) =~ "does not look like a hex.pm package name"
-    assert Portal.ScanRequests.open_request_for_package("not a package name") == nil
-  end
-
-  test "POST /admin/scan says which request is already open", %{conn: conn} do
-    {conn, admin} = signed_in_admin(conn, "admin_scan_dup")
-    {:ok, _} = Portal.Admin.queue_package("admin_dup_pkg", admin)
-
-    conn = post(conn, ~p"/admin/scan", %{"package_name" => "admin_dup_pkg"})
-
-    assert html_response(conn, 200) =~ "already has an open request"
-  end
-
-  test "POST /admin/requests/:id/priority moves the build down the queue", %{conn: conn} do
-    {conn, admin} = signed_in_admin(conn, "admin_priority")
-    for i <- 1..50, do: Portal.PackageListingFixtures.request_fixture("earlier_#{i}")
-    {:ok, request} = Portal.Admin.queue_package("admin_priority_pkg", admin)
-
-    conn =
-      post(conn, ~p"/admin/requests/#{request.id}/priority", %{
-        "direction" => "down",
-        "queue_page" => "2"
-      })
-
-    assert html_response(conn, 200) =~ "Moved to priority 1"
-    assert Portal.Admin.queue_positions([request.id])[request.id].priority == 1
-
-    doc = conn |> html_response(200) |> LazyHTML.from_document()
-    assert [_] = doc |> LazyHTML.query("#queue tbody tr") |> Enum.to_list()
-    assert doc |> LazyHTML.query("#queue tbody") |> LazyHTML.text() =~ "admin_priority_pkg"
-
-    assert ["2"] =
-             doc
-             |> LazyHTML.query("#queue input[name=queue_page]")
-             |> LazyHTML.attribute("value")
-             |> Enum.uniq()
-  end
-
-  test "POST /admin/requests/:id/priority reports a request with no job", %{conn: conn} do
-    {conn, _admin} = signed_in_admin(conn, "admin_priority_none")
-
-    conn =
-      post(conn, ~p"/admin/requests/#{Ecto.UUID.generate()}/priority", %{"direction" => "up"})
-
-    assert html_response(conn, 200) =~ "nothing to reorder"
   end
 
   test "POST /admin/update-check queues a run, and says so", %{conn: conn} do
@@ -547,16 +434,8 @@ defmodule PortalWeb.PageControllerTest do
     assert html_response(conn, 200) =~ "queues nothing"
   end
 
-  test "the queue and maintenance sections carry the scan form and the update check",
-       %{conn: conn} do
-    {conn, admin} = signed_in_admin(conn, "admin_panels")
-    # The queue table, and so its position column, only renders with a row in
-    # it -- an empty queue shows the empty state instead.
-    {:ok, _} = Portal.Admin.queue_package("admin_panel_pkg", admin)
-
-    queue = html_response(get(conn, ~p"/admin/queue"), 200)
-    assert queue =~ ~s(action="/admin/scan")
-    assert queue =~ "Queue position"
+  test "the maintenance section carries the update check", %{conn: conn} do
+    {conn, _admin} = signed_in_admin(conn, "admin_panels")
 
     maintenance = html_response(get(conn, ~p"/admin/maintenance"), 200)
     assert maintenance =~ ~s(action="/admin/update-check")

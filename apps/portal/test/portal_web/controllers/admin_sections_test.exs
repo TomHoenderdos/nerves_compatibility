@@ -49,20 +49,4 @@ defmodule PortalWeb.AdminSectionsTest do
     assert conn |> get(~p"/admin/maintenance") |> html_response(200) =~ "hex.pm update check"
     refute conn |> get(~p"/admin") |> html_response(200) =~ "Queue a scan"
   end
-
-  test "queue pagination links stay on the queue section", %{conn: conn} do
-    for n <- 1..60 do
-      {:ok, _} =
-        Portal.ScanRequests.ScanRequest
-        |> Ash.Changeset.for_create(:create, %{
-          package_name: "pg_pkg_#{n}",
-          source: :anonymous_manual,
-          status: :accepted
-        })
-        |> Ash.create(domain: Portal.ScanRequests)
-    end
-
-    html = conn |> get(~p"/admin/queue") |> html_response(200)
-    assert html =~ ~s(href="/admin/queue?queue_page=2)
-  end
 end
