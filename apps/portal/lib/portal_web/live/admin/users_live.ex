@@ -17,8 +17,6 @@ defmodule PortalWeb.Admin.UsersLive do
 
   import PortalWeb.AdminComponents
 
-  require Ash.Query
-
   alias Portal.Accounts.Mfa
   alias PortalWeb.AdminMessages
   alias PortalWeb.Plugs.RequireAdmin
