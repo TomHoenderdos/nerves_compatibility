@@ -643,6 +643,37 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert {:error, :not_found} = Portal.Catalog.revoke_run("nope")
   end
 
+  # A partial run that did not rebuild a system carries the prior run's result
+  # forward under its own run_id, keeping the true builder in
+  # carried_from_run_id. Revoking that builder must hide the files everywhere
+  # they were carried to, not just on the run that built them.
+  test "revoking a carried-forward builder hides its files everywhere", %{conn: conn} do
+    first = ingest_with_artifact()
+    name = first["package"]["name"]
+    version = first["package"]["version"]
+
+    {:ok, _run_b} =
+      Ingestion.ingest(
+        %{
+          "package" => %{"name" => name, "version" => version},
+          "finished_at" => "2026-10-21T12:00:00Z",
+          "scope" => "targets",
+          "systems" => %{"host" => %{"status" => "pass"}}
+        },
+        %{run_id: "run-b", image_digest: "sha256:b", files_dir: System.tmp_dir!(), log: "l"}
+      )
+
+    body = conn |> get("/api/precompiled/manifests/#{name}.json") |> json_response(200)
+
+    assert get_in(body, ["versions", version, "nerves_system_rpi4", "build", "run_id"]) ==
+             first["run_id"]
+
+    assert {:ok, _} = Portal.Catalog.revoke_run(first["run_id"])
+
+    assert conn |> get("/api/precompiled/manifests/#{name}.json") |> json_response(404)
+    refute name in Portal.Catalog.packages_with_precompiled_files()
+  end
+
   test "browser pages restrict embedding and base URL changes", %{conn: conn} do
     conn = get(conn, "/packages")
     assert [policy] = get_resp_header(conn, "content-security-policy")
