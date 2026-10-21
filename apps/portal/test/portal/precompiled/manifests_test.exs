@@ -28,14 +28,30 @@ defmodule Portal.Precompiled.ManifestsTest do
   end
 
   test "store cleans up temp file on ArtifactStore.put failure" do
+    leak_bytes = "leak"
+    leak_sha = Base.encode16(:crypto.hash(:sha256, leak_bytes), case: :lower)
+
+    # Clean up any leftover files from previous test runs
+    glob_pattern = Path.join(System.tmp_dir!(), "manifest-#{leak_sha}-*")
+
+    Path.wildcard(glob_pattern)
+    |> Enum.each(&File.rm/1)
+
     # Force ArtifactStore.put to fail by making the store path non-existent.
     old_config = Application.get_env(:portal, :artifact_store)
     Application.put_env(:portal, :artifact_store, path: "/nonexistent/dir")
     on_exit(fn -> Application.put_env(:portal, :artifact_store, old_config) end)
 
-    # Store will fail. The test verifies that it doesn't leave temp files by
-    # ensuring no exception escapes uncaught (cleanup_tmp handles all cleanup).
-    error = catch_error(Manifests.store("leak"))
-    assert error != nil, "store should have raised an error"
+    # Store will fail with an exception (File.mkdir_p! in ArtifactStore.put_blob).
+    # Catch the exception and verify temp cleanup happened.
+    try do
+      Manifests.store(leak_bytes)
+      assert false, "store should have raised an exception"
+    catch
+      _kind, _reason ->
+        # Exception was raised as expected. Now verify temp file was cleaned up.
+        assert Path.wildcard(glob_pattern) == [],
+               "Temp file was not cleaned up: #{inspect(Path.wildcard(glob_pattern))}"
+    end
   end
 end

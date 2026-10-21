@@ -47,6 +47,13 @@ defmodule Portal.Precompiled.Manifests do
     end
   end
 
+  @spec read(String.t()) :: {:ok, binary()} | :error
+  def read(sha) do
+    if ArtifactStore.present?(sha),
+      do: File.read(ArtifactStore.blob_path(sha)) |> ok_or_error(),
+      else: :error
+  end
+
   defp cleanup_tmp(path) do
     case File.rm(path) do
       :ok -> :ok
@@ -54,13 +61,6 @@ defmodule Portal.Precompiled.Manifests do
     end
   rescue
     _ -> :ok
-  end
-
-  @spec read(String.t()) :: {:ok, binary()} | :error
-  def read(sha) do
-    if ArtifactStore.present?(sha),
-      do: File.read(ArtifactStore.blob_path(sha)) |> ok_or_error(),
-      else: :error
   end
 
   defp ok_or_error({:ok, bin}), do: {:ok, bin}
