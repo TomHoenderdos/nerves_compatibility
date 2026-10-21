@@ -235,16 +235,19 @@ defmodule Portal.ScanRequests do
   # same topic the build pipeline reports on, so a review is announced there
   # too. Approval of a name hex.pm turns out not to know closes the request
   # (see `enqueue_build/3`), which the page hears as a rejection.
+  # The admin queue is announced at the write itself (`update_review/3`
+  # below, or `set_status/3`'s write inside `enqueue_build/3`), not here --
+  # `enqueue_build/3`'s hex lookup can fail in ways this function does not
+  # pattern-match below, and an admin's accept must still be announced even
+  # when it gets no further than `update_review/3`.
   defp announce_review({:ok, %ScanRequest{status: status}} = result, id)
        when status in [:queued, :rejected] do
-    AdminEvents.broadcast(:queue)
     Progress.broadcast(id, status, %{})
     result
   end
 
   defp announce_review({:error, reason} = result, id)
        when reason in [:unknown_package, :unknown_package_version] do
-    AdminEvents.broadcast(:queue)
     Progress.broadcast(id, :rejected, %{})
     result
   end
@@ -342,6 +345,7 @@ defmodule Portal.ScanRequests do
       error_reason: error_reason
     })
     |> Ash.update(domain: __MODULE__)
+    |> announce_queue_change()
   end
 
   defp maybe_enqueue_accepted({:ok, %ScanRequest{} = request}, requested_status, build)
@@ -448,5 +452,6 @@ defmodule Portal.ScanRequests do
       error_reason: nil
     })
     |> Ash.update(domain: __MODULE__)
+    |> announce_queue_change()
   end
 end

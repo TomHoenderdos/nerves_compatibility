@@ -9,6 +9,8 @@ defmodule Portal.AdminEvents do
   at its end.
   """
 
+  require Logger
+
   @topics %{queue: "admin:queue", sweeps: "admin:sweeps"}
 
   @type topic :: :queue | :sweeps
@@ -17,10 +19,22 @@ defmodule Portal.AdminEvents do
   @spec subscribe(topic()) :: :ok
   def subscribe(topic), do: Phoenix.PubSub.subscribe(Portal.PubSub, Map.fetch!(@topics, topic))
 
-  @doc "Tell every subscriber of one admin topic that it changed."
+  @doc """
+  Tell every subscriber of one admin topic that it changed.
+
+  Callers include Oban workers (`Portal.Workers.RequestSync`) for whom this
+  is a side note on a write that already committed, not the point of the job
+  -- so a `Phoenix.PubSub` hiccup here is logged and swallowed rather than
+  raised, and never turns a successful sync into a failed/retried job.
+  """
   @spec broadcast(topic()) :: :ok
   def broadcast(topic) do
     Phoenix.PubSub.broadcast(Portal.PubSub, Map.fetch!(@topics, topic), {:admin_changed, topic})
+    :ok
+  rescue
+    error ->
+      Logger.warning("Portal.AdminEvents.broadcast(#{inspect(topic)}) failed: #{inspect(error)}")
+      :ok
   end
 
   @doc """
