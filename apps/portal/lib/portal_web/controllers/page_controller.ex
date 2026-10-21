@@ -683,8 +683,12 @@ defmodule PortalWeb.PageController do
     ]
   end
 
-  defp admin_assigns(_conn, :failures),
-    do: [recent_failures: Portal.ScanRequests.recent_failures(50)]
+  defp admin_assigns(_conn, :failures) do
+    [
+      recent_failures: Portal.ScanRequests.recent_failures(50),
+      version_streaks: Portal.Catalog.failing_version_streaks()
+    ]
+  end
 
   defp admin_assigns(_conn, :argus) do
     [

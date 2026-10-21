@@ -53,3 +53,48 @@ defmodule PortalWeb.AdminFailuresTest do
     assert html =~ ~s(href="/packages/max_31856")
   end
 end
+
+defmodule PortalWeb.AdminFailuresStreaksTest do
+  use PortalWeb.ConnCase, async: false
+
+  import Portal.Test.AccountsFixtures, only: [add_test_passkey: 1]
+
+  alias Portal.Catalog.Ingestion
+
+  defp signed_in_admin(conn) do
+    {:ok, admin} = Portal.Accounts.seed_admin_user("streak_admin", "correct horse battery staple")
+    init_test_session(conn, user_id: add_test_passkey(admin).id, login_method: :passkey)
+  end
+
+  defp ingest_failure(name, version, finished) do
+    dir = Path.join(System.tmp_dir!(), "streak-web-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    result = %{
+      "package" => %{"name" => name, "version" => version},
+      "finished_at" => finished,
+      "systems" => %{"nerves_system_rpi0" => %{"status" => "fail", "log_tail" => "boom"}}
+    }
+
+    {:ok, _} =
+      Ingestion.ingest(result, %{
+        run_id: "#{name}-#{version}",
+        image_digest: "sha256:x",
+        files_dir: dir,
+        log: "l"
+      })
+  end
+
+  test "the admin page lists packages failing across versions", %{conn: conn} do
+    ingest_failure("serial_failer", "1.0.0", "2026-07-01T10:00:00Z")
+    ingest_failure("serial_failer", "1.1.0", "2026-07-02T10:00:00Z")
+
+    html = conn |> signed_in_admin() |> get(~p"/admin/failures") |> html_response(200)
+
+    assert html =~ ~s(id="version-streaks")
+    assert html =~ ~s(href="/packages/serial_failer")
+    assert html =~ "1.1.0"
+    assert html =~ "1.0.0"
+  end
+end
