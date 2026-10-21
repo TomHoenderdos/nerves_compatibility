@@ -1038,6 +1038,9 @@ defmodule Portal.Catalog do
     with [package] <- packages(package_name),
          runs when runs != [] <- precompiled_runs(package.id),
          results when results != [] <- manifest_results_for_runs(Enum.map(runs, & &1.id)) do
+      revoked = revoked_run_ids(package.id)
+      results = Enum.reject(results, &(&1.carried_from_run_id in revoked))
+
       shas_by_system_result_id =
         results
         |> Enum.map(& &1.id)
@@ -1079,7 +1082,9 @@ defmodule Portal.Catalog do
       JOIN catalog_runs r ON r.package_id = p.id
       JOIN catalog_system_results s ON s.run_id = r.id
       JOIN catalog_artifact_memberships m ON m.system_result_id = s.id
+      LEFT JOIN catalog_runs b ON b.id = s.carried_from_run_id
       WHERE r.revoked_at IS NULL
+        AND (s.carried_from_run_id IS NULL OR b.revoked_at IS NULL)
       ORDER BY p.name
       """)
 
@@ -1705,6 +1710,19 @@ defmodule Portal.Catalog do
     |> Ash.read!(domain: __MODULE__)
   end
 
+  # A carried system result keeps the carrying run's `run_id` and names its
+  # true builder in `carried_from_run_id` (see `built_by/2`). Revoking that
+  # builder must still hide the result everywhere it was carried forward to,
+  # so the manifest rejects any carried result whose builder is in this set
+  # before `precompiled_versions/4` ever sees it.
+  defp revoked_run_ids(package_id) do
+    Run
+    |> Ash.Query.filter(package_id == ^package_id and not is_nil(revoked_at))
+    |> Ash.Query.select([:id])
+    |> Ash.read!(domain: __MODULE__)
+    |> MapSet.new(& &1.id)
+  end
+
   # `deps` is the package's dependency closure as the build locked it: their
   # macros are expanded into its BEAMs, so a client may use the entry only when
   # its own lock has every one at the same version and checksum.
@@ -1725,11 +1743,18 @@ defmodule Portal.Catalog do
 
   # A system result a partial run carried forward was built by an earlier run
   # of the same package, under that run's toolchain, image and lock, so that is
-  # the run its entry has to describe. `precompiled_runs/1` reads every run of
-  # the package, so the builder is among them; the carrying run is only the
-  # fallback for a row whose builder has been deleted (the foreign key nils it).
+  # the run its entry has to describe. `precompiled_manifest/1` has already
+  # dropped any result carried from a revoked run, so a carried result's
+  # builder is always among `runs_by_id` here. A `nil` carried_from_run_id
+  # covers both a result that was never carried and one whose builder was
+  # hard-deleted (the foreign key nils it on delete) -- either way, the
+  # carrying run (`result.run_id`) is the right fallback.
+  defp built_by(runs_by_id, %{carried_from_run_id: nil} = result) do
+    Map.fetch!(runs_by_id, result.run_id)
+  end
+
   defp built_by(runs_by_id, result) do
-    Map.get(runs_by_id, result.carried_from_run_id) || Map.fetch!(runs_by_id, result.run_id)
+    Map.fetch!(runs_by_id, result.carried_from_run_id)
   end
 
   defp file_manifest(result, stored_shas, present_shas) do
