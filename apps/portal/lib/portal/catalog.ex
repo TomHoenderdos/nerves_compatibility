@@ -1072,7 +1072,6 @@ defmodule Portal.Catalog do
   @doc "Names of packages with at least one stored precompiled file on a run that is not revoked."
   @spec packages_with_precompiled_files() :: [String.t()]
   def packages_with_precompiled_files do
-    # Task 8 adds WHERE r.revoked_at IS NULL to filter out revoked runs.
     %{rows: rows} =
       Portal.Repo.query!("""
       SELECT DISTINCT p.name
@@ -1080,10 +1079,23 @@ defmodule Portal.Catalog do
       JOIN catalog_runs r ON r.package_id = p.id
       JOIN catalog_system_results s ON s.run_id = r.id
       JOIN catalog_artifact_memberships m ON m.system_result_id = s.id
+      WHERE r.revoked_at IS NULL
       ORDER BY p.name
       """)
 
     List.flatten(rows)
+  end
+
+  @doc """
+  Pulls a run's files from precompiled publication. Manifests and batches skip
+  a revoked run; the next batch drops it for every client.
+  """
+  @spec revoke_run(String.t()) :: {:ok, Run.t()} | {:error, :not_found}
+  def revoke_run(run_id) do
+    case Run |> Ash.Query.filter(run_id == ^run_id) |> Ash.read_one!(domain: __MODULE__) do
+      nil -> {:error, :not_found}
+      run -> run |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update(domain: __MODULE__)
+    end
   end
 
   @doc """
@@ -1676,6 +1688,7 @@ defmodule Portal.Catalog do
   defp precompiled_runs(package_id) do
     Run
     |> Ash.Query.filter(package_id == ^package_id)
+    |> Ash.Query.filter(is_nil(revoked_at))
     |> Ash.Query.sort(finished_at: :desc, inserted_at: :desc)
     |> Ash.Query.select([
       :id,
@@ -1686,7 +1699,8 @@ defmodule Portal.Catalog do
       :toolchain,
       :image_digest,
       :deps_lock,
-      :package_checksum
+      :package_checksum,
+      :revoked_at
     ])
     |> Ash.read!(domain: __MODULE__)
   end
