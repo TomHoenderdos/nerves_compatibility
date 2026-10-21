@@ -109,8 +109,11 @@ defmodule PortalWeb.AdminQueueLiveTest do
 
     test "page at 50 queued and 25 waiting rows, never reading a whole table",
          %{conn: conn} do
-      for i <- 1..51, do: request_fixture("queued_#{i}")
-      for i <- 1..26, do: request_fixture("pending_#{i}", %{status: :pending})
+      # 60 of each: a read of either whole table returns more than the 51
+      # rows a bounded page read may, so the telemetry check below can tell
+      # the two apart.
+      for i <- 1..60, do: request_fixture("queued_#{i}")
+      for i <- 1..60, do: request_fixture("pending_#{i}", %{status: :pending})
 
       handler = {__MODULE__, make_ref()}
 
@@ -132,8 +135,9 @@ defmodule PortalWeb.AdminQueueLiveTest do
       # Oldest first, as the controller page listed them; the second page
       # lives in the URL.
       {_view, html} = live_queue(conn, ~p"/admin/queue?page=2")
-      assert [row] = Enum.to_list(rows(html, "queue-table"))
-      assert LazyHTML.text(row) =~ "queued_51"
+      assert [first | _] = second_page = Enum.to_list(rows(html, "queue-table"))
+      assert length(second_page) == 10
+      assert LazyHTML.text(first) =~ "queued_51"
     end
 
     test "a malformed page or sort param does not crash the page", %{conn: conn} do
