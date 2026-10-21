@@ -1297,6 +1297,116 @@ defmodule Portal.Catalog do
     end)
   end
 
+  @doc """
+  Packages whose newest tested versions all failed, longest streak first.
+
+  A streak counts distinct versions from the newest down until one whose latest
+  run did not fail or error: a package that fails on three releases in a row
+  and passed on the fourth-newest has a streak of 3. A version counts by its
+  latest run, so a rebuild that passed clears it. Each entry carries the newest
+  `:versions` as a `chain`, newest first, with the version's status and the
+  failure category most of its failing systems were sorted into, so the reader
+  can see at a glance whether every release fails the same way (likely genuine,
+  or systemic on our side) or the cause moves between releases.
+
+  Options: `:min_streak` (2), `:limit` packages (100), `:versions` per chain (4).
+  Cached like the other dashboard aggregates.
+  """
+  @spec failing_version_streaks(keyword()) :: [map()]
+  def failing_version_streaks(opts \\ []) do
+    min_streak = Keyword.get(opts, :min_streak, 2)
+    limit = Keyword.get(opts, :limit, 100)
+    versions = Keyword.get(opts, :versions, 4)
+
+    Cache.fetch({:failing_version_streaks, min_streak, limit, versions}, fn ->
+      compute_failing_version_streaks(min_streak, limit, versions)
+    end)
+  end
+
+  # One SQL pass: the latest run per (package, version), ranked newest first
+  # per package, the rank of the first non-failing version per package, and
+  # from that the streak. Window functions, so raw SQL rather than Ecto's
+  # query DSL. `finished_at` ties fall to `inserted_at`, as the latest-run
+  # index does.
+  @streaks_sql """
+  WITH per_version AS (
+    SELECT DISTINCT ON (r.package_id, r.version_tested)
+           r.id AS run_id, r.package_id, r.version_tested, r.overall_status,
+           r.finished_at, r.inserted_at
+    FROM catalog_runs r
+    WHERE r.finished_at IS NOT NULL AND r.overall_status IS NOT NULL
+    ORDER BY r.package_id, r.version_tested, r.finished_at DESC, r.inserted_at DESC
+  ), ranked AS (
+    SELECT pv.*,
+           row_number() OVER (PARTITION BY pv.package_id
+                              ORDER BY pv.finished_at DESC, pv.inserted_at DESC) AS rn
+    FROM per_version pv
+  ), totals AS (
+    SELECT package_id, max(rn) AS total FROM ranked GROUP BY package_id
+  ), first_ok AS (
+    SELECT package_id, min(rn) AS rn FROM ranked
+    WHERE overall_status NOT IN ('fail', 'error') GROUP BY package_id
+  ), top AS (
+    SELECT t.package_id, p.name, t.total, COALESCE(f.rn, t.total + 1) - 1 AS streak
+    FROM totals t
+    JOIN catalog_packages p ON p.id = t.package_id
+    LEFT JOIN first_ok f ON f.package_id = t.package_id
+    WHERE COALESCE(f.rn, t.total + 1) - 1 >= $1
+    ORDER BY streak DESC, p.name ASC
+    LIMIT $2
+  )
+  SELECT top.name, top.streak, top.total,
+         k.run_id, k.version_tested, k.overall_status, k.finished_at
+  FROM top
+  JOIN ranked k ON k.package_id = top.package_id AND k.rn <= $3
+  ORDER BY top.streak DESC, top.name ASC, k.rn ASC
+  """
+
+  defp compute_failing_version_streaks(min_streak, limit, versions) do
+    rows = Repo.query!(@streaks_sql, [min_streak, limit, versions]).rows
+    categories = rows |> Enum.map(&Enum.at(&1, 3)) |> run_failure_categories()
+
+    rows
+    |> Enum.chunk_by(&hd/1)
+    |> Enum.map(fn [[name, streak, total | _] | _] = package_rows ->
+      chain =
+        for [_, _, _, run_id, version, status, finished_at] <- package_rows do
+          %{
+            version: version,
+            status: String.to_existing_atom(status),
+            category: Map.get(categories, run_id),
+            # Raw rows carry the column's `timestamp` as a NaiveDateTime; the
+            # column is UTC by convention, as the resource types it.
+            finished_at: DateTime.from_naive!(finished_at, "Etc/UTC")
+          }
+        end
+
+      %{
+        package: name,
+        streak: streak,
+        versions_tested: total,
+        last_failed_at: hd(chain).finished_at,
+        chain: chain
+      }
+    end)
+  end
+
+  # The failure category most of a run's failing systems fell into, per run.
+  # Ties go to the category that sorts first, so a run reads the same every time.
+  defp run_failure_categories([]), do: %{}
+
+  defp run_failure_categories(run_ids) do
+    from(s in "catalog_system_results",
+      where: s.run_id in ^run_ids,
+      where: s.status in ["fail", "error"] and not is_nil(s.failure_category),
+      group_by: [s.run_id, s.failure_category],
+      order_by: [asc: s.run_id, desc: count(), asc: s.failure_category],
+      select: {s.run_id, s.failure_category}
+    )
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn {run_id, category}, acc -> Map.put_new(acc, run_id, category) end)
+  end
+
   defp failing_latest_results do
     from([s, _r] in latest_results(),
       where: s.status in ["fail", "error"] and not is_nil(s.failure_category)

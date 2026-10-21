@@ -34,4 +34,64 @@
       </ul>
     </div>
   </section>
+
+  <section id="version-streaks" class="card mt-6 border border-base-300 bg-base-100 shadow-sm">
+    <div class="card-body">
+      <div>
+        <h2 class="card-title">Failing across versions</h2>
+        <p class="mt-1 text-sm leading-6 text-base-content/70">
+          Packages whose newest releases all failed, longest run first. A version counts by its
+          latest build. The same category on every release points at the package or at something
+          systemic on our side; a category that changes between releases is worth a closer look.
+        </p>
+      </div>
+      <p :if={@version_streaks == []} class="mt-3 text-sm text-base-content/60">
+        No package has failed on two releases in a row.
+      </p>
+      <div :if={@version_streaks != []} class="mt-3 overflow-x-auto">
+        <table class="table table-sm">
+          <thead>
+            <tr>
+              <th>Package</th>
+              <th class="text-right">Failing</th>
+              <th>Newest versions</th>
+              <th>Last failed</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :for={entry <- @version_streaks} id={"streak-#{entry.package}"}>
+              <td>
+                <.link
+                  navigate={~p"/packages/#{entry.package}"}
+                  class="link font-mono font-medium"
+                >
+                  {entry.package}
+                </.link>
+              </td>
+              <td class="text-right font-mono">
+                {entry.streak} / {entry.versions_tested}
+              </td>
+              <td>
+                <ul class="space-y-0.5">
+                  <li :for={step <- entry.chain} class="flex flex-wrap items-center gap-2 text-xs">
+                    <span class="font-mono">{step.version}</span>
+                    <span class={[
+                      "badge badge-xs",
+                      if(step.status == :pass, do: "badge-success", else: "badge-error")
+                    ]}>
+                      {step.status}
+                    </span>
+                    <span :if={step.category} class="text-base-content/60">{step.category}</span>
+                  </li>
+                </ul>
+              </td>
+              <td class="whitespace-nowrap text-xs text-base-content/60">
+                {format_datetime(entry.last_failed_at)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
 </.admin_layout>
