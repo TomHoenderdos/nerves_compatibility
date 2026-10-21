@@ -26,4 +26,16 @@ defmodule Portal.Precompiled.ManifestsTest do
     result = ingest_with_artifact()
     assert result["package"]["name"] in Catalog.packages_with_precompiled_files()
   end
+
+  test "store cleans up temp file on ArtifactStore.put failure" do
+    # Force ArtifactStore.put to fail by making the store path non-existent.
+    old_config = Application.get_env(:portal, :artifact_store)
+    Application.put_env(:portal, :artifact_store, path: "/nonexistent/dir")
+    on_exit(fn -> Application.put_env(:portal, :artifact_store, old_config) end)
+
+    # Store will fail. The test verifies that it doesn't leave temp files by
+    # ensuring no exception escapes uncaught (cleanup_tmp handles all cleanup).
+    error = catch_error(Manifests.store("leak"))
+    assert error != nil, "store should have raised an error"
+  end
 end

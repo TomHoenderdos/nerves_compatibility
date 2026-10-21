@@ -23,13 +23,37 @@ defmodule Portal.Precompiled.Manifests do
       {:ok, sha}
     else
       tmp = Path.join(System.tmp_dir!(), "manifest-#{sha}-#{System.unique_integer([:positive])}")
-      File.write!(tmp, bytes)
 
-      case ArtifactStore.put(sha, tmp) do
-        {:ok, _} -> {:ok, sha}
-        {:error, reason} -> {:error, reason}
+      case File.write(tmp, bytes) do
+        :ok ->
+          try do
+            case ArtifactStore.put(sha, tmp) do
+              {:ok, _} ->
+                {:ok, sha}
+
+              {:error, reason} ->
+                cleanup_tmp(tmp)
+                {:error, reason}
+            end
+          rescue
+            e ->
+              cleanup_tmp(tmp)
+              reraise e, __STACKTRACE__
+          end
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end
+  end
+
+  defp cleanup_tmp(path) do
+    case File.rm(path) do
+      :ok -> :ok
+      {:error, _} -> File.rm!(path)
+    end
+  rescue
+    _ -> :ok
   end
 
   @spec read(String.t()) :: {:ok, binary()} | :error
