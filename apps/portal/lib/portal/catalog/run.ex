@@ -43,6 +43,7 @@ defmodule Portal.Catalog.Run do
         :toolchain,
         :argus,
         :deps_lock,
+        :package_checksum,
         :log,
         :started_at,
         :finished_at,
@@ -115,6 +116,14 @@ defmodule Portal.Catalog.Run do
     # reuses a build only when its own lock matches. Nil for runs from images
     # before it was recorded and for argus-only runs, which build nothing.
     attribute :deps_lock, :map do
+      public?(true)
+    end
+
+    # The package's own outer Hex checksum from the build's mix.lock
+    # (`NccWorker.DepsLock.package_checksum/2`). A client compares it with its
+    # own lock entry before using the run's files. Nil for older runs and
+    # argus-only runs.
+    attribute :package_checksum, :string do
       public?(true)
     end
 

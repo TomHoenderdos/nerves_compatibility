@@ -210,6 +210,30 @@ defmodule Portal.Catalog.Ingestion do
 
   defp deps_lock(_), do: nil
 
+  defp package_checksum(v) when is_binary(v), do: v
+  defp package_checksum(_), do: nil
+
+  # Same contract as deps_lock/1: all or nothing per system, the ingest
+  # itself still succeeds.
+  defp compile_env(list) when is_list(list) do
+    Enum.reduce_while(list, [], fn
+      %{"app" => app, "path" => path, "value" => value}, acc
+      when is_binary(app) and is_list(path) and is_binary(value) ->
+        if Enum.all?(path, &is_binary/1),
+          do: {:cont, [%{"app" => app, "path" => path, "value" => value} | acc]},
+          else: {:halt, nil}
+
+      _, _ ->
+        {:halt, nil}
+    end)
+    |> then(fn
+      nil -> nil
+      acc -> Enum.reverse(acc)
+    end)
+  end
+
+  defp compile_env(_), do: nil
+
   defp create_run(result, opts, package_id, version, overall, finished_at, carried) do
     Run
     |> Ash.Changeset.for_create(:create, %{
@@ -222,6 +246,7 @@ defmodule Portal.Catalog.Ingestion do
       toolchain: result["toolchain"],
       argus: argus_map(result["argus"]),
       deps_lock: deps_lock(result["deps_lock"]),
+      package_checksum: package_checksum(result["package_checksum"]),
       log: run_log(overall, opts),
       finished_at: finished_at,
       scan_request_id: Map.get(opts, :scan_request_id)
@@ -317,10 +342,10 @@ defmodule Portal.Catalog.Ingestion do
       """
       INSERT INTO catalog_system_results
         (id, run_id, system_pkg, system_version, status, firmware_size_bytes, duration_sec,
-         phase_timings, hex_version_tested, beam_scan, dependency_scans, log_path, log_tail,
-         failure_category, carried_from_run_id, inserted_at, updated_at)
+         phase_timings, hex_version_tested, beam_scan, compile_env, dependency_scans, log_path,
+         log_tail, failure_category, carried_from_run_id, inserted_at, updated_at)
       SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
-             s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan,
+             s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan, s.compile_env,
              s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
              now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
       FROM catalog_system_results s
@@ -392,6 +417,7 @@ defmodule Portal.Catalog.Ingestion do
         phase_timings: sys["phase_timings"],
         hex_version_tested: version,
         beam_scan: sys["beam_scan"],
+        compile_env: compile_env(sys["compile_env"]),
         dependency_scans: drop_file_manifests(sys["dependency_scans"]),
         log_path: nil,
         log_tail: sys["log_tail"],

@@ -46,12 +46,16 @@ defmodule Portal.Workers.BuildIntegrationTest do
     # generated Nerves project resolves, so its closure is empty. Recorded as
     # an empty lock rather than none: a client matches it against any project.
     assert run.deps_lock == %{}
+    assert is_binary(run.package_checksum)
 
     # ≥1 SystemResult rows
     system_results =
       SystemResult
       |> Ash.Query.filter(run_id == ^run.id)
       |> Ash.read!(domain: Portal.Catalog)
+
+    # jason has no compile_env reads of its own.
+    for result <- system_results, do: assert(result.compile_env == [])
 
     assert Enum.sort(Enum.map(system_results, & &1.system_pkg)) == ["host", "pure_elixir"]
     assert Enum.all?(system_results, &is_nil(&1.firmware_size_bytes))
@@ -88,6 +92,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
     # An argus-only run builds nothing, so it has no lock of its own.
     assert first.deps_lock == %{}
     assert second.deps_lock == nil
+    assert second.package_checksum == nil
     assert request.status == :built
   end
 

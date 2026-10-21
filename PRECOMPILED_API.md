@@ -94,6 +94,15 @@ Status codes:
       itself excluded), as `name => {"version", "checksum"}`, where `checksum`
       is the outer Hex checksum, the last element of a `mix.lock` entry. `{}`
       for a package with no dependencies.
+    - `package_checksum` — the package's own outer Hex checksum from the
+      build's `mix.lock`, a string, or `null` for runs from before it was
+      recorded and for argus-only runs.
+    - `compile_env` — the package's `.app` file `compile_env` reads, one item
+      per `{app, path, value}` triple: `app` and the elements of `path` are
+      strings, and `value` is `base64url(:erlang.term_to_binary({:ok, v} |
+      :error, [:deterministic]))`. `null` for runs from before it was
+      recorded or when the worker could not read the `.app` file; `[]` when
+      the file was read but had no `compile_env` reads of its own.
     - A carried-forward entry (a partial rebuild of the version that left this
       system out) describes the run that actually built the files, so its
       `run_id` can be older than the version's newest run.
@@ -112,6 +121,10 @@ dependency tree has to match too. A client should use an entry only when:
 
 Extra dependencies in the client's lock do not matter. A missing dependency,
 a different version or a different checksum means building from source.
+
+Use an entry only if `build.package_checksum` equals the outer checksum of
+your own lock entry, and every `build.compile_env` item decodes to the value
+your project's config gives for that app and path (`:error` meaning unset).
 - `versions[version]["pure_elixir"]` — files of a package whose whole dependency
   closure is pure Elixir. No firmware is built for such a package; its files
   come from the host compile and are the same for every target, so a client

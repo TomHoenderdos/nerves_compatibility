@@ -44,6 +44,7 @@ defmodule Portal.Catalog.SystemResult do
         :phase_timings,
         :hex_version_tested,
         :beam_scan,
+        :compile_env,
         :dependency_scans,
         :log_path,
         :log_tail,
@@ -111,6 +112,14 @@ defmodule Portal.Catalog.SystemResult do
     end
 
     attribute :beam_scan, :map do
+      public?(true)
+    end
+
+    # The `.app` file's compile_env reads as the worker recorded them:
+    # `[%{"app", "path", "value"}]`, value a base64url deterministic term of
+    # `{:ok, v}` or `:error`. Nil for results from images before it was
+    # recorded or when the worker could not read the .app file.
+    attribute :compile_env, {:array, :map} do
       public?(true)
     end
 
