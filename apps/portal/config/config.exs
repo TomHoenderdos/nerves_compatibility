@@ -151,6 +151,9 @@ config :portal, :issues_url, "https://github.com/TomHoenderdos/nerves_compatibil
 # The Build worker moves the worker's files_dir outputs here.
 config :portal, :artifact_store, path: Path.expand("~/.ncc-artifacts")
 
+# Precompiled signing: Ed25519 online key and root document.
+config :portal, :precompiled_signing, key_path: nil
+
 # Admin data tables render through Cinder; this makes PortalWeb.CinderTheme
 # their default, so every one matches the daisyUI styling of the pages it
 # replaces without passing `theme:` at each call site.

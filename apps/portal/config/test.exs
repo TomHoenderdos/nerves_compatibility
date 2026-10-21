@@ -25,6 +25,8 @@ config :portal, Portal.Builder,
 
 config :portal, :artifact_store, path: Path.join(System.tmp_dir!(), "ncc-test-artifacts")
 
+config :portal, :precompiled_signing, key_path: nil
+
 # Controller tests drive the whole sign-in flow without hex.pm or github.com.
 config :portal, :identity_providers, %{
   hex: Portal.Test.FakeProvider,
