@@ -114,6 +114,8 @@ if portal_available? do
     config :portal, :artifact_store, path: store
   end
 
+  config :portal, :precompiled_signing, key_path: System.get_env("PRECOMPILED_SIGNING_KEY")
+
   # Lets a separate deployment of this codebase send its bug reports to its own
   # tracker rather than to whichever repo the compile-time default names.
   if issues_url = System.get_env("NCC_ISSUES_URL") do
