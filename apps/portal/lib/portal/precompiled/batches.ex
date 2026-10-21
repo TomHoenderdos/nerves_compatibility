@@ -5,6 +5,7 @@ defmodule Portal.Precompiled.Batches do
   manifest only if the newest valid batch names its hash.
   """
   require Ash.Query
+  require Logger
   alias Portal.Catalog
   alias Portal.Precompiled.{Batch, Envelope, Keys, Manifests}
 
@@ -26,13 +27,22 @@ defmodule Portal.Precompiled.Batches do
              {:ok, sha} <- Manifests.store(bytes) do
           Map.put(acc, name, sha)
         else
-          _ -> acc
+          reason ->
+            Logger.warning("Dropping #{name} from precompiled batch: #{inspect(reason)}")
+            acc
         end
       end)
 
     issued = DateTime.utc_now()
     expires = DateTime.add(issued, @ttl_days, :day)
-    sequence = (latest() && latest().sequence + 1) || 1
+    # No locking: this runs from one Oban cron job with a uniqueness
+    # constraint (Task 7), so concurrent calls do not occur in production,
+    # and `unique_sequence` turns any race into an error, not duplicate data.
+    sequence =
+      case latest() do
+        nil -> 1
+        batch -> batch.sequence + 1
+      end
 
     payload =
       JSON.encode!(%{

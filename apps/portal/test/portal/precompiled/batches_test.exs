@@ -2,6 +2,7 @@ defmodule Portal.Precompiled.BatchesTest do
   use Portal.DataCase, async: false
   @moduletag :tmp_dir
   import Portal.PrecompiledFixtures
+  import ExUnit.CaptureLog, only: [with_log: 1]
   alias Portal.Precompiled.{Batches, Envelope, Keys, Manifests}
 
   setup %{tmp_dir: dir} do
@@ -71,5 +72,36 @@ defmodule Portal.Precompiled.BatchesTest do
              Portal.Precompiled.Batch
              |> Ash.Changeset.for_create(:create, attrs)
              |> Ash.create(domain: Portal.Precompiled)
+  end
+
+  test "a package whose manifest fails to store is dropped with a warning" do
+    result = ingest_with_artifact()
+    name = result["package"]["name"]
+
+    old_store = Application.get_env(:portal, :artifact_store)
+
+    locked =
+      Path.join(System.tmp_dir!(), "locked-artifact-store-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(locked)
+    File.chmod!(locked, 0o555)
+
+    on_exit(fn ->
+      File.chmod!(locked, 0o755)
+      File.rm_rf!(locked)
+      Application.put_env(:portal, :artifact_store, old_store)
+    end)
+
+    Application.put_env(:portal, :artifact_store, path: locked)
+
+    {result, log} =
+      with_log(fn ->
+        Batches.build_and_sign()
+      end)
+
+    assert {:ok, batch} = result
+    assert batch.manifest_count == 0
+    assert log =~ name
+    assert log =~ "[warning]"
   end
 end
