@@ -758,6 +758,30 @@ defmodule Portal.Catalog.IngestionTest do
       assert systems["nerves_system_bbb"].status == :pass
     end
 
+    test "a carried-forward system result keeps its compile_env" do
+      compile_env = [%{"app" => "sample", "path" => ["mode"], "value" => "g2gCZAACb2tkAARmYXN0"}]
+
+      first =
+        ingest!(
+          full_result("carryenvpkg", "1.0.0", %{
+            "nerves_system_rpi4" => %{"status" => "pass", "compile_env" => compile_env},
+            "nerves_system_bbb" => %{"status" => "pass"}
+          })
+        )
+
+      second =
+        ingest!(%{
+          "package" => %{"name" => "carryenvpkg", "version" => "1.0.0"},
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "targets",
+          "systems" => %{"nerves_system_bbb" => %{"status" => "pass"}}
+        })
+
+      systems = systems_of(second)
+      assert systems["nerves_system_rpi4"].carried_from_run_id == first.id
+      assert systems["nerves_system_rpi4"].compile_env == compile_env
+    end
+
     test "keeps the original provenance across a chain of partial runs" do
       first =
         ingest!(

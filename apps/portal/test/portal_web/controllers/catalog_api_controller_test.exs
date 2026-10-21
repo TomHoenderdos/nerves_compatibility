@@ -41,15 +41,13 @@ defmodule PortalWeb.CatalogApiControllerTest do
     refute body =~ "<script>"
   end
 
-  defp ingest_fixture_with_artifact do
+  defp ingest_fixture_with_artifact(result \\ result_fixture()) do
     sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
     _ = File.rm(ArtifactStore.blob_path(sha))
     dir = Path.join(System.tmp_dir!(), "catalog-api-files-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     File.write!(Path.join(dir, sha), "precompiled-beam")
     on_exit(fn -> File.rm_rf(dir) end)
-
-    result = @fixture |> File.read!() |> Jason.decode!()
 
     {:ok, _run} =
       Ingestion.ingest(result, %{
@@ -189,8 +187,61 @@ defmodule PortalWeb.CatalogApiControllerTest do
              "system_version" => "1.24.0",
              "run_id" => "catalog-api-precompiled-jason-1.4.1",
              "image_digest" => "sha256:precompiled",
-             "deps" => nil
+             "deps" => nil,
+             "compile_env" => nil,
+             "package_checksum" => nil
            }
+  end
+
+  test "the build block publishes compile_env and package_checksum", %{conn: conn} do
+    result =
+      result_fixture()
+      |> Map.put("package_checksum", "deadbeef")
+      |> update_in(["systems", "nerves_system_rpi4"], fn sys ->
+        Map.put(sys, "compile_env", [
+          %{"app" => "sample", "path" => ["mode"], "value" => "g2gCZAACb2tkAARmYXN0"}
+        ])
+      end)
+
+    ingest_fixture_with_artifact(result)
+
+    body =
+      conn
+      |> get("/api/precompiled/manifests/#{result["package"]["name"]}.json")
+      |> json_response(200)
+
+    build =
+      get_in(body, ["versions", result["package"]["version"], "nerves_system_rpi4", "build"])
+
+    assert build["package_checksum"] == "deadbeef"
+
+    assert build["compile_env"] == [
+             %{"app" => "sample", "path" => ["mode"], "value" => "g2gCZAACb2tkAARmYXN0"}
+           ]
+  end
+
+  test "a malformed compile_env entry stores none for that system", %{conn: conn} do
+    result =
+      result_fixture()
+      |> update_in(
+        ["systems", "nerves_system_rpi4"],
+        &Map.put(&1, "compile_env", [%{"app" => 1}])
+      )
+
+    ingest_fixture_with_artifact(result)
+
+    body =
+      conn
+      |> get("/api/precompiled/manifests/#{result["package"]["name"]}.json")
+      |> json_response(200)
+
+    assert get_in(body, [
+             "versions",
+             result["package"]["version"],
+             "nerves_system_rpi4",
+             "build",
+             "compile_env"
+           ]) == nil
   end
 
   # Dependencies' macros are expanded into the package's BEAMs, so an entry is
@@ -281,7 +332,9 @@ defmodule PortalWeb.CatalogApiControllerTest do
              "system_version" => "1.24.0",
              "run_id" => "builder",
              "image_digest" => "sha256:first",
-             "deps" => old_lock
+             "deps" => old_lock,
+             "compile_env" => nil,
+             "package_checksum" => nil
            }
 
     assert version["nerves_system_x86_64"]["build"]["run_id"] == "carrier"

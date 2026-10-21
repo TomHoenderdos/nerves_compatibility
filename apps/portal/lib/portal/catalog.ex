@@ -88,7 +88,15 @@ defmodule Portal.Catalog do
   ]
   # The precompiled manifest is the one caller that genuinely needs `beam_scan`
   # — the file manifest lives inside it — and needs nothing else wide.
-  @manifest_fields [:id, :run_id, :system_pkg, :system_version, :beam_scan, :carried_from_run_id]
+  @manifest_fields [
+    :id,
+    :run_id,
+    :system_pkg,
+    :system_version,
+    :beam_scan,
+    :carried_from_run_id,
+    :compile_env
+  ]
   @json_fields [
     :run_id,
     :system_pkg,
@@ -1660,7 +1668,8 @@ defmodule Portal.Catalog do
       :inserted_at,
       :toolchain,
       :image_digest,
-      :deps_lock
+      :deps_lock,
+      :package_checksum
     ])
     |> Ash.read!(domain: __MODULE__)
   end
@@ -1677,7 +1686,9 @@ defmodule Portal.Catalog do
       "system_version" => result.system_version,
       "run_id" => run.run_id,
       "image_digest" => run.image_digest,
-      "deps" => run.deps_lock
+      "deps" => run.deps_lock,
+      "compile_env" => result.compile_env,
+      "package_checksum" => run.package_checksum
     }
   end
 
