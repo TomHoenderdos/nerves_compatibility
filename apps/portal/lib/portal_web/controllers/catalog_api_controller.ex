@@ -2,6 +2,7 @@ defmodule PortalWeb.CatalogApiController do
   use PortalWeb, :controller
 
   alias Portal.Catalog
+  alias Portal.Precompiled.{Batches, Manifests, Root}
 
   @badge_grey "#9ca3af"
   @badge_green "#22c55e"
@@ -36,17 +37,69 @@ defmodule PortalWeb.CatalogApiController do
   def precompiled_manifest(conn, %{"package" => raw_package}) do
     package = String.replace_suffix(raw_package, ".json", "")
 
-    case Catalog.precompiled_manifest(package) do
-      nil ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "precompiled manifest not found"})
-
-      manifest ->
+    case stored_manifest(package) do
+      {:ok, sha, bytes} ->
         conn
         |> put_cache_headers()
-        |> json(manifest)
+        |> put_resp_header("etag", ~s("#{sha}"))
+        |> send_json_bytes(bytes)
+
+      :none ->
+        case Catalog.precompiled_manifest(package) do
+          nil ->
+            conn |> put_status(:not_found) |> json(%{error: "precompiled manifest not found"})
+
+          manifest ->
+            conn |> put_cache_headers() |> json(manifest)
+        end
     end
+  end
+
+  # The bytes the newest batch signed over, when a batch exists. Before the
+  # first batch the live render stands in; a client that verifies batches
+  # cannot use it, one that does not (today's script) still can.
+  defp stored_manifest(package) do
+    with %{} = batch <- Batches.latest(),
+         sha when is_binary(sha) <- Batches.manifests(batch)[package],
+         {:ok, bytes} <- Manifests.read(sha) do
+      {:ok, sha, bytes}
+    else
+      _ -> :none
+    end
+  end
+
+  def precompiled_root(conn, _params) do
+    case Root.load() do
+      {:ok, body} -> conn |> put_cache_headers() |> send_json_bytes(body)
+      {:error, :no_root} -> send_resp(conn, 404, "Not Found")
+    end
+  end
+
+  def precompiled_batch(conn, _params) do
+    case Batches.latest() do
+      nil -> send_resp(conn, 503, "no signed batch yet")
+      batch -> serve_batch(conn, batch)
+    end
+  end
+
+  def precompiled_batch_history(conn, %{"sequence" => raw}) do
+    with {sequence, ""} <- raw |> String.replace_suffix(".json", "") |> Integer.parse(),
+         %{} = batch <- Batches.get(sequence) do
+      serve_batch(conn, batch)
+    else
+      _ -> send_resp(conn, 404, "Not Found")
+    end
+  end
+
+  defp serve_batch(conn, batch) do
+    conn
+    |> put_cache_headers()
+    |> put_resp_header("etag", ~s("batch-#{batch.sequence}"))
+    |> send_json_bytes(Batches.envelope(batch))
+  end
+
+  defp send_json_bytes(conn, bytes) do
+    conn |> put_resp_content_type("application/json") |> send_resp(200, bytes)
   end
 
   # The request supplies only a validated digest; the path is derived from the

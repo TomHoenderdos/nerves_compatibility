@@ -208,6 +208,9 @@ defmodule PortalWeb.Router do
     get "/packages/hex", PageController, :hex_package_search
     get "/precompiled/manifests/:package", CatalogApiController, :precompiled_manifest
     get "/precompiled/files/:sha256", CatalogApiController, :precompiled_file
+    get "/precompiled/root.json", CatalogApiController, :precompiled_root
+    get "/precompiled/batch.json", CatalogApiController, :precompiled_batch
+    get "/precompiled/batches/:sequence", CatalogApiController, :precompiled_batch_history
 
     # Schema-v2 catalog JSON API (docs/INDEX_FORMAT.md). `/packages` is the
     # whole catalog; it is served from `Portal.Catalog.Cache`, so repeated hits

@@ -8,6 +8,9 @@ defmodule PortalWeb.CatalogApiRoutesTest do
         "/api/packages/no_such_package",
         "/api/stats",
         "/api/precompiled/manifests/no_such_package.json",
+        "/api/precompiled/root.json",
+        "/api/precompiled/batch.json",
+        "/api/precompiled/batches/1.json",
         "/badge/no_such_package.svg"
       ] do
     test "#{path} is routed to the catalog API controller", %{conn: conn} do
