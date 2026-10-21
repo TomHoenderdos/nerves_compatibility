@@ -85,7 +85,10 @@ config :portal, Oban,
        # Every five minutes: a build cancelled in Oban Web otherwise leaves its
        # request `queued` in the admin queue until this notices. Two indexed
        # queries; carries `:maintenance`, the web host's queue.
-       {"*/5 * * * *", Portal.Workers.RequestSync}
+       {"*/5 * * * *", Portal.Workers.RequestSync},
+       # Every 15 minutes: render and sign a precompiled batch. Only the web
+       # host has the signing key and rsynced artifact files. Carries `:maintenance`.
+       {"*/15 * * * *", Portal.Workers.PrecompiledBatch}
      ]}
   ]
 

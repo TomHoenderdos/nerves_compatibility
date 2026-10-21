@@ -42,6 +42,16 @@ defmodule Portal.ObanConfigTest do
     assert Portal.Workers.RequestSync.__opts__()[:queue] == :maintenance
   end
 
+  test "precompiled batch is scheduled every 15 minutes on the maintenance queue" do
+    {_mod, opts} = plugin(Oban.Plugins.Cron)
+
+    assert {"*/15 * * * *", Portal.Workers.PrecompiledBatch} =
+             Enum.find(opts[:crontab], &match?({_e, Portal.Workers.PrecompiledBatch}, &1))
+
+    # Signing key and rsynced artifact files live on the web host only.
+    assert Portal.Workers.PrecompiledBatch.__opts__()[:queue] == :maintenance
+  end
+
   describe "the hex.pm update check" do
     defp update_check_entry do
       {_mod, opts} = plugin(Oban.Plugins.Cron)
