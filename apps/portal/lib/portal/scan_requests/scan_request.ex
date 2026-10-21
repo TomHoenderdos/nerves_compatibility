@@ -137,4 +137,11 @@ defmodule Portal.ScanRequests.ScanRequest do
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)
   end
+
+  calculations do
+    # Lives on the build job, not the row; see `Portal.Admin` for why.
+    calculate :queue_position, :map, Portal.ScanRequests.Calculations.QueuePosition do
+      public?(true)
+    end
+  end
 end

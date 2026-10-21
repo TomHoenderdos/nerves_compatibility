@@ -92,15 +92,10 @@ defmodule PortalWeb.Router do
     get "/requests/:id", RequestRedirectController, :show
     get "/request-scan", PageController, :request_scan
     get "/admin", PageController, :admin
-    get "/admin/queue", PageController, :admin_queue
     get "/admin/failures", PageController, :admin_failures
     get "/admin/argus", PageController, :admin_argus
     get "/admin/maintenance", PageController, :admin_maintenance
     get "/admin/monitor", PageController, :oban_embed
-    post "/admin/requests/:id/approve", PageController, :approve_anonymous_request
-    post "/admin/requests/:id/reject", PageController, :reject_anonymous_request
-    post "/admin/requests/:id/priority", PageController, :reprioritise_request
-    post "/admin/scan", PageController, :admin_queue_package
     post "/admin/update-check", PageController, :admin_update_check
     post "/admin/bulk-rebuild", PageController, :admin_bulk_rebuild
     post "/admin/bulk-rebuild/:id/cancel", PageController, :admin_cancel_sweep
@@ -160,9 +155,8 @@ defmodule PortalWeb.Router do
 
     post "/settings/providers/:provider/unlink", ProviderAuthController, :unlink
 
-    # POST rather than DELETE for removals, matching the
-    # `post "/admin/requests/:id/approve"` convention above: plain forms, no
-    # `data-method` JavaScript.
+    # POST rather than DELETE for removals, matching the `post` admin routes
+    # above: plain forms, no `data-method` JavaScript.
     get "/settings/security", SecurityController, :show
     post "/settings/security/reauth", SecurityController, :reauth
     post "/settings/security/passkeys/:id/delete", SecurityController, :delete_passkey
@@ -204,6 +198,7 @@ defmodule PortalWeb.Router do
       ] do
       live "/argus/findings", PortalWeb.Admin.ArgusFindingsLive, :index
       live "/users", PortalWeb.Admin.UsersLive, :index
+      live "/queue", PortalWeb.Admin.QueueLive, :index
     end
   end
 
