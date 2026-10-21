@@ -104,4 +104,40 @@ defmodule NccWorker.AppFile do
   end
 
   defp extract_applications(_), do: {:error, :invalid_app_file_format}
+
+  @doc """
+  The `compile_env` triples of an `.app` file as JSON-safe maps. Values are
+  arbitrary terms, so each is the deterministic external term format of
+  `{:ok, value}` or `:error`, base64url. `[]` when the key is absent, `nil`
+  when the file is missing or does not parse.
+  """
+  @spec read_compile_env(Path.t()) ::
+          [%{app: String.t(), path: [String.t()], value: String.t()}] | nil
+  def read_compile_env(app_path) do
+    with {:ok, [{:application, _app, props}]} <- :file.consult(String.to_charlist(app_path)) do
+      props
+      |> Keyword.get(:compile_env, [])
+      |> Enum.map(fn {app, path, value} ->
+        %{
+          app: Atom.to_string(app),
+          path: Enum.map(List.wrap(path), &to_string/1),
+          value:
+            value |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
+        }
+      end)
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  @doc "The release copy of `package`'s `.app` under a firmware build path."
+  @spec find_app_in_build(Path.t(), String.t()) :: Path.t() | nil
+  def find_app_in_build(build_path, package) do
+    [build_path, "rel", "*", "lib", "#{package}-*", "ebin", "#{package}.app"]
+    |> Path.join()
+    |> Path.wildcard()
+    |> List.first()
+  end
 end

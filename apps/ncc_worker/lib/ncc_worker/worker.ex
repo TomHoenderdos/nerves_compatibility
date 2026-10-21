@@ -4,6 +4,7 @@ defmodule NccWorker.Worker do
   """
 
   alias NccWorker.{
+    AppFile,
     Argus,
     BeamScan,
     BuildCache,
@@ -96,6 +97,7 @@ defmodule NccWorker.Worker do
               firmware_size_bytes: integer() | nil,
               log_tail: String.t(),
               system_version: String.t() | nil,
+              compile_env: list(map()) | nil,
               beam_scan: map() | nil,
               dependency_scans: map() | nil,
               error: String.t() | nil
@@ -435,6 +437,8 @@ defmodule NccWorker.Worker do
         {:error, reason} -> %{"errors" => ["beam scan failed: #{inspect(reason)}"]}
       end
 
+    compile_env = AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
+
     %{
       status: :pass,
       duration_sec: 0.0,
@@ -442,6 +446,7 @@ defmodule NccWorker.Worker do
       log_tail:
         "Assumed compatible: host compilation passed and the resolved package and " <>
           "its dependencies contain only pure Elixir. No firmware targets were built.",
+      compile_env: compile_env,
       beam_scan: beam_scan,
       error: nil
     }
@@ -872,6 +877,7 @@ defmodule NccWorker.Worker do
         log_tail = read_log_tail(log_file, log_tail_bytes)
         beam_scan = analyze_beam_scan(build_path, package_name)
         dependency_scans = analyze_dependency_beam_scans(build_path, package_name)
+        compile_env = compile_env_for(build_path, package_name)
         scan_sec = System.monotonic_time(:second) - scan_start
         duration = deps_duration + (System.monotonic_time(:second) - firmware_start)
 
@@ -885,6 +891,7 @@ defmodule NccWorker.Worker do
           },
           firmware_size_bytes: firmware_info[:size],
           log_tail: log_tail,
+          compile_env: compile_env,
           beam_scan: beam_scan,
           dependency_scans: dependency_scans,
           error: nil
@@ -909,6 +916,13 @@ defmodule NccWorker.Worker do
 
   defp run_mix(args, project_dir, env, log_file) do
     run_cmd("mix", args, project_dir, env, log_file)
+  end
+
+  defp compile_env_for(build_path, package_name) do
+    case AppFile.find_app_in_build(build_path, package_name) do
+      nil -> nil
+      app -> AppFile.read_compile_env(app)
+    end
   end
 
   # Assembling a firmware image runs mksquashfs, which sets ownership on the

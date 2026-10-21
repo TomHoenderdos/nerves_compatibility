@@ -81,6 +81,7 @@ defmodule NccWorker.JsonWriter do
       firmware_size_bytes: system_result.firmware_size_bytes,
       log_tail: system_result.log_tail,
       system_version: Map.get(system_result, :system_version),
+      compile_env: Map.get(system_result, :compile_env),
       beam_scan: Map.get(system_result, :beam_scan),
       dependency_scans: Map.get(system_result, :dependency_scans),
       error: system_result.error
