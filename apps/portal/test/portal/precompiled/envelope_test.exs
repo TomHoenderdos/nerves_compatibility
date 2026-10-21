@@ -39,4 +39,24 @@ defmodule Portal.Precompiled.EnvelopeTest do
     assert {:error, :bad_envelope} = Envelope.verify("not json", %{}, 1)
     assert {:error, :bad_envelope} = Envelope.verify(%{"payload" => 1}, %{}, 1)
   end
+
+  test "malformed public key does not crash, returns below_threshold" do
+    key = Keys.generate()
+    env = Envelope.sign("hello", [{key.keyid, key.private}])
+    # Replace the valid key with a 5-byte key
+    malformed_keys = %{key.keyid => <<1, 2, 3, 4, 5>>}
+    assert {:error, :below_threshold} = Envelope.verify(env, malformed_keys, 1)
+  end
+
+  test "malformed signature does not crash, returns below_threshold" do
+    key = Keys.generate()
+    env = Envelope.sign("hello", [{key.keyid, key.private}])
+    # Replace the signature with a short base64url-encoded value
+    tampered =
+      Map.update!(env, "signatures", fn [sig] ->
+        [Map.put(sig, "sig", Base.url_encode64(<<1, 2, 3>>, padding: false))]
+      end)
+
+    assert {:error, :below_threshold} = Envelope.verify(tampered, %{key.keyid => key.public}, 1)
+  end
 end

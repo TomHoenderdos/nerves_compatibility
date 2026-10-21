@@ -51,7 +51,9 @@ defmodule Portal.Precompiled.Envelope do
   defp valid_signature?(%{"keyid" => keyid, "sig" => sig}, payload, keys)
        when is_binary(keyid) and is_binary(sig) do
     with {:ok, public} <- Map.fetch(keys, keyid),
-         {:ok, raw} <- Base.url_decode64(sig, padding: false) do
+         {:ok, raw} <- Base.url_decode64(sig, padding: false),
+         true <- byte_size(public) == 32,
+         true <- byte_size(raw) == 64 do
       :crypto.verify(:eddsa, :none, payload, raw, [public, :ed25519])
     else
       _ -> false
