@@ -28,7 +28,7 @@ defmodule NccWorker.SourceScanner do
   # excluded from both snapshots so rebar3 / elixir_ls / git don't trigger
   # false-positive "writes to source" warnings. Matched as the first path
   # component (i.e. relative to the package root).
-  @ignored_top_dirs ~w(_build .rebar3 .elixir_ls .git .fetch .hex)
+  @ignored_top_dirs ~w(_build .rebar3 .elixir_ls .git .fetch .hex .ncc-hex)
 
   @doc """
   Build a snapshot of `dir`: every regular file under it, keyed by its

@@ -43,6 +43,13 @@ defmodule NccWorker.HexHome do
   @registry "cache.ets"
   @config "hex.config"
 
+  # Not `.hex`: typedstruct's mix.exs (0.5.4) reads `<deps_path>/../.hex` to
+  # learn the version it was published at, and `File.read!/1` on a directory
+  # raises, which failed every project depending on it (15 packages on
+  # 2026-10-21). Hex writes no such file in a project, so the name is ours to
+  # choose; this one no package has a reason to look for.
+  @dir ".ncc-hex"
+
   @doc """
   Creates a private `HEX_HOME` under `project_dir` and returns its path, or
   `nil` when there is no shared cache to seed it from and the caller should
@@ -53,7 +60,7 @@ defmodule NccWorker.HexHome do
   # sobelow_skip ["Traversal.FileModule"]
   def prepare(project_dir, name) do
     with shared when is_binary(shared) <- shared_root(),
-         dir = Path.join([project_dir, ".hex", name]),
+         dir = Path.join([project_dir, @dir, name]),
          false <- Path.expand(dir) == Path.expand(shared),
          :ok <- File.mkdir_p(dir) do
       link_packages(shared, dir)
