@@ -233,6 +233,22 @@ defmodule Portal.ScanRequests.ScanRequestTest do
     refute Map.has_key?(job.meta, "sweep_id")
   end
 
+  test "a status change is announced to the admin queue" do
+    :ok = Portal.AdminEvents.subscribe(:queue)
+
+    {:ok, request} =
+      Portal.ScanRequests.create_once(%{
+        package_name: "evt_pkg",
+        source: :admin_manual,
+        status: :accepted,
+        subject: "t"
+      })
+
+    assert_receive {:admin_changed, :queue}
+    {:ok, _} = Portal.ScanRequests.set_status(request, :queued)
+    assert_receive {:admin_changed, :queue}
+  end
+
   describe "get_request/1" do
     test "finds a request by id" do
       {:ok, request} =
