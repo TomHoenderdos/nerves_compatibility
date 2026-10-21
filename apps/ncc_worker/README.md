@@ -27,7 +27,8 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    the package itself excluded, as `{"spark": {"version": "2.7.8", "checksum": "<outer Hex checksum>"}}`
    (`NccWorker.DepsLock`). Dependencies' macros are compiled into the package's BEAMs, so the precompiled API
    publishes this for clients to match against their own lock. The key is absent for argus-only runs, which build
-   nothing, and when the lock cannot be read.
+   nothing, and when the lock cannot be read. It also records `package_checksum`, the package's own outer Hex checksum,
+   and each system result's `compile_env` (the `.app` file's compile-time config reads, values as base64url deterministic terms).
 7. Writes atomic `/out/result.json` plus per-system logs under `/out/logs/`, and archives compiled files by SHA256 under `/files`.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.

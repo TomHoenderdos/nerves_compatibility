@@ -181,6 +181,29 @@ defmodule NccWorker.JsonWriterTest do
       refute Map.has_key?(decoded, "deps_lock")
     end
 
+    test "writes the package checksum, and omits it when unreadable" do
+      dir = Path.join(System.tmp_dir!(), "jw_pkg_checksum_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      base = %{
+        run_id: "r",
+        package: %{name: "p", version: "1"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{},
+        finished_at: "2026-10-20T00:00:00Z"
+      }
+
+      :ok = JsonWriter.write_result(dir, Map.put(base, :package_checksum, "abc"))
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      assert decoded["package_checksum"] == "abc"
+
+      :ok = JsonWriter.write_result(dir, base)
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      refute Map.has_key?(decoded, "package_checksum")
+    end
+
     test "writes the run scope, so ingestion knows what the run left out" do
       dir = Path.join(System.tmp_dir!(), "jw_scope_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)

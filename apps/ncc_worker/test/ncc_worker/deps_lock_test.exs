@@ -81,4 +81,21 @@ defmodule NccWorker.DepsLockTest do
 
     assert DepsLock.read(dir, "pkg") == nil
   end
+
+  test "package_checksum is the package's own outer checksum", %{dir: dir} do
+    File.write!(Path.join(dir, "mix.lock"), @lock)
+    # @lock's spark entry's last element; copy the literal from @lock
+    assert DepsLock.package_checksum(dir, "spark") == spark_outer_checksum_from_lock(@lock)
+  end
+
+  test "package_checksum is nil for a package not in the lock or a missing lock", %{dir: dir} do
+    assert DepsLock.package_checksum(dir, "spark") == nil
+    File.write!(Path.join(dir, "mix.lock"), @lock)
+    assert DepsLock.package_checksum(dir, "not_there") == nil
+  end
+
+  defp spark_outer_checksum_from_lock(lock) do
+    {map, _} = Code.eval_string(lock)
+    map |> Map.fetch!(:spark) |> elem(7)
+  end
 end

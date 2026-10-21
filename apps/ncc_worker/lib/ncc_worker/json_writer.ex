@@ -66,9 +66,17 @@ defmodule NccWorker.JsonWriter do
 
     # Absent rather than null when the worker could not read the lock, the way
     # a run from an image before lock recording looks too.
-    case Map.get(result, :deps_lock) do
+    json =
+      case Map.get(result, :deps_lock) do
+        nil -> json
+        deps_lock -> Map.put(json, :deps_lock, deps_lock)
+      end
+
+    # Absent rather than null when the worker could not read the lock, the way
+    # a run from an image before lock recording looks too.
+    case Map.get(result, :package_checksum) do
       nil -> json
-      deps_lock -> Map.put(json, :deps_lock, deps_lock)
+      checksum -> Map.put(json, :package_checksum, checksum)
     end
   end
 

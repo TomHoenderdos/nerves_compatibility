@@ -48,6 +48,19 @@ defmodule NccWorker.DepsLock do
     end
   end
 
+  @doc "The package's own outer Hex checksum from the project's mix.lock, nil when unavailable."
+  @spec package_checksum(String.t(), String.t()) :: String.t() | nil
+  def package_checksum(project_dir, package) do
+    with {:ok, lock} <- read_lock(project_dir),
+         {:ok, name} <- lock_name(lock, package),
+         {:hex, _pkg, _version, _inner, _managers, _deps, _repo, outer} when is_binary(outer) <-
+           lock[name] do
+      outer
+    else
+      _ -> nil
+    end
+  end
+
   defp put_locked(dep, acc, lock) do
     case Map.get(lock, dep) do
       {:hex, _pkg, version, _inner, _managers, _deps, _repo, outer}

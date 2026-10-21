@@ -61,6 +61,9 @@ defmodule NccWorker.Worker do
           optional(:deps_lock) => %{
             String.t() => %{required(String.t()) => String.t()}
           },
+          # The package's own outer Hex checksum from the project's mix.lock.
+          # Absent when the lock could not be read and for argus-only runs.
+          optional(:package_checksum) => String.t(),
           run_id: String.t(),
           package: %{
             name: String.t(),
@@ -401,9 +404,15 @@ defmodule NccWorker.Worker do
   defp put_deps_lock(result, :argus_only, _project_dir, _package), do: result
 
   defp put_deps_lock(result, _scope, project_dir, package) do
-    case DepsLock.read(project_dir, package) do
+    result =
+      case DepsLock.read(project_dir, package) do
+        nil -> result
+        deps_lock -> Map.put(result, :deps_lock, deps_lock)
+      end
+
+    case DepsLock.package_checksum(project_dir, package) do
       nil -> result
-      deps_lock -> Map.put(result, :deps_lock, deps_lock)
+      checksum -> Map.put(result, :package_checksum, checksum)
     end
   end
 
