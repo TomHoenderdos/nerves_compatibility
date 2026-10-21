@@ -12,6 +12,7 @@ defmodule Portal.ScanRequests do
     resource(Portal.ScanRequests.ScanRequest)
   end
 
+  alias Portal.AdminEvents
   alias Portal.ScanRequests.ScanRequest
   alias Portal.Workers.{Build, Progress}
 
@@ -196,7 +197,9 @@ defmodule Portal.ScanRequests do
           {:ok, request}
       end
 
-    maybe_enqueue_accepted(request_result, requested_status, build_opts)
+    request_result
+    |> maybe_enqueue_accepted(requested_status, build_opts)
+    |> announce_queue_change()
   end
 
   def open_request_for_package(package_name) when is_binary(package_name) do
@@ -234,17 +237,29 @@ defmodule Portal.ScanRequests do
   # (see `enqueue_build/3`), which the page hears as a rejection.
   defp announce_review({:ok, %ScanRequest{status: status}} = result, id)
        when status in [:queued, :rejected] do
+    AdminEvents.broadcast(:queue)
     Progress.broadcast(id, status, %{})
     result
   end
 
   defp announce_review({:error, reason} = result, id)
        when reason in [:unknown_package, :unknown_package_version] do
+    AdminEvents.broadcast(:queue)
     Progress.broadcast(id, :rejected, %{})
     result
   end
 
   defp announce_review(result, _id), do: result
+
+  # A new row and a status change both move at least one card on the admin
+  # queue page, so both announce it there. Only a successful write does:
+  # an `{:error, _}` here means nothing was moved.
+  defp announce_queue_change({:ok, _request} = result) do
+    AdminEvents.broadcast(:queue)
+    result
+  end
+
+  defp announce_queue_change(result), do: result
 
   # This used to read every row and filter in Elixir. It is called from
   # `RequestRedirectController.show/2` on a public route, and up to four times
@@ -287,6 +302,7 @@ defmodule Portal.ScanRequests do
       run_id: Keyword.get(opts, :run_id)
     })
     |> Ash.update(domain: __MODULE__)
+    |> announce_queue_change()
   end
 
   def set_status(id, status, opts) when is_binary(id) do
