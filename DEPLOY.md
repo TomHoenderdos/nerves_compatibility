@@ -55,6 +55,7 @@ Configure these environment variables for the Phoenix service:
 | `UMAMI_WEBSITE_ID` | Analytics site id. Defaults to this project's own site id, so another deployment should set its own or an empty string to turn analytics off |
 | `DNS_CLUSTER_QUERY` | Optional DNS query for clustering nodes |
 | `OBAN_QUEUES` | Which queues this node runs, e.g. `builds:1,ingest:2`. Unset means `builds:1,ingest:2,intake:5,maintenance:1`. See [Splitting the build host](#splitting-the-build-host) |
+| `PRECOMPILED_SIGNING_KEY` | Path to the precompiled-package signing key, e.g. `/etc/ncc/precompiled/signing.key`. Web host only; see [Precompiled signing key](#precompiled-signing-key). Unset means `root.json` is 404 and `batch.json` is 503, with manifests still served unsigned |
 
 Build-host settings. Every path below is passed to `docker run --mount source=`, so it is
 resolved by the host daemon and must be a path the daemon can see:
@@ -141,6 +142,41 @@ bin/portal rpc 'Portal.Seeds.seed_admins_from_env!()'
 `rpc` inherits the running node's environment, so `PORTAL_SEED_ADMINS` and
 `PORTAL_SEED_ADMIN_PASSWORD` belong in the service's env file, not on this
 command line, unless the node already has them.
+
+## Precompiled signing key
+
+The precompiled API's `root.json` and `batch.json` are signed with one online
+Ed25519 key, generated once on the **web host only** — never on a builder,
+which runs unreviewed package code and must never hold a key that can sign
+batches. `PRECOMPILED_SIGNING_KEY` points at the key file; `root.json` is
+read from alongside it in the same directory.
+
+From a dev checkout or any shell with Mix (not a release):
+
+```bash
+mix portal.precompiled.keygen --out /etc/ncc/precompiled
+```
+
+In a built release, where `mix` is unavailable, call the same functions
+through `bin/portal eval` (they touch no running application, so this does
+not need the `rpc` form that migrations and seeding do above):
+
+```bash
+bin/portal eval '
+path = "/etc/ncc/precompiled/signing.key"
+if File.exists?(path), do: raise "#{path} exists; refusing to overwrite"
+key = Portal.Precompiled.Keys.generate()
+Portal.Precompiled.Keys.write!(path, key)
+root = Portal.Precompiled.Root.payload(key.keyid, key.public, DateTime.add(DateTime.utc_now(), 365, :day))
+File.write!("/etc/ncc/precompiled/root.json", JSON.encode!(Portal.Precompiled.Envelope.sign(root, [{key.keyid, key.private}])))
+'
+```
+
+Either way this writes `signing.key` mode `0600` and refuses to overwrite an
+existing one. Set `PRECOMPILED_SIGNING_KEY=/etc/ncc/precompiled/signing.key`
+in the web host's env file and restart. Copy the resulting `root.json` into
+the `nerves` package's `priv/precompiled/root.json` so a client ships the
+same root it was signed against; see [Trust](PRECOMPILED_API.md#trust).
 
 ## Seeding the catalogue from upstream
 
@@ -346,6 +382,7 @@ builder, `BUILDER_HOST` (and optionally `BUILDER_DEPLOY_SSH_KEY`) secrets in the
 - `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
 - `/api/precompiled/manifests/:package.json` — precompiled package manifest
 - `/api/precompiled/files/:sha256` — content-addressed artifact blob
+- `/api/precompiled/root.json`, `/api/precompiled/batch.json`, `/api/precompiled/batches/:sequence.json` — signed trust chain (see [Precompiled signing key](#precompiled-signing-key))
 - `/admin/oban` — Oban Web dashboard behind admin auth (passkey sign-in)
 
 ## Verification after deploy

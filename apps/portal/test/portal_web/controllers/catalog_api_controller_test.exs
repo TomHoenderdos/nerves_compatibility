@@ -681,4 +681,73 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert policy =~ "object-src 'none'"
     assert policy =~ "frame-ancestors 'self'"
   end
+
+  describe "trust endpoints" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: dir} do
+      old = Application.get_env(:portal, :precompiled_signing)
+      on_exit(fn -> Application.put_env(:portal, :precompiled_signing, old) end)
+      key = Portal.Precompiled.Keys.generate()
+      Portal.Precompiled.Keys.write!(Path.join(dir, "signing.key"), key)
+      root = Portal.Precompiled.Root.payload(key.keyid, key.public, ~U[2027-01-01 00:00:00Z])
+
+      File.write!(
+        Path.join(dir, "root.json"),
+        JSON.encode!(Portal.Precompiled.Envelope.sign(root, [{key.keyid, key.private}]))
+      )
+
+      Application.put_env(:portal, :precompiled_signing, key_path: Path.join(dir, "signing.key"))
+      %{key: key}
+    end
+
+    test "root.json serves the file next to the key", %{conn: conn, key: key} do
+      body = conn |> get("/api/precompiled/root.json") |> json_response(200)
+      assert {:ok, _} = Portal.Precompiled.Envelope.verify(body, %{key.keyid => key.public}, 1)
+    end
+
+    test "batch.json is 503 before any batch and the newest after", %{conn: conn, key: key} do
+      assert conn |> get("/api/precompiled/batch.json") |> response(503)
+      ingest_with_artifact()
+      {:ok, b1} = Portal.Precompiled.Batches.build_and_sign()
+      {:ok, b2} = Portal.Precompiled.Batches.build_and_sign()
+      resp = conn |> get("/api/precompiled/batch.json")
+
+      assert {:ok, payload} =
+               Portal.Precompiled.Envelope.verify(
+                 json_response(resp, 200),
+                 %{key.keyid => key.public},
+                 1
+               )
+
+      assert JSON.decode!(payload)["sequence"] == b2.sequence
+      assert get_resp_header(resp, "etag") == [~s("batch-#{b2.sequence}")]
+      hist = conn |> get("/api/precompiled/batches/#{b1.sequence}.json") |> json_response(200)
+      assert {:ok, p1} = Portal.Precompiled.Envelope.verify(hist, %{key.keyid => key.public}, 1)
+      assert JSON.decode!(p1)["sequence"] == b1.sequence
+      assert conn |> get("/api/precompiled/batches/999.json") |> response(404)
+    end
+
+    test "manifest endpoint serves the batch's bytes after a new ingest", %{conn: conn} do
+      first = ingest_with_artifact()
+      name = first["package"]["name"]
+      {:ok, batch} = Portal.Precompiled.Batches.build_and_sign()
+      sha = Portal.Precompiled.Batches.manifests(batch)[name]
+
+      ingest_with_artifact(
+        first
+        |> Map.put("run_id", "run-2")
+        |> Map.put("finished_at", "2026-10-21T12:00:00Z")
+      )
+
+      resp = conn |> get("/api/precompiled/manifests/#{name}.json")
+      assert Base.encode16(:crypto.hash(:sha256, response(resp, 200)), case: :lower) == sha
+      assert get_resp_header(resp, "etag") == [~s("#{sha}")]
+    end
+
+    test "root.json is 404 without a key" do
+      Application.put_env(:portal, :precompiled_signing, key_path: nil)
+      assert build_conn() |> get("/api/precompiled/root.json") |> response(404)
+    end
+  end
 end
