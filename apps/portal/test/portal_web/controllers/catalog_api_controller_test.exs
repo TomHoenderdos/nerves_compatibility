@@ -4,6 +4,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
   alias Portal.Catalog.Ingestion
   alias Portal.ArtifactStore
 
+  import Portal.PrecompiledFixtures
+
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
 
   defp ingest_fixture do
@@ -42,23 +44,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
   end
 
   defp ingest_fixture_with_artifact(result \\ result_fixture()) do
-    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
-    _ = File.rm(ArtifactStore.blob_path(sha))
-    dir = Path.join(System.tmp_dir!(), "catalog-api-files-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(dir)
-    File.write!(Path.join(dir, sha), "precompiled-beam")
-    on_exit(fn -> File.rm_rf(dir) end)
-
-    {:ok, _run} =
-      Ingestion.ingest(result, %{
-        run_id: "catalog-api-precompiled-jason-1.4.1",
-        image_digest: "sha256:precompiled",
-        files_dir: dir,
-        scan_request_id: nil,
-        log: "api log"
-      })
-
-    sha
+    _result = ingest_with_artifact(result)
+    "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
   end
 
   test "GET /api/packages returns schema-v2 latest_by_pkg shape", %{conn: conn} do

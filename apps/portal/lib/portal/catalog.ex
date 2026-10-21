@@ -1069,6 +1069,23 @@ defmodule Portal.Catalog do
     end
   end
 
+  @doc "Names of packages with at least one stored precompiled file on a run that is not revoked."
+  @spec packages_with_precompiled_files() :: [String.t()]
+  def packages_with_precompiled_files do
+    # Task 8 adds WHERE r.revoked_at IS NULL to filter out revoked runs.
+    %{rows: rows} =
+      Portal.Repo.query!("""
+      SELECT DISTINCT p.name
+      FROM catalog_packages p
+      JOIN catalog_runs r ON r.package_id = p.id
+      JOIN catalog_system_results s ON s.run_id = r.id
+      JOIN catalog_artifact_memberships m ON m.system_result_id = s.id
+      ORDER BY p.name
+      """)
+
+    List.flatten(rows)
+  end
+
   @doc """
   Returns a stored artifact by SHA256, or `nil` if unknown.
   """
