@@ -30,6 +30,8 @@ defmodule Portal.Precompiled.Keys do
   end
 
   @spec write!(Path.t(), t()) :: :ok
+  # sobelow_skip ["Traversal.FileModule"]
+  # Path and directory come from PRECOMPILED_SIGNING_KEY config, not a request.
   def write!(path, %{public: public, private: private}) do
     dir = Path.dirname(path)
     File.mkdir_p!(dir)
@@ -52,6 +54,8 @@ defmodule Portal.Precompiled.Keys do
     end
   end
 
+  # sobelow_skip ["Traversal.FileModule"]
+  # Path comes from PRECOMPILED_SIGNING_KEY config, not a request.
   defp read(path) do
     with {:ok, body} <- File.read(path),
          {:ok, %{"type" => "ed25519", "public" => pub, "private" => priv}} <- JSON.decode(body),
