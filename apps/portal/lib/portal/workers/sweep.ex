@@ -120,7 +120,7 @@ defmodule Portal.Workers.Sweep do
     total = [scratch, cache, hex] |> Enum.reduce(empty(), &add/2)
 
     Logger.info(
-      "Sweep reclaimed #{total.count} dirs / #{mb(total.bytes)} MB " <>
+      "Sweep reclaimed #{total.count} entries / #{mb(total.bytes)} MB " <>
         "(scratch #{scratch.count}, build-cache #{cache.count}, hex #{hex.count})"
     )
 

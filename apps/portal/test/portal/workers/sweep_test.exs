@@ -134,6 +134,8 @@ defmodule Portal.Workers.SweepTest do
 
       assert File.exists?(dir)
       assert log =~ "Sweep removed scratch"
+      # The total counts files (hex cache) as well as dirs.
+      assert log =~ ~r/Sweep reclaimed 1 entries/
     end
   end
 
