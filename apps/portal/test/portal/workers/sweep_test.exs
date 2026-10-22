@@ -416,6 +416,139 @@ defmodule Portal.Workers.SweepTest do
       assert log =~ "old-1.0.0.tar"
     end
 
+    # Seconds since the epoch, `hours` before the fixed clock.
+    defp posix_ago(hours), do: div(age(hours), 1000)
+
+    defp hex_file(hex, rel, bytes, opts) do
+      path = Path.join(hex, rel)
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, String.duplicate("x", bytes))
+
+      # `File.touch!/2` sets both times to one value; these tests need them apart.
+      stat = File.stat!(path, time: :posix)
+
+      File.write_stat!(
+        path,
+        %{stat | atime: Keyword.fetch!(opts, :atime), mtime: Keyword.fetch!(opts, :mtime)},
+        time: :posix
+      )
+
+      path
+    end
+
+    # The bound is on bytes, not on names: a build that writes `.bin` files
+    # (or anything else) under packages/ must not dodge it.
+    test "counts and evicts non-tarball files under packages", %{root: root, hex: hex} do
+      bin = hex_file(hex, "packages/hexpm/x.bin", 400, atime: posix_ago(48), mtime: posix_ago(48))
+      top = hex_file(hex, "packages/junk", 400, atime: posix_ago(36), mtime: posix_ago(36))
+      tar = tarball(hex, "keep-1.0.0", 400, 24)
+
+      Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 500))
+
+      refute File.exists?(bin)
+      refute File.exists?(top)
+      assert File.exists?(tar)
+    end
+
+    # Hex does not rewrite a cached tarball on a 304, so mtime alone is the
+    # first-download order. A tarball read recently is in use, whatever its mtime.
+    test "a recently read file outlives one old in both times", %{root: root, hex: hex} do
+      read =
+        hex_file(hex, "packages/hexpm/read-1.0.0.tar", 400,
+          atime: posix_ago(3),
+          mtime: posix_ago(96)
+        )
+
+      stale =
+        hex_file(hex, "packages/hexpm/stale-1.0.0.tar", 400,
+          atime: posix_ago(24),
+          mtime: posix_ago(24)
+        )
+
+      Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 500))
+
+      assert File.exists?(read)
+      refute File.exists?(stale)
+    end
+
+    # A hostile file dated in the future would otherwise sort newest and push
+    # every legitimate tarball out ahead of it.
+    test "a future-dated file is evicted first", %{root: root, hex: hex} do
+      future = posix_ago(-24)
+
+      evil =
+        hex_file(hex, "packages/hexpm/evil-1.0.0.tar", 400, atime: future, mtime: future)
+
+      old = tarball(hex, "old-1.0.0", 400, 48)
+      mid = tarball(hex, "mid-1.0.0", 400, 24)
+
+      Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 900))
+
+      refute File.exists?(evil)
+      assert File.exists?(old)
+      assert File.exists?(mid)
+    end
+
+    # A build may have just had a 304 for this tarball and be about to unpack it.
+    test "never evicts a file used within the build wall clock", %{root: root, hex: hex} do
+      recent = tarball(hex, "recent-1.0.0", 400, 1)
+
+      Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 0))
+
+      assert File.exists?(recent)
+    end
+
+    test "removes old junk at the cache root but keeps the registry and config", %{
+      root: root,
+      hex: hex
+    } do
+      ets = Path.join(hex, "cache.ets")
+      config = Path.join(hex, "hex.config")
+      File.write!(config, "config")
+
+      for path <- [ets, config], do: File.touch!(path, posix_ago(24 * 30))
+
+      junk = hex_file(hex, "junk", 100, atime: posix_ago(5), mtime: posix_ago(5))
+
+      temp =
+        hex_file(hex, ".cache.ets.12345", 100, atime: posix_ago(24), mtime: posix_ago(24))
+
+      fresh = hex_file(hex, "fresh", 100, atime: posix_ago(1), mtime: posix_ago(1))
+      dir = Path.join(hex, "somedir")
+      File.mkdir_p!(dir)
+
+      # Under the size bound: root junk goes on age alone.
+      Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 1_000_000))
+
+      refute File.exists?(junk)
+      refute File.exists?(temp)
+      assert File.exists?(fresh)
+      assert File.exists?(ets)
+      assert File.exists?(config)
+      assert File.dir?(dir)
+      assert File.dir?(Path.join(hex, "packages"))
+    end
+
+    test "never follows or removes a symlink at the cache root", %{root: root, hex: hex} do
+      victim_dir =
+        Path.join(System.tmp_dir!(), "sweep-hex-victim-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(victim_dir)
+      on_exit(fn -> File.rm_rf(victim_dir) end)
+
+      victim = Path.join(victim_dir, "victim")
+      File.write!(victim, "x")
+      File.touch!(victim, posix_ago(96))
+
+      link = Path.join(hex, "link")
+      File.ln_s!(victim, link)
+
+      Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 0))
+
+      assert File.exists?(victim)
+      assert {:ok, %File.Stat{type: :symlink}} = File.lstat(link)
+    end
+
     test "a missing hex cache is a no-op", %{root: root} do
       assert :ok =
                Sweep.run(opts(root, hex_cache: Path.join(root, "nope"), hex_cache_max_bytes: 1))
@@ -443,11 +576,13 @@ defmodule Portal.Workers.SweepTest do
 
       # A real tarball in the cache, over the bound, so the sweep does evict
       # something -- proving the symlinked dir survives a real eviction pass
-      # rather than merely being skipped because nothing ran.
-      tarball(hex, "a-1.0.0", 100, 1)
+      # rather than merely being skipped because nothing ran. Older than the
+      # 2h in-use window, which would otherwise protect it.
+      a = tarball(hex, "a-1.0.0", 100, 5)
 
       Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 0))
 
+      refute File.exists?(a)
       assert File.exists?(victim)
       assert File.exists?(link)
     end
