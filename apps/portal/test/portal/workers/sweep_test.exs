@@ -420,5 +420,55 @@ defmodule Portal.Workers.SweepTest do
       assert :ok =
                Sweep.run(opts(root, hex_cache: Path.join(root, "nope"), hex_cache_max_bytes: 1))
     end
+
+    # `/hex-cache` is bind-mounted read-write into every build container,
+    # which runs the package's own build scripts, so a symlink planted inside
+    # `packages/` is attacker-controlled. Sweep must never follow one: not to
+    # walk it (a symlinked directory could point outside the cache entirely,
+    # even at `/`) and not to stat or delete it (a symlinked file could point
+    # at anything the ncc user can reach on the host).
+    test "does not follow a symlinked directory inside packages", %{root: root, hex: hex} do
+      victim_dir =
+        Path.join(System.tmp_dir!(), "sweep-hex-victim-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(victim_dir)
+      on_exit(fn -> File.rm_rf(victim_dir) end)
+
+      victim = Path.join(victim_dir, "victim.tar")
+      File.write!(victim, String.duplicate("x", 10_000))
+      File.touch!(victim, div(age(96), 1000))
+
+      link = Path.join(hex, "packages/hexpm/evil")
+      File.ln_s!(victim_dir, link)
+
+      # A real tarball in the cache, over the bound, so the sweep does evict
+      # something -- proving the symlinked dir survives a real eviction pass
+      # rather than merely being skipped because nothing ran.
+      tarball(hex, "a-1.0.0", 100, 1)
+
+      Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 0))
+
+      assert File.exists?(victim)
+      assert File.exists?(link)
+    end
+
+    test "does not follow a symlinked tarball", %{root: root, hex: hex} do
+      victim_dir =
+        Path.join(System.tmp_dir!(), "sweep-hex-victim-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(victim_dir)
+      on_exit(fn -> File.rm_rf(victim_dir) end)
+
+      victim = Path.join(victim_dir, "victim.tar")
+      File.write!(victim, String.duplicate("x", 10_000))
+
+      link = Path.join(hex, "packages/hexpm/link.tar")
+      File.ln_s!(victim, link)
+
+      Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 0))
+
+      assert File.exists?(victim)
+      assert File.exists?(link)
+    end
   end
 end

@@ -355,22 +355,45 @@ defmodule Portal.Workers.Sweep do
     end
   end
 
-  # Every tarball under packages/ with size and mtime. A stat is microseconds;
-  # tens of thousands of them are well under a second, and it runs the same
-  # on macOS and Linux.
-  defp tarballs(packages) do
-    packages
-    |> Path.join("**/*.tar")
-    |> Path.wildcard()
-    |> Enum.flat_map(fn path ->
-      case File.stat(path, time: :posix) do
-        {:ok, %File.Stat{type: :regular, size: size, mtime: mtime}} ->
-          [%{path: path, size: size, mtime: mtime}]
+  # Every tarball under packages/, with size and mtime, found by hand-walking
+  # the tree rather than `Path.wildcard/1` + `File.stat/2`.
+  #
+  # `/hex-cache` is bind-mounted read-write into every build container, which
+  # runs the package's own build scripts, so everything under `packages/` is
+  # attacker-controlled. A build could plant `packages/hexpm/x -> /` (or any
+  # other symlink) before Sweep next runs on the host. `Path.wildcard/1`'s
+  # `**` descends through a symlinked directory, and `File.stat/2` follows a
+  # symlink to read the target's metadata — together they would make Sweep
+  # walk, and then delete, the oldest files anywhere the ncc user can reach,
+  # not just inside the cache. `File.lstat/2` reports the link itself and
+  # never the target, so only a real `:directory` is descended into and only
+  # a real `:regular` file is ever collected; a `:symlink` (file or
+  # directory) is skipped outright — never followed, never deleted.
+  defp tarballs(packages), do: walk(packages)
 
-        _ ->
-          []
-      end
-    end)
+  defp walk(dir) do
+    case File.ls(dir) do
+      {:ok, names} ->
+        Enum.flat_map(names, fn name ->
+          path = Path.join(dir, name)
+
+          case File.lstat(path, time: :posix) do
+            {:ok, %File.Stat{type: :directory}} ->
+              walk(path)
+
+            {:ok, %File.Stat{type: :regular, size: size, mtime: mtime}} ->
+              if String.ends_with?(name, ".tar"),
+                do: [%{path: path, size: size, mtime: mtime}],
+                else: []
+
+            _ ->
+              []
+          end
+        end)
+
+      {:error, _reason} ->
+        []
+    end
   end
 
   # Oldest first, stop as soon as enough is gone. Returns the files, not just
