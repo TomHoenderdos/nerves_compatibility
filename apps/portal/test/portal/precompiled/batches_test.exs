@@ -3,6 +3,7 @@ defmodule Portal.Precompiled.BatchesTest do
   @moduletag :tmp_dir
   import Portal.PrecompiledFixtures
   import ExUnit.CaptureLog, only: [with_log: 1]
+  alias Portal.ArtifactStore
   alias Portal.Precompiled.{Batches, Envelope, Keys, Manifests}
 
   setup %{tmp_dir: dir} do
@@ -78,21 +79,15 @@ defmodule Portal.Precompiled.BatchesTest do
     result = ingest_with_artifact()
     name = result["package"]["name"]
 
-    old_store = Application.get_env(:portal, :artifact_store)
+    # Ingestion already landed the package's own artifact under the real
+    # store dir, so render/1 succeeds. Make the store dir unwritable only
+    # for the manifest put: present?/read of the existing blob only needs
+    # read+execute, but ArtifactStore.put's staging write needs write too,
+    # so that's the step that fails -- not render/1 finding nothing.
+    store_dir = ArtifactStore.path()
 
-    locked =
-      Path.join(System.tmp_dir!(), "locked-artifact-store-#{System.unique_integer([:positive])}")
-
-    File.mkdir_p!(locked)
-    File.chmod!(locked, 0o555)
-
-    on_exit(fn ->
-      File.chmod!(locked, 0o755)
-      File.rm_rf!(locked)
-      Application.put_env(:portal, :artifact_store, old_store)
-    end)
-
-    Application.put_env(:portal, :artifact_store, path: locked)
+    on_exit(fn -> File.chmod!(store_dir, 0o755) end)
+    File.chmod!(store_dir, 0o500)
 
     {result, log} =
       with_log(fn ->
@@ -103,5 +98,6 @@ defmodule Portal.Precompiled.BatchesTest do
     assert batch.manifest_count == 0
     assert log =~ name
     assert log =~ "[warning]"
+    assert log =~ "eacces"
   end
 end
