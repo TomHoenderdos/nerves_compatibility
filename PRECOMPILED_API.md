@@ -102,7 +102,8 @@ Response: a signed envelope wrapping:
 Status codes:
 
 - `200` — root document found
-- `404` — no signing key configured on this host
+- `404` — no `PRECOMPILED_SIGNING_KEY` configured on this host, or
+  `root.json` is missing or unreadable next to the configured key
 
 ### GET /api/precompiled/batch.json
 
@@ -177,13 +178,15 @@ dependency tree has to match too. A client should use an entry only when:
 1. `build.elixir` and `build.otp` equal its own, and
 2. `build.deps` is not `null`, and every dependency it names is in the
    client's `mix.lock` with the same version and the same outer checksum.
+3. `build.package_checksum` is non-null and equals the outer checksum of
+   your own `mix.lock` entry for the package. An entry whose
+   `package_checksum` is `null` never matches.
+4. `build.compile_env` is non-null and every item decodes to the value
+   your project's config gives for that app and path (`:error` meaning
+   unset). An entry whose `compile_env` is `null` never matches.
 
 Extra dependencies in the client's lock do not matter. A missing dependency,
 a different version or a different checksum means building from source.
-
-Use an entry only if `build.package_checksum` equals the outer checksum of
-your own lock entry, and every `build.compile_env` item decodes to the value
-your project's config gives for that app and path (`:error` meaning unset).
 - `versions[version]["pure_elixir"]` — files of a package whose whole dependency
   closure is pure Elixir. No firmware is built for such a package; its files
   come from the host compile and are the same for every target, so a client
