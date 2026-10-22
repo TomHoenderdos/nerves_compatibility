@@ -114,19 +114,23 @@ defmodule NccWorker.AppFile do
   @spec read_compile_env(Path.t()) ::
           [%{app: String.t(), path: [String.t()], value: String.t()}] | nil
   def read_compile_env(app_path) do
-    with {:ok, [{:application, _app, props}]} <- :file.consult(String.to_charlist(app_path)) do
-      props
-      |> Keyword.get(:compile_env, [])
-      |> Enum.map(fn {app, path, value} ->
-        %{
-          app: Atom.to_string(app),
-          path: Enum.map(List.wrap(path), &to_string/1),
-          value:
-            value |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
-        }
-      end)
-    else
-      _ -> nil
+    case :file.consult(String.to_charlist(app_path)) do
+      {:ok, [{:application, _app, props}]} ->
+        props
+        |> Keyword.get(:compile_env, [])
+        |> Enum.map(fn {app, path, value} ->
+          %{
+            app: Atom.to_string(app),
+            path: Enum.map(List.wrap(path), &to_string/1),
+            value:
+              value
+              |> :erlang.term_to_binary([:deterministic])
+              |> Base.url_encode64(padding: false)
+          }
+        end)
+
+      _ ->
+        nil
     end
   rescue
     _ -> nil
