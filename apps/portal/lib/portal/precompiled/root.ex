@@ -19,6 +19,8 @@ defmodule Portal.Precompiled.Root do
 
   @doc "The signed root envelope bytes next to the signing key, as served."
   @spec load() :: {:ok, binary()} | {:error, :no_root}
+  # sobelow_skip ["Traversal.FileModule"]
+  # Path comes from Keys.root_path, derived from PRECOMPILED_SIGNING_KEY config, not a request.
   def load do
     with path when is_binary(path) <- Keys.root_path(),
          {:ok, body} <- File.read(path) do
