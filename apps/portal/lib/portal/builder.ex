@@ -409,7 +409,10 @@ defmodule Portal.Builder do
   @doc false
   # Writes a one-line shell script into `dir` and executes it. `{:error, :eacces}`
   # is what a noexec mount answers; anything else is reported as is.
-  # sobelow_skip ["Traversal.FileModule"]
+  # `dir` is the operator-configured scratch root and the file name is generated
+  # here; the executed script is the fixed two-line body written just above, so
+  # neither the command nor its contents come from a package or a request.
+  # sobelow_skip ["Traversal.FileModule", "CI.System"]
   def probe_exec(dir) do
     path = Path.join(dir, ".ncc-exec-probe-#{System.unique_integer([:positive])}")
 
