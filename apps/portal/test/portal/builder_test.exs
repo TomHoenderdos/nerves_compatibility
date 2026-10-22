@@ -23,7 +23,8 @@ defmodule Portal.BuilderTest do
     Application.put_env(:portal, Portal.Builder, Keyword.merge(previous, overrides))
   end
 
-  defp args, do: Builder.build_docker_args(@job, "/work", "/out", "/files")
+  defp args,
+    do: Builder.build_docker_args(@job, "/scratch/work", "/scratch/out", "/scratch/files")
 
   test "tells the runtimes how much CPU the container actually has", %{previous: previous} do
     put_builder([cpus: "2"], previous)
@@ -238,6 +239,56 @@ defmodule Portal.BuilderTest do
 
     test "a normal build sends no mode" do
       refute Map.has_key?(Builder.worker_input(Map.put(@input_job, :mode, nil)), "mode")
+    end
+  end
+
+  # The container's root filesystem is the image: a build that writes outside
+  # the mounts gets EROFS rather than a change that outlives the container.
+  test "runs the container on a read-only root filesystem" do
+    assert "--read-only" in args()
+  end
+
+  # A runaway `make -j` or fork bomb in a package build dies at the limit
+  # instead of taking the host's pid table.
+  test "caps the container's process count" do
+    assert ["--pids-limit", "4096" | _] = Enum.drop_while(args(), &(&1 != "--pids-limit"))
+  end
+
+  # With a read-only root, /tmp and rebar3's ~/.cache need somewhere to go.
+  # Per-run scratch directories rather than tmpfs: disk-backed on the
+  # filesystem the free-space check already guards, no RAM budget, exec
+  # allowed, removed with the run.
+  test "binds /tmp and the home cache to per-run scratch directories" do
+    mounts =
+      args()
+      |> Enum.chunk_every(2, 1)
+      |> Enum.filter(&match?(["--mount", _], &1))
+      |> Enum.map(&List.last/1)
+
+    assert "type=bind,source=/scratch/tmp,target=/tmp" in mounts
+    assert "type=bind,source=/scratch/cache,target=/home/nerves/.cache" in mounts
+  end
+
+  # The container's /tmp is the scratch filesystem, and fakeroot executes
+  # helpers there, so a scratch root mounted noexec breaks every firmware
+  # build in a way that reads as the package's fault. Probe it for real
+  # (write a script, run it) rather than parsing mount options.
+  describe "exec preflight" do
+    test "probe_exec/1 passes on a filesystem that allows exec" do
+      assert :ok = Builder.probe_exec(System.tmp_dir!())
+    end
+
+    test "a probe failure refuses the build before anything is written", %{previous: previous} do
+      root = Path.join(System.tmp_dir!(), "noexec-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(root) end)
+
+      put_builder(
+        [scratch_root: root, min_free_disk_gb: 0, exec_probe: fn _path -> {:error, :eacces} end],
+        previous
+      )
+
+      assert {:error, :scratch_noexec} = Builder.build(@build_args)
+      refute File.exists?(Path.join(root, "run-1"))
     end
   end
 end
