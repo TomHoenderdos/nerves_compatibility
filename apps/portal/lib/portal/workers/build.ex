@@ -175,6 +175,15 @@ defmodule Portal.Workers.Build do
         Builder.cleanup(run_id)
         {:snooze, 900}
 
+      {:error, :scratch_noexec} ->
+        # A host misconfiguration, not a package failure, and not one that
+        # resolves itself: snooze so the request stays :queued and the log line
+        # is the thing an operator sees, rather than every scan request on the
+        # host turning :error inside an hour.
+        Logger.error("Scratch root cannot execute files (noexec?); refusing to build #{package}")
+        Builder.cleanup(run_id)
+        {:snooze, 900}
+
       {:error, reason} ->
         # Runner-side failure (docker unavailable, scratch setup, wall-clock
         # timeout). Treat as retryable.

@@ -144,6 +144,8 @@ defmodule Portal.Builder do
     work_dir = Path.join(scratch, "work")
     output_dir = Path.join(scratch, "out")
     files_dir = Path.join(scratch, "files")
+    tmp_dir = Path.join(scratch, "tmp")
+    cache_dir = Path.join(scratch, "cache")
     log_file = Path.join(output_dir, "runner.log")
 
     job = %{
@@ -167,8 +169,18 @@ defmodule Portal.Builder do
     # downstream `:enospc` from `IO.binwrite/2` — which is the exception that
     # took the host down.
     with :ok <- check_free_space(scratch_root()),
+         :ok <- check_scratch_exec(scratch_root()),
          {:ok, _version} <- check_docker(),
-         :ok <- ensure_directories([work_dir, output_dir, files_dir, nerves_cache(), hex_cache()]),
+         :ok <-
+           ensure_directories([
+             work_dir,
+             output_dir,
+             files_dir,
+             tmp_dir,
+             cache_dir,
+             nerves_cache(),
+             hex_cache()
+           ]),
          :ok <- write_worker_input(job, work_dir),
          {:ok, exit_code} <- run_container(job, work_dir, output_dir, files_dir, log_file) do
       result = read_result_json(output_dir)
@@ -358,6 +370,51 @@ defmodule Portal.Builder do
     end
   end
 
+  # The container's /tmp is bound from scratch, and fakeroot executes helpers
+  # in /tmp, so a scratch filesystem mounted noexec breaks every firmware build
+  # in a way that would be recorded as the package's failure. Probe it the way
+  # fakeroot will: write a script and run it. Nothing to measure means nothing
+  # to parse, and it is the same check on macOS and Linux.
+  defp check_scratch_exec(root) do
+    probe = config(:exec_probe, &__MODULE__.probe_exec/1)
+    dir = existing_ancestor(root)
+
+    case probe.(dir) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "Scratch root #{dir} cannot execute a file (#{inspect(reason)}); is it mounted noexec?"
+        )
+
+        {:error, :scratch_noexec}
+    end
+  end
+
+  @doc false
+  # Writes a one-line shell script into `dir` and executes it. `{:error, :eacces}`
+  # is what a noexec mount answers; anything else is reported as is.
+  # sobelow_skip ["Traversal.FileModule"]
+  def probe_exec(dir) do
+    path = Path.join(dir, ".ncc-exec-probe-#{System.unique_integer([:positive])}")
+
+    try do
+      File.write!(path, "#!/bin/sh\nexit 0\n")
+      File.chmod!(path, 0o700)
+
+      case System.cmd(path, [], stderr_to_stdout: true) do
+        {_, 0} -> :ok
+        {out, status} -> {:error, {:exit, status, String.trim(out)}}
+      end
+    rescue
+      e in File.Error -> {:error, e.reason}
+      e in ErlangError -> {:error, e.original}
+    after
+      File.rm(path)
+    end
+  end
+
   # `~/.ncc-scratch` does not exist until the first build creates it, and `df` on
   # a missing path exits non-zero.
   defp existing_ancestor("/"), do: "/"
@@ -413,6 +470,8 @@ defmodule Portal.Builder do
   # the worker container environment expected by apps/ncc_worker.
   @spec build_docker_args(map(), Path.t(), Path.t(), Path.t()) :: [String.t()]
   def build_docker_args(job, work_dir, output_dir, files_dir) do
+    scratch = Path.dirname(work_dir)
+
     base = [
       "run",
       "--rm",
@@ -422,7 +481,16 @@ defmodule Portal.Builder do
       "--user",
       run_as_user(),
       "--cap-drop=ALL",
-      "--security-opt=no-new-privileges"
+      "--security-opt=no-new-privileges",
+      # The image is the root filesystem and nothing may change it: a package
+      # that writes outside the mounts gets EROFS. /tmp and ~/.cache are the
+      # two places the toolchain legitimately writes, and they are bound to
+      # per-run scratch below.
+      "--read-only",
+      # A runaway `make -j` or a fork bomb dies here rather than exhausting the
+      # host's pid table.
+      "--pids-limit",
+      "4096"
     ]
 
     limits = resource_limits()
@@ -432,6 +500,11 @@ defmodule Portal.Builder do
         ["--mount", "type=bind,source=#{work_dir},target=/work"],
         ["--mount", "type=bind,source=#{output_dir},target=/out"],
         ["--mount", "type=bind,source=#{files_dir},target=/files"],
+        # Per-run, disk-backed, removed by cleanup/1 with the rest of the run.
+        # Not tmpfs: that is RAM, and `mix firmware` (fwup, mksquashfs,
+        # fakeroot) puts whole rootfs images in /tmp.
+        ["--mount", "type=bind,source=#{Path.join(scratch, "tmp")},target=/tmp"],
+        ["--mount", "type=bind,source=#{Path.join(scratch, "cache")},target=/home/nerves/.cache"],
         ["--mount", "type=bind,source=#{nerves_cache()},target=/home/nerves/.nerves"],
         ["--mount", "type=bind,source=#{hex_cache()},target=/hex-cache"],
         build_cache_mount(job)
