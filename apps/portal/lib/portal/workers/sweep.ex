@@ -338,7 +338,8 @@ defmodule Portal.Workers.Sweep do
 
     with root when is_binary(root) <- root,
          packages = Path.join(root, "packages"),
-         true <- File.dir?(packages) do
+         :ok <- real_dir(root),
+         :ok <- real_dir(packages) do
       files = tarballs(packages)
       total = files |> Enum.map(& &1.size) |> Enum.sum()
 
@@ -348,12 +349,37 @@ defmodule Portal.Workers.Sweep do
         files
         |> Enum.sort_by(& &1.mtime)
         |> evict_until(total - max)
-        |> delete_sized(opts, "hex tarball")
+        |> delete_sized(root, opts, "hex tarball")
       end
     else
       _ -> empty()
     end
   end
+
+  # `File.dir?/1` and `File.ls/1` both follow a symlink, so they cannot be the
+  # gate: a build can `rm -rf /hex-cache/packages && ln -s / /hex-cache/packages`
+  # (or swap the whole cache root the same way, if it ever owns the parent), and
+  # the walk below would then evict the oldest files on the host. Only a real
+  # directory, as `File.lstat/2` sees it, is ever swept.
+  defp real_dir(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} ->
+        :ok
+
+      {:error, :enoent} ->
+        :error
+
+      other ->
+        Logger.warning(
+          "Sweep skipping hex cache: #{path} is not a real directory (#{inspect(lstat_type(other))})"
+        )
+
+        :error
+    end
+  end
+
+  defp lstat_type({:ok, %File.Stat{type: type}}), do: type
+  defp lstat_type({:error, reason}), do: reason
 
   # Every tarball under packages/, with size and mtime, found by hand-walking
   # the tree rather than `Path.wildcard/1` + `File.stat/2`.
@@ -412,11 +438,17 @@ defmodule Portal.Workers.Sweep do
   # `delete_all/3` runs `du` per path to learn a size it does not have. Here
   # the sizes come from the stat that chose the files, so a bulk eviction of
   # thousands of tarballs does not fork thousands of `du`s.
-  defp delete_sized(files, opts, label) do
+  #
+  # The walk that chose these files ran a while ago, and a build may have
+  # swapped a directory on the path for a symlink since. Re-checking the whole
+  # chain immediately before each unlink narrows that window to the gap
+  # between two syscalls; `File.rm/1` then unlinks the one name it is given
+  # and never recurses.
+  defp delete_sized(files, root, opts, label) do
     dry_run? = Keyword.get(opts, :dry_run, false)
 
     Enum.reduce(files, empty(), fn %{path: path, size: bytes}, acc ->
-      case maybe_remove(path, dry_run?) do
+      case remove_cached_file(root, path, dry_run?) do
         :ok ->
           Logger.info("Sweep removed #{label} #{Path.basename(path)} (#{mb(bytes)} MB)")
           %{count: acc.count + 1, bytes: acc.bytes + bytes}
@@ -427,6 +459,38 @@ defmodule Portal.Workers.Sweep do
       end
     end)
   end
+
+  defp remove_cached_file(root, path, dry_run?) do
+    cond do
+      not still_inside?(root, path) -> {:error, :path_changed_under_sweep}
+      dry_run? -> :ok
+      true -> rm_file(path)
+    end
+  end
+
+  # Every directory from `root` down to the file's parent is still a real
+  # directory, and the file itself is still a regular file.
+  defp still_inside?(root, path) do
+    rel = Path.relative_to(path, root)
+
+    if rel == path or rel in [".", ""] or ".." in Path.split(rel) do
+      false
+    else
+      parents =
+        rel
+        |> Path.split()
+        |> Enum.drop(-1)
+        |> Enum.scan(root, &Path.join(&2, &1))
+
+      Enum.all?([root | parents], &(lstat_type(File.lstat(&1)) == :directory)) and
+        lstat_type(File.lstat(path)) == :regular
+    end
+  end
+
+  # Paths come from an lstat walk of the configured hex cache, re-checked by
+  # `still_inside?/2` just before this call. `File.rm/1` unlinks one name.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp rm_file(path), do: File.rm(path)
 
   defp configured_hex_cache_max_bytes do
     :portal
