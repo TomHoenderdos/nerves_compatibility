@@ -22,6 +22,15 @@ defmodule Portal.Precompiled.ManifestsTest do
     assert Manifests.read(String.duplicate("0", 64)) == :error
   end
 
+  test "store repairs a blob that was already present with the wrong bytes" do
+    sha = Base.encode16(:crypto.hash(:sha256, "hello"), case: :lower)
+    File.mkdir_p!(ArtifactStore.path())
+    File.write!(ArtifactStore.blob_path(sha), "wrong bytes")
+
+    assert {:ok, ^sha} = Manifests.store("hello")
+    assert {:ok, "hello"} = Manifests.read(sha)
+  end
+
   test "packages_with_precompiled_files lists only packages with stored files" do
     result = ingest_with_artifact()
     assert result["package"]["name"] in Catalog.packages_with_precompiled_files()

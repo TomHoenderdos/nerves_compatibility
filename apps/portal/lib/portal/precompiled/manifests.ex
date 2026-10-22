@@ -18,32 +18,27 @@ defmodule Portal.Precompiled.Manifests do
   @spec store(binary()) :: {:ok, String.t()} | {:error, term()}
   def store(bytes) do
     sha = Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+    tmp = Path.join(System.tmp_dir!(), "manifest-#{sha}-#{System.unique_integer([:positive])}")
 
-    if ArtifactStore.present?(sha) do
-      {:ok, sha}
-    else
-      tmp = Path.join(System.tmp_dir!(), "manifest-#{sha}-#{System.unique_integer([:positive])}")
+    case File.write(tmp, bytes) do
+      :ok ->
+        try do
+          case ArtifactStore.put(sha, tmp) do
+            {:ok, _} ->
+              {:ok, sha}
 
-      case File.write(tmp, bytes) do
-        :ok ->
-          try do
-            case ArtifactStore.put(sha, tmp) do
-              {:ok, _} ->
-                {:ok, sha}
-
-              {:error, reason} ->
-                cleanup_tmp(tmp)
-                {:error, reason}
-            end
-          rescue
-            e ->
+            {:error, reason} ->
               cleanup_tmp(tmp)
-              reraise e, __STACKTRACE__
+              {:error, reason}
           end
+        rescue
+          e ->
+            cleanup_tmp(tmp)
+            reraise e, __STACKTRACE__
+        end
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
