@@ -70,14 +70,22 @@ defmodule PortalWeb.CatalogApiController do
 
   def precompiled_root(conn, _params) do
     case Root.load() do
-      {:ok, body} -> conn |> put_cache_headers() |> send_json_bytes(body)
-      {:error, :no_root} -> send_resp(conn, 404, "Not Found")
+      {:ok, body} ->
+        sha = Base.encode16(:crypto.hash(:sha256, body), case: :lower)
+
+        conn
+        |> put_cache_headers()
+        |> put_resp_header("etag", ~s("#{sha}"))
+        |> send_json_bytes(body)
+
+      {:error, :no_root} ->
+        conn |> put_status(:not_found) |> json(%{error: "no root document"})
     end
   end
 
   def precompiled_batch(conn, _params) do
     case Batches.latest() do
-      nil -> send_resp(conn, 503, "no signed batch yet")
+      nil -> conn |> put_status(:service_unavailable) |> json(%{error: "no signed batch yet"})
       batch -> serve_batch(conn, batch)
     end
   end
@@ -87,7 +95,7 @@ defmodule PortalWeb.CatalogApiController do
          %{} = batch <- Batches.get(sequence) do
       serve_batch(conn, batch)
     else
-      _ -> send_resp(conn, 404, "Not Found")
+      _ -> conn |> put_status(:not_found) |> json(%{error: "batch not found"})
     end
   end
 
