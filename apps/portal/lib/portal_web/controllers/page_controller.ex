@@ -133,6 +133,27 @@ defmodule PortalWeb.PageController do
     end
   end
 
+  def admin_revoke_run(conn, params) do
+    case require_admin(conn) do
+      {:ok, conn, _user} ->
+        run_id = params["run_id"]
+
+        conn =
+          case run_id && Portal.Catalog.revoke_run(run_id) do
+            {:ok, _run} ->
+              put_flash(conn, :info, "Run #{run_id} revoked; the next batch drops its files.")
+
+            _ ->
+              put_flash(conn, :error, "No run #{run_id}.")
+          end
+
+        redirect(conn, to: ~p"/admin/maintenance")
+
+      {:error, conn} ->
+        conn
+    end
+  end
+
   def admin_argus_settings(conn, params) do
     case require_admin(conn) do
       {:ok, conn, user} ->
@@ -623,7 +644,11 @@ defmodule PortalWeb.PageController do
     [
       update_check: Portal.Admin.update_check_status(),
       sweeps: Enum.map(Portal.BulkRebuild.recent(), &{&1, Portal.BulkRebuild.status(&1.id)}),
-      bulk_targets: Portal.BulkRebuild.targets()
+      bulk_targets: Portal.BulkRebuild.targets(),
+      precompiled: %{
+        key_loaded?: match?({:ok, _}, Portal.Precompiled.Keys.load()),
+        batch: Portal.Precompiled.Batches.latest()
+      }
     ]
   end
 

@@ -222,4 +222,57 @@
       </p>
     </div>
   </section>
+
+  <section class="card mt-6 border border-base-300 bg-base-100 shadow-sm">
+    <div class="card-body">
+      <h2 class="card-title">Precompiled signing</h2>
+      <p class="mt-1 text-sm leading-6 text-base-content/70">
+        Batches are signed on a schedule and name every package with precompiled files.
+        Revoking a run drops the files it built from the next batch, everywhere they were carried.
+      </p>
+
+      <dl class="mt-5 grid gap-3 sm:grid-cols-2">
+        <div>
+          <dt class="text-sm text-base-content/60">Signing key</dt>
+          <dd class="text-sm">
+            {if @precompiled.key_loaded?,
+              do: "loaded",
+              else: "no signing key (PRECOMPILED_SIGNING_KEY unset or unreadable)"}
+          </dd>
+        </div>
+        <div>
+          <dt class="text-sm text-base-content/60">Latest batch</dt>
+          <dd class="text-sm">
+            <%= if @precompiled.batch do %>
+              sequence {@precompiled.batch.sequence}, {@precompiled.batch.manifest_count} manifests,
+              issued {format_datetime(@precompiled.batch.issued_at)},
+              expires {format_datetime(@precompiled.batch.expires_at)}
+            <% else %>
+              no batch yet
+            <% end %>
+          </dd>
+        </div>
+      </dl>
+
+      <form
+        id="revoke-run-form"
+        method="post"
+        action={~p"/admin/maintenance/revoke-run"}
+        class="mt-5 flex flex-wrap items-center gap-2"
+      >
+        <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+        <label class="flex items-center gap-2 text-sm">
+          Revoke run
+          <input
+            type="text"
+            name="run_id"
+            placeholder="run id"
+            required
+            class="input input-bordered input-sm"
+          />
+        </label>
+        <button type="submit" class="btn btn-sm btn-error">Revoke</button>
+      </form>
+    </div>
+  </section>
 </.admin_layout>
