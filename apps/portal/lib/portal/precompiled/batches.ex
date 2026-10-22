@@ -11,11 +11,22 @@ defmodule Portal.Precompiled.Batches do
 
   @ttl_days 7
 
-  @spec build_and_sign() :: {:ok, Batch.t()} | {:error, :no_signing_key | term()}
+  @spec build_and_sign() ::
+          {:ok, Batch.t()} | {:error, :no_signing_key | :signing_key_unreadable | term()}
   def build_and_sign do
     case Keys.load() do
-      {:ok, key} -> do_build(key)
-      {:error, _} -> {:error, :no_signing_key}
+      {:ok, key} ->
+        do_build(key)
+
+      {:error, :no_key} ->
+        {:error, :no_signing_key}
+
+      {:error, :unreadable} ->
+        Logger.error(
+          "Precompiled signing key at #{inspect(Keys.key_path())} is configured but unreadable"
+        )
+
+        {:error, :signing_key_unreadable}
     end
   end
 
