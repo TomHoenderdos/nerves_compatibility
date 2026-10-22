@@ -526,7 +526,11 @@ defmodule Portal.Workers.BuildTest do
         max_attempts: 3
       }
 
-      assert {:snooze, 900} = Build.perform(job)
+      log = capture_log(fn -> assert {:snooze, 900} = Build.perform(job) end)
+
+      # The log line is the only thing an operator sees; it names the version
+      # like its `:insufficient_disk` sibling does.
+      assert log =~ "refusing to build noexec 1.0.0"
 
       # Snoozing does not excuse leaking: nothing will read this tree.
       assert File.ls!(root) == []

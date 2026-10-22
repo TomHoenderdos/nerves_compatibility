@@ -180,7 +180,10 @@ defmodule Portal.Workers.Build do
         # resolves itself: snooze so the request stays :queued and the log line
         # is the thing an operator sees, rather than every scan request on the
         # host turning :error inside an hour.
-        Logger.error("Scratch root cannot execute files (noexec?); refusing to build #{package}")
+        Logger.error(
+          "Scratch root cannot execute files (noexec?); refusing to build #{package} #{version}"
+        )
+
         Builder.cleanup(run_id)
         {:snooze, 900}
 
