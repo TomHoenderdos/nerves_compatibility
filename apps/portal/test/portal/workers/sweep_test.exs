@@ -35,7 +35,8 @@ defmodule Portal.Workers.SweepTest do
         max_age_ms: :timer.hours(3),
         live_run_ids: MapSet.new(),
         running_containers: MapSet.new(),
-        build_cache: nil
+        build_cache: nil,
+        hex_cache: nil
       ],
       extra
     )
@@ -353,6 +354,71 @@ defmodule Portal.Workers.SweepTest do
                )
 
       assert File.exists?(claimed)
+    end
+  end
+
+  describe "hex cache size bound" do
+    # The cache is `packages/hexpm/<name>-<version>.tar` next to `cache.ets`.
+    # Tarballs are content-addressed by Hex and re-fetched on demand, so
+    # evicting the oldest is safe; `cache.ets` is the registry and never goes.
+    #
+    # Lives in its own tmp dir rather than under `root`: `sweep_scratch` would
+    # otherwise see a `hex` dir inside the scratch root and warn about it as
+    # an unrecognized orphan.
+    setup do
+      hex = Path.join(System.tmp_dir!(), "sweep-hex-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(hex, "packages/hexpm"))
+      File.write!(Path.join(hex, "cache.ets"), "registry")
+      on_exit(fn -> File.rm_rf(hex) end)
+      %{hex: hex}
+    end
+
+    defp tarball(hex, name, bytes, age_hours) do
+      path = Path.join(hex, "packages/hexpm/#{name}.tar")
+      File.write!(path, String.duplicate("x", bytes))
+      File.touch!(path, div(age(age_hours), 1000))
+      path
+    end
+
+    test "evicts oldest-modified tarballs until under the bound", %{root: root, hex: hex} do
+      old = tarball(hex, "old-1.0.0", 400, 48)
+      mid = tarball(hex, "mid-1.0.0", 400, 24)
+      new = tarball(hex, "new-1.0.0", 400, 1)
+
+      Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 900))
+
+      refute File.exists?(old)
+      assert File.exists?(mid)
+      assert File.exists?(new)
+      assert File.exists?(Path.join(hex, "cache.ets"))
+    end
+
+    test "touches nothing under the bound", %{root: root, hex: hex} do
+      a = tarball(hex, "a-1.0.0", 100, 48)
+      Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 1_000))
+      assert File.exists?(a)
+    end
+
+    test "dry_run reports without deleting", %{root: root, hex: hex} do
+      old = tarball(hex, "old-1.0.0", 400, 48)
+      tarball(hex, "new-1.0.0", 400, 1)
+
+      # The whole point of dry_run is the log, and the suite runs at :warning.
+      Logger.configure(level: :info)
+      on_exit(fn -> Logger.configure(level: :warning) end)
+
+      log =
+        capture_log(fn ->
+          Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 500, dry_run: true))
+        end)
+
+      assert File.exists?(old)
+      assert log =~ "old-1.0.0.tar"
+    end
+
+    test "a missing hex cache is a no-op", %{root: root} do
+      assert :ok =
+               Sweep.run(opts(root, hex_cache: Path.join(root, "nope"), hex_cache_max_bytes: 1))
     end
   end
 end
