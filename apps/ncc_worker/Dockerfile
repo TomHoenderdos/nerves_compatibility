@@ -60,8 +60,11 @@ RUN set -eux; \
     cd /; \
     rm -rf /tmp/argus_warm /tmp/argus-warm-*
 
-# Create mount points
-RUN sudo mkdir -p /work /out /hex-cache /home/nerves/.nerves
+# Create every directory the portal bind-mounts. The container runs
+# --read-only; runc creates mount points before the root goes read-only, so
+# a missing one would probably still work, but pre-creating costs nothing
+# and keeps the set of mounts in one place. /tmp exists in the base image.
+RUN sudo mkdir -p /work /out /files /tmp /hex-cache /home/nerves/.nerves /home/nerves/.cache /build-cache
 
 # Create app directory
 WORKDIR /app
@@ -91,11 +94,13 @@ ENV NCC_INPUT=/work/input.json
 # Create bogus ssh keys so that default config works
 RUN ssh-keygen -t rsa -N "" -f $HOME/.ssh/id_rsa
 
-# Make the nerves home and app dir usable by any runtime uid. The runner passes
-# --user $(id -u):$(id -g) so the container process matches the host user for
-# bind-mount ownership, which means it won't be the nerves user baked into the
-# image and needs read/write access to the Mix archives, Elixir install, etc.
-RUN sudo chmod -R a+rwX /home/nerves /app
+# Make the nerves home and app dir readable by any runtime uid. The runner
+# passes --user $(id -u):$(id -g) (or 0:0 on a rootless daemon), so the
+# container process is not the nerves user baked into the image and needs
+# to read the Mix archives, the Elixir install and the worker escript.
+# Readable only: the root filesystem is mounted read-only by Portal.Builder,
+# and the two places the toolchain writes (/tmp, ~/.cache) are bind mounts.
+RUN sudo chmod -R a+rX /home/nerves /app
 
 # Set entrypoint
 ENTRYPOINT ["/app/apps/ncc_worker/ncc_worker"]

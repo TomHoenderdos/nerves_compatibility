@@ -74,6 +74,8 @@ resolved by the host daemon and must be a path the daemon can see:
 | `NCC_SCRATCH_MAX_AGE_HOURS` | Age after which `Portal.Workers.Sweep` treats a scratch dir as orphaned; default `3` |
 | `NCC_BUILD_CONCURRENCY` | How many Nerves targets one build may compile at once. Unset means 1 (serial). Raise it together with `NCC_BUILD_CPUS`: the targets share that cap, and the win comes from overlapping the single-threaded stretches (release assembly, squashfs, fwup). Capped at 4 in code. See the note below |
 
+The scratch filesystem must not be mounted `noexec`: the container's `/tmp` is bound from it and fakeroot executes helpers there.
+
 ### Picking a concurrency
 
 Targets each get their own `MIX_BUILD_PATH` and `MIX_DEPS_PATH`, so the
