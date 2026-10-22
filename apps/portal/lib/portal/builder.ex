@@ -310,12 +310,26 @@ defmodule Portal.Builder do
   """
   @spec running_containers() :: MapSet.t(String.t())
   def running_containers do
+    case fetch_running_containers() do
+      {:ok, names} -> names
+      :error -> MapSet.new()
+    end
+  end
+
+  @doc """
+  Like `running_containers/0`, but tells a failed docker lookup (`:error`) apart
+  from "nothing running". `Portal.Workers.Sweep` needs that for the hex cache,
+  which it may only touch while no build is running and must leave alone when
+  it cannot tell.
+  """
+  @spec fetch_running_containers() :: {:ok, MapSet.t(String.t())} | :error
+  def fetch_running_containers do
     case System.cmd("docker", ["ps", "--format", "{{.Names}}"], stderr_to_stdout: true) do
-      {out, 0} -> out |> String.split("\n", trim: true) |> MapSet.new(&String.trim/1)
-      {_out, _status} -> MapSet.new()
+      {out, 0} -> {:ok, out |> String.split("\n", trim: true) |> MapSet.new(&String.trim/1)}
+      {_out, _status} -> :error
     end
   rescue
-    _ -> MapSet.new()
+    _ -> :error
   end
 
   @doc """

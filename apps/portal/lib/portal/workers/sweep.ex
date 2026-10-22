@@ -34,6 +34,14 @@ defmodule Portal.Workers.Sweep do
   bound. At the cache root, regular files other than `cache.ets` and
   `hex.config` go once older than the scratch max age.
 
+  The hex sweep runs only while no build container (`ncc-*`) is running, and
+  does nothing if docker cannot say. Builds are the only writers of
+  `/hex-cache`, and a concurrent writer could otherwise race every
+  lstat-then-delete here. The lookup is repeated after the walk, just before
+  the first deletion. The guarantee is exactly "no build was running when the
+  walk started and when deletion started": a build starting during the
+  deletions themselves is not excluded, and is left to the lstat checks.
+
   Everything under `/hex-cache` is attacker-controlled, the cache root and
   `packages/` included, so the hex sweep never follows a symlink: both must be
   real directories by `File.lstat/2`, and nothing but a regular file is ever
@@ -103,7 +111,9 @@ defmodule Portal.Workers.Sweep do
     * `:max_age_ms` — scratch retention (and hex cache root junk), defaults to 3h
     * `:hex_cache_max_bytes` — hex cache retention, defaults to 20 GiB
     * `:live_run_ids` — `MapSet` of sanitized run ids with a live ingest job
-    * `:running_containers` — `MapSet` of docker container names
+    * `:running_containers` — `MapSet` of docker container names, `:error`
+      for a failed docker lookup, or a zero-arity function returning either
+      (called for each lookup)
     * `:current_digest` — digest the worker image resolves to right now
     * `:dry_run` — report what would go, delete nothing
 
@@ -136,7 +146,7 @@ defmodule Portal.Workers.Sweep do
 
     with {:ok, names} <- list_dir(root),
          {:ok, live} <- live_run_ids(opts) do
-      containers = Keyword.get_lazy(opts, :running_containers, &Builder.running_containers/0)
+      containers = scratch_containers(opts)
 
       names
       |> Enum.filter(&scratch_dead?(&1, now, max_age, live, containers))
@@ -146,6 +156,20 @@ defmodule Portal.Workers.Sweep do
       _ -> empty()
     end
   end
+
+  # A failed lookup is an empty set here, as `Builder.running_containers/0`
+  # has always answered: the scratch age floor makes that safe. Only the hex
+  # sweep fails closed.
+  defp scratch_containers(opts) do
+    case Keyword.get_lazy(opts, :running_containers, &Builder.running_containers/0) do
+      fun when is_function(fun, 0) -> scratch_set(fun.())
+      other -> scratch_set(other)
+    end
+  end
+
+  defp scratch_set(%MapSet{} = names), do: names
+  defp scratch_set({:ok, %MapSet{} = names}), do: names
+  defp scratch_set(_), do: MapSet.new()
 
   defp scratch_dead?(name, now, max_age, live, containers) do
     cond do
@@ -348,6 +372,9 @@ defmodule Portal.Workers.Sweep do
   # belongs to a build that is already over.
   @hex_in_use_ms :timer.hours(2)
 
+  # How far past `now` a timestamp may be and still count as "just used".
+  @future_tolerance_ms :timer.minutes(5)
+
   # The only regular files at the cache root that Hex itself owns. Anything
   # else there is either a `.cache.ets.<n>` temp left by a failed
   # `HexHome.publish` or something a build wrote to dodge the bound.
@@ -360,20 +387,77 @@ defmodule Portal.Workers.Sweep do
   defp sweep_hex_cache(opts) do
     root = Keyword.get_lazy(opts, :hex_cache, &Builder.hex_cache/0)
 
+    # This guard, not the lstat checks below, is what makes the hex sweep safe.
+    # Erlang has no `openat`/`O_NOFOLLOW`/`unlinkat`, so every lstat-then-act
+    # here has a gap a concurrent writer can race: flip a `packages/`
+    # subdirectory to a symlink between the check and the `File.ls`/`File.rm`,
+    # and Sweep walks or unlinks on the host. Nothing but a build container
+    # writes `/hex-cache`, so with no build running there is no one to race.
+    # The lstat checks and `still_inside?/2` stay as defence in depth.
     with root when is_binary(root) <- root,
+         :ok <- no_builds_running(opts),
          :ok <- real_dir(root),
          {:ok, packages?} <- packages_dir(Path.join(root, "packages")) do
+      root_files = hex_root_files(root)
+      package_files = if packages?, do: walk(Path.join(root, "packages")), else: []
+
+      # Sampled after the walk, not before: a file written during the walk must
+      # compare as just-used, not as "in the future".
       now = Keyword.get_lazy(opts, :now_ms, &now_ms/0)
+      junk = hex_root_junk(root_files, now, opts)
+      evict = hex_evictions(package_files, now, opts)
 
-      junk = sweep_hex_root(root, now, opts)
+      # A build can start after the first check. Ask again right before the
+      # first unlink; the guarantee is "no build was running when the walk
+      # started and when deletion started", and not more than that.
+      case no_builds_running(opts) do
+        :ok ->
+          junk
+          |> delete_sized(root, opts, "hex cache junk")
+          |> add(delete_sized(evict, root, opts, "hex cache file"))
 
-      if packages?,
-        do: add(junk, sweep_hex_packages(root, now, opts)),
-        else: junk
+        :error ->
+          empty()
+      end
     else
       _ -> empty()
     end
   end
+
+  # Build containers are `"ncc-" <> safe_name(run_id)` (`Builder.container_name/1`).
+  defp no_builds_running(opts) do
+    case container_lookup(opts) do
+      {:ok, names} ->
+        case Enum.count(names, &String.starts_with?(&1, "ncc-")) do
+          0 ->
+            :ok
+
+          n ->
+            Logger.info("Sweep skipping hex cache: #{n} build container(s) running")
+            :error
+        end
+
+      :error ->
+        # Unknown means a build may be running, and then the race is open.
+        Logger.warning("Sweep skipping hex cache: could not list running containers")
+        :error
+    end
+  end
+
+  # `:running_containers` is a `MapSet`, `:error` for a failed lookup, or a
+  # zero-arity function returning either (so a test can change the answer
+  # between the two checks). The default asks docker, and unlike
+  # `Builder.running_containers/0` tells a failure apart from "none running".
+  defp container_lookup(opts) do
+    case Keyword.get_lazy(opts, :running_containers, &Builder.fetch_running_containers/0) do
+      fun when is_function(fun, 0) -> normalize_lookup(fun.())
+      other -> normalize_lookup(other)
+    end
+  end
+
+  defp normalize_lookup(%MapSet{} = names), do: {:ok, names}
+  defp normalize_lookup({:ok, %MapSet{}} = ok), do: ok
+  defp normalize_lookup(_), do: :error
 
   # A missing `packages/` is a fresh cache: the root can still be tidied. Any
   # other non-directory there is a build tampering with the cache, and then
@@ -388,35 +472,35 @@ defmodule Portal.Workers.Sweep do
     end
   end
 
-  defp sweep_hex_root(root, now, opts) do
-    max_age = Keyword.get(opts, :max_age_ms, configured_max_age_ms())
-
+  defp hex_root_files(root) do
     case list_dir(root) do
       {:ok, names} ->
         names
         |> Enum.reject(&(&1 in @hex_root_keep))
-        |> Enum.flat_map(&regular_file(Path.join(root, &1), now))
-        |> Enum.filter(&(now - &1.used_ms > max_age))
-        |> delete_sized(root, opts, "hex cache junk")
+        |> Enum.flat_map(&regular_file(Path.join(root, &1)))
 
       :error ->
-        empty()
+        []
     end
   end
 
-  defp sweep_hex_packages(root, now, opts) do
+  defp hex_root_junk(files, now, opts) do
+    max_age = Keyword.get(opts, :max_age_ms, configured_max_age_ms())
+    Enum.filter(files, &(now - last_used_ms(&1, now) > max_age))
+  end
+
+  defp hex_evictions(files, now, opts) do
     max = Keyword.get_lazy(opts, :hex_cache_max_bytes, &configured_hex_cache_max_bytes/0)
-    files = walk(Path.join(root, "packages"), now)
     total = files |> Enum.map(& &1.size) |> Enum.sum()
 
     if total <= max do
-      empty()
+      []
     else
       files
+      |> Enum.map(&Map.put(&1, :used_ms, last_used_ms(&1, now)))
       |> Enum.reject(&(now - &1.used_ms < @hex_in_use_ms))
       |> Enum.sort_by(& &1.used_ms)
       |> evict_until(total - max)
-      |> delete_sized(root, opts, "hex cache file")
     end
   end
 
@@ -459,44 +543,45 @@ defmodule Portal.Workers.Sweep do
   # never the target, so only a real `:directory` is descended into and only
   # a real `:regular` file is ever collected; a `:symlink` (file or
   # directory) is skipped outright — never followed, never deleted.
-  defp walk(dir, now) do
+  defp walk(dir) do
     case File.ls(dir) do
-      {:ok, names} ->
-        Enum.flat_map(names, fn name ->
-          path = Path.join(dir, name)
-
-          case File.lstat(path, time: :posix) do
-            {:ok, %File.Stat{type: :directory}} -> walk(path, now)
-            {:ok, %File.Stat{type: :regular} = stat} -> [cached_file(path, stat, now)]
-            _ -> []
-          end
-        end)
-
-      {:error, _reason} ->
-        []
+      {:ok, names} -> Enum.flat_map(names, &walk_entry(Path.join(dir, &1)))
+      {:error, _reason} -> []
     end
   end
 
-  defp regular_file(path, now) do
+  defp walk_entry(path) do
     case File.lstat(path, time: :posix) do
-      {:ok, %File.Stat{type: :regular} = stat} -> [cached_file(path, stat, now)]
+      {:ok, %File.Stat{type: :directory}} -> walk(path)
+      {:ok, %File.Stat{type: :regular} = stat} -> [cached_file(path, stat)]
       _ -> []
     end
   end
 
-  defp cached_file(path, stat, now),
-    do: %{path: path, size: stat.size, used_ms: last_used_ms(stat, now)}
+  defp regular_file(path) do
+    case File.lstat(path, time: :posix) do
+      {:ok, %File.Stat{type: :regular} = stat} -> [cached_file(path, stat)]
+      _ -> []
+    end
+  end
+
+  defp cached_file(path, stat),
+    do: %{path: path, size: stat.size, atime: stat.atime, mtime: stat.mtime}
 
   # Least-recently-used, approximately. Hex does not rewrite a cached tarball
   # on a cache hit (it gets a 304), so mtime alone is first-download order and
   # would evict the most-used tarballs first. atime is what a hit moves:
   # `relatime` updates it at most once a day, which is fine resolution for an
-  # hourly sweep. Either time in the future is something a build set by hand,
-  # since nothing legitimate writes one, and it counts as the epoch — evicted
-  # first — rather than letting a hostile file outrank every real tarball.
-  defp last_used_ms(%File.Stat{atime: atime, mtime: mtime}, now) do
+  # hourly sweep.
+  #
+  # A time a little past `now` is clock skew or a write that landed while the
+  # walk ran: it counts as just used. One further out than
+  # `@future_tolerance_ms` was set by hand, since nothing legitimate writes
+  # one, and counts as the epoch — evicted first — rather than letting a
+  # hostile file outrank every real tarball.
+  defp last_used_ms(%{atime: atime, mtime: mtime}, now) do
     ms = max(atime, mtime) * 1000
-    if ms > now, do: 0, else: ms
+    if ms > now + @future_tolerance_ms, do: 0, else: ms
   end
 
   # Oldest first, stop as soon as enough is gone. Returns the files, not just

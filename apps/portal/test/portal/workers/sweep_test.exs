@@ -551,6 +551,130 @@ defmodule Portal.Workers.SweepTest do
       assert {:ok, %File.Stat{type: :symlink}} = File.lstat(link)
     end
 
+    # Nothing but a build container writes /hex-cache. With none alive there
+    # is no one to swap a directory for a symlink mid-sweep, so the hex sweep
+    # runs only then.
+    test "skips the whole hex sweep while a build container is running", %{
+      root: root,
+      hex: hex
+    } do
+      old = tarball(hex, "old-1.0.0", 400, 48)
+      junk = hex_file(hex, "junk", 100, atime: posix_ago(5), mtime: posix_ago(5))
+      dead = scratch(root, "jason-1.4.1-#{age(9)}")
+
+      Logger.configure(level: :info)
+      on_exit(fn -> Logger.configure(level: :warning) end)
+
+      log =
+        capture_log(fn ->
+          Sweep.run(
+            opts(root,
+              hex_cache: hex,
+              hex_cache_max_bytes: 0,
+              running_containers: MapSet.new(["ncc-jason-1.4.1-123", "postgres"])
+            )
+          )
+        end)
+
+      assert File.exists?(old)
+      assert File.exists?(junk)
+      assert log =~ "Sweep skipping hex cache: 1 build container(s) running"
+      # The scratch sweep is unaffected: this dir belongs to no running build.
+      refute File.exists?(dead)
+    end
+
+    test "unrelated running containers do not stop the hex sweep", %{root: root, hex: hex} do
+      old = tarball(hex, "old-1.0.0", 400, 48)
+      junk = hex_file(hex, "junk", 100, atime: posix_ago(5), mtime: posix_ago(5))
+
+      Sweep.run(
+        opts(root,
+          hex_cache: hex,
+          hex_cache_max_bytes: 0,
+          running_containers: MapSet.new(["postgres", "umami"])
+        )
+      )
+
+      refute File.exists?(old)
+      refute File.exists?(junk)
+    end
+
+    # `:error` is a failed docker lookup. A build may be running, so fail closed.
+    test "a failed container lookup skips the hex sweep", %{root: root, hex: hex} do
+      old = tarball(hex, "old-1.0.0", 400, 48)
+      junk = hex_file(hex, "junk", 100, atime: posix_ago(5), mtime: posix_ago(5))
+      dead = scratch(root, "jason-1.4.1-#{age(9)}")
+
+      log =
+        capture_log(fn ->
+          Sweep.run(
+            opts(root, hex_cache: hex, hex_cache_max_bytes: 0, running_containers: :error)
+          )
+        end)
+
+      assert File.exists?(old)
+      assert File.exists?(junk)
+      assert log =~ "could not list running containers"
+      # The scratch path keeps its old behaviour: a failed lookup is an empty
+      # set there, and its age floor keeps that safe.
+      refute File.exists?(dead)
+    end
+
+    # A build that starts after the walk and before the deletes must still
+    # stop them. The lookup is asked again right before deleting.
+    test "a build starting during the walk stops the deletes", %{hex: hex} do
+      old = tarball(hex, "old-1.0.0", 400, 48)
+      junk = hex_file(hex, "junk", 100, atime: posix_ago(5), mtime: posix_ago(5))
+
+      # Counts calls: the first (before the walk) sees no build, the second
+      # (before deleting) sees one. A missing scratch root keeps the scratch
+      # sweep from consuming a call.
+      Process.put(:lookups, 0)
+
+      lookup = fn ->
+        n = Process.put(:lookups, Process.get(:lookups) + 1)
+        if n == 0, do: MapSet.new(), else: MapSet.new(["ncc-late-1.0.0-1"])
+      end
+
+      capture_log(fn ->
+        Sweep.run(
+          opts("/nonexistent/ncc-scratch",
+            hex_cache: hex,
+            hex_cache_max_bytes: 0,
+            running_containers: lookup
+          )
+        )
+      end)
+
+      assert Process.get(:lookups) == 2
+      assert File.exists?(old)
+      assert File.exists?(junk)
+    end
+
+    # Clock skew or a write landing during the walk can put a just-used file a
+    # little after `now`. That is "just used", not hostile.
+    test "a slightly future file is in use, a far-future one goes first", %{
+      root: root,
+      hex: hex
+    } do
+      soon =
+        hex_file(hex, "packages/hexpm/soon-1.0.0.tar", 400,
+          atime: posix_ago(48),
+          mtime: div(@now, 1000) + 60
+        )
+
+      far = posix_ago(-24)
+      evil = hex_file(hex, "packages/hexpm/evil-1.0.0.tar", 400, atime: far, mtime: far)
+      old = tarball(hex, "old-1.0.0", 400, 48)
+
+      Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 500))
+
+      assert File.exists?(soon)
+      refute File.exists?(evil)
+      # Over the bound still (soon + old = 800), but old is the only candidate.
+      refute File.exists?(old)
+    end
+
     test "a missing hex cache is a no-op", %{root: root} do
       assert :ok =
                Sweep.run(opts(root, hex_cache: Path.join(root, "nope"), hex_cache_max_bytes: 1))
