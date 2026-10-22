@@ -99,6 +99,7 @@ defmodule PortalWeb.Router do
     post "/admin/update-check", PageController, :admin_update_check
     post "/admin/bulk-rebuild", PageController, :admin_bulk_rebuild
     post "/admin/bulk-rebuild/:id/cancel", PageController, :admin_cancel_sweep
+    post "/admin/maintenance/revoke-run", PageController, :admin_revoke_run
     post "/admin/argus", PageController, :admin_argus_settings
     get "/register", PageController, :register
     post "/register", PageController, :create_account

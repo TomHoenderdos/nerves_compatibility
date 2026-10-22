@@ -545,4 +545,25 @@ defmodule PortalWeb.PageControllerTest do
 
     assert html_response(conn, 200) =~ "Tick at least one analysis"
   end
+
+  test "maintenance shows precompiled batch state", %{conn: conn} do
+    {conn, _admin} = signed_in_admin(conn, "admin_precompiled_state")
+
+    html = conn |> get(~p"/admin/maintenance") |> html_response(200)
+    assert html =~ "Precompiled signing"
+    assert html =~ "no signing key"
+    assert html =~ "no batch yet"
+  end
+
+  test "revoke-run revokes and redirects", %{conn: conn} do
+    result = Portal.PrecompiledFixtures.ingest_with_artifact()
+    {conn, _admin} = signed_in_admin(conn, "admin_revoke_run")
+
+    conn = post(conn, ~p"/admin/maintenance/revoke-run", %{"run_id" => result["run_id"]})
+    assert redirected_to(conn) == ~p"/admin/maintenance"
+    assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "revoked"
+
+    conn = post(conn, ~p"/admin/maintenance/revoke-run", %{"run_id" => "nope"})
+    assert Phoenix.Flash.get(conn.assigns.flash, :error)
+  end
 end
