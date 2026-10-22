@@ -33,16 +33,18 @@ defmodule Portal.Precompiled.Envelope do
 
   def verify(%{"payload" => p, "signatures" => sigs}, keys, threshold)
       when is_binary(p) and is_list(sigs) and is_integer(threshold) and threshold > 0 do
-    with {:ok, payload} <- Base.url_decode64(p, padding: false) do
-      valid =
-        sigs
-        |> Enum.filter(&valid_signature?(&1, payload, keys))
-        |> Enum.map(& &1["keyid"])
-        |> Enum.uniq()
+    case Base.url_decode64(p, padding: false) do
+      {:ok, payload} ->
+        valid =
+          sigs
+          |> Enum.filter(&valid_signature?(&1, payload, keys))
+          |> Enum.map(& &1["keyid"])
+          |> Enum.uniq()
 
-      if length(valid) >= threshold, do: {:ok, payload}, else: {:error, :below_threshold}
-    else
-      _ -> {:error, :bad_envelope}
+        if length(valid) >= threshold, do: {:ok, payload}, else: {:error, :below_threshold}
+
+      _ ->
+        {:error, :bad_envelope}
     end
   end
 
