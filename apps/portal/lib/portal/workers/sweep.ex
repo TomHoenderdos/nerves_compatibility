@@ -21,11 +21,23 @@ defmodule Portal.Workers.Sweep do
   It leaves `nerves_cache` alone: that is bounded by the number of Nerves
   systems rather than by time, and evicting one costs a several-hundred-megabyte
   re-download in the middle of a build. `hex_cache/packages` it keeps under a
-  size bound (`hex_cache_max_bytes`, `NCC_HEX_CACHE_MAX_GB`), oldest-modified
-  tarball first: the cache is read-write inside every build container, so a
-  package that depends on everything on Hex could otherwise fill the disk. An
-  evicted tarball is simply fetched again. mtime, not atime: the hosts mount
-  with `relatime`, which makes atime unreliable for this.
+  size bound (`hex_cache_max_bytes`, `NCC_HEX_CACHE_MAX_GB`): the cache is
+  read-write inside every build container, so a package that depends on
+  everything on Hex could otherwise fill the disk. An evicted tarball is simply
+  fetched again. Every regular file under `packages/` counts, whatever its name,
+  and the least recently used goes first, by `max(atime, mtime)`: Hex does not
+  rewrite a cached tarball on a cache hit (a 304), so mtime alone is
+  first-download order, while `relatime` still moves atime at least daily — fine
+  resolution for an hourly sweep. A timestamp in the future counts as the epoch,
+  so a hostile file cannot push every real tarball out ahead of itself. Nothing
+  used in the last two hours (the build wall clock) is evicted, even over the
+  bound. At the cache root, regular files other than `cache.ets` and
+  `hex.config` go once older than the scratch max age.
+
+  Everything under `/hex-cache` is attacker-controlled, the cache root and
+  `packages/` included, so the hex sweep never follows a symlink: both must be
+  real directories by `File.lstat/2`, and nothing but a regular file is ever
+  removed.
 
   ## Why queue `:ingest`
 
@@ -88,7 +100,7 @@ defmodule Portal.Workers.Sweep do
     * `:now_ms` — defaults to `System.system_time(:millisecond)`
     * `:scratch_root` / `:build_cache` / `:hex_cache` — default to the
       `Portal.Builder` config
-    * `:max_age_ms` — scratch retention, defaults to 3h
+    * `:max_age_ms` — scratch retention (and hex cache root junk), defaults to 3h
     * `:hex_cache_max_bytes` — hex cache retention, defaults to 20 GiB
     * `:live_run_ids` — `MapSet` of sanitized run ids with a live ingest job
     * `:running_containers` — `MapSet` of docker container names
@@ -329,30 +341,82 @@ defmodule Portal.Workers.Sweep do
 
   @default_hex_cache_max_bytes 20 * 1024 * 1024 * 1024
 
-  # Only `packages/` is a candidate: `cache.ets` at the root is the signed
-  # registry, and losing it costs every build a refetch of the registry
-  # rather than of one tarball.
+  # Never evict a file used this recently, even if that leaves the cache over
+  # its bound. A build that just got a 304 for a tarball reads it from here a
+  # moment later; deleting it in between fails that build. Two hours is the
+  # docker wall clock (`Portal.Builder.total_timeout_ms/0`), so anything older
+  # belongs to a build that is already over.
+  @hex_in_use_ms :timer.hours(2)
+
+  # The only regular files at the cache root that Hex itself owns. Anything
+  # else there is either a `.cache.ets.<n>` temp left by a failed
+  # `HexHome.publish` or something a build wrote to dodge the bound.
+  @hex_root_keep ["cache.ets", "hex.config"]
+
+  # Everything under `packages/` counts toward the bound, whatever its name, so
+  # a build cannot dodge it with `packages/hexpm/x.bin`. At the root only
+  # `cache.ets` (the signed registry) and `hex.config` are kept for good; other
+  # regular files there go once they are older than the scratch max age.
   defp sweep_hex_cache(opts) do
     root = Keyword.get_lazy(opts, :hex_cache, &Builder.hex_cache/0)
-    max = Keyword.get_lazy(opts, :hex_cache_max_bytes, &configured_hex_cache_max_bytes/0)
 
     with root when is_binary(root) <- root,
-         packages = Path.join(root, "packages"),
          :ok <- real_dir(root),
-         :ok <- real_dir(packages) do
-      files = tarballs(packages)
-      total = files |> Enum.map(& &1.size) |> Enum.sum()
+         {:ok, packages?} <- packages_dir(Path.join(root, "packages")) do
+      now = Keyword.get_lazy(opts, :now_ms, &now_ms/0)
 
-      if total <= max do
-        empty()
-      else
-        files
-        |> Enum.sort_by(& &1.mtime)
-        |> evict_until(total - max)
-        |> delete_sized(root, opts, "hex tarball")
-      end
+      junk = sweep_hex_root(root, now, opts)
+
+      if packages?,
+        do: add(junk, sweep_hex_packages(root, now, opts)),
+        else: junk
     else
       _ -> empty()
+    end
+  end
+
+  # A missing `packages/` is a fresh cache: the root can still be tidied. Any
+  # other non-directory there is a build tampering with the cache, and then
+  # nothing is swept at all.
+  defp packages_dir(packages) do
+    case File.lstat(packages) do
+      {:error, :enoent} ->
+        {:ok, false}
+
+      _ ->
+        with :ok <- real_dir(packages), do: {:ok, true}
+    end
+  end
+
+  defp sweep_hex_root(root, now, opts) do
+    max_age = Keyword.get(opts, :max_age_ms, configured_max_age_ms())
+
+    case list_dir(root) do
+      {:ok, names} ->
+        names
+        |> Enum.reject(&(&1 in @hex_root_keep))
+        |> Enum.flat_map(&regular_file(Path.join(root, &1), now))
+        |> Enum.filter(&(now - &1.used_ms > max_age))
+        |> delete_sized(root, opts, "hex cache junk")
+
+      :error ->
+        empty()
+    end
+  end
+
+  defp sweep_hex_packages(root, now, opts) do
+    max = Keyword.get_lazy(opts, :hex_cache_max_bytes, &configured_hex_cache_max_bytes/0)
+    files = walk(Path.join(root, "packages"), now)
+    total = files |> Enum.map(& &1.size) |> Enum.sum()
+
+    if total <= max do
+      empty()
+    else
+      files
+      |> Enum.reject(&(now - &1.used_ms < @hex_in_use_ms))
+      |> Enum.sort_by(& &1.used_ms)
+      |> evict_until(total - max)
+      |> delete_sized(root, opts, "hex cache file")
     end
   end
 
@@ -381,8 +445,8 @@ defmodule Portal.Workers.Sweep do
   defp lstat_type({:ok, %File.Stat{type: type}}), do: type
   defp lstat_type({:error, reason}), do: reason
 
-  # Every tarball under packages/, with size and mtime, found by hand-walking
-  # the tree rather than `Path.wildcard/1` + `File.stat/2`.
+  # Every regular file under packages/, with its size and last use, found by
+  # hand-walking the tree rather than `Path.wildcard/1` + `File.stat/2`.
   #
   # `/hex-cache` is bind-mounted read-write into every build container, which
   # runs the package's own build scripts, so everything under `packages/` is
@@ -395,31 +459,44 @@ defmodule Portal.Workers.Sweep do
   # never the target, so only a real `:directory` is descended into and only
   # a real `:regular` file is ever collected; a `:symlink` (file or
   # directory) is skipped outright — never followed, never deleted.
-  defp tarballs(packages), do: walk(packages)
-
-  defp walk(dir) do
+  defp walk(dir, now) do
     case File.ls(dir) do
       {:ok, names} ->
         Enum.flat_map(names, fn name ->
           path = Path.join(dir, name)
 
           case File.lstat(path, time: :posix) do
-            {:ok, %File.Stat{type: :directory}} ->
-              walk(path)
-
-            {:ok, %File.Stat{type: :regular, size: size, mtime: mtime}} ->
-              if String.ends_with?(name, ".tar"),
-                do: [%{path: path, size: size, mtime: mtime}],
-                else: []
-
-            _ ->
-              []
+            {:ok, %File.Stat{type: :directory}} -> walk(path, now)
+            {:ok, %File.Stat{type: :regular} = stat} -> [cached_file(path, stat, now)]
+            _ -> []
           end
         end)
 
       {:error, _reason} ->
         []
     end
+  end
+
+  defp regular_file(path, now) do
+    case File.lstat(path, time: :posix) do
+      {:ok, %File.Stat{type: :regular} = stat} -> [cached_file(path, stat, now)]
+      _ -> []
+    end
+  end
+
+  defp cached_file(path, stat, now),
+    do: %{path: path, size: stat.size, used_ms: last_used_ms(stat, now)}
+
+  # Least-recently-used, approximately. Hex does not rewrite a cached tarball
+  # on a cache hit (it gets a 304), so mtime alone is first-download order and
+  # would evict the most-used tarballs first. atime is what a hit moves:
+  # `relatime` updates it at most once a day, which is fine resolution for an
+  # hourly sweep. Either time in the future is something a build set by hand,
+  # since nothing legitimate writes one, and it counts as the epoch — evicted
+  # first — rather than letting a hostile file outrank every real tarball.
+  defp last_used_ms(%File.Stat{atime: atime, mtime: mtime}, now) do
+    ms = max(atime, mtime) * 1000
+    if ms > now, do: 0, else: ms
   end
 
   # Oldest first, stop as soon as enough is gone. Returns the files, not just

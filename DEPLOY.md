@@ -72,7 +72,7 @@ resolved by the host daemon and must be a path the daemon can see:
 | `NCC_BUILD_CACHE` | Shared dependency build cache, one subdirectory per worker image. Unset means off |
 | `NCC_MIN_FREE_GB` | Refuse to start a build with less free space than this on the scratch filesystem; default `25` |
 | `NCC_SCRATCH_MAX_AGE_HOURS` | Age after which `Portal.Workers.Sweep` treats a scratch dir as orphaned; default `3` |
-| `NCC_HEX_CACHE_MAX_GB` | Upper bound on the shared Hex tarball cache, oldest evicted first (default 20) |
+| `NCC_HEX_CACHE_MAX_GB` | Upper bound on the shared Hex cache `packages/` dir, least recently used (`max(atime, mtime)`) evicted first, nothing used in the last 2h (default 20) |
 | `NCC_BUILD_CONCURRENCY` | How many Nerves targets one build may compile at once. Unset means 1 (serial). Raise it together with `NCC_BUILD_CPUS`: the targets share that cap, and the win comes from overlapping the single-threaded stretches (release assembly, squashfs, fwup). Capped at 4 in code. See the note below |
 
 The scratch filesystem must not be mounted `noexec`: the container's `/tmp` is bound from it and fakeroot executes helpers there.
