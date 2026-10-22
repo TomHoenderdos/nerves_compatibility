@@ -114,6 +114,22 @@ defmodule NccWorker.ReleaseArtifactsTest do
              NccWorker.Worker.pure_elixir_result(project, "plain")
   end
 
+  test "the host compile records compile_env the same way a pure Elixir result does", %{
+    project: project
+  } do
+    build_path = Path.join([project, "_build", "host"])
+    ebin = Path.join([build_path, "lib", "plain", "ebin"])
+    File.mkdir_p!(ebin)
+
+    File.write!(
+      Path.join(ebin, "plain.app"),
+      "{application, plain, [{compile_env, [{plain, [mode], {ok, fast}}]}]}.\n"
+    )
+
+    assert [%{app: "plain", path: ["mode"], value: _}] =
+             NccWorker.Worker.host_compile_env(build_path, "plain")
+  end
+
   test "finds runtime applications and handles a missing package", %{project: project} do
     assert {:ok, path} = AppFile.find_app_file(project, "sample")
     assert {:ok, [:kernel, :stdlib]} = AppFile.read_applications(path)

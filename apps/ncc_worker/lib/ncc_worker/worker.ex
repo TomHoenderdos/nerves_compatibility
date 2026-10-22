@@ -934,6 +934,18 @@ defmodule NccWorker.Worker do
     end
   end
 
+  # The host compile's `.app` sits directly under `build_path/lib`, unlike a
+  # firmware target's release copy under `rel/*/lib/<package>-<vsn>`, because
+  # the host build never runs `mix release`. Same path shape `pure_elixir_result/2`
+  # reads for a pure-Elixir package's assumed-compatible result.
+  @doc false
+  @spec host_compile_env(String.t(), String.t()) :: [map()] | nil
+  def host_compile_env(build_path, package_name) do
+    AppFile.read_compile_env(
+      Path.join([build_path, "lib", package_name, "ebin", "#{package_name}.app"])
+    )
+  end
+
   # Assembling a firmware image runs mksquashfs, which sets ownership on the
   # rootfs entries it packs. The build container runs with --cap-drop=ALL, so
   # those chowns come back "Operation not permitted" and the build dies partway
@@ -1029,7 +1041,16 @@ defmodule NccWorker.Worker do
         {plan, stats} =
           restore_cache(project_dir, deps_path, build_path, "host", env, package_name)
 
-        compile_result = run_compile(project_dir, env, log_file, start_time, log_tail_bytes)
+        compile_result =
+          run_compile(
+            project_dir,
+            env,
+            log_file,
+            start_time,
+            log_tail_bytes,
+            build_path,
+            package_name
+          )
 
         stats =
           case compile_result do
@@ -1058,18 +1079,29 @@ defmodule NccWorker.Worker do
     end
   end
 
-  @spec run_compile(String.t(), list(), String.t(), integer(), integer()) :: map()
-  defp run_compile(project_dir, env, log_file, start_time, log_tail_bytes) do
+  @spec run_compile(String.t(), list(), String.t(), integer(), integer(), String.t(), String.t()) ::
+          map()
+  defp run_compile(
+         project_dir,
+         env,
+         log_file,
+         start_time,
+         log_tail_bytes,
+         build_path,
+         package_name
+       ) do
     case run_mix(["compile"], project_dir, env, log_file) do
       :ok ->
         duration = System.monotonic_time(:second) - start_time
         log_tail = read_log_tail(log_file, log_tail_bytes)
+        compile_env = host_compile_env(build_path, package_name)
 
         %{
           status: :pass,
           duration_sec: duration * 1.0,
           firmware_size_bytes: nil,
           log_tail: log_tail,
+          compile_env: compile_env,
           beam_scan: nil,
           dependency_scans: nil,
           error: nil
