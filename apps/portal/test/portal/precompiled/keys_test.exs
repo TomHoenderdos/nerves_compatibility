@@ -19,6 +19,7 @@ defmodule Portal.Precompiled.KeysTest do
     key = Keys.generate()
     Keys.write!(path, key)
     assert File.stat!(path).mode |> Bitwise.band(0o777) == 0o600
+    assert File.stat!(Path.dirname(path)).mode |> Bitwise.band(0o777) == 0o700
     Application.put_env(:portal, :precompiled_signing, key_path: path)
     assert {:ok, ^key} = Keys.load()
     assert Keys.root_path() == Path.join(Path.dirname(path), "root.json")

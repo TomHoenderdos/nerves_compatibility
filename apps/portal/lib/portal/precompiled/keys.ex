@@ -31,13 +31,17 @@ defmodule Portal.Precompiled.Keys do
 
   @spec write!(Path.t(), t()) :: :ok
   def write!(path, %{public: public, private: private}) do
-    File.mkdir_p!(Path.dirname(path))
+    dir = Path.dirname(path)
+    File.mkdir_p!(dir)
+    File.chmod!(dir, 0o700)
 
     json =
       JSON.encode!(%{"type" => "ed25519", "public" => b64(public), "private" => b64(private)})
 
-    File.write!(path, json)
+    File.touch!(path)
     File.chmod!(path, 0o600)
+    File.write!(path, json)
+    :ok
   end
 
   @spec load() :: {:ok, t()} | {:error, :no_key | :unreadable}
