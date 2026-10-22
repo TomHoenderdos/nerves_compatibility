@@ -452,6 +452,52 @@ defmodule Portal.Workers.SweepTest do
       assert File.exists?(link)
     end
 
+    # A build can `rm -rf /hex-cache/packages && ln -s / /hex-cache/packages`.
+    # Walking through that link would make Sweep delete the oldest files
+    # anywhere on the host the portal user can unlink.
+    test "does nothing when packages itself is a symlink", %{root: root, hex: hex} do
+      victim_dir =
+        Path.join(System.tmp_dir!(), "sweep-hex-victim-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(victim_dir)
+      on_exit(fn -> File.rm_rf(victim_dir) end)
+
+      victim = Path.join(victim_dir, "old.tar")
+      File.write!(victim, String.duplicate("x", 10_000))
+      File.touch!(victim, div(age(96), 1000))
+
+      packages = Path.join(hex, "packages")
+      File.rm_rf!(packages)
+      File.ln_s!(victim_dir, packages)
+
+      log =
+        capture_log(fn ->
+          assert :ok = Sweep.run(opts(root, hex_cache: hex, hex_cache_max_bytes: 0))
+        end)
+
+      assert File.exists?(victim)
+      assert {:ok, %File.Stat{type: :symlink}} = File.lstat(packages)
+      assert log =~ "not a real directory"
+    end
+
+    test "does nothing when the cache root itself is a symlink", %{root: root, hex: hex} do
+      victim = Path.join(hex, "packages/hexpm/old.tar")
+      File.write!(victim, String.duplicate("x", 10_000))
+      File.touch!(victim, div(age(96), 1000))
+
+      link =
+        Path.join(System.tmp_dir!(), "sweep-hex-link-#{System.unique_integer([:positive])}")
+
+      File.ln_s!(hex, link)
+      on_exit(fn -> File.rm(link) end)
+
+      capture_log(fn ->
+        assert :ok = Sweep.run(opts(root, hex_cache: link, hex_cache_max_bytes: 0))
+      end)
+
+      assert File.exists?(victim)
+    end
+
     test "does not follow a symlinked tarball", %{root: root, hex: hex} do
       victim_dir =
         Path.join(System.tmp_dir!(), "sweep-hex-victim-#{System.unique_integer([:positive])}")
