@@ -18,9 +18,14 @@ defmodule Portal.Workers.Sweep do
       `NccWorker.BuildCache.store_entry/2` when the container was killed
       between its `cp -a` and its `File.rename/2`
 
-  It deliberately leaves `nerves_cache` and `hex_cache` alone. Those are bounded
-  by the number of Nerves systems rather than by time, and evicting one costs a
-  several-hundred-megabyte re-download in the middle of a build.
+  It leaves `nerves_cache` alone: that is bounded by the number of Nerves
+  systems rather than by time, and evicting one costs a several-hundred-megabyte
+  re-download in the middle of a build. `hex_cache/packages` it keeps under a
+  size bound (`hex_cache_max_bytes`, `NCC_HEX_CACHE_MAX_GB`), oldest-modified
+  tarball first: the cache is read-write inside every build container, so a
+  package that depends on everything on Hex could otherwise fill the disk. An
+  evicted tarball is simply fetched again. mtime, not atime: the hosts mount
+  with `relatime`, which makes atime unreliable for this.
 
   ## Why queue `:ingest`
 
@@ -81,8 +86,10 @@ defmodule Portal.Workers.Sweep do
   disk:
 
     * `:now_ms` — defaults to `System.system_time(:millisecond)`
-    * `:scratch_root` / `:build_cache` — default to the `Portal.Builder` config
+    * `:scratch_root` / `:build_cache` / `:hex_cache` — default to the
+      `Portal.Builder` config
     * `:max_age_ms` — scratch retention, defaults to 3h
+    * `:hex_cache_max_bytes` — hex cache retention, defaults to 20 GiB
     * `:live_run_ids` — `MapSet` of sanitized run ids with a live ingest job
     * `:running_containers` — `MapSet` of docker container names
     * `:current_digest` — digest the worker image resolves to right now
@@ -96,11 +103,13 @@ defmodule Portal.Workers.Sweep do
   def run(opts \\ []) do
     scratch = sweep_scratch(opts)
     cache = sweep_build_cache(opts)
-    total = %{count: scratch.count + cache.count, bytes: scratch.bytes + cache.bytes}
+    hex = sweep_hex_cache(opts)
+
+    total = [scratch, cache, hex] |> Enum.reduce(empty(), &add/2)
 
     Logger.info(
       "Sweep reclaimed #{total.count} dirs / #{mb(total.bytes)} MB " <>
-        "(scratch #{scratch.count}, build-cache #{cache.count})"
+        "(scratch #{scratch.count}, build-cache #{cache.count}, hex #{hex.count})"
     )
 
     :ok
@@ -314,6 +323,92 @@ defmodule Portal.Workers.Sweep do
     else
       :ok
     end
+  end
+
+  # ── Hex cache ──────────────────────────────────────────────────────────────
+
+  @default_hex_cache_max_bytes 20 * 1024 * 1024 * 1024
+
+  # Only `packages/` is a candidate: `cache.ets` at the root is the signed
+  # registry, and losing it costs every build a refetch of the registry
+  # rather than of one tarball.
+  defp sweep_hex_cache(opts) do
+    root = Keyword.get_lazy(opts, :hex_cache, &Builder.hex_cache/0)
+    max = Keyword.get_lazy(opts, :hex_cache_max_bytes, &configured_hex_cache_max_bytes/0)
+
+    with root when is_binary(root) <- root,
+         packages = Path.join(root, "packages"),
+         true <- File.dir?(packages) do
+      files = tarballs(packages)
+      total = files |> Enum.map(& &1.size) |> Enum.sum()
+
+      if total <= max do
+        empty()
+      else
+        files
+        |> Enum.sort_by(& &1.mtime)
+        |> evict_until(total - max)
+        |> delete_sized(opts, "hex tarball")
+      end
+    else
+      _ -> empty()
+    end
+  end
+
+  # Every tarball under packages/ with size and mtime. A stat is microseconds;
+  # tens of thousands of them are well under a second, and it runs the same
+  # on macOS and Linux.
+  defp tarballs(packages) do
+    packages
+    |> Path.join("**/*.tar")
+    |> Path.wildcard()
+    |> Enum.flat_map(fn path ->
+      case File.stat(path, time: :posix) do
+        {:ok, %File.Stat{type: :regular, size: size, mtime: mtime}} ->
+          [%{path: path, size: size, mtime: mtime}]
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  # Oldest first, stop as soon as enough is gone. Returns the files, not just
+  # paths, so the deletion log can use the sizes already in hand.
+  defp evict_until(files, bytes_to_free) do
+    files
+    |> Enum.reduce_while({[], 0}, fn file, {acc, freed} ->
+      if freed >= bytes_to_free,
+        do: {:halt, {acc, freed}},
+        else: {:cont, {[file | acc], freed + file.size}}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+  end
+
+  # `delete_all/3` runs `du` per path to learn a size it does not have. Here
+  # the sizes come from the stat that chose the files, so a bulk eviction of
+  # thousands of tarballs does not fork thousands of `du`s.
+  defp delete_sized(files, opts, label) do
+    dry_run? = Keyword.get(opts, :dry_run, false)
+
+    Enum.reduce(files, empty(), fn %{path: path, size: bytes}, acc ->
+      case maybe_remove(path, dry_run?) do
+        :ok ->
+          Logger.info("Sweep removed #{label} #{Path.basename(path)} (#{mb(bytes)} MB)")
+          %{count: acc.count + 1, bytes: acc.bytes + bytes}
+
+        {:error, reason} ->
+          Logger.warning("Sweep could not remove #{path}: #{inspect(reason)}")
+          acc
+      end
+    end)
+  end
+
+  defp configured_hex_cache_max_bytes do
+    :portal
+    |> Application.get_env(Portal.Builder, [])
+    |> Keyword.get(:hex_cache_max_bytes, @default_hex_cache_max_bytes)
   end
 
   # ── Deletion ───────────────────────────────────────────────────────────────

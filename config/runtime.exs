@@ -152,6 +152,19 @@ if portal_available? do
             {hours, _rest} when hours > 0 -> trunc(hours * 60 * 60 * 1000)
             _ -> nil
           end
+      end,
+    # GiB is the human unit; `Portal.Workers.Sweep` wants bytes. Unparseable
+    # falls through as nil and keeps the compile-time default.
+    hex_cache_max_bytes:
+      case System.get_env("NCC_HEX_CACHE_MAX_GB") do
+        nil ->
+          nil
+
+        raw ->
+          case Float.parse(raw) do
+            {gb, _rest} when gb > 0 -> trunc(gb * 1024 * 1024 * 1024)
+            _ -> nil
+          end
       end
   ]
 

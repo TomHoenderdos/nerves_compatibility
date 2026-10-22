@@ -145,7 +145,13 @@ config :portal, Portal.Builder,
   min_free_disk_gb: 25,
   # How long a scratch dir may sit before `Sweep` treats it as orphaned: the 2h
   # docker wall clock plus an hour for the ingest handoff.
-  scratch_max_age_ms: :timer.hours(3)
+  scratch_max_age_ms: :timer.hours(3),
+  # Upper bound on `hex_cache/packages`. A build can depend on anything on Hex,
+  # and the cache is read-write inside the container, so without a bound one
+  # package can fill the disk. 20 GiB is five times the 3.6 GiB the main
+  # builder held on 2026-10-21; `Portal.Workers.Sweep` evicts oldest-modified
+  # tarballs past it.
+  hex_cache_max_bytes: 20 * 1024 * 1024 * 1024
 
 # Where the "Open an issue" link in the UI points.
 #
