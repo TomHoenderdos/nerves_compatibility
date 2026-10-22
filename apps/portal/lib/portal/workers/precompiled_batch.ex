@@ -3,7 +3,9 @@ defmodule Portal.Workers.PrecompiledBatch do
   Every 15 minutes, render every precompiled manifest to bytes and sign a
   batch naming them. Runs on `:maintenance`, which only the web host serves:
   the signing key and the rsynced artifact files live there. Without a key
-  the job cancels; builders never sign.
+  configured the job cancels; builders never sign. A key that is configured
+  but unreadable (wrong owner, bad path) errors instead, so Oban retries and
+  the failure is visible rather than cancelling quietly.
   """
   use Oban.Worker,
     queue: :maintenance,
@@ -25,6 +27,9 @@ defmodule Portal.Workers.PrecompiledBatch do
 
       {:error, :no_signing_key} ->
         {:cancel, :no_signing_key}
+
+      {:error, :signing_key_unreadable} ->
+        {:error, :signing_key_unreadable}
 
       {:error, reason} ->
         {:error, reason}

@@ -22,6 +22,23 @@ defmodule Portal.Precompiled.BatchesTest do
     assert Batches.latest() == nil
   end
 
+  test "with a configured but unreadable key, the failure is distinct and loud" do
+    missing =
+      Path.join(System.tmp_dir!(), "missing-signing-key-#{System.unique_integer([:positive])}")
+
+    Application.put_env(:portal, :precompiled_signing, key_path: missing)
+
+    {result, log} =
+      with_log(fn ->
+        Batches.build_and_sign()
+      end)
+
+    assert {:error, :signing_key_unreadable} = result
+    assert Batches.latest() == nil
+    assert log =~ "[error]"
+    assert log =~ missing
+  end
+
   test "signs a batch naming every package's manifest hash", %{key: key} do
     result = ingest_with_artifact()
     name = result["package"]["name"]

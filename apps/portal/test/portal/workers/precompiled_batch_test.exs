@@ -3,6 +3,7 @@ defmodule Portal.Workers.PrecompiledBatchTest do
   use Oban.Testing, repo: Portal.Repo
   @moduletag :tmp_dir
   import Portal.PrecompiledFixtures
+  import ExUnit.CaptureLog, only: [with_log: 1]
   alias Portal.Precompiled.{Batches, Keys}
   alias Portal.Workers.PrecompiledBatch
 
@@ -29,5 +30,22 @@ defmodule Portal.Workers.PrecompiledBatchTest do
     Application.put_env(:portal, :precompiled_signing, key_path: nil)
     assert {:cancel, :no_signing_key} = perform_job(PrecompiledBatch, %{})
     assert Batches.latest() == nil
+  end
+
+  test "perform with a configured but unreadable key errors loudly instead of cancelling" do
+    missing =
+      Path.join(System.tmp_dir!(), "missing-signing-key-#{System.unique_integer([:positive])}")
+
+    Application.put_env(:portal, :precompiled_signing, key_path: missing)
+
+    {result, log} =
+      with_log(fn ->
+        perform_job(PrecompiledBatch, %{})
+      end)
+
+    assert {:error, :signing_key_unreadable} = result
+    assert Batches.latest() == nil
+    assert log =~ "[error]"
+    assert log =~ missing
   end
 end
