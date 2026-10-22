@@ -702,8 +702,17 @@ defmodule PortalWeb.CatalogApiControllerTest do
     end
 
     test "root.json serves the file next to the key", %{conn: conn, key: key} do
-      body = conn |> get("/api/precompiled/root.json") |> json_response(200)
-      assert {:ok, _} = Portal.Precompiled.Envelope.verify(body, %{key.keyid => key.public}, 1)
+      resp = conn |> get("/api/precompiled/root.json")
+      raw = response(resp, 200)
+      expected_sha = Base.encode16(:crypto.hash(:sha256, raw), case: :lower)
+      assert get_resp_header(resp, "etag") == [~s("#{expected_sha}")]
+
+      assert {:ok, _} =
+               Portal.Precompiled.Envelope.verify(
+                 JSON.decode!(raw),
+                 %{key.keyid => key.public},
+                 1
+               )
     end
 
     test "batch.json is 503 before any batch and the newest after", %{conn: conn, key: key} do
