@@ -269,6 +269,11 @@ them.
   `build.deps` is `null` and a client should skip them.
 - Pure Elixir packages have `pure_elixir` entries only from runs after
   2026-10-20; earlier ones archived no files.
+- Entries from runs before 2026-10-23 list the release copy of each BEAM,
+  stripped of `debug_info`. Later runs list the target's compile output,
+  `_build/<target>/lib/<package>/`, whose BEAMs keep it, so a client can
+  consolidate protocols a precompiled dependency defines and Dialyzer sees
+  its types. The manifest shape is the same either way.
 - An entry appears only once every file it lists can be served from this host.
   Builds run on other hosts whose blobs are copied here every few minutes, so a
   fresh build can take that long to show up; until then the manifest keeps

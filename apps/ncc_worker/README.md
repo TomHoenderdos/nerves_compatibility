@@ -30,6 +30,9 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    nothing, and when the lock cannot be read. It also records `package_checksum`, the package's own outer Hex checksum,
    and each system result's `compile_env` (the `.app` file's compile-time config reads, values as base64url deterministic terms).
 7. Writes atomic `/out/result.json` plus per-system logs under `/out/logs/`, and archives compiled files by SHA256 under `/files`.
+   The package's own files are its `ebin/` and `priv/` from `_build/<target>/lib/<package>/`, the target's compile
+   output with `debug_info` intact, not the release copy, whose BEAMs are stripped (`NccWorker.BeamScan`,
+   `NccWorker.Footprint`, `NccWorker.FileArchiver`). Dependencies' files are still archived from the release.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 

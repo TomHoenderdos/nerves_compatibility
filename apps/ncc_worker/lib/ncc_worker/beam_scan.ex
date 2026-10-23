@@ -6,14 +6,30 @@ defmodule NccWorker.BeamScan do
 
   @max_evidence 30
 
+  @doc """
+  Scans the package's compiled application under a firmware build path,
+  `_build/<target>/lib/<package>`, the same files Mix would have produced in a
+  client project. Its file manifest is what the precompiled API publishes, so
+  it must describe those bytes and not the release copy, whose BEAMs are
+  stripped of `debug_info`. The release copy is scanned only when the build
+  output is not found under the package's name.
+  """
   @spec analyze(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def analyze(build_path, package_name) do
-    with {:ok, package_dir} <- find_package_dir(build_path, package_name) do
+    with {:ok, package_dir} <- find_build_or_release_dir(build_path, package_name) do
       scan = BeamScanner.analyze(package_dir)
       {:ok, normalize(scan)}
     end
   rescue
     error -> {:error, {:beam_scan_failed, Exception.message(error)}}
+  end
+
+  defp find_build_or_release_dir(build_path, package_name) do
+    build_lib = Path.join([build_path, "lib", package_name])
+
+    if File.dir?(build_lib),
+      do: {:ok, build_lib},
+      else: find_package_dir(build_path, package_name)
   end
 
   @doc "Scans one compiled application directory, such as `_build/host/lib/<app>`."
