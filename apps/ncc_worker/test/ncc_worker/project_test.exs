@@ -275,6 +275,102 @@ defmodule NccWorker.ProjectTest do
     end
   end
 
+  describe "inject_deps/2" do
+    # A real application that depends on jason almost always has decimal in its
+    # lock too, and jason compiles differently when Decimal is loadable. The
+    # generated project has to resolve the optional dependency for the build
+    # to match such an application.
+    test "prepends each optional dependency with its requirement" do
+      deps = [%{app: "decimal", package: "decimal", requirement: "~> 1.0 or ~> 2.0"}]
+      assert {:ok, content} = Project.inject_deps(@sample_mix_exs, deps)
+
+      assert content =~ ~s[{:decimal, "~> 1.0 or ~> 2.0"},\n      {:nerves,]
+    end
+
+    test "names the Hex package when it differs from the application" do
+      deps = [%{app: "my_app", package: "my_package", requirement: "~> 2.0"}]
+      assert {:ok, content} = Project.inject_deps(@sample_mix_exs, deps)
+
+      assert content =~ ~s[{:my_app, "~> 2.0", hex: :my_package},]
+    end
+
+    # Mix refuses a dependency declared twice at the top level, and the template's
+    # own requirement for it is the one every Nerves project has anyway.
+    test "leaves a dependency the template already declares alone" do
+      deps = [%{app: "shoehorn", package: "shoehorn", requirement: "~> 0.9"}]
+      assert {:ok, content} = Project.inject_deps(@sample_mix_exs, deps)
+
+      assert content == @sample_mix_exs
+    end
+
+    test "fails when mix.exs has no deps list" do
+      deps = [%{app: "decimal", package: "decimal", requirement: "~> 2.0"}]
+      assert {:error, {:mix_exs_deps_list_not_found, _}} = Project.inject_deps("# none", deps)
+    end
+  end
+
+  describe "add_optional_deps/3" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "project_opt_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "mix.exs"), @sample_mix_exs)
+      File.write!(Path.join(tmp, "mix.lock"), "%{}\n")
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, project_dir: tmp}
+    end
+
+    test "with nothing to add, touches nothing and runs no mix", %{project_dir: dir} do
+      assert {:ok, []} = Project.add_optional_deps(dir, "pkg", [], [])
+      assert File.read!(Path.join(dir, "mix.exs")) == @sample_mix_exs
+    end
+
+    # An optional dependency that cannot be resolved alongside the template
+    # must not turn a package that builds fine into a worker error: the build
+    # goes on without it, exactly as before, and says so.
+    test "restores mix.exs and mix.lock when deps.get fails", %{project_dir: dir} do
+      deps = [%{app: "decimal", package: "decimal", requirement: "~> 2.0"}]
+
+      stderr =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert {:ok, []} = Project.add_optional_deps(dir, "pkg", deps, [])
+        end)
+
+      assert stderr =~ "optional"
+      assert stderr =~ "decimal"
+      assert File.read!(Path.join(dir, "mix.exs")) == @sample_mix_exs
+      assert File.read!(Path.join(dir, "mix.lock")) == "%{}\n"
+    end
+
+    # The first `mix deps.get` may already have compiled the package into the
+    # host build path, before the optional dependency existed. Mix would not
+    # recompile it: its lock entry and marker are unchanged. Left in place,
+    # that build would be published with a deps_lock naming a dependency it
+    # never saw, so it is removed before the dependencies are resolved, on the
+    # revert path too.
+    test "removes the package's stale host build before resolving", %{project_dir: dir} do
+      build_path = Path.join([dir, "_build", "host"])
+      stale = Path.join([build_path, "lib", "pkg", "ebin", "pkg.beam"])
+      other = Path.join([build_path, "lib", "other", "ebin", "other.beam"])
+
+      for path <- [stale, other],
+          do:
+            (
+              File.mkdir_p!(Path.dirname(path))
+              File.write!(path, "x")
+            )
+
+      deps = [%{app: "decimal", package: "decimal", requirement: "~> 2.0"}]
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert {:ok, []} =
+                 Project.add_optional_deps(dir, "pkg", deps, [{"MIX_BUILD_PATH", build_path}])
+      end)
+
+      refute File.exists?(Path.join([build_path, "lib", "pkg"]))
+      assert File.exists?(other)
+    end
+  end
+
   # Call the public API but stub out the deps.get side-effect by pointing at a
   # project_dir whose mix.exs is our sample. We read mix.exs before add_package
   # runs mix, then call add_package which will fail at deps.get (mix not
