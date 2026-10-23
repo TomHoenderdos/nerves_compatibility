@@ -94,6 +94,38 @@ defmodule NccWorker.DepsLockTest do
     assert DepsLock.package_checksum(dir, "not_there") == nil
   end
 
+  # An optional dependency the lock did not resolve is one the generated
+  # project never saw, so the build left it out. `spark`'s `igniter` is such a
+  # dependency; `jason`'s `decimal` is already in the lock and is not reported.
+  test "unresolved_optional_deps lists the package's optional deps the lock lacks", %{dir: dir} do
+    File.write!(Path.join(dir, "mix.lock"), @lock)
+
+    assert DepsLock.unresolved_optional_deps(dir, "spark") ==
+             [%{app: "igniter", package: "igniter", requirement: "~> 0.5"}]
+
+    assert DepsLock.unresolved_optional_deps(dir, "jason") == []
+    assert DepsLock.unresolved_optional_deps(dir, "ash_thing") == []
+  end
+
+  test "unresolved_optional_deps is empty for a missing lock or a package not in it", %{dir: dir} do
+    assert DepsLock.unresolved_optional_deps(dir, "spark") == []
+    File.write!(Path.join(dir, "mix.lock"), @lock)
+    assert DepsLock.unresolved_optional_deps(dir, "not_there") == []
+  end
+
+  # The lock keys dependencies by application name and names the Hex package
+  # separately; a private repo cannot be resolved from the generated project.
+  test "unresolved_optional_deps keeps the Hex package name and skips other repos", %{dir: dir} do
+    File.write!(Path.join(dir, "mix.lock"), """
+    %{
+      "pkg": {:hex, :pkg, "1.0.0", "i-pkg", [:mix], [{:my_app, "~> 2.0", [hex: :my_package, repo: "hexpm", optional: true]}, {:secret, "~> 1.0", [hex: :secret, repo: "acme", optional: true]}], "hexpm", "o-pkg"},
+    }
+    """)
+
+    assert DepsLock.unresolved_optional_deps(dir, "pkg") ==
+             [%{app: "my_app", package: "my_package", requirement: "~> 2.0"}]
+  end
+
   defp spark_outer_checksum_from_lock(lock) do
     {map, _} = Code.eval_string(lock)
     map |> Map.fetch!(:spark) |> elem(7)

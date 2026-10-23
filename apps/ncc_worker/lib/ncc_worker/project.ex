@@ -139,6 +139,108 @@ defmodule NccWorker.Project do
     end
   end
 
+  @doc """
+  Adds the package's unresolved optional dependencies (from
+  `NccWorker.DepsLock.unresolved_optional_deps/2`) to the project and runs
+  `mix deps.get` again, so they resolve and compile alongside it the way they
+  would in an application that has them in its lock.
+
+  Returns `{:ok, apps}` with the application names that were added. An
+  optional dependency the resolver cannot fit next to the template's own
+  requirements must not turn a package that builds fine into a worker error,
+  so when that `deps.get` fails both `mix.exs` and `mix.lock` are put back as
+  they were, a warning names the dependencies, and the result is `{:ok, []}`:
+  the build goes on without them, exactly as it did before this step existed.
+
+  Whatever the first `mix deps.get` left of `package_name` under the build
+  path in `env` (`MIX_BUILD_PATH`) is removed first. nerves_bootstrap has at
+  times compiled the whole tree during `deps.get`; a package compiled then
+  predates the optional dependency, and Mix would not recompile it, because
+  its lock entry and marker are unchanged. Published, those files would carry
+  a `deps_lock` naming a dependency they never saw. Removed, the package
+  compiles again in the host stage, with the optional dependency loadable, or
+  without it on the revert path, which is also correct.
+  """
+  @spec add_optional_deps(String.t(), String.t(), [map()], keyword() | list()) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def add_optional_deps(_project_dir, _package_name, [], _env), do: {:ok, []}
+
+  # Edits only the generated worker project's mix.exs, mix.lock and build output.
+  # sobelow_skip ["Traversal.FileModule"]
+  def add_optional_deps(project_dir, package_name, deps, env) do
+    mix_exs_path = Path.join(project_dir, "mix.exs")
+    lock_path = Path.join(project_dir, "mix.lock")
+
+    with {:ok, content} <- File.read(mix_exs_path),
+         {:ok, lock} <- File.read(lock_path),
+         {:ok, new_content} <- inject_deps(content, deps),
+         :ok <- File.write(mix_exs_path, new_content),
+         {:ok, _} <- remove_stale_build(env, package_name) do
+      case run_deps_get(project_dir, env) do
+        :ok ->
+          {:ok, Enum.map(deps, & &1.app)}
+
+        {:error, reason} ->
+          revert_optional_deps(deps, reason, {mix_exs_path, content}, {lock_path, lock})
+      end
+    end
+  end
+
+  # Only the build path the caller named; nothing is removed when the env has
+  # none. The sources fetched for the optional dependencies stay under deps/
+  # on the revert path, which Mix ignores for a dependency mix.exs no longer
+  # declares.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp remove_stale_build(env, package_name) do
+    case List.keyfind(env, "MIX_BUILD_PATH", 0) do
+      {_, build_path} -> File.rm_rf(Path.join([build_path, "lib", package_name]))
+      nil -> {:ok, []}
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp revert_optional_deps(
+         deps,
+         {:deps_get_failed, output},
+         {mix_exs_path, content},
+         {lock_path, lock}
+       ) do
+    names = Enum.map_join(deps, ", ", & &1.app)
+
+    IO.puts(
+      :stderr,
+      "Warning: building without optional dependencies #{names}: " <>
+        "mix deps.get failed after adding them\n#{NccWorker.LogTail.tail(output, 2000)}"
+    )
+
+    with :ok <- File.write(mix_exs_path, content),
+         :ok <- File.write(lock_path, lock) do
+      {:ok, []}
+    end
+  end
+
+  @doc false
+  # Prepends one `{:app, "requirement"}` entry per dependency, with `hex:`
+  # when the Hex package is not the application. A dependency the template
+  # already declares is left alone: Mix refuses a dependency declared twice at
+  # the top level, and the template's requirement is the one every Nerves
+  # project has.
+  @spec inject_deps(String.t(), [map()]) :: {:ok, String.t()} | {:error, term()}
+  def inject_deps(content, deps) do
+    Enum.reduce_while(deps, {:ok, content}, fn dep, {:ok, acc} ->
+      case inject_optional_dep(acc, dep) do
+        {:ok, injected} -> {:cont, {:ok, injected}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp inject_optional_dep(content, dep) do
+    if Regex.match?(~r/\{:#{Regex.escape(dep.app)},/, content),
+      do: {:ok, content},
+      else: prepend_dep(content, %{name: dep.app, requirement: dep.requirement, hex: dep.package})
+  end
+
   @spec inject_dep(String.t(), map()) :: {:ok, String.t()} | {:error, term()}
   defp inject_dep(content, package) do
     case repin_template_dep(content, package) do
@@ -192,6 +294,10 @@ defmodule NccWorker.Project do
   end
 
   @spec dep_tuple(map()) :: String.t()
+  defp dep_tuple(%{name: name, requirement: req, hex: hex})
+       when is_binary(req) and req != "" and is_binary(hex) and hex != name,
+       do: ~s[{:#{name}, "#{req}", hex: :#{hex}}]
+
   defp dep_tuple(%{name: name, version: version}) when is_binary(version) and version != "",
     do: ~s[{:#{name}, "== #{version}"}]
 

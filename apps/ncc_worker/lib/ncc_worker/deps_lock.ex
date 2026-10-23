@@ -61,6 +61,45 @@ defmodule NccWorker.DepsLock do
     end
   end
 
+  @doc """
+  The package's optional dependencies the lock did not resolve, as
+  `%{app, package, requirement}`, for `NccWorker.Project.add_optional_deps/3`
+  to add to the generated project. `[]` when the lock is missing or does not
+  name the package.
+
+  A generated project holds only the package under test, so an optional
+  dependency is never resolved unless the package itself drags it in, while a
+  real application almost always has it in its lock (decimal next to jason,
+  jason next to ecto). The package compiles differently with the optional
+  module loadable, so a build without it matches none of those applications.
+  Only Hex packages from the public repo: the generated project cannot
+  resolve a private repo.
+  """
+  @spec unresolved_optional_deps(String.t(), String.t()) ::
+          [%{app: String.t(), package: String.t(), requirement: String.t()}]
+  def unresolved_optional_deps(project_dir, package) do
+    with {:ok, lock} <- read_lock(project_dir),
+         {:ok, name} <- lock_name(lock, package) do
+      for {app, requirement, opts} <- lock_deps(lock[name]),
+          opts[:optional] == true,
+          to_string(opts[:repo] || "hexpm") == "hexpm",
+          app = to_string(app),
+          not Map.has_key?(lock, app),
+          do: %{app: app, package: to_string(opts[:hex] || app), requirement: requirement}
+    else
+      _ -> []
+    end
+  end
+
+  defp lock_deps({:hex, _pkg, _version, _inner, _managers, deps, _repo, _outer})
+       when is_list(deps),
+       do: deps
+
+  defp lock_deps({:hex, _pkg, _version, _inner, _managers, deps, _repo}) when is_list(deps),
+    do: deps
+
+  defp lock_deps(_entry), do: []
+
   defp put_locked(dep, acc, lock) do
     case Map.get(lock, dep) do
       {:hex, _pkg, version, _inner, _managers, _deps, _repo, outer}
@@ -92,21 +131,9 @@ defmodule NccWorker.DepsLock do
   # `BuildCache.closure/2` walks.
   defp graph(lock) do
     Map.new(lock, fn {name, entry} ->
-      deps =
-        case entry do
-          {:hex, _pkg, _version, _inner, _managers, deps, _repo, _outer} when is_list(deps) ->
-            deps
-
-          {:hex, _pkg, _version, _inner, _managers, deps, _repo} when is_list(deps) ->
-            deps
-
-          _ ->
-            []
-        end
-
       {name,
        for(
-         {dep, _requirement, _opts} <- deps,
+         {dep, _requirement, _opts} <- lock_deps(entry),
          dep = to_string(dep),
          Map.has_key?(lock, dep),
          do: dep

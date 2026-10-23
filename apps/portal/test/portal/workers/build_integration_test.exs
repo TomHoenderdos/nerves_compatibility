@@ -42,10 +42,13 @@ defmodule Portal.Workers.BuildIntegrationTest do
     # The default argus scope is firmware packages only, and jason is pure Elixir.
     assert run.argus["status"] == "skipped"
 
-    # jason's only dependency is an optional `decimal`, which nothing in the
-    # generated Nerves project resolves, so its closure is empty. Recorded as
-    # an empty lock rather than none: a client matches it against any project.
-    assert run.deps_lock == %{}
+    # jason's only dependency is an optional `decimal`. The worker resolves a
+    # package's optional dependencies before building it, so decimal is in the
+    # closure with the version and outer checksum the build locked: a client
+    # matches the entry only when its own lock has that decimal too.
+    assert %{"decimal" => %{"version" => version, "checksum" => checksum}} = run.deps_lock
+    assert Version.match?(version, "~> 1.0 or ~> 2.0")
+    assert is_binary(checksum)
     assert is_binary(run.package_checksum)
 
     # ≥1 SystemResult rows
@@ -58,6 +61,12 @@ defmodule Portal.Workers.BuildIntegrationTest do
     for result <- system_results, do: assert(result.compile_env == [])
 
     assert Enum.sort(Enum.map(system_results, & &1.system_pkg)) == ["host", "pure_elixir"]
+
+    # The published files must be the ones compiled with decimal loadable:
+    # jason only defines its Jason.Encoder implementation for Decimal then.
+    pure = Enum.find(system_results, &(&1.system_pkg == "pure_elixir"))
+    published = get_in(pure.beam_scan, ["footprint", "file_manifest", "ebin"]) || []
+    assert Enum.any?(published, &(&1["path"] == "ebin/Elixir.Jason.Encoder.Decimal.beam"))
     assert Enum.all?(system_results, &is_nil(&1.firmware_size_bytes))
 
     # Request marked built and linked to the run
@@ -90,7 +99,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
     assert second.argus["status"] in ["ok", "error"]
 
     # An argus-only run builds nothing, so it has no lock of its own.
-    assert first.deps_lock == %{}
+    assert %{"decimal" => _} = first.deps_lock
     assert second.deps_lock == nil
     assert second.package_checksum == nil
     assert request.status == :built

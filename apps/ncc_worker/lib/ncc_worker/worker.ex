@@ -55,6 +55,11 @@ defmodule NccWorker.Worker do
 
   @type result :: %{
           optional(:scope) => String.t(),
+          # Application names of the package's optional dependencies the
+          # worker added to the project (see `NccWorker.Project.add_optional_deps/4`),
+          # `[]` when none were. A system that fails because one of them does
+          # not cross-compile is explained by this list and the host log.
+          optional(:optional_deps) => [String.t()],
           # The package's transitive dependency closure as locked for this
           # build, itself excluded, keyed by name. Absent when the lock could
           # not be read and for argus-only runs, which build no files.
@@ -266,15 +271,45 @@ defmodule NccWorker.Worker do
   defp prepare_project(%{input: input, paths: paths, retired_info: retired_info} = context) do
     systems = Systems.select(input[:systems_filter])
 
+    # The optional dependencies are resolved before the lock is checked, so
+    # the policy judges the tree that is actually built. They come from the
+    # package's own lock entry, so a package that declares none costs nothing.
     with {:ok, project_dir} <-
            Project.create(paths.work_dir, input[:systems_override], Systems.targets(systems)),
          {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
+         {:ok, optional_deps} <- add_optional_deps(project_dir, input.package.name, paths),
          :ok <- LockPolicy.validate(project_dir) do
       if retired_info do
         skipped_retired(context)
       else
-        context |> Map.merge(%{project_dir: project_dir, systems: systems}) |> evaluate_project()
+        context
+        |> Map.merge(%{project_dir: project_dir, systems: systems, optional_deps: optional_deps})
+        |> evaluate_project()
       end
+    end
+  end
+
+  # See `NccWorker.DepsLock.unresolved_optional_deps/2`: without its optional
+  # dependencies the package compiles into BEAMs that match no application
+  # that has them, and the client's lock rule then refuses the build.
+  #
+  # The line goes into host.log as well as stderr: a system that fails because
+  # an optional dependency does not cross-compile shows that log, and the
+  # person reading it should see what was added and why.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp add_optional_deps(project_dir, package_name, paths) do
+    case DepsLock.unresolved_optional_deps(project_dir, package_name) do
+      [] ->
+        {:ok, []}
+
+      deps ->
+        line =
+          "Adding optional dependencies: " <>
+            Enum.map_join(deps, ", ", &"#{&1.app} #{&1.requirement}")
+
+        IO.puts(:stderr, line)
+        File.write(Path.join(paths.logs_dir, "host.log"), line <> "\n", [:append])
+        Project.add_optional_deps(project_dir, package_name, deps, host_env(project_dir))
     end
   end
 
@@ -284,6 +319,7 @@ defmodule NccWorker.Worker do
          toolchain: toolchain,
          project_dir: project_dir,
          systems: systems,
+         optional_deps: optional_deps,
          timeout: timeout,
          log_tail_bytes: log_tail_bytes,
          description: description,
@@ -391,7 +427,8 @@ defmodule NccWorker.Worker do
       systems: system_results,
       argus: argus,
       finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
-      scope: RunScope.to_string(scope)
+      scope: RunScope.to_string(scope),
+      optional_deps: optional_deps
     }
 
     {:ok, put_deps_lock(result, scope, project_dir, input.package.name)}
