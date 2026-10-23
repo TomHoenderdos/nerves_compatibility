@@ -2,9 +2,14 @@ defmodule NccWorker.Footprint do
   @moduledoc """
   Calculates footprint statistics for a package's compiled artifacts.
 
-  This scans the release directory to count only the files that are actually
-  included in the final release build (stripped BEAM files, .app files, and
-  priv directory contents).
+  For every target that finished a firmware build (has a release directory),
+  this reads the package's `ebin/` and `priv/` from the target's own compile
+  output, `_build/<target>/lib/<package>/`, the same directory Mix fills in a
+  client project and the one the client installs precompiled files into.
+  The release copy under `rel/*/lib/<package>-<vsn>/` holds the same files
+  with the BEAMs stripped of `debug_info`, which a client cannot consolidate
+  protocols from or run Dialyzer against. It is read only when the build
+  output is not found under the package's name.
   """
 
   @doc """
@@ -51,7 +56,8 @@ defmodule NccWorker.Footprint do
         target_stats =
           release_dirs
           |> Enum.map(fn {target, release_dir} ->
-            target_stats(target, release_dir, package_name, system_name_by_target, firmware_sizes)
+            package_dir = find_package_dir(build_dir, target, release_dir, package_name)
+            target_stats(target, package_dir, system_name_by_target, firmware_sizes)
           end)
           |> Enum.reject(&is_nil/1)
 
@@ -83,6 +89,17 @@ defmodule NccWorker.Footprint do
     else
       _ -> []
     end
+  end
+
+  # The target's compile output first, the release copy as the fallback.
+  @spec find_package_dir(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  defp find_package_dir(build_dir, target, release_lib_dir, package_name) do
+    build_lib = Path.join([build_dir, target, "lib", package_name])
+
+    if File.dir?(build_lib),
+      do: {:ok, build_lib},
+      else: find_package_in_release(release_lib_dir, package_name)
   end
 
   @spec find_package_in_release(String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
@@ -173,8 +190,8 @@ defmodule NccWorker.Footprint do
     end
   end
 
-  defp target_stats(target, release_dir, package_name, system_name_by_target, firmware_sizes) do
-    case find_package_in_release(release_dir, package_name) do
+  defp target_stats(target, package_dir, system_name_by_target, firmware_sizes) do
+    case package_dir do
       {:ok, package_lib_dir} ->
         ebin_dir = Path.join(package_lib_dir, "ebin")
         priv_dir = Path.join(package_lib_dir, "priv")

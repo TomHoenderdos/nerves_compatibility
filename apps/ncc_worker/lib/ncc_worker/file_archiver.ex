@@ -43,7 +43,7 @@ defmodule NccWorker.FileArchiver do
           collect_pure_elixir_manifest(system_result, project_dir, package_name)
 
         {system_name, system_result} ->
-          collect_manifests_from_system(system_result, project_dir, system_name)
+          collect_manifests_from_system(system_result, project_dir, system_name, package_name)
       end)
 
     # Archive each file
@@ -73,11 +73,11 @@ defmodule NccWorker.FileArchiver do
     {:ok, final_stats}
   end
 
-  @spec collect_manifests_from_system(map(), String.t(), String.t()) ::
+  @spec collect_manifests_from_system(map(), String.t(), String.t(), String.t() | nil) ::
           [{String.t(), map()}]
-  defp collect_manifests_from_system(_system_result, _project_dir, "host"), do: []
+  defp collect_manifests_from_system(_system_result, _project_dir, "host", _package), do: []
 
-  defp collect_manifests_from_system(system_result, project_dir, system_name) do
+  defp collect_manifests_from_system(system_result, project_dir, system_name, package_name) do
     # The system_name is like "nerves_system_rpi4" but the build directory is "rpi4"
     # We need to find the actual build directory
     build_path = find_build_path(project_dir, system_name)
@@ -90,8 +90,17 @@ defmodule NccWorker.FileArchiver do
 
       index = build_rel_index(build_path)
 
-      # Get the package's own beam_scan
-      package_files = collect_manifest_entries(system_result[:beam_scan], index, "package")
+      # The package's own files come from the target's compile output, which
+      # is what its beam_scan described (`NccWorker.BeamScan.analyze/2`): the
+      # release copy of a BEAM is stripped, so its bytes would not match the
+      # manifest's SHA256. The release index is the fallback for a package
+      # whose build output is not under its own name.
+      package_files =
+        collect_manifest_entries(
+          system_result[:beam_scan],
+          package_index(build_path, package_name, index),
+          "package"
+        )
 
       # Get all dependency scans
       dependency_files =
@@ -118,6 +127,18 @@ defmodule NccWorker.FileArchiver do
       |> Map.new(&{Path.relative_to(&1, app_dir), &1})
 
     collect_manifest_entries(system_result[:beam_scan], index, "package")
+  end
+
+  @spec package_index(String.t(), String.t() | nil, %{String.t() => String.t()}) ::
+          %{String.t() => String.t()}
+  defp package_index(_build_path, nil, release_index), do: release_index
+
+  defp package_index(build_path, package_name, release_index) do
+    app_dir = Path.join([build_path, "lib", package_name])
+
+    if File.dir?(app_dir),
+      do: app_dir |> walk_files() |> Map.new(&{Path.relative_to(&1, app_dir), &1}),
+      else: release_index
   end
 
   @spec find_build_path(String.t(), String.t()) :: String.t() | nil
