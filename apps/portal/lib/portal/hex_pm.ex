@@ -152,9 +152,15 @@ defmodule Portal.HexPm do
   checksum. Used by `Portal.BuildCache.Promotion` to tie a build cache
   candidate a container reported to the tarball Hex actually serves.
 
-  Found checksums are remembered for the life of the node: a release's
-  checksum never changes, and several builds of one popular release can
-  promote within minutes. Errors are not remembered, so a Hex outage is
+  Found checksums are remembered for the life of the node, since several
+  builds of one popular release can promote within minutes. Hex lets an
+  author republish a release for a short window after publishing, so a
+  remembered answer can go stale. That only ever makes promotion refuse
+  candidates built from the new tarball, or keep accepting ones built from
+  the author's earlier tarball, which was a genuine Hex release: it cannot
+  admit anything Hex never served. No TTL for that reason (one would need
+  a timestamp per entry and an expiry check, not a one-line change); a node
+  restart clears the memo. Errors are not remembered, so a Hex outage is
   retried by the next promotion. `fetch` is the uncached lookup, a seam for
   tests.
   """

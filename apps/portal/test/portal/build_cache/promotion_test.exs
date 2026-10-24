@@ -3,6 +3,8 @@ defmodule Portal.BuildCache.PromotionTest do
 
   @moduletag :capture_log
 
+  import ExUnit.CaptureLog
+
   alias Compatibility.BuildCacheKey
   alias Portal.BuildCache.Promotion
 
@@ -280,5 +282,74 @@ defmodule Portal.BuildCache.PromotionTest do
 
     assert_received :asked
     refute_received :asked
+  end
+
+  # `File.ls/1` drops names that are not valid UTF-8 on Linux, so an entry
+  # named that way would never be checked at all.
+  test "refuses an entry whose name is not valid UTF-8", ctx do
+    c = candidate(ctx.out)
+    ebin = Path.join([ctx.out, "build-cache", c["key"], "ebin"])
+
+    case :file.write_file(ebin <> "/" <> <<0xFF>>, "x") do
+      :ok ->
+        assert %{promoted: 0, refused: 1} =
+                 Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                   release_checksum: &hex_ok/2
+                 )
+
+        assert File.ls!(ctx.cache) == []
+
+      {:error, reason} ->
+        IO.puts(
+          "skipped: this filesystem refuses a non-UTF-8 file name (#{inspect(reason)}); " <>
+            "name_string/1 is covered without it"
+        )
+    end
+  end
+
+  test "name_string/1 accepts UTF-8 names only" do
+    assert Promotion.name_string(~c"ebin") == {:ok, "ebin"}
+    assert Promotion.name_string("Elixir.Jason.beam") == {:ok, "Elixir.Jason.beam"}
+    assert Promotion.name_string(~c"caf\u00e9") == {:ok, "caf\u00e9"}
+
+    for bad <- [<<0xFF>>, "a" <> <<0xFE>>, "", ".", "..", "a/b", "a" <> <<0>>, [0xD800], :atom] do
+      assert Promotion.name_string(bad) == :error, "accepted #{inspect(bad)}"
+    end
+  end
+
+  test "a refusal escapes a newline in a name rather than forging a log line", ctx do
+    c = candidate(ctx.out)
+    entry = Path.join([ctx.out, "build-cache", c["key"]])
+    File.ln_s!("/etc", Path.join(entry, "x\n[error] FORGED"))
+
+    log =
+      capture_log(fn ->
+        assert %{promoted: 0, refused: 1} =
+                 Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                   release_checksum: &hex_ok/2
+                 )
+      end)
+
+    assert log =~ ~S"x\n[error] FORGED"
+    refute log |> String.split("\n") |> Enum.any?(&String.starts_with?(&1, "[error] FORGED"))
+  end
+
+  test "refuses a candidate directory that is a symlink, leaving its target alone", ctx do
+    victim = Path.join(ctx.tmp, "victim")
+    File.mkdir_p!(Path.join(victim, "ebin"))
+    File.write!(Path.join(victim, "ebin/Elixir.Jason.beam"), "victim")
+
+    c = inputs(%{})
+    c = Map.put(c, "key", key_of(c))
+    File.mkdir_p!(Path.join(ctx.out, "build-cache"))
+    File.ln_s!(victim, Path.join([ctx.out, "build-cache", c["key"]]))
+
+    assert %{promoted: 0, refused: 1} =
+             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+               release_checksum: &hex_ok/2
+             )
+
+    assert File.ls!(ctx.cache) == []
+    assert File.read!(Path.join(victim, "ebin/Elixir.Jason.beam")) == "victim"
   end
 end

@@ -34,8 +34,15 @@ defmodule Portal.BuildCache.Promotion do
        above it), on the same device as `out/`, holding only directories,
        regular files with a link count of 1, and Mix's own links (below).
        The tree is walked with `File.lstat/1` only, so nothing a link points
-       at is ever followed. The container has exited by now, so nothing can
-       change the tree between the walk and the rename.
+       at is ever followed, and listed with `:file.list_dir_all/1`, because
+       `File.ls/1` silently drops names that are not valid UTF-8 on Linux
+       and such an entry would be promoted unchecked. Any such name refuses
+       the candidate: every real Mix artifact name is UTF-8.
+       The container has exited by now. A concurrent build could still hold
+       a file descriptor into the tree, passed through the read-write caches
+       builds share, and change it between the walk and the rename; what it
+       can reach that way is limited to its own package's slot, which step 3
+       already pins.
     6. An existing entry is never replaced. The tree is renamed into a
        `<dest>.tmp.<hex>` staging name (copied with `cp -a` when the cache is
        on another filesystem), then renamed into place. `Portal.Workers.Sweep`
@@ -143,7 +150,7 @@ defmodule Portal.BuildCache.Promotion do
       {:ok, key} ->
         Logger.warning(
           "Build cache candidate for #{ctx.package} #{ctx.version} reported key " <>
-            "#{inspect(reported, printable_limit: 80)} but its inputs hash to #{key}; refused"
+            "#{show(reported)} but its inputs hash to #{key}; refused"
         )
 
         {:refused, hex}
@@ -247,7 +254,7 @@ defmodule Portal.BuildCache.Promotion do
     parent = Path.join(ctx.out, "build-cache")
     source = Path.join(parent, key)
 
-    with {:ok, %File.Stat{} = out} <- lstat(ctx.out),
+    with {:ok, %File.Stat{type: :directory} = out} <- lstat(ctx.out),
          {:ok, %File.Stat{type: :directory}} <- lstat(parent),
          {:ok, %File.Stat{type: :directory} = src} <- lstat(source),
          true <- same_device?(out, src) || {:error, "not on the output directory's device"} do
@@ -262,20 +269,57 @@ defmodule Portal.BuildCache.Promotion do
   defp same_device?(a, b),
     do: a.major_device == b.major_device and a.minor_device == b.minor_device
 
-  # Paths below the candidate root, named by `File.ls/1` of a directory
-  # `lstat` showed is real.
+  # Paths below the candidate root, named by a raw listing of a directory
+  # `lstat` showed is real. Not `File.ls/1`: see the moduledoc, step 5.
   # sobelow_skip ["Traversal.FileModule"]
   defp walk(dir, top?, package) do
-    case File.ls(dir) do
+    case :file.list_dir_all(dir) do
       {:ok, names} ->
-        Enum.reduce_while(names, :ok, fn name, :ok ->
-          dir |> Path.join(name) |> check_entry(name, top?, package) |> continue_if_ok()
+        Enum.reduce_while(names, :ok, fn raw, :ok ->
+          raw |> check_name(dir, top?, package) |> continue_if_ok()
         end)
 
       {:error, reason} ->
-        {:error, "cannot list #{dir}: #{inspect(reason)}"}
+        {:error, "cannot list #{show(dir)}: #{inspect(reason)}"}
     end
   end
+
+  defp check_name(raw, dir, top?, package) do
+    case name_string(raw) do
+      {:ok, name} ->
+        dir |> Path.join(name) |> check_entry(name, top?, package)
+
+      :error ->
+        {:error, "name that is not valid UTF-8 in #{show(dir)}: #{show(raw)}"}
+    end
+  end
+
+  @doc false
+  # A name as `:file.list_dir_all/1` returns it: a charlist when it decodes
+  # in the native name encoding, a binary of raw bytes when it does not.
+  @spec name_string(binary() | charlist()) :: {:ok, String.t()} | :error
+  def name_string(name) when is_list(name) do
+    case :unicode.characters_to_binary(name) do
+      bin when is_binary(bin) -> name_string(bin)
+      _ -> :error
+    end
+  rescue
+    ArgumentError -> :error
+  end
+
+  def name_string(name) when is_binary(name) do
+    if String.valid?(name) and name not in ["", ".", ".."] and
+         not String.contains?(name, ["/", <<0>>]),
+       do: {:ok, name},
+       else: :error
+  end
+
+  def name_string(_name), do: :error
+
+  # Every container-chosen string reaches the log through here: escaped, so
+  # a newline cannot forge a line and invalid UTF-8 cannot make the
+  # formatter drop it, and bounded.
+  defp show(term), do: inspect(term, printable_limit: 200, binaries: :as_strings)
 
   defp continue_if_ok(:ok), do: {:cont, :ok}
   defp continue_if_ok(error), do: {:halt, error}
@@ -284,10 +328,10 @@ defmodule Portal.BuildCache.Promotion do
     case lstat(path) do
       {:ok, %File.Stat{type: :directory}} -> walk(path, false, package)
       {:ok, %File.Stat{type: :regular, links: 1}} -> :ok
-      {:ok, %File.Stat{type: :regular}} -> {:error, "hardlinked file #{path}"}
+      {:ok, %File.Stat{type: :regular}} -> {:error, "hardlinked file #{show(path)}"}
       {:ok, %File.Stat{type: :symlink}} -> check_link(path, name, top?, package)
-      {:ok, %File.Stat{type: type}} -> {:error, "#{type} at #{path}"}
-      {:error, reason} -> {:error, "cannot stat #{path}: #{inspect(reason)}"}
+      {:ok, %File.Stat{type: type}} -> {:error, "#{type} at #{show(path)}"}
+      {:error, reason} -> {:error, "cannot stat #{show(path)}: #{inspect(reason)}"}
     end
   end
 
@@ -300,11 +344,11 @@ defmodule Portal.BuildCache.Promotion do
          [_, _deps, ^name] <- Regex.run(allowed, target) do
       :ok
     else
-      _ -> {:error, "symlink #{path} is not Mix's own #{name} link"}
+      _ -> {:error, "symlink #{show(path)} is not Mix's own #{name} link"}
     end
   end
 
-  defp check_link(path, _name, _top?, _package), do: {:error, "symlink #{path}"}
+  defp check_link(path, _name, _top?, _package), do: {:error, "symlink #{show(path)}"}
 
   # `cache` is the per-image slug dir under the operator's cache root; `key`
   # is the host-computed 64-hex key; the staging suffix is host random.
@@ -324,7 +368,8 @@ defmodule Portal.BuildCache.Promotion do
              :ok <- stage(source, staging),
              :ok <- File.rename(staging, dest) do
           Logger.info(
-            "Promoted build cache entry #{key} for #{ctx.package} #{ctx.version} (#{c["target"]})"
+            "Promoted build cache entry #{key} for #{ctx.package} #{ctx.version} " <>
+              "(#{show(c["target"])})"
           )
 
           :promoted
