@@ -1105,6 +1105,158 @@ defmodule Portal.Catalog do
     List.flatten(rows)
   end
 
+  # Package versions a toolchain build is wanted for (`toolchain_backlog/3`),
+  # one row per version with the newest `finished_at` of its qualifying runs.
+  #
+  # A version qualifies on a passing `host` compile in a full run that is not
+  # revoked. A full run is one without carried systems: a partial run's other
+  # results are copies of an earlier run, so only a full one shows the package
+  # compiled from scratch on this image. Pure BEAM means the package records no
+  # NIF language and no port language, read as `native_breakdown/0` reads them;
+  # a package with no `native_components` at all counts as pure, since the
+  # worker writes the map whenever it can see the source.
+  #
+  # A live row for the identity removes the version: `pass` and `skipped` at any
+  # age, `error` younger than a day ($3), `fail` younger than 7 days ($4), and
+  # any revoked row, whatever its status. A revoke is a human decision, and only
+  # a `builder_version` bump makes a new identity to build again.
+  @toolchain_candidates_sql """
+  SELECT p.name AS package, r.version_tested AS version, max(r.finished_at) AS finished_at
+  FROM catalog_packages p
+  JOIN catalog_runs r ON r.package_id = p.id
+  JOIN catalog_system_results s ON s.run_id = r.id
+  WHERE s.system_pkg = 'host'
+    AND s.status = 'pass'
+    AND r.revoked_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM catalog_system_results c
+      WHERE c.run_id = r.id AND c.carried_from_run_id IS NOT NULL
+    )
+    AND p.native_components ->> 'nif_language' IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements_text(
+        CASE
+          WHEN jsonb_typeof(p.native_components -> 'port_languages') = 'array'
+          THEN p.native_components -> 'port_languages'
+        END
+      ) AS l(lang)
+      WHERE l.lang IS NOT NULL
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM catalog_toolchain_builds t
+      WHERE t.package_id = p.id
+        AND t.version = r.version_tested
+        AND t.toolchain = $1
+        AND t.builder_version = $2
+        AND (
+          t.revoked_at IS NOT NULL
+          OR t.status IN ('pass', 'skipped')
+          OR (t.status = 'error' AND coalesce(t.finished_at, t.updated_at) > $3::timestamp)
+          OR (t.status = 'fail' AND coalesce(t.finished_at, t.updated_at) > $4::timestamp)
+        )
+    )
+  GROUP BY p.id, p.name, r.version_tested
+  """
+
+  @doc """
+  Package versions to build on `toolchain` at `builder_version`, at most
+  `limit` of them: every version with a passing `host` compile on a full,
+  non-revoked run, of a package with no native components, that has no live
+  `Portal.Catalog.ToolchainBuild` for the identity (see the query's comment for
+  what is live).
+
+  The newest three versions of each package come first, newest run first, then
+  the rest the same way, so a capped sweep spreads over packages before it
+  works back through any one package's history.
+  """
+  @spec toolchain_backlog(String.t(), pos_integer(), non_neg_integer()) :: [
+          %{package: String.t(), version: String.t()}
+        ]
+  def toolchain_backlog(toolchain, builder_version, limit) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        WITH candidates AS (#{@toolchain_candidates_sql}),
+        ranked AS (
+          SELECT package, version, finished_at,
+                 row_number() OVER (
+                   PARTITION BY package ORDER BY finished_at DESC NULLS LAST, version DESC
+                 ) AS rank
+          FROM candidates
+        )
+        SELECT package, version
+        FROM ranked
+        ORDER BY rank > 3, finished_at DESC NULLS LAST, package, version
+        LIMIT $5
+        """,
+        toolchain_params(toolchain, builder_version) ++ [limit]
+      )
+
+    Enum.map(rows, fn [package, version] -> %{package: package, version: version} end)
+  end
+
+  @doc """
+  Per configured toolchain (`Portal.Toolchains.images/0`), at the current
+  `builder_version`: how many non-revoked toolchain builds have each status,
+  and how many versions `toolchain_backlog/3` would still build.
+  """
+  @spec toolchain_counts() :: %{
+          String.t() => %{
+            pass: non_neg_integer(),
+            skipped: non_neg_integer(),
+            error: non_neg_integer(),
+            fail: non_neg_integer(),
+            backlog: non_neg_integer()
+          }
+        }
+  def toolchain_counts do
+    builder_version = Portal.Toolchains.builder_version()
+
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT toolchain, status, count(*)
+        FROM catalog_toolchain_builds
+        WHERE builder_version = $1 AND revoked_at IS NULL
+        GROUP BY toolchain, status
+        """,
+        [builder_version]
+      )
+
+    statuses = Map.new(rows, fn [toolchain, status, count] -> {{toolchain, status}, count} end)
+
+    Map.new(Portal.Toolchains.images(), fn %{toolchain: toolchain} ->
+      counts =
+        Map.new(~w(pass skipped error fail)a, fn status ->
+          {status, Map.get(statuses, {toolchain, Atom.to_string(status)}, 0)}
+        end)
+
+      {toolchain, Map.put(counts, :backlog, toolchain_backlog_count(toolchain, builder_version))}
+    end)
+  end
+
+  defp toolchain_backlog_count(toolchain, builder_version) do
+    %{rows: [[count]]} =
+      Repo.query!(
+        "SELECT count(*) FROM (#{@toolchain_candidates_sql}) candidates",
+        toolchain_params(toolchain, builder_version)
+      )
+
+    count
+  end
+
+  defp toolchain_params(toolchain, builder_version) do
+    now = NaiveDateTime.utc_now()
+
+    [
+      toolchain,
+      builder_version,
+      NaiveDateTime.add(now, -1, :day),
+      NaiveDateTime.add(now, -7, :day)
+    ]
+  end
+
   @doc """
   Pulls a run's files from precompiled publication. Manifests and batches skip
   a revoked run; the next batch drops it for every client.

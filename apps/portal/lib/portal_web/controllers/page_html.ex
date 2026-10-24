@@ -10,6 +10,9 @@ defmodule PortalWeb.PageHTML do
 
   embed_templates "page_html/*"
 
+  @doc "A toolchain such as `1.19/28` as a DOM id fragment, `1.19-28`."
+  def toolchain_dom_id(toolchain), do: String.replace(toolchain, "/", "-")
+
   def verification_label(:hex_owner), do: "Hex.pm owner"
   def verification_label(:github_repo), do: "GitHub repository"
   def verification_label(:anonymous_turnstile), do: "Anonymous"

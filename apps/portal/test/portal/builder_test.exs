@@ -275,6 +275,25 @@ defmodule Portal.BuilderTest do
     test "a normal build sends no mode" do
       refute Map.has_key?(Builder.worker_input(Map.put(@input_job, :mode, nil)), "mode")
     end
+
+    test "a toolchain build tells the worker its mode and toolchain" do
+      input =
+        Builder.worker_input(
+          Map.merge(@input_job, %{mode: "toolchain", toolchain: %{elixir: "1.19", otp: "28"}})
+        )
+
+      assert input["mode"] == "toolchain"
+      assert input["toolchain"] == %{elixir: "1.19", otp: "28"}
+
+      assert Jason.decode!(Jason.encode!(input))["toolchain"] == %{
+               "elixir" => "1.19",
+               "otp" => "28"
+             }
+    end
+
+    test "a normal build sends no toolchain" do
+      refute Map.has_key?(Builder.worker_input(@input_job), "toolchain")
+    end
   end
 
   # The container's root filesystem is the image: a build that writes outside

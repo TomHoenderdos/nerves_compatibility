@@ -29,6 +29,9 @@ defmodule Portal.Builder do
           optional(:image_digest) => String.t(),
           optional(:systems_filter) => [String.t()] | nil,
           optional(:mode) => String.t() | nil,
+          # For `mode: "toolchain"`: the toolchain the run was queued for,
+          # e.g. `%{elixir: "1.19", otp: "28"}`.
+          optional(:toolchain) => %{elixir: String.t(), otp: String.t()} | nil,
           optional(:argus) => map() | nil
         }
 
@@ -159,6 +162,7 @@ defmodule Portal.Builder do
       },
       systems_filter: Map.get(args, :systems_filter),
       mode: Map.get(args, :mode),
+      toolchain: Map.get(args, :toolchain),
       argus: Map.get(args, :argus)
     }
 
@@ -477,6 +481,7 @@ defmodule Portal.Builder do
     }
     |> maybe_put("systems_filter", job.systems_filter)
     |> maybe_put("mode", Map.get(job, :mode))
+    |> maybe_put("toolchain", Map.get(job, :toolchain))
     |> maybe_put("argus", Map.get(job, :argus))
   end
 

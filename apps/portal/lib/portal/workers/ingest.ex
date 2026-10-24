@@ -100,10 +100,31 @@ defmodule Portal.Workers.Ingest do
   @doc """
   The queues a builder deploy pauses and drains on `node` before restarting it
   (`ops/builder-deploy.sh`): the builds, the shared ingest queue and the node's
-  own, where a build that finishes while draining puts its ingest.
+  own, where a build that finishes while draining puts its ingest, and the
+  `toolchain` queue (`Portal.Workers.ToolchainBuild`) when the node runs it.
+
+  The toolchain queue is conditional because the deploy refuses to go ahead
+  when a listed queue has no producer on the node (`Oban.check_queue/1` finds
+  none), and a build host only runs it once its `OBAN_QUEUES` names it.
   """
-  @spec builder_queues(node()) :: [String.t()]
-  def builder_queues(node \\ node()), do: ["builds", "ingest", local_queue(node)]
+  @spec builder_queues(node(), keyword() | false | nil) :: [String.t()]
+  def builder_queues(node \\ node(), queues \\ configured_queues()) do
+    ["builds", "ingest", local_queue(node)] ++
+      if runs_queue?(queues, :toolchain), do: ["toolchain"], else: []
+  end
+
+  defp configured_queues, do: :portal |> Application.get_env(Oban, []) |> Keyword.get(:queues)
+
+  defp runs_queue?(queues, name) when is_list(queues) do
+    case Keyword.get(queues, name, 0) do
+      limit when is_integer(limit) -> limit > 0
+      # Oban also takes a keyword of queue options, e.g. `[limit: 1]`.
+      opts when is_list(opts) -> Keyword.get(opts, :limit, 0) > 0
+      _ -> false
+    end
+  end
+
+  defp runs_queue?(_queues, _name), do: false
 
   alias Portal.Builder
   alias Portal.Catalog.Ingestion

@@ -88,7 +88,13 @@ config :portal, Oban,
        {"*/5 * * * *", Portal.Workers.RequestSync},
        # Every 15 minutes: render and sign a precompiled batch. Only the web
        # host has the signing key and rsynced artifact files. Carries `:maintenance`.
-       {"*/15 * * * *", Portal.Workers.PrecompiledBatch}
+       {"*/15 * * * *", Portal.Workers.PrecompiledBatch},
+       # Daily, off every other entry here: enqueue the pure-BEAM package
+       # versions still missing a build on each configured toolchain
+       # (`Portal.Toolchains`), up to `max_per_run`. The sweep itself is a few
+       # queries and carries `:maintenance`; the builds it queues run on the
+       # build host's single-slot `:toolchain` queue.
+       {"17 3 * * *", Portal.Workers.ToolchainSweep}
      ]}
   ]
 

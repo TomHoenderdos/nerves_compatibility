@@ -1,5 +1,6 @@
 defmodule PortalWeb.PageControllerTest do
   use PortalWeb.ConnCase
+  use Oban.Testing, repo: Portal.Repo
 
   # `add_test_passkey/1`: an admin without one is bounced to
   # `/settings/security` by `PortalWeb.Plugs.RequireAdmin`, so every admin
@@ -411,7 +412,8 @@ defmodule PortalWeb.PageControllerTest do
           ~p"/admin/update-check",
           ~p"/admin/argus",
           ~p"/admin/bulk-rebuild",
-          ~p"/admin/bulk-rebuild/#{Ecto.UUID.generate()}/cancel"
+          ~p"/admin/bulk-rebuild/#{Ecto.UUID.generate()}/cancel",
+          ~p"/admin/maintenance/toolchain-sweep"
         ] do
       assert redirected_to(post(recycle(conn), path)) == ~p"/login"
     end
@@ -553,6 +555,41 @@ defmodule PortalWeb.PageControllerTest do
     assert html =~ "Precompiled signing"
     assert html =~ "no signing key"
     assert html =~ "no batch yet"
+  end
+
+  test "maintenance shows the toolchain counts", %{conn: conn} do
+    {:ok, _run} =
+      Portal.Catalog.Ingestion.ingest(
+        %{
+          "package" => %{"name" => "portable", "version" => "1.0.0"},
+          "finished_at" => "2026-10-20T10:00:00Z",
+          "systems" => %{"host" => %{"status" => "pass"}}
+        },
+        %{run_id: "portable-run", image_digest: "sha256:x", files_dir: System.tmp_dir!()}
+      )
+
+    {conn, _admin} = signed_in_admin(conn, "admin_toolchains")
+
+    html = conn |> get(~p"/admin/maintenance") |> html_response(200)
+    assert html =~ "Toolchains"
+    assert html =~ "1.19/28"
+    assert html =~ "1.20/29"
+    assert html =~ ~r/id="toolchain-1\.19-28-backlog"[^>]*>\s*1\s*</
+    assert html =~ ~r/id="toolchain-1\.19-28-pass"[^>]*>\s*0\s*</
+    assert html =~ "Run sweep now"
+  end
+
+  test "toolchain-sweep enqueues a sweep and redirects", %{conn: conn} do
+    {conn, _admin} = signed_in_admin(conn, "admin_toolchain_sweep")
+
+    conn = post(conn, ~p"/admin/maintenance/toolchain-sweep")
+    assert redirected_to(conn) == ~p"/admin/maintenance"
+    assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "Toolchain sweep queued"
+    assert [_job] = all_enqueued(worker: Portal.Workers.ToolchainSweep)
+
+    conn = post(conn, ~p"/admin/maintenance/toolchain-sweep")
+    assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "already queued"
+    assert [_job] = all_enqueued(worker: Portal.Workers.ToolchainSweep)
   end
 
   test "revoke-run revokes and redirects", %{conn: conn} do
