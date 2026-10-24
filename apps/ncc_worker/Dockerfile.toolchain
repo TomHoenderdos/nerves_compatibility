@@ -1,0 +1,55 @@
+# check=skip=InvalidDefaultArgInFrom
+# A toolchain image: the worker on a plain Elixir/OTP pair, for
+# `mode: "toolchain"` runs (NccWorker.RunScope). Such a run compiles the
+# package in a `mix new` project on the host only, so this image carries no
+# Nerves system, no nerves_bootstrap and no argus. `make build-toolchains`
+# builds one image per pair in the Makefile's TOOLCHAIN_IMAGES, each from a
+# pinned hexpm/elixir BASE; the main image (Dockerfile) stays the 1.20/29 one.
+ARG BASE
+FROM ${BASE}
+
+# The slim images lack a compiler and git. A package's own build (elixir_make,
+# rebar3 port hooks, build scripts that ask git for a version) needs them, and
+# the worker's classifier shells out to grep.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      git make gcc g++ grep ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# No user: Portal.Builder runs the container as an arbitrary `--user uid:gid`
+# with HOME=/home/nerves, so the home has to be usable by any uid.
+RUN mkdir -p /home/nerves/.mix /home/nerves/.hex /home/nerves/.nerves /home/nerves/.cache /app && \
+    chmod -R a+rwX /home/nerves /app
+
+ENV HOME=/home/nerves \
+    MIX_HOME=/home/nerves/.mix \
+    HEX_HOME=/home/nerves/.hex \
+    LANG=C.UTF-8
+
+# The archives land in MIX_HOME, which the image keeps. At run time the portal
+# points HEX_HOME at the shared /hex-cache mount; the archives do not move.
+RUN mix local.hex --force && \
+    mix local.rebar --force
+
+# Every directory the portal bind-mounts, created here because the container
+# runs --read-only (see the main Dockerfile).
+RUN mkdir -p /work /out /files /tmp /hex-cache /build-cache && \
+    chmod a+rwX /work /out /files /hex-cache /build-cache
+
+WORKDIR /app
+
+# The same worker sources and escript build as the main Dockerfile.
+COPY mix.exs mix.lock ./
+COPY config ./config
+COPY apps/compatibility ./apps/compatibility
+COPY apps/ncc_worker        ./apps/ncc_worker
+
+WORKDIR /app/apps/ncc_worker
+RUN cp /app/mix.lock mix.lock && mix deps.get && mix escript.build
+
+ENV NCC_INPUT=/work/input.json
+
+# Root built everything above; let the runtime uid read and run it all.
+RUN chmod -R a+rwX /home/nerves /app
+
+ENTRYPOINT ["/app/apps/ncc_worker/ncc_worker"]

@@ -27,6 +27,29 @@ Docker layer caching is on, so a source-only change reuses the apt, Elixir and
 hex-archive layers above the `COPY`. Use `make build-clean` (`--no-cache`) when
 those upper layers are what you want refetched, e.g. after an OTP bump.
 
+### Toolchain images and queue
+
+Toolchain builds compile a package on a plain Elixir/OTP pair rather than the
+firmware image's 1.20/29. Each pair has its own image, built from
+`apps/ncc_worker/Dockerfile.toolchain` on a pinned `hexpm/elixir` base:
+
+```bash
+make build-toolchains   # every tag=base pair in the Makefile's TOOLCHAIN_IMAGES
+```
+
+`ops/builder-deploy.sh` builds them as `<tag>-deploy` next to the main image
+and moves `<tag>` to `<tag>-previous` only once every candidate built.
+
+- They run on the `toolchain` Oban queue, limit 1, so they never take a
+  firmware slot. Add `toolchain:1` to `OBAN_QUEUES` on the **build host
+  only**; the web host has no Docker images to run them with. The unset
+  default (single node) already includes it.
+- `NCC_TOOLCHAINS` replaces the configured list of toolchains, as
+  comma-separated `toolchain=image` pairs:
+  `1.20/29=ncc-worker:local,1.19/28=ncc-worker:elixir-1.19-otp-28`. Unset
+  uses the list in `apps/portal/config/config.exs`. A malformed entry stops
+  the boot.
+
 ## Portal configuration
 
 Configure these environment variables for the Phoenix service:
@@ -54,7 +77,7 @@ Configure these environment variables for the Phoenix service:
 | `NCC_LOG_BUDGET_MB` | Optional cap on stored build logs; default 2048 |
 | `UMAMI_WEBSITE_ID` | Analytics site id. Defaults to this project's own site id, so another deployment should set its own or an empty string to turn analytics off |
 | `DNS_CLUSTER_QUERY` | Optional DNS query for clustering nodes |
-| `OBAN_QUEUES` | Which queues this node runs, e.g. `builds:1,ingest:2`. Unset means `builds:1,ingest:2,intake:5,maintenance:1`. See [Splitting the build host](#splitting-the-build-host) |
+| `OBAN_QUEUES` | Which queues this node runs, e.g. `builds:1,ingest:2`. Unset means `builds:1,ingest:2,intake:5,maintenance:1,toolchain:1`. See [Splitting the build host](#splitting-the-build-host) |
 | `PRECOMPILED_SIGNING_KEY` | Path to the precompiled-package signing key, e.g. `/etc/ncc/precompiled/signing.key`. Web host only; see [Precompiled signing key](#precompiled-signing-key). Unset means `root.json` is 404 and `batch.json` is 503, with manifests still served unsigned |
 
 Build-host settings. Every path below is passed to `docker run --mount source=`, so it is
@@ -63,6 +86,7 @@ resolved by the host daemon and must be a path the daemon can see:
 | Env var | Purpose |
 | --- | --- |
 | `NCC_DOCKER_IMAGE` | Worker image; defaults to `ncc-worker:local` |
+| `NCC_TOOLCHAINS` | Toolchain images, `1.19/28=ncc-worker:elixir-1.19-otp-28,...`. See [Toolchain images and queue](#toolchain-images-and-queue) |
 | `NCC_SCRATCH_ROOT` | Per-run scratch dirs; defaults to `~/.ncc-scratch` |
 | `NCC_NERVES_CACHE` | Shared Nerves cache; defaults to `~/.ncc-nerves-cache` |
 | `NCC_HEX_CACHE` | Shared Hex cache; defaults to `~/.ncc-hex-cache` |
@@ -301,7 +325,7 @@ server. `OBAN_QUEUES` lets one deploy run as two nodes against one database:
 
 | | web node | build node |
 | --- | --- | --- |
-| `OBAN_QUEUES` | `intake:5,maintenance:1` | `builds:1,ingest:2` |
+| `OBAN_QUEUES` | `intake:5,maintenance:1` | `builds:1,ingest:2,toolchain:1` |
 | `DATABASE_URL` | local Postgres | the same Postgres, over the private network |
 | Docker daemon | not used | runs the worker image |
 | Reverse proxy/TLS | yes | no, firewall it to the private interface |
