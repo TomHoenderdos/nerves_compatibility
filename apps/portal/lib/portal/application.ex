@@ -7,6 +7,10 @@ defmodule Portal.Application do
 
   @impl true
   def start(_type, _args) do
+    # Owned by this process, which lives as long as the application: the
+    # memo of Hex.pm release checksums `Portal.BuildCache.Promotion` checks.
+    :ok = Portal.HexPm.create_release_checksum_table()
+
     children = [
       PortalWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:portal, :dns_cluster_query) || :ignore},

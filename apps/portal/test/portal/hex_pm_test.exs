@@ -118,4 +118,43 @@ defmodule Portal.HexPmTest do
       assert {:error, :hex_api_unavailable} = HexPm.identity_from_profile(%{})
     end
   end
+
+  describe "release_checksum/3" do
+    # Unique per test: the memo is one table for the whole node.
+    defp release, do: {"memo-#{System.unique_integer([:positive])}", "1.0.0"}
+
+    defp counting(answer) do
+      me = self()
+
+      fn name, version ->
+        send(me, {:fetched, name, version})
+        answer
+      end
+    end
+
+    # A release's checksum never changes, and several builds of one popular
+    # release can promote within minutes.
+    test "a found checksum is fetched once and then remembered" do
+      {name, version} = release()
+      fetch = counting({:ok, "abc"})
+
+      assert {:ok, "abc"} = HexPm.release_checksum(name, version, fetch)
+      assert {:ok, "abc"} = HexPm.release_checksum(name, version, fetch)
+
+      assert_received {:fetched, ^name, ^version}
+      refute_received {:fetched, _, _}
+    end
+
+    # A Hex outage must be retried by the next promotion, not remembered.
+    test "an error is not remembered" do
+      {name, version} = release()
+      fetch = counting({:error, :hex_api_unavailable})
+
+      assert {:error, :hex_api_unavailable} = HexPm.release_checksum(name, version, fetch)
+      assert {:error, :hex_api_unavailable} = HexPm.release_checksum(name, version, fetch)
+
+      assert_received {:fetched, ^name, ^version}
+      assert_received {:fetched, ^name, ^version}
+    end
+  end
 end
