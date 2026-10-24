@@ -320,7 +320,12 @@ defmodule Portal.Workers.BuildTest do
 
     test "a successful build promotes its candidate before enqueuing the ingest", ctx do
       Application.put_env(:portal, Portal.BuildCache.Promotion,
-        release_checksum: fn "jason", "1.4.5" -> {:ok, @outer} end
+        release_checksum: fn "jason", "1.4.5" -> {:ok, @outer} end,
+        # The real copy runs in a container; the integration test covers it.
+        copy: fn source, staging ->
+          {_, 0} = System.cmd("cp", ["-a", source <> "/.", staging])
+          :ok
+        end
       )
 
       assert :ok = build_jason()

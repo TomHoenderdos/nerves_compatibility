@@ -60,6 +60,26 @@ defmodule Portal.BuildCache.PromotionTest do
 
   # What a real run reports alongside its candidates: the host compile plus
   # one Nerves system, built by the toolchain `inputs/1` names.
+  # The default copy runs in a container (`copy_args/4`); unit tests copy
+  # locally through the seam instead, unless a test passes its own.
+  defp local_copy(source, staging) do
+    case System.cmd("cp", ["-a", source <> "/.", staging], stderr_to_stdout: true) do
+      {_, 0} -> :ok
+      {out, status} -> {:error, {:cp, status, out}}
+    end
+  end
+
+  defp promote(result, out, cache, package, version, opts \\ []) do
+    Promotion.promote(
+      result,
+      out,
+      cache,
+      package,
+      version,
+      Keyword.put_new(opts, :copy, &local_copy/2)
+    )
+  end
+
   defp result(cands, overrides \\ %{}) do
     Map.merge(
       %{
@@ -77,7 +97,7 @@ defmodule Portal.BuildCache.PromotionTest do
     c = candidate(ctx.out)
 
     assert %{promoted: 1, refused: 0} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2
              )
 
@@ -88,7 +108,7 @@ defmodule Portal.BuildCache.PromotionTest do
     c = candidate(ctx.out, %{"dep" => "plug"})
 
     assert %{promoted: 0} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2
              )
 
@@ -102,7 +122,7 @@ defmodule Portal.BuildCache.PromotionTest do
     c = candidate(ctx.out, %{"key" => victim})
 
     assert %{promoted: 0, refused: 1} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2
              )
 
@@ -114,7 +134,7 @@ defmodule Portal.BuildCache.PromotionTest do
     c = candidate(ctx.out, %{"dep_lock" => "1.4.50 x #{@outer}"})
 
     assert %{promoted: 0} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2
              )
   end
@@ -123,7 +143,7 @@ defmodule Portal.BuildCache.PromotionTest do
     c = candidate(ctx.out)
 
     assert %{promoted: 0, refused: 1} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: fn _, _ -> {:ok, String.duplicate("0", 64)} end
              )
   end
@@ -132,7 +152,7 @@ defmodule Portal.BuildCache.PromotionTest do
     c = candidate(ctx.out, %{"dep_lock" => "1.4.5 2e3a008590b0"})
 
     assert %{promoted: 0, refused: 1} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2
              )
   end
@@ -141,7 +161,7 @@ defmodule Portal.BuildCache.PromotionTest do
     c = candidate(ctx.out)
 
     assert %{promoted: 0} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: fn _, _ -> {:error, :hex_api_unavailable} end
              )
   end
@@ -151,7 +171,7 @@ defmodule Portal.BuildCache.PromotionTest do
     File.mkdir_p!(Path.join([ctx.out, "build-cache", c["key"]]))
 
     assert %{promoted: 0, refused: 1} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2
              )
   end
@@ -163,7 +183,7 @@ defmodule Portal.BuildCache.PromotionTest do
     File.ln_s!("../../../../deps_rpi4/jason/include", Path.join(entry, "include"))
 
     assert %{promoted: 1} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2
              )
   end
@@ -185,9 +205,7 @@ defmodule Portal.BuildCache.PromotionTest do
       File.ln_s!(target, link)
 
       assert %{promoted: 0, refused: 1} =
-               Promotion.promote(result([c]), out, ctx.cache, "jason", "1.4.5",
-                 release_checksum: &hex_ok/2
-               ),
+               promote(result([c]), out, ctx.cache, "jason", "1.4.5", release_checksum: &hex_ok/2),
              "accepted #{name} -> #{target}"
     end
   end
@@ -201,7 +219,7 @@ defmodule Portal.BuildCache.PromotionTest do
     File.ln!(beam, outside)
 
     assert %{promoted: 1} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2
              )
 
@@ -227,7 +245,7 @@ defmodule Portal.BuildCache.PromotionTest do
     File.write!(Path.join([ctx.out, "build-cache", c["key"], "ebin/Copy.beam"]), "beam")
 
     assert %{promoted: 0, refused: 1} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2,
                copy: copy
              )
@@ -240,9 +258,7 @@ defmodule Portal.BuildCache.PromotionTest do
     entry = Path.join([ctx.out, "build-cache", c["key"]])
     File.ln!(Path.join(entry, "ebin/Elixir.Jason.beam"), Path.join(entry, "ebin/Copy.beam"))
 
-    case Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
-           release_checksum: &hex_ok/2
-         ) do
+    case promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5", release_checksum: &hex_ok/2) do
       %{promoted: 1} ->
         for name <- ["Elixir.Jason.beam", "Copy.beam"] do
           assert File.lstat!(Path.join([ctx.cache, c["key"], "ebin", name])).links == 1
@@ -259,7 +275,7 @@ defmodule Portal.BuildCache.PromotionTest do
     File.write!(Path.join([ctx.cache, c["key"], "marker"]), "old")
 
     assert %{promoted: 0} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2
              )
 
@@ -272,12 +288,12 @@ defmodule Portal.BuildCache.PromotionTest do
     boom = fn _, _ -> raise "must not be called" end
 
     assert %{promoted: 0, refused: 0} =
-             Promotion.promote(result([candidate(ctx.out)]), ctx.out, nil, "jason", "1.4.5",
+             promote(result([candidate(ctx.out)]), ctx.out, nil, "jason", "1.4.5",
                release_checksum: boom
              )
 
     assert %{promoted: 0, refused: 0} =
-             Promotion.promote(%{}, ctx.out, ctx.cache, "jason", "1.4.5", release_checksum: boom)
+             promote(%{}, ctx.out, ctx.cache, "jason", "1.4.5", release_checksum: boom)
   end
 
   # `BuildCacheKey.key/1` turns each closure entry into a tuple; a closure the
@@ -296,7 +312,7 @@ defmodule Portal.BuildCache.PromotionTest do
       File.mkdir_p!(Path.join([ctx.out, "build-cache", c["key"]]))
 
       assert %{promoted: 0, refused: 1} =
-               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+               promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                  release_checksum: &hex_ok/2
                ),
              "accepted closure #{inspect(closure)}"
@@ -308,7 +324,7 @@ defmodule Portal.BuildCache.PromotionTest do
     File.ln_s!(Path.join([ctx.tmp, "real-out", "build-cache"]), Path.join(ctx.out, "build-cache"))
 
     assert %{promoted: 0, refused: 1} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2
              )
 
@@ -326,7 +342,7 @@ defmodule Portal.BuildCache.PromotionTest do
     end
 
     assert %{promoted: 2} =
-             Promotion.promote(result([c1, c2]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c1, c2]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: lookup
              )
 
@@ -343,7 +359,7 @@ defmodule Portal.BuildCache.PromotionTest do
     case :file.write_file(ebin <> "/" <> <<0xFF>>, "x") do
       :ok ->
         assert %{promoted: 0, refused: 1} =
-                 Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                 promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                    release_checksum: &hex_ok/2
                  )
 
@@ -375,7 +391,7 @@ defmodule Portal.BuildCache.PromotionTest do
     log =
       capture_log(fn ->
         assert %{promoted: 0, refused: 1} =
-                 Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                 promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                    release_checksum: &hex_ok/2
                  )
       end)
@@ -395,7 +411,7 @@ defmodule Portal.BuildCache.PromotionTest do
     File.ln_s!(victim, Path.join([ctx.out, "build-cache", c["key"]]))
 
     assert %{promoted: 0, refused: 1} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+             promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2
              )
 
@@ -420,7 +436,7 @@ defmodule Portal.BuildCache.PromotionTest do
       log =
         capture_log(fn ->
           assert %{promoted: 3, refused: 0, ignored: 1} =
-                   Promotion.promote(result(cands), out, ctx.cache, "jason", "1.4.5",
+                   promote(result(cands), out, ctx.cache, "jason", "1.4.5",
                      release_checksum: &hex_ok/2
                    )
         end)
@@ -433,7 +449,7 @@ defmodule Portal.BuildCache.PromotionTest do
       c = candidate(ctx.out, %{"target" => "x86_64"})
 
       assert %{promoted: 0, refused: 1} =
-               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+               promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                  release_checksum: &hex_ok/2
                )
 
@@ -445,7 +461,7 @@ defmodule Portal.BuildCache.PromotionTest do
       systems = %{"pure_elixir" => %{}, "host" => %{}}
 
       assert %{promoted: 0, refused: 1} =
-               Promotion.promote(
+               promote(
                  result([c], %{"systems" => systems}),
                  ctx.out,
                  ctx.cache,
@@ -457,7 +473,7 @@ defmodule Portal.BuildCache.PromotionTest do
       c = candidate(ctx.out, %{"target" => "any"})
 
       assert %{promoted: 1} =
-               Promotion.promote(
+               promote(
                  result([c], %{"systems" => systems}),
                  ctx.out,
                  ctx.cache,
@@ -473,7 +489,7 @@ defmodule Portal.BuildCache.PromotionTest do
         c = candidate(out, %{"elixir" => elixir, "otp" => otp})
 
         assert %{promoted: 0, refused: 1} =
-                 Promotion.promote(result([c]), out, ctx.cache, "jason", "1.4.5",
+                 promote(result([c]), out, ctx.cache, "jason", "1.4.5",
                    release_checksum: &hex_ok/2
                  ),
                "accepted elixir #{elixir} otp #{otp}"
@@ -482,7 +498,7 @@ defmodule Portal.BuildCache.PromotionTest do
       c = candidate(ctx.out)
 
       assert %{promoted: 0, refused: 1} =
-               Promotion.promote(
+               promote(
                  result([c], %{"toolchain" => nil}),
                  ctx.out,
                  ctx.cache,
@@ -505,7 +521,7 @@ defmodule Portal.BuildCache.PromotionTest do
       log =
         capture_log(fn ->
           assert %{promoted: 0, refused: 6} =
-                   Promotion.promote(
+                   promote(
                      result(cands, %{"systems" => systems}),
                      ctx.out,
                      ctx.cache,
@@ -535,7 +551,7 @@ defmodule Portal.BuildCache.PromotionTest do
       source = Path.join([ctx.out, "build-cache", c["key"]])
 
       assert %{promoted: 1} =
-               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+               promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                  release_checksum: &hex_ok/2
                )
 
@@ -550,7 +566,7 @@ defmodule Portal.BuildCache.PromotionTest do
       File.chmod!(beam, 0o000)
 
       assert %{promoted: 0} =
-               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+               promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                  release_checksum: &hex_ok/2
                )
 
@@ -570,7 +586,7 @@ defmodule Portal.BuildCache.PromotionTest do
       end
 
       assert %{promoted: 1} =
-               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+               promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                  release_checksum: &hex_ok/2,
                  copy: copy
                )
@@ -593,7 +609,7 @@ defmodule Portal.BuildCache.PromotionTest do
       end
 
       assert %{promoted: 0, refused: 1} =
-               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+               promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                  release_checksum: &hex_ok/2,
                  copy: copy
                )
@@ -610,7 +626,7 @@ defmodule Portal.BuildCache.PromotionTest do
       File.chmod!(Path.join(entry, "lib/sticky"), 0o1777)
 
       assert %{promoted: 1} =
-               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+               promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                  release_checksum: &hex_ok/2
                )
 
@@ -619,6 +635,68 @@ defmodule Portal.BuildCache.PromotionTest do
       assert mode.("ebin/Elixir.Jason.beam") == 0o755
       assert mode.("ebin") == 0o755
       assert mode.("lib/sticky") == 0o755
+    end
+  end
+
+  describe "container copy" do
+    @key String.duplicate("a", 64)
+
+    test "copy_args/4 copies inside a sealed container, mounting out/ read-only" do
+      args = Promotion.copy_args("/scratch/run/out", "/cache/slug/k.tmp.x", @key, "ncc-worker:t")
+
+      assert ["run", "--rm", "--pull=never", "--name", "ncc-promote-" <> suffix | _] = args
+      assert suffix =~ ~r/\A[0-9a-f]{16}\z/
+      assert args |> Enum.chunk_every(2, 1) |> Enum.member?(["--network", "none"])
+      assert "--read-only" in args
+      assert "--cap-drop=ALL" in args
+      assert "--security-opt=no-new-privileges" in args
+      assert "type=bind,source=/scratch/run/out,target=/src,readonly" in args
+      assert "type=bind,source=/cache/slug/k.tmp.x,target=/dst" in args
+      refute Enum.any?(args, &String.contains?(&1, "source=/scratch/run/out/build-cache"))
+
+      assert Enum.take(args, -6) ==
+               ["--entrypoint", "cp", "ncc-worker:t", "-a", "/src/build-cache/#{@key}/.", "/dst"]
+    end
+
+    test "a copy that returns an error promotes nothing and leaves no staging", ctx do
+      c = candidate(ctx.out)
+
+      assert %{promoted: 0} =
+               promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                 release_checksum: &hex_ok/2,
+                 copy: fn _source, _staging -> {:error, :boom} end
+               )
+
+      assert File.ls!(ctx.cache) == []
+    end
+
+    test "with no image to copy with, nothing is promoted", ctx do
+      c = candidate(ctx.out)
+
+      assert %{promoted: 0} =
+               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                 release_checksum: &hex_ok/2
+               )
+
+      assert File.ls!(ctx.cache) == []
+    end
+
+    # Another promotion of the same key raced this one to the staging name:
+    # that directory is not ours to remove.
+    test "a staging name that already exists is left alone", ctx do
+      c = candidate(ctx.out)
+      taken = Path.join(ctx.cache, c["key"] <> ".tmp.0000000000000000")
+      File.mkdir_p!(taken)
+      File.write!(Path.join(taken, "theirs"), "x")
+
+      assert %{promoted: 0} =
+               promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                 release_checksum: &hex_ok/2,
+                 staging_suffix: "0000000000000000",
+                 copy: fn _, _ -> raise "must not copy into someone else's staging" end
+               )
+
+      assert File.read!(Path.join(taken, "theirs")) == "x"
     end
   end
 end

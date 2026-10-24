@@ -267,7 +267,8 @@ defmodule Portal.Workers.Build do
           Builder.output_dir(run_id),
           Builder.build_cache_slug_dir(image_digest),
           package,
-          version
+          version,
+          image: Builder.worker_image_ref(image_digest)
         )
 
       if refused > 0,
