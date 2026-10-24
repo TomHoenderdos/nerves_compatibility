@@ -25,10 +25,13 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    restores `mix.exs` and `mix.lock`, removes `_build/host/lib/<package>` and rebuilds without them. A firmware
    package is not given the pass: its published files come from every target's build, which it would have to
    repeat. `result.json` records the outcome as `optional_deps`:
-   `{"added": ["decimal"], "dropped": [], "reason": null}`, where `dropped` lists what was left out and `reason`
-   is one of `deps_get_failed`, `lock_policy_violation`, `host_compile_failed`, `stale_build_not_removed`,
-   `mix_exs_edit_failed` or `firmware_build`. `host.log` carries the same lines. The key is absent for argus-only
-   runs.
+   `{"added": ["decimal"], "dropped": [], "skipped": [], "reason": null}`, where `dropped` lists what was left out
+   and `reason` is one of `deps_get_failed`, `lock_policy_violation`, `host_compile_failed`,
+   `stale_build_not_removed`, `mix_exs_edit_failed` or `firmware_build`. `skipped` lists optional dependencies never
+   tried because most applications do not lock them: dev tooling (`igniter`, `sourceror`, `rewrite`, `ex_doc`,
+   `credo`, `dialyxir`, `stream_data`, `excoveralls`, `mix_test_watch`, `benchee`) and alternatives an application
+   picks one of (`picosat_elixir`, `simple_sat`); the list is `@optional_deps_never_added` in `NccWorker.Project`.
+   `host.log` carries the same lines. The key is absent for argus-only runs.
 5. When `NCC_INPUT` carries `argus` (`{"analyses": ["default", "exposure"], "scope": "firmware", "timeout_seconds": 300}`),
    runs the argus_beam escript over the host-compiled beams (`NccWorker.Argus`) and writes its findings to
    `result.json` as `argus`. `scope: "firmware"` limits this to packages that build firmware. Advisory: it never
