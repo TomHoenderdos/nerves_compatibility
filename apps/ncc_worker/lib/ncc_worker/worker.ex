@@ -120,8 +120,9 @@ defmodule NccWorker.Worker do
           },
           systems: %{
             String.t() => %{
-              # Present only for a system that ran a build cache store (a pass
-              # or fail of `build_system/4`, or the host compile). `JsonWriter`
+              # Present only for a system that ran a build cache store: a
+              # passing `build_system/4` or host compile (a failed one stores
+              # nothing, so its list is empty). `JsonWriter`
               # concatenates every system's list, dedupes it by `"key"`, and
               # writes it to result.json as `cache: %{candidates: [candidate]}`
               # -- present there only when non-empty, rather than nested under
