@@ -702,12 +702,23 @@ defmodule Portal.Builder do
     if String.contains?(name, "/"), do: "#{name}@#{digest}", else: name
   end
 
+  @doc """
+  The image reference `build/2` runs for the configured worker image at
+  `image_digest`: what `Portal.BuildCache.Promotion` runs its copy in, so it
+  uses the same image the build did.
+  """
+  @spec worker_image_ref(String.t()) :: String.t()
+  def worker_image_ref(image_digest),
+    do: image_ref(%{image_name: docker_image(), image_digest: image_digest})
+
   # Matching our own uid keeps bind-mounted output owned by us on a normal
   # daemon. Under rootless Docker it does the opposite: the daemon runs in a
   # user namespace where our uid is already 0, so passing it literally lands
   # container writes on a subuid we cannot read back. Rootless hosts set
   # "0:0", which maps to the service user outside the namespace.
-  defp run_as_user do
+  @doc "The `--user` every container this module starts runs as."
+  @spec run_as_user() :: String.t()
+  def run_as_user do
     case config(:run_as_user, nil) do
       nil ->
         {uid, gid} = current_user()

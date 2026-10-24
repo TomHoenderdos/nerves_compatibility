@@ -46,15 +46,30 @@ defmodule Portal.BuildCache.Promotion do
        the build's fault. Hex is asked at most once per call.
     6. `out/`, `out/build-cache` and the candidate directory must be real
        directories (checked with `File.lstat/1`), the candidate on the same
-       device as `out/`. The candidate is then copied with `cp -a`, which
-       copies links as links and never follows one, into a host-private
-       `<dest>.tmp.<hex>` staging name inside the cache slug, and everything
-       from here on reads that copy, never the source. The slug is mounted
-       read-only into every container, so no build can write the copy or
-       reach it through a file descriptor it holds on the source: a
-       concurrent build changing the source after the copy changes nothing
-       that is checked, chmodded or promoted. The source is left alone for
-       the scratch cleanup.
+       device as `out/`. Those checks are advisory: a concurrent build
+       holding a file descriptor into `out/` (passed through the read-write
+       caches builds share) can swap any path below it for a symlink right
+       after. So the candidate is copied into a fresh `<dest>.tmp.<hex>`
+       staging dir inside the cache slug by `cp -a` running in a throwaway
+       container of the worker image (`copy_args/4`): no network, read-only
+       root, no capabilities, the run's `out/` bound read-only at `/src` and
+       the staging dir at `/dst`. A host `cp` would not do: the kernel
+       resolves the `<key>/.` it is given through a swapped link, and GNU
+       `cp` walks inner directories by path, so a swap mid-copy is followed
+       too, and the host could copy any directory the portal can read into
+       the cache. In the container every path and link resolves inside a
+       namespace where host directories do not exist. Only `out/` itself is
+       a bind source, because docker resolves a bind source on the host; it
+       sits in a scratch dir only the host writes. A copy that exits
+       non-zero, takes over 60 seconds (the container is killed) or raises
+       promotes nothing.
+       Everything from here on reads the staging copy, never the source. The
+       slug is mounted read-only into every build container, so no build can
+       write the copy or reach it through a descriptor on the source. The
+       source is left alone for the scratch cleanup.
+       The copy container is named `ncc-promote-<hex>`, so a
+       `Portal.Workers.Sweep` hex sweep that runs while it exists sees an
+       `ncc-*` container and skips once; that is accepted.
     7. The copy must hold only directories, regular files with a link count
        of 1, and Mix's own links (below). It is walked with `File.lstat/1`
        only, so nothing a link points at is ever followed, and listed with
@@ -106,8 +121,13 @@ defmodule Portal.BuildCache.Promotion do
   under the build cache root, or `nil` when the cache is off.
   `opts[:release_checksum]` is the Hex lookup; without it the
   `config :portal, Portal.BuildCache.Promotion, release_checksum: fun` value
-  is used, then `Portal.HexPm.release_checksum/2`. `opts[:copy]` replaces the
-  `cp -a` of the candidate into the staging copy, a seam for tests.
+  is used, then `Portal.HexPm.release_checksum/2`. `opts[:image]` is the
+  worker image the build ran (`Portal.Builder.worker_image_ref/1`), which
+  the copy runs in; without it nothing is promoted. `opts[:copy]` (or the same
+  `config` key) replaces that container copy with
+  `fn source, staging -> :ok | {:error, term}`, and
+  `opts[:staging_suffix]` pins the staging name's random suffix: seams for
+  tests.
   """
   @spec promote(map(), Path.t(), Path.t() | nil, String.t(), String.t(), keyword()) :: counts()
   def promote(result, out_dir, cache_dir, package, version, opts \\ [])
@@ -137,7 +157,12 @@ defmodule Portal.BuildCache.Promotion do
       lookup: lookup,
       targets: built_targets(systems),
       toolchain: toolchain(result),
-      copy: Keyword.get(opts, :copy, &cp_a/2)
+      copy: Keyword.get_lazy(opts, :copy, fn -> default_copy(opts[:image]) end),
+      staging_suffix:
+        case opts[:staging_suffix] do
+          nil -> fn -> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower) end
+          suffix -> fn -> suffix end
+        end
     }
 
     {counts, _hex} =
@@ -220,6 +245,12 @@ defmodule Portal.BuildCache.Promotion do
        do: {elixir, otp}
 
   defp toolchain(_result), do: nil
+
+  defp default_copy(image) do
+    :portal
+    |> Application.get_env(__MODULE__, [])
+    |> Keyword.get(:copy, {:container, image})
+  end
 
   defp default_lookup do
     :portal
@@ -481,7 +512,6 @@ defmodule Portal.BuildCache.Promotion do
   # is the host-computed 64-hex key; the staging suffix is host random.
   # sobelow_skip ["Traversal.FileModule"]
   defp copy_check_move(c, key, ctx) do
-    source = Path.join([ctx.out, "build-cache", key])
     dest = Path.join(ctx.cache, key)
 
     case lstat(dest) do
@@ -489,36 +519,54 @@ defmodule Portal.BuildCache.Promotion do
         :skipped
 
       {:error, _} ->
-        staging = dest <> ".tmp." <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+        staging = dest <> ".tmp." <> ctx.staging_suffix.()
 
-        case copy_and_check(source, staging, ctx) do
-          :ok ->
-            finish(c, key, staging, dest, ctx)
+        # Only a staging dir this call created is ever removed: `:eexist`
+        # means another promotion of the same key holds that name.
+        with :ok <- File.mkdir_p(ctx.cache),
+             :ok <- make_staging(staging) do
+          case copy_and_check(key, staging, ctx) do
+            :ok ->
+              finish(c, key, staging, dest, ctx)
 
-          {:refused, reason} ->
-            _ = File.rm_rf(staging)
-            refuse_tree(key, ctx, reason)
+            {:refused, reason} ->
+              _ = File.rm_rf(staging)
+              refuse_tree(key, ctx, reason)
 
-          error ->
-            _ = File.rm_rf(staging)
-            not_promoted(key, ctx, error)
+            error ->
+              _ = File.rm_rf(staging)
+              not_promoted(key, ctx, error)
+          end
+        else
+          error -> not_promoted(key, ctx, error)
         end
     end
   end
 
-  # `ctx.cache` is the operator's slug dir; `staging` is built from it in
-  # `copy_check_move/3` with the host key and a host-random suffix.
+  @doc false
+  # The staging dir, created fresh: `{:error, :eexist}` when the name is taken.
+  # `staging` is built in `copy_check_move/3` from the slug dir, the host key
+  # and a host-random suffix.
   # sobelow_skip ["Traversal.FileModule"]
-  defp copy_and_check(source, staging, ctx) do
-    with :ok <- File.mkdir_p(ctx.cache),
-         :ok <- File.mkdir(staging),
-         :ok <- ctx.copy.(source, staging) do
+  @spec make_staging(Path.t()) :: :ok | {:error, File.posix()}
+  def make_staging(staging), do: File.mkdir(staging)
+
+  defp copy_and_check(key, staging, ctx) do
+    with :ok <- copy(key, staging, ctx) do
       case walk(staging, true, ctx.package) do
         :ok -> :ok
         {:error, reason} -> {:refused, reason}
       end
     end
   end
+
+  defp copy(key, staging, %{copy: fun} = ctx) when is_function(fun, 2),
+    do: fun.(Path.join([ctx.out, "build-cache", key]), staging)
+
+  defp copy(_key, _staging, %{copy: {:container, nil}}), do: {:error, :no_image}
+
+  defp copy(key, staging, %{copy: {:container, image}} = ctx),
+    do: container_copy(ctx.out, staging, key, image)
 
   # sobelow_skip ["Traversal.FileModule"]
   defp finish(c, key, staging, dest, ctx) do
@@ -540,20 +588,87 @@ defmodule Portal.BuildCache.Promotion do
   defp not_promoted(key, ctx, error) do
     Logger.warning(
       "Could not promote build cache entry #{key} for #{ctx.package} " <>
-        "#{ctx.version}: #{inspect(error)}"
+        "#{ctx.version}: #{show(error)}"
     )
 
     :skipped
   end
 
-  # `cp -a` copies links as links and never follows one. Both paths come
-  # from `copy_check_move/3`; `cp` gets them as arguments, no shell.
-  # sobelow_skip ["CI.System"]
-  defp cp_a(source, staging) do
-    case System.cmd("cp", ["-a", source <> "/.", staging], stderr_to_stdout: true) do
-      {_out, 0} -> :ok
-      {out, status} -> {:error, {:cp, status, out}}
+  @copy_timeout_ms 60_000
+
+  @doc false
+  # The `docker run` argument list for the copy (moduledoc, step 6). Pure
+  # apart from the random container name, so tests can read it.
+  #
+  # The bind source is the run's `out/`, never `out/build-cache/<key>`:
+  # docker resolves a bind source on the host and would follow a link
+  # swapped in there, while `out/` itself sits in a scratch dir only the host
+  # writes. Everything below it resolves inside the container, where no host
+  # directory exists. `key` is the host-recomputed key.
+  @spec copy_args(Path.t(), Path.t(), String.t(), String.t(), String.t()) :: [String.t()]
+  def copy_args(out_dir, staging, key, image, name \\ copy_container_name()) do
+    [
+      "run",
+      "--rm",
+      "--pull=never",
+      "--name",
+      name,
+      "--network",
+      "none",
+      "--read-only",
+      "--cap-drop=ALL",
+      "--security-opt=no-new-privileges",
+      "--pids-limit",
+      "64",
+      "--user",
+      Portal.Builder.run_as_user(),
+      "--mount",
+      "type=bind,source=#{out_dir},target=/src,readonly",
+      "--mount",
+      "type=bind,source=#{staging},target=/dst",
+      "--entrypoint",
+      "cp",
+      image,
+      "-a",
+      "/src/build-cache/#{key}/.",
+      "/dst"
+    ]
+  end
+
+  defp copy_container_name,
+    do: "ncc-promote-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+
+  # Fails closed: a non-zero exit, a timeout (the container is killed) or an
+  # exception is a failed copy, and the caller removes the staging dir.
+  defp container_copy(out_dir, staging, key, image) do
+    name = copy_container_name()
+    args = copy_args(out_dir, staging, key, image, name)
+    task = Task.async(fn -> docker(args) end)
+
+    case Task.yield(task, @copy_timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {_out, 0}} ->
+        :ok
+
+      {:ok, {out, status}} ->
+        {:error, {:copy_container, status, String.slice(out, 0, 500)}}
+
+      {:exit, reason} ->
+        {:error, {:copy_container, reason}}
+
+      nil ->
+        _ = docker(["kill", name])
+        {:error, {:copy_container, :timeout}}
     end
+  end
+
+  # Every argument is host-built: the operator's scratch and cache paths, the
+  # host-recomputed key, the configured worker image and a host-random name.
+  # Passed as a list, no shell.
+  # sobelow_skip ["CI.System"]
+  defp docker(args) do
+    System.cmd("docker", args, stderr_to_stdout: true)
+  rescue
+    e -> {Exception.message(e), -1}
   end
 
   # The container chose every mode in the tree. Before it becomes visible,
