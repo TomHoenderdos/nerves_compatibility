@@ -165,9 +165,8 @@ defmodule NccWorker.ProjectTest do
       # integration test. Call the private helper via the public path up to
       # the point it invokes mix, then inspect mix.exs.
       #
-      # Since add_package/2 itself runs mix deps.get (which will fail without
-      # a full project), we test the injection helper by running it and then
-      # stopping — see inject_dep_via_exported_api/2 below.
+      # add_package/4 takes the deps.get runner, and inject_dep_only/2 below
+      # hands it one that fails offline, after mix.exs was edited.
       inject_dep_only(dir, %{name: "phoenix_kit", version: "1.7.98"})
 
       content = File.read!(Path.join(dir, "mix.exs"))
@@ -271,7 +270,12 @@ defmodule NccWorker.ProjectTest do
       File.write!(Path.join(dir, "mix.exs"), "# a file with no deps list at all\n")
 
       assert {:error, {:mix_exs_deps_list_not_found, _}} =
-               Project.add_package(dir, %{name: "jason", version: "1.4.4"}, [])
+               Project.add_package(
+                 dir,
+                 %{name: "jason", version: "1.4.4"},
+                 [],
+                 &failing_deps_get/2
+               )
     end
   end
 
@@ -329,21 +333,47 @@ defmodule NccWorker.ProjectTest do
     end
 
     # Whatever goes wrong, the caller gets back exactly the project it had,
-    # and rebuilds the package without the optional dependencies.
+    # and rebuilds the package without the optional dependencies. The
+    # deps.get is injected and fails without running mix, so this never
+    # depends on the network; the real resolution is covered by the Docker
+    # integration test.
     test "restores mix.exs and mix.lock when deps.get fails", %{project_dir: dir} do
       deps = [%{app: "decimal", package: "decimal", requirement: "~> 2.0"}]
+      test_pid = self()
 
-      assert {:error, {:deps_get_failed, _}} = Project.add_optional_deps(dir, "pkg", deps, [])
+      deps_get = fn project_dir, _env ->
+        send(test_pid, {:deps_get, File.read!(Path.join(project_dir, "mix.exs"))})
+        File.write!(Path.join(project_dir, "mix.lock"), "%{\"decimal\": :changed}\n")
+        {:error, {:deps_get_failed, "Failed to fetch record for decimal from registry"}}
+      end
 
+      assert {:error, {:deps_get_failed, "Failed to fetch record" <> _}} =
+               Project.add_optional_deps(dir, "pkg", deps, [], deps_get)
+
+      assert_received {:deps_get, edited}
+      assert edited =~ ~s[{:decimal, "~> 2.0"},]
       assert File.read!(Path.join(dir, "mix.exs")) == @sample_mix_exs
       assert File.read!(Path.join(dir, "mix.lock")) == "%{}\n"
+    end
+
+    test "returns only the deps it injected", %{project_dir: dir} do
+      deps = [
+        %{app: "shoehorn", package: "shoehorn", requirement: "~> 0.9"},
+        %{app: "decimal", package: "decimal", requirement: "~> 2.0"}
+      ]
+
+      assert {:ok, ["decimal"]} =
+               Project.add_optional_deps(dir, "pkg", deps, [], fn _dir, _env -> :ok end)
+
+      assert File.read!(Path.join(dir, "mix.exs")) =~ ~s[{:decimal, "~> 2.0"},]
     end
 
     test "injects nothing and runs no deps.get for deps the template declares",
          %{project_dir: dir} do
       deps = [%{app: "shoehorn", package: "shoehorn", requirement: "~> 0.9"}]
+      deps_get = fn _dir, _env -> flunk("deps.get ran with nothing injected") end
 
-      assert {:ok, []} = Project.add_optional_deps(dir, "pkg", deps, [])
+      assert {:ok, []} = Project.add_optional_deps(dir, "pkg", deps, [], deps_get)
       assert File.read!(Path.join(dir, "mix.exs")) == @sample_mix_exs
     end
 
@@ -351,27 +381,66 @@ defmodule NccWorker.ProjectTest do
     # host build path, before the optional dependency existed. Mix would not
     # recompile it: its lock entry and marker are unchanged. Left in place,
     # that build would be published with a deps_lock naming a dependency it
-    # never saw, so it is removed before the dependencies are resolved, on the
-    # revert path too.
+    # never saw, so it is removed before the dependencies are resolved.
     test "removes the package's stale host build before resolving", %{project_dir: dir} do
       build_path = Path.join([dir, "_build", "host"])
       stale = Path.join([build_path, "lib", "pkg", "ebin", "pkg.beam"])
       other = Path.join([build_path, "lib", "other", "ebin", "other.beam"])
 
-      for path <- [stale, other],
-          do:
-            (
-              File.mkdir_p!(Path.dirname(path))
-              File.write!(path, "x")
-            )
+      for path <- [stale, other] do
+        File.mkdir_p!(Path.dirname(path))
+        File.write!(path, "x")
+      end
 
       deps = [%{app: "decimal", package: "decimal", requirement: "~> 2.0"}]
 
-      assert {:error, _} =
-               Project.add_optional_deps(dir, "pkg", deps, [{"MIX_BUILD_PATH", build_path}])
+      deps_get = fn _dir, _env ->
+        refute File.exists?(Path.join([build_path, "lib", "pkg"]))
+        :ok
+      end
+
+      assert {:ok, ["decimal"]} =
+               Project.add_optional_deps(
+                 dir,
+                 "pkg",
+                 deps,
+                 [{"MIX_BUILD_PATH", build_path}],
+                 deps_get
+               )
 
       refute File.exists?(Path.join([build_path, "lib", "pkg"]))
       assert File.exists?(other)
+    end
+
+    # A stale build that cannot be removed is an ordinary error, with
+    # mix.exs put back, not a crash.
+    test "restores mix.exs when the stale build cannot be removed", %{project_dir: dir} do
+      build_path = Path.join([dir, "_build", "host"])
+      ebin = Path.join([build_path, "lib", "pkg", "ebin"])
+      File.mkdir_p!(ebin)
+      File.write!(Path.join(ebin, "pkg.beam"), "x")
+      File.chmod!(ebin, 0o500)
+      on_exit(fn -> File.chmod(ebin, 0o700) end)
+
+      if match?({:ok, _}, File.rm_rf(Path.join(ebin, "pkg.beam"))) and
+           not File.exists?(Path.join(ebin, "pkg.beam")) do
+        # Running as root: permissions cannot make rm_rf fail here.
+        :ok
+      else
+        deps = [%{app: "decimal", package: "decimal", requirement: "~> 2.0"}]
+        deps_get = fn _dir, _env -> flunk("deps.get ran after rm_rf failed") end
+
+        assert {:error, {:rm_rf_failed, _reason, _path}} =
+                 Project.add_optional_deps(
+                   dir,
+                   "pkg",
+                   deps,
+                   [{"MIX_BUILD_PATH", build_path}],
+                   deps_get
+                 )
+
+        assert File.read!(Path.join(dir, "mix.exs")) == @sample_mix_exs
+      end
     end
   end
 
@@ -426,13 +495,13 @@ defmodule NccWorker.ProjectTest do
     end
   end
 
-  # Call the public API but stub out the deps.get side-effect by pointing at a
-  # project_dir whose mix.exs is our sample. We read mix.exs before add_package
-  # runs mix, then call add_package which will fail at deps.get (mix not
-  # available in the ambient test environment against an empty project) — but
-  # the mix.exs was already edited by that point, which is what we're asserting.
+  # Call the public API with a deps.get that fails without running mix, so
+  # the test never reaches Hex: mix.exs was already edited by that point,
+  # which is what the callers assert.
   defp inject_dep_only(project_dir, package) do
-    _ = Project.add_package(project_dir, package, [])
+    _ = Project.add_package(project_dir, package, [], &failing_deps_get/2)
     :ok
   end
+
+  defp failing_deps_get(_project_dir, _env), do: {:error, {:deps_get_failed, "offline"}}
 end
