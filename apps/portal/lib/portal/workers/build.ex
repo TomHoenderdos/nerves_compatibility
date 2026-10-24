@@ -52,6 +52,7 @@ defmodule Portal.Workers.Build do
 
   import Ecto.Query, only: [from: 2]
 
+  alias Portal.BuildCache.Promotion
   alias Portal.Builder
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Run
@@ -261,7 +262,7 @@ defmodule Portal.Workers.Build do
   defp promote_cache(result, run_id, image_digest, package, version) do
     safely("build cache promotion", fn ->
       %{promoted: _promoted, refused: refused} =
-        Portal.BuildCache.Promotion.promote(
+        Promotion.promote(
           result,
           Builder.output_dir(run_id),
           Builder.build_cache_slug_dir(image_digest),

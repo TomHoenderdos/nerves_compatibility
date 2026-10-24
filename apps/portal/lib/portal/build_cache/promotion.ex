@@ -269,16 +269,16 @@ defmodule Portal.BuildCache.Promotion do
     case File.ls(dir) do
       {:ok, names} ->
         Enum.reduce_while(names, :ok, fn name, :ok ->
-          case check_entry(Path.join(dir, name), name, top?, package) do
-            :ok -> {:cont, :ok}
-            error -> {:halt, error}
-          end
+          dir |> Path.join(name) |> check_entry(name, top?, package) |> continue_if_ok()
         end)
 
       {:error, reason} ->
         {:error, "cannot list #{dir}: #{inspect(reason)}"}
     end
   end
+
+  defp continue_if_ok(:ok), do: {:cont, :ok}
+  defp continue_if_ok(error), do: {:halt, error}
 
   defp check_entry(path, name, top?, package) do
     case lstat(path) do
