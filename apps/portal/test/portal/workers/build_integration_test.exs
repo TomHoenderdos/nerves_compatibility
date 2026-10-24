@@ -19,6 +19,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
 
   require Ash.Query
 
+  alias Compatibility.BuildCacheKey
   alias Portal.Builder
   alias Portal.Catalog.{Package, Run, SystemResult}
   alias Portal.ScanRequests
@@ -108,6 +109,111 @@ defmodule Portal.Workers.BuildIntegrationTest do
     assert second.package_checksum == nil
     assert request.status == :built
   end
+
+  # Build sandbox isolation spec, section 2: the container's /build-cache is
+  # mounted read-only; the only writer is Portal.BuildCache.Promotion, which
+  # runs on the host before Portal.Workers.Build hands the run off to ingest.
+  # This proves the whole path through a real container: jason reports a
+  # candidate, the host recomputes its key with Compatibility.BuildCacheKey
+  # (the same function the worker used) and promotes it into the slug dir,
+  # and the mount the container actually saw was readonly throughout.
+  test "promotes jason's own build cache candidate before ingest, over a read-only mount" do
+    tmp_cache =
+      Path.join(System.tmp_dir!(), "ncc-build-cache-it-#{System.unique_integer([:positive])}")
+
+    previous = Application.get_env(:portal, Portal.Builder, [])
+
+    Application.put_env(
+      :portal,
+      Portal.Builder,
+      Keyword.put(previous, :build_cache, tmp_cache)
+    )
+
+    on_exit(fn ->
+      Application.put_env(:portal, Portal.Builder, previous)
+      File.rm_rf(tmp_cache)
+    end)
+
+    {:ok, request} =
+      ScanRequests.create_once(%{
+        package_name: "jason",
+        version: "1.4.4",
+        source: :hex_owner,
+        status: :accepted
+      })
+
+    image_digest = Builder.image_digest(Builder.docker_image())
+
+    args = %{
+      "package" => "jason",
+      "version" => "1.4.4",
+      "image_digest" => image_digest,
+      "scan_request_id" => request.id
+    }
+
+    job = %Oban.Job{args: args, attempt: 1, max_attempts: 3}
+
+    assert :ok = Build.perform(job)
+
+    ingest_job =
+      all_enqueued(worker: Ingest) |> Enum.find(&(&1.args["scan_request_id"] == request.id))
+
+    assert ingest_job, "expected an Ingest job for scan_request #{request.id}"
+
+    run_id = ingest_job.args["run_id"]
+    assert is_binary(run_id)
+
+    # Read result.json before Ingest.perform/1 removes the scratch dir below.
+    # Promotion already ran inside Build.perform/1, into tmp_cache, which is
+    # outside the scratch tree and survives that cleanup.
+    assert {:ok, %{result: result}} = Builder.load_run(run_id)
+    candidates = get_in(result, ["cache", "candidates"]) || []
+    assert candidates != [], "expected jason to report at least one build cache candidate"
+    assert Enum.all?(candidates, &(&1["dep"] == "jason"))
+
+    expected_keys =
+      candidates
+      |> Enum.map(fn c ->
+        {:ok, key} =
+          BuildCacheKey.key(%{
+            elixir: c["elixir"],
+            otp: c["otp"],
+            target: c["target"],
+            dep: c["dep"],
+            dep_lock: c["dep_lock"],
+            closure: Enum.map(c["closure"] || [], &{&1["name"], &1["lock"]})
+          })
+
+        key
+      end)
+      |> MapSet.new()
+
+    slug_dir = Builder.build_cache_slug_dir(image_digest)
+    assert slug_dir, "expected the build cache to be configured for this test"
+    assert File.dir?(slug_dir)
+
+    entries = slug_dir |> File.ls!() |> Enum.filter(&hex64?/1)
+    assert entries != [], "expected at least one promoted 64-hex entry in #{slug_dir}"
+
+    for entry <- entries do
+      assert entry in expected_keys,
+             "cache entry #{entry} does not match any candidate's recomputed key"
+    end
+
+    # The container is gone (--rm) by now, so the only way to confirm what it
+    # saw is to rebuild the same mount list Portal.Builder gave it.
+    mount_job = %{run_id: run_id, image_name: Builder.docker_image(), image_digest: image_digest}
+    mount_args = Builder.build_docker_args(mount_job, "/work", "/out", "/files")
+    mount = Enum.find(mount_args, &String.contains?(&1, "target=/build-cache"))
+    assert mount, "expected a /build-cache mount in the container's docker args"
+    assert String.ends_with?(mount, "target=/build-cache,readonly")
+
+    # Drain the ingest job so it does not linger for other tests in this file.
+    assert :ok = Ingest.perform(%Oban.Job{args: ingest_job.args, attempt: 1, max_attempts: 5})
+    Repo.delete!(ingest_job)
+  end
+
+  defp hex64?(name), do: String.match?(name, ~r/\A[0-9a-f]{64}\z/)
 
   defp build_and_ingest(name, version, opts \\ []) do
     {:ok, request} =
