@@ -74,6 +74,7 @@ The integration test is `apps/portal/test/portal/workers/build_integration_test.
    - `/home/nerves/.nerves` → shared Nerves cache (`~/.ncc-nerves-cache`)
    - `/hex-cache` → shared Hex cache (`~/.ncc-hex-cache`)
    - `/build-cache` → per-image dependency build cache, only when `NCC_BUILD_CACHE` is set
+   - `/tmp` → `<scratch>/tmp` and `/home/nerves/.cache` → `<scratch>/cache`, per-run writable dirs on an otherwise read-only root
 4. `NccWorker.Worker` inside the container reads `NCC_INPUT`, creates a fresh Nerves project with the package and its unresolved optional dependencies (`NccWorker.DepsLock.unresolved_optional_deps`), enforces `NccWorker.LockPolicy`, compiles on the host, then either builds firmware per Nerves system or, for a pure-Elixir dependency closure, records an assumed-compatible `pure_elixir` result (`NccWorker.BuildSelection`). It runs the advisory argus_beam analysis over the host beams (`NccWorker.Argus`), captures status/firmware size/log tail/BEAM scan/footprint, archives files by SHA256, and writes atomic `result.json`. A partial run builds less: `NCC_INPUT.systems_filter` builds only those targets, and `NCC_INPUT.mode: "argus_only"` builds none and only runs argus. `result.json` names which in `scope` (`full`, `targets`, `argus_only`).
 5. On success `Portal.Workers.Build` enqueues `Portal.Workers.Ingest` (queue `:ingest`, must run on the same host because they hand off through the scratch dir). It runs `Portal.Catalog.Ingestion` into Postgres: `Package`, `Run`, `SystemResult`, `SystemLog` (full logs of failed systems) and `Artifact` rows, with blobs moved into `Portal.ArtifactStore`. For a partial run it copies the systems the run left out from the previous run of the same version, marking each copy with `carried_from_run_id`; stats do not count the copies.
 6. Both workers update the linked `ScanRequest` and broadcast progress over `Portal.PubSub` topic `request:<id>` (`Portal.Workers.Progress`).
@@ -116,8 +117,8 @@ Portal maps these into Oban outcomes in `Portal.Workers.Build`: success enqueues
 ## Container / Caching Details
 
 - The worker image is based on `ghcr.io/nerves-project/nerves_system_br`.
-- `Portal.Builder` passes `--user $(id -u):$(id -g)` so bind-mounted files stay owned by the invoking host user (`NCC_BUILD_USER` overrides it, e.g. `0:0` on a rootless daemon), plus `--cap-drop=ALL` and `--security-opt=no-new-privileges`.
-- `/home/nerves` and `/app` are chmod'd `a+rwX` in the Dockerfile so arbitrary uids can use the baked-in Mix archives and Elixir install.
+- `Portal.Builder` passes `--user $(id -u):$(id -g)` so bind-mounted files stay owned by the invoking host user (`NCC_BUILD_USER` overrides it, e.g. `0:0` on a rootless daemon), plus `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only` and `--pids-limit 4096`. `/tmp` and `/home/nerves/.cache` are bind-mounted from the run's scratch dir (`<scratch>/tmp`, `<scratch>/cache`) because the root filesystem is read-only.
+- `/home/nerves` and `/app` are chmod'd `a+rX` in the Dockerfile so arbitrary uids can read the baked-in Mix archives and Elixir install; nothing in the image is writable at runtime.
 - `~/.ncc-nerves-cache` and `~/.ncc-hex-cache` persist across runs and speed up repeated tests.
 - `make build` keeps Docker's layer cache; `make build-clean` adds `--no-cache` when the apt, Elixir and Hex-archive layers need refetching.
 - The image carries the argus_beam escript at `/home/nerves/.mix/escripts/argus` and, under `/opt/argus-flowlog`, the prebuilt FlowLog engines it solves its rules with (downloaded once at image build). Each run copies them into its own project, because argus only runs engines from a cache its own uid owns, and runs argus with `ARGUS_OFFLINE=1`.
