@@ -109,7 +109,11 @@ builder_build_image() {
 
 # The live toolchain tags, one per line, from the Makefile's TOOLCHAIN_IMAGES.
 builder_toolchain_tags() {
-  make -s toolchain-tags
+  local uid
+  uid=$(id -u ncc)
+  # Reads the Makefile only, but runs under the rootless daemon like every
+  # other make and docker call here, so the deploy tests can assert on it.
+  DOCKER_HOST="unix:///run/user/$uid/docker.sock" make -s toolchain-tags
 }
 
 builder_docker() {
