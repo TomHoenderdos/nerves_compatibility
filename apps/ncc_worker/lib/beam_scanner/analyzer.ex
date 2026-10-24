@@ -44,7 +44,13 @@ defmodule BeamScanner.Analyzer do
           errors: [String.t()]
         }
 
-  @nif_targets MapSet.new([{:erlang, :load_nif, 2}])
+  # Port drivers are shared objects loaded the same way a NIF is, so they count
+  # as native code here too.
+  @nif_targets MapSet.new([
+                 {:erlang, :load_nif, 2},
+                 {:erl_ddll, :load_driver, 2},
+                 {:erl_ddll, :load, 2}
+               ])
 
   @shell_targets MapSet.new([
                    {System, :shell, 1},

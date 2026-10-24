@@ -30,6 +30,31 @@ defmodule BeamScannerTest do
     assert result.errors == []
   end
 
+  @tag :tmp_dir
+  test "loading a port driver counts as a NIF-class call", %{tmp_dir: root} do
+    call = fn function ->
+      {:call, 1, {:remote, 1, {:atom, 1, :erl_ddll}, {:atom, 1, function}},
+       [{:string, 1, ~c"priv"}, {:string, 1, ~c"drv"}]}
+    end
+
+    forms = [
+      {:attribute, 1, :module, :ncc_test_port_driver},
+      {:attribute, 1, :export, [load: 0, load_driver: 0]},
+      {:function, 1, :load, 0, [{:clause, 1, [], [], [call.(:load)]}]},
+      {:function, 1, :load_driver, 0, [{:clause, 1, [], [], [call.(:load_driver)]}]}
+    ]
+
+    {:ok, module, binary} = :compile.forms(forms, [:binary, :debug_info])
+    File.mkdir_p!(Path.join(root, "ebin"))
+    File.write!(Path.join([root, "ebin", "#{module}.beam"]), binary)
+
+    result = BeamScanner.analyze(root)
+    assert result.nif_calls?
+
+    assert result.nif_evidence |> Enum.map(& &1.mfa) |> Enum.sort() ==
+             [{:erl_ddll, :load, 2}, {:erl_ddll, :load_driver, 2}]
+  end
+
   test "analyzes circuits_gpio fixture" do
     result = BeamScanner.analyze("test/fixture/circuits_gpio-2.1.3")
 
