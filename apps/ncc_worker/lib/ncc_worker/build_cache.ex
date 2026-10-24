@@ -2,6 +2,22 @@ defmodule NccWorker.BuildCache do
   @moduledoc """
   Cross-run cache of compiled dependency artifacts.
 
+  ## Who writes it
+
+  Two tiers. The shared root (`NCC_BUILD_CACHE`, `/build-cache`) persists
+  across runs and is mounted read-only into the build container, because the
+  container runs untrusted package code: it can restore from the shared root
+  but never write it. The run-local tier (`ncc-build-cache` under the
+  container's tmp dir) lives only as long as the run: a target compiling a
+  dependency stores it there so the next target in the same run restores it
+  rather than compiling it again. Restores try the shared root first.
+
+  The only thing a run offers the shared root is the package under test,
+  written under `/out/build-cache/<key>` and listed in `result.json` as a
+  candidate. The host (`Portal.BuildCache.Promotion`) recomputes each
+  candidate's key, checks it against what the run built and what Hex
+  publishes, and promotes it into the shared root after the container exits.
+
   Compiling the dependency tree is the bulk of a package build. Compiling the
   tree takes 8 to 25 minutes per target, against 115 to 421 seconds to assemble
   the firmware image, and nearly every one of those beams belongs to a
@@ -94,7 +110,7 @@ defmodule NccWorker.BuildCache do
   between consecutive runs, with no cache involved: comparing two finished
   builds of sibling `ash_*` packages showed 9 of 39 shared dependencies
   differing, in 1 to 13 beams out of as many as 1317. The cache pins whichever
-  variant was stored first, which makes the result stable rather than
+  variant was promoted first, which makes the result stable rather than
   order-dependent. It is a change in which variant wins, not a new class of
   variance.
   """
@@ -110,7 +126,7 @@ defmodule NccWorker.BuildCache do
           restore?: boolean(),
           inputs: Compatibility.BuildCacheKey.inputs()
         }
-  @type plan :: %{root: String.t(), local_root: String.t(), entries: [entry()]}
+  @type plan :: %{root: String.t(), local_root: String.t() | nil, entries: [entry()]}
   @type candidate :: %{String.t() => String.t() | [%{String.t() => String.t()}]}
 
   @doc """
@@ -133,20 +149,19 @@ defmodule NccWorker.BuildCache do
       from an earlier run, because that is exactly the package this run is
       supposed to be building and checking.
     * `:local_root` - overrides the run-local tier's directory, for tests.
+
+  When the run-local tier's directory cannot be created the plan has
+  `local_root: nil`: no local tier, everything else unchanged.
   """
   @spec plan(String.t(), String.t(), String.t(), String.t(), keyword(), keyword()) ::
           plan() | :disabled
-  # local_root is either the fixed, host-configured default or a test override
-  # from opts; never built from package-controlled input.
-  # sobelow_skip ["Traversal.FileModule"]
   def plan(project_dir, deps_path, build_path, target, env, opts) do
     with root when is_binary(root) <- cache_root(),
          {:ok, lock} <- read_lock(project_dir),
          {:ok, graph} <- dep_graph(project_dir, env) do
       excluded = MapSet.new(Keyword.get(opts, :exclude, []))
       package = Keyword.fetch!(opts, :package)
-      local_root = Keyword.get(opts, :local_root, default_local_root())
-      File.mkdir_p!(local_root)
+      local_root = opts |> Keyword.get(:local_root, default_local_root()) |> local_tier()
 
       agnostic = agnostic_deps(deps_path, graph, lock, target)
 
@@ -177,6 +192,21 @@ defmodule NccWorker.BuildCache do
   end
 
   defp default_local_root, do: Path.join(System.tmp_dir!(), @local_root_dir)
+
+  @doc false
+  # The run-local tier's directory, created, or `nil` when it cannot be. A
+  # plan without one still restores from the shared root and still stores
+  # candidates; it just compiles a shared dependency once per target. Not
+  # creating it is a cache problem, never a reason to fail the build.
+  # `path` is the fixed default or a test override, never package input.
+  # sobelow_skip ["Traversal.FileModule"]
+  @spec local_tier(String.t()) :: String.t() | nil
+  def local_tier(path) do
+    case File.mkdir_p(path) do
+      :ok -> path
+      {:error, _reason} -> nil
+    end
+  end
 
   # `nil` means sharing is off for this target and every key stays target-scoped.
   defp agnostic_deps(_deps_path, _graph, _lock, "host"), do: nil
@@ -236,7 +266,9 @@ defmodule NccWorker.BuildCache do
   end
 
   @doc """
-  Counts the target-independent entries present in neither tier.
+  Counts the target-independent entries present in neither tier, leaving out
+  the package under test (`restore?: false`), which is never restored from
+  either.
 
   Each of these is compiled by every target that cannot restore it, so this is
   the work that building one target first, and letting the rest restore what it
@@ -249,7 +281,8 @@ defmodule NccWorker.BuildCache do
     local_root = Map.get(plan, :local_root)
 
     Enum.count(entries, fn entry ->
-      Map.get(entry, :shared, false) and is_nil(cache_source(root, local_root, entry.key))
+      Map.get(entry, :shared, false) and Map.get(entry, :restore?, true) and
+        is_nil(cache_source(root, local_root, entry.key))
     end)
   end
 
@@ -272,7 +305,8 @@ defmodule NccWorker.BuildCache do
   end
 
   @doc """
-  Stores dependency builds the host has not seen, for the host to promote.
+  Stores what a successful build compiled: the package under test as a
+  candidate for the host to promote, everything else into the run-local tier.
 
   The cache root is read-only inside the build container: a candidate is never
   written there directly. Only the package under test (`restore?: false`)
@@ -317,12 +351,11 @@ defmodule NccWorker.BuildCache do
   # from package-controlled input.
   # sobelow_skip ["Traversal.FileModule"]
   defp store_candidate(%{key: key, dir: dir} = entry, out_root) do
-    File.mkdir_p!(out_root)
-
-    if store_entry(dir, Path.join(out_root, key)) do
+    with :ok <- File.mkdir_p(out_root),
+         true <- store_entry(dir, Path.join(out_root, key)) do
       [candidate_for(entry)]
     else
-      []
+      _ -> []
     end
   end
 
@@ -339,7 +372,8 @@ defmodule NccWorker.BuildCache do
     }
   end
 
-  # The destination is the configured worker cache root plus key_for/5 SHA256 and a random suffix.
+  # The destination is a key from `plan/6` under the run-local tier or the
+  # out dir (never the read-only shared root), plus a random staging suffix.
   # sobelow_skip ["Traversal.FileModule"]
   defp store_entry(dir, target) do
     staging = target <> ".tmp." <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
