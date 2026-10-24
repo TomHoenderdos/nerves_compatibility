@@ -59,8 +59,9 @@ defmodule Portal.BuildCache.Promotion do
        already pins.
     7. An existing entry is never replaced. The tree is renamed into a
        `<dest>.tmp.<hex>` staging name (copied with `cp -a` when the cache is
-       on another filesystem), then renamed into place. `Portal.Workers.Sweep`
-       prunes leftover staging names.
+       on another filesystem), stripped of setuid, setgid, sticky and
+       group/other write on every directory and regular file, then renamed
+       into place. `Portal.Workers.Sweep` prunes leftover staging names.
 
   ## Symlinks
 
@@ -98,7 +99,9 @@ defmodule Portal.BuildCache.Promotion do
   under the build cache root, or `nil` when the cache is off.
   `opts[:release_checksum]` is the Hex lookup; without it the
   `config :portal, Portal.BuildCache.Promotion, release_checksum: fun` value
-  is used, then `Portal.HexPm.release_checksum/2`.
+  is used, then `Portal.HexPm.release_checksum/2`. `opts[:rename]` replaces
+  `File.rename/2` for the move out of `out_dir` only, a seam for tests to
+  force the cross-device copy.
   """
   @spec promote(map(), Path.t(), Path.t() | nil, String.t(), String.t(), keyword()) :: counts()
   def promote(result, out_dir, cache_dir, package, version, opts \\ [])
@@ -127,7 +130,8 @@ defmodule Portal.BuildCache.Promotion do
       version: version,
       lookup: lookup,
       targets: built_targets(systems),
-      toolchain: toolchain(result)
+      toolchain: toolchain(result),
+      rename: Keyword.get(opts, :rename, &File.rename/2)
     }
 
     {counts, _hex} =
@@ -476,7 +480,8 @@ defmodule Portal.BuildCache.Promotion do
         staging = dest <> ".tmp." <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
         with :ok <- File.mkdir_p(ctx.cache),
-             :ok <- stage(source, staging),
+             :ok <- stage(source, staging, ctx.rename),
+             :ok <- strip_modes(staging),
              :ok <- File.rename(staging, dest) do
           Logger.info(
             "Promoted build cache entry #{key} for #{ctx.package} #{ctx.version} " <>
@@ -500,8 +505,8 @@ defmodule Portal.BuildCache.Promotion do
 
   # Both paths come from `move/3`; `cp` gets them as arguments, no shell.
   # sobelow_skip ["Traversal.FileModule", "CI.System"]
-  defp stage(source, staging) do
-    case File.rename(source, staging) do
+  defp stage(source, staging, rename) do
+    case rename.(source, staging) do
       :ok ->
         :ok
 
@@ -518,6 +523,55 @@ defmodule Portal.BuildCache.Promotion do
       error ->
         error
     end
+  end
+
+  # The container chose every mode in the tree. Before it becomes visible,
+  # drop setuid, setgid and sticky and group/other write from each directory
+  # and regular file, so nothing in the cache is writable by another user or
+  # runs with its owner's rights. Walked with `lstat` and links left alone:
+  # `chmod` on a link would change what it points at. The names were checked
+  # by `walk/3` already, but are rechecked rather than trusted.
+  @keep_mode 0o755
+
+  # `staging` is the host-built staging path from `move/3`.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp strip_modes(path) do
+    case lstat(path) do
+      {:ok, %File.Stat{type: :directory, mode: mode}} ->
+        with :ok <- chmod(path, mode), do: strip_children(path)
+
+      {:ok, %File.Stat{type: :regular, mode: mode}} ->
+        chmod(path, mode)
+
+      {:ok, %File.Stat{}} ->
+        :ok
+
+      error ->
+        error
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp strip_children(dir) do
+    case :file.list_dir_all(dir) do
+      {:ok, names} ->
+        Enum.reduce_while(names, :ok, fn raw, :ok ->
+          case name_string(raw) do
+            {:ok, name} -> dir |> Path.join(name) |> strip_modes() |> continue_if_ok()
+            :error -> {:halt, {:error, {:name, raw}}}
+          end
+        end)
+
+      error ->
+        error
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp chmod(path, mode) do
+    wanted = Bitwise.band(mode, @keep_mode)
+
+    if Bitwise.band(mode, 0o7777) == wanted, do: :ok, else: File.chmod(path, wanted)
   end
 
   # sobelow_skip ["Traversal.FileModule"]

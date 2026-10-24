@@ -449,7 +449,9 @@ defmodule Portal.BuildCache.PromotionTest do
                  ctx.out,
                  ctx.cache,
                  "jason",
-                 "1.4.5", release_checksum: &hex_ok/2)
+                 "1.4.5",
+                 release_checksum: &hex_ok/2
+               )
 
       assert File.ls!(ctx.cache) == []
     end
@@ -479,6 +481,68 @@ defmodule Portal.BuildCache.PromotionTest do
       assert [line] = lines
       assert line =~ "6 build cache candidate(s)"
       assert line =~ ~S"111111111111111111111111111111111111111111111111111111111111111\n"
+    end
+  end
+
+  describe "staging" do
+    defp exdev(_from, _to), do: {:error, :exdev}
+
+    defp staging_names(cache), do: cache |> File.ls!() |> Enum.filter(&(&1 =~ ".tmp."))
+
+    test "copies the tree when the cache is on another filesystem", ctx do
+      c = candidate(ctx.out)
+
+      assert %{promoted: 1} =
+               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                 release_checksum: &hex_ok/2,
+                 rename: &exdev/2
+               )
+
+      assert File.read!(Path.join([ctx.cache, c["key"], "ebin/Elixir.Jason.beam"])) == "beam"
+      assert staging_names(ctx.cache) == []
+    end
+
+    test "a copy that fails leaves no staging directory", ctx do
+      c = candidate(ctx.out)
+      beam = Path.join([ctx.out, "build-cache", c["key"], "ebin/Elixir.Jason.beam"])
+      File.chmod!(beam, 0o000)
+
+      assert %{promoted: 0} =
+               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                 release_checksum: &hex_ok/2,
+                 rename: &exdev/2
+               )
+
+      assert File.ls!(ctx.cache) == []
+    end
+
+    test "strips setuid, setgid, sticky and group/other write from the promoted tree", ctx do
+      for opts <- [[], [rename: &exdev/2]] do
+        out = Path.join(ctx.tmp, "out-#{System.unique_integer([:positive])}")
+        cache = Path.join(ctx.tmp, "cache-#{System.unique_integer([:positive])}")
+        c = candidate(out)
+        entry = Path.join([out, "build-cache", c["key"]])
+        File.chmod!(Path.join(entry, "ebin/Elixir.Jason.beam"), 0o4755)
+        File.chmod!(Path.join(entry, "ebin"), 0o777)
+        File.mkdir_p!(Path.join(entry, "lib/sticky"))
+        File.chmod!(Path.join(entry, "lib/sticky"), 0o1777)
+
+        assert %{promoted: 1} =
+                 Promotion.promote(
+                   result([c]),
+                   out,
+                   cache,
+                   "jason",
+                   "1.4.5",
+                   [release_checksum: &hex_ok/2] ++ opts
+                 )
+
+        promoted = Path.join(cache, c["key"])
+        mode = &(File.lstat!(Path.join(promoted, &1)).mode |> Bitwise.band(0o7777))
+        assert mode.("ebin/Elixir.Jason.beam") == 0o755, inspect(opts)
+        assert mode.("ebin") == 0o755, inspect(opts)
+        assert mode.("lib/sticky") == 0o755, inspect(opts)
+      end
     end
   end
 end
