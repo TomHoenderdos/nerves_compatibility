@@ -48,7 +48,11 @@ and moves `<tag>` to `<tag>-previous` only once every candidate built.
   comma-separated `toolchain=image` pairs:
   `1.20/29=ncc-worker:local,1.19/28=ncc-worker:elixir-1.19-otp-28`. Unset
   uses the list in `apps/portal/config/config.exs`. A malformed entry stops
-  the boot.
+  the boot. Set it identically on **every host**: the web host's list
+  decides which toolchains the sweep queues and what the admin counts show,
+  and the build host's list decides which image a queued build runs on. A
+  toolchain the build host does not list falls back to the image the web host
+  named, with a warning in the log.
 
 ## Portal configuration
 

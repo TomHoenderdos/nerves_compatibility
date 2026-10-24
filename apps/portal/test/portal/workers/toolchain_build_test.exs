@@ -95,6 +95,40 @@ defmodule Portal.Workers.ToolchainBuildTest do
     assert "tc-jason-1.4.4-" <> _ = build_args.run_id
   end
 
+  describe "image resolution" do
+    setup do
+      original = Application.fetch_env!(:portal, Portal.Toolchains)
+      on_exit(fn -> Application.put_env(:portal, Portal.Toolchains, original) end)
+
+      put_images = fn images ->
+        Application.put_env(:portal, Portal.Toolchains, Keyword.put(original, :images, images))
+      end
+
+      %{put_images: put_images}
+    end
+
+    test "builds on this node's image for the toolchain, not the job's", %{put_images: put} do
+      put.([%{toolchain: "1.19/28", image: "registry.local/ncc:1.19-28"}])
+      respond(0)
+
+      assert :ok = perform_job(ToolchainBuild, @args)
+
+      assert_received {:image_digest, "registry.local/ncc:1.19-28"}
+      assert_received {:build_args, %{image: "registry.local/ncc:1.19-28"}}
+    end
+
+    test "falls back to the job's image, with a warning, when this node lacks the toolchain",
+         %{put_images: put} do
+      put.([%{toolchain: "1.20/29", image: "ncc-worker:local"}])
+      respond(0)
+
+      log = capture_log(fn -> assert :ok = perform_job(ToolchainBuild, @args) end)
+
+      assert log =~ "1.19/28 is not configured on this node"
+      assert_received {:build_args, %{image: "ncc-worker:elixir-1.19-otp-28"}}
+    end
+  end
+
   test "exit 0 hands the build to a toolchain ingest on this node's queue" do
     respond(0)
     assert :ok = perform_job(ToolchainBuild, @args)

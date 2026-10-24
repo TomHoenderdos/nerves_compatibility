@@ -5,9 +5,12 @@ defmodule Portal.Workers.ToolchainBuild do
   result to `Portal.Workers.Ingest` with `kind: "toolchain"`.
 
   Enqueued by `Portal.Workers.ToolchainSweep`. Args: `package`, `version`,
-  `toolchain` (`"1.19/28"`), `image` (the local tag carrying it) and
-  `builder_version` (`Portal.Toolchains.builder_version/0` at sweep time). The
-  image digest is resolved here, on the build host that has the image.
+  `toolchain` (`"1.19/28"`), `image` (the tag the sweeping node has configured
+  for it) and `builder_version` (`Portal.Toolchains.builder_version/0` at sweep
+  time). The image and its digest are resolved here, on the build host that
+  has the images: the toolchain's image in this node's own
+  `Portal.Toolchains.images/0`, and the job's `image` only when this node does
+  not configure the toolchain at all.
 
   Exit-code contract, as `Portal.Workers.Build`'s:
 
@@ -57,12 +60,13 @@ defmodule Portal.Workers.ToolchainBuild do
   def perform(%Oban.Job{args: args} = job) do
     case split_toolchain(args["toolchain"]) do
       {:ok, toolchain} ->
-        image_digest = builder().image_digest(args["image"])
+        image = local_image(args)
+        image_digest = builder().image_digest(image)
         run_id = run_id(args["package"], args["version"])
 
         with_crash_cleanup(job, run_id, fn ->
           job
-          |> build(run_id, image_digest, toolchain)
+          |> build(run_id, image, image_digest, toolchain)
           |> handle(job, run_id, image_digest)
         end)
 
@@ -71,12 +75,30 @@ defmodule Portal.Workers.ToolchainBuild do
     end
   end
 
-  defp build(%Oban.Job{args: args}, run_id, image_digest, toolchain) do
+  # The sweep runs on the web host and names the image from that node's
+  # `NCC_TOOLCHAINS`; the image that runs is the one this node, which has the
+  # images, configures for the toolchain.
+  defp local_image(args) do
+    case Enum.find(Portal.Toolchains.images(), &(&1.toolchain == args["toolchain"])) do
+      %{image: image} ->
+        image
+
+      nil ->
+        Logger.warning(
+          "Toolchain #{args["toolchain"]} is not configured on this node; " <>
+            "building on the job's image #{inspect(args["image"])}"
+        )
+
+        args["image"]
+    end
+  end
+
+  defp build(%Oban.Job{args: args}, run_id, image, image_digest, toolchain) do
     builder().build(%{
       package: args["package"],
       version: args["version"],
       run_id: run_id,
-      image: args["image"],
+      image: image,
       image_digest: image_digest,
       mode: "toolchain",
       toolchain: toolchain
