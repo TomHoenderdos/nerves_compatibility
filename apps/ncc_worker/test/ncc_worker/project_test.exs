@@ -375,6 +375,31 @@ defmodule NccWorker.ProjectTest do
     end
   end
 
+  describe "optional_deps_to_add/1" do
+    # mdns_lite declares igniter optional; adding it drags igniter's whole
+    # closure into the key, and the entry misses for every application that
+    # does not lock igniter. crux declares two SAT solvers an app picks one of.
+    test "sets dev tooling and alternatives aside" do
+      deps =
+        for app <- ~w(vintage_net igniter picosat_elixir simple_sat ex_doc),
+            do: %{app: app, package: app, requirement: ">= 0.0.0"}
+
+      assert {[%{app: "vintage_net"}], skipped} = Project.optional_deps_to_add(deps)
+      assert skipped == ~w(igniter picosat_elixir simple_sat ex_doc)
+    end
+
+    test "matches the Hex package name too" do
+      deps = [%{app: "my_igniter", package: "igniter", requirement: "~> 0.5"}]
+      assert {[], ["my_igniter"]} = Project.optional_deps_to_add(deps)
+    end
+
+    test "seeds the list with tooling and alternatives" do
+      for name <- ~w(igniter sourceror rewrite ex_doc credo dialyxir stream_data excoveralls
+                     mix_test_watch benchee picosat_elixir simple_sat),
+          do: assert(name in Project.optional_deps_never_added())
+    end
+  end
+
   describe "drop_optional_deps/3" do
     # After the optional pass built, or failed to build, with them: the project
     # goes back to what the status was decided on, and the package's build is

@@ -157,8 +157,10 @@ Status codes:
       worker resolves the package's own optional dependencies too, when they
       build, so they appear here (decimal under jason, jason under ecto); a
       client whose lock lacks one of them does not match, because the package
-      compiled differently with it loadable. Per-system entries of a firmware
-      package are built without its optional dependencies.
+      compiled differently with it loadable. Optional dev tooling (igniter,
+      ex_doc and the like) and alternatives an application picks one of are
+      never added. Per-system entries of a firmware package are built without
+      its optional dependencies.
     - `package_checksum` — the package's own outer Hex checksum from the
       build's `mix.lock`, a string, or `null` for runs from before it was
       recorded and for argus-only runs.

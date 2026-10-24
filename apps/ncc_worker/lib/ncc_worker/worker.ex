@@ -66,9 +66,12 @@ defmodule NccWorker.Worker do
           # "host_compile_failed", "stale_build_not_removed",
           # "mix_exs_edit_failed" or "firmware_build", `nil` when nothing was
           # dropped. Absent for argus-only runs.
+          # `skipped` were never tried: dev tooling and alternatives on
+          # `NccWorker.Project`'s `@optional_deps_never_added`.
           optional(:optional_deps) => %{
             added: [String.t()],
             dropped: [String.t()],
+            skipped: [String.t()],
             reason: String.t() | nil
           },
           # The package's transitive dependency closure as locked for this
@@ -491,7 +494,26 @@ defmodule NccWorker.Worker do
     do: {:ok, nil}
 
   defp resolve_optional_deps(_scope, selection, project_dir, package_name, paths) do
-    case DepsLock.unresolved_optional_deps(project_dir, package_name) do
+    {deps, skipped} =
+      project_dir
+      |> DepsLock.unresolved_optional_deps(package_name)
+      |> Project.optional_deps_to_add()
+
+    if skipped != [] do
+      log_host(
+        paths,
+        "Not adding optional dependencies #{Enum.join(skipped, ", ")}: " <>
+          "tooling or alternatives most applications do not lock"
+      )
+    end
+
+    with {:ok, info} <- optional_deps_pass(deps, selection, project_dir, package_name, paths) do
+      {:ok, Map.put(info, :skipped, skipped)}
+    end
+  end
+
+  defp optional_deps_pass(deps, selection, project_dir, package_name, paths) do
+    case deps do
       [] ->
         {:ok, optional_deps_info([], [], nil)}
 
