@@ -8,12 +8,24 @@ defmodule Portal.Precompiled.Manifests do
   alias Portal.{ArtifactStore, Catalog}
 
   @spec render(String.t()) :: {:ok, binary()} | :none
-  def render(package_name) do
-    case Catalog.precompiled_manifest(package_name) do
-      nil -> :none
-      manifest -> {:ok, JSON.encode!(manifest)}
-    end
+  def render(package_name), do: package_name |> Catalog.precompiled_manifest() |> encode()
+
+  @doc "The format-2 manifest (`Portal.Catalog.precompiled_manifest_v2/1`) as bytes."
+  @spec render_v2(String.t()) :: {:ok, binary()} | :none
+  def render_v2(package_name), do: package_name |> Catalog.precompiled_manifest_v2() |> encode()
+
+  @doc """
+  Both formats from one load of the package's catalog data, the same bytes
+  `render/1` and `render_v2/1` give.
+  """
+  @spec render_both(String.t()) :: %{v1: {:ok, binary()} | :none, v2: {:ok, binary()} | :none}
+  def render_both(package_name) do
+    %{v1: v1, v2: v2} = Catalog.precompiled_manifests(package_name)
+    %{v1: encode(v1), v2: encode(v2)}
   end
+
+  defp encode(nil), do: :none
+  defp encode(manifest), do: {:ok, JSON.encode!(manifest)}
 
   @spec store(binary()) :: {:ok, String.t()} | {:error, term()}
   # sobelow_skip ["Traversal.FileModule"]

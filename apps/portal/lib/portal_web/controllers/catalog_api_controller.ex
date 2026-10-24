@@ -35,9 +35,17 @@ defmodule PortalWeb.CatalogApiController do
   end
 
   def precompiled_manifest(conn, %{"package" => raw_package}) do
+    serve_manifest(conn, raw_package, &Batches.manifests/1, &Catalog.precompiled_manifest/1)
+  end
+
+  def precompiled_manifest_v2(conn, %{"package" => raw_package}) do
+    serve_manifest(conn, raw_package, &Batches.manifests_v2/1, &Catalog.precompiled_manifest_v2/1)
+  end
+
+  defp serve_manifest(conn, raw_package, batch_map, live) do
     package = String.replace_suffix(raw_package, ".json", "")
 
-    case stored_manifest(package) do
+    case stored_manifest(package, batch_map) do
       {:ok, sha, bytes} ->
         conn
         |> put_cache_headers()
@@ -45,7 +53,7 @@ defmodule PortalWeb.CatalogApiController do
         |> send_json_bytes(bytes)
 
       :none ->
-        case Catalog.precompiled_manifest(package) do
+        case live.(package) do
           nil ->
             conn |> put_status(:not_found) |> json(%{error: "precompiled manifest not found"})
 
@@ -55,12 +63,13 @@ defmodule PortalWeb.CatalogApiController do
     end
   end
 
-  # The bytes the newest batch signed over, when a batch exists. Before the
-  # first batch the live render stands in; a client that verifies batches
-  # cannot use it, one that does not (today's script) still can.
-  defp stored_manifest(package) do
+  # The bytes the newest batch signed over, when a batch exists, from the map
+  # of the format asked for (`Batches.manifests/1` or `Batches.manifests_v2/1`).
+  # Before the first batch the live render stands in; a client that verifies
+  # batches cannot use it, one that does not (today's script) still can.
+  defp stored_manifest(package, batch_map) do
     with %{} = batch <- Batches.latest(),
-         sha when is_binary(sha) <- Batches.manifests(batch)[package],
+         sha when is_binary(sha) <- batch_map.(batch)[package],
          {:ok, bytes} <- Manifests.read(sha) do
       {:ok, sha, bytes}
     else

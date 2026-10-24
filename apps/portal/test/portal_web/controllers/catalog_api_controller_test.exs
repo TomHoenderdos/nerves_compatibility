@@ -579,6 +579,23 @@ defmodule PortalWeb.CatalogApiControllerTest do
     end
   end
 
+  test "GET /api/precompiled/v2/manifests/:package.json returns format 2", %{conn: conn} do
+    ingest_toolchain_build("jason", "1.4.1")
+
+    body = conn |> get("/api/precompiled/v2/manifests/jason.json") |> json_response(200)
+
+    assert body["format"] == 2
+    assert is_binary(body["updated_at"])
+    assert %{"1.4.1" => %{"builds" => [%{"target" => "pure_elixir"} = build]}} = body["versions"]
+    assert build["build"]["dep_env"] == "prod"
+  end
+
+  test "GET /api/precompiled/v2/manifests is 404 without format-2 builds", %{conn: conn} do
+    ingest_fixture_with_artifact()
+
+    assert conn |> get("/api/precompiled/v2/manifests/jason.json") |> json_response(404)
+  end
+
   test "GET /api/precompiled/files/:sha256 serves artifact blob", %{conn: conn} do
     sha = ingest_fixture_with_artifact()
 
@@ -752,6 +769,22 @@ defmodule PortalWeb.CatalogApiControllerTest do
       resp = conn |> get("/api/precompiled/manifests/#{name}.json")
       assert Base.encode16(:crypto.hash(:sha256, response(resp, 200)), case: :lower) == sha
       assert get_resp_header(resp, "etag") == [~s("#{sha}")]
+    end
+
+    test "the v2 manifest endpoint serves the batch's format-2 bytes", %{conn: conn} do
+      name = "tc_api_#{System.unique_integer([:positive])}"
+      ingest_toolchain_build(name, "0.3.0")
+      {:ok, batch} = Portal.Precompiled.Batches.build_and_sign()
+      sha = Portal.Precompiled.Batches.manifests_v2(batch)[name]
+      assert is_binary(sha)
+
+      # A newer build after the batch: the endpoint still serves what was signed.
+      ingest_toolchain_build(name, "0.3.0", finished_at: "2026-10-25T10:00:00Z")
+
+      resp = conn |> get("/api/precompiled/v2/manifests/#{name}.json")
+      assert Base.encode16(:crypto.hash(:sha256, response(resp, 200)), case: :lower) == sha
+      assert get_resp_header(resp, "etag") == [~s("#{sha}")]
+      assert json_response(resp, 200)["format"] == 2
     end
 
     test "root.json is 404 without a key" do

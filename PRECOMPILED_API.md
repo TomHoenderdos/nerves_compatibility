@@ -17,6 +17,10 @@ The API consists of:
 
 ### GET /api/precompiled/manifests/{package_name}.json
 
+Manifest format 1, kept for existing clients. New clients use format 2
+(`/api/precompiled/v2/manifests`, below), which also lists the toolchain builds
+format 1 cannot express.
+
 Returns the manifest for a package: all available versions and systems with archived files.
 
 Example: `/api/precompiled/manifests/circuits_gpio.json`
@@ -65,6 +69,16 @@ Status codes:
 
 - `200` — manifest found
 - `404` — package has no precompiled manifest
+
+### GET /api/precompiled/v2/manifests/{package_name}.json
+
+Manifest format 2: see "Manifest format 2" below for the shape and how a
+client matches a build.
+
+Status codes:
+
+- `200` — manifest found
+- `404` — package has no build that format 2 can publish
 
 ### GET /api/precompiled/files/{sha256}
 
@@ -119,9 +133,21 @@ Response: a signed envelope wrapping:
   "expires": "2026-10-28T00:00:00Z",
   "manifests": {
     "circuits_gpio": "96b613f9050e8e3fba6639d9695a65386c699ccac6608d2e972f9e25a4fc81a7"
+  },
+  "manifests_v2": {
+    "circuits_gpio": "1f0c...",
+    "jason": "8a2e..."
   }
 }
 ```
+
+`manifests` names format-1 manifests and `manifests_v2` format-2 ones
+(served at `/api/precompiled/v2/manifests/<package>.json`). `version` stays
+`1`: format 2 is an added map, not a new batch format, so clients that only
+know `manifests` keep verifying. A package can be in one map and not the
+other: a run without a recorded toolchain, dependency lock or package checksum
+is format 1 only, and a toolchain build is format 2 only. A batch signed before
+format 2 has no `manifests_v2`; a client falls back to `manifests`.
 
 An `etag` header of `"batch-<sequence>"` is set.
 
@@ -139,7 +165,7 @@ Status codes:
 - `200` — batch found
 - `404` — no batch with that sequence
 
-## Response fields
+## Response fields (format 1, kept for existing clients)
 
 - `versions` — map of version strings to system data.
 - `versions[version][system]` — file manifest for a specific version/system combination.
@@ -206,12 +232,107 @@ a different version or a different checksum means building from source.
   - `mode` — Unix file mode when reported by the worker.
 - `updated_at` — ISO 8601 timestamp of the newest run represented in the manifest.
 
+## Manifest format 2 (`/api/precompiled/v2/manifests`)
+
+Format 1 is a map, `versions[v][target] = entry`, so it holds one entry per
+target. Format 2 is a build list, which can hold one build per target *and*
+toolchain:
+
+```json
+{
+  "format": 2,
+  "versions": {
+    "1.4.5": {
+      "builds": [
+        {
+          "target": "pure_elixir",
+          "ebin": [
+            {"path": "ebin/jason.beam", "sha256": "...", "size": 1234, "mode": 33188}
+          ],
+          "priv": [],
+          "build": {
+            "elixir": "1.20.3", "otp": "29", "dep_env": "prod",
+            "system_version": null,
+            "deps": {"decimal": {"version": "2.3.0", "checksum": "..."}},
+            "compile_env": [],
+            "package_checksum": "...",
+            "run_id": "...", "image_digest": "sha256:..."
+          }
+        },
+        {
+          "target": "nerves_system_rpi4",
+          "ebin": [...], "priv": [...],
+          "build": {"elixir": "1.18.4", "otp": "27", "dep_env": "prod", "system_version": "2.2.1", "...": "..."}
+        }
+      ]
+    }
+  },
+  "updated_at": "2026-10-24T10:00:00Z"
+}
+```
+
+- `format` — `2`. A client that gets a higher number than it knows must fail
+  rather than guess.
+- `versions[version].builds` — the builds of that version. An empty or absent
+  list, or a `target` the client does not know, is a miss, not an error.
+- `target` — what format 1 used as the map key: a Nerves system package, or
+  `pure_elixir` for files that are the same on every target.
+- `ebin`, `priv` and their file entries — as in format 1.
+- `build` — the format-1 `build` fields (`elixir`, `otp`, `system_version`,
+  `deps`, `compile_env`, `package_checksum`, `run_id`, `image_digest`, same
+  meaning) plus `dep_env`, the Mix env the package was compiled under as a
+  dependency. Every build the portal makes is `"prod"`, which is what Mix
+  compiles a dependency as unless the project overrides its `env:`.
+- `updated_at` — the newest `finished_at` among the builds listed.
+
+What it lists:
+
+- Every build format 1 publishes, with `target` set to its format-1 key.
+  Format 1 keeps only the newest per target; format 2 keeps each toolchain's.
+- Toolchain builds: a pure-BEAM package version built on a plain Elixir/OTP
+  image for `Mix.install` and non-Nerves projects, `target` `pure_elixir` and
+  `system_version` `null`. Only passing, unrevoked builds whose files are all
+  on this host appear.
+- A build whose `elixir`, `otp`, `deps` or `package_checksum` is `null` is left
+  out, since no client can match it (it stays in format 1).
+- One build per target, toolchain (`"<elixir minor>/<otp>"`) and `deps`: the
+  newest wins.
+
+### Matching a format-2 build to a project
+
+The client checks each build in this order, and reports the first rule a
+build fails as the reason it was not used:
+
+1. **Target** — `target` is `pure_elixir`, or equals the project's Nerves
+   system with `build.system_version` equal to the system's version.
+2. **Toolchain recorded** — `build.elixir` and `build.otp` are present.
+3. **Elixir minor** — the running Elixir has the same major.minor as
+   `build.elixir`, and its patch is at least the built patch. Code compiled on
+   x.y.0 runs on x.y.N; the reverse is not promised, because a later patch's
+   macros can expand to helpers an earlier one lacks.
+4. **OTP major** — exactly equal. Record layouts from OTP headers
+   (`Record.extract`) are baked into the BEAM at compile time and change
+   between majors.
+5. **Dependency compile env** — `build.dep_env` equals the env the project
+   compiles the dependency under (`env:` on the dep, `prod` when unset).
+6. **Package checksum** — `build.package_checksum` equals the outer checksum
+   of the project's own `mix.lock` entry for the package.
+7. **Dependencies** — every dependency in `build.deps` is in the project's
+   `mix.lock` with the same version and outer checksum. Extra dependencies in
+   the project's lock do not matter.
+8. **compile_env** — every `build.compile_env` item decodes to the value the
+   project's config gives for that app and path.
+
+Among the builds that pass, the client prefers an exact Elixir patch match,
+then the closest older patch, then `pure_elixir` over a system build, then the
+newest `run_id`.
+
 ## Trust
 
 A manifest or file is only as trustworthy as the chain that names it: `root.json`
 says which key may sign a batch; a batch, signed by that key, names the SHA256
-of every package's manifest bytes; `manifests/{package}.json` serves exactly
-those bytes, so a client can hash what it downloaded and compare it to the
+of every package's manifest bytes; `manifests/{package}.json` (and
+`v2/manifests/{package}.json` for `manifests_v2`) serves exactly those bytes, so a client can hash what it downloaded and compare it to the
 batch entry instead of trusting the connection; `files/{sha256}` is
 content-addressed, so each file is its own proof once its manifest entry is
 trusted. A client that skips this chain (today's install script) can still use
@@ -236,7 +357,7 @@ just without the batch to check them against.
   manifest endpoint serves those same stored bytes (not a fresh render) for
   as long as that is the newest batch, so the hash a client checks against
   always matches what it downloads.
-- **Revocation** — there is no separate revoke endpoint. Revoking a run (or a
+- **Revocation** — there is no separate revoke endpoint. Revoking a run or a toolchain build (or a
   newer run superseding a carried-forward one) changes what the catalog would
   render for that package; the next signed batch picks that up, dropping the
   package from `manifests` entirely or pointing at a different hash. A client

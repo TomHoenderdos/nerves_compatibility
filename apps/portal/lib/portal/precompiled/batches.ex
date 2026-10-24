@@ -31,18 +31,9 @@ defmodule Portal.Precompiled.Batches do
   end
 
   defp do_build(key) do
-    manifests =
+    {manifests, manifests_v2} =
       Catalog.packages_with_precompiled_files()
-      |> Enum.reduce(%{}, fn name, acc ->
-        with {:ok, bytes} <- Manifests.render(name),
-             {:ok, sha} <- Manifests.store(bytes) do
-          Map.put(acc, name, sha)
-        else
-          reason ->
-            Logger.warning("Dropping #{name} from precompiled batch: #{inspect(reason)}")
-            acc
-        end
-      end)
+      |> Enum.reduce({%{}, %{}}, fn name, acc -> add_package(acc, name) end)
 
     issued = DateTime.utc_now()
     expires = DateTime.add(issued, @ttl_days, :day)
@@ -61,7 +52,8 @@ defmodule Portal.Precompiled.Batches do
         "sequence" => sequence,
         "issued" => DateTime.to_iso8601(issued),
         "expires" => DateTime.to_iso8601(expires),
-        "manifests" => manifests
+        "manifests" => manifests,
+        "manifests_v2" => manifests_v2
       })
 
     %{"signatures" => signatures} = Envelope.sign(payload, [{key.keyid, key.private}])
@@ -76,6 +68,34 @@ defmodule Portal.Precompiled.Batches do
       manifest_count: map_size(manifests)
     })
     |> Ash.create(domain: Portal.Precompiled)
+  end
+
+  # Both formats of one package from one catalog load. A package can have one
+  # format and not the other (a run without toolchain keys is format 1 only, a
+  # toolchain build format 2 only), so only a package with neither, or a
+  # manifest that fails to store, is worth a warning.
+  defp add_package({v1_acc, v2_acc}, name) do
+    case Manifests.render_both(name) do
+      %{v1: :none, v2: :none} ->
+        Logger.warning("Dropping #{name} from precompiled batch: :none")
+        {v1_acc, v2_acc}
+
+      %{v1: v1, v2: v2} ->
+        {store_into(v1_acc, name, v1, "format 1"), store_into(v2_acc, name, v2, "format 2")}
+    end
+  end
+
+  defp store_into(acc, _name, :none, _format), do: acc
+
+  defp store_into(acc, name, {:ok, bytes}, format) do
+    case Manifests.store(bytes) do
+      {:ok, sha} ->
+        Map.put(acc, name, sha)
+
+      reason ->
+        Logger.warning("Dropping #{name} (#{format}) from precompiled batch: #{inspect(reason)}")
+        acc
+    end
   end
 
   @spec latest() :: Batch.t() | nil
@@ -102,4 +122,8 @@ defmodule Portal.Precompiled.Batches do
 
   @spec manifests(Batch.t()) :: %{String.t() => String.t()}
   def manifests(%Batch{payload: payload}), do: JSON.decode!(payload)["manifests"]
+
+  @doc "Format-2 manifest shas of a batch; `%{}` for a batch made before format 2."
+  @spec manifests_v2(Batch.t()) :: %{String.t() => String.t()}
+  def manifests_v2(%Batch{payload: payload}), do: JSON.decode!(payload)["manifests_v2"] || %{}
 end

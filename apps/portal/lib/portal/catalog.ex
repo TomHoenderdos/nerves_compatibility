@@ -1034,52 +1034,56 @@ defmodule Portal.Catalog do
   end
 
   @doc """
-  Returns the precompiled package manifest shape for a package.
+  Returns the precompiled package manifest shape for a package (format 1,
+  `versions[v][target] = entry`), or `nil` when it has nothing to publish.
   """
+  @spec precompiled_manifest(String.t()) :: map() | nil
   def precompiled_manifest(package_name) do
-    with [package] <- packages(package_name),
-         runs when runs != [] <- precompiled_runs(package.id),
-         results when results != [] <- manifest_results_for_runs(Enum.map(runs, & &1.id)) do
-      revoked = revoked_run_ids(package.id)
-      results = Enum.reject(results, &(&1.carried_from_run_id in revoked))
-
-      shas_by_system_result_id =
-        results
-        |> Enum.map(& &1.id)
-        |> manifest_shas_for_system_results()
-
-      versions =
-        precompiled_versions(
-          runs,
-          results,
-          shas_by_system_result_id,
-          present_shas(shas_by_system_result_id)
-        )
-
-      if versions == %{} do
-        nil
-      else
-        %{
-          versions: versions,
-          updated_at:
-            runs
-            |> Enum.map(& &1.finished_at)
-            |> Enum.reject(&is_nil/1)
-            |> Enum.max(DateTime, fn -> nil end)
-            |> iso8601()
-        }
-      end
-    else
-      _ -> nil
+    case precompiled_sources(package_name) do
+      nil -> nil
+      sources -> manifest_v1(sources)
     end
   end
 
-  @doc "Names of packages with at least one stored precompiled file on a run that is not revoked."
+  @doc """
+  Returns the format-2 manifest of a package (`versions[v]["builds"]`, a build
+  list; see `PRECOMPILED_API.md`), or `nil` when it has nothing to publish.
+
+  Its builds are every run result format 1 publishes, and every passing,
+  unrevoked `Portal.Catalog.ToolchainBuild` whose files this host holds. A
+  build without `elixir`, `otp`, `deps` or `package_checksum` is left out: a
+  client cannot match it. One build is kept per target, toolchain
+  (`"<elixir minor>/<otp>"`) and dependency lock, the newest.
+  """
+  @spec precompiled_manifest_v2(String.t()) :: map() | nil
+  def precompiled_manifest_v2(package_name) do
+    case precompiled_sources(package_name) do
+      nil -> nil
+      sources -> manifest_v2(sources)
+    end
+  end
+
+  @doc """
+  Both manifest formats of a package from one load of its runs, toolchain
+  builds and memberships, for the batch, which renders both for every package.
+  """
+  @spec precompiled_manifests(String.t()) :: %{v1: map() | nil, v2: map() | nil}
+  def precompiled_manifests(package_name) do
+    case precompiled_sources(package_name) do
+      nil -> %{v1: nil, v2: nil}
+      sources -> %{v1: manifest_v1(sources), v2: manifest_v2(sources)}
+    end
+  end
+
+  @doc """
+  Names of packages with at least one stored precompiled file on a run that is
+  not revoked, or on a passing toolchain build that is not revoked.
+  """
   @spec packages_with_precompiled_files() :: [String.t()]
   def packages_with_precompiled_files do
     %{rows: rows} =
       Portal.Repo.query!("""
-      SELECT DISTINCT p.name
+      SELECT p.name
       FROM catalog_packages p
       JOIN catalog_runs r ON r.package_id = p.id
       JOIN catalog_system_results s ON s.run_id = r.id
@@ -1087,7 +1091,14 @@ defmodule Portal.Catalog do
       LEFT JOIN catalog_runs b ON b.id = s.carried_from_run_id
       WHERE r.revoked_at IS NULL
         AND (s.carried_from_run_id IS NULL OR b.revoked_at IS NULL)
-      ORDER BY p.name
+      UNION
+      SELECT p.name
+      FROM catalog_packages p
+      JOIN catalog_toolchain_builds t ON t.package_id = p.id
+      JOIN catalog_artifact_memberships m ON m.toolchain_build_id = t.id
+      WHERE t.revoked_at IS NULL
+        AND t.status = 'pass'
+      ORDER BY 1
       """)
 
     List.flatten(rows)
@@ -1667,6 +1678,217 @@ defmodule Portal.Catalog do
     }
   end
 
+  # Everything either manifest format is rendered from, read once: the
+  # package's unrevoked runs and their results (minus those carried from a
+  # revoked run), its published toolchain builds, which stored blobs each of
+  # them owns, and which of those blobs this host holds.
+  defp precompiled_sources(package_name) do
+    case packages(package_name) do
+      [package] ->
+        runs = precompiled_runs(package.id)
+        results = unrevoked_manifest_results(package.id, runs)
+
+        shas_by_system_result_id =
+          results |> Enum.map(& &1.id) |> manifest_shas_for_system_results()
+
+        toolchain_builds = published_toolchain_builds(package.id)
+
+        shas_by_toolchain_build_id =
+          toolchain_builds |> Enum.map(& &1.id) |> manifest_shas_for_toolchain_builds()
+
+        %{
+          runs: runs,
+          results: results,
+          shas_by_system_result_id: shas_by_system_result_id,
+          toolchain_builds: toolchain_builds,
+          shas_by_toolchain_build_id: shas_by_toolchain_build_id,
+          present_shas:
+            present_shas(Map.merge(shas_by_system_result_id, shas_by_toolchain_build_id))
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp unrevoked_manifest_results(_package_id, []), do: []
+
+  defp unrevoked_manifest_results(package_id, runs) do
+    revoked = revoked_run_ids(package_id)
+
+    runs
+    |> Enum.map(& &1.id)
+    |> manifest_results_for_runs()
+    |> Enum.reject(&(&1.carried_from_run_id in revoked))
+  end
+
+  defp manifest_v1(sources) do
+    versions =
+      precompiled_versions(
+        sources.runs,
+        sources.results,
+        sources.shas_by_system_result_id,
+        sources.present_shas
+      )
+
+    if versions == %{} do
+      nil
+    else
+      %{
+        versions: versions,
+        updated_at:
+          sources.runs
+          |> Enum.map(& &1.finished_at)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.max(DateTime, fn -> nil end)
+          |> iso8601()
+      }
+    end
+  end
+
+  # Builds are `{version, finished_at, build}` until the end, so the newest of
+  # each key can be picked and `updated_at` taken over what is published.
+  defp manifest_v2(sources) do
+    builds =
+      (run_builds(sources) ++ toolchain_builds_v2(sources))
+      |> Enum.filter(&matchable?/1)
+      |> newest_per_key()
+
+    if builds == [] do
+      nil
+    else
+      %{
+        "format" => 2,
+        "versions" =>
+          builds
+          |> Enum.group_by(&elem(&1, 0), &elem(&1, 2))
+          |> Map.new(fn {version, list} ->
+            {version, %{"builds" => Enum.sort_by(list, &build_order/1)}}
+          end),
+        "updated_at" =>
+          builds
+          |> Enum.map(&elem(&1, 1))
+          |> Enum.reject(&is_nil/1)
+          |> Enum.max(DateTime, fn -> nil end)
+          |> iso8601()
+      }
+    end
+  end
+
+  # Every result format 1 could publish, not only the newest per system:
+  # format 2 keeps one per toolchain, so an older build under another
+  # toolchain stays reachable. Dated by the run that built it.
+  defp run_builds(sources) do
+    runs_by_id = Map.new(sources.runs, &{&1.id, &1})
+
+    for result <- sources.results,
+        result.system_pkg != "host",
+        stored = Map.get(sources.shas_by_system_result_id, result.id, MapSet.new()),
+        files = file_manifest(result, stored, sources.present_shas),
+        files != nil do
+      built_by = built_by(runs_by_id, result)
+      version = Map.fetch!(runs_by_id, result.run_id).version_tested
+      build = built_by |> build_inputs(result) |> Map.put("dep_env", "prod")
+
+      {version, built_by.finished_at,
+       Map.merge(files, %{"target" => result.system_pkg, "build" => build})}
+    end
+  end
+
+  # The portal makes every build with the dependency compiled as `prod`, which
+  # is what Mix compiles any dependency as unless the project overrides it.
+  defp toolchain_builds_v2(sources) do
+    for tb <- sources.toolchain_builds,
+        stored = Map.get(sources.shas_by_toolchain_build_id, tb.id, MapSet.new()),
+        files = toolchain_files(tb.file_manifest, stored, sources.present_shas),
+        files != nil do
+      build = %{
+        "elixir" => tb.elixir,
+        "otp" => tb.otp,
+        "dep_env" => "prod",
+        "system_version" => nil,
+        "deps" => tb.deps_lock,
+        "compile_env" => tb.compile_env,
+        "package_checksum" => tb.package_checksum,
+        "run_id" => tb.run_id,
+        "image_digest" => tb.image_digest
+      }
+
+      {tb.version, tb.finished_at,
+       Map.merge(files, %{"target" => "pure_elixir", "build" => build})}
+    end
+  end
+
+  defp matchable?({_version, _finished_at, %{"build" => build}}) do
+    Enum.all?(["elixir", "otp", "deps", "package_checksum"], &(build[&1] != nil))
+  end
+
+  defp newest_per_key(builds) do
+    builds
+    |> Enum.group_by(fn {version, _finished_at, %{"target" => target, "build" => build}} ->
+      {version, target, "#{elixir_minor(build["elixir"])}/#{build["otp"]}", build["deps"]}
+    end)
+    |> Enum.map(fn {_key, group} -> Enum.max_by(group, &recency/1) end)
+  end
+
+  defp elixir_minor(elixir), do: elixir |> String.split(".") |> Enum.take(2) |> Enum.join(".")
+
+  # A build without a finished_at is older than any with one; the run id breaks
+  # a tie so the pick, and so the manifest's bytes, do not depend on read order.
+  defp recency({_version, nil, %{"build" => build}}), do: {-1, build["run_id"] || ""}
+
+  defp recency({_version, finished_at, %{"build" => build}}),
+    do: {DateTime.to_unix(finished_at, :microsecond), build["run_id"] || ""}
+
+  defp build_order(%{"target" => target, "build" => build}),
+    do: {target, build["elixir"], build["otp"], build["run_id"] || ""}
+
+  defp published_toolchain_builds(package_id) do
+    ToolchainBuild
+    |> Ash.Query.filter(package_id == ^package_id and status == :pass and is_nil(revoked_at))
+    |> Ash.Query.select([
+      :id,
+      :version,
+      :elixir,
+      :otp,
+      :image_digest,
+      :run_id,
+      :deps_lock,
+      :package_checksum,
+      :compile_env,
+      :file_manifest,
+      :finished_at
+    ])
+    |> Ash.read!(domain: __MODULE__)
+  end
+
+  defp manifest_shas_for_toolchain_builds([]), do: %{}
+
+  defp manifest_shas_for_toolchain_builds(toolchain_build_ids) do
+    ArtifactMembership
+    |> Ash.Query.filter(toolchain_build_id in ^toolchain_build_ids)
+    |> Ash.Query.select([:toolchain_build_id, :sha256])
+    |> Ash.read!(domain: __MODULE__)
+    |> Enum.group_by(& &1.toolchain_build_id, & &1.sha256)
+    |> Map.new(fn {id, shas} -> {id, MapSet.new(shas)} end)
+  end
+
+  # A toolchain build's manifest is only the package's own files, so unlike a
+  # run's, every entry must be publishable: a file with no membership, an
+  # unsafe path or mode, or a blob this host lacks leaves the build out rather
+  # than shipping it without that file.
+  defp toolchain_files(%{} = manifest, stored_shas, present_shas) do
+    count =
+      length(manifest_entries(manifest, "ebin")) + length(manifest_entries(manifest, "priv"))
+
+    case published_files(manifest, stored_shas, present_shas) do
+      %{"ebin" => ebin, "priv" => priv} = files when length(ebin) + length(priv) == count -> files
+      _ -> nil
+    end
+  end
+
+  defp toolchain_files(_manifest, _stored_shas, _present_shas), do: nil
+
   # Runs come newest first, and an entry is taken from the first run that has
   # one: each (version, system) is published from exactly one build, its
   # newest. Merging every run over the result made the oldest one win. An
@@ -1760,21 +1982,33 @@ defmodule Portal.Catalog do
   end
 
   defp file_manifest(result, stored_shas, present_shas) do
-    manifest = get_in(result.beam_scan || %{}, ["footprint", "file_manifest"])
+    case get_in(result.beam_scan || %{}, ["footprint", "file_manifest"]) do
+      %{} = manifest -> published_files(manifest, stored_shas, present_shas)
+      _ -> nil
+    end
+  end
 
-    if manifest do
-      filtered = %{
-        "ebin" => filter_manifest_entries(Map.get(manifest, "ebin", []), stored_shas),
-        "priv" => filter_manifest_entries(Map.get(manifest, "priv", []), stored_shas)
-      }
+  # The entries of a manifest a client may fetch: owned by this build, safe to
+  # write, and all on this host (else none, so the client never gets half).
+  defp published_files(manifest, stored_shas, present_shas) do
+    filtered = %{
+      "ebin" => filter_manifest_entries(manifest_entries(manifest, "ebin"), stored_shas),
+      "priv" => filter_manifest_entries(manifest_entries(manifest, "priv"), stored_shas)
+    }
 
-      files = filtered["ebin"] ++ filtered["priv"]
+    files = filtered["ebin"] ++ filtered["priv"]
 
-      cond do
-        files == [] -> nil
-        Enum.all?(files, &MapSet.member?(present_shas, &1["sha256"])) -> filtered
-        true -> nil
-      end
+    cond do
+      files == [] -> nil
+      Enum.all?(files, &MapSet.member?(present_shas, &1["sha256"])) -> filtered
+      true -> nil
+    end
+  end
+
+  defp manifest_entries(manifest, key) do
+    case Map.get(manifest, key) do
+      entries when is_list(entries) -> entries
+      _ -> []
     end
   end
 

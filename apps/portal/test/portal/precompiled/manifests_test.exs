@@ -13,6 +13,18 @@ defmodule Portal.Precompiled.ManifestsTest do
     assert Manifests.render("no_such_package") == :none
   end
 
+  test "render_v2 gives the bytes of the live format-2 manifest" do
+    name = "tc_render_#{System.unique_integer([:positive])}"
+    ingest_toolchain_build(name, "0.3.0")
+
+    assert {:ok, bytes} = Manifests.render_v2(name)
+
+    assert JSON.decode!(bytes) ==
+             JSON.decode!(JSON.encode!(Catalog.precompiled_manifest_v2(name)))
+
+    assert Manifests.render_v2("no_such_package") == :none
+  end
+
   test "store writes by sha256 and is idempotent" do
     {:ok, sha} = Manifests.store("hello")
     assert sha == Base.encode16(:crypto.hash(:sha256, "hello"), case: :lower)
