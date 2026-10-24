@@ -546,7 +546,10 @@ defmodule NccWorker.BuildCache do
   # Whether a package's own sources compile to the same beams on every OS. A
   # `platform_define` in rebar.config or a compile-time look at the OS type or
   # architecture can bake the build host into the beams. Grep errors (no grep,
-  # missing or unreadable tree) fail closed as OS-specific.
+  # missing or unreadable tree) fail closed as OS-specific, and so does a
+  # `rebar.config.script`: it is Erlang that rewrites the config when rebar
+  # runs, so it can add a `platform_define` (or anything else) that no grep of
+  # the files on disk will see.
   @doc false
   @spec os_agnostic?(String.t()) :: :ok | {:error, {String.t(), String.t()}}
   def os_agnostic?(dir) do
@@ -558,6 +561,9 @@ defmodule NccWorker.BuildCache do
 
       mentions?(Path.join(dir, "rebar.config"), ["platform_define"]) ->
         {:error, {"rebar.config", "platform_define"}}
+
+      File.exists?(Path.join(dir, "rebar.config.script")) ->
+        {:error, {"rebar.config.script", "present"}}
 
       true ->
         grep_os_needles(dir)

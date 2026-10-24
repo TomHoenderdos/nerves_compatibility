@@ -67,6 +67,7 @@ defmodule Portal.Catalog.Ingestion do
           required(:files_dir) => Path.t(),
           required(:toolchain) => String.t(),
           required(:builder_version) => pos_integer(),
+          optional(:version) => String.t() | nil,
           optional(:output_dir) => Path.t() | nil
         }
 
@@ -116,6 +117,14 @@ defmodule Portal.Catalog.Ingestion do
   upserted on `(package, version, toolchain, builder_version)`, and its
   memberships are made to match this build's manifest exactly: a rebuild that
   stops passing, or produces other files, must not keep publishing the old ones.
+
+  `opts.version` is the version the job was queued for, which keys the row so
+  it matches the sweep's backlog; the result's `package.version` is used only
+  when the option is absent (an ingest job enqueued before it existed).
+
+  A later non-pass verdict for the same identity overwrites a pass row, and its
+  memberships with it. The sweep never re-queues an identity that has a pass
+  row, so that only happens through a manual re-enqueue.
   """
   @spec ingest_toolchain(map(), toolchain_opts()) ::
           {:ok, ToolchainBuild.t()} | {:error, term()}
@@ -191,7 +200,7 @@ defmodule Portal.Catalog.Ingestion do
     ToolchainBuild
     |> Ash.Changeset.for_create(:upsert, %{
       package_id: package_id,
-      version: get_in(result, ["package", "version"]) || "unknown",
+      version: Map.get(opts, :version) || get_in(result, ["package", "version"]) || "unknown",
       toolchain: opts.toolchain,
       builder_version: opts.builder_version,
       status: status,

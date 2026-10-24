@@ -32,7 +32,7 @@ defmodule Portal.Workers.ToolchainBuildTest do
 
     def image_digest(image) do
       send(self(), {:image_digest, image})
-      "sha256:toolchain-image"
+      Process.get(:stub_image_digest, "sha256:toolchain-image")
     end
   end
 
@@ -95,6 +95,18 @@ defmodule Portal.Workers.ToolchainBuildTest do
     assert "tc-jason-1.4.4-" <> _ = build_args.run_id
   end
 
+  test "snoozes without a build or a row when the image has no digest" do
+    package!("jason")
+    Process.put(:stub_image_digest, "sha256:" <> String.duplicate("0", 64))
+    respond(0)
+
+    log = capture_log(fn -> assert {:snooze, 900} = perform_job(ToolchainBuild, @args) end)
+
+    assert log =~ ~s(image "ncc-worker:elixir-1.19-otp-28" has no digest)
+    refute_received {:build_args, _}
+    assert rows("jason") == []
+  end
+
   describe "image resolution" do
     setup do
       original = Application.fetch_env!(:portal, Portal.Toolchains)
@@ -141,6 +153,7 @@ defmodule Portal.Workers.ToolchainBuildTest do
         "kind" => "toolchain",
         "run_id" => run_id,
         "image_digest" => "sha256:toolchain-image",
+        "version" => "1.4.4",
         "toolchain" => "1.19/28",
         "builder_version" => 1
       }

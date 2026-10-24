@@ -259,5 +259,13 @@ defmodule NccWorker.BuildSelectionTest do
       assert {:error, {_, "grep failed"}} =
                NccWorker.BuildCache.os_agnostic?(Path.join(root, "missing"))
     end
+
+    test "a rebar.config.script fails closed, whatever it says", %{root: root} do
+      source = package(root, "scripted")
+      File.write!(Path.join(source, "rebar.config.script"), "CONFIG.\n")
+
+      assert NccWorker.BuildCache.os_agnostic?(source) ==
+               {:error, {"rebar.config.script", "present"}}
+    end
   end
 end
