@@ -8,14 +8,15 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
   @deps %{"decimal" => %{"version" => "2.1.1", "checksum" => "abc"}}
 
-  # The fixture run has no deps lock and no package checksum, which format 2
-  # requires; this is the same run with both.
+  # The fixture run has no deps lock, package checksum or compile_env, which
+  # format 2 requires; this is the same run with all three.
   defp keyed_run do
     @fixture
     |> File.read!()
     |> Jason.decode!()
     |> Map.put("deps_lock", @deps)
     |> Map.put("package_checksum", "outer")
+    |> put_in(["systems", "nerves_system_rpi4", "compile_env"], [])
   end
 
   defp revoke!(build) do
@@ -52,7 +53,7 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
              "dep_env" => "prod",
              "system_version" => "1.24.0",
              "deps" => @deps,
-             "compile_env" => nil,
+             "compile_env" => [],
              "package_checksum" => "outer",
              "run_id" => "fixture-jason-1.4.1",
              "image_digest" => "sha256:precompiled"
@@ -162,6 +163,72 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
   test "a toolchain build without a package checksum is left out" do
     name = "tc_nochecksum_#{System.unique_integer([:positive])}"
     ingest_toolchain_build(name, "0.3.0", package_checksum: nil)
+
+    assert Catalog.precompiled_manifest_v2(name) == nil
+  end
+
+  test "two system versions of one target are two builds" do
+    ingest_with_artifact(
+      keyed_run()
+      |> Map.put("run_id", "rpi4-old")
+      |> Map.put("finished_at", "2026-10-01T00:00:00Z")
+    )
+
+    ingest_with_artifact(
+      keyed_run()
+      |> Map.put("run_id", "rpi4-new")
+      |> Map.put("finished_at", "2026-10-10T00:00:00Z")
+      |> put_in(["systems", "nerves_system_rpi4", "system_version"], "1.25.0")
+    )
+
+    assert %{"nerves_system_rpi4" => rpi4} =
+             by_target(Catalog.precompiled_manifest_v2("jason"), "1.4.1")
+
+    assert rpi4 |> Enum.map(& &1["build"]["system_version"]) |> Enum.sort() == [
+             "1.24.0",
+             "1.25.0"
+           ]
+  end
+
+  test "revoking the newer toolchain build brings the older one back" do
+    name = "tc_fallback_#{System.unique_integer([:positive])}"
+
+    old =
+      ingest_toolchain_build(name, "0.3.0",
+        builder_version: 1,
+        finished_at: "2026-10-01T00:00:00Z"
+      )
+
+    new =
+      ingest_toolchain_build(name, "0.3.0",
+        builder_version: 2,
+        finished_at: "2026-10-20T00:00:00Z"
+      )
+
+    assert [%{"build" => %{"run_id" => run_id}}] =
+             builds(Catalog.precompiled_manifest_v2(name), "0.3.0")
+
+    assert run_id == new.run_id
+
+    revoke!(new)
+
+    assert [%{"build" => %{"run_id" => run_id}}] =
+             builds(Catalog.precompiled_manifest_v2(name), "0.3.0")
+
+    assert run_id == old.run_id
+  end
+
+  test "a toolchain build that did not pass is not published" do
+    name = "tc_failed_#{System.unique_integer([:positive])}"
+    ingest_toolchain_build(name, "0.3.0", status: "fail")
+
+    assert Catalog.precompiled_manifest_v2(name) == nil
+    refute name in Catalog.packages_with_precompiled_files()
+  end
+
+  test "a toolchain build without a recorded compile_env is left out" do
+    name = "tc_nocompileenv_#{System.unique_integer([:positive])}"
+    ingest_toolchain_build(name, "0.3.0", compile_env: nil)
 
     assert Catalog.precompiled_manifest_v2(name) == nil
   end

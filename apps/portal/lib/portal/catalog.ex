@@ -1051,9 +1051,10 @@ defmodule Portal.Catalog do
 
   Its builds are every run result format 1 publishes, and every passing,
   unrevoked `Portal.Catalog.ToolchainBuild` whose files this host holds. A
-  build without `elixir`, `otp`, `deps` or `package_checksum` is left out: a
-  client cannot match it. One build is kept per target, toolchain
-  (`"<elixir minor>/<otp>"`) and dependency lock, the newest.
+  build without `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
+  is left out: a client cannot match it. One build is kept per target,
+  toolchain (`"<elixir minor>/<otp>"`), system version and dependency lock,
+  the newest.
   """
   @spec precompiled_manifest_v2(String.t()) :: map() | nil
   def precompiled_manifest_v2(package_name) do
@@ -1820,13 +1821,16 @@ defmodule Portal.Catalog do
   end
 
   defp matchable?({_version, _finished_at, %{"build" => build}}) do
-    Enum.all?(["elixir", "otp", "deps", "package_checksum"], &(build[&1] != nil))
+    Enum.all?(["elixir", "otp", "deps", "package_checksum", "compile_env"], &(build[&1] != nil))
   end
 
+  # A client takes a system build only at its own system version, so each
+  # system version is its own key; `pure_elixir` builds all have nil there.
   defp newest_per_key(builds) do
     builds
     |> Enum.group_by(fn {version, _finished_at, %{"target" => target, "build" => build}} ->
-      {version, target, "#{elixir_minor(build["elixir"])}/#{build["otp"]}", build["deps"]}
+      {version, target, "#{elixir_minor(build["elixir"])}/#{build["otp"]}",
+       build["system_version"], build["deps"]}
     end)
     |> Enum.map(fn {_key, group} -> Enum.max_by(group, &recency/1) end)
   end

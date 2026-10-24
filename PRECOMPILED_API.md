@@ -293,10 +293,12 @@ What it lists:
   image for `Mix.install` and non-Nerves projects, `target` `pure_elixir` and
   `system_version` `null`. Only passing, unrevoked builds whose files are all
   on this host appear.
-- A build whose `elixir`, `otp`, `deps` or `package_checksum` is `null` is left
-  out, since no client can match it (it stays in format 1).
-- One build per target, toolchain (`"<elixir minor>/<otp>"`) and `deps`: the
-  newest wins.
+- A build whose `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
+  is `null` is left out, since no client can match it (it stays in format 1).
+- One build per target, toolchain (`"<elixir minor>/<otp>"`),
+  `system_version` and `deps`: the newest wins. Two versions of one Nerves
+  system are two builds, because a client takes a system build only at its own
+  system version.
 
 ### Matching a format-2 build to a project
 
@@ -318,9 +320,14 @@ build fails as the reason it was not used:
 6. **Package checksum** — `build.package_checksum` equals the outer checksum
    of the project's own `mix.lock` entry for the package.
 7. **Dependencies** — every dependency in `build.deps` is in the project's
-   `mix.lock` with the same version and outer checksum. Extra dependencies in
-   the project's lock do not matter.
-8. **compile_env** — every `build.compile_env` item decodes to the value the
+   `mix.lock` with the same version and outer checksum.
+8. **Declared dependencies** — every dependency the package declares in its
+   own `mix.exs` (optional ones included) that is in the project's `mix.lock`
+   is also in `build.deps`. A package compiles differently when an optional
+   dependency is loadable, so a build made without one does not serve a
+   project that has it. Extra dependencies the package does not declare do not
+   matter.
+9. **compile_env** — `build.compile_env` is present, and every `build.compile_env` item decodes to the value the
    project's config gives for that app and path.
 
 Among the builds that pass, the client prefers an exact Elixir patch match,
@@ -357,10 +364,11 @@ just without the batch to check them against.
   manifest endpoint serves those same stored bytes (not a fresh render) for
   as long as that is the newest batch, so the hash a client checks against
   always matches what it downloads.
-- **Revocation** — there is no separate revoke endpoint. Revoking a run or a toolchain build (or a
-  newer run superseding a carried-forward one) changes what the catalog would
-  render for that package; the next signed batch picks that up, dropping the
-  package from `manifests` entirely or pointing at a different hash. A client
+- **Revocation** — there is no separate revoke endpoint. Revoking a run or a
+  toolchain build (or a newer run superseding a carried-forward one) changes
+  what the catalog would render for that package; the next signed batch picks
+  that up, dropping the package from `manifests` and `manifests_v2` entirely
+  or pointing at a different hash in each. A client
   that verifies against the newest batch stops being told to fetch the
   revoked bytes from the moment that batch is signed.
 
