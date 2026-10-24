@@ -102,6 +102,14 @@ builder_build_image() {
   uid=$(id -u ncc)
   # Build a candidate tag. Existing jobs and failed builds retain the live tag.
   DOCKER_HOST="unix:///run/user/$uid/docker.sock" make build WORKER_IMAGE=ncc-worker:deploy
+  # The same for every toolchain image: `<tag>-deploy` beside the live `<tag>`.
+  # A failure here stops the deploy before any tag moves, like the main image.
+  DOCKER_HOST="unix:///run/user/$uid/docker.sock" make build-toolchains TOOLCHAIN_SUFFIX=-deploy
+}
+
+# The live toolchain tags, one per line, from the Makefile's TOOLCHAIN_IMAGES.
+builder_toolchain_tags() {
+  make -s toolchain-tags
 }
 
 builder_docker() {
@@ -112,6 +120,20 @@ builder_docker() {
 
 builder_activate_image() {
   builder_docker image inspect ncc-worker:local >/dev/null
+  local tags tag
+  tags=$(builder_toolchain_tags)
+  # Check every candidate before moving any tag, so a missing one leaves all
+  # the live tags where they were.
+  for tag in $tags; do
+    builder_docker image inspect "$tag-deploy" >/dev/null
+  done
   builder_docker tag ncc-worker:local ncc-worker:previous
   builder_docker tag ncc-worker:deploy ncc-worker:local
+  for tag in $tags; do
+    # A toolchain added in this deploy has no live tag yet, so no previous.
+    if builder_docker image inspect "$tag" >/dev/null 2>&1; then
+      builder_docker tag "$tag" "$tag-previous"
+    fi
+    builder_docker tag "$tag-deploy" "$tag"
+  done
 }

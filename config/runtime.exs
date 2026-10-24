@@ -79,7 +79,8 @@ if portal_available? do
   # full set, so a single-node deploy needs nothing here.
   #
   # This is how the work splits across hosts: the web box runs the light queues,
-  # the build boxes run `builds` and `ingest`, and Postgres is the only thing they
+  # the build boxes run `builds`, `ingest` and `toolchain` (limit 1, so toolchain
+  # builds never take a firmware slot), and Postgres is the only thing they
   # share. A build hands off to its ingest through the run's scratch directory
   # on local disk, not through the database, so each build node also runs a
   # queue of its own for those ingests (`Portal.Workers.Ingest.local_queue/0`),
@@ -87,7 +88,7 @@ if portal_available? do
   parsed_queues =
     case System.get_env("OBAN_QUEUES") do
       nil ->
-        [builds: 1, ingest: 2, intake: 5, maintenance: 1]
+        [builds: 1, ingest: 2, intake: 5, maintenance: 1, toolchain: 1]
 
       queues ->
         queues
@@ -104,6 +105,15 @@ if portal_available? do
     end
 
   config :portal, Oban, queues: parsed_queues
+
+  # Which toolchains to build on, as comma-separated `toolchain=image` pairs:
+  # `1.20/29=ncc-worker:local,1.19/28=ncc-worker:elixir-1.19-otp-28`. A
+  # toolchain is `<elixir major.minor>/<otp major>`; the image is a local tag
+  # on the build host (`make build-toolchains`). Unset keeps the list in
+  # config.exs. A malformed entry stops the boot (`Portal.Toolchains.parse/1`).
+  if toolchains = System.get_env("NCC_TOOLCHAINS") do
+    config :portal, Portal.Toolchains, images: Portal.Toolchains.parse(toolchains)
+  end
 
   config :portal,
     orchestrator_scan_request_url: System.get_env("ORCHESTRATOR_SCAN_REQUEST_URL"),

@@ -131,6 +131,19 @@ config :portal, :queue_filter, enabled: false
 # `Portal.Catalog.Cache` for why this is a TTL and not invalidation on ingest.
 config :portal, Portal.Catalog.Cache, ttl_ms: :timer.seconds(60)
 
+# The toolchains packages are built on beyond the firmware run, each with the
+# worker image that carries it (`make build-toolchains`). `images` is
+# runtime-overridable from NCC_TOOLCHAINS in config/runtime.exs. Bumping
+# `builder_version` makes every toolchain build stale. `max_per_run` caps how
+# many builds one toolchain sweep enqueues.
+config :portal, Portal.Toolchains,
+  images: [
+    %{toolchain: "1.20/29", image: "ncc-worker:local"},
+    %{toolchain: "1.19/28", image: "ncc-worker:elixir-1.19-otp-28"}
+  ],
+  builder_version: 1,
+  max_per_run: 300
+
 # Host-side Docker invocation for worker builds.
 # Runtime-overridable in config/runtime.exs.
 config :portal, Portal.Builder,
