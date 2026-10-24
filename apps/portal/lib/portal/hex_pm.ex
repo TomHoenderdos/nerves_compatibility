@@ -144,6 +144,90 @@ defmodule Portal.HexPm do
 
   def latest_version(_package_name), do: {:error, :unknown_package}
 
+  @release_checksums :portal_hex_release_checksums
+
+  @doc """
+  The outer checksum Hex.pm publishes for one release: the SHA-256 of the
+  release tarball, the same value a `mix.lock` entry carries as its last
+  checksum. Used by `Portal.BuildCache.Promotion` to tie a build cache
+  candidate a container reported to the tarball Hex actually serves.
+
+  Found checksums are remembered for the life of the node: a release's
+  checksum never changes, and several builds of one popular release can
+  promote within minutes. Errors are not remembered, so a Hex outage is
+  retried by the next promotion. `fetch` is the uncached lookup, a seam for
+  tests.
+  """
+  @spec release_checksum(String.t(), String.t(), (String.t(), String.t() -> result)) :: result
+        when result: {:ok, String.t()} | {:error, :unknown_release | :hex_api_unavailable}
+  def release_checksum(name, version, fetch \\ &fetch_release_checksum/2)
+      when is_binary(name) and is_binary(version) and is_function(fetch, 2) do
+    case remembered_checksum(name, version) do
+      {:ok, checksum} ->
+        {:ok, checksum}
+
+      :miss ->
+        case fetch.(name, version) do
+          {:ok, checksum} = found when is_binary(checksum) ->
+            remember_checksum(name, version, checksum)
+            found
+
+          other ->
+            other
+        end
+    end
+  end
+
+  @doc """
+  Create the node-wide table `release_checksum/3` remembers answers in.
+  Called once from `Portal.Application.start/2`, whose process owns it.
+  """
+  @spec create_release_checksum_table() :: :ok
+  def create_release_checksum_table do
+    _ = :ets.new(@release_checksums, [:named_table, :public, :set, read_concurrency: true])
+    :ok
+  end
+
+  # No table (a release `eval` task starts no applications): look it up
+  # every time rather than crash.
+  defp remembered_checksum(name, version) do
+    case :ets.lookup(@release_checksums, {name, version}) do
+      [{_key, checksum}] -> {:ok, checksum}
+      [] -> :miss
+    end
+  rescue
+    ArgumentError -> :miss
+  end
+
+  defp remember_checksum(name, version, checksum) do
+    :ets.insert_new(@release_checksums, {{name, version}, checksum})
+  rescue
+    ArgumentError -> false
+  end
+
+  # Each part is one path segment, so nothing in it may add another.
+  defp fetch_release_checksum(name, version) do
+    url =
+      "#{@api_url}/packages/#{URI.encode(name, &URI.char_unreserved?/1)}" <>
+        "/releases/#{URI.encode(version, &URI.char_unreserved?/1)}"
+
+    case Req.get(url) do
+      {:ok, %{status: 200, body: %{"checksum" => checksum}}} when is_binary(checksum) ->
+        {:ok, String.downcase(checksum)}
+
+      {:ok, %{status: 404}} ->
+        {:error, :unknown_release}
+
+      {:ok, %{status: status}} ->
+        Logger.warning("Hex release lookup for #{name} #{version} failed: HTTP #{status}")
+        {:error, :hex_api_unavailable}
+
+      {:error, reason} ->
+        Logger.warning("Hex release lookup for #{name} #{version} failed: #{inspect(reason)}")
+        {:error, :hex_api_unavailable}
+    end
+  end
+
   # A package's `meta.links` is a free-form map the package author writes in
   # their own mix.exs, and it arrives here as whatever they put there. Both
   # halves of that are load-bearing:
