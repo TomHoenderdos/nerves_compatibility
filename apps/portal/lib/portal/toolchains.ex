@@ -25,6 +25,10 @@ defmodule Portal.Toolchains do
   @spec builder_version() :: pos_integer()
   def builder_version, do: Keyword.fetch!(config(), :builder_version)
 
+  @doc "How many toolchain builds one `Portal.Workers.ToolchainSweep` enqueues, at most."
+  @spec max_per_run() :: pos_integer()
+  def max_per_run, do: Keyword.get(config(), :max_per_run, 300)
+
   @doc """
   Parse `NCC_TOOLCHAINS`: comma-separated `toolchain=image` pairs, e.g.
   `"1.20/29=ncc-worker:local,1.19/28=ncc-worker:elixir-1.19-otp-28"`.

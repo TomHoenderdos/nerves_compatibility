@@ -154,6 +154,29 @@ defmodule PortalWeb.PageController do
     end
   end
 
+  # Redirects rather than renders, as the bulk rebuild does: a refreshed
+  # rendered POST would queue the sweep again.
+  def admin_toolchain_sweep(conn, _params) do
+    case require_admin(conn) do
+      {:ok, conn, _user} ->
+        conn
+        |> put_toolchain_sweep_flash(Portal.Workers.ToolchainSweep.enqueue())
+        |> redirect(to: ~p"/admin/maintenance")
+
+      {:error, conn} ->
+        conn
+    end
+  end
+
+  defp put_toolchain_sweep_flash(conn, {:ok, _job}),
+    do: put_flash(conn, :info, "Toolchain sweep queued.")
+
+  defp put_toolchain_sweep_flash(conn, {:error, :already_queued}),
+    do: put_flash(conn, :info, "A toolchain sweep is already queued.")
+
+  defp put_toolchain_sweep_flash(conn, {:error, reason}),
+    do: put_flash(conn, :error, PortalWeb.AdminMessages.error(reason))
+
   def admin_argus_settings(conn, params) do
     case require_admin(conn) do
       {:ok, conn, user} ->
@@ -648,7 +671,8 @@ defmodule PortalWeb.PageController do
       precompiled: %{
         key_loaded?: match?({:ok, _}, Portal.Precompiled.Keys.load()),
         batch: Portal.Precompiled.Batches.latest()
-      }
+      },
+      toolchains: toolchain_rows()
     ]
   end
 
@@ -661,6 +685,19 @@ defmodule PortalWeb.PageController do
       update_check: Portal.Admin.update_check_status(),
       admin_count: length(Portal.Admin.list_admins())
     ]
+  end
+
+  # In configured order, which a map of counts would lose.
+  defp toolchain_rows do
+    counts = Portal.Catalog.toolchain_counts()
+
+    %{
+      builder_version: Portal.Toolchains.builder_version(),
+      rows:
+        for %{toolchain: toolchain} <- Portal.Toolchains.images() do
+          Map.put(Map.fetch!(counts, toolchain), :toolchain, toolchain)
+        end
+    }
   end
 
   # These admin actions carry the same privilege as the Oban dashboard behind

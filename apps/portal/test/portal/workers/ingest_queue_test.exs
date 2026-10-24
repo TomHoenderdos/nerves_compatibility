@@ -26,7 +26,17 @@ defmodule Portal.Workers.IngestQueueTest do
     # its ingest on the local queue; leaving that queue out would restart the
     # node in the middle of that ingest.
     test "a build node drains builds, the shared ingest queue and its own" do
-      assert Ingest.builder_queues(:"portal@box-c") ==
+      assert Ingest.builder_queues(:"portal@box-c", builds: 3, ingest: 2) ==
+               ["builds", "ingest", "ingest_portal_box_c"]
+    end
+
+    # Only when the node runs it: `Oban.check_queue/1` finds no producer for a
+    # queue the node does not run, and the deploy then refuses to go ahead.
+    test "a build node running the toolchain queue drains it too" do
+      assert Ingest.builder_queues(:"portal@box-c", builds: 3, ingest: 2, toolchain: 1) ==
+               ["builds", "ingest", "ingest_portal_box_c", "toolchain"]
+
+      assert Ingest.builder_queues(:"portal@box-c", builds: 3, toolchain: 0) ==
                ["builds", "ingest", "ingest_portal_box_c"]
     end
   end

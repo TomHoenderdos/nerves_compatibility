@@ -275,4 +275,52 @@
       </form>
     </div>
   </section>
+
+  <section id="toolchains" class="card mt-6 border border-base-300 bg-base-100 shadow-sm">
+    <div class="card-body">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 class="card-title">Toolchains</h2>
+          <p class="mt-1 text-sm leading-6 text-base-content/70">
+            Pure-BEAM packages built per Elixir/OTP toolchain for <code>Mix.install</code>
+            users, at builder version {@toolchains.builder_version}. The sweep runs daily and
+            queues the backlog onto the single-slot toolchain queue.
+          </p>
+        </div>
+        <form method="post" action={~p"/admin/maintenance/toolchain-sweep"}>
+          <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+          <button type="submit" id="toolchain-sweep-button" class="btn btn-sm btn-primary">
+            Run sweep now
+          </button>
+        </form>
+      </div>
+
+      <div class="mt-5 overflow-x-auto">
+        <table class="table table-sm">
+          <thead>
+            <tr>
+              <th>Toolchain</th>
+              <th class="text-right">Pass</th>
+              <th class="text-right">Skipped</th>
+              <th class="text-right">Fail</th>
+              <th class="text-right">Error</th>
+              <th class="text-right">Backlog</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :for={row <- @toolchains.rows}>
+              <td class="font-mono">{row.toolchain}</td>
+              <td
+                :for={key <- [:pass, :skipped, :fail, :error, :backlog]}
+                id={"toolchain-#{toolchain_dom_id(row.toolchain)}-#{key}"}
+                class="text-right tabular-nums"
+              >
+                {Map.fetch!(row, key)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
 </.admin_layout>

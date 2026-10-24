@@ -68,6 +68,7 @@ defmodule Portal.ToolchainsTest do
              ]
 
       assert Toolchains.builder_version() == 1
+      assert Toolchains.max_per_run() == 300
     end
 
     test "images/0 and builder_version/0 read the application environment" do
@@ -78,6 +79,14 @@ defmodule Portal.ToolchainsTest do
 
       assert Toolchains.images() == [%{toolchain: "1.18/27", image: "x:y"}]
       assert Toolchains.builder_version() == 4
+    end
+
+    test "max_per_run/0 defaults to 300 when unset" do
+      Application.put_env(:portal, Toolchains, images: [], builder_version: 1)
+      assert Toolchains.max_per_run() == 300
+
+      Application.put_env(:portal, Toolchains, images: [], builder_version: 1, max_per_run: 7)
+      assert Toolchains.max_per_run() == 7
     end
   end
 end
