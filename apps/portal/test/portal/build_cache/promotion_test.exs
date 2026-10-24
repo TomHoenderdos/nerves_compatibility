@@ -58,7 +58,19 @@ defmodule Portal.BuildCache.PromotionTest do
     c
   end
 
-  defp result(cands), do: %{"cache" => %{"candidates" => cands}}
+  # What a real run reports alongside its candidates: the host compile plus
+  # one Nerves system, built by the toolchain `inputs/1` names.
+  defp result(cands, overrides \\ %{}) do
+    Map.merge(
+      %{
+        "cache" => %{"candidates" => cands},
+        "systems" => %{"host" => %{}, "nerves_system_rpi4" => %{}},
+        "toolchain" => %{"elixir" => "1.20.3", "erlang" => "29", "mix" => "1.20.3"}
+      },
+      overrides
+    )
+  end
+
   defp hex_ok(_name, _version), do: {:ok, @outer}
 
   test "promotes the package's own candidate under the recomputed key", ctx do
@@ -351,5 +363,122 @@ defmodule Portal.BuildCache.PromotionTest do
 
     assert File.ls!(ctx.cache) == []
     assert File.read!(Path.join(victim, "ebin/Elixir.Jason.beam")) == "victim"
+  end
+
+  describe "what the run itself reported" do
+    test "ignores candidates beyond one per built system plus the host compile", ctx do
+      # result/1 reports two systems ("host" and rpi4), so three are allowed.
+      # Distinct closures give each its own key.
+      out = ctx.out
+
+      cands =
+        for {target, i} <- Enum.with_index(["host", "rpi4", "any", "host"]) do
+          candidate(out, %{
+            "target" => target,
+            "closure" => [%{"name" => "decimal", "lock" => "2.3.#{i} aa bb"}]
+          })
+        end
+
+      log =
+        capture_log(fn ->
+          assert %{promoted: 3, refused: 0, ignored: 1} =
+                   Promotion.promote(result(cands), out, ctx.cache, "jason", "1.4.5",
+                     release_checksum: &hex_ok/2
+                   )
+        end)
+
+      refute File.exists?(Path.join(ctx.cache, List.last(cands)["key"]))
+      assert log =~ "Ignored 1 build cache candidate(s) over the limit of 3"
+    end
+
+    test "refuses a target the run did not build", ctx do
+      c = candidate(ctx.out, %{"target" => "x86_64"})
+
+      assert %{promoted: 0, refused: 1} =
+               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                 release_checksum: &hex_ok/2
+               )
+
+      assert File.ls!(ctx.cache) == []
+    end
+
+    test "maps only nerves_system_* keys to a target; pure_elixir maps to none", ctx do
+      c = candidate(ctx.out, %{"target" => "pure_elixir"})
+      systems = %{"pure_elixir" => %{}, "host" => %{}}
+
+      assert %{promoted: 0, refused: 1} =
+               Promotion.promote(
+                 result([c], %{"systems" => systems}),
+                 ctx.out,
+                 ctx.cache,
+                 "jason",
+                 "1.4.5",
+                 release_checksum: &hex_ok/2
+               )
+
+      c = candidate(ctx.out, %{"target" => "any"})
+
+      assert %{promoted: 1} =
+               Promotion.promote(
+                 result([c], %{"systems" => systems}),
+                 ctx.out,
+                 ctx.cache,
+                 "jason",
+                 "1.4.5",
+                 release_checksum: &hex_ok/2
+               )
+    end
+
+    test "refuses a candidate built by another toolchain than the run's", ctx do
+      for {elixir, otp} <- [{"1.19.0", "29"}, {"1.20.3", "28"}] do
+        out = Path.join(ctx.tmp, "out-#{System.unique_integer([:positive])}")
+        c = candidate(out, %{"elixir" => elixir, "otp" => otp})
+
+        assert %{promoted: 0, refused: 1} =
+                 Promotion.promote(result([c]), out, ctx.cache, "jason", "1.4.5",
+                   release_checksum: &hex_ok/2
+                 ),
+               "accepted elixir #{elixir} otp #{otp}"
+      end
+
+      c = candidate(ctx.out)
+
+      assert %{promoted: 0, refused: 1} =
+               Promotion.promote(
+                 result([c], %{"toolchain" => nil}),
+                 ctx.out,
+                 ctx.cache,
+                 "jason",
+                 "1.4.5", release_checksum: &hex_ok/2)
+
+      assert File.ls!(ctx.cache) == []
+    end
+
+    test "logs key mismatches once per call, with a count and one escaped example", ctx do
+      systems = Map.new(1..5, &{"nerves_system_s#{&1}", %{}})
+
+      cands =
+        for i <- 1..6 do
+          candidate(ctx.out, %{"key" => String.duplicate("#{i}", 63) <> "\n"})
+        end
+
+      log =
+        capture_log(fn ->
+          assert %{promoted: 0, refused: 6} =
+                   Promotion.promote(
+                     result(cands, %{"systems" => systems}),
+                     ctx.out,
+                     ctx.cache,
+                     "jason",
+                     "1.4.5",
+                     release_checksum: &hex_ok/2
+                   )
+        end)
+
+      lines = log |> String.split("\n") |> Enum.filter(&(&1 =~ "inputs hash to"))
+      assert [line] = lines
+      assert line =~ "6 build cache candidate(s)"
+      assert line =~ ~S"111111111111111111111111111111111111111111111111111111111111111\n"
+    end
   end
 end
