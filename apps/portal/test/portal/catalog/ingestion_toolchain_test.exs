@@ -101,7 +101,8 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     Package
     |> Ash.Changeset.for_create(:upsert, %{
       name: name,
-      latest_version: "1.4.4",
+      description: "an existing package",
+      latest_version: "1.4.3",
       last_run_at: last_run_at
     })
     |> Ash.create!(domain: @domain)
@@ -147,7 +148,10 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     end
 
     assert Ash.count!(Run, domain: @domain) == runs_before
-    assert Ash.get!(Package, pkg.id, domain: @domain).last_run_at == pkg.last_run_at
+    stored = Ash.get!(Package, pkg.id, domain: @domain)
+    assert stored.last_run_at == pkg.last_run_at
+    assert stored.description == "an existing package"
+    assert stored.latest_version == "1.4.3"
   end
 
   test "re-ingesting the same build keeps one row and its memberships" do
@@ -208,6 +212,69 @@ defmodule Portal.Catalog.IngestionToolchainTest do
 
     assert passed.id == skipped.id
     assert memberships(skipped) == []
+  end
+
+  test "a pass build whose files did not all stage is refused and keeps the previous row" do
+    name = unique_name()
+    beam = blob("beam-#{name}")
+    priv = blob("priv-#{name}")
+
+    {:ok, previous} =
+      Ingestion.ingest_toolchain(
+        pass_result(name, beam, priv),
+        opts(files_dir_with([beam, priv]), "tc-first")
+      )
+
+    new_beam = blob("beam2-#{name}")
+    new_priv = blob("priv2-#{name}")
+    {missing_sha, _} = new_priv
+
+    assert {:error, {:artifacts_unstaged, [^missing_sha]}} =
+             Ingestion.ingest_toolchain(
+               pass_result(name, new_beam, new_priv),
+               opts(files_dir_with([new_beam]), "tc-second")
+             )
+
+    assert [row] =
+             ToolchainBuild
+             |> Ash.Query.filter(package_id == ^previous.package_id)
+             |> Ash.read!(domain: @domain)
+
+    assert row.id == previous.id
+    assert row.run_id == "tc-first"
+
+    assert Enum.sort([elem(beam, 0), elem(priv, 0)]) ==
+             row |> memberships() |> Enum.map(& &1.sha256) |> Enum.sort()
+  end
+
+  test "a pass build that fails to stage writes no row" do
+    name = unique_name()
+    beam = blob("beam-#{name}")
+    priv = blob("priv-#{name}")
+
+    assert {:error, {:artifacts_unstaged, [_]}} =
+             Ingestion.ingest_toolchain(
+               pass_result(name, beam, priv),
+               opts(files_dir_with([beam]))
+             )
+
+    refute ToolchainBuild
+           |> Ash.Query.filter(package.name == ^name)
+           |> Ash.exists?(domain: @domain)
+  end
+
+  test "a non-pass build that carries a manifest stores none and no memberships" do
+    name = unique_name()
+    beam = blob("beam-#{name}")
+    priv = blob("priv-#{name}")
+    manifest = get_in(pass_result(name, beam, priv), ["toolchain_build", "file_manifest"])
+    result = put_in(skipped_result(name), ["toolchain_build", "file_manifest"], manifest)
+
+    assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(files_dir_with([beam, priv])))
+
+    assert tb.status == :skipped
+    assert tb.file_manifest == nil
+    assert memberships(tb) == []
   end
 
   describe "Portal.Workers.Ingest with kind toolchain" do

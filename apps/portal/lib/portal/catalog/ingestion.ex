@@ -120,11 +120,25 @@ defmodule Portal.Catalog.Ingestion do
   @spec ingest_toolchain(map(), toolchain_opts()) ::
           {:ok, ToolchainBuild.t()} | {:error, term()}
   def ingest_toolchain(result, opts) when is_map(result) do
-    build = toolchain_build_map(result)
+    build = result |> toolchain_build_map() |> gate_manifest()
+    wanted = build |> Map.get("file_manifest") |> shas_from_manifest()
+    staged = stage_shas(wanted, opts.files_dir)
 
-    staged =
-      build |> Map.get("file_manifest") |> shas_from_manifest() |> stage_shas(opts.files_dir)
+    case wanted -- Enum.map(staged, & &1.sha256) do
+      [] ->
+        write_toolchain_build(result, build, opts, staged)
 
+      # A pass build publishes every file of its manifest or none: storing it
+      # with a file missing would replace a complete published build with a
+      # broken one. Failing before the transaction leaves the previous row and
+      # its memberships alone, and the worker keeps the scratch dir until the
+      # last attempt, so a retry can stage the file again.
+      missing ->
+        {:error, {:artifacts_unstaged, missing}}
+    end
+  end
+
+  defp write_toolchain_build(result, build, opts, staged) do
     Repo.transaction(
       fn ->
         case do_ingest_toolchain(result, build, opts, staged) do
@@ -135,6 +149,11 @@ defmodule Portal.Catalog.Ingestion do
       timeout: @transaction_timeout
     )
   end
+
+  # Only a pass build has files to publish. A manifest on any other status is
+  # dropped, so it is neither staged nor stored nor given memberships.
+  defp gate_manifest(%{"status" => "pass"} = build), do: build
+  defp gate_manifest(build), do: Map.put(build, "file_manifest", nil)
 
   defp toolchain_build_map(%{"toolchain_build" => %{} = build}), do: build
   defp toolchain_build_map(_result), do: raise("result.json missing toolchain_build")
@@ -192,10 +211,11 @@ defmodule Portal.Catalog.Ingestion do
   defp file_manifest(_), do: nil
 
   # The memberships of a toolchain build are exactly the shas this ingest
-  # staged. Shas the row held from an earlier build of the same identity and
-  # this one no longer produces are removed first. A retry stages the same
-  # shas again (`ArtifactStore.put/2` verifies an already moved blob), so it
-  # removes nothing.
+  # staged, which `ingest_toolchain/2` has checked is the whole manifest.
+  # Shas the row held from an earlier build of the same identity and this one
+  # no longer produces are removed first. A retry stages the same shas again
+  # (`ArtifactStore.put/2` verifies an already moved blob), so it removes
+  # nothing.
   defp replace_toolchain_memberships(toolchain_build_id, staged) do
     shas = staged |> Enum.map(& &1.sha256) |> Enum.uniq() |> Enum.sort()
 
