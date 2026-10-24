@@ -498,6 +498,38 @@ defmodule NccWorker.ProjectTest do
   # Call the public API with a deps.get that fails without running mix, so
   # the test never reaches Hex: mix.exs was already edited by that point,
   # which is what the callers assert.
+  # A toolchain image has no nerves_bootstrap, so the project is a plain
+  # `mix new` one. Run for real: `mix new` needs no network.
+  describe "create_plain/2" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "project_plain_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, work_dir: tmp}
+    end
+
+    test "generates a plain project under proj that add_package can inject into", %{
+      work_dir: work_dir
+    } do
+      assert {:ok, project_dir} = Project.create_plain(work_dir, "nerves_compatibility_test")
+      assert project_dir == Path.join(work_dir, "proj")
+
+      content = File.read!(Path.join(project_dir, "mix.exs"))
+      assert content =~ "app: :nerves_compatibility_test"
+      refute content =~ "nerves_bootstrap"
+
+      inject_dep_only(project_dir, %{name: "jason", version: "1.4.4"})
+
+      content = File.read!(Path.join(project_dir, "mix.exs"))
+      assert content =~ ~r/defp deps do\n\s*\[\n\s*\{:jason, "== 1.4.4"\},\n/
+      assert {:ok, _ast} = Code.string_to_quoted(content)
+    end
+
+    test "reports mix new's output when it fails", %{work_dir: work_dir} do
+      assert {:error, {:mix_new_failed, output}} = Project.create_plain(work_dir, "Not-An-App")
+      assert is_binary(output)
+    end
+  end
+
   defp inject_dep_only(project_dir, package) do
     _ = Project.add_package(project_dir, package, [], &failing_deps_get/2)
     :ok

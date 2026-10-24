@@ -7,7 +7,8 @@ defmodule NccWorker.CLI do
 
   Exit codes:
   - 0: Worker completed successfully
-  - 10: Worker internal failure
+  - 10: Worker internal failure, or a toolchain run whose build errored
+    (`result.json` is still written)
   - 11: Policy violation
   """
 
@@ -43,7 +44,8 @@ defmodule NccWorker.CLI do
          {:ok, files_dir} <- get_files_dir(input),
          {:ok, archive_stats} <-
            FileArchiver.archive_manifest_files(files_dir, result, work_dir),
-         :ok <- JsonWriter.write_result(output_dir, result) do
+         :ok <- JsonWriter.write_result(output_dir, result),
+         :ok <- result_outcome(result) do
       IO.puts(
         "Archived #{archive_stats.files_archived} files (#{archive_stats.bytes_archived} bytes), skipped #{archive_stats.files_skipped} duplicates"
       )
@@ -55,6 +57,17 @@ defmodule NccWorker.CLI do
         error
     end
   end
+
+  @doc """
+  `:ok` for a written result, except a toolchain run whose build errored:
+  that is a retryable failure (exit 10), the way a full run's `deps.get`
+  failure is, so the portal retries rather than ingesting it.
+  """
+  @spec result_outcome(map()) :: :ok | {:error, {:toolchain_build_error, term()}}
+  def result_outcome(%{toolchain_build: %{status: "error"} = build}),
+    do: {:error, {:toolchain_build_error, Map.get(build, :reason)}}
+
+  def result_outcome(_result), do: :ok
 
   @spec setup_only() :: :ok | {:error, term()}
   defp setup_only() do
@@ -140,7 +153,7 @@ defmodule NccWorker.CLI do
     end
   end
 
-  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter systems_override argus analyses scope timeout_seconds mode)a
+  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter systems_override argus analyses scope timeout_seconds mode toolchain elixir otp)a
   @input_key_map Map.new(@input_keys, &{Atom.to_string(&1), &1})
 
   @spec atomize_keys(map()) :: map()
