@@ -11,10 +11,13 @@ defmodule Portal.Workers.ToolchainBuild do
 
   Exit-code contract, as `Portal.Workers.Build`'s:
 
-      worker   0  -> pass or skipped → ingest on this node's queue
+      worker   0  -> a written result (pass, skipped, or a failed host
+                     compile, which the ingest stores as `fail`) → ingest
+                     on this node's queue
       worker  11  -> lock policy violation → `fail` row, cancel
-      worker  10  -> internal (also a compile failure) → retry
-      host 20/21  -> runner error → retry
+      worker  10  -> no result at all (e.g. `mix new` or `deps.get` failed)
+                     → retry
+      host 20/21  -> runner error on the build host → retry
 
   The ingest writes the row for a finished build. The worker writes it itself
   only when no ingest will: a `fail` for exit 11, and an `error` once the last
@@ -23,8 +26,12 @@ defmodule Portal.Workers.ToolchainBuild do
   `skipped` row of the same identity: a transient host problem is not news
   about a build that already worked.
 
-  `max_attempts` is 2, not `Build`'s 3: a package that does not compile on a
-  toolchain exits 10 every time, so every extra attempt is a wasted build.
+  `max_attempts` is 2, not `Build`'s 3. A compile failure is a verdict and
+  never retried; what is left to retry (exit 10, or 20/21 from the host) is
+  either a transient flake, which one more attempt covers, or something that
+  fails the same way every time, such as a version whose deps do not resolve,
+  where more attempts are wasted builds. The sweep's day-old-error rule gives
+  an `error` row another try later anyway.
   """
 
   use Oban.Worker,

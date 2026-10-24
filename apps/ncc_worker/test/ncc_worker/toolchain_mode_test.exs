@@ -161,13 +161,14 @@ defmodule NccWorker.ToolchainModeTest do
   end
 
   describe "CLI outcome" do
-    test "pass and skipped exit 0, an error exits 10" do
+    test "a written result exits 0 for pass, skipped and a failed compile" do
       assert CLI.result_outcome(result(%{status: "pass"})) == :ok
       assert CLI.result_outcome(result(%{status: "skipped"})) == :ok
       assert CLI.result_outcome(%{systems: %{}}) == :ok
 
-      assert {:error, {:toolchain_build_error, "host compile failed"}} =
-               CLI.result_outcome(result(%{status: "error", reason: "host compile failed"}))
+      # Deterministic: the portal records it as a fail verdict, not a retry.
+      assert CLI.result_outcome(result(%{status: "error", reason: "host compile failed"})) ==
+               :ok
     end
   end
 end

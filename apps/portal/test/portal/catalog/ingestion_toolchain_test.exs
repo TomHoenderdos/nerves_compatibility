@@ -197,6 +197,21 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert memberships(tb) == []
   end
 
+  test "a failed host compile is stored as a fail verdict, not an error" do
+    name = unique_name()
+
+    result =
+      skipped_result(name)
+      |> put_in(["toolchain_build", "status"], "error")
+      |> put_in(["toolchain_build", "reason"], "host compile failed")
+
+    assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(files_dir_with([])))
+
+    assert tb.status == :fail
+    assert tb.reason == "compile failed: host compile failed"
+    assert memberships(tb) == []
+  end
+
   test "a rebuild that no longer passes drops the previous build's memberships" do
     name = unique_name()
     beam = blob("beam-#{name}")

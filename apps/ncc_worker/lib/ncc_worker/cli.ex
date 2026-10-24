@@ -6,9 +6,10 @@ defmodule NccWorker.CLI do
   runs the worker, and writes results to the output directory.
 
   Exit codes:
-  - 0: Worker completed successfully
-  - 10: Worker internal failure, or a toolchain run whose build errored
-    (`result.json` is still written)
+  - 0: Worker completed and wrote `result.json`, whatever the builds' verdicts
+    (a toolchain run whose host compile failed included)
+  - 10: Worker internal failure: no `result.json` (e.g. `mix new` or
+    `deps.get` failed)
   - 11: Policy violation
   """
 
@@ -59,14 +60,13 @@ defmodule NccWorker.CLI do
   end
 
   @doc """
-  `:ok` for a written result, except a toolchain run whose build errored:
-  that is a retryable failure (exit 10), the way a full run's `deps.get`
-  failure is, so the portal retries rather than ingesting it.
+  `:ok` (exit 0) for every written result, including a toolchain run whose
+  host compile failed (`toolchain_build.status == "error"`). A compile failure
+  is deterministic for that package, version and toolchain: the portal has to
+  ingest it as a verdict, and retrying it would only fail the same way. Exit 10
+  is left for runs that produced no result at all.
   """
-  @spec result_outcome(map()) :: :ok | {:error, {:toolchain_build_error, term()}}
-  def result_outcome(%{toolchain_build: %{status: "error"} = build}),
-    do: {:error, {:toolchain_build_error, Map.get(build, :reason)}}
-
+  @spec result_outcome(map()) :: :ok
   def result_outcome(_result), do: :ok
 
   @spec setup_only() :: :ok | {:error, term()}
