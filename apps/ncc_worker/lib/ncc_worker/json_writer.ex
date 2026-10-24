@@ -64,28 +64,15 @@ defmodule NccWorker.JsonWriter do
       scope: Map.get(result, :scope, "full")
     }
 
-    # Absent rather than null when the worker could not read the lock, the way
-    # a run from an image before lock recording looks too.
+    # Each absent rather than null when the result has none: `deps_lock` and
+    # `package_checksum` when the worker could not read the lock (the way a run
+    # from an image before lock recording looks too), `optional_deps` for
+    # argus-only runs, which publish nothing, and `toolchain_build` and
+    # `requested_toolchain` for every run but a toolchain one
+    # (`NccWorker.Worker.toolchain_build/4`).
     json =
-      case Map.get(result, :deps_lock) do
-        nil -> json
-        deps_lock -> Map.put(json, :deps_lock, deps_lock)
-      end
-
-    # Absent rather than null when the worker could not read the lock, the way
-    # a run from an image before lock recording looks too.
-    json =
-      case Map.get(result, :package_checksum) do
-        nil -> json
-        checksum -> Map.put(json, :package_checksum, checksum)
-      end
-
-    # Absent for argus-only runs, which publish nothing.
-    json =
-      case Map.get(result, :optional_deps) do
-        nil -> json
-        optional_deps -> Map.put(json, :optional_deps, optional_deps)
-      end
+      [:deps_lock, :package_checksum, :optional_deps, :toolchain_build, :requested_toolchain]
+      |> Enum.reduce(json, &put_present(&2, &1, Map.get(result, &1)))
 
     # Candidates for the host to promote into the shared build cache, one per
     # stored build of the package under test. Absent when there are none, the
@@ -100,6 +87,9 @@ defmodule NccWorker.JsonWriter do
       list -> Map.put(json, :cache, %{candidates: list})
     end
   end
+
+  defp put_present(json, _key, nil), do: json
+  defp put_present(json, key, value), do: Map.put(json, key, value)
 
   @spec convert_system_result(map()) :: map()
   defp convert_system_result(system_result) do

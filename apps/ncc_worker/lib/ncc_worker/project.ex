@@ -70,6 +70,32 @@ defmodule NccWorker.Project do
     end
   end
 
+  @doc """
+  Creates a plain, non-Nerves project in `<work_dir>/proj` with
+  `mix new . --app <app_name>`, for a toolchain run.
+
+  A toolchain image carries neither nerves_bootstrap nor an OTP that Nerves 2
+  accepts, and a toolchain build compiles the package on the host only, so
+  nothing in the project may depend on Nerves. The generated `mix.exs` has
+  the same `defp deps do [` block `add_package/4` injects into.
+  """
+  @spec create_plain(String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, {:mix_new_failed, String.t()}}
+  # project_dir is the runner-configured work mount plus the fixed proj directory.
+  # sobelow_skip ["Traversal.FileModule"]
+  def create_plain(work_dir, app_name) do
+    project_dir = Path.join(work_dir, "proj")
+    File.mkdir_p!(project_dir)
+
+    case System.cmd("mix", ["new", ".", "--app", app_name],
+           cd: project_dir,
+           stderr_to_stdout: true
+         ) do
+      {_, 0} -> {:ok, project_dir}
+      {output, _} -> {:error, {:mix_new_failed, output}}
+    end
+  end
+
   # Nerves' own defaults for `:squashfs`. Setting `rootfs_type` replaces them
   # rather than adding to them, and they are what makes the image reproducible.
   @squashfs_defaults ["-mkfs-time", "0", "-all-time", "0", "-no-xattrs", "-quiet"]

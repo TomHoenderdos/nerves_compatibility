@@ -63,12 +63,41 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    own `/tmp` rather than the shared cache, so a multi-target run still compiles a shared dependency once and
    restores it for the other targets without trusting the container to fill the shared cache itself.
 
+## Toolchain mode
+
+With `"mode": "toolchain"` (and an informational `"toolchain": {"elixir": "1.19", "otp": "28"}`, echoed back as
+`requested_toolchain`) the worker answers one question on a toolchain image: are the package's own beams, built by
+this Elixir and OTP, the same on every OS and architecture? Such an image has no nerves_bootstrap and possibly an
+OTP Nerves 2 does not accept, so the run uses a plain `mix new` project (`NccWorker.Project.create_plain/2`), adds
+the package, applies the lock policy (exit 11), runs the same optional-dependency pass as a pure-Elixir full run,
+compiles once on the host in `prod` and judges `_build/host/lib/<package>` with
+`NccWorker.BuildSelection.portable?/3`. No firmware, no argus (`argus.status` is `"skipped"`), no Nerves systems,
+no Hex metadata fetch; `toolchain.nerves_bootstrap` is `"absent"`. `result.json` has `"scope": "toolchain"`,
+`"systems": {}`, the usual top-level `deps_lock`, `package_checksum` and `optional_deps`, and:
+
+```json
+"toolchain_build": {
+  "status": "pass | skipped | error",
+  "reason": "portable?'s reason when skipped, what failed when error, null when pass",
+  "elixir": "1.19.1", "otp": "28",
+  "deps_lock": {"jason": {"version": "1.4.4", "checksum": "<outer>"}},
+  "package_checksum": "<outer>",
+  "compile_env": [{"app": "...", "path": ["..."], "value": "<base64url term>"}],
+  "file_manifest": {"ebin": [{"path": "ebin/x.beam", "sha256": "...", "size": 1234, "mode": 33188}], "priv": []}
+}
+```
+
+`deps_lock`, `package_checksum` and `compile_env` are present for `pass` and `skipped` and `null` for `error`;
+`file_manifest` only for `pass`, and those files are archived by SHA256 from `_build/host/lib/<package>`. A failed
+host compile is `status: "error"`: `result.json` is still written, but the exit code is `10` so the portal retries.
+A `deps.get` failure exits `10` without a result, as in a full run.
+
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 
 ## Exit codes
 
 - `0` — success (some systems may still have failed; check `result.json`)
-- `10` — internal failure
+- `10` — internal failure, or a toolchain run whose build errored
 - `11` — policy violation (non-Hex dependency in `mix.lock`)
 
 ## Develop

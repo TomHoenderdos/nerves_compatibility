@@ -139,7 +139,13 @@ defmodule NccWorker.BeamScan do
     error -> %{"errors" => ["beam scan failed for #{key}: #{Exception.message(error)}"]}
   end
 
-  defp normalize(scan) do
+  @doc """
+  A raw `BeamScanner.analyze/1` result in the JSON-safe shape the other
+  functions here return, for a caller that also needs the raw scan (a toolchain
+  run judges portability on it).
+  """
+  @spec normalize(map()) :: map()
+  def normalize(scan) do
     %{
       "flags" => %{
         "start_callback" => safe_bool(scan[:start_callback?]),

@@ -45,6 +45,7 @@ defmodule NccWorker.FileArchiver do
         {system_name, system_result} ->
           collect_manifests_from_system(system_result, project_dir, system_name, package_name)
       end)
+      |> Kernel.++(collect_toolchain_manifest(result, project_dir, package_name))
 
     # Archive each file
     final_stats =
@@ -128,6 +129,26 @@ defmodule NccWorker.FileArchiver do
 
     collect_manifest_entries(system_result[:beam_scan], index, "package")
   end
+
+  # A toolchain run has no systems: its files are the package's host build,
+  # listed in `toolchain_build.file_manifest` when the build passed. Only read
+  # for a "toolchain" scope, so a stray key on another run archives nothing.
+  defp collect_toolchain_manifest(%{scope: "toolchain"} = result, project_dir, package_name)
+       when is_binary(package_name) do
+    case get_in(result, [:toolchain_build, :file_manifest]) do
+      nil ->
+        []
+
+      manifest ->
+        collect_pure_elixir_manifest(
+          %{beam_scan: %{file_manifest: manifest}},
+          project_dir,
+          package_name
+        )
+    end
+  end
+
+  defp collect_toolchain_manifest(_result, _project_dir, _package_name), do: []
 
   @spec package_index(String.t(), String.t() | nil, %{String.t() => String.t()}) ::
           %{String.t() => String.t()}

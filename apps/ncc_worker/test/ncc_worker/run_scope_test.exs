@@ -16,6 +16,11 @@ defmodule NccWorker.RunScopeTest do
       assert RunScope.from_input(%{mode: "argus_only", systems_filter: ["x"]}) == :argus_only
     end
 
+    test "toolchain mode wins over a filter" do
+      assert RunScope.from_input(%{mode: "toolchain"}) == :toolchain
+      assert RunScope.from_input(%{mode: "toolchain", systems_filter: ["x"]}) == :toolchain
+    end
+
     test "an unknown mode is a full run, not a crash" do
       assert RunScope.from_input(%{mode: "bogus"}) == :full
     end
@@ -41,7 +46,7 @@ defmodule NccWorker.RunScopeTest do
   end
 
   test "to_string/1 is the result.json value" do
-    assert Enum.map([:full, :targets, :argus_only], &RunScope.to_string/1) ==
-             ["full", "targets", "argus_only"]
+    assert Enum.map([:full, :targets, :argus_only, :toolchain], &RunScope.to_string/1) ==
+             ["full", "targets", "argus_only", "toolchain"]
   end
 end

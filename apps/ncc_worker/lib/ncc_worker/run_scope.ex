@@ -1,8 +1,9 @@
 defmodule NccWorker.RunScope do
   @moduledoc """
   What a run rebuilds: every target (`:full`), the targets in
-  `systems_filter` (`:targets`), or nothing but the host compile and argus
-  (`:argus_only`).
+  `systems_filter` (`:targets`), nothing but the host compile and argus
+  (`:argus_only`), or one host build in a plain, non-Nerves project on a
+  toolchain image, judged for portability (`:toolchain`).
 
   The scope travels into `result.json` because ingestion has to know what a
   run left out: a partial run's missing systems are copied from the package's
@@ -10,10 +11,11 @@ defmodule NccWorker.RunScope do
   systems simply were not built.
   """
 
-  @type t :: :full | :targets | :argus_only
+  @type t :: :full | :targets | :argus_only | :toolchain
 
   @spec from_input(map()) :: t()
   def from_input(%{mode: "argus_only"}), do: :argus_only
+  def from_input(%{mode: "toolchain"}), do: :toolchain
   def from_input(%{systems_filter: [_ | _]}), do: :targets
   def from_input(_input), do: :full
 

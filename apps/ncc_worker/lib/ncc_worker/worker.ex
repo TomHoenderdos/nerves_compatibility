@@ -37,7 +37,15 @@ defmodule NccWorker.Worker do
           },
           optional(:systems_override) => %{String.t() => String.t()},
           optional(:systems_filter) => [String.t()],
+          # "argus_only" or "toolchain" (`NccWorker.RunScope`).
           optional(:mode) => String.t(),
+          # The toolchain a "toolchain" run was queued for. Informational: the
+          # worker records what it actually runs on, and echoes this back as
+          # `requested_toolchain`.
+          optional(:toolchain) => %{
+            optional(:elixir) => String.t(),
+            optional(:otp) => String.t()
+          },
           optional(:argus) => %{
             optional(:analyses) => [String.t()],
             optional(:scope) => String.t(),
@@ -60,8 +68,39 @@ defmodule NccWorker.Worker do
           String.t() => String.t() | [%{String.t() => String.t()}]
         }
 
+  # A "toolchain" run's verdict (`toolchain_build/4`): one prod host compile
+  # in a plain `mix new` project on a toolchain image, judged by
+  # `NccWorker.BuildSelection.portable?/3`. `reason` is portable?'s reason for
+  # "skipped" and what failed for "error", nil for "pass". `deps_lock`,
+  # `package_checksum` and `compile_env` describe the build ("pass" and
+  # "skipped"); `file_manifest` lists the package's own files under
+  # `_build/host/lib/<pkg>` for "pass" only, entries shaped like a beam scan's
+  # `footprint.file_manifest`, and those files are archived by SHA256.
+  @type toolchain_build :: %{
+          status: String.t(),
+          reason: String.t() | nil,
+          elixir: String.t(),
+          otp: String.t(),
+          deps_lock: %{String.t() => %{String.t() => String.t()}} | nil,
+          package_checksum: String.t() | nil,
+          compile_env: [map()] | nil,
+          file_manifest:
+            %{
+              String.t() => [
+                %{String.t() => String.t() | non_neg_integer()}
+              ]
+            }
+            | nil
+        }
+
   @type result :: %{
+          # "full", "targets", "argus_only" or "toolchain".
           optional(:scope) => String.t(),
+          # Only for a "toolchain" run, whose `systems` is `%{}`: no firmware,
+          # no argus (`argus.status` "skipped"), no Nerves systems.
+          optional(:toolchain_build) => toolchain_build(),
+          # `NCC_INPUT.toolchain` echoed back, when present.
+          optional(:requested_toolchain) => map(),
           # The package's optional dependencies the generated project did not
           # resolve on its own (`NccWorker.DepsLock.unresolved_optional_deps/2`),
           # and what the best-effort second pass did with them. Statuses and
@@ -116,6 +155,7 @@ defmodule NccWorker.Worker do
             elixir: String.t(),
             erlang: String.t(),
             mix: String.t(),
+            # "absent" for a toolchain run, whose image has no nerves_bootstrap.
             nerves_bootstrap: String.t() | nil
           },
           systems: %{
@@ -171,28 +211,34 @@ defmodule NccWorker.Worker do
   def run(input) do
     with :ok <- validate_input(input),
          {:ok, paths} <- setup_paths(input),
-         {:ok, toolchain} <- detect_toolchain() do
-      {description, github_url, release_info, retired_info, metadata_version, build_tools} =
-        fetch_metadata(input)
-
-      context = %{
-        input: input,
-        paths: paths,
-        toolchain: toolchain,
-        timeout: get_in(input, [:limits, :per_system_timeout_sec]) || @default_timeout_sec,
-        log_tail_bytes: get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes,
-        description: description,
-        github_url: github_url,
-        release_info: release_info,
-        retired_info: retired_info,
-        package_version_hint: metadata_version || input.package[:version],
-        build_tools: build_tools
-      }
-
-      if gleam_build_tool?(build_tools),
-        do: skipped_gleam(context),
-        else: prepare_project(context)
+         {:ok, toolchain} <- detect_toolchain(RunScope.from_input(input)) do
+      if RunScope.from_input(input) == :toolchain,
+        do: toolchain_run(input, paths, toolchain),
+        else: full_run(input, paths, toolchain)
     end
+  end
+
+  defp full_run(input, paths, toolchain) do
+    {description, github_url, release_info, retired_info, metadata_version, build_tools} =
+      fetch_metadata(input)
+
+    context = %{
+      input: input,
+      paths: paths,
+      toolchain: toolchain,
+      timeout: get_in(input, [:limits, :per_system_timeout_sec]) || @default_timeout_sec,
+      log_tail_bytes: get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes,
+      description: description,
+      github_url: github_url,
+      release_info: release_info,
+      retired_info: retired_info,
+      package_version_hint: metadata_version || input.package[:version],
+      build_tools: build_tools
+    }
+
+    if gleam_build_tool?(build_tools),
+      do: skipped_gleam(context),
+      else: prepare_project(context)
   end
 
   defp fetch_metadata(input) do
@@ -717,6 +763,121 @@ defmodule NccWorker.Worker do
     }
   end
 
+  # A toolchain run (`mode: "toolchain"`, `NccWorker.RunScope`) answers one
+  # question: are the package's own beams, built by this image's Elixir and
+  # OTP, the same on every OS and architecture? A toolchain image has no
+  # nerves_bootstrap and an OTP Nerves 2 may not accept, so the project is a
+  # plain `mix new` one: the package, the optional-dependency pass a
+  # pure-Elixir full run gets, one prod host compile and the
+  # `BuildSelection.portable?/3` verdict. No firmware, no argus, no systems,
+  # and no Hex metadata fetch: the portal only queues versions a full run has
+  # already checked.
+  defp toolchain_run(input, paths, toolchain) do
+    package_name = input.package.name
+    log_tail_bytes = get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes
+
+    with {:ok, project_dir} <- Project.create_plain(paths.work_dir, @wrapper_app),
+         {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
+         :ok <- LockPolicy.validate(project_dir) do
+      host = compile_host(project_dir, paths.output_dir, log_tail_bytes, package_name)
+
+      with {:ok, optional_deps} <-
+             toolchain_optional_deps(host, project_dir, package_name, paths) do
+        result =
+          %{
+            run_id: input.run_id,
+            package: %{
+              name: package_name,
+              version: get_package_version(project_dir, input.package),
+              dependencies: [],
+              footprint: empty_footprint()
+            },
+            image: input.image,
+            toolchain: toolchain,
+            systems: %{},
+            argus: Argus.skipped(),
+            finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+            scope: RunScope.to_string(:toolchain),
+            toolchain_build: toolchain_build(project_dir, package_name, host, toolchain)
+          }
+          |> put_optional_deps(optional_deps)
+          |> put_deps_lock(:toolchain, project_dir, package_name)
+          |> put_requested_toolchain(input[:toolchain])
+
+        {:ok, result}
+      end
+    end
+  end
+
+  # The same best-effort pass as a pure-Elixir full run, after the build
+  # without them has passed. A failed compile is the verdict already.
+  defp toolchain_optional_deps(%{status: :pass}, project_dir, package_name, paths),
+    do: resolve_optional_deps(:toolchain, :pure_elixir, project_dir, package_name, paths)
+
+  defp toolchain_optional_deps(_host, _project_dir, _package_name, _paths), do: {:ok, nil}
+
+  defp put_requested_toolchain(result, requested) when is_map(requested),
+    do: Map.put(result, :requested_toolchain, requested)
+
+  defp put_requested_toolchain(result, _requested), do: result
+
+  @doc """
+  A toolchain run's `toolchain_build` (see `t:toolchain_build/0`) from its
+  host compile and the package's host build under
+  `<project_dir>/_build/host/lib/<package_name>`.
+  """
+  @spec toolchain_build(String.t(), String.t(), map(), map()) :: toolchain_build()
+  def toolchain_build(project_dir, package_name, host_result, toolchain) do
+    build = %{
+      status: "error",
+      reason: nil,
+      elixir: toolchain.elixir,
+      otp: toolchain.erlang,
+      deps_lock: nil,
+      package_checksum: nil,
+      compile_env: nil,
+      file_manifest: nil
+    }
+
+    case host_result do
+      %{status: :pass} -> judge_toolchain_build(build, project_dir, package_name)
+      host -> %{build | reason: "host compile failed: " <> describe_error(host[:error])}
+    end
+  end
+
+  defp judge_toolchain_build(build, project_dir, package_name) do
+    app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
+    scan = scan_host_app(app_dir)
+
+    build = %{
+      build
+      | deps_lock: DepsLock.read(project_dir, package_name),
+        package_checksum: DepsLock.package_checksum(project_dir, package_name),
+        compile_env: AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
+    }
+
+    case BuildSelection.portable?(project_dir, package_name, scan) do
+      :ok ->
+        manifest = BeamScan.normalize(scan)["footprint"]["file_manifest"]
+        %{build | status: "pass", file_manifest: manifest}
+
+      {:skip, reason} ->
+        %{build | status: "skipped", reason: reason}
+    end
+  end
+
+  # The raw `BeamScanner` result, which `portable?/3` reads. A missing or
+  # unreadable build reads as no beams, so it is skipped rather than passed.
+  defp scan_host_app(app_dir) do
+    if File.dir?(app_dir), do: BeamScanner.analyze(app_dir), else: %{beam_count: 0}
+  rescue
+    _ -> %{beam_count: 0}
+  end
+
+  defp describe_error(error) when is_binary(error), do: error
+  defp describe_error(nil), do: "unknown error"
+  defp describe_error(error), do: inspect(error, limit: 20)
+
   defp package_footprint(:pure_elixir, _project, _package, _systems), do: empty_footprint()
 
   defp package_footprint(:firmware, project, package, systems) do
@@ -770,8 +931,11 @@ defmodule NccWorker.Worker do
     {:ok, %{work_dir: work_dir, output_dir: output_dir, logs_dir: logs_dir}}
   end
 
-  @spec detect_toolchain() :: {:ok, map()} | {:error, term()}
-  defp detect_toolchain() do
+  # A toolchain image has no nerves_bootstrap, so a toolchain run does not
+  # probe for it and records "absent".
+  @doc false
+  @spec detect_toolchain(RunScope.t()) :: {:ok, map()} | {:error, term()}
+  def detect_toolchain(scope) do
     elixir_version = System.version()
     erlang_version = :erlang.system_info(:otp_release) |> to_string()
 
@@ -788,19 +952,7 @@ defmodule NccWorker.Worker do
       end
 
     nerves_bootstrap_version =
-      case System.cmd("mix", ["nerves.info"], stderr_to_stdout: true) do
-        {output, 0} ->
-          output
-          |> String.split("\n")
-          |> Enum.find(&String.contains?(&1, "nerves_bootstrap"))
-          |> then(fn
-            nil -> nil
-            line -> Regex.run(~r/(\d+\.\d+\.\d+)/, line) |> List.last()
-          end)
-
-        _ ->
-          nil
-      end
+      if scope == :toolchain, do: "absent", else: nerves_bootstrap_version()
 
     {:ok,
      %{
@@ -809,6 +961,22 @@ defmodule NccWorker.Worker do
        mix: mix_version,
        nerves_bootstrap: nerves_bootstrap_version
      }}
+  end
+
+  defp nerves_bootstrap_version do
+    case System.cmd("mix", ["nerves.info"], stderr_to_stdout: true) do
+      {output, 0} ->
+        output
+        |> String.split("\n")
+        |> Enum.find(&String.contains?(&1, "nerves_bootstrap"))
+        |> then(fn
+          nil -> nil
+          line -> Regex.run(~r/(\d+\.\d+\.\d+)/, line) |> List.last()
+        end)
+
+      _ ->
+        nil
+    end
   end
 
   @spec build_all_systems(
