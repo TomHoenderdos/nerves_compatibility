@@ -355,6 +355,38 @@ defmodule NccWorker.BuildCacheTest do
       refute File.exists?(dir)
     end
 
+    # A cache problem must not crash the worker (exit 10): no candidate.
+    test "store with an out dir that cannot be created stores no candidate", ctx do
+      dir = Path.join(ctx.tmp, "_build/host/lib/pkg")
+      File.mkdir_p!(Path.join(dir, "ebin"))
+      File.write!(Path.join(dir, "ebin/x.beam"), "beam")
+
+      plan = %{
+        root: ctx.root,
+        local_root: Path.join(ctx.tmp, "local"),
+        entries: [
+          %{
+            name: "pkg",
+            key: String.duplicate("a", 64),
+            dir: dir,
+            shared: false,
+            restore?: false,
+            inputs: %{}
+          }
+        ]
+      }
+
+      assert [] = BuildCache.store(plan, "/dev/null/build-cache")
+    end
+
+    test "local_tier/1 is nil when the run-local tier cannot be created", ctx do
+      assert BuildCache.local_tier("/dev/null/ncc-build-cache") == nil
+
+      local = Path.join(ctx.tmp, "local")
+      assert BuildCache.local_tier(local) == local
+      assert File.dir?(local)
+    end
+
     test "store on a disabled plan writes nothing" do
       assert [] = BuildCache.store(:disabled, "/nonexistent")
     end
@@ -434,6 +466,23 @@ defmodule NccWorker.BuildCacheTest do
           %{name: "a", key: "held", dir: "/x/a", shared: true},
           %{name: "b", key: "absent1", dir: "/x/b", shared: true},
           %{name: "c", key: "absent2", dir: "/x/c", shared: false}
+        ]
+      }
+
+      assert BuildCache.missing_shared(plan) == 1
+    end
+
+    test "looks in both tiers and never counts the package under test", ctx do
+      local = Path.join(ctx.root, "local")
+      File.mkdir_p!(Path.join(local, "only-local"))
+
+      plan = %{
+        root: Path.join(ctx.root, "shared"),
+        local_root: local,
+        entries: [
+          %{name: "a", key: "only-local", dir: "/x/a", shared: true, restore?: true},
+          %{name: "b", key: "absent", dir: "/x/b", shared: true, restore?: true},
+          %{name: "pkg", key: "pkg-key", dir: "/x/pkg", shared: true, restore?: false}
         ]
       }
 
