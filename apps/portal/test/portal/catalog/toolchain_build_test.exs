@@ -73,4 +73,18 @@ defmodule Portal.Catalog.ToolchainBuildTest do
              |> Ash.Changeset.for_create(:create, %{sha256: String.duplicate("b", 64)})
              |> Ash.create(domain: Portal.Catalog)
   end
+
+  test "an older release's bare ON CONFLICT on system result and sha still matches an index" do
+    # The build host that predates toolchain builds keeps ingesting during a
+    # deploy, with no `WHERE` on its conflict target. Postgres resolves the
+    # arbiter index when it plans the statement, so inserting zero rows is
+    # enough: a partial index here would raise "there is no unique or
+    # exclusion constraint matching the ON CONFLICT specification".
+    assert %{num_rows: 0} =
+             Portal.Repo.query!("""
+             INSERT INTO catalog_artifact_memberships (id, sha256, system_result_id)
+             SELECT gen_random_uuid(), 'x', NULL WHERE false
+             ON CONFLICT (system_result_id, sha256) DO NOTHING
+             """)
+  end
 end

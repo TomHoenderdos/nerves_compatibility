@@ -188,7 +188,7 @@
   ],
   "custom_statements": [],
   "has_create_action": true,
-  "hash": "FAF5E68CCAFD467542039D3F2B5649288E14512B0F5A4ED036661512E99B9FA9",
+  "hash": "D5F66DFA7B3796BA6641800CBC6DC52B46A29385DCEA8C50560DE1212CD0F517",
   "identities": [
     {
       "all_tenants?": false,
@@ -206,7 +206,7 @@
       ],
       "name": "unique_system_result_sha256",
       "nils_distinct?": true,
-      "where": "system_result_id IS NOT NULL"
+      "where": null
     },
     {
       "all_tenants?": false,
@@ -224,7 +224,7 @@
       ],
       "name": "unique_toolchain_build_sha256",
       "nils_distinct?": true,
-      "where": "toolchain_build_id IS NOT NULL"
+      "where": null
     }
   ],
   "multitenancy": {

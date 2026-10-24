@@ -8,14 +8,17 @@ defmodule Portal.Repo.Migrations.ToolchainBuilds do
   use Ecto.Migration
 
   def up do
-    drop_if_exists(
-      unique_index(:catalog_artifact_memberships, [:system_result_id, :sha256],
-        name: "catalog_artifact_memberships_unique_system_result_sha256_index"
+    alter table(:catalog_artifact_memberships) do
+      add(:toolchain_build_id, :uuid)
+    end
+
+    create(
+      unique_index(:catalog_artifact_memberships, [:toolchain_build_id, :sha256],
+        name: "catalog_artifact_memberships_toolchain_build_sha256_index"
       )
     )
 
     alter table(:catalog_artifact_memberships) do
-      add(:toolchain_build_id, :uuid)
       modify(:system_result_id, :uuid, null: true)
     end
 
@@ -36,20 +39,6 @@ defmodule Portal.Repo.Migrations.ToolchainBuilds do
         )
       )
     end
-
-    create(
-      unique_index(:catalog_artifact_memberships, [:system_result_id, :sha256],
-        name: "catalog_artifact_memberships_unique_system_result_sha256_index",
-        where: "(system_result_id IS NOT NULL)"
-      )
-    )
-
-    create(
-      unique_index(:catalog_artifact_memberships, [:toolchain_build_id, :sha256],
-        name: "catalog_artifact_memberships_toolchain_build_sha256_index",
-        where: "(toolchain_build_id IS NOT NULL)"
-      )
-    )
 
     create(
       constraint(:catalog_artifact_memberships, :one_owner,
@@ -93,7 +82,9 @@ defmodule Portal.Repo.Migrations.ToolchainBuilds do
           name: "catalog_toolchain_builds_package_id_fkey",
           type: :uuid,
           prefix: "public"
-        ), null: false)
+        ),
+        null: false
+      )
     end
 
     create(
@@ -110,6 +101,10 @@ defmodule Portal.Repo.Migrations.ToolchainBuilds do
   end
 
   def down do
+    # Toolchain memberships have no system result; they would block restoring
+    # `system_result_id NOT NULL` below, and their owner table is dropped here.
+    execute("DELETE FROM catalog_artifact_memberships WHERE toolchain_build_id IS NOT NULL")
+
     drop_if_exists(index(:catalog_toolchain_builds, [:toolchain, :status]))
 
     drop_if_exists(index(:catalog_toolchain_builds, [:package_id, :version]))
@@ -154,18 +149,6 @@ defmodule Portal.Repo.Migrations.ToolchainBuilds do
       )
     )
 
-    drop_if_exists(
-      unique_index(:catalog_artifact_memberships, [:toolchain_build_id, :sha256],
-        name: "catalog_artifact_memberships_toolchain_build_sha256_index"
-      )
-    )
-
-    drop_if_exists(
-      unique_index(:catalog_artifact_memberships, [:system_result_id, :sha256],
-        name: "catalog_artifact_memberships_unique_system_result_sha256_index"
-      )
-    )
-
     alter table(:catalog_artifact_memberships) do
       modify(:toolchain_build_id, :uuid)
     end
@@ -176,13 +159,16 @@ defmodule Portal.Repo.Migrations.ToolchainBuilds do
 
     alter table(:catalog_artifact_memberships) do
       modify(:system_result_id, :uuid, null: false)
-      remove(:toolchain_build_id)
     end
 
-    create(
-      unique_index(:catalog_artifact_memberships, [:system_result_id, :sha256],
-        name: "catalog_artifact_memberships_unique_system_result_sha256_index"
+    drop_if_exists(
+      unique_index(:catalog_artifact_memberships, [:toolchain_build_id, :sha256],
+        name: "catalog_artifact_memberships_toolchain_build_sha256_index"
       )
     )
+
+    alter table(:catalog_artifact_memberships) do
+      remove(:toolchain_build_id)
+    end
   end
 end
