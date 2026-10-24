@@ -15,6 +15,11 @@ defmodule Portal.Workers.Ingest do
   `Portal.Builder.load_run/1` and only removes it once the rows are committed or
   the last attempt is spent. Retries therefore cost a database round trip, not a
   rebuild.
+
+  A toolchain build (`kind: "toolchain"`, with `toolchain` and
+  `builder_version`) goes to `Portal.Catalog.Ingestion.ingest_toolchain/2`
+  instead. It writes no `Run`, so none of a run's follow-up applies: no scan
+  request to mark, no progress broadcast, no package metadata refresh.
   """
 
   use Oban.Worker,
@@ -106,6 +111,19 @@ defmodule Portal.Workers.Ingest do
   alias Portal.Workers.Progress
 
   @impl Oban.Worker
+  def perform(%Oban.Job{args: %{"kind" => "toolchain"} = args} = job) do
+    run_id = args["run_id"]
+
+    case builder().load_run(run_id) do
+      {:ok, build} ->
+        ingest_toolchain(build, args, job)
+
+      {:error, reason} ->
+        Logger.error("Ingest found no toolchain build output for #{run_id}: #{inspect(reason)}")
+        {:cancel, "build output missing: #{inspect(reason)}"}
+    end
+  end
+
   def perform(%Oban.Job{args: args, attempt: attempt, max_attempts: max_attempts}) do
     run_id = args["run_id"]
     image_digest = args["image_digest"]
@@ -145,7 +163,7 @@ defmodule Portal.Workers.Ingest do
       log: build.log
     }
 
-    case safe_ingest(build.result, ingest_opts) do
+    case safe_ingest(&Ingestion.ingest/2, build.result, ingest_opts) do
       {:ok, run} ->
         complete(run, scan_request_id, get_in(build.result, ["package", "name"]))
 
@@ -161,6 +179,32 @@ defmodule Portal.Workers.Ingest do
           Progress.broadcast(scan_request_id, :error, %{reason: message})
         end
 
+        {:error, reason}
+    end
+  end
+
+  # Re-ingesting a committed toolchain build is an upsert of the same row, so
+  # unlike a run there is no committed-row check before it.
+  defp ingest_toolchain(build, args, %Oban.Job{attempt: attempt, max_attempts: max_attempts}) do
+    run_id = args["run_id"]
+
+    opts = %{
+      run_id: run_id,
+      image_digest: args["image_digest"],
+      files_dir: build.files_dir,
+      output_dir: build.output_dir,
+      toolchain: args["toolchain"],
+      builder_version: args["builder_version"]
+    }
+
+    case safe_ingest(&Ingestion.ingest_toolchain/2, build.result, opts) do
+      {:ok, _toolchain_build} ->
+        Builder.cleanup(run_id)
+        :ok
+
+      {:error, reason} ->
+        Logger.error("Toolchain ingestion failed for #{run_id}: #{inspect(reason)}")
+        if attempt >= max_attempts, do: Builder.cleanup(run_id)
         {:error, reason}
     end
   end
@@ -210,12 +254,13 @@ defmodule Portal.Workers.Ingest do
     end
   end
 
-  # `Ingestion.ingest/2` raises on a result.json it cannot map, rather than
-  # returning an error. Both failures need the same bookkeeping here, so
-  # normalise them: a raised exception would take the job down before the last
-  # attempt could free the scratch dir and mark the request.
-  defp safe_ingest(result, opts) do
-    Ingestion.ingest(result, opts)
+  # `Ingestion.ingest/2` and `ingest_toolchain/2` raise on a result.json they
+  # cannot map, rather than returning an error. Both failures need the same
+  # bookkeeping here, so normalise them: a raised exception would take the job
+  # down before the last attempt could free the scratch dir and mark the
+  # request.
+  defp safe_ingest(fun, result, opts) do
+    fun.(result, opts)
   rescue
     e -> {:error, Exception.message(e)}
   end
