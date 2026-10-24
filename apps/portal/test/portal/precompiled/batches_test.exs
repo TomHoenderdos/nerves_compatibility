@@ -64,6 +64,26 @@ defmodule Portal.Precompiled.BatchesTest do
     assert Batches.manifests(batch) == %{name => sha}
   end
 
+  test "the payload keeps version 1 and names format-2 manifests in manifests_v2" do
+    run = ingest_with_artifact()
+    name = run["package"]["name"]
+    tc_only = "tc_batch_#{System.unique_integer([:positive])}"
+    ingest_toolchain_build(tc_only, "0.3.0")
+
+    assert {:ok, batch} = Batches.build_and_sign()
+    doc = JSON.decode!(batch.payload)
+
+    assert doc["version"] == 1
+    assert Map.keys(doc["manifests"]) == [name]
+    # The fixture run has no toolchain keys, so only the toolchain build is in format 2.
+    assert Map.keys(doc["manifests_v2"]) == [tc_only]
+
+    {:ok, bytes} = Manifests.read(doc["manifests_v2"][tc_only])
+    assert {:ok, ^bytes} = Manifests.render_v2(tc_only)
+    assert JSON.decode!(bytes)["format"] == 2
+    assert Batches.manifests_v2(batch) == doc["manifests_v2"]
+  end
+
   test "sequence increments and latest is the newest" do
     ingest_with_artifact()
     {:ok, b1} = Batches.build_and_sign()

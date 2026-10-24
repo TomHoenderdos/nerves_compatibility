@@ -208,6 +208,7 @@ defmodule PortalWeb.Router do
 
     get "/packages/hex", PageController, :hex_package_search
     get "/precompiled/manifests/:package", CatalogApiController, :precompiled_manifest
+    get "/precompiled/v2/manifests/:package", CatalogApiController, :precompiled_manifest_v2
     get "/precompiled/files/:sha256", CatalogApiController, :precompiled_file
     get "/precompiled/root.json", CatalogApiController, :precompiled_root
     get "/precompiled/batch.json", CatalogApiController, :precompiled_batch

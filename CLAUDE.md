@@ -90,7 +90,7 @@ The integration test is `apps/portal/test/portal/workers/build_integration_test.
 - `/requests/:id` — redirects to the package page
 - `/badge/:name.svg` — SVG badge
 - `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
-- `/api/precompiled/manifests/:package.json`, `/api/precompiled/files/:sha256`, `/api/precompiled/root.json`, `/api/precompiled/batch.json`, `/api/precompiled/batches/:sequence.json` — precompiled API
+- `/api/precompiled/manifests/:package.json` (format 1), `/api/precompiled/v2/manifests/:package.json` (format 2), `/api/precompiled/files/:sha256`, `/api/precompiled/root.json`, `/api/precompiled/batch.json`, `/api/precompiled/batches/:sequence.json` — precompiled API
 - `/admin` (tabs Overview, Queue, Users, Failures, Argus, Triage at `/admin/argus/findings`, Maintenance) and `/admin/oban` — admin UI and Oban Web dashboard. `/admin` needs a passkey sign-in; `config/dev.exs` turns that off for local dev
 - `/login` — password, passkey, or password + TOTP; `/settings/security` enrols passkeys, TOTP and recovery codes
 - `/auth/:provider/login`, `/auth/choose-username` — sign in with Hex.pm or GitHub
