@@ -81,9 +81,23 @@ defmodule NccWorker.JsonWriter do
       end
 
     # Absent for argus-only runs, which publish nothing.
-    case Map.get(result, :optional_deps) do
-      nil -> json
-      optional_deps -> Map.put(json, :optional_deps, optional_deps)
+    json =
+      case Map.get(result, :optional_deps) do
+        nil -> json
+        optional_deps -> Map.put(json, :optional_deps, optional_deps)
+      end
+
+    # Candidates for the host to promote into the shared build cache, one per
+    # stored build of the package under test. Absent when there are none, the
+    # way a run with the cache off looks.
+    candidates =
+      result.systems
+      |> Enum.flat_map(fn {_name, sys} -> Map.get(sys, :cache_candidates, []) end)
+      |> Enum.uniq_by(& &1["key"])
+
+    case candidates do
+      [] -> json
+      list -> Map.put(json, :cache, %{candidates: list})
     end
   end
 
