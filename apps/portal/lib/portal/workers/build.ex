@@ -8,8 +8,9 @@ defmodule Portal.Workers.Build do
        unless the job carries `"force" => true`.
     2. Run the build via `Portal.Builder.build/2`.
     3. Map the worker/runner exit code to an outcome (see `classify/1`).
-    4. On success, enqueue `Portal.Workers.Ingest` and leave the scratch dir in
-       place for it to read.
+    4. On success, promote the build cache candidates the build reported
+       (`Portal.BuildCache.Promotion`, best-effort), then enqueue
+       `Portal.Workers.Ingest` and leave the scratch dir in place for it to read.
     5. Update the linked `ScanRequest` status (rejected / error; `built` is the
        ingest job's to set).
     6. Broadcast progress to `"request:<scan_request_id>"` over `Portal.PubSub`.
@@ -215,7 +216,7 @@ defmodule Portal.Workers.Build do
   end
 
   defp handle_outcome(:ingest, build, ctx) do
-    {_package, _version, image_digest, scan_request_id, run_id, attempt, max} = ctx
+    {package, version, image_digest, scan_request_id, run_id, attempt, max} = ctx
 
     case build.result do
       nil ->
@@ -227,7 +228,9 @@ defmodule Portal.Workers.Build do
         on_retry_or_exhaust(scan_request_id, attempt, max, "missing result.json", error_log)
         {:error, :missing_result_json}
 
-      _result ->
+      result ->
+        promote_cache(result, run_id, image_digest, package, version)
+
         # No cleanup: the scratch dir is what the ingest job reads, and it owns
         # removing it once the rows are committed.
         enqueue_ingest(run_id, image_digest, scan_request_id)
@@ -250,6 +253,26 @@ defmodule Portal.Workers.Build do
     Builder.cleanup(run_id)
     on_retry_or_exhaust(scan_request_id, attempt, max, reason, error_log)
     {:error, reason}
+  end
+
+  # Before ingest, because ingest consumes the scratch dir. A failure here must
+  # not cost the build its result: the cache is an optimisation, so anything
+  # going wrong promotes nothing and the build carries on.
+  defp promote_cache(result, run_id, image_digest, package, version) do
+    safely("build cache promotion", fn ->
+      %{promoted: _promoted, refused: refused} =
+        Portal.BuildCache.Promotion.promote(
+          result,
+          Builder.output_dir(run_id),
+          Builder.build_cache_slug_dir(image_digest),
+          package,
+          version
+        )
+
+      if refused > 0,
+        do:
+          Logger.warning("Refused #{refused} build cache candidate(s) from #{package} #{version}")
+    end)
   end
 
   defp enqueue_ingest(run_id, image_digest, scan_request_id) do

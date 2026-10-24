@@ -210,6 +210,41 @@ defmodule Portal.BuilderTest do
     end
   end
 
+  describe "build cache mount" do
+    setup %{previous: previous} do
+      cache = Path.join(System.tmp_dir!(), "builder-cache-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(cache) end)
+      put_builder([build_cache: cache], previous)
+      %{cache: cache}
+    end
+
+    # The container must not write the shared cache: a build could plant
+    # beams under another dependency's key. `Portal.BuildCache.Promotion`, on
+    # the host, is the only writer.
+    test "is read-only" do
+      mount = Enum.find(args(), &String.contains?(&1, "target=/build-cache"))
+      assert String.ends_with?(mount, "target=/build-cache,readonly")
+    end
+
+    test "build_cache_slug_dir/1 is the mounted directory, under the configured root", %{
+      cache: cache
+    } do
+      dir = Builder.build_cache_slug_dir("sha256:deadbeef")
+      assert dir == Path.join(cache, Builder.cache_slug("sha256:deadbeef"))
+      assert "type=bind,source=#{dir},target=/build-cache,readonly" in args()
+    end
+
+    test "build_cache_slug_dir/1 is nil when the cache is off", %{previous: previous} do
+      put_builder([build_cache: nil], previous)
+      assert Builder.build_cache_slug_dir("sha256:deadbeef") == nil
+    end
+  end
+
+  test "output_dir/1 is the run's out directory under the scratch root", %{previous: previous} do
+    put_builder([scratch_root: "/scratch"], previous)
+    assert Builder.output_dir("run-1") == "/scratch/run-1/out"
+  end
+
   describe "worker_input/1" do
     @input_job %{
       run_id: "r1",
