@@ -67,6 +67,29 @@ defmodule NccWorker.BuildCacheTest do
 
       assert key("a") == key("a", @lock, shuffled)
     end
+
+    # Production caches hold entries under these keys. Moving the function to
+    # apps/compatibility must not change one byte of its output, or every
+    # cached entry silently becomes a miss.
+    test "matches the key format production caches were written with" do
+      closure = MapSet.new(["b", "c"])
+
+      expected =
+        [
+          "v2",
+          "elixir=" <> System.version(),
+          "otp=" <> to_string(:erlang.system_info(:otp_release)),
+          "target=rpi4",
+          "dep=a " <> @lock["a"],
+          "b " <> @lock["b"],
+          "c " <> @lock["c"]
+        ]
+        |> Enum.join("\n")
+        |> then(&:crypto.hash(:sha256, &1))
+        |> Base.encode16(case: :lower)
+
+      assert BuildCache.key_for("a", "rpi4", closure, @lock) == expected
+    end
   end
 
   describe "plan/6" do
