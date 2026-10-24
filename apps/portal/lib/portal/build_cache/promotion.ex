@@ -525,21 +525,27 @@ defmodule Portal.BuildCache.Promotion do
         # means another promotion of the same key holds that name.
         with :ok <- File.mkdir_p(ctx.cache),
              :ok <- make_staging(staging) do
-          case copy_and_check(key, staging, ctx) do
-            :ok ->
-              finish(c, key, staging, dest, ctx)
-
-            {:refused, reason} ->
-              _ = File.rm_rf(staging)
-              refuse_tree(key, ctx, reason)
-
-            error ->
-              _ = File.rm_rf(staging)
-              not_promoted(key, ctx, error)
-          end
+          promote_staged(c, key, staging, dest, ctx)
         else
           error -> not_promoted(key, ctx, error)
         end
+    end
+  end
+
+  # `staging` was created by this call, so every way out removes it.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp promote_staged(c, key, staging, dest, ctx) do
+    case copy_and_check(key, staging, ctx) do
+      :ok ->
+        finish(c, key, staging, dest, ctx)
+
+      {:refused, reason} ->
+        _ = File.rm_rf(staging)
+        refuse_tree(key, ctx, reason)
+
+      error ->
+        _ = File.rm_rf(staging)
+        not_promoted(key, ctx, error)
     end
   end
 
@@ -703,15 +709,17 @@ defmodule Portal.BuildCache.Promotion do
   defp strip_children(dir) do
     case :file.list_dir_all(dir) do
       {:ok, names} ->
-        Enum.reduce_while(names, :ok, fn raw, :ok ->
-          case name_string(raw) do
-            {:ok, name} -> dir |> Path.join(name) |> strip_modes() |> continue_if_ok()
-            :error -> {:halt, {:error, {:name, raw}}}
-          end
-        end)
+        Enum.reduce_while(names, :ok, fn raw, :ok -> strip_child(dir, raw) end)
 
       error ->
         error
+    end
+  end
+
+  defp strip_child(dir, raw) do
+    case name_string(raw) do
+      {:ok, name} -> dir |> Path.join(name) |> strip_modes() |> continue_if_ok()
+      :error -> {:halt, {:error, {:name, raw}}}
     end
   end
 
