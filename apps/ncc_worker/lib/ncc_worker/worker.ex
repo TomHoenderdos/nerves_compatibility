@@ -55,11 +55,22 @@ defmodule NccWorker.Worker do
 
   @type result :: %{
           optional(:scope) => String.t(),
-          # Application names of the package's optional dependencies the
-          # worker added to the project (see `NccWorker.Project.add_optional_deps/4`),
-          # `[]` when none were. A system that fails because one of them does
-          # not cross-compile is explained by this list and the host log.
-          optional(:optional_deps) => [String.t()],
+          # The package's optional dependencies the generated project did not
+          # resolve on its own (`NccWorker.DepsLock.unresolved_optional_deps/2`),
+          # and what the best-effort second pass did with them. Statuses and
+          # the pure-Elixir classification come from the build without them;
+          # only the published pure-Elixir files are rebuilt with `added`
+          # loadable, and `deps_lock` then names them. `dropped` were tried
+          # (or, for a firmware build, not tried) and left out; `reason` says
+          # why: "deps_get_failed", "lock_policy_violation",
+          # "host_compile_failed", "stale_build_not_removed",
+          # "mix_exs_edit_failed" or "firmware_build", `nil` when nothing was
+          # dropped. Absent for argus-only runs.
+          optional(:optional_deps) => %{
+            added: [String.t()],
+            dropped: [String.t()],
+            reason: String.t() | nil
+          },
           # The package's transitive dependency closure as locked for this
           # build, itself excluded, keyed by name. Absent when the lock could
           # not be read and for argus-only runs, which build no files.
@@ -271,45 +282,15 @@ defmodule NccWorker.Worker do
   defp prepare_project(%{input: input, paths: paths, retired_info: retired_info} = context) do
     systems = Systems.select(input[:systems_filter])
 
-    # The optional dependencies are resolved before the lock is checked, so
-    # the policy judges the tree that is actually built. They come from the
-    # package's own lock entry, so a package that declares none costs nothing.
     with {:ok, project_dir} <-
            Project.create(paths.work_dir, input[:systems_override], Systems.targets(systems)),
          {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
-         {:ok, optional_deps} <- add_optional_deps(project_dir, input.package.name, paths),
          :ok <- LockPolicy.validate(project_dir) do
       if retired_info do
         skipped_retired(context)
       else
-        context
-        |> Map.merge(%{project_dir: project_dir, systems: systems, optional_deps: optional_deps})
-        |> evaluate_project()
+        context |> Map.merge(%{project_dir: project_dir, systems: systems}) |> evaluate_project()
       end
-    end
-  end
-
-  # See `NccWorker.DepsLock.unresolved_optional_deps/2`: without its optional
-  # dependencies the package compiles into BEAMs that match no application
-  # that has them, and the client's lock rule then refuses the build.
-  #
-  # The line goes into host.log as well as stderr: a system that fails because
-  # an optional dependency does not cross-compile shows that log, and the
-  # person reading it should see what was added and why.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp add_optional_deps(project_dir, package_name, paths) do
-    case DepsLock.unresolved_optional_deps(project_dir, package_name) do
-      [] ->
-        {:ok, []}
-
-      deps ->
-        line =
-          "Adding optional dependencies: " <>
-            Enum.map_join(deps, ", ", &"#{&1.app} #{&1.requirement}")
-
-        IO.puts(:stderr, line)
-        File.write(Path.join(paths.logs_dir, "host.log"), line <> "\n", [:append])
-        Project.add_optional_deps(project_dir, package_name, deps, host_env(project_dir))
     end
   end
 
@@ -319,7 +300,6 @@ defmodule NccWorker.Worker do
          toolchain: toolchain,
          project_dir: project_dir,
          systems: systems,
-         optional_deps: optional_deps,
          timeout: timeout,
          log_tail_bytes: log_tail_bytes,
          description: description,
@@ -341,6 +321,9 @@ defmodule NccWorker.Worker do
 
     scope = RunScope.from_input(input)
 
+    # Classified on the closure without the package's optional dependencies,
+    # like the status: code the package never needs must not send it to
+    # firmware builds.
     selection =
       BuildSelection.select(
         project_dir,
@@ -350,6 +333,58 @@ defmodule NccWorker.Worker do
         host_env(project_dir)
       )
 
+    # Read before the optional pass below can add its optional dependencies
+    # to the package's `.app`: the package metadata describes the package as
+    # it was checked.
+    runtime_apps =
+      runtime_applications(project_dir, input)
+
+    with {:ok, optional_deps} <-
+           resolve_optional_deps(scope, selection, project_dir, input.package.name, paths) do
+      context = %{
+        input: input,
+        paths: paths,
+        project_dir: project_dir,
+        systems: systems,
+        timeout: timeout,
+        log_tail_bytes: log_tail_bytes,
+        description: description,
+        release_info: release_info,
+        package_version_hint: package_version_hint,
+        host_result: host_result,
+        scope: scope,
+        selection: selection,
+        runtime_apps: runtime_apps,
+        source_before: source_before,
+        pkg_source_dir: pkg_source_dir
+      }
+
+      {:ok, finish_project(context, toolchain, github_url, optional_deps)}
+    end
+  end
+
+  defp finish_project(
+         %{
+           input: input,
+           paths: paths,
+           project_dir: project_dir,
+           systems: systems,
+           timeout: timeout,
+           log_tail_bytes: log_tail_bytes,
+           description: description,
+           release_info: release_info,
+           package_version_hint: package_version_hint,
+           host_result: host_result,
+           scope: scope,
+           selection: selection,
+           runtime_apps: runtime_apps,
+           source_before: source_before,
+           pkg_source_dir: pkg_source_dir
+         },
+         toolchain,
+         github_url,
+         optional_deps
+       ) do
     system_results =
       scope
       |> system_results_for(selection, %{
@@ -391,9 +426,6 @@ defmodule NccWorker.Worker do
           version
       end
 
-    runtime_apps =
-      runtime_applications(project_dir, input)
-
     {final_description, dependencies} =
       case release_info do
         release when is_map(release) ->
@@ -427,11 +459,161 @@ defmodule NccWorker.Worker do
       systems: system_results,
       argus: argus,
       finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
-      scope: RunScope.to_string(scope),
-      optional_deps: optional_deps
+      scope: RunScope.to_string(scope)
     }
 
-    {:ok, put_deps_lock(result, scope, project_dir, input.package.name)}
+    result
+    |> put_optional_deps(optional_deps)
+    |> put_deps_lock(scope, project_dir, input.package.name)
+  end
+
+  defp put_optional_deps(result, nil), do: result
+
+  defp put_optional_deps(result, optional_deps),
+    do: Map.put(result, :optional_deps, optional_deps)
+
+  # The package's optional dependencies, as a best-effort pass after its
+  # status is settled. A real application almost always has them in its lock
+  # (decimal next to jason), and the package compiles differently with them
+  # loadable, so files built without them match no such application in the
+  # precompiled API (see `NccWorker.DepsLock.unresolved_optional_deps/2`).
+  #
+  # Only a pure-Elixir package gets the pass: its one set of published files
+  # is the host build, which this recompiles. A firmware package's files come
+  # from every target's build, which the pass would have to repeat, so it
+  # publishes them without the optional dependencies, as before. Nothing here
+  # touches a status, the host result or the classification: whatever goes
+  # wrong, the project is put back and the package rebuilt without them.
+  #
+  # `nil` (no `optional_deps` key) for an argus-only run, which publishes
+  # nothing.
+  defp resolve_optional_deps(:argus_only, _selection, _project_dir, _package, _paths),
+    do: {:ok, nil}
+
+  defp resolve_optional_deps(_scope, selection, project_dir, package_name, paths) do
+    case DepsLock.unresolved_optional_deps(project_dir, package_name) do
+      [] ->
+        {:ok, optional_deps_info([], [], nil)}
+
+      deps when selection == :firmware ->
+        names = Enum.map(deps, & &1.app)
+
+        log_host(
+          paths,
+          "Not adding optional dependencies #{Enum.join(names, ", ")}: " <>
+            "firmware targets are built without them"
+        )
+
+        {:ok, optional_deps_info([], names, "firmware_build")}
+
+      deps ->
+        add_optional_deps(project_dir, package_name, deps, paths)
+    end
+  end
+
+  defp add_optional_deps(project_dir, package_name, deps, paths) do
+    names = Enum.map(deps, & &1.app)
+    env = host_env(project_dir)
+
+    log_host(
+      paths,
+      "Adding optional dependencies: " <>
+        Enum.map_join(deps, ", ", &"#{&1.app} #{&1.requirement}")
+    )
+
+    with {:ok, snapshot} <- Project.snapshot(project_dir) do
+      case Project.add_optional_deps(project_dir, package_name, deps, env) do
+        {:ok, []} ->
+          {:ok, optional_deps_info([], [], nil)}
+
+        {:ok, added} ->
+          build_with_optional_deps(project_dir, package_name, paths, snapshot, added)
+
+        {:error, {:restore_failed, _reason, _cause}} = error ->
+          error
+
+        # Restored already, but the package's build may be gone with it:
+        # rebuilt without them, as on every other way out.
+        {:error, reason} ->
+          drop_optional_deps(project_dir, package_name, paths, snapshot, names, %{
+            why: drop_why(reason),
+            detail: reason,
+            reason: drop_reason(reason)
+          })
+      end
+    end
+  end
+
+  defp build_with_optional_deps(project_dir, package_name, paths, snapshot, added) do
+    with {:policy, :ok} <- {:policy, LockPolicy.validate(project_dir)},
+         {:compile, %{status: :pass}} <-
+           {:compile, compile_host(project_dir, paths.output_dir, 0, package_name)} do
+      {:ok, optional_deps_info(added, [], nil)}
+    else
+      {:policy, {:error, reason}} ->
+        drop_optional_deps(project_dir, package_name, paths, snapshot, added, %{
+          why: "they bring in a dependency the lock policy rejects",
+          detail: reason,
+          reason: "lock_policy_violation"
+        })
+
+      {:compile, host} ->
+        drop_optional_deps(project_dir, package_name, paths, snapshot, added, %{
+          why: "the host compile failed with them",
+          detail: host[:error],
+          reason: "host_compile_failed"
+        })
+    end
+  end
+
+  # The package was built and classified without them already, so the same
+  # build again only fails for a reason that has nothing to do with the
+  # package; it is a retryable worker error rather than a published build of
+  # files nobody checked.
+  defp drop_optional_deps(project_dir, package_name, paths, snapshot, added, drop) do
+    log_host(paths, drop_warning(added, drop.why, drop.detail))
+
+    with :ok <- Project.drop_optional_deps(snapshot, package_name, host_env(project_dir)),
+         %{status: :pass} <- compile_host(project_dir, paths.output_dir, 0, package_name) do
+      {:ok, optional_deps_info([], added, drop.reason)}
+    else
+      {:error, reason} -> {:error, {:optional_deps_revert_failed, reason}}
+      host -> {:error, {:rebuild_without_optional_deps_failed, host[:error]}}
+    end
+  end
+
+  defp optional_deps_info(added, dropped, reason),
+    do: %{added: added, dropped: dropped, reason: reason}
+
+  defp drop_why({:deps_get_failed, _output}), do: "mix deps.get failed after adding them"
+  defp drop_why(_reason), do: "they could not be added to the project"
+
+  defp drop_reason({:deps_get_failed, _output}), do: "deps_get_failed"
+  defp drop_reason({:rm_rf_failed, _reason, _path}), do: "stale_build_not_removed"
+  defp drop_reason(_reason), do: "mix_exs_edit_failed"
+
+  defp drop_warning(names, why, detail) do
+    detail =
+      case detail do
+        {:deps_get_failed, output} -> LogTail.tail(output, 2000)
+        nil -> ""
+        text when is_binary(text) -> LogTail.tail(text, 2000)
+        other -> inspect(other, limit: 20)
+      end
+
+    String.trim_trailing(
+      "Warning: building without optional dependencies #{Enum.join(names, ", ")}: " <>
+        "#{why}\n#{detail}"
+    )
+  end
+
+  # Lines about the optional dependencies go into host.log as well as stderr,
+  # so whoever reads that log sees what was added or dropped and why.
+  # The log is the worker's own output mount.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp log_host(paths, line) do
+    IO.puts(:stderr, line)
+    File.write(Path.join(paths.logs_dir, "host.log"), line <> "\n", [:append])
   end
 
   # The BEAMs a run publishes have their dependencies' macros expanded into

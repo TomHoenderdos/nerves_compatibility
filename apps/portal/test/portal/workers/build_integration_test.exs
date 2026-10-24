@@ -42,9 +42,9 @@ defmodule Portal.Workers.BuildIntegrationTest do
     # The default argus scope is firmware packages only, and jason is pure Elixir.
     assert run.argus["status"] == "skipped"
 
-    # jason's only dependency is an optional `decimal`. The worker resolves a
-    # package's optional dependencies before building it, so decimal is in the
-    # closure with the version and outer checksum the build locked: a client
+    # jason's only dependency is an optional `decimal`. For a pure-Elixir
+    # package the worker rebuilds the published files with its optional
+    # dependencies resolved, so decimal is in the closure with the version and outer checksum the build locked: a client
     # matches the entry only when its own lock has that decimal too.
     assert %{"decimal" => %{"version" => version, "checksum" => checksum}} = run.deps_lock
     assert Version.match?(version, "~> 1.0 or ~> 2.0")
@@ -61,6 +61,10 @@ defmodule Portal.Workers.BuildIntegrationTest do
     for result <- system_results, do: assert(result.compile_env == [])
 
     assert Enum.sort(Enum.map(system_results, & &1.system_pkg)) == ["host", "pure_elixir"]
+
+    # decimal is added only for the published files: the status and the
+    # pure-Elixir classification above come from the build without it.
+    assert Enum.all?(system_results, &(&1.status == :pass))
 
     # The published files must be the ones compiled with decimal loadable:
     # jason only defines its Jason.Encoder implementation for Decimal then.

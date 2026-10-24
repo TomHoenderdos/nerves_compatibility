@@ -7,13 +7,7 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
 ## What it does
 
 1. Reads a job from `NCC_INPUT` (default `/work/input.json`).
-2. Generates a fresh Nerves project and adds the target package, then the package's optional dependencies that
-   the first `mix deps.get` left unresolved (`NccWorker.DepsLock.unresolved_optional_deps/2`, from the package's own
-   `mix.lock` entry). A real application almost always has them in its lock (decimal next to jason), and the package
-   compiles differently with them loadable, so a build without them matches no such application. If they cannot be
-   resolved next to the template's own deps, the worker restores `mix.exs` and `mix.lock` and builds without them.
-   `result.json` lists what was added as `optional_deps`, and `host.log` opens with the same line, because a system
-   that fails only because an optional dependency does not cross-compile is otherwise hard to read.
+2. Generates a fresh Nerves project and adds the target package.
 3. Rejects the run if `mix.lock` contains any non-Hex deps (exit 11).
 4. Compiles the package on the host. If that passes and the whole dependency closure is pure Elixir
    (`NccWorker.BuildSelection`), records an assumed-compatible `pure_elixir` result instead of building firmware.
@@ -22,6 +16,19 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    `skipped` ("host and <system> failed to compile") without being built (`NccWorker.SeedGate`).
    A `systems_filter` in `NCC_INPUT` builds only those systems and reports `"scope": "targets"` in `result.json`;
    otherwise the scope is `"full"`.
+   For a `pure_elixir` package, a best-effort second pass then adds the package's optional dependencies that the
+   project left unresolved (`NccWorker.DepsLock.unresolved_optional_deps/2`, from the package's own `mix.lock` entry)
+   and recompiles the package on the host with them loadable. A real application almost always has them in its lock
+   (decimal next to jason), and the package compiles differently with them, so files built without them match no
+   such application in the precompiled API. The pass never changes a status or the classification, which both come
+   from the build without them. If `mix deps.get`, the lock policy or the host compile fails with them, the worker
+   restores `mix.exs` and `mix.lock`, removes `_build/host/lib/<package>` and rebuilds without them. A firmware
+   package is not given the pass: its published files come from every target's build, which it would have to
+   repeat. `result.json` records the outcome as `optional_deps`:
+   `{"added": ["decimal"], "dropped": [], "reason": null}`, where `dropped` lists what was left out and `reason`
+   is one of `deps_get_failed`, `lock_policy_violation`, `host_compile_failed`, `stale_build_not_removed`,
+   `mix_exs_edit_failed` or `firmware_build`. `host.log` carries the same lines. The key is absent for argus-only
+   runs.
 5. When `NCC_INPUT` carries `argus` (`{"analyses": ["default", "exposure"], "scope": "firmware", "timeout_seconds": 300}`),
    runs the argus_beam escript over the host-compiled beams (`NccWorker.Argus`) and writes its findings to
    `result.json` as `argus`. `scope: "firmware"` limits this to packages that build firmware. Advisory: it never
@@ -30,7 +37,7 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    covers every package (whatever `argus.scope` says), and `result.json` reports `"scope": "argus_only"`.
    Ingestion copies the systems a partial run left out from the previous run of the same version.
 6. Records `deps_lock` in `result.json`: the package's transitive dependency closure from the project's `mix.lock`,
-   the optional dependencies added in step 2 included and the package itself excluded, as `{"spark": {"version": "2.7.8", "checksum": "<outer Hex checksum>"}}`
+   the optional dependencies added in step 4 included and the package itself excluded, as `{"spark": {"version": "2.7.8", "checksum": "<outer Hex checksum>"}}`
    (`NccWorker.DepsLock`). Dependencies' macros are compiled into the package's BEAMs, so the precompiled API
    publishes this for clients to match against their own lock. The key is absent for argus-only runs, which build
    nothing, and when the lock cannot be read. It also records `package_checksum`, the package's own outer Hex checksum,

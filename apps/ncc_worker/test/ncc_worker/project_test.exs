@@ -282,14 +282,14 @@ defmodule NccWorker.ProjectTest do
     # to match such an application.
     test "prepends each optional dependency with its requirement" do
       deps = [%{app: "decimal", package: "decimal", requirement: "~> 1.0 or ~> 2.0"}]
-      assert {:ok, content} = Project.inject_deps(@sample_mix_exs, deps)
+      assert {:ok, content, ["decimal"]} = Project.inject_deps(@sample_mix_exs, deps)
 
       assert content =~ ~s[{:decimal, "~> 1.0 or ~> 2.0"},\n      {:nerves,]
     end
 
     test "names the Hex package when it differs from the application" do
       deps = [%{app: "my_app", package: "my_package", requirement: "~> 2.0"}]
-      assert {:ok, content} = Project.inject_deps(@sample_mix_exs, deps)
+      assert {:ok, content, ["my_app"]} = Project.inject_deps(@sample_mix_exs, deps)
 
       assert content =~ ~s[{:my_app, "~> 2.0", hex: :my_package},]
     end
@@ -297,10 +297,14 @@ defmodule NccWorker.ProjectTest do
     # Mix refuses a dependency declared twice at the top level, and the template's
     # own requirement for it is the one every Nerves project has anyway.
     test "leaves a dependency the template already declares alone" do
-      deps = [%{app: "shoehorn", package: "shoehorn", requirement: "~> 0.9"}]
-      assert {:ok, content} = Project.inject_deps(@sample_mix_exs, deps)
+      deps = [
+        %{app: "shoehorn", package: "shoehorn", requirement: "~> 0.9"},
+        %{app: "decimal", package: "decimal", requirement: "~> 2.0"}
+      ]
 
-      assert content == @sample_mix_exs
+      assert {:ok, content, ["decimal"]} = Project.inject_deps(@sample_mix_exs, deps)
+      assert content =~ ~s[{:shoehorn, "~> 0.9.1"}]
+      refute content =~ ~s[{:shoehorn, "~> 0.9"}]
     end
 
     test "fails when mix.exs has no deps list" do
@@ -309,7 +313,7 @@ defmodule NccWorker.ProjectTest do
     end
   end
 
-  describe "add_optional_deps/3" do
+  describe "add_optional_deps/5" do
     setup do
       tmp = Path.join(System.tmp_dir!(), "project_opt_#{System.unique_integer([:positive])}")
       File.mkdir_p!(tmp)
@@ -324,21 +328,23 @@ defmodule NccWorker.ProjectTest do
       assert File.read!(Path.join(dir, "mix.exs")) == @sample_mix_exs
     end
 
-    # An optional dependency that cannot be resolved alongside the template
-    # must not turn a package that builds fine into a worker error: the build
-    # goes on without it, exactly as before, and says so.
+    # Whatever goes wrong, the caller gets back exactly the project it had,
+    # and rebuilds the package without the optional dependencies.
     test "restores mix.exs and mix.lock when deps.get fails", %{project_dir: dir} do
       deps = [%{app: "decimal", package: "decimal", requirement: "~> 2.0"}]
 
-      stderr =
-        ExUnit.CaptureIO.capture_io(:stderr, fn ->
-          assert {:ok, []} = Project.add_optional_deps(dir, "pkg", deps, [])
-        end)
+      assert {:error, {:deps_get_failed, _}} = Project.add_optional_deps(dir, "pkg", deps, [])
 
-      assert stderr =~ "optional"
-      assert stderr =~ "decimal"
       assert File.read!(Path.join(dir, "mix.exs")) == @sample_mix_exs
       assert File.read!(Path.join(dir, "mix.lock")) == "%{}\n"
+    end
+
+    test "injects nothing and runs no deps.get for deps the template declares",
+         %{project_dir: dir} do
+      deps = [%{app: "shoehorn", package: "shoehorn", requirement: "~> 0.9"}]
+
+      assert {:ok, []} = Project.add_optional_deps(dir, "pkg", deps, [])
+      assert File.read!(Path.join(dir, "mix.exs")) == @sample_mix_exs
     end
 
     # The first `mix deps.get` may already have compiled the package into the
@@ -361,13 +367,37 @@ defmodule NccWorker.ProjectTest do
 
       deps = [%{app: "decimal", package: "decimal", requirement: "~> 2.0"}]
 
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        assert {:ok, []} =
-                 Project.add_optional_deps(dir, "pkg", deps, [{"MIX_BUILD_PATH", build_path}])
-      end)
+      assert {:error, _} =
+               Project.add_optional_deps(dir, "pkg", deps, [{"MIX_BUILD_PATH", build_path}])
 
       refute File.exists?(Path.join([build_path, "lib", "pkg"]))
       assert File.exists?(other)
+    end
+  end
+
+  describe "drop_optional_deps/3" do
+    # After the optional pass built, or failed to build, with them: the project
+    # goes back to what the status was decided on, and the package's build is
+    # removed so the next host compile rebuilds it without them.
+    test "restores the snapshot and removes the package's build" do
+      dir = Path.join(System.tmp_dir!(), "project_drop_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf!(dir) end)
+      build_path = Path.join([dir, "_build", "host"])
+      File.mkdir_p!(Path.join([build_path, "lib", "pkg", "ebin"]))
+      File.mkdir_p!(Path.join([build_path, "lib", "other"]))
+      File.write!(Path.join(dir, "mix.exs"), @sample_mix_exs)
+      File.write!(Path.join(dir, "mix.lock"), "%{}\n")
+
+      assert {:ok, snapshot} = Project.snapshot(dir)
+      File.write!(Path.join(dir, "mix.exs"), "changed")
+      File.write!(Path.join(dir, "mix.lock"), "changed")
+
+      assert :ok = Project.drop_optional_deps(snapshot, "pkg", [{"MIX_BUILD_PATH", build_path}])
+
+      assert File.read!(Path.join(dir, "mix.exs")) == @sample_mix_exs
+      assert File.read!(Path.join(dir, "mix.lock")) == "%{}\n"
+      refute File.exists?(Path.join([build_path, "lib", "pkg"]))
+      assert File.dir?(Path.join([build_path, "lib", "other"]))
     end
   end
 
