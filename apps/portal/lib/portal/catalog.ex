@@ -37,7 +37,8 @@ defmodule Portal.Catalog do
     PackageOverride,
     Run,
     SystemLog,
-    SystemResult
+    SystemResult,
+    ToolchainBuild
   }
 
   alias Portal.Repo
@@ -117,6 +118,7 @@ defmodule Portal.Catalog do
     resource(PackageOverride)
     resource(FindingTriage)
     resource(BulkSweep)
+    resource(ToolchainBuild)
   end
 
   @doc """

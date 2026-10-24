@@ -1,6 +1,10 @@
 defmodule Portal.Catalog.ArtifactMembership do
   @moduledoc """
-  Records that one system result's file manifest includes one stored blob.
+  Records that one build's file manifest includes one stored blob. The build
+  is either a `Portal.Catalog.SystemResult` (one Nerves target of a run) or a
+  `Portal.Catalog.ToolchainBuild` (one host toolchain): every row has exactly
+  one of `system_result_id` and `toolchain_build_id`, which the `one_owner`
+  check constraint enforces.
 
   `Portal.Catalog.Artifact` is a *registry*: one row per distinct sha256, saying
   "these bytes are on disk". This table is the *membership*: one row per
@@ -54,8 +58,29 @@ defmodule Portal.Catalog.ArtifactMembership do
       # "who else references this sha", which is what any future orphan sweep
       # of the artifact store needs before it can delete a file.
       index([:system_result_id])
+      index([:toolchain_build_id])
       index([:sha256])
     end
+
+    check_constraints do
+      check_constraint(:toolchain_build_id, "one_owner",
+        check: "num_nonnulls(system_result_id, toolchain_build_id) = 1",
+        message: "exactly one owner"
+      )
+    end
+
+    # The SQL of the identities' `where`, which Postgres needs in the upsert's
+    # `ON CONFLICT (...) WHERE ...` to match the partial unique indexes.
+    identity_wheres_to_sql(
+      unique_system_result_sha256: "system_result_id IS NOT NULL",
+      unique_toolchain_build_sha256: "toolchain_build_id IS NOT NULL"
+    )
+
+    # The default name, `catalog_artifact_memberships_unique_toolchain_build_sha256_index`,
+    # is over Postgres's 63-character limit.
+    identity_index_names(
+      unique_toolchain_build_sha256: "catalog_artifact_memberships_toolchain_build_sha256_index"
+    )
   end
 
   actions do
@@ -73,10 +98,23 @@ defmodule Portal.Catalog.ArtifactMembership do
       # a run must be a no-op here rather than an error.
       upsert_fields([:sha256])
     end
+
+    create :upsert_toolchain do
+      accept([:sha256, :toolchain_build_id])
+      upsert?(true)
+      upsert_identity(:unique_toolchain_build_sha256)
+      upsert_fields([:sha256])
+    end
   end
 
   identities do
-    identity(:unique_system_result_sha256, [:system_result_id, :sha256])
+    identity(:unique_system_result_sha256, [:system_result_id, :sha256],
+      where: expr(not is_nil(system_result_id))
+    )
+
+    identity(:unique_toolchain_build_sha256, [:toolchain_build_id, :sha256],
+      where: expr(not is_nil(toolchain_build_id))
+    )
   end
 
   attributes do
@@ -92,7 +130,12 @@ defmodule Portal.Catalog.ArtifactMembership do
 
   relationships do
     belongs_to :system_result, Portal.Catalog.SystemResult do
-      allow_nil?(false)
+      allow_nil?(true)
+      public?(true)
+    end
+
+    belongs_to :toolchain_build, Portal.Catalog.ToolchainBuild do
+      allow_nil?(true)
       public?(true)
     end
   end
