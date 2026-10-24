@@ -271,15 +271,15 @@ defmodule Portal.Workers.BuildTest do
         "dep_lock" =>
           "1.4.5 2e3a008590b0b8d7388c20293e9dcc9cf3e5d642fd2a114e4cbbb52e595d940a #{@outer}",
         "target" => "host",
-        "elixir" => "1.20.3",
-        "otp" => "29",
+        "elixir" => "1.16.0",
+        "otp" => "26",
         "closure" => []
       }
 
       {:ok, key} =
         Compatibility.BuildCacheKey.key(%{
-          elixir: "1.20.3",
-          otp: "29",
+          elixir: "1.16.0",
+          otp: "26",
           target: "host",
           dep: "jason",
           dep_lock: candidate["dep_lock"],

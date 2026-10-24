@@ -14,23 +14,37 @@ defmodule Portal.BuildCache.Promotion do
   exited, this module decides which of them to keep. Everything in a
   candidate came from the container and is treated as hostile.
 
+  ## How many
+
+  A run builds the host compile and each system once, so it can have at most
+  one candidate per entry in `result["systems"]` plus one. Candidates past
+  that are ignored, neither promoted nor refused, and logged once as a count:
+  without the cap a build could list thousands of trees, each passing every
+  check below on its own, and fill the cache disk.
+
   ## Checks, in order, per candidate
 
     1. Only the package under test, at exactly the version under test: the
        candidate's `dep` must equal the package and the first field of its
        `dep_lock` the version. Anything else is skipped, not counted.
-    2. The key is recomputed with `Compatibility.BuildCacheKey.key/1`, with
+    2. Only what the run built, by the toolchain it built with: `target` must
+       be `"host"`, `"any"` or the mix target of a system in
+       `result["systems"]`, and `elixir` and `otp` must equal the run's
+       `toolchain.elixir` and `toolchain.erlang`. A run with no toolchain
+       refuses every candidate.
+    3. The key is recomputed with `Compatibility.BuildCacheKey.key/1`, with
        the dependency name forced to the package under test. Every input must
        be a single-line string and `closure` a list of `%{"name", "lock"}`
        string maps; anything else refuses the candidate.
-    3. The reported key must equal the recomputed one. A build cannot land a
+    4. The reported key must equal the recomputed one. A build cannot land a
        candidate in another package's slot without a SHA-256 preimage. From
-       here on only the recomputed key is used to build paths.
-    4. The lock's outer checksum must equal the one Hex.pm publishes for the
+       here on only the recomputed key is used to build paths. Refusals here
+       are logged once per call, as a count with one example.
+    5. The lock's outer checksum must equal the one Hex.pm publishes for the
        release, which ties the candidate to the tarball Hex serves. Hex being
        unreachable promotes nothing but refuses nothing either: that is not
        the build's fault. Hex is asked at most once per call.
-    5. The candidate tree must be a real directory (as must `out/build-cache`
+    6. The candidate tree must be a real directory (as must `out/build-cache`
        above it), on the same device as `out/`, holding only directories,
        regular files with a link count of 1, and Mix's own links (below).
        The tree is walked with `File.lstat/1` only, so nothing a link points
@@ -41,9 +55,9 @@ defmodule Portal.BuildCache.Promotion do
        The container has exited by now. A concurrent build could still hold
        a file descriptor into the tree, passed through the read-write caches
        builds share, and change it between the walk and the rename; what it
-       can reach that way is limited to its own package's slot, which step 3
+       can reach that way is limited to its own package's slot, which step 4
        already pins.
-    6. An existing entry is never replaced. The tree is renamed into a
+    7. An existing entry is never replaced. The tree is renamed into a
        `<dest>.tmp.<hex>` staging name (copied with `cp -a` when the cache is
        on another filesystem), then renamed into place. `Portal.Workers.Sweep`
        prunes leftover staging names.
@@ -69,7 +83,11 @@ defmodule Portal.BuildCache.Promotion do
 
   alias Compatibility.BuildCacheKey
 
-  @type counts :: %{promoted: non_neg_integer(), refused: non_neg_integer()}
+  @type counts :: %{
+          promoted: non_neg_integer(),
+          refused: non_neg_integer(),
+          ignored: non_neg_integer()
+        }
 
   @string_fields ~w(elixir otp target dep_lock)
 
@@ -88,7 +106,7 @@ defmodule Portal.BuildCache.Promotion do
   def promote(_result, _out_dir, nil, _package, _version, _opts), do: zero()
 
   def promote(
-        %{"cache" => %{"candidates" => [_ | _] = candidates}},
+        %{"cache" => %{"candidates" => [_ | _] = candidates}} = result,
         out_dir,
         cache_dir,
         package,
@@ -98,24 +116,100 @@ defmodule Portal.BuildCache.Promotion do
       when is_binary(out_dir) and is_binary(cache_dir) and is_binary(package) and
              is_binary(version) do
     lookup = Keyword.get_lazy(opts, :release_checksum, &default_lookup/0)
-    ctx = %{out: out_dir, cache: cache_dir, package: package, version: version, lookup: lookup}
+    systems = systems(result)
+    limit = map_size(systems) + 1
+    {kept, extra} = Enum.split(candidates, limit)
+
+    ctx = %{
+      out: out_dir,
+      cache: cache_dir,
+      package: package,
+      version: version,
+      lookup: lookup,
+      targets: built_targets(systems),
+      toolchain: toolchain(result)
+    }
 
     {counts, _hex} =
-      Enum.reduce(candidates, {zero(), :unasked}, fn candidate, {counts, hex} ->
+      Enum.reduce(kept, {zero(), :unasked}, fn candidate, {counts, hex} ->
         {outcome, hex} = consider(candidate, hex, ctx)
         {count(counts, outcome), hex}
       end)
 
+    log_ignored(length(extra), limit, ctx)
+    log_mismatches(counts, ctx)
+
     counts
+    |> Map.take([:promoted, :refused])
+    |> Map.put(:ignored, length(extra))
   end
 
   def promote(_result, _out_dir, _cache_dir, _package, _version, _opts), do: zero()
 
-  defp zero, do: %{promoted: 0, refused: 0}
+  defp zero, do: %{promoted: 0, refused: 0, ignored: 0}
 
   defp count(counts, :promoted), do: Map.update!(counts, :promoted, &(&1 + 1))
   defp count(counts, :refused), do: Map.update!(counts, :refused, &(&1 + 1))
   defp count(counts, :skipped), do: counts
+
+  # A key mismatch is a refusal whose log line is summed per call, keeping
+  # the first reported key as the example.
+  defp count(counts, {:mismatch, reported, key}) do
+    counts
+    |> count(:refused)
+    |> Map.update(:mismatched, 1, &(&1 + 1))
+    |> Map.put_new(:mismatch_example, {reported, key})
+  end
+
+  defp log_ignored(0, _limit, _ctx), do: :ok
+
+  defp log_ignored(n, limit, ctx) do
+    Logger.warning(
+      "Ignored #{n} build cache candidate(s) over the limit of #{limit} " <>
+        "for #{ctx.package} #{ctx.version}"
+    )
+  end
+
+  defp log_mismatches(%{mismatched: n, mismatch_example: {reported, key}}, ctx) do
+    Logger.warning(
+      "Refused #{n} build cache candidate(s) for #{ctx.package} #{ctx.version} whose " <>
+        "reported key is not the recomputed one; e.g. reported #{show(reported)} " <>
+        "but its inputs hash to #{key}"
+    )
+  end
+
+  defp log_mismatches(_counts, _ctx), do: :ok
+
+  # `result["systems"]` is keyed by system name: `nerves_system_<target>` for
+  # a firmware build, plus `"host"` (the host compile) or `"pure_elixir"`.
+  defp systems(%{"systems" => systems}) when is_map(systems), do: systems
+  defp systems(_result), do: %{}
+
+  # The targets a candidate may name: the host compile, a target-independent
+  # build, or the mix target of a system the run built. The name-to-target
+  # rule replicates `NccWorker.Systems`, where every system's `target` is its
+  # `name` without the `nerves_system_` prefix (the portal does not depend on
+  # ncc_worker). `"host"` and `"pure_elixir"` keys build no mix target.
+  defp built_targets(systems) do
+    systems
+    |> Map.keys()
+    |> Enum.flat_map(fn
+      "nerves_system_" <> target when target != "" -> [target]
+      _other -> []
+    end)
+    |> Enum.concat(["host", "any"])
+    |> MapSet.new()
+  end
+
+  # The worker writes `toolchain.elixir` as `System.version()` and
+  # `toolchain.erlang` as `:erlang.system_info(:otp_release)`, the same two
+  # calls its cache key's `elixir` and `otp` come from, so they compare as
+  # strings. `nil` (no toolchain reported) refuses every candidate.
+  defp toolchain(%{"toolchain" => %{"elixir" => elixir, "erlang" => otp}})
+       when is_binary(elixir) and is_binary(otp),
+       do: {elixir, otp}
+
+  defp toolchain(_result), do: nil
 
   defp default_lookup do
     :portal
@@ -124,11 +218,33 @@ defmodule Portal.BuildCache.Promotion do
   end
 
   defp consider(c, hex, ctx) do
-    if own?(c, ctx) do
-      check_key(c, hex, ctx)
-    else
-      {:skipped, hex}
+    cond do
+      not own?(c, ctx) -> {:skipped, hex}
+      not built?(c, ctx) -> {:refused, hex}
+      not same_toolchain?(c, ctx) -> {:refused, hex}
+      true -> check_key(c, hex, ctx)
     end
+  end
+
+  # Step 2.
+  defp built?(c, ctx) do
+    MapSet.member?(ctx.targets, c["target"]) ||
+      refuse_log(c, ctx, "names target #{show(c["target"])}, which the run did not build")
+  end
+
+  defp same_toolchain?(c, ctx) do
+    {c["elixir"], c["otp"]} == ctx.toolchain ||
+      refuse_log(
+        c,
+        ctx,
+        "was built by Elixir #{show(c["elixir"])} OTP #{show(c["otp"])}, " <>
+          "not the run's toolchain"
+      )
+  end
+
+  defp refuse_log(_c, ctx, why) do
+    Logger.warning("Build cache candidate for #{ctx.package} #{ctx.version} #{why}; refused")
+    false
   end
 
   # Step 1.
@@ -139,7 +255,7 @@ defmodule Portal.BuildCache.Promotion do
 
   defp own?(_c, _ctx), do: false
 
-  # Steps 2 and 3.
+  # Steps 3 and 4.
   defp check_key(c, hex, ctx) do
     reported = c["key"]
 
@@ -148,12 +264,7 @@ defmodule Portal.BuildCache.Promotion do
         check_checksum(c, key, hex, ctx)
 
       {:ok, key} ->
-        Logger.warning(
-          "Build cache candidate for #{ctx.package} #{ctx.version} reported key " <>
-            "#{show(reported)} but its inputs hash to #{key}; refused"
-        )
-
-        {:refused, hex}
+        {{:mismatch, reported, key}, hex}
 
       :error ->
         Logger.warning(
@@ -193,7 +304,7 @@ defmodule Portal.BuildCache.Promotion do
   defp closure_entry?(%{"name" => name, "lock" => lock}), do: is_binary(name) and is_binary(lock)
   defp closure_entry?(_entry), do: false
 
-  # Step 4.
+  # Step 5.
   defp check_checksum(c, key, hex, ctx) do
     case String.split(c["dep_lock"], " ") do
       [_version, _inner, outer] when outer != "" ->
@@ -232,7 +343,7 @@ defmodule Portal.BuildCache.Promotion do
   defp ask_hex(:unasked, ctx), do: ctx.lookup.(ctx.package, ctx.version)
   defp ask_hex(answer, _ctx), do: answer
 
-  # Steps 5 and 6.
+  # Steps 6 and 7.
   defp check_tree_and_move(c, key, ctx) do
     case check_tree(key, ctx) do
       :ok ->
@@ -270,7 +381,7 @@ defmodule Portal.BuildCache.Promotion do
     do: a.major_device == b.major_device and a.minor_device == b.minor_device
 
   # Paths below the candidate root, named by a raw listing of a directory
-  # `lstat` showed is real. Not `File.ls/1`: see the moduledoc, step 5.
+  # `lstat` showed is real. Not `File.ls/1`: see the moduledoc, step 6.
   # sobelow_skip ["Traversal.FileModule"]
   defp walk(dir, top?, package) do
     case :file.list_dir_all(dir) do
