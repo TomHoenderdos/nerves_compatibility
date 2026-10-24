@@ -33,7 +33,8 @@ defmodule Portal.Catalog.Ingestion do
     Package,
     Run,
     SystemLog,
-    SystemResult
+    SystemResult,
+    ToolchainBuild
   }
 
   alias Portal.Repo
@@ -58,6 +59,15 @@ defmodule Portal.Catalog.Ingestion do
           optional(:output_dir) => Path.t() | nil,
           optional(:scan_request_id) => String.t() | nil,
           optional(:log) => String.t() | nil
+        }
+
+  @type toolchain_opts :: %{
+          required(:run_id) => String.t(),
+          required(:image_digest) => String.t(),
+          required(:files_dir) => Path.t(),
+          required(:toolchain) => String.t(),
+          required(:builder_version) => pos_integer(),
+          optional(:output_dir) => Path.t() | nil
         }
 
   @doc """
@@ -89,6 +99,117 @@ defmodule Portal.Catalog.Ingestion do
       end,
       timeout: @transaction_timeout
     )
+  end
+
+  @doc """
+  Ingest the `result.json` of a `"toolchain"` run (`scope: "toolchain"`) into one
+  `Portal.Catalog.ToolchainBuild`. Returns `{:ok, toolchain_build}` or
+  `{:error, reason}`.
+
+  No `Run` is written and the package's `last_run_at` and `latest_version` stay
+  as they are: a toolchain build is not a compatibility verdict for a Nerves
+  target, and every page reads the newest run as one (see `ToolchainBuild`).
+  The package row is only created when the catalog has none yet.
+
+  The blobs named in `toolchain_build.file_manifest` are moved into the artifact
+  store first, outside the transaction, as `ingest/2` does. The row is then
+  upserted on `(package, version, toolchain, builder_version)`, and its
+  memberships are made to match this build's manifest exactly: a rebuild that
+  stops passing, or produces other files, must not keep publishing the old ones.
+  """
+  @spec ingest_toolchain(map(), toolchain_opts()) ::
+          {:ok, ToolchainBuild.t()} | {:error, term()}
+  def ingest_toolchain(result, opts) when is_map(result) do
+    build = toolchain_build_map(result)
+
+    staged =
+      build |> Map.get("file_manifest") |> shas_from_manifest() |> stage_shas(opts.files_dir)
+
+    Repo.transaction(
+      fn ->
+        case do_ingest_toolchain(result, build, opts, staged) do
+          {:ok, toolchain_build} -> toolchain_build
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end,
+      timeout: @transaction_timeout
+    )
+  end
+
+  defp toolchain_build_map(%{"toolchain_build" => %{} = build}), do: build
+  defp toolchain_build_map(_result), do: raise("result.json missing toolchain_build")
+
+  defp do_ingest_toolchain(result, build, opts, staged) do
+    package_info = Map.get(result, "package", %{})
+    package_name = package_info["name"] || raise "result.json missing package.name"
+
+    with {:ok, package} <- ensure_package(package_name, package_info),
+         {:ok, toolchain_build} <- upsert_toolchain_build(result, build, opts, package.id) do
+      :ok = upsert_artifacts(staged)
+      :ok = replace_toolchain_memberships(toolchain_build.id, staged)
+      {:ok, toolchain_build}
+    end
+  end
+
+  # Creates the package when it is new and otherwise leaves every field alone.
+  # The conflict update names only `name`, which is the conflict key and so
+  # unchanged; `:upsert`'s own field list would overwrite `last_run_at` and
+  # `latest_version` with what a toolchain build has no say over.
+  defp ensure_package(name, info) do
+    Package
+    |> Ash.Changeset.for_create(:upsert, %{
+      name: name,
+      description: info["description"],
+      latest_version: info["version"],
+      native_components: info["native_components"]
+    })
+    |> Ash.create(domain: @domain, upsert_fields: [:name])
+  end
+
+  defp upsert_toolchain_build(result, build, opts, package_id) do
+    ToolchainBuild
+    |> Ash.Changeset.for_create(:upsert, %{
+      package_id: package_id,
+      version: get_in(result, ["package", "version"]) || "unknown",
+      toolchain: opts.toolchain,
+      builder_version: opts.builder_version,
+      status: Compatibility.Types.parse_status(build["status"]),
+      reason: build["reason"],
+      elixir: build["elixir"],
+      otp: build["otp"],
+      image_digest: opts.image_digest,
+      run_id: opts.run_id,
+      deps_lock: deps_lock(build["deps_lock"]),
+      package_checksum: package_checksum(build["package_checksum"]),
+      compile_env: compile_env(build["compile_env"]),
+      file_manifest: file_manifest(build["file_manifest"]),
+      finished_at: parse_datetime(result["finished_at"])
+    })
+    |> Ash.create(domain: @domain)
+  end
+
+  defp file_manifest(%{} = manifest), do: manifest
+  defp file_manifest(_), do: nil
+
+  # The memberships of a toolchain build are exactly the shas this ingest
+  # staged. Shas the row held from an earlier build of the same identity and
+  # this one no longer produces are removed first. A retry stages the same
+  # shas again (`ArtifactStore.put/2` verifies an already moved blob), so it
+  # removes nothing.
+  defp replace_toolchain_memberships(toolchain_build_id, staged) do
+    shas = staged |> Enum.map(& &1.sha256) |> Enum.uniq() |> Enum.sort()
+
+    Repo.query!(
+      """
+      DELETE FROM catalog_artifact_memberships
+      WHERE toolchain_build_id = $1 AND NOT (sha256 = ANY($2::text[]))
+      """,
+      [dump(toolchain_build_id), shas]
+    )
+
+    shas
+    |> Enum.map(&%{sha256: &1, toolchain_build_id: toolchain_build_id})
+    |> insert_memberships(:upsert_toolchain, :unique_toolchain_build_sha256)
   end
 
   defp do_ingest(result, opts, staged, logs) do
@@ -618,7 +739,13 @@ defmodule Portal.Catalog.Ingestion do
   defp stage_system_artifacts(sys, files_dir) do
     sys
     |> collect_shas()
-    |> Enum.flat_map(fn sha ->
+    |> stage_shas(files_dir)
+  end
+
+  # Moves each named blob from files_dir into the store; the pending Artifact
+  # rows of those that made it. Filesystem only, like `stage_artifacts/2`.
+  defp stage_shas(shas, files_dir) do
+    Enum.flat_map(shas, fn sha ->
       source = Path.join(files_dir, sha)
 
       case ArtifactStore.put(sha, source) do
@@ -664,17 +791,17 @@ defmodule Portal.Catalog.Ingestion do
     |> Enum.filter(&MapSet.member?(stored, &1))
     |> Enum.sort()
     |> Enum.map(&%{sha256: &1, system_result_id: system_result_id})
-    |> insert_memberships()
+    |> insert_memberships(:upsert, :unique_system_result_sha256)
   end
 
-  defp insert_memberships([]), do: :ok
+  defp insert_memberships([], _action, _identity), do: :ok
 
-  defp insert_memberships(entries) do
+  defp insert_memberships(entries, action, identity) do
     entries
-    |> Ash.bulk_create(ArtifactMembership, :upsert,
+    |> Ash.bulk_create(ArtifactMembership, action,
       domain: @domain,
       upsert?: true,
-      upsert_identity: :unique_system_result_sha256,
+      upsert_identity: identity,
       upsert_fields: [:sha256],
       return_errors?: true,
       stop_on_error?: false,
@@ -758,17 +885,29 @@ defmodule Portal.Catalog.Ingestion do
     |> Enum.uniq()
   end
 
-  defp shas_from_scan(scan) when is_map(scan) do
-    manifest = get_in(scan, ["footprint", "file_manifest"]) || %{}
-    ebin = Map.get(manifest, "ebin", [])
-    priv = Map.get(manifest, "priv", [])
-
-    (ebin ++ priv)
-    |> Enum.map(fn entry -> is_map(entry) && entry["sha256"] end)
-    |> Enum.filter(&(is_binary(&1) and &1 != ""))
-  end
+  defp shas_from_scan(scan) when is_map(scan),
+    do: scan |> get_in(["footprint", "file_manifest"]) |> shas_from_manifest()
 
   defp shas_from_scan(_), do: []
+
+  # The shas of a `%{"ebin" => [entry], "priv" => [entry]}` file manifest, the
+  # shape of a beam scan's `footprint.file_manifest` and of a toolchain build's
+  # `file_manifest`.
+  defp shas_from_manifest(manifest) when is_map(manifest) do
+    (manifest_entries(manifest, "ebin") ++ manifest_entries(manifest, "priv"))
+    |> Enum.map(fn entry -> is_map(entry) && entry["sha256"] end)
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+  end
+
+  defp shas_from_manifest(_), do: []
+
+  defp manifest_entries(manifest, key) do
+    case Map.get(manifest, key) do
+      entries when is_list(entries) -> entries
+      _ -> []
+    end
+  end
 
   # Derive the overall status. A top-level forced_status (gleam/retired) wins;
   # otherwise pass if any system passed, then fail/error/skipped, else unknown.
