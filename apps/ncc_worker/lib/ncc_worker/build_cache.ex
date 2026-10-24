@@ -541,6 +541,60 @@ defmodule NccWorker.BuildCache do
     end
   end
 
+  @os_needles [":os.type(", "os:type(", "system_architecture"]
+
+  # Whether a package's own sources compile to the same beams on every OS. A
+  # `platform_define` in rebar.config or a compile-time look at the OS type or
+  # architecture can bake the build host into the beams. Grep errors (no grep,
+  # missing or unreadable tree) fail closed as OS-specific.
+  @doc false
+  @spec os_agnostic?(String.t()) :: :ok | {:error, {String.t(), String.t()}}
+  def os_agnostic?(dir) do
+    cond do
+      # grep with --include filters can exit 1 for a missing path, so a missing
+      # tree is caught here rather than read as "no match".
+      not File.dir?(dir) ->
+        {:error, {".", "grep failed"}}
+
+      mentions?(Path.join(dir, "rebar.config"), ["platform_define"]) ->
+        {:error, {"rebar.config", "platform_define"}}
+
+      true ->
+        grep_os_needles(dir)
+    end
+  end
+
+  defp grep_os_needles(dir) do
+    includes = Enum.map(~w(*.ex *.exs *.erl *.hrl *.src), &"--include=#{&1}")
+    needles = Enum.flat_map(@os_needles, &["-e", &1])
+    args = ["-r", "-o", "-F", "--null"] ++ includes ++ needles ++ ["--", dir]
+
+    case System.cmd("grep", args, stderr_to_stdout: true) do
+      {_, 1} -> :ok
+      {output, 0} -> first_match(output, dir)
+      _ -> {:error, {".", "grep failed"}}
+    end
+  rescue
+    _ -> {:error, {".", "grep failed"}}
+  end
+
+  # `--null` ends each file name with a NUL, so a needle with a colon in it
+  # (`os:type(`) cannot be confused with the file name separator.
+  defp first_match(output, dir) do
+    match =
+      output
+      |> String.split("\n", trim: true)
+      |> Enum.map(&String.split(&1, <<0>>, parts: 2))
+      |> Enum.filter(&match?([_, _], &1))
+      |> Enum.sort()
+      |> List.first()
+
+    case match do
+      [file, needle] -> {:error, {Path.relative_to(file, dir), needle}}
+      nil -> {:error, {".", "grep failed"}}
+    end
+  end
+
   # `grep -r` over the sources rather than a load-and-scan in Elixir: the tree is
   # a few megabytes for the larger dependencies and this stays one process. The
   # `--include` filters keep it off beam files and priv blobs. Exit 0 is a match,
