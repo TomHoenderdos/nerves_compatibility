@@ -49,6 +49,17 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    The package's own files are its `ebin/` and `priv/` from `_build/<target>/lib/<package>/`, the target's compile
    output with `debug_info` intact, not the release copy, whose BEAMs are stripped (`NccWorker.BeamScan`,
    `NccWorker.Footprint`, `NccWorker.FileArchiver`). Dependencies' files are still archived from the release.
+8. The shared dependency build cache at `/build-cache` is mounted read-only — the container can restore from it
+   (`NccWorker.BuildCache.restore/1`) but cannot write it. A pass or fail compile of the package under test is
+   instead stored to `/out/build-cache/<key>/` (`NccWorker.BuildCache.store/2`) and reported in `result.json` as
+   `cache.candidates`, one entry per system: `%{"key", "dep", "dep_lock", "target", "elixir", "otp", "closure"}`,
+   where `closure` is `[%{"name", "lock"}]` and `"key"` is `Compatibility.BuildCacheKey.key/1` of the rest. The host
+   (`Portal.BuildCache.Promotion`) recomputes that key with `dep` forced to the package under test, requires it to
+   equal the reported one, ties the lock's outer checksum to the one Hex publishes for the release, and only then
+   moves the candidate into the shared cache — the worker never decides which key its own output lands under.
+   Dependencies other than the package under test still get stored, but to a run-local tier under the container's
+   own `/tmp` rather than the shared cache, so a multi-target run still compiles a shared dependency once and
+   restores it for the other targets without trusting the container to fill the shared cache itself.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 
