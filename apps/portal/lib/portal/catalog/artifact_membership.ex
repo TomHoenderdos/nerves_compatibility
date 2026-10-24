@@ -69,13 +69,6 @@ defmodule Portal.Catalog.ArtifactMembership do
       )
     end
 
-    # The SQL of the identities' `where`, which Postgres needs in the upsert's
-    # `ON CONFLICT (...) WHERE ...` to match the partial unique indexes.
-    identity_wheres_to_sql(
-      unique_system_result_sha256: "system_result_id IS NOT NULL",
-      unique_toolchain_build_sha256: "toolchain_build_id IS NOT NULL"
-    )
-
     # The default name, `catalog_artifact_memberships_unique_toolchain_build_sha256_index`,
     # is over Postgres's 63-character limit.
     identity_index_names(
@@ -108,13 +101,16 @@ defmodule Portal.Catalog.ArtifactMembership do
   end
 
   identities do
-    identity(:unique_system_result_sha256, [:system_result_id, :sha256],
-      where: expr(not is_nil(system_result_id))
-    )
+    # Both are full, not partial, unique indexes. A release that predates
+    # toolchain builds upserts with a bare `ON CONFLICT (system_result_id,
+    # sha256)`, which Postgres refuses to match against a partial index, so
+    # the system-result index has to stay exactly as it was while an old build
+    # host is still running. Partial indexes are not needed anyway: NULLs are
+    # distinct in a unique index, so a row whose owner column is NULL never
+    # conflicts with another.
+    identity(:unique_system_result_sha256, [:system_result_id, :sha256])
 
-    identity(:unique_toolchain_build_sha256, [:toolchain_build_id, :sha256],
-      where: expr(not is_nil(toolchain_build_id))
-    )
+    identity(:unique_toolchain_build_sha256, [:toolchain_build_id, :sha256])
   end
 
   attributes do
