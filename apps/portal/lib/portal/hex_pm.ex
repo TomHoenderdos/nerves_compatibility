@@ -211,13 +211,23 @@ defmodule Portal.HexPm do
     ArgumentError -> false
   end
 
+  @doc false
+  # Promotion runs inside a build slot, so the lookup fails fast: no retries
+  # (Req's default retries a transient error with backoff for several
+  # seconds) and five seconds each to connect and to receive. A miss only
+  # costs this one promotion; the next one asks again.
+  @spec release_checksum_request_options() :: keyword()
+  def release_checksum_request_options do
+    [retry: false, receive_timeout: 5_000, connect_options: [timeout: 5_000]]
+  end
+
   # Each part is one path segment, so nothing in it may add another.
   defp fetch_release_checksum(name, version) do
     url =
       "#{@api_url}/packages/#{URI.encode(name, &URI.char_unreserved?/1)}" <>
         "/releases/#{URI.encode(version, &URI.char_unreserved?/1)}"
 
-    case Req.get(url) do
+    case Req.get(url, release_checksum_request_options()) do
       {:ok, %{status: 200, body: %{"checksum" => checksum}}} when is_binary(checksum) ->
         {:ok, String.downcase(checksum)}
 

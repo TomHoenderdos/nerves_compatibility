@@ -120,6 +120,16 @@ defmodule Portal.HexPmTest do
   end
 
   describe "release_checksum/3" do
+    # The default fetch runs inside a build slot (promotion is called from
+    # `Portal.Workers.Build`), so it must fail fast rather than retry.
+    test "the default fetch neither retries nor waits long" do
+      opts = HexPm.release_checksum_request_options()
+
+      assert opts[:retry] == false
+      assert opts[:receive_timeout] == 5_000
+      assert opts[:connect_options][:timeout] == 5_000
+    end
+
     # Unique per test: the memo is one table for the whole node.
     defp release, do: {"memo-#{System.unique_integer([:positive])}", "1.0.0"}
 
