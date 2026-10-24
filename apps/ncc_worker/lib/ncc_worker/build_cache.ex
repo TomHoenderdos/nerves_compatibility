@@ -100,9 +100,18 @@ defmodule NccWorker.BuildCache do
   """
 
   @cache_env "NCC_BUILD_CACHE"
+  @local_root_dir "ncc-build-cache"
 
-  @type entry :: %{name: String.t(), key: String.t(), dir: String.t(), shared: boolean()}
-  @type plan :: %{root: String.t(), entries: [entry()]}
+  @type entry :: %{
+          name: String.t(),
+          key: String.t(),
+          dir: String.t(),
+          shared: boolean(),
+          restore?: boolean(),
+          inputs: Compatibility.BuildCacheKey.inputs()
+        }
+  @type plan :: %{root: String.t(), local_root: String.t(), entries: [entry()]}
+  @type candidate :: %{String.t() => String.t() | [%{String.t() => String.t()}]}
 
   @doc """
   Works out which dependency build directories are cacheable and under what key.
@@ -114,14 +123,31 @@ defmodule NccWorker.BuildCache do
   else is using the project directory: `mix deps.tree --format dot` writes
   `deps_tree.dot` into the project root, so two targets doing this at once would
   race. The callers do it in the serial preparation phase for that reason.
+
+  `opts`:
+    * `:exclude` - names to drop from the plan entirely (the generated wrapper
+      app, which is not a dependency of anything and is rewritten per package).
+    * `:package` - the package under test's name, required. It still gets an
+      entry (so its key is computed the same way), but that entry is marked
+      `restore?: false`: nothing restores a build of the package under test
+      from an earlier run, because that is exactly the package this run is
+      supposed to be building and checking.
+    * `:local_root` - overrides the run-local tier's directory, for tests.
   """
-  @spec plan(String.t(), String.t(), String.t(), String.t(), keyword(), [String.t()]) ::
+  @spec plan(String.t(), String.t(), String.t(), String.t(), keyword(), keyword()) ::
           plan() | :disabled
-  def plan(project_dir, deps_path, build_path, target, env, exclude) do
+  # local_root is either the fixed, host-configured default or a test override
+  # from opts; never built from package-controlled input.
+  # sobelow_skip ["Traversal.FileModule"]
+  def plan(project_dir, deps_path, build_path, target, env, opts) do
     with root when is_binary(root) <- cache_root(),
          {:ok, lock} <- read_lock(project_dir),
          {:ok, graph} <- dep_graph(project_dir, env) do
-      excluded = MapSet.new(exclude)
+      excluded = MapSet.new(Keyword.get(opts, :exclude, []))
+      package = Keyword.fetch!(opts, :package)
+      local_root = Keyword.get(opts, :local_root, default_local_root())
+      File.mkdir_p!(local_root)
+
       agnostic = agnostic_deps(deps_path, graph, lock, target)
 
       entries =
@@ -131,20 +157,26 @@ defmodule NccWorker.BuildCache do
         |> Enum.map(fn name ->
           closure = closure(graph, name)
           component = target_component(name, closure, target, agnostic)
+          inputs = inputs_for(name, component, closure, lock)
+          {:ok, key} = Compatibility.BuildCacheKey.key(inputs)
 
           %{
             name: name,
-            key: key_for(name, component, closure, lock),
+            key: key,
             dir: Path.join([build_path, "lib", name]),
-            shared: component == "any"
+            shared: component == "any",
+            restore?: name != package,
+            inputs: inputs
           }
         end)
 
-      %{root: root, entries: entries}
+      %{root: root, local_root: local_root, entries: entries}
     else
       _ -> :disabled
     end
   end
+
+  defp default_local_root, do: Path.join(System.tmp_dir!(), @local_root_dir)
 
   # `nil` means sharing is off for this target and every key stays target-scoped.
   defp agnostic_deps(_deps_path, _graph, _lock, "host"), do: nil
@@ -171,11 +203,16 @@ defmodule NccWorker.BuildCache do
   end
 
   @doc """
-  Copies every cached dependency build into place.
+  Copies every restorable cached dependency build into place.
 
-  Skips a dependency whose build directory already exists: this runs before the
-  compile, so anything already there was put there by `mix deps.get` and is not
-  ours to overwrite.
+  Skips the package under test (`restore?: false`): nothing restores a build
+  of the package this run exists to check. For the rest, prefers the shared
+  root, falling back to the run-local tier a target earlier in this same run
+  may have stored into (see `store/2`).
+
+  Also skips a dependency whose build directory already exists: this runs
+  before the compile, so anything already there was put there by
+  `mix deps.get` and is not ours to overwrite.
 
   Returns `{restored, total}` for reporting. A copy that fails is not an error
   worth failing the build over. The compiler simply rebuilds that dependency.
@@ -183,19 +220,23 @@ defmodule NccWorker.BuildCache do
   @spec restore(plan() | :disabled) :: {non_neg_integer(), non_neg_integer()}
   def restore(:disabled), do: {0, 0}
 
-  def restore(%{root: root, entries: entries}) do
-    restored =
-      Enum.count(entries, fn %{key: key, dir: dir} ->
-        source = Path.join(root, key)
+  def restore(%{root: root, entries: entries} = plan) do
+    local_root = Map.get(plan, :local_root)
 
-        not File.dir?(dir) and File.dir?(source) and copy_tree(source, dir) == :ok
+    restored =
+      Enum.count(entries, fn %{key: key, dir: dir} = entry ->
+        Map.get(entry, :restore?, true) and not File.dir?(dir) and
+          case cache_source(root, local_root, key) do
+            nil -> false
+            source -> copy_tree(source, dir) == :ok
+          end
       end)
 
     {restored, length(entries)}
   end
 
   @doc """
-  Counts the target-independent entries the cache does not have yet.
+  Counts the target-independent entries present in neither tier.
 
   Each of these is compiled by every target that cannot restore it, so this is
   the work that building one target first, and letting the rest restore what it
@@ -204,29 +245,98 @@ defmodule NccWorker.BuildCache do
   @spec missing_shared(plan() | :disabled) :: non_neg_integer()
   def missing_shared(:disabled), do: 0
 
-  def missing_shared(%{root: root, entries: entries}) do
+  def missing_shared(%{root: root, entries: entries} = plan) do
+    local_root = Map.get(plan, :local_root)
+
     Enum.count(entries, fn entry ->
-      Map.get(entry, :shared, false) and not File.dir?(Path.join(root, entry.key))
+      Map.get(entry, :shared, false) and is_nil(cache_source(root, local_root, entry.key))
     end)
   end
 
+  # `root` (read-only, shared across runs) first, then `local_root` (this run's
+  # own tier). `nil` when the key is in neither, or `local_root` is absent, the
+  # way a plan built without one (older tests, a disabled cache) behaves.
+  defp cache_source(root, local_root, key) do
+    shared = Path.join(root, key)
+
+    cond do
+      File.dir?(shared) ->
+        shared
+
+      is_binary(local_root) and File.dir?(Path.join(local_root, key)) ->
+        Path.join(local_root, key)
+
+      true ->
+        nil
+    end
+  end
+
   @doc """
-  Stores dependency builds that the cache does not have yet.
+  Stores dependency builds the host has not seen, for the host to promote.
+
+  The cache root is read-only inside the build container: a candidate is never
+  written there directly. Only the package under test (`restore?: false`)
+  produces a candidate at all, written under `out_root` for the host-side
+  `Portal.BuildCache.Promotion` to verify (by recomputing the key) and promote
+  into the shared cache. Everything else this run compiled (`restore?: true`)
+  goes into the run-local tier instead, so a later target in the same run can
+  restore it without ever compiling it twice, and skips entries the cache
+  already holds in either tier.
 
   Written to a temporary directory and moved into place, so a reader never sees
   a half-copied entry and two workers racing on the same key both end up with a
   complete one. Only ever called for a successful build: a failed one can leave
   a dependency directory that Mix abandoned partway through.
   """
-  @spec store(plan() | :disabled) :: non_neg_integer()
-  def store(:disabled), do: 0
+  @spec store(plan() | :disabled, String.t()) :: [candidate()]
+  def store(:disabled, _out_root), do: []
 
-  def store(%{root: root, entries: entries}) do
-    Enum.count(entries, fn %{key: key, dir: dir} ->
-      target = Path.join(root, key)
+  def store(%{root: root, entries: entries} = plan, out_root) do
+    local_root = Map.get(plan, :local_root)
 
-      File.dir?(dir) and not File.dir?(target) and store_entry(dir, target)
-    end)
+    Enum.flat_map(entries, &store_one(&1, root, local_root, out_root))
+  end
+
+  defp store_one(%{dir: dir} = entry, root, local_root, out_root) do
+    cond do
+      not File.dir?(dir) -> []
+      Map.get(entry, :restore?, true) -> store_shared(entry, root, local_root)
+      true -> store_candidate(entry, out_root)
+    end
+  end
+
+  defp store_shared(%{key: key, dir: dir}, root, local_root) do
+    if is_binary(local_root) and is_nil(cache_source(root, local_root, key)) do
+      store_entry(dir, Path.join(local_root, key))
+    end
+
+    []
+  end
+
+  # out_root is the worker's own output mount (/out/build-cache); never built
+  # from package-controlled input.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp store_candidate(%{key: key, dir: dir} = entry, out_root) do
+    File.mkdir_p!(out_root)
+
+    if store_entry(dir, Path.join(out_root, key)) do
+      [candidate_for(entry)]
+    else
+      []
+    end
+  end
+
+  defp candidate_for(%{key: key, inputs: inputs}) do
+    %{
+      "key" => key,
+      "dep" => inputs.dep,
+      "dep_lock" => inputs.dep_lock,
+      "target" => inputs.target,
+      "elixir" => inputs.elixir,
+      "otp" => inputs.otp,
+      "closure" =>
+        Enum.map(inputs.closure, fn {name, lock} -> %{"name" => name, "lock" => lock} end)
+    }
   end
 
   # The destination is the configured worker cache root plus key_for/5 SHA256 and a random suffix.
@@ -417,16 +527,23 @@ defmodule NccWorker.BuildCache do
 
   @doc false
   def key_for(name, target, closure, lock) do
-    {:ok, key} =
-      Compatibility.BuildCacheKey.key(%{
-        elixir: System.version(),
-        otp: to_string(:erlang.system_info(:otp_release)),
-        target: target,
-        dep: name,
-        dep_lock: Map.get(lock, name, "unlocked"),
-        closure: Enum.map(closure, &{&1, Map.get(lock, &1, "unlocked")})
-      })
-
+    {:ok, key} = name |> inputs_for(target, closure, lock) |> Compatibility.BuildCacheKey.key()
     key
+  end
+
+  # The exact map `Compatibility.BuildCacheKey.key/1` is computed from, built
+  # once so `plan/6`'s entries and the key they were made from cannot drift
+  # apart from each other.
+  @spec inputs_for(String.t(), String.t(), MapSet.t() | [String.t()], map()) ::
+          Compatibility.BuildCacheKey.inputs()
+  defp inputs_for(name, component, closure, lock) do
+    %{
+      elixir: System.version(),
+      otp: to_string(:erlang.system_info(:otp_release)),
+      target: component,
+      dep: name,
+      dep_lock: Map.get(lock, name, "unlocked"),
+      closure: Enum.map(closure, &{&1, Map.get(lock, &1, "unlocked")})
+    }
   end
 end

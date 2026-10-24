@@ -233,6 +233,90 @@ defmodule NccWorker.JsonWriterTest do
       refute Map.has_key?(decoded, "package_checksum")
     end
 
+    test "aggregates cache candidates across systems and dedupes by key" do
+      dir = Path.join(System.tmp_dir!(), "jw_cache_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      candidate = %{
+        "key" => String.duplicate("a", 64),
+        "dep" => "pkg",
+        "dep_lock" => "1.0.0 aa",
+        "target" => "rpi4",
+        "elixir" => "1.20.3",
+        "otp" => "29",
+        "closure" => [%{"name" => "dep", "lock" => "2.0.0 cc"}]
+      }
+
+      result = %{
+        run_id: "r",
+        package: %{name: "pkg", version: "1.0.0"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{
+          "nerves_system_rpi4" => %{
+            status: :pass,
+            duration_sec: 1.0,
+            firmware_size_bytes: 1,
+            log_tail: "",
+            error: nil,
+            cache_candidates: [candidate]
+          },
+          "nerves_system_bbb" => %{
+            status: :pass,
+            duration_sec: 1.0,
+            firmware_size_bytes: 1,
+            log_tail: "",
+            error: nil,
+            cache_candidates: [candidate]
+          },
+          "host" => %{
+            status: :pass,
+            duration_sec: 1.0,
+            firmware_size_bytes: nil,
+            log_tail: "",
+            error: nil,
+            cache_candidates: []
+          }
+        },
+        finished_at: "2026-10-24T00:00:00Z"
+      }
+
+      assert :ok = JsonWriter.write_result(dir, result)
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+
+      assert decoded["cache"]["candidates"] == [candidate]
+    end
+
+    test "omits cache from result.json when no system produced a candidate" do
+      dir = Path.join(System.tmp_dir!(), "jw_no_cache_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      result = %{
+        run_id: "r",
+        package: %{name: "pkg", version: "1.0.0"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{
+          "nerves_system_rpi4" => %{
+            status: :fail,
+            duration_sec: 1.0,
+            firmware_size_bytes: nil,
+            log_tail: "",
+            error: "boom",
+            cache_candidates: []
+          }
+        },
+        finished_at: "2026-10-24T00:00:00Z"
+      }
+
+      assert :ok = JsonWriter.write_result(dir, result)
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+
+      refute Map.has_key?(decoded, "cache")
+    end
+
     test "writes the run scope, so ingestion knows what the run left out" do
       dir = Path.join(System.tmp_dir!(), "jw_scope_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)

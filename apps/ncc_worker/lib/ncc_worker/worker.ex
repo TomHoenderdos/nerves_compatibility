@@ -53,6 +53,13 @@ defmodule NccWorker.Worker do
           }
         }
 
+  # One stored build of the package under test, for the host to recompute the
+  # key from (`dep`, `dep_lock`, `target`, `elixir`, `otp`, `closure`) before
+  # trusting and promoting it. See `NccWorker.BuildCache.store/2`.
+  @type cache_candidate :: %{
+          String.t() => String.t() | [%{String.t() => String.t()}]
+        }
+
   @type result :: %{
           optional(:scope) => String.t(),
           # The package's optional dependencies the generated project did not
@@ -113,6 +120,13 @@ defmodule NccWorker.Worker do
           },
           systems: %{
             String.t() => %{
+              # Present only for a system that ran a build cache store (a pass
+              # or fail of `build_system/4`, or the host compile). `JsonWriter`
+              # concatenates every system's list, dedupes it by `"key"`, and
+              # writes it to result.json as `cache: %{candidates: [candidate]}`
+              # -- present there only when non-empty, rather than nested under
+              # each system.
+              optional(:cache_candidates) => [cache_candidate()],
               status: Compatibility.Types.status(),
               duration_sec: float(),
               phase_timings: map() | nil,
@@ -871,13 +885,15 @@ defmodule NccWorker.Worker do
     # clobbering each other across targets.
     #
     # Most of a dependency tree is target-independent and one build of it can
-    # serve every target (see `NccWorker.BuildCache`). But the cache only gets
-    # those builds once a target finishes, and with every target starting at
-    # once on a cold cache none of them can use another's: phoenix_kit_ai
-    # compiled 67 shareable dependencies eight times over, an hour in all. So
-    # when enough of them are missing, one target builds alone first and the
-    # rest restore from it just before they compile. On a warm cache that would
-    # only cost a wave of parallel firmware assembly, so it is skipped.
+    # serve every target (see `NccWorker.BuildCache`). But the run-local tier
+    # only gets those builds once a target finishes, and with every target
+    # starting at once on a cold cache none of them can use another's:
+    # phoenix_kit_ai compiled 67 shareable dependencies eight times over, an
+    # hour in all. So when enough of them are missing from both the shared
+    # root and the run-local tier, one target builds alone first and the rest
+    # restore from it (now from the run-local tier) just before they compile.
+    # On a warm shared cache that would only cost a wave of parallel firmware
+    # assembly, so it is skipped.
     concurrency = build_concurrency()
 
     prepared =
@@ -954,6 +970,7 @@ defmodule NccWorker.Worker do
     log_file = Path.join([output_dir, "logs", "#{system.name}.log"])
     build_path = Path.join([project_dir, "_build", system.target])
     deps_path = Path.join([project_dir, "deps_#{system.target}"])
+    out_root = Path.join(output_dir, "build-cache")
     start_time = System.monotonic_time(:second)
 
     hex_home = HexHome.prepare(project_dir, system.target)
@@ -992,21 +1009,23 @@ defmodule NccWorker.Worker do
       deps: deps,
       cache_plan: cache_plan,
       cache_stats: cache_stats,
+      out_root: out_root,
       deps_duration: System.monotonic_time(:second) - start_time
     }
   end
 
-  # Populates `_build/<target>/lib` from the shared cache before anything
-  # compiles, and reports what it managed to fill in. The counts ride along in
-  # `phase_timings` because a cache whose hit rate nobody can see is a cache
-  # nobody can tell is broken: a key that is too specific still produces correct
-  # builds, just slow ones, and this is the only signal that separates the two.
+  # Fills `_build/<target>/lib` from the shared root and the run-local tier
+  # before anything compiles, and reports what it managed to fill in. The
+  # counts ride along in `phase_timings` because a cache whose hit rate nobody
+  # can see is a cache nobody can tell is broken: a key that is too specific
+  # still produces correct builds, just slow ones, and this is the only signal
+  # that separates the two.
   defp restore_cache(project_dir, deps_path, build_path, target, env, package_name) do
     plan =
-      BuildCache.plan(project_dir, deps_path, build_path, target, env, [
-        package_name,
-        @wrapper_app
-      ])
+      BuildCache.plan(project_dir, deps_path, build_path, target, env,
+        exclude: [@wrapper_app],
+        package: package_name
+      )
 
     {restored, total} = BuildCache.restore(plan)
     {plan, %{cache_restored: restored * 1.0, cache_candidates: total * 1.0}}
@@ -1014,9 +1033,9 @@ defmodule NccWorker.Worker do
 
   # The restore in prepare_system/4 runs for every target before any of them
   # has compiled, so it never sees what an earlier target in this same run
-  # stored. Restoring again right before the compile picks that up. It only
-  # fills directories that are still missing, so nothing restored or built
-  # already is touched.
+  # stored into the run-local tier. Restoring again right before the compile
+  # picks that up. It only fills directories that are still missing, so
+  # nothing restored or built already is touched.
   defp restore_again(%{cache_plan: plan} = prep) do
     {restored, _total} = BuildCache.restore(plan)
 
@@ -1060,15 +1079,18 @@ defmodule NccWorker.Worker do
   # that Mix abandoned partway through, and there is no way to tell that apart
   # from a complete one after the fact.
   defp store_cache(%{status: :pass} = result, prep) do
-    stored = BuildCache.store(prep.cache_plan)
+    candidates = BuildCache.store(prep.cache_plan, prep.out_root)
 
     result
     |> Map.update!(:phase_timings, &Map.merge(&1, prep.cache_stats))
-    |> put_in([:phase_timings, :cache_stored], stored * 1.0)
+    |> put_in([:phase_timings, :cache_stored], length(candidates) * 1.0)
+    |> Map.put(:cache_candidates, candidates)
   end
 
   defp store_cache(result, prep) do
-    Map.update(result, :phase_timings, prep.cache_stats, &Map.merge(&1, prep.cache_stats))
+    result
+    |> Map.update(:phase_timings, prep.cache_stats, &Map.merge(&1, prep.cache_stats))
+    |> Map.put(:cache_candidates, [])
   end
 
   defp task_crash_result(prep, log_tail_bytes, reason) do
@@ -1240,6 +1262,7 @@ defmodule NccWorker.Worker do
     hex_home = HexHome.prepare(project_dir, "host")
     env = host_env(project_dir) ++ hex_env(hex_home)
     build_path = Path.join([project_dir, "_build", "host"])
+    out_root = Path.join(output_dir, "build-cache")
 
     result =
       compile_host_run(
@@ -1249,7 +1272,8 @@ defmodule NccWorker.Worker do
         log_file,
         start_time,
         log_tail_bytes,
-        package_name
+        package_name,
+        out_root
       )
 
     HexHome.publish(hex_home)
@@ -1263,6 +1287,7 @@ defmodule NccWorker.Worker do
           String.t(),
           integer(),
           integer(),
+          String.t(),
           String.t()
         ) ::
           map()
@@ -1273,7 +1298,8 @@ defmodule NccWorker.Worker do
          log_file,
          start_time,
          log_tail_bytes,
-         package_name
+         package_name,
+         out_root
        ) do
     case run_mix(["deps.get"], project_dir, env, log_file) do
       :ok ->
@@ -1293,10 +1319,16 @@ defmodule NccWorker.Worker do
             package_name
           )
 
-        stats =
+        {compile_result, stats} =
           case compile_result do
-            %{status: :pass} -> Map.put(stats, :cache_stored, BuildCache.store(plan) * 1.0)
-            _ -> stats
+            %{status: :pass} = result ->
+              candidates = BuildCache.store(plan, out_root)
+
+              {Map.put(result, :cache_candidates, candidates),
+               Map.put(stats, :cache_stored, length(candidates) * 1.0)}
+
+            result ->
+              {Map.put(result, :cache_candidates, []), stats}
           end
 
         compile_result
