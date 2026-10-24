@@ -343,6 +343,27 @@ defmodule Portal.Builder do
   def cache_slug(digest), do: safe_name(digest)
 
   @doc """
+  The per-image build cache directory mounted at `/build-cache`, or nil when
+  the cache is off. Not created here; `Portal.BuildCache.Promotion` writes
+  into it after a build.
+  """
+  @spec build_cache_slug_dir(String.t() | nil) :: Path.t() | nil
+  def build_cache_slug_dir(image_digest) do
+    case build_cache() do
+      nil -> nil
+      root -> Path.join(root, cache_slug(image_digest || "unknown"))
+    end
+  end
+
+  @doc """
+  A run's output directory, mounted at `/out`. It may not exist.
+  """
+  @spec output_dir(String.t()) :: Path.t()
+  # Only service-generated run IDs reach this helper; safe_name rejects path components.
+  # sobelow_skip ["Traversal.FileModule"]
+  def output_dir(run_id), do: Path.join([scratch_root(), safe_name(run_id), "out"])
+
+  @doc """
   Scratch directory name for a run id.
 
   Public because `Portal.Workers.Sweep` has to map a directory on disk back to
@@ -562,7 +583,11 @@ defmodule Portal.Builder do
   defp build_cache_mount(job) do
     case build_cache_dir(job) do
       nil -> []
-      dir -> ["--mount", "type=bind,source=#{dir},target=/build-cache"]
+      # Read-only: a build runs untrusted package code, and one that could
+      # write here could plant beams under another dependency's key. What a
+      # build compiles goes to /out/build-cache, and
+      # `Portal.BuildCache.Promotion` moves what it accepts in from the host.
+      dir -> ["--mount", "type=bind,source=#{dir},target=/build-cache,readonly"]
     end
   end
 
@@ -577,24 +602,21 @@ defmodule Portal.Builder do
   # its name is not known until a build runs. A failure to create it disables the
   # cache for that build instead of failing it, since a cache that cannot be
   # written is a slowdown and not an error.
-  # The operator owns the cache root; image_slug maps the image digest to one component.
+  # The operator owns the cache root; build_cache_slug_dir maps the image
+  # digest to one component.
   # sobelow_skip ["Traversal.FileModule"]
   defp build_cache_dir(job) do
-    case build_cache() do
+    case build_cache_slug_dir(job.image_digest || job.image_name) do
       nil ->
         nil
 
-      root ->
-        dir = Path.join(root, image_slug(job))
-
+      dir ->
         case File.mkdir_p(dir) do
           :ok -> dir
           {:error, _reason} -> nil
         end
     end
   end
-
-  defp image_slug(job), do: cache_slug(job.image_digest || job.image_name || "unknown")
 
   # `--cpus` is a CFS quota, not a core assignment: `nproc` inside the container
   # still reports every core the host has. Nothing in the build reads the quota,

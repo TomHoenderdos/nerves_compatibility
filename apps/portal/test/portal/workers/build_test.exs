@@ -30,6 +30,9 @@ defmodule Portal.Workers.BuildTest do
         if log = Process.get(:stub_runner_log) do
           File.write!(Path.join(out, "runner.log"), log)
         end
+
+        # What the container left in /out, e.g. build cache candidates.
+        if fill = Process.get(:stub_fill_out), do: fill.(out)
       end
 
       case Process.get(:stub_build_response) do
@@ -245,6 +248,102 @@ defmodule Portal.Workers.BuildTest do
       assert :ok = run_enqueued_ingest()
 
       assert [%{args: %{"package" => "jason"}}] = all_enqueued(worker: PackageMeta)
+    end
+  end
+
+  describe "build cache promotion" do
+    @outer "b0c823996102bcd0239b3c2444eb00409b72f6a140c1950bc8b457d836b30684"
+
+    setup do
+      root = Path.join(System.tmp_dir!(), "build-promo-#{System.unique_integer([:positive])}")
+      scratch = Path.join(root, "scratch")
+      cache = Path.join(root, "cache")
+      File.mkdir_p!(scratch)
+      on_exit(fn -> File.rm_rf(root) end)
+
+      Application.put_env(:portal, Portal.Builder, scratch_root: scratch, build_cache: cache)
+      on_exit(fn -> Application.delete_env(:portal, Portal.Builder) end)
+      on_exit(fn -> Application.delete_env(:portal, Portal.BuildCache.Promotion) end)
+      Process.put(:stub_scratch_root, scratch)
+
+      candidate = %{
+        "dep" => "jason",
+        "dep_lock" =>
+          "1.4.5 2e3a008590b0b8d7388c20293e9dcc9cf3e5d642fd2a114e4cbbb52e595d940a #{@outer}",
+        "target" => "host",
+        "elixir" => "1.20.3",
+        "otp" => "29",
+        "closure" => []
+      }
+
+      {:ok, key} =
+        Compatibility.BuildCacheKey.key(%{
+          elixir: "1.20.3",
+          otp: "29",
+          target: "host",
+          dep: "jason",
+          dep_lock: candidate["dep_lock"],
+          closure: []
+        })
+
+      candidate = Map.put(candidate, "key", key)
+
+      Process.put(:stub_fill_out, fn out ->
+        ebin = Path.join([out, "build-cache", key, "ebin"])
+        File.mkdir_p!(ebin)
+        File.write!(Path.join(ebin, "Elixir.Jason.beam"), "beam")
+      end)
+
+      files_dir = files_dir_with([])
+
+      set_response(
+        {:ok,
+         %{
+           exit_code: 0,
+           result: Map.put(fixture_result(), "cache", %{"candidates" => [candidate]}),
+           files_dir: files_dir,
+           output_dir: files_dir,
+           log: "ok"
+         }}
+      )
+
+      %{cache: cache, key: key}
+    end
+
+    defp build_jason do
+      perform_job(Build, %{
+        "package" => "jason",
+        "version" => "1.4.5",
+        "image_digest" => "sha256:deadbeef"
+      })
+    end
+
+    test "a successful build promotes its candidate before enqueuing the ingest", ctx do
+      Application.put_env(:portal, Portal.BuildCache.Promotion,
+        release_checksum: fn "jason", "1.4.5" -> {:ok, @outer} end
+      )
+
+      assert :ok = build_jason()
+
+      assert File.regular?(
+               Path.join([ctx.cache, "sha256_deadbeef", ctx.key, "ebin", "Elixir.Jason.beam"])
+             )
+
+      assert_enqueued(worker: Ingest)
+    end
+
+    # The cache is an optimisation: nothing promotion does may cost the build
+    # its result.
+    test "a promotion that raises still enqueues the ingest", ctx do
+      Application.put_env(:portal, Portal.BuildCache.Promotion,
+        release_checksum: fn _, _ -> raise "hex lookup exploded" end
+      )
+
+      log = capture_log(fn -> assert :ok = build_jason() end)
+
+      assert log =~ "build cache promotion failed"
+      assert_enqueued(worker: Ingest)
+      refute File.exists?(Path.join([ctx.cache, "sha256_deadbeef", ctx.key]))
     end
   end
 
