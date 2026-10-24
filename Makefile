@@ -21,7 +21,7 @@ help:
 	@echo "  build-toolchains Build the toolchain worker images (TOOLCHAIN_IMAGES)"
 	@echo "  dev              Start the Phoenix portal server"
 	@echo "  test             Run the umbrella test suite"
-	@echo "  test-integration Run the Docker-backed portal build integration test"
+	@echo "  test-integration Run the Docker-backed portal build and toolchain integration tests"
 	@echo "  format           Format the umbrella projects"
 	@echo "  clean            Remove generated umbrella build artifacts"
 
@@ -59,7 +59,7 @@ test:
 	mix test
 
 test-integration:
-	mix test apps/portal/test/portal/workers/build_integration_test.exs --only integration
+	mix test apps/portal/test/portal/workers/build_integration_test.exs apps/portal/test/portal/workers/toolchain_integration_test.exs --only integration
 
 format:
 	mix format
