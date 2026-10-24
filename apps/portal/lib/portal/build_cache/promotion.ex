@@ -44,24 +44,31 @@ defmodule Portal.BuildCache.Promotion do
        release, which ties the candidate to the tarball Hex serves. Hex being
        unreachable promotes nothing but refuses nothing either: that is not
        the build's fault. Hex is asked at most once per call.
-    6. The candidate tree must be a real directory (as must `out/build-cache`
-       above it), on the same device as `out/`, holding only directories,
-       regular files with a link count of 1, and Mix's own links (below).
-       The tree is walked with `File.lstat/1` only, so nothing a link points
-       at is ever followed, and listed with `:file.list_dir_all/1`, because
-       `File.ls/1` silently drops names that are not valid UTF-8 on Linux
-       and such an entry would be promoted unchecked. Any such name refuses
-       the candidate: every real Mix artifact name is UTF-8.
-       The container has exited by now. A concurrent build could still hold
-       a file descriptor into the tree, passed through the read-write caches
-       builds share, and change it between the walk and the rename; what it
-       can reach that way is limited to its own package's slot, which step 4
-       already pins.
-    7. An existing entry is never replaced. The tree is renamed into a
-       `<dest>.tmp.<hex>` staging name (copied with `cp -a` when the cache is
-       on another filesystem), stripped of setuid, setgid, sticky and
-       group/other write on every directory and regular file, then renamed
-       into place. `Portal.Workers.Sweep` prunes leftover staging names.
+    6. `out/`, `out/build-cache` and the candidate directory must be real
+       directories (checked with `File.lstat/1`), the candidate on the same
+       device as `out/`. The candidate is then copied with `cp -a`, which
+       copies links as links and never follows one, into a host-private
+       `<dest>.tmp.<hex>` staging name inside the cache slug, and everything
+       from here on reads that copy, never the source. The slug is mounted
+       read-only into every container, so no build can write the copy or
+       reach it through a file descriptor it holds on the source: a
+       concurrent build changing the source after the copy changes nothing
+       that is checked, chmodded or promoted. The source is left alone for
+       the scratch cleanup.
+    7. The copy must hold only directories, regular files with a link count
+       of 1, and Mix's own links (below). It is walked with `File.lstat/1`
+       only, so nothing a link points at is ever followed, and listed with
+       `:file.list_dir_all/1`, because `File.ls/1` silently drops names that
+       are not valid UTF-8 on Linux and such an entry would be promoted
+       unchecked. Any such name refuses the candidate: every real Mix
+       artifact name is UTF-8. A file hardlinked to one outside the tree is
+       an independent file in the copy; GNU `cp -a` keeps a hardlink between
+       two names inside the tree, and that is refused.
+    8. Setuid, setgid, sticky and group/other write are stripped from every
+       directory and regular file in the copy, which is then renamed into
+       place. An existing entry is never replaced. Any refusal or error
+       removes the copy; `Portal.Workers.Sweep` prunes staging names a crash
+       left behind.
 
   ## Symlinks
 
@@ -99,9 +106,8 @@ defmodule Portal.BuildCache.Promotion do
   under the build cache root, or `nil` when the cache is off.
   `opts[:release_checksum]` is the Hex lookup; without it the
   `config :portal, Portal.BuildCache.Promotion, release_checksum: fun` value
-  is used, then `Portal.HexPm.release_checksum/2`. `opts[:rename]` replaces
-  `File.rename/2` for the move out of `out_dir` only, a seam for tests to
-  force the cross-device copy.
+  is used, then `Portal.HexPm.release_checksum/2`. `opts[:copy]` replaces the
+  `cp -a` of the candidate into the staging copy, a seam for tests.
   """
   @spec promote(map(), Path.t(), Path.t() | nil, String.t(), String.t(), keyword()) :: counts()
   def promote(result, out_dir, cache_dir, package, version, opts \\ [])
@@ -131,7 +137,7 @@ defmodule Portal.BuildCache.Promotion do
       lookup: lookup,
       targets: built_targets(systems),
       toolchain: toolchain(result),
-      rename: Keyword.get(opts, :rename, &File.rename/2)
+      copy: Keyword.get(opts, :copy, &cp_a/2)
     }
 
     {counts, _hex} =
@@ -347,25 +353,31 @@ defmodule Portal.BuildCache.Promotion do
   defp ask_hex(:unasked, ctx), do: ctx.lookup.(ctx.package, ctx.version)
   defp ask_hex(answer, _ctx), do: answer
 
-  # Steps 6 and 7.
+  # Steps 6 to 8.
   defp check_tree_and_move(c, key, ctx) do
-    case check_tree(key, ctx) do
+    case check_source(key, ctx) do
       :ok ->
-        move(c, key, ctx)
+        copy_check_move(c, key, ctx)
 
       {:error, reason} ->
-        Logger.warning(
-          "Build cache candidate #{key} for #{ctx.package} #{ctx.version} refused: #{reason}"
-        )
-
-        :refused
+        refuse_tree(key, ctx, reason)
     end
   end
 
+  defp refuse_tree(key, ctx, reason) do
+    Logger.warning(
+      "Build cache candidate #{key} for #{ctx.package} #{ctx.version} refused: #{reason}"
+    )
+
+    :refused
+  end
+
+  # Only the directories leading to the candidate. Its contents are checked
+  # on the host-private copy, in `copy_check_move/3`.
   # `out` is the run's scratch output dir (operator config + run id); `key`
   # is a 64-hex string this module computed, never the container's.
   # sobelow_skip ["Traversal.FileModule"]
-  defp check_tree(key, ctx) do
+  defp check_source(key, ctx) do
     parent = Path.join(ctx.out, "build-cache")
     source = Path.join(parent, key)
 
@@ -373,7 +385,7 @@ defmodule Portal.BuildCache.Promotion do
          {:ok, %File.Stat{type: :directory}} <- lstat(parent),
          {:ok, %File.Stat{type: :directory} = src} <- lstat(source),
          true <- same_device?(out, src) || {:error, "not on the output directory's device"} do
-      walk(source, true, ctx.package)
+      :ok
     else
       {:ok, %File.Stat{type: type}} -> {:error, "not a directory (#{type})"}
       {:error, reason} when is_binary(reason) -> {:error, reason}
@@ -385,7 +397,7 @@ defmodule Portal.BuildCache.Promotion do
     do: a.major_device == b.major_device and a.minor_device == b.minor_device
 
   # Paths below the candidate root, named by a raw listing of a directory
-  # `lstat` showed is real. Not `File.ls/1`: see the moduledoc, step 6.
+  # `lstat` showed is real. Not `File.ls/1`: see the moduledoc, step 7.
   # sobelow_skip ["Traversal.FileModule"]
   defp walk(dir, top?, package) do
     case :file.list_dir_all(dir) do
@@ -468,7 +480,7 @@ defmodule Portal.BuildCache.Promotion do
   # `cache` is the per-image slug dir under the operator's cache root; `key`
   # is the host-computed 64-hex key; the staging suffix is host random.
   # sobelow_skip ["Traversal.FileModule"]
-  defp move(c, key, ctx) do
+  defp copy_check_move(c, key, ctx) do
     source = Path.join([ctx.out, "build-cache", key])
     dest = Path.join(ctx.cache, key)
 
@@ -479,49 +491,68 @@ defmodule Portal.BuildCache.Promotion do
       {:error, _} ->
         staging = dest <> ".tmp." <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
-        with :ok <- File.mkdir_p(ctx.cache),
-             :ok <- stage(source, staging, ctx.rename),
-             :ok <- strip_modes(staging),
-             :ok <- File.rename(staging, dest) do
-          Logger.info(
-            "Promoted build cache entry #{key} for #{ctx.package} #{ctx.version} " <>
-              "(#{show(c["target"])})"
-          )
+        case copy_and_check(source, staging, ctx) do
+          :ok ->
+            finish(c, key, staging, dest, ctx)
 
-          :promoted
-        else
+          {:refused, reason} ->
+            _ = File.rm_rf(staging)
+            refuse_tree(key, ctx, reason)
+
           error ->
             _ = File.rm_rf(staging)
-
-            Logger.warning(
-              "Could not promote build cache entry #{key} for #{ctx.package} " <>
-                "#{ctx.version}: #{inspect(error)}"
-            )
-
-            :skipped
+            not_promoted(key, ctx, error)
         end
     end
   end
 
-  # Both paths come from `move/3`; `cp` gets them as arguments, no shell.
-  # sobelow_skip ["Traversal.FileModule", "CI.System"]
-  defp stage(source, staging, rename) do
-    case rename.(source, staging) do
-      :ok ->
-        :ok
+  # `ctx.cache` is the operator's slug dir; `staging` is built from it in
+  # `copy_check_move/3` with the host key and a host-random suffix.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp copy_and_check(source, staging, ctx) do
+    with :ok <- File.mkdir_p(ctx.cache),
+         :ok <- File.mkdir(staging),
+         :ok <- ctx.copy.(source, staging) do
+      case walk(staging, true, ctx.package) do
+        :ok -> :ok
+        {:error, reason} -> {:refused, reason}
+      end
+    end
+  end
 
-      {:error, :exdev} ->
-        with :ok <- File.mkdir_p(staging),
-             {_out, 0} <-
-               System.cmd("cp", ["-a", source <> "/.", staging], stderr_to_stdout: true) do
-          :ok
-        else
-          {out, status} when is_integer(status) -> {:error, {:cp, status, out}}
-          error -> error
-        end
+  # sobelow_skip ["Traversal.FileModule"]
+  defp finish(c, key, staging, dest, ctx) do
+    with :ok <- strip_modes(staging),
+         :ok <- File.rename(staging, dest) do
+      Logger.info(
+        "Promoted build cache entry #{key} for #{ctx.package} #{ctx.version} " <>
+          "(#{show(c["target"])})"
+      )
 
+      :promoted
+    else
       error ->
-        error
+        _ = File.rm_rf(staging)
+        not_promoted(key, ctx, error)
+    end
+  end
+
+  defp not_promoted(key, ctx, error) do
+    Logger.warning(
+      "Could not promote build cache entry #{key} for #{ctx.package} " <>
+        "#{ctx.version}: #{inspect(error)}"
+    )
+
+    :skipped
+  end
+
+  # `cp -a` copies links as links and never follows one. Both paths come
+  # from `copy_check_move/3`; `cp` gets them as arguments, no shell.
+  # sobelow_skip ["CI.System"]
+  defp cp_a(source, staging) do
+    case System.cmd("cp", ["-a", source <> "/.", staging], stderr_to_stdout: true) do
+      {_out, 0} -> :ok
+      {out, status} -> {:error, {:cp, status, out}}
     end
   end
 
@@ -529,8 +560,10 @@ defmodule Portal.BuildCache.Promotion do
   # drop setuid, setgid and sticky and group/other write from each directory
   # and regular file, so nothing in the cache is writable by another user or
   # runs with its owner's rights. Walked with `lstat` and links left alone:
-  # `chmod` on a link would change what it points at. The names were checked
-  # by `walk/3` already, but are rechecked rather than trusted.
+  # `chmod` on a link would change what it points at. That lstat-then-chmod
+  # is only safe because it runs on the host-private copy, which no build can
+  # change between the two (moduledoc, step 6). The names were checked by
+  # `walk/3` already, but are rechecked rather than trusted.
   @keep_mode 0o755
 
   # `staging` is the host-built staging path from `move/3`.

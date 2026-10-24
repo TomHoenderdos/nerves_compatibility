@@ -192,27 +192,65 @@ defmodule Portal.BuildCache.PromotionTest do
     end
   end
 
-  test "refuses a hardlinked file", ctx do
+  # The copy holds its own bytes: a name outside the tree no longer reaches
+  # what was promoted.
+  test "a file hardlinked outside the tree is promoted as an independent copy", ctx do
     c = candidate(ctx.out)
     beam = Path.join([ctx.out, "build-cache", c["key"], "ebin/Elixir.Jason.beam"])
-    File.ln!(beam, Path.join(ctx.tmp, "elsewhere"))
+    outside = Path.join(ctx.tmp, "elsewhere")
+    File.ln!(beam, outside)
 
-    assert %{promoted: 0, refused: 1} =
+    assert %{promoted: 1} =
              Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                release_checksum: &hex_ok/2
              )
+
+    promoted = Path.join([ctx.cache, c["key"], "ebin/Elixir.Jason.beam"])
+    assert File.lstat!(promoted).links == 1
+    File.write!(outside, "changed")
+    assert File.read!(promoted) == "beam"
   end
 
-  # What a crafted candidate would actually do: both names inside the tree.
-  test "refuses a hardlink whose two names are both inside the candidate", ctx do
+  # GNU `cp -a` (production) keeps a hardlink inside the tree a hardlink in
+  # the copy; BSD `cp -a` (macOS) splits it. The seam reproduces the GNU
+  # behaviour so the refusal is tested everywhere.
+  test "refuses a hardlink whose two names are both inside the copy", ctx do
+    c = candidate(ctx.out)
+
+    copy = fn from, to ->
+      {_, 0} = System.cmd("cp", ["-a", from <> "/.", to])
+      File.rm!(Path.join(to, "ebin/Copy.beam"))
+      File.ln!(Path.join(to, "ebin/Elixir.Jason.beam"), Path.join(to, "ebin/Copy.beam"))
+      :ok
+    end
+
+    File.write!(Path.join([ctx.out, "build-cache", c["key"], "ebin/Copy.beam"]), "beam")
+
+    assert %{promoted: 0, refused: 1} =
+             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+               release_checksum: &hex_ok/2,
+               copy: copy
+             )
+
+    assert File.ls!(ctx.cache) == []
+  end
+
+  test "never promotes a file with more than one link, whatever cp does", ctx do
     c = candidate(ctx.out)
     entry = Path.join([ctx.out, "build-cache", c["key"]])
     File.ln!(Path.join(entry, "ebin/Elixir.Jason.beam"), Path.join(entry, "ebin/Copy.beam"))
 
-    assert %{promoted: 0, refused: 1} =
-             Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
-               release_checksum: &hex_ok/2
-             )
+    case Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+           release_checksum: &hex_ok/2
+         ) do
+      %{promoted: 1} ->
+        for name <- ["Elixir.Jason.beam", "Copy.beam"] do
+          assert File.lstat!(Path.join([ctx.cache, c["key"], "ebin", name])).links == 1
+        end
+
+      %{refused: 1} ->
+        assert File.ls!(ctx.cache) == []
+    end
   end
 
   test "leaves an existing entry alone", ctx do
@@ -484,21 +522,25 @@ defmodule Portal.BuildCache.PromotionTest do
     end
   end
 
-  describe "staging" do
-    defp exdev(_from, _to), do: {:error, :exdev}
-
+  describe "copy first" do
     defp staging_names(cache), do: cache |> File.ls!() |> Enum.filter(&(&1 =~ ".tmp."))
 
-    test "copies the tree when the cache is on another filesystem", ctx do
+    defp real_copy(source, staging) do
+      {_, 0} = System.cmd("cp", ["-a", source <> "/.", staging])
+      :ok
+    end
+
+    test "copies the candidate, leaving the source tree in place", ctx do
       c = candidate(ctx.out)
+      source = Path.join([ctx.out, "build-cache", c["key"]])
 
       assert %{promoted: 1} =
                Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
-                 release_checksum: &hex_ok/2,
-                 rename: &exdev/2
+                 release_checksum: &hex_ok/2
                )
 
       assert File.read!(Path.join([ctx.cache, c["key"], "ebin/Elixir.Jason.beam"])) == "beam"
+      assert File.read!(Path.join(source, "ebin/Elixir.Jason.beam")) == "beam"
       assert staging_names(ctx.cache) == []
     end
 
@@ -509,40 +551,74 @@ defmodule Portal.BuildCache.PromotionTest do
 
       assert %{promoted: 0} =
                Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                 release_checksum: &hex_ok/2
+               )
+
+      assert File.ls!(ctx.cache) == []
+    end
+
+    # What a concurrent build holding an fd on the source could do after the
+    # copy: it changes the source, never what is checked and promoted.
+    test "a symlink added to the source after the copy does not reach the cache", ctx do
+      c = candidate(ctx.out)
+      source = Path.join([ctx.out, "build-cache", c["key"]])
+
+      copy = fn from, to ->
+        :ok = real_copy(from, to)
+        File.ln_s!("/etc/passwd", Path.join(from, "ebin/Evil.beam"))
+        :ok
+      end
+
+      assert %{promoted: 1} =
+               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
                  release_checksum: &hex_ok/2,
-                 rename: &exdev/2
+                 copy: copy
+               )
+
+      assert File.exists?(Path.join(source, "ebin/Evil.beam")) or
+               match?({:ok, _}, File.read_link(Path.join(source, "ebin/Evil.beam")))
+
+      refute match?({:ok, _}, File.lstat(Path.join([ctx.cache, c["key"], "ebin/Evil.beam"])))
+    end
+
+    # The walk reads the copy: whatever the source held when it was copied is
+    # what is checked, so a link swapped in before the copy is refused.
+    test "the tree walk checks the copy, not the source", ctx do
+      c = candidate(ctx.out)
+
+      copy = fn from, to ->
+        :ok = real_copy(from, to)
+        File.ln_s!("/etc/passwd", Path.join(to, "ebin/Evil.beam"))
+        :ok
+      end
+
+      assert %{promoted: 0, refused: 1} =
+               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                 release_checksum: &hex_ok/2,
+                 copy: copy
                )
 
       assert File.ls!(ctx.cache) == []
     end
 
     test "strips setuid, setgid, sticky and group/other write from the promoted tree", ctx do
-      for opts <- [[], [rename: &exdev/2]] do
-        out = Path.join(ctx.tmp, "out-#{System.unique_integer([:positive])}")
-        cache = Path.join(ctx.tmp, "cache-#{System.unique_integer([:positive])}")
-        c = candidate(out)
-        entry = Path.join([out, "build-cache", c["key"]])
-        File.chmod!(Path.join(entry, "ebin/Elixir.Jason.beam"), 0o4755)
-        File.chmod!(Path.join(entry, "ebin"), 0o777)
-        File.mkdir_p!(Path.join(entry, "lib/sticky"))
-        File.chmod!(Path.join(entry, "lib/sticky"), 0o1777)
+      c = candidate(ctx.out)
+      entry = Path.join([ctx.out, "build-cache", c["key"]])
+      File.chmod!(Path.join(entry, "ebin/Elixir.Jason.beam"), 0o4755)
+      File.chmod!(Path.join(entry, "ebin"), 0o777)
+      File.mkdir_p!(Path.join(entry, "lib/sticky"))
+      File.chmod!(Path.join(entry, "lib/sticky"), 0o1777)
 
-        assert %{promoted: 1} =
-                 Promotion.promote(
-                   result([c]),
-                   out,
-                   cache,
-                   "jason",
-                   "1.4.5",
-                   [release_checksum: &hex_ok/2] ++ opts
-                 )
+      assert %{promoted: 1} =
+               Promotion.promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+                 release_checksum: &hex_ok/2
+               )
 
-        promoted = Path.join(cache, c["key"])
-        mode = &(File.lstat!(Path.join(promoted, &1)).mode |> Bitwise.band(0o7777))
-        assert mode.("ebin/Elixir.Jason.beam") == 0o755, inspect(opts)
-        assert mode.("ebin") == 0o755, inspect(opts)
-        assert mode.("lib/sticky") == 0o755, inspect(opts)
-      end
+      promoted = Path.join(ctx.cache, c["key"])
+      mode = &(File.lstat!(Path.join(promoted, &1)).mode |> Bitwise.band(0o7777))
+      assert mode.("ebin/Elixir.Jason.beam") == 0o755
+      assert mode.("ebin") == 0o755
+      assert mode.("lib/sticky") == 0o755
     end
   end
 end
