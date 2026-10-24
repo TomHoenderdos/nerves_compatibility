@@ -186,14 +186,16 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp upsert_toolchain_build(result, build, opts, package_id) do
+    {status, reason} = toolchain_verdict(build["status"], build["reason"])
+
     ToolchainBuild
     |> Ash.Changeset.for_create(:upsert, %{
       package_id: package_id,
       version: get_in(result, ["package", "version"]) || "unknown",
       toolchain: opts.toolchain,
       builder_version: opts.builder_version,
-      status: Compatibility.Types.parse_status(build["status"]),
-      reason: build["reason"],
+      status: status,
+      reason: reason,
       elixir: build["elixir"],
       otp: build["otp"],
       image_digest: opts.image_digest,
@@ -206,6 +208,15 @@ defmodule Portal.Catalog.Ingestion do
     })
     |> Ash.create(domain: @domain)
   end
+
+  # The worker's `"error"` is a failed host compile, which is deterministic for
+  # this package, version and toolchain: it is stored as a `:fail` verdict so
+  # the live window for failures applies. `:error` rows mean the build never
+  # produced a result, and only `Portal.Workers.ToolchainBuild` writes those.
+  defp toolchain_verdict("error", reason),
+    do: {:fail, "compile failed: " <> (reason || "unknown")}
+
+  defp toolchain_verdict(status, reason), do: {Compatibility.Types.parse_status(status), reason}
 
   defp file_manifest(%{} = manifest), do: manifest
   defp file_manifest(_), do: nil

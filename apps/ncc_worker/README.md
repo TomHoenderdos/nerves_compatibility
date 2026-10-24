@@ -89,15 +89,16 @@ no Hex metadata fetch; `toolchain.nerves_bootstrap` is `"absent"`. `result.json`
 
 `deps_lock`, `package_checksum` and `compile_env` are present for `pass` and `skipped` and `null` for `error`;
 `file_manifest` only for `pass`, and those files are archived by SHA256 from `_build/host/lib/<package>`. A failed
-host compile is `status: "error"`: `result.json` is still written, but the exit code is `10` so the portal retries.
-A `deps.get` failure exits `10` without a result, as in a full run.
+host compile is `status: "error"`: `result.json` is still written and the exit code is `0`, so the portal ingests the
+verdict (as a `fail` row). A compile failure is deterministic for that package, version and toolchain, so it is
+recorded, not retried. A `deps.get` failure exits `10` without a result, as in a full run, and that is retried.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 
 ## Exit codes
 
 - `0` — success (some systems may still have failed; check `result.json`)
-- `10` — internal failure, or a toolchain run whose build errored
+- `10` — internal failure: no `result.json` was written (a toolchain run whose compile failed exits `0`)
 - `11` — policy violation (non-Hex dependency in `mix.lock`)
 
 ## Develop
