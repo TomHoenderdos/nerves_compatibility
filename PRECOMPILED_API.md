@@ -153,10 +153,12 @@ Status codes:
       package in the package's transitive dependency closure (the package
       itself excluded), as `name => {"version", "checksum"}`, where `checksum`
       is the outer Hex checksum, the last element of a `mix.lock` entry. `{}`
-      for a package with no dependencies. The worker resolves the package's
-      own optional dependencies too, so they appear here (decimal under
-      jason, jason under ecto); a client whose lock lacks one of them does not
-      match, because the package compiled differently with it loadable.
+      for a package with no dependencies. For a `pure_elixir` entry the
+      worker resolves the package's own optional dependencies too, when they
+      build, so they appear here (decimal under jason, jason under ecto); a
+      client whose lock lacks one of them does not match, because the package
+      compiled differently with it loadable. Per-system entries of a firmware
+      package are built without its optional dependencies.
     - `package_checksum` — the package's own outer Hex checksum from the
       build's `mix.lock`, a string, or `null` for runs from before it was
       recorded and for argus-only runs.
@@ -270,9 +272,10 @@ them.
   `build.elixir` and `build.otp` are `null` and a client should skip them.
 - Entries from runs before 2026-10-20 have no dependency lock stored, so their
   `build.deps` is `null` and a client should skip them.
-- Entries from runs before 2026-10-23 were built without the package's
-  optional dependencies, so their `build.deps` lacks them and a client whose
-  lock has them (decimal next to jason, for example) does not match.
+- `pure_elixir` entries from runs before 2026-10-23, and every per-system
+  entry, were built without the package's optional dependencies, so their
+  `build.deps` lacks them and a client whose lock has them (decimal next to
+  jason, for example) does not match.
 - Pure Elixir packages have `pure_elixir` entries only from runs after
   2026-10-20; earlier ones archived no files.
 - Entries from runs before 2026-10-23 list the release copy of each BEAM,

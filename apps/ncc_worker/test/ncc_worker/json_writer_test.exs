@@ -181,6 +181,35 @@ defmodule NccWorker.JsonWriterTest do
       refute Map.has_key?(decoded, "deps_lock")
     end
 
+    test "writes what the optional-deps pass did, and omits it for argus-only runs" do
+      dir = Path.join(System.tmp_dir!(), "jw_optional_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      base = %{
+        run_id: "r",
+        package: %{name: "p", version: "1"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{},
+        finished_at: "2026-10-20T00:00:00Z"
+      }
+
+      optional_deps = %{added: ["decimal"], dropped: [], reason: nil}
+      :ok = JsonWriter.write_result(dir, Map.put(base, :optional_deps, optional_deps))
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+
+      assert decoded["optional_deps"] == %{
+               "added" => ["decimal"],
+               "dropped" => [],
+               "reason" => nil
+             }
+
+      :ok = JsonWriter.write_result(dir, base)
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      refute Map.has_key?(decoded, "optional_deps")
+    end
+
     test "writes the package checksum, and omits it when unreadable" do
       dir = Path.join(System.tmp_dir!(), "jw_pkg_checksum_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)
