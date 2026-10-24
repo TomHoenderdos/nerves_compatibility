@@ -150,21 +150,28 @@ defmodule NccWorker.Project do
   ## Parameters
     - project_dir: Path to the project directory
     - package: Package information with name and optional version/requirement
+    - env: the environment `mix deps.get` runs in
+    - deps_get: runs `mix deps.get`; tests pass their own so they stay offline
 
   ## Returns
     - {:ok, :added} - Package was added successfully
     - {:error, reason} - Failed to add package
   """
-  @spec add_package(String.t(), map(), keyword() | list()) :: {:ok, :added} | {:error, term()}
+  @spec add_package(
+          String.t(),
+          map(),
+          keyword() | list(),
+          (String.t(), list() -> :ok | {:error, term()})
+        ) :: {:ok, :added} | {:error, term()}
   # Edits only the generated worker project mix.exs; the worker deliberately builds package code.
   # sobelow_skip ["Traversal.FileModule"]
-  def add_package(project_dir, package, env) do
+  def add_package(project_dir, package, env, deps_get \\ &run_deps_get/2) do
     mix_exs_path = Path.join(project_dir, "mix.exs")
 
     with {:ok, content} <- File.read(mix_exs_path),
          {:ok, new_content} <- inject_dep(content, package),
          :ok <- File.write(mix_exs_path, new_content),
-         :ok <- run_deps_get(project_dir, env) do
+         :ok <- deps_get.(project_dir, env) do
       {:ok, :added}
     end
   end
