@@ -108,7 +108,12 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     |> Ash.create!(domain: @domain)
   end
 
-  defp unique_name, do: "tcpkg_#{System.unique_integer([:positive])}"
+  # Random as well as unique: blobs are named after the package, and the
+  # artifact store outlives the test run, so a name reused by a later run would
+  # find its "unstaged" blob already stored.
+  defp unique_name,
+    do:
+      "tcpkg_#{System.unique_integer([:positive])}_#{Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)}"
 
   test "a passing build stores one row, its files and their memberships, and no run" do
     name = unique_name()
@@ -195,6 +200,20 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert tb.reason == "os-specific source"
     assert tb.file_manifest == nil
     assert memberships(tb) == []
+  end
+
+  test "the row is keyed on the queued version, the result's only without one" do
+    name = unique_name()
+    queued = Map.put(opts(files_dir_with([])), :version, "1.4.5")
+
+    assert {:ok, tb} = Ingestion.ingest_toolchain(skipped_result(name), queued)
+    assert tb.version == "1.4.5"
+
+    assert {:ok, fallback} =
+             Ingestion.ingest_toolchain(skipped_result(name), opts(files_dir_with([])))
+
+    assert fallback.version == "1.4.4"
+    refute fallback.id == tb.id
   end
 
   test "a failed host compile is stored as a fail verdict, not an error" do
@@ -320,6 +339,7 @@ defmodule Portal.Catalog.IngestionToolchainTest do
         "run_id" => "tc-worker",
         "image_digest" => "sha256:toolchain",
         "kind" => "toolchain",
+        "version" => "1.4.4",
         "toolchain" => "1.19/28",
         "builder_version" => 1
       }
@@ -332,6 +352,7 @@ defmodule Portal.Catalog.IngestionToolchainTest do
                |> Ash.read!(domain: @domain)
 
       assert tb.run_id == "tc-worker"
+      assert tb.version == "1.4.4"
       assert tb.toolchain == "1.19/28"
       assert length(memberships(tb)) == 2
       assert Ash.count!(Run, domain: @domain) == runs_before

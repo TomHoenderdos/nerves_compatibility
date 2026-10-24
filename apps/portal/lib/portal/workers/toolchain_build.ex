@@ -56,23 +56,40 @@ defmodule Portal.Workers.ToolchainBuild do
   alias Portal.Catalog.Package
   alias Portal.Workers.Ingest
 
+  @zero_digest "sha256:" <> String.duplicate("0", 64)
+
   @impl Oban.Worker
   def perform(%Oban.Job{args: args} = job) do
     case split_toolchain(args["toolchain"]) do
       {:ok, toolchain} ->
         image = local_image(args)
-        image_digest = builder().image_digest(image)
-        run_id = run_id(args["package"], args["version"])
-
-        with_crash_cleanup(job, run_id, fn ->
-          job
-          |> build(run_id, image, image_digest, toolchain)
-          |> handle(job, run_id, image_digest)
-        end)
+        build_on(job, toolchain, image, builder().image_digest(image))
 
       :error ->
         {:cancel, "malformed toolchain #{inspect(args["toolchain"])}"}
     end
+  end
+
+  # `Builder.image_digest/1` answers with the zero digest when it cannot
+  # inspect the image: it is missing on this host or docker is not answering.
+  # Neither is news about the package, so wait for the image rather than spend
+  # an attempt or write a row.
+  defp build_on(job, _toolchain, image, @zero_digest) do
+    Logger.warning(
+      "Toolchain build #{describe(job)} waiting: image #{inspect(image)} has no digest"
+    )
+
+    {:snooze, 900}
+  end
+
+  defp build_on(%Oban.Job{args: args} = job, toolchain, image, image_digest) do
+    run_id = run_id(args["package"], args["version"])
+
+    with_crash_cleanup(job, run_id, fn ->
+      job
+      |> build(run_id, image, image_digest, toolchain)
+      |> handle(job, run_id, image_digest)
+    end)
   end
 
   # The sweep runs on the web host and names the image from that node's
@@ -163,6 +180,9 @@ defmodule Portal.Workers.ToolchainBuild do
       "kind" => "toolchain",
       "run_id" => run_id,
       "image_digest" => image_digest,
+      # The row's version is the one the sweep queued, not whatever the result
+      # reports, so the row and the sweep's backlog agree on the identity.
+      "version" => args["version"],
       "toolchain" => args["toolchain"],
       "builder_version" => args["builder_version"]
     }

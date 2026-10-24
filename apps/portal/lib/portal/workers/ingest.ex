@@ -16,8 +16,8 @@ defmodule Portal.Workers.Ingest do
   the last attempt is spent. Retries therefore cost a database round trip, not a
   rebuild.
 
-  A toolchain build (`kind: "toolchain"`, with `toolchain` and
-  `builder_version`) goes to `Portal.Catalog.Ingestion.ingest_toolchain/2`
+  A toolchain build (`kind: "toolchain"`, with `toolchain`, `builder_version`
+  and the queued `version`) goes to `Portal.Catalog.Ingestion.ingest_toolchain/2`
   instead. It writes no `Run`, so none of a run's follow-up applies: no scan
   request to mark, no progress broadcast, no package metadata refresh.
   """
@@ -214,6 +214,7 @@ defmodule Portal.Workers.Ingest do
       image_digest: args["image_digest"],
       files_dir: build.files_dir,
       output_dir: build.output_dir,
+      version: args["version"],
       toolchain: args["toolchain"],
       builder_version: args["builder_version"]
     }
