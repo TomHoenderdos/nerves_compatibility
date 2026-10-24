@@ -100,7 +100,6 @@ defmodule NccWorker.BuildCache do
   """
 
   @cache_env "NCC_BUILD_CACHE"
-  @key_version "v2"
 
   @type entry :: %{name: String.t(), key: String.t(), dir: String.t(), shared: boolean()}
   @type plan :: %{root: String.t(), entries: [entry()]}
@@ -418,20 +417,16 @@ defmodule NccWorker.BuildCache do
 
   @doc false
   def key_for(name, target, closure, lock) do
-    [
-      @key_version,
-      "elixir=" <> System.version(),
-      "otp=" <> to_string(:erlang.system_info(:otp_release)),
-      "target=" <> target,
-      "dep=" <> name <> " " <> Map.get(lock, name, "unlocked")
-    ]
-    |> Enum.concat(
-      closure
-      |> Enum.map(&(&1 <> " " <> Map.get(lock, &1, "unlocked")))
-      |> Enum.sort()
-    )
-    |> Enum.join("\n")
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
+    {:ok, key} =
+      Compatibility.BuildCacheKey.key(%{
+        elixir: System.version(),
+        otp: to_string(:erlang.system_info(:otp_release)),
+        target: target,
+        dep: name,
+        dep_lock: Map.get(lock, name, "unlocked"),
+        closure: Enum.map(closure, &{&1, Map.get(lock, &1, "unlocked")})
+      })
+
+    key
   end
 end
