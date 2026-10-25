@@ -10,7 +10,9 @@ once the security workflows have passed on that commit (see `DEPLOY.md`,
 | `ssh-deploy.sh` | in CI | runs `deploy.sh <sha>` on the web host, or `deploy.sh <sha> builder` on the build host through it |
 | `deploy.sh` | on a host | fast-forwards the checkout, builds the release, migrates, restarts |
 | `build-release.sh` | on a host | builds the release in a container matching the host's glibc |
-| `builder-deploy.sh` | on the build host | sourced by `deploy.sh`: drains the build queues, swaps the worker image and warms the Nerves cache on it |
+| `builder-deploy.sh` | on the build host | sourced by `deploy.sh`: installs and loads the egress filter, drains the build queues, swaps the worker image and warms the Nerves cache on it |
+| `builder-egress-load.sh` | on the build host, as `ncc` | loads `builder-egress.nft` and `builder-egress-bridge.nft` into rootless dockerd's network namespace |
+| `builder-egress.nft`, `builder-egress-bridge.nft` | loaded by the above | the build egress policy |
 
 ## Hosts
 
@@ -51,6 +53,76 @@ for h in WEB_HOST BUILD_HOST; do
   ssh "root@$h" 'cd /opt/nerves_compatibility/src && git log --oneline -1'
 done
 ```
+
+## Egress filter
+
+A build may reach DNS and TCP 80/443 on public addresses, and nothing else:
+not the tailnet, not the web host's Postgres, not the LAN, over v4 or v6
+(isolation spec, section 3). The rules are table `inet ncc_egress`
+(`builder-egress.nft`) and, best effort, table `bridge ncc_egress`
+(`builder-egress-bridge.nft`, container to container, needs the
+`nft_meta_bridge` module). They live in the network namespace of rootless
+dockerd's bridge. rootlesskit runs with `--detach-netns`, so that is the
+namespace of `$XDG_RUNTIME_DIR/dockerd-rootless/child_pid`, not of
+`docker.pid`: dockerd itself sits in the host namespace.
+
+What a builder deploy does (`builder-deploy.sh`, as root):
+
+1. Before pausing the queues: copies both rulesets to `/etc/ncc-portal/`
+   (root, 644) and the loader to `/opt/nerves_compatibility/` (root, 755); on
+   Ubuntu writes `~ncc/.config/systemd/user/docker.service.d/ncc-egress.conf`
+   (`ExecStartPost=-…/builder-egress-load.sh`) and reloads the user manager;
+   runs the loader as `ncc`. Any failure stops the deploy with the running
+   release and queues untouched.
+2. Before moving the image tags: runs the new release's
+   `Portal.Builder.check_egress/0`; a failure stops the deploy there.
+
+The namespace, and the rules with it, is recreated whenever the daemon
+restarts. On Ubuntu the drop-in reloads them. On NixOS the docker user unit
+comes from the nix store, so the same `ExecStartPost` must come from the
+host's nix config (homelab repo); without it a daemon restart leaves the
+host refusing builds until the loader runs again.
+
+Every build first lists the table (`Portal.Builder.check_egress/0`). Where it
+is missing, `build/2` returns `{:error, :egress_filter_missing}` and the job
+snoozes 15 minutes; the portal also logs the state at boot.
+
+Load or reload by hand, as root:
+
+```bash
+cd /tmp && sudo -u ncc env XDG_RUNTIME_DIR="/run/user/$(id -u ncc)" \
+  /opt/nerves_compatibility/builder-egress-load.sh
+```
+
+Inspect:
+
+```bash
+cd /tmp && sudo -u ncc env XDG_RUNTIME_DIR="/run/user/$(id -u ncc)" sh -c \
+  'nsenter -U --preserve-credentials -n -t "$(cat "$XDG_RUNTIME_DIR/dockerd-rootless/child_pid")" nft list table inet ncc_egress'
+```
+
+Ask the running service, which is what builds see:
+
+```bash
+cd /var/lib/ncc && sudo -u ncc -H env RELEASE_TMP=/var/lib/ncc/tmp bash -c \
+  'set -a; . /etc/ncc-portal/portal.env; set +a; /opt/nerves_compatibility/portal/bin/portal rpc "IO.inspect(Portal.Builder.check_egress())"'
+```
+
+### Rollback
+
+1. Add `NCC_EGRESS_CHECK=0` to `/etc/ncc-portal/portal.env` and
+   `systemctl restart ncc-portal`. Builds run again at once, unfiltered, and
+   later deploys leave the filter alone.
+2. Delete the tables:
+
+   ```bash
+   cd /tmp && sudo -u ncc env XDG_RUNTIME_DIR="/run/user/$(id -u ncc)" sh -c \
+     'p=$(cat "$XDG_RUNTIME_DIR/dockerd-rootless/child_pid"); for f in inet bridge; do nsenter -U --preserve-credentials -n -t "$p" nft delete table "$f" ncc_egress; done'
+   ```
+
+3. On Ubuntu, so a daemon restart does not bring them back:
+   `rm ~ncc/.config/systemd/user/docker.service.d/ncc-egress.conf` and
+   `systemctl --user -M ncc@ daemon-reload`. On NixOS, revert the nix change.
 
 ## Advisory audit
 

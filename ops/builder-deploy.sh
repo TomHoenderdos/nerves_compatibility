@@ -3,6 +3,100 @@
 
 builder_paused=false
 
+# The build egress filter (isolation spec, section 3; ops/README.md "Egress
+# filter"). Installed from this checkout, which deploy.sh has already moved to
+# the commit being deployed.
+builder_src=${SRC:-/opt/nerves_compatibility/src}
+builder_portal_env=${NCC_PORTAL_ENV:-/etc/ncc-portal/portal.env}
+builder_egress_rules=/etc/ncc-portal/builder-egress.nft
+builder_egress_bridge_rules=/etc/ncc-portal/builder-egress-bridge.nft
+builder_egress_loader=/opt/nerves_compatibility/builder-egress-load.sh
+
+builder_ncc_home() { getent passwd ncc | cut -d: -f6; }
+builder_is_nixos() { [[ -e /etc/NIXOS ]]; }
+
+# `NCC_EGRESS_CHECK=0` in portal.env is the rollback: it turns the portal's
+# preflight off, and here it stops a deploy from putting the filter back.
+builder_egress_disabled() {
+  [[ -r "$builder_portal_env" ]] || return 1
+  (
+    set -a
+    # shellcheck source=/dev/null
+    . "$builder_portal_env"
+    [[ ${NCC_EGRESS_CHECK:-} == 0 ]]
+  )
+}
+
+builder_egress_dropin() {
+  cat <<EOF
+# Installed by ops/builder-deploy.sh. Rootless dockerd recreates its network
+# namespace on every start, and the build egress filter goes with it; reload
+# it once the daemon answers. "-": a failed load leaves the daemon up, and the
+# portal's preflight then refuses builds instead.
+[Service]
+ExecStartPost=-$builder_egress_loader
+EOF
+}
+
+# Called from an `if`, where `set -e` does not apply, so every step checks its
+# own status.
+builder_install_egress() {
+  if builder_egress_disabled; then
+    echo 'NCC_EGRESS_CHECK=0: leaving the build egress filter alone'
+    return 0
+  fi
+
+  local uid home dir tmp
+  uid=$(id -u ncc) || return 1
+  install -o root -g root -m 0644 "$builder_src/ops/builder-egress.nft" \
+    "$builder_egress_rules" || return 1
+  install -o root -g root -m 0644 "$builder_src/ops/builder-egress-bridge.nft" \
+    "$builder_egress_bridge_rules" || return 1
+  install -o root -g root -m 0755 "$builder_src/ops/builder-egress-load.sh" \
+    "$builder_egress_loader" || return 1
+
+  if builder_is_nixos; then
+    echo 'NixOS: the docker user unit is nix-managed; its ExecStartPost comes from the host nix config (ops/README.md, "Egress filter")'
+  else
+    home=$(builder_ncc_home) || return 1
+    [[ -n "$home" ]] || return 1
+    dir="$home/.config/systemd/user/docker.service.d"
+    install -d -o ncc -g "$(id -gn ncc)" -m 0755 "$dir" || return 1
+    tmp=$(mktemp) || return 1
+    builder_egress_dropin > "$tmp" || { rm -f "$tmp"; return 1; }
+    install -o root -g root -m 0644 "$tmp" "$dir/ncc-egress.conf" || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
+    systemctl --user -M ncc@ daemon-reload || return 1
+  fi
+
+  # Now as well: the namespace that exists today has no rules on a host's
+  # first deploy of this, and an older ruleset on every later one.
+  sudo -u ncc env XDG_RUNTIME_DIR="/run/user/$uid" "$builder_egress_loader" || return 1
+}
+
+# The new release's own preflight, so a release that would refuse every build
+# is never activated.
+builder_check_egress() {
+  if ! sudo -u ncc bash -c '
+    set -euo pipefail
+    cd /var/lib/ncc
+    set -a
+    . /etc/ncc-portal/portal.env
+    set +a
+    exec /opt/nerves_compatibility/portal/bin/portal eval "$1"
+  ' -- 'case Portal.Builder.check_egress() do
+    :ok ->
+      :ok
+
+    error ->
+      IO.puts(:stderr, inspect(error))
+      System.halt(1)
+  end'; then
+    echo 'refusing to activate: the new release finds no build egress filter (ops/README.md, "Egress filter")' >&2
+    return 1
+  fi
+}
+
 builder_rpc() {
   sudo -u ncc bash -c '
     set -euo pipefail
@@ -70,6 +164,14 @@ builder_prepare() {
   # Respect an operator's existing pause; never unpause it as a side effect.
   if [[ $(builder_queues_available) != true ]]; then
     echo 'builder queues are missing or already paused; refusing deployment' >&2
+    return 1
+  fi
+
+  # Before the pause: a host that cannot load its egress filter keeps its
+  # running release and queues, rather than draining into a release whose
+  # preflight would refuse every build.
+  if ! builder_install_egress; then
+    echo 'could not install the build egress filter; leaving the running release in place' >&2
     return 1
   fi
 
@@ -174,6 +276,7 @@ builder_kill_warm() {
 }
 
 builder_activate_image() {
+  builder_check_egress || return 1
   builder_docker image inspect ncc-worker:local >/dev/null
   local tags tag
   tags=$(builder_toolchain_tags)
