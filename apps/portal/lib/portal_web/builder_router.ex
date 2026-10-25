@@ -34,5 +34,7 @@ defmodule PortalWeb.BuilderRouter do
     pipe_through :builder_api
     post "/renew", EnrolmentController, :renew
     post "/status", EnrolmentController, :status
+    post "/jobs/claim", JobController, :claim
+    post "/jobs/:lease_id/heartbeat", JobController, :heartbeat
   end
 end
