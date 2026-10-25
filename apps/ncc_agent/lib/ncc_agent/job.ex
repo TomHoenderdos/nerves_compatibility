@@ -18,7 +18,7 @@ defmodule NccAgent.Job do
   require Logger
 
   alias Compatibility.Builder.Argv
-  alias NccAgent.{Caps, Client, Config, Docker, Heartbeat, NervesCache, Tar}
+  alias NccAgent.{Caps, Client, Config, Docker, Fs, Heartbeat, NervesCache, Tar}
 
   @runner_failure 20
   @default_timeout_sec 7200
@@ -149,8 +149,8 @@ defmodule NccAgent.Job do
 
     nerves = NervesCache.prepare(config, dirs.work)
     write_input(claim, dirs.work, nerves.env)
-    chown(config, Map.values(dirs), ["-R"])
-    chown(config, [Config.path(config, :hex_cache)], [])
+    Fs.chown(config, Map.values(dirs), ["-R"])
+    Fs.chown(config, [Config.path(config, :hex_cache)], [])
 
     spec = argv_spec(config, claim, dirs, nerves.env)
     argv = Argv.build(spec)
@@ -214,18 +214,6 @@ defmodule NccAgent.Job do
       end)
 
     File.write!(Path.join(work_dir, "input.json"), Jason.encode_to_iodata!(input))
-  end
-
-  defp chown(config, paths, flags) do
-    if config.build_user != Config.defaults().build_user do
-      case System.cmd("chown", flags ++ [config.build_user | paths], stderr_to_stdout: true) do
-        {_, 0} ->
-          :ok
-
-        {out, status} ->
-          Logger.warning("chown #{config.build_user} exited #{status}: #{String.trim(out)}")
-      end
-    end
   end
 
   # sobelow_skip ["Traversal.FileModule"]

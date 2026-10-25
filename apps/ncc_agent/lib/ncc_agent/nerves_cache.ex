@@ -19,13 +19,15 @@ defmodule NccAgent.NervesCache do
   require Logger
 
   alias Compatibility.Builder.Argv
-  alias NccAgent.{Config, Docker, Job}
+  alias NccAgent.{Config, Docker, Fs, Job}
 
   @artifacts "/work/nerves/artifacts"
   @dl "/work/nerves/dl"
   @container_cache_artifacts "/nerves-cache/artifacts"
   @warm_pairs_per_run 4
   @warm_timeout_ms 2 * 60 * 60 * 1000
+  @max_field_bytes 64
+  @name ~r/\A[a-z][a-z0-9_]*\z/
 
   @type prepared :: %{
           env: [{String.t(), String.t()}],
@@ -38,20 +40,29 @@ defmodule NccAgent.NervesCache do
   @doc """
   Creates the run's Nerves dirs under `work_dir`: the symlink farm onto the
   cache's artifacts and an empty dl dir. Returns the worker env for them.
+
+  The cache root and its `artifacts` must be real directories: a warm
+  container has them read-write and could leave a symlink (to `/etc`, say)
+  that the agent, as root, would otherwise list and chown. Anything else is
+  logged, removed (`File.rm_rf/1` removes a link, not its target) and
+  recreated empty; it is only a cache. Only directory entries are linked.
   """
   @spec prepare(Config.t(), Path.t()) :: prepared()
   # `work_dir` is the job's own scratch dir; the cache dir is the agent's.
   # sobelow_skip ["Traversal.FileModule"]
   def prepare(config, work_dir) do
-    cache_artifacts = Path.join(Config.path(config, :nerves_cache), "artifacts")
-    File.mkdir_p!(cache_artifacts)
+    cache = Config.path(config, :nerves_cache)
+    cache_artifacts = Path.join(cache, "artifacts")
+    ensure_real_dir!(cache)
+    ensure_real_dir!(cache_artifacts)
 
     artifacts = Path.join(work_dir, "nerves/artifacts")
     dl = Path.join(work_dir, "nerves/dl")
     File.mkdir_p!(artifacts)
     File.mkdir_p!(dl)
 
-    for entry <- File.ls!(cache_artifacts) |> Enum.sort() do
+    for entry <- File.ls!(cache_artifacts) |> Enum.sort(),
+        real_dir?(Path.join(cache_artifacts, entry)) do
       File.ln_s!(Path.join(@container_cache_artifacts, entry), Path.join(artifacts, entry))
     end
 
@@ -62,31 +73,60 @@ defmodule NccAgent.NervesCache do
     }
   end
 
+  # sobelow_skip ["Traversal.FileModule"]
+  defp ensure_real_dir!(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} ->
+        :ok
+
+      {:error, :enoent} ->
+        File.mkdir_p!(path)
+
+      other ->
+        Logger.error("#{path} is not a directory (#{inspect(other)}): replaced with an empty one")
+        File.rm_rf(path)
+        File.mkdir_p!(path)
+    end
+  end
+
+  defp real_dir?(path), do: match?({:ok, %File.Stat{type: :directory}}, File.lstat(path))
+
   @doc """
   The run's reported cache misses (`result["nerves_cache"]["misses"]`) with
-  string `name` and `version`, deduplicated, at most four.
+  well-formed `name` (`[a-z][a-z0-9_]*`) and `version` (a semantic
+  version), each at most 64 bytes, deduplicated. Untrusted: the worker
+  reports it. `allowed/2` bounds the count.
   """
   @spec misses(map() | nil) :: [pair()]
   def misses(%{"nerves_cache" => %{"misses" => misses}}) when is_list(misses) do
     misses
     |> Enum.flat_map(fn
       %{"name" => name, "version" => version} when is_binary(name) and is_binary(version) ->
-        [%{name: name, version: version}]
+        if valid_name?(name) and valid_version?(version),
+          do: [%{name: name, version: version}],
+          else: []
 
       _ ->
         []
     end)
     |> Enum.uniq()
-    |> Enum.take(@warm_pairs_per_run)
   end
 
   def misses(_result), do: []
 
-  @doc "The pairs whose name is in the portal's `allowlist`."
+  defp valid_name?(name), do: byte_size(name) <= @max_field_bytes and Regex.match?(@name, name)
+
+  defp valid_version?(version),
+    do: byte_size(version) <= @max_field_bytes and match?({:ok, _}, Version.parse(version))
+
+  @doc "The first four (`@warm_pairs_per_run`) pairs whose name is in the portal's `allowlist`."
   @spec allowed([pair()], [String.t()] | nil) :: [pair()]
   def allowed(misses, allowlist) when is_list(allowlist) do
     allowed = MapSet.new(allowlist, &to_string/1)
-    Enum.filter(misses, &MapSet.member?(allowed, &1.name))
+
+    misses
+    |> Enum.filter(&MapSet.member?(allowed, &1.name))
+    |> Enum.take(@warm_pairs_per_run)
   end
 
   def allowed(_misses, _allowlist), do: []
@@ -119,8 +159,8 @@ defmodule NccAgent.NervesCache do
       write_input(claim, run_id, pairs, dirs.work)
 
       cache = Config.path(config, :nerves_cache)
-      chown(config, Map.values(dirs), ["-R"])
-      chown(config, [cache, Path.join(cache, "artifacts")], [])
+      Fs.chown(config, Map.values(dirs), ["-R"])
+      Fs.chown(config, [cache, Path.join(cache, "artifacts")], [])
 
       spec =
         config
@@ -180,17 +220,5 @@ defmodule NccAgent.NervesCache do
       })
 
     File.write!(Path.join(work_dir, "input.json"), Jason.encode_to_iodata!(input))
-  end
-
-  defp chown(config, paths, flags) do
-    if config.build_user != Config.defaults().build_user do
-      case System.cmd("chown", flags ++ [config.build_user | paths], stderr_to_stdout: true) do
-        {_, 0} ->
-          :ok
-
-        {out, status} ->
-          Logger.warning("chown #{config.build_user} exited #{status}: #{String.trim(out)}")
-      end
-    end
   end
 end
