@@ -60,3 +60,6 @@ config :phoenix,
   sort_verified_routes_query_params: true
 
 config :portal, Portal.Builders.Images, path: Path.join(System.tmp_dir!(), "ncc-test-images.json")
+
+# Tests that need a CA point this at their own tmp dir.
+config :portal, Portal.Builders.CA, key_path: nil

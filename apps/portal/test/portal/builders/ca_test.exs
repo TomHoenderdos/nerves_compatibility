@@ -1,0 +1,103 @@
+defmodule Portal.Builders.CATest do
+  use ExUnit.Case, async: false
+
+  alias Portal.Builders.CA
+
+  setup do
+    dir = Path.join(System.tmp_dir!(), "ncc-ca-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    key_path = Path.join(dir, "ca-key.pem")
+    previous = Application.get_env(:portal, CA, [])
+    Application.put_env(:portal, CA, Keyword.put(previous, :key_path, key_path))
+
+    on_exit(fn ->
+      Application.put_env(:portal, CA, previous)
+      File.rm_rf(dir)
+    end)
+
+    %{dir: dir, key_path: key_path}
+  end
+
+  defp csr_pem do
+    key = X509.PrivateKey.new_ec(:secp256r1)
+    X509.CSR.new(key, "/CN=ignored") |> X509.CSR.to_pem()
+  end
+
+  test "init writes a P-256 CA with key mode 600 and refuses to overwrite", %{key_path: key_path} do
+    assert {:ok, %{key_path: ^key_path, cert_path: cert_path}} = CA.init(key_path)
+    assert File.stat!(key_path).mode |> Bitwise.band(0o777) == 0o600
+    assert {:ok, %{key: _, cert: cert}} = CA.load()
+    assert String.length(CA.fingerprint(cert)) == 64
+    assert CA.prefix(cert) == String.slice(CA.fingerprint(cert), 0, 16)
+    assert {:ok, "-----BEGIN CERTIFICATE-----" <> _} = CA.cert_pem()
+    assert File.exists?(cert_path)
+    assert {:error, :exists} = CA.init(key_path)
+  end
+
+  test "unconfigured and missing CAs are distinguishable", %{key_path: key_path} do
+    assert {:error, :missing} = CA.load()
+    Application.put_env(:portal, CA, [])
+    assert {:error, :not_configured} = CA.load()
+    refute File.exists?(key_path)
+  end
+
+  test "issues a one-year client certificate naming the builder, ignoring the CSR subject", %{
+    key_path: key_path
+  } do
+    {:ok, _} = CA.init(key_path)
+
+    assert {:ok, %{pem: pem, fingerprint: fp, expires_at: expires}} =
+             CA.issue_client(csr_pem(), "box-a", "b1d2")
+
+    cert = X509.Certificate.from_pem!(pem)
+    assert X509.Certificate.subject(cert, "CN") == ["box-a"]
+    assert X509.Certificate.subject(cert, "serialNumber") == ["b1d2"]
+    assert fp == CA.fingerprint(cert)
+    assert DateTime.diff(expires, DateTime.utc_now(), :day) in 364..366
+    assert CA.expires_at(cert) == expires
+    assert X509.Certificate.extension(cert, :subject_alt_name) == nil
+
+    {:ok, %{cert: ca}} = CA.load()
+    assert :public_key.pkix_is_issuer(X509.Certificate.to_der(cert), X509.Certificate.to_der(ca))
+
+    assert {:ok, _} =
+             :public_key.pkix_path_validation(
+               X509.Certificate.to_der(ca),
+               [X509.Certificate.to_der(cert)],
+               []
+             )
+  end
+
+  test "a CSR with a broken signature is refused", %{key_path: key_path} do
+    {:ok, _} = CA.init(key_path)
+
+    assert {:error, :invalid_csr} =
+             CA.issue_client(
+               "-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----\n",
+               "x",
+               "y"
+             )
+  end
+
+  test "ensure_server_cert issues a SAN certificate once and reuses it", %{
+    key_path: key_path,
+    dir: dir
+  } do
+    {:ok, _} = CA.init(key_path)
+
+    assert {:ok, %{certfile: certfile, keyfile: keyfile}} =
+             CA.ensure_server_cert("portal.example")
+
+    assert certfile == Path.join(dir, "server.pem")
+    assert File.stat!(keyfile).mode |> Bitwise.band(0o777) == 0o600
+    cert = certfile |> File.read!() |> X509.Certificate.from_pem!()
+    assert X509.Certificate.subject(cert, "CN") == ["portal.example"]
+
+    {:Extension, _, _, [dNSName: ~c"portal.example"]} =
+      X509.Certificate.extension(cert, :subject_alt_name)
+
+    first = File.read!(certfile)
+    assert {:ok, _} = CA.ensure_server_cert("portal.example")
+    assert File.read!(certfile) == first
+  end
+end

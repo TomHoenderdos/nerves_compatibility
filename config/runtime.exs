@@ -129,6 +129,9 @@ if portal_available? do
 
   config :portal, :precompiled_signing, key_path: System.get_env("PRECOMPILED_SIGNING_KEY")
 
+  if key = System.get_env("NCC_BUILDER_CA_KEY"),
+    do: config(:portal, Portal.Builders.CA, key_path: key)
+
   # Lets a separate deployment of this codebase send its bug reports to its own
   # tracker rather than to whichever repo the compile-time default names.
   if issues_url = System.get_env("NCC_ISSUES_URL") do

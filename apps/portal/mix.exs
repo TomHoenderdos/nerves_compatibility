@@ -69,6 +69,7 @@ defmodule Portal.MixProject do
       {:compatibility, in_umbrella: true},
       {:argon2_elixir, "~> 4.1"},
       {:wax_, "~> 0.7"},
+      {:x509, "~> 0.9"},
       {:nimble_totp, "~> 1.0"},
       {:eqrcode, "~> 0.2"},
       {:req, "~> 0.7"},
