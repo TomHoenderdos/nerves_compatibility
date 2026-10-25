@@ -130,4 +130,23 @@ defmodule NccWorker.DepsLockTest do
     {map, _} = Code.eval_string(lock)
     map |> Map.fetch!(:spark) |> elem(7)
   end
+
+  describe "versions/1" do
+    test "maps every Hex entry to its locked version and skips anything else", %{dir: dir} do
+      File.write!(Path.join(dir, "mix.lock"), """
+      %{
+        "nerves_system_rpi4": {:hex, :nerves_system_rpi4, "2.0.0", "i", [:mix], [], "hexpm", "o"},
+        "jason": {:hex, :jason, "1.4.4", "i", [:mix], [], "hexpm", "o"},
+        "local": {:git, "https://example.invalid/local.git", "abc", []},
+      }
+      """)
+
+      assert DepsLock.versions(dir) ==
+               {:ok, %{"nerves_system_rpi4" => "2.0.0", "jason" => "1.4.4"}}
+    end
+
+    test "a missing lock is an error", %{dir: dir} do
+      assert DepsLock.versions(dir) == :error
+    end
+  end
 end
