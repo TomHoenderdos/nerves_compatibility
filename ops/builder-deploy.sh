@@ -131,8 +131,13 @@ builder_docker() {
 # untrusted entries in place and its trust marker unwritten, so the next
 # deploy wipes and warms again; one that fails after it leaves builds
 # extracting what they miss, which Portal.Workers.WarmNerves then fills.
+# A timeout (124) kills the eval BEAM and with it Portal.Builder's own wall
+# clock, while `docker run --rm` goes on writing the cache with nothing left
+# to stop it, and its ncc- name keeps Portal.Workers.Sweep from evicting;
+# builder_kill_warm stops it.
 builder_warm_nerves() {
-  if ! sudo -u ncc bash -c '
+  local status=0
+  sudo -u ncc bash -c '
     set -euo pipefail
     cd /var/lib/ncc
     set -a
@@ -147,8 +152,24 @@ builder_warm_nerves() {
     error ->
       IO.puts(:stderr, inspect(error))
       System.halt(1)
-  end'; then
+  end' || status=$?
+  if [ "$status" -ne 0 ]; then
+    if [ "$status" -eq 124 ]; then
+      builder_kill_warm
+    fi
     echo 'warning: deploy-time Nerves cache warm failed; the cache may still hold untrusted entries, and the warm will be retried next deploy' >&2
+  fi
+}
+
+# Portal.Builder names a warm's container ncc-warm_nerves-<ms>
+# (Portal.NervesCache.deploy_warm/1, container_name/1).
+builder_kill_warm() {
+  local ids
+  ids=$(builder_docker ps -q --filter 'name=^ncc-warm_nerves-') || ids=''
+  if [ -n "$ids" ]; then
+    # One id per line; word splitting is what passes them as arguments.
+    # shellcheck disable=SC2086
+    builder_docker kill $ids >/dev/null || echo 'warning: could not kill the timed-out warm container' >&2
   fi
 }
 

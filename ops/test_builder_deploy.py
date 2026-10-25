@@ -101,20 +101,29 @@ test -z "${DOCKER_HOST+x}"
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
-    def run_warm(self, status):
+    def run_warm(self, status, running=""):
         script = r'''
 set -euo pipefail
 source "$HELPER"
 sudo() { printf '%s\n' "$@" > "$EVENTS"; return "$WARM_STATUS"; }
+builder_docker() {
+  echo "docker $*" >> "$DOCKER_EVENTS"
+  if [ "$1" = ps ]; then printf '%s' "$RUNNING"; fi
+}
 builder_warm_nerves
 '''
         with tempfile.TemporaryDirectory() as directory:
             events = Path(directory) / "events"
+            docker_events = Path(directory) / "docker"
             result = subprocess.run(
                 ["bash", "-c", script],
                 env={**os.environ, "HELPER": str(HELPER), "EVENTS": str(events),
+                     "DOCKER_EVENTS": str(docker_events), "RUNNING": running,
                      "WARM_STATUS": str(status)},
                 capture_output=True, text=True, timeout=5,
+            )
+            self.docker_calls = (
+                docker_events.read_text().splitlines() if docker_events.exists() else []
             )
             return result, events.read_text() if events.exists() else ""
 
@@ -132,6 +141,27 @@ builder_warm_nerves
         self.assertIn("Nerves cache warm failed", result.stderr)
         self.assertIn("may still hold untrusted entries", result.stderr)
         self.assertIn("retried next deploy", result.stderr)
+
+    # Killing the eval BEAM ends Portal.Builder's own wall clock; docker run
+    # would go on writing the cache, and its ncc- name stalls Sweep.
+    def test_a_timed_out_warm_kills_its_container(self):
+        result, _args = self.run_warm(124, running="abc123\ndef456\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.docker_calls,
+            ["docker ps -q --filter name=^ncc-warm_nerves-", "docker kill abc123 def456"],
+        )
+        self.assertIn("Nerves cache warm failed", result.stderr)
+
+    def test_a_timed_out_warm_with_no_container_left_kills_nothing(self):
+        result, _args = self.run_warm(124)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.docker_calls, ["docker ps -q --filter name=^ncc-warm_nerves-"])
+
+    def test_a_warm_that_failed_otherwise_touches_no_container(self):
+        result, _args = self.run_warm(1, running="abc123\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.docker_calls, [])
 
     def test_activation_warms_the_cache_after_moving_the_tags(self):
         script = r'''
