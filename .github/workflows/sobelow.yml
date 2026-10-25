@@ -32,6 +32,8 @@ jobs:
             flags: ""
           - app: ncc_worker
             flags: --no-router
+          - app: ncc_agent
+            flags: --no-router
           - app: compatibility
             flags: --no-router
     steps:
