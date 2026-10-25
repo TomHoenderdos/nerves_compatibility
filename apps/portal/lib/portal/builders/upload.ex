@@ -6,7 +6,9 @@ defmodule Portal.Builders.Upload do
   `Portal.Builder.load_run/1` returns, so `Portal.Workers.Ingest` runs the same
   ingestion for a remote build as for a local one.
   """
-  alias Portal.ArtifactStore
+  require Logger
+
+  alias Portal.{ArtifactStore, Repo}
   alias Portal.Builders.{Lease, Leases, TarStream}
 
   @sha ~r/\A[0-9a-f]{64}\z/
@@ -27,7 +29,9 @@ defmodule Portal.Builders.Upload do
 
     Map.merge(Leases.upload_caps(), %{
       max_result_bytes: Keyword.get(config, :max_result_bytes, 8_388_608),
-      max_logs_bytes: Keyword.get(config, :max_logs_bytes, 67_108_864)
+      max_logs_bytes: Keyword.get(config, :max_logs_bytes, 67_108_864),
+      max_log_bytes: Keyword.get(config, :max_log_bytes, 16_777_216),
+      max_logs_total_bytes: Keyword.get(config, :max_logs_total_bytes, 268_435_456)
     })
   end
 
@@ -74,8 +78,13 @@ defmodule Portal.Builders.Upload do
   :done | {:error, reason}`), verifying each entry's sha as it is written.
   An entry whose bytes do not hash to its name, or that is over
   `max_file_bytes`, is listed under `bad`; an entry whose name is not a sha,
-  or any entry that is not a plain file, refuses the whole batch. Every byte
-  received counts against the lease's total, refused batch or not.
+  or any entry that is not a plain file, refuses the whole batch.
+
+  The declared `content_length` is reserved against the lease's total in one
+  guarded `UPDATE` before the body is read, so concurrent batches on one
+  lease cannot overrun `max_total_bytes` together; once read, the
+  reservation is corrected to the bytes actually received, refused batch or
+  not.
   """
   @spec receive_batch(Lease.t(), (-> term()), keyword()) ::
           {:ok, %{stored: [String.t()], bad: [String.t()], bytes: non_neg_integer()}}
@@ -85,49 +94,141 @@ defmodule Portal.Builders.Upload do
     length = Keyword.fetch!(opts, :content_length)
 
     cond do
-      length > caps.max_batch_bytes -> {:error, :batch_too_large}
-      lease.bytes_uploaded + length > caps.max_total_bytes -> {:error, :total_exceeded}
-      disk_full?() -> {:error, :insufficient_disk}
-      true -> stream_batch(lease, read_chunk, length, caps)
+      length > caps.max_batch_bytes ->
+        {:error, :batch_too_large}
+
+      disk_full?() ->
+        {:error, :insufficient_disk}
+
+      true ->
+        with :ok <- reserve(lease, length, caps.max_total_bytes),
+             do: reserved_batch(lease, read_chunk, length, caps)
     end
+  end
+
+  defp reserved_batch(lease, read_chunk, length, caps) do
+    {result, bytes} = stream_batch(lease, read_chunk, length, caps)
+    settle(lease, bytes - length)
+
+    case result do
+      {:ok, summary} -> {:ok, %{summary | bytes: bytes}}
+      error -> error
+    end
+  end
+
+  # These two statements guard on the attempt the way `Leases.add_bytes/2`
+  # does; they could move into `Portal.Builders.Leases`.
+  @reserve_sql """
+  UPDATE builder_leases
+  SET bytes_uploaded = bytes_uploaded + $3::bigint, updated_at = now()
+  WHERE id = $1 AND builder_id = $2 AND run_id = $4
+    AND state IN ('leased', 'uploading')
+    AND bytes_uploaded + $3::bigint <= $5::bigint
+  RETURNING bytes_uploaded
+  """
+
+  @settle_sql """
+  UPDATE builder_leases
+  SET bytes_uploaded = bytes_uploaded + $2::bigint, updated_at = now()
+  WHERE id = $1 AND run_id = $3
+  """
+
+  defp reserve(%Lease{builder_id: builder_id, run_id: run_id}, _length, _max)
+       when is_nil(builder_id) or is_nil(run_id),
+       do: {:error, :not_held}
+
+  defp reserve(%Lease{} = lease, length, max) do
+    params = [
+      Ecto.UUID.dump!(lease.id),
+      Ecto.UUID.dump!(lease.builder_id),
+      length,
+      lease.run_id,
+      max
+    ]
+
+    case Repo.query(@reserve_sql, params) do
+      {:ok, %{num_rows: 1}} ->
+        :ok
+
+      {:ok, %{num_rows: 0}} ->
+        if held?(lease), do: {:error, :total_exceeded}, else: {:error, :not_held}
+
+      {:error, reason} ->
+        db_failed(lease, reason)
+    end
+  end
+
+  defp held?(%Lease{id: id, builder_id: builder_id, run_id: run_id}),
+    do: match?({:ok, %Lease{run_id: ^run_id}}, Leases.held(id, builder_id))
+
+  defp settle(lease, delta) do
+    if delta != 0 do
+      case Repo.query(@settle_sql, [Ecto.UUID.dump!(lease.id), delta, lease.run_id]) do
+        {:ok, _} -> :ok
+        {:error, reason} -> db_failed(lease, reason)
+      end
+    end
+
+    Portal.AdminEvents.broadcast(:builders)
+  end
+
+  defp db_failed(lease, reason) do
+    Logger.error("upload could not update lease #{lease.id}: #{inspect(reason)}")
+    {:error, :update_failed}
   end
 
   # sobelow_skip ["Traversal.FileModule"]
   defp stream_batch(lease, read_chunk, length, caps) do
     dir = files_dir(lease.id)
-    File.mkdir_p!(dir)
-    state = TarStream.new(callbacks(dir, caps.max_file_bytes))
 
-    case pump(read_chunk, state, 0, length) do
-      {:ok, state, bytes} -> conclude(lease, dir, state, bytes)
-      {:error, reason, state, bytes} -> refuse(lease, dir, state, bytes, reason)
+    case File.mkdir_p(dir) do
+      :ok ->
+        state = TarStream.new(callbacks(dir, caps.max_file_bytes))
+
+        case pump(read_chunk, state, 0, length) do
+          {:ok, state, bytes} -> {conclude(dir, state), bytes}
+          {:error, reason, state, open, bytes} -> {refuse(dir, state, open, reason), bytes}
+        end
+
+      {:error, reason} ->
+        {{:error, io_error(reason)}, 0}
     end
   end
 
-  defp conclude(lease, dir, state, bytes) do
-    with {:ok, results} <- TarStream.finish(state),
-         {:ok, _} <- Leases.add_bytes(lease, bytes) do
-      stored = for {:stored, sha} <- results, do: sha
-      bad = for {kind, sha, _} <- results, kind in [:bad, :skipped], do: sha
-      {:ok, %{stored: stored, bad: Enum.uniq(bad), bytes: bytes}}
-    else
-      {:error, :truncated} -> refuse(lease, dir, state, bytes, :truncated)
-      {:error, reason} -> {:error, reason}
+  defp conclude(dir, state) do
+    case TarStream.finish(state) do
+      {:ok, results} ->
+        stored = for {:stored, sha} <- results, do: sha
+        bad = for {kind, sha, _} <- results, kind in [:bad, :skipped], do: sha
+        {:ok, %{stored: stored, bad: Enum.uniq(bad), bytes: nil}}
+
+      {:error, reason} ->
+        refuse(dir, state, nil, reason)
     end
   end
 
-  # A refused batch keeps no partial file, and its bytes still count. The
-  # open file is the `.incoming-*` path `callbacks/2` built under `dir`.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp refuse(lease, dir, state, bytes, reason) do
-    with {_name, tmp, fd, _hash} <- state && TarStream.pending(state) do
-      File.close(fd)
-      File.rm(tmp)
+  # A refused batch keeps no partial file: the entry the reader had open
+  # (`TarStream.pending/1`), the one a failed write names, and any other
+  # `.incoming-*` are removed.
+  defp refuse(dir, state, open, reason) do
+    case TarStream.pending(state) do
+      {_name, tmp, fd, _hash} -> close_open({fd, tmp})
+      nil -> :ok
     end
 
+    close_open(open)
     sweep_incoming(dir)
-    if bytes > 0, do: Leases.add_bytes(lease, bytes)
     {:error, reason}
+  end
+
+  defp close_open(nil), do: :ok
+
+  # `tmp` is an `.incoming-*` path `open_incoming/1` built.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp close_open({fd, tmp}) do
+    if fd, do: File.close(fd)
+    File.rm(tmp)
+    :ok
   end
 
   defp pump(read_chunk, state, bytes, length) do
@@ -143,61 +244,91 @@ defmodule Portal.Builders.Upload do
         {:ok, state, bytes}
 
       {:error, reason} ->
-        {:error, reason, state, bytes}
+        {:error, reason, state, nil, bytes}
     end
   end
 
-  # The `start` callback throws for an entry that is not a sha, so the throw
-  # crosses `TarStream`; it is caught here, where no entry is open.
+  # The callbacks `throw` to refuse the batch from inside `TarStream` (an
+  # entry that is not a sha, a failed write); caught here with whatever file
+  # the failure left open.
   defp feed(state, chunk, bytes, length) do
     bytes = bytes + byte_size(chunk)
 
     if bytes > length do
-      {:error, :batch_too_large, state, bytes}
+      {:error, :batch_too_large, state, nil, bytes}
     else
       try do
         case TarStream.feed(state, chunk) do
           {:ok, state} -> {:ok, state, bytes}
-          {:error, reason} -> {:error, reason, state, bytes}
+          {:error, reason} -> {:error, reason, state, nil, bytes}
         end
       catch
-        {:unsupported_entry, name} -> {:error, {:unsupported_entry, name}, nil, bytes}
+        {:upload_abort, reason, open} -> {:error, reason, state, open, bytes}
       end
     end
   end
 
+  defp abort(reason, open), do: throw({:upload_abort, reason, open})
+
+  defp io_error(:enospc), do: :insufficient_disk
+  defp io_error(reason), do: {:io, reason}
+
   # sobelow_skip ["Traversal.FileModule"]
+  defp open_incoming(dir) do
+    rand = Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+    tmp = Path.join(dir, ".incoming-#{rand}")
+
+    case File.open(tmp, [:write, :binary, :raw, :exclusive]) do
+      {:ok, fd} -> {fd, tmp}
+      {:error, reason} -> abort(io_error(reason), nil)
+    end
+  end
+
+  defp write_chunk(fd, tmp, data) do
+    case :file.write(fd, data) do
+      :ok -> :ok
+      {:error, reason} -> abort(io_error(reason), {fd, tmp})
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp publish(fd, tmp, dest) do
+    with :ok <- File.close(fd),
+         :ok <- File.chmod(tmp, 0o644),
+         :ok <- File.rename(tmp, dest) do
+      :ok
+    else
+      {:error, reason} -> abort(io_error(reason), {nil, tmp})
+    end
+  end
+
   defp callbacks(dir, max_file_bytes) do
     %{
       start: fn name, size ->
         cond do
           not Regex.match?(@sha, name) ->
-            throw({:unsupported_entry, name})
+            abort({:unsupported_entry, name}, nil)
 
           size > max_file_bytes ->
             {:skip, :too_large}
 
           true ->
-            rand = Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
-            tmp = Path.join(dir, ".incoming-#{name}-#{rand}")
-            fd = File.open!(tmp, [:write, :binary, :raw, :exclusive])
+            {fd, tmp} = open_incoming(dir)
             {:ok, {name, tmp, fd, :crypto.hash_init(:sha256)}}
         end
       end,
       data: fn {name, tmp, fd, hash}, data ->
-        :ok = IO.binwrite(fd, data)
+        write_chunk(fd, tmp, data)
         {name, tmp, fd, :crypto.hash_update(hash, data)}
       end,
       finish: fn {name, tmp, fd, hash} ->
-        :ok = File.close(fd)
         actual = hash |> :crypto.hash_final() |> Base.encode16(case: :lower)
 
         if actual == name do
-          File.chmod!(tmp, 0o644)
-          File.rename!(tmp, Path.join(dir, name))
+          publish(fd, tmp, Path.join(dir, name))
           {:stored, name}
         else
-          File.rm(tmp)
+          close_open({fd, tmp})
           {:bad, name, :checksum_mismatch}
         end
       end
@@ -216,25 +347,47 @@ defmodule Portal.Builders.Upload do
     end
   end
 
-  @doc "Write `result.json`, the per-system logs and the runner log for ingest."
+  @doc """
+  Write `result.json`, the per-system logs and the runner log for ingest.
+  The logs directory starts empty on every call, so an attempt never
+  inherits a previous attempt's logs.
+  """
   @spec write_outputs(String.t(), map()) ::
           :ok
-          | {:error, :result_too_large | :result_unparsable | :logs_too_large | :logs_invalid}
+          | {:error,
+             :result_too_large
+             | :result_unparsable
+             | :logs_too_large
+             | :logs_invalid
+             | :insufficient_disk
+             | {:io, term()}}
   # sobelow_skip ["Traversal.FileModule"]
   def write_outputs(lease_id, %{result: %Plug.Upload{} = result} = parts) do
     caps = caps()
     out = out_dir(lease_id)
     logs_dir = Path.join(out, "logs")
-    File.mkdir_p!(logs_dir)
     _ = File.rm(Path.join(out, "result.json"))
+    _ = File.rm_rf(logs_dir)
 
-    with :ok <- size_ok(result.path, caps.max_result_bytes, :result_too_large),
+    with :ok <- mkdir(logs_dir),
+         :ok <- size_ok(result.path, caps.max_result_bytes, :result_too_large),
          {:ok, bytes} <- read_result(result.path),
          {:ok, _} <- decode(bytes),
-         :ok <- write_logs(Map.get(parts, :logs), logs_dir, caps.max_logs_bytes),
+         :ok <- write_logs(Map.get(parts, :logs), logs_dir, caps),
          :ok <- write_runner_log(Map.get(parts, :runner_log), Path.join(out, "runner.log")) do
       # result.json last: `load_run/1` only sees a run whose parts all landed.
-      File.write!(Path.join(out, "result.json"), bytes)
+      case File.write(Path.join(out, "result.json"), bytes) do
+        :ok -> :ok
+        {:error, reason} -> {:error, io_error(reason)}
+      end
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp mkdir(dir) do
+    case File.mkdir_p(dir) do
+      :ok -> :ok
+      {:error, reason} -> {:error, io_error(reason)}
     end
   end
 
@@ -262,39 +415,132 @@ defmodule Portal.Builders.Upload do
     end
   end
 
-  defp write_logs(nil, _dir, _max), do: :ok
+  defp write_logs(nil, _dir, _caps), do: :ok
 
+  # `logs.tar.gz` is never handed to `:erl_tar`: it is inflated chunk by
+  # chunk into `TarStream`, which takes plain file entries only, and each
+  # entry is written to a fresh `.incoming-*` file and renamed to its
+  # (validated, not yet present) name. Sizes are capped on the inflated
+  # bytes, per entry and in total, so a small archive cannot inflate past
+  # them. Any refusal removes everything written.
   # sobelow_skip ["Traversal.FileModule"]
-  defp write_logs(%Plug.Upload{path: path}, dir, max) do
-    archive = String.to_charlist(path)
+  defp write_logs(%Plug.Upload{path: path}, dir, caps) do
+    with :ok <- size_ok(path, caps.max_logs_bytes, :logs_too_large) do
+      case inflate_logs(path, dir, caps) do
+        :ok ->
+          :ok
 
-    with :ok <- size_ok(path, max, :logs_too_large),
-         {:ok, entries} <- :erl_tar.table(archive, [:compressed]),
-         names = Enum.map(entries, &to_string/1),
-         true <- Enum.all?(names, &Regex.match?(@log_name, &1)),
-         :ok <-
-           :erl_tar.extract(archive, [
-             :compressed,
-             {:cwd, String.to_charlist(dir)},
-             {:files, Enum.map(names, &String.to_charlist/1)}
-           ]) do
-      drop_irregular(dir, names)
-    else
-      {:error, :logs_too_large} -> {:error, :logs_too_large}
-      _ -> {:error, :logs_invalid}
+        {:error, reason} ->
+          _ = File.rm_rf(dir)
+          {:error, reason}
+      end
     end
   end
 
-  # Defence in depth: the names were checked, but only regular files stay.
+  # `path` is the Plug.Upload temp file Plug.Parsers wrote.
   # sobelow_skip ["Traversal.FileModule"]
-  defp drop_irregular(dir, names) do
-    for name <- names,
-        path = Path.join(dir, name),
-        not match?({:ok, %File.Stat{type: :regular}}, File.lstat(path)) do
-      File.rm_rf(path)
+  defp inflate_logs(path, dir, caps) do
+    z = :zlib.open()
+
+    try do
+      :ok = :zlib.inflateInit(z, 31)
+      state = TarStream.new(log_callbacks(dir, caps.max_log_bytes))
+      max = caps.max_logs_total_bytes
+
+      path
+      |> File.stream!(65_536)
+      |> Enum.reduce_while({:ok, state, 0}, fn chunk, {:ok, state, n} ->
+        case inflate(z, chunk, state, n, max) do
+          {:ok, state, n} -> {if(TarStream.done?(state), do: :halt, else: :cont), {:ok, state, n}}
+          error -> {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, state, _n} -> finish_logs(state)
+        {:error, reason} -> {:error, reason}
+      end
+    catch
+      {:upload_abort, reason, open} ->
+        close_open(open)
+        {:error, log_error(reason)}
+
+      :error, _ ->
+        {:error, :logs_invalid}
+    after
+      :zlib.close(z)
+    end
+  end
+
+  defp inflate(z, input, state, n, max) do
+    case :zlib.safeInflate(z, input) do
+      {status, out} when status in [:continue, :finished] ->
+        bin = IO.iodata_to_binary(out)
+        feed_logs(z, status, bin, state, n + byte_size(bin), max)
+
+      _ ->
+        {:error, :logs_invalid}
+    end
+  end
+
+  defp feed_logs(_z, _status, _bin, state, n, max) when n > max,
+    do: abandon(state, :logs_too_large)
+
+  defp feed_logs(z, status, bin, state, n, max) do
+    case TarStream.feed(state, bin) do
+      {:ok, state} ->
+        if status == :continue and bin != "" and not TarStream.done?(state),
+          do: inflate(z, [], state, n, max),
+          else: {:ok, state, n}
+
+      {:error, _} ->
+        abandon(state, :logs_invalid)
+    end
+  end
+
+  defp finish_logs(state) do
+    case TarStream.finish(state) do
+      {:ok, _names} -> :ok
+      {:error, _} -> abandon(state, :logs_invalid)
+    end
+  end
+
+  defp abandon(state, reason) do
+    case TarStream.pending(state) do
+      {_name, tmp, fd} -> close_open({fd, tmp})
+      nil -> :ok
     end
 
-    :ok
+    {:error, reason}
+  end
+
+  defp log_error({:unsupported_entry, _}), do: :logs_invalid
+  defp log_error(reason), do: reason
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp log_callbacks(dir, max_log_bytes) do
+    %{
+      start: fn name, size ->
+        cond do
+          not Regex.match?(@log_name, name) -> abort(:logs_invalid, nil)
+          size > max_log_bytes -> abort(:logs_too_large, nil)
+          File.lstat(Path.join(dir, name)) != {:error, :enoent} -> abort(:logs_invalid, nil)
+          true -> open_log(dir, name)
+        end
+      end,
+      data: fn {name, tmp, fd}, data ->
+        write_chunk(fd, tmp, data)
+        {name, tmp, fd}
+      end,
+      finish: fn {name, tmp, fd} ->
+        publish(fd, tmp, Path.join(dir, name))
+        name
+      end
+    }
+  end
+
+  defp open_log(dir, name) do
+    {fd, tmp} = open_incoming(dir)
+    {:ok, {name, tmp, fd}}
   end
 
   defp write_runner_log(nil, _path), do: :ok

@@ -268,4 +268,175 @@ defmodule Portal.Builders.UploadTest do
     assert {:error, :missing_result_json} = Upload.load_run(lease.id)
     File.rm_rf(dir)
   end
+
+  # A `logs.tar.gz` built by `:erl_tar` from `{name_in_archive, path}` pairs.
+  defp logs_upload(dir, entries) do
+    archive = Path.join(dir, "logs-#{System.unique_integer([:positive])}.tar.gz")
+
+    :ok =
+      :erl_tar.create(
+        String.to_charlist(archive),
+        for({name, path} <- entries, do: {String.to_charlist(name), String.to_charlist(path)}),
+        [:compressed]
+      )
+
+    %Plug.Upload{path: archive, filename: "logs.tar.gz", content_type: "application/gzip"}
+  end
+
+  defp parts_dir do
+    dir = Path.join(System.tmp_dir!(), "parts-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "result.json"), ~s({"run_id":"rb-1"}))
+    on_exit(fn -> File.rm_rf(dir) end)
+    dir
+  end
+
+  defp result_upload(dir),
+    do: %Plug.Upload{path: Path.join(dir, "result.json"), filename: "result.json"}
+
+  defp logs_dir(lease), do: Path.join(Upload.out_dir(lease.id), "logs")
+
+  test "a symlink, a duplicate, a ../ name or an absolute name refuses the logs",
+       %{lease: lease} do
+    dir = parts_dir()
+    victim = Path.join(dir, "victim")
+    File.write!(victim, "untouched")
+    File.ln_s!(victim, Path.join(dir, "link"))
+    File.write!(Path.join(dir, "evil"), "overwritten")
+    File.write!(Path.join(dir, "ok"), "fine")
+
+    archives = [
+      symlink_then_file: [{"a.log", Path.join(dir, "link")}, {"a.log", Path.join(dir, "evil")}],
+      duplicate: [{"a.log", Path.join(dir, "ok")}, {"a.log", Path.join(dir, "evil")}],
+      parent: [{"../x.log", Path.join(dir, "evil")}],
+      absolute: [{Path.join(dir, "abs.log"), Path.join(dir, "evil")}]
+    ]
+
+    for {label, entries} <- archives do
+      parts = %{result: result_upload(dir), logs: logs_upload(dir, entries), runner_log: nil}
+      assert {label, {:error, :logs_invalid}} == {label, Upload.write_outputs(lease.id, parts)}
+      assert Path.wildcard(Path.join(logs_dir(lease), "*"), match_dot: true) == []
+      refute File.exists?(Path.join(Upload.out_dir(lease.id), "result.json"))
+    end
+
+    assert File.read!(victim) == "untouched"
+    refute File.exists?(Path.join(dir, "abs.log"))
+    refute File.exists?(Path.join(Upload.out_dir(lease.id), "x.log"))
+  end
+
+  test "inflated sizes are capped per entry and in total", %{lease: lease} do
+    dir = parts_dir()
+    File.write!(Path.join(dir, "big"), String.duplicate("z", 200_000))
+    File.write!(Path.join(dir, "mid"), String.duplicate("m", 3000))
+    big = logs_upload(dir, [{"big.log", Path.join(dir, "big")}])
+    assert File.stat!(big.path).size < 2000
+
+    previous = Application.get_env(:portal, Upload)
+    Application.put_env(:portal, Upload, Keyword.put(previous, :max_log_bytes, 100_000))
+
+    assert {:error, :logs_too_large} =
+             Upload.write_outputs(lease.id, %{
+               result: result_upload(dir),
+               logs: big,
+               runner_log: nil
+             })
+
+    Application.put_env(
+      :portal,
+      Upload,
+      Keyword.merge(previous, max_log_bytes: 100_000, max_logs_total_bytes: 8000)
+    )
+
+    two = logs_upload(dir, [{"a.log", Path.join(dir, "mid")}, {"b.log", Path.join(dir, "mid")}])
+
+    assert {:error, :logs_too_large} =
+             Upload.write_outputs(lease.id, %{
+               result: result_upload(dir),
+               logs: two,
+               runner_log: nil
+             })
+
+    assert Path.wildcard(Path.join(logs_dir(lease), "*"), match_dot: true) == []
+
+    one = logs_upload(dir, [{"a.log", Path.join(dir, "mid")}])
+
+    assert :ok =
+             Upload.write_outputs(lease.id, %{
+               result: result_upload(dir),
+               logs: one,
+               runner_log: nil
+             })
+
+    assert File.read!(Path.join(logs_dir(lease), "a.log")) == String.duplicate("m", 3000)
+  end
+
+  test "a later attempt's outputs never inherit the previous attempt's logs", %{lease: lease} do
+    dir = parts_dir()
+    File.write!(Path.join(dir, "host"), "old")
+    logs = logs_upload(dir, [{"host.log", Path.join(dir, "host")}])
+
+    assert :ok =
+             Upload.write_outputs(lease.id, %{
+               result: result_upload(dir),
+               logs: logs,
+               runner_log: nil
+             })
+
+    assert File.exists?(Path.join(logs_dir(lease), "host.log"))
+
+    assert :ok =
+             Upload.write_outputs(lease.id, %{
+               result: result_upload(dir),
+               logs: nil,
+               runner_log: nil
+             })
+
+    assert File.ls!(logs_dir(lease)) == []
+  end
+
+  test "the declared length is reserved before reading, so concurrent batches share the cap",
+       %{lease: lease} do
+    good = sha("reserved")
+    bin = tar([{good, "reserved"}])
+    inner = reader(bin)
+    test = self()
+
+    # While this batch's body is being read a second batch of 3000 arrives:
+    # 3000 reserved here plus 3000 would pass the 5000 cap.
+    outer = fn ->
+      send(test, {:during, Ash.get!(Lease, lease.id, domain: Portal.Builders).bytes_uploaded})
+      send(test, {:second, Upload.receive_batch(lease, reader(""), content_length: 3000)})
+      inner.()
+    end
+
+    assert {:ok, %{stored: [^good], bytes: n}} =
+             Upload.receive_batch(lease, outer, content_length: 3000)
+
+    assert_received {:during, 3000}
+    assert_received {:second, {:error, :total_exceeded}}
+    assert n == byte_size(bin)
+    assert Ash.get!(Lease, lease.id, domain: Portal.Builders).bytes_uploaded == n
+  end
+
+  test "a lease another attempt holds now is not reserved against", %{lease: lease} do
+    stale = %{lease | run_id: "rb-someone-else"}
+    assert {:error, :not_held} = Upload.receive_batch(stale, reader(""), content_length: 10)
+    assert Ash.get!(Lease, lease.id, domain: Portal.Builders).bytes_uploaded == 0
+  end
+
+  test "a file that cannot be written refuses the batch and leaves nothing open",
+       %{lease: lease} do
+    dir = Upload.files_dir(lease.id)
+    File.mkdir_p!(dir)
+    File.chmod!(dir, 0o555)
+    on_exit(fn -> File.chmod(dir, 0o755) end)
+    bin = tar([{sha("ro"), "ro"}])
+
+    assert {:error, {:io, :eacces}} =
+             Upload.receive_batch(lease, reader(bin), content_length: byte_size(bin))
+
+    File.chmod!(dir, 0o755)
+    assert File.ls!(dir) == []
+    assert Ash.get!(Lease, lease.id, domain: Portal.Builders).bytes_uploaded > 0
+  end
 end
