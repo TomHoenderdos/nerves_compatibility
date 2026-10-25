@@ -211,6 +211,28 @@ defmodule Portal.NervesCacheTest do
       refute File.exists?(Path.join(root, "template.json.tmp"))
     end
 
+    # Under the rw rollback a build can plant the temp name; following it
+    # would let the host itself (re)create the trust marker.
+    test "a planted template.json.tmp symlink is never followed", %{root: root} do
+      marker = NervesCache.trusted_marker(root)
+      File.rm(marker)
+      on_exit(fn -> File.rm(marker) end)
+      File.ln_s!(marker, Path.join(root, "template.json.tmp"))
+
+      assert :ok = NervesCache.write_template(root, "sha256:x", ["nerves_system_rpi4-2.0.0"])
+
+      refute File.exists?(marker)
+      assert File.lstat(marker) == {:error, :enoent}
+      assert {:ok, %File.Stat{type: :regular}} = File.lstat(Path.join(root, "template.json"))
+      assert File.lstat(Path.join(root, "template.json.tmp")) == {:error, :enoent}
+
+      # An existing marker is not overwritten either.
+      File.write!(marker, "real marker")
+      File.ln_s!(marker, Path.join(root, "template.json.tmp"))
+      assert :ok = NervesCache.write_template(root, "sha256:x", ["nerves_system_rpi4-2.0.0"])
+      assert File.read!(marker) == "real marker"
+    end
+
     test "missing, malformed or not a regular file reads as unknown", %{root: root} do
       assert NervesCache.template_entries(root) == :error
 

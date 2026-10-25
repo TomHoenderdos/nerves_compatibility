@@ -282,7 +282,13 @@ defmodule Portal.NervesCache do
     end
   end
 
-  @doc "Writes `template_file/0` atomically (temp file, then rename)."
+  @doc """
+  Writes `template_file/0` atomically (temp file, then rename). The temp name
+  is inside a root builds may have written, so whatever sits there is removed
+  first (`File.rm/1` unlinks a symlink, never its target) and the temp file is
+  created with `:exclusive`, which refuses to open through a link planted in
+  between: the host never writes through a path a build chose.
+  """
   @spec write_template(Path.t(), String.t(), [String.t()]) :: :ok | {:error, term()}
   # root is the operator-configured Nerves cache; the file names are fixed.
   # sobelow_skip ["Traversal.FileModule"]
@@ -294,8 +300,19 @@ defmodule Portal.NervesCache do
       Jason.encode_to_iodata!(%{"image_digest" => image_digest, "entries" => Enum.sort(entries)})
 
     with :ok <- File.mkdir_p(root),
-         :ok <- File.write(tmp, body) do
+         :ok <- remove_tmp(tmp),
+         :ok <- File.write(tmp, body, [:exclusive]) do
       File.rename(tmp, path)
+    end
+  end
+
+  # tmp is write_template/3's fixed temp name under the operator-configured root.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp remove_tmp(tmp) do
+    case File.rm(tmp) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      error -> error
     end
   end
 
