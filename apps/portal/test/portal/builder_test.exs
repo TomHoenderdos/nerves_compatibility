@@ -423,6 +423,44 @@ defmodule Portal.BuilderTest do
       assert "NCC_NERVES_CACHE_RW=1" in args()
     end
 
+    # Under the rollback builds write the cache again, so whatever a later
+    # read-only deploy finds there must be wiped first, not trusted; the
+    # marker goes before any such container can start, not only at deploy.
+    test "an rw build removes the trust marker before it starts", %{previous: previous} do
+      tmp = Path.join(System.tmp_dir!(), "rw-marker-#{System.unique_integer([:positive])}")
+      cache = Path.join(tmp, "nerves-cache")
+      marker = Portal.NervesCache.trusted_marker(cache)
+      File.mkdir_p!(cache)
+      on_exit(fn -> File.rm_rf(tmp) end)
+
+      put_builder(
+        [
+          scratch_root: Path.join(tmp, "scratch"),
+          nerves_cache: cache,
+          min_free_disk_gb: 0,
+          exec_probe: fn _path -> {:error, :eacces} end,
+          nerves_cache_rw: nil
+        ],
+        previous
+      )
+
+      File.write!(marker, "trusted")
+      assert {:error, :scratch_noexec} = Builder.build(@build_args)
+      assert File.regular?(marker)
+
+      assert {:error, :scratch_noexec} =
+               Builder.build(Map.merge(@build_args, %{mode: "warm_nerves", nerves_packages: []}))
+
+      assert File.regular?(marker)
+
+      put_builder([nerves_cache_rw: true], Application.get_env(:portal, Portal.Builder))
+      assert {:error, :scratch_noexec} = Builder.build(@build_args)
+      refute File.exists?(marker)
+
+      # Nothing to remove is fine.
+      assert {:error, :scratch_noexec} = Builder.build(@build_args)
+    end
+
     test "nerves_cache_mode/1 picks warm first, then the fallback", %{previous: previous} do
       put_builder([nerves_cache_rw: nil], previous)
       assert Builder.nerves_cache_mode(@job) == :readonly

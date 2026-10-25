@@ -408,6 +408,21 @@ builder, `BUILDER_HOST` (and optionally `BUILDER_DEPLOY_SSH_KEY`) secrets in the
 `production` environment. `deploy.sh` can also be run by hand on a host; see
 `ops/README.md`.
 
+### Rolling back the read-only Nerves cache
+
+Builds trust the Nerves cache only while its marker `<NCC_NERVES_CACHE>.trusted-v1`
+(a sibling of the cache directory) exists; a deploy without it wipes the cache
+before the warm refills it.
+
+- `NCC_NERVES_CACHE_RW=1` in `portal.env` plus a restart: every build in that
+  mode removes the marker before its container starts, so once the variable is
+  unset again the next read-only deploy re-wipes the cache instead of trusting
+  what the read-write builds wrote. Nothing to do by hand.
+- Redeploying a commit from before the isolation work: its builds write the
+  cache at `~/.nerves` and know nothing of the marker. Delete
+  `<NCC_NERVES_CACHE>.trusted-v1` by hand on the build host before rolling
+  forward again, or the next read-only deploy trusts what those builds wrote.
+
 ## Public endpoints
 
 - `/` — dashboard; `/packages` — package browser
