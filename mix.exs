@@ -21,6 +21,13 @@ defmodule NervesCompatibility.MixProject do
       portal: [
         applications: [compatibility: :permanent, portal: :permanent],
         include_executables_for: [:unix]
+      ],
+      # The remote builder agent: ships its own ERTS so a builder host needs
+      # only Docker, not an Erlang install.
+      ncc_agent: [
+        applications: [compatibility: :permanent, ncc_agent: :permanent],
+        include_executables_for: [:unix],
+        include_erts: true
       ]
     ]
   end
