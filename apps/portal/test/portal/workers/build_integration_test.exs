@@ -299,6 +299,68 @@ defmodule Portal.Workers.BuildIntegrationTest do
     Repo.delete!(ingest_job)
   end
 
+  # The jason build above is pure Elixir and builds no firmware, so it never
+  # resolves a Nerves artifact. This one does: circuits_gpio compiles a NIF
+  # with elixir_make against the x86_64 system's sysroot and toolchain, then
+  # `mix firmware` runs fwup and sqfstar from the system, all through the
+  # per-run farm into the read-only mount. Nothing may be written into the
+  # cache root while it does.
+  @tag timeout: :timer.minutes(90)
+  test "a NIF package's x86_64 firmware builds through the read-only Nerves cache" do
+    root = Builder.nerves_cache()
+
+    assert :ok = Portal.NervesCache.deploy_warm()
+    assert {:ok, template} = Portal.NervesCache.template_entries(root)
+    assert Enum.any?(template, &String.starts_with?(&1, "nerves_system_x86_64-"))
+
+    before = cache_snapshot(root)
+    run_id = "it-circuits-gpio-#{System.unique_integer([:positive])}"
+    on_exit(fn -> Builder.cleanup(run_id) end)
+
+    assert {:ok, %{exit_code: 0, result: result, log: log}} =
+             Builder.build(%{
+               run_id: run_id,
+               package: "circuits_gpio",
+               version: "2.3.1",
+               image_digest: Builder.image_digest(Builder.docker_image()),
+               systems_filter: ["nerves_system_x86_64"]
+             })
+
+    assert %{"nerves_system_x86_64" => x86} = result["systems"], inspect(result["systems"])
+    assert x86["status"] == "pass", x86["log_tail"] || log
+    assert is_integer(x86["firmware_size_bytes"]) and x86["firmware_size_bytes"] > 0
+
+    assert %{"misses" => [], "lock" => [_ | _] = lock} = result["nerves_cache"]
+    locked = MapSet.new(lock, &"#{&1["name"]}-#{&1["version"]}")
+    assert MapSet.subset?(locked, template)
+
+    assert cache_snapshot(root) == before
+  end
+
+  # Every path under the cache root with what a write would change: type,
+  # size, mode and mtime (from lstat, so a link is never followed).
+  defp cache_snapshot(root) do
+    root
+    |> walk()
+    |> Map.new(fn path ->
+      {:ok, stat} = File.lstat(path, time: :posix)
+      {Path.relative_to(path, root), {stat.type, stat.size, stat.mode, stat.mtime}}
+    end)
+  end
+
+  defp walk(dir) do
+    case File.lstat(dir) do
+      {:ok, %File.Stat{type: :directory}} ->
+        [dir | dir |> File.ls!() |> Enum.flat_map(&walk(Path.join(dir, &1)))]
+
+      {:ok, _other} ->
+        [dir]
+
+      {:error, _} ->
+        []
+    end
+  end
+
   defp hex64?(name), do: String.match?(name, ~r/\A[0-9a-f]{64}\z/)
 
   defp build_and_ingest(name, version, opts \\ []) do
