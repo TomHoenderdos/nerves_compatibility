@@ -126,6 +126,15 @@ recorded, not retried. A `deps.get` failure exits `10` without a result, as in a
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 
+## Egress probe
+
+With `"egress_probe": [{"address": "100.126.79.115", "port": 5432}, {"address": "fd7a:115c:a1e0::1", "port": 5432}]`
+in `NCC_INPUT`, the worker tries a TCP connect (2 s timeout) to each target before any `mix` runs and writes
+`result.json` `egress_probe`: one `{"address", "port", "family", "outcome"}` per target, `outcome` one of
+`connected` or `refused` (both mean the packet got through), `timeout` (dropped by the host's egress filter),
+`unreachable` (no route), `invalid_target`, or the socket error's name. Advisory: it never changes a status or fails
+the run. Only `Portal.EgressCheck` sends it (`ops/README.md`, "Egress filter"); otherwise the key is absent.
+
 ## Exit codes
 
 - `0` — success (some systems may still have failed; check `result.json`)

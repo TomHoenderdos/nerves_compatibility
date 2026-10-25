@@ -143,20 +143,21 @@ defmodule NccWorker.CLI do
   # sobelow_skip ["Traversal.FileModule"]
   defp read_input(path) do
     case File.read(path) do
-      {:ok, content} ->
-        try do
-          json_map = JSON.decode!(content)
-          {:ok, atomize_keys(json_map)}
-        rescue
-          _ -> {:error, {:invalid_json, "Failed to decode JSON"}}
-        end
-
-      {:error, reason} ->
-        {:error, {:cannot_read_input, reason}}
+      {:ok, content} -> parse_input(content)
+      {:error, reason} -> {:error, {:cannot_read_input, reason}}
     end
   end
 
-  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages)a
+  @doc false
+  # The JSON-to-input transform `read_input/1` applies; public for tests.
+  @spec parse_input(String.t()) :: {:ok, map()} | {:error, {:invalid_json, String.t()}}
+  def parse_input(content) do
+    {:ok, content |> JSON.decode!() |> atomize_keys()}
+  rescue
+    _ -> {:error, {:invalid_json, "Failed to decode JSON"}}
+  end
+
+  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages egress_probe)a
   @input_key_map Map.new(@input_keys, &{Atom.to_string(&1), &1})
 
   @spec atomize_keys(map()) :: map()

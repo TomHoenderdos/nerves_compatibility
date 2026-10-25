@@ -342,6 +342,38 @@ defmodule NccWorker.JsonWriterTest do
              |> Map.fetch!("scope") ==
                "argus_only"
     end
+
+    test "writes egress_probe when the run probed, and omits it otherwise" do
+      tmp_dir = System.tmp_dir!() |> Path.join("ncc_test_#{:rand.uniform(1_000_000)}")
+      File.mkdir_p!(tmp_dir)
+      on_exit(fn -> File.rm_rf!(tmp_dir) end)
+
+      base = %{
+        run_id: "egress",
+        package: %{name: "jason", version: "1.4.4"},
+        image: %{name: "test/image", digest: "sha256:abc"},
+        toolchain: %{elixir: "1.20.0", erlang: "29", mix: "1.20.0", nerves_bootstrap: nil},
+        systems: %{},
+        finished_at: "2026-10-25T10:00:00Z"
+      }
+
+      probe = [
+        %{
+          "address" => "100.126.79.115",
+          "port" => 5432,
+          "family" => "inet",
+          "outcome" => "timeout"
+        }
+      ]
+
+      assert :ok = JsonWriter.write_result(tmp_dir, Map.put(base, :egress_probe, probe))
+      decoded = tmp_dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      assert decoded["egress_probe"] == probe
+
+      assert :ok = JsonWriter.write_result(tmp_dir, base)
+      decoded = tmp_dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      refute Map.has_key?(decoded, "egress_probe")
+    end
   end
 
   describe "nerves_cache" do
