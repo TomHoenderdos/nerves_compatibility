@@ -68,15 +68,68 @@ defmodule Portal.Builders.CATest do
              )
   end
 
-  test "a CSR with a broken signature is refused", %{key_path: key_path} do
+  test "a CSR with a tampered signature is refused", %{key_path: key_path} do
+    {:ok, _} = CA.init(key_path)
+    der = csr_pem() |> X509.CSR.from_pem!() |> X509.CSR.to_der()
+    size = byte_size(der) - 1
+    <<head::binary-size(^size), last>> = der
+    tampered = <<head::binary, Bitwise.bxor(last, 0xFF)>>
+    pem = :public_key.pem_encode([{:CertificationRequest, tampered, :not_encrypted}])
+
+    assert {:ok, csr} = X509.CSR.from_pem(pem)
+    refute X509.CSR.valid?(csr)
+    assert {:error, :invalid_csr} = CA.issue_client(pem, "x", "y")
+  end
+
+  test "builder names that would inject subject components are refused", %{key_path: key_path} do
     {:ok, _} = CA.init(key_path)
 
-    assert {:error, :invalid_csr} =
-             CA.issue_client(
-               "-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----\n",
-               "x",
-               "y"
-             )
+    for bad <- ["a/CN=b", "a=b", "", "-x", String.duplicate("a", 65), "a b"] do
+      refute CA.valid_name?(bad)
+      assert {:error, :invalid_name} = CA.issue_client(csr_pem(), bad, "id")
+    end
+
+    assert CA.valid_name?("box-a.1_x")
+  end
+
+  test "ensure_server_cert refuses hosts that are not plain names", %{key_path: key_path} do
+    {:ok, _} = CA.init(key_path)
+    assert {:error, :invalid_host} = CA.ensure_server_cert("")
+    assert {:error, :invalid_host} = CA.ensure_server_cert("a/CN=b")
+  end
+
+  test "ensure_server_cert reissues after the CA is rotated", %{key_path: key_path, dir: dir} do
+    {:ok, _} = CA.init(key_path)
+    {:ok, %{certfile: certfile}} = CA.ensure_server_cert("portal.example")
+    old = File.read!(certfile)
+
+    File.rm!(key_path)
+    File.rm!(Path.join(dir, "ca.pem"))
+    {:ok, _} = CA.init(key_path)
+
+    assert {:ok, _} = CA.ensure_server_cert("portal.example")
+    new = File.read!(certfile)
+    refute new == old
+    {:ok, %{cert: ca}} = CA.load()
+
+    assert :public_key.pkix_verify(
+             new |> X509.Certificate.from_pem!() |> X509.Certificate.to_der(),
+             X509.Certificate.public_key(ca)
+           )
+  end
+
+  test "ensure_server_cert reissues when the key file is missing", %{key_path: key_path, dir: dir} do
+    {:ok, _} = CA.init(key_path)
+    {:ok, %{keyfile: keyfile}} = CA.ensure_server_cert("portal.example")
+    File.rm!(keyfile)
+    assert {:ok, _} = CA.ensure_server_cert("portal.example")
+    assert File.exists?(Path.join(dir, "server-key.pem"))
+  end
+
+  test "init leaves no temp files behind", %{key_path: key_path, dir: dir} do
+    {:ok, _} = CA.init(key_path)
+    assert {:error, :exists} = CA.init(key_path)
+    assert dir |> File.ls!() |> Enum.sort() == ["ca-key.pem", "ca.pem"]
   end
 
   test "ensure_server_cert issues a SAN certificate once and reuses it", %{
