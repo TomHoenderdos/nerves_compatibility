@@ -258,7 +258,7 @@ defmodule NccWorker.BeamScan do
         "path" => to_string_safe(entry[:path]),
         "size" => entry[:size] || 0,
         "sha256" => to_string_safe(entry[:sha256]),
-        "mode" => entry[:mode] || 33_188
+        "mode" => entry[:mode]
       }
     end)
   end
