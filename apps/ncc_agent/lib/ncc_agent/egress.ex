@@ -10,13 +10,17 @@ defmodule NccAgent.Egress do
   reinstalling at once do not interleave their `iptables` calls.
   """
 
+  require Logger
+
   alias NccAgent.Config
 
   @timeout_ms 30_000
 
   @spec install() :: :ok | {:error, String.t()}
   def install do
-    :global.trans({__MODULE__, :install}, fn -> run("install") end)
+    # `:global` lets callers with the same requester id share a lock, so the
+    # id must be the caller's own pid for the installs to queue.
+    :global.trans({__MODULE__, self()}, fn -> run("install") end)
   end
 
   @spec verify() :: :ok | {:error, String.t()}
@@ -40,8 +44,15 @@ defmodule NccAgent.Egress do
   # sobelow_skip ["CI.System"]
   defp cmd(script, action) do
     case System.cmd(script, [action], stderr_to_stdout: true) do
-      {_output, 0} -> :ok
-      {output, status} -> {:error, "#{action} exited #{status}: #{String.trim(output)}"}
+      {output, 0} ->
+        # install output (e.g. "v6 rules skipped") is for the operator;
+        # verify runs before every claim, so its output stays at debug.
+        level = if action == "install", do: :info, else: :debug
+        Logger.log(level, "egress #{action}: #{String.trim(output)}")
+        :ok
+
+      {output, status} ->
+        {:error, "#{action} exited #{status}: #{String.trim(output)}"}
     end
   rescue
     e in ErlangError -> {:error, "#{action}: cannot run #{script}: #{inspect(e.original)}"}
