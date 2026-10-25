@@ -12,12 +12,25 @@ defmodule NccWorker.DockerfileTest do
     {:ok, text: File.read!(@dockerfile)}
   end
 
+  @toolchain_dockerfile Path.expand("../../Dockerfile.toolchain", __DIR__)
+
   test "pre-creates every directory the portal mounts", %{text: text} do
     for target <-
-          ~w(/work /out /files /tmp /hex-cache /home/nerves/.nerves /home/nerves/.cache /build-cache) do
+          ~w(/work /out /files /tmp /hex-cache /nerves-cache /home/nerves/.cache /build-cache) do
       assert Regex.match?(~r/mkdir -p[^\n]*\s#{Regex.escape(target)}(\s|$)/m, text),
              "Dockerfile does not mkdir -p #{target}"
     end
+  end
+
+  # Nerves is pointed at the per-run farm or the mounted cache in every mode
+  # (`NccWorker.NervesCache`); a ~/.nerves would only invite a fallback.
+  test "neither image refers to ~/.nerves", %{text: text} do
+    refute text =~ "/home/nerves/.nerves"
+    refute File.read!(@toolchain_dockerfile) =~ "/home/nerves/.nerves"
+  end
+
+  test "the toolchain image pre-creates the Nerves cache mount point too" do
+    assert File.read!(@toolchain_dockerfile) =~ ~r/mkdir -p[^\n]*\s\/nerves-cache(\s|$)/m
   end
 
   test "makes the home and app directories readable, not writable, by any uid", %{text: text} do

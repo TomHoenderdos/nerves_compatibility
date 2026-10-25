@@ -140,6 +140,10 @@ if portal_available? do
     docker_image: System.get_env("NCC_DOCKER_IMAGE"),
     scratch_root: System.get_env("NCC_SCRATCH_ROOT"),
     nerves_cache: System.get_env("NCC_NERVES_CACHE"),
+    # `1` mounts the Nerves cache read-write into builds and drops the worker's
+    # symlink farm, as before the isolation work: the one-release rollback.
+    # Anything else, or unset, keeps it read-only.
+    nerves_cache_rw: if(System.get_env("NCC_NERVES_CACHE_RW") == "1", do: true),
     hex_cache: System.get_env("NCC_HEX_CACHE"),
     build_cache: System.get_env("NCC_BUILD_CACHE"),
     cpus: System.get_env("NCC_BUILD_CPUS"),

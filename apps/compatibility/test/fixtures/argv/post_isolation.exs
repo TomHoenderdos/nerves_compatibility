@@ -2,9 +2,11 @@
 # worker container must produce exactly this list from this input:
 # `Compatibility.Builder.ArgvTest` checks `Argv.build/1`, `Portal.BuilderTest`
 # checks the portal's builder from equivalent config, and a remote build agent
-# checks its own. Post-hardening (isolation spec section 4): read-only root,
-# pids limit, per-run /tmp and ~/.cache, read-only build cache. Change it only
-# together with the sandbox, and expect every builder's test to follow.
+# checks its own. Post-isolation (isolation spec sections 4 and 1): read-only
+# root, pids limit, per-run /tmp and ~/.cache, read-only build cache, and the
+# Nerves cache read-only at /nerves-cache. Section 3 (egress) is not reflected
+# here. Change it only together with the sandbox, and expect every builder's
+# test to follow.
 %{
   input: %{
     container_name: "ncc-11111111-2222-3333-4444-555555555555",
@@ -13,6 +15,7 @@
     cpus: "2",
     memory: "4g",
     build_concurrency: "2",
+    nerves_cache_mode: :readonly,
     paths: %{
       work: "/scratch/run/work",
       out: "/scratch/run/out",
@@ -52,7 +55,7 @@
     "--mount",
     "type=bind,source=/scratch/run/cache,target=/home/nerves/.cache",
     "--mount",
-    "type=bind,source=/srv/ncc/nerves-cache,target=/home/nerves/.nerves",
+    "type=bind,source=/srv/ncc/nerves-cache,target=/nerves-cache,readonly",
     "--mount",
     "type=bind,source=/srv/ncc/hex-cache,target=/hex-cache",
     "--mount",

@@ -3,7 +3,7 @@ defmodule Compatibility.Builder.ArgvTest do
 
   alias Compatibility.Builder.Argv
 
-  @fixture Path.expand("../../fixtures/argv/post_hardening.exs", __DIR__)
+  @fixture Path.expand("../../fixtures/argv/post_isolation.exs", __DIR__)
 
   setup_all do
     {fixture, _binding} = Code.eval_file(@fixture)
@@ -88,5 +88,41 @@ defmodule Compatibility.Builder.ArgvTest do
              argv,
              &String.starts_with?(&1, ["ERL_FLAGS=", "ELIXIR_ERL_OPTIONS="])
            )
+  end
+
+  # Isolation spec, section 1: a build only ever reads the Nerves cache; the
+  # warm run is its one writer.
+  test "a build mounts the Nerves cache read-only at /nerves-cache", %{input: input} do
+    argv = Argv.build(input)
+
+    assert "type=bind,source=/srv/ncc/nerves-cache,target=/nerves-cache,readonly" in argv
+    refute "NCC_NERVES_CACHE_RW=1" in argv
+    refute Enum.any?(argv, &String.contains?(&1, "/home/nerves/.nerves"))
+  end
+
+  test "a warm run mounts it read-write and sets no fallback env", %{input: input} do
+    argv = Argv.build(%{input | nerves_cache_mode: :warm})
+
+    assert "type=bind,source=/srv/ncc/nerves-cache,target=/nerves-cache" in argv
+    refute "NCC_NERVES_CACHE_RW=1" in argv
+  end
+
+  # The one-release rollback: read-write as before, and the worker is told so
+  # it skips the per-run symlink farm.
+  test "the read-write fallback mounts it read-write and tells the worker", %{input: input} do
+    argv = Argv.build(%{input | nerves_cache_mode: :rw})
+
+    assert "type=bind,source=/srv/ncc/nerves-cache,target=/nerves-cache" in argv
+    index = Enum.find_index(argv, &(&1 == "NCC_NERVES_CACHE_RW=1"))
+    assert index, "expected -e NCC_NERVES_CACHE_RW=1"
+    assert Enum.at(argv, index - 1) == "-e"
+  end
+
+  test "a spec without a Nerves cache mode raises", %{input: input} do
+    assert_raise KeyError, fn -> Argv.build(Map.delete(input, :nerves_cache_mode)) end
+  end
+
+  test "an unknown Nerves cache mode raises rather than mounting read-write", %{input: input} do
+    assert_raise FunctionClauseError, fn -> Argv.build(%{input | nerves_cache_mode: :bogus}) end
   end
 end
