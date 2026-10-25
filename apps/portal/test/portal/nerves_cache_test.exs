@@ -232,7 +232,12 @@ defmodule Portal.NervesCacheTest do
     setup do
       root = Path.join(System.tmp_dir!(), "nerves-deploy-#{System.unique_integer([:positive])}")
       File.mkdir_p!(root)
-      on_exit(fn -> File.rm_rf(root) end)
+
+      on_exit(fn ->
+        File.rm_rf(root)
+        File.rm(NervesCache.trusted_marker(root))
+      end)
+
       %{root: root}
     end
 
@@ -264,8 +269,9 @@ defmodule Portal.NervesCacheTest do
 
     # Every entry there before this release was extracted by an untrusted build.
     test "the first call drops what builds wrote, without following links", %{root: root} do
-      outside = Path.join(root, "outside")
+      outside = root <> "-outside"
       File.mkdir_p!(outside)
+      on_exit(fn -> File.rm_rf(outside) end)
       File.write!(Path.join(outside, "keep"), "not the cache's")
       File.mkdir_p!(Path.join([root, "artifacts", "nerves_system_rpi4-2.0.0"]))
       File.mkdir_p!(Path.join([root, "dl", "nerves_system_rpi4-2.0.0"]))
@@ -273,14 +279,100 @@ defmodule Portal.NervesCacheTest do
 
       assert :ok = NervesCache.ensure_trusted(root)
 
-      refute File.exists?(Path.join(root, "artifacts"))
-      refute File.exists?(Path.join(root, "dl"))
+      assert File.ls!(root) == []
       assert File.read!(Path.join(outside, "keep")) == "not the cache's"
-      assert File.regular?(Path.join(root, ".ncc-trusted-v1"))
+      assert File.regular?(NervesCache.trusted_marker(root))
 
       File.mkdir_p!(Path.join([root, "artifacts", "nerves_system_rpi4-2.0.0"]))
       assert :ok = NervesCache.ensure_trusted(root)
       assert File.dir?(Path.join([root, "artifacts", "nerves_system_rpi4-2.0.0"]))
+    end
+
+    test "the marker is a sibling of the root, outside every build's mount", %{root: root} do
+      assert NervesCache.trusted_marker(root) == Path.expand(root) <> ".trusted-v1"
+      refute String.starts_with?(NervesCache.trusted_marker(root), Path.expand(root) <> "/")
+    end
+
+    test "a symlinked artifacts dir is unlinked, its target untouched", %{root: root} do
+      outside = root <> "-outside"
+      File.mkdir_p!(Path.join(outside, "nerves_system_rpi4-2.0.0"))
+      on_exit(fn -> File.rm_rf(outside) end)
+      File.ln_s!(outside, Path.join(root, "artifacts"))
+
+      assert :ok = NervesCache.ensure_trusted(root)
+
+      assert File.lstat(Path.join(root, "artifacts")) == {:error, :enoent}
+      assert File.dir?(Path.join(outside, "nerves_system_rpi4-2.0.0"))
+    end
+
+    # A build mounted the root read-write and could have written any of these.
+    test "a marker planted inside the root does not skip the wipe", %{root: root} do
+      File.write!(Path.join(root, ".ncc-trusted-v1"), "planted")
+      File.write!(Path.join(root, "template.json"), ~s({"entries": ["nerves_system_evil-1.0.0"]}))
+      File.mkdir_p!(Path.join([root, "artifacts", "nerves_system_evil-1.0.0"]))
+      File.mkdir_p!(Path.join([root, "staging", "warm_nerves-1"]))
+      File.mkdir_p!(Path.join([root, "artifacts", "nerves_system_rpi4-1.0.0.stale.1"]))
+      File.mkdir_p!(Path.join(root, "nerves_system_rpi4-1.0.0.stale.2"))
+
+      assert :ok = NervesCache.ensure_trusted(root)
+
+      assert File.ls!(root) == []
+      assert File.regular?(NervesCache.trusted_marker(root))
+    end
+
+    test "the marker is written only after the wipe succeeds", %{root: root} do
+      stuck = Path.join([root, "artifacts", "stuck"])
+      File.mkdir_p!(stuck)
+      File.write!(Path.join(stuck, "file"), "")
+      File.chmod!(stuck, 0o500)
+      on_exit(fn -> File.chmod(stuck, 0o700) end)
+
+      assert_raise File.Error, fn -> NervesCache.ensure_trusted(root) end
+      refute File.exists?(NervesCache.trusted_marker(root))
+
+      File.chmod!(stuck, 0o700)
+      assert :ok = NervesCache.ensure_trusted(root)
+      assert File.regular?(NervesCache.trusted_marker(root))
+    end
+
+    test "under the read-write rollback it drops the marker and wipes nothing", %{root: root} do
+      :ok = NervesCache.ensure_trusted(root)
+      File.mkdir_p!(Path.join([root, "artifacts", "nerves_system_rpi4-2.0.0"]))
+      Process.put(:warm_response, warm_ok(["nerves_system_rpi4-2.0.0"]))
+
+      assert :ok = NervesCache.deploy_warm(builder: WarmStub, root: root, rw: true)
+
+      refute File.exists?(NervesCache.trusted_marker(root))
+      assert File.dir?(Path.join([root, "artifacts", "nerves_system_rpi4-2.0.0"]))
+
+      # The next read-only deploy distrusts what the rw builds wrote.
+      assert :ok = NervesCache.deploy_warm(builder: WarmStub, root: root, rw: false)
+      refute File.exists?(Path.join([root, "artifacts", "nerves_system_rpi4-2.0.0"]))
+      assert File.regular?(NervesCache.trusted_marker(root))
+    end
+
+    test "template.json keeps only well-formed Nerves entries", %{root: root} do
+      Process.put(
+        :warm_response,
+        warm_ok([
+          "nerves_system_rpi4-2.0.0",
+          "nerves_toolchain_x86_64_nerves_linux_musl-15.3.1-rc.1",
+          "../../etc-1.0.0",
+          "nerves_system_rpi4",
+          "jason-1.4.4",
+          "nerves_system_bbb-notaversion",
+          7
+        ])
+      )
+
+      assert :ok = NervesCache.deploy_warm(builder: WarmStub, root: root)
+
+      assert NervesCache.template_entries(root) ==
+               {:ok,
+                MapSet.new([
+                  "nerves_system_rpi4-2.0.0",
+                  "nerves_toolchain_x86_64_nerves_linux_musl-15.3.1-rc.1"
+                ])}
     end
 
     test "warms the template on the live image and records what it resolved", %{root: root} do
@@ -306,6 +398,7 @@ defmodule Portal.NervesCacheTest do
     end
 
     test "a failed warm leaves the template file alone and says why", %{root: root} do
+      :ok = NervesCache.ensure_trusted(root)
       :ok = NervesCache.write_template(root, "sha256:old", ["nerves_system_rpi4-1.0.0"])
 
       Process.put(

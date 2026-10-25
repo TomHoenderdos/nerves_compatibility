@@ -122,7 +122,7 @@ builder_warm_nerves
         result, args = self.run_warm(0)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(args.startswith("-u\nncc\nbash\n-c\n"), args)
-        self.assertIn("/opt/nerves_compatibility/portal/bin/portal eval", args)
+        self.assertIn("exec timeout 60m /opt/nerves_compatibility/portal/bin/portal eval", args)
         self.assertIn("Portal.NervesCache.deploy_warm()", args)
         self.assertIn('DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/$(id -u)/docker.sock}"', args)
 
@@ -130,6 +130,8 @@ builder_warm_nerves
         result, _args = self.run_warm(1)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Nerves cache warm failed", result.stderr)
+        self.assertIn("may still hold untrusted entries", result.stderr)
+        self.assertIn("retried next deploy", result.stderr)
 
     def test_activation_warms_the_cache_after_moving_the_tags(self):
         script = r'''

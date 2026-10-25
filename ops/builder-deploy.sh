@@ -126,8 +126,11 @@ builder_docker() {
 # activated, before the restart lets the first build run (isolation spec,
 # section 1). Through the new release's `eval`, so the warm container gets
 # exactly the argv every build gets (Portal.Builder), not a copy of it here.
-# Never fatal: after a failed warm, builds extract artifacts per run, slower
-# but correct, and Portal.Workers.WarmNerves fills the cache from their misses.
+# Bounded at an hour, inside the deploy job's own limit. Never fatal: a run
+# that fails before the one-time wipe finishes leaves the cache's old,
+# untrusted entries in place and its trust marker unwritten, so the next
+# deploy wipes and warms again; one that fails after it leaves builds
+# extracting what they miss, which Portal.Workers.WarmNerves then fills.
 builder_warm_nerves() {
   if ! sudo -u ncc bash -c '
     set -euo pipefail
@@ -136,7 +139,7 @@ builder_warm_nerves() {
     . /etc/ncc-portal/portal.env
     set +a
     export DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/$(id -u)/docker.sock}"
-    exec /opt/nerves_compatibility/portal/bin/portal eval "$1"
+    exec timeout 60m /opt/nerves_compatibility/portal/bin/portal eval "$1"
   ' -- 'case Portal.NervesCache.deploy_warm() do
     :ok ->
       :ok
@@ -145,7 +148,7 @@ builder_warm_nerves() {
       IO.puts(:stderr, inspect(error))
       System.halt(1)
   end'; then
-    echo 'warning: deploy-time Nerves cache warm failed; builds will extract artifacts per run' >&2
+    echo 'warning: deploy-time Nerves cache warm failed; the cache may still hold untrusted entries, and the warm will be retried next deploy' >&2
   fi
 }
 

@@ -299,19 +299,34 @@ defmodule Portal.NervesCache do
     end
   end
 
-  @trusted_marker ".ncc-trusted-v1"
+  @doc """
+  Where `ensure_trusted/1` records that `root` holds only what warm runs
+  wrote: a sibling of the cache root (`<root>.trusted-v1`), never inside it.
+  Every build before this release, and every build under
+  `NCC_NERVES_CACHE_RW=1`, mounted the root itself read-write, so a marker
+  inside it could have been planted by one.
+  """
+  @spec trusted_marker(Path.t()) :: Path.t()
+  def trusted_marker(root) do
+    root = Path.expand(root)
+    Path.join(Path.dirname(root), Path.basename(root) <> ".trusted-v1")
+  end
 
   @doc """
-  Makes sure everything under `root` was written by a warm. Until this release
-  every build extracted into the shared cache, so on the first call
-  `artifacts/` and `dl/` are removed (`File.rm_rf/1` removes a symlink, never
-  its target) and `#{@trusted_marker}` is written; later calls do nothing.
+  Makes sure everything under `root` was written by a warm. Without
+  `trusted_marker/1`, everything inside `root` is removed -- `artifacts/`,
+  `dl/`, `staging/`, `*.stale.*`, `template.json` and any marker a build left
+  there -- with `File.rm_rf!/1`, which unlinks a symlink and never follows
+  it; only after that succeeds is the marker written. Later calls do nothing.
+  A wipe that cannot finish raises and leaves the marker unwritten, so the
+  next call wipes again.
   """
   @spec ensure_trusted(Path.t()) :: :ok
-  # root is the operator-configured Nerves cache; the names below it are fixed.
+  # root is the operator-configured Nerves cache; the marker is its fixed
+  # sibling, and the entries removed are read from the root itself.
   # sobelow_skip ["Traversal.FileModule"]
   def ensure_trusted(root) do
-    marker = Path.join(root, @trusted_marker)
+    marker = trusted_marker(root)
 
     case File.lstat(marker) do
       {:ok, %File.Stat{type: :regular}} ->
@@ -319,12 +334,14 @@ defmodule Portal.NervesCache do
 
       _ ->
         File.mkdir_p!(root)
-        File.rm_rf!(Path.join(root, "artifacts"))
-        File.rm_rf!(Path.join(root, "dl"))
+
+        root
+        |> File.ls!()
+        |> Enum.each(&File.rm_rf!(Path.join(root, &1)))
 
         File.write!(
           marker,
-          "Every entry under artifacts/ was written by a warm run (Portal.NervesCache).\n"
+          "Every entry under #{Path.expand(root)} was written by a warm run (Portal.NervesCache).\n"
         )
 
         :ok
@@ -336,12 +353,21 @@ defmodule Portal.NervesCache do
   release's `eval` after the new worker image is live and before the restart:
   `ensure_trusted/1`, then one synchronous `mode: "warm_nerves"` container
   with no pairs, so what the template resolves is cached before the first
-  build, and its `warm.resolved` recorded with `write_template/3` for
+  build, and its `warm.resolved` (only well-formed Nerves system and
+  toolchain entries) recorded with `write_template/3` for
   `Portal.Workers.Sweep`. A docker run, not an Oban job: a job would run on
-  whichever host polled first. `opts[:builder]` and `opts[:root]` replace
-  `Portal.Builder` and its `nerves_cache/0` in tests.
+  whichever host polled first.
+
+  Under the `NCC_NERVES_CACHE_RW=1` rollback builds write the cache again, so
+  instead of `ensure_trusted/1` this removes `trusted_marker/1`: the next
+  read-only deploy then wipes the cache before trusting it.
+
+  `opts[:builder]` and `opts[:root]` replace `Portal.Builder` and its
+  `nerves_cache/0` in tests, `opts[:rw]` its `nerves_cache_mode/1`.
   """
   @spec deploy_warm(keyword()) :: :ok | {:error, term()}
+  # root is the operator-configured Nerves cache; the marker is its fixed sibling.
+  # sobelow_skip ["Traversal.FileModule"]
   def deploy_warm(opts \\ []) do
     builder =
       Keyword.get_lazy(opts, :builder, fn ->
@@ -349,10 +375,15 @@ defmodule Portal.NervesCache do
       end)
 
     root = Keyword.get_lazy(opts, :root, &Portal.Builder.nerves_cache/0)
+    rw? = Keyword.get_lazy(opts, :rw, fn -> Portal.Builder.nerves_cache_mode(%{}) == :rw end)
     digest = builder.image_digest(builder.docker_image())
     run_id = "warm_nerves-#{System.system_time(:millisecond)}"
 
-    :ok = ensure_trusted(root)
+    if rw? do
+      _ = File.rm(trusted_marker(root))
+    else
+      :ok = ensure_trusted(root)
+    end
 
     try do
       case builder.build(%{
@@ -363,7 +394,7 @@ defmodule Portal.NervesCache do
            }) do
         {:ok, %{exit_code: 0, result: %{"warm" => %{"resolved" => resolved}}}}
         when is_list(resolved) ->
-          write_template(root, digest, Enum.filter(resolved, &is_binary/1))
+          write_template(root, digest, Enum.filter(resolved, &entry?/1))
 
         {:ok, %{exit_code: 0}} ->
           {:error, :missing_warm_result}
@@ -378,4 +409,15 @@ defmodule Portal.NervesCache do
       builder.cleanup(run_id)
     end
   end
+
+  # A `<name>-<version>` cache entry `pair_tuple/1` accepts. Names have no
+  # `-`, so the first one splits off the version, prerelease and all.
+  defp entry?(entry) when is_binary(entry) do
+    case String.split(entry, "-", parts: 2) do
+      [name, version] -> pair_tuple(%{"name" => name, "version" => version}) != []
+      _ -> false
+    end
+  end
+
+  defp entry?(_entry), do: false
 end
