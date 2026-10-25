@@ -18,7 +18,7 @@ defmodule NccAgent.Job do
   require Logger
 
   alias Compatibility.Builder.Argv
-  alias NccAgent.{Client, Config, Docker, Heartbeat, NervesCache, Tar}
+  alias NccAgent.{Caps, Client, Config, Docker, Heartbeat, NervesCache, Tar}
 
   @runner_failure 20
   @default_timeout_sec 7200
@@ -69,7 +69,7 @@ defmodule NccAgent.Job do
     {:ok, hb} = Heartbeat.start_link(%{req: req, lease_id: lease_id, log_path: runner_log})
 
     try do
-      exit_code = build(claim, config, dirs, runner_log, hb)
+      exit_code = claim |> build(config, dirs, runner_log, hb) |> check_result(dirs.out)
       Heartbeat.set_phase(hb, "uploading")
       if exit_code == 0, do: upload_files(req, lease_id, scratch, dirs.files, claim["upload"])
       outcome = complete(req, lease_id, exit_code, scratch)
@@ -259,22 +259,35 @@ defmodule NccAgent.Job do
     tar = Path.join(upload_dir, "batch-#{i}.tar")
 
     try do
-      :ok = Tar.write(batch, tar)
-
-      case Client.upload(req, lease_id, tar) do
-        {:ok, _} ->
-          :ok
-
-        {:error, {:bad_entries, bad}} ->
-          Logger.error(
-            "the portal refused #{length(bad)} file(s) of #{lease_id}: #{inspect(bad)}"
-          )
-
-        {:error, reason} ->
-          Logger.error("uploading batch #{i} of #{lease_id} failed: #{inspect(reason)}")
+      with :ok <- write_batch(batch, tar, i, lease_id) do
+        send_batch(req, lease_id, tar, i)
       end
     after
       File.rm(tar)
+    end
+  end
+
+  defp write_batch(batch, tar, i, lease_id) do
+    case Tar.write(batch, tar) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("could not write batch #{i} of #{lease_id}, skipped: #{inspect(reason)}")
+        :skipped
+    end
+  end
+
+  defp send_batch(req, lease_id, tar, i) do
+    case Client.upload(req, lease_id, tar) do
+      {:ok, _} ->
+        :ok
+
+      {:error, {:bad_entries, bad}} ->
+        Logger.error("the portal refused #{length(bad)} file(s) of #{lease_id}: #{inspect(bad)}")
+
+      {:error, reason} ->
+        Logger.error("uploading batch #{i} of #{lease_id} failed: #{inspect(reason)}")
     end
   end
 
@@ -331,7 +344,7 @@ defmodule NccAgent.Job do
     runner_log = Path.join(scratch, "runner.log")
 
     %{
-      result: if(regular?(result), do: result),
+      result: if(result_ok?(result) == :ok, do: result),
       logs: logs_tarball(scratch, Path.join(out, "logs")),
       runner_log: if(regular?(runner_log), do: runner_log)
     }
@@ -359,17 +372,62 @@ defmodule NccAgent.Job do
   end
 
   defp logs(logs_dir, names) do
+    cap = Caps.get(:log_bytes)
+
     for name <- Enum.sort(names),
         String.ends_with?(name, ".log"),
         path = Path.join(logs_dir, name),
-        regular?(path),
+        log_ok?(path, name, cap),
         do: {String.to_charlist(name), String.to_charlist(path)}
+  end
+
+  defp log_ok?(path, name, cap) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size <= cap ->
+        true
+
+      {:ok, %File.Stat{type: :regular, size: size}} ->
+        Logger.warning("logs/#{name} is #{size} bytes, over the #{cap} cap: skipped")
+        false
+
+      _ ->
+        false
+    end
+  end
+
+  # A passing run must leave a readable result.json within the cap;
+  # otherwise the run is a runner failure (20), never a pass without one.
+  defp check_result(0, out) do
+    case result_ok?(Path.join(out, "result.json")) do
+      :ok ->
+        0
+
+      {:error, :too_large} ->
+        Logger.error("result.json too large (over #{Caps.get(:result_json_bytes)} bytes)")
+        @runner_failure
+
+      {:error, :missing} ->
+        Logger.error("the worker exited 0 without a regular result.json")
+        @runner_failure
+    end
+  end
+
+  defp check_result(exit_code, _out), do: exit_code
+
+  defp result_ok?(path) do
+    cap = Caps.get(:result_json_bytes)
+
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size <= cap -> :ok
+      {:ok, %File.Stat{type: :regular}} -> {:error, :too_large}
+      _ -> {:error, :missing}
+    end
   end
 
   # sobelow_skip ["Traversal.FileModule"]
   defp warm(config, claim, out) do
     result =
-      with true <- regular?(Path.join(out, "result.json")),
+      with :ok <- result_ok?(Path.join(out, "result.json")),
            {:ok, body} <- File.read(Path.join(out, "result.json")),
            {:ok, %{} = result} <- Jason.decode(body) do
         result

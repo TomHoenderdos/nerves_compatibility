@@ -1,7 +1,8 @@
 defmodule NccAgent.Application do
   @moduledoc """
-  Loads the configuration and starts the agent: the identity and one
-  `NccAgent.Slot` per configured slot. A release without its environment
+  Loads the configuration and starts the agent: the identity, the updater
+  and one `NccAgent.Slot` per configured slot (each stopped with time to
+  kill its container and hand its lease back). A release without its environment
   must not spin, so a bad configuration stops the VM before any slot runs.
   """
   use Application
@@ -15,7 +16,8 @@ defmodule NccAgent.Application do
         case NccAgent.Config.load() do
           {:ok, config} ->
             NccAgent.Config.put(config)
-            [NccAgent.Identity, slots(config)]
+            clear_scratch(config)
+            [NccAgent.Identity, NccAgent.Updater, slots(config)]
 
           {:error, errors} ->
             Enum.each(errors, &Logger.error/1)
@@ -23,11 +25,20 @@ defmodule NccAgent.Application do
             []
         end
       else
-        # Tests drive the identity and the jobs themselves.
-        [NccAgent.Identity]
+        # Tests drive the identity, the updater and the jobs themselves.
+        [NccAgent.Identity, NccAgent.Updater]
       end
 
     Supervisor.start_link(children, strategy: :one_for_one, name: NccAgent.Supervisor)
+  end
+
+  # No job runs yet: whatever is in the scratch dir is left over from a
+  # VM that stopped mid-job.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp clear_scratch(config) do
+    scratch = NccAgent.Config.path(config, :scratch)
+    File.rm_rf(scratch)
+    File.mkdir_p(scratch)
   end
 
   defp slots(config) do

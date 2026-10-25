@@ -1,32 +1,53 @@
 defmodule NccAgent.Docker do
   @moduledoc """
-  The agent's calls to `docker` (`config.docker_bin`): pull, inspect, and
-  one worker container run with its output appended to a log and a
-  wall-clock deadline, past which the container is killed.
+  The agent's calls to `docker` (`config.docker_bin`): pull, inspect, kill,
+  and one worker container run with its output appended to a log and a
+  wall-clock deadline, past which the container is killed. Every call has
+  a deadline; `runner.log` stops growing at `NccAgent.Caps`'
+  `:runner_log_bytes` while the output keeps being drained.
   """
 
-  alias NccAgent.Config
+  require Logger
 
-  @doc "Pulls `image_ref`."
+  alias NccAgent.{Caps, Config}
+
+  @pull_timeout_ms 30 * 60_000
+  @inspect_timeout_ms 60_000
+  @kill_timeout_ms 60_000
+  # What a short command's answer keeps of its output, for error messages.
+  @output_bytes 65_536
+
+  @doc "Pulls `image_ref`, for at most 30 minutes."
   @spec pull(Config.t(), String.t()) :: :ok | {:error, String.t()}
-  # `docker_bin` is the operator's NCC_DOCKER_BIN; arguments go to it as a
-  # list, never through a shell.
-  # sobelow_skip ["CI.System"]
   def pull(config, image_ref) do
-    case System.cmd(bin(config), ["pull", image_ref], stderr_to_stdout: true) do
-      {_out, 0} -> :ok
-      {out, status} -> {:error, "docker pull exited #{status}: #{String.trim(out)}"}
+    case cmd(config, ["pull", image_ref], @pull_timeout_ms) do
+      {:ok, _out, 0} -> :ok
+      {:ok, out, status} -> {:error, "docker pull exited #{status}: #{String.trim(out)}"}
+      {:error, :timeout} -> {:error, "docker pull timed out"}
+      {:error, reason} -> {:error, "docker pull failed: #{inspect(reason)}"}
     end
   end
 
   @doc "Whether `image_ref` is in the local image store."
   @spec present?(Config.t(), String.t()) :: boolean()
-  # sobelow_skip ["CI.System"]
-  def present?(config, image_ref) do
-    match?(
-      {_, 0},
-      System.cmd(bin(config), ["image", "inspect", image_ref], stderr_to_stdout: true)
-    )
+  def present?(config, image_ref),
+    do: match?({:ok, _, 0}, cmd(config, ["image", "inspect", image_ref], @inspect_timeout_ms))
+
+  @doc "Kills container `name`, for at most 60 s; a failure is logged."
+  @spec kill(Config.t(), String.t()) :: :ok | {:error, term()}
+  def kill(config, name) do
+    case cmd(config, ["kill", name], @kill_timeout_ms) do
+      {:ok, _out, 0} ->
+        :ok
+
+      {:ok, out, status} ->
+        Logger.warning("docker kill #{name} exited #{status}: #{String.trim(out)}")
+        {:error, {:exit, status}}
+
+      {:error, reason} ->
+        Logger.warning("docker kill #{name} failed: #{inspect(reason)}")
+        {:error, reason}
+    end
   end
 
   @doc """
@@ -41,16 +62,11 @@ defmodule NccAgent.Docker do
   def run(config, argv, log_path, timeout_ms) do
     with {:ok, log} <- File.open(log_path, [:append, :binary]) do
       try do
-        port =
-          Port.open({:spawn_executable, bin(config)}, [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            args: argv
-          ])
-
+        port = open(config, argv)
+        written = log_size(log_path)
         deadline = System.monotonic_time(:millisecond) + timeout_ms
-        receive_output(config, port, log, deadline, container_name(argv))
+        sink = %{log: log, written: written, cap: Caps.get(:runner_log_bytes)}
+        receive_output(config, port, sink, deadline, container_name(argv))
       rescue
         e -> {:error, {:spawn_failed, Exception.message(e)}}
       after
@@ -59,27 +75,104 @@ defmodule NccAgent.Docker do
     end
   end
 
-  # sobelow_skip ["CI.System"]
-  defp receive_output(config, port, log, deadline, name) do
+  defp receive_output(config, port, sink, deadline, name) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
       {^port, {:data, data}} ->
-        IO.binwrite(log, data)
-        receive_output(config, port, log, deadline, name)
+        receive_output(config, port, write(sink, data), deadline, name)
 
       {^port, {:exit_status, status}} ->
         {:ok, status}
     after
       remaining ->
-        if name, do: System.cmd(bin(config), ["kill", name], stderr_to_stdout: true)
-        IO.binwrite(log, "\n[agent] wall-clock timeout exceeded - killed container #{name}\n")
+        if name, do: kill(config, name)
+
+        IO.binwrite(
+          sink.log,
+          "\n[agent] wall-clock timeout exceeded - killed container #{name}\n"
+        )
+
         close(port)
         {:error, :timeout}
     end
   end
 
+  defp write(%{written: written, cap: cap} = sink, _data) when written >= cap, do: sink
+
+  defp write(sink, data) do
+    room = sink.cap - sink.written
+
+    if byte_size(data) <= room do
+      IO.binwrite(sink.log, data)
+      %{sink | written: sink.written + byte_size(data)}
+    else
+      IO.binwrite(sink.log, binary_part(data, 0, room))
+      IO.binwrite(sink.log, "\n[agent] runner.log truncated at #{human_size(sink.cap)}\n")
+      %{sink | written: sink.cap}
+    end
+  end
+
+  defp human_size(bytes) when rem(bytes, 1_048_576) == 0, do: "#{div(bytes, 1_048_576)} MiB"
+  defp human_size(bytes), do: "#{bytes} bytes"
+
+  defp log_size(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{size: size}} -> size
+      _ -> 0
+    end
+  end
+
+  # A short command with a deadline, keeping the start of its output.
+  defp cmd(config, args, timeout_ms) do
+    port = open(config, args)
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    collect(port, [], 0, deadline)
+  rescue
+    e -> {:error, {:spawn_failed, Exception.message(e)}}
+  end
+
+  defp collect(port, acc, size, deadline) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^port, {:data, data}} when size < @output_bytes ->
+        collect(port, [acc, data], size + byte_size(data), deadline)
+
+      {^port, {:data, _data}} ->
+        collect(port, acc, size, deadline)
+
+      {^port, {:exit_status, status}} ->
+        {:ok, IO.iodata_to_binary(acc), status}
+    after
+      remaining ->
+        close(port)
+        {:error, :timeout}
+    end
+  end
+
+  # `docker_bin` is the operator's NCC_DOCKER_BIN; arguments go to it as a
+  # list, never through a shell.
+  defp open(config, args) do
+    Port.open({:spawn_executable, bin(config)}, [
+      :binary,
+      :exit_status,
+      :stderr_to_stdout,
+      args: args
+    ])
+  end
+
+  # Closing a port does not end its process: a hung docker CLI is killed.
+  # sobelow_skip ["CI.System"]
   defp close(port) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, pid} ->
+        System.cmd("kill", ["-KILL", Integer.to_string(pid)], stderr_to_stdout: true)
+
+      nil ->
+        :ok
+    end
+
     Port.close(port)
   rescue
     ArgumentError -> :ok
