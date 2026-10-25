@@ -63,6 +63,8 @@ defmodule NccAgent.Heartbeat do
     rescue
       # Linked to the job: a heartbeat must never take the build down.
       e -> failed(state, Exception.message(e))
+    catch
+      :exit, reason -> failed(state, inspect(reason))
     end
 
     %{state | timer: Process.send_after(self(), :beat, state.interval)}

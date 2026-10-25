@@ -9,7 +9,7 @@ defmodule NccAgent.JobTest do
 
   @fake Path.expand("../support/fake_docker.sh", __DIR__)
   @env ~w(FAKE_DOCKER_EXIT FAKE_DOCKER_RESULT FAKE_DOCKER_ARGV_LOG FAKE_DOCKER_FILE_CONTENT
-          FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_SLEEP)
+          FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_SLEEP FAKE_DOCKER_PLANT FAKE_DOCKER_RESULT_LINK)
   @lease "5b0c8a8e-1111-4c2d-9e3f-0a1b2c3d4e5f"
   @digest "sha256:" <> String.duplicate("a", 64)
   @content "the archived artifact"
@@ -40,6 +40,7 @@ defmodule NccAgent.JobTest do
 
     on_exit(fn ->
       Enum.each(@env, &System.delete_env/1)
+      Application.delete_env(:ncc_agent, :caps)
       File.rm_rf(dir)
     end)
 
@@ -192,6 +193,65 @@ defmodule NccAgent.JobTest do
 
     assert params["exit_code"] == "20"
     refute File.exists?(Path.join(Config.path(config, :scratch), "rb-jason-1.4.4-1"))
+  end
+
+  test "symlinks and non-sha names in files/ are not uploaded", %{req: req, config: config} do
+    System.put_env("FAKE_DOCKER_PLANT", "1")
+    sha = :crypto.hash(:sha256, @content) |> Base.encode16(case: :lower)
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    assert_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, %{"shas" => shas}, _}
+    assert shas == [sha]
+
+    assert_received {:portal_request, "PUT", "/builder/v1/jobs/" <> _, %{"names" => [^sha]}, _}
+  end
+
+  test "a symlinked result.json is missing: the run completes with 20", %{
+    req: req,
+    config: config,
+    dir: dir
+  } do
+    secret = Path.join(dir, "host-secret.json")
+    File.write!(secret, ~s({"status":"pass"}))
+    System.put_env("FAKE_DOCKER_RESULT_LINK", secret)
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    assert_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, params, _}
+                    when is_map_key(params, "exit_code")
+
+    assert params["exit_code"] == "20"
+    refute Map.has_key?(params, "result")
+    refute_received {:portal_request, "PUT", _, _, _}
+  end
+
+  test "a result.json over the cap is not read: the run completes with 20", %{
+    req: req,
+    config: config
+  } do
+    Application.put_env(:ncc_agent, :caps, result_json_bytes: 10)
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    assert_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, params, _}
+                    when is_map_key(params, "exit_code")
+
+    assert params["exit_code"] == "20"
+    refute Map.has_key?(params, "result")
+  end
+
+  test "a log over the cap is left out of logs.tar.gz", %{req: req, config: config} do
+    Application.put_env(:ncc_agent, :caps, log_bytes: 5)
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    assert_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, params, _}
+                    when is_map_key(params, "exit_code")
+
+    assert params["exit_code"] == "0"
+    assert {"result.json", _} = params["result"]
+    refute Map.has_key?(params, "logs")
   end
 
   test "argv_spec/4 is the read-only, hardened spec without a build cache", %{config: config} do

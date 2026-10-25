@@ -3,12 +3,15 @@
 #
 #   image inspect  exit 0 when FAKE_DOCKER_IMAGE_PRESENT=1, else 1
 #   pull           echo, exit 0
-#   kill           exit 0
+#   kill           append the container name to FAKE_DOCKER_KILL_LOG, exit 0
 #   run ...        append the argv (one per line) to FAKE_DOCKER_ARGV_LOG,
 #                  write FAKE_DOCKER_RESULT to <out>/result.json, a log to
 #                  <out>/logs/host.log, a file named by its own sha256 with
 #                  FAKE_DOCKER_FILE_CONTENT into <files>, print
 #                  "fake build output", sleep 5 when FAKE_DOCKER_SLEEP=1,
+#                  with FAKE_DOCKER_PLANT=1 also a symlink named like a sha
+#                  and a non-sha file in <files>, and result.json as a
+#                  symlink to FAKE_DOCKER_RESULT_LINK when that is set,
 #                  exit FAKE_DOCKER_EXIT (default 0)
 #   anything else  echo, exit 0
 set -euo pipefail
@@ -25,6 +28,9 @@ case "${1:-}" in
     exit 0
     ;;
   kill)
+    if [ -n "${FAKE_DOCKER_KILL_LOG:-}" ]; then
+      printf '%s\n' "${2:-}" >>"$FAKE_DOCKER_KILL_LOG"
+    fi
     exit 0
     ;;
   run)
@@ -65,6 +71,16 @@ case "${1:-}" in
       content="${FAKE_DOCKER_FILE_CONTENT:-fake artifact}"
       sha=$(printf '%s' "$content" | sha256sum | cut -d' ' -f1)
       printf '%s' "$content" >"$files/$sha"
+
+      if [ "${FAKE_DOCKER_PLANT:-0}" = "1" ]; then
+        ln -s /etc/hostname "$files/$(printf '%064d' 0)"
+        echo "not a sha" >"$files/README"
+      fi
+    fi
+
+    if [ -n "$out" ] && [ -n "${FAKE_DOCKER_RESULT_LINK:-}" ]; then
+      rm -f "$out/result.json"
+      ln -s "$FAKE_DOCKER_RESULT_LINK" "$out/result.json"
     fi
 
     echo "fake build output"

@@ -16,15 +16,33 @@ defmodule NccAgent.TarTest do
     {name, path}
   end
 
-  test "batches/2 packs greedily by size and gives an oversized file its own batch", %{dir: dir} do
+  test "batches/2 packs greedily by tar size and gives an oversized file its own batch", %{
+    dir: dir
+  } do
+    # Each 400-byte file takes 1024 bytes in a tar (header + padded
+    # content), and every tar ends with 1024 bytes: two fit in 3072.
     a = file(dir, "a", 400)
     b = file(dir, "b", 400)
     c = file(dir, "c", 400)
-    assert [[^a, ^b], [^c]] = Tar.batches([a, b, c], 1000)
+    assert [[^a, ^b], [^c]] = Tar.batches([a, b, c], 3072)
+    assert [[^a], [^b], [^c]] = Tar.batches([a, b, c], 3071)
 
-    big = file(dir, "big", 2000)
-    assert [[^a], [^big], [^b]] = Tar.batches([a, big, b], 1000)
+    big = file(dir, "big", 5000)
+    assert [[^a], [^big], [^b]] = Tar.batches([a, big, b], 3072)
     assert [] = Tar.batches([], 1000)
+  end
+
+  test "a written batch never exceeds the cap on disk", %{dir: dir} do
+    files = for i <- 1..7, do: file(dir, "f#{i}", i * 333)
+    cap = 4096
+
+    for {batch, i} <- Enum.with_index(Tar.batches(files, cap)) do
+      out = Path.join(dir, "b#{i}.tar")
+      :ok = Tar.write(batch, out)
+      size = File.stat!(out).size
+      assert size == Tar.tar_bytes(Enum.map(batch, fn {_, p} -> File.stat!(p).size end))
+      assert size <= cap or length(batch) == 1
+    end
   end
 
   test "write/2 writes a tar of the files under their sha names", %{dir: dir} do
