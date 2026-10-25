@@ -6,6 +6,8 @@ defmodule PortalWeb.Builder.JobController do
   """
   use PortalWeb, :controller
 
+  require Logger
+
   alias Portal.Builders
   alias Portal.Builders.{Images, Leases, RateLimit, WarmAllowlist}
 
@@ -21,14 +23,14 @@ defmodule PortalWeb.Builder.JobController do
       # Without its egress ruleset a builder's containers could reach anything,
       # so it gets no work until the ruleset is back.
       params["egress"] != "ok" ->
-        {:ok, _} = record_egress(builder, "missing")
+        record_egress(builder, "missing")
         error(conn, 409, "egress_missing")
 
       free_slots(params) < 1 ->
         send_resp(conn, 204, "")
 
       true ->
-        {:ok, _} = record_egress(builder, "ok")
+        record_egress(builder, "ok")
 
         case Leases.claim_or_wait(builder, Leases.long_poll_ms()) do
           :none -> send_resp(conn, 204, "")
@@ -41,6 +43,7 @@ defmodule PortalWeb.Builder.JobController do
     case Leases.heartbeat(id, conn.assigns.builder.id, params["phase"], params["log_tail"]) do
       {:ok, _lease} -> json(conn, %{ok: true})
       {:error, :not_held} -> error(conn, 409, "lease_not_held")
+      {:error, :update_failed} -> error(conn, 500, "heartbeat_failed")
     end
   end
 
@@ -73,8 +76,21 @@ defmodule PortalWeb.Builder.JobController do
   end
 
   # A claim arrives every few seconds per slot; write the row only on change.
-  defp record_egress(%{egress_status: status} = builder, status), do: {:ok, builder}
-  defp record_egress(builder, status), do: Builders.set_egress(builder, status)
+  # Bookkeeping for the admin page: a failed write is logged, and the claim
+  # is answered on the egress the agent reported either way.
+  defp record_egress(%{egress_status: status}, status), do: :ok
+
+  defp record_egress(builder, status) do
+    case Builders.set_egress(builder, status) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "could not record egress #{status} for #{builder.name}: #{inspect(reason)}"
+        )
+    end
+  end
 
   defp free_slots(%{"free_slots" => n}) when is_integer(n), do: n
   defp free_slots(_), do: 1
