@@ -1,4 +1,4 @@
-.PHONY: build build-clean build-toolchains toolchain-tags dev test test-integration format clean help all
+.PHONY: build build-clean build-toolchains toolchain-tags dev test test-integration test-remote-e2e test-remote-integration format clean help all
 
 WORKER_IMAGE := ncc-worker:local
 
@@ -22,6 +22,8 @@ help:
 	@echo "  dev              Start the Phoenix portal server"
 	@echo "  test             Run the umbrella test suite"
 	@echo "  test-integration Run the Docker-backed portal build and toolchain integration tests"
+	@echo "  test-remote-e2e  Run a real ncc_agent process against the portal with a fake docker"
+	@echo "  test-remote-integration  Same against the real worker container (needs Docker)"
 	@echo "  format           Format the umbrella projects"
 	@echo "  clean            Remove generated umbrella build artifacts"
 
@@ -60,6 +62,15 @@ test:
 
 test-integration:
 	mix test apps/portal/test/portal/workers/build_integration_test.exs apps/portal/test/portal/workers/toolchain_integration_test.exs --only integration
+
+# A real ncc_agent OS process against the portal's builder router; Docker is
+# faked, so this runs anywhere the test database does.
+test-remote-e2e:
+	mix test apps/portal/test/portal/builders/agent_e2e_test.exs --only e2e
+
+# The same through the real worker container (ncc-worker:local, `make build`).
+test-remote-integration:
+	mix test apps/portal/test/portal/builders/remote_integration_test.exs --only integration
 
 format:
 	mix format
