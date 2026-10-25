@@ -17,6 +17,9 @@ defmodule NccWorker.WarmNervesTest do
 
   defp p(name, version), do: %{"name" => name, "version" => version}
 
+  # run/5 sets HEX_HOME for the whole VM; tests run async and must not.
+  defp no_put_env(_name, _value), do: :ok
+
   describe "plan/2" do
     test "pins a requested system exactly and builds only its target" do
       plan = WarmNerves.plan([p("nerves_system_rpi4", "2.0.0")], Systems.default())
@@ -155,6 +158,7 @@ defmodule NccWorker.WarmNervesTest do
                  @toolchain,
                  layout,
                  create_project: fake_project(),
+                 put_env: &no_put_env/2,
                  mix: mix
                )
 
@@ -183,6 +187,7 @@ defmodule NccWorker.WarmNervesTest do
       assert {:ok, result} =
                WarmNerves.run(input([]), paths, @toolchain, layout,
                  create_project: fake_project(),
+                 put_env: &no_put_env/2,
                  mix: fake_mix(layout, %{})
                )
 
@@ -203,11 +208,65 @@ defmodule NccWorker.WarmNervesTest do
       assert {:error, {:warm_failed, "nerves_system_x86_64", "deps.get", 1}} =
                WarmNerves.run(input([]), paths, @toolchain, layout,
                  create_project: fake_project(),
+                 put_env: &no_put_env/2,
                  mix: mix
                )
 
       refute File.exists?(Path.join([cache, "artifacts", "nerves_system_bbb-2.0.0"]))
       refute File.exists?(Path.join([cache, "staging", "warm_nerves-42"]))
+    end
+
+    # Every build mounts /hex-cache read-write and can plant hex.config,
+    # cache.ets or tarballs there; the warm, the only container that writes
+    # the Nerves cache, must resolve through a Hex home no build has touched.
+    test "runs every mix with a fresh HEX_HOME under /work, never /hex-cache", ctx do
+      %{paths: paths, layout: layout} = ctx
+      me = self()
+      hex_home = Path.join(paths.work_dir, "hex-home")
+      File.mkdir_p!(hex_home)
+      File.write!(Path.join(hex_home, "hex.config"), "planted")
+
+      mix = fn args, _dir, env, _log ->
+        send(me, {:mix_env, args, env})
+        :ok
+      end
+
+      create = fn work_dir, _overrides, _targets ->
+        send(me, :created)
+        fake_project().(work_dir, nil, [])
+      end
+
+      put_env = fn name, value ->
+        send(me, {:put_env, name, value, File.ls!(value)})
+        :ok
+      end
+
+      assert {:ok, _result} =
+               WarmNerves.run(
+                 input([p("nerves_system_rpi4", "2.0.0")]),
+                 paths,
+                 @toolchain,
+                 layout,
+                 create_project: create,
+                 mix: mix,
+                 put_env: put_env
+               )
+
+      {:messages, messages} = Process.info(self(), :messages)
+
+      # Set, fresh and empty, before Project.create runs its first mix.
+      assert [{:put_env, "HEX_HOME", ^hex_home, []}, :created | _] = messages
+
+      envs = for {:mix_env, _args, env} <- messages, do: env
+      assert envs != []
+
+      for env <- envs do
+        assert List.keyfind(env, "HEX_HOME", 0) == {"HEX_HOME", hex_home}
+
+        refute Enum.any?(env, fn {_k, v} ->
+                 is_binary(v) and String.starts_with?(v, "/hex-cache")
+               end)
+      end
     end
 
     test "a requested pair the project did not lock is reported not warmed", ctx do
@@ -217,6 +276,7 @@ defmodule NccWorker.WarmNervesTest do
       assert {:ok, result} =
                WarmNerves.run(input([wanted]), paths, @toolchain, layout,
                  create_project: fake_project(),
+                 put_env: &no_put_env/2,
                  mix: fake_mix(layout, %{})
                )
 
