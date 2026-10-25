@@ -7,7 +7,7 @@ defmodule NccAgent.IdentityTest do
   setup do
     dir = Path.join(System.tmp_dir!(), "agent-#{System.unique_integer([:positive])}")
     ca = CA.new(Path.join(dir, "ca"))
-    %{url: url} = FakePortal.start(ca, self(), %{})
+    %{url: url, script: script} = FakePortal.start(ca, self(), %{})
 
     config = %{
       Config.defaults()
@@ -18,7 +18,7 @@ defmodule NccAgent.IdentityTest do
 
     Config.put(config)
     on_exit(fn -> File.rm_rf(dir) end)
-    %{ca: ca, config: config, dir: dir}
+    %{ca: ca, config: config, dir: dir, script: script}
   end
 
   test "first boot fetches and verifies the CA, enrols, and stores the identity", %{
@@ -61,5 +61,62 @@ defmodule NccAgent.IdentityTest do
 
     assert File.read!(Config.path(config, :key)) != before
     assert DateTime.diff(Identity.cert_expires_at(), DateTime.utc_now(), :day) > 300
+  end
+
+  test "a crash between the renewal's renames is repaired from the previous pair", %{
+    config: config
+  } do
+    {:ok, _} = Identity.ensure()
+    key_path = Config.path(config, :key)
+    cert_path = Config.path(config, :cert)
+    old_key = File.read!(key_path)
+    File.cp!(key_path, key_path <> ".prev")
+    File.cp!(cert_path, cert_path <> ".prev")
+    # The new key landed, the new certificate did not.
+    File.write!(key_path, X509.PrivateKey.new_ec(:secp256r1) |> X509.PrivateKey.to_pem())
+
+    assert {:ok, req} = Identity.ensure()
+    assert File.read!(key_path) == old_key
+    assert :ok = NccAgent.Client.status(req, "ok", 1)
+    assert_received {:portal_request, "POST", "/builder/v1/status", _, fp} when is_binary(fp)
+  end
+
+  test "a mismatched pair with no previous pair is an error", %{config: config} do
+    {:ok, _} = Identity.ensure()
+    key_path = Config.path(config, :key)
+    File.write!(key_path, X509.PrivateKey.new_ec(:secp256r1) |> X509.PrivateKey.to_pem())
+
+    assert {:error, :identity_mismatch} = Identity.ensure()
+  end
+
+  test "an issued certificate for a different key is refused", %{
+    config: config,
+    ca: ca,
+    script: script
+  } do
+    other = X509.PrivateKey.new_ec(:secp256r1)
+    csr = other |> X509.CSR.new("/CN=other") |> X509.CSR.to_pem()
+    pem = CA.issue(ca, csr, "box")
+
+    body = %{
+      certificate_pem: pem,
+      builder_id: "b1",
+      name: "box",
+      expires_at: DateTime.utc_now() |> DateTime.add(365, :day) |> DateTime.to_iso8601()
+    }
+
+    Agent.update(script, &Map.put(&1, :enroll_error, {201, body}))
+
+    assert {:error, {:bad_certificate, :key_mismatch}} = Identity.ensure()
+    refute File.exists?(Config.path(config, :cert))
+    refute File.exists?(Config.path(config, :key))
+  end
+
+  test "an enrolment token with a trailing newline still enrols", %{config: config} do
+    Config.put(%{config | enrolment_token: config.enrolment_token <> "\n"})
+    assert {:ok, _} = Identity.ensure()
+
+    assert_received {:portal_request, "POST", "/builder/v1/enroll", %{"token" => token}, _}
+    refute String.ends_with?(token, "\n")
   end
 end

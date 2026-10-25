@@ -70,8 +70,13 @@ defmodule NccAgent.Config do
   def path(config, :releases), do: Path.join(config.data_dir, "releases")
 
   defp url_errors(nil), do: ["NCC_PORTAL_URL is required (https://host:8443)"]
-  defp url_errors("https://" <> _), do: []
-  defp url_errors(_), do: ["NCC_PORTAL_URL must be an https URL"]
+
+  defp url_errors(url) do
+    case URI.parse(url) do
+      %URI{scheme: "https", host: host} when is_binary(host) and host != "" -> []
+      _ -> ["NCC_PORTAL_URL must be an https URL with a host, got #{inspect(url)}"]
+    end
+  end
 
   defp parse_slots(value) do
     case Integer.parse(value) do

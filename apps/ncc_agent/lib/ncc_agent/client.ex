@@ -240,19 +240,21 @@ defmodule NccAgent.Client do
 
   @doc """
   Completes the lease with the worker's exit code and whichever of
-  `result` (result.json), `logs` (logs.tar.gz) and `runner_log` exist.
+  `result` (result.json), `logs` (logs.tar.gz) and `runner_log` are given.
+  A given part whose file is missing is `{:error, {:missing_part, name}}`.
   """
   @spec complete(Req.Request.t(), String.t(), integer(), %{optional(atom()) => Path.t() | nil}) ::
           {:ok, map()} | error()
   def complete(req, lease_id, exit_code, parts) do
-    form =
-      [exit_code: Integer.to_string(exit_code)] ++
-        part(parts, :result, "result.json") ++
-        part(parts, :logs, "logs.tar.gz") ++ part(parts, :runner_log, "runner.log")
+    with {:ok, result} <- part(parts, :result, "result.json"),
+         {:ok, logs} <- part(parts, :logs, "logs.tar.gz"),
+         {:ok, runner_log} <- part(parts, :runner_log, "runner.log") do
+      form = [exit_code: Integer.to_string(exit_code)] ++ result ++ logs ++ runner_log
 
-    case Req.post(req, url: job(lease_id, "/complete"), form_multipart: form) do
-      {:ok, %Req.Response{status: 202, body: %{} = body}} -> {:ok, body}
-      other -> error(other)
+      case Req.post(req, url: job(lease_id, "/complete"), form_multipart: form) do
+        {:ok, %Req.Response{status: 202, body: %{} = body}} -> {:ok, body}
+        other -> error(other)
+      end
     end
   end
 
@@ -264,8 +266,13 @@ defmodule NccAgent.Client do
   # sobelow_skip ["Traversal.FileModule"]
   defp part(parts, key, filename) do
     case Map.get(parts, key) do
-      nil -> []
-      path -> [{key, {File.stream!(path, @chunk), filename: filename}}]
+      nil ->
+        {:ok, []}
+
+      path ->
+        if File.regular?(path),
+          do: {:ok, [{key, {File.stream!(path, @chunk), filename: filename}}]},
+          else: {:error, {:missing_part, key}}
     end
   end
 

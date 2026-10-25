@@ -98,6 +98,15 @@ defmodule NccAgent.ClientTest do
     refute Map.has_key?(params, "runner_log")
   end
 
+  test "complete refuses a part whose file is missing", %{req: req, dir: dir} do
+    missing = Path.join(dir, "nope.json")
+
+    assert {:error, {:missing_part, :result}} =
+             Client.complete(req, @lease, 0, %{result: missing})
+
+    refute_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, _, _}
+  end
+
   test "every request carries the client certificate and the agent version", %{req: req} do
     {:ok, _} = Client.claim(req, 1, "ok")
     {:ok, _} = Client.missing(req, @lease, ["aa"])

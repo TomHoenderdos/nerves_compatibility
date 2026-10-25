@@ -10,7 +10,9 @@ defmodule NccAgent.Token do
 
   @spec parse(String.t() | nil) :: {:ok, t()} | :error
   def parse(token) when is_binary(token) do
-    with [id, secret, prefix] when id != "" and secret != "" <- String.split(token, "."),
+    # Env files often end the value with a newline.
+    with [id, secret, prefix] when id != "" and secret != "" <-
+           token |> String.trim() |> String.split("."),
          true <- prefix =~ ~r/\A[0-9a-f]{16}\z/ do
       {:ok, %{id: id, secret: secret, ca_prefix: prefix}}
     else

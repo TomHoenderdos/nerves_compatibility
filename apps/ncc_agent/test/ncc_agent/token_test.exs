@@ -12,4 +12,9 @@ defmodule NccAgent.TokenTest do
     assert :error = Token.parse("a.b.NOTHEX0123456789")
     assert :error = Token.parse("")
   end
+
+  test "trims surrounding whitespace" do
+    assert {:ok, %{ca_prefix: "0123456789abcdef"}} =
+             Token.parse("0f2b.c2VjcmV0.0123456789abcdef\n")
+  end
 end
