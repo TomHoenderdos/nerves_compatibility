@@ -405,4 +405,41 @@ defmodule Portal.Builders do
       {:ok, id}
     end
   end
+
+  @doc "How many catalogue runs each builder produced, revoked ones included: `%{builder_id => n}`."
+  @spec runs_count() :: %{String.t() => non_neg_integer()}
+  def runs_count do
+    from(r in "catalog_runs",
+      where: not is_nil(r.builder_id),
+      group_by: r.builder_id,
+      select: {type(r.builder_id, Ecto.UUID), count()}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  @doc """
+  Leases each builder finished in the last 24 hours, by outcome:
+  `%{builder_id => %{done: n, failed: n}}`. A lease counts by its last
+  change, so one failed and requeued is not counted until it ends again.
+  """
+  @spec throughput_24h() :: %{
+          String.t() => %{done: non_neg_integer(), failed: non_neg_integer()}
+        }
+  def throughput_24h do
+    since = DateTime.add(DateTime.utc_now(), -24, :hour)
+
+    from(l in "builder_leases",
+      where:
+        not is_nil(l.builder_id) and l.state in ["done", "failed"] and
+          l.updated_at > type(^since, :utc_datetime_usec),
+      group_by: [l.builder_id, l.state],
+      select: {type(l.builder_id, Ecto.UUID), l.state, count()}
+    )
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn {id, state, n}, acc ->
+      key = if state == "done", do: :done, else: :failed
+      Map.update(acc, id, Map.put(%{done: 0, failed: 0}, key, n), &Map.put(&1, key, n))
+    end)
+  end
 end

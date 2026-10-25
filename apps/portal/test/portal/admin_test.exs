@@ -250,4 +250,45 @@ defmodule Portal.AdminTest do
       assert Portal.Settings.get().argus_analyses == [:default, :exposure]
     end
   end
+
+  describe "update_remote_settings/1" do
+    test "saves a mode and a threshold" do
+      assert {:ok, %{remote_mode: :off, remote_backlog_threshold: 0}} =
+               Admin.update_remote_settings(%{
+                 "remote_mode" => "off",
+                 "remote_backlog_threshold" => "0"
+               })
+
+      assert %{remote_mode: :off, remote_backlog_threshold: 0} = Portal.Settings.get()
+    end
+
+    test "refuses an unknown mode, a negative or non-numeric threshold, and keeps the stored one" do
+      for params <- [
+            %{"remote_mode" => "always", "remote_backlog_threshold" => "4"},
+            %{"remote_mode" => "on", "remote_backlog_threshold" => "-1"},
+            %{"remote_mode" => "on", "remote_backlog_threshold" => "4x"},
+            %{"remote_mode" => ["on"], "remote_backlog_threshold" => "4"},
+            %{}
+          ] do
+        assert {:error, :invalid_remote_settings} = Admin.update_remote_settings(params)
+      end
+
+      assert %{remote_mode: :auto, remote_backlog_threshold: 10} = Portal.Settings.get()
+    end
+  end
+
+  describe "builder actions" do
+    test "an unknown builder or lease id is not found", %{admin: admin} do
+      assert {:error, :not_found} = Admin.revoke_builder("not-a-uuid", admin)
+
+      assert {:error, :not_found} =
+               Admin.set_builder_publishing(Ecto.UUID.generate(), true, admin)
+
+      assert {:error, :not_found} = Admin.requeue_lease(Ecto.UUID.generate())
+    end
+
+    test "an invalid builder name is refused before any CA is needed", %{admin: admin} do
+      assert {:error, :invalid_name} = Admin.create_builder_token("not a name!", admin)
+    end
+  end
 end

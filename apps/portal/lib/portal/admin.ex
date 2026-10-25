@@ -397,6 +397,107 @@ defmodule Portal.Admin do
   end
 
   @doc """
+  Mint a one-time enrolment token for a builder called `name`, on behalf of
+  `actor`. The token itself is returned once and never stored.
+  """
+  @spec create_builder_token(String.t(), Portal.Accounts.User.t()) ::
+          {:ok, %{token: String.t(), record: Portal.Builders.EnrolmentToken.t()}}
+          | {:error, :invalid_name | :no_ca | term()}
+  def create_builder_token(name, actor) do
+    name = name |> to_string() |> String.trim()
+
+    with {:ok, result} <- Portal.Builders.create_token(name, actor.username) do
+      Logger.warning("Builder enrolment token for #{name} minted by #{actor.username}")
+      {:ok, result}
+    end
+  end
+
+  @doc """
+  Revoke the builder `builder_id`, on behalf of `actor`: see
+  `Portal.Builders.revoke/1` for what that undoes.
+  """
+  @spec revoke_builder(String.t(), Portal.Accounts.User.t()) ::
+          {:ok, map()} | {:error, :not_found | term()}
+  def revoke_builder(builder_id, actor) do
+    with {:ok, builder} <- Portal.Builders.get_builder(builder_id),
+         {:ok, result} <- Portal.Builders.revoke(builder) do
+      Logger.warning(
+        "Builder #{builder.name} revoked by #{actor.username}: " <>
+          "#{result.runs_revoked} runs revoked, #{length(result.packages)} packages rebuilt locally"
+      )
+
+      Portal.AdminEvents.broadcast(:builders)
+      {:ok, result}
+    end
+  end
+
+  @doc "Let the builder `builder_id` publish its runs, or stop it, on behalf of `actor`."
+  @spec set_builder_publishing(String.t(), boolean(), Portal.Accounts.User.t()) ::
+          {:ok, Portal.Builders.Builder.t()} | {:error, :not_found | term()}
+  def set_builder_publishing(builder_id, publishing, actor) when is_boolean(publishing) do
+    with {:ok, builder} <- Portal.Builders.get_builder(builder_id),
+         {:ok, builder} <- Portal.Builders.set_publishing(builder, publishing) do
+      verb = if publishing, do: "enabled", else: "disabled"
+      Logger.warning("Publishing #{verb} for builder #{builder.name} by #{actor.username}")
+      Portal.AdminEvents.broadcast(:builders)
+      {:ok, builder}
+    end
+  end
+
+  @doc "Put the `:failed` lease `lease_id` back in the remote queue with a fresh attempt budget."
+  @spec requeue_lease(String.t()) ::
+          {:ok, Portal.Builders.Lease.t()} | {:error, :not_found | :not_failed | term()}
+  def requeue_lease(lease_id) do
+    with {:ok, lease} <- fetch_lease(lease_id),
+         {:ok, lease} <- Portal.Builders.Leases.requeue(lease) do
+      Portal.AdminEvents.broadcast(:builders)
+      {:ok, lease}
+    end
+  end
+
+  defp fetch_lease(lease_id) do
+    with {:ok, id} <- Ecto.UUID.cast(lease_id),
+         {:ok, lease} <- Ash.get(Portal.Builders.Lease, id, domain: Portal.Builders) do
+      {:ok, lease}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Save the remote routing card of `/admin/builders`. `params` are the
+  `remote[...]` form fields: `remote_mode` one of `auto`, `on`, `off`, and
+  `remote_backlog_threshold` a whole number of jobs, zero or more.
+  """
+  @spec update_remote_settings(map()) ::
+          {:ok, Portal.Settings.Setting.t()} | {:error, :invalid_remote_settings}
+  def update_remote_settings(params) when is_map(params) do
+    with {:ok, mode} <- remote_mode(params["remote_mode"]),
+         {:ok, threshold} <- backlog_threshold(params["remote_backlog_threshold"]),
+         {:ok, setting} <-
+           Portal.Settings.save(%{remote_mode: mode, remote_backlog_threshold: threshold}) do
+      Portal.AdminEvents.broadcast(:builders)
+      {:ok, setting}
+    else
+      _ -> {:error, :invalid_remote_settings}
+    end
+  end
+
+  def update_remote_settings(_params), do: {:error, :invalid_remote_settings}
+
+  defp remote_mode(mode) when mode in ~w(auto on off), do: {:ok, String.to_existing_atom(mode)}
+  defp remote_mode(_mode), do: :error
+
+  defp backlog_threshold(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {n, ""} when n >= 0 -> {:ok, n}
+      _ -> :error
+    end
+  end
+
+  defp backlog_threshold(_value), do: :error
+
+  @doc """
   Ask for an update check now.
 
   Marked `manual` so the run happens even while the schedule is switched off --

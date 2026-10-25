@@ -202,6 +202,7 @@ defmodule PortalWeb.Router do
       live "/argus/findings", PortalWeb.Admin.ArgusFindingsLive, :index
       live "/users", PortalWeb.Admin.UsersLive, :index
       live "/queue", PortalWeb.Admin.QueueLive, :index
+      live "/builders", PortalWeb.Admin.BuildersLive, :index
     end
   end
 
