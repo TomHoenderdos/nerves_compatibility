@@ -128,7 +128,15 @@ All of this is manual, once.
 
 ### cloud-init
 
-Debian/Ubuntu, x86_64 or aarch64. Replace `PORTAL_HOST` (the portal's
+**Ubuntu 24.04 x86_64 or aarch64 only.** The agent release carries its own
+ERTS (`include_erts: true`), and that ERTS is linked against the glibc of
+the `ubuntu-24.04` runner that built it (2.39): on an older glibc, Debian
+12's 2.36 for one, the release does not start. Before relying on the
+published releases, run `.github/workflows/images.yml` once by hand
+(`workflow_dispatch`) to prove the release build and the upload of
+`images.json` work end to end.
+
+Replace `PORTAL_HOST` (the portal's
 `PHX_HOST`: the server certificate names it), `TOKEN` and `COMMIT` (the
 40-hex sha the web host is on; any published commit works, the agent
 updates itself to the portal's version on its first claim).
@@ -233,9 +241,24 @@ the identity lives in `/srv/ncc/{ca.pem,client.pem,client-key.pem}`.
     with the cache read-write, at most four per run.
   - *Egress*: `priv/egress.sh` writes chain `NCC-EGRESS` first in
     `DOCKER-USER` (IPv6 too when `ip6tables` has the chain): established
-    replies, DNS, then drop RFC1918, `100.64.0.0/10`, `169.254.0.0/16`
-    (IMDS) and loopback (`fc00::/7`, `fe80::/10`, `::1` on v6), accept TCP
-    443/80, drop the rest. The agent fails closed: no ruleset, no claim.
+    replies, DNS to the resolvers, then drop RFC1918, `100.64.0.0/10`,
+    `169.254.0.0/16` (IMDS) and loopback (`fc00::/7`, `fe80::/10`, `::1`
+    on v6), accept TCP 443/80, drop the rest. The agent fails closed: no
+    ruleset, no claim.
+    The resolvers are the ones Docker hands the containers: the `dns` list
+    of `/etc/docker/daemon.json`, else the non-loopback `nameserver` lines
+    of `/etc/resolv.conf`, else (when that only names systemd-resolved's
+    `127.0.0.53`) the servers `resolvectl status` reports. `NCC_DNS_SERVERS`
+    (space-separated addresses, in the unit's environment) overrides the
+    lookup. When none can be found the install prints
+    `egress: resolver unknown, DNS allowed to any destination` and port 53
+    stays open to every address; check the agent's boot log for it.
+    The chain only sees what the containers send *through* the host
+    (FORWARD). Traffic from a container to the builder host itself --
+    `172.17.0.1`, the VM's own addresses -- goes through INPUT, not
+    `DOCKER-USER`, and is not filtered by it: keep nothing listening on the
+    VM that a build should not reach, or filter INPUT from `docker0`
+    yourself.
     On a daemon using the native nftables backend (`DOCKER-USER` absent)
     the builder never claims and the tab shows `egress: missing`.
     `NCC_EGRESS_SCRIPT` replaces the script for tests only; never set it in
