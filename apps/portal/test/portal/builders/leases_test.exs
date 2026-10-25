@@ -159,13 +159,59 @@ defmodule Portal.Builders.LeasesTest do
     set.(exhausted, %{heartbeat_at: DateTime.add(now, -11, :minute), attempt: 3})
     set.(fresh, %{heartbeat_at: DateTime.add(now, -9, :minute)})
 
-    assert %{requeued: 2, failed: 1} = Leases.reap(now)
+    assert %{requeued: 2, failed: 1, failed_ids: [exhausted_id]} = Leases.reap(now)
+    assert exhausted_id == exhausted.id
     assert Ash.get!(Lease, fresh.id, domain: Portal.Builders).state == :leased
     assert Ash.get!(Lease, silent.id, domain: Portal.Builders).state == :queued
     assert Ash.get!(Lease, old_upload.id, domain: Portal.Builders).state == :queued
 
     assert %Lease{state: :failed, error: "builder went silent"} =
              Ash.get!(Lease, exhausted.id, domain: Portal.Builders)
+  end
+
+  test "fail_by_id fails a held or done lease, errors its request and drops its uploads" do
+    root = Path.join(System.tmp_dir!(), "fail-#{System.unique_integer([:positive])}")
+    previous = Application.get_env(:portal, Portal.Builders.Upload, [])
+    Application.put_env(:portal, Portal.Builders.Upload, Keyword.put(previous, :root, root))
+
+    on_exit(fn ->
+      Application.put_env(:portal, Portal.Builders.Upload, previous)
+      File.rm_rf(root)
+    end)
+
+    {:ok, request} =
+      Portal.ScanRequests.create_once(%{
+        package_name: "jason",
+        version: "1.4.4",
+        source: :hex_owner,
+        status: :accepted
+      })
+
+    {:ok, _} =
+      Leases.enqueue(%{
+        package: "jason",
+        version: "1.4.4",
+        image_name: "i",
+        image_digest: "sha256:d",
+        args: %{},
+        scan_request_id: request.id,
+        priority: 5
+      })
+
+    {:ok, lease} = Leases.claim(builder!("f"))
+    {:ok, :done, lease} = Leases.complete(lease, 0)
+    File.mkdir_p!(Portal.Builders.Upload.files_dir(lease.id))
+
+    assert {:ok, %Lease{state: :failed, error: "upload missing"}} =
+             Leases.fail_by_id(lease.id, "upload missing")
+
+    refute File.exists?(Portal.Builders.Upload.lease_dir(lease.id))
+    {:ok, updated} = Portal.ScanRequests.get_request(request.id)
+    assert updated.status == :error
+
+    # Already failed: nothing to transition.
+    assert {:error, :stale} = Leases.fail_by_id(lease.id, "again")
+    assert {:error, :not_found} = Leases.fail_by_id(Ecto.UUID.generate(), "none")
   end
 
   test "transitions only apply to the lease as the caller saw it" do

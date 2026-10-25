@@ -290,6 +290,44 @@ defmodule Portal.Builders.Leases do
     Progress.broadcast(lease.scan_request_id, :error, %{reason: reason})
   end
 
+  @doc """
+  Fail the lease `lease_id` names for good, from `:leased`, `:uploading` or
+  `:done`, with `error: reason`: its request is errored and its upload dir
+  removed. For an attempt that ended but whose upload cannot be ingested
+  (`Portal.Workers.Ingest` finding no `result.json`), where `complete/2`'s
+  exit-code semantics do not apply. A lease already moved on answers
+  `{:error, :stale}`.
+  """
+  @spec fail_by_id(term(), String.t()) ::
+          {:ok, Lease.t()} | {:error, :not_found | :stale | :update_failed}
+  def fail_by_id(lease_id, reason) do
+    with {:ok, id} <- Ecto.UUID.cast(lease_id),
+         {:ok, %Lease{} = lease} <- Ash.get(Lease, id, domain: @domain) do
+      fail(lease, reason)
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc "`fail_by_id/2` for a lease already read."
+  @spec fail(Lease.t(), String.t()) :: {:ok, Lease.t()} | {:error, :stale | :update_failed}
+  def fail(%Lease{} = lease, reason) do
+    case transition(lease.id, [states: [:leased, :uploading, :done]],
+           set: [state: "failed", error: reason]
+         ) do
+      {:ok, lease} ->
+        fail_request(lease, reason)
+        Portal.Builders.Upload.cleanup(lease.id)
+        {:ok, lease}
+
+      {:error, :stale} ->
+        {:error, :stale}
+
+      {:error, {:db, reason}} ->
+        db_failed("fail", lease.id, reason)
+    end
+  end
+
   @doc "Admin retry: a `:failed` lease back to `:queued` with a fresh attempt budget."
   @spec requeue(Lease.t()) :: {:ok, Lease.t()} | {:error, :not_failed | :update_failed}
   def requeue(%Lease{} = lease) do
@@ -327,8 +365,13 @@ defmodule Portal.Builders.Leases do
   heartbeat for 60 minutes. Each is requeued, or failed once its attempts
   are spent. Both are single updates whose `WHERE` is the silence rule
   itself, so a heartbeat or completion that lands first keeps its lease.
+  `failed_ids` names the failed ones, whose upload dirs nothing will read.
   """
-  @spec reap(DateTime.t()) :: %{requeued: non_neg_integer(), failed: non_neg_integer()}
+  @spec reap(DateTime.t()) :: %{
+          requeued: non_neg_integer(),
+          failed: non_neg_integer(),
+          failed_ids: [Ecto.UUID.t()]
+        }
   def reap(now \\ DateTime.utc_now()) do
     reason = "builder went silent"
 
@@ -356,7 +399,11 @@ defmodule Portal.Builders.Leases do
 
     if failed != [] or requeued != [], do: Portal.AdminEvents.broadcast(:builders)
 
-    %{requeued: length(requeued), failed: length(failed)}
+    %{
+      requeued: length(requeued),
+      failed: length(failed),
+      failed_ids: Enum.map(failed, fn {id, _, _} -> id end)
+    }
   end
 
   defp silent(now) do

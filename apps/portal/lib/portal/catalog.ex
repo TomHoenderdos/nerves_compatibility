@@ -1078,7 +1078,9 @@ defmodule Portal.Catalog do
 
   @doc """
   Names of packages with at least one stored precompiled file on a run that is
-  not revoked, or on a passing toolchain build that is not revoked.
+  not revoked, or on a passing toolchain build that is not revoked. A remote
+  builder's run (and a result carried from one) counts only while the
+  builder is enrolled and publishing, as in `precompiled_manifest/1`.
   """
   @spec packages_with_precompiled_files() :: [String.t()]
   def packages_with_precompiled_files do
@@ -1090,8 +1092,12 @@ defmodule Portal.Catalog do
       JOIN catalog_system_results s ON s.run_id = r.id
       JOIN catalog_artifact_memberships m ON m.system_result_id = s.id
       LEFT JOIN catalog_runs b ON b.id = s.carried_from_run_id
+      LEFT JOIN builders rb ON rb.id = r.builder_id
+      LEFT JOIN builders bb ON bb.id = b.builder_id
       WHERE r.revoked_at IS NULL
         AND (s.carried_from_run_id IS NULL OR b.revoked_at IS NULL)
+        AND (r.builder_id IS NULL OR (rb.publishing AND rb.status = 'enrolled'))
+        AND (s.carried_from_run_id IS NULL OR b.builder_id IS NULL OR (bb.publishing AND bb.status = 'enrolled'))
       UNION
       SELECT p.name
       FROM catalog_packages p
@@ -1867,12 +1873,12 @@ defmodule Portal.Catalog do
   defp unrevoked_manifest_results(_package_id, []), do: []
 
   defp unrevoked_manifest_results(package_id, runs) do
-    revoked = revoked_run_ids(package_id)
+    hidden = MapSet.union(revoked_run_ids(package_id), unpublished_run_ids(package_id))
 
     runs
     |> Enum.map(& &1.id)
     |> manifest_results_for_runs()
-    |> Enum.reject(&(&1.carried_from_run_id in revoked))
+    |> Enum.reject(&(&1.carried_from_run_id in hidden))
   end
 
   defp manifest_v1(sources) do
@@ -2074,6 +2080,11 @@ defmodule Portal.Catalog do
     Run
     |> Ash.Query.filter(package_id == ^package_id)
     |> Ash.Query.filter(is_nil(revoked_at))
+    # A remote builder's runs publish only while it is enrolled and an admin
+    # has turned its publishing on; local runs (no builder) always do.
+    |> Ash.Query.filter(
+      is_nil(builder_id) or (builder.publishing == true and builder.status == :enrolled)
+    )
     |> Ash.Query.sort(finished_at: :desc, inserted_at: :desc)
     |> Ash.Query.select([
       :id,
@@ -2098,6 +2109,18 @@ defmodule Portal.Catalog do
   defp revoked_run_ids(package_id) do
     Run
     |> Ash.Query.filter(package_id == ^package_id and not is_nil(revoked_at))
+    |> Ash.Query.select([:id])
+    |> Ash.read!(domain: __MODULE__)
+    |> MapSet.new(& &1.id)
+  end
+
+  # The remote runs `precompiled_runs/1` leaves out (builder not publishing or
+  # not enrolled). A result carried from one onto a local run is hidden with
+  # it, as `packages_with_precompiled_files/0` hides it.
+  defp unpublished_run_ids(package_id) do
+    Run
+    |> Ash.Query.filter(package_id == ^package_id and not is_nil(builder_id))
+    |> Ash.Query.filter(not (builder.publishing == true and builder.status == :enrolled))
     |> Ash.Query.select([:id])
     |> Ash.read!(domain: __MODULE__)
     |> MapSet.new(& &1.id)

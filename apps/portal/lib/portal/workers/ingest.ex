@@ -16,6 +16,12 @@ defmodule Portal.Workers.Ingest do
   the last attempt is spent. Retries therefore cost a database round trip, not a
   rebuild.
 
+  A remote build (`source: "remote"`, with `lease_id` and `builder_id`) is
+  enqueued on `:remote` by the builder's `complete` call. Its output is the
+  lease's upload dir on the web host (`Portal.Builders.Upload`), the run
+  records its `builder_id`, and an upload with no `result.json` fails the
+  lease (`Portal.Builders.Leases.fail_by_id/2`).
+
   A toolchain build (`kind: "toolchain"`, with `toolchain`, `builder_version`
   and the queued `version`) goes to `Portal.Catalog.Ingestion.ingest_toolchain/2`
   instead. It writes no `Run`, so none of a run's follow-up applies: no scan
@@ -128,6 +134,7 @@ defmodule Portal.Workers.Ingest do
   defp runs_queue?(_queues, _name), do: false
 
   alias Portal.Builder
+  alias Portal.Builders.{Leases, Upload}
   alias Portal.Catalog.Ingestion
   alias Portal.Workers.PackageMeta
   alias Portal.Workers.Progress
@@ -150,55 +157,89 @@ defmodule Portal.Workers.Ingest do
     run_id = args["run_id"]
     image_digest = args["image_digest"]
     scan_request_id = args["scan_request_id"]
+    source = source(args)
 
     with {:ok, run} <- Portal.Catalog.committed_run(run_id) do
       case run do
-        nil -> load_and_ingest(run_id, image_digest, scan_request_id, attempt, max_attempts)
-        run -> complete(run, scan_request_id, run.package.name)
+        nil ->
+          load_and_ingest(source, run_id, image_digest, scan_request_id, attempt, max_attempts)
+
+        run ->
+          complete(source, run, scan_request_id, run.package.name)
       end
     end
   end
 
-  defp load_and_ingest(run_id, image_digest, scan_request_id, attempt, max_attempts) do
-    case builder().load_run(run_id) do
+  # Where the run's output lives and how to drop it: a local build's scratch
+  # dir on this node, or a remote builder's upload dir on the web host
+  # (`Portal.Builders.Upload`, enqueued by the builder's `complete` call).
+  defp source(%{"source" => "remote", "lease_id" => lease_id} = args),
+    do: %{kind: :remote, lease_id: lease_id, builder_id: args["builder_id"]}
+
+  defp source(_args), do: %{kind: :local}
+
+  defp load(%{kind: :remote, lease_id: lease_id}, _run_id), do: Upload.load_run(lease_id)
+  defp load(%{kind: :local}, run_id), do: builder().load_run(run_id)
+
+  defp cleanup(%{kind: :remote, lease_id: lease_id}, _run_id), do: Upload.cleanup(lease_id)
+  defp cleanup(%{kind: :local}, run_id), do: Builder.cleanup(run_id)
+
+  defp load_and_ingest(source, run_id, image_digest, scan_request_id, attempt, max_attempts) do
+    case load(source, run_id) do
       {:ok, build} ->
-        ingest(build, run_id, image_digest, scan_request_id, attempt, max_attempts)
+        ingest(source, build, run_id, image_digest, scan_request_id, attempt, max_attempts)
 
       {:error, reason} ->
-        # The scratch dir is gone, so there is nothing a retry could read. Fail
+        # The output is gone, so there is nothing a retry could read. Fail
         # the request rather than looping on an empty directory.
         Logger.error("Ingest found no build output for #{run_id}: #{inspect(reason)}")
         message = "build output missing: #{inspect(reason)}"
-        Progress.mark(scan_request_id, :error, error_reason: message)
-        Progress.broadcast(scan_request_id, :error, %{reason: message})
+        output_missing(source, scan_request_id, message)
         {:cancel, message}
     end
   end
 
-  defp ingest(build, run_id, image_digest, scan_request_id, attempt, max_attempts) do
+  # A remote lease is `:done` by now; failing it marks and broadcasts the
+  # request's error and drops whatever did land in its upload dir. A lease
+  # that has already moved on still gets its request errored here.
+  defp output_missing(%{kind: :remote, lease_id: lease_id}, scan_request_id, message) do
+    case Leases.fail_by_id(lease_id, "upload missing") do
+      {:ok, _lease} -> :ok
+      {:error, _} -> error_request(scan_request_id, message)
+    end
+  end
+
+  defp output_missing(%{kind: :local}, scan_request_id, message),
+    do: error_request(scan_request_id, message)
+
+  defp error_request(scan_request_id, message) do
+    Progress.mark(scan_request_id, :error, error_reason: message)
+    Progress.broadcast(scan_request_id, :error, %{reason: message})
+  end
+
+  defp ingest(source, build, run_id, image_digest, scan_request_id, attempt, max_attempts) do
     ingest_opts = %{
       run_id: run_id,
       image_digest: image_digest,
       files_dir: build.files_dir,
       output_dir: build.output_dir,
       scan_request_id: scan_request_id,
-      log: build.log
+      log: build.log,
+      builder_id: Map.get(source, :builder_id)
     }
 
     case safe_ingest(&Ingestion.ingest/2, build.result, ingest_opts) do
       {:ok, run} ->
-        complete(run, scan_request_id, get_in(build.result, ["package", "name"]))
+        complete(source, run, scan_request_id, get_in(build.result, ["package", "name"]))
 
       {:error, reason} ->
         Logger.error("Ingestion failed for #{run_id}: #{inspect(reason)}")
 
-        # Keep the scratch dir until the attempts are spent; it is the only copy
+        # Keep the output until the attempts are spent; it is the only copy
         # of the build a retry can work from.
         if attempt >= max_attempts do
-          Builder.cleanup(run_id)
-          message = "ingestion failed: #{inspect(reason)}"
-          Progress.mark(scan_request_id, :error, error_reason: message)
-          Progress.broadcast(scan_request_id, :error, %{reason: message})
+          cleanup(source, run_id)
+          error_request(scan_request_id, "ingestion failed: #{inspect(reason)}")
         end
 
         {:error, reason}
@@ -235,10 +276,10 @@ defmodule Portal.Workers.Ingest do
   # Once the transaction commits, the run is the durable source of truth. A
   # retry must finish these steps even after scratch cleanup. Unlike the
   # best-effort Progress.mark/3, a failed request update must retry this job.
-  defp complete(run, scan_request_id, package) do
+  defp complete(source, run, scan_request_id, package) do
     with :ok <- mark_built(scan_request_id, run.id) do
       enqueue_package_meta(package)
-      Builder.cleanup(run.run_id)
+      cleanup(source, run.run_id)
       Progress.broadcast(scan_request_id, :done, %{run_id: run.id, status: run.overall_status})
       :ok
     end
