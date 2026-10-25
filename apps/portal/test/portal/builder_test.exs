@@ -345,4 +345,47 @@ defmodule Portal.BuilderTest do
       refute File.exists?(Path.join(root, "run-1"))
     end
   end
+
+  # The argv is `Compatibility.Builder.Argv`'s, and remote builders run the
+  # same function; this pins that the portal's config resolves to the shared
+  # fixture, so the two cannot drift apart unnoticed.
+  describe "argv parity" do
+    @argv_fixture Path.expand(
+                    "../../../compatibility/test/fixtures/argv/post_hardening.exs",
+                    __DIR__
+                  )
+
+    test "the portal builds exactly the argv the shared fixture pins", %{previous: previous} do
+      {%{input: input, argv: argv}, _binding} = Code.eval_file(@argv_fixture)
+      cache = Path.join(System.tmp_dir!(), "builder-parity-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(cache) end)
+
+      put_builder(
+        [
+          run_as_user: input.user,
+          cpus: input.cpus,
+          memory: input.memory,
+          build_concurrency: input.build_concurrency,
+          nerves_cache: input.paths.nerves_cache,
+          hex_cache: input.paths.hex_cache,
+          build_cache: cache
+        ],
+        previous
+      )
+
+      job = %{
+        run_id: "11111111-2222-3333-4444-555555555555",
+        image_name: input.image,
+        image_digest: "sha256:deadbeef"
+      }
+
+      # The build cache slug dir is created on the host, so it has to be a real
+      # temp path here; everything else is the fixture's own.
+      slug_dir = Path.join(cache, Builder.cache_slug(job.image_digest))
+      expected = Enum.map(argv, &String.replace(&1, input.paths.build_cache, slug_dir))
+
+      assert Builder.build_docker_args(job, input.paths.work, input.paths.out, input.paths.files) ==
+               expected
+    end
+  end
 end
