@@ -458,7 +458,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
   # `path` and `mode` come from JSON the build container wrote, so a package
   # under test controls them. A client writes files at `path` with `mode`.
-  test "entries with unsafe paths or modes are not published", %{conn: conn} do
+  test "a system owning entries with unsafe paths or modes is not published", %{conn: conn} do
     sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
     _ = File.rm(ArtifactStore.blob_path(sha))
     dir = Path.join(System.tmp_dir!(), "catalog-api-unsafe-#{System.unique_integer([:positive])}")
@@ -489,9 +489,9 @@ defmodule PortalWeb.CatalogApiControllerTest do
         log: "l"
       })
 
-    body = conn |> get("/api/precompiled/manifests/jason.json") |> json_response(200)
-    paths = Enum.map(body["versions"]["1.4.1"]["nerves_system_rpi4"]["ebin"], & &1["path"])
-    assert paths == ["ebin/jason.beam"]
+    # Each unsafe entry is owned by the build, so the system is left out whole
+    # rather than published without its files.
+    assert conn |> get("/api/precompiled/manifests/jason.json") |> json_response(404)
   end
 
   # A pure Elixir package builds no firmware; its host-built files fit every

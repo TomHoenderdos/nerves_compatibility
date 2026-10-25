@@ -2144,22 +2144,35 @@ defmodule Portal.Catalog do
     end
   end
 
-  # The entries of a manifest a client may fetch: owned by this build, safe to
-  # write, and all on this host (else none, so the client never gets half).
+  # The entries of a manifest a client may fetch: the ones owned by this build,
+  # all of them safe to write and all on this host. An owned file with an
+  # unsafe path or no publishable mode, or one this host lacks, leaves the
+  # whole manifest out: a client then compiles the package rather than
+  # installing it without that file.
   defp published_files(manifest, stored_shas, present_shas) do
-    filtered = %{
-      "ebin" => filter_manifest_entries(manifest_entries(manifest, "ebin"), stored_shas),
-      "priv" => filter_manifest_entries(manifest_entries(manifest, "priv"), stored_shas)
+    owned = %{
+      "ebin" => owned_entries(manifest_entries(manifest, "ebin"), stored_shas),
+      "priv" => owned_entries(manifest_entries(manifest, "priv"), stored_shas)
     }
 
-    files = filtered["ebin"] ++ filtered["priv"]
+    files = owned["ebin"] ++ owned["priv"]
 
     cond do
       files == [] -> nil
-      Enum.all?(files, &MapSet.member?(present_shas, &1["sha256"])) -> filtered
+      not Enum.all?(files, &publishable?/1) -> nil
+      Enum.all?(files, &MapSet.member?(present_shas, &1["sha256"])) -> Map.new(owned, &publish/1)
       true -> nil
     end
   end
+
+  defp owned_entries(entries, stored_shas),
+    do: Enum.filter(entries, &(is_map(&1) and MapSet.member?(stored_shas, &1["sha256"])))
+
+  defp publishable?(entry), do: safe_path?(entry["path"]) and publish_mode(entry["mode"]) != nil
+
+  # The row keeps what the build saw; a client gets 0644 or 0755.
+  defp publish({key, entries}),
+    do: {key, Enum.map(entries, &Map.put(&1, "mode", publish_mode(&1["mode"])))}
 
   defp manifest_entries(manifest, key) do
     case Map.get(manifest, key) do
@@ -2179,18 +2192,6 @@ defmodule Portal.Catalog do
     |> MapSet.filter(&ArtifactStore.present?/1)
   end
 
-  # Each kept entry is published with `publish_mode/1` of its stored mode, so
-  # the row keeps what the build saw and a client gets 0644 or 0755.
-  defp filter_manifest_entries(entries, stored_shas) do
-    for entry <- entries,
-        is_map(entry),
-        MapSet.member?(stored_shas, entry["sha256"]),
-        safe_path?(entry["path"]),
-        mode = publish_mode(entry["mode"]),
-        mode != nil,
-        do: Map.put(entry, "mode", mode)
-  end
-
   # `path` and `mode` come from JSON the build container wrote, which the
   # package under test can control, and a client writes each file at `path`
   # with `mode`. Only plain files under the package's own ebin/ and priv/.
@@ -2203,13 +2204,19 @@ defmodule Portal.Catalog do
 
   defp safe_path?(_path), do: false
 
-  # A published mode is exactly rw-r--r-- or rwxr-xr-x, which is all a client
-  # accepts: 0755 when the build saw any execute bit, 0644 otherwise. Builds
-  # leave files 0664, 0555, 0700 and the like, and publishing those as is would
-  # make the client refuse the whole dependency. A mode that is missing, not an
-  # integer, not a regular file's (a symlink, a device) or carries setuid,
-  # setgid or sticky is not published at all.
-  defp publish_mode(mode) when is_integer(mode) and mode >= 0 do
+  @doc """
+  The mode a manifest publishes for a file whose build recorded `mode`, or
+  `nil` when it publishes none.
+
+  A published mode is exactly rw-r--r-- or rwxr-xr-x (`0o100644`,
+  `0o100755`), which is all a client accepts: 0755 when the build saw any
+  execute bit, 0644 otherwise. Builds leave files 0664, 0555, 0700 and the
+  like, and publishing those as is would make the client refuse the whole
+  dependency. A mode that is missing, not an integer, not a regular file's (a
+  symlink, a device) or carries setuid, setgid or sticky publishes none.
+  """
+  @spec publish_mode(term()) :: 0o100644 | 0o100755 | nil
+  def publish_mode(mode) when is_integer(mode) and mode >= 0 and mode <= 0o177777 do
     type = Bitwise.band(mode, 0o170000)
     special = Bitwise.band(mode, 0o7000)
 
@@ -2220,7 +2227,7 @@ defmodule Portal.Catalog do
     end
   end
 
-  defp publish_mode(_mode), do: nil
+  def publish_mode(_mode), do: nil
 
   # Over `{system_pkg, system_version, status, count}` groups.
   defp counts(groups, include_total? \\ true) do

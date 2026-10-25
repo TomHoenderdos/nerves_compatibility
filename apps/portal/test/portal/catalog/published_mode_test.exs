@@ -11,7 +11,8 @@ defmodule Portal.Catalog.PublishedModeTest do
   defp sha(content), do: Base.encode16(:crypto.hash(:sha256, content), case: :lower)
 
   # One run of `name` whose rpi4 manifest carries a priv file per `{path, mode}`.
-  defp ingest_run(name, modes) do
+  # `unowned` entries go into the manifest with no blob, so the build owns none.
+  defp ingest_run(name, modes, unowned \\ []) do
     dir = Path.join(System.tmp_dir!(), "pm-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf(dir) end)
@@ -24,7 +25,12 @@ defmodule Portal.Catalog.PublishedModeTest do
         %{"path" => path, "sha256" => sha(content), "size" => byte_size(content), "mode" => mode}
       end
 
-    {ebin, priv} = Enum.split_with(entries, &String.starts_with?(&1["path"], "ebin/"))
+    unowned =
+      for {path, mode} <- unowned,
+          do: %{"path" => path, "sha256" => sha("unowned-#{name}-#{path}"), "mode" => mode}
+
+    {ebin, priv} =
+      Enum.split_with(entries ++ unowned, &String.starts_with?(&1["path"], "ebin/"))
 
     result = %{
       "run_id" => "pm-#{name}",
@@ -64,11 +70,7 @@ defmodule Portal.Catalog.PublishedModeTest do
       {"priv/rw-rw-r--", 0o100664},
       {"priv/r-xr-xr-x", 0o100555},
       {"priv/rw-------", 0o100600},
-      {"priv/bare-rwx", 0o755},
-      {"priv/no-mode", nil},
-      {"priv/string-mode", "0755"},
-      {"priv/setuid", 0o104755},
-      {"priv/symlink", 0o120777}
+      {"priv/bare-rwx", 0o755}
     ])
 
     expected = %{
@@ -85,6 +87,26 @@ defmodule Portal.Catalog.PublishedModeTest do
 
     [v2] = Catalog.precompiled_manifest_v2(name)["versions"]["1.0.0"]["builds"]
     assert published_modes(v2) == expected
+  end
+
+  # A client installing the package without that file would ship it broken;
+  # without the system's entry it compiles the package instead.
+  test "a run owning a file without a publishable mode leaves its system out whole" do
+    for mode <- [nil, "0755", 0o104755, 0o120777, 0o1100755] do
+      name = "pm_bad_#{System.unique_integer([:positive])}"
+      ingest_run(name, [{"priv/port", 0o100755}, {"priv/bad", mode}])
+
+      assert Catalog.precompiled_manifest(name) == nil, "mode #{inspect(mode)} was published"
+      assert Catalog.precompiled_manifest_v2(name) == nil, "mode #{inspect(mode)} was published"
+    end
+  end
+
+  test "an entry the build does not own is left out and the rest still published" do
+    name = "pm_unowned_#{System.unique_integer([:positive])}"
+    ingest_run(name, [{"priv/port", 0o100755}], [{"priv/elsewhere", nil}, {"../evil", 0o100644}])
+
+    v1 = Catalog.precompiled_manifest(name).versions["1.0.0"]["nerves_system_rpi4"]
+    assert published_modes(v1) == %{"priv/port" => 0o100755}
   end
 
   test "a toolchain build's files are normalised the same way" do
