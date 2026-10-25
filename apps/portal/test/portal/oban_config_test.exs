@@ -52,6 +52,16 @@ defmodule Portal.ObanConfigTest do
     assert Portal.Workers.PrecompiledBatch.__opts__()[:queue] == :maintenance
   end
 
+  test "the lease reaper is scheduled every five minutes on the maintenance queue" do
+    {_mod, opts} = plugin(Oban.Plugins.Cron)
+
+    assert {"*/5 * * * *", Portal.Workers.LeaseReaper} =
+             Enum.find(opts[:crontab], &match?({_e, Portal.Workers.LeaseReaper}, &1))
+
+    # Rows only, like `RequestSync`: the web host's queue keeps it off the build boxes.
+    assert Portal.Workers.LeaseReaper.__opts__()[:queue] == :maintenance
+  end
+
   describe "the hex.pm update check" do
     defp update_check_entry do
       {_mod, opts} = plugin(Oban.Plugins.Cron)

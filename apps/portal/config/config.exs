@@ -87,6 +87,11 @@ config :portal, Oban,
        # request `queued` in the admin queue until this notices. Two indexed
        # queries; carries `:maintenance`, the web host's queue.
        {"*/5 * * * *", Portal.Workers.RequestSync},
+       # Every five minutes: take leases back from remote builders that went
+       # silent (`Portal.Builders.Leases.reap/1`). Rows only, plus the upload
+       # dirs of the leases it fails, which live on the web host; carries
+       # `:maintenance`, the web host's queue, like `RequestSync`.
+       {"*/5 * * * *", Portal.Workers.LeaseReaper},
        # Every 15 minutes: render and sign a precompiled batch. Only the web
        # host has the signing key and rsynced artifact files. Carries `:maintenance`.
        {"*/15 * * * *", Portal.Workers.PrecompiledBatch},
