@@ -58,6 +58,7 @@ defmodule Portal.Catalog.Ingestion do
           required(:files_dir) => Path.t(),
           optional(:output_dir) => Path.t() | nil,
           optional(:scan_request_id) => String.t() | nil,
+          optional(:builder_id) => String.t() | nil,
           optional(:log) => String.t() | nil
         }
 
@@ -410,7 +411,8 @@ defmodule Portal.Catalog.Ingestion do
       package_checksum: package_checksum(result["package_checksum"]),
       log: run_log(overall, opts),
       finished_at: finished_at,
-      scan_request_id: Map.get(opts, :scan_request_id)
+      scan_request_id: Map.get(opts, :scan_request_id),
+      builder_id: Map.get(opts, :builder_id)
     })
     |> Ash.create(domain: @domain)
   end
