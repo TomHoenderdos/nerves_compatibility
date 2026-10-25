@@ -15,6 +15,9 @@ defmodule Portal.Catalog.Run do
     custom_indexes do
       index([:scan_request_id])
       index([:finished_at])
+      # Revoking a builder reads its open runs; the admin tab counts runs
+      # per builder.
+      index([:builder_id])
 
       # The latest run of a package: `DISTINCT ON (package_id) ORDER BY
       # package_id, finished_at DESC, inserted_at DESC`, which `/packages` asks
