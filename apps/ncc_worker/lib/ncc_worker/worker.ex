@@ -20,7 +20,8 @@ defmodule NccWorker.Worker do
     RunScope,
     Scanner,
     SeedGate,
-    Systems
+    Systems,
+    WarmNerves
   }
 
   @forced_skip_system "forced@admin@unknown"
@@ -31,15 +32,19 @@ defmodule NccWorker.Worker do
             required(:name) => String.t(),
             required(:digest) => String.t()
           },
-          required(:package) => %{
+          # Absent only for "warm_nerves", which builds no package.
+          optional(:package) => %{
             required(:name) => String.t(),
             optional(:requirement) => String.t(),
             optional(:version) => String.t()
           },
+          # "argus_only", "toolchain" or "warm_nerves" (`NccWorker.RunScope`).
+          optional(:mode) => String.t(),
+          # For "warm_nerves": `%{"name", "version"}` pairs to warm, string-keyed
+          # (`NccWorker.WarmNerves.plan/2`); `[]` warms what the template resolves.
+          optional(:nerves_packages) => [%{String.t() => String.t()}],
           optional(:systems_override) => %{String.t() => String.t()},
           optional(:systems_filter) => [String.t()],
-          # "argus_only" or "toolchain" (`NccWorker.RunScope`).
-          optional(:mode) => String.t(),
           # The toolchain a "toolchain" run was queued for. Informational: the
           # worker records what it actually runs on, and echoes this back as
           # `requested_toolchain`.
@@ -95,7 +100,7 @@ defmodule NccWorker.Worker do
         }
 
   @type result :: %{
-          # "full", "targets", "argus_only" or "toolchain".
+          # "full", "targets", "argus_only", "toolchain" or "warm_nerves".
           optional(:scope) => String.t(),
           # Only for a "toolchain" run, whose `systems` is `%{}`: no firmware,
           # no argus (`argus.status` "skipped"), no Nerves systems.
@@ -139,24 +144,30 @@ defmodule NccWorker.Worker do
             misses: [%{String.t() => String.t()}],
             lock: [%{String.t() => String.t()}]
           },
+          # Only for a "warm_nerves" run, whose `package` is nil and `systems`
+          # `%{}` (`NccWorker.WarmNerves`).
+          optional(:warm) => NccWorker.WarmNerves.warm(),
           run_id: String.t(),
-          package: %{
-            name: String.t(),
-            version: String.t(),
-            description: String.t(),
-            dependencies:
-              list(%{
-                name: String.t(),
-                requirement: String.t(),
-                optional: boolean(),
-                runtime: boolean(),
-                app: String.t() | nil
-              }),
-            footprint: %{
-              file_count: integer(),
-              total_bytes: integer()
+          # nil for a "warm_nerves" run.
+          package:
+            %{
+              name: String.t(),
+              version: String.t(),
+              description: String.t(),
+              dependencies:
+                list(%{
+                  name: String.t(),
+                  requirement: String.t(),
+                  optional: boolean(),
+                  runtime: boolean(),
+                  app: String.t() | nil
+                }),
+              footprint: %{
+                file_count: integer(),
+                total_bytes: integer()
+              }
             }
-          },
+            | nil,
           image: %{
             name: String.t(),
             digest: String.t()
@@ -227,6 +238,7 @@ defmodule NccWorker.Worker do
          {:ok, toolchain} <- detect_toolchain(scope) do
       case scope do
         :toolchain -> toolchain_run(input, paths, toolchain)
+        :warm_nerves -> WarmNerves.run(input, paths, toolchain, nerves)
         _ -> input |> full_run(paths, toolchain) |> put_nerves_cache(nerves, paths)
       end
     end
@@ -929,10 +941,20 @@ defmodule NccWorker.Worker do
 
   @spec validate_input(input()) :: :ok | {:error, term()}
   defp validate_input(input) do
-    cond do
-      !is_binary(input[:run_id]) || input.run_id == "" ->
-        {:error, :missing_run_id}
+    with :ok <- validate_run_id(input),
+         :ok <- validate_image(input) do
+      validate_package(input)
+    end
+  end
 
+  defp validate_run_id(input) do
+    if is_binary(input[:run_id]) && input.run_id != "",
+      do: :ok,
+      else: {:error, :missing_run_id}
+  end
+
+  defp validate_image(input) do
+    cond do
       !is_map(input[:image]) ->
         {:error, :missing_image}
 
@@ -941,6 +963,17 @@ defmodule NccWorker.Worker do
 
       !is_binary(get_in(input, [:image, :digest])) ->
         {:error, :missing_image_digest}
+
+      true ->
+        :ok
+    end
+  end
+
+  # A warm run fills the Nerves cache and builds no package.
+  defp validate_package(input) do
+    cond do
+      RunScope.from_input(input) == :warm_nerves ->
+        :ok
 
       !is_map(input[:package]) ->
         {:error, :missing_package}

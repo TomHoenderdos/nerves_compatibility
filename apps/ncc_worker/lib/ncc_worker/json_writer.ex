@@ -50,7 +50,7 @@ defmodule NccWorker.JsonWriter do
   defp convert_result_for_json(result) do
     json = %{
       run_id: result.run_id,
-      package: result.package,
+      package: Map.get(result, :package),
       image: result.image,
       toolchain: result.toolchain,
       systems:
@@ -69,9 +69,10 @@ defmodule NccWorker.JsonWriter do
     # from an image before lock recording looks too), `optional_deps` for
     # argus-only runs, which publish nothing, `toolchain_build` and
     # `requested_toolchain` for every run but a toolchain one
-    # (`NccWorker.Worker.toolchain_build/4`), and `nerves_cache` for a run with
+    # (`NccWorker.Worker.toolchain_build/4`), `nerves_cache` for a run with
     # no Nerves cache misses or locked Nerves packages
-    # (`NccWorker.NervesCache.report/2`).
+    # (`NccWorker.NervesCache.report/2`), and `warm` for every run but a warm
+    # one (`NccWorker.WarmNerves`).
     json =
       [
         :deps_lock,
@@ -79,7 +80,8 @@ defmodule NccWorker.JsonWriter do
         :optional_deps,
         :toolchain_build,
         :requested_toolchain,
-        :nerves_cache
+        :nerves_cache,
+        :warm
       ]
       |> Enum.reduce(json, &put_present(&2, &1, Map.get(result, &1)))
 

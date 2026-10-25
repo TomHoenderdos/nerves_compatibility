@@ -24,6 +24,11 @@ defmodule NccWorker.RunScopeTest do
     test "an unknown mode is a full run, not a crash" do
       assert RunScope.from_input(%{mode: "bogus"}) == :full
     end
+
+    test "warm_nerves mode wins over a filter" do
+      assert RunScope.from_input(%{mode: "warm_nerves"}) == :warm_nerves
+      assert RunScope.from_input(%{mode: "warm_nerves", systems_filter: ["x"]}) == :warm_nerves
+    end
   end
 
   describe "argus_config/2" do
