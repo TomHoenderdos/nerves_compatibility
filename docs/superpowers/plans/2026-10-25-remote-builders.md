@@ -18,7 +18,7 @@ Work on branch `agent/chat-f61630354660` in `/home/agent/repo` (a snapshot of `m
 
 - Owner's rulings (do not reopen): no database access for remote builders; HTTPS only to `PortalWeb.BuilderEndpoint` on `NCC_BUILDER_PORT` (default `8443`), Bandit, mutual TLS, portal's own ECDSA P-256 CA, Apache not involved; enrolment token format `<token id>.<32-byte secret, base64url no padding>.<first 16 hex chars of the CA certificate sha256>`; client certificates one year, renewal via `POST /builder/v1/renew` within 30 days of expiry (425 too early, 403 revoked); builders enrol with `publishing: false`; revoking a builder revokes its runs and re-enqueues those package versions locally through `Portal.BulkRebuild` (`what: :full`, `created_by: "revoke builder <name>"`); `:remote` queue only writes `builder_leases`; claim long-polls up to 25 s, woken by a `Phoenix.PubSub` broadcast on `builders:leases`; heartbeat every 60 s during build and upload; `files/missing` then tar batches verified on extraction with per-file/batch/total caps and a free-space floor; `complete` then today's `Portal.Catalog.Ingestion.ingest/2` on the web host; reaper re-queues silent leases (10 min leased, 60 min uploading, 3 attempts); routing goes remote only when the local backlog exceeds a threshold (default 10), toolchain/warm/pinned jobs stay local, `remote_enabled` auto-flips on builders' `last_seen_at` (on within 5 min, off after 15 min); agent is `apps/ncc_agent`, a release run directly on the VM, Req/Finch with mTLS, rootful Docker; CI publishes `ncc-worker` to GHCR and agent tarballs plus `images.json` of registry digests; staleness checks never compare run digests with the current image.
 - Worker exit codes stay `0/10/11`; host codes `20/21`. Remote `complete` maps exit codes exactly as `Portal.Workers.Build.classify/1`.
-- `Portal.Builder.build_docker_args/4` is **not modified** here (the isolation branch is changing it). `Compatibility.Builder.Argv.build/1` reproduces it today (`nerves_cache_mode: :legacy`, `hardening: false`) and carries the post-isolation options; a parity test in `apps/portal` pins the two together so the isolation branch's landing is forced to switch `Portal.Builder` over.
+- `Portal.Builder.build_docker_args/4` is **not modified** here (the isolation branch is changing it). Main already carries the isolation design's section 4 in it: `--read-only`, `--pids-limit 4096`, per-run `/tmp` and `/home/nerves/.cache` scratch binds and a read-only `/build-cache`; only section 1 (the Nerves cache at `/nerves-cache`, read-only, with the per-run farm) is still to land. `Compatibility.Builder.Argv.build/1` reproduces today's argv with `nerves_cache_mode: :legacy, hardening: true` and carries the post-isolation `:readonly`/`:readwrite` modes; a parity test in `apps/portal` pins the two together so the isolation branch's landing is forced to switch `Portal.Builder` over.
 - Oban 2.23: any `unique:` option names `states` (use `states: :incomplete` where the worker is a singleton). AshPostgres partial identities need `identity_wheres_to_sql`; index names stay under 63 chars.
 - Sobelow: every `File.*` on a trusted path carries `# sobelow_skip ["Traversal.FileModule"]` above the `def`; `String.to_atom` on boot-only values carries `# sobelow_skip ["DOS.StringToAtom"]`. Sobelow prints `SCAN COMPLETE` on failure too: check `$?`.
 - The Elixir type checker rejects `send(...) && :ok` in tests; write two statements.
@@ -503,7 +503,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `apps/compatibility/test/compatibility/builder/argv_test.exs`, `apps/portal/test/portal/builder_argv_parity_test.exs`
 
 **Interfaces:**
-- Produces: `Compatibility.Builder.Argv.build(spec) :: [String.t()]` (the argv after `docker`), `Compatibility.Builder.Argv.container_name(run_id)`, `Compatibility.Builder.Argv.safe_name(run_id)`. `spec` keys: `:run_id`, `:image` (the exact image ref to run), `:user` (`"uid:gid"`), `:work_dir`, `:output_dir`, `:files_dir`, `:nerves_cache`, `:hex_cache`, optional `:build_cache` (host dir or nil), `:cpus`, `:memory`, `:build_concurrency` (strings or nil), `:nerves_cache_mode` (`:legacy` default | `:readonly` | `:readwrite`), `:hardening` (boolean, default false), `:tmp_dir`, `:cache_dir` (required when `hardening: true`), `:extra_env` (`[{"K", "v"}]`, appended last before the image).
+- Produces: `Compatibility.Builder.Argv.build(spec) :: [String.t()]` (the argv after `docker`), `Compatibility.Builder.Argv.container_name(run_id)`, `Compatibility.Builder.Argv.safe_name(run_id)`. `spec` keys: `:run_id`, `:image` (the exact image ref to run), `:user` (`"uid:gid"`), `:work_dir`, `:output_dir`, `:files_dir`, `:nerves_cache`, `:hex_cache`, optional `:build_cache` (host dir or nil), `:cpus`, `:memory`, `:build_concurrency` (strings or nil), `:nerves_cache_mode` (`:legacy` default | `:readonly` | `:readwrite`), `:hardening` (boolean, default false; **today's `Portal.Builder` runs with it true**), `:tmp_dir`, `:cache_dir` (required when `hardening: true`), `:extra_env` (`[{"K", "v"}]`, appended last before the image). Argument order mirrors `Portal.Builder.build_docker_args/4` on main exactly: base flags, `--read-only`/`--pids-limit 4096` when hardening, `--cpus`/`--memory`, mounts in the order `/work`, `/out`, `/files`, `/tmp` and `/home/nerves/.cache` (hardening), the Nerves cache, `/hex-cache`, `/build-cache` (always `,readonly`), then env.
 - `Portal.Builder.build_docker_args/4` is **not** changed; the parity test ties them together.
 
 - [ ] **Step 1: Write the failing compatibility test**
@@ -552,11 +552,11 @@ defmodule Compatibility.Builder.ArgvTest do
 
   test "hardening adds the read-only root, the scratch binds and the pids limit" do
     argv = Argv.build(Map.merge(@spec_base, %{hardening: true, tmp_dir: "/s/tmp", cache_dir: "/s/cache"}))
-    assert "--read-only" in argv
-    assert "--pids-limit" in argv
-    assert "4096" in argv
-    assert "type=bind,source=/s/tmp,target=/tmp" in argv
-    assert "type=bind,source=/s/cache,target=/home/nerves/.cache" in argv
+    assert Enum.slice(argv, 7, 4) == ["--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--pids-limit"]
+    assert Enum.at(argv, 11) == "4096"
+    # Scratch binds come right after /files, before the Nerves cache, as on the local host.
+    mounts = argv |> Enum.filter(&String.starts_with?(&1, "type=bind")) |> Enum.map(&(&1 |> String.split("target=") |> List.last()))
+    assert mounts == ["/work", "/out", "/files", "/tmp", "/home/nerves/.cache", "/home/nerves/.nerves", "/hex-cache"]
   end
 
   test "limits, cpu env and concurrency follow the spec" do
@@ -569,7 +569,7 @@ defmodule Compatibility.Builder.ArgvTest do
 
   test "a build cache mounts at /build-cache and is announced in the env" do
     argv = Argv.build(Map.put(@spec_base, :build_cache, "/c/build/slug"))
-    assert "type=bind,source=/c/build/slug,target=/build-cache" in argv
+    assert "type=bind,source=/c/build/slug,target=/build-cache,readonly" in argv
     assert "NCC_BUILD_CACHE=/build-cache" in argv
   end
 
@@ -675,10 +675,10 @@ defmodule Compatibility.Builder.Argv do
       mount(spec.work_dir, "/work"),
       mount(spec.output_dir, "/out"),
       mount(spec.files_dir, "/files"),
+      hardening_mounts(spec),
       nerves_mount(spec),
       mount(spec.hex_cache, "/hex-cache"),
-      build_cache_mount(spec),
-      hardening_mounts(spec)
+      build_cache_mount(spec)
     ])
   end
 
@@ -693,7 +693,8 @@ defmodule Compatibility.Builder.Argv do
 
   defp nerves_mount(spec), do: mount(spec.nerves_cache, "/home/nerves/.nerves")
 
-  defp build_cache_mount(%{build_cache: dir}) when is_binary(dir), do: mount(dir, "/build-cache")
+  # Always read-only: a build runs untrusted package code (isolation design section 2, on main).
+  defp build_cache_mount(%{build_cache: dir}) when is_binary(dir), do: mount(dir, "/build-cache", ",readonly")
   defp build_cache_mount(_spec), do: []
 
   defp hardening_mounts(%{hardening: true} = spec) do
@@ -791,33 +792,49 @@ defmodule Portal.BuilderArgvParityTest do
 
   defp job, do: %{run_id: "jason-1.4.4-1", image_name: "ncc-worker:local", image_digest: "sha256:abc"}
 
+  # `Portal.Builder` derives the /tmp and ~/.cache scratch binds from the
+  # scratch dir above `work_dir`, so the spec names them explicitly.
   defp spec do
     %{
       run_id: "jason-1.4.4-1",
       image: "ncc-worker:local",
       user: "0:0",
-      work_dir: "/w",
-      output_dir: "/o",
-      files_dir: "/f",
+      work_dir: "/s/work",
+      output_dir: "/s/out",
+      files_dir: "/s/files",
+      tmp_dir: "/s/tmp",
+      cache_dir: "/s/cache",
       nerves_cache: Builder.nerves_cache(),
       hex_cache: Builder.hex_cache(),
       build_cache: nil,
       cpus: nil,
       memory: nil,
-      build_concurrency: nil
+      build_concurrency: nil,
+      nerves_cache_mode: :legacy,
+      hardening: true
     }
   end
 
   test "the two builders produce the same argv for a plain build", %{previous: previous} do
     put_builder([run_as_user: "0:0", cpus: nil, memory: nil, build_concurrency: nil, build_cache: nil], previous)
-    assert Builder.build_docker_args(job(), "/w", "/o", "/f") == Argv.build(spec())
+    assert Builder.build_docker_args(job(), "/s/work", "/s/out", "/s/files") == Argv.build(spec())
   end
 
   test "and for a capped build with concurrency", %{previous: previous} do
     put_builder([run_as_user: "0:0", cpus: "2", memory: "4g", build_concurrency: "2", build_cache: nil], previous)
 
-    assert Builder.build_docker_args(job(), "/w", "/o", "/f") ==
+    assert Builder.build_docker_args(job(), "/s/work", "/s/out", "/s/files") ==
              Argv.build(Map.merge(spec(), %{cpus: "2", memory: "4g", build_concurrency: "2"}))
+  end
+
+  test "and with a build cache, which is read-only on both sides", %{previous: previous} do
+    root = Path.join(System.tmp_dir!(), "parity-cache-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(root) end)
+    put_builder([run_as_user: "0:0", cpus: nil, memory: nil, build_concurrency: nil, build_cache: root], previous)
+    slug = Builder.build_cache_slug_dir("sha256:abc")
+
+    assert Builder.build_docker_args(job(), "/s/work", "/s/out", "/s/files") ==
+             Argv.build(Map.put(spec(), :build_cache, slug))
   end
 end
 ```
@@ -2349,7 +2366,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Files:**
 - Create: `apps/portal/lib/portal/builders/leases.ex`, `apps/portal/lib/portal/workers/remote_build.ex`, `apps/portal/lib/portal_web/controllers/builder/job_controller.ex` (claim, heartbeat; Task 8 adds files/complete)
 - Modify: `apps/portal/lib/portal_web/builder_router.ex`, `apps/portal/lib/portal/builders/upload.ex` does not exist yet (Task 8); claim response caps come from `Portal.Builders.Upload.caps/0` which Task 8 creates — in this task define `Portal.Builders.Leases.upload_caps/0` reading `Application.get_env(:portal, Portal.Builders.Upload, [])` with defaults `max_file_bytes: 268_435_456, max_total_bytes: 2_147_483_648, max_batch_bytes: 536_870_912, max_files: 20_000`, and Task 8 reuses it.
-- Modify: `apps/portal/config/config.exs` (Oban: nothing — queues come from runtime), `config/runtime.exs` (default `OBAN_QUEUES` gains `remote: 2`), `apps/portal/lib/portal/workers/build.ex` (none; `scope_args/3` is already public)
+- Modify: `apps/portal/config/config.exs` (Oban: nothing — queues come from runtime), `config/runtime.exs` (default `OBAN_QUEUES` gains `remote: 2` after `toolchain: 1`), `apps/portal/lib/portal/workers/build.ex` (none; `scope_args/3` is already public)
 - Test: `apps/portal/test/portal/builders/leases_test.exs`, `apps/portal/test/portal/workers/remote_build_test.exs`, `apps/portal/test/portal_web/builder/job_controller_claim_test.exs`
 
 **Interfaces:**
@@ -3011,7 +3028,7 @@ defmodule PortalWeb.Builder.JobController do
 end
 ```
 
-`Portal.Builders.WarmAllowlist.names/0` returns a sorted list of the official Nerves system and toolchain package names (read `apps/portal/lib/portal/catalog/tooling_skip.ex`; if it exports its lists, use them, otherwise copy its `nerves_system_*`, kiosk and `nerves_toolchain_*` names into a module attribute with a comment pointing at `ToolingSkip` as the source). Routes under `:builder_api`: `post "/jobs/claim", JobController, :claim` and `post "/jobs/:lease_id/heartbeat", JobController, :heartbeat`. `Portal.AdminEvents`: add `builders: "admin:builders"`. `config/runtime.exs`: default queues `[builds: 1, ingest: 2, intake: 5, maintenance: 1, remote: 2]`.
+`Portal.Builders.WarmAllowlist.names/0` returns a sorted list of the official Nerves system and toolchain package names (read `apps/portal/lib/portal/catalog/tooling_skip.ex`; if it exports its lists, use them, otherwise copy its `nerves_system_*`, kiosk and `nerves_toolchain_*` names into a module attribute with a comment pointing at `ToolingSkip` as the source). Routes under `:builder_api`: `post "/jobs/claim", JobController, :claim` and `post "/jobs/:lease_id/heartbeat", JobController, :heartbeat`. `Portal.AdminEvents`: add `builders: "admin:builders"`. `config/runtime.exs`: default queues `[builds: 1, ingest: 2, intake: 5, maintenance: 1, toolchain: 1, remote: 2]`.
 
 - [ ] **Step 6: Run the three test files plus `oban_config_test.exs`, expect PASS**
 
@@ -3783,8 +3800,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `apps/portal/test/portal/workers/ingest_remote_test.exs`, `apps/portal/test/portal/catalog/publishing_gate_test.exs`, `apps/portal/test/portal/workers/lease_reaper_test.exs`, extend `apps/portal/test/portal/oban_config_test.exs`
 
 **Interfaces:**
-- `Portal.Workers.Ingest.perform/1` with `args["source"] == "remote"`: loader `Portal.Builders.Upload.load_run(args["lease_id"])`, `ingest_opts` gains `builder_id: args["builder_id"]`, cleanup is `Upload.cleanup(lease_id)` (both on success and on the last failed attempt), and on `{:error, :missing_result_json}` the lease is marked failed (`Leases.complete(lease, 10)` semantics are wrong here; call `Portal.Builders.Leases.fail(lease, "upload missing")` — add `fail/2`: state `:failed`, error, `Progress.mark(:error)`). Local path unchanged. Refactor: `loader(args)` returns `{load_fun, cleanup_fun}`.
-- `Portal.Catalog.precompiled_runs/1` adds `|> Ash.Query.filter(is_nil(builder_id) or (builder.publishing == true and builder.status == :enrolled))`. `packages_with_precompiled_files/0` SQL gains `LEFT JOIN builders rb ON rb.id = r.builder_id LEFT JOIN builders bb ON bb.id = b.builder_id` and `AND (r.builder_id IS NULL OR (rb.publishing AND rb.status = 'enrolled')) AND (s.carried_from_run_id IS NULL OR b.builder_id IS NULL OR (bb.publishing AND bb.status = 'enrolled'))`. `revoked_run_ids/1` unchanged (revocation already revokes the runs).
+- `Portal.Workers.Ingest.perform/1` on main already has a first clause for `%{"kind" => "toolchain"}` and a `safe_ingest/3`; leave those as they are. The run clause with `args["source"] == "remote"`: loader `Portal.Builders.Upload.load_run(args["lease_id"])`, `ingest_opts` gains `builder_id: args["builder_id"]`, cleanup is `Upload.cleanup(lease_id)` (both on success and on the last failed attempt), and on `{:error, :missing_result_json}` the lease is marked failed (`Leases.complete(lease, 10)` semantics are wrong here; call `Portal.Builders.Leases.fail(lease, "upload missing")` — add `fail/2`: state `:failed`, error, `Progress.mark(:error)`). Local path unchanged. Refactor: `loader(args)` returns `{load_fun, cleanup_fun}`.
+- `Portal.Catalog.precompiled_runs/1` adds `|> Ash.Query.filter(is_nil(builder_id) or (builder.publishing == true and builder.status == :enrolled))` — it feeds both `precompiled_manifest/1` and `precompiled_manifest_v2/1`; grep `catalog.ex` for every other reader of runs for publication (`toolchain_backlog` reads pass runs to decide what to build locally and is deliberately not gated: a remote run is a real verdict). `packages_with_precompiled_files/0` SQL gains `LEFT JOIN builders rb ON rb.id = r.builder_id LEFT JOIN builders bb ON bb.id = b.builder_id` and `AND (r.builder_id IS NULL OR (rb.publishing AND rb.status = 'enrolled')) AND (s.carried_from_run_id IS NULL OR b.builder_id IS NULL OR (bb.publishing AND bb.status = 'enrolled'))`. `revoked_run_ids/1` unchanged (revocation already revokes the runs).
 - `Portal.Workers.LeaseReaper`: `use Oban.Worker, queue: :maintenance, max_attempts: 1, unique: [period: :infinity, states: :incomplete]`; `perform/1` logs and returns `:ok` after `Leases.reap/0`. Cron `{"*/5 * * * *", Portal.Workers.LeaseReaper}`, with a comment that it carries `:maintenance` (web host) like `RequestSync`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -4878,7 +4895,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - `NccAgent.Job.argv_spec(config, claim, dirs, env) :: Compatibility.Builder.Argv.spec()` is extracted from `Job.build/5` (pure) so the fixture test can call it without Docker.
-- The fixture is the exact argv (one argument per line) for `claim` = `%{"run_id" => "rb-jason-1.4.4-1700000000000", "image" => %{"name" => "ghcr.io/tomhoenderdos/ncc-worker", "digest" => "sha256:" <> String.duplicate("a", 64)}}`, `config` with `data_dir: "/srv/ncc"`, `build_user: "1001:1001"`, `cpus: "4"`, `memory: "8g"`, `build_concurrency: nil`, dirs under `/srv/ncc/scratch/rb-jason-1.4.4-1700000000000/`, and the `NERVES_*` env from Task 14. It must contain, in this order after the base flags: `--read-only`, `--pids-limit 4096`, `--cpus 4 --memory 8g`, the `/work`, `/out`, `/files` binds, `type=bind,source=/srv/ncc/nerves-cache,target=/nerves-cache,readonly`, the `/hex-cache` bind, **no** `/build-cache` bind (the agent never promotes into a build cache), the `/tmp` and `/home/nerves/.cache` scratch binds, the standard env, the CPU env for 4, the two `NERVES_*` env pairs, and finally `ghcr.io/tomhoenderdos/ncc-worker@sha256:aaaa…`.
+- The fixture is the exact argv (one argument per line) for `claim` = `%{"run_id" => "rb-jason-1.4.4-1700000000000", "image" => %{"name" => "ghcr.io/tomhoenderdos/ncc-worker", "digest" => "sha256:" <> String.duplicate("a", 64)}}`, `config` with `data_dir: "/srv/ncc"`, `build_user: "1001:1001"`, `cpus: "4"`, `memory: "8g"`, `build_concurrency: nil`, dirs under `/srv/ncc/scratch/rb-jason-1.4.4-1700000000000/`, and the `NERVES_*` env from Task 14. It must contain, in this order after the base flags: `--read-only`, `--pids-limit 4096`, `--cpus 4 --memory 8g`, the `/work`, `/out`, `/files` binds, the `/tmp` and `/home/nerves/.cache` scratch binds, `type=bind,source=/srv/ncc/nerves-cache,target=/nerves-cache,readonly`, the `/hex-cache` bind, **no** `/build-cache` bind (the agent never promotes into a build cache), the standard env, the CPU env for 4, the two `NERVES_*` env pairs, and finally `ghcr.io/tomhoenderdos/ncc-worker@sha256:aaaa…`.
 
 - [ ] **Step 1: Write the fixture and the test**
 
