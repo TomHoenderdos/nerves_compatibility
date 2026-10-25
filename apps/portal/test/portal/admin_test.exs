@@ -19,6 +19,8 @@ defmodule Portal.AdminTest do
     %{admin: admin}
   end
 
+  defp stringify(map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)
+
   defp build_job_for(request_id) do
     from(j in Oban.Job,
       where: j.worker == "Portal.Workers.Build",
@@ -285,6 +287,43 @@ defmodule Portal.AdminTest do
                Admin.set_builder_publishing(Ecto.UUID.generate(), true, admin)
 
       assert {:error, :not_found} = Admin.requeue_lease(Ecto.UUID.generate())
+    end
+
+    # A lease failed for good (its builder revoked, say) is built here
+    # instead: forced, pinned local, never routed back to a builder.
+    test "a failed lease is requeued locally once", %{admin: admin} do
+      # Remote on and over threshold: only the pin keeps the job local.
+      {:ok, _} =
+        Admin.update_remote_settings(%{"remote_mode" => "on", "remote_backlog_threshold" => "0"})
+
+      lease =
+        Ash.create!(
+          Portal.Builders.Lease,
+          %{
+            package: "jason",
+            version: "1.4.4",
+            image_name: "i",
+            image_digest: "sha256:d",
+            state: :failed,
+            error: "builder revoked"
+          },
+          action: :create,
+          domain: Portal.Builders
+        )
+
+      assert {:ok, %Oban.Job{} = job} = Admin.requeue_lease_locally(lease.id, admin)
+      assert job.worker == "Portal.Workers.Build"
+      assert job.queue == "builds"
+      assert job.priority == 3
+      assert job.meta["pin_local"] == true or job.meta[:pin_local] == true
+      assert %{"package" => "jason", "version" => "1.4.4", "force" => true} = stringify(job.args)
+
+      assert %{state: :failed, error: "requeued locally"} =
+               Ash.get!(Portal.Builders.Lease, lease.id, domain: Portal.Builders)
+
+      assert {:error, :not_failed} = Admin.requeue_lease_locally(lease.id, admin)
+      assert [_one] = all_enqueued(worker: Portal.Workers.Build)
+      assert {:error, :not_found} = Admin.requeue_lease_locally(Ecto.UUID.generate(), admin)
     end
 
     test "an invalid builder name is refused before any CA is needed", %{admin: admin} do

@@ -323,8 +323,10 @@ defmodule Portal.Builders do
 
   @doc """
   Revoke a builder: status `:revoked`, its runs revoked (the next precompiled
-  batch drops their files), its open leases back to `:queued`, and the
-  affected packages rebuilt on this host through `Portal.BulkRebuild` with
+  batch drops their files), its open leases back to `:queued` -- or, when no
+  other enrolled builder is left to claim them, `:failed` with "builder
+  revoked" and their requests errored -- and the affected packages (those
+  failed leases' included) rebuilt on this host through `Portal.BulkRebuild` with
   `pin_local`, so the catalogue heals without routing to a remote builder.
   """
   @spec revoke(Builder.t()) ::
@@ -343,20 +345,35 @@ defmodule Portal.Builders do
     # still finds the runs open and their packages to rebuild. The package
     # names come from the runs revoked here, not from an earlier preview, so a
     # run ingested in between is rebuilt too.
-    with {:ok, builder} <- mark_revoked(builder) do
-      Repo.transaction(fn -> revoke_in_transaction(builder) end)
+    with {:ok, builder} <- mark_revoked(builder),
+         {:ok, result} <- Repo.transaction(fn -> revoke_in_transaction(builder) end) do
+      # Once committed: the failed leases' upload dirs hold nothing anyone
+      # will ingest.
+      {lease_ids, result} = Map.pop(result, :failed_lease_ids)
+      Enum.each(lease_ids, &Portal.Builders.Upload.cleanup/1)
+      {:ok, result}
     end
   end
 
   defp revoke_in_transaction(builder) do
     runs = open_runs(builder, load: :package)
     Enum.each(runs, &revoke_run!/1)
-    requeue_leases(builder)
-    packages = package_names(runs)
+    failed_leases = settle_leases(builder)
+
+    packages =
+      (package_names(runs) ++ Enum.map(failed_leases, fn {_id, package, _req} -> package end))
+      |> Enum.uniq()
+      |> Enum.sort()
 
     case rebuild(packages, builder) do
       {:ok, sweep_id} ->
-        %{builder: builder, runs_revoked: length(runs), packages: packages, sweep_id: sweep_id}
+        %{
+          builder: builder,
+          runs_revoked: length(runs),
+          packages: packages,
+          sweep_id: sweep_id,
+          failed_lease_ids: Enum.map(failed_leases, fn {id, _package, _req} -> id end)
+        }
 
       {:error, reason} ->
         Repo.rollback(reason)
@@ -375,6 +392,48 @@ defmodule Portal.Builders do
   end
 
   defp package_names(runs), do: runs |> Enum.map(& &1.package.name) |> Enum.uniq() |> Enum.sort()
+
+  # The revoked builder's in-flight leases go back to the queue while another
+  # enrolled builder can take them. With none left a requeued lease would wait
+  # forever and its open request block every later `create_once/1` for its
+  # package, so they fail instead (their requests errored) and their packages
+  # join the local rebuild. Answers the failed ones as `{id, package,
+  # scan_request_id}`.
+  defp settle_leases(builder) do
+    if other_enrolled?(builder) do
+      requeue_leases(builder)
+      []
+    else
+      fail_leases(builder)
+    end
+  end
+
+  defp other_enrolled?(%Builder{id: id}) do
+    Builder
+    |> Ash.Query.filter(status == :enrolled and id != ^id)
+    |> Ash.exists?(domain: __MODULE__)
+  end
+
+  defp fail_leases(builder) do
+    reason = "builder revoked"
+
+    {_, failed} =
+      Repo.update_all(
+        from(l in "builder_leases",
+          where:
+            l.builder_id == type(^builder.id, Ecto.UUID) and l.state in ["leased", "uploading"],
+          select: {type(l.id, Ecto.UUID), l.package, type(l.scan_request_id, Ecto.UUID)}
+        ),
+        set: [state: "failed", error: reason, phase: nil, updated_at: DateTime.utc_now()]
+      )
+
+    for {_id, _package, scan_request_id} <- failed do
+      Portal.Workers.Progress.mark(scan_request_id, :error, error_reason: reason)
+      Portal.Workers.Progress.broadcast(scan_request_id, :error, %{reason: reason})
+    end
+
+    failed
+  end
 
   defp requeue_leases(builder) do
     Repo.update_all(
