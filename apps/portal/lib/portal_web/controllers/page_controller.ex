@@ -177,6 +177,28 @@ defmodule PortalWeb.PageController do
   defp put_toolchain_sweep_flash(conn, {:error, reason}),
     do: put_flash(conn, :error, PortalWeb.AdminMessages.error(reason))
 
+  # Redirects like the toolchain sweep, so a refresh does not queue it again.
+  def admin_repair_file_modes(conn, _params) do
+    case require_admin(conn) do
+      {:ok, conn, _user} ->
+        conn
+        |> put_repair_file_modes_flash(Portal.Workers.ManifestModeRepair.enqueue())
+        |> redirect(to: ~p"/admin/maintenance")
+
+      {:error, conn} ->
+        conn
+    end
+  end
+
+  defp put_repair_file_modes_flash(conn, {:ok, _job}),
+    do: put_flash(conn, :info, "File mode repair queued; the next batch publishes it.")
+
+  defp put_repair_file_modes_flash(conn, {:error, :already_queued}),
+    do: put_flash(conn, :info, "A file mode repair is already queued.")
+
+  defp put_repair_file_modes_flash(conn, {:error, reason}),
+    do: put_flash(conn, :error, PortalWeb.AdminMessages.error(reason))
+
   def admin_argus_settings(conn, params) do
     case require_admin(conn) do
       {:ok, conn, user} ->

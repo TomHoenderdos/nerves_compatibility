@@ -40,7 +40,7 @@ defmodule Portal.PrecompiledFixtures do
   Options: `:toolchain` (`"1.19/28"`), `:elixir` (`"1.19.1"`), `:otp` (`"28"`),
   `:builder_version` (1), `:finished_at` (`"2026-10-24T10:00:00Z"`),
   `:deps_lock`, `:package_checksum` (`"outer"`), `:compile_env` (`[]`),
-  `:status` (`"pass"`).
+  `:status` (`"pass"`), `:mode` (`33_188`).
   """
   def ingest_toolchain_build(name, version, opts \\ []) do
     content = "toolchain-beam-#{name}-#{version}-#{System.unique_integer([:positive])}"
@@ -73,7 +73,7 @@ defmodule Portal.PrecompiledFixtures do
               "path" => "ebin/#{name}.beam",
               "sha256" => sha,
               "size" => byte_size(content),
-              "mode" => 33_188
+              "mode" => Keyword.get(opts, :mode, 33_188)
             }
           ],
           "priv" => []

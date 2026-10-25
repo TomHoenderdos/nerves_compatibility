@@ -229,7 +229,11 @@ a different version or a different checksum means building from source.
   - `path` — relative path within the package, e.g. `ebin/myapp.beam`.
   - `sha256` — lowercase hexadecimal SHA256 of the file.
   - `size` — file size in bytes when reported by the worker.
-  - `mode` — Unix file mode when reported by the worker.
+  - `mode` — the file's mode as built, published as exactly `33188` (0o100644)
+    or `33261` (0o100755): 0755 when the build saw any execute bit, 0644
+    otherwise; an entry without a usable mode is not published. Manifests
+    published before 2026-10-25 carried 0644 for every file, executables
+    under `priv/` included, until the file mode repair rewrote them.
 - `updated_at` — ISO 8601 timestamp of the newest run represented in the manifest.
 
 ## Manifest format 2 (`/api/precompiled/v2/manifests`)
