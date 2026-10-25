@@ -132,6 +132,17 @@ if portal_available? do
   if key = System.get_env("NCC_BUILDER_CA_KEY"),
     do: config(:portal, Portal.Builders.CA, key_path: key)
 
+  # The remote builders' mTLS listener: served with PHX_SERVER once a CA key
+  # is configured. `Portal.Builders.Listener` adds the certificates to
+  # `https:` at boot, and leaves it off if the CA does not load. Never in
+  # test, where Phoenix.ConnTest dispatches to it directly.
+  builder_port = String.to_integer(System.get_env("NCC_BUILDER_PORT", "8443"))
+  config :portal, PortalWeb.BuilderEndpoint, https: [port: builder_port]
+
+  if config_env() != :test and System.get_env("PHX_SERVER") != nil and
+       System.get_env("NCC_BUILDER_CA_KEY") != nil,
+     do: config(:portal, PortalWeb.BuilderEndpoint, server: true)
+
   # Lets a separate deployment of this codebase send its bug reports to its own
   # tracker rather than to whichever repo the compile-time default names.
   if issues_url = System.get_env("NCC_ISSUES_URL") do
@@ -315,5 +326,10 @@ if portal_available? do
         ip: bind_ip
       ],
       secret_key_base: secret_key_base
+
+    # Never signs anything; Phoenix wants one per endpoint.
+    config :portal, PortalWeb.BuilderEndpoint,
+      secret_key_base: secret_key_base,
+      url: [host: host, port: builder_port, scheme: "https"]
   end
 end

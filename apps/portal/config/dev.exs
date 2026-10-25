@@ -32,6 +32,11 @@ config :portal, PortalWeb.Endpoint,
     tailwind: {Tailwind, :install_and_run, [:portal, ~w(--watch)]}
   ]
 
+# The builder listener needs a CA (NCC_BUILDER_CA_KEY) and PHX_SERVER to start.
+config :portal, PortalWeb.BuilderEndpoint,
+  secret_key_base: "xGrnVZIHgSQn6u46zsaLdFmC8WfMC0xsPGdysk1YAP2Ff7Q/wQ8bv59FZPveK3CW",
+  server: false
+
 # ## SSL Support
 #
 # In order to use HTTPS in development, a self-signed
