@@ -17,4 +17,17 @@ defmodule Portal.Builders.RateLimitTest do
     refute RateLimit.allow?(a, 1, 60_000)
     assert RateLimit.allow?(b, 1, 60_000)
   end
+
+  test "the sweep drops windows that have ended and keeps the current one" do
+    key = {:test, System.unique_integer()}
+    now = System.system_time(:millisecond)
+    assert RateLimit.allow?(key, 1, 60_000, now_ms: now)
+    refute RateLimit.allow?(key, 1, 60_000, now_ms: now)
+
+    RateLimit.sweep(now)
+    refute RateLimit.allow?(key, 1, 60_000, now_ms: now)
+
+    RateLimit.sweep(now + 60_000)
+    assert RateLimit.allow?(key, 1, 60_000, now_ms: now)
+  end
 end

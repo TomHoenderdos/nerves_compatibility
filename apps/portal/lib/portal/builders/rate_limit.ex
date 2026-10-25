@@ -3,7 +3,7 @@ defmodule Portal.Builders.RateLimit do
   Fixed-window counters in a public ETS table: enrolment 10/min per address,
   claims 60/min per builder. Callers count in their own process through
   `:ets.update_counter/4`; this GenServer only owns the table and sweeps
-  windows older than five minutes once a minute.
+  windows that have ended once a minute.
   """
   use GenServer
 
@@ -16,7 +16,10 @@ defmodule Portal.Builders.RateLimit do
   def allow?(key, limit, window_ms, opts \\ []) do
     now = Keyword.get(opts, :now_ms, System.system_time(:millisecond))
     window = div(now, window_ms)
-    count = :ets.update_counter(@table, {key, window}, {2, 1}, {{key, window}, 0, now})
+    # The third element is when the window ends, so the sweep is right for
+    # any window length.
+    ends = (window + 1) * window_ms
+    count = :ets.update_counter(@table, {key, window}, {2, 1}, {{key, window}, 0, ends})
     count <= limit
   end
 
@@ -32,11 +35,15 @@ defmodule Portal.Builders.RateLimit do
 
   @impl true
   def handle_info(:sweep, state) do
-    cutoff = System.system_time(:millisecond) - :timer.minutes(5)
-    :ets.select_delete(@table, [{{:_, :_, :"$1"}, [{:<, :"$1", cutoff}], [true]}])
+    sweep(System.system_time(:millisecond))
     schedule()
     {:noreply, state}
   end
+
+  @doc false
+  # Drop every window that ended before `now_ms`.
+  def sweep(now_ms),
+    do: :ets.select_delete(@table, [{{:_, :_, :"$1"}, [{:<, :"$1", now_ms}], [true]}])
 
   defp schedule, do: Process.send_after(self(), :sweep, :timer.minutes(1))
 end

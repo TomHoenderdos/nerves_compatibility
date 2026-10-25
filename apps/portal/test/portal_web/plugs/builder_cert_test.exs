@@ -10,6 +10,31 @@ defmodule PortalWeb.Plugs.BuilderCertTest do
     assert json_response(conn, 401) == %{"error" => "client_certificate_required"}
   end
 
+  test "the body is not parsed before the certificate is checked", %{conn: conn} do
+    conn =
+      conn
+      |> without_cert()
+      |> put_req_header("content-type", "application/json")
+      |> post("/builder/v1/status", Jason.encode!(@status))
+
+    assert json_response(conn, 401) == %{"error" => "client_certificate_required"}
+    assert %Plug.Conn.Unfetched{} = conn.body_params
+  end
+
+  test "the agent version in a status body is recorded", %{conn: conn} do
+    %{builder: builder, cert_der: der} = enrolled_builder!("box-v")
+
+    conn =
+      conn
+      |> with_cert(der)
+      |> post("/builder/v1/status", %{"agent_version" => "8.y", "egress" => "ok"})
+
+    assert json_response(conn, 200) == %{"ok" => true}
+    {:ok, seen} = Builders.get_builder(builder.id)
+    assert seen.last_version == "8.y"
+    assert seen.egress_status == "ok"
+  end
+
   test "an unknown certificate is 403", %{conn: conn} do
     stray =
       X509.PrivateKey.new_ec(:secp256r1)
