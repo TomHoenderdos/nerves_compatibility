@@ -3,6 +3,7 @@ defmodule Portal.Workers.IngestRemoteTest do
   use Oban.Testing, repo: Portal.Repo
 
   require Ash.Query
+  import Ecto.Query, only: [from: 2]
 
   alias Portal.Builders.{Builder, Lease, Leases, Upload}
   alias Portal.Catalog.Run
@@ -139,5 +140,80 @@ defmodule Portal.Workers.IngestRemoteTest do
 
     {:ok, updated} = Portal.ScanRequests.get_request(request.id)
     assert updated.status == :error
+  end
+
+  defp run_for(lease) do
+    Run
+    |> Ash.Query.filter(run_id == ^lease.run_id)
+    |> Ash.read_one!(domain: Portal.Catalog)
+  end
+
+  # The request can go while the remote build runs; the run is kept,
+  # unlinked, instead of tripping the scan_request_id foreign key on every
+  # attempt and losing the upload.
+  test "a deleted request does not fail the ingest", %{
+    builder: builder,
+    lease: lease,
+    request: request
+  } do
+    seed_outputs!(lease, put_in(@fixture_result, ["run_id"], lease.run_id))
+
+    Repo.delete_all(
+      from(r in "portal_scan_requests", where: r.id == type(^request.id, Ecto.UUID))
+    )
+
+    assert :ok = perform_job(Ingest, args(lease, builder))
+
+    run = run_for(lease)
+    assert run.scan_request_id == nil
+    assert run.builder_id == builder.id
+    refute File.exists?(Upload.lease_dir(lease.id))
+  end
+
+  test "the last failed attempt fails the lease and errors the request", %{
+    builder: builder,
+    lease: lease,
+    request: request
+  } do
+    # A result.json `Ingestion` cannot map.
+    seed_outputs!(lease, %{"run_id" => lease.run_id, "systems" => "not a map"})
+
+    assert {:error, _} = perform_job(Ingest, args(lease, builder), attempt: 1)
+
+    assert %Lease{state: :done} = Ash.get!(Lease, lease.id, domain: Portal.Builders)
+    assert File.exists?(Upload.lease_dir(lease.id))
+
+    assert {:error, _} = perform_job(Ingest, args(lease, builder), attempt: 5)
+
+    assert %Lease{state: :failed, error: "ingestion failed: " <> _} =
+             Ash.get!(Lease, lease.id, domain: Portal.Builders)
+
+    {:ok, updated} = Portal.ScanRequests.get_request(request.id)
+    assert updated.status == :error
+    assert "ingestion failed: " <> _ = updated.error_reason
+    refute File.exists?(Upload.lease_dir(lease.id))
+    assert run_for(lease) == nil
+  end
+
+  test "an upload from a builder revoked since is dropped and fails the lease", %{
+    builder: builder,
+    lease: lease,
+    request: request
+  } do
+    seed_outputs!(lease, put_in(@fixture_result, ["run_id"], lease.run_id))
+
+    builder
+    |> Ash.Changeset.for_update(:revoke, %{})
+    |> Ash.update!(domain: Portal.Builders)
+
+    assert {:cancel, "builder revoked"} = perform_job(Ingest, args(lease, builder))
+
+    assert %Lease{state: :failed, error: "builder revoked"} =
+             Ash.get!(Lease, lease.id, domain: Portal.Builders)
+
+    {:ok, updated} = Portal.ScanRequests.get_request(request.id)
+    assert updated.status == :error
+    refute File.exists?(Upload.lease_dir(lease.id))
+    assert run_for(lease) == nil
   end
 end

@@ -2,7 +2,8 @@ defmodule PortalWeb.Admin.BuildersLive do
   @moduledoc """
   Admin Builders tab: the remote routing policy, enrolment tokens, the
   enrolled builders with their publishing switch and revoke, and the recent
-  remote leases with a requeue for the failed ones.
+  remote leases with, for the failed ones, a requeue to the remote queue and
+  a "Requeue locally" that builds the package on this host instead.
 
   The page follows the builders live: `Portal.Builders.Leases` and
   `Portal.Admin` announce changes on `Portal.AdminEvents`' `:builders` topic
@@ -142,6 +143,22 @@ defmodule PortalWeb.Admin.BuildersLive do
       case Portal.Admin.requeue_lease(string_param(params, "id")) do
         {:ok, lease} -> done(socket, :info, "Requeued #{lease.package} #{lease.version}.")
         {:error, reason} -> done(socket, :error, error_message(reason))
+      end
+    end)
+  end
+
+  def handle_event("requeue_local", params, socket) do
+    as_admin(socket, fn socket, user ->
+      case Portal.Admin.requeue_lease_locally(string_param(params, "id"), user) do
+        {:ok, job} ->
+          done(
+            socket,
+            :info,
+            "Queued a local build of #{job.args["package"]} #{job.args["version"]}."
+          )
+
+        {:error, reason} ->
+          done(socket, :error, error_message(reason))
       end
     end)
   end
@@ -479,16 +496,29 @@ defmodule PortalWeb.Admin.BuildersLive do
                     </details>
                   </td>
                   <td class="text-right">
-                    <button
-                      :if={l.state == :failed}
-                      id={"requeue-#{l.id}"}
-                      type="button"
-                      phx-click="requeue"
-                      phx-value-id={l.id}
-                      class="btn btn-xs btn-ghost whitespace-nowrap"
+                    <div
+                      :if={l.state == :failed and l.error != Leases.requeued_locally()}
+                      class="flex justify-end gap-1"
                     >
-                      Requeue
-                    </button>
+                      <button
+                        id={"requeue-#{l.id}"}
+                        type="button"
+                        phx-click="requeue"
+                        phx-value-id={l.id}
+                        class="btn btn-xs btn-ghost whitespace-nowrap"
+                      >
+                        Requeue
+                      </button>
+                      <button
+                        id={"requeue-local-#{l.id}"}
+                        type="button"
+                        phx-click="requeue_local"
+                        phx-value-id={l.id}
+                        class="btn btn-xs btn-ghost whitespace-nowrap"
+                      >
+                        Requeue locally
+                      </button>
+                    </div>
                   </td>
                 </tr>
               </tbody>

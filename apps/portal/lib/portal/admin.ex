@@ -455,6 +455,36 @@ defmodule Portal.Admin do
     end
   end
 
+  @doc """
+  Build the `:failed` lease `lease_id`'s package and version on this host
+  instead, on behalf of `actor`: a forced `Portal.Workers.Build` pinned local
+  (`meta.pin_local`, so routing never sends it back to a remote builder), at
+  priority 3. The lease stays `:failed`, with `error: "requeued locally"`,
+  and is handed over only once.
+  """
+  @spec requeue_lease_locally(String.t(), Portal.Accounts.User.t()) ::
+          {:ok, Oban.Job.t()} | {:error, :not_found | :not_failed | term()}
+  def requeue_lease_locally(lease_id, actor) do
+    with {:ok, lease} <- fetch_lease(lease_id) do
+      Portal.Repo.transaction(fn ->
+        with {:ok, _lease} <- Portal.Builders.Leases.mark_requeued_locally(lease),
+             {:ok, job} <-
+               %{package: lease.package, version: lease.version, force: true}
+               |> Portal.Builders.Routing.build_job(meta: %{pin_local: true}, priority: 3)
+               |> Oban.insert() do
+          Logger.warning(
+            "Lease #{lease.id} (#{lease.package} #{lease.version}) requeued locally " <>
+              "by #{actor.username}"
+          )
+
+          job
+        else
+          {:error, reason} -> Portal.Repo.rollback(reason)
+        end
+      end)
+    end
+  end
+
   defp fetch_lease(lease_id) do
     with {:ok, id} <- Ecto.UUID.cast(lease_id),
          {:ok, lease} <- Ash.get(Portal.Builders.Lease, id, domain: Portal.Builders) do

@@ -13,7 +13,8 @@ defmodule Portal.Workers.RequestSync do
 
   Two rules:
 
-    * **Open requests with no live Build or Ingest job** are closed. Ours
+    * **Open requests with no live Build, RemoteBuild or Ingest job and no
+      open `builder_leases` row** are closed. Ours
       (`backfill`, `catalog_seed`, `update_check`) are deleted; nobody asked
       for them. A person's request is kept and closed as an `error` so they
       can see what happened. Requests younger than ten
@@ -40,6 +41,11 @@ defmodule Portal.Workers.RequestSync do
   @system_sources ~w(backfill catalog_seed update_check)
   @live_states ~w(available scheduled executing retryable)
   @job_workers ~w(Portal.Workers.Build Portal.Workers.RemoteBuild Portal.Workers.Ingest)
+  # A remote build's `RemoteBuild` job completes once it has written the
+  # lease, so from then until its `Ingest` is enqueued the lease is the only
+  # live work. `done` counts too: the builder has completed, and its
+  # `Ingest` (which marks the request) may not have run yet.
+  @open_lease_states ~w(queued leased uploading done)
   @retain_finished_hours 24
   @grace_minutes 10
 
@@ -76,6 +82,14 @@ defmodule Portal.Workers.RequestSync do
               where:
                 fragment("? ->> 'scan_request_id'", j.args) ==
                   fragment("?::text", parent_as(:request).id),
+              select: 1
+            )
+          ),
+        where:
+          not exists(
+            from(l in "builder_leases",
+              where: l.state in ^@open_lease_states,
+              where: l.scan_request_id == parent_as(:request).id,
               select: 1
             )
           )

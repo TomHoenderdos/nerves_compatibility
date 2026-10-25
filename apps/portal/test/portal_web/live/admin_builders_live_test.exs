@@ -1,5 +1,6 @@
 defmodule PortalWeb.Admin.BuildersLiveTest do
   use PortalWeb.ConnCase, async: false
+  use Oban.Testing, repo: Portal.Repo
 
   import Phoenix.LiveViewTest
   import Portal.Test.AccountsFixtures, only: [add_test_passkey: 1]
@@ -96,5 +97,24 @@ defmodule PortalWeb.Admin.BuildersLiveTest do
 
     view |> element("#builder-#{builder.id} button[phx-click=revoke]") |> render_click()
     assert {:ok, %{status: :revoked}} = Builders.get_builder(builder.id)
+  end
+
+  test "requeues a failed lease locally and then offers no further requeue", %{conn: conn} do
+    builder = enrol!("box-local")
+    enqueue!()
+    {:ok, lease} = Leases.claim(builder)
+    {:ok, :rejected, lease} = Leases.complete(lease, 11)
+
+    {:ok, view, _} = live(conn, ~p"/admin/builders")
+
+    view |> element("#lease-#{lease.id} button[phx-click=requeue_local]") |> render_click()
+
+    assert %{state: :failed, error: "requeued locally"} =
+             Ash.get!(Lease, lease.id, domain: Builders)
+
+    assert [job] = all_enqueued(worker: Portal.Workers.Build)
+    assert job.args["package"] == "jason" and job.args["force"] == true
+    refute has_element?(view, "#requeue-local-#{lease.id}")
+    refute has_element?(view, "#requeue-#{lease.id}")
   end
 end

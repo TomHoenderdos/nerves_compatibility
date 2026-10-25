@@ -348,6 +348,43 @@ defmodule Portal.Builders.Leases do
     end
   end
 
+  @requeued_locally "requeued locally"
+
+  @doc "The `error` a `:failed` lease handed to a local build carries."
+  @spec requeued_locally() :: String.t()
+  def requeued_locally, do: @requeued_locally
+
+  @doc """
+  Note that a `:failed` lease was handed to a local build: it stays
+  `:failed`, with `error: "requeued locally"`. Only once: a lease already
+  noted, or no longer `:failed`, answers `{:error, :not_failed}`.
+  """
+  @spec mark_requeued_locally(Lease.t()) ::
+          {:ok, Lease.t()} | {:error, :not_failed | :update_failed}
+  def mark_requeued_locally(%Lease{} = lease) do
+    {count, _} =
+      Repo.update_all(
+        from(l in "builder_leases",
+          where:
+            l.id == type(^lease.id, Ecto.UUID) and l.state == "failed" and
+              (is_nil(l.error) or l.error != @requeued_locally)
+        ),
+        set: [error: @requeued_locally, updated_at: now()]
+      )
+
+    case count do
+      1 ->
+        Portal.AdminEvents.broadcast(:builders)
+        {:ok, Ash.get!(Lease, lease.id, domain: @domain)}
+
+      0 ->
+        {:error, :not_failed}
+    end
+  rescue
+    e in [Postgrex.Error, DBConnection.ConnectionError] ->
+      db_failed("requeue locally", lease.id, e)
+  end
+
   @doc "Count `n` uploaded bytes against the attempt `lease` names, atomically."
   @spec add_bytes(Lease.t(), non_neg_integer()) ::
           {:ok, Lease.t()} | {:error, :not_held | :update_failed}

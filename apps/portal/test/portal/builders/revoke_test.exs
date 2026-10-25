@@ -43,24 +43,46 @@ defmodule Portal.Builders.RevokeTest do
     run
   end
 
+  defp other_builder! do
+    Portal.Builders.Builder
+    |> Ash.Changeset.for_create(:enrol, %{
+      name: "box-other",
+      fingerprint: "fp-other-#{System.unique_integer([:positive])}",
+      cert_pem: "p",
+      cert_expires_at: DateTime.utc_now(),
+      enrolled_at: DateTime.utc_now()
+    })
+    |> Ash.create!(domain: Builders)
+  end
+
+  defp lease!(builder, package, attrs \\ %{}) do
+    Lease
+    |> Ash.Changeset.for_create(
+      :create,
+      Map.merge(
+        %{
+          package: package,
+          version: "1.0.0",
+          image_name: "i",
+          image_digest: "sha256:d",
+          args: %{},
+          state: :leased,
+          builder_id: builder.id,
+          attempt: 1
+        },
+        attrs
+      )
+    )
+    |> Ash.create!(domain: Builders)
+  end
+
   test "revoking a builder revokes its runs, requeues its leases and pins the rebuilds locally",
        %{builder: builder} do
+    _other = other_builder!()
     mine = ingest!("jason", "1.4.4", builder.id)
     other = ingest!("decimal", "2.1.1", nil)
 
-    lease =
-      Lease
-      |> Ash.Changeset.for_create(:create, %{
-        package: "plug",
-        version: "1.0.0",
-        image_name: "i",
-        image_digest: "sha256:d",
-        args: %{},
-        state: :leased,
-        builder_id: builder.id,
-        attempt: 1
-      })
-      |> Ash.create!(domain: Builders)
+    lease = lease!(builder, "plug")
 
     assert %{runs: 1, packages: ["jason"]} = Builders.revoke_preview(builder)
 
@@ -99,5 +121,39 @@ defmodule Portal.Builders.RevokeTest do
     assert %Run{revoked_at: %DateTime{}} = Ash.get!(Run, mine.id, domain: Portal.Catalog)
     assert [job] = all_enqueued(worker: Portal.Workers.Backfill)
     assert job.args["pin_local"] == true
+  end
+
+  # With nobody left to claim them, requeued leases would sit `queued` for
+  # good and their open requests block every later request for the package.
+  test "revoking the only enrolled builder fails its leases and rebuilds their packages locally",
+       %{builder: builder} do
+    {:ok, request} =
+      Portal.ScanRequests.create_once(%{
+        package_name: "plug",
+        version: "1.0.0",
+        source: :hex_owner,
+        status: :accepted
+      })
+
+    lease = lease!(builder, "plug", %{scan_request_id: request.id, state: :uploading})
+    upload_dir = Portal.Builders.Upload.lease_dir(lease.id)
+    File.mkdir_p!(upload_dir)
+
+    assert {:ok, %{runs_revoked: 0, packages: ["plug"], sweep_id: sweep_id} = result} =
+             Builders.revoke(builder)
+
+    refute Map.has_key?(result, :failed_lease_ids)
+    assert is_binary(sweep_id)
+
+    assert %Lease{state: :failed, error: "builder revoked"} =
+             Ash.get!(Lease, lease.id, domain: Builders)
+
+    {:ok, request} = Portal.ScanRequests.get_request(request.id)
+    assert request.status == :error
+    assert request.error_reason == "builder revoked"
+    refute File.exists?(upload_dir)
+
+    assert [job] = all_enqueued(worker: Portal.Workers.Backfill)
+    assert job.args["package"] == "plug" and job.args["pin_local"] == true
   end
 end

@@ -20,7 +20,9 @@ defmodule Portal.Workers.Ingest do
   enqueued on `:remote` by the builder's `complete` call. Its output is the
   lease's upload dir on the web host (`Portal.Builders.Upload`), the run
   records its `builder_id`, and an upload with no `result.json` fails the
-  lease (`Portal.Builders.Leases.fail_by_id/2`).
+  lease (`Portal.Builders.Leases.fail_by_id/2`), as do a revoked builder and
+  a last attempt that still cannot ingest. A request deleted while the build
+  ran leaves the run unlinked instead of failing it.
 
   A toolchain build (`kind: "toolchain"`, with `toolchain`, `builder_version`
   and the queued `version`) goes to `Portal.Catalog.Ingestion.ingest_toolchain/2`
@@ -156,13 +158,17 @@ defmodule Portal.Workers.Ingest do
   def perform(%Oban.Job{args: args, attempt: attempt, max_attempts: max_attempts}) do
     run_id = args["run_id"]
     image_digest = args["image_digest"]
-    scan_request_id = args["scan_request_id"]
     source = source(args)
+    scan_request_id = live_request_id(source, args["scan_request_id"])
 
     with {:ok, run} <- Portal.Catalog.committed_run(run_id) do
       case run do
         nil ->
-          load_and_ingest(source, run_id, image_digest, scan_request_id, attempt, max_attempts)
+          if builder_revoked?(source) do
+            revoked(source, run_id)
+          else
+            load_and_ingest(source, run_id, image_digest, scan_request_id, attempt, max_attempts)
+          end
 
         run ->
           complete(source, run, scan_request_id, run.package.name)
@@ -177,6 +183,46 @@ defmodule Portal.Workers.Ingest do
     do: %{kind: :remote, lease_id: lease_id, builder_id: args["builder_id"]}
 
   defp source(_args), do: %{kind: :local}
+
+  # A remote build outlives its request's jobs by as long as it takes, so the
+  # request may be gone by the time its upload is ingested (deleted by hand,
+  # or by `Portal.Workers.RequestSync` before it knew about leases). The run
+  # is still worth keeping: ingest it unlinked rather than trip
+  # `catalog_runs_scan_request_id_fkey` on every attempt and lose the upload.
+  defp live_request_id(%{kind: :remote}, id) when is_binary(id) do
+    case Portal.ScanRequests.get_request(id) do
+      {:error, :not_found} ->
+        Logger.warning("Ingest: request #{id} is gone, ingesting the run unlinked")
+        nil
+
+      _found_or_unknown ->
+        id
+    end
+  end
+
+  defp live_request_id(_source, id), do: id
+
+  # A builder revoked after it uploaded is no longer trusted, so neither is
+  # what it uploaded: handled like a missing upload, with no run.
+  defp builder_revoked?(%{kind: :remote, builder_id: builder_id}) when is_binary(builder_id) do
+    match?(
+      {:ok, %Portal.Builders.Builder{status: :revoked}},
+      Ash.get(Portal.Builders.Builder, builder_id, domain: Portal.Builders)
+    )
+  end
+
+  defp builder_revoked?(_source), do: false
+
+  defp revoked(%{lease_id: lease_id} = source, run_id) do
+    Logger.error("Ingest dropped #{run_id}: its builder was revoked")
+
+    case Leases.fail_by_id(lease_id, "builder revoked") do
+      {:ok, _lease} -> :ok
+      {:error, _} -> cleanup(source, run_id)
+    end
+
+    {:cancel, "builder revoked"}
+  end
 
   defp load(%{kind: :remote, lease_id: lease_id}, _run_id), do: Upload.load_run(lease_id)
   defp load(%{kind: :local}, run_id), do: builder().load_run(run_id)
@@ -237,13 +283,35 @@ defmodule Portal.Workers.Ingest do
 
         # Keep the output until the attempts are spent; it is the only copy
         # of the build a retry can work from.
-        if attempt >= max_attempts do
-          cleanup(source, run_id)
-          error_request(scan_request_id, "ingestion failed: #{inspect(reason)}")
-        end
+        if attempt >= max_attempts,
+          do:
+            ingest_exhausted(
+              source,
+              run_id,
+              scan_request_id,
+              "ingestion failed: #{inspect(reason)}"
+            )
 
         {:error, reason}
     end
+  end
+
+  # A remote lease is failed rather than left `:done` with nothing behind
+  # it; `Leases.fail/2` errors the request and drops the upload itself. A
+  # lease that has already moved on gets the local treatment.
+  defp ingest_exhausted(%{kind: :remote, lease_id: lease_id} = source, run_id, request, message) do
+    case Leases.fail_by_id(lease_id, message) do
+      {:ok, _lease} -> :ok
+      {:error, _} -> cleanup_and_error(source, run_id, request, message)
+    end
+  end
+
+  defp ingest_exhausted(source, run_id, scan_request_id, message),
+    do: cleanup_and_error(source, run_id, scan_request_id, message)
+
+  defp cleanup_and_error(source, run_id, scan_request_id, message) do
+    cleanup(source, run_id)
+    error_request(scan_request_id, message)
   end
 
   # Re-ingesting a committed toolchain build is an upsert of the same row, so

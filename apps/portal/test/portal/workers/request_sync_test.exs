@@ -43,6 +43,22 @@ defmodule Portal.Workers.RequestSyncTest do
     })
   end
 
+  defp lease(request, state) do
+    Ash.create!(
+      Portal.Builders.Lease,
+      %{
+        package: request.package_name,
+        version: "1.0.0",
+        image_name: "i",
+        image_digest: "sha256:" <> String.duplicate("a", 64),
+        scan_request_id: request.id,
+        state: state
+      },
+      action: :create,
+      domain: Portal.Builders
+    )
+  end
+
   defp exists?(request), do: match?({:ok, _}, Portal.ScanRequests.get_request(request.id))
 
   defp status(request) do
@@ -114,6 +130,33 @@ defmodule Portal.Workers.RequestSyncTest do
       sync()
 
       assert status(ingesting) == :queued
+    end
+
+    # `RemoteBuild` completes once it has written the lease; the remote build
+    # runs for as long as it takes with no live job behind the request.
+    test "a request with an open lease is left alone" do
+      for state <- [:queued, :leased, :uploading, :done] do
+        remote = request(:backfill, :queued)
+        user = request(:admin_manual, :queued)
+        job("Portal.Workers.RemoteBuild", remote, "completed")
+        lease(remote, state)
+        lease(user, state)
+
+        sync()
+
+        assert status(remote) == :queued
+        assert status(user) == :queued
+      end
+    end
+
+    test "a request whose lease failed is closed" do
+      orphan = request(:admin_manual, :queued)
+      job("Portal.Workers.RemoteBuild", orphan, "completed")
+      lease(orphan, :failed)
+
+      sync()
+
+      assert status(orphan) == :error
     end
 
     # `create_once/1` inserts the request before its build job; a sync landing
