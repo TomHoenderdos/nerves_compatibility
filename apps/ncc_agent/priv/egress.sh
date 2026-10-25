@@ -8,11 +8,21 @@
 #   egress.sh verify    exit 0 only when the ruleset is in place, else
 #                       print why and exit 1
 #
-# Container traffic only (DOCKER-USER sees forwarded packets): DNS is
-# accepted before the private-range drops on purpose, since the VM's
-# resolver is usually a private address; then RFC1918, CGNAT, link-local
-# (IMDS) and loopback are dropped, TCP 80/443 to the Internet accepted and
-# everything else dropped. Return traffic is Docker's own chains' job.
+# Order of NCC-EGRESS:
+#
+#   1. -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT, first, always.
+#      FORWARD jumps to DOCKER-USER before Docker's own
+#      `-o docker0 --ctstate RELATED,ESTABLISHED -j ACCEPT`, so replies to
+#      the containers cross this chain too. A SYN-ACK from x:443 back to
+#      172.17.0.2 matches `-d 172.16.0.0/12 -j DROP`, and a DNS answer
+#      does too. Without this accept no build could finish a TCP handshake
+#      or a lookup. It only lets through packets of connections that a
+#      later rule already allowed out (a builder publishes no ports).
+#   2. DNS (udp/tcp 53), before the private-range drops on purpose: the
+#      VM's resolver is usually a private address (127.0.0.53, the VPC
+#      resolver), and DNS is the one private destination a build needs.
+#   3. Drop RFC1918, CGNAT, link-local (IMDS) and loopback.
+#   4. Accept TCP 443/80 to the Internet; drop everything else.
 #
 # IPTABLES / IP6TABLES override the binaries (tests stub them).
 set -euo pipefail
@@ -21,7 +31,10 @@ IPTABLES="${IPTABLES:-iptables}"
 IP6TABLES="${IP6TABLES:-ip6tables}"
 CHAIN=NCC-EGRESS
 
+CONNTRACK="-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+
 V4_RULES=(
+  "$CONNTRACK"
   "-p udp --dport 53 -j ACCEPT"
   "-p tcp --dport 53 -j ACCEPT"
   "-d 10.0.0.0/8 -j DROP"
@@ -35,6 +48,7 @@ V4_RULES=(
 )
 
 V6_RULES=(
+  "$CONNTRACK"
   "-p udp --dport 53 -j ACCEPT"
   "-p tcp --dport 53 -j ACCEPT"
   "-d fc00::/7 -j DROP"
@@ -52,29 +66,29 @@ install_family() {
   local bin="$1"
   shift
 
-  if ! "$bin" -w -S DOCKER-USER >/dev/null 2>&1; then
+  if ! "$bin" -w 10 -S DOCKER-USER >/dev/null 2>&1; then
     echo "$bin: no DOCKER-USER chain (is the Docker daemon running?)" >&2
     return 1
   fi
 
-  if ! "$bin" -w -S "$CHAIN" >/dev/null 2>&1; then
-    "$bin" -w -N "$CHAIN"
+  if ! "$bin" -w 10 -S "$CHAIN" >/dev/null 2>&1; then
+    "$bin" -w 10 -N "$CHAIN"
   fi
 
   # The final DROP goes in first and the rest are inserted above it, so
   # the rewritten chain never ends in an open fall-through for longer
   # than the flush itself.
-  "$bin" -w -F "$CHAIN"
-  "$bin" -w -A "$CHAIN" -j DROP
+  "$bin" -w 10 -F "$CHAIN"
+  "$bin" -w 10 -A "$CHAIN" -j DROP
   local pos=1 rule
   for rule in "$@"; do
     # shellcheck disable=SC2086 # each rule is a list of iptables words
-    "$bin" -w -I "$CHAIN" "$pos" $rule
+    "$bin" -w 10 -I "$CHAIN" "$pos" $rule
     pos=$((pos + 1))
   done
 
-  if ! "$bin" -w -C DOCKER-USER -j "$CHAIN" >/dev/null 2>&1; then
-    "$bin" -w -I DOCKER-USER 1 -j "$CHAIN"
+  if ! "$bin" -w 10 -C DOCKER-USER -j "$CHAIN" >/dev/null 2>&1; then
+    "$bin" -w 10 -I DOCKER-USER 1 -j "$CHAIN"
   fi
 }
 
@@ -82,9 +96,9 @@ install_family() {
 verify_family() {
   local bin="$1"
   shift
-  local docker_user chain rule last
+  local docker_user chain rule first last
 
-  if ! docker_user="$("$bin" -w -S DOCKER-USER 2>&1)"; then
+  if ! docker_user="$("$bin" -w 10 -S DOCKER-USER 2>&1)"; then
     echo "$bin: no DOCKER-USER chain: $docker_user"
     return 1
   fi
@@ -94,10 +108,22 @@ verify_family() {
     return 1
   fi
 
-  if ! chain="$("$bin" -w -S "$CHAIN" 2>&1)"; then
+  if ! chain="$("$bin" -w 10 -S "$CHAIN" 2>&1)"; then
     echo "$bin: no $CHAIN chain: $chain"
     return 1
   fi
+
+  # Rule 1 (line 2, after `-N`) must be the conntrack accept; iptables-nft
+  # prints the states as RELATED,ESTABLISHED.
+  first="$(sed -n 2p <<<"$chain")"
+  case "$first" in
+    "-A $CHAIN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" | \
+      "-A $CHAIN -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT") ;;
+    *)
+      echo "$bin: the first rule of $CHAIN is not the ESTABLISHED,RELATED accept"
+      return 1
+      ;;
+  esac
 
   for rule in "$@"; do
     if ! grep -qxF -- "-A $CHAIN $rule" <<<"$chain"; then
@@ -114,7 +140,11 @@ verify_family() {
 }
 
 ip6_present() {
-  "$IP6TABLES" -w -S DOCKER-USER >/dev/null 2>&1
+  if "$IP6TABLES" -w 10 -S DOCKER-USER >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "egress: ip6tables DOCKER-USER chain not present, v6 rules skipped"
+  return 1
 }
 
 case "${1:-}" in

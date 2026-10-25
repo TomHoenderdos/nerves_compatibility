@@ -4,8 +4,10 @@
 # Every invocation is appended (one line, space-separated) to
 # FAKE_IPTABLES_LOG. Chain state lives in the FAKE_IPTABLES_STATE
 # directory, one file per chain holding its `-S` output: `-N CHAIN` then
-# one `-A CHAIN ...` line per rule. A leading `-w` and `-t filter` are
-# accepted and ignored. Implemented:
+# one `-A CHAIN ...` line per rule, echoed verbatim (no normalisation of
+# matches such as `-m conntrack --ctstate ...`). A leading `-w [SECONDS]`
+# and `-t filter` are accepted and ignored. FAKE_IPTABLES_DELAY (seconds)
+# sleeps after logging, to widen races in tests. Implemented:
 #
 #   -N CHAIN         create (exit 1 if it exists)
 #   -F CHAIN         drop every rule
@@ -26,13 +28,20 @@ if [ -n "${FAKE_IPTABLES_LOG:-}" ]; then
   echo "$*" >>"$FAKE_IPTABLES_LOG"
 fi
 
+if [ -n "${FAKE_IPTABLES_DELAY:-}" ]; then
+  sleep "$FAKE_IPTABLES_DELAY"
+fi
+
 if [ "${FAKE_IPTABLES_DOCKER_USER:-0}" = "1" ] && [ ! -f "$state/DOCKER-USER" ]; then
   echo "-N DOCKER-USER" >"$state/DOCKER-USER"
 fi
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    -w) shift ;;
+    -w)
+      shift
+      if [[ "${1:-}" =~ ^[0-9]+$ ]]; then shift; fi
+      ;;
     -t)
       [ "${2:-}" = "filter" ] || { echo "fake iptables: only the filter table" >&2; exit 2; }
       shift 2
