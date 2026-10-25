@@ -84,13 +84,17 @@ defmodule Portal.Workers.RemoteBuildTest do
     assert [_] = Ash.read!(Lease, domain: Portal.Builders)
   end
 
-  test "dedups on a lease still in flight unless forced" do
+  test "waits on a lease still in flight unless forced" do
     args = %{"package" => "jason", "version" => "1.4.4"}
     assert :ok = perform_job(RemoteBuild, args)
-    assert :ok = perform_job(RemoteBuild, args)
+    assert {:snooze, 120} = perform_job(RemoteBuild, args)
     assert [_] = Ash.read!(Lease, domain: Portal.Builders)
     assert :ok = perform_job(RemoteBuild, Map.put(args, "force", true))
     assert [_, _] = Ash.read!(Lease, domain: Portal.Builders)
+  end
+
+  test "the snooze backoff is capped at an hour" do
+    assert RemoteBuild.backoff(%Oban.Job{attempt: 40, max_attempts: 60}) <= 3600
   end
 
   test "tooling is recorded as skipped, never leased" do
