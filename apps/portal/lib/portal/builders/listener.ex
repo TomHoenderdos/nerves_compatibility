@@ -41,11 +41,18 @@ defmodule Portal.Builders.Listener do
          ip: {0, 0, 0, 0, 0, 0, 0, 0},
          certfile: certfile,
          keyfile: keyfile,
-         cacertfile: CA.cert_path(),
-         verify: :verify_peer,
-         fail_if_no_peer_cert: false,
          cipher_suite: :strong,
-         http_2_options: [enabled: false]
+         http_2_options: [enabled: false],
+         # Bandit refuses unknown top-level keys and forwards only ip,
+         # certfile, keyfile, otp_app and cipher_suite to :ssl itself; the
+         # client-certificate options go to the transport directly.
+         thousand_island_options: [
+           transport_options: [
+             cacertfile: CA.cert_path(),
+             verify: :verify_peer,
+             fail_if_no_peer_cert: false
+           ]
+         ]
        ]}
     end
   end
@@ -79,6 +86,16 @@ defmodule Portal.Builders.Listener do
           error
       end
     else
+      requested? = Keyword.get(endpoint_config(), :server, false) == true
+
+      if requested? do
+        {:error, reason} = CA.load()
+
+        Logger.error(
+          "builder listener not started: CA key #{inspect(CA.key_path())} does not load (#{inspect(reason)})"
+        )
+      end
+
       put_endpoint_config(:server, false)
       {:error, :disabled}
     end

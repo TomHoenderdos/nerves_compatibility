@@ -76,8 +76,14 @@ defmodule PortalWeb.Builder.EnrolmentController do
       {:error, :revoked} ->
         error(conn, 403, "revoked")
 
-      {:error, _} ->
+      {:error, :invalid_csr} ->
         error(conn, 422, "invalid_csr")
+
+      {:error, :no_ca} ->
+        error(conn, 503, "no_ca")
+
+      {:error, _} ->
+        error(conn, 500, "renewal_failed")
     end
   end
 
@@ -85,8 +91,18 @@ defmodule PortalWeb.Builder.EnrolmentController do
 
   def status(conn, params) do
     egress = if params["egress"] in ["ok", "missing"], do: params["egress"], else: "unknown"
-    {:ok, _} = Builders.set_egress(conn.assigns.builder, egress)
-    json(conn, %{ok: true})
+
+    # The plug records the header's version; a body-only agent version counts too.
+    builder =
+      case string(params["agent_version"]) do
+        nil -> conn.assigns.builder
+        version -> Builders.touch(conn.assigns.builder, version)
+      end
+
+    case Builders.set_egress(builder, egress) do
+      {:ok, _} -> json(conn, %{ok: true})
+      {:error, _} -> error(conn, 500, "status_failed")
+    end
   end
 
   defp slots(n) when is_integer(n) and n in 1..16, do: n

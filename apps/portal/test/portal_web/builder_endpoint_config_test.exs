@@ -30,9 +30,14 @@ defmodule PortalWeb.BuilderEndpointConfigTest do
     assert Listener.enabled?()
 
     opts = Listener.https_options("portal.test")
-    assert opts[:verify] == :verify_peer
-    assert opts[:fail_if_no_peer_cert] == false
-    assert opts[:cacertfile] == CA.cert_path()
+    transport = opts[:thousand_island_options][:transport_options]
+    assert transport[:verify] == :verify_peer
+    assert transport[:fail_if_no_peer_cert] == false
+    assert transport[:cacertfile] == CA.cert_path()
+
+    for key <- [:verify, :fail_if_no_peer_cert, :cacertfile],
+        do: refute(Keyword.has_key?(opts, key))
+
     assert File.exists?(opts[:certfile]) and File.exists?(opts[:keyfile])
     assert opts[:http_2_options][:enabled] == false
     assert opts[:cipher_suite] == :strong
