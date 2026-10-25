@@ -47,7 +47,8 @@ defmodule Portal.Catalog.Run do
         :log,
         :started_at,
         :finished_at,
-        :scan_request_id
+        :scan_request_id,
+        :builder_id
       ])
     end
 
@@ -161,6 +162,13 @@ defmodule Portal.Catalog.Run do
     end
 
     belongs_to :scan_request, Portal.ScanRequests.ScanRequest do
+      allow_nil?(true)
+      public?(true)
+      attribute_type(:uuid)
+      define_attribute?(true)
+    end
+
+    belongs_to :builder, Portal.Builders.Builder do
       allow_nil?(true)
       public?(true)
       attribute_type(:uuid)

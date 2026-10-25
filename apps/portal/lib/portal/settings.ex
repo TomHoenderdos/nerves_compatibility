@@ -17,7 +17,10 @@ defmodule Portal.Settings do
     argus_analyses: [:default, :exposure],
     argus_scope: :firmware,
     argus_min_severity: :warning,
-    argus_timeout_seconds: 300
+    argus_timeout_seconds: 300,
+    remote_mode: :auto,
+    remote_backlog_threshold: 10,
+    remote_auto_on: false
   }
 
   resources do
