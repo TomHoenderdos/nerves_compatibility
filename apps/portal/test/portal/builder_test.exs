@@ -444,6 +444,11 @@ defmodule Portal.BuilderTest do
       refute Builder.egress_table_complete?(
                String.replace(@egress_listing, "inet ncc_egress", "inet other")
              )
+
+      # The right table and marker, but hooked somewhere other than forward.
+      refute Builder.egress_table_complete?(
+               String.replace(@egress_listing, "hook forward", "hook input")
+             )
     end
 
     test "probe_egress/1 lists the table in the rootlesskit child's namespace" do
@@ -515,6 +520,41 @@ defmodule Portal.BuilderTest do
                    "nft" -> nil
                  end
                )
+    end
+
+    test "probe_egress/1 fails closed when the probe hangs past its bound" do
+      dir = egress_tmp()
+      pid_file = Path.join(dir, "child_pid")
+      File.write!(pid_file, "4242\n")
+      nsenter = fake_nsenter(dir, "sleep 5\n")
+
+      started = System.monotonic_time(:millisecond)
+
+      assert {:error, :timeout} =
+               Builder.probe_egress(
+                 child_pid_file: pid_file,
+                 find: fn _ -> nsenter end,
+                 timeout_ms: 100
+               )
+
+      # Bounded by timeout_ms, not by the stub's 5s sleep.
+      assert System.monotonic_time(:millisecond) - started < 1000
+    end
+
+    test "check_egress/0 fails closed and logs a probe timeout like any other probe failure",
+         %{previous: previous} do
+      put_builder(
+        [egress_check: true, egress_filter_probe: fn -> {:error, :timeout} end],
+        previous
+      )
+
+      log =
+        capture_log(fn ->
+          assert {:error, :egress_filter_missing} = Builder.check_egress()
+        end)
+
+      assert log =~ "Build egress filter missing"
+      assert log =~ ":timeout"
     end
 
     test "boot_egress_check/0 warns when the check is off", %{previous: previous} do
