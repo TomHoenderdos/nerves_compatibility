@@ -231,9 +231,11 @@ a different version or a different checksum means building from source.
   - `size` — file size in bytes when reported by the worker.
   - `mode` — the file's mode as built, published as exactly `33188` (0o100644)
     or `33261` (0o100755): 0755 when the build saw any execute bit, 0644
-    otherwise; an entry without a usable mode is not published. Manifests
-    published before 2026-10-25 carried 0644 for every file, executables
-    under `priv/` included, until the file mode repair rewrote them.
+    otherwise. A system whose build owns a file without a usable mode or
+    path is left out of the manifest whole, so a client compiles the package
+    rather than installing it without that file. Manifests published before
+    2026-10-25 carried 0644 for every file, executables under `priv/`
+    included, until repaired or rebuilt.
 - `updated_at` — ISO 8601 timestamp of the newest run represented in the manifest.
 
 ## Manifest format 2 (`/api/precompiled/v2/manifests`)
