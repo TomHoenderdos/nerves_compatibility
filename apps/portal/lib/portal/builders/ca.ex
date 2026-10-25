@@ -56,26 +56,35 @@ defmodule Portal.Builders.CA do
       key_tmp = stage_private(key_path, X509.PrivateKey.to_pem(key))
       cert_tmp = stage(cert_path, X509.Certificate.to_pem(cert), 0o644)
 
-      # A hard link fails if the key appeared meanwhile, so two inits cannot
-      # both win; the key goes live first and the certificate follows at once.
-      case :file.make_link(String.to_charlist(key_tmp), String.to_charlist(key_path)) do
-        :ok ->
-          File.rm!(key_tmp)
+      publish_ca(key_tmp, cert_tmp, key_path, cert_path)
+    end
+  end
 
-          case File.rename(cert_tmp, cert_path) do
-            :ok ->
-              {:ok, %{key_path: key_path, cert_path: cert_path}}
+  # A hard link fails if the key appeared meanwhile, so two inits cannot
+  # both win; the key goes live first and the certificate follows at once.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp publish_ca(key_tmp, cert_tmp, key_path, cert_path) do
+    case :file.make_link(String.to_charlist(key_tmp), String.to_charlist(key_path)) do
+      :ok ->
+        File.rm!(key_tmp)
+        publish_ca_cert(cert_tmp, key_path, cert_path)
 
-            {:error, reason} ->
-              File.rm(key_path)
-              raise File.Error, reason: reason, action: "rename", path: cert_path
-          end
+      {:error, _} ->
+        File.rm(key_tmp)
+        File.rm(cert_tmp)
+        {:error, :exists}
+    end
+  end
 
-        {:error, _} ->
-          File.rm(key_tmp)
-          File.rm(cert_tmp)
-          {:error, :exists}
-      end
+  # sobelow_skip ["Traversal.FileModule"]
+  defp publish_ca_cert(cert_tmp, key_path, cert_path) do
+    case File.rename(cert_tmp, cert_path) do
+      :ok ->
+        {:ok, %{key_path: key_path, cert_path: cert_path}}
+
+      {:error, reason} ->
+        File.rm(key_path)
+        raise File.Error, reason: reason, action: "rename", path: cert_path
     end
   end
 
@@ -173,36 +182,39 @@ defmodule Portal.Builders.CA do
   # Operator-configured paths.
   # sobelow_skip ["Traversal.FileModule"]
   def ensure_server_cert(host) do
-    if valid_name?(host) do
-      with {:ok, %{key: ca_key, cert: ca_cert}} <- load() do
-        certfile = server_cert_path()
-        keyfile = server_key_path()
+    with :ok <- check_host(host),
+         {:ok, %{key: ca_key, cert: ca_cert}} <- load() do
+      certfile = server_cert_path()
+      keyfile = server_key_path()
 
-        if server_cert_current?(certfile, keyfile, host, ca_cert) do
-          {:ok, %{certfile: certfile, keyfile: keyfile}}
-        else
-          key = X509.PrivateKey.new_ec(:secp256r1)
+      unless server_cert_current?(certfile, keyfile, host, ca_cert),
+        do: issue_server_cert(host, ca_key, ca_cert, certfile, keyfile)
 
-          cert =
-            X509.Certificate.new(X509.PublicKey.derive(key), "/CN=#{host}", ca_cert, ca_key,
-              template: :server,
-              validity: @server_days,
-              extensions: [subject_alt_name: X509.Certificate.Extension.subject_alt_name([host])]
-            )
-
-          # Stage both before either goes live. A crash between the renames
-          # leaves a key that does not match the certificate, which
-          # server_cert_current?/4 treats as stale.
-          key_tmp = stage_private(keyfile, X509.PrivateKey.to_pem(key))
-          cert_tmp = stage(certfile, X509.Certificate.to_pem(cert), 0o644)
-          File.rename!(key_tmp, keyfile)
-          File.rename!(cert_tmp, certfile)
-          {:ok, %{certfile: certfile, keyfile: keyfile}}
-        end
-      end
-    else
-      {:error, :invalid_host}
+      {:ok, %{certfile: certfile, keyfile: keyfile}}
     end
+  end
+
+  defp check_host(host), do: if(valid_name?(host), do: :ok, else: {:error, :invalid_host})
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp issue_server_cert(host, ca_key, ca_cert, certfile, keyfile) do
+    key = X509.PrivateKey.new_ec(:secp256r1)
+
+    cert =
+      X509.Certificate.new(X509.PublicKey.derive(key), "/CN=#{host}", ca_cert, ca_key,
+        template: :server,
+        validity: @server_days,
+        extensions: [subject_alt_name: X509.Certificate.Extension.subject_alt_name([host])]
+      )
+
+    # Stage both before either goes live. A crash between the renames
+    # leaves a key that does not match the certificate, which
+    # server_cert_current?/4 treats as stale.
+    key_tmp = stage_private(keyfile, X509.PrivateKey.to_pem(key))
+    cert_tmp = stage(certfile, X509.Certificate.to_pem(cert), 0o644)
+    File.rename!(key_tmp, keyfile)
+    File.rename!(cert_tmp, certfile)
+    :ok
   end
 
   # sobelow_skip ["Traversal.FileModule"]

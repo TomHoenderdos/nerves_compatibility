@@ -114,12 +114,8 @@ defmodule PortalWeb.Admin.BuildersLive do
       publishing = params["publishing"] == "true"
 
       case Portal.Admin.set_builder_publishing(string_param(params, "id"), publishing, user) do
-        {:ok, builder} ->
-          verb = if builder.publishing, do: "now publishes", else: "no longer publishes"
-          done(socket, :info, "#{builder.name} #{verb} its files.")
-
-        {:error, reason} ->
-          done(socket, :error, error_message(reason))
+        {:ok, builder} -> done(socket, :info, publishing_message(builder))
+        {:error, reason} -> done(socket, :error, error_message(reason))
       end
     end)
   end
@@ -506,4 +502,9 @@ defmodule PortalWeb.Admin.BuildersLive do
 
   defp throughput_line(nil), do: "-"
   defp throughput_line(%{done: done, failed: failed}), do: "#{done} done, #{failed} failed"
+
+  defp publishing_message(builder) do
+    verb = if builder.publishing, do: "now publishes", else: "no longer publishes"
+    "#{builder.name} #{verb} its files."
+  end
 end

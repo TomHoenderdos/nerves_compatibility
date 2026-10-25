@@ -79,24 +79,26 @@ defmodule Portal.Builders do
     with {:ok, record} <- token_record(token),
          :ok <- token_usable(record),
          :ok <- name_free(record.name) do
-      Repo.transaction(fn ->
-        with {:ok, builder} <- create_builder(record.name, attrs),
-             {:ok, issued} <- CA.issue_client(csr_pem, record.name, builder.id),
-             {:ok, builder} <- rotate(builder, issued),
-             {:ok, _cert} <- record_certificate(builder, issued),
-             {:ok, _token} <-
-               record
-               |> Ash.Changeset.for_update(:use, %{builder_id: builder.id})
-               |> Ash.update(domain: __MODULE__) do
-          %{builder: builder, cert_pem: issued.pem, expires_at: issued.expires_at}
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      Repo.transaction(fn -> enrol_in_transaction(record, csr_pem, attrs) end)
     end
   end
 
   def enrol(_token, _csr_pem, _attrs), do: {:error, :invalid_token}
+
+  defp enrol_in_transaction(record, csr_pem, attrs) do
+    with {:ok, builder} <- create_builder(record.name, attrs),
+         {:ok, issued} <- CA.issue_client(csr_pem, record.name, builder.id),
+         {:ok, builder} <- rotate(builder, issued),
+         {:ok, _cert} <- record_certificate(builder, issued),
+         {:ok, _token} <-
+           record
+           |> Ash.Changeset.for_update(:use, %{builder_id: builder.id})
+           |> Ash.update(domain: __MODULE__) do
+      %{builder: builder, cert_pem: issued.pem, expires_at: issued.expires_at}
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
 
   defp token_record(token) do
     with [id, secret, _prefix] <- String.split(token, "."),
@@ -193,16 +195,18 @@ defmodule Portal.Builders do
     if DateTime.diff(builder.cert_expires_at, DateTime.utc_now(), :day) > @renew_within_days do
       {:error, :too_early}
     else
-      Repo.transaction(fn ->
-        with {:ok, issued} <- CA.issue_client(csr_pem, builder.name, builder.id),
-             :ok <- supersede_current(builder),
-             {:ok, builder} <- rotate(builder, issued),
-             {:ok, _} <- record_certificate(builder, issued) do
-          %{cert_pem: issued.pem, expires_at: issued.expires_at}
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      Repo.transaction(fn -> renew_in_transaction(builder, csr_pem) end)
+    end
+  end
+
+  defp renew_in_transaction(builder, csr_pem) do
+    with {:ok, issued} <- CA.issue_client(csr_pem, builder.name, builder.id),
+         :ok <- supersede_current(builder),
+         {:ok, builder} <- rotate(builder, issued),
+         {:ok, _} <- record_certificate(builder, issued) do
+      %{cert_pem: issued.pem, expires_at: issued.expires_at}
+    else
+      {:error, reason} -> Repo.rollback(reason)
     end
   end
 
@@ -340,25 +344,22 @@ defmodule Portal.Builders do
     # names come from the runs revoked here, not from an earlier preview, so a
     # run ingested in between is rebuilt too.
     with {:ok, builder} <- mark_revoked(builder) do
-      Repo.transaction(fn ->
-        runs = open_runs(builder, load: :package)
-        Enum.each(runs, &revoke_run!/1)
-        requeue_leases(builder)
-        packages = package_names(runs)
+      Repo.transaction(fn -> revoke_in_transaction(builder) end)
+    end
+  end
 
-        case rebuild(packages, builder) do
-          {:ok, sweep_id} ->
-            %{
-              builder: builder,
-              runs_revoked: length(runs),
-              packages: packages,
-              sweep_id: sweep_id
-            }
+  defp revoke_in_transaction(builder) do
+    runs = open_runs(builder, load: :package)
+    Enum.each(runs, &revoke_run!/1)
+    requeue_leases(builder)
+    packages = package_names(runs)
 
-          {:error, reason} ->
-            Repo.rollback(reason)
-        end
-      end)
+    case rebuild(packages, builder) do
+      {:ok, sweep_id} ->
+        %{builder: builder, runs_revoked: length(runs), packages: packages, sweep_id: sweep_id}
+
+      {:error, reason} ->
+        Repo.rollback(reason)
     end
   end
 

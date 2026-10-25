@@ -39,46 +39,55 @@ defmodule Portal.Workers.RemoteBuild do
     if ToolingSkip.tooling?(package) do
       record_tooling_skip(package, version, scan_request_id, attempt, max)
     else
+      job = %{
+        package: package,
+        version: version,
+        scan_request_id: scan_request_id,
+        force: force,
+        args: args,
+        priority: priority,
+        attempt: attempt,
+        max: max
+      }
+
       case Images.worker_image() do
-        nil ->
-          Logger.error("RemoteBuild for #{package} #{version}: no registry image in images.json")
-
-          Progress.mark(scan_request_id, :error,
-            error_reason: "no registry image for remote build"
-          )
-
-          Progress.broadcast(scan_request_id, :error, %{reason: "no registry image"})
-          {:cancel, :no_registry_image}
-
-        %{name: name, digest: digest} ->
-          cond do
-            not force and run_exists?(package, version, digest) ->
-              Logger.info("RemoteBuild dedup: run already exists for #{package} #{version}")
-              Progress.mark(scan_request_id, :built)
-              Progress.broadcast(scan_request_id, :done, %{deduped: true})
-              :ok
-
-            # This job is done once its lease is written, long before the run
-            # exists, so a later job for the same build (a sweep after a
-            # request, past the unique window) would otherwise lease it twice.
-            # It waits instead: once that lease is ingested the next run
-            # dedups on the run above and marks this request built; if the
-            # lease failed, the next run leases afresh.
-            not force and lease_in_flight?(package, version, digest) ->
-              Logger.info("RemoteBuild waiting on an open lease for #{package} #{version}")
-
-              Progress.broadcast(scan_request_id, :queued, %{
-                remote: true,
-                waiting_on_lease: true
-              })
-
-              {:snooze, 120}
-
-            true ->
-              lease(package, version, name, digest, args, scan_request_id, priority, force)
-              |> on_enqueue_error(scan_request_id, attempt, max)
-          end
+        nil -> no_registry_image(job)
+        %{name: _, digest: _} = image -> lease_unless_built(job, image)
       end
+    end
+  end
+
+  defp no_registry_image(%{package: package, version: version, scan_request_id: id}) do
+    Logger.error("RemoteBuild for #{package} #{version}: no registry image in images.json")
+    Progress.mark(id, :error, error_reason: "no registry image for remote build")
+    Progress.broadcast(id, :error, %{reason: "no registry image"})
+    {:cancel, :no_registry_image}
+  end
+
+  defp lease_unless_built(job, %{name: name, digest: digest}) do
+    %{package: package, version: version, scan_request_id: scan_request_id, force: force} = job
+
+    cond do
+      not force and run_exists?(package, version, digest) ->
+        Logger.info("RemoteBuild dedup: run already exists for #{package} #{version}")
+        Progress.mark(scan_request_id, :built)
+        Progress.broadcast(scan_request_id, :done, %{deduped: true})
+        :ok
+
+      # This job is done once its lease is written, long before the run
+      # exists, so a later job for the same build (a sweep after a
+      # request, past the unique window) would otherwise lease it twice.
+      # It waits instead: once that lease is ingested the next run
+      # dedups on the run above and marks this request built; if the
+      # lease failed, the next run leases afresh.
+      not force and lease_in_flight?(package, version, digest) ->
+        Logger.info("RemoteBuild waiting on an open lease for #{package} #{version}")
+        Progress.broadcast(scan_request_id, :queued, %{remote: true, waiting_on_lease: true})
+        {:snooze, 120}
+
+      true ->
+        lease(package, version, name, digest, job.args, scan_request_id, job.priority, force)
+        |> on_enqueue_error(scan_request_id, job.attempt, job.max)
     end
   end
 

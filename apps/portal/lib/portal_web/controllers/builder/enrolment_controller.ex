@@ -38,25 +38,9 @@ defmodule PortalWeb.Builder.EnrolmentController do
             expires_at: DateTime.to_iso8601(expires)
           })
 
-        {:error, reason} when reason in [:invalid_token, :token_used, :token_expired] ->
-          error(conn, 401, reason)
-
-        {:error, :invalid_csr} ->
-          error(conn, 422, "invalid_csr")
-
-        # The token's name is checked when it is created, so this means a
-        # name the CA has since stopped accepting.
-        {:error, :invalid_name} ->
-          error(conn, 422, "invalid_name")
-
-        {:error, :name_taken} ->
-          error(conn, 409, "name_taken")
-
-        {:error, :no_ca} ->
-          error(conn, 503, "no_ca")
-
-        {:error, _} ->
-          error(conn, 500, "enrolment_failed")
+        {:error, reason} ->
+          {status, code} = enrol_error(reason)
+          error(conn, status, code)
       end
     else
       error(conn, 429, "rate_limited")
@@ -64,6 +48,17 @@ defmodule PortalWeb.Builder.EnrolmentController do
   end
 
   def enroll(conn, _params), do: error(conn, 400, "bad_request")
+
+  defp enrol_error(reason) when reason in [:invalid_token, :token_used, :token_expired],
+    do: {401, reason}
+
+  defp enrol_error(:invalid_csr), do: {422, "invalid_csr"}
+  # The token's name is checked when it is created, so this means a name the
+  # CA has since stopped accepting.
+  defp enrol_error(:invalid_name), do: {422, "invalid_name"}
+  defp enrol_error(:name_taken), do: {409, "name_taken"}
+  defp enrol_error(:no_ca), do: {503, "no_ca"}
+  defp enrol_error(_), do: {500, "enrolment_failed"}
 
   def renew(conn, %{"csr_pem" => csr}) when is_binary(csr) do
     case Builders.renew(conn.assigns.builder, csr) do
