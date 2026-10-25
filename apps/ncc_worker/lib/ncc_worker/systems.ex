@@ -38,6 +38,7 @@ defmodule NccWorker.Systems do
     %{name: "nerves_system_mangopi_mq_pro", target: "mangopi_mq_pro"},
     %{name: "nerves_system_qemu_aarch64", target: "qemu_aarch64"},
     %{name: "nerves_system_rpi0", target: "rpi0"},
+    %{name: "nerves_system_rpi0_2", target: "rpi0_2"},
     %{name: "nerves_system_rpi4", target: "rpi4"},
     %{name: "nerves_system_rpi5", target: "rpi5"},
     %{name: "nerves_system_trellis", target: "trellis"},
@@ -61,11 +62,16 @@ defmodule NccWorker.Systems do
   #
   # trellis is also the Nerves Starter Kit board, so it is the configuration
   # newcomers actually hit first.
+  #
+  # rpi0_2 is the Zero 2 W: aarch64 like rpi4, added 2026-10-25 because Zero 2
+  # W users had no target in the matrix to hit, so the portal never built for
+  # them and they got no precompiled results at all.
   @default [
     "nerves_system_bbb",
     "nerves_system_mangopi_mq_pro",
     "nerves_system_qemu_aarch64",
     "nerves_system_rpi0",
+    "nerves_system_rpi0_2",
     "nerves_system_rpi4",
     "nerves_system_rpi5",
     "nerves_system_trellis",
