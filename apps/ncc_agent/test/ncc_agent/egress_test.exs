@@ -13,6 +13,11 @@ defmodule NccAgent.EgressTest do
     System.put_env("IP6TABLES", "/bin/false")
     System.put_env("FAKE_IPTABLES_LOG", Path.join(dir, "log"))
     System.put_env("FAKE_IPTABLES_STATE", Path.join(dir, "state"))
+    # No resolver to find unless a test plants one: the host's own files
+    # stay out of it.
+    System.put_env("NCC_DOCKER_DAEMON_JSON", Path.join(dir, "daemon.json"))
+    System.put_env("NCC_RESOLV_CONF", Path.join(dir, "resolv.conf"))
+    System.put_env("RESOLVECTL", Path.join(dir, "resolvectl"))
 
     File.write!(
       Path.join([dir, "state", "DOCKER-USER"]),
@@ -29,7 +34,8 @@ defmodule NccAgent.EgressTest do
     on_exit(fn ->
       File.rm_rf(dir)
 
-      for k <- ~w(IPTABLES IP6TABLES FAKE_IPTABLES_LOG FAKE_IPTABLES_STATE),
+      for k <- ~w(IPTABLES IP6TABLES FAKE_IPTABLES_LOG FAKE_IPTABLES_STATE NCC_DNS_SERVERS
+                  NCC_DOCKER_DAEMON_JSON NCC_RESOLV_CONF RESOLVECTL),
           do: System.delete_env(k)
     end)
 
@@ -212,5 +218,116 @@ defmodule NccAgent.EgressTest do
     assert {:error, _} = Egress.verify()
     assert {:error, _} = Egress.install()
     assert Egress.status() == "missing"
+  end
+
+  defp chain(dir, state \\ "state"),
+    do: dir |> Path.join(state) |> Path.join("NCC-EGRESS") |> File.read!()
+
+  defp bare_dns?(rules),
+    do: rules =~ "-A NCC-EGRESS -p udp --dport 53" or rules =~ "-A NCC-EGRESS -p tcp --dport 53"
+
+  defp ip6tables!(dir) do
+    File.mkdir_p!(Path.join(dir, "state6"))
+    wrapper = Path.join(dir, "ip6tables")
+
+    File.write!(wrapper, """
+    #!/usr/bin/env bash
+    FAKE_IPTABLES_STATE=#{Path.join(dir, "state6")} FAKE_IPTABLES_DOCKER_USER=1 exec #{@fake} "$@"
+    """)
+
+    File.chmod!(wrapper, 0o755)
+    System.put_env("IP6TABLES", wrapper)
+  end
+
+  test "with NCC_DNS_SERVERS, DNS goes to those resolvers only, before the private drops", %{
+    dir: dir
+  } do
+    System.put_env("NCC_DNS_SERVERS", "10.0.0.2")
+
+    assert :ok = Egress.install()
+    assert :ok = Egress.verify()
+    rules = chain(dir)
+    lines = String.split(rules, "\n", trim: true)
+
+    assert Enum.slice(lines, 1, 3) == [
+             "-A NCC-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+             "-A NCC-EGRESS -d 10.0.0.2/32 -p udp --dport 53 -j ACCEPT",
+             "-A NCC-EGRESS -d 10.0.0.2/32 -p tcp --dport 53 -j ACCEPT"
+           ]
+
+    assert Enum.at(lines, 4) == "-A NCC-EGRESS -d 10.0.0.0/8 -j DROP"
+    refute bare_dns?(rules)
+  end
+
+  test "the dns list of daemon.json is used, v4 in iptables and v6 in ip6tables", %{dir: dir} do
+    ip6tables!(dir)
+
+    File.write!(Path.join(dir, "daemon.json"), """
+    {"dns-search": ["corp"], "dns": ["10.1.1.1", "fd00::53"], "log-driver": "json-file"}
+    """)
+
+    {out, 0} = System.cmd(@script, ["install"], stderr_to_stdout: true)
+    refute out =~ "resolver unknown"
+    v4 = chain(dir)
+    v6 = chain(dir, "state6")
+    assert v4 =~ "-A NCC-EGRESS -d 10.1.1.1/32 -p udp --dport 53 -j ACCEPT"
+    refute v4 =~ "fd00::53"
+    assert v6 =~ "-A NCC-EGRESS -d fd00::53/128 -p tcp --dport 53 -j ACCEPT"
+    refute v6 =~ "10.1.1.1"
+    refute bare_dns?(v4) or bare_dns?(v6)
+    assert :ok = Egress.verify()
+  end
+
+  test "resolv.conf's nameservers are used, loopback ones left out", %{dir: dir} do
+    File.write!(Path.join(dir, "resolv.conf"), """
+    # generated
+    nameserver 127.0.0.1
+    nameserver 192.168.1.1
+    search lan
+    """)
+
+    assert :ok = Egress.install()
+    rules = chain(dir)
+    assert rules =~ "-A NCC-EGRESS -d 192.168.1.1/32 -p udp --dport 53 -j ACCEPT"
+    refute rules =~ "127.0.0.1/32"
+    refute bare_dns?(rules)
+  end
+
+  test "behind systemd-resolved the resolvers come from resolvectl", %{dir: dir} do
+    File.write!(Path.join(dir, "resolv.conf"), "nameserver 127.0.0.53\noptions edns0\n")
+    resolvectl = Path.join(dir, "resolvectl")
+
+    File.write!(resolvectl, """
+    #!/usr/bin/env bash
+    cat <<'OUT'
+    Global
+           Protocols: -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+
+    Link 2 (eth0)
+    Current DNS Server: 10.0.0.2
+           DNS Servers: 10.0.0.2 10.0.0.3#dns.example
+    OUT
+    """)
+
+    File.chmod!(resolvectl, 0o755)
+
+    assert :ok = Egress.install()
+    rules = chain(dir)
+    assert rules =~ "-A NCC-EGRESS -d 10.0.0.2/32 -p udp --dport 53 -j ACCEPT"
+    assert rules =~ "-A NCC-EGRESS -d 10.0.0.3/32 -p tcp --dport 53 -j ACCEPT"
+    assert length(Regex.scan(~r/10\.0\.0\.2/, rules)) == 2
+    refute rules =~ "127.0.0.53"
+    refute bare_dns?(rules)
+  end
+
+  test "with no resolver to be found DNS stays open to any destination, and install says so", %{
+    dir: dir
+  } do
+    File.write!(Path.join(dir, "resolv.conf"), "nameserver 127.0.0.53\n")
+
+    {out, 0} = System.cmd(@script, ["install"], stderr_to_stdout: true)
+    assert out =~ "egress: resolver unknown, DNS allowed to any destination"
+    assert bare_dns?(chain(dir))
+    assert :ok = Egress.verify()
   end
 end
