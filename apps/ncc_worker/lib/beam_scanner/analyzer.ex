@@ -10,7 +10,8 @@ defmodule BeamScanner.Analyzer do
   @type file_manifest_entry :: %{
           path: String.t(),
           size: non_neg_integer(),
-          sha256: String.t()
+          sha256: String.t(),
+          mode: non_neg_integer() | nil
         }
   @type footprint :: %{
           file_count: non_neg_integer(),
@@ -505,13 +506,14 @@ defmodule BeamScanner.Analyzer do
     relative_path = Path.relative_to(file, root_dir)
 
     case File.stat(file) do
-      {:ok, %{size: size}} ->
+      {:ok, %{size: size, mode: mode}} ->
         sha256 = compute_sha256(file)
 
         %{
           path: relative_path,
           size: size,
-          sha256: sha256
+          sha256: sha256,
+          mode: mode
         }
 
       _ ->

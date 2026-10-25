@@ -233,4 +233,32 @@ defmodule BeamScannerTest do
     assert is_list(result.footprint.manifest)
     assert length(result.footprint.manifest) == 2
   end
+
+  @tag :tmp_dir
+  test "manifest entries carry the file's real mode, not a fixed 0644", %{tmp_dir: root} do
+    ebin_dir = Path.join(root, "ebin")
+    priv_dir = Path.join(root, "priv")
+    File.mkdir_p!(ebin_dir)
+    File.mkdir_p!(priv_dir)
+
+    beam_path = Path.join(ebin_dir, "x.beam")
+    File.write!(beam_path, "fake beam content")
+    File.chmod!(beam_path, 0o644)
+
+    exec_path = Path.join(priv_dir, "tool")
+    File.write!(exec_path, "#!/bin/sh\necho hi\n")
+    File.chmod!(exec_path, 0o755)
+
+    data_path = Path.join(priv_dir, "data.txt")
+    File.write!(data_path, "hello")
+    File.chmod!(data_path, 0o644)
+
+    result = BeamScanner.analyze(root)
+
+    manifest_by_path = Map.new(result.footprint.manifest, &{&1.path, &1})
+
+    assert manifest_by_path["ebin/x.beam"].mode == 33_188
+    assert manifest_by_path["priv/tool"].mode == 33_261
+    assert manifest_by_path["priv/data.txt"].mode == 33_188
+  end
 end
