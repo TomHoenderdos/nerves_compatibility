@@ -10,6 +10,7 @@ defmodule NccWorker.Worker do
     BuildCache,
     BuildSelection,
     DepsLock,
+    EgressProbe,
     Footprint,
     HexHome,
     HexMetadata,
@@ -43,6 +44,9 @@ defmodule NccWorker.Worker do
           # For "warm_nerves": `%{"name", "version"}` pairs to warm, string-keyed
           # (`NccWorker.WarmNerves.plan/2`); `[]` warms what the template resolves.
           optional(:nerves_packages) => [%{String.t() => String.t()}],
+          # TCP targets to probe before any `mix` runs (`NccWorker.EgressProbe`),
+          # string-keyed `%{"address", "port"}`; only `Portal.EgressCheck` sends it.
+          optional(:egress_probe) => [%{String.t() => String.t() | pos_integer()}],
           optional(:systems_override) => %{String.t() => String.t()},
           optional(:systems_filter) => [String.t()],
           # The toolchain a "toolchain" run was queued for. Informational: the
@@ -147,6 +151,8 @@ defmodule NccWorker.Worker do
           # Only for a "warm_nerves" run, whose `package` is nil and `systems`
           # `%{}` (`NccWorker.WarmNerves`).
           optional(:warm) => NccWorker.WarmNerves.warm(),
+          # The outcome per `NCC_INPUT.egress_probe` target, when it had any.
+          optional(:egress_probe) => [NccWorker.EgressProbe.outcome()],
           run_id: String.t(),
           # nil for a "warm_nerves" run.
           package:
@@ -234,15 +240,25 @@ defmodule NccWorker.Worker do
 
     with :ok <- validate_input(input),
          {:ok, paths} <- setup_paths(input),
+         # Before any `mix`, so the probe sees the network a build's
+         # `deps.get` would (isolation spec, section 3). Advisory.
+         egress = EgressProbe.run(input[:egress_probe]),
          {:ok, nerves} <- prepare_nerves_cache(scope, input, paths),
          {:ok, toolchain} <- detect_toolchain(scope) do
-      case scope do
-        :toolchain -> toolchain_run(input, paths, toolchain)
-        :warm_nerves -> WarmNerves.run(input, paths, toolchain, nerves)
-        _ -> input |> full_run(paths, toolchain) |> put_nerves_cache(nerves, paths)
-      end
+      scope
+      |> run_scope(input, paths, toolchain, nerves)
+      |> EgressProbe.put_result(egress)
     end
   end
+
+  defp run_scope(:toolchain, input, paths, toolchain, _nerves),
+    do: toolchain_run(input, paths, toolchain)
+
+  defp run_scope(:warm_nerves, input, paths, toolchain, nerves),
+    do: WarmNerves.run(input, paths, toolchain, nerves)
+
+  defp run_scope(_scope, input, paths, toolchain, nerves),
+    do: input |> full_run(paths, toolchain) |> put_nerves_cache(nerves, paths)
 
   # Before any `mix` runs, `detect_toolchain/1`'s included: every later
   # invocation is a child of this process and inherits both variables, so

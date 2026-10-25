@@ -71,8 +71,9 @@ defmodule NccWorker.JsonWriter do
     # `requested_toolchain` for every run but a toolchain one
     # (`NccWorker.Worker.toolchain_build/4`), `nerves_cache` for a run with
     # no Nerves cache misses or locked Nerves packages
-    # (`NccWorker.NervesCache.report/2`), and `warm` for every run but a warm
-    # one (`NccWorker.WarmNerves`).
+    # (`NccWorker.NervesCache.report/2`), `warm` for every run but a warm
+    # one (`NccWorker.WarmNerves`), and `egress_probe` for every run that was
+    # not asked to probe (`NccWorker.EgressProbe`).
     json =
       [
         :deps_lock,
@@ -81,7 +82,8 @@ defmodule NccWorker.JsonWriter do
         :toolchain_build,
         :requested_toolchain,
         :nerves_cache,
-        :warm
+        :warm,
+        :egress_probe
       ]
       |> Enum.reduce(json, &put_present(&2, &1, Map.get(result, &1)))
 
