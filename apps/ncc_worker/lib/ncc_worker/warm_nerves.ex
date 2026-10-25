@@ -12,8 +12,13 @@ defmodule NccWorker.WarmNerves do
   `NccWorker.Project`'s `systems_override`) and never a toolchain, which only
   resolves through its system. Each target then runs `mix deps.get` and
   `mix nerves.artifact.get`: Nerves 2.0.0-pre.3 resolves artifacts in
-  `Nerves.export_env/0`, which `nerves.artifact.get` runs before halting,
-  without compiling any other dependency. When every target succeeded,
+  `Nerves.export_env/0`, which `nerves.artifact.get` runs before halting.
+  Running a dependency's task goes through `deps.loadpaths`, which compiles
+  the template's dependencies first, so the warm executes the generated
+  template's Hex dependencies (what `mix nerves.new` generates: nerves, the
+  runtime libraries, the systems and their toolchains, and everything they
+  depend on), not only nerves-owned packages. That is why the template is the trusted, generated
+  one and never a package's project. When every target succeeded,
   `NervesCache.install_staged/1` renames what was extracted into the cache;
   if any failed, nothing is installed and the run fails (exit 10, retried).
   The staging dir goes either way.
@@ -88,8 +93,15 @@ defmodule NccWorker.WarmNerves do
 
   @doc """
   Runs the warm described by `input.nerves_packages` into `layout` (a
-  `:staging` layout from `NccWorker.NervesCache.prepare/2`). `opts[:create_project]`
-  and `opts[:mix]` replace `Project.create/3` and the `mix` runner in tests.
+  `:staging` layout from `NccWorker.NervesCache.prepare/2`). `opts[:create_project]`,
+  `opts[:mix]` and `opts[:put_env]` replace `Project.create/3`, the `mix` runner
+  and `System.put_env/2` in tests.
+
+  Every `mix` the warm spawns, `Project.create/3`'s included, resolves through
+  a fresh, empty `HEX_HOME` at `<work_dir>/hex-home`, never the shared
+  `/hex-cache`: every build mounts that read-write and could plant a
+  `hex.config`, registry cache or tarball there for the one container that
+  writes the Nerves cache to fetch and run.
   """
   @spec run(map(), map(), map(), NervesCache.layout(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -97,12 +109,16 @@ defmodule NccWorker.WarmNerves do
     plan = plan(input[:nerves_packages], Systems.default())
     create = Keyword.get(opts, :create_project, &Project.create/3)
     mix = Keyword.get(opts, :mix, &run_mix/4)
+    put_env = Keyword.get(opts, :put_env, &System.put_env/2)
     log_file = Path.join([paths.output_dir, "logs", "warm_nerves.log"])
 
     try do
+      hex_home = fresh_hex_home(paths.work_dir)
+      :ok = put_env.("HEX_HOME", hex_home)
+
       with {:ok, project_dir} <-
              create.(paths.work_dir, overrides(plan), Systems.targets(Systems.default())),
-           :ok <- resolve(project_dir, plan.systems, mix, log_file),
+           :ok <- resolve(project_dir, plan.systems, mix, log_file, hex_home),
            {:ok, installed} <- NervesCache.install_staged(layout) do
         resolved =
           project_dir |> NervesCache.lock_entries() |> Enum.map(&NervesCache.entry_name/1)
@@ -117,9 +133,19 @@ defmodule NccWorker.WarmNerves do
   defp overrides(%{overrides: overrides}) when map_size(overrides) == 0, do: nil
   defp overrides(%{overrides: overrides}), do: overrides
 
-  defp resolve(project_dir, systems, mix, log_file) do
+  # work_dir is the worker's /work mount; the name is fixed.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp fresh_hex_home(work_dir) do
+    dir = Path.join(work_dir, "hex-home")
+    File.rm_rf!(dir)
+    File.mkdir_p!(dir)
+    dir
+  end
+
+  defp resolve(project_dir, systems, mix, log_file, hex_home) do
     Enum.reduce_while(systems, :ok, fn system, :ok ->
       env = [
+        {"HEX_HOME", hex_home},
         {"MIX_TARGET", system.target},
         {"MIX_ENV", "prod"},
         {"MIX_BUILD_PATH", Path.join([project_dir, "_build", system.target])},
