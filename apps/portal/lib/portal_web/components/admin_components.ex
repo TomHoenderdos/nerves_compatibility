@@ -14,6 +14,7 @@ defmodule PortalWeb.AdminComponents do
   @admin_tabs [
     {:overview, "Overview", "/admin"},
     {:queue, "Queue", "/admin/queue"},
+    {:builders, "Builders", "/admin/builders"},
     {:users, "Users", "/admin/users"},
     {:failures, "Failures", "/admin/failures"},
     {:argus, "Argus", "/admin/argus"},

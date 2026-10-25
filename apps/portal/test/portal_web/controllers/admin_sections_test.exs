@@ -7,6 +7,7 @@ defmodule PortalWeb.AdminSectionsTest do
   @tabs [
     {"/admin", "Overview"},
     {"/admin/queue", "Queue"},
+    {"/admin/builders", "Builders"},
     {"/admin/users", "Users"},
     {"/admin/failures", "Failures"},
     {"/admin/argus", "Argus"},

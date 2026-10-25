@@ -46,5 +46,18 @@ defmodule PortalWeb.AdminMessages do
   def error(:last_admin), do: "That is the last admin; grant someone else first."
   def error(:not_admin), do: "That account is not an admin."
 
+  def error(:no_ca),
+    do: "No builder CA is configured; run portal.builder_ca.init first."
+
+  def error(:invalid_name),
+    do:
+      "A builder name is a letter or digit, then up to 63 letters, digits, dots, dashes or underscores."
+
+  def error(:not_failed),
+    do: "That lease is no longer failed; only a failed lease can be requeued."
+
+  def error(:invalid_remote_settings),
+    do: "Choose auto, on or off, and a backlog threshold of zero or more."
+
   def error(_), do: "Admin action failed."
 end
