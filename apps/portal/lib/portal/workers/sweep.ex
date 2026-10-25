@@ -18,9 +18,17 @@ defmodule Portal.Workers.Sweep do
       `NccWorker.BuildCache.store_entry/2` when the container was killed
       between its `cp -a` and its `File.rename/2`
 
-  It leaves `nerves_cache` alone: that is bounded by the number of Nerves
-  systems rather than by time, and evicting one costs a several-hundred-megabyte
-  re-download in the middle of a build. `hex_cache/packages` it keeps under a
+  `nerves_cache/artifacts` it keeps under a size bound
+  (`nerves_cache_max_bytes`, `NCC_NERVES_CACHE_MAX_GB`, default 40 GiB),
+  evicting whole entries by mtime, oldest first, but never one the template
+  currently resolves (`Portal.NervesCache.template_entries/1`; when that file
+  cannot be read nothing is evicted), and only while no build container runs,
+  since a build reads entries through its symlink farm. It also removes a warm
+  run's `staging/<run_id>` and `artifacts/*.stale.*` dirs once older than
+  three hours. Only the warm job writes this cache, so nothing in it is a
+  build's to plant.
+
+  `hex_cache/packages` it keeps under a
   size bound (`hex_cache_max_bytes`, `NCC_HEX_CACHE_MAX_GB`): the cache is
   read-write inside every build container, so a package that depends on
   everything on Hex could otherwise fill the disk. An evicted tarball is simply
@@ -80,6 +88,7 @@ defmodule Portal.Workers.Sweep do
   require Logger
 
   alias Portal.Builder
+  alias Portal.NervesCache
   alias Portal.Repo
 
   # 2h hard docker wall clock (`Portal.Builder.total_timeout_ms/0`) plus an hour
@@ -116,6 +125,10 @@ defmodule Portal.Workers.Sweep do
       (called for each lookup)
     * `:current_digest` — digest the worker image resolves to right now
     * `:dry_run` — report what would go, delete nothing
+    * `:nerves_cache` — defaults to `Portal.Builder.nerves_cache/0`; `nil` skips it
+    * `:nerves_cache_max_bytes` — Nerves cache bound, defaults to 40 GiB
+    * `:nerves_template` — `{:ok, MapSet}` of entries never to evict, or
+      `:error`; defaults to `Portal.NervesCache.template_entries/1`
 
   Always returns `:ok`. A sweep that cannot do its job logs and reclaims
   nothing; it never fails the Oban job, because there is no retry that would
@@ -126,12 +139,14 @@ defmodule Portal.Workers.Sweep do
     scratch = sweep_scratch(opts)
     cache = sweep_build_cache(opts)
     hex = sweep_hex_cache(opts)
+    nerves = sweep_nerves_cache(opts)
 
-    total = [scratch, cache, hex] |> Enum.reduce(empty(), &add/2)
+    total = [scratch, cache, hex, nerves] |> Enum.reduce(empty(), &add/2)
 
     Logger.info(
       "Sweep reclaimed #{total.count} entries / #{mb(total.bytes)} MB " <>
-        "(scratch #{scratch.count}, build-cache #{cache.count}, hex #{hex.count})"
+        "(scratch #{scratch.count}, build-cache #{cache.count}, hex #{hex.count}, " <>
+        "nerves #{nerves.count})"
     )
 
     :ok
@@ -425,7 +440,7 @@ defmodule Portal.Workers.Sweep do
   end
 
   # Build containers are `"ncc-" <> safe_name(run_id)` (`Builder.container_name/1`).
-  defp no_builds_running(opts) do
+  defp no_builds_running(opts, label \\ "hex cache") do
     case container_lookup(opts) do
       {:ok, names} ->
         case Enum.count(names, &String.starts_with?(&1, "ncc-")) do
@@ -433,13 +448,13 @@ defmodule Portal.Workers.Sweep do
             :ok
 
           n ->
-            Logger.info("Sweep skipping hex cache: #{n} build container(s) running")
+            Logger.info("Sweep skipping #{label}: #{n} build container(s) running")
             :error
         end
 
       :error ->
         # Unknown means a build may be running, and then the race is open.
-        Logger.warning("Sweep skipping hex cache: could not list running containers")
+        Logger.warning("Sweep skipping #{label}: could not list running containers")
         :error
     end
   end
@@ -658,6 +673,109 @@ defmodule Portal.Workers.Sweep do
     :portal
     |> Application.get_env(Portal.Builder, [])
     |> Keyword.get(:hex_cache_max_bytes, @default_hex_cache_max_bytes)
+  end
+
+  # ── Nerves cache ───────────────────────────────────────────────────────────
+
+  @default_nerves_cache_max_bytes 40 * 1024 * 1024 * 1024
+
+  # A warm runs under the same two-hour wall clock as a build, so its staging
+  # tree and set-aside entries are past any live warm after three.
+  @nerves_leftover_ms :timer.hours(3)
+
+  defp sweep_nerves_cache(opts) do
+    root = Keyword.get_lazy(opts, :nerves_cache, &Builder.nerves_cache/0)
+
+    with root when is_binary(root) <- root,
+         {:ok, %File.Stat{type: :directory}} <- File.lstat(root) do
+      now = Keyword.get_lazy(opts, :now_ms, &now_ms/0)
+
+      root
+      |> nerves_leftovers(now)
+      |> delete_all(opts, "nerves cache leftover")
+      |> add(sweep_nerves_entries(root, opts))
+    else
+      _ -> empty()
+    end
+  end
+
+  defp nerves_leftovers(root, now) do
+    staging = Path.join(root, "staging")
+    artifacts = Path.join(root, "artifacts")
+
+    staged = for name <- list_or_empty(staging), do: Path.join(staging, name)
+
+    stale =
+      for name <- list_or_empty(artifacts),
+          String.contains?(name, ".stale."),
+          do: Path.join(artifacts, name)
+
+    Enum.filter(staged ++ stale, &older_than?(&1, now, @nerves_leftover_ms))
+  end
+
+  defp sweep_nerves_entries(root, opts) do
+    max = Keyword.get_lazy(opts, :nerves_cache_max_bytes, &configured_nerves_cache_max_bytes/0)
+    entries = nerves_entries(Path.join(root, "artifacts"))
+    total = entries |> Enum.map(& &1.size) |> Enum.sum()
+
+    if total <= max, do: empty(), else: evict_nerves(root, entries, total - max, opts)
+  end
+
+  defp evict_nerves(root, entries, excess, opts) do
+    with {:ok, keep} <- nerves_template(root, opts),
+         :ok <- no_builds_running(opts, "nerves cache") do
+      entries
+      |> Enum.reject(&MapSet.member?(keep, &1.name))
+      |> Enum.sort_by(& &1.mtime)
+      |> evict_until(excess)
+      |> Enum.map(& &1.path)
+      |> delete_all(opts, "nerves cache entry")
+    else
+      _ -> empty()
+    end
+  end
+
+  # Whole real directories only; set-aside entries are leftovers, above.
+  defp nerves_entries(artifacts) do
+    for name <- list_or_empty(artifacts),
+        not String.contains?(name, ".stale."),
+        path = Path.join(artifacts, name),
+        {:ok, %File.Stat{type: :directory, mtime: mtime}} <- [File.lstat(path, time: :posix)],
+        do: %{path: path, name: name, size: du(path), mtime: mtime}
+  end
+
+  defp nerves_template(root, opts) do
+    case Keyword.get_lazy(opts, :nerves_template, fn -> NervesCache.template_entries(root) end) do
+      {:ok, %MapSet{} = keep} ->
+        {:ok, keep}
+
+      _ ->
+        Logger.warning(
+          "Sweep skipping nerves cache eviction: no readable #{NervesCache.template_file()} in #{root}"
+        )
+
+        :error
+    end
+  end
+
+  defp older_than?(path, now, max_age) do
+    case File.lstat(path, time: :posix) do
+      {:ok, %File.Stat{mtime: mtime}} -> now - mtime * 1000 > max_age
+      {:error, _reason} -> false
+    end
+  end
+
+  defp list_or_empty(dir) do
+    case list_dir(dir) do
+      {:ok, names} -> names
+      :error -> []
+    end
+  end
+
+  defp configured_nerves_cache_max_bytes do
+    :portal
+    |> Application.get_env(Portal.Builder, [])
+    |> Keyword.get(:nerves_cache_max_bytes, @default_nerves_cache_max_bytes)
   end
 
   # ── Deletion ───────────────────────────────────────────────────────────────

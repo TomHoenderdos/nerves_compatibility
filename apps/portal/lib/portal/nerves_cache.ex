@@ -253,4 +253,49 @@ defmodule Portal.NervesCache do
       Logger.warning("Could not load recent Nerves cache warms: #{Exception.message(exception)}")
       MapSet.new()
   end
+
+  @template_file "template.json"
+
+  @doc "The file under the cache root naming what the template currently resolves."
+  @spec template_file() :: String.t()
+  def template_file, do: @template_file
+
+  @doc """
+  The `<name>-<version>` entries the template resolved at the last deploy-time
+  warm (`deploy_warm/1`), which `Portal.Workers.Sweep` never evicts. `:error`
+  when the file is missing, not a regular file or not what `write_template/3`
+  writes; Sweep then evicts nothing.
+  """
+  @spec template_entries(Path.t()) :: {:ok, MapSet.t(String.t())} | :error
+  # root is the operator-configured Nerves cache; the file name is fixed.
+  # sobelow_skip ["Traversal.FileModule"]
+  def template_entries(root) do
+    path = Path.join(root, @template_file)
+
+    with {:ok, %File.Stat{type: :regular}} <- File.lstat(path),
+         {:ok, body} <- File.read(path),
+         {:ok, %{"entries" => entries}} when is_list(entries) <- Jason.decode(body),
+         true <- Enum.all?(entries, &is_binary/1) do
+      {:ok, MapSet.new(entries)}
+    else
+      _ -> :error
+    end
+  end
+
+  @doc "Writes `template_file/0` atomically (temp file, then rename)."
+  @spec write_template(Path.t(), String.t(), [String.t()]) :: :ok | {:error, term()}
+  # root is the operator-configured Nerves cache; the file names are fixed.
+  # sobelow_skip ["Traversal.FileModule"]
+  def write_template(root, image_digest, entries) do
+    path = Path.join(root, @template_file)
+    tmp = path <> ".tmp"
+
+    body =
+      Jason.encode_to_iodata!(%{"image_digest" => image_digest, "entries" => Enum.sort(entries)})
+
+    with :ok <- File.mkdir_p(root),
+         :ok <- File.write(tmp, body) do
+      File.rename(tmp, path)
+    end
+  end
 end
