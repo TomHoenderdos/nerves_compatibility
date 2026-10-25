@@ -1022,6 +1022,13 @@ defmodule Portal.Workers.BuildTest do
 
   describe "Nerves cache warm requests" do
     setup do
+      # The recently-warmed memo is one node-wide ETS table (it has to
+      # outlive the per-test DB sandbox rollback, see nerves_cache.ex), and
+      # these tests share "sha256:deadbeef" across each other. Without this,
+      # whichever test runs first poisons the rest for the same pair.
+      if :ets.whereis(:portal_nerves_cache_warmed) != :undefined,
+        do: :ets.delete_all_objects(:portal_nerves_cache_warmed)
+
       on_exit(fn -> Application.delete_env(:portal, Portal.NervesCache) end)
       :ok
     end
@@ -1104,6 +1111,24 @@ defmodule Portal.Workers.BuildTest do
 
       pairs = all_enqueued(worker: WarmNerves) |> Enum.map(& &1.args["pairs"]) |> Enum.sort()
       assert pairs == Enum.sort([[a], [b]])
+    end
+
+    # The warm hook is best-effort (`Portal.Workers.Build.safely/2`): whatever
+    # goes wrong requesting it must cost the next build a private extraction,
+    # never this build its ingest.
+    test "a nerves cache warm request that raises still enqueues ingest" do
+      Application.put_env(:portal, Portal.NervesCache,
+        owners: fn _name -> raise "hex is down" end
+      )
+
+      pair = np("nerves_system_rpi4", "2.0.0")
+
+      assert capture_log(fn ->
+               build_reporting(%{"misses" => [pair], "lock" => [pair]})
+             end) =~ "nerves cache warm request failed"
+
+      assert all_enqueued(worker: WarmNerves) == []
+      assert_enqueued(worker: Ingest)
     end
   end
 end

@@ -38,11 +38,30 @@ defmodule Portal.NervesCache do
   @warm_owner "nerves"
   @pair_name ~r/\Anerves_(system|toolchain)_[a-z0-9_]+\z/
 
+  # Node-local memo of pairs a successful `request_warm/3` has queued, keyed
+  # by `{image_digest, name, version}`, so `recently_warmed/2` still bounds
+  # repeats once `Oban.Plugins.Pruner` deletes the completed job row it also
+  # reads (6 h, `apps/portal/config/config.exs`) -- well inside the day this
+  # moduledoc promises.
+  @warmed_memo :portal_nerves_cache_warmed
+  @warmed_memo_ttl_ms :timer.hours(24)
+
   @type pair :: %{String.t() => String.t()}
 
   @doc false
   @spec warm_pairs_per_run() :: pos_integer()
   def warm_pairs_per_run, do: @warm_pairs_per_run
+
+  @doc """
+  Creates the node-local ETS table `recently_warmed/2` and `request_warm/3`
+  share, the same way `Portal.HexPm.create_package_owners_table/0` does for
+  the owners memo. Call once, from `Portal.Application.start/2`.
+  """
+  @spec create_warmed_table() :: :ok
+  def create_warmed_table do
+    _ = :ets.new(@warmed_memo, [:named_table, :public, :set, read_concurrency: true])
+    :ok
+  end
 
   @doc """
   The pairs worth warming from a build's `result` (see the moduledoc), as
@@ -67,14 +86,38 @@ defmodule Portal.NervesCache do
         |> Enum.reject(&MapSet.member?(recent, &1))
         |> Enum.sort()
         |> Enum.take(@max_misses_considered)
-        |> Stream.filter(fn {name, _version} -> owned_by_nerves?(name, owners) end)
-        |> Enum.take(@warm_pairs_per_run)
+        |> owned_by_nerves(owners)
         |> Enum.map(fn {name, version} -> %{"name" => name, "version" => version} end)
 
       _ ->
         []
     end
   end
+
+  # Stops asking Hex as soon as four pairs are owned, same as the old
+  # `Stream.filter |> Enum.take/2` -- and, unlike it, also stops on the first
+  # `:hex_api_unavailable` instead of working through the rest of the misses
+  # one blocking lookup at a time. A build with a dozen locked misses during a
+  # Hex outage would otherwise make that many sequential 5+5s lookups, none of
+  # which can come back owned, before ingest gets enqueued.
+  defp owned_by_nerves(candidates, owners) do
+    candidates
+    |> Enum.reduce_while([], fn {name, _version} = pair, acc ->
+      if length(acc) >= @warm_pairs_per_run do
+        {:halt, acc}
+      else
+        add_if_owned(pair, name, owners.(name), acc)
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  defp add_if_owned(pair, _name, {:ok, usernames}, acc) when is_list(usernames) do
+    {:cont, if(@warm_owner in usernames, do: [pair | acc], else: acc)}
+  end
+
+  defp add_if_owned(_pair, _name, {:error, :hex_api_unavailable}, acc), do: {:halt, acc}
+  defp add_if_owned(_pair, _name, _other, acc), do: {:cont, acc}
 
   @doc false
   # `{name, version}` for a well-formed Nerves system or toolchain pair, else
@@ -89,13 +132,6 @@ defmodule Portal.NervesCache do
 
   def pair_tuple(_pair), do: []
 
-  defp owned_by_nerves?(name, owners) do
-    case owners.(name) do
-      {:ok, usernames} when is_list(usernames) -> @warm_owner in usernames
-      _ -> false
-    end
-  end
-
   defp owners_lookup do
     :portal
     |> Application.get_env(__MODULE__, [])
@@ -107,43 +143,95 @@ defmodule Portal.NervesCache do
 
   @doc """
   Queues a `Portal.Workers.WarmNerves` job for `result`'s `warm_pairs/2` on
-  this node, skipping pairs `recently_warmed/1` names. `{:ok, []}` when there
-  is nothing to warm. Options as `warm_pairs/2`.
+  this node, skipping pairs `recently_warmed/2` names. `{:ok, []}` when there
+  is nothing to warm, `{:ok, :already_queued}` when every pair chosen is
+  already covered by another unique job (`recently_warmed/2` should have
+  filtered these out already, so this is rare, not routine). Options as
+  `warm_pairs/2`, plus `opts[:now_ms]` (default `System.monotonic_time/1`) for
+  the memo this writes on a genuine enqueue.
   """
-  @spec request_warm(map(), String.t(), keyword()) :: {:ok, [pair()]} | {:error, term()}
+  @spec request_warm(map(), String.t(), keyword()) ::
+          {:ok, [pair()] | :already_queued} | {:error, term()}
   def request_warm(result, image_digest, opts \\ []) do
     case result do
       %{"nerves_cache" => %{"misses" => [_ | _]}} ->
-        recent = Keyword.get_lazy(opts, :recently_warmed, fn -> recently_warmed(image_digest) end)
+        now = Keyword.get_lazy(opts, :now_ms, fn -> System.monotonic_time(:millisecond) end)
+
+        recent =
+          Keyword.get_lazy(opts, :recently_warmed, fn ->
+            recently_warmed(image_digest, now_ms: now)
+          end)
 
         result
         |> warm_pairs(Keyword.put(opts, :recently_warmed, recent))
-        |> enqueue_warm(image_digest)
+        |> enqueue_warm(image_digest, now)
 
       _ ->
         {:ok, []}
     end
   end
 
-  defp enqueue_warm([], _image_digest), do: {:ok, []}
+  defp enqueue_warm([], _image_digest, _now), do: {:ok, []}
 
-  defp enqueue_warm(pairs, image_digest) do
+  defp enqueue_warm(pairs, image_digest, now) do
     case WarmNerves.enqueue(image_digest, pairs) do
-      {:ok, _job} -> {:ok, pairs}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{conflict?: true}} ->
+        {:ok, :already_queued}
+
+      {:ok, _job} ->
+        remember_warmed(image_digest, pairs, now)
+        {:ok, pairs}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
+  defp remember_warmed(image_digest, pairs, now) do
+    Enum.each(pairs, fn pair ->
+      case pair_tuple(pair) do
+        [{name, version}] -> :ets.insert(@warmed_memo, {{image_digest, name, version}, now})
+        [] -> :ok
+      end
+    end)
+  rescue
+    ArgumentError -> :ok
+  end
+
+  # Unexpired entries of `@warmed_memo` for `image_digest`, read with a
+  # partial-key `match_object/2` rather than scanning the whole table.
+  defp memoized_warmed(image_digest, now) do
+    :ets.match_object(@warmed_memo, {{image_digest, :_, :_}, :_})
+    |> Enum.filter(fn {_key, at} -> now - at < @warmed_memo_ttl_ms end)
+    |> Enum.map(fn {{_digest, name, version}, _at} -> {name, version} end)
+    |> MapSet.new()
+  rescue
+    ArgumentError -> MapSet.new()
+  end
+
   @doc """
-  `{name, version}` of every pair in a `WarmNerves` job on this node's queue
-  for `image_digest` inserted in the last day and not discarded or cancelled.
-  Per pair, where the job's uniqueness is per set of pairs, and still there
-  after `Oban.Plugins.Pruner` has deleted the finished job row (it keeps them
-  6 h). A database error answers the empty set: the job's own uniqueness still
-  bounds repeats.
+  `{name, version}` of every pair `request_warm/3` has queued for
+  `image_digest` on this node in the last day, as the union of two sources:
+
+    * a node-local ETS memo written the moment a warm is queued, which keeps
+      the day-long bound even after `Oban.Plugins.Pruner` deletes the
+      completed job row (6 h, `apps/portal/config/config.exs`);
+    * a live `Portal.Workers.WarmNerves` job on this node's queue, not
+      discarded or cancelled -- which the memo above does not cover when the
+      table was not yet created (for example, a release eval that starts no
+      applications).
+
+  A database error drops only the second source: the job's own uniqueness and
+  the memo still bound repeats. `opts[:now_ms]` (default
+  `System.monotonic_time/1`) is the memo's clock.
   """
-  @spec recently_warmed(String.t()) :: MapSet.t({String.t(), String.t()})
-  def recently_warmed(image_digest) do
+  @spec recently_warmed(String.t(), keyword()) :: MapSet.t({String.t(), String.t()})
+  def recently_warmed(image_digest, opts \\ []) do
+    now = Keyword.get_lazy(opts, :now_ms, fn -> System.monotonic_time(:millisecond) end)
+    MapSet.union(memoized_warmed(image_digest, now), oban_warmed(image_digest))
+  end
+
+  defp oban_warmed(image_digest) do
     cutoff = DateTime.add(DateTime.utc_now(), -86_400, :second)
     queue = WarmNerves.local_queue()
 
