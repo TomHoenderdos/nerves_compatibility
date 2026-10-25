@@ -13,6 +13,7 @@ defmodule NccWorker.SystemsTest do
       "nerves_system_mangopi_mq_pro" => "riscv64",
       "nerves_system_qemu_aarch64" => "arm64",
       "nerves_system_rpi0" => "arm32",
+      "nerves_system_rpi0_2" => "arm64",
       "nerves_system_rpi4" => "arm64",
       "nerves_system_rpi5" => "arm64",
       "nerves_system_trellis" => "arm32",
@@ -30,6 +31,11 @@ defmodule NccWorker.SystemsTest do
     test "includes rpi0, the only armv6 system" do
       names = Enum.map(Systems.default(), & &1.name)
       assert "nerves_system_rpi0" in names
+    end
+
+    test "includes rpi0_2, aarch64 like rpi4, so Zero 2 W users get a hit" do
+      names = Enum.map(Systems.default(), & &1.name)
+      assert "nerves_system_rpi0_2" in names
     end
 
     test "leaves out grisp2 while its release still rejects Nerves 2" do

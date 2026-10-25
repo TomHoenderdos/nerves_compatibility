@@ -26,8 +26,8 @@ defmodule Portal.BulkRebuild do
   # does not depend on the worker app, so the list is repeated here; keep the
   # two in step.
   @targets ~w(nerves_system_bbb nerves_system_mangopi_mq_pro nerves_system_qemu_aarch64
-              nerves_system_rpi0 nerves_system_rpi4 nerves_system_rpi5 nerves_system_trellis
-              nerves_system_x86_64)
+              nerves_system_rpi0 nerves_system_rpi0_2 nerves_system_rpi4 nerves_system_rpi5
+              nerves_system_trellis nerves_system_x86_64)
 
   # Oban states in which a job has not started yet, so cancelling it stops the
   # work rather than interrupting it.
