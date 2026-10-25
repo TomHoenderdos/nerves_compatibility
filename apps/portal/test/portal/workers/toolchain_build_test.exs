@@ -107,6 +107,15 @@ defmodule Portal.Workers.ToolchainBuildTest do
     assert rows("jason") == []
   end
 
+  test "a missing egress filter snoozes and cleans up" do
+    Process.put(:stub_build_response, {:error, :egress_filter_missing})
+
+    log = capture_log(fn -> assert {:snooze, 900} = perform_job(ToolchainBuild, @args) end)
+
+    assert log =~ "egress filter missing"
+    assert_received {:cleanup, _run_id}
+  end
+
   describe "image resolution" do
     setup do
       original = Application.fetch_env!(:portal, Portal.Toolchains)

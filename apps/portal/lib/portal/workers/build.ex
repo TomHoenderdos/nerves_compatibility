@@ -192,6 +192,19 @@ defmodule Portal.Workers.Build do
         Builder.cleanup(run_id)
         {:snooze, 900}
 
+      {:error, :egress_filter_missing} ->
+        # The host's egress filter is not loaded (`Portal.Builder.check_egress/0`
+        # logged why). Building would run package code with the tailnet in
+        # reach; failing would turn every request on this host `:error` for a
+        # host condition. Snooze, as for a noexec scratch root, so the request
+        # stays `:queued` until an operator loads the filter.
+        Logger.error(
+          "Build egress filter missing on this host; refusing to build #{package} #{version}"
+        )
+
+        Builder.cleanup(run_id)
+        {:snooze, 900}
+
       {:error, reason} ->
         # Runner-side failure (docker unavailable, scratch setup, wall-clock
         # timeout). Treat as retryable.
