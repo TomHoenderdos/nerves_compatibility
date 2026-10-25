@@ -1,0 +1,68 @@
+#!/usr/sbin/nft -f
+# Build egress filter (isolation spec, section 3). Loaded by
+# ops/builder-egress-load.sh into the network namespace rootless dockerd's
+# bridge lives in (rootlesskit's child, dockerd-rootless/child_pid), never
+# into the host's.
+#
+# Only this table: dockerd keeps its NAT and filter rules in iptables-nft
+# tables in the same namespace, so nothing here may flush the ruleset.
+# Declaring the table, deleting it and declaring it again in one file is one
+# transaction: an older version's chains go too, and a reload never leaves a
+# moment without a filter.
+#
+# Only nf_tables core expressions: the namespace cannot load modules, so no
+# ct state, no reject, no counter. `drop` also makes a blocked connect time
+# out, which Portal.EgressCheck reads as blocked; a reset would read as
+# reached.
+#
+# Remote builders apply the same policy in DOCKER-USER
+# (docs/superpowers/specs/2026-10-25-remote-builders-design.md, section 5);
+# keep the address lists the same in both.
+#
+# The loader replaces this define with the name `docker network inspect
+# bridge` reports; docker0 is the default, so the file checks as it stands.
+define ncc_bridge = "docker0"
+
+table inet ncc_egress {}
+delete table inet ncc_egress
+
+table inet ncc_egress {
+	# What a container sends out of the bridge. slirp4netns NATs it in user
+	# space after this hook, so a drop here never becomes a host socket.
+	chain build_forward {
+		type filter hook forward priority filter - 10; policy accept;
+
+		iifname != $ncc_bridge accept
+
+		# DNS to the slirp4netns gateway and resolver, ahead of the private
+		# drops below, which would otherwise catch both.
+		ip daddr { 10.0.2.2, 10.0.2.3 } meta l4proto { tcp, udp } th dport 53 accept
+
+		# This-network, private, shared (the tailnet's 100.64.0.0/10),
+		# loopback, link-local, multicast and reserved. 172.16.0.0/12 covers
+		# the bridge subnet, 172.17.0.0/16.
+		ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } drop
+
+		# fc00::/7 covers the tailnet's fd7a:115c:a1e0::/48; an interval set
+		# refuses overlapping elements, so that prefix is not listed apart.
+		ip6 daddr { ::1, ::ffff:0:0/96, 64:ff9b::/96, fc00::/7, fe80::/10, ff00::/8 } drop
+
+		# Hex.pm, GitHub and the distribution mirrors.
+		tcp dport { 80, 443 } accept
+
+		# Public resolvers: the homelab daemons hand containers 1.1.1.1 and
+		# 9.9.9.9 rather than the slirp4netns resolver.
+		meta l4proto { tcp, udp } th dport 53 accept
+
+		# Portal.Builder.check_egress/0 looks for this comment.
+		drop comment "ncc_egress_v1"
+	}
+
+	# What a container sends to the namespace itself: nothing there serves a
+	# build.
+	chain build_input {
+		type filter hook input priority filter - 10; policy accept;
+
+		iifname $ncc_bridge drop
+	}
+}
