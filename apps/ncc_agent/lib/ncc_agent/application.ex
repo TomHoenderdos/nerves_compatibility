@@ -36,9 +36,11 @@ defmodule NccAgent.Application do
   end
 
   # No job runs yet: whatever is in the scratch dir is left over from a
-  # VM that stopped mid-job.
+  # VM that stopped mid-job, and so is any worker container still running,
+  # which would otherwise keep writing into the binds being removed.
   # sobelow_skip ["Traversal.FileModule"]
   defp clear_scratch(config) do
+    NccAgent.Docker.kill_leftovers(config)
     scratch = NccAgent.Config.path(config, :scratch)
     File.rm_rf(scratch)
     File.mkdir_p(scratch)

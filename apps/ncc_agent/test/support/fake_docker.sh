@@ -4,11 +4,14 @@
 #   image inspect  exit 0 when FAKE_DOCKER_IMAGE_PRESENT=1, else 1
 #   pull           echo, exit 0
 #   kill           append the container name to FAKE_DOCKER_KILL_LOG, exit 0
+#   ps             append the argv to FAKE_DOCKER_PS_LOG, print FAKE_DOCKER_PS
+#                  (container ids, one per line), exit 0
 #   run ...        append the argv (one per line) to FAKE_DOCKER_ARGV_LOG,
 #                  write FAKE_DOCKER_RESULT to <out>/result.json, a log to
 #                  <out>/logs/host.log, a file named by its own sha256 with
 #                  FAKE_DOCKER_FILE_CONTENT into <files>, print
-#                  "fake build output", sleep 5 when FAKE_DOCKER_SLEEP=1,
+#                  FAKE_DOCKER_OUTPUT_BYTES bytes of "x" and a newline when
+#                  set, then "fake build output", sleep 5 when FAKE_DOCKER_SLEEP=1,
 #                  with FAKE_DOCKER_PLANT=1 also a symlink named like a sha
 #                  and a non-sha file in <files>, and result.json as a
 #                  symlink to FAKE_DOCKER_RESULT_LINK when that is set,
@@ -25,6 +28,15 @@ case "${1:-}" in
     ;;
   pull)
     echo "pulled ${2:-}"
+    exit 0
+    ;;
+  ps)
+    if [ -n "${FAKE_DOCKER_PS_LOG:-}" ]; then
+      printf '%s\n' "$*" >>"$FAKE_DOCKER_PS_LOG"
+    fi
+    if [ -n "${FAKE_DOCKER_PS:-}" ]; then
+      printf '%s\n' "$FAKE_DOCKER_PS"
+    fi
     exit 0
     ;;
   kill)
@@ -81,6 +93,11 @@ case "${1:-}" in
     if [ -n "$out" ] && [ -n "${FAKE_DOCKER_RESULT_LINK:-}" ]; then
       rm -f "$out/result.json"
       ln -s "$FAKE_DOCKER_RESULT_LINK" "$out/result.json"
+    fi
+
+    if [ -n "${FAKE_DOCKER_OUTPUT_BYTES:-}" ]; then
+      head -c "$FAKE_DOCKER_OUTPUT_BYTES" /dev/zero | tr '\0' x
+      echo
     fi
 
     echo "fake build output"

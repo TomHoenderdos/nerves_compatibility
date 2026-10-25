@@ -1,7 +1,7 @@
 defmodule NccAgent.Docker do
   @moduledoc """
-  The agent's calls to `docker` (`config.docker_bin`): pull, inspect, kill,
-  and one worker container run with its output appended to a log and a
+  The agent's calls to `docker` (`config.docker_bin`): pull, inspect, kill
+  (one container, or the leftovers of a previous boot), and one worker container run with its output appended to a log and a
   wall-clock deadline, past which the container is killed. Every call has
   a deadline; `runner.log` stops growing at `NccAgent.Caps`'
   `:runner_log_bytes` while the output keeps being drained.
@@ -47,6 +47,34 @@ defmodule NccAgent.Docker do
       {:error, reason} ->
         Logger.warning("docker kill #{name} failed: #{inspect(reason)}")
         {:error, reason}
+    end
+  end
+
+  @doc """
+  Kills every running worker container (named `ncc-*`), best effort: what
+  an agent that stopped mid-job left running. Each failure is logged.
+  Answers the ids it tried to kill.
+  """
+  @spec kill_leftovers(Config.t()) :: [String.t()]
+  def kill_leftovers(config) do
+    case cmd(config, ["ps", "-q", "--filter", "name=ncc-"], @inspect_timeout_ms) do
+      {:ok, out, 0} ->
+        ids = String.split(out, ~r/\s+/, trim: true)
+
+        for id <- ids do
+          Logger.warning("killing leftover worker container #{id}")
+          kill(config, id)
+        end
+
+        ids
+
+      {:ok, out, status} ->
+        Logger.warning("docker ps exited #{status}: #{String.trim(out)}")
+        []
+
+      {:error, reason} ->
+        Logger.warning("docker ps failed: #{inspect(reason)}")
+        []
     end
   end
 

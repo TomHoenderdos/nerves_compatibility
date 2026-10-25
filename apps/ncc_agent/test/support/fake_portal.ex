@@ -17,6 +17,9 @@ defmodule NccAgent.Test.FakePortal do
     * `:claim_error` - `{status, body}` returned by `POST /jobs/claim`
     * `:missing` - the list `POST /jobs/:id/files/missing` answers (default: all)
     * `:upload_bad` - names `PUT /jobs/:id/files` reports as bad (422)
+    * `:upload_error` - `{status, body}` every `PUT /jobs/:id/files` answers
+    * `:upload_failures` - how many `PUT /jobs/:id/files` answer 503 before
+      the rest are stored
     * `:releases` - `%{name => binary}` served by `GET /releases/:name`
       (agent release tarballs for `NccAgent.Updater`)
   """
@@ -141,12 +144,19 @@ defmodule NccAgent.Test.FakePortal do
     names = Enum.map(entries, &to_string/1)
     record(conn, opts, %{"names" => names, "content_type" => content_type(conn)})
 
-    case script(opts, :upload_bad) do
-      nil ->
-        json(conn, 200, %{stored: names, bad: [], bytes: byte_size(body)})
+    cond do
+      error = script(opts, :upload_error) ->
+        {status, body} = error
+        json(conn, status, body)
 
-      bad ->
+      take_failure(opts, :upload_failures) ->
+        json(conn, 503, %{error: "unavailable"})
+
+      bad = script(opts, :upload_bad) ->
         json(conn, 422, %{error: "bad_entries", bad: bad, stored: names -- bad, bytes: 0})
+
+      true ->
+        json(conn, 200, %{stored: names, bad: [], bytes: byte_size(body)})
     end
   end
 
@@ -176,6 +186,15 @@ defmodule NccAgent.Test.FakePortal do
   defp route(conn, _method, _path, opts) do
     record(conn, opts, nil)
     json(conn, 404, %{error: "not_found"})
+  end
+
+  defp take_failure(opts, key) do
+    Agent.get_and_update(opts.script, fn script ->
+      case Map.get(script, key, 0) do
+        n when n > 0 -> {true, Map.put(script, key, n - 1)}
+        _ -> {false, script}
+      end
+    end)
   end
 
   defp next_claim(script) do
