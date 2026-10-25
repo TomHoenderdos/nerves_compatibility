@@ -27,7 +27,10 @@ defmodule NervesCompatibility.MixProject do
       ncc_agent: [
         applications: [compatibility: :permanent, ncc_agent: :permanent],
         include_executables_for: [:unix],
-        include_erts: true
+        include_erts: true,
+        # env.sh.eex, plus overlays/ (the systemd unit, the env example)
+        # copied into the release root.
+        rel_templates_path: "apps/ncc_agent/rel"
       ]
     ]
   end

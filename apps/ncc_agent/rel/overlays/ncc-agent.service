@@ -1,0 +1,17 @@
+[Unit]
+Description=Nerves compatibility remote builder agent
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=exec
+User=root
+EnvironmentFile=/etc/ncc-agent.env
+Environment=HOME=/srv/ncc
+ExecStart=/srv/ncc/releases/current/bin/ncc_agent start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

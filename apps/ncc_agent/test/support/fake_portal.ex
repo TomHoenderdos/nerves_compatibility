@@ -17,6 +17,8 @@ defmodule NccAgent.Test.FakePortal do
     * `:claim_error` - `{status, body}` returned by `POST /jobs/claim`
     * `:missing` - the list `POST /jobs/:id/files/missing` answers (default: all)
     * `:upload_bad` - names `PUT /jobs/:id/files` reports as bad (422)
+    * `:releases` - `%{name => binary}` served by `GET /releases/:name`
+      (agent release tarballs for `NccAgent.Updater`)
   """
 
   @behaviour Plug
@@ -164,6 +166,18 @@ defmodule NccAgent.Test.FakePortal do
 
     record(conn, opts, params)
     json(conn, 202, %{accepted: true, outcome: "done"})
+  end
+
+  defp route(conn, "GET", ["releases", name], opts) do
+    record(conn, opts, nil)
+
+    case script(opts, :releases) do
+      %{^name => body} ->
+        conn |> put_resp_content_type("application/gzip") |> send_resp(200, body)
+
+      _ ->
+        json(conn, 404, %{error: "not_found"})
+    end
   end
 
   defp route(conn, _method, _path, opts) do
