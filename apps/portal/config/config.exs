@@ -23,7 +23,8 @@ config :portal,
     Portal.ScanRequests,
     Portal.Catalog,
     Portal.Settings,
-    Portal.Precompiled
+    Portal.Precompiled,
+    Portal.Builders
   ],
   ecto_repos: [Portal.Repo],
   generators: [timestamp_type: :utc_datetime]

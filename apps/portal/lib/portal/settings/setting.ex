@@ -51,7 +51,10 @@ defmodule Portal.Settings.Setting do
         :argus_analyses,
         :argus_scope,
         :argus_min_severity,
-        :argus_timeout_seconds
+        :argus_timeout_seconds,
+        :remote_mode,
+        :remote_backlog_threshold,
+        :remote_auto_on
       ])
 
       upsert?(true)
@@ -104,6 +107,26 @@ defmodule Portal.Settings.Setting do
       default(300)
       public?(true)
       constraints(min: 30, max: 1800)
+    end
+
+    attribute :remote_mode, :atom do
+      allow_nil?(false)
+      default(:auto)
+      public?(true)
+      constraints(one_of: [:auto, :on, :off])
+    end
+
+    attribute :remote_backlog_threshold, :integer do
+      allow_nil?(false)
+      default(10)
+      public?(true)
+      constraints(min: 0)
+    end
+
+    attribute :remote_auto_on, :boolean do
+      allow_nil?(false)
+      default(false)
+      public?(true)
     end
 
     create_timestamp(:inserted_at)
