@@ -88,3 +88,6 @@ config :phoenix_live_view,
   debug_attributes: true,
   # Enable helpful, but potentially expensive runtime checks
   enable_expensive_runtime_checks: true
+
+# A laptop has no rootless daemon to filter (`Portal.Builder.check_egress/0`).
+config :portal, Portal.Builder, egress_check: false

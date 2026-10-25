@@ -27,6 +27,18 @@ defmodule Portal.Builder do
   @total_timeout_ms :timer.hours(2)
   @zero_digest "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
+  # The build egress filter (isolation spec, section 3; ops/builder-egress.nft).
+  # The preflight looks for this marker, the comment on the ruleset's final
+  # drop, so a table that is present but older or emptied does not pass. Bump
+  # it in ops/builder-egress.nft and ops/builder-egress-load.sh together;
+  # ops/test_builder_egress.py checks all three agree.
+  @egress_table "ncc_egress"
+  @egress_marker "ncc_egress_v1"
+
+  # Where `nsenter` and `nft` live when the service's PATH leaves sbin out
+  # (a plain systemd service) or is a NixOS unit's narrow `path`.
+  @egress_tool_dirs ["/usr/sbin", "/sbin", "/usr/local/sbin", "/run/current-system/sw/bin"]
+
   @type build_args :: %{
           required(:run_id) => String.t(),
           # Required for every mode except "warm_nerves", which builds no package.
@@ -112,6 +124,16 @@ defmodule Portal.Builder do
   @spec total_timeout_ms() :: pos_integer()
   def total_timeout_ms, do: @total_timeout_ms
 
+  @doc """
+  Whether builds on this host need the egress filter (`check_egress/0`).
+
+  On unless `NCC_EGRESS_CHECK=0` (`:egress_check`), which is for a host with no
+  rootless daemon (a laptop, the integration test) and is the section-3
+  rollback.
+  """
+  @spec egress_check?() :: boolean()
+  def egress_check?, do: config(:egress_check, true) != false
+
   defp config(key, default) do
     :portal
     |> Application.get_env(__MODULE__, [])
@@ -184,6 +206,7 @@ defmodule Portal.Builder do
     with :ok <- distrust_rw_cache(job),
          :ok <- check_free_space(scratch_root()),
          :ok <- check_scratch_exec(scratch_root()),
+         :ok <- check_egress(),
          {:ok, _version} <- check_docker(),
          :ok <-
            ensure_directories([
@@ -465,6 +488,147 @@ defmodule Portal.Builder do
     after
       File.rm(path)
     end
+  end
+
+  @doc """
+  The egress preflight: `:ok` when the build egress filter is loaded in
+  rootless dockerd's network namespace, or when `egress_check?/0` is off.
+
+  Otherwise logs why and returns `{:error, :egress_filter_missing}`, which
+  every worker that builds snoozes on: a host whose filter is missing refuses
+  to build rather than building unfiltered. The probe is
+  `config :portal, Portal.Builder, egress_filter_probe:`, `probe_egress/0` by
+  default, so tests inject it as they do `exec_probe`.
+  """
+  @spec check_egress() :: :ok | {:error, :egress_filter_missing}
+  def check_egress do
+    if egress_check?() do
+      probe = config(:egress_filter_probe, &__MODULE__.probe_egress/0)
+
+      case probe.() do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.error(
+            "Build egress filter missing (#{inspect(reason)}); refusing to build. " <>
+              "Load it as the daemon's user with " <>
+              "/opt/nerves_compatibility/builder-egress-load.sh, or set " <>
+              "NCC_EGRESS_CHECK=0 on a host without a rootless daemon"
+          )
+
+          {:error, :egress_filter_missing}
+      end
+    else
+      :ok
+    end
+  end
+
+  @doc """
+  Logs the egress filter's state once at boot, on a node that runs builds
+  (`Portal.Application`), where an operator looks first.
+  """
+  @spec boot_egress_check() :: :ok | :disabled | {:error, :egress_filter_missing}
+  def boot_egress_check do
+    if egress_check?() do
+      case check_egress() do
+        :ok ->
+          Logger.info("Build egress filter is loaded")
+          :ok
+
+        error ->
+          error
+      end
+    else
+      Logger.warning("NCC_EGRESS_CHECK=0: builds on this host are not egress-filtered")
+      :disabled
+    end
+  end
+
+  @doc false
+  # Lists `inet ncc_egress` inside the namespace of rootlesskit's child, the
+  # one the bridge lives in: with `--detach-netns` dockerd itself stays in the
+  # host namespace. `opts` (`:child_pid_file`, `:find`) are for tests. The pid
+  # file is rootlesskit's own and both tools are found on PATH or fixed sbin
+  # dirs; the pid is checked to be digits; nothing in the argv comes from a
+  # package or a request.
+  # sobelow_skip ["CI.System"]
+  @spec probe_egress(keyword()) :: :ok | {:error, term()}
+  def probe_egress(opts \\ []) do
+    find = Keyword.get(opts, :find, &find_egress_tool/1)
+    pid_file = Keyword.get_lazy(opts, :child_pid_file, &rootlesskit_child_pid_file/0)
+
+    with {:ok, pid} <- read_child_pid(pid_file),
+         {:ok, nsenter} <- egress_tool(find, "nsenter"),
+         {:ok, nft} <- egress_tool(find, "nft") do
+      list_egress_table(nsenter, nft, pid)
+    end
+  rescue
+    e in ErlangError -> {:error, {:probe_failed, Exception.message(e)}}
+  end
+
+  # Fixed argv built from the two resolved tool paths and the rootlesskit
+  # child's own pid; nothing here comes from a package or a request.
+  # sobelow_skip ["CI.System"]
+  defp list_egress_table(nsenter, nft, pid) do
+    args = ["-U", "--preserve-credentials", "-n", "-t", pid, nft, "list", "table", "inet"]
+
+    case System.cmd(nsenter, args ++ [@egress_table], stderr_to_stdout: true) do
+      {out, 0} ->
+        if egress_table_complete?(out), do: :ok, else: {:error, :egress_table_incomplete}
+
+      {out, status} ->
+        {:error, {:nft_failed, status, String.trim(out)}}
+    end
+  end
+
+  @doc false
+  # The table, its forward hook, and the final drop of the ruleset version
+  # this release expects.
+  @spec egress_table_complete?(String.t()) :: boolean()
+  def egress_table_complete?(listing) do
+    String.contains?(listing, "table inet #{@egress_table}") and
+      String.contains?(listing, "hook forward") and
+      String.contains?(listing, ~s(comment "#{@egress_marker}"))
+  end
+
+  # A system service gets no XDG_RUNTIME_DIR; the rootless daemon's runtime
+  # dir is the user's /run/user/<uid> either way.
+  defp rootlesskit_child_pid_file do
+    config(:rootlesskit_child_pid_file, nil) ||
+      Path.join([
+        System.get_env("XDG_RUNTIME_DIR") || "/run/user/#{elem(current_user(), 0)}",
+        "dockerd-rootless",
+        "child_pid"
+      ])
+  end
+
+  # The path is rootlesskit's pid file under the service user's runtime dir
+  # or operator config.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_child_pid(path) do
+    case File.read(path) do
+      {:ok, content} ->
+        pid = String.trim(content)
+        if pid =~ ~r/\A\d+\z/, do: {:ok, pid}, else: {:error, {:child_pid_invalid, path}}
+
+      {:error, reason} ->
+        {:error, {:child_pid_unreadable, path, reason}}
+    end
+  end
+
+  defp egress_tool(find, name) do
+    case find.(name) do
+      path when is_binary(path) -> {:ok, path}
+      _ -> {:error, {:missing_executable, name}}
+    end
+  end
+
+  # Fixed directory list joined with a fixed tool name.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp find_egress_tool(name) do
+    System.find_executable(name) ||
+      @egress_tool_dirs |> Enum.map(&Path.join(&1, name)) |> Enum.find(&File.regular?/1)
   end
 
   # `~/.ncc-scratch` does not exist until the first build creates it, and `df` on

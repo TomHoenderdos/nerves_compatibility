@@ -2,6 +2,7 @@ defmodule Portal.BuilderTest do
   use ExUnit.Case, async: false
 
   alias Portal.Builder
+  import ExUnit.CaptureLog
 
   # `build_docker_args/4` takes the assembled job; `build/2` takes the caller's
   # args and assembles it itself.
@@ -343,6 +344,194 @@ defmodule Portal.BuilderTest do
 
       assert {:error, :scratch_noexec} = Builder.build(@build_args)
       refute File.exists?(Path.join(root, "run-1"))
+    end
+  end
+
+  # The build egress filter lives in rootless dockerd's network namespace
+  # (ops/builder-egress.nft). A host without it must refuse to build rather
+  # than run package code with the private network in reach (isolation spec, section 3).
+  describe "egress preflight" do
+    @egress_listing """
+    table inet ncc_egress {
+      chain build_forward {
+        type filter hook forward priority filter - 10; policy accept;
+        iifname != "docker0" accept
+        drop comment "ncc_egress_v1"
+      }
+    }
+    """
+
+    defp egress_tmp do
+      dir = Path.join(System.tmp_dir!(), "egress-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+      dir
+    end
+
+    defp fake_nsenter(dir, body) do
+      path = Path.join(dir, "nsenter")
+      File.write!(path, "#!/bin/sh\necho \"$*\" > #{dir}/args\n" <> body)
+      File.chmod!(path, 0o755)
+      path
+    end
+
+    test "a missing filter refuses the build before anything is written", %{previous: previous} do
+      root = Path.join(System.tmp_dir!(), "egress-root-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(root) end)
+
+      put_builder(
+        [
+          scratch_root: root,
+          min_free_disk_gb: 0,
+          exec_probe: fn _path -> :ok end,
+          egress_check: true,
+          egress_filter_probe: fn -> {:error, {:missing_executable, "nft"}} end
+        ],
+        previous
+      )
+
+      log =
+        capture_log(fn ->
+          assert {:error, :egress_filter_missing} = Builder.build(@build_args)
+        end)
+
+      assert log =~ "Build egress filter missing"
+      assert log =~ ~s({:missing_executable, "nft"})
+      refute File.exists?(Path.join(root, "run-1"))
+    end
+
+    test "check_egress/0 passes when the probe finds the table", %{previous: previous} do
+      put_builder([egress_check: true, egress_filter_probe: fn -> :ok end], previous)
+      assert :ok = Builder.check_egress()
+    end
+
+    test "NCC_EGRESS_CHECK=0 skips the probe", %{previous: previous} do
+      test = self()
+
+      put_builder(
+        [
+          egress_check: false,
+          egress_filter_probe: fn ->
+            send(test, :probed)
+            {:error, :should_not_run}
+          end
+        ],
+        previous
+      )
+
+      refute Builder.egress_check?()
+      assert :ok = Builder.check_egress()
+      refute_received :probed
+    end
+
+    test "the check is on unless configured off", %{previous: previous} do
+      put_builder([], Keyword.delete(previous, :egress_check))
+      assert Builder.egress_check?()
+    end
+
+    test "egress_table_complete?/1 wants the forward hook and the versioned final drop" do
+      assert Builder.egress_table_complete?(@egress_listing)
+
+      # A table someone emptied with `flush table`.
+      refute Builder.egress_table_complete?("table inet ncc_egress {\n}\n")
+
+      # An older ruleset whose marker is not the one this release expects.
+      refute Builder.egress_table_complete?(
+               String.replace(@egress_listing, "ncc_egress_v1", "ncc_egress_v0")
+             )
+
+      # Some other table that happens to have a forward hook.
+      refute Builder.egress_table_complete?(
+               String.replace(@egress_listing, "inet ncc_egress", "inet other")
+             )
+    end
+
+    test "probe_egress/1 lists the table in the rootlesskit child's namespace" do
+      dir = egress_tmp()
+      pid_file = Path.join(dir, "child_pid")
+      File.write!(pid_file, "4242\n")
+      nsenter = fake_nsenter(dir, "cat <<'EOF'\n#{@egress_listing}EOF\n")
+
+      assert :ok =
+               Builder.probe_egress(
+                 child_pid_file: pid_file,
+                 find: fn
+                   "nsenter" -> nsenter
+                   "nft" -> "/usr/sbin/nft"
+                 end
+               )
+
+      assert File.read!(Path.join(dir, "args")) ==
+               "-U --preserve-credentials -n -t 4242 /usr/sbin/nft list table inet ncc_egress\n"
+    end
+
+    test "probe_egress/1 reports what nft said when the table is absent" do
+      dir = egress_tmp()
+      pid_file = Path.join(dir, "child_pid")
+      File.write!(pid_file, "4242\n")
+      nsenter = fake_nsenter(dir, "echo 'Error: No such file or directory' >&2\nexit 1\n")
+
+      assert {:error, {:nft_failed, 1, "Error: No such file or directory"}} =
+               Builder.probe_egress(child_pid_file: pid_file, find: fn _ -> nsenter end)
+    end
+
+    test "probe_egress/1 refuses a table without the marker" do
+      dir = egress_tmp()
+      pid_file = Path.join(dir, "child_pid")
+      File.write!(pid_file, "4242\n")
+      nsenter = fake_nsenter(dir, "echo 'table inet ncc_egress {'\necho '}'\n")
+
+      assert {:error, :egress_table_incomplete} =
+               Builder.probe_egress(child_pid_file: pid_file, find: fn _ -> nsenter end)
+    end
+
+    test "probe_egress/1 fails closed on a missing or malformed child_pid" do
+      dir = egress_tmp()
+      missing = Path.join(dir, "absent")
+
+      assert {:error, {:child_pid_unreadable, ^missing, :enoent}} =
+               Builder.probe_egress(child_pid_file: missing, find: fn _ -> "/bin/true" end)
+
+      garbled = Path.join(dir, "child_pid")
+      File.write!(garbled, "42 1\n")
+
+      assert {:error, {:child_pid_invalid, ^garbled}} =
+               Builder.probe_egress(child_pid_file: garbled, find: fn _ -> "/bin/true" end)
+    end
+
+    test "probe_egress/1 names the tool it could not find" do
+      dir = egress_tmp()
+      pid_file = Path.join(dir, "child_pid")
+      File.write!(pid_file, "4242\n")
+
+      assert {:error, {:missing_executable, "nsenter"}} =
+               Builder.probe_egress(child_pid_file: pid_file, find: fn _ -> nil end)
+
+      assert {:error, {:missing_executable, "nft"}} =
+               Builder.probe_egress(
+                 child_pid_file: pid_file,
+                 find: fn
+                   "nsenter" -> "/usr/bin/nsenter"
+                   "nft" -> nil
+                 end
+               )
+    end
+
+    test "boot_egress_check/0 warns when the check is off", %{previous: previous} do
+      put_builder([egress_check: false], previous)
+      log = capture_log(fn -> assert :disabled = Builder.boot_egress_check() end)
+      assert log =~ "not egress-filtered"
+    end
+
+    test "boot_egress_check/0 reports a missing filter", %{previous: previous} do
+      put_builder([egress_check: true, egress_filter_probe: fn -> {:error, :nope} end], previous)
+
+      log =
+        capture_log(fn ->
+          assert {:error, :egress_filter_missing} = Builder.boot_egress_check()
+        end)
+
+      assert log =~ "Build egress filter missing"
     end
   end
 
