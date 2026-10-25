@@ -250,4 +250,7 @@ config :portal, Portal.Accounts.WebAuthn,
 # Registry digests and agent releases CI published (ops/images-sync.sh).
 config :portal, Portal.Builders.Images, path: "/etc/ncc-portal/images.json"
 
+# The remote-builder CA key (NCC_BUILDER_CA_KEY in prod); unset disables enrolment.
+config :portal, Portal.Builders.CA, key_path: nil
+
 import_config "#{config_env()}.exs"
