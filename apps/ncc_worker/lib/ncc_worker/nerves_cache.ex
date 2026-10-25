@@ -140,12 +140,15 @@ defmodule NccWorker.NervesCache do
   def build_farm(source, farm) do
     with :ok <- File.mkdir_p(farm),
          {:ok, names} <- list_entries(source) do
-      Enum.reduce_while(names, :ok, fn name, :ok ->
-        case File.ln_s(Path.join(source, name), Path.join(farm, name)) do
-          :ok -> {:cont, :ok}
-          {:error, reason} -> {:halt, {:error, {:nerves_farm_link_failed, name, reason}}}
-        end
-      end)
+      Enum.reduce_while(names, :ok, &link_entry(&1, &2, source, farm))
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp link_entry(name, :ok, source, farm) do
+    case File.ln_s(Path.join(source, name), Path.join(farm, name)) do
+      :ok -> {:cont, :ok}
+      {:error, reason} -> {:halt, {:error, {:nerves_farm_link_failed, name, reason}}}
     end
   end
 
@@ -277,38 +280,43 @@ defmodule NccWorker.NervesCache do
     with :ok <- File.mkdir_p(target) do
       layout.artifacts_dir
       |> real_entries()
-      |> Enum.reduce_while({:ok, empty}, fn name, {:ok, acc} ->
-        source = Path.join(layout.artifacts_dir, name)
-        dest = Path.join(target, name)
+      |> Enum.reduce_while({:ok, empty}, &install_one(&1, &2, layout, target))
+    end
+  end
 
-        case install_entry(source, dest, dest <> @stale <> staging_name(layout.run_id)) do
-          {:ok, outcome} -> {:cont, {:ok, Map.update!(acc, outcome, &(&1 ++ [name]))}}
-          {:error, reason} -> {:halt, {:error, {:nerves_install_failed, name, reason}}}
-        end
-      end)
+  defp install_one(name, {:ok, acc}, layout, target) do
+    source = Path.join(layout.artifacts_dir, name)
+    dest = Path.join(target, name)
+
+    case install_entry(source, dest, dest <> @stale <> staging_name(layout.run_id)) do
+      {:ok, outcome} -> {:cont, {:ok, Map.update!(acc, outcome, &(&1 ++ [name]))}}
+      {:error, reason} -> {:halt, {:error, {:nerves_install_failed, name, reason}}}
+    end
+  end
+
+  defp install_entry(source, dest, stale) do
+    case fingerprint(source) do
+      {:ok, staged} -> install_at_dest(source, dest, stale, staged)
+      :error -> {:ok, :incomplete}
     end
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp install_entry(source, dest, stale) do
-    with {:ok, staged} <- fingerprint(source) do
-      case File.lstat(dest) do
-        {:error, :enoent} ->
-          with :ok <- File.rename(source, dest), do: {:ok, :installed}
+  defp install_at_dest(source, dest, stale, staged) do
+    case File.lstat(dest) do
+      {:error, :enoent} ->
+        with :ok <- File.rename(source, dest), do: {:ok, :installed}
 
-        {:ok, %File.Stat{type: :directory}} ->
-          if fingerprint(dest) == {:ok, staged},
-            do: {:ok, :kept},
-            else: replace(source, dest, stale)
+      {:ok, %File.Stat{type: :directory}} ->
+        if fingerprint(dest) == {:ok, staged},
+          do: {:ok, :kept},
+          else: replace(source, dest, stale)
 
-        {:ok, %File.Stat{}} ->
-          replace(source, dest, stale)
+      {:ok, %File.Stat{}} ->
+        replace(source, dest, stale)
 
-        {:error, reason} ->
-          {:error, reason}
-      end
-    else
-      :error -> {:ok, :incomplete}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

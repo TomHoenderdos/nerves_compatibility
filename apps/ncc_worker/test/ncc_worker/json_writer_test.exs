@@ -343,4 +343,45 @@ defmodule NccWorker.JsonWriterTest do
                "argus_only"
     end
   end
+
+  describe "nerves_cache" do
+    defp nerves_result(extra) do
+      Map.merge(
+        %{
+          run_id: "r-nerves",
+          package: %{name: "jason", version: "1.4.4"},
+          image: %{name: "ncc-worker:local", digest: "sha256:x"},
+          toolchain: %{elixir: "1.20.3", erlang: "29", mix: "1.20.3", nerves_bootstrap: "1.17.3"},
+          systems: %{},
+          finished_at: "2026-10-25T10:00:00Z"
+        },
+        extra
+      )
+    end
+
+    @tag :tmp_dir
+    test "writes a build's misses and locked Nerves packages", %{tmp_dir: dir} do
+      report = %{
+        misses: [%{"name" => "nerves_system_rpi4", "version" => "2.0.0"}],
+        lock: [%{"name" => "nerves_system_rpi4", "version" => "2.0.0"}]
+      }
+
+      assert :ok = JsonWriter.write_result(dir, nerves_result(%{nerves_cache: report}))
+
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+
+      assert decoded["nerves_cache"] == %{
+               "misses" => [%{"name" => "nerves_system_rpi4", "version" => "2.0.0"}],
+               "lock" => [%{"name" => "nerves_system_rpi4", "version" => "2.0.0"}]
+             }
+    end
+
+    @tag :tmp_dir
+    test "leaves the key out when the run has no report", %{tmp_dir: dir} do
+      assert :ok = JsonWriter.write_result(dir, nerves_result(%{}))
+
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      refute Map.has_key?(decoded, "nerves_cache")
+    end
+  end
 end

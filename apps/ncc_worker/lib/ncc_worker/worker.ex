@@ -15,6 +15,7 @@ defmodule NccWorker.Worker do
     HexMetadata,
     LockPolicy,
     LogTail,
+    NervesCache,
     Project,
     RunScope,
     Scanner,
@@ -129,6 +130,15 @@ defmodule NccWorker.Worker do
           # The package's own outer Hex checksum from the project's mix.lock.
           # Absent when the lock could not be read and for argus-only runs.
           optional(:package_checksum) => String.t(),
+          # A build's Nerves cache misses (artifacts Nerves had to extract into
+          # the run's farm) and its locked nerves_system_*/nerves_toolchain_*
+          # packages, string-keyed `%{"name", "version"}` pairs, for the host to
+          # warm (`NccWorker.NervesCache.report/2`). Absent when both are empty,
+          # for toolchain runs and under NCC_NERVES_CACHE_RW=1.
+          optional(:nerves_cache) => %{
+            misses: [%{String.t() => String.t()}],
+            lock: [%{String.t() => String.t()}]
+          },
           run_id: String.t(),
           package: %{
             name: String.t(),
@@ -209,14 +219,40 @@ defmodule NccWorker.Worker do
   """
   @spec run(input()) :: {:ok, result()} | {:error, term()}
   def run(input) do
+    scope = RunScope.from_input(input)
+
     with :ok <- validate_input(input),
          {:ok, paths} <- setup_paths(input),
-         {:ok, toolchain} <- detect_toolchain(RunScope.from_input(input)) do
-      if RunScope.from_input(input) == :toolchain,
-        do: toolchain_run(input, paths, toolchain),
-        else: full_run(input, paths, toolchain)
+         {:ok, nerves} <- prepare_nerves_cache(scope, input, paths),
+         {:ok, toolchain} <- detect_toolchain(scope) do
+      case scope do
+        :toolchain -> toolchain_run(input, paths, toolchain)
+        _ -> input |> full_run(paths, toolchain) |> put_nerves_cache(nerves, paths)
+      end
     end
   end
+
+  # Before any `mix` runs, `detect_toolchain/1`'s included: every later
+  # invocation is a child of this process and inherits both variables, so
+  # Nerves never falls back to `~/.nerves` (`NccWorker.NervesCache`). Every
+  # mode sets them; only a full, targets or argus-only run reports.
+  defp prepare_nerves_cache(scope, input, paths) do
+    kind = if scope == :warm_nerves, do: :warm, else: :build
+
+    with {:ok, layout} <-
+           NervesCache.prepare(kind, work_dir: paths.work_dir, run_id: input.run_id) do
+      :ok = NervesCache.export_env(layout)
+      {:ok, layout}
+    end
+  end
+
+  # At the end of the run, not after `deps.get`: Nerves 2 resolves artifacts
+  # when the nerves_bootstrap compile hook runs, which in a build is
+  # `mix firmware`.
+  defp put_nerves_cache({:ok, result}, layout, paths),
+    do: {:ok, NervesCache.put_report(result, layout, Path.join(paths.work_dir, "proj"))}
+
+  defp put_nerves_cache(other, _layout, _paths), do: other
 
   defp full_run(input, paths, toolchain) do
     {description, github_url, release_info, retired_info, metadata_version, build_tools} =

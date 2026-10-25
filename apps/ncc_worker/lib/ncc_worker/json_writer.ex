@@ -67,11 +67,20 @@ defmodule NccWorker.JsonWriter do
     # Each absent rather than null when the result has none: `deps_lock` and
     # `package_checksum` when the worker could not read the lock (the way a run
     # from an image before lock recording looks too), `optional_deps` for
-    # argus-only runs, which publish nothing, and `toolchain_build` and
+    # argus-only runs, which publish nothing, `toolchain_build` and
     # `requested_toolchain` for every run but a toolchain one
-    # (`NccWorker.Worker.toolchain_build/4`).
+    # (`NccWorker.Worker.toolchain_build/4`), and `nerves_cache` for a run with
+    # no Nerves cache misses or locked Nerves packages
+    # (`NccWorker.NervesCache.report/2`).
     json =
-      [:deps_lock, :package_checksum, :optional_deps, :toolchain_build, :requested_toolchain]
+      [
+        :deps_lock,
+        :package_checksum,
+        :optional_deps,
+        :toolchain_build,
+        :requested_toolchain,
+        :nerves_cache
+      ]
       |> Enum.reduce(json, &put_present(&2, &1, Map.get(result, &1)))
 
     # Candidates for the host to promote into the shared build cache, one per

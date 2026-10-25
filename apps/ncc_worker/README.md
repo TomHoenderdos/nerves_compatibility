@@ -63,6 +63,20 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    own `/tmp` rather than the shared cache, so a multi-target run still compiles a shared dependency once and
    restores it for the other targets without trusting the container to fill the shared cache itself.
 
+## Nerves cache
+
+`/nerves-cache` is the build host's shared Nerves cache, mounted read-only into a build. Before any `mix` runs, the
+worker (`NccWorker.NervesCache`) sets `NERVES_ARTIFACTS_DIR=/work/nerves/artifacts` and `NERVES_DL_DIR=/work/nerves/dl`
+in every mode: the first holds one symlink per entry of `/nerves-cache/artifacts/` (`<app>-<version>`), the second
+starts empty. A cached artifact resolves through its link; one the cache lacks, or whose `.fingerprint` does not match,
+Nerves downloads and extracts into the run dir (removing a link never touches its target), and the build passes either
+way. At the end of the run every farm entry that is a real directory is a miss, and `result.json` carries
+`"nerves_cache": {"misses": [{"name": "nerves_system_rpi4", "version": "2.0.0"}], "lock": [...]}`, where `lock` lists
+the run's `mix.lock` entries whose name starts with `nerves_system_` or `nerves_toolchain_`. The key is absent when
+both lists are empty and for toolchain runs. With `NCC_NERVES_CACHE_RW=1` in the container env (the one-release
+rollback, set by `Portal.Builder`) the cache is mounted read-write, both variables point at `/nerves-cache/artifacts`
+and `/nerves-cache/dl` directly, and nothing is reported. Nothing refers to `/home/nerves/.nerves`.
+
 ## Toolchain mode
 
 With `"mode": "toolchain"` (and an informational `"toolchain": {"elixir": "1.19", "otp": "28"}`, echoed back as
