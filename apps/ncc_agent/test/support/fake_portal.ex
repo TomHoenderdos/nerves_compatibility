@@ -106,6 +106,13 @@ defmodule NccAgent.Test.FakePortal do
     end
   end
 
+  defp next_claim(script) do
+    case Map.get(script, :claims, []) do
+      [next | rest] -> {next, Map.put(script, :claims, rest)}
+      [] -> {nil, script}
+    end
+  end
+
   defp route(conn, "POST", ["builder", "v1", "status"], opts) do
     record(conn, opts, conn.body_params)
     json(conn, 200, %{ok: true})
@@ -119,14 +126,7 @@ defmodule NccAgent.Test.FakePortal do
         json(conn, status, body)
 
       nil ->
-        claim =
-          Agent.get_and_update(opts.script, fn script ->
-            case Map.get(script, :claims, []) do
-              [next | rest] -> {next, Map.put(script, :claims, rest)}
-              [] -> {nil, script}
-            end
-          end)
-
+        claim = Agent.get_and_update(opts.script, &next_claim/1)
         if claim, do: json(conn, 200, claim), else: send_resp(conn, 204, "")
     end
   end
