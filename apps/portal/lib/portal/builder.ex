@@ -39,6 +39,12 @@ defmodule Portal.Builder do
   # (a plain systemd service) or is a NixOS unit's narrow `path`.
   @egress_tool_dirs ["/usr/sbin", "/sbin", "/usr/local/sbin", "/run/current-system/sw/bin"]
 
+  # A hung `nsenter`/`nft` (a wedged mount namespace, a stuck daemon) must not
+  # block a `:builds` slot forever; `probe_egress/1` bounds the call to this
+  # many milliseconds and fails closed past it. Overridable per call
+  # (`:timeout_ms`) so tests use a short bound.
+  @egress_probe_timeout_ms :timer.seconds(10)
+
   @type build_args :: %{
           required(:run_id) => String.t(),
           # Required for every mode except "warm_nerves", which builds no package.
@@ -548,27 +554,50 @@ defmodule Portal.Builder do
   @doc false
   # Lists `inet ncc_egress` inside the namespace of rootlesskit's child, the
   # one the bridge lives in: with `--detach-netns` dockerd itself stays in the
-  # host namespace. `opts` (`:child_pid_file`, `:find`) are for tests. The pid
-  # file is rootlesskit's own and both tools are found on PATH or fixed sbin
-  # dirs; the pid is checked to be digits; nothing in the argv comes from a
-  # package or a request.
-  # sobelow_skip ["CI.System"]
+  # host namespace. `opts` (`:child_pid_file`, `:find`, `:timeout_ms`) are for
+  # tests. The pid file is rootlesskit's own and both tools are found on PATH
+  # or fixed sbin dirs; the pid is checked to be digits; nothing in the argv
+  # comes from a package or a request. The `nsenter`/`nft` call itself runs in
+  # a separate task bounded by `:timeout_ms` (`@egress_probe_timeout_ms` by
+  # default): a wedged namespace or daemon fails closed instead of blocking
+  # the caller's `:builds` slot forever.
   @spec probe_egress(keyword()) :: :ok | {:error, term()}
   def probe_egress(opts \\ []) do
     find = Keyword.get(opts, :find, &find_egress_tool/1)
     pid_file = Keyword.get_lazy(opts, :child_pid_file, &rootlesskit_child_pid_file/0)
+    timeout_ms = Keyword.get(opts, :timeout_ms, @egress_probe_timeout_ms)
 
     with {:ok, pid} <- read_child_pid(pid_file),
          {:ok, nsenter} <- egress_tool(find, "nsenter"),
          {:ok, nft} <- egress_tool(find, "nft") do
-      list_egress_table(nsenter, nft, pid)
+      bounded_list_egress_table(nsenter, nft, pid, timeout_ms)
     end
-  rescue
-    e in ErlangError -> {:error, {:probe_failed, Exception.message(e)}}
+  end
+
+  # Runs the actual nft call in its own task so a hang can be abandoned
+  # (`Task.shutdown/2`) instead of blocking the caller past `timeout_ms`.
+  # `Task.shutdown(:brutal_kill)` only stops the Elixir task; it does not
+  # reliably reap `nsenter` itself, but it is what bounds `check_egress/0`'s
+  # caller, which is the load-bearing property here.
+  defp bounded_list_egress_table(nsenter, nft, pid, timeout_ms) do
+    task = Task.async(fn -> list_egress_table(nsenter, nft, pid) end)
+
+    case Task.yield(task, timeout_ms) do
+      {:ok, result} ->
+        result
+
+      {:exit, reason} ->
+        {:error, {:probe_crashed, reason}}
+
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, :timeout}
+    end
   end
 
   # Fixed argv built from the two resolved tool paths and the rootlesskit
-  # child's own pid; nothing here comes from a package or a request.
+  # child's own pid; nothing here comes from a package or a request. Runs
+  # inside the bounded task started by `bounded_list_egress_table/4`.
   # sobelow_skip ["CI.System"]
   defp list_egress_table(nsenter, nft, pid) do
     args = ["-U", "--preserve-credentials", "-n", "-t", pid, nft, "list", "table", "inet"]
@@ -580,6 +609,8 @@ defmodule Portal.Builder do
       {out, status} ->
         {:error, {:nft_failed, status, String.trim(out)}}
     end
+  rescue
+    e in ErlangError -> {:error, {:probe_failed, Exception.message(e)}}
   end
 
   @doc false
