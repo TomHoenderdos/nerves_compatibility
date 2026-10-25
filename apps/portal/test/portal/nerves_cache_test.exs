@@ -227,4 +227,95 @@ defmodule Portal.NervesCacheTest do
       assert NervesCache.template_entries(root) == :error
     end
   end
+
+  describe "ensure_trusted/1 and deploy_warm/1" do
+    setup do
+      root = Path.join(System.tmp_dir!(), "nerves-deploy-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf(root) end)
+      %{root: root}
+    end
+
+    defmodule WarmStub do
+      def docker_image, do: "ncc-worker:local"
+      def image_digest("ncc-worker:local"), do: "sha256:live"
+
+      def build(args) do
+        send(self(), {:warm_build, args})
+        Process.get(:warm_response)
+      end
+
+      def cleanup(run_id) do
+        send(self(), {:cleanup, run_id})
+        :ok
+      end
+    end
+
+    defp warm_ok(resolved),
+      do:
+        {:ok,
+         %{
+           exit_code: 0,
+           result: %{"warm" => %{"resolved" => resolved}},
+           files_dir: "",
+           output_dir: "",
+           log: ""
+         }}
+
+    # Every entry there before this release was extracted by an untrusted build.
+    test "the first call drops what builds wrote, without following links", %{root: root} do
+      outside = Path.join(root, "outside")
+      File.mkdir_p!(outside)
+      File.write!(Path.join(outside, "keep"), "not the cache's")
+      File.mkdir_p!(Path.join([root, "artifacts", "nerves_system_rpi4-2.0.0"]))
+      File.mkdir_p!(Path.join([root, "dl", "nerves_system_rpi4-2.0.0"]))
+      File.ln_s!(outside, Path.join([root, "artifacts", "nerves_system_bbb-2.0.0"]))
+
+      assert :ok = NervesCache.ensure_trusted(root)
+
+      refute File.exists?(Path.join(root, "artifacts"))
+      refute File.exists?(Path.join(root, "dl"))
+      assert File.read!(Path.join(outside, "keep")) == "not the cache's"
+      assert File.regular?(Path.join(root, ".ncc-trusted-v1"))
+
+      File.mkdir_p!(Path.join([root, "artifacts", "nerves_system_rpi4-2.0.0"]))
+      assert :ok = NervesCache.ensure_trusted(root)
+      assert File.dir?(Path.join([root, "artifacts", "nerves_system_rpi4-2.0.0"]))
+    end
+
+    test "warms the template on the live image and records what it resolved", %{root: root} do
+      Process.put(
+        :warm_response,
+        warm_ok(["nerves_system_rpi4-2.0.0", "nerves_system_bbb-2.0.0"])
+      )
+
+      assert :ok = NervesCache.deploy_warm(builder: WarmStub, root: root)
+
+      assert_received {:warm_build,
+                       %{
+                         mode: "warm_nerves",
+                         nerves_packages: [],
+                         image_digest: "sha256:live",
+                         run_id: "warm_nerves-" <> _ = run_id
+                       }}
+
+      assert_received {:cleanup, ^run_id}
+
+      assert NervesCache.template_entries(root) ==
+               {:ok, MapSet.new(["nerves_system_bbb-2.0.0", "nerves_system_rpi4-2.0.0"])}
+    end
+
+    test "a failed warm leaves the template file alone and says why", %{root: root} do
+      :ok = NervesCache.write_template(root, "sha256:old", ["nerves_system_rpi4-1.0.0"])
+
+      Process.put(
+        :warm_response,
+        {:ok, %{exit_code: 10, result: nil, files_dir: "", output_dir: "", log: ""}}
+      )
+
+      assert {:error, {:warm_exit, 10}} = NervesCache.deploy_warm(builder: WarmStub, root: root)
+      assert NervesCache.template_entries(root) == {:ok, MapSet.new(["nerves_system_rpi4-1.0.0"])}
+      assert_received {:cleanup, _}
+    end
+  end
 end

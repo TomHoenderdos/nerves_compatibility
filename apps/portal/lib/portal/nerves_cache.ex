@@ -298,4 +298,84 @@ defmodule Portal.NervesCache do
       File.rename(tmp, path)
     end
   end
+
+  @trusted_marker ".ncc-trusted-v1"
+
+  @doc """
+  Makes sure everything under `root` was written by a warm. Until this release
+  every build extracted into the shared cache, so on the first call
+  `artifacts/` and `dl/` are removed (`File.rm_rf/1` removes a symlink, never
+  its target) and `#{@trusted_marker}` is written; later calls do nothing.
+  """
+  @spec ensure_trusted(Path.t()) :: :ok
+  # root is the operator-configured Nerves cache; the names below it are fixed.
+  # sobelow_skip ["Traversal.FileModule"]
+  def ensure_trusted(root) do
+    marker = Path.join(root, @trusted_marker)
+
+    case File.lstat(marker) do
+      {:ok, %File.Stat{type: :regular}} ->
+        :ok
+
+      _ ->
+        File.mkdir_p!(root)
+        File.rm_rf!(Path.join(root, "artifacts"))
+        File.rm_rf!(Path.join(root, "dl"))
+
+        File.write!(
+          marker,
+          "Every entry under artifacts/ was written by a warm run (Portal.NervesCache).\n"
+        )
+
+        :ok
+    end
+  end
+
+  @doc """
+  The deploy-time warm, run by `ops/builder-deploy.sh` through the new
+  release's `eval` after the new worker image is live and before the restart:
+  `ensure_trusted/1`, then one synchronous `mode: "warm_nerves"` container
+  with no pairs, so what the template resolves is cached before the first
+  build, and its `warm.resolved` recorded with `write_template/3` for
+  `Portal.Workers.Sweep`. A docker run, not an Oban job: a job would run on
+  whichever host polled first. `opts[:builder]` and `opts[:root]` replace
+  `Portal.Builder` and its `nerves_cache/0` in tests.
+  """
+  @spec deploy_warm(keyword()) :: :ok | {:error, term()}
+  def deploy_warm(opts \\ []) do
+    builder =
+      Keyword.get_lazy(opts, :builder, fn ->
+        Application.get_env(:portal, :build_runner, Portal.Builder)
+      end)
+
+    root = Keyword.get_lazy(opts, :root, &Portal.Builder.nerves_cache/0)
+    digest = builder.image_digest(builder.docker_image())
+    run_id = "warm_nerves-#{System.system_time(:millisecond)}"
+
+    :ok = ensure_trusted(root)
+
+    try do
+      case builder.build(%{
+             run_id: run_id,
+             mode: "warm_nerves",
+             nerves_packages: [],
+             image_digest: digest
+           }) do
+        {:ok, %{exit_code: 0, result: %{"warm" => %{"resolved" => resolved}}}}
+        when is_list(resolved) ->
+          write_template(root, digest, Enum.filter(resolved, &is_binary/1))
+
+        {:ok, %{exit_code: 0}} ->
+          {:error, :missing_warm_result}
+
+        {:ok, %{exit_code: code}} ->
+          {:error, {:warm_exit, code}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    after
+      builder.cleanup(run_id)
+    end
+  end
 end

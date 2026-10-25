@@ -11,8 +11,11 @@ defmodule Portal.Workers.BuildIntegrationTest do
       mix test --only integration
 
   Requires: Docker daemon running, `ncc-worker:local` built (`make build`), and
-  network access to Hex.pm + the Nerves system artifact host. First run is slow
-  (~10 min) while the x86_64 system artifact is cached into ~/.ncc-nerves-cache.
+  network access to Hex.pm + the Nerves system artifact host. The Nerves cache
+  test runs the deploy-time warm, which on its first run empties the configured
+  Nerves cache (`Portal.Builder.nerves_cache/0`: a temp dir under `config/test.exs`,
+  ~/.ncc-nerves-cache elsewhere unless NCC_NERVES_CACHE names another) of
+  entries builds wrote and downloads every default target's artifacts, about 2 GB.
   """
   use Portal.DataCase, async: false
   use Oban.Testing, repo: Portal.Repo
@@ -23,7 +26,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
   alias Portal.Builder
   alias Portal.Catalog.{Package, Run, SystemResult}
   alias Portal.ScanRequests
-  alias Portal.Workers.{Build, Ingest}
+  alias Portal.Workers.{Build, Ingest, WarmNerves}
 
   @moduletag :integration
   @moduletag timeout: :timer.minutes(30)
@@ -209,6 +212,89 @@ defmodule Portal.Workers.BuildIntegrationTest do
     assert String.ends_with?(mount, "target=/build-cache,readonly")
 
     # Drain the ingest job so it does not linger for other tests in this file.
+    assert :ok = Ingest.perform(%Oban.Job{args: ingest_job.args, attempt: 1, max_attempts: 5})
+    Repo.delete!(ingest_job)
+  end
+
+  # Isolation spec, section 1: the deploy-time warm fills the cache through
+  # trusted code only; a build then mounts it read-only, resolves through its
+  # per-run symlink farm, reports its locked Nerves packages and no misses,
+  # and so queues no warm.
+  @tag timeout: :timer.minutes(90)
+  test "a template warm fills the read-only Nerves cache a jason build then reads" do
+    root = Builder.nerves_cache()
+
+    assert :ok = Portal.NervesCache.deploy_warm()
+
+    assert {:ok, template} = Portal.NervesCache.template_entries(root)
+    assert Enum.any?(template, &String.starts_with?(&1, "nerves_system_x86_64-"))
+    assert Enum.any?(template, &String.starts_with?(&1, "nerves_toolchain_"))
+
+    artifacts = Path.join(root, "artifacts")
+
+    installed =
+      Enum.filter(
+        template,
+        &match?({:ok, %File.Stat{type: :directory}}, File.lstat(Path.join(artifacts, &1)))
+      )
+
+    assert Enum.any?(installed, &String.starts_with?(&1, "nerves_system_x86_64-"))
+
+    for entry <- installed,
+        do: assert(File.regular?(Path.join([artifacts, entry, ".fingerprint"])))
+
+    assert File.ls(Path.join(root, "staging")) in [{:ok, []}, {:error, :enoent}]
+
+    {:ok, request} =
+      ScanRequests.create_once(%{
+        package_name: "jason",
+        version: "1.4.2",
+        source: :hex_owner,
+        status: :accepted
+      })
+
+    image_digest = Builder.image_digest(Builder.docker_image())
+
+    job = %Oban.Job{
+      args: %{
+        "package" => "jason",
+        "version" => "1.4.2",
+        "image_digest" => image_digest,
+        "scan_request_id" => request.id
+      },
+      attempt: 1,
+      max_attempts: 3
+    }
+
+    assert :ok = Build.perform(job)
+
+    ingest_job =
+      all_enqueued(worker: Ingest) |> Enum.find(&(&1.args["scan_request_id"] == request.id))
+
+    assert ingest_job
+    run_id = ingest_job.args["run_id"]
+    assert {:ok, %{result: result}} = Builder.load_run(run_id)
+
+    assert %{"misses" => [], "lock" => [_ | _] = lock} = result["nerves_cache"]
+    locked = MapSet.new(lock, &"#{&1["name"]}-#{&1["version"]}")
+    assert MapSet.subset?(locked, template)
+    assert all_enqueued(worker: WarmNerves) == []
+
+    mount_job = %{run_id: run_id, image_name: Builder.docker_image(), image_digest: image_digest}
+    build_args = Builder.build_docker_args(mount_job, "/work", "/out", "/files")
+
+    warm_args =
+      Builder.build_docker_args(
+        Map.put(mount_job, :mode, "warm_nerves"),
+        "/work",
+        "/out",
+        "/files"
+      )
+
+    assert "type=bind,source=#{root},target=/nerves-cache,readonly" in build_args
+    assert "type=bind,source=#{root},target=/nerves-cache" in warm_args
+    refute Enum.any?(build_args ++ warm_args, &String.contains?(&1, "/home/nerves/.nerves"))
+
     assert :ok = Ingest.perform(%Oban.Job{args: ingest_job.args, attempt: 1, max_attempts: 5})
     Repo.delete!(ingest_job)
   end
