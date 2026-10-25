@@ -91,6 +91,25 @@ defmodule NccWorker.DepsLock do
     end
   end
 
+  @doc """
+  Every Hex entry's locked version, keyed by lock name, or `:error` when the
+  lock is missing or unreadable. `NccWorker.NervesCache` reads the Nerves
+  systems and toolchains a run resolved out of it.
+  """
+  @spec versions(String.t()) :: {:ok, %{String.t() => String.t()}} | :error
+  def versions(project_dir) do
+    with {:ok, lock} <- read_lock(project_dir) do
+      {:ok, lock |> Enum.flat_map(&locked_version/1) |> Map.new()}
+    end
+  end
+
+  defp locked_version({name, entry})
+       when is_tuple(entry) and tuple_size(entry) >= 3 and elem(entry, 0) == :hex and
+              is_binary(elem(entry, 2)),
+       do: [{name, elem(entry, 2)}]
+
+  defp locked_version(_entry), do: []
+
   defp lock_deps({:hex, _pkg, _version, _inner, _managers, deps, _repo, _outer})
        when is_list(deps),
        do: deps
