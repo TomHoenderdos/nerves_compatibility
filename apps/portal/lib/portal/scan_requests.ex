@@ -183,7 +183,7 @@ defmodule Portal.ScanRequests do
     # so they are stripped here rather than handed to a changeset that would
     # reject them. See `Portal.Workers.Build` for what each one does, and
     # `Portal.BulkRebuild` for the only caller that sets scope and sweep id.
-    {build_opts, attrs} = Map.split(attrs, [:force, :scope, :systems, :sweep_id])
+    {build_opts, attrs} = Map.split(attrs, [:force, :scope, :systems, :sweep_id, :pin_local])
 
     request_result =
       case open_request_for_package(package_name) do
@@ -358,7 +358,7 @@ defmodule Portal.ScanRequests do
   # Options:
   #
   #   * `:admin_user` - stamps the request as approved by that admin.
-  #   * `:build` - a map of `:force`/`:scope`/`:systems`/`:sweep_id` instructions
+  #   * `:build` - a map of `:force`/`:scope`/`:systems`/`:sweep_id`/`:pin_local` instructions
   #     for the build job. See `insert_build_job/4`.
   defp enqueue_build(%ScanRequest{} = request, source, opts) do
     admin_user = Keyword.get(opts, :admin_user)
@@ -398,7 +398,11 @@ defmodule Portal.ScanRequests do
       |> put_if(:systems, build[:scope] == "targets", build[:systems])
 
     # Only a sweep names its jobs; an ordinary request's job carries no meta.
-    meta = if build[:sweep_id], do: %{sweep_id: build[:sweep_id]}, else: %{}
+    # `pin_local` (a builder revocation's rebuild) keeps the job off remote
+    # builders; routing reads it from `meta`.
+    meta =
+      if(build[:sweep_id], do: %{sweep_id: build[:sweep_id]}, else: %{})
+      |> Map.merge(if build[:pin_local], do: %{pin_local: true}, else: %{})
 
     args
     |> Build.new(priority: priority(source), meta: meta)

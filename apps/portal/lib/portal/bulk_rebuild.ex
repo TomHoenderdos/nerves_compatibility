@@ -68,6 +68,9 @@ defmodule Portal.BulkRebuild do
     * `:dry_run` -- count the selection, write and queue nothing
     * `:stagger_ms` -- gap between consecutive jobs (default 1000)
     * `:created_by` -- who started the sweep, kept on the `BulkSweep` row
+    * `:pin_local` -- build on this host only, never on a remote builder
+      (`Portal.Builders.revoke/1` sets it); carried as `"pin_local"` in the
+      Backfill job args
 
   A dry run, or an empty selection, returns `sweep_id: nil`.
   """
@@ -172,9 +175,9 @@ defmodule Portal.BulkRebuild do
                what: what,
                systems: systems,
                options:
-                 Map.new(Keyword.take(opts, [:limit, :order, :status, :names]), fn {k, v} ->
-                   {k, inspect(v)}
-                 end),
+                 opts
+                 |> Keyword.take([:limit, :order, :status, :names, :pin_local])
+                 |> Map.new(fn {k, v} -> {k, inspect(v)} end),
                selected: length(names),
                created_by: Keyword.get(opts, :created_by)
              },
@@ -182,12 +185,15 @@ defmodule Portal.BulkRebuild do
              domain: Portal.Catalog
            ) do
       stagger = Keyword.get(opts, :stagger_ms, 1000)
+      pin_local = Keyword.get(opts, :pin_local, false) == true
       now = DateTime.utc_now()
 
       inserted =
         names
         |> Enum.with_index()
-        |> Enum.map(fn {name, i} -> job(name, i, what, systems, sweep.id, now, stagger) end)
+        |> Enum.map(fn {name, i} ->
+          job(name, i, {what, systems, pin_local}, sweep.id, now, stagger)
+        end)
         |> Enum.chunk_every(@chunk)
         |> Enum.flat_map(&Oban.insert_all/1)
         |> Enum.reject(& &1.conflict?)
@@ -196,7 +202,7 @@ defmodule Portal.BulkRebuild do
     end
   end
 
-  defp job(name, index, what, systems, sweep_id, now, stagger) do
+  defp job(name, index, {what, systems, pin_local}, sweep_id, now, stagger) do
     %{
       "package" => name,
       "source" => "backfill",
@@ -205,6 +211,7 @@ defmodule Portal.BulkRebuild do
       "sweep_id" => sweep_id
     }
     |> then(&if(systems, do: Map.put(&1, "systems", systems), else: &1))
+    |> then(&if(pin_local, do: Map.put(&1, "pin_local", true), else: &1))
     |> Backfill.new(
       scheduled_at: DateTime.add(now, index * stagger, :millisecond),
       meta: %{sweep_id: sweep_id}

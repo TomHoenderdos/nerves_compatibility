@@ -93,7 +93,8 @@ defmodule Portal.Workers.Backfill do
       force: args["force"] == true,
       scope: args["scope"],
       systems: args["systems"],
-      sweep_id: args["sweep_id"]
+      sweep_id: args["sweep_id"],
+      pin_local: args["pin_local"] == true
     }
 
     if source in @sources do
