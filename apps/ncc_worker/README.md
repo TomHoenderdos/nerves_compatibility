@@ -77,6 +77,22 @@ both lists are empty and for toolchain runs. With `NCC_NERVES_CACHE_RW=1` in the
 rollback, set by `Portal.Builder`) the cache is mounted read-write, both variables point at `/nerves-cache/artifacts`
 and `/nerves-cache/dl` directly, and nothing is reported. Nothing refers to `/home/nerves/.nerves`.
 
+## Warm mode
+
+With `"mode": "warm_nerves"` and `"nerves_packages": [{"name": "nerves_system_rpi4", "version": "2.0.0"}]` (and no
+`package`) the worker fills the shared Nerves cache, which only this mode gets read-write (`NccWorker.WarmNerves`).
+Nerves points at `/nerves-cache/staging/<run_id>/`, a farm over the cache like a build's. The worker creates the
+template project, pins each requested system that it builds to `== version` (toolchains are never pinned; they resolve
+through their system), and runs `mix deps.get` and `mix nerves.artifact.get` for every default target (only the pinned
+systems' targets when the request names systems and no toolchain). If all of them succeed, every artifact Nerves
+extracted is moved into `/nerves-cache/artifacts/`: renamed in when absent, left alone when the existing entry has the
+same `.fingerprint`, and otherwise swapped in after the old entry is renamed to `<entry>.stale.<run_id>`. If any target
+fails, nothing is installed and the run exits `10`. The staging dir and this run's `.stale.` entries are removed either
+way. `result.json` has `"scope": "warm_nerves"`, `"package": null`, `"systems": {}` and
+`"warm": {"requested", "rejected", "targets", "installed", "kept", "replaced", "incomplete", "resolved", "not_warmed"}`,
+where `resolved` lists the project's locked `nerves_system_*`/`nerves_toolchain_*` as `<name>-<version>`. With no pairs
+it warms whatever the template resolves; `ops/builder-deploy.sh` runs that after every builder deploy.
+
 ## Toolchain mode
 
 With `"mode": "toolchain"` (and an informational `"toolchain": {"elixir": "1.19", "otp": "28"}`, echoed back as
