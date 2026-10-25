@@ -52,6 +52,27 @@ defmodule Portal.Settings do
     |> Ash.create(domain: __MODULE__)
   end
 
+  @doc """
+  Writes only `remote_auto_on`, leaving every other column as stored, so it
+  is safe to call from the enqueue path alongside an admin `save/1`. With no
+  row yet it first stores the defaults.
+  """
+  @spec set_remote_auto_on(boolean()) :: {:ok, Setting.t()} | {:error, term()}
+  def set_remote_auto_on(value) when is_boolean(value) do
+    with {:ok, setting} <- stored() do
+      setting
+      |> Ash.Changeset.for_update(:set_remote_auto_on, %{remote_auto_on: value})
+      |> Ash.update(domain: __MODULE__)
+    end
+  end
+
+  defp stored do
+    case Setting |> Ash.Query.filter(key == ^@key) |> Ash.read_one(domain: __MODULE__) do
+      {:ok, nil} -> save(%{})
+      other -> other
+    end
+  end
+
   @doc "The `argus` key of the worker's `NCC_INPUT`, or nil when argus is off."
   @spec worker_argus(Setting.t()) :: map() | nil
   def worker_argus(%Setting{argus_enabled: false}), do: nil

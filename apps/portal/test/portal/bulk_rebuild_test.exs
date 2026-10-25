@@ -135,4 +135,57 @@ defmodule Portal.BulkRebuildTest do
     assert BulkRebuild.recent() == []
     assert all_enqueued(worker: Portal.Workers.Backfill) == []
   end
+
+  describe "a completed RemoteBuild job" do
+    defp remote_job!(sweep_id, package, state) do
+      request_id = Ecto.UUID.generate()
+
+      job =
+        %{package: package, version: "1.0.0", scan_request_id: request_id}
+        |> Portal.Workers.RemoteBuild.new(meta: %{sweep_id: sweep_id})
+        |> Oban.insert!()
+
+      Repo.update!(Ecto.Changeset.change(job, state: state))
+      request_id
+    end
+
+    defp lease!(request_id, state) do
+      Portal.Builders.Lease
+      |> Ash.Changeset.for_create(:create, %{
+        package: "p",
+        version: "1.0.0",
+        image_name: "i",
+        image_digest: "sha256:d",
+        args: %{},
+        scan_request_id: request_id,
+        state: state
+      })
+      |> Ash.create!(domain: Portal.Builders)
+    end
+
+    test "counts by its request's newest lease, and as done with none" do
+      sweep_id = Ecto.UUID.generate()
+
+      for {package, state} <- [
+            q: :queued,
+            l: :leased,
+            u: :uploading,
+            d: :done,
+            f: :failed
+          ] do
+        sweep_id |> remote_job!(to_string(package), "completed") |> lease!(state)
+      end
+
+      # An older failed lease is superseded by the newer queued one.
+      retried = remote_job!(sweep_id, "retried", "completed")
+      lease!(retried, :failed)
+      lease!(retried, :queued)
+
+      _deduped = remote_job!(sweep_id, "deduped", "completed")
+      _waiting = remote_job!(sweep_id, "waiting", "available")
+
+      assert %{queued: 3, building: 2, done: 2, failed: 1, remaining: 5} =
+               BulkRebuild.status(sweep_id)
+    end
+  end
 end

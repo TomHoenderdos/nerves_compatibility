@@ -14,10 +14,11 @@ defmodule Portal.Workers.RemoteBuild do
   use Oban.Worker,
     queue: :remote,
     max_attempts: 3,
-    # The same uniqueness as `Portal.Workers.Build`; see the reasoning there.
+    # The same uniqueness as `Portal.Workers.Build`, which it dedups against;
+    # see the reasoning there.
     unique: [
       period: 60,
-      fields: [:worker, :queue, :args],
+      fields: [:args],
       keys: [:package, :version, :image_digest, :force, :scan_request_id, :scope, :systems]
     ]
 

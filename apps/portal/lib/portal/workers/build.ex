@@ -43,9 +43,13 @@ defmodule Portal.Workers.Build do
     # different scope inside the 60 s window (e.g. a bulk rebuild's
     # argus-only pass right after its targets pass) must not be coalesced
     # into the first.
+    #
+    # Neither worker nor queue is a field: `Portal.Builders.Routing` may route
+    # the same request to `Portal.Workers.RemoteBuild` on `:remote`, and a
+    # request enqueued twice inside the window must still get one job.
     unique: [
       period: 60,
-      fields: [:worker, :queue, :args],
+      fields: [:args],
       keys: [:package, :version, :image_digest, :force, :scan_request_id, :scope, :systems]
     ]
 

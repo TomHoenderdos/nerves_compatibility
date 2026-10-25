@@ -60,6 +60,12 @@ defmodule Portal.Settings.Setting do
       upsert?(true)
       upsert_identity(:unique_key)
     end
+
+    # Routing's automatic flag, written alone: a read-merge-write `upsert` from
+    # the enqueue path could undo an admin save that landed in between.
+    update :set_remote_auto_on do
+      accept([:remote_auto_on])
+    end
   end
 
   identities do

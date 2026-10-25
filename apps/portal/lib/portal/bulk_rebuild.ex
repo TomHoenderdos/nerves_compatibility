@@ -224,9 +224,16 @@ defmodule Portal.BulkRebuild do
 
   @doc """
   The sweep's jobs counted by stage: Backfill jobs not yet finished are
-  `intake`; Build jobs are `queued`, `building` or `done`; either kind
-  discarded is `failed` and either kind cancelled is `cancelled`.
+  `intake`; Build jobs are `queued`, `building` or `done`; any kind
+  discarded is `failed` and any kind cancelled is `cancelled`.
   `remaining` is intake + queued + building.
+
+  A `Portal.Workers.RemoteBuild` job counts like a Build job until it
+  completes, which it does as soon as it has written its lease. A completed
+  one counts by the state of its request's newest lease instead: `queued` is
+  `queued`, `leased` or `uploading` is `building`, `done` is `done` and
+  `failed` is `failed`. One with no lease deduped against an existing run and
+  is `done`.
 
   Counts come from Oban, whose Pruner deletes finished jobs (completed,
   discarded, cancelled) once they are older than its `max_age`
@@ -248,6 +255,11 @@ defmodule Portal.BulkRebuild do
 
     counts
     |> Enum.reduce(empty, fn {worker, state, n}, acc -> tally(acc, worker, state, n) end)
+    |> then(
+      &Enum.reduce(remote_lease_counts(sweep_id), &1, fn {state, n}, acc ->
+        tally_lease(acc, state, n)
+      end)
+    )
     |> then(&Map.put(&1, :remaining, &1.intake + &1.queued + &1.building))
   end
 
@@ -272,8 +284,42 @@ defmodule Portal.BulkRebuild do
   defp tally(acc, worker, "executing", n) when worker in @build_workers,
     do: add(acc, :building, n)
 
+  # Counted by its lease instead; see `remote_lease_counts/1`.
+  defp tally(acc, "Portal.Workers.RemoteBuild", "completed", _n), do: acc
   defp tally(acc, worker, "completed", n) when worker in @build_workers, do: add(acc, :done, n)
   defp tally(acc, _worker, _state, _n), do: acc
+
+  # The sweep's completed RemoteBuild jobs, grouped by the state of the newest
+  # lease for each job's scan request (nil when it wrote none).
+  defp remote_lease_counts(sweep_id) do
+    Repo.all(
+      from(j in "oban_jobs",
+        where: ^sweep_jobs(sweep_id),
+        where: j.worker == "Portal.Workers.RemoteBuild" and j.state == "completed",
+        left_lateral_join:
+          l in fragment(
+            """
+            SELECT state FROM builder_leases
+            WHERE scan_request_id::text = (? ->> 'scan_request_id')
+            ORDER BY inserted_at DESC
+            LIMIT 1
+            """,
+            j.args
+          ),
+        on: true,
+        group_by: l.state,
+        select: {l.state, count()}
+      )
+    )
+  end
+
+  defp tally_lease(acc, "queued", n), do: add(acc, :queued, n)
+
+  defp tally_lease(acc, state, n) when state in ["leased", "uploading"],
+    do: add(acc, :building, n)
+
+  defp tally_lease(acc, "failed", n), do: add(acc, :failed, n)
+  defp tally_lease(acc, _done_or_none, n), do: add(acc, :done, n)
 
   defp add(acc, key, n), do: Map.update!(acc, key, &(&1 + n))
 

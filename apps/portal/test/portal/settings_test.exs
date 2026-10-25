@@ -61,4 +61,31 @@ defmodule Portal.SettingsTest do
     {:ok, _} = Settings.save(%{argus_enabled: false})
     assert Settings.worker_argus(Settings.get()) == nil
   end
+
+  describe "set_remote_auto_on/1" do
+    test "writes only remote_auto_on, keeping an admin save that landed before it" do
+      assert {:ok, _} = Settings.save(%{remote_mode: :off, remote_backlog_threshold: 4})
+      assert {:ok, _} = Settings.set_remote_auto_on(true)
+
+      setting = Settings.get()
+      assert setting.remote_mode == :off
+      assert setting.remote_backlog_threshold == 4
+      assert setting.remote_auto_on == true
+    end
+
+    test "a stale read of the settings does not undo the admin save" do
+      stale = Settings.get()
+      assert {:ok, _} = Settings.save(%{remote_mode: :off})
+      refute stale.remote_mode == :off
+      assert {:ok, _} = Settings.set_remote_auto_on(true)
+      assert %{remote_mode: :off, remote_auto_on: true} = Settings.get()
+    end
+
+    test "with no stored row it stores the defaults plus the flag" do
+      assert {:ok, _} = Settings.set_remote_auto_on(true)
+
+      assert %{remote_mode: :auto, remote_backlog_threshold: 10, remote_auto_on: true} =
+               Settings.get()
+    end
+  end
 end

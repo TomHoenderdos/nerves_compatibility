@@ -80,7 +80,7 @@ defmodule Portal.Builders.Routing do
     # Best effort: the stored flag only matters for the hold window, and an
     # enqueue must not fail over it.
     if decision != settings.remote_auto_on,
-      do: _ = Portal.Settings.save(%{remote_auto_on: decision})
+      do: _ = Portal.Settings.set_remote_auto_on(decision)
 
     decision
   end
