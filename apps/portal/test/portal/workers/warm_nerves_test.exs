@@ -139,6 +139,15 @@ defmodule Portal.Workers.WarmNervesTest do
                perform_job(WarmNerves, %{"image_digest" => "sha256:x", "pairs" => @pairs})
     end
 
+    test "a missing egress filter snoozes rather than spending attempts" do
+      Process.put(:warm_response, {:error, :egress_filter_missing})
+
+      assert {:snooze, 900} =
+               perform_job(WarmNerves, %{"image_digest" => "sha256:x", "pairs" => @pairs})
+
+      assert_received {:cleanup, _run_id}
+    end
+
     test "malformed args are cancelled" do
       assert {:cancel, _} = perform_job(WarmNerves, %{"image_digest" => "sha256:x"})
       refute_received {:warm_build, _}

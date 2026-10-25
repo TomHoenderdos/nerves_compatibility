@@ -95,6 +95,7 @@ defmodule Portal.Workers.WarmNerves do
   # Host conditions that resolve themselves, as for a build.
   defp outcome({:error, {:insufficient_disk, _free, _needed}}, _pairs), do: {:snooze, 900}
   defp outcome({:error, :scratch_noexec}, _pairs), do: {:snooze, 900}
+  defp outcome({:error, :egress_filter_missing}, _pairs), do: {:snooze, 900}
   defp outcome({:error, reason}, _pairs), do: {:error, reason}
 
   defp describe([]), do: "the template"
