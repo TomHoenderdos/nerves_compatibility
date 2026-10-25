@@ -213,6 +213,15 @@ config :portal, PortalWeb.Endpoint,
   pubsub_server: Portal.PubSub,
   live_view: [signing_salt: "h07XGKsu"]
 
+# The remote builders' mTLS listener. Off unless runtime.exs turns it on (a
+# CA key and PHX_SERVER); `Portal.Builders.Listener` fills in `https:`.
+config :portal, PortalWeb.BuilderEndpoint,
+  url: [host: "localhost"],
+  adapter: Bandit.PhoenixAdapter,
+  server: false,
+  render_errors: [formats: [json: PortalWeb.ErrorJSON], layout: false],
+  pubsub_server: Portal.PubSub
+
 config :esbuild,
   version: "0.25.4",
   portal: [

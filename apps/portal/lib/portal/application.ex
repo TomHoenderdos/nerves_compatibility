@@ -35,11 +35,20 @@ defmodule Portal.Application do
        |> Portal.Workers.Ingest.with_local_queue()
        |> Portal.Workers.WarmNerves.with_local_queue()},
       {Phoenix.PubSub, name: Portal.PubSub},
+      # Owns the ETS table of builder rate-limit counters; precedes both
+      # endpoints, whose requests count against it.
+      Portal.Builders.RateLimit,
       # Start a worker by calling: Portal.Worker.start_link(arg)
       # {Portal.Worker, arg},
       # Start to serve requests, typically the last entry
       PortalWeb.Endpoint
     ]
+
+    # The remote builders' endpoint. It listens (mTLS) only with a CA and
+    # `server: true`; `configure/0` installs its certificates first, or turns
+    # the listener off, so a CA problem never stops the public site.
+    _ = Portal.Builders.Listener.configure()
+    children = children ++ [PortalWeb.BuilderEndpoint]
 
     # After the endpoint, so the warm-up never delays serving; the Repo and the
     # Cache it fills are both up by then.
@@ -80,6 +89,7 @@ defmodule Portal.Application do
   @impl true
   def config_change(changed, _new, removed) do
     PortalWeb.Endpoint.config_change(changed, removed)
+    PortalWeb.BuilderEndpoint.config_change(changed, removed)
     :ok
   end
 end

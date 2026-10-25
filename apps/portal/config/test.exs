@@ -45,6 +45,11 @@ config :portal, PortalWeb.Endpoint,
   secret_key_base: "5xw4EhV2dY7qQuovEyJb+WxGCvtoQr0x+8LmUawav5Xmv0o8LJFp5FVM0WYBNoy7",
   server: false
 
+# Never listens in test; Phoenix.ConnTest dispatches through it directly.
+config :portal, PortalWeb.BuilderEndpoint,
+  secret_key_base: "5xw4EhV2dY7qQuovEyJb+WxGCvtoQr0x+8LmUawav5Xmv0o8LJFp5FVM0WYBNoy7",
+  server: false
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 
