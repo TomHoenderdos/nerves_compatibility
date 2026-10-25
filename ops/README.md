@@ -10,7 +10,7 @@ once the security workflows have passed on that commit (see `DEPLOY.md`,
 | `ssh-deploy.sh` | in CI | runs `deploy.sh <sha>` on the web host, or `deploy.sh <sha> builder` on the build host through it |
 | `deploy.sh` | on a host | fast-forwards the checkout, builds the release, migrates, restarts |
 | `build-release.sh` | on a host | builds the release in a container matching the host's glibc |
-| `builder-deploy.sh` | on the build host | sourced by `deploy.sh`: drains the build queues and swaps the worker image |
+| `builder-deploy.sh` | on the build host | sourced by `deploy.sh`: drains the build queues, swaps the worker image and warms the Nerves cache on it |
 
 ## Hosts
 

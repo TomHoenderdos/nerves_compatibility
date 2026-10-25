@@ -89,6 +89,7 @@ unset DOCKER_HOST
 id() { echo 999; }
 make() { test "$DOCKER_HOST" = unix:///run/user/999/docker.sock; }
 docker() { test "$DOCKER_HOST" = unix:///run/user/999/docker.sock; }
+sudo() { :; }
 builder_build_image
 builder_activate_image
 test -z "${DOCKER_HOST+x}"
@@ -98,6 +99,58 @@ test -z "${DOCKER_HOST+x}"
             capture_output=True, text=True, timeout=5,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+    def run_warm(self, status):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+sudo() { printf '%s\n' "$@" > "$EVENTS"; return "$WARM_STATUS"; }
+builder_warm_nerves
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "events"
+            result = subprocess.run(
+                ["bash", "-c", script],
+                env={**os.environ, "HELPER": str(HELPER), "EVENTS": str(events),
+                     "WARM_STATUS": str(status)},
+                capture_output=True, text=True, timeout=5,
+            )
+            return result, events.read_text() if events.exists() else ""
+
+    def test_deploy_warm_runs_the_new_release_as_ncc_on_its_rootless_daemon(self):
+        result, args = self.run_warm(0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(args.startswith("-u\nncc\nbash\n-c\n"), args)
+        self.assertIn("/opt/nerves_compatibility/portal/bin/portal eval", args)
+        self.assertIn("Portal.NervesCache.deploy_warm()", args)
+        self.assertIn('DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/$(id -u)/docker.sock}"', args)
+
+    def test_a_failed_deploy_warm_warns_and_does_not_fail_the_deploy(self):
+        result, _args = self.run_warm(1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Nerves cache warm failed", result.stderr)
+
+    def test_activation_warms_the_cache_after_moving_the_tags(self):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+builder_docker() { echo "docker $*" >> "$EVENTS"; }
+builder_toolchain_tags() { :; }
+builder_warm_nerves() { echo warm >> "$EVENTS"; }
+builder_activate_image
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "events"
+            result = subprocess.run(
+                ["bash", "-c", script],
+                env={**os.environ, "HELPER": str(HELPER), "EVENTS": str(events)},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = events.read_text().splitlines()
+            self.assertEqual(lines[-1], "warm")
+            self.assertIn("docker tag ncc-worker:deploy ncc-worker:local", lines[:-1])
 
 
 if __name__ == "__main__":

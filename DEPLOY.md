@@ -398,8 +398,10 @@ variable `PORTAL_AUTO_DEPLOY=true`, it then:
    (`ops/ssh-deploy.sh portal`) and checks the public site answers;
 3. with `BUILDER_AUTO_DEPLOY=true`, does the same on the build host, reached
    through the web host, in builder mode: it pauses the `builds` and `ingest`
-   queues, waits for running jobs, builds a new worker image, and only then
-   swaps it in and restarts (`ops/builder-deploy.sh`).
+   queues, waits for running jobs, builds a new worker image, swaps it in,
+   warms the Nerves cache with what the template resolves on it
+   (`Portal.NervesCache.deploy_warm/1`; a warning, not a failure, if that
+   cannot run), and only then restarts (`ops/builder-deploy.sh`).
 
 It needs the `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS` and, for the
 builder, `BUILDER_HOST` (and optionally `BUILDER_DEPLOY_SSH_KEY`) secrets in the
