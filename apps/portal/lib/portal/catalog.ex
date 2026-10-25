@@ -2179,11 +2179,16 @@ defmodule Portal.Catalog do
     |> MapSet.filter(&ArtifactStore.present?/1)
   end
 
+  # Each kept entry is published with `publish_mode/1` of its stored mode, so
+  # the row keeps what the build saw and a client gets 0644 or 0755.
   defp filter_manifest_entries(entries, stored_shas) do
-    Enum.filter(entries, fn entry ->
-      is_map(entry) and MapSet.member?(stored_shas, entry["sha256"]) and safe_path?(entry["path"]) and
-        safe_mode?(entry["mode"])
-    end)
+    for entry <- entries,
+        is_map(entry),
+        MapSet.member?(stored_shas, entry["sha256"]),
+        safe_path?(entry["path"]),
+        mode = publish_mode(entry["mode"]),
+        mode != nil,
+        do: Map.put(entry, "mode", mode)
   end
 
   # `path` and `mode` come from JSON the build container wrote, which the
@@ -2198,9 +2203,24 @@ defmodule Portal.Catalog do
 
   defp safe_path?(_path), do: false
 
-  # Regular files, rw-r--r-- or rwxr-xr-x: no setuid, setgid or world-write.
-  defp safe_mode?(nil), do: true
-  defp safe_mode?(mode), do: mode in [0o100644, 0o100755]
+  # A published mode is exactly rw-r--r-- or rwxr-xr-x, which is all a client
+  # accepts: 0755 when the build saw any execute bit, 0644 otherwise. Builds
+  # leave files 0664, 0555, 0700 and the like, and publishing those as is would
+  # make the client refuse the whole dependency. A mode that is missing, not an
+  # integer, not a regular file's (a symlink, a device) or carries setuid,
+  # setgid or sticky is not published at all.
+  defp publish_mode(mode) when is_integer(mode) and mode >= 0 do
+    type = Bitwise.band(mode, 0o170000)
+    special = Bitwise.band(mode, 0o7000)
+
+    cond do
+      type not in [0, 0o100000] or special != 0 -> nil
+      Bitwise.band(mode, 0o111) != 0 -> 0o100755
+      true -> 0o100644
+    end
+  end
+
+  defp publish_mode(_mode), do: nil
 
   # Over `{system_pkg, system_version, status, count}` groups.
   defp counts(groups, include_total? \\ true) do

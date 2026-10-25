@@ -286,7 +286,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
           result_fixture()["systems"]["nerves_system_rpi4"]
           |> put_in(
             ["beam_scan", "footprint", "file_manifest", "ebin"],
-            [%{"path" => "ebin/jason.beam", "sha256" => new_sha}]
+            [%{"path" => "ebin/jason.beam", "sha256" => new_sha, "mode" => 0o100644}]
           )
       })
 
@@ -394,8 +394,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
         result_fixture(),
         ["systems", "nerves_system_rpi4", "beam_scan", "footprint", "file_manifest", "ebin"],
         [
-          %{"path" => "ebin/jason.beam", "sha256" => here},
-          %{"path" => "ebin/Elixir.Jason.Pending.beam", "sha256" => pending}
+          %{"path" => "ebin/jason.beam", "sha256" => here, "mode" => 0o100644},
+          %{"path" => "ebin/Elixir.Jason.Pending.beam", "sha256" => pending, "mode" => 0o100644}
         ]
       )
 
@@ -436,7 +436,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
         |> Map.put("finished_at", finished_at)
         |> put_in(
           ["systems", "nerves_system_rpi4", "beam_scan", "footprint", "file_manifest", "ebin"],
-          [%{"path" => "ebin/jason.beam", "sha256" => sha}]
+          [%{"path" => "ebin/jason.beam", "sha256" => sha, "mode" => 0o100644}]
         )
 
       {:ok, _} =

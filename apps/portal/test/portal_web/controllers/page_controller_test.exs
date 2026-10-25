@@ -413,7 +413,8 @@ defmodule PortalWeb.PageControllerTest do
           ~p"/admin/argus",
           ~p"/admin/bulk-rebuild",
           ~p"/admin/bulk-rebuild/#{Ecto.UUID.generate()}/cancel",
-          ~p"/admin/maintenance/toolchain-sweep"
+          ~p"/admin/maintenance/toolchain-sweep",
+          ~p"/admin/maintenance/repair-file-modes"
         ] do
       assert redirected_to(post(recycle(conn), path)) == ~p"/login"
     end
@@ -590,6 +591,22 @@ defmodule PortalWeb.PageControllerTest do
     conn = post(conn, ~p"/admin/maintenance/toolchain-sweep")
     assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "already queued"
     assert [_job] = all_enqueued(worker: Portal.Workers.ToolchainSweep)
+  end
+
+  test "repair-file-modes enqueues a repair and redirects", %{conn: conn} do
+    {conn, _admin} = signed_in_admin(conn, "admin_repair_modes")
+
+    assert html_response(get(conn, ~p"/admin/maintenance"), 200) =~
+             ~s(action="/admin/maintenance/repair-file-modes")
+
+    conn = post(conn, ~p"/admin/maintenance/repair-file-modes")
+    assert redirected_to(conn) == ~p"/admin/maintenance"
+    assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "File mode repair queued"
+    assert [_job] = all_enqueued(worker: Portal.Workers.ManifestModeRepair)
+
+    conn = post(conn, ~p"/admin/maintenance/repair-file-modes")
+    assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "already queued"
+    assert [_job] = all_enqueued(worker: Portal.Workers.ManifestModeRepair)
   end
 
   test "revoke-run revokes and redirects", %{conn: conn} do

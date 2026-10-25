@@ -101,6 +101,7 @@ defmodule PortalWeb.Router do
     post "/admin/bulk-rebuild/:id/cancel", PageController, :admin_cancel_sweep
     post "/admin/maintenance/revoke-run", PageController, :admin_revoke_run
     post "/admin/maintenance/toolchain-sweep", PageController, :admin_toolchain_sweep
+    post "/admin/maintenance/repair-file-modes", PageController, :admin_repair_file_modes
     post "/admin/argus", PageController, :admin_argus_settings
     get "/register", PageController, :register
     post "/register", PageController, :create_account

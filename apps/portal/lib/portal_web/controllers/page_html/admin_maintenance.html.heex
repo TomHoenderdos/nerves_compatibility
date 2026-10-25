@@ -273,6 +273,21 @@
         </label>
         <button type="submit" class="btn btn-sm btn-error">Revoke</button>
       </form>
+
+      <form
+        id="repair-file-modes-form"
+        method="post"
+        action={~p"/admin/maintenance/repair-file-modes"}
+        class="mt-3 flex flex-wrap items-center gap-2"
+      >
+        <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+        <button type="submit" id="repair-file-modes-button" class="btn btn-sm btn-outline">
+          Repair published file modes
+        </button>
+        <span class="text-sm text-base-content/60">
+          Copies each file's real mode from its run's footprint into the published manifests. One-off; safe to repeat.
+        </span>
+      </form>
     </div>
   </section>
 
