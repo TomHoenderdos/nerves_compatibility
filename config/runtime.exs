@@ -22,6 +22,9 @@ if portal_available? do
   config :portal, PortalWeb.Endpoint,
     http: [port: String.to_integer(System.get_env("PORT", "4001"))]
 
+  if images = System.get_env("NCC_IMAGES_JSON"),
+    do: config(:portal, Portal.Builders.Images, path: images)
+
   repo_config = Application.get_env(:portal, Portal.Repo, [])
 
   repo_pool_size =

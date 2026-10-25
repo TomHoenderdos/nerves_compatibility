@@ -247,4 +247,7 @@ config :portal, Portal.Accounts.WebAuthn,
   rp_id: "localhost",
   origin: "http://localhost:4001"
 
+# Registry digests and agent releases CI published (ops/images-sync.sh).
+config :portal, Portal.Builders.Images, path: "/etc/ncc-portal/images.json"
+
 import_config "#{config_env()}.exs"
