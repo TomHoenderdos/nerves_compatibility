@@ -60,11 +60,18 @@ defmodule Portal.Workers.RemoteBuild do
             # This job is done once its lease is written, long before the run
             # exists, so a later job for the same build (a sweep after a
             # request, past the unique window) would otherwise lease it twice.
-            # The request is not built yet, so nothing is marked.
+            # It waits instead: once that lease is ingested the next run
+            # dedups on the run above and marks this request built; if the
+            # lease failed, the next run leases afresh.
             not force and lease_in_flight?(package, version, digest) ->
-              Logger.info("RemoteBuild dedup: lease already open for #{package} #{version}")
-              Progress.broadcast(scan_request_id, :queued, %{remote: true, deduped: true})
-              :ok
+              Logger.info("RemoteBuild waiting on an open lease for #{package} #{version}")
+
+              Progress.broadcast(scan_request_id, :queued, %{
+                remote: true,
+                waiting_on_lease: true
+              })
+
+              {:snooze, 120}
 
             true ->
               lease(package, version, name, digest, args, scan_request_id, priority, force)
@@ -154,5 +161,13 @@ defmodule Portal.Workers.RemoteBuild do
     )
     |> Ash.read!(domain: Portal.Catalog)
     |> Enum.any?()
+  end
+
+  # As `Portal.Workers.Build`: `{:snooze, _}` bumps `attempt`, and Oban's
+  # default backoff is quartic in it, so a job waiting on a long lease would
+  # otherwise come back days later. Cap it at an hour.
+  @impl Oban.Worker
+  def backoff(%Oban.Job{} = job) do
+    job |> Oban.Worker.backoff() |> min(3600)
   end
 end
