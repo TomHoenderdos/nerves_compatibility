@@ -82,6 +82,8 @@ defmodule Portal.Builders.Leases do
   starts the attempt clean (bytes, log tail and error of the last one gone).
   """
   @spec claim(Builder.t()) :: {:ok, Lease.t()} | :none
+  # `sql` is a literal; every value is a bound parameter.
+  # sobelow_skip ["SQL.Query"]
   def claim(%Builder{id: builder_id, slots: slots}) do
     ms = System.system_time(:millisecond)
 

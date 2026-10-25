@@ -222,9 +222,7 @@ defmodule NccAgent.Identity do
         Logger.warning("client key and certificate do not match; restoring the previous pair")
 
         with :ok <- copy_atomic(prev(key_path), key_path, 0o600),
-             :ok <- copy_atomic(prev(cert_path), cert_path, 0o644) do
-          :ok
-        end
+             do: copy_atomic(prev(cert_path), cert_path, 0o644)
 
       true ->
         Logger.error(
