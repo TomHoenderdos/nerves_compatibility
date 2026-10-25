@@ -41,6 +41,10 @@ defmodule Portal.Builders.TarStream do
 
   def finish(_state), do: {:error, :truncated}
 
+  @doc "Whether the end-of-archive block has been read (later bytes are ignored)."
+  @spec done?(t()) :: boolean()
+  def done?(%__MODULE__{done: done}), do: done
+
   @doc "The accumulator of the entry being read, if one is open (for cleanup on error)."
   @spec pending(t()) :: any() | nil
   def pending(%__MODULE__{mode: :data, entry: {_name, acc}}), do: acc

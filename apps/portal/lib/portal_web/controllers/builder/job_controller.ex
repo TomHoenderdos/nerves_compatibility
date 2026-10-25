@@ -89,16 +89,19 @@ defmodule PortalWeb.Builder.JobController do
   end
 
   defp files_response(conn, {:error, reason}) do
-    case reason do
-      :batch_too_large -> error(conn, 413, "batch_too_large")
-      :total_exceeded -> error(conn, 413, "total_exceeded")
-      :insufficient_disk -> error(conn, 507, "insufficient_disk")
-      :not_held -> error(conn, 409, "lease_not_held")
-      {:unsupported_entry, _name} -> error(conn, 400, "unsupported_entry")
-      :truncated -> error(conn, 400, "truncated")
-      _ -> error(conn, 400, "bad_body")
-    end
+    {status, code} = files_error(reason)
+    error(conn, status, code)
   end
+
+  defp files_error(:batch_too_large), do: {413, "batch_too_large"}
+  defp files_error(:total_exceeded), do: {413, "total_exceeded"}
+  defp files_error(:insufficient_disk), do: {507, "insufficient_disk"}
+  defp files_error(:not_held), do: {409, "lease_not_held"}
+  defp files_error({:unsupported_entry, _name}), do: {400, "unsupported_entry"}
+  defp files_error(:truncated), do: {400, "truncated"}
+  defp files_error(:update_failed), do: {500, "upload_failed"}
+  defp files_error({:io, _reason}), do: {500, "storage_failed"}
+  defp files_error(_), do: {400, "bad_body"}
 
   # `Plug.Conn.read_body/2` returns a new conn each time; keep the latest in
   # the process so the response goes out on the conn that finished reading.
@@ -157,6 +160,8 @@ defmodule PortalWeb.Builder.JobController do
       {:error, :result_too_large} -> error(conn, 413, "result_too_large")
       {:error, :logs_too_large} -> error(conn, 413, "logs_too_large")
       {:error, :logs_invalid} -> error(conn, 422, "logs_invalid")
+      {:error, :insufficient_disk} -> error(conn, 507, "insufficient_disk")
+      {:error, {:io, _reason}} -> error(conn, 500, "storage_failed")
     end
   end
 
