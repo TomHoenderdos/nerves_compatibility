@@ -17,8 +17,13 @@ defmodule PortalWeb.BuilderRouter do
     plug :accepts, ["json"]
     plug PortalWeb.Plugs.BuilderCert
 
+    # `complete`'s multipart body is the sum of its part caps, 8 + 64 + 8 MiB:
+    # result.json (`max_result_bytes`, 8 MiB), logs.tar.gz (`max_logs_bytes`,
+    # 64 MiB; the agent drops an archive over 48 MiB) and the runner log, of
+    # which the agent sends the last 1 MiB (the portal reads no more), the
+    # rest of its 8 MiB being headroom for the multipart framing.
     plug Plug.Parsers,
-      parsers: [:json, {:multipart, length: 80_000_000}],
+      parsers: [:json, {:multipart, length: 83_886_080}],
       pass: ["*/*"],
       json_decoder: Phoenix.json_library(),
       length: 8_000_000

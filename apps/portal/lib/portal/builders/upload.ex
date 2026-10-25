@@ -84,7 +84,8 @@ defmodule Portal.Builders.Upload do
   guarded `UPDATE` before the body is read, so concurrent batches on one
   lease cannot overrun `max_total_bytes` together; once read, the
   reservation is corrected to the bytes actually received, refused batch or
-  not.
+  not, and also when the read raises or exits. A batch first sweeps the
+  `.incoming-*` files a killed batch left behind.
   """
   @spec receive_batch(Lease.t(), (-> term()), keyword()) ::
           {:ok, %{stored: [String.t()], bad: [String.t()], bytes: non_neg_integer()}}
@@ -106,13 +107,34 @@ defmodule Portal.Builders.Upload do
     end
   end
 
+  # The reservation is settled in `after`, from a count the reader keeps as
+  # it goes: a body read that raises or exits (a dropped connection) still
+  # hands back the bytes it never read, instead of holding them against the
+  # lease's total for good.
   defp reserved_batch(lease, read_chunk, length, caps) do
-    {result, bytes} = stream_batch(lease, read_chunk, length, caps)
-    settle(lease, bytes - length)
+    key = {__MODULE__, :received, make_ref()}
+    Process.put(key, 0)
 
-    case result do
-      {:ok, summary} -> {:ok, %{summary | bytes: bytes}}
-      error -> error
+    counted = fn ->
+      case read_chunk.() do
+        {tag, chunk} = read when tag in [:ok, :more] and is_binary(chunk) ->
+          Process.put(key, Process.get(key, 0) + byte_size(chunk))
+          read
+
+        other ->
+          other
+      end
+    end
+
+    try do
+      {result, bytes} = stream_batch(lease, counted, length, caps)
+
+      case result do
+        {:ok, summary} -> {:ok, %{summary | bytes: bytes}}
+        error -> error
+      end
+    after
+      settle(lease, (Process.delete(key) || 0) - length)
     end
   end
 
@@ -183,6 +205,7 @@ defmodule Portal.Builders.Upload do
 
     case File.mkdir_p(dir) do
       :ok ->
+        sweep_stale_incoming(dir)
         state = TarStream.new(callbacks(dir, caps.max_file_bytes))
 
         case pump(read_chunk, state, 0, length) do
@@ -338,6 +361,28 @@ defmodule Portal.Builders.Upload do
   # sobelow_skip ["Traversal.FileModule"]
   defp sweep_incoming(dir),
     do: dir |> Path.join(".incoming-*") |> Path.wildcard(match_dot: true) |> Enum.each(&File.rm/1)
+
+  # A batch killed mid-entry (the request process gone with its connection)
+  # leaves its `.incoming-*` behind, which no refusal swept. Each batch
+  # starts by removing those not written to for a minute: a concurrent
+  # batch on the same lease writes its open entry as its bytes arrive, so
+  # only a dead one goes that long untouched.
+  @stale_incoming_seconds 60
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp sweep_stale_incoming(dir) do
+    cutoff = System.os_time(:second) - @stale_incoming_seconds
+
+    dir
+    |> Path.join(".incoming-*")
+    |> Path.wildcard(match_dot: true)
+    |> Enum.each(fn path ->
+      case File.lstat(path, time: :posix) do
+        {:ok, %File.Stat{type: :regular, mtime: mtime}} when mtime < cutoff -> File.rm(path)
+        _ -> :ok
+      end
+    end)
+  end
 
   # Like `Portal.Builder`'s free-space check: an unknown answer does not refuse.
   defp disk_full? do

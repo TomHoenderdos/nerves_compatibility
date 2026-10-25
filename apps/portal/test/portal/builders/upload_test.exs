@@ -439,4 +439,43 @@ defmodule Portal.Builders.UploadTest do
     assert File.ls!(dir) == []
     assert Ash.get!(Lease, lease.id, domain: Portal.Builders).bytes_uploaded > 0
   end
+
+  # A dropped connection makes the body read raise or exit; the bytes it
+  # never read must not stay reserved against the lease's total.
+  test "a body read that raises still settles the reservation", %{lease: lease} do
+    bin = tar([{sha("dropped"), "dropped"}])
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    read = fn ->
+      case Agent.get_and_update(calls, &{&1, &1 + 1}) do
+        0 -> {:more, binary_part(bin, 0, 600)}
+        _ -> raise "connection closed"
+      end
+    end
+
+    assert_raise RuntimeError, fn ->
+      Upload.receive_batch(lease, read, content_length: 3000)
+    end
+
+    assert Ash.get!(Lease, lease.id, domain: Portal.Builders).bytes_uploaded == 600
+  end
+
+  test "a batch sweeps the .incoming files a killed batch left, not a live one's",
+       %{lease: lease} do
+    dir = Upload.files_dir(lease.id)
+    File.mkdir_p!(dir)
+    stale = Path.join(dir, ".incoming-stale")
+    live = Path.join(dir, ".incoming-live")
+    File.write!(stale, "half an entry")
+    File.write!(live, "being written")
+    File.touch!(stale, System.os_time(:second) - 600)
+
+    bin = tar([{sha("next"), "next"}])
+
+    assert {:ok, %{stored: [_]}} =
+             Upload.receive_batch(lease, reader(bin), content_length: byte_size(bin))
+
+    refute File.exists?(stale)
+    assert File.exists?(live)
+  end
 end
