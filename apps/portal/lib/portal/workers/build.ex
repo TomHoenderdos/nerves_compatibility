@@ -289,6 +289,11 @@ defmodule Portal.Workers.Build do
         {:ok, []} ->
           :ok
 
+        {:ok, :already_queued} ->
+          Logger.info(
+            "Nerves cache warm after #{package} #{version} was already queued by another run"
+          )
+
         {:ok, pairs} ->
           Logger.info(
             "Queued a Nerves cache warm of " <>

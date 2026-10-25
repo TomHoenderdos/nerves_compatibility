@@ -12,6 +12,8 @@ defmodule Portal.Application do
     :ok = Portal.HexPm.create_release_checksum_table()
     # And the memo of package owners `Portal.NervesCache.warm_pairs/2` checks.
     :ok = Portal.HexPm.create_package_owners_table()
+    # And the memo of pairs already warmed `Portal.NervesCache.recently_warmed/2` checks.
+    :ok = Portal.NervesCache.create_warmed_table()
 
     children = [
       PortalWeb.Telemetry,

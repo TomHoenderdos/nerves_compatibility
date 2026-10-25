@@ -1,7 +1,9 @@
 defmodule Portal.NervesCacheTest do
-  use ExUnit.Case, async: true
+  use Portal.DataCase, async: true
+  use Oban.Testing, repo: Portal.Repo
 
   alias Portal.NervesCache
+  alias Portal.Workers.WarmNerves
 
   defp p(name, version), do: %{"name" => name, "version" => version}
 
@@ -44,6 +46,27 @@ defmodule Portal.NervesCacheTest do
       assert NervesCache.warm_pairs(report([pair], [pair]),
                owners: fn _ -> {:error, :hex_api_unavailable} end
              ) == []
+    end
+
+    # A Hex outage must not turn one build into over a dozen sequential 5+5s
+    # lookups, none of which can come back owned, before ingest is enqueued
+    # (Portal.Workers.Build.handle_outcome/3 calls this synchronously).
+    test "a Hex blackhole stops asking after the first error and drops the rest" do
+      pairs =
+        for board <- ~w(x86_64 trellis rpi5 rpi4 rpi0 bbb),
+            do: p("nerves_system_#{board}", "2.0.0")
+
+      me = self()
+
+      owners = fn name ->
+        send(me, {:owners, name})
+        {:error, :hex_api_unavailable}
+      end
+
+      assert NervesCache.warm_pairs(report(pairs, pairs), owners: owners) == []
+
+      assert_received {:owners, _}
+      refute_received {:owners, _}
     end
 
     test "keeps at most four, the first in lock order, and asks Hex no further" do
@@ -93,6 +116,78 @@ defmodule Portal.NervesCacheTest do
       end
 
       refute_received {:owners, _}
+    end
+  end
+
+  describe "request_warm/3 and recently_warmed/2" do
+    # The memo is one ETS table for the whole node, so each test picks its own
+    # image digest the way `Portal.HexPmTest` picks its own package name.
+    defp image, do: "sha256:memo-#{System.unique_integer([:positive])}"
+
+    # Plan-mandated (task-6-review.md Important 1): the day-long repeat bound
+    # must survive `Oban.Plugins.Pruner` deleting the completed job row at 6 h
+    # (apps/portal/config/config.exs), which both the uniqueness check and the
+    # old `recently_warmed/1` relied on and which the old doc wrongly claimed
+    # it survived.
+    test "a warmed pair is still recently_warmed after its job row is gone, for a day" do
+      digest = image()
+      pair = p("nerves_system_rpi4", "2.0.0")
+
+      assert {:ok, [^pair]} =
+               NervesCache.request_warm(report([pair], [pair]), digest,
+                 owners: nerves_owns(["nerves_system_rpi4"]),
+                 now_ms: 0
+               )
+
+      Repo.delete_all(Oban.Job)
+
+      assert MapSet.member?(
+               NervesCache.recently_warmed(digest, now_ms: :timer.hours(23)),
+               {"nerves_system_rpi4", "2.0.0"}
+             )
+
+      refute MapSet.member?(
+               NervesCache.recently_warmed(digest, now_ms: :timer.hours(24)),
+               {"nerves_system_rpi4", "2.0.0"}
+             )
+    end
+
+    test "recently_warmed also sees a live job the memo missed" do
+      digest = image()
+      pair = p("nerves_system_rpi4", "2.0.0")
+
+      assert {:ok, _job} = WarmNerves.enqueue(digest, [pair])
+
+      assert MapSet.member?(NervesCache.recently_warmed(digest), {"nerves_system_rpi4", "2.0.0"})
+    end
+
+    test "nothing to warm answers {:ok, []} without touching Oban" do
+      assert {:ok, []} =
+               NervesCache.request_warm(report([], []), image(), owners: nerves_owns([]))
+    end
+
+    # Minor (task-6-review.md Minor 2): a unique conflict must not be reported
+    # or logged as a newly queued warm.
+    test "a unique conflict is reported as already queued, not queued again" do
+      digest = image()
+      pair = p("nerves_system_rpi4", "2.0.0")
+      owners = nerves_owns(["nerves_system_rpi4"])
+
+      assert {:ok, [^pair]} =
+               NervesCache.request_warm(report([pair], [pair]), digest,
+                 owners: owners,
+                 recently_warmed: MapSet.new(),
+                 now_ms: 0
+               )
+
+      assert {:ok, :already_queued} =
+               NervesCache.request_warm(report([pair], [pair]), digest,
+                 owners: owners,
+                 recently_warmed: MapSet.new(),
+                 now_ms: 0
+               )
+
+      assert [_one] = all_enqueued(worker: WarmNerves)
     end
   end
 end
