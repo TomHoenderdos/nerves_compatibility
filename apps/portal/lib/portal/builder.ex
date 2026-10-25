@@ -11,9 +11,15 @@ defmodule Portal.Builder do
   This module never writes to the database. `Portal.Workers.Build` calls
   `build/2`, interprets the returned exit code, and ingests the parsed
   `result.json` into `Portal.Catalog`.
+
+  The docker argv itself is `Compatibility.Builder.Argv.build/1`, shared with
+  remote builders so both run the same sandbox; this module resolves the
+  host's config into its input and runs the container.
   """
 
   require Logger
+
+  alias Compatibility.Builder.Argv
 
   # See `read_log/1`.
   @log_tail_bytes 1024 * 1024
@@ -509,74 +515,31 @@ defmodule Portal.Builder do
   end
 
   @doc false
-  # Builds the docker run argument list. Mounts and flags intentionally preserve
-  # the worker container environment expected by apps/ncc_worker.
+  # Builds the docker run argument list. The flags, mounts and env are
+  # `Compatibility.Builder.Argv`'s, shared with remote builders; this resolves
+  # the host's configuration, paths and user into its input.
   @spec build_docker_args(map(), Path.t(), Path.t(), Path.t()) :: [String.t()]
   def build_docker_args(job, work_dir, output_dir, files_dir) do
     scratch = Path.dirname(work_dir)
 
-    base = [
-      "run",
-      "--rm",
-      "--pull=never",
-      "--name",
-      container_name(job.run_id),
-      "--user",
-      run_as_user(),
-      "--cap-drop=ALL",
-      "--security-opt=no-new-privileges",
-      # The image is the root filesystem and nothing may change it: a package
-      # that writes outside the mounts gets EROFS. /tmp and ~/.cache are the
-      # two places the toolchain legitimately writes, and they are bound to
-      # per-run scratch below.
-      "--read-only",
-      # A runaway `make -j` or a fork bomb dies here rather than exhausting the
-      # host's pid table.
-      "--pids-limit",
-      "4096"
-    ]
-
-    limits = resource_limits()
-
-    mounts =
-      List.flatten([
-        ["--mount", "type=bind,source=#{work_dir},target=/work"],
-        ["--mount", "type=bind,source=#{output_dir},target=/out"],
-        ["--mount", "type=bind,source=#{files_dir},target=/files"],
-        # Per-run, disk-backed, removed by cleanup/1 with the rest of the run.
-        # Not tmpfs: that is RAM, and `mix firmware` (fwup, mksquashfs,
-        # fakeroot) puts whole rootfs images in /tmp.
-        ["--mount", "type=bind,source=#{Path.join(scratch, "tmp")},target=/tmp"],
-        ["--mount", "type=bind,source=#{Path.join(scratch, "cache")},target=/home/nerves/.cache"],
-        ["--mount", "type=bind,source=#{nerves_cache()},target=/home/nerves/.nerves"],
-        ["--mount", "type=bind,source=#{hex_cache()},target=/hex-cache"],
-        build_cache_mount(job)
-      ])
-
-    env = [
-      "-e",
-      "NCC_INPUT=/work/input.json",
-      "-e",
-      "LANG=C.UTF-8",
-      "-e",
-      "HOME=/home/nerves",
-      "-e",
-      "HEX_HOME=/hex-cache",
-      # Nerves extracts prebuilt system tarballs with the external `tar`, and
-      # GNU tar restores ownership by default when it believes it is root. On a
-      # rootless daemon run_as_user is "0:0", so it does believe that, and every
-      # chown then fails against --cap-drop=ALL: tar exits 2 and
-      # Nerves.Artifact.Cache.put/2 raises. Dropping the chown is the fix, not
-      # granting CAP_CHOWN back to a container that builds untrusted package
-      # code. Under a rootful daemon we run as our own non-root uid, where this
-      # is already tar's default, so it is a no-op there.
-      "-e",
-      "TAR_OPTIONS=--no-same-owner"
-    ]
-
-    base ++
-      limits ++
-      mounts ++ env ++ build_cache_env(job) ++ cpu_env() ++ concurrency_env() ++ [image_ref(job)]
+    Argv.build(%{
+      container_name: container_name(job.run_id),
+      user: run_as_user(),
+      image: image_ref(job),
+      cpus: config(:cpus, nil),
+      memory: config(:memory, nil),
+      build_concurrency: config(:build_concurrency, nil),
+      paths: %{
+        work: work_dir,
+        out: output_dir,
+        files: files_dir,
+        tmp: Path.join(scratch, "tmp"),
+        cache: Path.join(scratch, "cache"),
+        nerves_cache: nerves_cache(),
+        hex_cache: hex_cache(),
+        build_cache: build_cache_dir(job)
+      }
+    })
   end
 
   # The cache is mounted per worker image rather than as one flat directory.
@@ -585,24 +548,7 @@ defmodule Portal.Builder do
   # part of the path means a rebuilt image starts from an empty cache instead of
   # inheriting entries it cannot vouch for. The worker's own cache key covers
   # everything below that line; this covers the line itself.
-  defp build_cache_mount(job) do
-    case build_cache_dir(job) do
-      nil -> []
-      # Read-only: a build runs untrusted package code, and one that could
-      # write here could plant beams under another dependency's key. What a
-      # build compiles goes to /out/build-cache, and
-      # `Portal.BuildCache.Promotion` moves what it accepts in from the host.
-      dir -> ["--mount", "type=bind,source=#{dir},target=/build-cache,readonly"]
-    end
-  end
-
-  defp build_cache_env(job) do
-    case build_cache_dir(job) do
-      nil -> []
-      _dir -> ["-e", "NCC_BUILD_CACHE=/build-cache"]
-    end
-  end
-
+  #
   # Created here rather than by the deployment: the directory is per image, so
   # its name is not known until a build runs. A failure to create it disables the
   # cache for that build instead of failing it, since a cache that cannot be
@@ -621,84 +567,6 @@ defmodule Portal.Builder do
           {:error, _reason} -> nil
         end
     end
-  end
-
-  # `--cpus` is a CFS quota, not a core assignment: `nproc` inside the container
-  # still reports every core the host has. Nothing in the build reads the quota,
-  # so each container started a BEAM with one scheduler per *host* core, and BEAM
-  # schedulers busy-wait by default. Five concurrent builds on six cores left the
-  # host at 21% system time with a run queue of 20: a fifth of the machine spent
-  # spinning and being throttled instead of compiling. Tell the runtimes how much
-  # CPU they actually have.
-  #
-  # ERL_FLAGS covers the worker's own VM and any `erl` it starts; mix and elixir
-  # read ELIXIR_ERL_OPTIONS instead, and that is where the compile parallelism
-  # lives.
-  #
-  # MAKEFLAGS is deliberately not set. It never capped anything: elixir_make
-  # passes no -j, so a NIF's C code builds serially by default, and
-  # `MAKEFLAGS=-jN` *raised* that to N for a few seconds saved per NIF package.
-  # The price was false failures on Makefiles that are not parallel-safe, which
-  # no user hits because their `mix compile` runs make serially -- circuits_spi
-  # 2.1.0 failed on rpi4 creating obj/ while compiling into it. Frank Hunleth is
-  # fixing the elixir-circuits Makefiles; `MAKEFLAGS=-j#{quota}` can come back
-  # once that has shipped, if the seconds are worth it.
-  defp cpu_env do
-    case cpu_quota() do
-      nil ->
-        []
-
-      quota ->
-        beam_flags = "+S #{quota}:#{quota} +sbwt none +sbwtdcpu none +sbwtdio none"
-
-        # sqfstar has the same blind spot and started a thread per host core
-        # for every rootfs; the worker turns this into `-processors`.
-        [
-          "-e",
-          "ERL_FLAGS=#{beam_flags}",
-          "-e",
-          "ELIXIR_ERL_OPTIONS=#{beam_flags}",
-          "-e",
-          "NCC_SQUASHFS_PROCESSORS=#{quota}"
-        ]
-    end
-  end
-
-  # Whole cores only, and never zero: a fractional cap still needs at least one
-  # scheduler to make progress.
-  defp cpu_quota do
-    with value when not is_nil(value) <- config(:cpus, nil),
-         {cpus, _rest} <- Float.parse(to_string(value)) do
-      max(1, trunc(cpus))
-    else
-      _ -> nil
-    end
-  end
-
-  # How many targets the worker may build at once inside one container. Unset
-  # means one, the serial behaviour this started with. Worth raising only
-  # together with the CPU cap: the targets share whatever `--cpus` allows, and
-  # the gain comes from overlapping the single-threaded stretches (release
-  # assembly, squashfs, fwup), not from finding more cores.
-  defp concurrency_env do
-    case config(:build_concurrency, nil) do
-      nil -> []
-      value -> ["-e", "NCC_BUILD_CONCURRENCY=#{value}"]
-    end
-  end
-
-  # Buildroot cross-compiles will use every core they are given. On a host that
-  # shares the machine with other services, an unbounded build starves them, so
-  # deployments can cap what a single build may take. Unset means unbounded,
-  # which is the historical behaviour and stays the default.
-  defp resource_limits do
-    [{:cpus, "--cpus"}, {:memory, "--memory"}]
-    |> Enum.flat_map(fn {key, flag} ->
-      case config(key, nil) do
-        nil -> []
-        value -> [flag, to_string(value)]
-      end
-    end)
   end
 
   # Local images (no registry slash) use the tag directly; remote images use
