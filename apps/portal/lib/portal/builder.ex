@@ -181,7 +181,8 @@ defmodule Portal.Builder do
     # ahead of `check_docker/0` so the log carries the disk error rather than a
     # downstream `:enospc` from `IO.binwrite/2` — which is the exception that
     # took the host down.
-    with :ok <- check_free_space(scratch_root()),
+    with :ok <- distrust_rw_cache(job),
+         :ok <- check_free_space(scratch_root()),
          :ok <- check_scratch_exec(scratch_root()),
          {:ok, _version} <- check_docker(),
          :ok <-
@@ -571,6 +572,26 @@ defmodule Portal.Builder do
       Map.get(job, :mode) == "warm_nerves" -> :warm
       config(:nerves_cache_rw, false) == true -> :rw
       true -> :readonly
+    end
+  end
+
+  # Under the NCC_NERVES_CACHE_RW=1 rollback the container writes the Nerves
+  # cache, so `Portal.NervesCache.trusted_marker/1` stops being true the moment
+  # it starts. Removing it here, before any such container exists, makes the
+  # next read-only deploy wipe the cache instead of trusting what rw builds
+  # left, however the rollback ends (env unset plus restart, or a deploy). A
+  # marker that cannot be removed refuses the build rather than run it rw.
+  # The marker is the operator-configured cache root's fixed sibling.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp distrust_rw_cache(job) do
+    if nerves_cache_mode(job) == :rw do
+      case File.rm(Portal.NervesCache.trusted_marker(nerves_cache())) do
+        :ok -> :ok
+        {:error, :enoent} -> :ok
+        {:error, reason} -> {:error, {:nerves_cache_marker, reason}}
+      end
+    else
+      :ok
     end
   end
 
