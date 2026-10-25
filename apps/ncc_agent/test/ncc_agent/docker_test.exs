@@ -4,7 +4,8 @@ defmodule NccAgent.DockerTest do
   alias NccAgent.{Config, Docker}
 
   @fake Path.expand("../support/fake_docker.sh", __DIR__)
-  @env ~w(FAKE_DOCKER_EXIT FAKE_DOCKER_SLEEP FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_KILL_LOG)
+  @env ~w(FAKE_DOCKER_EXIT FAKE_DOCKER_SLEEP FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_KILL_LOG
+          FAKE_DOCKER_PS FAKE_DOCKER_PS_LOG)
 
   setup do
     dir = Path.join(System.tmp_dir!(), "agent-docker-#{System.unique_integer([:positive])}")
@@ -79,5 +80,23 @@ defmodule NccAgent.DockerTest do
 
   test "log_tail/2 of a missing log is empty", %{dir: dir} do
     assert Docker.log_tail(Path.join(dir, "nope.log")) == ""
+  end
+
+  # A boot after a VM stopped mid-job: the worker containers it left running
+  # are killed before the scratch dir under their binds is removed.
+  @tag :capture_log
+  test "kill_leftovers/1 kills every running ncc- container", %{dir: dir, config: config} do
+    kills = Path.join(dir, "kills.log")
+    ps = Path.join(dir, "ps.log")
+    System.put_env("FAKE_DOCKER_KILL_LOG", kills)
+    System.put_env("FAKE_DOCKER_PS_LOG", ps)
+    System.put_env("FAKE_DOCKER_PS", "abc123\ndef456")
+
+    assert ["abc123", "def456"] = Docker.kill_leftovers(config)
+    assert File.read!(ps) == "ps -q --filter name=ncc-\n"
+    assert File.read!(kills) == "abc123\ndef456\n"
+
+    System.delete_env("FAKE_DOCKER_PS")
+    assert [] = Docker.kill_leftovers(config)
   end
 end

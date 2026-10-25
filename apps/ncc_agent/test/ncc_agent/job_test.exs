@@ -9,7 +9,8 @@ defmodule NccAgent.JobTest do
 
   @fake Path.expand("../support/fake_docker.sh", __DIR__)
   @env ~w(FAKE_DOCKER_EXIT FAKE_DOCKER_RESULT FAKE_DOCKER_ARGV_LOG FAKE_DOCKER_FILE_CONTENT
-          FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_SLEEP FAKE_DOCKER_PLANT FAKE_DOCKER_RESULT_LINK)
+          FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_SLEEP FAKE_DOCKER_PLANT FAKE_DOCKER_RESULT_LINK
+          FAKE_DOCKER_OUTPUT_BYTES)
   @lease "5b0c8a8e-1111-4c2d-9e3f-0a1b2c3d4e5f"
   @digest "sha256:" <> String.duplicate("a", 64)
   @content "the archived artifact"
@@ -38,9 +39,13 @@ defmodule NccAgent.JobTest do
     System.put_env("FAKE_DOCKER_FILE_CONTENT", @content)
     System.put_env("FAKE_DOCKER_RESULT", ~s({"status":"pass","nerves_cache":{"misses":[]}}))
 
+    # Retries back off by nothing here.
+    Application.put_env(:ncc_agent, :retry_ms, 0)
+
     on_exit(fn ->
       Enum.each(@env, &System.delete_env/1)
       Application.delete_env(:ncc_agent, :caps)
+      Application.delete_env(:ncc_agent, :retry_ms)
       File.rm_rf(dir)
     end)
 
@@ -277,5 +282,87 @@ defmodule NccAgent.JobTest do
     after
       0 -> :ok
     end
+  end
+
+  defp complete_params do
+    assert_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, params, _}
+                    when is_map_key(params, "exit_code")
+
+    params
+  end
+
+  defp puts do
+    receive do
+      {:portal_request, "PUT", _, _, _} -> 1 + puts()
+    after
+      0 -> 0
+    end
+  end
+
+  # `Ingestion` skips an absent blob without a word: a pass whose files did
+  # not all upload must not complete as one.
+  test "a batch the portal never stores completes the run with 20", %{
+    req: req,
+    config: config,
+    script: script
+  } do
+    Agent.update(script, &Map.put(&1, :upload_error, {503, %{error: "unavailable"}}))
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    assert complete_params()["exit_code"] == "20"
+    assert puts() == 3
+  end
+
+  test "a batch that fails once is retried and the run passes", %{
+    req: req,
+    config: config,
+    script: script
+  } do
+    Agent.update(script, &Map.put(&1, :upload_failures, 1))
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    assert complete_params()["exit_code"] == "0"
+    assert puts() == 2
+  end
+
+  test "a batch refused as not held is not retried and completes with 20", %{
+    req: req,
+    config: config,
+    script: script
+  } do
+    Agent.update(script, &Map.put(&1, :upload_error, {409, %{error: "lease_not_held"}}))
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    assert complete_params()["exit_code"] == "20"
+    assert puts() == 1
+  end
+
+  # The portal reads only the last 1 MiB of it, and a whole 64 MiB log would
+  # push `complete` past its multipart limit.
+  test "a runner.log over the cap yields a runner_log part of at most 1 MiB, its tail", %{
+    req: req,
+    config: config
+  } do
+    System.put_env("FAKE_DOCKER_OUTPUT_BYTES", Integer.to_string(1536 * 1024))
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    assert {"runner.log", runner_log} = complete_params()["runner_log"]
+    assert byte_size(runner_log) <= 1024 * 1024
+    assert String.ends_with?(runner_log, "fake build output\n")
+  end
+
+  test "a logs.tar.gz over its cap is left out of complete", %{req: req, config: config} do
+    Application.put_env(:ncc_agent, :caps, logs_tarball_bytes: 10)
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    params = complete_params()
+    assert params["exit_code"] == "0"
+    assert {"result.json", _} = params["result"]
+    refute Map.has_key?(params, "logs")
   end
 end

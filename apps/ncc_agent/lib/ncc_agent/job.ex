@@ -11,8 +11,13 @@ defmodule NccAgent.Job do
   those binds, and everything it reads back from them must be a regular
   file: the agent runs as root and the container could leave symlinks.
 
-  A runner-side failure (a timeout, a failed pull, a crash) completes the
-  lease with exit code `20`, which the portal retries.
+  A runner-side failure (a timeout, a failed pull, a crash, an upload of
+  the run's files that still fails after its retries) completes the lease
+  with exit code `20`, which the portal retries.
+
+  `complete` carries `result.json`, `logs.tar.gz` (left out over 48 MiB)
+  and the last 1 MiB of `runner.log`, which keeps the request within the
+  portal's multipart limit however much the build printed.
   """
 
   require Logger
@@ -32,7 +37,10 @@ defmodule NccAgent.Job do
     "rejected" => :rejected
   }
   @complete_attempts 3
-  @complete_retry_ms 5_000
+  # Each request of the upload (files/missing, every batch) gets this many
+  # tries on a 5xx or a transport error.
+  @upload_attempts 3
+  @default_retry_ms 5_000
 
   @type outcome :: :done | :requeued | :failed | :rejected
   @type dirs :: %{
@@ -71,7 +79,7 @@ defmodule NccAgent.Job do
     try do
       exit_code = claim |> build(config, dirs, runner_log, hb) |> check_result(dirs.out)
       Heartbeat.set_phase(hb, "uploading")
-      if exit_code == 0, do: upload_files(req, lease_id, scratch, dirs.files, claim["upload"])
+      exit_code = upload_or_fail(exit_code, req, lease_id, scratch, dirs.files, claim["upload"])
       outcome = complete(req, lease_id, exit_code, scratch)
       if exit_code == 0, do: warm(config, claim, dirs.out)
       outcome
@@ -216,13 +224,32 @@ defmodule NccAgent.Job do
     File.write!(Path.join(work_dir, "input.json"), Jason.encode_to_iodata!(input))
   end
 
+  # A passing run whose files did not all reach the portal is not a pass:
+  # `Portal.Catalog.Ingestion` skips an absent blob without a word, so the
+  # run would be published without its precompiled files. Completing with
+  # 20 has the portal retry the lease instead.
+  defp upload_or_fail(0, req, lease_id, scratch, files_dir, caps) do
+    case upload_files(req, lease_id, scratch, files_dir, caps) do
+      :ok ->
+        0
+
+      :failed ->
+        Logger.error("the files of #{lease_id} did not all upload: completing with 20")
+        @runner_failure
+    end
+  end
+
+  defp upload_or_fail(exit_code, _req, _lease_id, _scratch, _files_dir, _caps), do: exit_code
+
   # sobelow_skip ["Traversal.FileModule"]
   defp upload_files(req, lease_id, scratch, files_dir, caps) do
     caps = caps || %{}
     files = list_files(files_dir, caps["max_files"] || @default_max_files)
+    shas = Enum.map(files, &elem(&1, 0))
 
     with [_ | _] <- files,
-         {:ok, missing} <- Client.missing(req, lease_id, Enum.map(files, &elem(&1, 0))) do
+         {:ok, missing} <-
+           with_retry("files/missing", lease_id, fn -> Client.missing(req, lease_id, shas) end) do
       missing = MapSet.new(missing)
       upload_dir = Path.join(scratch, "upload")
       File.rm_rf!(upload_dir)
@@ -232,13 +259,12 @@ defmodule NccAgent.Job do
       |> Enum.filter(fn {sha, _} -> MapSet.member?(missing, sha) end)
       |> Tar.batches(caps["max_batch_bytes"] || @default_max_batch_bytes)
       |> Enum.with_index()
-      |> Enum.each(fn {batch, i} -> upload_batch(req, lease_id, upload_dir, batch, i) end)
+      |> Enum.map(fn {batch, i} -> upload_batch(req, lease_id, upload_dir, batch, i) end)
+      |> Enum.all?(&(&1 == :ok))
+      |> if(do: :ok, else: :failed)
     else
-      [] ->
-        :ok
-
-      {:error, reason} ->
-        Logger.error("files/missing for #{lease_id} failed: #{inspect(reason)}")
+      [] -> :ok
+      {:error, _reason} -> :failed
     end
   end
 
@@ -261,23 +287,53 @@ defmodule NccAgent.Job do
         :ok
 
       {:error, reason} ->
-        Logger.error("could not write batch #{i} of #{lease_id}, skipped: #{inspect(reason)}")
-        :skipped
+        Logger.error("could not write batch #{i} of #{lease_id}: #{inspect(reason)}")
+        :failed
     end
   end
 
+  # A refusal of the content itself -- an entry that does not hash to its
+  # name, or a batch over the portal's cap -- would be refused again on any
+  # retry or attempt, so it is logged and the run goes on without those
+  # files, as the portal's own size caps would have it. Anything else that
+  # still fails after `with_retry/3` fails the upload.
   defp send_batch(req, lease_id, tar, i) do
-    case Client.upload(req, lease_id, tar) do
+    case with_retry("batch #{i}", lease_id, fn -> Client.upload(req, lease_id, tar) end) do
       {:ok, _} ->
         :ok
 
       {:error, {:bad_entries, bad}} ->
         Logger.error("the portal refused #{length(bad)} file(s) of #{lease_id}: #{inspect(bad)}")
+        :ok
 
-      {:error, reason} ->
-        Logger.error("uploading batch #{i} of #{lease_id} failed: #{inspect(reason)}")
+      {:error, {:http, 413, _}} ->
+        Logger.error("the portal refused batch #{i} of #{lease_id} as too large")
+        :ok
+
+      {:error, _reason} ->
+        :failed
     end
   end
+
+  defp with_retry(what, lease_id, fun, attempt \\ 1) do
+    case fun.() do
+      {:error, reason} = error ->
+        if attempt < @upload_attempts and retryable?(reason) do
+          Logger.warning("#{what} for #{lease_id} failed (#{inspect(reason)}), retrying")
+          Process.sleep(retry_ms() * attempt)
+          with_retry(what, lease_id, fun, attempt + 1)
+        else
+          Logger.error("#{what} for #{lease_id} failed: #{inspect(reason)}")
+          error
+        end
+
+      ok ->
+        ok
+    end
+  end
+
+  # Tests set `config :ncc_agent, retry_ms: 0`.
+  defp retry_ms, do: Application.get_env(:ncc_agent, :retry_ms, @default_retry_ms)
 
   # sobelow_skip ["Traversal.FileModule"]
   defp list_files(files_dir, max_files) do
@@ -310,7 +366,7 @@ defmodule NccAgent.Job do
       {:error, reason} = error ->
         if attempt < @complete_attempts and retryable?(reason) do
           Logger.warning("complete for #{lease_id} failed (#{inspect(reason)}), retrying")
-          Process.sleep(@complete_retry_ms * attempt)
+          Process.sleep(retry_ms() * attempt)
           complete_with_retry(req, lease_id, exit_code, parts, attempt + 1)
         else
           Logger.error("complete for #{lease_id} failed: #{inspect(reason)}")
@@ -334,8 +390,41 @@ defmodule NccAgent.Job do
     %{
       result: if(result_ok?(result) == :ok, do: result),
       logs: logs_tarball(scratch, Path.join(out, "logs")),
-      runner_log: if(regular?(runner_log), do: runner_log)
+      runner_log: runner_log_tail(scratch, runner_log)
     }
+  end
+
+  # The last `Caps.get(:runner_log_tail_bytes)` of `runner.log`, copied to a file of
+  # its own: the heartbeat still reads the whole log.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp runner_log_tail(scratch, runner_log) do
+    tail = Path.join(scratch, "runner.tail.log")
+    File.rm(tail)
+
+    with {:ok, %File.Stat{type: :regular, size: size}} <- File.lstat(runner_log),
+         {:ok, bytes} <- read_tail(runner_log, size),
+         :ok <- File.write(tail, bytes) do
+      tail
+    else
+      _ -> nil
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_tail(path, size) do
+    offset = max(size - Caps.get(:runner_log_tail_bytes), 0)
+
+    with {:ok, fd} <- :file.open(path, [:read, :binary, :raw]) do
+      try do
+        case :file.pread(fd, offset, size - offset) do
+          {:ok, bytes} -> {:ok, bytes}
+          :eof -> {:ok, ""}
+          {:error, reason} -> {:error, reason}
+        end
+      after
+        :file.close(fd)
+      end
+    end
   end
 
   # sobelow_skip ["Traversal.FileModule"]
@@ -348,7 +437,7 @@ defmodule NccAgent.Job do
 
       case :erl_tar.create(String.to_charlist(tar), logs, [:compressed]) do
         :ok ->
-          tar
+          within_logs_cap(tar)
 
         {:error, reason} ->
           Logger.error("could not pack the logs: #{inspect(reason)}")
@@ -356,6 +445,25 @@ defmodule NccAgent.Job do
       end
     else
       _ -> nil
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp within_logs_cap(tar) do
+    cap = Caps.get(:logs_tarball_bytes)
+
+    case File.stat(tar) do
+      {:ok, %File.Stat{size: size}} when size <= cap ->
+        tar
+
+      {:ok, %File.Stat{size: size}} ->
+        Logger.warning("logs.tar.gz is #{size} bytes, over the #{cap} cap: not sent")
+
+        File.rm(tar)
+        nil
+
+      {:error, _} ->
+        nil
     end
   end
 

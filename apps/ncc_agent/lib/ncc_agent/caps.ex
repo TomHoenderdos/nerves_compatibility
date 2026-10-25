@@ -2,17 +2,27 @@ defmodule NccAgent.Caps do
   @moduledoc """
   Size caps on what the agent reads back from a worker container, which
   runs untrusted package code: `result.json`, each `out/logs/*.log`, and
-  how much container output `runner.log` collects. Tests lower them with
+  how much container output `runner.log` collects; and on what `complete`
+  sends: the last `runner_log_tail_bytes` of `runner.log` (the portal reads
+  no more) and a `logs.tar.gz` of at most `logs_tarball_bytes` (under the
+  portal's 64 MiB `max_logs_bytes`). Tests lower them with
   `Application.put_env(:ncc_agent, :caps, result_json_bytes: 10)`.
   """
 
   @defaults %{
     result_json_bytes: 8 * 1024 * 1024,
     log_bytes: 16 * 1024 * 1024,
-    runner_log_bytes: 64 * 1024 * 1024
+    runner_log_bytes: 64 * 1024 * 1024,
+    runner_log_tail_bytes: 1024 * 1024,
+    logs_tarball_bytes: 48 * 1024 * 1024
   }
 
-  @type key :: :result_json_bytes | :log_bytes | :runner_log_bytes
+  @type key ::
+          :result_json_bytes
+          | :log_bytes
+          | :runner_log_bytes
+          | :runner_log_tail_bytes
+          | :logs_tarball_bytes
 
   @spec get(key()) :: pos_integer()
   def get(key) do
