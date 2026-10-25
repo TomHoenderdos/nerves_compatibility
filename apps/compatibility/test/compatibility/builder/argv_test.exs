@@ -59,4 +59,34 @@ defmodule Compatibility.Builder.ArgvTest do
       Argv.build(%{input | paths: Map.delete(input.paths, :tmp)})
     end
   end
+
+  test "a comma in a mount path raises", %{input: input} do
+    assert_raise ArgumentError, fn ->
+      Argv.build(put_in(input, [:paths, :work], "/scratch/run,evil/work"))
+    end
+  end
+
+  test "an image starting with a dash raises", %{input: input} do
+    assert_raise ArgumentError, fn ->
+      Argv.build(%{input | image: "-x"})
+    end
+  end
+
+  test "memory-only and build_concurrency-only, without cpus", %{input: input} do
+    argv =
+      input
+      |> Map.drop([:cpus])
+      |> Map.put(:memory, "4g")
+      |> Map.put(:build_concurrency, "2")
+      |> Argv.build()
+
+    assert "--memory" in argv
+    refute "--cpus" in argv
+    assert "NCC_BUILD_CONCURRENCY=2" in argv
+
+    refute Enum.any?(
+             argv,
+             &String.starts_with?(&1, ["ERL_FLAGS=", "ELIXIR_ERL_OPTIONS="])
+           )
+  end
 end

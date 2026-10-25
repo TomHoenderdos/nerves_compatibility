@@ -31,7 +31,7 @@ defmodule Compatibility.Builder.Argv do
           required(:image) => String.t(),
           required(:paths) => paths(),
           optional(:cpus) => String.t() | number() | nil,
-          optional(:memory) => String.t() | nil,
+          optional(:memory) => String.t() | number() | nil,
           optional(:build_concurrency) => String.t() | pos_integer() | nil
         }
 
@@ -39,13 +39,38 @@ defmodule Compatibility.Builder.Argv do
   @spec build(spec()) :: [String.t()]
   def build(spec) do
     paths = Map.fetch!(spec, :paths)
+    image = Map.fetch!(spec, :image)
+
+    validate_paths!(paths)
+    validate_image!(image)
 
     flags(spec) ++
       limits(spec) ++
       mounts(paths) ++
       env() ++
       build_cache_env(paths) ++
-      cpu_env(spec) ++ concurrency_env(spec) ++ [Map.fetch!(spec, :image)]
+      cpu_env(spec) ++ concurrency_env(spec) ++ [image]
+  end
+
+  # A comma in a mount source is a field separator in `--mount`'s own
+  # `type=bind,source=...,target=...` syntax, so it would inject extra mount
+  # options rather than naming a path.
+  defp validate_paths!(paths) do
+    Enum.each(paths, fn {_key, value} ->
+      if is_binary(value) and String.contains?(value, ",") do
+        raise ArgumentError,
+              "path contains a comma, which `--mount` would read as a separator: #{inspect(value)}"
+      end
+    end)
+  end
+
+  # docker reads a leading `-` as the start of another flag rather than the
+  # image argument.
+  defp validate_image!(image) do
+    if String.starts_with?(image, "-") do
+      raise ArgumentError,
+            "image starts with '-', which docker would read as a flag: #{inspect(image)}"
+    end
   end
 
   defp flags(spec) do
@@ -90,7 +115,7 @@ defmodule Compatibility.Builder.Argv do
       bind(Map.fetch!(paths, :work), "/work"),
       bind(Map.fetch!(paths, :out), "/out"),
       bind(Map.fetch!(paths, :files), "/files"),
-      # Per-run, disk-backed, removed by cleanup/1 with the rest of the run.
+      # Per-run, disk-backed, removed with the rest of the run by the caller.
       # Not tmpfs: that is RAM, and `mix firmware` (fwup, mksquashfs,
       # fakeroot) puts whole rootfs images in /tmp.
       bind(Map.fetch!(paths, :tmp), "/tmp"),
@@ -107,8 +132,8 @@ defmodule Compatibility.Builder.Argv do
 
   # Read-only: a build runs untrusted package code, and one that could
   # write here could plant beams under another dependency's key. What a
-  # build compiles goes to /out/build-cache, and
-  # `Portal.BuildCache.Promotion` moves what it accepts in from the host.
+  # build compiles goes to /out/build-cache, and the host-side promotion
+  # is the cache's only writer, moving in what it accepts after the run exits.
   defp build_cache_mount(dir),
     do: ["--mount", "type=bind,source=#{dir},target=/build-cache,readonly"]
 
@@ -123,8 +148,8 @@ defmodule Compatibility.Builder.Argv do
       "-e",
       "HEX_HOME=/hex-cache",
       # Nerves extracts prebuilt system tarballs with the external `tar`, and
-      # GNU tar restores ownership by default when it believes it is root. On a
-      # rootless daemon run_as_user is "0:0", so it does believe that, and every
+      # GNU tar restores ownership by default when it believes it is root.
+      # Rootless hosts pass `0:0` as :user, so it does believe that, and every
       # chown then fails against --cap-drop=ALL: tar exits 2 and
       # Nerves.Artifact.Cache.put/2 raises. Dropping the chown is the fix, not
       # granting CAP_CHOWN back to a container that builds untrusted package
