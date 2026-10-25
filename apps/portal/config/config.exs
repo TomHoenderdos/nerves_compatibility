@@ -170,7 +170,10 @@ config :portal, Portal.Builder,
   # package can fill the disk. 20 GiB is five times the 3.6 GiB the main
   # builder held on 2026-10-21; `Portal.Workers.Sweep` evicts oldest-modified
   # tarballs past it.
-  hex_cache_max_bytes: 20 * 1024 * 1024 * 1024
+  hex_cache_max_bytes: 20 * 1024 * 1024 * 1024,
+  # Refuse to build on a host whose egress filter is not loaded
+  # (`Portal.Builder.check_egress/0`). `NCC_EGRESS_CHECK=0` turns it off.
+  egress_check: true
 
 # Where the "Open an issue" link in the UI points.
 #

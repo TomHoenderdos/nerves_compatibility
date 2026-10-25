@@ -51,7 +51,26 @@ defmodule Portal.Application do
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Portal.Supervisor]
-    Supervisor.start_link(children, opts)
+
+    with {:ok, pid} <- Supervisor.start_link(children, opts) do
+      :ok = start_boot_egress_check()
+      {:ok, pid}
+    end
+  end
+
+  # A build node whose egress filter is missing refuses every build
+  # (`Portal.Builder.check_egress/0`); say so once at boot rather than only in
+  # each refusal. Only where builds run: the web host has no rootless daemon.
+  # Off the boot path, since it shells out.
+  defp start_boot_egress_check do
+    oban = Application.fetch_env!(:portal, Oban)
+
+    if Keyword.get(oban, :testing, :disabled) == :disabled and
+         Portal.Workers.Ingest.local_queue_limit(Keyword.get(oban, :queues)) != nil do
+      {:ok, _pid} = Task.start(&Portal.Builder.boot_egress_check/0)
+    end
+
+    :ok
   end
 
   # Tell Phoenix to update the endpoint configuration

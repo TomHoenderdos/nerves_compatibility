@@ -187,6 +187,10 @@ class EgressRulesetTest(unittest.TestCase):
         self.assertIn(f'drop comment "{MARKER}"', self.rules)
         self.assertIn(f"marker={MARKER}", LOADER.read_text())
 
+    def test_preflight_looks_for_the_same_marker(self):
+        builder = (OPS.parent / "apps/portal/lib/portal/builder.ex").read_text()
+        self.assertIn(f'@egress_marker "{MARKER}"', builder)
+
     @unittest.skipUnless(shutil.which("nft") and shutil.which("unshare"), "needs nft and unshare")
     def test_nft_parses_the_ruleset(self):
         if subprocess.run(["unshare", "-rn", "true"], capture_output=True).returncode != 0:

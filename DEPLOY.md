@@ -104,8 +104,11 @@ resolved by the host daemon and must be a path the daemon can see:
 | `NCC_HEX_CACHE_MAX_GB` | Upper bound on the shared Hex cache `packages/` dir, in GiB (1024³ bytes; default 20). Least recently used (`max(atime, mtime)`) is evicted first; nothing used in the last 2h is evicted |
 | `NCC_NERVES_CACHE_MAX_GB` | Upper bound on the shared Nerves cache `artifacts/` dir, in GiB (default 40). Oldest entries by mtime go first, never one the template currently resolves (`template.json`, written by the deploy-time warm), and only while no build runs; without a readable `template.json` nothing is evicted |
 | `NCC_BUILD_CONCURRENCY` | How many Nerves targets one build may compile at once. Unset means 1 (serial). Raise it together with `NCC_BUILD_CPUS`: the targets share that cap, and the win comes from overlapping the single-threaded stretches (release assembly, squashfs, fwup). Capped at 4 in code. See the note below |
+| `NCC_EGRESS_CHECK` | `0` lets builds run without the egress filter (`ops/README.md`, "Egress filter"): for a host with no rootless daemon, and the rollback. Unset or `1`: every build first checks that `inet ncc_egress` is loaded in the daemon's network namespace and is snoozed when it is not. Any other value keeps it on |
 
 The scratch filesystem must not be mounted `noexec`: the container's `/tmp` is bound from it and fakeroot executes helpers there.
+
+A build host also needs the egress filter loaded in its rootless daemon's network namespace, or every build is refused and snoozed; `ops/builder-deploy.sh` installs and loads it, and the portal logs its state at boot. See `ops/README.md`, "Egress filter".
 
 ### Picking a concurrency
 

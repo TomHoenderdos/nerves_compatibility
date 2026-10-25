@@ -21,7 +21,9 @@ config :portal, Portal.Builder,
   docker_image: "ncc-worker:local",
   scratch_root: Path.join(System.tmp_dir!(), "ncc-test-scratch"),
   nerves_cache: Path.join(System.tmp_dir!(), "ncc-test-nerves-cache"),
-  hex_cache: Path.join(System.tmp_dir!(), "ncc-test-hex-cache")
+  hex_cache: Path.join(System.tmp_dir!(), "ncc-test-hex-cache"),
+  # No rootless daemon here, nor in the integration test.
+  egress_check: false
 
 config :portal, :artifact_store, path: Path.join(System.tmp_dir!(), "ncc-test-artifacts")
 

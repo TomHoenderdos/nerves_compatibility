@@ -152,6 +152,15 @@ if portal_available? do
     run_as_user: System.get_env("NCC_BUILD_USER"),
     # `Portal.Builder.min_free_bytes/0` parses this, so the string is fine.
     min_free_disk_gb: System.get_env("NCC_MIN_FREE_GB"),
+    # `0` turns the egress preflight off (a host with no rootless daemon, or
+    # the section-3 rollback), `1` on. Anything else keeps the default, which
+    # is on, so a typo can never switch the check off.
+    egress_check:
+      case System.get_env("NCC_EGRESS_CHECK") do
+        "0" -> false
+        "1" -> true
+        _ -> nil
+      end,
     # Hours are the human unit; `Portal.Workers.Sweep` wants milliseconds. An
     # unparseable value falls through as nil and leaves the compile-time default,
     # rather than silently becoming a retention of zero — which would have the
