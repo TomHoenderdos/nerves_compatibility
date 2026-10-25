@@ -114,4 +114,9 @@ sleep_until_up
 
 if [[ ${2:-portal} == builder ]]; then
   builder_check_running_egress
+else
+  # Remote builders read the registry digest for this commit from images.json;
+  # the images workflow publishes it minutes after this deploy, so a miss here
+  # is retried by the ncc-images-sync timer (docs/REMOTE_BUILDERS.md).
+  bash "$SRC/ops/images-sync.sh" "$(git rev-parse HEAD)" || echo 'images.json not yet available; the sync timer will retry' >&2
 fi

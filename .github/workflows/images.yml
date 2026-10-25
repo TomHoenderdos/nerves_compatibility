@@ -1,0 +1,147 @@
+name: Images and agent releases
+
+# Publishes what a remote builder needs to mean the same thing as a local
+# build host: the worker image by registry digest, and the agent release per
+# architecture, all described in one images.json the web host reads
+# (Portal.Builders.Images). Runs only after the test workflow passed on main.
+on:
+  workflow_run:
+    workflows: ["Test and deploy"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  WORKER_IMAGE: ghcr.io/tomhoenderdos/ncc-worker
+
+jobs:
+  worker-image:
+    name: Push ncc-worker
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - id: sha
+        run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/ncc_worker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.WORKER_IMAGE }}:${{ steps.sha.outputs.sha }}
+            ${{ env.WORKER_IMAGE }}:latest
+
+  agent-release:
+    name: Agent release (${{ matrix.arch }})
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - id: sha
+        run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "28"
+      - name: Build release
+        env:
+          MIX_ENV: prod
+        run: |
+          sha="${{ steps.sha.outputs.sha }}"
+          export NCC_AGENT_VERSION="$(git show -s --format=%ct "$sha").${sha:0:12}"
+          mix deps.get --only prod
+          mix release ncc_agent --overwrite
+          tar -C _build/prod/rel -czf "ncc-agent-${{ matrix.arch }}.tar.gz" ncc_agent
+          sha256sum "ncc-agent-${{ matrix.arch }}.tar.gz" > "ncc-agent-${{ matrix.arch }}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ncc-agent-${{ matrix.arch }}
+          path: ncc-agent-${{ matrix.arch }}.tar.gz*
+
+  publish:
+    name: Release and images.json
+    needs: [worker-image, agent-release]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Write images.json
+        env:
+          SHA: ${{ needs.worker-image.outputs.sha }}
+          DIGEST: ${{ needs.worker-image.outputs.digest }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="$(curl -fsSL -H "Authorization: Bearer ${{ github.token }}" \
+            "https://api.github.com/repos/$REPO/commits/$SHA" | python3 -c '
+          import json,sys,datetime
+          c=json.load(sys.stdin)["commit"]["committer"]["date"]
+          t=datetime.datetime.fromisoformat(c.replace("Z","+00:00"))
+          print(int(t.timestamp()))')"
+          version="${version}.${SHA:0:12}"
+          x86="$(cut -d" " -f1 artifacts/ncc-agent-x86_64.tar.gz.sha256)"
+          arm="$(cut -d" " -f1 artifacts/ncc-agent-aarch64.tar.gz.sha256)"
+          base="https://github.com/$REPO/releases/download/agent-$SHA"
+          python3 - "$SHA" "$DIGEST" "$version" "$x86" "$arm" "$base" <<'PY' > artifacts/images.json
+          import json, sys, datetime
+          sha, digest, version, x86, arm, base = sys.argv[1:]
+          print(json.dumps({
+            "commit": sha,
+            "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "images": {"ncc-worker": {"name": "ghcr.io/tomhoenderdos/ncc-worker", "tag": sha, "digest": digest}},
+            "agent": {"version": version, "releases": {
+              "x86_64": {"url": f"{base}/ncc-agent-x86_64.tar.gz", "sha256": x86},
+              "aarch64": {"url": f"{base}/ncc-agent-aarch64.tar.gz", "sha256": arm}}}
+          }, indent=2))
+          PY
+          cat artifacts/images.json
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.worker-image.outputs.sha }}
+        run: |
+          gh release create "agent-$SHA" --repo "${{ github.repository }}" \
+            --title "Agent $SHA" --notes "ncc-agent release and images.json for $SHA" \
+            --target "$SHA" artifacts/ncc-agent-x86_64.tar.gz artifacts/ncc-agent-aarch64.tar.gz \
+            artifacts/images.json
