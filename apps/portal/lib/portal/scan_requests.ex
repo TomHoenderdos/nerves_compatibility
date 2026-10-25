@@ -14,7 +14,8 @@ defmodule Portal.ScanRequests do
 
   alias Portal.AdminEvents
   alias Portal.ScanRequests.ScanRequest
-  alias Portal.Workers.{Build, Progress}
+  alias Portal.Builders.Routing
+  alias Portal.Workers.Progress
 
   @admin_page_size 50
 
@@ -405,7 +406,7 @@ defmodule Portal.ScanRequests do
       |> Map.merge(if build[:pin_local], do: %{pin_local: true}, else: %{})
 
     args
-    |> Build.new(priority: priority(source), meta: meta)
+    |> Routing.build_job(priority: priority(source), meta: meta)
     |> Oban.insert()
   end
 
