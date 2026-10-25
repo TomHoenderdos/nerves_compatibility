@@ -128,4 +128,13 @@ defmodule Compatibility.Builder.ArgvTest do
   test "an unknown Nerves cache mode raises rather than mounting read-write", %{input: input} do
     assert_raise FunctionClauseError, fn -> Argv.build(%{input | nerves_cache_mode: :bogus}) end
   end
+
+  # Shared with `Portal.Builder.safe_name/1` and the agent's scratch layout.
+  test "safe_name/1 and container_name/1 are the one run-id transform" do
+    assert Argv.safe_name("rb-jason-1.4.4-1700000000000") == "rb-jason-1.4.4-1700000000000"
+    assert Argv.safe_name("a/b c") == "a_b_c"
+    assert Argv.safe_name("../x") == ".._x"
+    assert Argv.container_name("x y") == "ncc-x_y"
+    for bad <- ["", ".", ".."], do: assert_raise(ArgumentError, fn -> Argv.safe_name(bad) end)
+  end
 end

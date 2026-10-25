@@ -259,4 +259,24 @@ defmodule Compatibility.Builder.Argv do
       value -> ["-e", "NCC_BUILD_CONCURRENCY=#{value}"]
     end
   end
+
+  @doc """
+  The container name for a run id: `ncc-` plus `safe_name/1` of it. Every
+  host names its containers this way, so a run's container can be found,
+  killed or listed by the same rule on any of them.
+  """
+  @spec container_name(String.t()) :: String.t()
+  def container_name(run_id), do: "ncc-#{safe_name(run_id)}"
+
+  @doc """
+  The one transform from a run id to a directory or container name: anything
+  outside `[A-Za-z0-9_.-]` becomes `_`, and the names that would escape a
+  scratch root (`""`, `"."`, `".."`) raise. `Portal.Builder.safe_name/1` and
+  the remote agent's scratch layout are this function.
+  """
+  @spec safe_name(String.t()) :: String.t()
+  def safe_name(run_id) when run_id in ["", ".", ".."],
+    do: raise(ArgumentError, "invalid directory name")
+
+  def safe_name(run_id), do: String.replace(run_id, ~r/[^A-Za-z0-9_.\-]/, "_")
 end
