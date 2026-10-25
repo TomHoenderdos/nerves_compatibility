@@ -1,6 +1,8 @@
 defmodule NccAgent.Application do
   @moduledoc """
-  Loads the configuration and starts the agent: the identity, the updater
+  Loads the configuration, installs the egress ruleset (`NccAgent.Egress`;
+  a failure is logged, and the slots refuse to claim until it verifies) and
+  starts the agent: the identity, the updater
   and one `NccAgent.Slot` per configured slot (each stopped with time to
   kill its container and hand its lease back). A release without its environment
   must not spin, so a bad configuration stops the VM before any slot runs.
@@ -17,6 +19,7 @@ defmodule NccAgent.Application do
           {:ok, config} ->
             NccAgent.Config.put(config)
             clear_scratch(config)
+            install_egress()
             [NccAgent.Identity, NccAgent.Updater, slots(config)]
 
           {:error, errors} ->
@@ -39,6 +42,15 @@ defmodule NccAgent.Application do
     scratch = NccAgent.Config.path(config, :scratch)
     File.rm_rf(scratch)
     File.mkdir_p(scratch)
+  end
+
+  # A failed install must not stop the VM: every slot verifies before each
+  # claim, reinstalls once and claims nothing until the ruleset is in place.
+  defp install_egress do
+    case NccAgent.Egress.install() do
+      :ok -> Logger.info("egress ruleset installed")
+      {:error, why} -> Logger.error("egress ruleset not installed; slots will not claim: #{why}")
+    end
   end
 
   defp slots(config) do

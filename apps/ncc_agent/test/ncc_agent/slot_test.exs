@@ -24,7 +24,8 @@ defmodule NccAgent.SlotTest do
       | portal_url: url,
         data_dir: Path.join(dir, "data"),
         enrolment_token: "id.c2VjcmV0c2VjcmV0.#{ca.prefix}",
-        docker_bin: @fake
+        docker_bin: @fake,
+        egress_script: egress_stub(dir, "exit 0")
     }
 
     Config.put(config)
@@ -58,6 +59,26 @@ defmodule NccAgent.SlotTest do
       "warm_allowlist" => []
     }
   end
+
+  # An egress script that appends its argument to `egress.log` in `dir`, then runs `body`.
+  defp egress_stub(dir, body) do
+    File.mkdir_p!(dir)
+    path = Path.join(dir, "egress-#{System.unique_integer([:positive])}.sh")
+
+    File.write!(path, """
+    #!/usr/bin/env bash
+    echo "$1" >>#{Path.join(dir, "egress.log")}
+    #{body}
+    """)
+
+    File.chmod!(path, 0o755)
+    path
+  end
+
+  defp use_egress(dir, body),
+    do: Config.put(%{Config.get() | egress_script: egress_stub(dir, body)})
+
+  defp egress_log(dir), do: File.read!(Path.join(dir, "egress.log"))
 
   defp script_claim(script, claim), do: Agent.update(script, &Map.put(&1, :claims, [claim]))
 
@@ -137,6 +158,54 @@ defmodule NccAgent.SlotTest do
     :persistent_term.put({Updater, :updating}, "1800000000.def")
     start_supervised!({Slot, 1})
     refute_receive {:portal_request, "POST", "/builder/v1/jobs/claim", _, _}, 300
+  end
+
+  test "without a verified egress ruleset a slot reinstalls once, reports missing and never claims",
+       %{script: script, dir: dir} do
+    use_egress(dir, ~s(echo "NCC-EGRESS is not in DOCKER-USER"; exit 1))
+    script_claim(script, claim())
+    start_supervised!({Slot, 1})
+
+    assert_receive {:portal_request, "POST", "/builder/v1/status", body, _}, 5_000
+    assert body["egress"] == "missing"
+    assert body["free_slots"] == 0
+    assert egress_log(dir) == "verify\ninstall\nverify\n"
+    refute_receive {:portal_request, "POST", "/builder/v1/jobs/claim", _, _}, 500
+  end
+
+  test "a slot whose verify fails claims once the reinstall makes it pass", %{
+    script: script,
+    dir: dir
+  } do
+    marker = Path.join(dir, "installed")
+
+    use_egress(dir, """
+    case "$1" in
+      install) touch #{marker} ;;
+      verify) [ -f #{marker} ] || { echo "NCC-EGRESS is missing"; exit 1; } ;;
+    esac
+    """)
+
+    script_claim(script, claim())
+    start_supervised!({Slot, 1})
+
+    assert_receive {:portal_request, "POST", "/builder/v1/jobs/claim", %{"egress" => "ok"}, _},
+                   5_000
+
+    assert String.starts_with?(egress_log(dir), "verify\ninstall\nverify\n")
+    refute_received {:portal_request, "POST", "/builder/v1/status", _, _}
+  end
+
+  test "a slot verifies the egress ruleset before each claim", %{dir: dir} do
+    start_supervised!({Slot, 1})
+
+    assert_receive {:portal_request, "POST", "/builder/v1/jobs/claim", %{"egress" => "ok"}, _},
+                   5_000
+
+    # The portal had nothing (204): the slot claims again, verifying first.
+    assert_receive {:portal_request, "POST", "/builder/v1/jobs/claim", _, _}, 5_000
+    assert egress_log(dir) |> String.split("\n", trim: true) |> Enum.uniq() == ["verify"]
+    assert egress_log(dir) |> String.split("\n", trim: true) |> length() >= 2
   end
 
   defp flush do
