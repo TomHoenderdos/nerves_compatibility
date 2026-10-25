@@ -83,8 +83,36 @@ defmodule NccWorker.NervesCacheTest do
 
       assert NervesCache.env(layout) == [
                {"NERVES_ARTIFACTS_DIR", Path.join([tmp, "work", "nerves", "artifacts"])},
-               {"NERVES_DL_DIR", Path.join([tmp, "work", "nerves", "dl"])}
+               {"NERVES_DL_DIR", Path.join([tmp, "work", "nerves", "dl"])},
+               {"XDG_DATA_HOME", Path.join([tmp, "work", "nerves", "data"])}
              ]
+    end
+
+    # nerves_bootstrap's UpdateChecker writes <XDG_DATA_HOME or ~>/.nerves
+    # when its application starts. The root is read-only and ~/.nerves is no
+    # longer a mount, so without this the app fails to start, its compile
+    # hook never runs, and `mix firmware` builds for the host and dies with
+    # "No Nerves package is supplying an Erlang runtime".
+    test "every mode gives nerves_bootstrap a writable data dir under /work", %{tmp_dir: tmp} do
+      work = Path.join(tmp, "work")
+      cache = Path.join(tmp, "cache")
+
+      layouts = [
+        build!(tmp),
+        build!(tmp, rw: true),
+        elem(NervesCache.prepare(:warm, cache_root: cache, work_dir: work, run_id: "w-1"), 1)
+      ]
+
+      for layout <- layouts do
+        {"XDG_DATA_HOME", data} = List.keyfind(NervesCache.env(layout), "XDG_DATA_HOME", 0)
+        assert data == Path.join([work, "nerves", "data"])
+        refute String.starts_with?(data, cache)
+
+        # Marked checked, so bootstrap neither writes nor asks hex.pm.
+        check = Path.join([data, "nerves", "nerves_bootstrap_update_check"])
+        assert {:ok, %File.Stat{type: :regular, mtime: mtime}} = File.lstat(check, time: :posix)
+        assert abs(System.os_time(:second) - mtime) < 60
+      end
     end
 
     test "misses are the real directories only, as name and version", %{tmp_dir: tmp} do
@@ -163,7 +191,14 @@ defmodule NccWorker.NervesCacheTest do
   describe "warm mode" do
     setup %{tmp_dir: tmp} do
       cache = Path.join(tmp, "cache")
-      {:ok, layout} = NervesCache.prepare(:warm, cache_root: cache, run_id: "warm_nerves-42")
+
+      {:ok, layout} =
+        NervesCache.prepare(:warm,
+          cache_root: cache,
+          work_dir: Path.join(tmp, "work"),
+          run_id: "warm_nerves-42"
+        )
+
       %{cache: cache, layout: layout}
     end
 
@@ -180,7 +215,13 @@ defmodule NccWorker.NervesCacheTest do
     test "staging lives under staging/<run_id> and farms the cache", %{tmp_dir: tmp} do
       cache = Path.join(tmp, "cache2")
       entry!(cache, "nerves_system_rpi4-2.0.0", "abc1234")
-      {:ok, layout} = NervesCache.prepare(:warm, cache_root: cache, run_id: "warm_nerves-7")
+
+      {:ok, layout} =
+        NervesCache.prepare(:warm,
+          cache_root: cache,
+          work_dir: Path.join(tmp, "work"),
+          run_id: "warm_nerves-7"
+        )
 
       assert layout.mode == :staging
       assert layout.artifacts_dir == Path.join([cache, "staging", "warm_nerves-7", "artifacts"])
@@ -248,14 +289,16 @@ defmodule NccWorker.NervesCacheTest do
       assert File.dir?(other)
     end
 
-    test "a run id cannot name a directory outside staging", %{cache: cache} do
+    test "a run id cannot name a directory outside staging", %{cache: cache, tmp_dir: tmp} do
       for bad <- ["", ".", ".."] do
         assert_raise ArgumentError, fn ->
-          NervesCache.prepare(:warm, cache_root: cache, run_id: bad)
+          NervesCache.prepare(:warm, cache_root: cache, work_dir: tmp, run_id: bad)
         end
       end
 
-      {:ok, layout} = NervesCache.prepare(:warm, cache_root: cache, run_id: "a/../../b")
+      {:ok, layout} =
+        NervesCache.prepare(:warm, cache_root: cache, work_dir: tmp, run_id: "a/../../b")
+
       assert Path.dirname(Path.dirname(layout.artifacts_dir)) == Path.join(cache, "staging")
     end
   end

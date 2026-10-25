@@ -29,6 +29,14 @@ defmodule NccWorker.NervesCache do
       rollback, points both variables straight at the mounted cache
       (`:direct`), as builds did before the farm.
 
+  Every mode also points `XDG_DATA_HOME` at `/work/nerves/data`.
+  nerves_bootstrap's `UpdateChecker` creates `<XDG_DATA_HOME>/nerves` (else
+  `~/.nerves`) when its application starts. The container root is read-only,
+  so without a writable dir the app fails to start, its compile hook never
+  runs `Nerves.export_env/0`, and `mix firmware` builds for the host and
+  raises "No Nerves package is supplying an Erlang runtime". `prepare/2`
+  marks the check done there, so bootstrap does not ask hex.pm either.
+
   Nothing refers to `/home/nerves/.nerves`.
   """
 
@@ -46,6 +54,7 @@ defmodule NccWorker.NervesCache do
           cache_root: Path.t(),
           artifacts_dir: Path.t(),
           dl_dir: Path.t(),
+          data_dir: Path.t(),
           run_id: String.t() | nil
         }
   @type pair :: %{String.t() => String.t()}
@@ -65,12 +74,28 @@ defmodule NccWorker.NervesCache do
   """
   @spec prepare(:build | :warm, keyword()) :: {:ok, layout()} | {:error, term()}
   def prepare(kind, opts \\ []) do
-    layout = layout(kind, Keyword.get(opts, :cache_root, @cache_root), opts)
+    data_dir = Path.join([Keyword.get(opts, :work_dir, "/work"), "nerves", "data"])
 
-    case materialize(layout) do
-      :ok -> {:ok, layout}
-      {:error, _reason} = error -> error
+    layout =
+      kind
+      |> layout(Keyword.get(opts, :cache_root, @cache_root), opts)
+      |> Map.put(:data_dir, data_dir)
+
+    with :ok <- materialize_data_dir(data_dir),
+         :ok <- materialize(layout) do
+      {:ok, layout}
     end
+  end
+
+  # nerves_bootstrap's check file (`NervesBootstrap.UpdateChecker`), touched
+  # so it counts as checked and nothing writes or fetches at app start.
+  # data_dir is under the container's own /work mount, from prepare/2.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp materialize_data_dir(data_dir) do
+    dir = Path.join(data_dir, "nerves")
+
+    with :ok <- File.mkdir_p(dir),
+         do: File.touch(Path.join(dir, "nerves_bootstrap_update_check"))
   end
 
   defp layout(:warm, root, opts) do
@@ -165,10 +190,17 @@ defmodule NccWorker.NervesCache do
     end
   end
 
-  @doc "The two variables that point Nerves at `layout`."
+  @doc """
+  The variables that point Nerves at `layout`: its two artifact dirs, and
+  `XDG_DATA_HOME` for nerves_bootstrap's data dir.
+  """
   @spec env(layout()) :: [{String.t(), String.t()}]
   def env(layout),
-    do: [{"NERVES_ARTIFACTS_DIR", layout.artifacts_dir}, {"NERVES_DL_DIR", layout.dl_dir}]
+    do: [
+      {"NERVES_ARTIFACTS_DIR", layout.artifacts_dir},
+      {"NERVES_DL_DIR", layout.dl_dir},
+      {"XDG_DATA_HOME", layout.data_dir}
+    ]
 
   @doc """
   Sets `env/1` in this process's environment. Every `mix` the worker runs is
