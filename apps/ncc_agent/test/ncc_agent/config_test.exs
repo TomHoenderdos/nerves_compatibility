@@ -36,4 +36,10 @@ defmodule NccAgent.ConfigTest do
     assert {:error, errors} = Config.load()
     assert Enum.any?(errors, &(&1 =~ "NCC_SLOTS")) and Enum.any?(errors, &(&1 =~ "https"))
   end
+
+  test "an https URL without a host is an error" do
+    System.put_env("NCC_PORTAL_URL", "https://")
+    assert {:error, [msg]} = Config.load()
+    assert msg =~ "NCC_PORTAL_URL"
+  end
 end
