@@ -135,7 +135,7 @@ defmodule Portal.Workers.RequestSyncTest do
     # `RemoteBuild` completes once it has written the lease; the remote build
     # runs for as long as it takes with no live job behind the request.
     test "a request with an open lease is left alone" do
-      for state <- [:queued, :leased, :uploading, :done] do
+      for state <- [:queued, :leased, :uploading] do
         remote = request(:backfill, :queued)
         user = request(:admin_manual, :queued)
         job("Portal.Workers.RemoteBuild", remote, "completed")
@@ -147,6 +147,34 @@ defmodule Portal.Workers.RequestSyncTest do
         assert status(remote) == :queued
         assert status(user) == :queued
       end
+    end
+
+    # `done` is terminal: once its Ingest job is gone (cancelled, out of
+    # attempts) nothing will ever mark the request.
+    test "a request whose lease is done and whose ingest is gone is closed" do
+      remote = request(:backfill, :queued)
+      user = request(:admin_manual, :queued)
+
+      for r <- [remote, user] do
+        job("Portal.Workers.RemoteBuild", r, "completed")
+        job("Portal.Workers.Ingest", r, "cancelled")
+        lease(r, :done)
+      end
+
+      sync()
+
+      refute exists?(remote)
+      assert status(user) == :error
+    end
+
+    test "a done lease with a live ingest is left alone" do
+      ingesting = request(:backfill, :queued)
+      job("Portal.Workers.Ingest", ingesting, "available")
+      lease(ingesting, :done)
+
+      sync()
+
+      assert status(ingesting) == :queued
     end
 
     test "a request whose lease failed is closed" do

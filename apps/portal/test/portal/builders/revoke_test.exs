@@ -139,8 +139,32 @@ defmodule Portal.Builders.RevokeTest do
     upload_dir = Portal.Builders.Upload.lease_dir(lease.id)
     File.mkdir_p!(upload_dir)
 
-    assert {:ok, %{runs_revoked: 0, packages: ["plug"], sweep_id: sweep_id} = result} =
+    {:ok, queued_request} =
+      Portal.ScanRequests.create_once(%{
+        package_name: "decimal",
+        version: "2.1.1",
+        source: :hex_owner,
+        status: :accepted
+      })
+
+    # Queued before the revoke, held by nobody: with no builder left nothing
+    # would ever claim it.
+    queued =
+      lease!(builder, "decimal", %{
+        scan_request_id: queued_request.id,
+        state: :queued,
+        builder_id: nil,
+        attempt: 0
+      })
+
+    assert {:ok, %{runs_revoked: 0, packages: ["decimal", "plug"], sweep_id: sweep_id} = result} =
              Builders.revoke(builder)
+
+    assert %Lease{state: :failed, error: "no enrolled builder"} =
+             Ash.get!(Lease, queued.id, domain: Builders)
+
+    {:ok, queued_request} = Portal.ScanRequests.get_request(queued_request.id)
+    assert queued_request.status == :error
 
     refute Map.has_key?(result, :failed_lease_ids)
     assert is_binary(sweep_id)
@@ -153,7 +177,8 @@ defmodule Portal.Builders.RevokeTest do
     assert request.error_reason == "builder revoked"
     refute File.exists?(upload_dir)
 
-    assert [job] = all_enqueued(worker: Portal.Workers.Backfill)
-    assert job.args["package"] == "plug" and job.args["pin_local"] == true
+    jobs = all_enqueued(worker: Portal.Workers.Backfill)
+    assert jobs |> Enum.map(& &1.args["package"]) |> Enum.sort() == ["decimal", "plug"]
+    assert Enum.all?(jobs, &(&1.args["pin_local"] == true))
   end
 end

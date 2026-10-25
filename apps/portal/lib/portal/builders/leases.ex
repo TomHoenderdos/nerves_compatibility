@@ -26,6 +26,7 @@ defmodule Portal.Builders.Leases do
   @phases ~w(pulling building uploading)
   @held [:leased, :uploading]
   @default_long_poll_ms 25_000
+  @requeued_locally "requeued locally"
 
   @spec topic() :: String.t()
   def topic, do: @topic
@@ -330,25 +331,30 @@ defmodule Portal.Builders.Leases do
     end
   end
 
-  @doc "Admin retry: a `:failed` lease back to `:queued` with a fresh attempt budget."
-  @spec requeue(Lease.t()) :: {:ok, Lease.t()} | {:error, :not_failed | :update_failed}
+  @doc """
+  Admin retry: a `:failed` lease back to `:queued` with a fresh attempt
+  budget. A lease already handed to a local build (`mark_requeued_locally/1`)
+  answers `{:error, :requeued_locally}`, so a stale page cannot build it twice.
+  """
+  @spec requeue(Lease.t()) ::
+          {:ok, Lease.t()} | {:error, :not_failed | :requeued_locally | :update_failed}
   def requeue(%Lease{} = lease) do
     set = Keyword.merge(requeue_set(nil), attempt: 0)
 
-    case transition(lease.id, [states: [:failed]], set: set) do
+    case transition(lease.id, [states: [:failed], not_error: @requeued_locally], set: set) do
       {:ok, lease} ->
         notify_queued(lease)
         {:ok, lease}
 
       {:error, :stale} ->
-        {:error, :not_failed}
+        if requeued_locally?(lease.id),
+          do: {:error, :requeued_locally},
+          else: {:error, :not_failed}
 
       {:error, {:db, reason}} ->
         db_failed("requeue", lease.id, reason)
     end
   end
-
-  @requeued_locally "requeued locally"
 
   @doc "The `error` a `:failed` lease handed to a local build carries."
   @spec requeued_locally() :: String.t()
@@ -383,6 +389,13 @@ defmodule Portal.Builders.Leases do
   rescue
     e in [Postgrex.Error, DBConnection.ConnectionError] ->
       db_failed("requeue locally", lease.id, e)
+  end
+
+  defp requeued_locally?(id) do
+    match?(
+      {:ok, %Lease{state: :failed, error: @requeued_locally}},
+      Ash.get(Lease, id, domain: @domain)
+    )
   end
 
   @doc "Count `n` uploaded bytes against the attempt `lease` names, atomically."
@@ -509,6 +522,9 @@ defmodule Portal.Builders.Leases do
 
         {:run_id, run_id}, q ->
           from(l in q, where: l.run_id == ^run_id)
+
+        {:not_error, error}, q ->
+          from(l in q, where: is_nil(l.error) or l.error != ^error)
       end)
 
     updates = Keyword.update(updates, :set, [updated_at: now()], &[{:updated_at, now()} | &1])

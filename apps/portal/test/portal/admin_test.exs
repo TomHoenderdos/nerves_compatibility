@@ -322,6 +322,12 @@ defmodule Portal.AdminTest do
                Ash.get!(Portal.Builders.Lease, lease.id, domain: Portal.Builders)
 
       assert {:error, :not_failed} = Admin.requeue_lease_locally(lease.id, admin)
+      # Nor back to the remote queue from a stale page: it would build twice.
+      assert {:error, :requeued_locally} = Admin.requeue_lease(lease.id)
+
+      assert %{state: :failed, error: "requeued locally"} =
+               Ash.get!(Portal.Builders.Lease, lease.id, domain: Portal.Builders)
+
       assert [_one] = all_enqueued(worker: Portal.Workers.Build)
       assert {:error, :not_found} = Admin.requeue_lease_locally(Ecto.UUID.generate(), admin)
     end

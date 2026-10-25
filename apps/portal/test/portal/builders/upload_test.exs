@@ -469,6 +469,10 @@ defmodule Portal.Builders.UploadTest do
     File.write!(stale, "half an entry")
     File.write!(live, "being written")
     File.touch!(stale, System.os_time(:second) - 600)
+    # Quiet for less than two read timeouts: possibly a live batch.
+    quiet = Path.join(dir, ".incoming-quiet")
+    File.write!(quiet, "between reads")
+    File.touch!(quiet, System.os_time(:second) - 90)
 
     bin = tar([{sha("next"), "next"}])
 
@@ -477,5 +481,21 @@ defmodule Portal.Builders.UploadTest do
 
     refute File.exists?(stale)
     assert File.exists?(live)
+    assert File.exists?(quiet)
+  end
+
+  test "a refused batch removes its own .incoming files, not a concurrent batch's",
+       %{lease: lease} do
+    dir = Upload.files_dir(lease.id)
+    File.mkdir_p!(dir)
+    other = Path.join(dir, ".incoming-other-batch")
+    File.write!(other, "someone else's entry")
+
+    bin = tar([{sha("first"), "first"}, {"README", "x"}])
+
+    assert {:error, {:unsupported_entry, "README"}} =
+             Upload.receive_batch(lease, reader(bin, 512), content_length: byte_size(bin))
+
+    assert Path.wildcard(Path.join(dir, ".incoming-*"), match_dot: true) == [other]
   end
 end

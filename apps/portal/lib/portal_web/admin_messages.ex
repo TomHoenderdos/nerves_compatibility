@@ -56,6 +56,9 @@ defmodule PortalWeb.AdminMessages do
   def error(:not_failed),
     do: "That lease is no longer failed; only a failed lease can be requeued."
 
+  def error(:requeued_locally),
+    do: "That lease was already requeued locally; its build runs on this host."
+
   def error(:invalid_remote_settings),
     do: "Choose auto, on or off, and a backlog threshold of zero or more."
 
