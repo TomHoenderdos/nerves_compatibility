@@ -36,12 +36,14 @@ requeues the lease until its third attempt, then fails it.
 All of this is manual, once.
 
 1. **Create the CA.** As the service user, with the key outside the
-   checkout:
+   checkout. `bin/portal eval` evaluates `config/runtime.exs`, which raises
+   without `SECRET_KEY_BASE` and the rest of the env file, so source it
+   first, exactly as `ops/deploy.sh` does:
 
    ```bash
    install -d -o ncc -g ncc -m 0700 /etc/ncc-portal/builder-ca
-   sudo -u ncc /opt/nerves_compatibility/portal/bin/portal eval \
-     'Portal.Builders.CA.init("/etc/ncc-portal/builder-ca/ca-key.pem")'
+   sudo -u ncc bash -c "cd /var/lib/ncc && set -a && . /etc/ncc-portal/portal.env && set +a && \
+     /opt/nerves_compatibility/portal/bin/portal eval 'Portal.Builders.CA.init(\"/etc/ncc-portal/builder-ca/ca-key.pem\")'"
    ```
 
    (`mix portal.builder_ca.init --key PATH` from a checkout.) It writes the
@@ -306,8 +308,13 @@ lands:
 
 Web host, once:
 
-1. `Portal.Builders.CA.init("/etc/ncc-portal/builder-ca/ca-key.pem")` via
-   `bin/portal eval`, as `ncc`.
+1. Create the CA as `ncc` with `/etc/ncc-portal/portal.env` sourced:
+
+   ```bash
+   sudo -u ncc bash -c "cd /var/lib/ncc && set -a && . /etc/ncc-portal/portal.env && set +a && \
+     /opt/nerves_compatibility/portal/bin/portal eval 'Portal.Builders.CA.init(\"/etc/ncc-portal/builder-ca/ca-key.pem\")'"
+   ```
+
 2. `NCC_BUILDER_CA_KEY`, `NCC_UPLOAD_ROOT`, `remote:2` in `OBAN_QUEUES`
    (and `NCC_BUILDER_PORT`/`NCC_IMAGES_JSON` if not the defaults) in
    `/etc/ncc-portal/portal.env`.

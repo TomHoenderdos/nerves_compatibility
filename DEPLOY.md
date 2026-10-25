@@ -395,9 +395,16 @@ must be refused with `SSH_ORIGINAL_COMMAND does not run rsync`.
 ## Remote builders
 
 Remote VMs can take builds from the web host over mTLS. Setting it up is
-manual: create the CA with
-`bin/portal eval 'Portal.Builders.CA.init("/etc/ncc-portal/builder-ca/ca-key.pem")'`,
-set `NCC_BUILDER_CA_KEY` (and `NCC_UPLOAD_ROOT`), add `remote:2` to the web
+manual: create the CA, as `ncc` with the env file sourced (a release
+`eval` evaluates `config/runtime.exs`, which raises without
+`SECRET_KEY_BASE`):
+
+```bash
+sudo -u ncc bash -c "cd /var/lib/ncc && set -a && . /etc/ncc-portal/portal.env && set +a && \
+  /opt/nerves_compatibility/portal/bin/portal eval 'Portal.Builders.CA.init(\"/etc/ncc-portal/builder-ca/ca-key.pem\")'"
+```
+
+Then set `NCC_BUILDER_CA_KEY` (and `NCC_UPLOAD_ROOT`), add `remote:2` to the web
 host's `OBAN_QUEUES`, open TCP 8443, install the `ncc-images-sync.timer`,
 restart. `docs/REMOTE_BUILDERS.md` has the steps, the unit texts and the
 builder cloud-init.

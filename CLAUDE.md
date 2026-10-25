@@ -64,7 +64,7 @@ run `mix precommit` or `mix setup` inside `apps/portal`: `precommit` includes
 `deps.unlock --unused` and `setup` includes `deps.get`, both of which rewrite
 the shared lock.
 
-The integration test is `apps/portal/test/portal/workers/build_integration_test.exs`, tagged `:integration` and excluded from default `mix test`. The remote-builder tests (`apps/portal/test/portal/builders/agent_e2e_test.exs`, tag `:e2e`, and `remote_integration_test.exs`, tag `:integration`) are excluded too; run the e2e one after any change to the builder API, the agent, `Portal.Builders.Upload` or remote ingest. Run it after any change that could affect Docker invocation, the JSON contract, artifact storage, or the worker firmware-build path.
+The integration test is `apps/portal/test/portal/workers/build_integration_test.exs`, tagged `:integration` and excluded from default `mix test`. Run it after any change that could affect Docker invocation, the JSON contract, artifact storage, or the worker firmware-build path. The remote-builder tests (`apps/portal/test/portal/builders/agent_e2e_test.exs`, tag `:e2e`, and `remote_integration_test.exs`, tag `:integration`) are excluded too; run the e2e one after any change to the builder API, the agent, `Portal.Builders.Upload` or remote ingest.
 
 ## How a Package Gets Checked
 
