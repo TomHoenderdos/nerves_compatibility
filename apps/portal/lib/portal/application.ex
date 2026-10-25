@@ -10,6 +10,8 @@ defmodule Portal.Application do
     # Owned by this process, which lives as long as the application: the
     # memo of Hex.pm release checksums `Portal.BuildCache.Promotion` checks.
     :ok = Portal.HexPm.create_release_checksum_table()
+    # And the memo of package owners `Portal.NervesCache.warm_pairs/2` checks.
+    :ok = Portal.HexPm.create_package_owners_table()
 
     children = [
       PortalWeb.Telemetry,

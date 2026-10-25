@@ -167,4 +167,52 @@ defmodule Portal.HexPmTest do
       assert_received {:fetched, ^name, ^version}
     end
   end
+
+  describe "owners/2" do
+    # Unique per test: the memo is one table for the whole node.
+    defp owners_package, do: "owners-memo-#{System.unique_integer([:positive])}"
+
+    defp counting_owners(answer) do
+      me = self()
+
+      fn name ->
+        send(me, {:owners_fetched, name})
+        answer
+      end
+    end
+
+    test "remembers an answer for a day" do
+      name = owners_package()
+      fetch = counting_owners({:ok, ["nerves"]})
+
+      assert {:ok, ["nerves"]} = HexPm.owners(name, fetch: fetch, now_ms: 0)
+      assert {:ok, ["nerves"]} = HexPm.owners(name, fetch: fetch, now_ms: :timer.hours(23))
+
+      assert_received {:owners_fetched, ^name}
+      refute_received {:owners_fetched, _}
+    end
+
+    test "asks again once the day is over" do
+      name = owners_package()
+      fetch = counting_owners({:ok, ["nerves"]})
+
+      assert {:ok, ["nerves"]} = HexPm.owners(name, fetch: fetch, now_ms: 0)
+      assert {:ok, ["nerves"]} = HexPm.owners(name, fetch: fetch, now_ms: :timer.hours(24))
+
+      assert_received {:owners_fetched, ^name}
+      assert_received {:owners_fetched, ^name}
+    end
+
+    # A Hex outage must be retried by the next build, not remembered for a day.
+    test "an owners error is not remembered" do
+      name = owners_package()
+      fetch = counting_owners({:error, :hex_api_unavailable})
+
+      assert {:error, :hex_api_unavailable} = HexPm.owners(name, fetch: fetch, now_ms: 0)
+      assert {:error, :hex_api_unavailable} = HexPm.owners(name, fetch: fetch, now_ms: 1)
+
+      assert_received {:owners_fetched, ^name}
+      assert_received {:owners_fetched, ^name}
+    end
+  end
 end

@@ -221,6 +221,90 @@ defmodule Portal.HexPm do
     [retry: false, receive_timeout: 5_000, connect_options: [timeout: 5_000]]
   end
 
+  @package_owners :portal_hex_package_owners
+  @owners_ttl_ms :timer.hours(24)
+
+  @doc """
+  The Hex usernames that own `name` (`GET /api/packages/:name/owners`, which
+  needs no token). `Portal.NervesCache.warm_pairs/2` warms a Nerves package
+  only when `nerves` is among them.
+
+  An answer is remembered for a day, so the first builds after a cold start on
+  every build host cost one lookup per package rather than one per build.
+  Errors are not remembered: a Hex outage drops the pair for that run only.
+  The lookup fails fast (`release_checksum_request_options/0`), since it runs
+  inside a build slot. `opts[:fetch]` replaces the uncached lookup and
+  `opts[:now_ms]` the monotonic clock, for tests.
+  """
+  @spec owners(String.t(), keyword()) ::
+          {:ok, [String.t()]} | {:error, :unknown_package | :hex_api_unavailable}
+  def owners(name, opts \\ []) when is_binary(name) do
+    now = Keyword.get_lazy(opts, :now_ms, fn -> System.monotonic_time(:millisecond) end)
+    fetch = Keyword.get(opts, :fetch, &fetch_owners/1)
+
+    case remembered_owners(name, now) do
+      {:ok, owners} ->
+        {:ok, owners}
+
+      :miss ->
+        case fetch.(name) do
+          {:ok, owners} = found when is_list(owners) ->
+            remember_owners(name, owners, now)
+            found
+
+          other ->
+            other
+        end
+    end
+  end
+
+  @doc """
+  Create the node-wide table `owners/2` remembers answers in. Called once
+  from `Portal.Application.start/2`, whose process owns it.
+  """
+  @spec create_package_owners_table() :: :ok
+  def create_package_owners_table do
+    _ = :ets.new(@package_owners, [:named_table, :public, :set, read_concurrency: true])
+    :ok
+  end
+
+  # No table (a release `eval`): look it up every time rather than crash.
+  defp remembered_owners(name, now) do
+    case :ets.lookup(@package_owners, name) do
+      [{^name, owners, at}] when now - at < @owners_ttl_ms -> {:ok, owners}
+      _ -> :miss
+    end
+  rescue
+    ArgumentError -> :miss
+  end
+
+  defp remember_owners(name, owners, now) do
+    :ets.insert(@package_owners, {name, owners, now})
+  rescue
+    ArgumentError -> false
+  end
+
+  # One path segment, so nothing in the name may add another.
+  defp fetch_owners(name) do
+    url = "#{@api_url}/packages/#{URI.encode(name, &URI.char_unreserved?/1)}/owners"
+
+    case Req.get(url, release_checksum_request_options()) do
+      {:ok, %{status: 200, body: owners}} when is_list(owners) ->
+        {:ok, Enum.flat_map(owners, &owner_username/1)}
+
+      {:ok, %{status: 404}} ->
+        {:error, :unknown_package}
+
+      {:ok, %{status: status}} ->
+        Logger.warning("Hex owners lookup for #{name} failed: HTTP #{status}")
+        {:error, :hex_api_unavailable}
+
+      {:error, reason} ->
+        Logger.warning("Hex owners lookup for #{name} failed: #{inspect(reason)}")
+        {:error, :hex_api_unavailable}
+    end
+  end
+
   # Each part is one path segment, so nothing in it may add another.
   defp fetch_release_checksum(name, version) do
     url =
