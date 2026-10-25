@@ -39,7 +39,7 @@ defmodule Portal.Workers.RequestSync do
 
   @system_sources ~w(backfill catalog_seed update_check)
   @live_states ~w(available scheduled executing retryable)
-  @job_workers ~w(Portal.Workers.Build Portal.Workers.Ingest)
+  @job_workers ~w(Portal.Workers.Build Portal.Workers.RemoteBuild Portal.Workers.Ingest)
   @retain_finished_hours 24
   @grace_minutes 10
 

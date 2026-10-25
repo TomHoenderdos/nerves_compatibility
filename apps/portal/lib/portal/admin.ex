@@ -26,7 +26,7 @@ defmodule Portal.Admin do
   alias Portal.ScanRequests.ScanRequest
   alias Portal.Workers.UpdateCheck
 
-  @build_worker "Portal.Workers.Build"
+  @build_workers ~w(Portal.Workers.Build Portal.Workers.RemoteBuild)
   @update_check_worker "Portal.Workers.UpdateCheck"
 
   # States in which a priority change still means something. An `executing` job
@@ -187,7 +187,7 @@ defmodule Portal.Admin do
 
   def queue_positions(scan_request_ids) do
     from(j in Oban.Job,
-      where: j.worker == @build_worker,
+      where: j.worker in @build_workers,
       where: fragment("? ->> 'scan_request_id' = ANY(?)", j.args, ^scan_request_ids),
       order_by: [asc: j.id],
       select: %{
@@ -421,7 +421,7 @@ defmodule Portal.Admin do
 
   defp build_job(scan_request_id) do
     from(j in Oban.Job,
-      where: j.worker == @build_worker,
+      where: j.worker in @build_workers,
       where: fragment("? ->> 'scan_request_id' = ?", j.args, ^scan_request_id),
       order_by: [desc: j.id],
       limit: 1

@@ -25,7 +25,7 @@ defmodule Portal.LogBackfill do
 
   require Logger
 
-  alias Portal.Workers.Build
+  alias Portal.Builders.Routing
 
   # The `DISTINCT ON` ordering mirrors `Portal.Catalog.latest_runs/1` and
   # `Portal.Workers.LogRetention`'s rule 1 exactly, including the plain `DESC`
@@ -90,7 +90,7 @@ defmodule Portal.LogBackfill do
   end
 
   defp enqueue({name, version}, acc) do
-    job = Build.new(%{package: name, version: version, force: true}, priority: 9)
+    job = Routing.build_job(%{package: name, version: version, force: true}, priority: 9)
 
     case Oban.insert(job) do
       {:ok, _job} ->

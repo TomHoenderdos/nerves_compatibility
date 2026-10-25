@@ -33,6 +33,10 @@ defmodule Portal.BulkRebuild do
   # work rather than interrupting it.
   @waiting ~w(available scheduled retryable)
 
+  # A sweep's build job is local or remote per `Portal.Builders.Routing`; both
+  # count the same.
+  @build_workers ~w(Portal.Workers.Build Portal.Workers.RemoteBuild)
+
   # `Oban.insert_all/1` sends one statement per call; 500 jobs keeps each well
   # under Postgres' 65,535 bind-parameter limit.
   @chunk 500
@@ -262,11 +266,13 @@ defmodule Portal.BulkRebuild do
        when state in @waiting or state == "executing",
        do: add(acc, :intake, n)
 
-  defp tally(acc, "Portal.Workers.Build", state, n) when state in @waiting,
+  defp tally(acc, worker, state, n) when worker in @build_workers and state in @waiting,
     do: add(acc, :queued, n)
 
-  defp tally(acc, "Portal.Workers.Build", "executing", n), do: add(acc, :building, n)
-  defp tally(acc, "Portal.Workers.Build", "completed", n), do: add(acc, :done, n)
+  defp tally(acc, worker, "executing", n) when worker in @build_workers,
+    do: add(acc, :building, n)
+
+  defp tally(acc, worker, "completed", n) when worker in @build_workers, do: add(acc, :done, n)
   defp tally(acc, _worker, _state, _n), do: acc
 
   defp add(acc, key, n), do: Map.update!(acc, key, &(&1 + n))
