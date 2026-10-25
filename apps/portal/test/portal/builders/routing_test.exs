@@ -127,4 +127,15 @@ defmodule Portal.Builders.RoutingTest do
 
     assert [_] = all_enqueued(worker: Build, args: %{package: "decimal"})
   end
+
+  test "a local job and a remote one for the same args dedup against each other" do
+    {:ok, _} = Portal.Settings.save(%{remote_mode: :on, remote_backlog_threshold: 0})
+    args = %{package: "jason", version: "1.4.4", scan_request_id: Ecto.UUID.generate()}
+    assert %Oban.Job{conflict?: false} = Oban.insert!(Build.new(args))
+
+    changeset = Routing.build_job(args, priority: 2)
+    assert changeset.changes.worker == "Portal.Workers.RemoteBuild"
+    assert {:ok, %Oban.Job{conflict?: true}} = Oban.insert(changeset)
+    assert [] = all_enqueued(worker: RemoteBuild)
+  end
 end
