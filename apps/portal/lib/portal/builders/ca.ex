@@ -31,8 +31,17 @@ defmodule Portal.Builders.CA do
   @spec server_key_path() :: Path.t() | nil
   def server_key_path, do: if(d = dir(), do: Path.join(d, "server-key.pem"))
 
+  @name_pattern ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/
+
+  @doc """
+  Whether `name` is safe as a certificate subject component (a builder name
+  or a host): it is interpolated into an RDN string, so `/` and `=` are out.
+  """
+  @spec valid_name?(term()) :: boolean()
+  def valid_name?(name), do: is_binary(name) and Regex.match?(@name_pattern, name)
+
   @doc "Create the CA at `key_path` (key mode 600, `ca.pem` beside it). Refuses an existing key."
-  @spec init(Path.t()) :: {:ok, %{key_path: Path.t(), cert_path: Path.t()}} | {:error, term()}
+  @spec init(Path.t()) :: {:ok, %{key_path: Path.t(), cert_path: Path.t()}} | {:error, :exists}
   # The path is operator input to a mix task or `bin/portal eval`, never a request.
   # sobelow_skip ["Traversal.FileModule"]
   def init(key_path) do
@@ -44,9 +53,29 @@ defmodule Portal.Builders.CA do
       key = X509.PrivateKey.new_ec(:secp256r1)
       cert = X509.Certificate.self_signed(key, "/CN=ncc builder CA", template: :root_ca)
       File.mkdir_p!(Path.dirname(key_path))
-      write_private(key_path, X509.PrivateKey.to_pem(key))
-      File.write!(cert_path, X509.Certificate.to_pem(cert))
-      {:ok, %{key_path: key_path, cert_path: cert_path}}
+      key_tmp = stage_private(key_path, X509.PrivateKey.to_pem(key))
+      cert_tmp = stage(cert_path, X509.Certificate.to_pem(cert), 0o644)
+
+      # A hard link fails if the key appeared meanwhile, so two inits cannot
+      # both win; the key goes live first and the certificate follows at once.
+      case :file.make_link(String.to_charlist(key_tmp), String.to_charlist(key_path)) do
+        :ok ->
+          File.rm!(key_tmp)
+
+          case File.rename(cert_tmp, cert_path) do
+            :ok ->
+              {:ok, %{key_path: key_path, cert_path: cert_path}}
+
+            {:error, reason} ->
+              File.rm(key_path)
+              raise File.Error, reason: reason, action: "rename", path: cert_path
+          end
+
+        {:error, _} ->
+          File.rm(key_tmp)
+          File.rm(cert_tmp)
+          {:error, :exists}
+      end
     end
   end
 
@@ -89,8 +118,16 @@ defmodule Portal.Builders.CA do
 
   @spec issue_client(String.t(), String.t(), String.t()) ::
           {:ok, %{pem: String.t(), fingerprint: String.t(), expires_at: DateTime.t()}}
-          | {:error, :invalid_csr}
+          | {:error, :invalid_csr | :invalid_name}
   def issue_client(csr_pem, name, builder_id) do
+    if valid_name?(name) do
+      do_issue_client(csr_pem, name, builder_id)
+    else
+      {:error, :invalid_name}
+    end
+  end
+
+  defp do_issue_client(csr_pem, name, builder_id) do
     with {:ok, %{key: ca_key, cert: ca_cert}} <- load(),
          {:ok, csr} <- X509.CSR.from_pem(csr_pem),
          true <- X509.CSR.valid?(csr) do
@@ -130,49 +167,77 @@ defmodule Portal.Builders.CA do
     end
   end
 
-  @doc "The listener's certificate for `host`, issued when missing or expiring within 30 days."
+  @doc "The listener's certificate for `host`, issued when missing, stale, or expiring within 30 days."
   @spec ensure_server_cert(String.t()) ::
           {:ok, %{certfile: Path.t(), keyfile: Path.t()}} | {:error, term()}
   # Operator-configured paths.
   # sobelow_skip ["Traversal.FileModule"]
   def ensure_server_cert(host) do
-    with {:ok, %{key: ca_key, cert: ca_cert}} <- load() do
-      certfile = server_cert_path()
-      keyfile = server_key_path()
+    if valid_name?(host) do
+      with {:ok, %{key: ca_key, cert: ca_cert}} <- load() do
+        certfile = server_cert_path()
+        keyfile = server_key_path()
 
-      if server_cert_current?(certfile, host) do
-        {:ok, %{certfile: certfile, keyfile: keyfile}}
-      else
-        key = X509.PrivateKey.new_ec(:secp256r1)
+        if server_cert_current?(certfile, keyfile, host, ca_cert) do
+          {:ok, %{certfile: certfile, keyfile: keyfile}}
+        else
+          key = X509.PrivateKey.new_ec(:secp256r1)
 
-        cert =
-          X509.Certificate.new(X509.PublicKey.derive(key), "/CN=#{host}", ca_cert, ca_key,
-            template: :server,
-            validity: @server_days,
-            extensions: [subject_alt_name: X509.Certificate.Extension.subject_alt_name([host])]
-          )
+          cert =
+            X509.Certificate.new(X509.PublicKey.derive(key), "/CN=#{host}", ca_cert, ca_key,
+              template: :server,
+              validity: @server_days,
+              extensions: [subject_alt_name: X509.Certificate.Extension.subject_alt_name([host])]
+            )
 
-        write_private(keyfile, X509.PrivateKey.to_pem(key))
-        File.write!(certfile, X509.Certificate.to_pem(cert))
-        {:ok, %{certfile: certfile, keyfile: keyfile}}
+          # Stage both before either goes live. A crash between the renames
+          # leaves a key that does not match the certificate, which
+          # server_cert_current?/4 treats as stale.
+          key_tmp = stage_private(keyfile, X509.PrivateKey.to_pem(key))
+          cert_tmp = stage(certfile, X509.Certificate.to_pem(cert), 0o644)
+          File.rename!(key_tmp, keyfile)
+          File.rename!(cert_tmp, certfile)
+          {:ok, %{certfile: certfile, keyfile: keyfile}}
+        end
       end
+    else
+      {:error, :invalid_host}
     end
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp server_cert_current?(certfile, host) do
+  defp server_cert_current?(certfile, keyfile, host, ca_cert) do
     with {:ok, pem} <- File.read(certfile),
          {:ok, cert} <- X509.Certificate.from_pem(pem),
-         [^host] <- X509.Certificate.subject(cert, "CN") do
+         {:ok, key_pem} <- File.read(keyfile),
+         {:ok, key} <- X509.PrivateKey.from_pem(key_pem),
+         [^host] <- X509.Certificate.subject(cert, "CN"),
+         true <- X509.Certificate.public_key(cert) == X509.PublicKey.derive(key),
+         true <- signed_by?(cert, ca_cert) do
       DateTime.diff(expires_at(cert), DateTime.utc_now(), :day) > @server_renew_within_days
     else
       _ -> false
     end
   end
 
+  # Both CAs are named "ncc builder CA", so name matching (pkix_is_issuer)
+  # cannot tell a rotated CA from the current one; the signature can.
+  defp signed_by?(cert, ca_cert) do
+    :public_key.pkix_verify(X509.Certificate.to_der(cert), X509.Certificate.public_key(ca_cert))
+  end
+
+  defp stage_private(path, pem), do: stage(path, pem, 0o600)
+
+  # Write `pem` to a fresh sibling of `path` created exclusively, restrict it
+  # before any content lands, and return the temp path for the caller to
+  # rename into place.
   # sobelow_skip ["Traversal.FileModule"]
-  defp write_private(path, pem) do
-    File.write!(path, pem)
-    File.chmod!(path, 0o600)
+  defp stage(path, pem, mode) do
+    tmp = "#{path}.tmp-#{System.unique_integer([:positive])}"
+    {:ok, io} = File.open(tmp, [:write, :exclusive, :binary])
+    File.chmod!(tmp, mode)
+    IO.binwrite(io, pem)
+    File.close(io)
+    tmp
   end
 end
