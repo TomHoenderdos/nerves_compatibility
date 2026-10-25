@@ -263,4 +263,7 @@ config :portal, Portal.Builders.Images, path: "/etc/ncc-portal/images.json"
 # The remote-builder CA key (NCC_BUILDER_CA_KEY in prod); unset disables enrolment.
 config :portal, Portal.Builders.CA, key_path: nil
 
+# Remote builders' uploads wait here for ingest (NCC_UPLOAD_ROOT in prod).
+config :portal, Portal.Builders.Upload, root: Path.expand("~/.ncc-uploads")
+
 import_config "#{config_env()}.exs"

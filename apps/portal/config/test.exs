@@ -68,3 +68,5 @@ config :portal, Portal.Builders.Images, path: Path.join(System.tmp_dir!(), "ncc-
 
 # Tests that need a CA point this at their own tmp dir.
 config :portal, Portal.Builders.CA, key_path: nil
+
+config :portal, Portal.Builders.Upload, root: Path.join(System.tmp_dir!(), "ncc-test-uploads")

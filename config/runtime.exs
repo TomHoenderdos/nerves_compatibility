@@ -133,6 +133,9 @@ if portal_available? do
   if key = System.get_env("NCC_BUILDER_CA_KEY"),
     do: config(:portal, Portal.Builders.CA, key_path: key)
 
+  if root = System.get_env("NCC_UPLOAD_ROOT"),
+    do: config(:portal, Portal.Builders.Upload, root: root)
+
   # The remote builders' mTLS listener: served with PHX_SERVER once a CA key
   # is configured. `Portal.Builders.Listener` adds the certificates to
   # `https:` at boot, and leaves it off if the CA does not load. Never in

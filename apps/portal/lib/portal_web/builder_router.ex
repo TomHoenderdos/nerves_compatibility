@@ -36,5 +36,8 @@ defmodule PortalWeb.BuilderRouter do
     post "/status", EnrolmentController, :status
     post "/jobs/claim", JobController, :claim
     post "/jobs/:lease_id/heartbeat", JobController, :heartbeat
+    post "/jobs/:lease_id/files/missing", JobController, :missing
+    put "/jobs/:lease_id/files", JobController, :files
+    post "/jobs/:lease_id/complete", JobController, :complete
   end
 end
