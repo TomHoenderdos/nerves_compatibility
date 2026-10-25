@@ -81,7 +81,11 @@ Configure these environment variables for the Phoenix service:
 | `NCC_LOG_BUDGET_MB` | Optional cap on stored build logs; default 2048 |
 | `UMAMI_WEBSITE_ID` | Analytics site id. Defaults to this project's own site id, so another deployment should set its own or an empty string to turn analytics off |
 | `DNS_CLUSTER_QUERY` | Optional DNS query for clustering nodes |
-| `OBAN_QUEUES` | Which queues this node runs, e.g. `builds:1,ingest:2`. Unset means `builds:1,ingest:2,intake:5,maintenance:1,toolchain:1`. See [Splitting the build host](#splitting-the-build-host) |
+| `OBAN_QUEUES` | Which queues this node runs, e.g. `builds:1,ingest:2`. Unset means `builds:1,ingest:2,intake:5,maintenance:1,toolchain:1,remote:2`. With remote builders the **web host** must list `remote:2`: remote leases are written and their uploads ingested there. See [Splitting the build host](#splitting-the-build-host) |
+| `NCC_BUILDER_CA_KEY` | Path to the remote-builder CA key, e.g. `/etc/ncc-portal/builder-ca/ca-key.pem` (mode 600, owner the service user; `ca.pem` and the listener's server certificate live beside it). Web host only. With `PHX_SERVER` set it turns the builder listener on; unset, no listener. See `docs/REMOTE_BUILDERS.md` |
+| `NCC_BUILDER_PORT` | Port of the builder mTLS listener (`PortalWeb.BuilderEndpoint`), default `8443`. Open it to the world: the client certificate is the gate |
+| `NCC_IMAGES_JSON` | `images.json` with the worker image's registry digest and the agent releases for the deployed commit, default `/etc/ncc-portal/images.json`, written by `ops/images-sync.sh`. Missing, every job stays local |
+| `NCC_UPLOAD_ROOT` | Where remote builders' uploads wait for ingest, default `~/.ncc-uploads`. Web host only; up to 2 GiB per in-flight lease, refused below `NCC_MIN_FREE_GB` |
 | `PRECOMPILED_SIGNING_KEY` | Path to the precompiled-package signing key, e.g. `/etc/ncc/precompiled/signing.key`. Web host only; see [Precompiled signing key](#precompiled-signing-key). Unset means `root.json` is 404 and `batch.json` is 503, with manifests still served unsigned |
 
 Build-host settings. Every path below is passed to `docker run --mount source=`, so it is
@@ -334,7 +338,7 @@ server. `OBAN_QUEUES` lets one deploy run as two nodes against one database:
 
 | | web node | build node |
 | --- | --- | --- |
-| `OBAN_QUEUES` | `intake:5,maintenance:1` | `builds:1,ingest:2,toolchain:1` |
+| `OBAN_QUEUES` | `intake:5,maintenance:1` (plus `remote:2` with remote builders) | `builds:1,ingest:2,toolchain:1` |
 | `DATABASE_URL` | local Postgres | the same Postgres, over the private network |
 | Docker daemon | not used | runs the worker image |
 | Reverse proxy/TLS | yes | no, firewall it to the private interface |
@@ -388,6 +392,16 @@ ssh root@BUILD_HOST id
 
 must be refused with `SSH_ORIGINAL_COMMAND does not run rsync`.
 
+## Remote builders
+
+Remote VMs can take builds from the web host over mTLS. Setting it up is
+manual: create the CA with
+`bin/portal eval 'Portal.Builders.CA.init("/etc/ncc-portal/builder-ca/ca-key.pem")'`,
+set `NCC_BUILDER_CA_KEY` (and `NCC_UPLOAD_ROOT`), add `remote:2` to the web
+host's `OBAN_QUEUES`, open TCP 8443, install the `ncc-images-sync.timer`,
+restart. `docs/REMOTE_BUILDERS.md` has the steps, the unit texts and the
+builder cloud-init.
+
 ## Continuous deployment
 
 `.github/workflows/deploy.yml` runs the umbrella tests on every push and pull
@@ -437,6 +451,7 @@ before the warm refills it.
 - `/api/precompiled/files/:sha256` — content-addressed artifact blob
 - `/api/precompiled/root.json`, `/api/precompiled/batch.json`, `/api/precompiled/batches/:sequence.json` — signed trust chain (see [Precompiled signing key](#precompiled-signing-key))
 - `/admin/oban` — Oban Web dashboard behind admin auth (passkey sign-in)
+- `https://<PHX_HOST>:8443/builder/v1/*` — the remote-builder API (mTLS; see `docs/REMOTE_BUILDERS.md`)
 
 ## Verification after deploy
 

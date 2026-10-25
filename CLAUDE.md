@@ -10,7 +10,8 @@ This is a **Mix umbrella** at the repo root. It serves the Nerves Compatibility 
 | --- | --- |
 | `apps/compatibility` | Core library: shared result/index types, validators, and `Compatibility.Types` status helpers. |
 | `apps/ncc_worker` | Runs **inside** the Docker container. Creates a Nerves project, adds the package, builds firmware per system, enforces Hex-only deps, scans BEAM artifacts, archives precompiled files by SHA256, and writes `result.json`. Dockerfile at `apps/ncc_worker/Dockerfile`. |
-| `apps/portal` | Phoenix 1.8 + Ash/Postgres + Oban web app. Owns scan intake, accounts/admin, host-side Docker invocation (`Portal.Builder`), build jobs (`Portal.Workers.Build`), Catalog persistence, dynamic browser, badges, schema-v2 JSON API, and precompiled artifact API. |
+| `apps/portal` | Phoenix 1.8 + Ash/Postgres + Oban web app. Owns scan intake, accounts/admin, host-side Docker invocation (`Portal.Builder`), build jobs (`Portal.Workers.Build`), Catalog persistence, dynamic browser, badges, schema-v2 JSON API, and precompiled artifact API. Also the remote-builder side: the builder CA, `builders`/`builder_leases`, `PortalWeb.BuilderEndpoint` (mTLS, port 8443), `Portal.Workers.RemoteBuild`, `Portal.Workers.LeaseReaper`, `Portal.Builders.Routing`. |
+| `apps/ncc_agent` | The remote builder agent, shipped as the `ncc_agent` release and run by systemd on a builder VM (as root). Enrols over mTLS, claims leases, installs the `DOCKER-USER` egress ruleset (`priv/egress.sh`), runs the worker container with the shared `Compatibility.Builder.Argv` (post-isolation argv, per-run Nerves cache farm), uploads files, completes, updates itself. See `docs/REMOTE_BUILDERS.md`. |
 
 `apps/portal/AGENTS.md` carries extensive Phoenix 1.8 / LiveView / HEEx conventions — read it before touching `apps/portal/`.
 
@@ -21,6 +22,8 @@ make build                         # Rebuild ncc-worker:local
 make dev                           # Start Phoenix portal
 make test                          # Run umbrella test suite
 make test-integration              # Real Docker -> Portal.Catalog integration test
+make test-remote-e2e               # Real ncc_agent process + fake docker -> lease -> ingest (tag :e2e)
+make test-remote-integration       # Same through the real worker container (needs Docker)
 make format                        # mix format at umbrella root
 ```
 
@@ -61,7 +64,7 @@ run `mix precommit` or `mix setup` inside `apps/portal`: `precommit` includes
 `deps.unlock --unused` and `setup` includes `deps.get`, both of which rewrite
 the shared lock.
 
-The integration test is `apps/portal/test/portal/workers/build_integration_test.exs`, tagged `:integration` and excluded from default `mix test`. Run it after any change that could affect Docker invocation, the JSON contract, artifact storage, or the worker firmware-build path.
+The integration test is `apps/portal/test/portal/workers/build_integration_test.exs`, tagged `:integration` and excluded from default `mix test`. The remote-builder tests (`apps/portal/test/portal/builders/agent_e2e_test.exs`, tag `:e2e`, and `remote_integration_test.exs`, tag `:integration`) are excluded too; run the e2e one after any change to the builder API, the agent, `Portal.Builders.Upload` or remote ingest. Run it after any change that could affect Docker invocation, the JSON contract, artifact storage, or the worker firmware-build path.
 
 ## How a Package Gets Checked
 
@@ -78,7 +81,8 @@ The integration test is `apps/portal/test/portal/workers/build_integration_test.
 4. `NccWorker.Worker` inside the container reads `NCC_INPUT`, creates a fresh Nerves project, enforces `NccWorker.LockPolicy`, compiles on the host, then either builds firmware per Nerves system or, for a pure-Elixir dependency closure, records an assumed-compatible `pure_elixir` result (`NccWorker.BuildSelection`). For a pure-Elixir package it then rebuilds the host beams it publishes with the package's unresolved optional dependencies added (`NccWorker.DepsLock.unresolved_optional_deps`), best effort and never changing a status; `result.json` `optional_deps` records what was added or dropped. It runs the advisory argus_beam analysis over the host beams (`NccWorker.Argus`), captures status/firmware size/log tail/BEAM scan/footprint, archives files by SHA256, and writes atomic `result.json`. A partial run builds less: `NCC_INPUT.systems_filter` builds only those targets, and `NCC_INPUT.mode: "argus_only"` builds none and only runs argus. `result.json` names which in `scope` (`full`, `targets`, `argus_only`). `NCC_INPUT.mode: "toolchain"` is a different run altogether: a plain `mix new` project on a toolchain image, one host build and a `BuildSelection.portable?/3` verdict, written as `toolchain_build` with `scope: "toolchain"` and empty `systems` (see `apps/ncc_worker/README.md`). Before any `mix` call the worker points `NERVES_ARTIFACTS_DIR`/`NERVES_DL_DIR` at a per-run symlink farm over the read-only `/nerves-cache` (`NccWorker.NervesCache`) and reports what it had to extract itself as `nerves_cache.misses`; `NCC_INPUT.mode: "warm_nerves"` is the one run that writes the cache (`NccWorker.WarmNerves`).
 5. On success, before enqueueing ingest, `Portal.Workers.Build` promotes the run's build-cache candidates for the package under test (`Portal.BuildCache.Promotion`) and queues a Nerves cache warm for the run's allowlisted misses (`Portal.NervesCache.request_warm/3` → `Portal.Workers.WarmNerves` on the node's `warm_nerves_<node>` queue, concurrency 1), then enqueues `Portal.Workers.Ingest` (queue `:ingest`, must run on the same host because they hand off through the scratch dir). It runs `Portal.Catalog.Ingestion` into Postgres: `Package`, `Run`, `SystemResult`, `SystemLog` (full logs of failed systems) and `Artifact` rows, with blobs moved into `Portal.ArtifactStore`. For a partial run it copies the systems the run left out from the previous run of the same version, marking each copy with `carried_from_run_id`; stats do not count the copies.
 6. Both workers update the linked `ScanRequest` and broadcast progress over `Portal.PubSub` topic `request:<id>` (`Portal.Workers.Progress`).
-7. Phoenix serves the dynamic site, badge endpoint, schema-v2 JSON API, and precompiled manifest/blob API directly from Catalog.
+7. **Remote builds.** Every enqueuer of `Build` goes through `Portal.Builders.Routing.build_job/2`: with remote building on (`remote_mode`, auto while a builder was seen lately), a registry image in `images.json` and the local `:builds` backlog above the threshold, the job becomes `Portal.Workers.RemoteBuild` on the `:remote` queue (web host), which writes a `queued` `Portal.Builders.Lease` instead of running Docker. An `ncc_agent` claims it over `/builder/v1/*` (port 8443, mTLS), heartbeats, uploads missing files into `NCC_UPLOAD_ROOT`, and completes; exit 0 marks it `done` and enqueues `Ingest` with `source: "remote"` on `:remote`, which records the run's `builder_id`. A builder's precompiled files publish only once its `publishing` flag is on. `Portal.Workers.LeaseReaper` (every 5 min, `:maintenance`) requeues leases whose builder went silent and fails them after 3 attempts.
+8. Phoenix serves the dynamic site, badge endpoint, schema-v2 JSON API, and precompiled manifest/blob API directly from Catalog.
 
 ## Public Routes
 
@@ -91,10 +95,11 @@ The integration test is `apps/portal/test/portal/workers/build_integration_test.
 - `/badge/:name.svg` — SVG badge
 - `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
 - `/api/precompiled/manifests/:package.json` (format 1), `/api/precompiled/v2/manifests/:package.json` (format 2), `/api/precompiled/files/:sha256`, `/api/precompiled/root.json`, `/api/precompiled/batch.json`, `/api/precompiled/batches/:sequence.json` — precompiled API
-- `/admin` (tabs Overview, Queue, Users, Failures, Argus, Triage at `/admin/argus/findings`, Maintenance) and `/admin/oban` — admin UI and Oban Web dashboard. `/admin` needs a passkey sign-in; `config/dev.exs` turns that off for local dev
+- `/admin` (tabs Overview, Queue, Users, Failures, Argus, Triage at `/admin/argus/findings`, Builders at `/admin/builders`, Maintenance) and `/admin/oban` — admin UI and Oban Web dashboard. `/admin` needs a passkey sign-in; `config/dev.exs` turns that off for local dev
 - `/login` — password, passkey, or password + TOTP; `/settings/security` enrols passkeys, TOTP and recovery codes
 - `/auth/:provider/login`, `/auth/choose-username` — sign in with Hex.pm or GitHub
 - `/settings/providers/:provider/...` — link, unlink, confirm a provider from Settings
+- `/builder/v1/*` on `PortalWeb.BuilderEndpoint` (`NCC_BUILDER_PORT`, default 8443, mTLS): `ca.pem` and `enroll` open, `renew`, `status`, `jobs/claim`, `jobs/:lease_id/{heartbeat,files/missing,files,complete}` behind a client certificate. The remote-builder API, not part of the public site
 
 ## Exit Code Conventions
 
@@ -113,6 +118,7 @@ Portal maps these into Oban outcomes in `Portal.Workers.Build`: success enqueues
 - **Catalog JSON API**: schema version 2, documented in `docs/INDEX_FORMAT.md`.
 - **Package overrides**: `Portal.Catalog.PackageOverride` rows, documented in `docs/PACKAGE_METADATA.md`. Nothing reads them yet, so they have no effect on results.
 - **Precompiled API**: manifests and content-addressed files served by portal, documented in `PRECOMPILED_API.md`.
+- **Remote builders**: the builder API, lease states, `images.json`, agent layout and cloud-init, documented in `docs/REMOTE_BUILDERS.md`.
 
 ## Container / Caching Details
 

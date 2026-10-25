@@ -7,6 +7,10 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
 ## What it does
 
 1. Reads a job from `NCC_INPUT` (default `/work/input.json`).
+   A job from a remote builder (`apps/ncc_agent`) also carries `paths.nerves_artifacts_dir` and
+   `paths.nerves_dl_dir` (the per-run Nerves cache farm, also set as `NERVES_ARTIFACTS_DIR`/`NERVES_DL_DIR` in the
+   container env). The worker does not read them yet: they are informational until the sandbox-isolation branch
+   does, and nothing else in the input or `result.json` contract changes for a remote run.
 2. Generates a fresh Nerves project and adds the target package.
 3. Rejects the run if `mix.lock` contains any non-Hex deps (exit 11).
 4. Compiles the package on the host. If that passes and the whole dependency closure is pure Elixir

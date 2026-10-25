@@ -14,6 +14,7 @@ once the security workflows have passed on that commit (see `DEPLOY.md`,
 | `builder-deploy.sh` | on the build host | sourced by `deploy.sh`: installs and loads the egress filter, drains the build queues, swaps the worker image and warms the Nerves cache on it |
 | `builder-egress-load.sh` | on the build host, as `ncc` | loads `builder-egress.nft` and `builder-egress-bridge.nft` into rootless dockerd's network namespace |
 | `builder-egress.nft`, `builder-egress-bridge.nft` | loaded by the above | the build egress policy |
+| `images-sync.sh` | on the web host | fetches `images.json` for a commit from its `agent-<sha>` GitHub release into `/etc/ncc-portal/images.json`; run by `deploy.sh` (best-effort) and by `ncc-images-sync.timer` |
 
 ## Hosts
 
@@ -23,13 +24,29 @@ secrets.
 
 | Host | Role | `OBAN_QUEUES` |
 | --- | --- | --- |
-| web host | public site | `intake:5,maintenance:1` |
+| web host | public site, remote-builder listener (TCP 8443) | `intake:5,maintenance:1,remote:2` |
 | build host | builds; owns the scratch and cache disks | `builds:N,ingest:N` |
 
 Each build host also runs an ingest queue of its own, named after its node
 (`ingest_portal_<host>`), so a build is ingested on the host whose disk holds its
 scratch dir. It is added at boot and needs no entry in `OBAN_QUEUES`; give every
 build host a distinct node name.
+
+## Remote builders
+
+The web host serves remote builders on TCP 8443 (`NCC_BUILDER_PORT`), mTLS
+against the CA at `NCC_BUILDER_CA_KEY`; open the port to the world. The
+`remote:2` queue in its `OBAN_QUEUES` writes the leases and ingests their
+uploads. `images.json` reaches the host through `images-sync.sh`:
+`deploy.sh` runs it after each deploy, but the images workflow publishes the
+file minutes later, so the `ncc-images-sync.timer` retries every 10 minutes:
+
+```bash
+/opt/nerves_compatibility/src/ops/images-sync.sh "$(cd /opt/nerves_compatibility/src && git rev-parse HEAD)"
+```
+
+Unit texts, the CA setup and the builder cloud-init are in
+`docs/REMOTE_BUILDERS.md`.
 
 ## Installing a change
 

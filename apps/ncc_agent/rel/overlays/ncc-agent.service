@@ -12,6 +12,8 @@ Environment=HOME=/srv/ncc
 ExecStart=/srv/ncc/releases/current/bin/ncc_agent start
 Restart=always
 RestartSec=5
+# The slots get 90 s to kill their containers and hand their leases back.
+TimeoutStopSec=150
 
 [Install]
 WantedBy=multi-user.target
