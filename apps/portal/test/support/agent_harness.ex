@@ -119,8 +119,11 @@ defmodule Portal.Builders.AgentHarness do
         {"NCC_SLOTS", "1"}
       ] ++ env
 
+    mix = System.find_executable("mix")
+    assert mix, "no `mix` on PATH: the e2e tests spawn the agent with `mix run`"
+
     agent =
-      Port.open({:spawn_executable, System.find_executable("mix")}, [
+      Port.open({:spawn_executable, mix}, [
         :binary,
         :exit_status,
         :stderr_to_stdout,
@@ -130,8 +133,26 @@ defmodule Portal.Builders.AgentHarness do
       ])
 
     {:os_pid, os_pid} = Port.info(agent, :os_pid)
-    on_exit(fn -> stop_os_pid(os_pid) end)
+    :persistent_term.put({__MODULE__, agent}, os_pid)
+
+    # Once the port reported its exit the pid may already belong to another
+    # process, so only a still-running agent is killed.
+    on_exit(fn ->
+      if :persistent_term.get({__MODULE__, :exited, os_pid}, false),
+        do: :persistent_term.erase({__MODULE__, :exited, os_pid}),
+        else: stop_os_pid(os_pid)
+
+      :persistent_term.erase({__MODULE__, agent})
+    end)
+
     agent
+  end
+
+  defp exited(agent) do
+    case :persistent_term.get({__MODULE__, agent}, nil) do
+      nil -> :ok
+      os_pid -> :persistent_term.put({__MODULE__, :exited, os_pid}, true)
+    end
   end
 
   @doc "Stop the agent: TERM (its slots hand leases back), then KILL after `grace_ms`."
@@ -142,9 +163,16 @@ defmodule Portal.Builders.AgentHarness do
         System.cmd("kill", ["-TERM", Integer.to_string(os_pid)], stderr_to_stdout: true)
 
         receive do
-          {^agent, {:exit_status, _}} -> :ok
+          {^agent, {:exit_status, _}} -> exited(agent)
         after
-          grace_ms -> stop_os_pid(os_pid)
+          grace_ms ->
+            stop_os_pid(os_pid)
+
+            receive do
+              {^agent, {:exit_status, _}} -> exited(agent)
+            after
+              5_000 -> :ok
+            end
         end
 
       nil ->
@@ -200,6 +228,7 @@ defmodule Portal.Builders.AgentHarness do
         drain(agent, output <> data, 0)
 
       {^agent, {:exit_status, status}} ->
+        exited(agent)
         flunk("the agent exited #{status}\n--- agent output ---\n#{tail(output)}")
     after
       wait_ms -> output
