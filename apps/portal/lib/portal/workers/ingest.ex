@@ -164,11 +164,14 @@ defmodule Portal.Workers.Ingest do
     with {:ok, run} <- Portal.Catalog.committed_run(run_id) do
       case run do
         nil ->
-          if builder_revoked?(source) do
-            revoked(source, run_id)
-          else
-            load_and_ingest(source, run_id, image_digest, scan_request_id, attempt, max_attempts)
-          end
+          ingest_unless_revoked(
+            source,
+            run_id,
+            image_digest,
+            scan_request_id,
+            attempt,
+            max_attempts
+          )
 
         run ->
           complete(source, run, scan_request_id, run.package.name)
@@ -201,6 +204,12 @@ defmodule Portal.Workers.Ingest do
   end
 
   defp live_request_id(_source, id), do: id
+
+  defp ingest_unless_revoked(source, run_id, image_digest, scan_request_id, attempt, max) do
+    if builder_revoked?(source),
+      do: revoked(source, run_id),
+      else: load_and_ingest(source, run_id, image_digest, scan_request_id, attempt, max)
+  end
 
   # A builder revoked after it uploaded is no longer trusted, so neither is
   # what it uploaded: handled like a missing upload, with no run.

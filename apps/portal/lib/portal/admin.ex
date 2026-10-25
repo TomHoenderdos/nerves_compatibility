@@ -465,23 +465,28 @@ defmodule Portal.Admin do
   @spec requeue_lease_locally(String.t(), Portal.Accounts.User.t()) ::
           {:ok, Oban.Job.t()} | {:error, :not_found | :not_failed | term()}
   def requeue_lease_locally(lease_id, actor) do
-    with {:ok, lease} <- fetch_lease(lease_id) do
-      Portal.Repo.transaction(fn ->
-        with {:ok, _lease} <- Portal.Builders.Leases.mark_requeued_locally(lease),
-             {:ok, job} <-
-               %{package: lease.package, version: lease.version, force: true}
-               |> Portal.Builders.Routing.build_job(meta: %{pin_local: true}, priority: 3)
-               |> Oban.insert() do
-          Logger.warning(
-            "Lease #{lease.id} (#{lease.package} #{lease.version}) requeued locally " <>
-              "by #{actor.username}"
-          )
+    with {:ok, lease} <- fetch_lease(lease_id),
+         {:ok, job} <- Portal.Repo.transaction(fn -> requeue_locally(lease) end) do
+      Logger.warning(
+        "Lease #{lease.id} (#{lease.package} #{lease.version}) requeued locally " <>
+          "by #{actor.username}"
+      )
 
-          job
-        else
-          {:error, reason} -> Portal.Repo.rollback(reason)
-        end
-      end)
+      {:ok, job}
+    end
+  end
+
+  # The lease note and the job commit together: a failed insert leaves the
+  # lease offering its buttons again.
+  defp requeue_locally(lease) do
+    with {:ok, _lease} <- Portal.Builders.Leases.mark_requeued_locally(lease),
+         {:ok, job} <-
+           %{package: lease.package, version: lease.version, force: true}
+           |> Portal.Builders.Routing.build_job(meta: %{pin_local: true}, priority: 3)
+           |> Oban.insert() do
+      job
+    else
+      {:error, reason} -> Portal.Repo.rollback(reason)
     end
   end
 
