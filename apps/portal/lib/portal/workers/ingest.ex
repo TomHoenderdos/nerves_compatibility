@@ -101,6 +101,7 @@ defmodule Portal.Workers.Ingest do
   The queues a builder deploy pauses and drains on `node` before restarting it
   (`ops/builder-deploy.sh`): the builds, the shared ingest queue and the node's
   own, where a build that finishes while draining puts its ingest, and the
+  node's Nerves cache warm queue (`Portal.Workers.WarmNerves`), and the
   `toolchain` queue (`Portal.Workers.ToolchainBuild`) when the node runs it.
 
   The toolchain queue is conditional because the deploy refuses to go ahead
@@ -109,7 +110,7 @@ defmodule Portal.Workers.Ingest do
   """
   @spec builder_queues(node(), keyword() | false | nil) :: [String.t()]
   def builder_queues(node \\ node(), queues \\ configured_queues()) do
-    ["builds", "ingest", local_queue(node)] ++
+    ["builds", "ingest", local_queue(node), Portal.Workers.WarmNerves.local_queue(node)] ++
       if runs_queue?(queues, :toolchain), do: ["toolchain"], else: []
   end
 

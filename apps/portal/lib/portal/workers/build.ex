@@ -9,8 +9,10 @@ defmodule Portal.Workers.Build do
     2. Run the build via `Portal.Builder.build/2`.
     3. Map the worker/runner exit code to an outcome (see `classify/1`).
     4. On success, promote the build cache candidates the build reported
-       (`Portal.BuildCache.Promotion`, best-effort), then enqueue
-       `Portal.Workers.Ingest` and leave the scratch dir in place for it to read.
+       (`Portal.BuildCache.Promotion`) and queue a Nerves cache warm for its
+       allowlisted misses (`Portal.NervesCache.request_warm/3`), both
+       best-effort, then enqueue `Portal.Workers.Ingest` and leave the scratch
+       dir in place for it to read.
     5. Update the linked `ScanRequest` status (rejected / error; `built` is the
        ingest job's to set).
     6. Broadcast progress to `"request:<scan_request_id>"` over `Portal.PubSub`.
@@ -57,6 +59,7 @@ defmodule Portal.Workers.Build do
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Run
   alias Portal.Catalog.ToolingSkip
+  alias Portal.NervesCache
   alias Portal.Repo
   alias Portal.Workers.{Ingest, Progress}
 
@@ -231,6 +234,7 @@ defmodule Portal.Workers.Build do
 
       result ->
         promote_cache(result, run_id, image_digest, package, version)
+        request_nerves_warm(result, image_digest, package, version)
 
         # No cleanup: the scratch dir is what the ingest job reads, and it owns
         # removing it once the rows are committed.
@@ -274,6 +278,29 @@ defmodule Portal.Workers.Build do
       if refused > 0,
         do:
           Logger.warning("Refused #{refused} build cache candidate(s) from #{package} #{version}")
+    end)
+  end
+
+  # Best-effort like promotion: a warm that cannot be requested costs the next
+  # build of that system a private extraction, never this build its result.
+  defp request_nerves_warm(result, image_digest, package, version) do
+    safely("nerves cache warm request", fn ->
+      case NervesCache.request_warm(result, image_digest) do
+        {:ok, []} ->
+          :ok
+
+        {:ok, pairs} ->
+          Logger.info(
+            "Queued a Nerves cache warm of " <>
+              Enum.map_join(pairs, ", ", &"#{&1["name"]} #{&1["version"]}") <>
+              " after #{package} #{version}"
+          )
+
+        {:error, reason} ->
+          Logger.warning(
+            "Could not queue a Nerves cache warm after #{package} #{version}: #{inspect(reason)}"
+          )
+      end
     end)
   end
 

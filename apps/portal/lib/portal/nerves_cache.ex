@@ -21,6 +21,13 @@ defmodule Portal.NervesCache do
   extraction; it is just never cached.
   """
 
+  import Ecto.Query, only: [from: 2]
+
+  require Logger
+
+  alias Portal.Repo
+  alias Portal.Workers.WarmNerves
+
   @warm_pairs_per_run 4
 
   # Distinct misses looked at before any Hex lookup. A real run has at most one
@@ -93,5 +100,69 @@ defmodule Portal.NervesCache do
     :portal
     |> Application.get_env(__MODULE__, [])
     |> Keyword.get(:owners, &Portal.HexPm.owners/1)
+  end
+
+  # Every state but discarded and cancelled, as `WarmNerves`' uniqueness.
+  @warm_states ~w(suspended available scheduled executing retryable completed)
+
+  @doc """
+  Queues a `Portal.Workers.WarmNerves` job for `result`'s `warm_pairs/2` on
+  this node, skipping pairs `recently_warmed/1` names. `{:ok, []}` when there
+  is nothing to warm. Options as `warm_pairs/2`.
+  """
+  @spec request_warm(map(), String.t(), keyword()) :: {:ok, [pair()]} | {:error, term()}
+  def request_warm(result, image_digest, opts \\ []) do
+    case result do
+      %{"nerves_cache" => %{"misses" => [_ | _]}} ->
+        recent = Keyword.get_lazy(opts, :recently_warmed, fn -> recently_warmed(image_digest) end)
+
+        result
+        |> warm_pairs(Keyword.put(opts, :recently_warmed, recent))
+        |> enqueue_warm(image_digest)
+
+      _ ->
+        {:ok, []}
+    end
+  end
+
+  defp enqueue_warm([], _image_digest), do: {:ok, []}
+
+  defp enqueue_warm(pairs, image_digest) do
+    case WarmNerves.enqueue(image_digest, pairs) do
+      {:ok, _job} -> {:ok, pairs}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  `{name, version}` of every pair in a `WarmNerves` job on this node's queue
+  for `image_digest` inserted in the last day and not discarded or cancelled.
+  Per pair, where the job's uniqueness is per set of pairs, and still there
+  after `Oban.Plugins.Pruner` has deleted the finished job row (it keeps them
+  6 h). A database error answers the empty set: the job's own uniqueness still
+  bounds repeats.
+  """
+  @spec recently_warmed(String.t()) :: MapSet.t({String.t(), String.t()})
+  def recently_warmed(image_digest) do
+    cutoff = DateTime.add(DateTime.utc_now(), -86_400, :second)
+    queue = WarmNerves.local_queue()
+
+    from(j in Oban.Job,
+      where: j.worker == "Portal.Workers.WarmNerves",
+      where: j.queue == ^queue,
+      where: j.state in ^@warm_states,
+      where: j.inserted_at > ^cutoff,
+      where: fragment("?->>'image_digest' = ?", j.args, ^image_digest),
+      select: j.args
+    )
+    |> Repo.all()
+    |> Enum.flat_map(fn args ->
+      args |> Map.get("pairs") |> List.wrap() |> Enum.flat_map(&pair_tuple/1)
+    end)
+    |> MapSet.new()
+  rescue
+    exception ->
+      Logger.warning("Could not load recent Nerves cache warms: #{Exception.message(exception)}")
+      MapSet.new()
   end
 end

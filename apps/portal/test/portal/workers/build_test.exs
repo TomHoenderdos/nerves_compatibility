@@ -8,7 +8,7 @@ defmodule Portal.Workers.BuildTest do
 
   alias Portal.Catalog.{Package, Run}
   alias Portal.ScanRequests
-  alias Portal.Workers.{Build, Ingest, PackageMeta}
+  alias Portal.Workers.{Build, Ingest, PackageMeta, WarmNerves}
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
 
@@ -1017,6 +1017,93 @@ defmodule Portal.Workers.BuildTest do
       assert Run
              |> Ash.Query.filter(run_id == "tooling-nerves-2.0.0")
              |> Ash.exists?(domain: Portal.Catalog)
+    end
+  end
+
+  describe "Nerves cache warm requests" do
+    setup do
+      on_exit(fn -> Application.delete_env(:portal, Portal.NervesCache) end)
+      :ok
+    end
+
+    defp nerves_owns(names) do
+      Application.put_env(:portal, Portal.NervesCache,
+        owners: fn name -> {:ok, if(name in names, do: ["nerves"], else: ["mallory"])} end
+      )
+    end
+
+    defp np(name, version), do: %{"name" => name, "version" => version}
+
+    defp build_reporting(report, version \\ "1.4.1") do
+      files_dir =
+        files_dir_with(["ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"])
+
+      set_response(
+        {:ok,
+         %{
+           exit_code: 0,
+           result: Map.put(fixture_result(), "nerves_cache", report),
+           files_dir: files_dir,
+           output_dir: files_dir,
+           log: "ok"
+         }}
+      )
+
+      assert :ok =
+               perform_job(Build, %{
+                 "package" => "jason",
+                 "version" => version,
+                 "image_digest" => "sha256:deadbeef"
+               })
+    end
+
+    test "a locked miss nerves owns is warmed on this node's queue, and ingest still runs" do
+      nerves_owns(["nerves_system_rpi4"])
+      pair = np("nerves_system_rpi4", "2.0.0")
+
+      build_reporting(%{"misses" => [pair], "lock" => [pair]})
+
+      assert [job] = all_enqueued(worker: WarmNerves)
+      assert job.queue == WarmNerves.local_queue()
+      assert job.args == %{"image_digest" => "sha256:deadbeef", "pairs" => [pair]}
+      assert_enqueued(worker: Ingest)
+    end
+
+    test "pairs not in the lock, not owned by nerves, or beyond the cap are dropped" do
+      owned = for b <- ~w(bbb rpi0 rpi4 rpi5 trellis), do: np("nerves_system_#{b}", "2.0.0")
+      foreign = np("nerves_system_custom", "1.0.0")
+      unlocked = np("nerves_system_x86_64", "2.0.0")
+
+      nerves_owns(["nerves_system_x86_64" | Enum.map(owned, & &1["name"])])
+
+      build_reporting(%{
+        "misses" => [unlocked, foreign | owned],
+        "lock" => [foreign | owned]
+      })
+
+      assert [job] = all_enqueued(worker: WarmNerves)
+      assert job.args["pairs"] == Enum.take(owned, 4)
+    end
+
+    test "a run with no misses queues no warm" do
+      nerves_owns(["nerves_system_rpi4"])
+
+      build_reporting(%{"misses" => [], "lock" => [np("nerves_system_rpi4", "2.0.0")]})
+
+      assert all_enqueued(worker: WarmNerves) == []
+      assert_enqueued(worker: Ingest)
+    end
+
+    test "a pair already warmed for this image within the day is not warmed again" do
+      nerves_owns(["nerves_system_rpi4", "nerves_system_bbb"])
+      a = np("nerves_system_rpi4", "2.0.0")
+      b = np("nerves_system_bbb", "2.0.0")
+
+      build_reporting(%{"misses" => [a], "lock" => [a]}, "1.4.1")
+      build_reporting(%{"misses" => [a, b], "lock" => [a, b]}, "1.4.2")
+
+      pairs = all_enqueued(worker: WarmNerves) |> Enum.map(& &1.args["pairs"]) |> Enum.sort()
+      assert pairs == Enum.sort([[a], [b]])
     end
   end
 end

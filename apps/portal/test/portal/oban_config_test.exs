@@ -84,4 +84,18 @@ defmodule Portal.ObanConfigTest do
       assert expr =~ ~r/^\d+ \* \* \* \*$/, "expected an hourly schedule, got #{expr}"
     end
   end
+
+  # One warm at a time per host, on the host whose cache missed: two warms
+  # renaming into the same cache would race, and a warm taking a `:builds`
+  # slot would run on whichever host polled first.
+  test "the Nerves cache warm runs one at a time, on the build node's own queue" do
+    queues =
+      [queues: [builds: 3, ingest: 2]]
+      |> Portal.Workers.Ingest.with_local_queue(:"portal@box-c")
+      |> Portal.Workers.WarmNerves.with_local_queue(:"portal@box-c")
+      |> Keyword.fetch!(:queues)
+
+    assert queues[:warm_nerves_portal_box_c] == 1
+    assert queues[:ingest_portal_box_c] == 2
+  end
 end
