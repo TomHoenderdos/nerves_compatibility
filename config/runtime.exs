@@ -87,11 +87,12 @@ if portal_available? do
   # share. A build hands off to its ingest through the run's scratch directory
   # on local disk, not through the database, so each build node also runs a
   # queue of its own for those ingests (`Portal.Workers.Ingest.local_queue/0`),
-  # as wide as `ingest`. Nothing to list here for it.
+  # as wide as `ingest`. Nothing to list here for it. `remote` belongs on the
+  # web box: it only writes `builder_leases` rows for remote builders to claim.
   parsed_queues =
     case System.get_env("OBAN_QUEUES") do
       nil ->
-        [builds: 1, ingest: 2, intake: 5, maintenance: 1, toolchain: 1]
+        [builds: 1, ingest: 2, intake: 5, maintenance: 1, toolchain: 1, remote: 2]
 
       queues ->
         queues

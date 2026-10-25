@@ -11,9 +11,9 @@ defmodule Portal.AdminEvents do
 
   require Logger
 
-  @topics %{queue: "admin:queue", sweeps: "admin:sweeps"}
+  @topics %{queue: "admin:queue", sweeps: "admin:sweeps", builders: "admin:builders"}
 
-  @type topic :: :queue | :sweeps
+  @type topic :: :queue | :sweeps | :builders
 
   @doc "Subscribe the calling process to one admin topic."
   @spec subscribe(topic()) :: :ok
