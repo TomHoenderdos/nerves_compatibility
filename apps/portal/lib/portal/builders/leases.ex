@@ -24,6 +24,7 @@ defmodule Portal.Builders.Leases do
   @lease_ceiling_minutes 150
   @log_tail_bytes 4096
   @phases ~w(pulling building uploading)
+  @held [:leased, :uploading]
   @default_long_poll_ms 25_000
 
   @spec topic() :: String.t()
@@ -72,9 +73,13 @@ defmodule Portal.Builders.Leases do
   end
 
   @doc """
-  Take the next queued lease (lowest `priority`, then oldest) for `builder`,
-  in one statement. `SKIP LOCKED` keeps two claimants off the same row; the
-  slot check sits in the same `WHERE`, so a full builder takes nothing.
+  Take the next queued lease (lowest `priority`, then oldest) for `builder`.
+  `SKIP LOCKED` keeps two claimants off the same row. The slot check sits in
+  the claim's `WHERE`, and a per-builder advisory lock taken first, in its own
+  statement, serialises one builder's claims: without it two concurrent
+  claims from the same builder would both count the same held leases in
+  their snapshot and both take one. The claim is still one `UPDATE`, and it
+  starts the attempt clean (bytes, log tail and error of the last one gone).
   """
   @spec claim(Builder.t()) :: {:ok, Lease.t()} | :none
   def claim(%Builder{id: builder_id, slots: slots}) do
@@ -83,8 +88,8 @@ defmodule Portal.Builders.Leases do
     sql = """
     UPDATE builder_leases
     SET state = 'leased', builder_id = $1, leased_at = now(), heartbeat_at = now(),
-        attempt = attempt + 1, phase = NULL,
-        run_id = 'rb-' || package || '-' || version || '-' || $3::text,
+        attempt = attempt + 1, phase = NULL, bytes_uploaded = 0, log_tail = NULL,
+        error = NULL, run_id = 'rb-' || package || '-' || version || '-' || $3::text,
         updated_at = now()
     WHERE id = (
       SELECT id FROM builder_leases
@@ -97,13 +102,20 @@ defmodule Portal.Builders.Leases do
     RETURNING id
     """
 
-    case Repo.query!(sql, [Ecto.UUID.dump!(builder_id), slots, Integer.to_string(ms)]) do
-      %{rows: [[id]]} ->
+    {:ok, rows} =
+      Repo.transaction(fn ->
+        Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1::text))", [builder_id])
+
+        Repo.query!(sql, [Ecto.UUID.dump!(builder_id), slots, Integer.to_string(ms)]).rows
+      end)
+
+    case rows do
+      [[id]] ->
         lease = Ash.get!(Lease, Ecto.UUID.load!(id), domain: @domain)
         Portal.AdminEvents.broadcast(:builders)
         {:ok, lease}
 
-      %{rows: []} ->
+      [] ->
         :none
     end
   end
@@ -119,7 +131,7 @@ defmodule Portal.Builders.Leases do
     # either claimed outright or wakes the wait.
     subscribe()
 
-    result =
+    try do
       case claim(builder) do
         {:ok, lease} ->
           {:ok, lease}
@@ -131,10 +143,10 @@ defmodule Portal.Builders.Leases do
             timeout_ms -> :none
           end
       end
-
-    Phoenix.PubSub.unsubscribe(Portal.PubSub, @topic)
-    drain()
-    result
+    after
+      Phoenix.PubSub.unsubscribe(Portal.PubSub, @topic)
+      drain()
+    end
   end
 
   defp drain do
@@ -150,7 +162,7 @@ defmodule Portal.Builders.Leases do
   def held(lease_id, builder_id) do
     with {:ok, id} <- Ecto.UUID.cast(lease_id),
          {:ok, %Lease{builder_id: ^builder_id, state: state} = lease}
-         when state in [:leased, :uploading] <- Ash.get(Lease, id, domain: @domain) do
+         when state in @held <- Ash.get(Lease, id, domain: @domain) do
       {:ok, lease}
     else
       _ -> {:error, :not_held}
@@ -159,38 +171,47 @@ defmodule Portal.Builders.Leases do
 
   @doc """
   Record that the builder is alive: `heartbeat_at`, the phase (an unknown one
-  is stored as `"building"`) and the last 4096 bytes of its log. Phase
-  `"uploading"` moves the lease to `:uploading`, which has the longer silence
-  allowance.
+  is stored as `"building"`) and the last 4096 bytes of its log (a heartbeat
+  without one keeps the last). Phase `"uploading"` moves the lease to
+  `:uploading`, which has the longer silence allowance. One guarded update:
+  a lease the builder no longer holds is left alone and answers `:not_held`.
   """
-  @spec heartbeat(term(), String.t(), term(), term()) :: {:ok, Lease.t()} | {:error, :not_held}
+  @spec heartbeat(term(), String.t(), term(), term()) ::
+          {:ok, Lease.t()} | {:error, :not_held | :update_failed}
   def heartbeat(lease_id, builder_id, phase, log_tail) do
-    with {:ok, lease} <- held(lease_id, builder_id) do
-      phase = if phase in @phases, do: phase, else: "building"
-      state = if phase == "uploading", do: :uploading, else: lease.state
+    phase = if phase in @phases, do: phase, else: "building"
 
-      attrs = %{
-        heartbeat_at: DateTime.utc_now(),
-        phase: phase,
-        log_tail: tail(log_tail, lease.log_tail),
-        state: state
-      }
+    set =
+      [heartbeat_at: DateTime.utc_now(), phase: phase]
+      |> then(&if(phase == "uploading", do: [{:state, "uploading"} | &1], else: &1))
+      |> then(&if(is_binary(log_tail), do: [{:log_tail, tail(log_tail)} | &1], else: &1))
 
-      case update(lease, attrs) do
-        {:ok, lease} ->
-          Progress.broadcast(lease.scan_request_id, :building, %{remote: true, phase: phase})
-          {:ok, lease}
-
-        {:error, reason} ->
-          Logger.error("heartbeat could not update lease #{lease.id}: #{inspect(reason)}")
-          {:error, :not_held}
-      end
+    with {:ok, id} <- cast_id(lease_id),
+         {:ok, lease} <- transition(id, [states: @held, builder_id: builder_id], set: set) do
+      Progress.broadcast(lease.scan_request_id, :building, %{remote: true, phase: phase})
+      {:ok, lease}
+    else
+      {:error, :stale} -> {:error, :not_held}
+      {:error, :not_held} -> {:error, :not_held}
+      {:error, {:db, reason}} -> db_failed("heartbeat", lease_id, reason)
     end
   end
 
-  # A heartbeat without a log keeps the last one. A tail cut mid-character
-  # loses the partial bytes, so the column only ever holds valid UTF-8.
-  defp tail(log, _previous) when is_binary(log) do
+  defp cast_id(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, id} -> {:ok, id}
+      :error -> {:error, :not_held}
+    end
+  end
+
+  defp db_failed(what, id, reason) do
+    Logger.error("#{what} could not update lease #{inspect(id)}: #{inspect(reason)}")
+    {:error, :update_failed}
+  end
+
+  # A tail cut mid-character loses the partial bytes, so the column only ever
+  # holds valid UTF-8.
+  defp tail(log) do
     size = byte_size(log)
 
     log
@@ -198,8 +219,6 @@ defmodule Portal.Builders.Leases do
     |> drop_continuation_bytes()
     |> String.replace_invalid("")
   end
-
-  defp tail(_log, previous), do: previous
 
   defp drop_continuation_bytes(<<0b10::2, _::6, rest::binary>>),
     do: drop_continuation_bytes(rest)
@@ -209,116 +228,153 @@ defmodule Portal.Builders.Leases do
   @doc """
   The end of an attempt: exit 0 is `:done`, 11 (non-Hex dependency) fails
   the lease for good and rejects the request, anything else requeues it
-  until `max_attempts` and then fails it.
+  until `max_attempts` and then fails it. Applies only while `lease` is
+  still the attempt it names (held, same builder, same `run_id`); a lease the
+  reaper or an admin has moved on answers `{:error, :not_held}`.
   """
   @spec complete(Lease.t(), integer()) ::
-          {:ok, :done | :requeued | :failed | :rejected, Lease.t()} | {:error, term()}
+          {:ok, :done | :requeued | :failed | :rejected, Lease.t()}
+          | {:error, :not_held | :update_failed}
   def complete(%Lease{} = lease, 0) do
-    with {:ok, lease} <- update(lease, %{state: :done, phase: nil}), do: {:ok, :done, lease}
+    with {:ok, lease} <- end_attempt(lease, state: "done", phase: nil), do: {:ok, :done, lease}
   end
 
   def complete(%Lease{} = lease, 11) do
-    with {:ok, lease} <- update(lease, %{state: :failed, error: "non-Hex dep"}) do
+    with {:ok, lease} <- end_attempt(lease, state: "failed", error: "non-Hex dep") do
       Progress.mark(lease.scan_request_id, :rejected, error_reason: "non-Hex dep")
       Progress.broadcast(lease.scan_request_id, :rejected, %{reason: "non-Hex dep"})
       {:ok, :rejected, lease}
     end
   end
 
-  def complete(%Lease{} = lease, exit_code),
-    do: retry_or_fail(lease, "worker/runner exit #{exit_code}")
+  def complete(%Lease{attempt: attempt, max_attempts: max} = lease, exit_code) do
+    reason = "worker/runner exit #{exit_code}"
 
-  # `attempt` is kept: the claim incremented it.
-  defp retry_or_fail(%Lease{attempt: attempt, max_attempts: max} = lease, reason)
-       when attempt < max do
-    with {:ok, lease} <-
-           update(lease, %{
-             state: :queued,
-             builder_id: nil,
-             leased_at: nil,
-             heartbeat_at: nil,
-             phase: nil,
-             error: reason
-           }) do
-      notify_queued(lease)
-      {:ok, :requeued, lease}
+    if attempt < max do
+      # `attempt` is kept: the claim incremented it.
+      with {:ok, lease} <- end_attempt(lease, requeue_set(reason)) do
+        notify_queued(lease)
+        {:ok, :requeued, lease}
+      end
+    else
+      with {:ok, lease} <- end_attempt(lease, state: "failed", error: reason) do
+        fail_request(lease, reason)
+        {:ok, :failed, lease}
+      end
     end
   end
 
-  defp retry_or_fail(lease, reason) do
-    with {:ok, lease} <- update(lease, %{state: :failed, error: reason}) do
-      Progress.mark(lease.scan_request_id, :error,
-        error_reason: reason,
-        error_log: lease.log_tail
-      )
+  defp end_attempt(lease, set) do
+    guard = [states: @held, builder_id: lease.builder_id, run_id: lease.run_id]
 
-      Progress.broadcast(lease.scan_request_id, :error, %{reason: reason})
-      {:ok, :failed, lease}
+    case transition(lease.id, guard, set: set) do
+      {:ok, lease} -> {:ok, lease}
+      {:error, :stale} -> {:error, :not_held}
+      {:error, {:db, reason}} -> db_failed("complete", lease.id, reason)
     end
   end
 
-  @doc "Admin retry: a lease back to `:queued` with a fresh attempt budget."
-  @spec requeue(Lease.t()) :: {:ok, Lease.t()} | {:error, term()}
+  defp requeue_set(reason) do
+    [
+      state: "queued",
+      builder_id: nil,
+      leased_at: nil,
+      heartbeat_at: nil,
+      phase: nil,
+      error: reason
+    ]
+  end
+
+  defp fail_request(lease, reason) do
+    Progress.mark(lease.scan_request_id, :error, error_reason: reason, error_log: lease.log_tail)
+    Progress.broadcast(lease.scan_request_id, :error, %{reason: reason})
+  end
+
+  @doc "Admin retry: a `:failed` lease back to `:queued` with a fresh attempt budget."
+  @spec requeue(Lease.t()) :: {:ok, Lease.t()} | {:error, :not_failed | :update_failed}
   def requeue(%Lease{} = lease) do
-    with {:ok, lease} <-
-           update(lease, %{
-             state: :queued,
-             builder_id: nil,
-             leased_at: nil,
-             heartbeat_at: nil,
-             phase: nil,
-             attempt: 0,
-             error: nil
-           }) do
-      notify_queued(lease)
-      {:ok, lease}
+    set = Keyword.merge(requeue_set(nil), attempt: 0)
+
+    case transition(lease.id, [states: [:failed]], set: set) do
+      {:ok, lease} ->
+        notify_queued(lease)
+        {:ok, lease}
+
+      {:error, :stale} ->
+        {:error, :not_failed}
+
+      {:error, {:db, reason}} ->
+        db_failed("requeue", lease.id, reason)
     end
   end
 
-  @spec add_bytes(Lease.t(), non_neg_integer()) :: {:ok, Lease.t()} | {:error, term()}
-  def add_bytes(%Lease{} = lease, n),
-    do: update(lease, %{bytes_uploaded: lease.bytes_uploaded + n})
+  @doc "Count `n` uploaded bytes against the attempt `lease` names, atomically."
+  @spec add_bytes(Lease.t(), non_neg_integer()) ::
+          {:ok, Lease.t()} | {:error, :not_held | :update_failed}
+  def add_bytes(%Lease{} = lease, n) do
+    guard = [states: @held, builder_id: lease.builder_id, run_id: lease.run_id]
+
+    case transition(lease.id, guard, inc: [bytes_uploaded: n]) do
+      {:ok, lease} -> {:ok, lease}
+      {:error, :stale} -> {:error, :not_held}
+      {:error, {:db, reason}} -> db_failed("add_bytes", lease.id, reason)
+    end
+  end
 
   @doc """
   Take leases back from builders that went silent: `:leased` without a
   heartbeat for 10 minutes or held past 2 h 30 min, `:uploading` without a
   heartbeat for 60 minutes. Each is requeued, or failed once its attempts
-  are spent.
+  are spent. Both are single updates whose `WHERE` is the silence rule
+  itself, so a heartbeat or completion that lands first keeps its lease.
   """
   @spec reap(DateTime.t()) :: %{requeued: non_neg_integer(), failed: non_neg_integer()}
   def reap(now \\ DateTime.utc_now()) do
+    reason = "builder went silent"
+
+    {_, failed} =
+      Repo.update_all(
+        from(l in silent(now), where: l.attempt >= l.max_attempts),
+        set: [state: "failed", error: reason, updated_at: DateTime.utc_now()]
+      )
+
+    {_, requeued} =
+      Repo.update_all(
+        from(l in silent(now), where: l.attempt < l.max_attempts),
+        set: Keyword.put(requeue_set(reason), :updated_at, DateTime.utc_now())
+      )
+
+    for {id, scan_request_id, log_tail} <- failed do
+      Progress.mark(scan_request_id, :error, error_reason: reason, error_log: log_tail)
+      Progress.broadcast(scan_request_id, :error, %{reason: reason})
+      Logger.warning("reaper failed lease #{id}: #{reason}")
+    end
+
+    for {id, _, _} <- requeued do
+      Phoenix.PubSub.broadcast(Portal.PubSub, @topic, {:lease_queued, id})
+    end
+
+    if failed != [] or requeued != [], do: Portal.AdminEvents.broadcast(:builders)
+
+    %{requeued: length(requeued), failed: length(failed)}
+  end
+
+  defp silent(now) do
     leased_cutoff = DateTime.add(now, -@leased_silence_minutes, :minute)
     ceiling = DateTime.add(now, -@lease_ceiling_minutes, :minute)
     uploading_cutoff = DateTime.add(now, -@uploading_silence_minutes, :minute)
 
-    Lease
-    |> Ash.Query.filter(
-      (state == :leased and (heartbeat_at < ^leased_cutoff or leased_at < ^ceiling)) or
-        (state == :uploading and heartbeat_at < ^uploading_cutoff)
+    from(l in "builder_leases",
+      where:
+        (l.state == "leased" and
+           (l.heartbeat_at < type(^leased_cutoff, :utc_datetime_usec) or
+              l.leased_at < type(^ceiling, :utc_datetime_usec))) or
+          (l.state == "uploading" and
+             l.heartbeat_at < type(^uploading_cutoff, :utc_datetime_usec)),
+      select: {type(l.id, Ecto.UUID), type(l.scan_request_id, Ecto.UUID), l.log_tail}
     )
-    |> Ash.read!(domain: @domain)
-    |> Enum.reduce(%{requeued: 0, failed: 0}, fn lease, acc ->
-      case retry_or_fail(lease, "builder went silent") do
-        {:ok, :requeued, _} ->
-          Map.update!(acc, :requeued, &(&1 + 1))
-
-        {:ok, :failed, _} ->
-          Map.update!(acc, :failed, &(&1 + 1))
-
-        {:error, reason} ->
-          Logger.error("reaper could not update lease #{lease.id}: #{inspect(reason)}")
-          acc
-      end
-    end)
   end
 
-  @spec counts() :: %{
-          queued: non_neg_integer(),
-          leased: non_neg_integer(),
-          uploading: non_neg_integer(),
-          done: non_neg_integer(),
-          failed: non_neg_integer()
-        }
   def counts do
     from(l in "builder_leases", group_by: l.state, select: {l.state, count()})
     |> Repo.all()
@@ -353,11 +409,35 @@ defmodule Portal.Builders.Leases do
   defp notify_queued(lease),
     do: Phoenix.PubSub.broadcast(Portal.PubSub, @topic, {:lease_queued, lease.id})
 
-  defp update(lease, attrs) do
-    with {:ok, lease} <-
-           lease |> Ash.Changeset.for_update(:update, attrs) |> Ash.update(domain: @domain) do
-      Portal.AdminEvents.broadcast(:builders)
-      {:ok, lease}
+  # Every state change after the claim: one `UPDATE ... WHERE id AND <the
+  # state the caller saw>`, so a transition never lands on a lease that has
+  # moved on since it was read. `{:error, :stale}` when nothing matched.
+  defp transition(id, guard, updates) do
+    query =
+      Enum.reduce(guard, from(l in "builder_leases", where: l.id == type(^id, Ecto.UUID)), fn
+        {:states, states}, q ->
+          from(l in q, where: l.state in ^Enum.map(states, &Atom.to_string/1))
+
+        {:builder_id, builder_id}, q ->
+          from(l in q, where: l.builder_id == type(^builder_id, Ecto.UUID))
+
+        {:run_id, run_id}, q ->
+          from(l in q, where: l.run_id == ^run_id)
+      end)
+
+    updates = Keyword.update(updates, :set, [updated_at: now()], &[{:updated_at, now()} | &1])
+
+    case Repo.update_all(from(l in query, select: l.id), updates) do
+      {1, _} ->
+        Portal.AdminEvents.broadcast(:builders)
+        {:ok, Ash.get!(Lease, id, domain: @domain)}
+
+      {0, _} ->
+        {:error, :stale}
     end
+  rescue
+    e in [Postgrex.Error, DBConnection.ConnectionError] -> {:error, {:db, e}}
   end
+
+  defp now, do: DateTime.utc_now()
 end

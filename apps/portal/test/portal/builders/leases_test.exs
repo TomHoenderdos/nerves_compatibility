@@ -167,4 +167,36 @@ defmodule Portal.Builders.LeasesTest do
     assert %Lease{state: :failed, error: "builder went silent"} =
              Ash.get!(Lease, exhausted.id, domain: Portal.Builders)
   end
+
+  test "transitions only apply to the lease as the caller saw it" do
+    queued!()
+    b = builder!("s")
+    {:ok, leased} = Leases.claim(b)
+    {:ok, :requeued, _} = Leases.complete(leased, 10)
+
+    # The builder's struct is stale now: it no longer holds the lease.
+    assert {:error, :not_held} = Leases.heartbeat(leased.id, b.id, "uploading", "late")
+    assert {:error, :not_held} = Leases.complete(leased, 0)
+
+    assert %Lease{state: :queued, builder_id: nil, log_tail: nil} =
+             Ash.get!(Lease, leased.id, domain: Portal.Builders)
+
+    {:ok, again} = Leases.claim(b)
+    {:ok, :done, done} = Leases.complete(again, 0)
+    assert {:error, :not_held} = Leases.complete(done, 10)
+    assert %Lease{state: :done} = Ash.get!(Lease, done.id, domain: Portal.Builders)
+    assert %{requeued: 0, failed: 0} = Leases.reap(DateTime.add(DateTime.utc_now(), 1, :day))
+  end
+
+  test "a claim starts the attempt clean" do
+    queued!()
+    b = builder!("clean")
+    {:ok, leased} = Leases.claim(b)
+    {:ok, _} = Leases.heartbeat(leased.id, b.id, "uploading", "old tail")
+    {:ok, _} = Leases.add_bytes(Ash.get!(Lease, leased.id, domain: Portal.Builders), 10)
+    {:ok, :requeued, _} = Leases.complete(Ash.get!(Lease, leased.id, domain: Portal.Builders), 10)
+
+    assert {:ok, %Lease{bytes_uploaded: 0, log_tail: nil, error: nil, attempt: 2}} =
+             Leases.claim(b)
+  end
 end

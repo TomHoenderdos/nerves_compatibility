@@ -24,7 +24,7 @@ defmodule Portal.Workers.RemoteBuild do
   require Ash.Query
   require Logger
 
-  alias Portal.Builders.{Images, Leases}
+  alias Portal.Builders.{Images, Lease, Leases}
   alias Portal.Catalog.{Run, ToolingSkip}
   alias Portal.Workers.{Build, Progress}
 
@@ -50,13 +50,25 @@ defmodule Portal.Workers.RemoteBuild do
           {:cancel, :no_registry_image}
 
         %{name: name, digest: digest} ->
-          if not force and run_exists?(package, version, digest) do
-            Logger.info("RemoteBuild dedup: run already exists for #{package} #{version}")
-            Progress.mark(scan_request_id, :built)
-            Progress.broadcast(scan_request_id, :done, %{deduped: true})
-            :ok
-          else
-            lease(package, version, name, digest, args, scan_request_id, priority, force)
+          cond do
+            not force and run_exists?(package, version, digest) ->
+              Logger.info("RemoteBuild dedup: run already exists for #{package} #{version}")
+              Progress.mark(scan_request_id, :built)
+              Progress.broadcast(scan_request_id, :done, %{deduped: true})
+              :ok
+
+            # This job is done once its lease is written, long before the run
+            # exists, so a later job for the same build (a sweep after a
+            # request, past the unique window) would otherwise lease it twice.
+            # The request is not built yet, so nothing is marked.
+            not force and lease_in_flight?(package, version, digest) ->
+              Logger.info("RemoteBuild dedup: lease already open for #{package} #{version}")
+              Progress.broadcast(scan_request_id, :queued, %{remote: true, deduped: true})
+              :ok
+
+            true ->
+              lease(package, version, name, digest, args, scan_request_id, priority, force)
+              |> on_enqueue_error(scan_request_id, attempt, max)
           end
       end
     end
@@ -90,6 +102,22 @@ defmodule Portal.Workers.RemoteBuild do
     end
   end
 
+  # As `Portal.Workers.Build.on_retry_or_exhaust/5`: the job retries, and the
+  # last attempt marks the request errored instead of leaving it queued.
+  defp on_enqueue_error(:ok, _scan_request_id, _attempt, _max), do: :ok
+
+  defp on_enqueue_error({:error, reason} = error, scan_request_id, attempt, max) do
+    message = "remote lease enqueue failed: #{inspect(reason)}"
+    Logger.error(message)
+
+    if attempt >= max do
+      Progress.mark(scan_request_id, :error, error_reason: message)
+      Progress.broadcast(scan_request_id, :error, %{reason: message})
+    end
+
+    error
+  end
+
   # As `Portal.Workers.Build`: never built, regardless of `force`; an error
   # retries, and the last attempt marks the request errored.
   defp record_tooling_skip(package, version, scan_request_id, attempt, max) do
@@ -108,6 +136,15 @@ defmodule Portal.Workers.RemoteBuild do
 
         {:error, reason}
     end
+  end
+
+  defp lease_in_flight?(package, version, digest) do
+    Lease
+    |> Ash.Query.filter(
+      package == ^package and version == ^version and image_digest == ^digest and
+        state in [:queued, :leased, :uploading]
+    )
+    |> Ash.exists?(domain: Portal.Builders)
   end
 
   defp run_exists?(package, version, digest) do
