@@ -325,8 +325,9 @@ defmodule Portal.Builders do
   Revoke a builder: status `:revoked`, its runs revoked (the next precompiled
   batch drops their files), its open leases back to `:queued` -- or, when no
   other enrolled builder is left to claim them, `:failed` with "builder
-  revoked" and their requests errored -- and the affected packages (those
-  failed leases' included) rebuilt on this host through `Portal.BulkRebuild` with
+  revoked", and every queued lease `:failed` with "no enrolled builder",
+  their requests errored -- and the affected packages (those failed
+  leases' included) rebuilt on this host through `Portal.BulkRebuild` with
   `pin_local`, so the catalogue heals without routing to a remote builder.
   """
   @spec revoke(Builder.t()) ::
@@ -396,7 +397,8 @@ defmodule Portal.Builders do
   # The revoked builder's in-flight leases go back to the queue while another
   # enrolled builder can take them. With none left a requeued lease would wait
   # forever and its open request block every later `create_once/1` for its
-  # package, so they fail instead (their requests errored) and their packages
+  # package, so they fail instead (their requests errored), together with
+  # every lease still `queued` ("no enrolled builder"), and their packages
   # join the local rebuild. Answers the failed ones as `{id, package,
   # scan_request_id}`.
   defp settle_leases(builder) do
@@ -414,14 +416,28 @@ defmodule Portal.Builders do
     |> Ash.exists?(domain: __MODULE__)
   end
 
+  # The revoked builder's in-flight leases, and every lease still queued:
+  # with no enrolled builder left nothing would ever claim those either.
   defp fail_leases(builder) do
-    reason = "builder revoked"
-
-    {_, failed} =
-      Repo.update_all(
+    held =
+      fail_where(
         from(l in "builder_leases",
           where:
-            l.builder_id == type(^builder.id, Ecto.UUID) and l.state in ["leased", "uploading"],
+            l.builder_id == type(^builder.id, Ecto.UUID) and l.state in ["leased", "uploading"]
+        ),
+        "builder revoked"
+      )
+
+    queued =
+      fail_where(from(l in "builder_leases", where: l.state == "queued"), "no enrolled builder")
+
+    held ++ queued
+  end
+
+  defp fail_where(query, reason) do
+    {_, failed} =
+      Repo.update_all(
+        from(l in query,
           select: {type(l.id, Ecto.UUID), l.package, type(l.scan_request_id, Ecto.UUID)}
         ),
         set: [state: "failed", error: reason, phase: nil, updated_at: DateTime.utc_now()]

@@ -42,10 +42,12 @@ defmodule Portal.Workers.RequestSync do
   @live_states ~w(available scheduled executing retryable)
   @job_workers ~w(Portal.Workers.Build Portal.Workers.RemoteBuild Portal.Workers.Ingest)
   # A remote build's `RemoteBuild` job completes once it has written the
-  # lease, so from then until its `Ingest` is enqueued the lease is the only
-  # live work. `done` counts too: the builder has completed, and its
-  # `Ingest` (which marks the request) may not have run yet.
-  @open_lease_states ~w(queued leased uploading done)
+  # lease, so from then until the builder completes the lease is the only
+  # live work. `done` does not count: the builder's `complete` commits the
+  # `done` transition and the `Ingest` insert together, so the live Ingest
+  # job covers the request from there, and a `done` lease whose Ingest died
+  # must not hold its request open for good.
+  @open_lease_states ~w(queued leased uploading)
   @retain_finished_hours 24
   @grace_minutes 10
 

@@ -206,11 +206,19 @@ defmodule Portal.Builders.Upload do
     case File.mkdir_p(dir) do
       :ok ->
         sweep_stale_incoming(dir)
-        state = TarStream.new(callbacks(dir, caps.max_file_bytes))
+        # The `.incoming-*` files this batch opens, so a refusal removes its
+        # own and never a concurrent batch's.
+        own = {__MODULE__, :incoming, make_ref()}
+        Process.put(own, [])
+        state = TarStream.new(callbacks(dir, caps.max_file_bytes, own))
 
-        case pump(read_chunk, state, 0, length) do
-          {:ok, state, bytes} -> {conclude(dir, state), bytes}
-          {:error, reason, state, open, bytes} -> {refuse(dir, state, open, reason), bytes}
+        try do
+          case pump(read_chunk, state, 0, length) do
+            {:ok, state, bytes} -> {conclude(own, state), bytes}
+            {:error, reason, state, open, bytes} -> {refuse(own, state, open, reason), bytes}
+          end
+        after
+          Process.delete(own)
         end
 
       {:error, reason} ->
@@ -218,7 +226,7 @@ defmodule Portal.Builders.Upload do
     end
   end
 
-  defp conclude(dir, state) do
+  defp conclude(own, state) do
     case TarStream.finish(state) do
       {:ok, results} ->
         stored = for {:stored, sha} <- results, do: sha
@@ -226,21 +234,21 @@ defmodule Portal.Builders.Upload do
         {:ok, %{stored: stored, bad: Enum.uniq(bad), bytes: nil}}
 
       {:error, reason} ->
-        refuse(dir, state, nil, reason)
+        refuse(own, state, nil, reason)
     end
   end
 
   # A refused batch keeps no partial file: the entry the reader had open
   # (`TarStream.pending/1`), the one a failed write names, and any other
-  # `.incoming-*` are removed.
-  defp refuse(dir, state, open, reason) do
+  # `.incoming-*` this batch opened are removed.
+  defp refuse(own, state, open, reason) do
     case TarStream.pending(state) do
       {_name, tmp, fd, _hash} -> close_open({fd, tmp})
       nil -> :ok
     end
 
     close_open(open)
-    sweep_incoming(dir)
+    sweep_own(own)
     {:error, reason}
   end
 
@@ -297,9 +305,10 @@ defmodule Portal.Builders.Upload do
   defp io_error(reason), do: {:io, reason}
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp open_incoming(dir) do
+  defp open_incoming(dir, own \\ nil) do
     rand = Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
     tmp = Path.join(dir, ".incoming-#{rand}")
+    if own, do: Process.put(own, [tmp | Process.get(own, [])])
 
     case File.open(tmp, [:write, :binary, :raw, :exclusive]) do
       {:ok, fd} -> {fd, tmp}
@@ -325,7 +334,7 @@ defmodule Portal.Builders.Upload do
     end
   end
 
-  defp callbacks(dir, max_file_bytes) do
+  defp callbacks(dir, max_file_bytes, own) do
     %{
       start: fn name, size ->
         cond do
@@ -336,7 +345,7 @@ defmodule Portal.Builders.Upload do
             {:skip, :too_large}
 
           true ->
-            {fd, tmp} = open_incoming(dir)
+            {fd, tmp} = open_incoming(dir, own)
             {:ok, {name, tmp, fd, :crypto.hash_init(:sha256)}}
         end
       end,
@@ -358,16 +367,18 @@ defmodule Portal.Builders.Upload do
     }
   end
 
+  # Every path is one `open_incoming/2` built; a published one is already
+  # renamed away and its `rm` a no-op.
   # sobelow_skip ["Traversal.FileModule"]
-  defp sweep_incoming(dir),
-    do: dir |> Path.join(".incoming-*") |> Path.wildcard(match_dot: true) |> Enum.each(&File.rm/1)
+  defp sweep_own(own), do: own |> Process.get([]) |> Enum.each(&File.rm/1)
 
   # A batch killed mid-entry (the request process gone with its connection)
   # leaves its `.incoming-*` behind, which no refusal swept. Each batch
-  # starts by removing those not written to for a minute: a concurrent
-  # batch on the same lease writes its open entry as its bytes arrive, so
-  # only a dead one goes that long untouched.
-  @stale_incoming_seconds 60
+  # starts by removing those not written to for two minutes, twice the
+  # files controller's 60 s `read_timeout`: a concurrent batch on the same
+  # lease writes its open entry as its bytes arrive and is cut off after a
+  # read timeout, so only a dead one goes that long untouched.
+  @stale_incoming_seconds 120
 
   # sobelow_skip ["Traversal.FileModule"]
   defp sweep_stale_incoming(dir) do

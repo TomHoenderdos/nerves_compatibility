@@ -446,7 +446,8 @@ defmodule Portal.Admin do
 
   @doc "Put the `:failed` lease `lease_id` back in the remote queue with a fresh attempt budget."
   @spec requeue_lease(String.t()) ::
-          {:ok, Portal.Builders.Lease.t()} | {:error, :not_found | :not_failed | term()}
+          {:ok, Portal.Builders.Lease.t()}
+          | {:error, :not_found | :not_failed | :requeued_locally | term()}
   def requeue_lease(lease_id) do
     with {:ok, lease} <- fetch_lease(lease_id),
          {:ok, lease} <- Portal.Builders.Leases.requeue(lease) do
