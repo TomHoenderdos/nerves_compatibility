@@ -71,7 +71,7 @@ The integration test is `apps/portal/test/portal/workers/build_integration_test.
    - `/work` → per-run scratch
    - `/out` → outputs (`result.json`, logs, artifacts)
    - `/files` → content-addressed artifact staging
-   - `/home/nerves/.nerves` → shared Nerves cache (`~/.ncc-nerves-cache`)
+   - `/nerves-cache` → shared Nerves cache (`~/.ncc-nerves-cache`), **read-only** in every build and read-write only for a warm run (`NCC_NERVES_CACHE_RW=1` is the one-release rollback to read-write)
    - `/hex-cache` → shared Hex cache (`~/.ncc-hex-cache`)
    - `/build-cache` → per-image dependency build cache, **read-only**, only when `NCC_BUILD_CACHE` is set
    - `/tmp` → `<scratch>/tmp` and `/home/nerves/.cache` → `<scratch>/cache`, per-run writable dirs on an otherwise read-only root
@@ -118,7 +118,7 @@ Portal maps these into Oban outcomes in `Portal.Workers.Build`: success enqueues
 
 - The worker image is based on `ghcr.io/nerves-project/nerves_system_br`.
 - `Portal.Builder` passes `--user $(id -u):$(id -g)` so bind-mounted files stay owned by the invoking host user (`NCC_BUILD_USER` overrides it, e.g. `0:0` on a rootless daemon), plus `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only` and `--pids-limit 4096`. `/tmp` and `/home/nerves/.cache` are bind-mounted from the run's scratch dir (`<scratch>/tmp`, `<scratch>/cache`) because the root filesystem is read-only.
-- The docker argv is built by `Compatibility.Builder.Argv.build/1` (a pure function of paths, user, image and limits) so remote builders run the same sandbox; `apps/compatibility/test/fixtures/argv/post_hardening.exs` pins it and both `Compatibility.Builder.ArgvTest` and `Portal.BuilderTest` compare against it. Change the fixture only together with the sandbox.
+- The docker argv is built by `Compatibility.Builder.Argv.build/1` (a pure function of paths, user, image and limits) so remote builders run the same sandbox; `apps/compatibility/test/fixtures/argv/post_isolation.exs` pins it and both `Compatibility.Builder.ArgvTest` and `Portal.BuilderTest` compare against it. Change the fixture only together with the sandbox.
 - `/home/nerves` and `/app` are chmod'd `a+rX` in the Dockerfile so arbitrary uids can read the baked-in Mix archives and Elixir install; nothing in the image is writable at runtime.
 - `~/.ncc-nerves-cache` and `~/.ncc-hex-cache` persist across runs and speed up repeated tests.
 - The shared dependency build cache (`NCC_BUILD_CACHE`, mounted at `/build-cache` read-only) has exactly one writer: `Portal.BuildCache.Promotion`, which runs on the host after the container exits and before ingest. It trusts nothing a build reported without recomputing it — see `Portal.BuildCache.Promotion`'s moduledoc for the checks in order (dep/version match, recomputed key, Hex outer checksum, symlink and hardlink rules). Dependencies other than the package under test are not promoted; they live only in the worker's run-local tier for the duration of that run.

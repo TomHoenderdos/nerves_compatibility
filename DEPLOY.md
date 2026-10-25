@@ -92,7 +92,8 @@ resolved by the host daemon and must be a path the daemon can see:
 | `NCC_DOCKER_IMAGE` | Worker image; defaults to `ncc-worker:local` |
 | `NCC_TOOLCHAINS` | Toolchain images, `1.19/28=ncc-worker:elixir-1.19-otp-28,...`. See [Toolchain images and queue](#toolchain-images-and-queue) |
 | `NCC_SCRATCH_ROOT` | Per-run scratch dirs; defaults to `~/.ncc-scratch` |
-| `NCC_NERVES_CACHE` | Shared Nerves cache; defaults to `~/.ncc-nerves-cache` |
+| `NCC_NERVES_CACHE` | Shared Nerves cache, mounted read-only into builds at `/nerves-cache` and written only by the warm run; defaults to `~/.ncc-nerves-cache` |
+| `NCC_NERVES_CACHE_RW` | `1` mounts the Nerves cache read-write into builds and drops the worker's per-run symlink farm, as before the isolation work. A one-release rollback; unset by default |
 | `NCC_HEX_CACHE` | Shared Hex cache; defaults to `~/.ncc-hex-cache` |
 | `NCC_BUILD_CPUS` | Cap cores per build, e.g. `3`. Unset means unbounded. Also sizes the BEAM schedulers and sqfstar's `-processors` to the cap, since both otherwise start one per host core |
 | `NCC_BUILD_MEMORY` | Cap memory per build, e.g. `4g`. Unset means unbounded |

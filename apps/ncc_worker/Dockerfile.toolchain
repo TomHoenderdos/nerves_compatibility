@@ -18,7 +18,7 @@ RUN apt-get update && \
 
 # No user: Portal.Builder runs the container as an arbitrary `--user uid:gid`
 # with HOME=/home/nerves, so the home has to be usable by any uid.
-RUN mkdir -p /home/nerves/.mix /home/nerves/.hex /home/nerves/.nerves /home/nerves/.cache /app && \
+RUN mkdir -p /home/nerves/.mix /home/nerves/.hex /home/nerves/.cache /app && \
     chmod -R a+rwX /home/nerves /app
 
 ENV HOME=/home/nerves \
@@ -33,8 +33,8 @@ RUN mix local.hex --force && \
 
 # Every directory the portal bind-mounts, created here because the container
 # runs --read-only (see the main Dockerfile).
-RUN mkdir -p /work /out /files /tmp /hex-cache /build-cache && \
-    chmod a+rwX /work /out /files /hex-cache /build-cache
+RUN mkdir -p /work /out /files /tmp /hex-cache /nerves-cache /build-cache && \
+    chmod a+rwX /work /out /files /hex-cache /nerves-cache /build-cache
 
 WORKDIR /app
 

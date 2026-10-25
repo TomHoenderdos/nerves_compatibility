@@ -64,7 +64,7 @@ RUN set -eux; \
 # --read-only; runc creates mount points before the root goes read-only, so
 # a missing one would probably still work, but pre-creating costs nothing
 # and keeps the set of mounts in one place. /tmp exists in the base image.
-RUN sudo mkdir -p /work /out /files /tmp /hex-cache /home/nerves/.nerves /home/nerves/.cache /build-cache
+RUN sudo mkdir -p /work /out /files /tmp /hex-cache /nerves-cache /home/nerves/.cache /build-cache
 
 # Create app directory
 WORKDIR /app
@@ -77,7 +77,7 @@ COPY apps/compatibility ./apps/compatibility
 COPY apps/ncc_worker        ./apps/ncc_worker
 
 # Ensure nerves user owns the directories
-RUN sudo chown -R nerves:nerves /app /work /out /hex-cache /home/nerves/.nerves
+RUN sudo chown -R nerves:nerves /app /work /out /hex-cache /nerves-cache
 
 # Build the worker escript. Mix only discovers compatibility + ncc_worker under
 # apps/, so dep resolution never pulls Phoenix/Ash/Oban into the image even

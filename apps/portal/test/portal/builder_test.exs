@@ -351,7 +351,7 @@ defmodule Portal.BuilderTest do
   # fixture, so the two cannot drift apart unnoticed.
   describe "argv parity" do
     @argv_fixture Path.expand(
-                    "../../../compatibility/test/fixtures/argv/post_hardening.exs",
+                    "../../../compatibility/test/fixtures/argv/post_isolation.exs",
                     __DIR__
                   )
 
@@ -367,6 +367,7 @@ defmodule Portal.BuilderTest do
           memory: input.memory,
           build_concurrency: input.build_concurrency,
           nerves_cache: input.paths.nerves_cache,
+          nerves_cache_rw: false,
           hex_cache: input.paths.hex_cache,
           build_cache: cache
         ],
@@ -386,6 +387,105 @@ defmodule Portal.BuilderTest do
 
       assert Builder.build_docker_args(job, input.paths.work, input.paths.out, input.paths.files) ==
                expected
+    end
+  end
+
+  describe "Nerves cache mount" do
+    defp mounts(argv) do
+      argv
+      |> Enum.chunk_every(2, 1)
+      |> Enum.filter(&match?(["--mount", _], &1))
+      |> Enum.map(&List.last/1)
+    end
+
+    test "a build mounts it read-only at /nerves-cache", %{previous: previous} do
+      put_builder([nerves_cache: "/srv/nerves", nerves_cache_rw: nil], previous)
+
+      assert "type=bind,source=/srv/nerves,target=/nerves-cache,readonly" in mounts(args())
+      refute "NCC_NERVES_CACHE_RW=1" in args()
+      refute Enum.any?(args(), &String.contains?(&1, "/home/nerves/.nerves"))
+    end
+
+    test "a warm job mounts it read-write", %{previous: previous} do
+      put_builder([nerves_cache: "/srv/nerves", nerves_cache_rw: nil], previous)
+      job = Map.put(@job, :mode, "warm_nerves")
+
+      argv = Builder.build_docker_args(job, "/scratch/work", "/scratch/out", "/scratch/files")
+
+      assert "type=bind,source=/srv/nerves,target=/nerves-cache" in mounts(argv)
+      refute "NCC_NERVES_CACHE_RW=1" in argv
+    end
+
+    test "NCC_NERVES_CACHE_RW=1 mounts it read-write and drops the farm", %{previous: previous} do
+      put_builder([nerves_cache: "/srv/nerves", nerves_cache_rw: true], previous)
+
+      assert "type=bind,source=/srv/nerves,target=/nerves-cache" in mounts(args())
+      assert "NCC_NERVES_CACHE_RW=1" in args()
+    end
+
+    test "nerves_cache_mode/1 picks warm first, then the fallback", %{previous: previous} do
+      put_builder([nerves_cache_rw: nil], previous)
+      assert Builder.nerves_cache_mode(@job) == :readonly
+      assert Builder.nerves_cache_mode(Map.put(@job, :mode, "warm_nerves")) == :warm
+      assert Builder.nerves_cache_mode(Map.put(@job, :mode, "argus_only")) == :readonly
+
+      put_builder([nerves_cache_rw: true], previous)
+      assert Builder.nerves_cache_mode(@job) == :rw
+      assert Builder.nerves_cache_mode(Map.put(@job, :mode, "warm_nerves")) == :warm
+    end
+  end
+
+  describe "warm runs" do
+    test "worker_input/1 sends the mode and pairs and no package" do
+      pairs = [%{"name" => "nerves_system_rpi4", "version" => "2.0.0"}]
+
+      input =
+        Builder.worker_input(%{
+          run_id: "warm_nerves-1",
+          image_name: "ncc-worker",
+          image_digest: "sha256:x",
+          package: nil,
+          systems_filter: nil,
+          mode: "warm_nerves",
+          nerves_packages: pairs
+        })
+
+      assert input["mode"] == "warm_nerves"
+      assert input["nerves_packages"] == pairs
+      refute Map.has_key?(input, "package")
+    end
+
+    test "worker_input/1 sends no nerves_packages for a build" do
+      job = %{
+        run_id: "r1",
+        image_name: "ncc-worker",
+        image_digest: "sha256:x",
+        package: %{"name" => "jason", "version" => "1.4.4", "source" => "hex"},
+        systems_filter: nil
+      }
+
+      refute Map.has_key?(Builder.worker_input(job), "nerves_packages")
+      assert Builder.worker_input(job)["package"]["name"] == "jason"
+    end
+
+    # Reaching the exec preflight proves the job was assembled without a
+    # package: a build without one raises KeyError before that.
+    test "build/2 needs no package or version for a warm run", %{previous: previous} do
+      root = Path.join(System.tmp_dir!(), "warm-args-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(root) end)
+
+      put_builder(
+        [scratch_root: root, min_free_disk_gb: 0, exec_probe: fn _path -> {:error, :eacces} end],
+        previous
+      )
+
+      assert {:error, :scratch_noexec} =
+               Builder.build(%{
+                 run_id: "warm_nerves-1",
+                 mode: "warm_nerves",
+                 nerves_packages: [],
+                 image_digest: "sha256:x"
+               })
     end
   end
 end

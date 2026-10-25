@@ -6,12 +6,16 @@ defmodule Compatibility.Builder.Argv do
   portal's own builders, and remote build VMs — runs the same sandbox: the same
   flags, mounts, environment and limits. Callers resolve their configuration,
   paths and user into the map; this module alone decides what the container
-  gets. `test/fixtures/argv/post_hardening.exs` pins the result, and every
+  gets. `test/fixtures/argv/post_isolation.exs` pins the result, and every
   caller's tests compare against that fixture.
 
   `:paths` are host paths. The build cache, when given, is always mounted
   read-only: a build runs untrusted package code, and the host-side promotion
-  is the cache's only writer.
+  is the cache's only writer. The Nerves cache is mounted at `/nerves-cache`
+  as `:nerves_cache_mode` says: `:readonly` for every build, `:warm` (read-write)
+  for the warm run that is its only writer, and `:rw` (read-write, plus
+  `NCC_NERVES_CACHE_RW=1` so the worker skips its symlink farm) for the
+  one-release rollback.
   """
 
   @type paths :: %{
@@ -25,13 +29,16 @@ defmodule Compatibility.Builder.Argv do
           optional(:build_cache) => Path.t() | nil
         }
 
+  @type nerves_cache_mode :: :readonly | :warm | :rw
+
   @type spec :: %{
           required(:container_name) => String.t(),
           required(:user) => String.t(),
           required(:image) => String.t(),
           required(:paths) => paths(),
+          required(:nerves_cache_mode) => nerves_cache_mode(),
           optional(:cpus) => String.t() | number() | nil,
-          optional(:memory) => String.t() | number() | nil,
+          optional(:memory) => String.t() | nil,
           optional(:build_concurrency) => String.t() | pos_integer() | nil
         }
 
@@ -40,14 +47,16 @@ defmodule Compatibility.Builder.Argv do
   def build(spec) do
     paths = Map.fetch!(spec, :paths)
     image = Map.fetch!(spec, :image)
+    nerves_cache_mode = Map.fetch!(spec, :nerves_cache_mode)
 
     validate_paths!(paths)
     validate_image!(image)
 
     flags(spec) ++
       limits(spec) ++
-      mounts(paths) ++
+      mounts(paths, nerves_cache_mode) ++
       env() ++
+      nerves_cache_env(nerves_cache_mode) ++
       build_cache_env(paths) ++
       cpu_env(spec) ++ concurrency_env(spec) ++ [image]
   end
@@ -110,7 +119,7 @@ defmodule Compatibility.Builder.Argv do
     end)
   end
 
-  defp mounts(paths) do
+  defp mounts(paths, nerves_cache_mode) do
     List.flatten([
       bind(Map.fetch!(paths, :work), "/work"),
       bind(Map.fetch!(paths, :out), "/out"),
@@ -120,13 +129,28 @@ defmodule Compatibility.Builder.Argv do
       # fakeroot) puts whole rootfs images in /tmp.
       bind(Map.fetch!(paths, :tmp), "/tmp"),
       bind(Map.fetch!(paths, :cache), "/home/nerves/.cache"),
-      bind(Map.fetch!(paths, :nerves_cache), "/home/nerves/.nerves"),
+      nerves_cache_mount(Map.fetch!(paths, :nerves_cache), nerves_cache_mode),
       bind(Map.fetch!(paths, :hex_cache), "/hex-cache"),
       build_cache_mount(Map.get(paths, :build_cache))
     ])
   end
 
   defp bind(source, target), do: ["--mount", "type=bind,source=#{source},target=#{target}"]
+
+  # Read-only for a build: Nerves only checks an artifact's `.fingerprint`,
+  # so a build that could write here could swap a toolchain binary or a
+  # rootfs under every later firmware on the host. The worker resolves
+  # through a per-run symlink farm instead (`NccWorker.NervesCache`); the
+  # warm run is the cache's only writer.
+  defp nerves_cache_mount(dir, :readonly),
+    do: ["--mount", "type=bind,source=#{dir},target=/nerves-cache,readonly"]
+
+  defp nerves_cache_mount(dir, mode) when mode in [:warm, :rw], do: bind(dir, "/nerves-cache")
+
+  # Only the rollback tells the worker: it then points Nerves straight at
+  # the mounted cache, as builds did before the farm.
+  defp nerves_cache_env(:rw), do: ["-e", "NCC_NERVES_CACHE_RW=1"]
+  defp nerves_cache_env(mode) when mode in [:readonly, :warm], do: []
 
   defp build_cache_mount(nil), do: []
 

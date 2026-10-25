@@ -4,7 +4,7 @@ defmodule Portal.Builder do
 
   Host-side replacement for the retired standalone runner. Keeps the `docker run`
   invocation contract stable for the worker: same mounts (`/work`, `/out`, `/files`,
-  `/home/nerves/.nerves` ← nerves cache,
+  `/nerves-cache` ← nerves cache (read-only except for a warm run),
   `/hex-cache` ← hex cache), `--user uid:gid`, `--pull=never`, the worker image,
   `NCC_INPUT=/work/input.json`, container naming, and a wall-clock timeout.
 
@@ -28,9 +28,10 @@ defmodule Portal.Builder do
   @zero_digest "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
   @type build_args :: %{
-          required(:package) => String.t(),
-          required(:version) => String.t(),
           required(:run_id) => String.t(),
+          # Required for every mode except "warm_nerves", which builds no package.
+          optional(:package) => String.t(),
+          optional(:version) => String.t(),
           optional(:image) => String.t(),
           optional(:image_digest) => String.t(),
           optional(:systems_filter) => [String.t()] | nil,
@@ -38,7 +39,10 @@ defmodule Portal.Builder do
           # For `mode: "toolchain"`: the toolchain the run was queued for,
           # e.g. `%{elixir: "1.19", otp: "28"}`.
           optional(:toolchain) => %{elixir: String.t(), otp: String.t()} | nil,
-          optional(:argus) => map() | nil
+          optional(:argus) => map() | nil,
+          # For `mode: "warm_nerves"`: `%{"name", "version"}` pairs to warm
+          # (`Portal.Workers.WarmNerves`); `[]` warms what the template resolves.
+          optional(:nerves_packages) => [%{String.t() => String.t()}] | nil
         }
 
   @type build_result :: %{
@@ -59,7 +63,7 @@ defmodule Portal.Builder do
   @spec scratch_root() :: Path.t()
   def scratch_root, do: config(:scratch_root, Path.expand("~/.ncc-scratch"))
 
-  @doc "Host path for the shared Nerves cache (mounted at /home/nerves/.nerves)."
+  @doc "Host path for the shared Nerves cache (mounted at /nerves-cache)."
   @spec nerves_cache() :: Path.t()
   def nerves_cache, do: config(:nerves_cache, Path.expand("~/.ncc-nerves-cache"))
 
@@ -157,19 +161,18 @@ defmodule Portal.Builder do
     cache_dir = Path.join(scratch, "cache")
     log_file = Path.join(output_dir, "runner.log")
 
+    mode = Map.get(args, :mode)
+
     job = %{
       run_id: run_id,
       image_name: image,
       image_digest: image_digest,
-      package: %{
-        "name" => Map.fetch!(args, :package),
-        "version" => Map.fetch!(args, :version),
-        "source" => "hex"
-      },
+      package: job_package(mode, args),
       systems_filter: Map.get(args, :systems_filter),
-      mode: Map.get(args, :mode),
+      mode: mode,
       toolchain: Map.get(args, :toolchain),
-      argus: Map.get(args, :argus)
+      argus: Map.get(args, :argus),
+      nerves_packages: Map.get(args, :nerves_packages)
     }
 
     # Free space first: it is the cheapest check in the chain, and it is the
@@ -478,17 +481,29 @@ defmodule Portal.Builder do
     %{
       "run_id" => job.run_id,
       "image" => %{"name" => job.image_name, "digest" => job.image_digest},
-      "package" => job.package,
       "paths" => %{
         "work_dir" => "/work",
         "output_dir" => "/out",
         "files_dir" => "/files"
       }
     }
+    |> maybe_put("package", Map.get(job, :package))
     |> maybe_put("systems_filter", job.systems_filter)
     |> maybe_put("mode", Map.get(job, :mode))
     |> maybe_put("toolchain", Map.get(job, :toolchain))
     |> maybe_put("argus", Map.get(job, :argus))
+    |> maybe_put("nerves_packages", Map.get(job, :nerves_packages))
+  end
+
+  # A warm run fills the Nerves cache and builds no package.
+  defp job_package("warm_nerves", _args), do: nil
+
+  defp job_package(_mode, args) do
+    %{
+      "name" => Map.fetch!(args, :package),
+      "version" => Map.fetch!(args, :version),
+      "source" => "hex"
+    }
   end
 
   # work_dir is the run scratch directory constructed by build/2; input.json is fixed.
@@ -529,6 +544,7 @@ defmodule Portal.Builder do
       cpus: config(:cpus, nil),
       memory: config(:memory, nil),
       build_concurrency: config(:build_concurrency, nil),
+      nerves_cache_mode: nerves_cache_mode(job),
       paths: %{
         work: work_dir,
         out: output_dir,
@@ -540,6 +556,22 @@ defmodule Portal.Builder do
         build_cache: build_cache_dir(job)
       }
     })
+  end
+
+  @doc """
+  How the container for `job` mounts the Nerves cache
+  (`Compatibility.Builder.Argv`): read-write for a warm run, the cache's only
+  writer; read-only for every other run, unless `NCC_NERVES_CACHE_RW=1`
+  (`:nerves_cache_rw`) restores the pre-isolation read-write mount for one
+  release.
+  """
+  @spec nerves_cache_mode(map()) :: :readonly | :warm | :rw
+  def nerves_cache_mode(job) do
+    cond do
+      Map.get(job, :mode) == "warm_nerves" -> :warm
+      config(:nerves_cache_rw, false) == true -> :rw
+      true -> :readonly
+    end
   end
 
   # The cache is mounted per worker image rather than as one flat directory.
