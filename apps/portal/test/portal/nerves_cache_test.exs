@@ -190,4 +190,41 @@ defmodule Portal.NervesCacheTest do
       assert [_one] = all_enqueued(worker: WarmNerves)
     end
   end
+
+  describe "template file" do
+    setup do
+      root = Path.join(System.tmp_dir!(), "nerves-template-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf(root) end)
+      %{root: root}
+    end
+
+    test "round-trips the entries the template resolves", %{root: root} do
+      assert :ok =
+               NervesCache.write_template(root, "sha256:x", [
+                 "nerves_system_rpi4-2.0.0",
+                 "nerves_system_bbb-2.0.0"
+               ])
+
+      assert {:ok, entries} = NervesCache.template_entries(root)
+      assert entries == MapSet.new(["nerves_system_bbb-2.0.0", "nerves_system_rpi4-2.0.0"])
+      refute File.exists?(Path.join(root, "template.json.tmp"))
+    end
+
+    test "missing, malformed or not a regular file reads as unknown", %{root: root} do
+      assert NervesCache.template_entries(root) == :error
+
+      File.write!(Path.join(root, "template.json"), "{not json")
+      assert NervesCache.template_entries(root) == :error
+
+      File.write!(Path.join(root, "template.json"), ~s({"entries": [1, 2]}))
+      assert NervesCache.template_entries(root) == :error
+
+      File.rm!(Path.join(root, "template.json"))
+      target = Path.join(root, "elsewhere.json")
+      File.write!(target, ~s({"entries": ["nerves_system_rpi4-2.0.0"]}))
+      File.ln_s!(target, Path.join(root, "template.json"))
+      assert NervesCache.template_entries(root) == :error
+    end
+  end
 end

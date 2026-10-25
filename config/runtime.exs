@@ -179,6 +179,18 @@ if portal_available? do
             {gb, _rest} when gb > 0 -> trunc(gb * 1024 * 1024 * 1024)
             _ -> nil
           end
+      end,
+    # Same units and fallback for the Nerves cache's `artifacts/` bound.
+    nerves_cache_max_bytes:
+      case System.get_env("NCC_NERVES_CACHE_MAX_GB") do
+        nil ->
+          nil
+
+        raw ->
+          case Float.parse(raw) do
+            {gb, _rest} when gb > 0 -> trunc(gb * 1024 * 1024 * 1024)
+            _ -> nil
+          end
       end
   ]
 

@@ -36,7 +36,8 @@ defmodule Portal.Workers.SweepTest do
         live_run_ids: MapSet.new(),
         running_containers: MapSet.new(),
         build_cache: nil,
-        hex_cache: nil
+        hex_cache: nil,
+        nerves_cache: nil
       ],
       extra
     )
@@ -776,6 +777,151 @@ defmodule Portal.Workers.SweepTest do
 
       assert File.exists?(victim)
       assert File.exists?(link)
+    end
+  end
+
+  describe "nerves cache" do
+    # `artifacts/<app>-<version>` dirs written only by the warm job, next to
+    # `template.json` and `staging/`. Lives outside `root` like the hex cache.
+    setup do
+      nerves = Path.join(System.tmp_dir!(), "sweep-nerves-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(nerves, "artifacts"))
+      on_exit(fn -> File.rm_rf(nerves) end)
+      %{nerves: nerves}
+    end
+
+    @mib 1024 * 1024
+
+    defp nerves_entry(nerves, name, mib, age_hours) do
+      dir = Path.join([nerves, "artifacts", name])
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "rootfs.tar"), :binary.copy("x", mib * @mib))
+      File.touch!(dir, div(age(age_hours), 1000))
+      dir
+    end
+
+    defp aged_dir(path, age_hours) do
+      File.mkdir_p!(path)
+      File.touch!(path, div(age(age_hours), 1000))
+      path
+    end
+
+    defp nerves_opts(root, nerves, extra) do
+      opts(
+        root,
+        Keyword.merge(
+          [
+            nerves_cache: nerves,
+            nerves_cache_max_bytes: div(5 * @mib, 2),
+            nerves_template: {:ok, MapSet.new()}
+          ],
+          extra
+        )
+      )
+    end
+
+    test "evicts the oldest entries until under the bound", %{root: root, nerves: nerves} do
+      old = nerves_entry(nerves, "nerves_system_bbb-2.0.0", 1, 48)
+      mid = nerves_entry(nerves, "nerves_system_rpi4-2.0.0", 1, 24)
+      new = nerves_entry(nerves, "nerves_system_x86_64-2.0.0", 1, 1)
+
+      Sweep.run(nerves_opts(root, nerves, []))
+
+      refute File.exists?(old)
+      assert File.exists?(mid)
+      assert File.exists?(new)
+    end
+
+    test "never evicts what the template resolves, even when it is the oldest", ctx do
+      %{root: root, nerves: nerves} = ctx
+      kept = nerves_entry(nerves, "nerves_system_bbb-2.0.0", 1, 48)
+      mid = nerves_entry(nerves, "nerves_system_rpi4-2.0.0", 1, 24)
+      new = nerves_entry(nerves, "nerves_system_x86_64-2.0.0", 1, 1)
+
+      Sweep.run(
+        nerves_opts(root, nerves, nerves_template: {:ok, MapSet.new(["nerves_system_bbb-2.0.0"])})
+      )
+
+      assert File.exists?(kept)
+      refute File.exists?(mid)
+      assert File.exists?(new)
+    end
+
+    test "honours the template.json the deploy warm wrote", %{root: root, nerves: nerves} do
+      kept = nerves_entry(nerves, "nerves_system_bbb-2.0.0", 1, 48)
+      mid = nerves_entry(nerves, "nerves_system_rpi4-2.0.0", 1, 24)
+      nerves_entry(nerves, "nerves_system_x86_64-2.0.0", 1, 1)
+      :ok = Portal.NervesCache.write_template(nerves, "sha256:x", ["nerves_system_bbb-2.0.0"])
+
+      Sweep.run(opts(root, nerves_cache: nerves, nerves_cache_max_bytes: div(5 * @mib, 2)))
+
+      assert File.exists?(kept)
+      refute File.exists?(mid)
+    end
+
+    test "touches nothing under the bound", %{root: root, nerves: nerves} do
+      a = nerves_entry(nerves, "nerves_system_bbb-2.0.0", 1, 48)
+
+      Sweep.run(nerves_opts(root, nerves, nerves_cache_max_bytes: 10 * @mib))
+
+      assert File.exists?(a)
+    end
+
+    test "evicts nothing over the bound when the template cannot be read", ctx do
+      %{root: root, nerves: nerves} = ctx
+      a = nerves_entry(nerves, "nerves_system_bbb-2.0.0", 1, 48)
+      b = nerves_entry(nerves, "nerves_system_rpi4-2.0.0", 1, 24)
+
+      log =
+        capture_log(fn ->
+          Sweep.run(nerves_opts(root, nerves, nerves_cache_max_bytes: 0, nerves_template: :error))
+        end)
+
+      assert File.exists?(a)
+      assert File.exists?(b)
+      assert log =~ "Sweep skipping nerves cache eviction"
+    end
+
+    test "evicts nothing while a build container is running", %{root: root, nerves: nerves} do
+      a = nerves_entry(nerves, "nerves_system_bbb-2.0.0", 1, 48)
+
+      Sweep.run(
+        nerves_opts(root, nerves,
+          nerves_cache_max_bytes: 0,
+          running_containers: MapSet.new(["ncc-jason-1.4.1-123"])
+        )
+      )
+
+      assert File.exists?(a)
+    end
+
+    test "removes warm staging and set-aside entries older than three hours", ctx do
+      %{root: root, nerves: nerves} = ctx
+      old_staging = aged_dir(Path.join([nerves, "staging", "warm_nerves-1"]), 5)
+      live_staging = aged_dir(Path.join([nerves, "staging", "warm_nerves-2"]), 1)
+
+      old_stale =
+        aged_dir(
+          Path.join([nerves, "artifacts", "nerves_system_bbb-2.0.0.stale.warm_nerves-1"]),
+          5
+        )
+
+      new_stale =
+        aged_dir(
+          Path.join([nerves, "artifacts", "nerves_system_bbb-2.0.0.stale.warm_nerves-2"]),
+          1
+        )
+
+      Sweep.run(nerves_opts(root, nerves, nerves_cache_max_bytes: 10 * @mib))
+
+      refute File.exists?(old_staging)
+      assert File.exists?(live_staging)
+      refute File.exists?(old_stale)
+      assert File.exists?(new_stale)
+    end
+
+    test "a missing nerves cache is a no-op", %{root: root} do
+      assert :ok = Sweep.run(opts(root, nerves_cache: Path.join(root, "nope")))
     end
   end
 end
