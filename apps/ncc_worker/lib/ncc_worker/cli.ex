@@ -15,6 +15,7 @@ defmodule NccWorker.CLI do
 
   alias NccWorker.Worker
   alias NccWorker.JsonWriter
+  alias NccWorker.NervesCache
   alias NccWorker.Project
   alias NccWorker.Systems
   alias NccWorker.FileArchiver
@@ -75,6 +76,8 @@ defmodule NccWorker.CLI do
          {:ok, input} <- read_input(input_path),
          {:ok, work_dir} <- get_work_dir(input),
          {:ok, package} <- get_package(input),
+         {:ok, nerves} <- NervesCache.prepare(:build, work_dir: work_dir),
+         :ok <- NervesCache.export_env(nerves),
          {:ok, project_dir} <-
            Project.create(work_dir, nil, Systems.targets(Systems.default())),
          {:ok, _} <-
