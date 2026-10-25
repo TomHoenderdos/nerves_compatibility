@@ -90,7 +90,13 @@ defmodule NccWorker.WarmNervesTest do
         logs_dir: Path.join(out, "logs")
       }
 
-      {:ok, layout} = NervesCache.prepare(:warm, cache_root: cache, run_id: "warm_nerves-42")
+      {:ok, layout} =
+        NervesCache.prepare(:warm,
+          cache_root: cache,
+          work_dir: paths.work_dir,
+          run_id: "warm_nerves-42"
+        )
+
       %{cache: cache, paths: paths, layout: layout}
     end
 

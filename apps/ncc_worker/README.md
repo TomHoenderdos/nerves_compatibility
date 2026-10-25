@@ -68,7 +68,8 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
 `/nerves-cache` is the build host's shared Nerves cache, mounted read-only into a build. Before any `mix` runs, the
 worker (`NccWorker.NervesCache`) sets `NERVES_ARTIFACTS_DIR=/work/nerves/artifacts` and `NERVES_DL_DIR=/work/nerves/dl`
 in every mode: the first holds one symlink per entry of `/nerves-cache/artifacts/` (`<app>-<version>`), the second
-starts empty. A cached artifact resolves through its link; one the cache lacks, or whose `.fingerprint` does not match,
+starts empty. It also sets `XDG_DATA_HOME=/work/nerves/data`, so nerves_bootstrap's update check writes there and not
+to `~/.nerves` on the read-only root, which would stop its application and with it every cross-compile. A cached artifact resolves through its link; one the cache lacks, or whose `.fingerprint` does not match,
 Nerves downloads and extracts into the run dir (removing a link never touches its target), and the build passes either
 way. At the end of the run every farm entry that is a real directory is a miss, and `result.json` carries
 `"nerves_cache": {"misses": [{"name": "nerves_system_rpi4", "version": "2.0.0"}], "lock": [...]}`, where `lock` lists
