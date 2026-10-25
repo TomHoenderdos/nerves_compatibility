@@ -5,8 +5,10 @@ defmodule NccAgent.Slot do
   The claim is a long poll, so an empty answer (204) claims again at once
   (but at most once a second, in case the portal answers early). Errors
   back off from 30 s, doubling up to 5 min, and reset after a good claim.
-  Without a verified egress ruleset the slot claims nothing: it reports
-  `egress: "missing"` through `/status` and backs off. Once
+  Every claim is preceded by `NccAgent.Egress.verify/0`. When it fails the
+  slot reinstalls the ruleset once and verifies again; still failing, it
+  claims nothing, reports `egress: "missing"` through `/status` and checks
+  again in 60 s. Once
   `NccAgent.Updater.updating?/0` is set no slot claims again.
 
   The job runs in a task so the slot stays responsive: it traps exits,
@@ -18,14 +20,14 @@ defmodule NccAgent.Slot do
   require Logger
 
   alias Compatibility.Builder.Argv
-  alias NccAgent.{Client, Config, Docker, Identity, Job, Updater}
+  alias NccAgent.{Client, Config, Docker, Egress, Identity, Job, Updater}
 
-  @egress_module NccAgent.Egress
   @runner_failure 20
   @backoff_ms 30_000
   @max_backoff_ms 300_000
   @min_poll_ms 1_000
   @updating_poll_ms 30_000
+  @egress_retry_ms 60_000
 
   def child_spec(n) do
     %{id: {__MODULE__, n}, start: {__MODULE__, :start_link, [n]}, shutdown: 90_000}
@@ -52,6 +54,10 @@ defmodule NccAgent.Slot do
 
       :updating ->
         Process.send_after(self(), :tick, @updating_poll_ms)
+        {:noreply, state}
+
+      :egress_missing ->
+        Process.send_after(self(), :tick, @egress_retry_ms)
         {:noreply, state}
 
       :handed_back ->
@@ -118,10 +124,28 @@ defmodule NccAgent.Slot do
   end
 
   defp claim_step do
-    egress = if @egress_module.verify() == :ok, do: "ok", else: "missing"
+    egress = ensure_egress()
 
     with {:ok, req} <- Identity.ensure() do
-      if egress == "ok", do: claim(req), else: egress_missing(req)
+      if egress == :ok, do: claim(req), else: egress_missing(req)
+    end
+  end
+
+  # A failed verify gets one reinstall (Docker restarting rewrites its
+  # chains, an operator may flush them) before the slot gives up.
+  defp ensure_egress do
+    with {:error, why} <- Egress.verify() do
+      Logger.warning("egress ruleset not in place, reinstalling: #{why}")
+
+      case Egress.install() do
+        :ok -> :ok
+        {:error, install_why} -> Logger.error("egress install failed: #{install_why}")
+      end
+
+      with {:error, why} <- Egress.verify() do
+        Logger.error("egress ruleset still not in place; not claiming: #{why}")
+        {:error, why}
+      end
     end
   end
 
@@ -134,8 +158,12 @@ defmodule NccAgent.Slot do
   end
 
   defp egress_missing(req) do
-    _ = Client.status(req, "missing", 0)
-    {:error, :egress_missing}
+    case Client.status(req, "missing", 0) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("reporting egress missing: #{inspect(reason)}")
+    end
+
+    :egress_missing
   end
 
   defp start(req, claim) do
