@@ -82,4 +82,22 @@ defmodule Portal.Builders.RevokeTest do
 
     assert job.meta["sweep_id"] == sweep_id
   end
+
+  test "a revoke retried after only the status was written still revokes and rebuilds", %{
+    builder: builder
+  } do
+    mine = ingest!("jason", "1.4.4", builder.id)
+
+    revoked =
+      builder |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update!(domain: Builders)
+
+    assert {:ok, %{runs_revoked: 1, packages: ["jason"], sweep_id: sweep_id, builder: again}} =
+             Builders.revoke(revoked)
+
+    assert is_binary(sweep_id)
+    assert again.revoked_at == revoked.revoked_at
+    assert %Run{revoked_at: %DateTime{}} = Ash.get!(Run, mine.id, domain: Portal.Catalog)
+    assert [job] = all_enqueued(worker: Portal.Workers.Backfill)
+    assert job.args["pin_local"] == true
+  end
 end

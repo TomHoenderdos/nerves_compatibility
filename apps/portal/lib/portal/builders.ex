@@ -206,11 +206,12 @@ defmodule Portal.Builders do
     end
   end
 
+  # Every live row of the builder, not just the one matching the caller's
+  # struct: two renewals racing on the same stale struct would otherwise leave
+  # the loser's certificate unsuperseded, and valid, for good.
   defp supersede_current(builder) do
     BuilderCertificate
-    |> Ash.Query.filter(
-      builder_id == ^builder.id and fingerprint == ^builder.fingerprint and is_nil(superseded_at)
-    )
+    |> Ash.Query.filter(builder_id == ^builder.id and is_nil(superseded_at))
     |> Ash.read!(domain: __MODULE__)
     |> Enum.reduce_while(:ok, fn cert, :ok ->
       case cert |> Ash.Changeset.for_update(:supersede, %{}) |> Ash.update(domain: __MODULE__) do
@@ -306,13 +307,10 @@ defmodule Portal.Builders do
   def revoke_preview(%Builder{} = builder) do
     runs = open_runs(builder, load: :package)
 
-    %{
-      runs: length(runs),
-      packages: runs |> Enum.map(& &1.package.name) |> Enum.uniq() |> Enum.sort()
-    }
+    %{runs: length(runs), packages: package_names(runs)}
   end
 
-  defp open_runs(%Builder{id: id}, opts \\ []) do
+  defp open_runs(%Builder{id: id}, opts) do
     Run
     |> Ash.Query.filter(builder_id == ^id and is_nil(revoked_at))
     |> Ash.Query.load(Keyword.get(opts, :load, []))
@@ -335,27 +333,47 @@ defmodule Portal.Builders do
            }}
           | {:error, term()}
   def revoke(%Builder{} = builder) do
-    %{packages: packages} = revoke_preview(builder)
+    # The status is committed on its own and first, so the builder is shut out
+    # even if what follows fails. The rest is one transaction: if any run
+    # revoke or the rebuild enqueue fails, nothing of it sticks and a retry
+    # still finds the runs open and their packages to rebuild. The package
+    # names come from the runs revoked here, not from an earlier preview, so a
+    # run ingested in between is rebuilt too.
+    with {:ok, builder} <- mark_revoked(builder) do
+      Repo.transaction(fn ->
+        runs = open_runs(builder, load: :package)
+        Enum.each(runs, &revoke_run!/1)
+        requeue_leases(builder)
+        packages = package_names(runs)
 
-    with {:ok, builder} <- update(builder, :revoke, %{}) do
-      runs_revoked =
-        builder
-        |> open_runs()
-        |> Enum.count(fn run ->
-          match?(
-            {:ok, _},
-            run |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update(domain: Portal.Catalog)
-          )
-        end)
+        case rebuild(packages, builder) do
+          {:ok, sweep_id} ->
+            %{
+              builder: builder,
+              runs_revoked: length(runs),
+              packages: packages,
+              sweep_id: sweep_id
+            }
 
-      requeue_leases(builder)
-
-      with {:ok, sweep_id} <- rebuild(packages, builder) do
-        {:ok,
-         %{builder: builder, runs_revoked: runs_revoked, packages: packages, sweep_id: sweep_id}}
-      end
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+      end)
     end
   end
+
+  # A retry after a failed revoke keeps the original `revoked_at`.
+  defp mark_revoked(%Builder{status: :revoked} = builder), do: {:ok, builder}
+  defp mark_revoked(builder), do: update(builder, :revoke, %{})
+
+  defp revoke_run!(run) do
+    case run |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update(domain: Portal.Catalog) do
+      {:ok, _} -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp package_names(runs), do: runs |> Enum.map(& &1.package.name) |> Enum.uniq() |> Enum.sort()
 
   defp requeue_leases(builder) do
     Repo.update_all(
