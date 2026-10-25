@@ -38,7 +38,7 @@ defmodule Compatibility.Builder.Argv do
           required(:paths) => paths(),
           required(:nerves_cache_mode) => nerves_cache_mode(),
           optional(:cpus) => String.t() | number() | nil,
-          optional(:memory) => String.t() | nil,
+          optional(:memory) => String.t() | number() | nil,
           optional(:build_concurrency) => String.t() | pos_integer() | nil
         }
 
