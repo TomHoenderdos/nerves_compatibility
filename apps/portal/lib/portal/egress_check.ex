@@ -2,13 +2,16 @@ defmodule Portal.EgressCheck do
   @moduledoc """
   The per-host egress check (isolation spec, section 3; `ops/README.md`,
   "Egress filter"), run on a build host after a deploy that touches the
-  filter. It passes only when all three hold:
+  filter. It passes only when all four hold:
 
   1. `Portal.Builder.check_egress/0` passes: the filter is loaded.
   2. A bare worker-image container cannot open a TCP connection to any target.
   3. A real build of `jason` (pure Elixir: a host compile, no firmware) cannot
      either: the worker probes every target before `deps.get`
      (`NccWorker.EgressProbe`) and reports it in `result.json.egress_probe`.
+  4. That build itself succeeds: exit code 0 and every system `pass`. The
+     probe runs before `deps.get`, so a filter that also breaks DNS or 443
+     would block every target and still fail every honest build.
 
   A target is blocked when the connect timed out (the filter drops it) or had
   no route (IPv6 in a namespace without one). `connected` and `refused` both
@@ -24,12 +27,17 @@ defmodule Portal.EgressCheck do
   @package "jason"
   @version "1.4.4"
   @blocked ["timeout", "unreachable"]
+  @probe_exit "ncc-egress-probe-exit="
+  # Connects within 3 s, then prints its own exit status (124: timed out).
+  @bare_script ~S|timeout 3 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$0" "$1"; s=$?; echo "| <>
+                 @probe_exit <> ~S|$s"; exit "$s"|
 
   @type target :: %{String.t() => String.t() | pos_integer()}
   @type report :: %{
           preflight: :ok | {:error, term()},
           bare: [map()],
           build: [map()] | {:error, term()},
+          build_result: :pass | {:error, String.t()},
           ok?: boolean()
         }
 
@@ -89,13 +97,16 @@ defmodule Portal.EgressCheck do
   def run(targets, deps \\ default_deps()) do
     preflight = deps.preflight.()
     bare = Enum.map(targets, &Map.put(&1, "outcome", deps.bare.(&1)))
-    build = probe_build(targets, deps)
+    {build, build_result} = probe_build(targets, deps)
 
     %{
       preflight: preflight,
       bare: bare,
       build: build,
-      ok?: preflight == :ok and all_blocked?(bare) and all_blocked?(build)
+      build_result: build_result,
+      ok?:
+        preflight == :ok and all_blocked?(bare) and all_blocked?(build) and
+          build_result == :pass
     }
   end
 
@@ -113,6 +124,7 @@ defmodule Portal.EgressCheck do
         &"bare container -> #{&1["address"]}:#{&1["port"]}: #{&1["outcome"]}"
       ),
       build_lines(report.build),
+      build_result_line(report.build_result),
       if(report.ok?, do: "egress check PASSED", else: "egress check FAILED")
     ]
     |> List.flatten()
@@ -124,6 +136,8 @@ defmodule Portal.EgressCheck do
   # and none of a build's other sandboxing: this checks the filter, not the
   # container hardening. `address` and `port` were validated by
   # `parse_targets/1`, and reach bash as positional arguments, never as script.
+  # The script prints its own exit status, so `bare_outcome/1` can tell a
+  # probe that ran (and timed out) from docker failing to run it at all.
   # sobelow_skip ["CI.System"]
   @spec bare_probe(target()) :: String.t()
   def bare_probe(%{"address" => address, "port" => port}) do
@@ -139,7 +153,7 @@ defmodule Portal.EgressCheck do
       "bash",
       Builder.docker_image(),
       "-c",
-      ~S|timeout 3 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$0" "$1"|,
+      @bare_script,
       address,
       Integer.to_string(port)
     ]
@@ -148,11 +162,23 @@ defmodule Portal.EgressCheck do
   end
 
   @doc false
+  # Only the probe's own exit line, matching docker's exit status, says the
+  # probe ran; without it docker failed (no image, no daemon, a container
+  # that never started), and nothing docker said counts as a drop.
   @spec bare_outcome({String.t(), non_neg_integer()}) :: String.t()
-  def bare_outcome({_out, 0}), do: "connected"
-  def bare_outcome({_out, 124}), do: "timeout"
+  def bare_outcome({out, status}) do
+    probed = Integer.to_string(status)
 
-  def bare_outcome({out, _status}) do
+    case Regex.run(~r/^#{@probe_exit}(\d+)$/m, out) do
+      [_, ^probed] -> probe_outcome(status, out)
+      _ -> "error: the probe did not run: " <> String.trim(out)
+    end
+  end
+
+  defp probe_outcome(0, _out), do: "connected"
+  defp probe_outcome(124, _out), do: "timeout"
+
+  defp probe_outcome(_status, out) do
     cond do
       out =~ "Connection refused" -> "refused"
       out =~ ~r/unreachable|No route to host/i -> "unreachable"
@@ -172,13 +198,31 @@ defmodule Portal.EgressCheck do
     end
   end
 
-  defp build_outcomes({:ok, %{result: %{"egress_probe" => outcomes}}}) when is_list(outcomes),
-    do: outcomes
+  defp build_outcomes({:ok, %{result: %{"egress_probe" => outcomes}} = build})
+       when is_list(outcomes),
+       do: {outcomes, build_result(build)}
 
-  defp build_outcomes({:ok, %{exit_code: code}}),
-    do: {:error, "the build exited #{code} without an egress_probe in result.json"}
+  defp build_outcomes({:ok, %{exit_code: code}}) do
+    reason = "the build exited #{code} without an egress_probe in result.json"
+    {{:error, reason}, {:error, reason}}
+  end
 
-  defp build_outcomes({:error, reason}), do: {:error, reason}
+  defp build_outcomes({:error, reason}), do: {{:error, reason}, {:error, inspect(reason)}}
+
+  # Exit 0 and a host compile among the systems, every one of them `pass`.
+  defp build_result(%{exit_code: 0, result: result}) do
+    statuses =
+      case result["systems"] do
+        %{} = systems -> Map.new(systems, fn {name, system} -> {name, system["status"]} end)
+        _ -> %{}
+      end
+
+    if Map.has_key?(statuses, "host") and Enum.all?(statuses, &match?({_, "pass"}, &1)),
+      do: :pass,
+      else: {:error, "the build exited 0 but its systems are #{inspect(statuses)}"}
+  end
+
+  defp build_result(%{exit_code: code}), do: {:error, "the build exited #{code}"}
 
   defp all_blocked?([_ | _] = outcomes), do: Enum.all?(outcomes, &blocked?(&1["outcome"]))
   defp all_blocked?(_outcomes), do: false
@@ -191,6 +235,9 @@ defmodule Portal.EgressCheck do
       )
 
   defp build_lines({:error, reason}), do: ["build #{@package} #{@version}: #{inspect(reason)}"]
+
+  defp build_result_line(:pass), do: "build #{@package} #{@version}: exit 0, every system pass"
+  defp build_result_line({:error, reason}), do: "build #{@package} #{@version}: FAILED, #{reason}"
 
   defp default_deps do
     %{
