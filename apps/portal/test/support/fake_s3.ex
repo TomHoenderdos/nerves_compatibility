@@ -44,7 +44,9 @@ defmodule Portal.Test.FakeS3 do
   @spec start(keyword()) :: {:ok, s()}
   def start(_opts \\ []) do
     {:ok, agent} =
-      Agent.start_link(fn -> %{objects: %{}, fault: nil, on_get: nil, requests: []} end)
+      Agent.start_link(fn ->
+        %{objects: %{}, fault: nil, on_get: nil, on_list: nil, requests: []}
+      end)
 
     plug_opts = %{
       agent: agent,
@@ -112,6 +114,9 @@ defmodule Portal.Test.FakeS3 do
 
   @doc "`fun.(key)` runs before each GET is answered; nil clears it."
   def on_get(%{agent: agent}, fun), do: Agent.update(agent, &%{&1 | on_get: fun})
+
+  @doc "`fun.(prefix)` runs before each listing page is answered; nil clears it."
+  def on_list(%{agent: agent}, fun), do: Agent.update(agent, &%{&1 | on_list: fun})
 
   @doc "Every request the stub saw, oldest first, listing GETs included."
   def requests(%{agent: agent}), do: agent |> Agent.get(& &1.requests) |> Enum.reverse()
@@ -225,6 +230,8 @@ defmodule Portal.Test.FakeS3.Plug do
   defp object(conn, _opts, _method, _key), do: error(conn, 400, "InvalidRequest")
 
   defp list(conn, %{agent: agent}, q) do
+    if fun = Agent.get(agent, & &1.on_list), do: fun.(q["prefix"])
+
     case fault(agent) do
       {:list, :status, n} -> error(conn, n, "InternalError")
       fault -> list_page(conn, agent, q, fault)

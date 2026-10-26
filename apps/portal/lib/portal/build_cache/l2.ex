@@ -200,6 +200,13 @@ defmodule Portal.BuildCache.L2 do
     e ->
       Logger.warning("Build cache L2 prefetch of #{slug} raised: #{Exception.message(e)}")
       %{Prefetch.empty_counts() | failed: 1}
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "Build cache L2 prefetch of #{slug} exited: #{inspect(reason, printable_limit: 200)}"
+      )
+
+      %{Prefetch.empty_counts() | failed: 1}
   end
 
   @spec log_state() :: :ok
