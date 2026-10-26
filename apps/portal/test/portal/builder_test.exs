@@ -572,15 +572,70 @@ defmodule Portal.BuilderTest do
       assert log =~ "not egress-filtered"
     end
 
-    test "boot_egress_check/0 reports a missing filter", %{previous: previous} do
-      put_builder([egress_check: true, egress_filter_probe: fn -> {:error, :nope} end], previous)
+    # A probe that answers `answers` in turn, then the last one forever.
+    defp probe_answering(answers) do
+      {:ok, calls} = Agent.start_link(fn -> answers end)
+      on_exit(fn -> if Process.alive?(calls), do: Agent.stop(calls) end)
+
+      test = self()
+
+      fn ->
+        send(test, :probed)
+
+        Agent.get_and_update(calls, fn
+          [answer] -> {answer, [answer]}
+          [answer | rest] -> {answer, rest}
+        end)
+      end
+    end
+
+    test "boot_egress_check/1 reports a filter still missing after its retries",
+         %{previous: previous} do
+      test = self()
+
+      probe = fn ->
+        send(test, :probed)
+        {:error, :nope}
+      end
+
+      put_builder([egress_check: true, egress_filter_probe: probe], previous)
 
       log =
         capture_log(fn ->
-          assert {:error, :egress_filter_missing} = Builder.boot_egress_check()
+          assert {:error, :egress_filter_missing} =
+                   Builder.boot_egress_check(attempts: 3, interval_ms: 0)
         end)
 
       assert log =~ "Build egress filter missing"
+      # Once, after the last attempt, not on every retry.
+      assert length(String.split(log, "Build egress filter missing")) == 2
+
+      for _ <- 1..3, do: assert_received(:probed)
+      refute_received :probed
+    end
+
+    # At boot the portal usually comes up before the rootless daemon and its
+    # ExecStartPost loader do.
+    test "boot_egress_check/1 waits for a daemon that loads the filter after boot",
+         %{previous: previous} do
+      probe = probe_answering([{:error, :no_child_pid}, {:error, :no_child_pid}, :ok])
+      put_builder([egress_check: true, egress_filter_probe: probe], previous)
+
+      log =
+        capture_log(fn ->
+          assert :ok = Builder.boot_egress_check(attempts: 5, interval_ms: 10)
+        end)
+
+      # Stops at the first :ok.
+      for _ <- 1..3, do: assert_received(:probed)
+      refute_received :probed
+      # The "is loaded" line is info, below the test log level.
+      refute log =~ "Build egress filter missing"
+    end
+
+    test "boot_egress_check/1 retries for a minute by default", %{previous: previous} do
+      put_builder([egress_check: true], previous)
+      assert Builder.boot_egress_retry() == {13, 5_000}
     end
   end
 
