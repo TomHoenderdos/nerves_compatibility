@@ -80,14 +80,16 @@ on top of main's warm request), `apps/portal/lib/portal/workers/ingest.ex`
 ## Gates
 
 Run from the umbrella root on OTP 28.5.0.8 / Elixir 1.20.0 / PostgreSQL 17.4
-(the CI versions), after the three follow-up commits above:
+(the CI versions). The matrix ran four times: after the rebase and
+reconciliation, after the review fixes, after the re-review follow-ups and
+on the final commit. The final run, on the tree this branch ends with:
 
 | Gate | Result |
 | --- | --- |
 | `mix format --check-formatted` | exit 0 |
-| `mix compile --warnings-as-errors --force` | exit 0 (first run exit 1: `defp route/4` clauses split by a helper in `test/support/fake_portal.ex`; fixed in `5aca9f5`) |
-| `mix credo` | exit 0, "3999 mods/funs, found no issues" |
-| `mix test` | exit 0: compatibility 24, ncc_worker 270, portal 1616 (9 excluded: `:integration`, `:e2e`), ncc_agent 86; all passed |
+| `mix compile --warnings-as-errors --force` | exit 0 |
+| `mix credo` | exit 0, "4040 mods/funs, found no issues" |
+| `mix test` | exit 0: compatibility 24, ncc_worker 270, portal 1627 (9 excluded: `:integration`, `:e2e`), ncc_agent 97; all passed |
 | `mix sobelow --root apps/portal --private --skip --strict --exit low` | exit 0 |
 | `mix sobelow --root apps/ncc_worker --no-router --private --skip --strict --exit low` | exit 0 |
 | `mix sobelow --root apps/compatibility --private --skip --strict --exit low` | exit 0 |
@@ -95,9 +97,15 @@ Run from the umbrella root on OTP 28.5.0.8 / Elixir 1.20.0 / PostgreSQL 17.4
 | `mix do deps.loadpaths + deps.audit` | exit 0, "No vulnerabilities found" |
 | `mix hex.audit` | exit 0, "No retired or security advisory packages found" |
 | `bash -n` on every `ops/*.sh` and `apps/ncc_agent/priv/egress.sh` | all parse |
-| `shellcheck ops/*.sh apps/ncc_agent/priv/egress.sh` | exit 0 |
+| `shellcheck -x ops/*.sh apps/ncc_agent/priv/egress.sh` | exit 0 |
 | `python3 -m unittest discover -s ops -p 'test_*.py'` | 56 tests OK (1 skipped) |
 | `make test-remote-e2e` (real `ncc_agent` process, fake docker, tag `:e2e`) | 1 passed |
+
+Earlier runs caught, and the commits fixed: a `defp route/4` split by a
+helper in the agent's fake portal (forced compile, exit 1); two credo
+refactoring findings in the CA and the enrolment controller and one
+`Enum.count/2` in a test (credo exit 8 and 16); a LiveView test that
+expected a remote requeue button for a non-Hex-dep rejection.
 
 Not run: `make test-integration` and `make test-remote-integration` (need
 Docker and the `ncc-worker:local` image; this box has neither). Run them
