@@ -12,11 +12,13 @@ defmodule Portal.BuildCache.L2.ClientTest do
     %{s: s, cfg: s.config, tmp: tmp}
   end
 
-  test "put, head, get round trip with the sha metadata", %{cfg: cfg, tmp: tmp} do
+  test "put, head, get round trip with the sha metadata", %{s: s, cfg: cfg, tmp: tmp} do
     src = Path.join(tmp, "src")
     File.write!(src, "hello")
     sha = :crypto.hash(:sha256, "hello") |> Base.encode16(case: :lower)
     assert :ok = Client.put(cfg, "slug/k.tar.gz", src, sha)
+    assert {:ok, %{meta: meta}} = FakeS3.get_object(s, "slug/k.tar.gz")
+    assert meta["x-amz-meta-sha256"] == sha
     assert {:ok, %{size: 5, sha256: ^sha}} = Client.head(cfg, "slug/k.tar.gz")
     dst = Path.join(tmp, "dst")
 
@@ -50,17 +52,36 @@ defmodule Portal.BuildCache.L2.ClientTest do
     FakeS3.put_object(s, "slug/slow", "body", %{})
     FakeS3.on_get(s, fn _ -> Process.sleep(500) end)
 
-    assert {:error, :timeout} =
-             Client.get(cfg, "slug/slow", Path.join(tmp, "dst"), timeout_ms: 50)
+    dst = Path.join(tmp, "dst")
+    assert {:error, :timeout} = Client.get(cfg, "slug/slow", dst, timeout_ms: 50)
+    refute File.exists?(dst)
   end
 
   test "a non-2xx is reported by status", %{s: s, cfg: cfg, tmp: tmp} do
     FakeS3.put_object(s, "slug/k", "body", %{})
     FakeS3.set_fault(s, {:get, :status, 500})
-    assert {:error, {:status, 500}} = Client.get(cfg, "slug/k", Path.join(tmp, "dst"), [])
+    dst = Path.join(tmp, "dst")
+    assert {:error, {:status, 500}} = Client.get(cfg, "slug/k", dst, [])
+    refute File.exists?(dst)
     FakeS3.set_fault(s, {:put, :status, 503})
     File.write!(Path.join(tmp, "src"), "x")
     assert {:error, {:status, 503}} = Client.put(cfg, "slug/k", Path.join(tmp, "src"), "sha")
+  end
+
+  test "a write failure comes back as an error and the caller survives", %{
+    s: s,
+    cfg: cfg,
+    tmp: tmp
+  } do
+    FakeS3.put_object(s, "slug/k", "body", %{})
+    # A directory cannot be opened for writing, so the failure is in the task.
+    assert {:error, _} = Client.get(cfg, "slug/k", tmp, [])
+    assert File.dir?(tmp)
+
+    # /dev/full accepts the open and fails every write with ENOSPC, inside the task.
+    if File.exists?("/dev/full") do
+      assert {:error, {:exception, _}} = Client.get(cfg, "slug/k", "/dev/full", [])
+    end
   end
 
   test "list pages through the prefix and parses size and time", %{s: s, cfg: cfg} do

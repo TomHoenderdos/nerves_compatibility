@@ -48,13 +48,20 @@ defmodule Portal.BuildCache.L2.Client do
   # sobelow_skip ["Traversal.FileModule"]
   defp do_get(cfg, object, path, max_bytes) do
     with {:ok, io} <- File.open(path, [:write, :binary, :raw]) do
-      result =
-        Req.get(req(cfg, receive_timeout: 60_000, into: collector(io, max_bytes)),
-          url: object_url(cfg, object)
-        )
+      try do
+        result =
+          Req.get(req(cfg, receive_timeout: 60_000, into: collector(io, max_bytes)),
+            url: object_url(cfg, object)
+          )
 
-      File.close(io)
-      finish_get(result, path)
+        finish_get(result, path)
+      rescue
+        e -> remove(path, {:error, {:exception, Exception.message(e)}})
+      catch
+        :exit, reason -> remove(path, {:error, {:exit, reason}})
+      after
+        File.close(io)
+      end
     end
   end
 
@@ -118,9 +125,9 @@ defmodule Portal.BuildCache.L2.Client do
     result
   end
 
+  @spec put(Config.t(), String.t(), Path.t(), String.t()) :: :ok | {:error, term()}
   # `path` is the tarball `Portal.BuildCache.L2.Tarball.pack/3` just wrote.
   # sobelow_skip ["Traversal.FileModule"]
-  @spec put(Config.t(), String.t(), Path.t(), String.t()) :: :ok | {:error, term()}
   def put(cfg, object, path, sha256) do
     with {:ok, body} <- File.read(path) do
       case Req.put(req(cfg, receive_timeout: 120_000),
