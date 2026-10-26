@@ -237,7 +237,11 @@ recover_chain() {
 
   "$bin" -w 10 -S "$new" >/dev/null 2>&1 || return 0
 
-  if "$bin" -w 10 -S "$parent" | grep -qF -- "-j $new"; then
+  # Read first, grep after: with pipefail a `grep -q` that closes the pipe
+  # early would fail the pipeline and send a live chain down the else branch.
+  local parent_rules
+  parent_rules="$("$bin" -w 10 -S "$parent" 2>/dev/null || true)"
+  if grep -qF -- "-j $new" <<<"$parent_rules"; then
     echo "egress: finishing a swap to $new an earlier install left behind"
     remove_jumps "$bin" "$parent" "$chain" "$@"
     drop_chain "$bin" "$chain"
@@ -316,6 +320,7 @@ dns_accept() {
 verify_chain() {
   local bin="$1" parent="$2" chain="$3" terminal="$4" jumps_var="$5"
   shift 5
+  # A nameref: bash 4.3+ (Ubuntu 24.04 ships 5.2).
   local -n jumps="$jumps_var"
   local parent_rules rules rest expected rule line jump
 

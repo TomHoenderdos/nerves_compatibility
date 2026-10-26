@@ -132,7 +132,7 @@ defmodule NccAgent.EgressTest do
     assert :ok = Egress.verify()
     calls = dir |> Path.join("log") |> File.read!() |> String.split("\n", trim: true)
     # The live NEW chain was renamed into place, never flushed.
-    assert Enum.count(calls, &(&1 =~ ~r/-F NCC-EGRESS-NEW$/)) == 0
+    refute Enum.any?(calls, &(&1 =~ ~r/-F NCC-EGRESS-NEW$/))
     assert Enum.count(calls, &(&1 =~ ~r/-E NCC-EGRESS-NEW NCC-EGRESS$/)) == 2
 
     assert File.read!(Path.join(state, "DOCKER-USER")) ==
