@@ -327,3 +327,12 @@ has the commands and unit files.
 10. **Turn remote building on** (`remote_mode` auto or on, backlog
     threshold) and, after inspecting the first runs, flip `publishing` per
     builder.
+
+## Landed
+
+Rebased once more onto main `c4e2728` on 2026-10-26, after
+`feat/makeflags-libnl` landed there. The branch's own MAKEFLAGS commit was
+dropped: `Compatibility.Builder.Argv` is main's module (which now carries
+`MAKEFLAGS=-j<quota>` itself) plus the two name helpers `safe_name/1` and
+`container_name/1` the agent uses, and the argv fixture and parity tests are
+main's. The gate matrix was run again on the result before landing.
