@@ -295,6 +295,15 @@ defmodule Portal.BuilderTest do
     test "a normal build sends no toolchain" do
       refute Map.has_key?(Builder.worker_input(@input_job), "toolchain")
     end
+
+    test "carries egress probe targets when given, and nothing otherwise" do
+      targets = [%{"address" => "100.126.79.115", "port" => 5432}]
+
+      assert Builder.worker_input(Map.put(@input_job, :egress_probe, targets))["egress_probe"] ==
+               targets
+
+      refute Map.has_key?(Builder.worker_input(@input_job), "egress_probe")
+    end
   end
 
   # The container's root filesystem is the image: a build that writes outside

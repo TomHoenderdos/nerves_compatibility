@@ -108,6 +108,28 @@ cd /var/lib/ncc && sudo -u ncc -H env RELEASE_TMP=/var/lib/ncc/tmp bash -c \
   'set -a; . /etc/ncc-portal/portal.env; set +a; /opt/nerves_compatibility/portal/bin/portal rpc "IO.inspect(Portal.Builder.check_egress())"'
 ```
 
+### Checking a host
+
+Repeat after every deploy that changes the filter, on every build host. It
+needs the web host's Postgres address over v4 and v6 (`tailscale ip -4` and
+`tailscale ip -6` on the web host; Postgres listens on the v4 one), and takes a
+few minutes because it runs one real build of `jason`. As root:
+
+```bash
+cd /tmp && sudo -u ncc bash -c '
+  cd /var/lib/ncc
+  set -a; . /etc/ncc-portal/portal.env; set +a
+  export DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/$(id -u)/docker.sock}"
+  export NCC_EGRESS_PROBE="WEB_V4:5432,[WEB_V6]:5432"
+  exec timeout 30m /opt/nerves_compatibility/portal/bin/portal eval "Portal.EgressCheck.main()"
+'
+```
+
+It prints the preflight, a bare container's outcome per target and the build
+worker's (`result.json` `egress_probe`), then `egress check PASSED` (exit 0)
+when the filter is loaded and every target timed out or had no route.
+`connected` or `refused` for any target is a failure: the packet got through.
+
 ### Rollback
 
 1. Add `NCC_EGRESS_CHECK=0` to `/etc/ncc-portal/portal.env` and
