@@ -3,10 +3,14 @@ defmodule PortalWeb.Admin.MaintenanceLive do
   Admin Maintenance tab: the hex.pm update check, bulk rebuilds with their
   sweeps in a Cinder table, precompiled signing and the toolchain backlog.
 
-  The sweeps follow along live: `Portal.BulkRebuild` announces a sweep that
-  starts or is cancelled, and `Portal.AdminEvents.SweepTelemetry` each sweep
-  job attempt Oban records, on `Portal.AdminEvents`' `:sweeps` topic. The
-  table refetches at most once per throttle window, so a sweep of thousands
+  The sweeps' counts follow along live from two `Portal.AdminEvents` topics.
+  On `:sweeps`, `Portal.BulkRebuild` announces a sweep that starts or is
+  cancelled, and `Portal.AdminEvents.SweepTelemetry` each sweep job attempt
+  Oban records. On `:builders`, `Portal.Builders.Leases` announces each
+  lease state change: a remote build's job completes once it has written its
+  lease, so from then on `Portal.BulkRebuild.status/1` counts it by that
+  lease alone. Both topics share one throttle window, so the table refetches
+  at most once per window however the events mix, and a sweep of thousands
   of jobs costs two refreshes a second, not thousands.
 
   Each click and each bulk action re-runs the admin policy against a freshly
@@ -28,7 +32,10 @@ defmodule PortalWeb.Admin.MaintenanceLive do
 
   @impl true
   def mount(_params, session, socket) do
-    if connected?(socket), do: Portal.AdminEvents.subscribe(:sweeps)
+    if connected?(socket) do
+      Portal.AdminEvents.subscribe(:sweeps)
+      Portal.AdminEvents.subscribe(:builders)
+    end
 
     user_id = session["user_id"]
     login_method = session["login_method"]
@@ -41,6 +48,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
        user_id: user_id,
        login_method: login_method,
        bulk_targets: BulkRebuild.targets(),
+       counts_version: 0,
        # Newest first, as `Portal.BulkRebuild.recent/1` listed them. Cinder
        # takes the query's sort as the table's default and drops it once a
        # header sort is chosen.
@@ -152,16 +160,19 @@ defmodule PortalWeb.Admin.MaintenanceLive do
     end
   end
 
+  # A lease change is throttled under `:sweeps` too, so a lease storm and a
+  # job storm share one window and its single trailing
+  # `{:admin_refresh, :sweeps}`.
   @impl true
-  def handle_info({:admin_changed, :sweeps}, socket) do
+  def handle_info({:admin_changed, topic}, socket) when topic in [:sweeps, :builders] do
     case Portal.AdminEvents.throttle(socket, :sweeps) do
-      {:refresh, socket} -> {:noreply, Cinder.refresh_tables(socket, @tables)}
+      {:refresh, socket} -> {:noreply, refresh_sweeps(socket)}
       {:skip, socket} -> {:noreply, socket}
     end
   end
 
   def handle_info({:admin_refresh, :sweeps}, socket),
-    do: {:noreply, Cinder.refresh_tables(socket, @tables)}
+    do: {:noreply, refresh_sweeps(socket)}
 
   # Cinder sends the action's own `{:ok, result}` unwrapped, as `result`.
   # Cancelling cannot refuse a sweep, so this reads as the single cancel does.
@@ -233,8 +244,19 @@ defmodule PortalWeb.Admin.MaintenanceLive do
     {:noreply, socket |> put_flash(:error, flash) |> redirect(to: to)}
   end
 
+  # Cinder renders its rows with a `:for`, and LiveView re-renders only the
+  # rows whose record changed. A sweep's row is the same `BulkSweep` before
+  # and after its jobs move, so a refetch alone leaves `sweep_counts/1`'s
+  # numbers as they were. The counter goes into the counts cell, which makes
+  # every row re-render, and so re-read its status, on each refresh.
+  defp refresh_sweeps(socket) do
+    socket
+    |> update(:counts_version, &(&1 + 1))
+    |> Cinder.refresh_tables(@tables)
+  end
+
   defp done(socket, kind, message) do
-    {:noreply, socket |> put_flash(kind, message) |> Cinder.refresh_tables(@tables)}
+    {:noreply, socket |> put_flash(kind, message) |> refresh_sweeps()}
   end
 
   @impl true
@@ -424,7 +446,9 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               >
                 {what_label(s)}
               </:col>
-              <:col :let={s} label="Counts"><.sweep_counts sweep={s} /></:col>
+              <:col :let={s} label="Counts">
+                <.sweep_counts sweep={s} version={@counts_version} />
+              </:col>
               <:col :let={s} label="">
                 <span :if={s.cancelled_at} class="text-base-content/50">Cancelled</span>
                 <button
@@ -594,6 +618,8 @@ defmodule PortalWeb.Admin.MaintenanceLive do
   ]
 
   attr :sweep, :any, required: true
+  # Unused in the markup; see `refresh_sweeps/1`.
+  attr :version, :integer, required: true
 
   # One `Portal.BulkRebuild.status/1` per row, so at most a page's worth (10)
   # per refresh. Remaining is the one number that is exact, so it stands out,

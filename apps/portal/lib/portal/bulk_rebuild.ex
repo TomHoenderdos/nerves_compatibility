@@ -337,8 +337,8 @@ defmodule Portal.BulkRebuild do
 
   @doc """
   Cancels the sweep's Backfill and Build jobs that have not started, and
-  stamps the sweep's `cancelled_at`. Jobs already executing finish. Returns
-  how many jobs were cancelled.
+  stamps the sweep's `cancelled_at` when there were any. Jobs already
+  executing finish. Returns how many jobs were cancelled.
 
   The scan requests those jobs opened are not touched here:
   `Portal.Workers.RequestSync` deletes a sweep's requests: a finished one a
@@ -386,7 +386,11 @@ defmodule Portal.BulkRebuild do
         )
       )
 
-    with {:ok, sweep} <- Ash.get(BulkSweep, sweep_id, domain: Portal.Catalog) do
+    # Stamped only when something was stopped: a sweep that had already
+    # finished keeps its record as finished rather than reading as cancelled
+    # for good after a stray click.
+    with true <- n > 0,
+         {:ok, sweep} <- Ash.get(BulkSweep, sweep_id, domain: Portal.Catalog) do
       sweep |> Ash.Changeset.for_update(:cancel, %{}) |> Ash.update!(domain: Portal.Catalog)
     end
 

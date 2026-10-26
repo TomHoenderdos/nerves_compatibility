@@ -136,6 +136,21 @@ defmodule Portal.BulkRebuildTest do
     assert all_enqueued(worker: Portal.Workers.Backfill) == []
   end
 
+  test "cancelling a sweep with nothing waiting leaves it uncancelled" do
+    {:ok, %{sweep_id: id}} = BulkRebuild.run(limit: 1, names: ["finished_sweep"])
+
+    for job <- all_enqueued(worker: Portal.Workers.Backfill) do
+      Repo.update!(Ecto.Changeset.change(job, state: "completed"))
+    end
+
+    assert {:ok, 0} = BulkRebuild.cancel(id)
+    assert [%{id: ^id, cancelled_at: nil}] = BulkRebuild.recent()
+
+    query = Ash.Query.filter_input(Portal.Catalog.BulkSweep, %{id: [in: [id]]})
+    assert {:ok, %{ok: 0}} = BulkRebuild.bulk_cancel(query, [])
+    assert [%{id: ^id, cancelled_at: nil}] = BulkRebuild.recent()
+  end
+
   # The Maintenance page's form, as `opts_from_params/2` turns it into `run/1`
   # options. Moved from the controller unchanged, so these pin what it did.
   describe "opts_from_params/2" do

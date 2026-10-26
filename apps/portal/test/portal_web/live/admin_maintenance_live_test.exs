@@ -64,8 +64,8 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
 
     test "the removed controller routes are gone", %{conn: conn} do
       for path <- [
-            ~p"/admin/update-check",
-            ~p"/admin/bulk-rebuild",
+            "/admin/update-check",
+            "/admin/bulk-rebuild",
             "/admin/bulk-rebuild/#{Ecto.UUID.generate()}/cancel"
           ] do
         assert conn |> recycle() |> post(path) |> response(404)
@@ -220,6 +220,59 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
         Portal.BulkRebuild.run(limit: 1, names: ["maint_evt"], created_by: "t")
 
       assert eventually(fn -> has_element?(view, "#sweep-#{id}-remaining") end)
+    end
+  end
+
+  describe "remote builds" do
+    # A remote build's job completes as soon as it has written its lease, so
+    # from then on only the lease moves, and a lease announces itself on
+    # `:builders`, not `:sweeps`.
+    test "a lease state change while the page is open refreshes the sweep counts",
+         %{conn: conn} do
+      {:ok, %{sweep_id: id}} =
+        Portal.BulkRebuild.run(limit: 1, names: ["remote_sweep"], created_by: "t")
+
+      request_id = Ecto.UUID.generate()
+
+      job =
+        %{package: "remote_sweep", version: "1.0.0", scan_request_id: request_id}
+        |> Portal.Workers.RemoteBuild.new(meta: %{sweep_id: id})
+        |> Oban.insert!()
+
+      Portal.Repo.update!(Ecto.Changeset.change(job, state: "completed"))
+
+      {:ok, _lease} =
+        Portal.Builders.Leases.enqueue(%{
+          package: "remote_sweep",
+          version: "1.0.0",
+          image_name: "i",
+          image_digest: "sha256:d",
+          args: %{},
+          scan_request_id: request_id
+        })
+
+      builder =
+        Portal.Builders.Builder
+        |> Ash.Changeset.for_create(:enrol, %{
+          name: "maint-builder",
+          fingerprint: "fp-maint-builder",
+          cert_pem: "p",
+          cert_expires_at: DateTime.utc_now(),
+          slots: 1,
+          enrolled_at: DateTime.utc_now()
+        })
+        |> Ash.create!(domain: Portal.Builders)
+
+      {view, _html} = live_maintenance(conn)
+      assert view |> element("#sweep-#{id}-building") |> render() =~ ~r/>\s*0\s*</
+
+      {:ok, _} = Portal.Builders.Leases.claim(builder)
+
+      assert eventually(fn ->
+               view |> element("#sweep-#{id}-building") |> render() =~ ~r/>\s*1\s*</
+             end)
+
+      render_async(view)
     end
   end
 
