@@ -80,12 +80,16 @@ defmodule Portal.BuildCache.Promotion do
        an independent file in the copy; GNU `cp -a` keeps a hardlink between
        two names inside the tree, and that is refused.
     8. Setuid, setgid, sticky and group/other write are stripped from every
-       directory and regular file in the copy, which is then renamed into
+       directory and regular file in the copy (and owner read/write, plus
+       search on a directory, is added), which is then renamed into
        place. An existing entry is never replaced. Any refusal or error
        removes the copy; `Portal.Workers.Sweep` prunes staging names
        (`Portal.BuildCache.Staging`) a crash left behind, once old enough.
        Once renamed, the entry is also offered to the shared L2 cache
-       (`Portal.BuildCache.L2`), best effort.
+       (`Portal.BuildCache.L2`), best effort, under one upload deadline per
+       call (`l2_upload_budget_ms/0`): once it passes, or once an upload
+       times out or finds the store failing, the remaining entries of the
+       call are promoted locally and not uploaded.
 
   ## Symlinks
 
@@ -109,6 +113,16 @@ defmodule Portal.BuildCache.Promotion do
   alias Compatibility.BuildCacheKey
   alias Portal.BuildCache.{L2, Staging, Tree}
 
+  @l2_upload_budget_ms 120_000
+
+  @doc """
+  The wall-clock budget for the L2 uploads of one `promote/6` call. Exposed
+  so the Oban config test can keep `Lifeline`'s `rescue_after` above a
+  build's whole worst case.
+  """
+  @spec l2_upload_budget_ms() :: pos_integer()
+  def l2_upload_budget_ms, do: @l2_upload_budget_ms
+
   @type counts :: %{
           promoted: non_neg_integer(),
           refused: non_neg_integer(),
@@ -131,7 +145,8 @@ defmodule Portal.BuildCache.Promotion do
   `fn source, staging -> :ok | {:error, term}`, and
   `opts[:staging_suffix]` pins the staging name's random suffix: seams for
   tests. `opts[:l2]` is the L2 upload called after a successful promotion
-  (`Portal.BuildCache.L2.upload/4`), or `false`.
+  (`Portal.BuildCache.L2.upload/5`, called as `fun.(dir, slug, key, package,
+  timeout_ms: remaining)`), or `false`.
   """
   @spec promote(map(), Path.t(), Path.t() | nil, String.t(), String.t(), keyword()) :: counts()
   def promote(result, out_dir, cache_dir, package, version, opts \\ [])
@@ -162,7 +177,7 @@ defmodule Portal.BuildCache.Promotion do
       targets: built_targets(systems),
       toolchain: toolchain(result),
       copy: Keyword.get_lazy(opts, :copy, fn -> default_copy(opts[:image]) end),
-      l2: Keyword.get(opts, :l2, &L2.upload/4),
+      l2: Keyword.get(opts, :l2, &L2.upload/5),
       staging_suffix:
         case opts[:staging_suffix] do
           nil -> nil
@@ -170,10 +185,21 @@ defmodule Portal.BuildCache.Promotion do
         end
     }
 
-    {counts, _hex} =
-      Enum.reduce(kept, {zero(), :unasked}, fn candidate, {counts, hex} ->
-        {outcome, hex} = consider(candidate, hex, ctx)
-        {count(counts, outcome), hex}
+    acc = %{
+      counts: zero(),
+      hex: :unasked,
+      l2: %{
+        deadline: System.monotonic_time(:millisecond) + @l2_upload_budget_ms,
+        stopped?: false,
+        logged?: false
+      }
+    }
+
+    %{counts: counts} =
+      Enum.reduce(kept, acc, fn candidate, acc ->
+        {outcome, hex} = consider(candidate, acc.hex, ctx)
+        {outcome, l2} = offer_to_l2(outcome, acc.l2, ctx)
+        %{acc | counts: count(acc.counts, outcome), hex: hex, l2: l2}
       end)
 
     log_ignored(length(extra), limit, ctx)
@@ -517,8 +543,7 @@ defmodule Portal.BuildCache.Promotion do
           "(#{show(c["target"])})"
       )
 
-      upload_to_l2(dest, key, ctx)
-      :promoted
+      {:promoted, dest, key}
     else
       error ->
         _ = File.rm_rf(staging)
@@ -527,17 +552,67 @@ defmodule Portal.BuildCache.Promotion do
   end
 
   # Best effort and after the fact: the entry is already promoted locally,
-  # and a failed or crashing upload must not change that.
-  defp upload_to_l2(_dest, _key, %{l2: false}), do: :ok
-
-  defp upload_to_l2(dest, key, %{l2: fun} = ctx) when is_function(fun, 4) do
-    _ = fun.(dest, Path.basename(ctx.cache), key, ctx.package)
-    :ok
-  rescue
-    e ->
-      Logger.warning("Build cache L2 upload of #{key} raised: #{Exception.message(e)}")
-      :ok
+  # and a failed or crashing upload must not change that. Uploads run before
+  # Ingest is enqueued, so they share one deadline per `promote/6` call, and
+  # the first upload that times out or finds the store failing ends them for
+  # the call: the remaining entries are promoted locally only.
+  defp offer_to_l2({:promoted, dest, key}, l2, ctx) do
+    {:promoted, upload_to_l2(dest, key, l2, ctx)}
   end
+
+  defp offer_to_l2(outcome, l2, _ctx), do: {outcome, l2}
+
+  defp upload_to_l2(_dest, _key, l2, %{l2: false}), do: l2
+
+  defp upload_to_l2(dest, key, l2, %{l2: fun} = ctx) when is_function(fun, 5) do
+    remaining = l2.deadline - System.monotonic_time(:millisecond)
+
+    if l2.stopped? or remaining <= 0 do
+      skip_upload(l2, key, ctx)
+    else
+      result =
+        try do
+          fun.(dest, Path.basename(ctx.cache), key, ctx.package, timeout_ms: remaining)
+        rescue
+          e ->
+            Logger.warning("Build cache L2 upload of #{key} raised: #{Exception.message(e)}")
+            {:error, {:exception, Exception.message(e)}}
+        catch
+          kind, reason ->
+            Logger.warning("Build cache L2 upload of #{key} failed: #{show({kind, reason})}")
+            {:error, {kind, reason}}
+        end
+
+      %{l2 | stopped?: upload_stops?(result)}
+    end
+  end
+
+  defp skip_upload(%{logged?: true} = l2, _key, _ctx), do: l2
+
+  defp skip_upload(l2, key, ctx) do
+    why = if l2.stopped?, do: "the store is failing", else: "the upload budget is spent"
+
+    Logger.info(
+      "Build cache L2 uploads for #{ctx.package} #{ctx.version} stopped at #{key}: #{why}; " <>
+        "the remaining entries are promoted locally only"
+    )
+
+    %{l2 | logged?: true}
+  end
+
+  @doc false
+  # Whether an upload result means the store should not be asked again in
+  # this call: a timeout, a crash, a transport error or a 5xx.
+  @spec upload_stops?(term()) :: boolean()
+  def upload_stops?({:error, reason}), do: stopping_reason?(reason)
+  def upload_stops?(_result), do: false
+
+  defp stopping_reason?(:timeout), do: true
+  defp stopping_reason?({kind, _}) when kind in [:exit, :exception, :throw], do: true
+  defp stopping_reason?({:status, status}) when is_integer(status) and status >= 500, do: true
+  defp stopping_reason?(%Req.TransportError{}), do: true
+  defp stopping_reason?(%Mint.TransportError{}), do: true
+  defp stopping_reason?(_reason), do: false
 
   defp not_promoted(key, ctx, error) do
     Logger.warning(

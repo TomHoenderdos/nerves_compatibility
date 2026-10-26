@@ -4,6 +4,8 @@ defmodule Portal.ObanConfigTest do
   """
   use ExUnit.Case, async: true
 
+  alias Portal.BuildCache.L2.Prefetch
+  alias Portal.BuildCache.Promotion
   alias Portal.Builder
 
   defp plugins, do: Application.get_env(:portal, Oban)[:plugins]
@@ -18,6 +20,12 @@ defmodule Portal.ObanConfigTest do
     # rescued while still executing — a second container and a second
     # multi-gigabyte scratch tree for work already in flight.
     assert opts[:rescue_after] > Builder.total_timeout_ms()
+
+    # The job also spends, outside the container's wall clock, the L2
+    # prefetch before it and the L2 uploads after it, each under a budget of
+    # its own. Rescue must wait out all three.
+    assert opts[:rescue_after] >
+             Builder.total_timeout_ms() + Prefetch.budget_ms() + Promotion.l2_upload_budget_ms()
   end
 
   test "the sweeper is scheduled, and on a queue the build host actually runs" do

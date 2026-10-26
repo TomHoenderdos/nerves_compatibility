@@ -57,6 +57,21 @@ defmodule Portal.BuildCache.L2.ClientTest do
     refute File.exists?(dst)
   end
 
+  @tag :capture_log
+  test "put is bounded in total time", %{s: s, cfg: cfg, tmp: tmp} do
+    File.write!(Path.join(tmp, "src"), "x")
+    FakeS3.set_fault(s, {:put, :hang})
+
+    {micros, result} =
+      :timer.tc(fn ->
+        Client.put(cfg, "slug/k", Path.join(tmp, "src"), "sha", timeout_ms: 200)
+      end)
+
+    assert {:error, :timeout} = result
+    assert micros < 1_000_000
+    assert Process.alive?(self())
+  end
+
   test "a non-2xx is reported by status", %{s: s, cfg: cfg, tmp: tmp} do
     FakeS3.put_object(s, "slug/k", "body", %{})
     FakeS3.set_fault(s, {:get, :status, 500})
