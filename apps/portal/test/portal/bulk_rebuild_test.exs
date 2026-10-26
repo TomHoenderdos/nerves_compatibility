@@ -188,4 +188,32 @@ defmodule Portal.BulkRebuildTest do
                BulkRebuild.status(sweep_id)
     end
   end
+
+  # Task 7's Maintenance page watches `:sweeps` to refresh an in-progress
+  # sweep's counts. `run/1` and `cancel/1` are both one-shot writes (unlike the
+  # per-job broadcasts in Build/Ingest), so each announces itself directly.
+  describe "sweep change events" do
+    setup do
+      :ok = Portal.AdminEvents.subscribe(:sweeps)
+      :ok
+    end
+
+    test "starting and cancelling a sweep is announced" do
+      {:ok, %{sweep_id: id}} = BulkRebuild.run(limit: 1, names: ["sweep_evt"], created_by: "t")
+      assert_receive {:admin_changed, :sweeps}
+      {:ok, _} = BulkRebuild.cancel(id)
+      assert_receive {:admin_changed, :sweeps}
+    end
+
+    test "a dry run does not announce" do
+      docker_run!("dry_evt")
+      assert {:ok, %{sweep_id: nil}} = BulkRebuild.run(limit: 10, dry_run: true)
+      refute_receive {:admin_changed, :sweeps}
+    end
+
+    test "an empty selection does not announce" do
+      assert {:ok, %{sweep_id: nil, selected: 0}} = BulkRebuild.run(limit: 10)
+      refute_receive {:admin_changed, :sweeps}
+    end
+  end
 end
