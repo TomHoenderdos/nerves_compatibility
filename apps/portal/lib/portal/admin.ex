@@ -473,16 +473,25 @@ defmodule Portal.Admin do
           "by #{actor.username}"
       )
 
+      # A lease that was still queued may hold files a reaped attempt
+      # uploaded; nothing will read them now.
+      Portal.Builders.Upload.cleanup(lease.id)
       {:ok, job}
     end
   end
 
   # The lease note and the job commit together: a failed insert leaves the
-  # lease offering its buttons again.
+  # lease offering its buttons again. The local job carries the lease's
+  # request, so a still-queued request follows its build instead of being
+  # closed as cancelled once the lease stops holding it.
   defp requeue_locally(lease) do
+    args =
+      %{package: lease.package, version: lease.version, force: true}
+      |> maybe_put(:scan_request_id, lease.scan_request_id)
+
     with {:ok, _lease} <- Portal.Builders.Leases.mark_requeued_locally(lease),
          {:ok, job} <-
-           %{package: lease.package, version: lease.version, force: true}
+           args
            |> Portal.Builders.Routing.build_job(meta: %{pin_local: true}, priority: 3)
            |> Oban.insert() do
       job
@@ -490,6 +499,9 @@ defmodule Portal.Admin do
       {:error, reason} -> Portal.Repo.rollback(reason)
     end
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp fetch_lease(lease_id) do
     with {:ok, id} <- Ecto.UUID.cast(lease_id),

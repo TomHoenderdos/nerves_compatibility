@@ -39,12 +39,13 @@
 #
 # NCC-EGRESS filters what the containers send through FORWARD. Traffic
 # from a container to the builder host itself (172.17.0.1, the VM's own
-# addresses) goes through INPUT instead: chain NCC-INPUT, first in INPUT,
-# accepts DNS to the resolvers (the host may be one) and drops every other
-# new connection arriving on docker0 or a br-* bridge, so nothing listening
-# on the VM (sshd, the agent's docker socket proxy, whatever an operator
-# adds) is reachable from a build. A daemon configured with another bridge
-# name is not covered by it; FORWARD filtering does not depend on it.
+# addresses) goes through INPUT instead: INPUT's first two rules send what
+# arrives on docker0 or a br-* bridge to chain NCC-INPUT, which accepts
+# established replies and DNS to the resolvers (the host may be one) and
+# drops the rest, so nothing listening on the VM (sshd, whatever an
+# operator adds) is reachable from a build. Traffic on any other interface
+# never enters the chain. A daemon configured with another bridge name is
+# not covered by it; FORWARD filtering does not depend on it.
 #
 # verify checks the whole policy, not just a few rules: the NCC-EGRESS jump
 # is the first rule of DOCKER-USER, FORWARD jumps to DOCKER-USER, the chain
@@ -175,19 +176,18 @@ V6_TAIL=(
 )
 
 # The INPUT side (IPv4 only: the default bridge's v6 is the ip6tables
-# DOCKER-USER case, and containers reach the host over v4): DNS to the
-# resolvers, then no new connection from a bridge to the host.
-INPUT_TAIL=(
-  "-i docker0 -m conntrack --ctstate NEW -j DROP"
-  "-i br-+ -m conntrack --ctstate NEW -j DROP"
-)
+# DOCKER-USER case, and containers reach the host over v4). Only bridge
+# traffic is sent to the chain, by these jump matches, so its final DROP
+# never touches the operator's ssh or the portal's answers.
+INPUT_JUMPS=("-i docker0" "-i br-+")
+EGRESS_JUMPS=("")
 
-# build_chain BIN CHAIN RULE...: (re)create CHAIN with exactly RULE... then
-# a final DROP. The DROP goes in first and the rest are inserted above it,
-# so the chain never ends in an open fall-through.
+# build_chain BIN CHAIN TERMINAL RULE...: (re)create CHAIN with exactly
+# RULE... then `-j TERMINAL`. The terminal rule goes in first and the rest
+# are inserted above it, so the chain never ends in an open fall-through.
 build_chain() {
-  local bin="$1" chain="$2"
-  shift 2
+  local bin="$1" chain="$2" terminal="$3"
+  shift 3
 
   if "$bin" -w 10 -S "$chain" >/dev/null 2>&1; then
     "$bin" -w 10 -F "$chain"
@@ -195,7 +195,7 @@ build_chain() {
     "$bin" -w 10 -N "$chain"
   fi
 
-  "$bin" -w 10 -A "$chain" -j DROP
+  "$bin" -w 10 -A "$chain" -j "$terminal"
   local pos=1 rule
   for rule in "$@"; do
     # shellcheck disable=SC2086 # each rule is a list of iptables words
@@ -204,22 +204,65 @@ build_chain() {
   done
 }
 
-# swap_chain BIN PARENT CHAIN: build CHAIN-NEW is done; make PARENT jump
-# to it first, drop the jump to and the old CHAIN, and rename CHAIN-NEW to
-# CHAIN (the kernel follows the rename in PARENT). A build running during
-# the swap is filtered by one chain or the other at every moment.
-swap_chain() {
-  local bin="$1" parent="$2" chain="$3"
-  local new="$chain-NEW"
-
-  "$bin" -w 10 -I "$parent" 1 -j "$new"
-  while "$bin" -w 10 -C "$parent" -j "$chain" >/dev/null 2>&1; do
-    "$bin" -w 10 -D "$parent" -j "$chain"
+# remove_jumps BIN PARENT TARGET JUMP...: every `-A PARENT JUMP -j TARGET`.
+remove_jumps() {
+  local bin="$1" parent="$2" target="$3"
+  shift 3
+  local jump
+  for jump in "$@"; do
+    # shellcheck disable=SC2086 # a jump is a list of iptables words, or empty
+    while "$bin" -w 10 -C "$parent" $jump -j "$target" >/dev/null 2>&1; do
+      "$bin" -w 10 -D "$parent" $jump -j "$target"
+    done
   done
+}
+
+# drop_chain BIN CHAIN: flush and delete CHAIN when it exists.
+drop_chain() {
+  local bin="$1" chain="$2"
   if "$bin" -w 10 -S "$chain" >/dev/null 2>&1; then
     "$bin" -w 10 -F "$chain"
     "$bin" -w 10 -X "$chain"
   fi
+}
+
+# recover_chain BIN PARENT CHAIN JUMP...: a CHAIN-NEW left by an install
+# that died mid-swap. If PARENT already jumps to it, the swap is finished
+# (it is the live chain: never flushed); otherwise it is removed. Either
+# way the next build starts from one CHAIN and no -NEW.
+recover_chain() {
+  local bin="$1" parent="$2" chain="$3"
+  shift 3
+  local new="$chain-NEW"
+
+  "$bin" -w 10 -S "$new" >/dev/null 2>&1 || return 0
+
+  if "$bin" -w 10 -S "$parent" | grep -qF -- "-j $new"; then
+    echo "egress: finishing a swap to $new an earlier install left behind"
+    remove_jumps "$bin" "$parent" "$chain" "$@"
+    drop_chain "$bin" "$chain"
+    "$bin" -w 10 -E "$new" "$chain"
+  else
+    echo "egress: removing a stale $new an earlier install left behind"
+    drop_chain "$bin" "$new"
+  fi
+}
+
+# swap_chain BIN PARENT CHAIN JUMP...: CHAIN-NEW is built; make PARENT
+# jump to it first (one rule per JUMP match, in order), drop the jumps to
+# and the old CHAIN, and rename CHAIN-NEW to CHAIN (the kernel follows the
+# rename in PARENT). A build running during the swap is filtered by one
+# chain or the other at every moment.
+swap_chain() {
+  local bin="$1" parent="$2" chain="$3"
+  shift 3
+  local new="$chain-NEW" i
+  for ((i = $#; i >= 1; i--)); do
+    # shellcheck disable=SC2086 # a jump is a list of iptables words, or empty
+    "$bin" -w 10 -I "$parent" 1 ${!i} -j "$new"
+  done
+  remove_jumps "$bin" "$parent" "$chain" "$@"
+  drop_chain "$bin" "$chain"
   "$bin" -w 10 -E "$new" "$chain"
 }
 
@@ -233,8 +276,9 @@ install_family() {
     return 1
   fi
 
-  build_chain "$bin" "$CHAIN-NEW" "$@"
-  swap_chain "$bin" DOCKER-USER "$CHAIN"
+  recover_chain "$bin" DOCKER-USER "$CHAIN" "${EGRESS_JUMPS[@]}"
+  build_chain "$bin" "$CHAIN-NEW" DROP "$@"
+  swap_chain "$bin" DOCKER-USER "$CHAIN" "${EGRESS_JUMPS[@]}"
 }
 
 # install_input BIN DNS_RULE...
@@ -247,8 +291,9 @@ install_input() {
     return 1
   fi
 
-  build_chain "$bin" "$INPUT_CHAIN-NEW" "$CONNTRACK" "$@" "${INPUT_TAIL[@]}"
-  swap_chain "$bin" INPUT "$INPUT_CHAIN"
+  recover_chain "$bin" INPUT "$INPUT_CHAIN" "${INPUT_JUMPS[@]}"
+  build_chain "$bin" "$INPUT_CHAIN-NEW" DROP "$CONNTRACK" "$@"
+  swap_chain "$bin" INPUT "$INPUT_CHAIN" "${INPUT_JUMPS[@]}"
 }
 
 # Real iptables prints what it was given with the implicit match modules
@@ -258,22 +303,35 @@ normalise() {
   sed -E 's/ -m (tcp|udp) --dport/ --dport/; s/RELATED,ESTABLISHED/ESTABLISHED,RELATED/'
 }
 
-# verify_chain BIN PARENT CHAIN TAIL_RULE...: the parent's first rule is
-# the jump to CHAIN, and CHAIN is the conntrack accept, then only DNS
-# accepts (any number, to port 53 only), then exactly TAIL_RULE... in
-# order, then DROP.
+# A DNS accept as install writes it: to one resolver (-d) or to any.
+dns_accept() {
+  [[ "$1" =~ ^-A\ [A-Z-]+(\ -d\ [0-9A-Fa-f.:/]+)?\ -p\ (udp|tcp)\ --dport\ 53\ -j\ ACCEPT$ ]]
+}
+
+# verify_chain BIN PARENT CHAIN TERMINAL JUMPS_VAR TAIL_RULE...: the
+# parent's first rules are the jumps to CHAIN (one per entry of the array
+# named JUMPS_VAR, in order), and CHAIN is the conntrack accept, then only
+# DNS accepts (any number, to port 53 only), then exactly TAIL_RULE... in
+# order, then `-j TERMINAL`.
 verify_chain() {
-  local bin="$1" parent="$2" chain="$3"
-  shift 3
-  local parent_rules rules rest expected rule line
+  local bin="$1" parent="$2" chain="$3" terminal="$4" jumps_var="$5"
+  shift 5
+  local -n jumps="$jumps_var"
+  local parent_rules rules rest expected rule line jump
 
   if ! parent_rules="$("$bin" -w 10 -S "$parent" 2>&1)"; then
     echo "$bin: no $parent chain: $parent_rules"
     return 1
   fi
 
-  if [ "$(grep -E '^-A ' <<<"$parent_rules" | head -n 1 || true)" != "-A $parent -j $chain" ]; then
-    echo "$bin: the first rule of $parent is not the jump to $chain"
+  expected=""
+  for jump in "${jumps[@]}"; do
+    expected+="-A $parent${jump:+ $jump} -j $chain"$'\n'
+  done
+  expected="${expected%$'\n'}"
+
+  if [ "$(grep -E '^-A ' <<<"$parent_rules" | head -n "${#jumps[@]}" || true)" != "$expected" ]; then
+    echo "$bin: the first rule(s) of $parent are not the jump(s) to $chain"
     return 1
   fi
 
@@ -291,15 +349,12 @@ verify_chain() {
 
   rest="$(tail -n +2 <<<"$rules")"
   while IFS= read -r line; do
-    case "$line" in
-      "-A $chain -d "*" --dport 53 -j ACCEPT" | "-A $chain -p "*" --dport 53 -j ACCEPT") ;;
-      *) break ;;
-    esac
+    dns_accept "$line" || break
     rest="$(tail -n +2 <<<"$rest")"
   done <<<"$rest"
 
   expected=""
-  for rule in "$@" "-j DROP"; do
+  for rule in "$@" "-j $terminal"; do
     expected+="-A $chain $rule"$'\n'
   done
   expected="${expected%$'\n'}"
@@ -329,7 +384,7 @@ verify_family() {
     return 1
   fi
 
-  verify_chain "$bin" DOCKER-USER "$CHAIN" "$@"
+  verify_chain "$bin" DOCKER-USER "$CHAIN" DROP EGRESS_JUMPS "$@"
 }
 
 ip6_present() {
@@ -374,7 +429,7 @@ case "${1:-}" in
     ;;
   verify)
     verify_family "$IPTABLES" "${V4_TAIL[@]}"
-    verify_chain "$IPTABLES" INPUT "$INPUT_CHAIN" "${INPUT_TAIL[@]}"
+    verify_chain "$IPTABLES" INPUT "$INPUT_CHAIN" DROP INPUT_JUMPS
     if ip6_present; then
       verify_family "$IP6TABLES" "${V6_TAIL[@]}"
     else

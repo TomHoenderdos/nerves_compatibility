@@ -10,7 +10,7 @@ defmodule NccAgent.JobTest do
   @fake Path.expand("../support/fake_docker.sh", __DIR__)
   @env ~w(FAKE_DOCKER_EXIT FAKE_DOCKER_RESULT FAKE_DOCKER_ARGV_LOG FAKE_DOCKER_FILE_CONTENT
           FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_SLEEP FAKE_DOCKER_PLANT FAKE_DOCKER_RESULT_LINK
-          FAKE_DOCKER_OUTPUT_BYTES FAKE_DOCKER_CONTAINER_PRESENT)
+          FAKE_DOCKER_OUTPUT_BYTES FAKE_DOCKER_CONTAINER_PRESENT FAKE_DOCKER_DOWN)
   @lease "5b0c8a8e-1111-4c2d-9e3f-0a1b2c3d4e5f"
   @digest "sha256:" <> String.duplicate("a", 64)
   @content "the archived artifact"
@@ -230,6 +230,26 @@ defmodule NccAgent.JobTest do
     refute_received {:portal_request, "PUT", _, _, _}
     refute_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, %{"shas" => _}, _}
     refute File.exists?(Path.join(Config.path(config, :scratch), "rb-jason-1.4.4-1"))
+  end
+
+  test "a daemon that cannot be asked is not a container that is gone", %{
+    req: req,
+    config: config
+  } do
+    System.put_env("FAKE_DOCKER_DOWN", "1")
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    params = complete_params()
+    assert params["exit_code"] == "20"
+    refute Map.has_key?(params, "result")
+  end
+
+  test "each slot has a Hex cache of its own", %{config: config} do
+    assert Config.path(Map.put(config, :slot, 2), :hex_cache) ==
+             Path.join([config.data_dir, "hex-cache", "slot-2"])
+
+    assert Config.path(config, :hex_cache) == Path.join(config.data_dir, "hex-cache")
   end
 
   # Sizes are the container's doing; what is over the claim's caps is never

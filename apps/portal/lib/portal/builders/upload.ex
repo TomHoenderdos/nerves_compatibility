@@ -111,6 +111,15 @@ defmodule Portal.Builders.Upload do
     end
   end
 
+  # One batch at a time per lease on this node: the entry budget
+  # (`max_files` minus what the dir holds) is read at the batch's start, so
+  # two batches running at once could each spend the whole remainder. The
+  # agent sends its batches one after the other anyway; a second connection
+  # simply waits.
+  defp one_batch_at_a_time(lease_id, fun) do
+    :global.trans({{__MODULE__, :batch}, lease_id}, fun, [node()], :infinity)
+  end
+
   # The reservation is settled in `after`, from a count the reader keeps as
   # it goes: a body read that raises or exits (a dropped connection) still
   # hands back the bytes it never read, instead of holding them against the
@@ -203,8 +212,11 @@ defmodule Portal.Builders.Upload do
     {:error, :update_failed}
   end
 
+  defp stream_batch(lease, read_chunk, length, caps),
+    do: one_batch_at_a_time(lease.id, fn -> do_stream_batch(lease, read_chunk, length, caps) end)
+
   # sobelow_skip ["Traversal.FileModule"]
-  defp stream_batch(lease, read_chunk, length, caps) do
+  defp do_stream_batch(lease, read_chunk, length, caps) do
     dir = files_dir(lease.id)
 
     case File.mkdir_p(dir) do
@@ -648,6 +660,11 @@ defmodule Portal.Builders.Upload do
     end
   end
 
+  # What a failing attempt may leave on its request as `error_log`: the
+  # heartbeat tail's size (`Portal.Builders.Leases`), not the 1 MiB
+  # `load_run/1` reads for a run's own log.
+  @error_log_bytes 4096
+
   @doc """
   The last 4 KiB of a runner log part a failing `complete` carried, for the
   request's `error_log`; `nil` when the part is missing, oversized or not a
@@ -661,7 +678,7 @@ defmodule Portal.Builders.Upload do
 
     case File.lstat(path) do
       {:ok, %File.Stat{type: :regular, size: size}} when size <= max ->
-        case read_tail(path) do
+        case read_tail(path, @error_log_bytes) do
           "" -> nil
           tail -> tail |> drop_continuation_bytes() |> String.replace_invalid("")
         end
@@ -733,11 +750,11 @@ defmodule Portal.Builders.Upload do
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp read_tail(path) do
+  defp read_tail(path, bytes \\ @log_tail_bytes) do
     with {:ok, %File.Stat{type: :regular, size: size}} <- File.lstat(path),
          {:ok, fd} <- :file.open(path, [:read, :binary, :raw]) do
       try do
-        case :file.pread(fd, max(size - @log_tail_bytes, 0), min(size, @log_tail_bytes)) do
+        case :file.pread(fd, max(size - bytes, 0), min(size, bytes)) do
           {:ok, content} -> content
           _ -> ""
         end

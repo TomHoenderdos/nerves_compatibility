@@ -43,29 +43,30 @@ defmodule NccAgent.Docker do
   """
   @spec gone?(Config.t(), String.t()) :: boolean()
   def gone?(config, name) do
-    case cmd(
-           config,
-           ["container", "inspect", "--format", "{{.State.Status}}", name],
-           @inspect_timeout_ms
-         ) do
-      {:ok, _out, status} when status != 0 ->
+    case inspect_container(config, name) do
+      :gone ->
         true
 
-      {:ok, out, 0} ->
-        Logger.warning("container #{name} still exists (#{String.trim(out)}): removing it")
+      {:present, status} ->
+        Logger.warning("container #{name} still exists (#{status}): removing it")
         _ = cmd(config, ["rm", "-f", name], @kill_timeout_ms)
+        inspect_container(config, name) == :gone
 
-        match?(
-          {:ok, _, status} when status != 0,
-          cmd(
-            config,
-            ["container", "inspect", "--format", "{{.State.Status}}", name],
-            @inspect_timeout_ms
-          )
-        )
-
-      {:error, _reason} ->
+      :unknown ->
         false
+    end
+  end
+
+  # Only the daemon saying the container does not exist counts as gone: a
+  # daemon that is down or hung answers with another error, and the
+  # container may well be running under it.
+  defp inspect_container(config, name) do
+    args = ["container", "inspect", "--format", "{{.State.Status}}", name]
+
+    case cmd(config, args, @inspect_timeout_ms) do
+      {:ok, out, 0} -> {:present, String.trim(out)}
+      {:ok, out, _status} -> if out =~ ~r/No such/i, do: :gone, else: :unknown
+      {:error, _reason} -> :unknown
     end
   end
 

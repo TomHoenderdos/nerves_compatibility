@@ -93,19 +93,60 @@ defmodule NccAgent.EgressTest do
     assert File.read!(Path.join([dir, "state", "DOCKER-USER"])) ==
              "-N DOCKER-USER\n-A DOCKER-USER -j NCC-EGRESS\n-A DOCKER-USER -j RETURN\n"
 
-    # Container-to-host traffic: DNS, then no new connection from a bridge.
+    # Container-to-host traffic: only what arrives on a bridge enters the
+    # chain (the operator's ssh never does); replies and DNS, then nothing.
     assert File.read!(Path.join([dir, "state", "NCC-INPUT"])) == """
            -N NCC-INPUT
            -A NCC-INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
            -A NCC-INPUT -p udp --dport 53 -j ACCEPT
            -A NCC-INPUT -p tcp --dport 53 -j ACCEPT
-           -A NCC-INPUT -i docker0 -m conntrack --ctstate NEW -j DROP
-           -A NCC-INPUT -i br-+ -m conntrack --ctstate NEW -j DROP
            -A NCC-INPUT -j DROP
            """
 
-    assert File.read!(Path.join([dir, "state", "INPUT"])) == "-N INPUT\n-A INPUT -j NCC-INPUT\n"
+    assert File.read!(Path.join([dir, "state", "INPUT"])) ==
+             "-N INPUT\n-A INPUT -i docker0 -j NCC-INPUT\n-A INPUT -i br-+ -j NCC-INPUT\n"
+
     refute File.exists?(Path.join([dir, "state", "NCC-EGRESS-NEW"]))
+    refute File.exists?(Path.join([dir, "state", "NCC-INPUT-NEW"]))
+  end
+
+  test "an install that died mid-swap is finished, or its leftover removed, never flushed live",
+       %{dir: dir} do
+    :ok = Egress.install()
+    state = Path.join(dir, "state")
+
+    # Died after the jump moved to NCC-EGRESS-NEW and the old chain was
+    # deleted, before the rename: NEW is the live chain.
+    File.rename!(Path.join(state, "NCC-EGRESS"), Path.join(state, "NCC-EGRESS-NEW"))
+    live = Path.join(state, "NCC-EGRESS-NEW")
+    File.write!(live, String.replace(File.read!(live), "NCC-EGRESS", "NCC-EGRESS-NEW"))
+
+    File.write!(
+      Path.join(state, "DOCKER-USER"),
+      "-N DOCKER-USER\n-A DOCKER-USER -j NCC-EGRESS-NEW\n-A DOCKER-USER -j RETURN\n"
+    )
+
+    assert {:error, _} = Egress.verify()
+    File.write!(Path.join(dir, "log"), "")
+    assert :ok = Egress.install()
+    assert :ok = Egress.verify()
+    calls = dir |> Path.join("log") |> File.read!() |> String.split("\n", trim: true)
+    # The live NEW chain was renamed into place, never flushed.
+    assert Enum.count(calls, &(&1 =~ ~r/-F NCC-EGRESS-NEW$/)) == 0
+    assert Enum.count(calls, &(&1 =~ ~r/-E NCC-EGRESS-NEW NCC-EGRESS$/)) == 2
+
+    assert File.read!(Path.join(state, "DOCKER-USER")) ==
+             "-N DOCKER-USER\n-A DOCKER-USER -j NCC-EGRESS\n-A DOCKER-USER -j RETURN\n"
+
+    # Died before the jump moved: NEW is a stale, unreferenced chain.
+    File.write!(
+      Path.join(state, "NCC-EGRESS-NEW"),
+      "-N NCC-EGRESS-NEW\n-A NCC-EGRESS-NEW -j DROP\n"
+    )
+
+    assert :ok = Egress.install()
+    assert :ok = Egress.verify()
+    refute File.exists?(Path.join(state, "NCC-EGRESS-NEW"))
   end
 
   test "verify wants the whole policy: the jump first, FORWARD wired, the rules in order", %{
@@ -123,7 +164,7 @@ defmodule NccAgent.EgressTest do
     )
 
     assert {:error, why} = Egress.verify()
-    assert why =~ "first rule of DOCKER-USER"
+    assert why =~ "first rule(s) of DOCKER-USER"
     :ok = Egress.install()
     assert :ok = Egress.verify()
 

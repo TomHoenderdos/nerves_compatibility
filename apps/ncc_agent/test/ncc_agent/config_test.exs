@@ -44,6 +44,10 @@ defmodule NccAgent.ConfigTest do
     assert {:error, [msg]} = Config.load()
     assert msg =~ "non-root"
 
+    System.put_env("NCC_BUILD_USER", "00:1000")
+    assert {:error, [msg]} = Config.load()
+    assert msg =~ "non-root"
+
     System.put_env("NCC_BUILD_USER", "ncc-build")
     assert {:error, [msg]} = Config.load()
     assert msg =~ "uid:gid"

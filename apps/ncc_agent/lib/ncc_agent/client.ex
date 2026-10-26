@@ -65,6 +65,8 @@ defmodule NccAgent.Client do
       url: @api <> "/enroll",
       headers: [{"x-ncc-agent-version", version}],
       retry: false,
+      # The token travels in this body: it goes to the portal and nowhere else.
+      redirect: false,
       receive_timeout: 60_000,
       json: %{token: token, csr_pem: csr_pem, agent_version: version, slots: slots},
       connect_options: [

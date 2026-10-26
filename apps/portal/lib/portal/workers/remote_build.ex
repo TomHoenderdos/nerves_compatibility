@@ -77,7 +77,19 @@ defmodule Portal.Workers.RemoteBuild do
         decide(job, image)
       end)
 
-    outcome
+    # The wake-up goes out once the lease is committed: a claim woken inside
+    # the transaction would find nothing and sleep its whole poll.
+    case outcome do
+      {:ok, %Lease{} = lease} ->
+        Leases.notify_queued(lease)
+        :ok
+
+      {:error, _reason} = error ->
+        on_enqueue_error(error, job.scan_request_id, job.attempt, job.max)
+
+      other ->
+        other
+    end
   end
 
   defp decide(job, %{name: name, digest: digest}) do
@@ -104,7 +116,6 @@ defmodule Portal.Workers.RemoteBuild do
 
       true ->
         lease(package, version, name, digest, job.args, scan_request_id, job.priority, force)
-        |> on_enqueue_error(scan_request_id, job.attempt, job.max)
     end
   end
 
@@ -120,26 +131,27 @@ defmodule Portal.Workers.RemoteBuild do
       "force" => force
     }
 
-    with {:ok, _lease} <-
-           Leases.enqueue(%{
-             package: package,
-             version: version,
-             image_name: name,
-             image_digest: digest,
-             args: lease_args,
-             scan_request_id: scan_request_id,
-             # Oban's own default; only a hand-built job struct has none.
-             priority: priority || 0
-           }) do
+    with {:ok, lease} <-
+           Leases.enqueue(
+             %{
+               package: package,
+               version: version,
+               image_name: name,
+               image_digest: digest,
+               args: lease_args,
+               scan_request_id: scan_request_id,
+               # Oban's own default; only a hand-built job struct has none.
+               priority: priority || 0
+             },
+             notify: false
+           ) do
       Progress.broadcast(scan_request_id, :queued, %{remote: true})
-      :ok
+      {:ok, lease}
     end
   end
 
   # As `Portal.Workers.Build.on_retry_or_exhaust/5`: the job retries, and the
   # last attempt marks the request errored instead of leaving it queued.
-  defp on_enqueue_error(:ok, _scan_request_id, _attempt, _max), do: :ok
-
   defp on_enqueue_error({:error, reason} = error, scan_request_id, attempt, max) do
     message = "remote lease enqueue failed: #{inspect(reason)}"
     Logger.error(message)
