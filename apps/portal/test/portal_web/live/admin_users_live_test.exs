@@ -85,6 +85,17 @@ defmodule PortalWeb.AdminUsersLiveTest do
       assert render_async(view) =~ "cinder_admin"
     end
 
+    # Cinder's boolean filter says True / False unless told otherwise, which
+    # reads as nonsense under "Status" and "Password".
+    test "the yes/no filters say what they mean", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/users")
+      filters = view |> element("#users-filter-form") |> render()
+
+      for label <- ["Admin", "Not admin", "Set", "No password"], do: assert(filters =~ label)
+      refute filters =~ ~r/>\s*True\s*</
+      refute filters =~ ~r/>\s*False\s*</
+    end
+
     test "admins come first, then by username", %{conn: conn} do
       {:ok, _} = Portal.Accounts.register_user("aaa_plain", @pw)
       {:ok, _} = Portal.Accounts.seed_admin_user("zzz_admin", @pw)
