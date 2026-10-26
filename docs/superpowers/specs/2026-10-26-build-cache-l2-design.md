@@ -237,6 +237,22 @@ creates the links, deletes the manifest, and runs the same `Tree.check` and
 `strip_modes` as before. The operator's "no symlinks" rule (section 2) now
 holds literally for the archive; the Mix exception lives in the manifest.
 
+**Amendment (2026-10-26, final review).** `:erl_tar.table/2` inflates the
+whole stream and builds the full member list before any size check can run,
+so the 2 GiB member-size check bounded nothing. `unpack/3` now first
+pre-scans the file with `:zlib` (`inflateInit(z, 31)`, 1 MiB input chunks
+through `safeInflate/2`), counting decompressed bytes and refusing with
+`:too_large` past `max_extracted_bytes/0`, now 1 GiB; a stream that does not
+inflate is `{:gzip, reason}`. Everything after it (table, screen, extract,
+`strip_modes`, manifest, `Tree.check`) runs in
+`Portal.BuildCache.L2.Bounded.run/2`, an unlinked monitored process with a
+512 MiB heap cap and a deadline (`timeout_ms:`, default 120 s), whose
+timeout and kill come back as `{:unpack, :timeout | :killed}`. Modes are
+stripped before the walk, and `strip_modes/1` adds owner read/write (and
+search on directories), so an archive-applied 0o000 can be walked and
+removed. An extraction holding no regular file is `:empty_entry`. The
+result is `{:ok, %{extracted_bytes: n}}`.
+
 ### 4.4 Tree and Staging
 
 `Portal.BuildCache.Tree.check(dir, package: name | :any)` is Promotion's
@@ -271,6 +287,15 @@ return counts do not change.
    with bytes in Stats; log one info line on success, one warning on
    failure. Returns `:ok | {:error, term}`; never raises past its boundary
    (`rescue` → `{:error, {:exception, msg}}`).
+
+**Amendment (2026-10-26, final review).** The seam is 5-arity,
+`fn dir, slug, key, package, opts`, and `upload/5` takes `timeout_ms:`,
+passed to `Client.put/5`, which bounds the whole request (send included) in
+a killed task. One `promote/6` call shares one upload deadline
+(`l2_upload_budget_ms/0`, 120 s); the first upload that times out, crashes,
+meets a transport error or a 5xx ends the uploads for that call, and the
+remaining entries are promoted locally only. Only slugs matching
+`sha256_<64 hex>` (not all zeros) are uploaded (`L2.shareable_slug?/1`).
 
 ### 4.6 Download path (Builder → L2)
 
@@ -308,6 +333,21 @@ enabled, logging the returned counts in one line.
    archive) also `Stats.mark_bad(key)` so the object is not retried for 24 h.
 5. Returns `%{listed, candidates, downloaded, discarded, failed, skipped,
    bytes}`; records downloads and bytes in Stats.
+
+**Amendment (2026-10-26, final review).** The extraction gets
+`timeout_ms: min(remaining, 120_000)` too, so it counts against the
+budget; an extraction killed or timed out by its bound is a refusal, except
+one whose timeout the build's budget cut short (`:budget_spent`, which
+stops the loop without marking the object bad). Extraction is budgeted at
+4 GiB per build (`extracted_budget_bytes:`), charged with each object's
+pre-scanned size. Free space on the slug dir's filesystem is checked before
+every object against `Portal.Builder.prefetch_min_free_bytes/0`, stopping
+the loop with one warning. A body longer than the listed size is an object
+replaced after the listing (`:larger_than_listed`, a plain failure), and
+`{:tar, :eacces | :eperm}` is a refusal. A slug that is not shareable is
+not listed. `Prefetch.budget_ms/0` and the upload budget are exposed for
+`oban_config_test.exs`, which keeps Lifeline's `rescue_after` above the
+build ceiling plus both.
 
 ### 4.7 Admin
 
@@ -378,6 +418,17 @@ slug. The Mix `priv`/`include` links are allowed because a flat ban would
 refuse most of the cache (Promotion's moduledoc, "Symlinks"); they point at
 `../../../../deps[_<target>]/<package>/<same name>`, a path that resolves
 inside the worker's own project tree, never outside the container.
+
+**Amendment (2026-10-26, final review).** The SHA-256 in
+`x-amz-meta-sha256` arrives in the same response as the body, so it detects
+corruption, not tampering: over plain `http` anything on the path can
+replace both, and "a compromised transport" above holds only for a path
+that is itself protected. `http://` is acceptable only on the tailnet,
+which encrypts it; any other endpoint must be `https://`.
+`Config.insecure_endpoint?/1` is true for plain `http` to a host outside
+loopback and `100.64.0.0/10` (a hostname other than `localhost` counts as
+outside), and `L2.log_state/0` logs a warning for it at boot. The
+structural checks still hold against any transport.
 
 ### 5.2 Why the table is screened before extraction
 
