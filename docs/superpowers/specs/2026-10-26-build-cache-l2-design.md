@@ -218,6 +218,25 @@ bounded `inspect` of the reason.
   refusal returns `{:error, reason}` and the caller removes the staging dir.
   An empty tarball is refused.
 
+**Amendment (2026-10-26, during implementation).** `:erl_tar.extract/2`
+refuses a symlink member whose target leaves the extraction directory, and
+Mix's `priv -> ../../../../deps/<pkg>/priv` does. Rather than parse tar
+headers ourselves to recreate such links (new hostile-input surface), the
+tarball carries no symlink members at all. `pack/3` writes the entry's
+top-level Mix links (already proven Mix-shaped by `Tree.check` with the
+package bound) into one regular member, `.ncc-links.json`, a JSON object of
+link name to target, and omits the links themselves. `unpack/2` refuses any
+member that is not `regular` or `directory`, refuses an archive whose
+summed member sizes exceed 2 GiB (a gzip bomb never reaches the disk),
+extracts, and then, if a top-level `.ncc-links.json` exists, requires it to
+be at most 4096 bytes, a JSON object whose keys are exactly `priv` or
+`include`, whose values match
+`../../../../deps[_<target>]/<package>/<same name>` with the final
+component equal to the key, and whose link names do not yet exist; it
+creates the links, deletes the manifest, and runs the same `Tree.check` and
+`strip_modes` as before. The operator's "no symlinks" rule (section 2) now
+holds literally for the archive; the Mix exception lives in the manifest.
+
 ### 4.4 Tree and Staging
 
 `Portal.BuildCache.Tree.check(dir, package: name | :any)` is Promotion's
