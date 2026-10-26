@@ -6,22 +6,36 @@ defmodule Portal.BuildCache.L2.Tarball do
   it extracts before a build. Both ends apply the same structural rules as
   `Portal.BuildCache.Promotion` (through `Portal.BuildCache.Tree`): only
   directories, regular files with one link, and Mix's own top-level
-  `priv`/`include` links. On the way in the tar table is screened before a
-  single byte is extracted: `:erl_tar` refuses escaping paths and symlinks
-  itself (`safe_relative_path`) and ignores hard-link entries, but writes
+  `priv`/`include` links.
+
+  The tarball carries no symlink member at all. `:erl_tar` refuses a symlink
+  whose target leaves the extraction directory, which Mix's own links do, and
+  its path safety is what spec section 5.2 relies on, so the links travel as a
+  small regular file, `.ncc-links.json` (`{"priv": "<target>"}`), and `unpack/3`
+  recreates them after extraction from a validated manifest. On the way in the
+  tar table is screened before a single byte is extracted: only regular files
+  and directories, safe names, and a bounded total size. `:erl_tar` writes
   device and fifo entries as empty regular files, which the walk afterwards
-  could not tell from real ones. gzip rather than zstd so the portal needs
-  no NIF for a few megabytes per entry (spec, section 3.2).
+  could not tell from real ones, and ignores hard-link entries. gzip rather
+  than zstd so the portal needs no NIF for a few megabytes per entry (spec,
+  section 3.2).
   """
 
   alias Portal.BuildCache.Tree
 
   @max_object_bytes 512 * 1024 * 1024
+  @max_extracted_bytes 2 * 1024 * 1024 * 1024
   @max_depth 64
-  @allowed_types [:regular, :directory, :symlink]
+  @max_manifest_bytes 4096
+  @manifest ".ncc-links.json"
+  @allowed_types [:regular, :directory]
+  @link_target ~r/\A\.\.\/\.\.\/\.\.\/\.\.\/deps(_[a-z0-9_]+)?\/[a-z][a-z0-9_]*\/(priv|include)\z/
 
   @spec max_object_bytes() :: pos_integer()
   def max_object_bytes, do: @max_object_bytes
+
+  @spec max_extracted_bytes() :: pos_integer()
+  def max_extracted_bytes, do: @max_extracted_bytes
 
   # `entry_dir` is a promoted entry under the operator's cache root;
   # `tar_path` its sibling staging name.
@@ -31,14 +45,8 @@ defmodule Portal.BuildCache.L2.Tarball do
   def pack(entry_dir, tar_path, package) do
     with :ok <- Tree.check(entry_dir, package: package),
          {:ok, names} <- top_level(entry_dir),
-         :ok <-
-           create(
-             tar_path,
-             Enum.map(
-               names,
-               &{String.to_charlist(&1), String.to_charlist(Path.join(entry_dir, &1))}
-             )
-           ),
+         {:ok, files, links} <- split_links(entry_dir, names),
+         :ok <- create(tar_path, members(entry_dir, files, links)),
          {:ok, %File.Stat{size: bytes}} <- File.stat(tar_path),
          :ok <- bounded(bytes) do
       {:ok, %{sha256: sha256_file(tar_path), bytes: bytes}}
@@ -69,6 +77,41 @@ defmodule Portal.BuildCache.L2.Tarball do
     end
   end
 
+  # `Tree.check/2` has already proven every top-level link is Mix's own.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp split_links(dir, names) do
+    {links, files} =
+      Enum.split_with(names, fn name ->
+        match?({:ok, %File.Stat{type: :symlink}}, File.lstat(Path.join(dir, name)))
+      end)
+
+    with [_ | _] <- files,
+         {:ok, targets} <- read_links(dir, links) do
+      {:ok, files, targets}
+    else
+      [] -> {:error, :empty_entry}
+      {:error, _} = error -> error
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_links(dir, links) do
+    Enum.reduce_while(links, {:ok, %{}}, fn name, {:ok, acc} ->
+      case File.read_link(Path.join(dir, name)) do
+        {:ok, target} -> {:cont, {:ok, Map.put(acc, name, target)}}
+        {:error, reason} -> {:halt, {:error, {:list, reason}}}
+      end
+    end)
+  end
+
+  defp members(dir, files, links) do
+    members = Enum.map(files, &{String.to_charlist(&1), String.to_charlist(Path.join(dir, &1))})
+
+    if links == %{},
+      do: members,
+      else: members ++ [{String.to_charlist(@manifest), Jason.encode!(links)}]
+  end
+
   defp create(tar_path, members) do
     case :erl_tar.create(String.to_charlist(tar_path), members, [:compressed]) do
       :ok -> :ok
@@ -79,23 +122,19 @@ defmodule Portal.BuildCache.L2.Tarball do
   defp bounded(bytes) when bytes > @max_object_bytes, do: {:error, :too_large}
   defp bounded(_), do: :ok
 
-  # `:erl_tar` refuses every symlink whose target leaves the extraction
-  # directory (`unsafe_symlink`), and Mix's own `priv` link does exactly that,
-  # so links are not extracted by `:erl_tar`: everything else is, and the links
-  # are created from the archive's own headers afterwards, each checked by
-  # `Tree.check/2` against Mix's link shape like any other entry.
-  @spec unpack(Path.t(), Path.t()) :: :ok | {:error, term()}
-  def unpack(tar_path, staging_dir) do
+  @doc """
+  Extracts `tar_path` into `staging_dir`. Option `:max_extracted_bytes` bounds
+  the sum of the members' sizes (default `max_extracted_bytes/0`).
+  """
+  @spec unpack(Path.t(), Path.t(), keyword()) :: :ok | {:error, term()}
+  def unpack(tar_path, staging_dir, opts \\ []) do
+    max = Keyword.get(opts, :max_extracted_bytes, @max_extracted_bytes)
+
     with {:ok, table} <- table(tar_path),
          :ok <- screen(table),
-         {:ok, links} <- links(tar_path, table),
-         :ok <-
-           extract(
-             tar_path,
-             staging_dir,
-             for({name, type, _, _, _, _, _} <- table, type != :symlink, do: name)
-           ),
-         :ok <- link(staging_dir, links),
+         :ok <- extracted_size(table, max),
+         :ok <- extract(tar_path, staging_dir),
+         :ok <- restore_links(staging_dir),
          :ok <- refusal(Tree.check(staging_dir, package: :any)) do
       Tree.strip_modes(staging_dir)
     end
@@ -147,82 +186,97 @@ defmodule Portal.BuildCache.L2.Tarball do
 
   defp safe_show(raw), do: inspect(raw, printable_limit: 200)
 
-  defp extract(tar_path, staging_dir, names) do
-    opts = [:compressed, {:cwd, String.to_charlist(staging_dir)}, {:files, names}]
+  defp extracted_size(entries, max) do
+    total = Enum.reduce(entries, 0, fn {_, _, size, _, _, _, _}, sum -> sum + size end)
+    if total > max, do: {:error, :too_large}, else: :ok
+  end
 
-    case :erl_tar.extract(String.to_charlist(tar_path), opts) do
+  defp extract(tar_path, staging_dir) do
+    case :erl_tar.extract(String.to_charlist(tar_path), [
+           :compressed,
+           {:cwd, String.to_charlist(staging_dir)}
+         ]) do
       :ok -> :ok
       {:error, reason} -> {:error, {:tar, reason}}
     end
   end
 
-  # The symlink members as `{name, target}`, read from the ustar headers
-  # because the table does not carry targets. The names must be exactly the
-  # table's symlinks, so a header this reader and `:erl_tar` disagree on
-  # (pax or GNU extensions) is refused rather than guessed at.
-  defp links(tar_path, table) do
-    wanted = for {name, :symlink, _, _, _, _, _} <- table, do: name
+  # The top-level manifest never survives: read, validated, turned into the
+  # links, deleted. `staging_dir` is a host-built staging name.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp restore_links(staging_dir) do
+    path = Path.join(staging_dir, @manifest)
 
-    if wanted == [] do
-      {:ok, []}
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_manifest_bytes ->
+        with {:ok, links} <- read_manifest(path),
+             :ok <- validate_links(staging_dir, links),
+             :ok <- create_links(staging_dir, links) do
+          File.rm(path)
+        end
+
+      {:ok, %File.Stat{type: :regular}} ->
+        {:error, {:links, :too_large}}
+
+      {:ok, %File.Stat{}} ->
+        {:error, {:links, :not_a_file}}
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, {:links, reason}}
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_manifest(path) do
+    with {:ok, json} <- File.read(path),
+         {:ok, links} when is_map(links) <- Jason.decode(json) do
+      {:ok, links}
     else
-      links = tar_path |> gunzip() |> header_links([])
-
-      if Enum.sort(Enum.map(links, &elem(&1, 0))) == Enum.sort(wanted),
-        do: {:ok, links},
-        else: {:error, {:member_name, "symlink headers"}}
+      _ -> {:error, {:links, :not_a_map}}
     end
   end
 
-  # `tar_path` is a host-built staging name.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp gunzip(tar_path), do: tar_path |> File.read!() |> :zlib.gunzip()
-
-  defp header_links(<<header::binary-size(512), rest::binary>>, acc) do
-    <<name::binary-size(100), _::binary-size(24), size::binary-size(12), _::binary-size(20), type,
-      linkname::binary-size(100), _::binary-size(88), prefix::binary-size(155), _::binary>> =
-      header
-
-    case octal(size) do
-      nil ->
-        acc
-
-      bytes ->
-        skip = min(div(bytes + 511, 512) * 512, byte_size(rest))
-        <<_::binary-size(^skip), rest::binary>> = rest
-
-        acc =
-          if type == ?2, do: [{join(trim(prefix), trim(name)), trim(linkname)} | acc], else: acc
-
-        header_links(rest, acc)
-    end
-  end
-
-  defp header_links(_end, acc), do: acc
-
-  defp octal(field) do
-    case field |> trim() |> String.trim() |> Integer.parse(8) do
-      {n, ""} -> n
-      _ -> if String.trim(trim(field)) == "", do: 0
-    end
-  end
-
-  defp trim(field), do: field |> :binary.split(<<0>>) |> hd()
-  defp join("", name), do: String.to_charlist(name)
-  defp join(prefix, name), do: String.to_charlist(prefix <> "/" <> name)
-
-  # The target is only a string here; `Tree.check/2` decides whether it is
-  # Mix's link. `staging_dir` and the names are host-built or screened.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp link(staging_dir, links) do
+  defp validate_links(staging_dir, links) do
     Enum.reduce_while(links, :ok, fn {name, target}, :ok ->
-      path = Path.join(staging_dir, List.to_string(name))
+      case validate_link(staging_dir, name, target) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:links, reason}}}
+      end
+    end)
+  end
 
-      with :ok <- File.mkdir_p(Path.dirname(path)),
-           :ok <- File.ln_s(target, path) do
-        {:cont, :ok}
-      else
-        {:error, reason} -> {:halt, {:error, {:tar, reason}}}
+  defp validate_link(staging_dir, name, target) when name in ["priv", "include"] do
+    if link_target?(name, target),
+      do: absent(staging_dir, name),
+      else: {:error, {:bad_target, Tree.show(target)}}
+  end
+
+  defp validate_link(_staging_dir, name, _target), do: {:error, {:bad_name, Tree.show(name)}}
+
+  # The link name must not already exist in what was extracted.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp absent(staging_dir, name) do
+    case File.lstat(Path.join(staging_dir, name)) do
+      {:error, :enoent} -> :ok
+      _ -> {:error, {:exists, name}}
+    end
+  end
+
+  defp link_target?(name, target) when is_binary(target) do
+    match?([_, _, ^name], Regex.run(@link_target, target))
+  end
+
+  defp link_target?(_name, _target), do: false
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp create_links(staging_dir, links) do
+    Enum.reduce_while(links, :ok, fn {name, target}, :ok ->
+      case File.ln_s(target, Path.join(staging_dir, name)) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:links, reason}}}
       end
     end)
   end
