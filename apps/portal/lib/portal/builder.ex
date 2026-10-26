@@ -512,45 +512,75 @@ defmodule Portal.Builder do
   @spec check_egress() :: :ok | {:error, :egress_filter_missing}
   def check_egress do
     if egress_check?() do
-      probe = config(:egress_filter_probe, &__MODULE__.probe_egress/0)
-
-      case probe.() do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          Logger.error(
-            "Build egress filter missing (#{inspect(reason)}); refusing to build. " <>
-              "Load it as the daemon's user with " <>
-              "/opt/nerves_compatibility/builder-egress-load.sh, or set " <>
-              "NCC_EGRESS_CHECK=0 on a host without a rootless daemon"
-          )
-
-          {:error, :egress_filter_missing}
+      case egress_probe_result() do
+        :ok -> :ok
+        {:error, reason} -> egress_missing(reason)
       end
     else
       :ok
     end
   end
 
+  defp egress_probe_result, do: config(:egress_filter_probe, &__MODULE__.probe_egress/0).()
+
+  defp egress_missing(reason) do
+    Logger.error(
+      "Build egress filter missing (#{inspect(reason)}); refusing to build. " <>
+        "Load it as the daemon's user with " <>
+        "/opt/nerves_compatibility/builder-egress-load.sh, or set " <>
+        "NCC_EGRESS_CHECK=0 on a host without a rootless daemon"
+    )
+
+    {:error, :egress_filter_missing}
+  end
+
   @doc """
   Logs the egress filter's state once at boot, on a node that runs builds
   (`Portal.Application`), where an operator looks first.
+
+  At boot the portal usually comes up before the rootless daemon and its
+  `ExecStartPost` loader do, so a missing filter is probed again every
+  `:interval_ms` for up to `:attempts` tries (`boot_egress_retry/0`, about a
+  minute) before the "missing" error is logged. Builds themselves never
+  wait: each one runs `check_egress/0` on its own.
   """
-  @spec boot_egress_check() :: :ok | :disabled | {:error, :egress_filter_missing}
-  def boot_egress_check do
+  @spec boot_egress_check(keyword()) :: :ok | :disabled | {:error, :egress_filter_missing}
+  def boot_egress_check(opts \\ []) do
+    {attempts, interval_ms} = boot_egress_retry()
+    attempts = Keyword.get(opts, :attempts, attempts)
+    interval_ms = Keyword.get(opts, :interval_ms, interval_ms)
+
     if egress_check?() do
-      case check_egress() do
+      case await_egress(attempts, interval_ms) do
         :ok ->
           Logger.info("Build egress filter is loaded")
           :ok
 
-        error ->
-          error
+        {:error, reason} ->
+          egress_missing(reason)
       end
     else
       Logger.warning("NCC_EGRESS_CHECK=0: builds on this host are not egress-filtered")
       :disabled
+    end
+  end
+
+  @doc false
+  # Tries and the pause between them: the first at boot, the last a minute on.
+  @spec boot_egress_retry() :: {pos_integer(), non_neg_integer()}
+  def boot_egress_retry, do: {13, 5_000}
+
+  defp await_egress(attempts, interval_ms) do
+    case egress_probe_result() do
+      :ok ->
+        :ok
+
+      {:error, _reason} when attempts > 1 ->
+        Process.sleep(interval_ms)
+        await_egress(attempts - 1, interval_ms)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -581,7 +611,12 @@ defmodule Portal.Builder do
   # (`Task.shutdown/2`) instead of blocking the caller past `timeout_ms`.
   # `Task.shutdown(:brutal_kill)` only stops the Elixir task; it does not
   # reliably reap `nsenter` itself, but it is what bounds `check_egress/0`'s
-  # caller, which is the load-bearing property here.
+  # caller, which is the load-bearing property here. The task is linked
+  # (`Task.async/1`): a raise inside it would kill the caller through the
+  # link, before `Task.yield/2` could return `{:exit, _}`, so that branch is
+  # not what keeps a crash safe. `list_egress_table/3`'s own `rescue` is: it
+  # turns the failures `System.cmd/3` raises into `{:error, _}` inside the
+  # task.
   defp bounded_list_egress_table(nsenter, nft, pid, timeout_ms) do
     task = Task.async(fn -> list_egress_table(nsenter, nft, pid) end)
 
