@@ -55,8 +55,7 @@ defmodule NccAgent.SlotTest do
       },
       "input" => %{"run_id" => "rb-jason-1.4.4-2", "paths" => %{}},
       "timeout_sec" => 60,
-      "upload" => %{"max_batch_bytes" => 1_000_000, "max_files" => 10},
-      "warm_allowlist" => []
+      "upload" => %{"max_batch_bytes" => 1_000_000, "max_files" => 10}
     }
   end
 

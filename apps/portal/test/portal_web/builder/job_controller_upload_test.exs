@@ -116,7 +116,7 @@ defmodule PortalWeb.Builder.JobControllerUploadTest do
         }
       })
 
-    assert %{"accepted" => true, "outcome" => "done"} = json_response(conn, 202)
+    assert %{"accepted" => true, "outcome" => "done", "warm" => []} = json_response(conn, 202)
 
     assert [job] = all_enqueued(worker: Portal.Workers.Ingest)
     assert job.queue == "remote"
@@ -125,6 +125,64 @@ defmodule PortalWeb.Builder.JobControllerUploadTest do
     assert job.args["builder_id"] == builder.id
     assert job.args["run_id"] == lease.run_id
     assert File.exists?(Path.join(Upload.out_dir(lease.id), "result.json"))
+  end
+
+  # The builder warms its own Nerves cache only with what the portal names:
+  # `Portal.NervesCache.warm_pairs/2` over the uploaded result.json, so a
+  # miss the lock does not name, or a package the `nerves` Hex user does not
+  # own, never comes back.
+  test "a done completion names the warm pairs the portal's rule allows",
+       %{conn: conn, der: der, lease: lease} do
+    previous = Application.get_env(:portal, Portal.NervesCache)
+
+    Application.put_env(:portal, Portal.NervesCache,
+      owners: fn
+        "nerves_system_rpi4" -> {:ok, ["nerves", "fhunleth"]}
+        _other -> {:ok, ["mallory"]}
+      end
+    )
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:portal, Portal.NervesCache, previous),
+        else: Application.delete_env(:portal, Portal.NervesCache)
+    end)
+
+    rpi4 = %{"name" => "nerves_system_rpi4", "version" => "1.30.0"}
+    forged = %{"name" => "nerves_system_rpi0", "version" => "1.30.0"}
+    unowned = %{"name" => "nerves_system_mallory", "version" => "1.0.0"}
+
+    result =
+      Jason.encode!(%{
+        "run_id" => lease.run_id,
+        "package" => %{"name" => "jason", "version" => "1.4.4"},
+        "systems" => %{"host" => %{"status" => "pass"}},
+        "nerves_cache" => %{
+          "misses" => [rpi4, forged, unowned],
+          "lock" => [rpi4, unowned]
+        }
+      })
+
+    result_path =
+      Path.join(System.tmp_dir!(), "result-#{System.unique_integer([:positive])}.json")
+
+    File.write!(result_path, result)
+
+    body =
+      conn
+      |> with_cert(der)
+      |> post("/builder/v1/jobs/#{lease.id}/complete", %{
+        "exit_code" => "0",
+        "result" => %Plug.Upload{
+          path: result_path,
+          filename: "result.json",
+          content_type: "application/json"
+        }
+      })
+      |> json_response(202)
+
+    assert body["outcome"] == "done"
+    assert body["warm"] == [rpi4]
   end
 
   test "a bad entry answers 422 and keeps the good one", %{conn: conn, der: der, lease: lease} do

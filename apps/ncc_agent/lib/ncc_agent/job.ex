@@ -11,6 +11,14 @@ defmodule NccAgent.Job do
   those binds, and everything it reads back from them must be a regular
   file: the agent runs as root and the container could leave symlinks.
 
+  The container gets `claim["input"]` as its `NCC_INPUT` unchanged: it is
+  `Portal.Builder.worker_input/1`, what a local build gets. The worker lays
+  out its own per-run Nerves cache farm over the read-only `/nerves-cache`
+  (`NccWorker.NervesCache`); the agent only keeps the cache dir real
+  (`NccAgent.NervesCache.prepare_cache/1`). After a `done` completion the
+  portal's answer names the cache misses worth warming (`warm`), and
+  `NccAgent.NervesCache.warm/4` runs them.
+
   A runner-side failure (a timeout, a failed pull, a crash, an upload of
   the run's files that still fails after its retries) completes the lease
   with exit code `20`, which the portal retries.
@@ -80,17 +88,23 @@ defmodule NccAgent.Job do
       exit_code = claim |> build(config, dirs, runner_log, hb) |> check_result(dirs.out)
       Heartbeat.set_phase(hb, "uploading")
       exit_code = upload_or_fail(exit_code, req, lease_id, scratch, dirs.files, claim["upload"])
-      outcome = complete(req, lease_id, exit_code, scratch)
-      if exit_code == 0, do: warm(config, claim, dirs.out)
-      outcome
+
+      case complete(req, lease_id, exit_code, scratch) do
+        {:ok, :done, pairs} when exit_code == 0 ->
+          warm(config, claim, pairs)
+          {:ok, :done}
+
+        other ->
+          outcome(other)
+      end
     rescue
       e ->
         Logger.error("job #{claim["run_id"]} crashed: #{Exception.message(e)}")
-        complete(req, lease_id, @runner_failure, scratch)
+        outcome(complete(req, lease_id, @runner_failure, scratch))
     catch
       :exit, reason ->
         Logger.error("job #{claim["run_id"]} crashed: #{inspect(reason)}")
-        complete(req, lease_id, @runner_failure, scratch)
+        outcome(complete(req, lease_id, @runner_failure, scratch))
     after
       Heartbeat.stop(hb)
       File.rm_rf(scratch)
@@ -98,30 +112,32 @@ defmodule NccAgent.Job do
   end
 
   @doc """
-  The `Compatibility.Builder.Argv` spec for `claim`: the post-isolation
-  argv, with the Nerves cache read-only at `/nerves-cache`, a read-only
-  root with the scratch `tmp`/`cache` binds, and never a build cache. Pure.
+  The `Compatibility.Builder.Argv` spec for `claim`: the agent's config and
+  scratch dirs resolved the way `Portal.Builder.build_docker_args/4` resolves
+  the local host's, with the Nerves cache read-only and never a build cache
+  (a remote builder has none; `Portal.BuildCache.Promotion` is host-side).
+  `NccAgent.ArgvParityTest` pins the result to the shared fixture. Pure.
   """
-  @spec argv_spec(Config.t(), map(), dirs(), [{String.t(), String.t()}]) :: Argv.spec()
-  def argv_spec(config, claim, dirs, env) do
+  @spec argv_spec(Config.t(), map(), dirs()) :: Argv.spec()
+  def argv_spec(config, claim, dirs) do
     %{
-      run_id: claim["run_id"],
-      image: image_ref(claim["image"]),
+      container_name: Argv.container_name(claim["run_id"]),
       user: config.build_user,
-      work_dir: dirs.work,
-      output_dir: dirs.out,
-      files_dir: dirs.files,
-      nerves_cache: Config.path(config, :nerves_cache),
-      hex_cache: Config.path(config, :hex_cache),
-      build_cache: nil,
+      image: image_ref(claim["image"]),
       cpus: config.cpus,
       memory: config.memory,
       build_concurrency: config.build_concurrency,
       nerves_cache_mode: :readonly,
-      hardening: true,
-      tmp_dir: dirs.tmp,
-      cache_dir: dirs.cache,
-      extra_env: env
+      paths: %{
+        work: dirs.work,
+        out: dirs.out,
+        files: dirs.files,
+        tmp: dirs.tmp,
+        cache: dirs.cache,
+        nerves_cache: Config.path(config, :nerves_cache),
+        hex_cache: Config.path(config, :hex_cache),
+        build_cache: nil
+      }
     }
   end
 
@@ -152,15 +168,14 @@ defmodule NccAgent.Job do
   # sobelow_skip ["Traversal.FileModule"]
   defp build(claim, config, dirs, runner_log, hb) do
     Enum.each(Map.values(dirs), &File.mkdir_p!/1)
-    File.mkdir_p!(Config.path(config, :nerves_cache))
+    NervesCache.prepare_cache(config)
     File.mkdir_p!(Config.path(config, :hex_cache))
 
-    nerves = NervesCache.prepare(config, dirs.work)
-    write_input(claim, dirs.work, nerves.env)
+    write_input(claim, dirs.work)
     Fs.chown(config, Map.values(dirs), ["-R"])
     Fs.chown(config, [Config.path(config, :hex_cache)], [])
 
-    spec = argv_spec(config, claim, dirs, nerves.env)
+    spec = argv_spec(config, claim, dirs)
     argv = Argv.build(spec)
 
     case ensure_image(config, spec.image, runner_log) do
@@ -204,23 +219,10 @@ defmodule NccAgent.Job do
     end
   end
 
-  # The worker of either generation finds the per-run Nerves dirs: newer
-  # ones through `paths`, older ones through the container env.
+  # `claim["input"]` is `Portal.Builder.worker_input/1`, written as is.
   # sobelow_skip ["Traversal.FileModule"]
-  defp write_input(claim, work_dir, env) do
-    env = Map.new(env)
-
-    input =
-      claim
-      |> Map.get("input", %{})
-      |> Map.update("paths", %{}, & &1)
-      |> update_in(["paths"], fn paths ->
-        Map.merge(paths, %{
-          "nerves_artifacts_dir" => env["NERVES_ARTIFACTS_DIR"],
-          "nerves_dl_dir" => env["NERVES_DL_DIR"]
-        })
-      end)
-
+  defp write_input(claim, work_dir) do
+    input = Map.get(claim, "input", %{})
     File.write!(Path.join(work_dir, "input.json"), Jason.encode_to_iodata!(input))
   end
 
@@ -350,15 +352,20 @@ defmodule NccAgent.Job do
     end
   end
 
+  # `{:ok, outcome, warm}`: the portal's verdict on the attempt and, for a
+  # `done` one, the Nerves cache pairs it wants warmed (`[]` otherwise).
   defp complete(req, lease_id, exit_code, scratch) do
     parts = if scratch, do: parts(scratch), else: %{}
     complete_with_retry(req, lease_id, exit_code, parts, 1)
   end
 
+  defp outcome({:ok, outcome, _warm}), do: {:ok, outcome}
+  defp outcome({:error, _reason} = error), do: error
+
   defp complete_with_retry(req, lease_id, exit_code, parts, attempt) do
     case Client.complete(req, lease_id, exit_code, parts) do
-      {:ok, %{"outcome" => outcome}} when is_map_key(@outcomes, outcome) ->
-        {:ok, Map.fetch!(@outcomes, outcome)}
+      {:ok, %{"outcome" => outcome} = body} when is_map_key(@outcomes, outcome) ->
+        {:ok, Map.fetch!(@outcomes, outcome), Map.get(body, "warm", [])}
 
       {:ok, body} ->
         {:error, {:unexpected_complete, body}}
@@ -520,18 +527,10 @@ defmodule NccAgent.Job do
     end
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
-  defp warm(config, claim, out) do
-    result =
-      with :ok <- result_ok?(Path.join(out, "result.json")),
-           {:ok, body} <- File.read(Path.join(out, "result.json")),
-           {:ok, %{} = result} <- Jason.decode(body) do
-        result
-      else
-        _ -> %{}
-      end
-
-    warmed = NervesCache.warm(config, claim, result)
+  # The pairs are the portal's choice (`Portal.NervesCache.warm_pairs/2` over
+  # the result.json this run uploaded); the agent only runs them.
+  defp warm(config, claim, pairs) do
+    warmed = NervesCache.warm(config, claim, pairs)
 
     if warmed not in [:ok, :skipped],
       do: Logger.warning("warming the Nerves cache failed: #{inspect(warmed)}")

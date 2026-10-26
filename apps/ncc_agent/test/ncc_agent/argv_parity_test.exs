@@ -1,55 +1,81 @@
 defmodule NccAgent.ArgvParityTest do
   @moduledoc """
-  The argv the agent runs is the post-isolation argv of the sandbox design:
-  read-only Nerves cache at /nerves-cache, read-only root with the scratch
-  binds, pids limit. When `Portal.Builder` switches to
-  `Compatibility.Builder.Argv` with the same options (feat/sandbox-isolation),
-  this fixture and `Portal.BuilderArgvParityTest` describe the same argv.
+  The agent runs `Compatibility.Builder.Argv.build/1` on a spec of its own
+  making. This pins that its config and scratch layout resolve to the shared
+  post-isolation fixture `Compatibility.Builder.ArgvTest` and
+  `Portal.BuilderTest` are pinned to, minus the one thing a remote builder
+  never has: a build cache. A remote build therefore runs exactly what the
+  local host runs.
   """
   use ExUnit.Case, async: true
 
+  alias Compatibility.Builder.Argv
   alias NccAgent.{Config, Job}
 
-  @fixture Path.expand("../fixtures/post_isolation_argv.txt", __DIR__)
+  @fixture Path.expand(
+             "../../../compatibility/test/fixtures/argv/post_isolation.exs",
+             __DIR__
+           )
 
-  test "the agent's argv equals the post-isolation fixture" do
-    config = %{
+  setup_all do
+    {fixture, _binding} = Code.eval_file(@fixture)
+    fixture
+  end
+
+  # The fixture's cache paths are `/srv/ncc/...`, the agent's default data
+  # dir, so `Config.path/2` resolves to them without any special casing.
+  defp config(input) do
+    %{
       Config.defaults()
       | portal_url: "https://x",
         data_dir: "/srv/ncc",
-        build_user: "1001:1001",
-        cpus: "4",
-        memory: "8g"
+        build_user: input.user,
+        cpus: input.cpus,
+        memory: input.memory,
+        build_concurrency: input.build_concurrency
     }
+  end
 
-    claim = %{
-      "run_id" => "rb-jason-1.4.4-1700000000000",
-      "image" => %{
-        "name" => "ghcr.io/tomhoenderdos/ncc-worker",
-        "digest" => "sha256:" <> String.duplicate("a", 64)
-      }
+  defp claim(input, image) do
+    %{
+      "run_id" => String.replace_prefix(input.container_name, "ncc-", ""),
+      "image" => %{"name" => image, "digest" => "sha256:" <> String.duplicate("a", 64)}
     }
+  end
 
-    scratch = "/srv/ncc/scratch/rb-jason-1.4.4-1700000000000"
+  # Drops `value` and the flag before it (`--mount x`, `-e x`).
+  defp drop_pair(argv, value) do
+    index = Enum.find_index(argv, &(&1 == value)) || flunk("the fixture lacks #{value}")
+    argv |> List.delete_at(index) |> List.delete_at(index - 1)
+  end
 
-    dirs = %{
-      work: "#{scratch}/work",
-      out: "#{scratch}/out",
-      files: "#{scratch}/files",
-      tmp: "#{scratch}/tmp",
-      cache: "#{scratch}/cache"
-    }
+  test "the agent's argv is the shared fixture's without the build cache", %{
+    input: input,
+    argv: argv
+  } do
+    config = config(input)
+    assert Config.path(config, :nerves_cache) == input.paths.nerves_cache
+    assert Config.path(config, :hex_cache) == input.paths.hex_cache
 
-    env = [
-      {"NERVES_ARTIFACTS_DIR", "/work/nerves/artifacts"},
-      {"NERVES_DL_DIR", "/work/nerves/dl"}
-    ]
+    expected =
+      argv
+      |> drop_pair("type=bind,source=#{input.paths.build_cache},target=/build-cache,readonly")
+      |> drop_pair("NCC_BUILD_CACHE=/build-cache")
 
-    argv = config |> Job.argv_spec(claim, dirs, env) |> Compatibility.Builder.Argv.build()
-    expected = @fixture |> File.read!() |> String.split("\n", trim: true)
+    dirs = Map.take(input.paths, [:work, :out, :files, :tmp, :cache])
+    spec = Job.argv_spec(config, claim(input, input.image), dirs)
 
-    assert argv == expected
-    refute Enum.any?(argv, &String.contains?(&1, "/build-cache"))
-    refute Enum.any?(argv, &String.contains?(&1, "/home/nerves/.nerves"))
+    assert Argv.build(spec) == expected
+    refute Enum.any?(expected, &String.contains?(&1, "build-cache"))
+    refute Enum.any?(expected, &String.contains?(&1, "/home/nerves/.nerves"))
+  end
+
+  test "a registry image is run by digest", %{input: input} do
+    dirs = Map.take(input.paths, [:work, :out, :files, :tmp, :cache])
+    claim = claim(input, "ghcr.io/tomhoenderdos/ncc-worker")
+    argv = input |> config() |> Job.argv_spec(claim, dirs) |> Argv.build()
+
+    assert List.last(argv) ==
+             "ghcr.io/tomhoenderdos/ncc-worker@sha256:" <> String.duplicate("a", 64)
   end
 end

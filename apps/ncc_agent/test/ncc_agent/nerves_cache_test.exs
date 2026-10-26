@@ -34,106 +34,49 @@ defmodule NccAgent.NervesCacheTest do
       "input" => %{
         "run_id" => "rb-jason-1.4.4-1",
         "image" => %{},
-        "package" => %{},
+        "package" => %{"name" => "jason", "version" => "1.4.4", "source" => "hex"},
         "paths" => %{},
         "systems_filter" => ["rpi4"],
         "argus" => %{"enabled" => true}
       },
-      "warm_allowlist" => ["nerves_system_rpi4"],
       "timeout_sec" => 60
     }
   end
 
-  defp miss(name, version), do: %{"name" => name, "version" => version}
+  defp pair(name, version), do: %{"name" => name, "version" => version}
 
-  test "builds a symlink farm pointing at the container path and an empty dl dir", %{
-    config: config,
-    dir: dir
-  } do
-    work = Path.join(dir, "work")
-    assert %{env: env, artifacts_dir: artifacts, dl_dir: dl} = NervesCache.prepare(config, work)
-
-    assert env == [
-             {"NERVES_ARTIFACTS_DIR", "/work/nerves/artifacts"},
-             {"NERVES_DL_DIR", "/work/nerves/dl"}
-           ]
-
-    assert File.dir?(dl)
-    assert File.ls!(dl) == []
-    link = Path.join(artifacts, "nerves_system_rpi4-1.30.0")
-    assert {:ok, "/nerves-cache/artifacts/nerves_system_rpi4-1.30.0"} = File.read_link(link)
-    # Removing the link (Nerves' fingerprint-mismatch path) leaves the cache untouched.
-    File.rm_rf!(link)
-
-    assert File.exists?(
-             Path.join([
-               dir,
-               "nerves-cache",
-               "artifacts",
-               "nerves_system_rpi4-1.30.0",
-               ".fingerprint"
-             ])
-           )
-  end
-
-  test "prepare creates the cache's artifacts dir when it is missing", %{dir: dir} do
+  test "prepare_cache creates the cache and its artifacts dir", %{dir: dir} do
     other = Path.join(dir, "fresh")
     config = %{Config.defaults() | data_dir: other, portal_url: "https://x"}
-    %{artifacts_dir: artifacts} = NervesCache.prepare(config, Path.join(other, "work"))
+    assert :ok = NervesCache.prepare_cache(config)
     assert File.dir?(Path.join([other, "nerves-cache", "artifacts"]))
-    assert File.ls!(artifacts) == []
   end
 
-  test "the allowlist is applied before the bound of four pairs" do
-    result = %{
-      "nerves_cache" => %{
-        "misses" => [
-          miss("evil_system", "1.0.0"),
-          miss("a", "1.0.0"),
-          miss("nerves_system_rpi4", "1.30.0"),
-          miss("b", "1.0.0"),
-          miss("nerves_system_rpi4", "1.30.0"),
-          miss("c", "1.0.0"),
-          miss("d", "1.0.0")
-        ]
-      }
-    }
-
-    misses = NervesCache.misses(result)
-    assert length(misses) == 6
-
-    assert NervesCache.allowed(misses, ["nerves_system_rpi4", "a"]) == [
-             %{name: "a", version: "1.0.0"},
-             %{name: "nerves_system_rpi4", version: "1.30.0"}
-           ]
-
-    assert length(NervesCache.allowed(misses, ~w(evil_system a b c d nerves_system_rpi4))) == 4
-    assert NervesCache.misses(%{}) == []
-  end
-
-  test "misses keep only well-formed names and versions" do
+  test "pairs keeps well-formed official pairs, deduplicated, at most four" do
     long = String.duplicate("a", 65)
 
-    result = %{
-      "nerves_cache" => %{
-        "misses" => [
-          %{"name" => 1, "version" => "1.0.0"},
-          %{"name" => "x"},
-          "junk",
-          miss("ok", "1"),
-          miss("../etc", "1.0.0"),
-          miss("Upper", "1.0.0"),
-          miss(long, "1.0.0"),
-          miss("ok", "1.0.0-" <> long),
-          miss("ok", "2.0.0-rc.1")
-        ]
-      }
-    }
+    assert NervesCache.pairs([
+             %{"name" => 1, "version" => "1.0.0"},
+             %{"name" => "x"},
+             "junk",
+             pair("nerves_system_rpi4", "1"),
+             pair("../etc", "1.0.0"),
+             pair("evil_system", "1.0.0"),
+             pair("Nerves_System_Rpi4", "1.0.0"),
+             pair("nerves_system_" <> long, "1.0.0"),
+             pair("nerves_system_rpi4", "1.0.0-" <> long),
+             pair("nerves_system_rpi4", "2.0.0-rc.1"),
+             pair("nerves_system_rpi4", "2.0.0-rc.1"),
+             pair("nerves_toolchain_aarch64_nerves_linux_gnu", "13.2.0")
+           ]) == [
+             %{name: "nerves_system_rpi4", version: "2.0.0-rc.1"},
+             %{name: "nerves_toolchain_aarch64_nerves_linux_gnu", version: "13.2.0"}
+           ]
 
-    assert NervesCache.misses(result) == [%{name: "ok", version: "2.0.0-rc.1"}]
-    assert NervesCache.misses(%{"nerves_cache" => %{"misses" => "nope"}}) == []
-    assert NervesCache.misses(nil) == []
-    assert NervesCache.allowed([%{name: "ok", version: "2.0.0"}], nil) == []
+    many = for n <- 1..6, do: pair("nerves_system_rpi#{n}", "1.0.0")
+    assert length(NervesCache.pairs(many)) == 4
+    assert NervesCache.pairs("nope") == []
+    assert NervesCache.pairs(nil) == []
   end
 
   test "a symlinked artifacts dir is replaced, never followed", %{config: config, dir: dir} do
@@ -143,12 +86,11 @@ defmodule NccAgent.NervesCacheTest do
     File.rm_rf!(cache_artifacts)
     File.ln_s!(victim, cache_artifacts)
 
-    %{artifacts_dir: artifacts} = NervesCache.prepare(config, Path.join(dir, "work"))
+    assert :ok = NervesCache.prepare_cache(config)
 
     assert File.ls!(victim) == ["secret"]
     assert {:ok, %File.Stat{type: :directory}} = File.lstat(cache_artifacts)
     assert File.ls!(cache_artifacts) == []
-    assert File.ls!(artifacts) == []
   end
 
   test "a symlinked or file cache root is replaced", %{config: config, dir: dir} do
@@ -158,27 +100,18 @@ defmodule NccAgent.NervesCacheTest do
     File.rm_rf!(cache)
     File.ln_s!(victim, cache)
 
-    %{artifacts_dir: artifacts} = NervesCache.prepare(config, Path.join(dir, "work"))
+    assert :ok = NervesCache.prepare_cache(config)
     assert {:ok, %File.Stat{type: :directory}} = File.lstat(cache)
     assert File.ls!(Path.join(victim, "artifacts")) == ["x-1.0.0"]
-    assert File.ls!(artifacts) == []
+    assert File.ls!(Path.join(cache, "artifacts")) == []
 
     File.rm_rf!(cache)
     File.write!(cache, "not a dir")
-    NervesCache.prepare(config, Path.join(dir, "work2"))
+    assert :ok = NervesCache.prepare_cache(config)
     assert {:ok, %File.Stat{type: :directory}} = File.lstat(Path.join(cache, "artifacts"))
   end
 
-  test "the farm links only directories of the cache", %{config: config, dir: dir} do
-    cache_artifacts = Path.join([dir, "nerves-cache", "artifacts"])
-    File.write!(Path.join(cache_artifacts, "stray-file"), "x")
-    File.ln_s!("/etc", Path.join(cache_artifacts, "planted-1.0.0"))
-
-    %{artifacts_dir: artifacts} = NervesCache.prepare(config, Path.join(dir, "work"))
-    assert File.ls!(artifacts) == ["nerves_system_rpi4-1.30.0"]
-  end
-
-  test "warm runs the worker read-write in warm_nerves mode only for allowed pairs", %{
+  test "warm runs the worker read-write in warm_nerves mode for the portal's pairs", %{
     config: config,
     dir: dir
   } do
@@ -186,20 +119,21 @@ defmodule NccAgent.NervesCacheTest do
     System.put_env("FAKE_DOCKER_ARGV_LOG", argv_log)
     System.put_env("FAKE_DOCKER_RESULT", ~s({"scope":"warm_nerves"}))
     config = %{config | docker_bin: @fake}
-    evil = %{"nerves_cache" => %{"misses" => [miss("evil", "1.0.0")]}}
 
-    assert :skipped = NervesCache.warm(config, claim(), evil)
+    assert :skipped = NervesCache.warm(config, claim(), [pair("evil", "1.0.0")])
+    assert :skipped = NervesCache.warm(config, claim(), [])
     assert :skipped = NervesCache.warm(config, claim(), nil)
     refute File.exists?(argv_log)
 
-    result = %{"nerves_cache" => %{"misses" => [miss("nerves_system_rpi4", "1.30.0")]}}
-    assert :ok = NervesCache.warm(config, claim(), result, keep_scratch: true)
+    pairs = [pair("nerves_system_rpi4", "1.30.0")]
+    assert :ok = NervesCache.warm(config, claim(), pairs, keep_scratch: true)
     argv = File.read!(argv_log)
     assert argv =~ "type=bind,source=#{Path.join(dir, "nerves-cache")},target=/nerves-cache\n"
     refute argv =~ "target=/nerves-cache,readonly"
+    refute argv =~ "NCC_NERVES_CACHE_RW"
+    refute argv =~ "build-cache"
     assert argv =~ "--read-only\n"
     assert argv =~ "ncc-rb-jason-1.4.4-1-warm\n"
-    assert argv =~ "NERVES_ARTIFACTS_DIR=/work/nerves/artifacts\n"
 
     [input] =
       Path.join(dir, "scratch/*/work/input.json")
@@ -209,6 +143,7 @@ defmodule NccAgent.NervesCacheTest do
     assert input["mode"] == "warm_nerves"
     assert input["nerves_packages"] == [%{"name" => "nerves_system_rpi4", "version" => "1.30.0"}]
     assert input["run_id"] == "rb-jason-1.4.4-1-warm"
+    refute Map.has_key?(input, "package")
     refute Map.has_key?(input, "systems_filter")
     refute Map.has_key?(input, "argus")
     assert [_] = Path.wildcard(Path.join(dir, "scratch/rb-jason-1.4.4-1-warm"))
@@ -217,9 +152,9 @@ defmodule NccAgent.NervesCacheTest do
   test "warm removes its scratch and reports a failing exit", %{config: config, dir: dir} do
     System.put_env("FAKE_DOCKER_EXIT", "10")
     config = %{config | docker_bin: @fake}
-    result = %{"nerves_cache" => %{"misses" => [miss("nerves_system_rpi4", "1.30.0")]}}
+    pairs = [pair("nerves_system_rpi4", "1.30.0")]
 
-    assert {:error, {:exit, 10}} = NervesCache.warm(config, claim(), result)
+    assert {:error, {:exit, 10}} = NervesCache.warm(config, claim(), pairs)
     refute File.exists?(Path.join(dir, "scratch/rb-jason-1.4.4-1-warm"))
   end
 end

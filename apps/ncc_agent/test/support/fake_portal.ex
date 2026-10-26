@@ -22,6 +22,8 @@ defmodule NccAgent.Test.FakePortal do
       the rest are stored
     * `:releases` - `%{name => binary}` served by `GET /releases/:name`
       (agent release tarballs for `NccAgent.Updater`)
+    * `:warm` - the `warm` pairs every `POST /jobs/:id/complete` answers
+      with (default `[]`)
   """
 
   @behaviour Plug
@@ -168,7 +170,15 @@ defmodule NccAgent.Test.FakePortal do
       end)
 
     record(conn, opts, params)
-    json(conn, 202, %{accepted: true, outcome: "done"})
+    json(conn, 202, %{accepted: true, outcome: "done", warm: warm(opts)})
+  end
+
+  # A slot handing its lease back while the test is already shutting down
+  # finds the script agent gone; the answer is still a plain `done`.
+  defp warm(opts) do
+    script(opts, :warm) || []
+  catch
+    :exit, _ -> []
   end
 
   defp route(conn, "GET", ["releases", name], opts) do

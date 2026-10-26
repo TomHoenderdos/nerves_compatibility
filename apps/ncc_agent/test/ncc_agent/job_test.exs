@@ -70,8 +70,7 @@ defmodule NccAgent.JobTest do
         "max_total_bytes" => 10_000_000,
         "max_batch_bytes" => 1_000_000,
         "max_files" => 100
-      },
-      "warm_allowlist" => []
+      }
     }
   end
 
@@ -118,9 +117,11 @@ defmodule NccAgent.JobTest do
     assert "4242:4242" ==
              argv |> Enum.drop_while(&(&1 != "--user")) |> Enum.at(1)
 
-    assert "NERVES_ARTIFACTS_DIR=/work/nerves/artifacts" in argv
-    assert "NERVES_DL_DIR=/work/nerves/dl" in argv
+    # Never a build cache: a remote builder has no promotion.
+    refute Enum.any?(argv, &String.contains?(&1, "build-cache"))
     assert List.last(argv) == "ghcr.io/x/ncc-worker@" <> @digest
+    # Exactly one container ran: the portal named nothing to warm.
+    assert Enum.count(argv, &(&1 == "run")) == 1
 
     # The image was absent, so it was pulled first.
     assert_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, %{"phase" => "building"},
@@ -144,7 +145,11 @@ defmodule NccAgent.JobTest do
     refute File.exists?(Path.join(Config.path(config, :scratch), "rb-jason-1.4.4-1"))
   end
 
-  test "the worker sees input.json with the Nerves paths", %{req: req, config: config, dir: dir} do
+  test "the worker sees input.json exactly as the portal sent it", %{
+    req: req,
+    config: config,
+    dir: dir
+  } do
     # A fake that copies input.json out before the scratch dir goes.
     copy = Path.join(dir, "input-copy.json")
     wrapper = Path.join(dir, "docker.sh")
@@ -166,10 +171,46 @@ defmodule NccAgent.JobTest do
     assert {:ok, :done} = Job.run(req, claim(), %{config | docker_bin: wrapper})
 
     input = copy |> File.read!() |> Jason.decode!()
-    assert input["package"]["name"] == "jason"
-    assert input["paths"]["nerves_artifacts_dir"] == "/work/nerves/artifacts"
-    assert input["paths"]["nerves_dl_dir"] == "/work/nerves/dl"
-    assert input["paths"]["work_dir"] == "/work"
+    assert input == claim()["input"]
+  end
+
+  test "a done completion that names pairs runs a read-write warm container", %{
+    req: req,
+    config: config,
+    argv_log: argv_log,
+    script: script
+  } do
+    pairs = [%{"name" => "nerves_system_rpi4", "version" => "1.30.0"}, %{"name" => "evil"}]
+    Agent.update(script, &Map.put(&1, :warm, pairs))
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    argv = argv_log |> File.read!() |> String.split("\n", trim: true)
+    assert Enum.count(argv, &(&1 == "run")) == 2
+    data = config.data_dir
+    assert "type=bind,source=#{data}/nerves-cache,target=/nerves-cache,readonly" in argv
+    assert "type=bind,source=#{data}/nerves-cache,target=/nerves-cache" in argv
+    assert "ncc-rb-jason-1.4.4-1-warm" in argv
+    refute File.exists?(Path.join(Config.path(config, :scratch), "rb-jason-1.4.4-1-warm"))
+  end
+
+  test "a failing run is never followed by a warm, whatever the portal says", %{
+    req: req,
+    config: config,
+    argv_log: argv_log,
+    script: script
+  } do
+    Agent.update(
+      script,
+      &Map.put(&1, :warm, [%{"name" => "nerves_system_rpi4", "version" => "1.30.0"}])
+    )
+
+    System.put_env("FAKE_DOCKER_EXIT", "10")
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    argv = argv_log |> File.read!() |> String.split("\n", trim: true)
+    assert Enum.count(argv, &(&1 == "run")) == 1
   end
 
   test "a timeout completes the lease with exit code 20", %{req: req, config: config} do
@@ -259,21 +300,24 @@ defmodule NccAgent.JobTest do
     refute Map.has_key?(params, "logs")
   end
 
-  test "argv_spec/4 is the read-only, hardened spec without a build cache", %{config: config} do
+  test "argv_spec/3 is the read-only post-isolation spec without a build cache", %{
+    config: config
+  } do
     dirs = %{work: "/s/work", out: "/s/out", files: "/s/files", tmp: "/s/tmp", cache: "/s/cache"}
-    env = [{"NERVES_DL_DIR", "/work/nerves/dl"}]
-    spec = Job.argv_spec(config, claim(), dirs, env)
+    spec = Job.argv_spec(config, claim(), dirs)
 
     assert spec.image == "ghcr.io/x/ncc-worker@" <> @digest
+    assert spec.container_name == "ncc-rb-jason-1.4.4-1"
+    assert spec.user == "4242:4242"
     assert spec.nerves_cache_mode == :readonly
-    assert spec.hardening == true
-    assert spec.build_cache == nil
-    assert spec.extra_env == env
-    assert spec.tmp_dir == "/s/tmp"
-    assert spec.cache_dir == "/s/cache"
+    assert spec.paths.build_cache == nil
+    assert spec.paths.tmp == "/s/tmp"
+    assert spec.paths.cache == "/s/cache"
+    assert spec.paths.nerves_cache == Config.path(config, :nerves_cache)
+    assert spec.paths.hex_cache == Config.path(config, :hex_cache)
 
     local = put_in(claim(), ["image", "name"], "ncc-worker:local")
-    assert Job.argv_spec(config, local, dirs, env).image == "ncc-worker:local"
+    assert Job.argv_spec(config, local, dirs).image == "ncc-worker:local"
   end
 
   defp flush do

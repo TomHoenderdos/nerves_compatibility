@@ -222,23 +222,30 @@ the identity lives in `/srv/ncc/{ca.pem,client.pem,client-key.pem}`.
   60 s), claim, and if the claim names a newer `min_agent_version`,
   download that release, verify its sha256, swap `current`, hand the lease
   back and restart. Otherwise pull `image@digest` when missing, write
-  `input.json`, build the Nerves symlink farm, `docker run` the shared argv
-  with a heartbeat every minute, upload the files the portal lacks in tar
-  batches, complete, warm the cache from the run's misses, delete the
+  `input.json` (the claim's `input`, which is `Portal.Builder.worker_input/1`
+  as a local build gets it), `docker run` the shared argv with a heartbeat
+  every minute, upload the files the portal lacks in tar batches, complete,
+  warm the cache with the pairs the portal's answer names, delete the
   scratch dir.
 - **Isolation.** The argv is `Compatibility.Builder.Argv.build/1`, the
-  post-isolation argv (pinned by `apps/ncc_agent/test/fixtures/post_isolation_argv.txt`
-  and the portal's argv parity test): read-only root with per-run
-  `tmp`/`cache` binds, `--cap-drop=ALL`, `no-new-privileges`, the
-  container as `NCC_BUILD_USER`, the Nerves cache read-only at
-  `/nerves-cache`, never a build cache.
-  - *Nerves cache farm*: each run gets `work/nerves/artifacts/` with one
-    symlink per entry of `<data>/nerves-cache/artifacts` and an empty
-    `dl/`, passed as `NERVES_ARTIFACTS_DIR`/`NERVES_DL_DIR` (container env
-    and `input.paths`). After a passing run, `result.json`'s
-    `nerves_cache.misses` that the portal's allowlist names (official
-    Nerves packages, sent in the claim) are warmed by a second container
-    with the cache read-write, at most four per run.
+  post-isolation argv the local host runs too. The shared fixture
+  `apps/compatibility/test/fixtures/argv/post_isolation.exs` pins it, and
+  `Compatibility.Builder.ArgvTest`, `Portal.BuilderTest` and
+  `NccAgent.ArgvParityTest` all check against it: read-only root with
+  per-run `tmp`/`cache` binds, `--cap-drop=ALL`, `no-new-privileges`,
+  `--pids-limit`, the container as `NCC_BUILD_USER`, the Nerves cache
+  read-only at `/nerves-cache`, never a build cache (a remote builder has
+  no `Portal.BuildCache.Promotion`).
+  - *Nerves cache*: `<data>/nerves-cache` is mounted read-only; the worker
+    inside the container lays out its own per-run symlink farm over it
+    (`NccWorker.NervesCache`) and reports what it had to extract itself as
+    `result.json` `nerves_cache.misses`. Which misses are worth caching is
+    the portal's decision, made when the lease completes with
+    `Portal.NervesCache.warm_pairs/2` (named by the run's lock, owned by
+    the `nerves` Hex user, at most four) and returned in the `complete`
+    answer as `warm`; the agent then runs a second container in
+    `warm_nerves` mode with the cache read-write for exactly those pairs.
+    The agent has no allowlist of its own.
   - *Egress*: `priv/egress.sh` writes chain `NCC-EGRESS` first in
     `DOCKER-USER` (IPv6 too when `ip6tables` has the chain): established
     replies, DNS to the resolvers, then drop RFC1918, `100.64.0.0/10`,
@@ -309,23 +316,6 @@ the identity lives in `/srv/ncc/{ca.pem,client.pem,client-key.pem}`.
 | Leases `done` but no runs | `remote` is missing from the web host's `OBAN_QUEUES`. |
 | Nothing goes remote | `images.json` missing or stale (`systemctl status ncc-images-sync`), `remote_mode` off, no builder seen in 15 min, or the local backlog under the threshold. |
 | Builder never claims, no errors | The agent is waiting to restart into a new release (`updating`), or its `NCC_SLOTS` are all busy. |
-
-## Depends on `feat/sandbox-isolation`
-
-The agent already runs the post-isolation argv and writes the per-run
-Nerves paths; three things only take full effect once the isolation branch
-lands:
-
-- The worker reading `NERVES_ARTIFACTS_DIR`/`NERVES_DL_DIR` and
-  `paths.nerves_artifacts_dir`/`paths.nerves_dl_dir` from `NCC_INPUT`.
-  Until then the keys are informational (`apps/ncc_worker/README.md`) and
-  the container env alone steers Nerves.
-- `nerves_cache.misses` in `result.json`. Until the worker reports it, the
-  agent warms nothing and every remote run fetches its Nerves artifacts
-  cold.
-- `Portal.Builder` switching to `Compatibility.Builder.Argv`: today the
-  local host still builds its own argv, and the parity test pins the two
-  (`apps/portal/test/portal/builder_argv_parity_test.exs`).
 
 ## Manual deploy steps, summarised
 

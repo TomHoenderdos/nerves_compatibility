@@ -43,7 +43,7 @@ defmodule PortalWeb.Builder.JobControllerClaimTest do
     assert body["timeout_sec"] == 7200
     assert body["upload"]["max_files"] == 20_000
     assert body["egress_required"] == true
-    assert is_list(body["warm_allowlist"])
+    refute Map.has_key?(body, "warm_allowlist")
   end
 
   test "nothing to do is 204 and a short poll returns quickly", %{conn: conn} do
