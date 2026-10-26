@@ -138,6 +138,79 @@ defmodule Portal.BuildCache.L2.TarballTest do
              0o755
   end
 
+  test "pack carries Mix links as a manifest, never as symlink members", %{entry: entry, tar: tar} do
+    {:ok, _} = Tarball.pack(entry, tar, "jason")
+    {:ok, table} = :erl_tar.table(String.to_charlist(tar), [:compressed, :verbose])
+    refute Enum.any?(table, fn {_, type, _, _, _, _, _} -> type == :symlink end)
+    assert Enum.count(table, fn {name, _, _, _, _, _, _} -> name == ~c".ncc-links.json" end) == 1
+  end
+
+  test "pack refuses an entry that holds nothing but links", %{entry: entry, tar: tar} do
+    File.rm_rf!(Path.join(entry, "ebin"))
+    File.rm_rf!(Path.join(entry, ".mix"))
+    assert {:error, :empty_entry} = Tarball.pack(entry, tar, "jason")
+  end
+
+  test "unpack refuses any symlink member", %{tmp: tmp, out: out} do
+    dir = Path.join(tmp, "withlink")
+    File.mkdir_p!(Path.join(dir, "ebin"))
+    File.ln_s!("y", Path.join(dir, "ebin/x"))
+    tar = Path.join(tmp, "link.tar.gz")
+
+    :ok =
+      :erl_tar.create(
+        String.to_charlist(tar),
+        [{~c"ebin", String.to_charlist(Path.join(dir, "ebin"))}],
+        [:compressed]
+      )
+
+    File.mkdir_p!(out)
+    assert {:error, {:member_type, :symlink, _}} = Tarball.unpack(tar, out)
+  end
+
+  @good "../../../../deps/x/priv"
+
+  for {label, members} <- [
+        {"a bad key", ~s({"ebin": "../../../../deps/x/priv"})},
+        {"a target outside Mix's shape", ~s({"priv": "../../other"})},
+        {"a name and target mismatch", ~s({"priv": "../../../../deps/x/include"})},
+        {"a non-map", "[1]"},
+        {"a non-string target", ~s({"priv": 1})},
+        {"not JSON", "nope"},
+        {"an oversized manifest",
+         ~s({"priv": "../../../../deps/x/priv", "pad": "#{String.duplicate("a", 5000)}"})}
+      ] do
+    test "unpack refuses a manifest with #{label}", %{tmp: tmp, out: out} do
+      File.mkdir_p!(out)
+      tar = hostile(tmp, [{"ebin/a", "x"}, {".ncc-links.json", unquote(members)}])
+      assert {:error, {:links, _}} = Tarball.unpack(tar, out)
+    end
+  end
+
+  test "unpack refuses a manifest whose link name exists in the archive", %{tmp: tmp, out: out} do
+    File.mkdir_p!(out)
+    tar = hostile(tmp, [{"priv/a", "x"}, {".ncc-links.json", ~s({"priv": "#{@good}"})}])
+    assert {:error, {:links, {:exists, "priv"}}} = Tarball.unpack(tar, out)
+  end
+
+  test "unpack leaves a manifest-named file below the top level alone", %{tmp: tmp, out: out} do
+    File.mkdir_p!(out)
+    tar = hostile(tmp, [{"ebin/.ncc-links.json", "[1]"}])
+    assert :ok = Tarball.unpack(tar, out)
+    assert File.exists?(Path.join(out, "ebin/.ncc-links.json"))
+  end
+
+  test "unpack refuses when the members sum past the extraction cap", %{
+    entry: entry,
+    tar: tar,
+    out: out
+  } do
+    {:ok, _} = Tarball.pack(entry, tar, "jason")
+    File.mkdir_p!(out)
+    assert {:error, :too_large} = Tarball.unpack(tar, out, max_extracted_bytes: 10)
+    assert Tarball.max_extracted_bytes() == 2 * 1024 * 1024 * 1024
+  end
+
   # A single 512-byte ustar header with no data, for a type erl_tar will not write.
   defp ustar_entry(name, typeflag) do
     name = String.pad_trailing(name, 100, <<0>>)
