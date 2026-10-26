@@ -1170,4 +1170,123 @@ defmodule Portal.Workers.BuildTest do
       assert_enqueued(worker: Ingest)
     end
   end
+
+  # `perform_job/3` runs the job's `perform/1` directly, so these cover the
+  # `after`-block broadcast the same way a real job attempt would reach it.
+  describe "sweep broadcasts" do
+    setup do
+      :ok = Portal.AdminEvents.subscribe(:sweeps)
+      :ok
+    end
+
+    test "a finished build job with a sweep id in meta announces :sweeps" do
+      package =
+        Package
+        |> Ash.Changeset.for_create(:create, %{name: "swept"})
+        |> Ash.create!(domain: Portal.Catalog)
+
+      Run
+      |> Ash.Changeset.for_create(:create, %{
+        run_id: "existing-swept",
+        package_id: package.id,
+        version_tested: "1.0.0",
+        image_digest: "sha256:dup",
+        overall_status: :pass
+      })
+      |> Ash.create!(domain: Portal.Catalog)
+
+      assert :ok =
+               perform_job(
+                 Build,
+                 %{"package" => "swept", "version" => "1.0.0", "image_digest" => "sha256:dup"},
+                 meta: %{sweep_id: "sweep-dedup"}
+               )
+
+      assert_receive {:admin_changed, :sweeps}
+    end
+
+    test "a build job without a sweep id does not announce" do
+      package =
+        Package
+        |> Ash.Changeset.for_create(:create, %{name: "unswept"})
+        |> Ash.create!(domain: Portal.Catalog)
+
+      Run
+      |> Ash.Changeset.for_create(:create, %{
+        run_id: "existing-unswept",
+        package_id: package.id,
+        version_tested: "1.0.0",
+        image_digest: "sha256:dup2",
+        overall_status: :pass
+      })
+      |> Ash.create!(domain: Portal.Catalog)
+
+      assert :ok =
+               perform_job(Build, %{
+                 "package" => "unswept",
+                 "version" => "1.0.0",
+                 "image_digest" => "sha256:dup2"
+               })
+
+      refute_receive {:admin_changed, :sweeps}
+    end
+
+    test "a successful build carries its sweep id into the ingest job" do
+      files_dir =
+        files_dir_with(["ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"])
+
+      set_response(
+        {:ok,
+         %{
+           exit_code: 0,
+           result: fixture_result(),
+           files_dir: files_dir,
+           output_dir: files_dir,
+           log: "ok"
+         }}
+      )
+
+      assert :ok =
+               perform_job(
+                 Build,
+                 %{
+                   "package" => "jason",
+                   "version" => "1.4.1",
+                   "image_digest" => "sha256:deadbeef"
+                 },
+                 meta: %{sweep_id: "sweep-ingest"}
+               )
+
+      assert_receive {:admin_changed, :sweeps}
+      assert [job] = all_enqueued(worker: Ingest)
+      assert job.meta["sweep_id"] == "sweep-ingest"
+    end
+
+    test "an ingest job with a sweep id in meta announces :sweeps when it finishes" do
+      {:ok, run} =
+        Portal.Catalog.Ingestion.ingest(fixture_result(), %{
+          run_id: "sweep-committed",
+          image_digest: "sha256:retry",
+          files_dir: files_dir_with([])
+        })
+
+      assert :ok =
+               perform_job(Ingest, %{"run_id" => run.run_id}, meta: %{sweep_id: "sweep-3"})
+
+      assert_receive {:admin_changed, :sweeps}
+    end
+
+    test "an ingest job without a sweep id does not announce" do
+      {:ok, run} =
+        Portal.Catalog.Ingestion.ingest(fixture_result(), %{
+          run_id: "sweep-committed2",
+          image_digest: "sha256:retry2",
+          files_dir: files_dir_with([])
+        })
+
+      assert :ok = perform_job(Ingest, %{"run_id" => run.run_id})
+
+      refute_receive {:admin_changed, :sweeps}
+    end
+  end
 end

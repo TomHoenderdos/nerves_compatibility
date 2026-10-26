@@ -58,6 +58,7 @@ defmodule Portal.Workers.Build do
 
   import Ecto.Query, only: [from: 2]
 
+  alias Portal.AdminEvents
   alias Portal.BuildCache.Promotion
   alias Portal.Builder
   alias Portal.Catalog.LogSanitizer
@@ -68,7 +69,20 @@ defmodule Portal.Workers.Build do
   alias Portal.Workers.{Ingest, Progress}
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: args, attempt: attempt, max_attempts: max_attempts}) do
+  def perform(%Oban.Job{meta: meta, args: args, attempt: attempt, max_attempts: max_attempts}) do
+    do_perform(args, attempt, max_attempts, meta["sweep_id"])
+  after
+    # A bulk rebuild's Maintenance page (Task 7) counts a sweep's jobs by Oban
+    # state (`Portal.BulkRebuild.status/1`); every attempt here moves a job
+    # from one state to another -- success, a retry-bound failure, a policy
+    # cancel, or an exhausted discard -- so it is told regardless of how
+    # `do_perform/4` above returns or raises. `after` runs either way, once
+    # any transaction `do_perform/4` opened has already closed, and a job
+    # without a `sweep_id` has no Maintenance page watching it.
+    if meta["sweep_id"], do: AdminEvents.broadcast(:sweeps)
+  end
+
+  defp do_perform(args, attempt, max_attempts, sweep_id) do
     package = args["package"]
     version = args["version"]
     image_digest = args["image_digest"] || Builder.docker_image() |> Builder.image_digest()
@@ -102,17 +116,12 @@ defmodule Portal.Workers.Build do
         :ok
 
       true ->
+        ctx =
+          {package, version, image_digest, scan_request_id, run_id, attempt, max_attempts,
+           sweep_id}
+
         with_crash_cleanup(scan_request_id, run_id, attempt, max_attempts, fn ->
-          do_build(
-            package,
-            version,
-            image_digest,
-            scan_request_id,
-            run_id,
-            attempt,
-            max_attempts,
-            args
-          )
+          do_build(ctx, args)
         end)
     end
   end
@@ -138,16 +147,13 @@ defmodule Portal.Workers.Build do
     end
   end
 
-  defp do_build(
-         package,
-         version,
-         image_digest,
-         scan_request_id,
-         run_id,
-         attempt,
-         max_attempts,
-         args
-       ) do
+  # `ctx` is the same tuple `handle_outcome/3` pattern-matches: building it once
+  # here, before the call, is what keeps `do_build/2` at two parameters rather
+  # than the nine separate fields it would otherwise need to close over.
+  defp do_build(ctx, args) do
+    {package, version, image_digest, scan_request_id, run_id, attempt, max_attempts, _sweep_id} =
+      ctx
+
     build_args =
       %{
         package: package,
@@ -161,11 +167,7 @@ defmodule Portal.Workers.Build do
 
     case builder().build(build_args) do
       {:ok, %{exit_code: exit_code} = build} ->
-        handle_outcome(
-          classify(exit_code),
-          build,
-          {package, version, image_digest, scan_request_id, run_id, attempt, max_attempts}
-        )
+        handle_outcome(classify(exit_code), build, ctx)
 
       {:error, {:insufficient_disk, free, needed}} ->
         # A disk that is full right now is usually full because other builds are
@@ -237,7 +239,7 @@ defmodule Portal.Workers.Build do
   end
 
   defp handle_outcome(:ingest, build, ctx) do
-    {package, version, image_digest, scan_request_id, run_id, attempt, max} = ctx
+    {package, version, image_digest, scan_request_id, run_id, attempt, max, sweep_id} = ctx
 
     case build.result do
       nil ->
@@ -255,12 +257,12 @@ defmodule Portal.Workers.Build do
 
         # No cleanup: the scratch dir is what the ingest job reads, and it owns
         # removing it once the rows are committed.
-        enqueue_ingest(run_id, image_digest, scan_request_id)
+        enqueue_ingest(run_id, image_digest, scan_request_id, sweep_id)
     end
   end
 
   defp handle_outcome({:reject, reason}, _build, ctx) do
-    {_package, _version, _digest, scan_request_id, run_id, _attempt, _max} = ctx
+    {_package, _version, _digest, scan_request_id, run_id, _attempt, _max, _sweep_id} = ctx
     Builder.cleanup(run_id)
     Progress.mark(scan_request_id, :rejected, error_reason: reason)
     Progress.broadcast(scan_request_id, :rejected, %{reason: reason})
@@ -268,7 +270,7 @@ defmodule Portal.Workers.Build do
   end
 
   defp handle_outcome(:retry, build, ctx) do
-    {package, version, _digest, scan_request_id, run_id, attempt, max} = ctx
+    {package, version, _digest, scan_request_id, run_id, attempt, max, _sweep_id} = ctx
     reason = "worker/runner exit #{build.exit_code}"
     Logger.warning("Build retry for #{package} #{version}: #{reason}")
     error_log = excerpt_from(build.log)
@@ -326,13 +328,19 @@ defmodule Portal.Workers.Build do
     end)
   end
 
-  defp enqueue_ingest(run_id, image_digest, scan_request_id) do
+  # `sweep_id` is threaded through so a sweep's build and the ingest it hands
+  # off to are both watched: Build's own `perform/1` already announced this
+  # attempt, and now the ingest job carries the same id so its own completion
+  # (success, retry, or discard) announces too.
+  defp enqueue_ingest(run_id, image_digest, scan_request_id, sweep_id) do
     args =
       %{"run_id" => run_id, "image_digest" => image_digest}
       |> maybe_put("scan_request_id", scan_request_id)
 
+    meta = if sweep_id, do: %{sweep_id: sweep_id}, else: %{}
+
     # This node's own queue: the scratch dir the ingest reads is on this disk.
-    case args |> Ingest.new(queue: Ingest.local_queue()) |> Oban.insert() do
+    case args |> Ingest.new(queue: Ingest.local_queue(), meta: meta) |> Oban.insert() do
       {:ok, _job} ->
         # Nothing after this point may raise. The ingest job now owns the
         # scratch dir, and `with_crash_cleanup/5` deletes it on the way out of

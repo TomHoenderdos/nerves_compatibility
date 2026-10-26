@@ -18,6 +18,7 @@ defmodule Portal.BulkRebuild do
 
   import Ecto.Query
 
+  alias Portal.AdminEvents
   alias Portal.Catalog.BulkSweep
   alias Portal.Repo
   alias Portal.Workers.Backfill
@@ -98,10 +99,21 @@ defmodule Portal.BulkRebuild do
           {:ok, %{sweep_id: nil, selected: 0, enqueued: 0}}
 
         true ->
-          enqueue(names, what, systems, opts)
+          names |> enqueue(what, systems, opts) |> announce_sweep_started()
       end
     end
   end
+
+  # A dry run and an empty selection both return before `enqueue/4`, so they
+  # never reach here; only a sweep that actually queued jobs tells the
+  # Maintenance page (Task 7) to refresh. `Ash.create/3` failing inside
+  # `enqueue/4` means nothing was queued either, so only `{:ok, _}` announces.
+  defp announce_sweep_started({:ok, _result} = result) do
+    AdminEvents.broadcast(:sweeps)
+    result
+  end
+
+  defp announce_sweep_started(result), do: result
 
   defp what(:full), do: {:ok, "full", nil}
   defp what(:argus_only), do: {:ok, "argus_only", nil}
@@ -346,6 +358,10 @@ defmodule Portal.BulkRebuild do
     with {:ok, sweep} <- Ash.get(BulkSweep, sweep_id, domain: Portal.Catalog) do
       sweep |> Ash.Changeset.for_update(:cancel, %{}) |> Ash.update!(domain: Portal.Catalog)
     end
+
+    # Only when something was actually waiting to be stopped: a cancel of a
+    # sweep that already finished moves nothing the Maintenance page shows.
+    if n > 0, do: AdminEvents.broadcast(:sweeps)
 
     {:ok, n}
   end
