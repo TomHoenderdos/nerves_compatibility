@@ -236,7 +236,7 @@ defmodule Portal.Builders.UploadTest do
                runner_log: nil
              })
 
-    assert :ok =
+    assert {:ok, %{}} =
              Upload.write_outputs(lease.id, %{
                result: upload.("result.json"),
                logs: upload.("logs.tar.gz"),
@@ -360,7 +360,7 @@ defmodule Portal.Builders.UploadTest do
 
     one = logs_upload(dir, [{"a.log", Path.join(dir, "mid")}])
 
-    assert :ok =
+    assert {:ok, %{}} =
              Upload.write_outputs(lease.id, %{
                result: result_upload(dir),
                logs: one,
@@ -375,7 +375,7 @@ defmodule Portal.Builders.UploadTest do
     File.write!(Path.join(dir, "host"), "old")
     logs = logs_upload(dir, [{"host.log", Path.join(dir, "host")}])
 
-    assert :ok =
+    assert {:ok, %{}} =
              Upload.write_outputs(lease.id, %{
                result: result_upload(dir),
                logs: logs,
@@ -384,7 +384,7 @@ defmodule Portal.Builders.UploadTest do
 
     assert File.exists?(Path.join(logs_dir(lease), "host.log"))
 
-    assert :ok =
+    assert {:ok, %{}} =
              Upload.write_outputs(lease.id, %{
                result: result_upload(dir),
                logs: nil,

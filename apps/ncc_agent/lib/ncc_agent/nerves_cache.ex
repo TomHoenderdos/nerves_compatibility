@@ -1,19 +1,23 @@
 defmodule NccAgent.NervesCache do
   @moduledoc """
-  The per-run view of the shared Nerves cache and its allowlisted warm
-  (isolation design, section 1).
+  The agent's side of the shared Nerves cache (isolation design, section 1).
 
-  A build mounts `<data>/nerves-cache` read-only at `/nerves-cache` and gets
-  its own `work/nerves/artifacts/`: one symlink per cache entry, pointing at
-  the container path `/nerves-cache/artifacts/<entry>`, so a cached artifact
-  resolves through its link and a missing or mismatched one is extracted
-  into the run's own dir (Nerves' `File.rm_rf!` on a mismatch removes the
-  link, never the target). `work/nerves/dl/` starts empty.
+  A build mounts `<data>/nerves-cache` read-only at `/nerves-cache`. Inside
+  the container the worker lays out its own per-run symlink farm over it
+  (`NccWorker.NervesCache`) and reports what it had to extract itself as
+  `result.json` `nerves_cache.misses`. Which of those misses are worth
+  caching is the portal's call, not the agent's
+  (`Portal.NervesCache.warm_pairs/2`: named by the run's lock, owned by the
+  `nerves` Hex user, at most four), and the portal answers the lease's
+  `complete` with them as `warm`. `warm/4` then runs a second, trusted
+  container in `warm_nerves` mode with the cache mounted read-write for
+  exactly those pairs. The agent has no allowlist of its own and never warms
+  anything the portal did not name; `pairs/1` only re-checks the shape.
 
-  After a passing build, `warm/3` runs a second, trusted container with the
-  cache mounted read-write in `warm_nerves` mode, for the run's misses that
-  the portal's allowlist (`claim["warm_allowlist"]`) names, at most
-  `@warm_pairs_per_run` of them. The agent never has an allowlist of its own.
+  `prepare_cache/1` makes sure the cache root and its `artifacts` are real
+  directories before anything mounts or chowns them: a warm container has
+  them read-write and could leave a symlink (to `/etc`, say) that the agent,
+  as root, would otherwise follow.
   """
 
   require Logger
@@ -21,58 +25,28 @@ defmodule NccAgent.NervesCache do
   alias Compatibility.Builder.Argv
   alias NccAgent.{Config, Docker, Fs, Job}
 
-  @artifacts "/work/nerves/artifacts"
-  @dl "/work/nerves/dl"
-  @container_cache_artifacts "/nerves-cache/artifacts"
   @warm_pairs_per_run 4
   @warm_timeout_ms 2 * 60 * 60 * 1000
   @max_field_bytes 64
-  @name ~r/\A[a-z][a-z0-9_]*\z/
-
-  @type prepared :: %{
-          env: [{String.t(), String.t()}],
-          artifacts_dir: Path.t(),
-          dl_dir: Path.t()
-        }
+  # The same shape `Portal.NervesCache.pair_tuple/1` accepts: an official
+  # Nerves system or toolchain package and a semantic version.
+  @name ~r/\Anerves_(system|toolchain)_[a-z0-9_]+\z/
 
   @type pair :: %{name: String.t(), version: String.t()}
 
   @doc """
-  Creates the run's Nerves dirs under `work_dir`: the symlink farm onto the
-  cache's artifacts and an empty dl dir. Returns the worker env for them.
-
-  The cache root and its `artifacts` must be real directories: a warm
-  container has them read-write and could leave a symlink (to `/etc`, say)
-  that the agent, as root, would otherwise list and chown. Anything else is
-  logged, removed (`File.rm_rf/1` removes a link, not its target) and
-  recreated empty; it is only a cache. Only directory entries are linked.
+  Makes `<data>/nerves-cache` and its `artifacts` real directories. Anything
+  else there (a symlink, a file) is logged, removed (`File.rm_rf/1` removes
+  a link, not its target) and recreated empty; it is only a cache.
   """
-  @spec prepare(Config.t(), Path.t()) :: prepared()
-  # `work_dir` is the job's own scratch dir; the cache dir is the agent's.
-  # sobelow_skip ["Traversal.FileModule"]
-  def prepare(config, work_dir) do
+  @spec prepare_cache(Config.t()) :: :ok
+  def prepare_cache(config) do
     cache = Config.path(config, :nerves_cache)
-    cache_artifacts = Path.join(cache, "artifacts")
     ensure_real_dir!(cache)
-    ensure_real_dir!(cache_artifacts)
-
-    artifacts = Path.join(work_dir, "nerves/artifacts")
-    dl = Path.join(work_dir, "nerves/dl")
-    File.mkdir_p!(artifacts)
-    File.mkdir_p!(dl)
-
-    for entry <- File.ls!(cache_artifacts) |> Enum.sort(),
-        real_dir?(Path.join(cache_artifacts, entry)) do
-      File.ln_s!(Path.join(@container_cache_artifacts, entry), Path.join(artifacts, entry))
-    end
-
-    %{
-      env: [{"NERVES_ARTIFACTS_DIR", @artifacts}, {"NERVES_DL_DIR", @dl}],
-      artifacts_dir: artifacts,
-      dl_dir: dl
-    }
+    ensure_real_dir!(Path.join(cache, "artifacts"))
   end
 
+  # The cache dir is the agent's own, under its data dir.
   # sobelow_skip ["Traversal.FileModule"]
   defp ensure_real_dir!(path) do
     case File.lstat(path) do
@@ -89,17 +63,16 @@ defmodule NccAgent.NervesCache do
     end
   end
 
-  defp real_dir?(path), do: match?({:ok, %File.Stat{type: :directory}}, File.lstat(path))
-
   @doc """
-  The run's reported cache misses (`result["nerves_cache"]["misses"]`) with
-  well-formed `name` (`[a-z][a-z0-9_]*`) and `version` (a semantic
-  version), each at most 64 bytes, deduplicated. Untrusted: the worker
-  reports it. `allowed/2` bounds the count.
+  The pairs of a `complete` answer's `warm` list with a well-formed `name`
+  (an official `nerves_system_*` or `nerves_toolchain_*` package) and
+  `version` (semantic), each at most 64 bytes, deduplicated, at most four.
+  Anything else is dropped without a word: the portal chose the list, this
+  only keeps a bad answer from naming an arbitrary package.
   """
-  @spec misses(map() | nil) :: [pair()]
-  def misses(%{"nerves_cache" => %{"misses" => misses}}) when is_list(misses) do
-    misses
+  @spec pairs(term()) :: [pair()]
+  def pairs(list) when is_list(list) do
+    list
     |> Enum.flat_map(fn
       %{"name" => name, "version" => version} when is_binary(name) and is_binary(version) ->
         if valid_name?(name) and valid_version?(version),
@@ -110,36 +83,25 @@ defmodule NccAgent.NervesCache do
         []
     end)
     |> Enum.uniq()
+    |> Enum.take(@warm_pairs_per_run)
   end
 
-  def misses(_result), do: []
+  def pairs(_list), do: []
 
   defp valid_name?(name), do: byte_size(name) <= @max_field_bytes and Regex.match?(@name, name)
 
   defp valid_version?(version),
     do: byte_size(version) <= @max_field_bytes and match?({:ok, _}, Version.parse(version))
 
-  @doc "The first four (`@warm_pairs_per_run`) pairs whose name is in the portal's `allowlist`."
-  @spec allowed([pair()], [String.t()] | nil) :: [pair()]
-  def allowed(misses, allowlist) when is_list(allowlist) do
-    allowed = MapSet.new(allowlist, &to_string/1)
-
-    misses
-    |> Enum.filter(&MapSet.member?(allowed, &1.name))
-    |> Enum.take(@warm_pairs_per_run)
-  end
-
-  def allowed(_misses, _allowlist), do: []
-
   @doc """
-  Warms the shared cache with the run's allowlisted misses: `:skipped` when
-  there are none, else one read-write `warm_nerves` container run under
-  `<scratch>/<run_id>-warm`, removed afterwards (kept with
+  Warms the shared cache with the pairs the portal named: `:skipped` when
+  `pairs/1` leaves none, else one read-write `warm_nerves` container run
+  under `<scratch>/<run_id>-warm`, removed afterwards (kept with
   `keep_scratch: true`, for tests).
   """
-  @spec warm(Config.t(), map(), map() | nil, keyword()) :: :ok | :skipped | {:error, term()}
-  def warm(config, claim, result, opts \\ []) do
-    case allowed(misses(result), claim["warm_allowlist"]) do
+  @spec warm(Config.t(), map(), term(), keyword()) :: :ok | :skipped | {:error, term()}
+  def warm(config, claim, pairs, opts \\ []) do
+    case pairs(pairs) do
       [] -> :skipped
       pairs -> run_warm(config, claim, pairs, opts)
     end
@@ -155,17 +117,19 @@ defmodule NccAgent.NervesCache do
 
     try do
       Enum.each(Map.values(dirs), &File.mkdir_p!/1)
-      nerves = prepare(config, dirs.work)
+      prepare_cache(config)
       write_input(claim, run_id, pairs, dirs.work)
 
+      # The warm container writes `staging/<run_id>` under the cache root and
+      # renames finished artifacts into `artifacts/`, so both must be its.
       cache = Config.path(config, :nerves_cache)
       Fs.chown(config, Map.values(dirs), ["-R"])
       Fs.chown(config, [cache, Path.join(cache, "artifacts")], [])
 
       spec =
         config
-        |> Job.argv_spec(Map.put(claim, "run_id", run_id), dirs, nerves.env)
-        |> Map.merge(%{nerves_cache_mode: :readwrite, hardening: true})
+        |> Job.argv_spec(Map.put(claim, "run_id", run_id), dirs)
+        |> Map.put(:nerves_cache_mode, :warm)
 
       names = Enum.map_join(pairs, ", ", &"#{&1.name}-#{&1.version}")
       Logger.info("warming the Nerves cache with #{names} (#{run_id})")
@@ -207,12 +171,14 @@ defmodule NccAgent.NervesCache do
     }
   end
 
+  # The build's input with its package-specific parts dropped, as
+  # `Portal.Workers.WarmNerves` shapes a local warm.
   # sobelow_skip ["Traversal.FileModule"]
   defp write_input(claim, run_id, pairs, work_dir) do
     input =
       claim
       |> Map.get("input", %{})
-      |> Map.drop(["systems_filter", "argus"])
+      |> Map.drop(["package", "systems_filter", "argus", "egress_probe"])
       |> Map.merge(%{
         "mode" => "warm_nerves",
         "nerves_packages" => Enum.map(pairs, &%{"name" => &1.name, "version" => &1.version}),

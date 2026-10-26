@@ -416,10 +416,7 @@ defmodule Portal.Builder do
   the `run_id` in an Oban job's args, and must use this exact transform to do it.
   """
   @spec safe_name(String.t()) :: String.t()
-  def safe_name(run_id) when run_id in ["", ".", ".."],
-    do: raise(ArgumentError, "invalid directory name")
-
-  def safe_name(run_id), do: String.replace(run_id, ~r/[^A-Za-z0-9_.\-]/, "_")
+  def safe_name(run_id), do: Argv.safe_name(run_id)
 
   # ── Internals ──────────────────────────────────────────────────────────────
 

@@ -404,12 +404,12 @@ defmodule Portal.Builders.Upload do
   end
 
   @doc """
-  Write `result.json`, the per-system logs and the runner log for ingest.
-  The logs directory starts empty on every call, so an attempt never
-  inherits a previous attempt's logs.
+  Write `result.json`, the per-system logs and the runner log for ingest,
+  returning the decoded `result.json`. The logs directory starts empty on
+  every call, so an attempt never inherits a previous attempt's logs.
   """
   @spec write_outputs(String.t(), map()) ::
-          :ok
+          {:ok, map()}
           | {:error,
              :result_too_large
              | :result_unparsable
@@ -428,12 +428,12 @@ defmodule Portal.Builders.Upload do
     with :ok <- mkdir(logs_dir),
          :ok <- size_ok(result.path, caps.max_result_bytes, :result_too_large),
          {:ok, bytes} <- read_result(result.path),
-         {:ok, _} <- decode(bytes),
+         {:ok, decoded} <- decode(bytes),
          :ok <- write_logs(Map.get(parts, :logs), logs_dir, caps),
          :ok <- write_runner_log(Map.get(parts, :runner_log), Path.join(out, "runner.log")) do
       # result.json last: `load_run/1` only sees a run whose parts all landed.
       case File.write(Path.join(out, "result.json"), bytes) do
-        :ok -> :ok
+        :ok -> {:ok, decoded}
         {:error, reason} -> {:error, io_error(reason)}
       end
     end

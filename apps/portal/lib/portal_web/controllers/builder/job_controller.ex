@@ -10,7 +10,7 @@ defmodule PortalWeb.Builder.JobController do
   require Logger
 
   alias Portal.Builders
-  alias Portal.Builders.{Images, Leases, RateLimit, Upload, WarmAllowlist}
+  alias Portal.Builders.{Images, Leases, RateLimit, Upload}
   alias Portal.Workers.{Ingest, Progress}
 
   @claims_per_minute 60
@@ -142,15 +142,18 @@ defmodule PortalWeb.Builder.JobController do
     with {:ok, lease} <- Leases.held(id, builder.id),
          {:ok, exit_code} <- exit_code(params["exit_code"]),
          {:ok, lease} <- Leases.heartbeat(lease.id, lease.builder_id, "uploading", nil),
-         :ok <- write_outputs(lease, exit_code, params),
+         {:ok, result} <- write_outputs(lease, exit_code, params),
          {:ok, outcome, lease} <- end_attempt(lease, exit_code, builder) do
-      if outcome == :done do
-        Progress.broadcast(lease.scan_request_id, :ingesting, %{run_id: lease.run_id})
-      else
-        Upload.cleanup(lease.id)
-      end
+      warm =
+        if outcome == :done do
+          Progress.broadcast(lease.scan_request_id, :ingesting, %{run_id: lease.run_id})
+          warm_pairs(result, lease)
+        else
+          Upload.cleanup(lease.id)
+          []
+        end
 
-      conn |> put_status(202) |> json(%{accepted: true, outcome: outcome})
+      conn |> put_status(202) |> json(%{accepted: true, outcome: outcome, warm: warm})
     else
       {:error, :not_held} -> error(conn, 409, "lease_not_held")
       {:error, :update_failed} -> error(conn, 500, "complete_failed")
@@ -198,8 +201,26 @@ defmodule PortalWeb.Builder.JobController do
 
   defp end_attempt(lease, exit_code, _builder), do: Leases.complete(lease, exit_code)
 
+  # Which of the run's reported Nerves cache misses the builder may warm into
+  # its own cache, for a `done` completion: the portal's rule
+  # (`Portal.NervesCache.warm_pairs/2`: named by the run's lock, owned by the
+  # `nerves` Hex user, at most four) over the result.json it just uploaded,
+  # never a list of the builder's. The recently-warmed bound is per host cache
+  # and this cache is the builder's own, so it is not applied; a repeat warm
+  # only downloads what that cache still lacks. A Hex lookup that fails
+  # warms nothing this time.
+  defp warm_pairs(%{} = result, lease) do
+    Portal.NervesCache.warm_pairs(result, recently_warmed: MapSet.new())
+  rescue
+    e ->
+      Logger.warning("warm pairs for #{lease.id} not computed: #{Exception.message(e)}")
+      []
+  end
+
+  defp warm_pairs(_result, _lease), do: []
+
   # A failing exit needs no result.json; a success needs one.
-  defp write_outputs(_lease, exit_code, _params) when exit_code != 0, do: :ok
+  defp write_outputs(_lease, exit_code, _params) when exit_code != 0, do: {:ok, nil}
 
   defp write_outputs(lease, 0, %{"result" => %Plug.Upload{} = result} = params) do
     Upload.write_outputs(lease.id, %{
@@ -248,7 +269,6 @@ defmodule PortalWeb.Builder.JobController do
       upload: Leases.upload_caps(),
       min_agent_version: agent && agent.version,
       agent_releases: (agent && agent.releases) || %{},
-      warm_allowlist: WarmAllowlist.names(),
       egress_required: true
     }
   end
