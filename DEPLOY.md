@@ -174,21 +174,24 @@ Hosts share entries only under the same image digest (the object prefix is the i
 
 Only hosts holding the read-write key can upload; a host with the read-only key sets `NCC_BUILD_CACHE_S3_READ_ONLY=1` and only reads. That key split is the whole trust story: downloaded entries are re-checked structurally, but their content is trusted because nobody without the read-write key could have written them. See [docs/BUILD_CACHE_L2.md](docs/BUILD_CACHE_L2.md).
 
-Each build's download is bounded: at most 2 GiB and 5 minutes (the bucket listing counts against that), newest objects first, 512 MiB per object. It stops for that build on a transport error, a 401/403/5xx, or 5 consecutive failures, and is skipped when the cache filesystem has less free space than `NCC_MIN_FREE_GB`. The build always proceeds. The outcome is one `Build cache L2 prefetch for <run>: N downloaded, ...` line in the portal log and in the run's `runner.log`. On boot the portal logs `Build cache L2 on: <endpoint>/<bucket>`, `Build cache L2 off`, or a warning when the configuration is incomplete.
+Each build's download is bounded: at most 2 GiB and 5 minutes (the bucket listing counts against that), newest objects first, 512 MiB per object. It stops for that build on a transport error, a 401/403/5xx, or 5 consecutive download failures other than a refused object (a bad sha256 or structure does not advance the count), and is skipped when the cache filesystem has less free space than `NCC_MIN_FREE_GB`. The build always proceeds. The outcome is one `Build cache L2 prefetch for <run>: N downloaded, ...` line in the portal log and in the run's `runner.log`. On boot the portal logs `Build cache L2 on: <endpoint>/<bucket>`, `Build cache L2 off`, or a warning when the configuration is incomplete.
 
 The Maintenance tab at `/admin` has a "Build cache L2" card: state, endpoint and bucket, read-only, last upload and download, and counters since boot on that node (the web node on a split deployment, so build-host numbers are in that host's log).
 
 To seed the bucket from an existing local cache, push it once. Locally:
 
 ```bash
-mix portal.build_cache.push --limit 500            # also --max-gb G, --slug S, --dry-run
+mix portal.build_cache.push --limit 500            # also --max-gb G, --slug S, --root DIR, --dry-run
 ```
 
 On a deployed host:
 
 ```bash
-bin/portal eval 'Portal.BuildCache.L2.Push.run(limit: 500) |> IO.inspect()'
+cd /var/lib/ncc && sudo -u ncc -H env RELEASE_TMP=/var/lib/ncc/tmp bash -c \
+  'set -a; . /etc/ncc-portal/portal.env; set +a; /opt/nerves_compatibility/portal/bin/portal eval "Portal.BuildCache.L2.Push.run(limit: 500) |> IO.inspect()"'
 ```
+
+Run it as the user that owns the build cache directory (`ncc` on the build hosts; check with `ls -ld "$NCC_BUILD_CACHE"`): the staging tarball is written beside each entry, so another user fails on permissions. Sourcing `portal.env` matters, since a bare `bin/portal eval` has no `NCC_BUILD_CACHE*` variables and finds L2 off.
 
 It is resumable: a HEAD per entry is the state, so entries already in the bucket are skipped and a rerun continues where the last one stopped.
 

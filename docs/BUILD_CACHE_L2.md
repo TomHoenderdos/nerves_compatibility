@@ -86,6 +86,8 @@ NCC_BUILD_CACHE_S3_SECRET_KEY=<rw secret>
 
 `NCC_BUILD_CACHE` (use your host's existing path) must be set: L2 is off without a local cache. A host with the read-only key also sets `NCC_BUILD_CACHE_S3_READ_ONLY=1`. Then restart the portal. The boot log has `Build cache L2 on: http://100.64.0.2:3900/ncc-build-cache` (`Build cache L2 off`, or a warning, if the configuration is missing or incomplete). The Maintenance tab at `/admin` shows a "Build cache L2" card: state, endpoint and bucket, read-only, last upload and download, and counters since boot on that node (on a split deployment the web node's, which are zero).
 
+Staging names are `<key>.tmp.<host>.<hex>`; `Portal.Workers.Sweep` prunes only its own host's (or the older host-less ones), and only past the scratch max age, so hosts never remove each other's in-flight files.
+
 Every home host must run the same worker image by digest: entries are shared only under one image slug. A locally built `ncc-worker:local` has its own slug.
 
 ## First push
@@ -93,8 +95,14 @@ Every home host must run the same worker image by digest: entries are shared onl
 Seed the bucket from a host's existing cache once, in bounded steps:
 
 ```bash
-mix portal.build_cache.push --limit 500            # also --max-gb G, --slug S, --dry-run
-bin/portal eval 'Portal.BuildCache.L2.Push.run(limit: 500) |> IO.inspect()'   # on a deployed host
+mix portal.build_cache.push --limit 500            # also --max-gb G, --slug S, --root DIR, --dry-run
+```
+
+On a deployed host, source the portal env and run the release's `eval`, as the user that owns the build cache directory (`ncc`; check with `ls -ld "$NCC_BUILD_CACHE"`), because the staging tarball is written beside each entry. A bare `bin/portal eval` has no `NCC_BUILD_CACHE*` variables and finds L2 off:
+
+```bash
+cd /var/lib/ncc && sudo -u ncc -H env RELEASE_TMP=/var/lib/ncc/tmp bash -c \
+  'set -a; . /etc/ncc-portal/portal.env; set +a; /opt/nerves_compatibility/portal/bin/portal eval "Portal.BuildCache.L2.Push.run(limit: 500) |> IO.inspect()"'
 ```
 
 Use the first form on a checkout and the second on a deployed release. It is resumable: a HEAD per entry is the state, so rerunning skips what is already in the bucket. `--dry-run` reports what would be uploaded.
@@ -105,7 +113,7 @@ On box-b, `garage bucket info ncc-build-cache` shows the object count and size g
 
 ## Key rotation
 
-Create a new key (`garage key create ncc-build-cache-rw2`), grant it the same `bucket allow` rights, update `NCC_BUILD_CACHE_S3_ACCESS_KEY` and `NCC_BUILD_CACHE_S3_SECRET_KEY` on each host and restart, then `garage key delete` the old one. Objects are not tied to a key. If the read-write key may have leaked, treat the bucket's contents as untrusted: rotate, then empty the bucket (or the affected prefixes) and re-push from a host you trust.
+Create a new key (`garage key create ncc-build-cache-rw2`), grant it access with `garage bucket allow --read --write ncc-build-cache --key ncc-build-cache-rw2`, update `NCC_BUILD_CACHE_S3_ACCESS_KEY` and `NCC_BUILD_CACHE_S3_SECRET_KEY` on each host and restart, then `garage key delete --yes ncc-build-cache-rw` the old one. Objects are not tied to a key. If the read-write key may have leaked, treat the bucket's contents as untrusted: rotate, then empty the bucket (or the affected prefixes) and re-push from a host you trust.
 
 ## Pruning
 
@@ -116,4 +124,3 @@ Not automated. When an image is retired, delete its prefix from the bucket with 
 * Remote builders (`ncc_agent`) never touch L2; they run with no build cache.
 * Contabo and other hosts that are not on the tailnet do not use it. A host that should only read gets the read-only key and `NCC_BUILD_CACHE_S3_READ_ONLY=1`.
 * No pruning or expiry of the bucket, and no change to the worker.
-* Staging names are `<key>.tmp.<host>.<hex>`; `Portal.Workers.Sweep` prunes only its own host's (or the older host-less ones), and only past the scratch max age, so hosts never remove each other's in-flight files.
