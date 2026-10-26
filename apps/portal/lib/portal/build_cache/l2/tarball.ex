@@ -8,6 +8,29 @@ defmodule Portal.BuildCache.L2.Tarball do
   directories, regular files with one link, and Mix's own top-level
   `priv`/`include` links.
 
+  ## Bounds on the way in
+
+  An object from the bucket is hostile input until proven otherwise, and two
+  shapes of it would cost the node far more than the object's size:
+
+    * a gzip bomb, a few megabytes that inflate to gigabytes. Before
+      `:erl_tar` sees the file, a streaming pre-scan inflates it with `:zlib`
+      in bounded pieces, counting the output and discarding it, and refuses
+      it (`{:error, :too_large}`) as soon as the count passes
+      `max_extracted_bytes/0` (1 GiB). A stream that does not inflate is
+      `{:error, {:gzip, reason}}`. The pre-scan reads one gzip member, as
+      `:erl_tar` does (`compressed_one`), and refuses a file that is not
+      gzip at all, which `:erl_tar` would otherwise read as a plain tar.
+    * a header flood, millions of empty members, which `:erl_tar.table/2`
+      would turn into a member list of hundreds of megabytes. Everything
+      after the pre-scan (table, screen, extraction, manifest, modes, walk)
+      runs in `Portal.BuildCache.L2.Bounded`, a separate unlinked process
+      with a heap cap and a deadline, so the worst it can do is be killed:
+      `{:error, {:unpack, :killed}}` or `{:error, {:unpack, :timeout}}`.
+
+  The pre-scan bounds the tar stream at 1 GiB, which also bounds the header
+  count (two million per GiB); the heap cap bounds what those headers cost.
+
   The tarball carries no symlink member at all. `:erl_tar` refuses a symlink
   whose target leaves the extraction directory, which Mix's own links do, and
   its path safety is what spec section 5.2 relies on, so the links travel as a
@@ -21,10 +44,13 @@ defmodule Portal.BuildCache.L2.Tarball do
   section 3.2).
   """
 
+  alias Portal.BuildCache.L2.Bounded
   alias Portal.BuildCache.Tree
 
   @max_object_bytes 512 * 1024 * 1024
-  @max_extracted_bytes 2 * 1024 * 1024 * 1024
+  @max_extracted_bytes 1024 * 1024 * 1024
+  @unpack_timeout_ms 120_000
+  @prescan_chunk_bytes 1024 * 1024
   @max_depth 64
   @max_manifest_bytes 4096
   @manifest ".ncc-links.json"
@@ -128,20 +154,135 @@ defmodule Portal.BuildCache.L2.Tarball do
   defp bounded(_), do: :ok
 
   @doc """
-  Extracts `tar_path` into `staging_dir`. Option `:max_extracted_bytes` bounds
-  the sum of the members' sizes (default `max_extracted_bytes/0`).
+  Extracts `tar_path` into `staging_dir`, returning the tar stream's
+  decompressed size. Options: `:max_extracted_bytes` bounds the decompressed
+  size (default `max_extracted_bytes/0`), `:timeout_ms` (default 120 s) and
+  `:max_heap_bytes` (default `Bounded.default_max_heap_bytes/0`) bound the
+  process that reads the table and extracts.
   """
-  @spec unpack(Path.t(), Path.t(), keyword()) :: :ok | {:error, term()}
+  @spec unpack(Path.t(), Path.t(), keyword()) ::
+          {:ok, %{extracted_bytes: non_neg_integer()}} | {:error, term()}
   def unpack(tar_path, staging_dir, opts \\ []) do
     max = Keyword.get(opts, :max_extracted_bytes, @max_extracted_bytes)
 
+    with {:ok, bytes} <- prescan(tar_path, max),
+         :ok <- bounded_unpack(tar_path, staging_dir, max, opts) do
+      {:ok, %{extracted_bytes: bytes}}
+    end
+  end
+
+  defp bounded_unpack(tar_path, staging_dir, max, opts) do
+    bound = [
+      timeout_ms: Keyword.get(opts, :timeout_ms, @unpack_timeout_ms),
+      max_heap_bytes: Keyword.get(opts, :max_heap_bytes, Bounded.default_max_heap_bytes())
+    ]
+
+    case Bounded.run(fn -> extract_checked(tar_path, staging_dir, max) end, bound) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, {:unpack, reason}}
+    end
+  end
+
+  defp extract_checked(tar_path, staging_dir, max) do
+    # Modes are stripped before the walk: an archive-applied 0o000 directory
+    # could not be listed otherwise. `strip_modes/1` follows no link, and the
+    # screened archive held none; the manifest's links come after it.
     with {:ok, table} <- table(tar_path),
          :ok <- screen(table),
          :ok <- extracted_size(table, max),
          :ok <- extract(tar_path, staging_dir),
+         :ok <- staging_dir |> Tree.strip_modes() |> refusal(),
          :ok <- restore_links(staging_dir),
          :ok <- refusal(Tree.check(staging_dir, package: :any)) do
-      staging_dir |> Tree.strip_modes() |> refusal()
+      if any_regular_file?(staging_dir), do: :ok, else: {:error, :empty_entry}
+    end
+  end
+
+  # Inflates the file in bounded pieces, counting and discarding the output,
+  # and stops as soon as the count passes `max`. One gzip member, as
+  # `:erl_tar` reads it (`compressed_one`); anything after it is ignored by
+  # both. `tar_path` is a host-built staging name.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp prescan(tar_path, max) do
+    z = :zlib.open()
+
+    try do
+      :ok = :zlib.inflateInit(z, 31)
+
+      case File.open(tar_path, [:read, :binary, :raw], &prescan_file(&1, z, max)) do
+        {:ok, result} -> result
+        {:error, reason} -> {:error, {:gzip, reason}}
+      end
+    after
+      :zlib.close(z)
+    end
+  end
+
+  defp prescan_file(io, z, max) do
+    with {:ok, total} <- prescan_chunks(io, z, 0, max),
+         :ok <- inflate_end(z) do
+      {:ok, total}
+    end
+  end
+
+  defp prescan_chunks(io, z, total, max) do
+    case IO.binread(io, @prescan_chunk_bytes) do
+      :eof ->
+        {:ok, total}
+
+      {:error, reason} ->
+        {:error, {:gzip, reason}}
+
+      chunk ->
+        case inflate_counting(z, :zlib.safeInflate(z, chunk), total, max) do
+          {:ok, total} -> prescan_chunks(io, z, total, max)
+          error -> error
+        end
+    end
+  catch
+    :error, reason -> {:error, {:gzip, reason}}
+  end
+
+  defp inflate_counting(z, {:continue, out}, total, max) do
+    total = total + IO.iodata_length(out)
+
+    if total > max,
+      do: {:error, :too_large},
+      else: inflate_counting(z, :zlib.safeInflate(z, []), total, max)
+  end
+
+  defp inflate_counting(_z, {:finished, out}, total, max) do
+    total = total + IO.iodata_length(out)
+    if total > max, do: {:error, :too_large}, else: {:ok, total}
+  end
+
+  defp inflate_counting(_z, {:need_dictionary, _, _}, _total, _max),
+    do: {:error, {:gzip, :need_dictionary}}
+
+  # Raises `data_error` when the stream did not end: a truncated object.
+  defp inflate_end(z) do
+    :zlib.inflateEnd(z)
+  catch
+    :error, reason -> {:error, {:gzip, reason}}
+  end
+
+  # The pack side's `:empty_entry` rule: at least one regular file somewhere.
+  # Runs after `Tree.check/2`, on a tree of directories, regular files and
+  # Mix's two links. `dir` is under the host-built staging dir.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp any_regular_file?(dir) do
+    case :file.list_dir_all(dir) do
+      {:ok, names} -> Enum.any?(names, &regular_below?(Path.join(dir, IO.chardata_to_string(&1))))
+      {:error, _} -> false
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp regular_below?(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular}} -> true
+      {:ok, %File.Stat{type: :directory}} -> any_regular_file?(path)
+      _ -> false
     end
   end
 

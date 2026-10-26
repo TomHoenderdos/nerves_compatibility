@@ -63,4 +63,33 @@ defmodule Portal.BuildCache.L2.ConfigTest do
 
     assert {:error, _} = Config.config(Keyword.put(@full, :endpoint, "http://host:3900#frag"))
   end
+
+  test "insecure_endpoint? is plain http off loopback and off the tailnet" do
+    for endpoint <- [
+          "http://10.0.0.5:3900",
+          "http://192.168.1.2",
+          "http://100.128.0.1:3900",
+          "http://garage.example:3900",
+          "http://[2001:db8::1]:3900"
+        ] do
+      assert Config.insecure_endpoint?(endpoint), endpoint
+    end
+
+    for endpoint <- [
+          "http://100.64.0.2:3900",
+          "http://100.127.255.254",
+          "http://127.0.0.1:3900",
+          "http://127.8.9.10",
+          "http://localhost:3900",
+          "http://LOCALHOST",
+          "http://[::1]:3900",
+          "https://garage.example",
+          "https://10.0.0.5:3900"
+        ] do
+      refute Config.insecure_endpoint?(endpoint), endpoint
+    end
+
+    {:ok, cfg} = Config.config(Keyword.put(@full, :endpoint, "http://10.0.0.5:3900"))
+    assert Config.insecure_endpoint?(cfg)
+  end
 end

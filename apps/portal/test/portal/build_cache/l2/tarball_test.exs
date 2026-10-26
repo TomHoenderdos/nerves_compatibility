@@ -28,7 +28,8 @@ defmodule Portal.BuildCache.L2.TarballTest do
     assert bytes == File.stat!(tar).size
     assert sha == Tarball.sha256_file(tar)
     File.mkdir_p!(out)
-    assert :ok = Tarball.unpack(tar, out)
+    assert {:ok, %{extracted_bytes: n}} = Tarball.unpack(tar, out)
+    assert n > 0
     assert listing(out) == listing(entry)
     assert File.read_link!(Path.join(out, "priv")) == "../../../../deps/jason/priv"
     assert File.read!(Path.join(out, "ebin/Elixir.Jason.beam")) == "beam"
@@ -133,10 +134,107 @@ defmodule Portal.BuildCache.L2.TarballTest do
     File.chmod!(Path.join(entry, "ebin/Elixir.Jason.beam"), 0o4777)
     {:ok, _} = Tarball.pack(entry, tar, "jason")
     File.mkdir_p!(out)
-    assert :ok = Tarball.unpack(tar, out)
+    assert {:ok, _} = Tarball.unpack(tar, out)
 
     assert Bitwise.band(File.stat!(Path.join(out, "ebin/Elixir.Jason.beam")).mode, 0o7777) ==
              0o755
+  end
+
+  test "unpack gives the owner back a file and a directory the archive made 0o000", %{
+    tmp: tmp,
+    out: out
+  } do
+    # erl_tar cannot read a 0o000 source, so the headers carry the modes.
+    path = Path.join(tmp, "modes.tar.gz")
+
+    body =
+      ustar_header("ebin/a", ?0, 0o644, "x") <>
+        ustar_header("f0", ?0, 0o000, "y") <>
+        ustar_header("d0/", ?5, 0o000, "") <> :binary.copy(<<0>>, 1024)
+
+    File.write!(path, :zlib.gzip(body))
+    File.mkdir_p!(out)
+    assert {:ok, _} = Tarball.unpack(path, out)
+    assert Bitwise.band(File.lstat!(Path.join(out, "f0")).mode, 0o7777) == 0o600
+    assert Bitwise.band(File.lstat!(Path.join(out, "d0")).mode, 0o7777) == 0o700
+  end
+
+  test "unpack refuses a tree with no regular file in it", %{tmp: tmp, out: out} do
+    File.mkdir_p!(out)
+
+    only_dirs =
+      Path.join(tmp, "dirs.tar.gz")
+      |> tap(
+        &File.write!(
+          &1,
+          :zlib.gzip(
+            ustar_header("ebin/", ?5, 0o755, "") <>
+              ustar_header("ebin/x/", ?5, 0o755, "") <> :binary.copy(<<0>>, 1024)
+          )
+        )
+      )
+
+    assert {:error, :empty_entry} = Tarball.unpack(only_dirs, out)
+    File.rm_rf!(out)
+    File.mkdir_p!(out)
+
+    only_manifest = hostile(tmp, [{".ncc-links.json", ~s({"priv": "../../../../deps/x/priv"})}])
+    assert {:error, :empty_entry} = Tarball.unpack(only_manifest, out)
+  end
+
+  test "the gzip pre-scan refuses a bomb before anything is extracted", %{tmp: tmp, out: out} do
+    # 4 MiB of zeros: a valid gzip that inflates past the cap given here.
+    path = Path.join(tmp, "zeros.tar.gz")
+    File.write!(path, :zlib.gzip(:binary.copy(<<0>>, 4 * 1024 * 1024)))
+    File.mkdir_p!(out)
+
+    assert {:error, :too_large} = Tarball.unpack(path, out, max_extracted_bytes: 1_000_000)
+    assert File.ls!(out) == []
+  end
+
+  test "the gzip pre-scan refuses what is not gzip and a truncated stream", %{
+    tmp: tmp,
+    out: out,
+    entry: entry,
+    tar: tar
+  } do
+    File.mkdir_p!(out)
+    plain = Path.join(tmp, "plain.tar")
+
+    :ok =
+      :erl_tar.create(String.to_charlist(plain), [
+        {~c"ebin", String.to_charlist(Path.join(entry, "ebin"))}
+      ])
+
+    assert {:error, {:gzip, _}} = Tarball.unpack(plain, out)
+
+    {:ok, _} = Tarball.pack(entry, tar, "jason")
+    bytes = File.read!(tar)
+    cut = Path.join(tmp, "cut2.tar.gz")
+    File.write!(cut, binary_part(bytes, 0, byte_size(bytes) - 8))
+    assert {:error, {:gzip, _}} = Tarball.unpack(cut, out)
+    assert File.ls!(out) == []
+  end
+
+  @tag :capture_log
+  test "a header flood is killed by the heap bound, not the caller", %{tmp: tmp, out: out} do
+    # 200k empty members: about 100 MB of tar stream, inside the pre-scan's
+    # 1 GiB, but a member list far over a 32 MiB heap.
+    body = IO.iodata_to_binary([flood_headers(200_000), :binary.copy(<<0>>, 1024)])
+    path = Path.join(tmp, "flood.tar.gz")
+    File.write!(path, :zlib.gzip(body))
+    File.mkdir_p!(out)
+
+    assert {:error, {:unpack, :killed}} =
+             Tarball.unpack(path, out, max_heap_bytes: 32 * 1024 * 1024)
+
+    assert Process.alive?(self())
+  end
+
+  test "unpack is bounded in time", %{entry: entry, tar: tar, out: out} do
+    {:ok, _} = Tarball.pack(entry, tar, "jason")
+    File.mkdir_p!(out)
+    assert {:error, {:unpack, :timeout}} = Tarball.unpack(tar, out, timeout_ms: 0)
   end
 
   test "pack carries Mix links as a manifest, never as symlink members", %{entry: entry, tar: tar} do
@@ -205,7 +303,7 @@ defmodule Portal.BuildCache.L2.TarballTest do
   test "unpack leaves a manifest-named file below the top level alone", %{tmp: tmp, out: out} do
     File.mkdir_p!(out)
     tar = hostile(tmp, [{"ebin/.ncc-links.json", "[1]"}])
-    assert :ok = Tarball.unpack(tar, out)
+    assert {:ok, _} = Tarball.unpack(tar, out)
     assert File.exists?(Path.join(out, "ebin/.ncc-links.json"))
   end
 
@@ -217,16 +315,41 @@ defmodule Portal.BuildCache.L2.TarballTest do
     {:ok, _} = Tarball.pack(entry, tar, "jason")
     File.mkdir_p!(out)
     assert {:error, :too_large} = Tarball.unpack(tar, out, max_extracted_bytes: 10)
-    assert Tarball.max_extracted_bytes() == 2 * 1024 * 1024 * 1024
+    assert Tarball.max_extracted_bytes() == 1024 * 1024 * 1024
   end
 
   # A single 512-byte ustar header with no data, for a type erl_tar will not write.
-  defp ustar_entry(name, typeflag) do
+  defp ustar_entry(name, typeflag),
+    do: ustar_header(name, typeflag, 0o644, "") <> :binary.copy(<<0>>, 1024)
+
+  # `n` empty regular members named `m/<i>`, fast: the header differs only in
+  # its name, so the checksum is the nameless header's plus the name's bytes.
+  defp flood_headers(n) do
+    <<_name::binary-size(100), rest::binary-size(48), _chksum::binary-size(8), tail::binary>> =
+      ustar_header("", ?0, 0o644, "")
+
+    base = Enum.sum(:binary.bin_to_list(rest <> "        " <> tail))
+
+    for i <- 1..n do
+      name = "m/" <> Integer.to_string(i)
+      chksum = base + Enum.sum(:binary.bin_to_list(name))
+
+      [
+        String.pad_trailing(name, 100, <<0>>),
+        rest,
+        (chksum |> Integer.to_string(8) |> String.pad_leading(6, "0")) <> <<0, ?\s>>,
+        tail
+      ]
+    end
+  end
+
+  # One ustar member: the header, then `data` padded to a 512-byte block.
+  defp ustar_header(name, typeflag, mode, data) do
     name = String.pad_trailing(name, 100, <<0>>)
-    mode = "0000644\0"
+    mode = (mode |> Integer.to_string(8) |> String.pad_leading(7, "0")) <> "\0"
     uid = "0000000\0"
     gid = "0000000\0"
-    size = "00000000000\0"
+    size = (byte_size(data) |> Integer.to_string(8) |> String.pad_leading(11, "0")) <> "\0"
     mtime = "00000000000\0"
 
     rest =
@@ -247,6 +370,7 @@ defmodule Portal.BuildCache.L2.TarballTest do
         (chksum |> Integer.to_string(8) |> String.pad_leading(6, "0")) <> <<0, ?\s>> <> rest
 
     header = String.pad_trailing(header, 512, <<0>>)
-    header <> :binary.copy(<<0>>, 1024)
+    pad = rem(512 - rem(byte_size(data), 512), 512)
+    header <> data <> :binary.copy(<<0>>, pad)
   end
 end

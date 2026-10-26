@@ -11,6 +11,12 @@ defmodule Portal.BuildCache.L2 do
   L2 is on only with a complete `Portal.BuildCache.L2.Config` and a local
   cache to restore into (`enabled?/0`).
 
+  Only content-addressed slugs are shared (`shareable_slug?/1`):
+  `sha256_<64 hex>`, not the all-zero digest. Anything else (`unknown`, a
+  tag, a truncated digest) names no particular image, so two hosts could
+  mean different images by it; such a slug is neither uploaded nor
+  prefetched.
+
   ## Writing
 
   `upload/5` runs on the host right after `Portal.BuildCache.Promotion` has
@@ -32,12 +38,19 @@ defmodule Portal.BuildCache.L2 do
   run the same worker image digest; a locally built image has its own slug
   and shares nothing.
 
-  The budget is per build: at most 2 GiB and 5 minutes, and no single object
-  over `Tarball.max_object_bytes/0`. An object over the remaining byte budget
-  is skipped rather than ending the loop, so small entries behind a large one
-  still arrive. A timeout or a transport error ends the loop for this build:
-  the store is unwell, and the build should not wait on it once per object.
+  The budget is per build: at most 2 GiB downloaded, 4 GiB extracted and 5
+  minutes (listing, downloads and extraction all count), and no single
+  object over `Tarball.max_object_bytes/0`. An object over the remaining
+  byte budget is skipped rather than ending the loop, so small entries
+  behind a large one still arrive. A timeout or a transport error ends the
+  loop for this build: the store is unwell, and the build should not wait on
+  it once per object. So does free space on the cache filesystem below
+  `Portal.Builder.prefetch_min_free_bytes/0`, checked before every object.
   Two builds on one node never fetch the same key at once (`Stats.claim/1`).
+
+  Uploads run before Ingest is enqueued, so they are bounded too: each PUT
+  in total time (send included), and all of one promotion's uploads by one
+  deadline (`Portal.BuildCache.Promotion.l2_upload_budget_ms/0`).
 
   ## Why a downloaded entry is trusted
 
@@ -50,11 +63,16 @@ defmodule Portal.BuildCache.L2 do
   The integrity of L2 is the integrity of that key (`docs/BUILD_CACHE_L2.md`:
   read-write on the home hosts only, read-only for anything else).
 
-  What the downloader still checks is what a faulty or hostile transport
-  could change without the key. The tarball's SHA-256 must equal the
-  uploader's metadata, and the object may not be larger than the listing
-  said. `Tarball.unpack/3` screens the tar table before extracting anything
-  (regular files and directories only, safe names, bounded size), recreates
+  What the downloader still checks is what a faulty transport could change.
+  The tarball's SHA-256 must equal the uploader's metadata, and the object
+  may not be larger than the listing said. The SHA-256 travels in the same
+  response as the body, so it detects corruption, not tampering: over plain
+  `http` anyone on the path can replace both. That is acceptable only on the
+  tailnet, which encrypts the path; any other endpoint must be `https`
+  (`Config.insecure_endpoint?/1`, warned about at boot by `log_state/0`).
+  Whatever arrives, `Tarball.unpack/3` bounds what inflating it may cost,
+  screens the tar table before extracting anything (regular files and
+  directories only, safe names, bounded size), recreates
   Mix's `priv`/`include` links only from a validated manifest, and walks the
   result with Promotion's own rules, so not even a wrong object can plant a
   symlink, hardlink, device, setuid file or escaping path in the slug. A
@@ -77,6 +95,16 @@ defmodule Portal.BuildCache.L2 do
   require Logger
   alias Portal.BuildCache.L2.{Client, Config, Prefetch, Stats, Tarball}
   alias Portal.BuildCache.Staging
+
+  @shareable_slug ~r/\Asha256_[0-9a-f]{64}\z/
+  @zero_slug "sha256_" <> String.duplicate("0", 64)
+
+  @doc "Whether `slug` names one image by content: `sha256_<64 hex>`, not all zeros."
+  @spec shareable_slug?(term()) :: boolean()
+  def shareable_slug?(slug) when is_binary(slug),
+    do: slug != @zero_slug and Regex.match?(@shareable_slug, slug)
+
+  def shareable_slug?(_slug), do: false
 
   @spec object_key(String.t(), String.t()) :: String.t()
   def object_key(slug, key), do: slug <> "/" <> key <> ".tar.gz"
@@ -117,19 +145,36 @@ defmodule Portal.BuildCache.L2 do
 
   @doc """
   Uploads one promoted entry, best effort: `{:ok, bytes}` with the tarball
-  size, `:skipped` when L2 is off or read-only, `{:error, reason}` on any
-  failure, never an exception. Logs its own outcome and records it in `Stats`.
+  size, `:skipped` when L2 is off or read-only or the slug is not shareable,
+  `{:error, reason}` on any failure, never an exception or exit. Logs its own
+  outcome and records it in `Stats`. Options: `:config` (default the active
+  one) and `:timeout_ms`, the PUT's total time (default 120 s).
   """
   @spec upload(Path.t(), String.t(), String.t(), String.t() | :any, keyword()) ::
           {:ok, non_neg_integer()} | :skipped | {:error, term()}
   def upload(entry_dir, slug, key, package, opts \\ []) do
     case Keyword.get_lazy(opts, :config, &active_config/0) do
-      %Config{read_only?: false} = cfg -> do_upload(cfg, entry_dir, slug, key, package)
-      _ -> :skipped
+      %Config{read_only?: false} = cfg ->
+        if shareable_slug?(slug) do
+          do_upload(cfg, entry_dir, slug, key, package, opts)
+        else
+          Logger.info(
+            "Build cache L2 upload of #{key} skipped: slug #{show(slug)} is not shareable"
+          )
+
+          :skipped
+        end
+
+      _ ->
+        :skipped
     end
   rescue
     e -> {:error, {:exception, Exception.message(e)}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
+
+  defp show(term), do: inspect(term, printable_limit: 100)
 
   defp active_config do
     case Config.config() do
@@ -141,14 +186,14 @@ defmodule Portal.BuildCache.L2 do
   # `entry_dir` is a promoted entry under the operator's cache root; the
   # tarball is staged beside it, inside the slug dir, and always removed.
   # sobelow_skip ["Traversal.FileModule"]
-  defp do_upload(cfg, entry_dir, slug, key, package) do
+  defp do_upload(cfg, entry_dir, slug, key, package, opts) do
     object = object_key(slug, key)
     tar = Staging.name(entry_dir) <> ".tar.gz"
 
     result =
       try do
         with {:ok, %{sha256: sha, bytes: bytes}} <- Tarball.pack(entry_dir, tar, package),
-             :ok <- Client.put(cfg, object, tar, sha) do
+             :ok <- Client.put(cfg, object, tar, sha, Keyword.take(opts, [:timeout_ms])) do
           {:ok, bytes}
         end
       after
@@ -178,8 +223,11 @@ defmodule Portal.BuildCache.L2 do
   counts for the caller to log.
 
   Options: `:config` (default the active one; nil does nothing),
-  `:budget_bytes` (2 GiB), `:budget_ms` (5 minutes), `:max_object_bytes`
-  (`Tarball.max_object_bytes/0`).
+  `:budget_bytes` (2 GiB downloaded), `:extracted_budget_bytes` (4 GiB
+  extracted), `:budget_ms` (5 minutes), `:max_object_bytes`
+  (`Tarball.max_object_bytes/0`), `:free_bytes` (a `fn dir -> bytes | nil`,
+  default `Portal.Builder.free_bytes/1`) and `:min_free_bytes` (default
+  `Portal.Builder.prefetch_min_free_bytes/0`).
   """
   @spec prefetch(Path.t(), String.t(), keyword()) :: %{
           listed: non_neg_integer(),
@@ -189,21 +237,30 @@ defmodule Portal.BuildCache.L2 do
           failed: non_neg_integer(),
           skipped: non_neg_integer(),
           bytes: non_neg_integer(),
+          extracted_bytes: non_neg_integer(),
           list_failed: boolean()
         }
   def prefetch(slug_dir, slug, opts \\ []) do
     case Keyword.get_lazy(opts, :config, &active_config/0) do
-      %Config{} = cfg -> Prefetch.run(cfg, slug_dir, slug, opts)
-      _ -> Prefetch.empty_counts()
+      %Config{} = cfg ->
+        if shareable_slug?(slug) do
+          Prefetch.run(cfg, slug_dir, slug, opts)
+        else
+          Logger.info("Build cache L2 prefetch skipped: slug #{show(slug)} is not shareable")
+          Prefetch.empty_counts()
+        end
+
+      _ ->
+        Prefetch.empty_counts()
     end
   rescue
     e ->
-      Logger.warning("Build cache L2 prefetch of #{slug} raised: #{Exception.message(e)}")
+      Logger.warning("Build cache L2 prefetch of #{show(slug)} raised: #{Exception.message(e)}")
       %{Prefetch.empty_counts() | failed: 1}
   catch
-    :exit, reason ->
+    kind, reason ->
       Logger.warning(
-        "Build cache L2 prefetch of #{slug} exited: #{inspect(reason, printable_limit: 200)}"
+        "Build cache L2 prefetch of #{show(slug)} failed: #{inspect({kind, reason}, printable_limit: 200)}"
       )
 
       %{Prefetch.empty_counts() | failed: 1}
@@ -216,6 +273,13 @@ defmodule Portal.BuildCache.L2 do
         Logger.info(
           "Build cache L2 on: #{cfg.endpoint}/#{cfg.bucket}#{if cfg.read_only?, do: " (read-only)", else: ""}"
         )
+
+        if Config.insecure_endpoint?(cfg) do
+          Logger.warning(
+            "Build cache L2 endpoint #{cfg.endpoint} is plain http outside the tailnet; " <>
+              "entries can be tampered with in transit"
+          )
+        end
 
       :off ->
         Logger.info("Build cache L2 off")

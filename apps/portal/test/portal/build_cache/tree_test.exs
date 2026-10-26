@@ -47,4 +47,18 @@ defmodule Portal.BuildCache.TreeTest do
     assert :ok = Tree.strip_modes(dir)
     assert Bitwise.band(File.stat!(file).mode, 0o7777) == 0o755
   end
+
+  test "strip_modes/1 gives the owner back a 0o000 file and directory", %{dir: dir} do
+    file = Path.join(dir, "ebin/Elixir.Jason.beam")
+    locked = Path.join(dir, "locked")
+    File.mkdir_p!(Path.join(locked, "inner"))
+    File.chmod!(file, 0o000)
+    File.chmod!(locked, 0o000)
+    on_exit(fn -> File.chmod(locked, 0o700) end)
+
+    assert :ok = Tree.strip_modes(dir)
+    assert Bitwise.band(File.stat!(file).mode, 0o7777) == 0o600
+    assert Bitwise.band(File.stat!(locked).mode, 0o7777) == 0o700
+    assert File.dir?(Path.join(locked, "inner"))
+  end
 end
