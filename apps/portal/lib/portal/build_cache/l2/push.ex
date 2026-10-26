@@ -8,6 +8,8 @@ defmodule Portal.BuildCache.L2.Push do
   portal.build_cache.push` or `bin/portal eval`.
 
   Slugs and keys are walked in sorted order so a bounded run is repeatable.
+  Only shareable slugs (`Portal.BuildCache.L2.shareable_slug?/1`) are
+  walked; any other slug directory is reported as ignored.
   Staging directories, symlinks and strays are ignored: only a real
   directory named by a 64-hex key is an entry. Every entry under the root
   already passed `Portal.BuildCache.Promotion` with its package name bound,
@@ -37,7 +39,7 @@ defmodule Portal.BuildCache.L2.Push do
 
     with {:ok, cfg} <- config(Keyword.get_lazy(opts, :config, &configured/0)),
          {:ok, root} <- root(Keyword.get_lazy(opts, :root, &Portal.Builder.build_cache/0)) do
-      entries = entries(root, Keyword.get(opts, :slug))
+      entries = entries(root, Keyword.get(opts, :slug), io)
       IO.puts(io, "#{length(entries)} entries under #{root}")
 
       summary =
@@ -76,11 +78,12 @@ defmodule Portal.BuildCache.L2.Push do
   # sobelow_skip ["Traversal.FileModule"]
   # The root is operator-supplied and the names are listed from it, filtered
   # to a 64-hex pattern, and checked with lstat so a symlink is never followed.
-  defp entries(root, slug) do
+  defp entries(root, slug, io) do
     root
     |> ls()
     |> Enum.filter(&(is_nil(slug) or &1 == slug))
     |> Enum.sort()
+    |> Enum.filter(&shareable?(&1, io))
     |> Enum.flat_map(fn s ->
       dir = Path.join(root, s)
 
@@ -90,6 +93,15 @@ defmodule Portal.BuildCache.L2.Push do
       |> Enum.sort()
       |> Enum.map(&{s, &1, Path.join(dir, &1)})
     end)
+  end
+
+  defp shareable?(slug, io) do
+    if L2.shareable_slug?(slug) do
+      true
+    else
+      IO.puts(io, "#{inspect(slug)} ignored: not a shareable slug (sha256_<64 hex>)")
+      false
+    end
   end
 
   # sobelow_skip ["Traversal.FileModule"]

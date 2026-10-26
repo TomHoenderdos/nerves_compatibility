@@ -820,6 +820,9 @@ defmodule Portal.BuilderTest do
     end
   end
 
+  # L2 shares only content-addressed slugs, so these builds name a full digest.
+  @l2_args Map.put(@build_args, :image_digest, "sha256:" <> String.duplicate("d", 64))
+
   # Before the container runs, the build pulls what the shared L2 cache holds
   # for this image into the local slug dir. A fake `docker` on PATH answers
   # the version check and the run, so this exercises `build/2` end to end
@@ -885,7 +888,7 @@ defmodule Portal.BuilderTest do
       File.write!(Path.join(src, "ebin/Elixir.Jason.beam"), "beam")
       tar = Path.join(tmp, "entry.tar.gz")
       {:ok, %{sha256: sha}} = Tarball.pack(src, tar, :any)
-      object = Builder.cache_slug(@build_args.image_digest) <> "/" <> key <> ".tar.gz"
+      object = Builder.cache_slug(@l2_args.image_digest) <> "/" <> key <> ".tar.gz"
       FakeS3.put_object(s, object, File.read!(tar), %{"x-amz-meta-sha256" => sha})
 
       %{s: s, cache: cache, key: key}
@@ -908,9 +911,9 @@ defmodule Portal.BuilderTest do
     } do
       put_l2(s)
 
-      assert {:ok, %{exit_code: 0, log: log}} = Builder.build(@build_args)
+      assert {:ok, %{exit_code: 0, log: log}} = Builder.build(@l2_args)
 
-      slug_dir = Path.join(cache, Builder.cache_slug(@build_args.image_digest))
+      slug_dir = Path.join(cache, Builder.cache_slug(@l2_args.image_digest))
       assert File.read!(Path.join([slug_dir, key, "ebin/Elixir.Jason.beam"])) == "beam"
       assert log =~ "Build cache L2 prefetch for run-1: 1 downloaded"
       # The docker header still opens the log, so `LogSanitizer` strips it.
@@ -923,7 +926,7 @@ defmodule Portal.BuilderTest do
       current = Application.get_env(:portal, Portal.Builder)
       put_builder([prefetch_min_free_bytes: 1_000_000_000_000_000_000], current)
 
-      assert {:ok, %{exit_code: 0, log: log}} = Builder.build(@build_args)
+      assert {:ok, %{exit_code: 0, log: log}} = Builder.build(@l2_args)
       assert log =~ "Build cache L2 prefetch for run-1 skipped: low disk space"
       assert FakeS3.requests(s) == []
     end
@@ -931,7 +934,7 @@ defmodule Portal.BuilderTest do
     test "with L2 off the build neither prefetches nor contacts the store", %{s: s} do
       Application.delete_env(:portal, L2)
 
-      assert {:ok, %{exit_code: 0, log: log}} = Builder.build(@build_args)
+      assert {:ok, %{exit_code: 0, log: log}} = Builder.build(@l2_args)
       refute log =~ "Build cache L2 prefetch"
       assert FakeS3.requests(s) == []
     end

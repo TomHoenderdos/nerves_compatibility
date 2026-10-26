@@ -124,6 +124,17 @@ defmodule Portal.Builder do
   end
 
   @doc """
+  Minimum free bytes on the build cache filesystem for the L2 prefetch to
+  start, and to fetch each further object (`Portal.BuildCache.L2.Prefetch`).
+  The prefetch writes up to its byte budget plus the extracted trees into the
+  cache root, which may be another filesystem than scratch, so it keeps the
+  same headroom as a build: `:prefetch_min_free_bytes`, default
+  `min_free_bytes/0`.
+  """
+  @spec prefetch_min_free_bytes() :: non_neg_integer()
+  def prefetch_min_free_bytes, do: config(:prefetch_min_free_bytes, nil) || min_free_bytes()
+
+  @doc """
   Hard wall-clock ceiling for one build, in milliseconds.
 
   Exposed so the Oban config test can assert `Lifeline`'s `rescue_after` still
@@ -882,14 +893,13 @@ defmodule Portal.Builder do
     end
   end
 
-  # The prefetch writes up to its byte budget plus the extracted trees into
-  # the cache root, which may be another filesystem than scratch, so it gets
-  # the same headroom check as the build (`:prefetch_min_free_bytes`, default
-  # `min_free_bytes/0`). A cache root `df` cannot measure is not refused.
+  # `prefetch_min_free_bytes/0` before the prefetch starts; the prefetch
+  # repeats it before every object. A cache root `df` cannot measure is not
+  # refused.
   defp prefetch_space?(dir) do
     case free_bytes(dir) do
       nil -> true
-      free -> free >= config(:prefetch_min_free_bytes, min_free_bytes())
+      free -> free >= prefetch_min_free_bytes()
     end
   end
 

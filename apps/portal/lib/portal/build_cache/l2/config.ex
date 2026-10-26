@@ -72,6 +72,36 @@ defmodule Portal.BuildCache.L2.Config do
     end
   end
 
+  @doc """
+  Whether `endpoint` (a URL or a `t()`) is plain `http` outside the private network:
+  the host is not loopback (`127.0.0.0/8`, `::1`, `localhost`) and not in
+  the private network's CGNAT range `100.64.0.0/10`. A hostname other than
+  `localhost` counts as outside, since nothing says where it resolves. The
+  object's SHA-256 header detects corruption, not tampering, so such an
+  endpoint lets anything on the path change entries in transit.
+  """
+  @spec insecure_endpoint?(t() | String.t()) :: boolean()
+  def insecure_endpoint?(%__MODULE__{endpoint: endpoint}), do: insecure_endpoint?(endpoint)
+
+  def insecure_endpoint?(endpoint) when is_binary(endpoint) do
+    case URI.parse(endpoint) do
+      %URI{scheme: "http", host: host} when is_binary(host) -> not private_host?(host)
+      _ -> false
+    end
+  end
+
+  defp private_host?(host) do
+    host = String.downcase(host)
+
+    host == "localhost" or
+      case :inet.parse_address(String.to_charlist(host)) do
+        {:ok, {127, _, _, _}} -> true
+        {:ok, {100, b, _, _}} when b in 64..127 -> true
+        {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
+        _ -> false
+      end
+  end
+
   defp present(value) when is_binary(value) do
     case String.trim(value) do
       "" -> nil

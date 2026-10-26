@@ -14,7 +14,8 @@ defmodule Portal.BuildCache.Tree do
   def check(dir, opts), do: walk(dir, true, Keyword.fetch!(opts, :package))
 
   # Paths below the candidate root, named by a raw listing of a directory
-  # `lstat` showed is real. Not `File.ls/1`: see the moduledoc, step 7.
+  # `lstat` showed is real. Not `File.ls/1`: see `Portal.BuildCache.Promotion`'s
+  # moduledoc, step 7.
   # sobelow_skip ["Traversal.FileModule"]
   defp walk(dir, top?, package) do
     case :file.list_dir_all(dir) do
@@ -105,26 +106,32 @@ defmodule Portal.BuildCache.Tree do
 
   def mix_link?(_name, _target, _package), do: false
 
-  # The container chose every mode in the tree. Before it becomes visible,
-  # drop setuid, setgid and sticky and group/other write from each directory
-  # and regular file, so nothing in the cache is writable by another user or
-  # runs with its owner's rights. Walked with `lstat` and links left alone:
-  # `chmod` on a link would change what it points at. That lstat-then-chmod
-  # is only safe because it runs on the host-private copy, which no build can
-  # change between the two (moduledoc, step 6). The names were checked by
-  # `walk/3` already, but are rechecked rather than trusted.
+  # The container (or, on the L2 download path, the archive) chose every
+  # mode in the tree. Before it becomes visible, drop setuid, setgid and
+  # sticky and group/other write from each directory and regular file, so
+  # nothing in the cache is writable by another user or runs with its owner's
+  # rights, and give the owner read and write (and search, on a directory),
+  # so an applied 0o000 can always be read and removed. Walked with `lstat`
+  # and links left alone: `chmod` on a link would change what it points at.
+  # That lstat-then-chmod is only safe because it runs on a host-private
+  # copy no build can change between the two: Promotion's staging copy
+  # (`Portal.BuildCache.Promotion`'s moduledoc, step 6) or the L2 download
+  # staging dir `Portal.BuildCache.L2.Tarball.unpack/3` extracts into. The
+  # names are rechecked here rather than trusted.
   @keep_mode 0o755
+  @dir_floor 0o700
+  @file_floor 0o600
 
-  # `staging` is the host-built staging path from `move/3`.
+  # `path` is a host-built staging path (Promotion's copy or an L2 download).
   # sobelow_skip ["Traversal.FileModule"]
   @spec strip_modes(Path.t()) :: :ok | {:error, term()}
   def strip_modes(path) do
     case lstat(path) do
       {:ok, %File.Stat{type: :directory, mode: mode}} ->
-        with :ok <- chmod(path, mode), do: strip_children(path)
+        with :ok <- chmod(path, mode, @dir_floor), do: strip_children(path)
 
       {:ok, %File.Stat{type: :regular, mode: mode}} ->
-        chmod(path, mode)
+        chmod(path, mode, @file_floor)
 
       {:ok, %File.Stat{}} ->
         :ok
@@ -153,8 +160,8 @@ defmodule Portal.BuildCache.Tree do
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp chmod(path, mode) do
-    wanted = Bitwise.band(mode, @keep_mode)
+  defp chmod(path, mode, floor) do
+    wanted = mode |> Bitwise.band(@keep_mode) |> Bitwise.bor(floor)
 
     if Bitwise.band(mode, 0o7777) == wanted, do: :ok, else: File.chmod(path, wanted)
   end

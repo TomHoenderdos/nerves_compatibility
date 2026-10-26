@@ -7,6 +7,8 @@ defmodule Portal.BuildCache.L2Test do
   alias Portal.BuildCache.L2.{Stats, Tarball}
   alias Portal.Test.FakeS3
 
+  @slug "sha256_" <> String.duplicate("ab", 32)
+
   @full [
     endpoint: "http://100.64.0.2:3900",
     bucket: "ncc-build-cache",
@@ -86,13 +88,39 @@ defmodule Portal.BuildCache.L2Test do
     assert capture_log(fn -> L2.log_state() end) =~ "NCC_BUILD_CACHE_S3_BUCKET"
   end
 
+  test "log_state warns about plain http outside the private network, and only there" do
+    put(@full)
+    refute capture_log(fn -> L2.log_state() end) =~ "tampered"
+
+    put(Keyword.put(@full, :endpoint, "http://10.1.2.3:3900"))
+    log = capture_log(fn -> L2.log_state() end)
+    assert log =~ "Build cache L2 on: http://10.1.2.3:3900/ncc-build-cache"
+
+    assert log =~
+             "Build cache L2 endpoint http://10.1.2.3:3900 is plain http outside the private network; " <>
+               "entries can be tampered with in transit"
+
+    put(Keyword.put(@full, :endpoint, "https://garage.example"))
+    refute capture_log(fn -> L2.log_state() end) =~ "tampered"
+  end
+
+  test "shareable_slug? takes a full sha256 digest only" do
+    assert L2.shareable_slug?(@slug)
+    refute L2.shareable_slug?("sha256_" <> String.duplicate("0", 64))
+    refute L2.shareable_slug?("sha256_abc")
+    refute L2.shareable_slug?("sha256_" <> String.duplicate("A", 64))
+    refute L2.shareable_slug?("unknown")
+    refute L2.shareable_slug?(@slug <> "\n")
+    refute L2.shareable_slug?(nil)
+  end
+
   describe "upload/4" do
     @describetag :capture_log
 
     setup do
       {:ok, s} = FakeS3.start()
       tmp = Path.join(System.tmp_dir!(), "l2up-#{System.unique_integer([:positive])}")
-      slug_dir = Path.join(tmp, "sha256_abc")
+      slug_dir = Path.join(tmp, @slug)
       key = String.duplicate("a", 64)
       entry = Path.join(slug_dir, key)
       File.mkdir_p!(Path.join(entry, "ebin"))
@@ -109,10 +137,10 @@ defmodule Portal.BuildCache.L2Test do
       key: key,
       slug_dir: slug_dir
     } do
-      assert {:ok, bytes} = L2.upload(entry, "sha256_abc", key, "jason", config: cfg)
+      assert {:ok, bytes} = L2.upload(entry, @slug, key, "jason", config: cfg)
 
       assert {:ok, %{body: body, meta: %{"x-amz-meta-sha256" => sha}}} =
-               FakeS3.get_object(s, "sha256_abc/#{key}.tar.gz")
+               FakeS3.get_object(s, "#{@slug}/#{key}.tar.gz")
 
       assert sha == :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
       assert File.ls!(slug_dir) == [key], "no tarball left beside the entry"
@@ -123,7 +151,7 @@ defmodule Portal.BuildCache.L2Test do
 
     test "read-only mode uploads nothing", %{s: s, cfg: cfg, entry: entry, key: key} do
       assert :skipped =
-               L2.upload(entry, "sha256_abc", key, "jason", config: %{cfg | read_only?: true})
+               L2.upload(entry, @slug, key, "jason", config: %{cfg | read_only?: true})
 
       assert FakeS3.objects(s) == []
     end
@@ -136,23 +164,60 @@ defmodule Portal.BuildCache.L2Test do
       log =
         capture_log(fn ->
           assert {:error, _} =
-                   L2.upload(entry, "sha256_abc", key, "jason",
+                   L2.upload(entry, @slug, key, "jason",
                      config: %{cfg | endpoint: "http://127.0.0.1:1"}
                    )
         end)
 
-      assert log =~ "Build cache L2 upload of sha256_abc/#{key}.tar.gz failed"
+      assert log =~ "Build cache L2 upload of #{@slug}/#{key}.tar.gz failed"
       assert %{upload_failures: 1} = Stats.snapshot()
     end
 
     test "a structural refusal uploads nothing", %{s: s, cfg: cfg, entry: entry, key: key} do
       File.ln_s!("/etc/hostname", Path.join(entry, "ebin/evil"))
-      assert {:error, _} = L2.upload(entry, "sha256_abc", key, "jason", config: cfg)
+      assert {:error, _} = L2.upload(entry, @slug, key, "jason", config: cfg)
       assert FakeS3.objects(s) == []
     end
 
     test "with L2 off it is skipped", %{entry: entry, key: key} do
-      assert :skipped = L2.upload(entry, "sha256_abc", key, "jason", config: nil)
+      assert :skipped = L2.upload(entry, @slug, key, "jason", config: nil)
+    end
+
+    test "a slug that is not a full digest is skipped, with one info line", %{
+      s: s,
+      cfg: cfg,
+      entry: entry,
+      key: key
+    } do
+      for slug <- ["sha256_abc", "unknown", "sha256_" <> String.duplicate("0", 64)] do
+        log =
+          capture_log(fn ->
+            assert :skipped = L2.upload(entry, slug, key, "jason", config: cfg)
+          end)
+
+        assert log =~ "is not shareable"
+      end
+
+      assert FakeS3.objects(s) == []
+      assert FakeS3.requests(s) == []
+    end
+
+    test "the upload honours timeout_ms and is counted as a failure", %{
+      s: s,
+      cfg: cfg,
+      entry: entry,
+      key: key,
+      slug_dir: slug_dir
+    } do
+      FakeS3.set_fault(s, {:put, :hang})
+
+      {micros, result} =
+        :timer.tc(fn -> L2.upload(entry, @slug, key, "jason", config: cfg, timeout_ms: 200) end)
+
+      assert {:error, :timeout} = result
+      assert micros < 1_000_000
+      assert %{upload_failures: 1} = Stats.snapshot()
+      assert File.ls!(slug_dir) == [key], "no tarball left beside the entry"
     end
   end
 
@@ -162,7 +227,7 @@ defmodule Portal.BuildCache.L2Test do
     setup do
       {:ok, s} = FakeS3.start()
       tmp = Path.join(System.tmp_dir!(), "l2pf-#{System.unique_integer([:positive])}")
-      slug_dir = Path.join(tmp, "sha256_abc")
+      slug_dir = Path.join(tmp, @slug)
       File.mkdir_p!(slug_dir)
       on_exit(fn -> File.rm_rf(tmp) end)
       Stats.reset()
@@ -186,7 +251,7 @@ defmodule Portal.BuildCache.L2Test do
       {:ok, %{sha256: sha}} = Tarball.pack(src, tar, :any)
       bytes = File.read!(tar)
       meta = %{"x-amz-meta-sha256" => Keyword.get(opts, :sha, sha)}
-      FakeS3.put_object(s, "sha256_abc/#{key}.tar.gz", Keyword.get(opts, :body, bytes), meta)
+      FakeS3.put_object(s, "#{@slug}/#{key}.tar.gz", Keyword.get(opts, :body, bytes), meta)
       bytes
     end
 
@@ -195,6 +260,10 @@ defmodule Portal.BuildCache.L2Test do
     end
 
     defp key(n), do: String.pad_leading(Integer.to_string(n), 64, "0")
+
+    # The host's real free space is not this test's business unless it says so.
+    defp prefetch(slug_dir, opts),
+      do: L2.prefetch(slug_dir, @slug, Keyword.put_new(opts, :free_bytes, fn _ -> nil end))
 
     defp sha_meta(body),
       do: %{"x-amz-meta-sha256" => :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)}
@@ -206,7 +275,7 @@ defmodule Portal.BuildCache.L2Test do
       slug_dir: slug_dir
     } do
       seed(s, tmp, key(1), priv_link: true)
-      assert %{downloaded: 1, failed: 0} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      assert %{downloaded: 1, failed: 0} = prefetch(slug_dir, config: cfg)
       assert File.read!(Path.join([slug_dir, key(1), "ebin/Elixir.X.beam"])) == "beam-" <> key(1)
       assert File.read_link!(Path.join([slug_dir, key(1), "priv"])) == "../../../../deps/x/priv"
       assert File.ls!(slug_dir) == [key(1)]
@@ -221,10 +290,10 @@ defmodule Portal.BuildCache.L2Test do
     } do
       seed(s, tmp, key(1))
       File.mkdir_p!(Path.join(slug_dir, key(1)))
-      FakeS3.put_object(s, "sha256_abc/README", "x", %{})
+      FakeS3.put_object(s, "#{@slug}/README", "x", %{})
 
       assert %{downloaded: 0, candidates: 0, listed: 2} =
-               L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+               prefetch(slug_dir, config: cfg)
     end
 
     test "a sha mismatch is refused, removed and marked bad", %{
@@ -237,21 +306,21 @@ defmodule Portal.BuildCache.L2Test do
 
       log =
         capture_log(fn ->
-          assert %{failed: 1, downloaded: 0} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+          assert %{failed: 1, downloaded: 0} = prefetch(slug_dir, config: cfg)
         end)
 
       assert log =~ "sha256"
       assert File.ls!(slug_dir) == []
       assert Stats.bad?(key(1))
       assert %{refused: 1} = Stats.snapshot()
-      assert %{candidates: 0} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      assert %{candidates: 0} = prefetch(slug_dir, config: cfg)
     end
 
     test "a truncated tarball is refused", %{s: s, cfg: cfg, tmp: tmp, slug_dir: slug_dir} do
       bytes = seed(s, tmp, key(1))
       cut = binary_part(bytes, 0, div(byte_size(bytes), 2))
-      FakeS3.put_object(s, "sha256_abc/#{key(1)}.tar.gz", cut, sha_meta(cut))
-      assert %{failed: 1} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      FakeS3.put_object(s, "#{@slug}/#{key(1)}.tar.gz", cut, sha_meta(cut))
+      assert %{failed: 1} = prefetch(slug_dir, config: cfg)
       assert File.ls!(slug_dir) == []
     end
 
@@ -263,7 +332,7 @@ defmodule Portal.BuildCache.L2Test do
     } do
       seed(s, tmp, key(1))
       FakeS3.set_fault(s, {:get, :truncate})
-      assert %{failed: 1} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      assert %{failed: 1} = prefetch(slug_dir, config: cfg)
       assert File.ls!(slug_dir) == []
     end
 
@@ -299,9 +368,9 @@ defmodule Portal.BuildCache.L2Test do
       ]
 
       for {k, body} <- bodies,
-          do: FakeS3.put_object(s, "sha256_abc/#{k}.tar.gz", body, sha_meta(body))
+          do: FakeS3.put_object(s, "#{@slug}/#{k}.tar.gz", body, sha_meta(body))
 
-      assert %{failed: 3, downloaded: 0} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      assert %{failed: 3, downloaded: 0} = prefetch(slug_dir, config: cfg)
       assert File.ls!(slug_dir) == []
       refute File.exists?(Path.join(tmp, "escape"))
       refute File.exists?("/tmp/abs")
@@ -313,16 +382,16 @@ defmodule Portal.BuildCache.L2Test do
       cfg: cfg,
       slug_dir: slug_dir
     } do
-      FakeS3.put_object(s, "sha256_abc/#{key(1)}.tar.gz", "junk", sha_meta("junk"))
-      assert %{failed: 1} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      FakeS3.put_object(s, "#{@slug}/#{key(1)}.tar.gz", "junk", sha_meta("junk"))
+      assert %{failed: 1} = prefetch(slug_dir, config: cfg)
       assert Stats.bad?(key(1))
       assert File.ls!(slug_dir) == []
     end
 
     test "a missing sha header is refused", %{s: s, cfg: cfg, tmp: tmp, slug_dir: slug_dir} do
       bytes = seed(s, tmp, key(1))
-      FakeS3.put_object(s, "sha256_abc/#{key(1)}.tar.gz", bytes, %{})
-      assert %{failed: 1} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      FakeS3.put_object(s, "#{@slug}/#{key(1)}.tar.gz", bytes, %{})
+      assert %{failed: 1} = prefetch(slug_dir, config: cfg)
       assert Stats.bad?(key(1))
       assert File.ls!(slug_dir) == []
     end
@@ -335,7 +404,7 @@ defmodule Portal.BuildCache.L2Test do
     } do
       seed(s, tmp, key(1))
       FakeS3.set_fault(s, {:get, :status, 500})
-      assert %{failed: 1} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      assert %{failed: 1} = prefetch(slug_dir, config: cfg)
       refute Stats.bad?(key(1))
       assert %{download_failures: 1, refused: 0} = Stats.snapshot()
       assert File.ls!(slug_dir) == []
@@ -356,7 +425,7 @@ defmodule Portal.BuildCache.L2Test do
       end)
 
       assert %{discarded: 1, downloaded: 0, failed: 0} =
-               L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+               prefetch(slug_dir, config: cfg)
 
       assert File.ls!(slug_dir) == [key(1)]
       assert File.ls!(Path.join(dest, "ebin")) == ["local"]
@@ -376,7 +445,7 @@ defmodule Portal.BuildCache.L2Test do
       budget = byte_size(big) + byte_size(small) + 10
 
       assert %{downloaded: 2, skipped: 1} =
-               L2.prefetch(slug_dir, "sha256_abc", config: cfg, budget_bytes: budget)
+               prefetch(slug_dir, config: cfg, budget_bytes: budget)
 
       assert Enum.sort(File.ls!(slug_dir)) == [key(1), key(3)]
     end
@@ -388,7 +457,7 @@ defmodule Portal.BuildCache.L2Test do
 
       log =
         capture_log(fn ->
-          result = L2.prefetch(slug_dir, "sha256_abc", config: cfg, budget_ms: 1500)
+          result = prefetch(slug_dir, config: cfg, budget_ms: 1500)
           # One GET fits; after it under a second is left, too little to start another.
           assert %{downloaded: 1, skipped: 2, failed: 0} = result
         end)
@@ -412,7 +481,7 @@ defmodule Portal.BuildCache.L2Test do
       end)
 
       {micros, result} =
-        :timer.tc(fn -> L2.prefetch(slug_dir, "sha256_abc", config: cfg, budget_ms: 100) end)
+        :timer.tc(fn -> prefetch(slug_dir, config: cfg, budget_ms: 100) end)
 
       assert %{list_failed: true, downloaded: 0} = result
       assert micros < 700_000
@@ -430,7 +499,7 @@ defmodule Portal.BuildCache.L2Test do
     } do
       for i <- 1..3, do: seed(s, tmp, key(i))
       FakeS3.set_fault(s, {:get, :status, 503})
-      assert %{failed: 1, skipped: 2} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      assert %{failed: 1, skipped: 2} = prefetch(slug_dir, config: cfg)
       assert length(object_gets(s)) == 1
       refute Enum.any?(1..3, &Stats.bad?(key(&1)))
     end
@@ -444,13 +513,13 @@ defmodule Portal.BuildCache.L2Test do
       for i <- 1..7, do: seed(s, tmp, key(i))
       # Every object vanishes between the listing and its GET: a 404 each.
       FakeS3.on_get(s, fn object -> FakeS3.delete_object(s, object) end)
-      assert %{failed: 5, skipped: 2} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      assert %{failed: 5, skipped: 2} = prefetch(slug_dir, config: cfg)
       assert length(object_gets(s)) == 5
     end
 
     test "an empty object is refused and marked bad", %{s: s, cfg: cfg, slug_dir: slug_dir} do
-      FakeS3.put_object(s, "sha256_abc/#{key(1)}.tar.gz", "", sha_meta(""))
-      assert %{failed: 1} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      FakeS3.put_object(s, "#{@slug}/#{key(1)}.tar.gz", "", sha_meta(""))
+      assert %{failed: 1} = prefetch(slug_dir, config: cfg)
       assert Stats.bad?(key(1))
     end
 
@@ -463,19 +532,19 @@ defmodule Portal.BuildCache.L2Test do
       seed(s, tmp, key(1), content: String.duplicate("x", 5000))
 
       assert %{candidates: 0} =
-               L2.prefetch(slug_dir, "sha256_abc", config: cfg, max_object_bytes: 10)
+               prefetch(slug_dir, config: cfg, max_object_bytes: 10)
     end
 
     test "an endpoint that is down lists nothing and says so", %{cfg: cfg, slug_dir: slug_dir} do
       log =
         capture_log(fn ->
           assert %{list_failed: true, downloaded: 0} =
-                   L2.prefetch(slug_dir, "sha256_abc",
+                   prefetch(slug_dir,
                      config: %{cfg | endpoint: "http://127.0.0.1:1"}
                    )
         end)
 
-      assert log =~ "Build cache L2 listing of sha256_abc/ failed"
+      assert log =~ "Build cache L2 listing of #{@slug}/ failed"
       assert %{list_failures: 1} = Stats.snapshot()
     end
 
@@ -483,13 +552,13 @@ defmodule Portal.BuildCache.L2Test do
       seed(s, tmp, key(1))
 
       assert %{downloaded: 1} =
-               L2.prefetch(slug_dir, "sha256_abc", config: %{cfg | read_only?: true})
+               prefetch(slug_dir, config: %{cfg | read_only?: true})
     end
 
     test "with L2 off it does nothing", %{s: s, tmp: tmp, slug_dir: slug_dir} do
       seed(s, tmp, key(1))
       Application.delete_env(:portal, L2)
-      assert %{listed: 0, downloaded: 0} = L2.prefetch(slug_dir, "sha256_abc")
+      assert %{listed: 0, downloaded: 0} = L2.prefetch(slug_dir, @slug)
       assert FakeS3.requests(s) == []
     end
 
@@ -501,8 +570,106 @@ defmodule Portal.BuildCache.L2Test do
     } do
       seed(s, tmp, key(1))
       assert Stats.claim(key(1))
-      assert %{skipped: 1, downloaded: 0} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      assert %{skipped: 1, downloaded: 0} = prefetch(slug_dir, config: cfg)
       Stats.release(key(1))
+    end
+
+    test "a slug that is not a full digest is not even listed", %{
+      s: s,
+      cfg: cfg,
+      tmp: tmp,
+      slug_dir: slug_dir
+    } do
+      seed(s, tmp, key(1))
+
+      log =
+        capture_log(fn ->
+          assert %{listed: 0, downloaded: 0} =
+                   L2.prefetch(slug_dir, "sha256_abc", config: cfg, free_bytes: fn _ -> nil end)
+        end)
+
+      assert log =~ "is not shareable"
+      assert FakeS3.requests(s) == []
+    end
+
+    test "free space under the minimum stops the loop before the next object, warning once", %{
+      s: s,
+      cfg: cfg,
+      tmp: tmp,
+      slug_dir: slug_dir
+    } do
+      for i <- 1..3, do: seed(s, tmp, key(i))
+      {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+      free = fn dir ->
+        assert dir == slug_dir
+        if Agent.get_and_update(calls, &{&1, &1 + 1}) == 0, do: 10_000, else: 10
+      end
+
+      log =
+        capture_log(fn ->
+          assert %{downloaded: 1, skipped: 2, failed: 0} =
+                   prefetch(slug_dir, config: cfg, free_bytes: free, min_free_bytes: 1_000)
+        end)
+
+      assert length(Regex.scan(~r/stopped: 10 bytes free/, log)) == 1
+      assert length(object_gets(s)) == 1
+    end
+
+    test "the extracted-bytes budget stops the loop", %{
+      s: s,
+      cfg: cfg,
+      tmp: tmp,
+      slug_dir: slug_dir
+    } do
+      for i <- 1..3, do: seed(s, tmp, key(i))
+
+      assert %{downloaded: 1, skipped: 2, extracted_bytes: extracted} =
+               prefetch(slug_dir, config: cfg, extracted_budget_bytes: 1)
+
+      assert extracted > 0
+      assert length(object_gets(s)) == 1
+    end
+
+    test "an object replaced by a bigger one after the listing is a plain failure", %{
+      s: s,
+      cfg: cfg,
+      tmp: tmp,
+      slug_dir: slug_dir
+    } do
+      seed(s, tmp, key(1))
+      object = "#{@slug}/#{key(1)}.tar.gz"
+      bigger = :crypto.strong_rand_bytes(100_000)
+      FakeS3.on_get(s, fn _ -> FakeS3.put_object(s, object, bigger, sha_meta(bigger)) end)
+
+      assert %{failed: 1, downloaded: 0} = prefetch(slug_dir, config: cfg)
+      refute Stats.bad?(key(1))
+      assert %{download_failures: 1, refused: 0} = Stats.snapshot()
+      assert File.ls!(slug_dir) == []
+    end
+
+    test "a raise inside the listing task and a throw in the loop both come back as counts", %{
+      s: s,
+      cfg: cfg,
+      tmp: tmp,
+      slug_dir: slug_dir
+    } do
+      # A bucket that is not a string makes `Client.list/2` raise inside the
+      # listing task.
+      assert %{list_failed: true} = prefetch(slug_dir, config: %{cfg | bucket: nil})
+
+      # A `free_bytes` seam that throws does so in the loop, outside any task,
+      # where only `L2.prefetch/3`'s own boundary can catch it.
+      seed(s, tmp, key(1))
+
+      log =
+        capture_log(fn ->
+          assert %{failed: 1, downloaded: 0} =
+                   prefetch(slug_dir, config: cfg, free_bytes: fn _ -> throw(:boom) end)
+        end)
+
+      assert log =~ "{:throw, :boom}"
+      assert Process.alive?(self())
     end
 
     test "newest objects come first", %{s: s, cfg: cfg, tmp: tmp, slug_dir: slug_dir} do
@@ -512,7 +679,7 @@ defmodule Portal.BuildCache.L2Test do
       small = byte_size(File.read!(Path.join(tmp, "#{key(2)}.tar.gz")))
 
       assert %{downloaded: 1} =
-               L2.prefetch(slug_dir, "sha256_abc", config: cfg, budget_bytes: small + 10)
+               prefetch(slug_dir, config: cfg, budget_bytes: small + 10)
 
       assert File.ls!(slug_dir) == [key(2)]
     end
@@ -530,6 +697,12 @@ defmodule Portal.BuildCache.L2Test do
             {:sha256_mismatch, "a", "b"},
             {:tar, :eof},
             {:tar, {~c"x", :unsafe_path}},
+            {:tar, :eacces},
+            {:tar, :eperm},
+            {:gzip, :data_error},
+            {:unpack, :killed},
+            {:unpack, :timeout},
+            :empty_entry,
             {:structure, :symlink},
             {:member_type, :symlink, "x"},
             {:member_name, "x"},
@@ -541,12 +714,13 @@ defmodule Portal.BuildCache.L2Test do
 
       for reason <- [
             {:tar, :enospc},
-            {:tar, :eacces},
+            {:tar, :eio},
             {:links, :eacces},
             {:links, :enospc},
             {:links, :eio},
             :not_found,
             :eexist,
+            :larger_than_listed,
             {:rename, :exdev}
           ] do
         assert {:failed, :go} = Prefetch.classify(reason), inspect(reason)
@@ -562,6 +736,8 @@ defmodule Portal.BuildCache.L2Test do
             {:status, 503},
             {:exit, :killed},
             {:exception, "boom"},
+            {:throw, :boom},
+            :budget_spent,
             %Req.TransportError{reason: :econnrefused}
           ] do
         assert {:failed, :stop} = Prefetch.classify(reason), inspect(reason)

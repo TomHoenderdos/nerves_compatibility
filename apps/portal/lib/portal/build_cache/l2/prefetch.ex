@@ -11,6 +11,7 @@ defmodule Portal.BuildCache.L2.Prefetch do
   alias Portal.BuildCache.Staging
 
   @budget_bytes 2 * 1024 * 1024 * 1024
+  @extracted_budget_bytes 4 * 1024 * 1024 * 1024
   @budget_ms :timer.minutes(5)
   @object_timeout_ms 120_000
   @key_pattern ~r/\A[0-9a-f]{64}\z/
@@ -18,6 +19,8 @@ defmodule Portal.BuildCache.L2.Prefetch do
   # logged as a failure for nothing.
   @min_get_ms 1_000
   @max_failures_in_a_row 5
+  # `:eacces` and `:eperm` from the extraction itself are the archive's
+  # doing (modes it applied), so `{:tar, _}` leaves them out; see `classify/1`.
   @local_posix [
     :enospc,
     :eacces,
@@ -31,6 +34,13 @@ defmodule Portal.BuildCache.L2.Prefetch do
     :enotdir
   ]
 
+  @doc """
+  The wall-clock budget of one build's prefetch. Exposed so the Oban config
+  test can keep `Lifeline`'s `rescue_after` above a build's whole worst case.
+  """
+  @spec budget_ms() :: pos_integer()
+  def budget_ms, do: @budget_ms
+
   @doc false
   @spec empty_counts() :: map()
   def empty_counts do
@@ -42,6 +52,7 @@ defmodule Portal.BuildCache.L2.Prefetch do
       failed: 0,
       skipped: 0,
       bytes: 0,
+      extracted_bytes: 0,
       list_failed: false
     }
   end
@@ -59,7 +70,16 @@ defmodule Portal.BuildCache.L2.Prefetch do
       {:ok, objects} ->
         max_object = Keyword.get(opts, :max_object_bytes, Tarball.max_object_bytes())
         candidates = candidates(objects, prefix, local_names(slug_dir), max_object)
-        budget = %{bytes: Keyword.get(opts, :budget_bytes, @budget_bytes), deadline: deadline}
+
+        budget = %{
+          bytes: Keyword.get(opts, :budget_bytes, @budget_bytes),
+          extracted: Keyword.get(opts, :extracted_budget_bytes, @extracted_budget_bytes),
+          deadline: deadline,
+          free_bytes: Keyword.get(opts, :free_bytes, &Portal.Builder.free_bytes/1),
+          min_free:
+            Keyword.get_lazy(opts, :min_free_bytes, &Portal.Builder.prefetch_min_free_bytes/0)
+        }
+
         counts = %{empty_counts() | listed: length(objects), candidates: length(candidates)}
 
         candidates
@@ -84,10 +104,8 @@ defmodule Portal.BuildCache.L2.Prefetch do
       Task.async(fn ->
         try do
           Client.list(cfg, prefix)
-        rescue
-          e -> {:error, {:exception, Exception.message(e)}}
         catch
-          :exit, reason -> {:error, {:exit, reason}}
+          kind, reason -> {:error, Client.caught(kind, reason)}
         end
       end)
 
@@ -139,28 +157,75 @@ defmodule Portal.BuildCache.L2.Prefetch do
       state == :stop or remaining_ms < @min_get_ms or counts.bytes + obj.size > budget.bytes ->
         {bump(counts, :skipped), state}
 
+      low_disk?(slug_dir, budget) ->
+        {bump(counts, :skipped), :stop}
+
       not Stats.claim(hex) ->
         {bump(counts, :skipped), state}
 
       true ->
         try do
           cfg
-          |> download_one(slug_dir, hex, obj, min(remaining_ms, @object_timeout_ms))
+          |> download_one(slug_dir, hex, obj, budget.deadline)
           |> tally(counts, state)
+          |> charge_extracted(budget)
         after
           Stats.release(hex)
         end
     end
   end
 
-  defp tally({:ok, bytes}, counts, _state) do
-    Stats.record(:download_ok, bytes)
-    {%{bump(counts, :downloaded) | bytes: counts.bytes + bytes}, {:go, 0}}
+  # Before every object: the downloads and their extracted trees land on the
+  # cache filesystem, which may not be scratch's. A filesystem `df` cannot
+  # measure is not refused. Logged once, since it stops the loop.
+  defp low_disk?(slug_dir, budget) do
+    case budget.free_bytes.(slug_dir) do
+      free when is_integer(free) and free < budget.min_free ->
+        Logger.warning(
+          "Build cache L2 prefetch into #{slug_dir} stopped: #{free} bytes free, " <>
+            "under the #{budget.min_free} bytes kept free"
+        )
+
+        true
+
+      _ ->
+        false
+    end
   end
 
-  defp tally({:discarded, bytes}, counts, _state) do
+  # Extraction is charged with the pre-scan's decompressed size; once the
+  # build has extracted its budget the remaining objects are skipped.
+  defp charge_extracted({counts, state}, budget) do
+    if counts.extracted_bytes >= budget.extracted do
+      Logger.info(
+        "Build cache L2 prefetch stopped: #{counts.extracted_bytes} bytes extracted, " <>
+          "the per-build budget is #{budget.extracted}"
+      )
+
+      {counts, :stop}
+    else
+      {counts, state}
+    end
+  end
+
+  defp tally({:ok, bytes, extracted}, counts, _state) do
+    Stats.record(:download_ok, bytes)
+
+    {%{
+       bump(counts, :downloaded)
+       | bytes: counts.bytes + bytes,
+         extracted_bytes: counts.extracted_bytes + extracted
+     }, {:go, 0}}
+  end
+
+  defp tally({:discarded, bytes, extracted}, counts, _state) do
     Stats.record(:discarded)
-    {%{bump(counts, :discarded) | bytes: counts.bytes + bytes}, {:go, 0}}
+
+    {%{
+       bump(counts, :discarded)
+       | bytes: counts.bytes + bytes,
+         extracted_bytes: counts.extracted_bytes + extracted
+     }, {:go, 0}}
   end
 
   defp tally({:error, {:refused, _}}, counts, state), do: {bump(counts, :failed), state}
@@ -179,14 +244,14 @@ defmodule Portal.BuildCache.L2.Prefetch do
   # `slug_dir` is the per-image directory under the operator's cache root and
   # `hex` a validated 64-hex key, so every path here is host-built.
   # sobelow_skip ["Traversal.FileModule"]
-  defp download_one(cfg, slug_dir, hex, obj, timeout_ms) do
+  defp download_one(cfg, slug_dir, hex, obj, deadline) do
     dest = Path.join(slug_dir, hex)
     staging = Staging.name(dest)
     tar = staging <> ".tar.gz"
 
     result =
       try do
-        fetch_and_publish(cfg, obj, tar, staging, dest, timeout_ms)
+        fetch_and_publish(cfg, obj, tar, staging, dest, deadline)
       after
         _ = File.rm(tar)
         _ = File.rm_rf(staging)
@@ -198,23 +263,51 @@ defmodule Portal.BuildCache.L2.Prefetch do
     end
   end
 
-  # Staging names built by `download_one/5`.
+  # Staging names built by `download_one/5`. The GET and the extraction
+  # each get what is left of the build's budget, at most 120 s.
   # sobelow_skip ["Traversal.FileModule"]
-  defp fetch_and_publish(cfg, obj, tar, staging, dest, timeout_ms) do
-    with {:ok, %{bytes: bytes} = got} <-
-           Client.get(cfg, obj.key, tar, max_bytes: obj.size, timeout_ms: timeout_ms),
+  defp fetch_and_publish(cfg, obj, tar, staging, dest, deadline) do
+    with {:ok, %{bytes: bytes} = got} <- get(cfg, obj, tar, deadline),
          :ok <- verify_sha(got),
          :ok <- File.mkdir(staging),
-         :ok <- Tarball.unpack(tar, staging) do
+         {:ok, %{extracted_bytes: extracted}} <- unpack(tar, staging, deadline) do
       _ = File.rm(tar)
 
       case publish(staging, dest) do
-        :ok -> {:ok, bytes}
-        :discarded -> {:discarded, bytes}
+        :ok -> {:ok, bytes, extracted}
+        :discarded -> {:discarded, bytes, extracted}
         {:error, reason} -> {:error, reason}
       end
     end
   end
+
+  # A body longer than the listing said means the object was replaced after
+  # the listing, not that it is wrong: a plain failure, not a refusal.
+  defp get(cfg, obj, tar, deadline) do
+    case Client.get(cfg, obj.key, tar, max_bytes: obj.size, timeout_ms: object_timeout(deadline)) do
+      {:error, :too_large} -> {:error, :larger_than_listed}
+      other -> other
+    end
+  end
+
+  # An extraction that runs out of time is the archive's fault only when it
+  # had the full per-object time; cut short by the build's budget, it is the
+  # budget that ran out, and the object is not marked bad for it.
+  defp unpack(tar, staging, deadline) do
+    timeout = object_timeout(deadline)
+
+    case Tarball.unpack(tar, staging, timeout_ms: timeout) do
+      {:error, {:unpack, :timeout}} when timeout < @object_timeout_ms -> {:error, :budget_spent}
+      other -> other
+    end
+  end
+
+  defp object_timeout(deadline),
+    do:
+      deadline
+      |> Kernel.-(System.monotonic_time(:millisecond))
+      |> max(0)
+      |> min(@object_timeout_ms)
 
   defp verify_sha(%{sha256_header: nil}), do: {:error, :no_sha256_header}
 
@@ -268,7 +361,12 @@ defmodule Portal.BuildCache.L2.Prefetch do
   How a download failure is handled: `:refused` when the object itself is
   wrong (marked bad for a day), `:failed` otherwise; `:stop` when the store
   is failing and the loop should end for this build. Local I/O errors during
-  extraction are this host's problem, never the object's.
+  extraction are this host's problem, never the object's, except a refused
+  permission while extracting (`{:tar, :eacces | :eperm}`), which comes from
+  modes the archive applied. An extraction the bound killed or timed out
+  (`{:unpack, _}`) is the archive's doing; one cut short by the build's own
+  budget (`:budget_spent`) is not. A body longer than the listing said
+  (`:larger_than_listed`) is an object replaced after the listing.
   """
   @spec classify(term()) :: {:refused | :failed, :stop | :go}
   def classify(reason) do
@@ -280,20 +378,24 @@ defmodule Portal.BuildCache.L2.Prefetch do
     end
   end
 
+  defp local_io?({:tar, posix}) when posix in [:eacces, :eperm], do: false
   defp local_io?({tag, posix}) when tag in [:tar, :links], do: posix in @local_posix
   defp local_io?(_), do: false
 
   defp refusal?(reason)
-       when reason in [:no_sha256_header, :too_large, :empty_archive, :empty],
+       when reason in [:no_sha256_header, :too_large, :empty_archive, :empty, :empty_entry],
        do: true
 
-  defp refusal?({tag, _}) when tag in [:tar, :structure, :member_name, :links], do: true
+  defp refusal?({tag, _})
+       when tag in [:tar, :structure, :member_name, :links, :gzip, :unpack],
+       do: true
+
   defp refusal?({tag, _, _}) when tag in [:sha256_mismatch, :member_type], do: true
   defp refusal?(_), do: false
 
-  defp store_failing?(:timeout), do: true
+  defp store_failing?(reason) when reason in [:timeout, :budget_spent], do: true
   defp store_failing?({:status, status}) when status in [401, 403] or status >= 500, do: true
-  defp store_failing?({tag, _}) when tag in [:exit, :exception], do: true
+  defp store_failing?({tag, _}) when tag in [:exit, :exception, :throw], do: true
   defp store_failing?(%Req.TransportError{}), do: true
   defp store_failing?(%Mint.TransportError{}), do: true
   defp store_failing?(_), do: false
