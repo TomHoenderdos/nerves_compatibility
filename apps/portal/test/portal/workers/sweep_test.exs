@@ -3,8 +3,6 @@ defmodule Portal.Workers.SweepTest do
 
   import ExUnit.CaptureLog
 
-  require Logger
-
   alias Portal.Workers.Sweep
 
   @hour :timer.hours(1)

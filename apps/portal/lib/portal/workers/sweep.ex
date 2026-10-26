@@ -21,7 +21,10 @@ defmodule Portal.Workers.Sweep do
       download's `.tar.gz` beside it): only those older than the scratch max
       age go, and only this host's or the host-less pre-L2 form, since an
       in-flight L2 download can hold a name for minutes and a shared cache
-      root holds other hosts' staging
+      root holds other hosts' staging. A promotion's staging copy inherits
+      its source's mtime from `cp -a`, so it can look as old as the build at
+      once: the age bound is safe only while `NCC_SCRATCH_MAX_AGE_HOURS`
+      exceeds the two-hour build ceiling (`Portal.Builder.total_timeout_ms/0`)
 
   `nerves_cache/artifacts` it keeps under a size bound
   (`nerves_cache_max_bytes`, `NCC_NERVES_CACHE_MAX_GB`, default 40 GiB),
@@ -320,7 +323,11 @@ defmodule Portal.Workers.Sweep do
   end
 
   # lstat, never stat: a symlink planted under a staging name must not be
-  # followed to decide anything.
+  # followed to decide anything. The age is the staging dir's mtime, and a
+  # promotion copy made with `cp -a` carries its source's, which is as old as
+  # the build that wrote it: a copy in flight is safe from this only while
+  # the scratch max age (`NCC_SCRATCH_MAX_AGE_HOURS`) exceeds the two-hour
+  # build ceiling (`Portal.Builder.total_timeout_ms/0`).
   # `path` is a name under the operator's cache root.
   # sobelow_skip ["Traversal.FileModule"]
   defp staging_stale?(path, now, max_age) do
