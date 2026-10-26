@@ -1171,8 +1171,12 @@ defmodule Portal.Workers.BuildTest do
     end
   end
 
-  # `perform_job/3` runs the job's `perform/1` directly, so these cover the
-  # `after`-block broadcast the same way a real job attempt would reach it.
+  # `Portal.AdminEvents.SweepTelemetry` is a global handler on
+  # `[:oban, :job, :stop | :exception]`, attached once at app start -- not a
+  # broadcast call inside either worker. `perform_job/3` still exercises it:
+  # it runs the job through the real `Oban.Queue.Executor` (just without
+  # acking the result to the database), and the executor emits those events
+  # regardless of `ack`. So these tests cover the same path a live job takes.
   describe "sweep broadcasts" do
     setup do
       :ok = Portal.AdminEvents.subscribe(:sweeps)
@@ -1231,7 +1235,7 @@ defmodule Portal.Workers.BuildTest do
       refute_receive {:admin_changed, :sweeps}
     end
 
-    test "a successful build carries its sweep id into the ingest job" do
+    test "a successful build carries its sweep id into the ingest job under announce_sweep" do
       files_dir =
         files_dir_with(["ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"])
 
@@ -1259,10 +1263,15 @@ defmodule Portal.Workers.BuildTest do
 
       assert_receive {:admin_changed, :sweeps}
       assert [job] = all_enqueued(worker: Ingest)
-      assert job.meta["sweep_id"] == "sweep-ingest"
+      # `announce_sweep`, not `sweep_id`: `Portal.BulkRebuild.sweep_jobs/1`
+      # matches any worker's `meta.sweep_id` by JSONB containment, so this
+      # ingest job must stay outside that sweep's cancel/status scope while
+      # still reaching the telemetry handler.
+      assert job.meta["announce_sweep"] == "sweep-ingest"
+      refute Map.has_key?(job.meta, "sweep_id")
     end
 
-    test "an ingest job with a sweep id in meta announces :sweeps when it finishes" do
+    test "an ingest job with announce_sweep in meta announces :sweeps when it finishes" do
       {:ok, run} =
         Portal.Catalog.Ingestion.ingest(fixture_result(), %{
           run_id: "sweep-committed",
@@ -1271,12 +1280,12 @@ defmodule Portal.Workers.BuildTest do
         })
 
       assert :ok =
-               perform_job(Ingest, %{"run_id" => run.run_id}, meta: %{sweep_id: "sweep-3"})
+               perform_job(Ingest, %{"run_id" => run.run_id}, meta: %{announce_sweep: "sweep-3"})
 
       assert_receive {:admin_changed, :sweeps}
     end
 
-    test "an ingest job without a sweep id does not announce" do
+    test "an ingest job without announce_sweep does not announce" do
       {:ok, run} =
         Portal.Catalog.Ingestion.ingest(fixture_result(), %{
           run_id: "sweep-committed2",

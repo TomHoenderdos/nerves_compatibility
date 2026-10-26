@@ -135,7 +135,6 @@ defmodule Portal.Workers.Ingest do
 
   defp runs_queue?(_queues, _name), do: false
 
-  alias Portal.AdminEvents
   alias Portal.Builder
   alias Portal.Builders.{Leases, Upload}
   alias Portal.Catalog.Ingestion
@@ -156,18 +155,7 @@ defmodule Portal.Workers.Ingest do
     end
   end
 
-  def perform(%Oban.Job{meta: meta, args: args, attempt: attempt, max_attempts: max_attempts}) do
-    do_perform(args, attempt, max_attempts)
-  after
-    # Same reasoning as `Portal.Workers.Build`: a sweep's Maintenance page
-    # (Task 7) counts jobs by Oban state, so every attempt here -- whether it
-    # commits the run, retries, or gets discarded -- has to announce. `after`
-    # runs once the ingest's own transaction (inside `Ingestion.ingest/2`) has
-    # already committed or rolled back, and a non-sweep job stays silent.
-    if meta["sweep_id"], do: AdminEvents.broadcast(:sweeps)
-  end
-
-  defp do_perform(args, attempt, max_attempts) do
+  def perform(%Oban.Job{args: args, attempt: attempt, max_attempts: max_attempts}) do
     run_id = args["run_id"]
     image_digest = args["image_digest"]
     source = source(args)

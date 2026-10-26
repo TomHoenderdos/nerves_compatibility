@@ -15,6 +15,10 @@ defmodule Portal.Application do
     # And the memo of pairs already warmed `Portal.NervesCache.recently_warmed/2` checks.
     :ok = Portal.NervesCache.create_warmed_table()
 
+    # Before the Oban child below starts, so no sweep job's completion can run
+    # before this handler is in place to hear it.
+    :ok = Portal.AdminEvents.SweepTelemetry.attach()
+
     children = [
       PortalWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:portal, :dns_cluster_query) || :ignore},
