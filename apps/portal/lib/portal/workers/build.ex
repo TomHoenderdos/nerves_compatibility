@@ -58,7 +58,6 @@ defmodule Portal.Workers.Build do
 
   import Ecto.Query, only: [from: 2]
 
-  alias Portal.AdminEvents
   alias Portal.BuildCache.Promotion
   alias Portal.Builder
   alias Portal.Catalog.LogSanitizer
@@ -71,17 +70,15 @@ defmodule Portal.Workers.Build do
   @impl Oban.Worker
   def perform(%Oban.Job{meta: meta, args: args, attempt: attempt, max_attempts: max_attempts}) do
     do_perform(args, attempt, max_attempts, meta["sweep_id"])
-  after
-    # A bulk rebuild's Maintenance page (Task 7) counts a sweep's jobs by Oban
-    # state (`Portal.BulkRebuild.status/1`); every attempt here moves a job
-    # from one state to another -- success, a retry-bound failure, a policy
-    # cancel, or an exhausted discard -- so it is told regardless of how
-    # `do_perform/4` above returns or raises. `after` runs either way, once
-    # any transaction `do_perform/4` opened has already closed, and a job
-    # without a `sweep_id` has no Maintenance page watching it.
-    if meta["sweep_id"], do: AdminEvents.broadcast(:sweeps)
   end
 
+  # `sweep_id` is not for this job to announce itself -- a global telemetry
+  # handler (`Portal.AdminEvents.SweepTelemetry`) does that from
+  # `[:oban, :job, :stop | :exception]`, which Oban emits only after it has
+  # already recorded this attempt's new state, so the Maintenance page never
+  # reloads `Portal.BulkRebuild.status/1` while this job still shows
+  # `executing`. It is threaded through here only so a successful build can
+  # hand it to the `Ingest` job it enqueues (see `enqueue_ingest/4` below).
   defp do_perform(args, attempt, max_attempts, sweep_id) do
     package = args["package"]
     version = args["version"]
@@ -149,7 +146,8 @@ defmodule Portal.Workers.Build do
 
   # `ctx` is the same tuple `handle_outcome/3` pattern-matches: building it once
   # here, before the call, is what keeps `do_build/2` at two parameters rather
-  # than the nine separate fields it would otherwise need to close over.
+  # than the eight separate fields (seven before `sweep_id` joined them) it
+  # would otherwise need to close over.
   defp do_build(ctx, args) do
     {package, version, image_digest, scan_request_id, run_id, attempt, max_attempts, _sweep_id} =
       ctx
@@ -328,16 +326,20 @@ defmodule Portal.Workers.Build do
     end)
   end
 
-  # `sweep_id` is threaded through so a sweep's build and the ingest it hands
-  # off to are both watched: Build's own `perform/1` already announced this
-  # attempt, and now the ingest job carries the same id so its own completion
-  # (success, retry, or discard) announces too.
+  # `sweep_id` is threaded through so the ingest job this hands off to is
+  # watched too, but under a different meta key: `Portal.BulkRebuild.sweep_jobs/1`
+  # matches any worker's `meta.sweep_id` by JSONB containment, so an Ingest job
+  # tagged `sweep_id` would fall inside `cancel/1`'s scope (cancelling a
+  # pending ingest loses a finished build's result and leaks its scratch dir)
+  # and would be double-counted by `status/1`. `announce_sweep` is not one of
+  # those queries' keys -- it only reaches `Portal.AdminEvents.SweepTelemetry`,
+  # which broadcasts on either key.
   defp enqueue_ingest(run_id, image_digest, scan_request_id, sweep_id) do
     args =
       %{"run_id" => run_id, "image_digest" => image_digest}
       |> maybe_put("scan_request_id", scan_request_id)
 
-    meta = if sweep_id, do: %{sweep_id: sweep_id}, else: %{}
+    meta = if sweep_id, do: %{announce_sweep: sweep_id}, else: %{}
 
     # This node's own queue: the scratch dir the ingest reads is on this disk.
     case args |> Ingest.new(queue: Ingest.local_queue(), meta: meta) |> Oban.insert() do

@@ -189,9 +189,10 @@ defmodule Portal.BulkRebuildTest do
     end
   end
 
-  # Task 7's Maintenance page watches `:sweeps` to refresh an in-progress
-  # sweep's counts. `run/1` and `cancel/1` are both one-shot writes (unlike the
-  # per-job broadcasts in Build/Ingest), so each announces itself directly.
+  # The Maintenance page watches `:sweeps` to refresh an in-progress sweep's
+  # counts. `run/1` and `cancel/1` are both one-shot writes -- unlike a build
+  # or ingest job's own attempt, which the `Portal.AdminEvents.SweepTelemetry`
+  # handler announces instead -- so each broadcasts directly.
   describe "sweep change events" do
     setup do
       :ok = Portal.AdminEvents.subscribe(:sweeps)
@@ -214,6 +215,35 @@ defmodule Portal.BulkRebuildTest do
     test "an empty selection does not announce" do
       assert {:ok, %{sweep_id: nil, selected: 0}} = BulkRebuild.run(limit: 10)
       refute_receive {:admin_changed, :sweeps}
+    end
+  end
+
+  # An Ingest job that a sweep's build hands off to carries the sweep's id
+  # under `meta.announce_sweep`, a different key from the `meta.sweep_id` that
+  # `sweep_jobs/1` matches by JSONB containment -- see
+  # `Portal.Workers.Build.enqueue_ingest/4`. If it carried `sweep_id` instead,
+  # `cancel/1` could cancel a pending ingest (losing a finished build's result
+  # and leaking its scratch dir) and `status/1` would double-count the
+  # package once for its Build job and again for its Ingest job.
+  describe "Ingest jobs stay outside a sweep's scope" do
+    test "cancel leaves a pending ingest job alone" do
+      {:ok, _job} =
+        Oban.insert(
+          Portal.Workers.Ingest.new(%{"run_id" => "r1"}, meta: %{announce_sweep: "sweep-x"})
+        )
+
+      assert {:ok, 0} = BulkRebuild.cancel("sweep-x")
+
+      assert [%{state: "available"}] = all_enqueued(worker: Portal.Workers.Ingest)
+    end
+
+    test "status does not count a pending ingest job" do
+      {:ok, _job} =
+        Oban.insert(
+          Portal.Workers.Ingest.new(%{"run_id" => "r2"}, meta: %{announce_sweep: "sweep-y"})
+        )
+
+      assert %{intake: 0, queued: 0, building: 0, remaining: 0} = BulkRebuild.status("sweep-y")
     end
   end
 end

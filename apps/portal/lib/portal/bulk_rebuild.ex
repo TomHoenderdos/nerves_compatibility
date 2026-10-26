@@ -106,8 +106,8 @@ defmodule Portal.BulkRebuild do
 
   # A dry run and an empty selection both return before `enqueue/4`, so they
   # never reach here; only a sweep that actually queued jobs tells the
-  # Maintenance page (Task 7) to refresh. `Ash.create/3` failing inside
-  # `enqueue/4` means nothing was queued either, so only `{:ok, _}` announces.
+  # Maintenance page to refresh. `Ash.create/3` failing inside `enqueue/4`
+  # means nothing was queued either, so only `{:ok, _}` announces.
   defp announce_sweep_started({:ok, _result} = result) do
     AdminEvents.broadcast(:sweeps)
     result
