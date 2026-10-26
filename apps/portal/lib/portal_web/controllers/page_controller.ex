@@ -18,118 +18,11 @@ defmodule PortalWeb.PageController do
   def admin(conn, _params), do: admin_section(conn, :overview)
   def admin_failures(conn, _params), do: admin_section(conn, :failures)
   def admin_argus(conn, _params), do: admin_section(conn, :argus)
-  def admin_maintenance(conn, _params), do: admin_section(conn, :maintenance)
 
   defp admin_section(conn, section) do
     case require_admin(conn) do
       {:ok, conn, user} -> render_admin(conn, user, section)
       {:error, conn} -> conn
-    end
-  end
-
-  def admin_update_check(conn, params) do
-    case require_admin(conn) do
-      {:ok, conn, user} ->
-        dry_run = params["mode"] == "dry_run"
-
-        case Portal.Admin.request_update_check(dry_run: dry_run) do
-          {:ok, _job} ->
-            conn
-            |> put_flash(:info, update_check_message(dry_run))
-            |> render_admin(user, :maintenance)
-
-          {:error, reason} ->
-            conn
-            |> put_flash(:error, PortalWeb.AdminMessages.error(reason))
-            |> render_admin(user, :maintenance)
-        end
-
-      {:error, conn} ->
-        conn
-    end
-  end
-
-  # Both bulk rebuild actions redirect rather than render: refreshing a
-  # rendered POST response re-sends the form, which here would start a second
-  # sweep of forced builds.
-  def admin_bulk_rebuild(conn, params) do
-    case require_admin(conn) do
-      {:ok, conn, user} ->
-        conn
-        |> bulk_rebuild_flash(bulk_rebuild_opts(params, user))
-        |> redirect(to: ~p"/admin/maintenance")
-
-      {:error, conn} ->
-        conn
-    end
-  end
-
-  defp bulk_rebuild_opts(params, user) do
-    limit =
-      params
-      |> Map.get("limit", "100")
-      |> Integer.parse()
-      |> case do
-        {n, _} when n in 1..20_000 -> n
-        _ -> 100
-      end
-
-    systems = Enum.filter(List.wrap(params["systems"]), &(&1 in Portal.BulkRebuild.targets()))
-
-    what =
-      case {params["what"], systems} do
-        {"argus_only", _} -> :argus_only
-        {"targets", []} -> :no_targets
-        {"targets", systems} -> {:targets, systems}
-        _ -> :full
-      end
-
-    [
-      limit: limit,
-      order: if(params["order"] == "catalog", do: :catalog, else: :stalest),
-      status: Map.get(%{"pass" => :pass, "fail" => :fail, "error" => :error}, params["status"]),
-      what: what,
-      dry_run: params["mode"] == "dry_run",
-      created_by: user.username
-    ]
-  end
-
-  defp bulk_rebuild_flash(conn, opts) do
-    if opts[:what] == :no_targets do
-      put_flash(conn, :error, "Pick at least one target, or choose all targets or argus only.")
-    else
-      case {opts[:dry_run], Portal.BulkRebuild.run(opts)} do
-        {true, {:ok, %{selected: n}}} ->
-          put_flash(conn, :info, "Dry run: would rebuild #{n} packages.")
-
-        {false, {:ok, %{selected: n}}} ->
-          put_flash(conn, :info, "Bulk rebuild queued: #{pluralize(n, "package")}.")
-
-        {_, {:error, reason}} ->
-          put_flash(conn, :error, PortalWeb.AdminMessages.error(reason))
-      end
-    end
-  end
-
-  def admin_cancel_sweep(conn, %{"id" => id}) do
-    case require_admin(conn) do
-      {:ok, conn, _user} ->
-        case Ecto.UUID.cast(id) do
-          {:ok, sweep_id} ->
-            {:ok, n} = Portal.BulkRebuild.cancel(sweep_id)
-
-            conn
-            |> put_flash(:info, "Cancelled #{n} waiting jobs.")
-            |> redirect(to: ~p"/admin/maintenance")
-
-          :error ->
-            conn
-            |> put_flash(:error, "That sweep id is not valid.")
-            |> redirect(to: ~p"/admin/maintenance")
-        end
-
-      {:error, conn} ->
-        conn
     end
   end
 
@@ -154,8 +47,8 @@ defmodule PortalWeb.PageController do
     end
   end
 
-  # Redirects rather than renders, as the bulk rebuild does: a refreshed
-  # rendered POST would queue the sweep again.
+  # Redirects rather than renders: a refreshed rendered POST would queue the
+  # sweep again.
   def admin_toolchain_sweep(conn, _params) do
     case require_admin(conn) do
       {:ok, conn, _user} ->
@@ -218,11 +111,6 @@ defmodule PortalWeb.PageController do
         conn
     end
   end
-
-  defp update_check_message(true),
-    do: "Dry run queued. It reports what it would rebuild and queues nothing."
-
-  defp update_check_message(false), do: "Update check queued."
 
   def register(conn, _params) do
     render_auth(conn, :register, username: "")
@@ -668,7 +556,6 @@ defmodule PortalWeb.PageController do
   defp admin_template(:overview), do: :admin
   defp admin_template(:failures), do: :admin_failures
   defp admin_template(:argus), do: :admin_argus
-  defp admin_template(:maintenance), do: :admin_maintenance
 
   defp admin_assigns(:failures) do
     [
@@ -685,19 +572,6 @@ defmodule PortalWeb.PageController do
     ]
   end
 
-  defp admin_assigns(:maintenance) do
-    [
-      update_check: Portal.Admin.update_check_status(),
-      sweeps: Enum.map(Portal.BulkRebuild.recent(), &{&1, Portal.BulkRebuild.status(&1.id)}),
-      bulk_targets: Portal.BulkRebuild.targets(),
-      precompiled: %{
-        key_loaded?: match?({:ok, _}, Portal.Precompiled.Keys.load()),
-        batch: Portal.Precompiled.Batches.latest()
-      },
-      toolchains: toolchain_rows()
-    ]
-  end
-
   defp admin_assigns(:overview) do
     [
       review_total: Portal.ScanRequests.pending_anonymous_page(1).total,
@@ -707,19 +581,6 @@ defmodule PortalWeb.PageController do
       update_check: Portal.Admin.update_check_status(),
       admin_count: length(Portal.Admin.list_admins())
     ]
-  end
-
-  # In configured order, which a map of counts would lose.
-  defp toolchain_rows do
-    counts = Portal.Catalog.toolchain_counts()
-
-    %{
-      builder_version: Portal.Toolchains.builder_version(),
-      rows:
-        for %{toolchain: toolchain} <- Portal.Toolchains.images() do
-          Map.put(Map.fetch!(counts, toolchain), :toolchain, toolchain)
-        end
-    }
   end
 
   # These admin actions carry the same privilege as the Oban dashboard behind

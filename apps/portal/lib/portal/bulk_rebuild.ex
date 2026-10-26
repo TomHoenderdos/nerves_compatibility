@@ -347,6 +347,37 @@ defmodule Portal.BulkRebuild do
   """
   @spec cancel(String.t()) :: {:ok, non_neg_integer()}
   def cancel(sweep_id) do
+    n = cancel_waiting(sweep_id)
+
+    # Only when something was actually waiting to be stopped: a cancel of a
+    # sweep that already finished moves nothing the Maintenance page shows.
+    if n > 0, do: AdminEvents.broadcast(:sweeps)
+
+    {:ok, n}
+  end
+
+  @doc """
+  `cancel/1` for every sweep `query` selects: the Maintenance page's bulk
+  action, which Cinder calls with a query filtered to the ticked rows.
+  Returns the total of jobs cancelled across them as `ok`, in the
+  `%{ok: _, failed: _}` shape the admin bulk actions share; cancelling
+  cannot refuse a sweep, so `failed` is always empty.
+
+  Announces once for the lot rather than once per sweep, and only when
+  something was waiting.
+  """
+  @spec bulk_cancel(Ash.Query.t(), keyword()) ::
+          {:ok, %{ok: non_neg_integer(), failed: []}} | {:error, term()}
+  def bulk_cancel(query, opts) do
+    with {:ok, sweeps} <-
+           Ash.read(query, Keyword.take(opts, [:actor]) ++ [domain: Portal.Catalog]) do
+      total = sweeps |> Enum.map(&cancel_waiting(&1.id)) |> Enum.sum()
+      if total > 0, do: AdminEvents.broadcast(:sweeps)
+      {:ok, %{ok: total, failed: []}}
+    end
+  end
+
+  defp cancel_waiting(sweep_id) do
     {:ok, n} =
       Oban.cancel_all_jobs(
         from(j in Oban.Job,
@@ -359,11 +390,49 @@ defmodule Portal.BulkRebuild do
       sweep |> Ash.Changeset.for_update(:cancel, %{}) |> Ash.update!(domain: Portal.Catalog)
     end
 
-    # Only when something was actually waiting to be stopped: a cancel of a
-    # sweep that already finished moves nothing the Maintenance page shows.
-    if n > 0, do: AdminEvents.broadcast(:sweeps)
+    n
+  end
 
-    {:ok, n}
+  @doc """
+  Turns the Maintenance page's bulk rebuild form into `run/1` options.
+
+  Every field falls back to its default when missing or not one of the
+  values the form offers, since a forged submit may carry anything: the
+  limit to 100 (outside 1..20,000 too), the order to `:stalest`, the
+  result filter to none and the scope to `:full`. Only known targets are
+  kept, and `"targets"` with none of them left is `what: :no_targets`, which
+  `run/1` does not accept; the caller refuses it with its own message.
+  """
+  @spec opts_from_params(map(), String.t() | nil) :: keyword()
+  def opts_from_params(params, created_by) do
+    # The controller read `limit` with `Integer.parse/1` straight away, which
+    # raises on a forged non-string value; it falls back like any other here.
+    limit =
+      with value when is_binary(value) <- Map.get(params, "limit", "100"),
+           {n, _} when n in 1..20_000 <- Integer.parse(value) do
+        n
+      else
+        _ -> 100
+      end
+
+    systems = Enum.filter(List.wrap(params["systems"]), &(&1 in @targets))
+
+    what =
+      case {params["what"], systems} do
+        {"argus_only", _} -> :argus_only
+        {"targets", []} -> :no_targets
+        {"targets", systems} -> {:targets, systems}
+        _ -> :full
+      end
+
+    [
+      limit: limit,
+      order: if(params["order"] == "catalog", do: :catalog, else: :stalest),
+      status: Map.get(%{"pass" => :pass, "fail" => :fail, "error" => :error}, params["status"]),
+      what: what,
+      dry_run: params["mode"] == "dry_run",
+      created_by: created_by
+    ]
   end
 
   @doc "The newest sweeps, newest first."
