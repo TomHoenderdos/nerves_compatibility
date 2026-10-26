@@ -9,8 +9,8 @@ defmodule PortalWeb.Admin.UsersLive do
 
   Each click also re-runs the admin policy against a freshly loaded user, as
   the controller actions this replaces did on every request: an admin demoted
-  or stripped of their passkey while the page is open loses its buttons on
-  the next click, not when the socket happens to reconnect.
+  or stripped of their passkey while the page is open is refused and
+  redirected on the next click, not when the socket happens to reconnect.
   """
   use PortalWeb, :live_view
   use Cinder.UrlSync
