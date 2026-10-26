@@ -216,6 +216,94 @@ defmodule Portal.Workers.BuildIntegrationTest do
     Repo.delete!(ingest_job)
   end
 
+  # L2 spec, section 7: a promotion on one host becomes a local entry on
+  # another. The stub stands in for Garage; the two tmp cache roots stand in
+  # for two hosts (the slug is the same image digest on both).
+  test "a promoted jason entry is restored into an empty cache on the next build through L2" do
+    {:ok, s} = Portal.Test.FakeS3.start()
+    previous_l2 = Application.get_env(:portal, Portal.BuildCache.L2, [])
+
+    Application.put_env(:portal, Portal.BuildCache.L2,
+      endpoint: s.endpoint,
+      bucket: s.bucket,
+      region: s.region,
+      access_key: s.access_key,
+      secret_key: s.secret_key
+    )
+
+    previous = Application.get_env(:portal, Portal.Builder, [])
+    cache_a = Path.join(System.tmp_dir!(), "ncc-l2-a-#{System.unique_integer([:positive])}")
+    cache_b = Path.join(System.tmp_dir!(), "ncc-l2-b-#{System.unique_integer([:positive])}")
+
+    on_exit(fn ->
+      Application.put_env(:portal, Portal.BuildCache.L2, previous_l2)
+      Application.put_env(:portal, Portal.Builder, previous)
+      File.rm_rf(cache_a)
+      File.rm_rf(cache_b)
+    end)
+
+    image_digest = Builder.image_digest(Builder.docker_image())
+    slug = Builder.cache_slug(image_digest)
+
+    # Host A: build, promote, upload.
+    Application.put_env(:portal, Portal.Builder, Keyword.put(previous, :build_cache, cache_a))
+    {_request, _package, _run} = build_and_ingest("jason", "1.4.4")
+
+    keys_a = cache_a |> Path.join(slug) |> File.ls!() |> Enum.filter(&hex64?/1)
+    assert keys_a != [], "expected host A to promote at least one entry"
+
+    for key <- keys_a do
+      assert {:ok, %{body: body, meta: %{"x-amz-meta-sha256" => sha}}} =
+               Portal.Test.FakeS3.get_object(s, "#{slug}/#{key}.tar.gz")
+
+      assert sha == Base.encode16(:crypto.hash(:sha256, body), case: :lower)
+    end
+
+    # Host B: empty cache, same image, same bucket. The prefetch runs before
+    # the container; the entry is present afterwards with A's contents.
+    Application.put_env(:portal, Portal.Builder, Keyword.put(previous, :build_cache, cache_b))
+
+    {:ok, request} =
+      ScanRequests.create_once(%{
+        package_name: "jason",
+        version: "1.4.4",
+        source: :hex_owner,
+        status: :accepted
+      })
+
+    job = %Oban.Job{
+      args: %{
+        "package" => "jason",
+        "version" => "1.4.4",
+        "image_digest" => image_digest,
+        "scan_request_id" => request.id,
+        "force" => true
+      },
+      attempt: 1,
+      max_attempts: 3
+    }
+
+    assert :ok = Build.perform(job)
+
+    ingest_job =
+      all_enqueued(worker: Ingest) |> Enum.find(&(&1.args["scan_request_id"] == request.id))
+
+    assert ingest_job, "expected an Ingest job for scan_request #{request.id}"
+
+    # The whole runner.log, not load_run's tail: the prefetch line sits right
+    # after the docker header, which a long build log pushes out of the tail.
+    log = File.read!(Builder.runner_log_path(ingest_job.args["run_id"]))
+    assert log =~ ~r/Build cache L2 prefetch for .*: #{length(keys_a)} downloaded/
+
+    for key <- keys_a do
+      assert entry_contents(Path.join([cache_b, slug, key])) ==
+               entry_contents(Path.join([cache_a, slug, key]))
+    end
+
+    assert :ok = Ingest.perform(%Oban.Job{args: ingest_job.args, attempt: 1, max_attempts: 5})
+    Repo.delete!(ingest_job)
+  end
+
   # Isolation spec, section 1: the deploy-time warm fills the cache through
   # trusted code only; a build then mounts it read-only, resolves through its
   # per-run symlink farm, reports its locked Nerves packages and no misses,
@@ -428,6 +516,25 @@ defmodule Portal.Workers.BuildIntegrationTest do
     |> Map.new(fn path ->
       {:ok, stat} = File.lstat(path, time: :posix)
       {Path.relative_to(path, root), {stat.type, stat.size, stat.mode, stat.mtime}}
+    end)
+  end
+
+  # Relative path => {type, size, content hash} for an entry tree: what must
+  # survive a tar round trip, without the mtimes extraction may reset.
+  defp entry_contents(root) do
+    root
+    |> walk()
+    |> Map.new(fn path ->
+      {:ok, stat} = File.lstat(path)
+
+      digest =
+        case stat.type do
+          :regular -> Base.encode16(:crypto.hash(:sha256, File.read!(path)), case: :lower)
+          :symlink -> File.read_link!(path)
+          _ -> nil
+        end
+
+      {Path.relative_to(path, root), {stat.type, digest}}
     end)
   end
 
