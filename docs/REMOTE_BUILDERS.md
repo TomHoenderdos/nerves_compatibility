@@ -268,13 +268,16 @@ the identity lives in `/srv/ncc/{ca.pem,client.pem,client-key.pem}`.
     `NCC-EGRESS` only sees what the containers send *through* the host
     (FORWARD). Traffic from a container to the builder host itself --
     `172.17.0.1`, the VM's own addresses -- goes through INPUT, so the
-    script also writes chain `NCC-INPUT` first in `INPUT`: established
-    replies, DNS to the resolvers (the host may be one), then no new
-    connection from `docker0` or a `br-*` bridge. A daemon configured with
-    another bridge name is not covered by it; still keep nothing listening
-    on the VM that a build should not reach. `verify` wants `NCC-INPUT`
-    first in `INPUT` too: a host firewall (ufw) that puts its own chains
-    ahead of it fails the check, and the tab shows `egress: missing`.
+    script also makes `INPUT`'s first two rules send what arrives on
+    `docker0` or a `br-*` bridge to chain `NCC-INPUT`: established replies,
+    DNS to the resolvers (the host may be one), then drop. Traffic on any
+    other interface (the operator's ssh, the portal's answers) never enters
+    the chain. A daemon configured with another bridge name is not covered
+    by it; still keep nothing listening on the VM that a build should not
+    reach. `verify` wants those two jumps first in `INPUT`: a host firewall
+    (ufw) that puts its own chains ahead of them fails the check, and the
+    tab shows `egress: missing`. An install that dies mid-swap is finished
+    or cleaned up by the next one; the live chain is never flushed.
     IPv6: when `ip6tables` has no `DOCKER-USER` chain nothing filters v6,
     so `verify` then requires the daemon's default bridge to have
     `EnableIPv6: false` (`docker network inspect bridge`); otherwise the
@@ -284,12 +287,13 @@ the identity lives in `/srv/ncc/{ca.pem,client.pem,client-key.pem}`.
     the builder never claims and the tab shows `egress: missing`.
     `NCC_EGRESS_SCRIPT` replaces the script for tests only; never set it in
     production.
-  - *Hex cache*: every build mounts `<data>/hex-cache` read-write (the
-    local host does too), and the worker seeds each build's private
-    `HEX_HOME` from it. Before every run the agent removes `hex.config`
-    and `cache.ets` from it (`NccAgent.HexCache`), so a build cannot leave
-    a repo, a key or a registry snapshot for the next build to trust; the
-    `packages/` tarballs stay and are checked against the fresh registry.
+  - *Hex cache*: every build mounts a Hex cache read-write (the local host
+    does too), and the worker seeds each build's private `HEX_HOME` from
+    it. Each slot has its own, `<data>/hex-cache/slot-<n>`, and before
+    every run the agent removes `hex.config` and `cache.ets` from it
+    (`NccAgent.HexCache`), so a build cannot leave a repo, a key or a
+    registry snapshot for the next build to trust; the `packages/`
+    tarballs stay and are checked against the fresh registry.
   - *Build user*: the agent refuses to start with `NCC_BUILD_USER` unset
     or naming uid 0: it runs as root, and the container would otherwise
     build as root on the bind mounts. The cloud-init sets it to the

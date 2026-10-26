@@ -398,17 +398,24 @@ defmodule NccAgent.Job do
     end
   end
 
-  # The largest content one batch can carry: the batch cap minus the tar's
-  # own header and end-of-archive blocks.
+  # The largest content one batch can carry: the batch cap, rounded down to
+  # whole tar blocks, minus the tar's own header and end-of-archive blocks.
   defp max_entry_bytes(caps) do
-    max((caps["max_batch_bytes"] || @default_max_batch_bytes) - 3 * 512, 0)
+    cap = caps["max_batch_bytes"] || @default_max_batch_bytes
+    max(div(cap, 512) * 512 - 3 * 512, 0)
   end
 
+  # The portal counts tar bytes (each batch's Content-Length) against
+  # `max_total_bytes`, so the files are measured as tar entries here, plus
+  # one end-of-archive per batch at least.
   defp within_total(files, max_total) do
     {kept, _total} =
-      Enum.reduce_while(files, {[], 0}, fn {name, path, size}, {acc, total} ->
-        if total + size <= max_total do
-          {:cont, {[{name, path} | acc], total + size}}
+      Enum.reduce_while(files, {[], Tar.end_of_archive_bytes()}, fn {name, path, size},
+                                                                    {acc, total} ->
+        bytes = Tar.entry_bytes(size)
+
+        if total + bytes <= max_total do
+          {:cont, {[{name, path} | acc], total + bytes}}
         else
           Logger.warning(
             "files/#{name} would take the upload over #{max_total} bytes: stopping here"

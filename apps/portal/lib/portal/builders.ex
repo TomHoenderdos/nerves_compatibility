@@ -366,9 +366,12 @@ defmodule Portal.Builders do
     with {:ok, builder} <- mark_revoked(builder),
          {:ok, result} <- Repo.transaction(fn -> revoke_in_transaction(builder) end) do
       # Once committed: the failed leases' upload dirs hold nothing anyone
-      # will ingest.
-      {lease_ids, result} = Map.pop(result, :failed_lease_ids)
-      Enum.each(lease_ids, &Portal.Builders.Upload.cleanup/1)
+      # will ingest, and the requeued leases are there for the other
+      # builders' polls to find (a wake-up before the commit finds nothing).
+      {failed_ids, result} = Map.pop(result, :failed_lease_ids)
+      {requeued_ids, result} = Map.pop(result, :requeued_lease_ids)
+      Enum.each(failed_ids, &Portal.Builders.Upload.cleanup/1)
+      Enum.each(requeued_ids, &Leases.notify_queued/1)
       {:ok, result}
     end
   end
@@ -376,7 +379,7 @@ defmodule Portal.Builders do
   defp revoke_in_transaction(builder) do
     runs = open_runs(builder, load: :package)
     Enum.each(runs, &revoke_run!/1)
-    failed_leases = settle_leases(builder)
+    {failed_leases, requeued_ids} = settle_leases(builder)
 
     packages =
       (package_names(runs) ++ Enum.map(failed_leases, fn {_id, package, _req} -> package end))
@@ -390,7 +393,8 @@ defmodule Portal.Builders do
           runs_revoked: length(runs),
           packages: packages,
           sweep_id: sweep_id,
-          failed_lease_ids: Enum.map(failed_leases, fn {id, _package, _req} -> id end)
+          failed_lease_ids: Enum.map(failed_leases, fn {id, _package, _req} -> id end),
+          requeued_lease_ids: requeued_ids
         }
 
       {:error, reason} ->
@@ -419,16 +423,16 @@ defmodule Portal.Builders do
   # join the local rebuild. Either way its `done` leases whose ingest has not
   # committed a run yet fail too: `Portal.Workers.Ingest` would drop that
   # upload as a revoked builder's, so the package goes to the local rebuild
-  # now rather than being left errored. Answers the failed ones as `{id,
-  # package, scan_request_id}`.
+  # now rather than being left errored. Answers `{failed, requeued_ids}`:
+  # the failed ones as `{id, package, scan_request_id}`, the requeued ones
+  # by id for the caller to broadcast once the transaction commits.
   defp settle_leases(builder) do
     done = fail_done_without_run(builder)
 
     if other_enrolled?(builder) do
-      requeue_leases(builder)
-      done
+      {done, requeue_leases(builder)}
     else
-      fail_leases(builder) ++ done
+      {fail_leases(builder) ++ done, []}
     end
   end
 
@@ -484,8 +488,9 @@ defmodule Portal.Builders do
     failed
   end
 
-  # Wakes the other builders' long polls the way `Leases.enqueue/1` does,
-  # rather than leaving the requeued leases for their next 25 s poll.
+  # Answers the requeued ids; the caller wakes the other builders' long
+  # polls with them after the commit, as `Leases.enqueue/1` does, rather than
+  # leaving the leases for their next 25 s poll.
   defp requeue_leases(builder) do
     {_, ids} =
       Repo.update_all(
@@ -504,8 +509,7 @@ defmodule Portal.Builders do
         ]
       )
 
-    for id <- ids,
-        do: Phoenix.PubSub.broadcast(Portal.PubSub, Leases.topic(), {:lease_queued, id})
+    ids
   end
 
   defp rebuild([], _builder), do: {:ok, nil}

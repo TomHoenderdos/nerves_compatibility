@@ -16,18 +16,16 @@ defmodule PortalWeb.Builder.EnrolmentController do
   @ca_per_minute 30
 
   def ca(conn, _params) do
-    cond do
-      not RateLimit.allow?({:ca, conn.remote_ip}, @ca_per_minute, :timer.minutes(1)) ->
-        error(conn, 429, "rate_limited")
+    if RateLimit.allow?({:ca, conn.remote_ip}, @ca_per_minute, :timer.minutes(1)) do
+      case CA.cert_pem() do
+        {:ok, pem} ->
+          conn |> put_resp_content_type("application/x-pem-file") |> send_resp(200, pem)
 
-      true ->
-        case CA.cert_pem() do
-          {:ok, pem} ->
-            conn |> put_resp_content_type("application/x-pem-file") |> send_resp(200, pem)
-
-          {:error, _} ->
-            error(conn, 503, "no_ca")
-        end
+        {:error, _} ->
+          error(conn, 503, "no_ca")
+      end
+    else
+      error(conn, 429, "rate_limited")
     end
   end
 

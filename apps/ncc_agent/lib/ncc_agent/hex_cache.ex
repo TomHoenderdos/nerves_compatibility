@@ -12,8 +12,10 @@ defmodule NccAgent.HexCache do
   run the agent removes those two from the shared dir: the next build fetches
   a registry that Hex verifies against its built-in key, and a planted
   tarball then fails its checksum. `packages/` stays, which is the cache.
-  A proper fix (a read-only mount with host-side promotion, as the build
-  cache has) belongs to the worker and the local host alike.
+  The dir is per slot (`NccAgent.Config.path/2`): the scrub only holds when
+  no other container is writing the dir while this one starts. A proper fix
+  (a read-only mount with host-side promotion, as the build cache has)
+  belongs to the worker and the local host alike.
   """
 
   require Logger
@@ -42,7 +44,7 @@ defmodule NccAgent.HexCache do
         File.mkdir_p!(dir)
     end
 
-    for name <- @scrubbed, path = Path.join(dir, name), File.exists?(path, [:raw]) do
+    for name <- @scrubbed, path = Path.join(dir, name), match?({:ok, _}, File.lstat(path)) do
       Logger.info("hex cache: removing #{name} left by an earlier build")
       File.rm_rf(path)
     end

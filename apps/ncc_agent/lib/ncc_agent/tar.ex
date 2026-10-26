@@ -39,7 +39,13 @@ defmodule NccAgent.Tar do
   @spec tar_bytes([non_neg_integer()]) :: pos_integer()
   def tar_bytes(sizes), do: @end_of_archive + Enum.sum(Enum.map(sizes, &entry_bytes/1))
 
-  defp entry_bytes(size), do: @block + div(size + @block - 1, @block) * @block
+  @doc "The tar bytes one file of `size` takes: its header block and its content padded to 512."
+  @spec entry_bytes(non_neg_integer()) :: pos_integer()
+  def entry_bytes(size), do: @block + div(size + @block - 1, @block) * @block
+
+  @doc "The end-of-archive bytes every tar carries."
+  @spec end_of_archive_bytes() :: pos_integer()
+  def end_of_archive_bytes, do: @end_of_archive
 
   @doc "Writes `batch` as a tar at `out`, each file under its sha name."
   @spec write([file()], Path.t()) :: :ok | {:error, term()}

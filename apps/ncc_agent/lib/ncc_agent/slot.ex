@@ -46,7 +46,7 @@ defmodule NccAgent.Slot do
   def handle_info(:tick, %{job: nil} = state) do
     started = System.monotonic_time(:millisecond)
 
-    case step() do
+    case step(state.n) do
       :none ->
         elapsed = System.monotonic_time(:millisecond) - started
         Process.send_after(self(), :tick, max(@min_poll_ms - elapsed, 0))
@@ -132,15 +132,15 @@ defmodule NccAgent.Slot do
 
   def terminate(_reason, _state), do: :ok
 
-  defp step do
-    if Updater.updating?(), do: :updating, else: claim_step()
+  defp step(n) do
+    if Updater.updating?(), do: :updating, else: claim_step(n)
   end
 
-  defp claim_step do
+  defp claim_step(n) do
     egress = ensure_egress()
 
     with {:ok, req} <- Identity.ensure() do
-      if egress == :ok, do: claim(req), else: egress_missing(req)
+      if egress == :ok, do: claim(req, n), else: egress_missing(req)
     end
   end
 
@@ -162,10 +162,10 @@ defmodule NccAgent.Slot do
     end
   end
 
-  defp claim(req) do
+  defp claim(req, n) do
     case Client.claim(req, 1, "ok") do
       :none -> :none
-      {:ok, claim} -> start(req, claim)
+      {:ok, claim} -> start(req, claim, n)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -179,8 +179,10 @@ defmodule NccAgent.Slot do
     :egress_missing
   end
 
-  defp start(req, claim) do
-    config = Config.get()
+  # The job gets the slot's number: its Hex cache is per slot
+  # (`NccAgent.Config.path/2`), so no other slot's build writes it.
+  defp start(req, claim, n) do
+    config = Map.put(Config.get(), :slot, n)
 
     # `:updater_opts` is a test hook (see `NccAgent.Updater.maybe_update/3`); empty in a release.
     case Updater.maybe_update(claim, config, Application.get_env(:ncc_agent, :updater_opts, [])) do

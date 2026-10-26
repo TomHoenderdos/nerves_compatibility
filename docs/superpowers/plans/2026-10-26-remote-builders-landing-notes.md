@@ -115,7 +115,128 @@ Four reviewers, fresh context each, one layer each, with the spec section
 and the diff of their files only. Findings per layer, with what was fixed
 or why not, follow.
 
-REVIEW_PLACEHOLDER
+Severities are the reviewers'. "Fixed" means in commits `77d935f` (portal)
+and `7d18312` (agent) plus the re-review follow-ups; every fix was re-read by
+the same reviewer with the diff of the fix.
+
+### Layer 1: CA, certificates, enrolment tokens, the mTLS endpoint, revocation
+
+No critical or high findings. Confirmed correct by the reviewer: peer
+certificate from the TLS layer only, `verify_peer` really active on the
+socket (real-handshake test), trust anchor the portal CA alone on both
+sides, CSR subject ignored, `CA:false` client certs, fingerprint lookup with
+the 24 h overlap, token hashing and constant-time compare, atomic key
+writes, revocation covering old fingerprints and racing completes,
+additive-only migration.
+
+| # | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| 1 | medium | An unwritable CA dir (owner, disk full, cert within 30 days of expiry) raised inside `Listener.configure/0` at boot and took the public site down with it. | Fixed: `CA.issue_server_cert/5` rescues `File.Error`/`MatchError` into `{:error, {:server_cert, _}}`; the listener runs without its port. Test with a read-only CA dir. |
+| 2 | low | Any CSR key type was signed (RSA-512, odd curves). | Fixed: P-256 only, the key the agent generates. Tests for P-384 and RSA-1024. |
+| 3 | low | Server certificate carried `extKeyUsage: serverAuth, clientAuth`. | Fixed: `serverAuth` only, asserted by OID. |
+| 4 | low | `x-ncc-agent-version` header stored unbounded in `builders.last_version`. | Fixed: sliced to 64 chars in the plug. |
+| 5 | low | Token single use enforced only transitively by the builder name's unique index. | Fixed: `spend_token/1`, a conditional `UPDATE ... WHERE used_at IS NULL`, first in the enrolment transaction. |
+| 6 | low | Unauthenticated `GET /ca.pem` read and parsed the CA private key per request, unlimited. | Fixed: reads `ca.pem` only; 30/min per IP. |
+| 7 | info | Rate limiter keyed per exact IP (IPv6 /64 gives many keys). | Not changed: memory bounded by request rate × 60 s. |
+| 8 | info | The token's 64-bit CA prefix. | Not changed: the spec sets 16 hex chars; noted for a later token format. |
+| 9-11 | info | Unreachable 403 branch on renew; `.prev` key kept; IP in `PHX_HOST` yields a DNS SAN. | Not changed. |
+| re-review | low | `stage/3` ignored `IO.binwrite/2`'s result: an ENOSPC short write could rename a truncated key into place. | Fixed: `:ok = IO.binwrite`, `:ok = File.close`, inside the rescued body. |
+
+Spec deviations noted: `POST /builder/v1/status` (egress status) is an
+extension; `cipher_suite: :strong` makes 8443 TLS 1.3 only; JSON body limit
+is 8,000,000 bytes rather than 8 MiB.
+
+### Layer 2: leases, claim atomicity, heartbeat, reaper, requeue, RequestSync
+
+No critical or high findings. Confirmed correct: the single `UPDATE ... FOR
+UPDATE SKIP LOCKED` claim with the slot check in its `WHERE` behind a
+per-builder advisory lock; every later transition guarded on state,
+builder and `run_id`; `done` + `Ingest` in one transaction; long poll
+subscribed before the first attempt and holding no DB connection; heartbeat
+tail bounded server-side; reaper thresholds and attempt counting; exit code
+mapping; routing policy and hysteresis; Oban uniqueness across `Build` and
+`RemoteBuild`; RequestSync treating `queued|leased|uploading` as holding a
+request and `done|failed` as not; admin actions behind the admin pipeline.
+
+| # | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| 1 | medium | `lease_in_flight?` ignored `:done`, so a second lease could be written for the same build between `complete` and ingest. | Fixed: `:done` counts as in flight. Test. |
+| 2 | medium | A `queued` lease nobody will claim (dead or absent builders) stranded its request for good; no admin path out. | Fixed: "Requeue locally" accepts `queued` leases (`Leases.mark_requeued_locally/1` moves it to `failed`/"requeued locally" and enqueues a pinned local build). Test. |
+| 3 | medium-low | The `:remote` queue runs with limit 2 and the dedup was read-then-write. | Fixed: advisory lock on the build around the dedup checks and the insert. Queue limit left at 2 (ingests share it). |
+| 4 | low | A stale attempt from the same builder (reaped, then reclaimed by the same builder with `slots > 1`) is accepted as the current one. | Not changed: same builder, same package/version/digest, attempt bookkeeping only; would need `run_id` in every agent request. Noted. |
+| 5 | low | A failing `complete` deleted the upload dir on requeue and discarded the runner log. | Fixed: dir kept on `:requeued`; the runner log part's tail becomes the request's `error_log` when the lease fails. `bytes_uploaded` is now per lease (kept by the claim, zeroed by fail/requeue). Tests. |
+| 6 | low | The 150-min lease ceiling could reap a live run (30 min pull + 2 h build). | Fixed: 180 min. |
+| 7 | low | Revoke's requeue did not wake waiting claimants; a `done` lease of the revoked builder whose ingest had not run was dropped by Ingest without a rebuild. | Fixed: broadcast per requeued lease; `done` leases without a run fail and their packages join the rebuild. |
+| 8 | low | No index on `builder_leases.scan_request_id`; a text cast defeats indexes in `BulkRebuild.remote_lease_counts/1`. | Not changed: performance only, bounded by the bulk's job count; a later migration. |
+| 9-13 | info | Advisory-lock keyspace shared with Oban; admin broadcast before commit; requeue offered for exit-11 leases; `BulkRebuild.cancel` does not cancel leases; orphaned `leased` rows after an agent restart. | #11 fixed (button hidden for `non-Hex dep`); the rest noted. |
+
+Spec deviations noted: backlog counts `retryable` too; the first `:building`
+broadcast is the first heartbeat.
+
+### Layer 3: uploads, tar verification, ingest on the web host, publication
+
+Confirmed correct: tar parsing accepts only plain regular entries named by
+a 64-hex sha (PAX/GNU/long names, links, directories, devices, separators,
+uppercase all refuse the batch); sha256 over exactly the written bytes with
+an exclusive temp file renamed only on match; byte reservation before the
+read and settlement after, also on raise/exit; `Content-Length` handling and
+the never-buffered body; result.json decoded as an object before write;
+logs inflated chunkwise with per-entry and total caps on inflated bytes;
+atomic log names; `load_run` shape; Ingestion re-hashing every blob; the
+manifests, `packages_with_precompiled_files`, batches and `root.json`
+gated on the builder; no error-response leaks.
+
+| # | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| 1 | **high** | result.json's `package.name`/`version` were never bound to the lease: an enrolled builder (publishing or not) could write a run, latest version and stats for *any* package. | Fixed: `complete` refuses a mismatch with 422 `result_mismatch` and the lease stays held; `Upload.load_run/1` checks again against the lease and Ingest fails the lease. Tests at both levels. |
+| 2 | medium | `/api/precompiled/files/:sha256` served any blob with an `Artifact` row, so a non-publishing or revoked builder's bytes stayed fetchable by sha. | Fixed: `Catalog.published_sha256?/1`, the manifests' join, gates the blob endpoint. Test. |
+| 3 | medium | No cap on the *number* of uploaded files per lease (`max_files` bounded `missing` only): inode exhaustion and O(n²) sweeps. | Fixed: per-batch entry budget of `max_files` minus what the dir holds; 422 `too_many_files`. Test. |
+| 4 | low | The runner.log part was uncapped on disk. | Fixed: 2 MiB cap, 413 `runner_log_too_large`. |
+| 5 | low | Free-space floor checked once per batch and not for `write_outputs`. | Fixed: checked before `write_outputs` and every 64 MiB inside a batch. |
+| 6 | low | Upload dir persisted across reaper requeues while `bytes_uploaded` reset per attempt. | Fixed: the quota is per lease; the claim keeps the count, fail/requeue zero it with the dir. |
+| 7 | low | The `warm` computation could hold `complete` for up to 16 sequential Hex lookups. | Fixed: 10 s deadline in a task; `[]` past it. |
+| 8 | low | `Images.agent/0` did not validate release `url`/`sha256`. | Fixed: https only, 64-hex sha256. Test. |
+| 9-12 | info | Tar checksum unverified; `missing` is a presence oracle; two concurrent `complete`s on one lease (self-inflicted); result-derived strings in `error_reason`. | Not changed. |
+
+Spec deviations noted: `runner_log` is an extra multipart part (now capped).
+
+### Layer 4: the agent (egress, Nerves cache, self-update, argv parity, the container's reach)
+
+Confirmed correct: `/files` listing by sha regex and lstat; result.json and
+logs read only as regular files, `erl_tar` without dereference; `rm_rf` and
+`chown -h` as root; `prepare_cache` replacing a symlinked cache root without
+following it; `pairs/1` shape check and the worker's own gate on warm input;
+argv parity with the shared fixture and no shell; kill by name on timeout;
+egress rule order (conntrack, DNS, IMDS and private drops before the 80/443
+accepts) and fail-closed on any verify failure; self-update sha check,
+`erl_tar` path safety, atomic `current` swap; identity file modes; client
+TLS; heartbeat and slot shutdown; images.yml pinned and scoped.
+
+| # | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| 1 | high | `/hex-cache` is mounted read-write by every build (locally too); a package can leave `hex.config`/`cache.ets` for later builds to trust. | Mitigated: `NccAgent.HexCache.prepare/1` removes `hex.config` and `cache.ets` before every run; the next build fetches a registry Hex verifies against its built-in key and a planted tarball fails its checksum. The full fix (read-only mount with host-side promotion, as the build cache has) belongs to the worker and the local host alike; documented. Test. |
+| 2 | **high** | The agent ignored the claim's `max_file_bytes`/`max_total_bytes`; a sparse file in `/files` would be tarred dense and fill the builder's disk. | Fixed: `list_files` drops entries over `max_file_bytes` (or over what fits one batch) and stops at `max_total_bytes`, before anything is tarred. Test. |
+| 3 | medium/high | `logs.tar.gz` bounded per file and by compressed size only: unbounded count and inflated total. | Fixed: at most 64 logs and 64 MiB together, by lstat before gzip. Test. |
+| 4 | medium | Outputs read with path-based calls while the container could still be alive (CLI died or detached): symlink swap between lstat and read. | Fixed: `Docker.gone?/2` after `docker run` (inspect, `rm -f`, inspect); if the container cannot be shown gone the lease completes with 20 and nothing is read. Test. |
+| 5 | medium | The container ran as root unless `NCC_BUILD_USER` was set. | Fixed: `Config.load/0` refuses an unset-as-root or `0:*` build user. Test. |
+| 6 | medium | `verify` checked two drops and the jump's presence only. | Fixed: the jump must be the first rule of `DOCKER-USER`, `FORWARD` must jump to `DOCKER-USER`, and the chain must be exactly the policy in order (match modules and state order normalised). Tests. |
+| 7 | medium | IPv6 failed open when ip6tables had no `DOCKER-USER` chain. | Fixed: then the default bridge must have `EnableIPv6: false` (`docker network inspect`), else verify fails. Test. |
+| 8 | medium | Container-to-host (INPUT) traffic unfiltered. | Fixed: chain `NCC-INPUT` first in `INPUT`: conntrack, DNS to the resolvers, drop NEW from `docker0`/`br-+`, then `RETURN` (an earlier draft ended it in DROP, which would have cut the operator's ssh; caught before commit). Test. |
+| 9 | low | mTLS client followed redirects; release download uncapped. | Fixed: `redirect: false`; download stops at 512 MiB. |
+| 10 | low | A bare image name is run/pulled as-is. | Not changed: the portal only leases registry images; the integration test uses `ncc-worker:local`. Noted. |
+| 11 | low | A job task dying abnormally did not hand its lease back. | Fixed: `:DOWN` kills the container and completes with 20. |
+| 12 | low | Self-update trusts whatever `images.json` names; "newer" is the leading integer. | Portal side validates URL/sha (layer 3 #8); signing of releases and pruning noted as later work. |
+| 13 | low | Install window: `-F` then re-add left the chain empty for a moment. | Fixed: build `NCC-EGRESS-NEW`, insert its jump, remove the old, rename. Test. |
+| 14 | low | No re-verification during a build. | Not changed: noted as a follow-up (heartbeat could verify and kill). |
+| 15-19 | info | Staging leftovers; `workflow_dispatch` from any branch; `NCC_EGRESS_SCRIPT`/`NCC_DOCKER_BIN` honoured in prod; `safe_name` collisions; 64-bit CA prefix. | Not changed. |
+
+Spec deviations noted: the egress ruleset is iptables (`DOCKER-USER`)
+rather than the `nft` file the spec names; the bridge subnet is dropped
+through `172.16.0.0/12` only; the farm is the worker's and the warm list
+comes back at `complete`, as described above.
+
+RE_REVIEW_PLACEHOLDER
+
 
 ## What an operator still has to do by hand to go live
 

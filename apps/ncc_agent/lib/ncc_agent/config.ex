@@ -11,7 +11,9 @@ defmodule NccAgent.Config do
           data_dir: Path.t(),
           build_user: String.t(),
           docker_bin: String.t(),
-          egress_script: Path.t()
+          egress_script: Path.t(),
+          # The slot a job runs in, set by `NccAgent.Slot` on the job's copy.
+          slot: pos_integer() | nil
         }
 
   @doc "Every default, with no portal URL."
@@ -27,7 +29,8 @@ defmodule NccAgent.Config do
       data_dir: "/srv/ncc",
       build_user: own_user(),
       docker_bin: "docker",
-      egress_script: Path.join(to_string(:code.priv_dir(:ncc_agent)), "egress.sh")
+      egress_script: Path.join(to_string(:code.priv_dir(:ncc_agent)), "egress.sh"),
+      slot: nil
     }
   end
 
@@ -66,6 +69,12 @@ defmodule NccAgent.Config do
   def path(config, :csr), do: Path.join(config.data_dir, "client.csr")
   def path(config, :scratch), do: Path.join(config.data_dir, "scratch")
   def path(config, :nerves_cache), do: Path.join(config.data_dir, "nerves-cache")
+  # One Hex cache per slot: a build mounts it read-write for its whole run,
+  # and the scrub between runs (`NccAgent.HexCache`) only holds when no
+  # other slot's container is writing the same dir meanwhile.
+  def path(%{slot: n} = config, :hex_cache) when is_integer(n),
+    do: Path.join([config.data_dir, "hex-cache", "slot-#{n}"])
+
   def path(config, :hex_cache), do: Path.join(config.data_dir, "hex-cache")
   def path(config, :releases), do: Path.join(config.data_dir, "releases")
 
@@ -82,17 +91,16 @@ defmodule NccAgent.Config do
   # every build container as uid 0 on the bind mounts; the release refuses
   # to start rather than do that quietly.
   defp user_errors(user) do
-    cond do
-      not Regex.match?(~r/\A[0-9]+:[0-9]+\z/, user) ->
-        ["NCC_BUILD_USER must be uid:gid, got #{inspect(user)}"]
-
-      String.starts_with?(user, "0:") ->
-        [
+    with [uid, gid] <- String.split(user, ":"),
+         {uid, ""} when uid >= 0 <- Integer.parse(uid),
+         {_gid, ""} <- Integer.parse(gid) do
+      if uid == 0,
+        do: [
           "NCC_BUILD_USER must name a non-root uid (the container would build as root); set it to the ncc-build user's uid:gid"
-        ]
-
-      true ->
-        []
+        ],
+        else: []
+    else
+      _ -> ["NCC_BUILD_USER must be uid:gid, got #{inspect(user)}"]
     end
   end
 

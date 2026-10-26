@@ -62,18 +62,28 @@ defmodule Portal.Builders.Leases do
     }
   end
 
-  @doc "Queue a lease and wake every waiting claim."
-  @spec enqueue(map()) :: {:ok, Lease.t()} | {:error, term()}
-  def enqueue(attrs) do
+  @doc """
+  Queue a lease and wake every waiting claim. A caller inside a transaction
+  passes `notify: false` and calls `notify_queued/1` itself once committed:
+  a claim woken before the commit finds nothing and sleeps for its whole
+  poll.
+  """
+  @spec enqueue(map(), keyword()) :: {:ok, Lease.t()} | {:error, term()}
+  def enqueue(attrs, opts \\ []) do
     with {:ok, lease} <-
            Lease
            |> Ash.Changeset.for_create(:create, Map.put(attrs, :state, :queued))
            |> Ash.create(domain: @domain) do
-      notify_queued(lease)
+      if Keyword.get(opts, :notify, true), do: notify_queued(lease)
       Portal.AdminEvents.broadcast(:builders)
       {:ok, lease}
     end
   end
+
+  @doc "Wake every waiting claim for a lease (or lease id) that is `:queued` and committed."
+  @spec notify_queued(Lease.t() | Ecto.UUID.t()) :: :ok
+  def notify_queued(%Lease{id: id}), do: notify_queued(id)
+  def notify_queued(id), do: Phoenix.PubSub.broadcast(Portal.PubSub, @topic, {:lease_queued, id})
 
   @doc """
   Take the next queued lease (lowest `priority`, then oldest) for `builder`.
@@ -521,9 +531,6 @@ defmodule Portal.Builders.Leases do
     |> Ash.Query.sort(updated_at: :desc)
     |> Ash.read!(domain: @domain)
   end
-
-  defp notify_queued(lease),
-    do: Phoenix.PubSub.broadcast(Portal.PubSub, @topic, {:lease_queued, lease.id})
 
   # Every state change after the claim: one `UPDATE ... WHERE id AND <the
   # state the caller saw>`, so a transition never lands on a lease that has

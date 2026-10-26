@@ -73,7 +73,8 @@ defmodule PortalWeb.Admin.BuildersLiveTest do
     builder = enrol!("box-act")
     enqueue!()
     {:ok, lease} = Leases.claim(builder)
-    {:ok, :rejected, lease} = Leases.complete(lease, 11)
+    # A reaped attempt: unlike a non-Hex-dep rejection, worth a remote retry.
+    {:ok, lease} = Leases.fail(lease, "builder went silent")
 
     {:ok, view, _} = live(conn, ~p"/admin/builders")
     assert has_element?(view, "#throughput-#{builder.id}", "0 done, 1 failed")

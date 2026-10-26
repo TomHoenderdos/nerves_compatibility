@@ -213,14 +213,16 @@ defmodule Portal.Builders.CA do
          {:ok, %{key: ca_key, cert: ca_cert}} <- load() do
       certfile = server_cert_path()
       keyfile = server_key_path()
+      paths = %{certfile: certfile, keyfile: keyfile}
 
-      if server_cert_current?(certfile, keyfile, host, ca_cert) do
-        {:ok, %{certfile: certfile, keyfile: keyfile}}
-      else
-        with :ok <- issue_server_cert(host, ca_key, ca_cert, certfile, keyfile),
-             do: {:ok, %{certfile: certfile, keyfile: keyfile}}
-      end
+      with :ok <- current_or_issued(host, ca_key, ca_cert, certfile, keyfile), do: {:ok, paths}
     end
+  end
+
+  defp current_or_issued(host, ca_key, ca_cert, certfile, keyfile) do
+    if server_cert_current?(certfile, keyfile, host, ca_cert),
+      do: :ok,
+      else: issue_server_cert(host, ca_key, ca_cert, certfile, keyfile)
   end
 
   defp check_host(host), do: if(valid_name?(host), do: :ok, else: {:error, :invalid_host})
@@ -288,8 +290,10 @@ defmodule Portal.Builders.CA do
     tmp = "#{path}.tmp-#{System.unique_integer([:positive])}"
     {:ok, io} = File.open(tmp, [:write, :exclusive, :binary])
     File.chmod!(tmp, mode)
-    IO.binwrite(io, pem)
-    File.close(io)
+    # A short write (ENOSPC) must not leave a truncated key to be renamed
+    # into place and handed to the listener; the MatchError is the caller's.
+    :ok = IO.binwrite(io, pem)
+    :ok = File.close(io)
     tmp
   end
 end

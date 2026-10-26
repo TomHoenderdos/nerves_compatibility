@@ -256,14 +256,24 @@ defmodule PortalWeb.Builder.JobController do
   @warm_deadline_ms 10_000
 
   defp warm_pairs(%{} = result, lease) do
+    # The task is linked, so it rescues for itself: a raise in the lookup
+    # must not take the request down after the lease is already `done`.
     task =
       Task.async(fn ->
-        Portal.NervesCache.warm_pairs(result, recently_warmed: MapSet.new())
+        try do
+          Portal.NervesCache.warm_pairs(result, recently_warmed: MapSet.new())
+        rescue
+          e -> {:error, Exception.message(e)}
+        end
       end)
 
     case Task.yield(task, @warm_deadline_ms) || Task.shutdown(task, :brutal_kill) do
       {:ok, pairs} when is_list(pairs) ->
         pairs
+
+      {:ok, {:error, why}} ->
+        Logger.warning("warm pairs for #{lease.id} not computed: #{why}")
+        []
 
       {:exit, reason} ->
         Logger.warning("warm pairs for #{lease.id} not computed: #{inspect(reason)}")

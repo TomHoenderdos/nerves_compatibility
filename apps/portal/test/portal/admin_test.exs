@@ -332,6 +332,40 @@ defmodule Portal.AdminTest do
       assert {:error, :not_found} = Admin.requeue_lease_locally(Ecto.UUID.generate(), admin)
     end
 
+    # A lease still queued with no builder to come back for it: the request
+    # it holds follows the local build instead of being closed as cancelled,
+    # and whatever a reaped attempt uploaded is gone.
+    test "a queued lease is handed to a local build with its request", %{admin: admin} do
+      {:ok, request} =
+        Portal.ScanRequests.create_once(%{
+          package_name: "jason",
+          version: "1.4.4",
+          source: :hex_owner,
+          status: :accepted
+        })
+
+      {:ok, lease} =
+        Portal.Builders.Leases.enqueue(%{
+          package: "jason",
+          version: "1.4.4",
+          image_name: "i",
+          image_digest: "sha256:d",
+          args: %{},
+          scan_request_id: request.id,
+          priority: 5
+        })
+
+      File.mkdir_p!(Portal.Builders.Upload.files_dir(lease.id))
+
+      assert {:ok, %Oban.Job{} = job} = Admin.requeue_lease_locally(lease.id, admin)
+      assert stringify(job.args)["scan_request_id"] == request.id
+
+      assert %{state: :failed, error: "requeued locally"} =
+               Ash.get!(Portal.Builders.Lease, lease.id, domain: Portal.Builders)
+
+      refute File.exists?(Portal.Builders.Upload.lease_dir(lease.id))
+    end
+
     test "an invalid builder name is refused before any CA is needed", %{admin: admin} do
       assert {:error, :invalid_name} = Admin.create_builder_token("not a name!", admin)
     end

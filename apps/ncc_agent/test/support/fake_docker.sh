@@ -3,7 +3,9 @@
 #
 #   image inspect  exit 0 when FAKE_DOCKER_IMAGE_PRESENT=1, else 1
 #   container inspect  print "running" and exit 0 when
-#                  FAKE_DOCKER_CONTAINER_PRESENT=1, else exit 1
+#                  FAKE_DOCKER_CONTAINER_PRESENT=1; print the daemon's
+#                  connection error and exit 1 when FAKE_DOCKER_DOWN=1;
+#                  else "Error: No such container", exit 1
 #   rm             echo, exit 0
 #   pull           echo, exit 0
 #   kill           append the container name to FAKE_DOCKER_KILL_LOG, exit 0
@@ -34,6 +36,11 @@ case "${1:-}" in
       echo running
       exit 0
     fi
+    if [ "${FAKE_DOCKER_DOWN:-0}" = "1" ]; then
+      echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock" >&2
+      exit 1
+    fi
+    echo "Error: No such container: ${*: -1}" >&2
     exit 1
     ;;
   pull)
