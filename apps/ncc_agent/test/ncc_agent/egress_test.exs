@@ -18,11 +18,17 @@ defmodule NccAgent.EgressTest do
     System.put_env("NCC_DOCKER_DAEMON_JSON", Path.join(dir, "daemon.json"))
     System.put_env("NCC_RESOLV_CONF", Path.join(dir, "resolv.conf"))
     System.put_env("RESOLVECTL", Path.join(dir, "resolvectl"))
+    # No IPv6 on the default bridge unless a test says otherwise.
+    System.put_env("NCC_DOCKER_BRIDGE_IPV6", "false")
 
+    # What a running Docker daemon leaves in the filter table.
     File.write!(
       Path.join([dir, "state", "DOCKER-USER"]),
       "-N DOCKER-USER\n-A DOCKER-USER -j RETURN\n"
     )
+
+    File.write!(Path.join([dir, "state", "FORWARD"]), "-N FORWARD\n-A FORWARD -j DOCKER-USER\n")
+    File.write!(Path.join([dir, "state", "INPUT"]), "-N INPUT\n")
 
     Config.put(%{
       Config.defaults()
@@ -35,7 +41,7 @@ defmodule NccAgent.EgressTest do
       File.rm_rf(dir)
 
       for k <- ~w(IPTABLES IP6TABLES FAKE_IPTABLES_LOG FAKE_IPTABLES_STATE NCC_DNS_SERVERS
-                  NCC_DOCKER_DAEMON_JSON NCC_RESOLV_CONF RESOLVECTL),
+                  NCC_DOCKER_DAEMON_JSON NCC_RESOLV_CONF RESOLVECTL NCC_DOCKER_BRIDGE_IPV6),
           do: System.delete_env(k)
     end)
 
@@ -86,6 +92,98 @@ defmodule NccAgent.EgressTest do
 
     assert File.read!(Path.join([dir, "state", "DOCKER-USER"])) ==
              "-N DOCKER-USER\n-A DOCKER-USER -j NCC-EGRESS\n-A DOCKER-USER -j RETURN\n"
+
+    # Container-to-host traffic: DNS, then no new connection from a bridge.
+    assert File.read!(Path.join([dir, "state", "NCC-INPUT"])) == """
+           -N NCC-INPUT
+           -A NCC-INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+           -A NCC-INPUT -p udp --dport 53 -j ACCEPT
+           -A NCC-INPUT -p tcp --dport 53 -j ACCEPT
+           -A NCC-INPUT -i docker0 -m conntrack --ctstate NEW -j DROP
+           -A NCC-INPUT -i br-+ -m conntrack --ctstate NEW -j DROP
+           -A NCC-INPUT -j DROP
+           """
+
+    assert File.read!(Path.join([dir, "state", "INPUT"])) == "-N INPUT\n-A INPUT -j NCC-INPUT\n"
+    refute File.exists?(Path.join([dir, "state", "NCC-EGRESS-NEW"]))
+  end
+
+  test "verify wants the whole policy: the jump first, FORWARD wired, the rules in order", %{
+    dir: dir
+  } do
+    :ok = Egress.install()
+    docker_user = Path.join([dir, "state", "DOCKER-USER"])
+    chain = Path.join([dir, "state", "NCC-EGRESS"])
+    forward = Path.join([dir, "state", "FORWARD"])
+
+    # A rule inserted ahead of the jump (ufw-docker style) is a bypass.
+    File.write!(
+      docker_user,
+      "-N DOCKER-USER\n-A DOCKER-USER -j ACCEPT\n-A DOCKER-USER -j NCC-EGRESS\n"
+    )
+
+    assert {:error, why} = Egress.verify()
+    assert why =~ "first rule of DOCKER-USER"
+    :ok = Egress.install()
+    assert :ok = Egress.verify()
+
+    # The drops must precede the Internet accepts.
+    lines = chain |> File.read!() |> String.split("\n", trim: true)
+    {accepts, drops} = Enum.split_with(lines, &(&1 =~ "--dport 443" or &1 =~ "--dport 80"))
+    [head, conntrack, dns1, dns2 | rest] = drops
+    reordered = [head, conntrack, dns1, dns2] ++ accepts ++ rest
+    File.write!(chain, Enum.join(reordered, "\n") <> "\n")
+    assert {:error, why} = Egress.verify()
+    assert why =~ "not the policy"
+    :ok = Egress.install()
+
+    # A rule the policy does not name is not tolerated either.
+    File.write!(
+      chain,
+      String.replace(File.read!(chain), "-j DROP\n", "-d 1.2.3.4/32 -j ACCEPT\n-j DROP\n",
+        global: false
+      )
+    )
+
+    assert {:error, _} = Egress.verify()
+    :ok = Egress.install()
+
+    # Real iptables prints the implicit match modules; that still verifies.
+    File.write!(
+      chain,
+      String.replace(File.read!(chain), "-p tcp --dport 443", "-p tcp -m tcp --dport 443")
+    )
+
+    assert :ok = Egress.verify()
+
+    File.write!(forward, "-N FORWARD\n")
+    assert {:error, why} = Egress.verify()
+    assert why =~ "FORWARD"
+  end
+
+  test "a reinstall swaps the chain in rather than emptying it", %{dir: dir} do
+    :ok = Egress.install()
+    :ok = Egress.install()
+    calls = dir |> Path.join("log") |> File.read!() |> String.split("\n", trim: true)
+    # The old chain is only flushed after DOCKER-USER already jumps to the new one.
+    jump = Enum.find_index(calls, &(&1 =~ "-I DOCKER-USER 1 -j NCC-EGRESS-NEW"))
+    flushes = calls |> Enum.with_index() |> Enum.filter(fn {c, _} -> c =~ ~r/-F NCC-EGRESS$/ end)
+    assert [{_, flush}] = flushes
+    assert jump < flush
+    assert Enum.count(calls, &(&1 =~ "-E NCC-EGRESS-NEW NCC-EGRESS")) == 2
+    assert :ok = Egress.verify()
+    docker_user = File.read!(Path.join([dir, "state", "DOCKER-USER"]))
+    assert length(Regex.scan(~r/-j NCC-EGRESS/, docker_user)) == 1
+  end
+
+  test "IPv6 on the bridge with nothing to filter it fails verify" do
+    :ok = Egress.install()
+    assert :ok = Egress.verify()
+    System.put_env("NCC_DOCKER_BRIDGE_IPV6", "true")
+    assert {:error, why} = Egress.verify()
+    assert why =~ "IPv6"
+    System.put_env("NCC_DOCKER_BRIDGE_IPV6", "unknown")
+    assert {:error, _} = Egress.verify()
   end
 
   test "verify requires the conntrack accept as the first rule, in either state order", %{
@@ -140,10 +238,9 @@ defmodule NccAgent.EgressTest do
     for calls <- installs do
       assert calls |> hd() |> String.ends_with?("-S DOCKER-USER")
       assert Enum.count(calls, &(&1 =~ "-S DOCKER-USER")) == 1
-      assert Enum.count(calls, &(&1 =~ "-F NCC-EGRESS")) == 1
-      assert Enum.count(calls, &(&1 =~ "-A NCC-EGRESS -j DROP")) == 1
-      assert Enum.count(calls, &(&1 =~ "-I NCC-EGRESS")) == 11
-      assert Enum.count(calls, &(&1 =~ "-C DOCKER-USER")) == 1
+      assert Enum.count(calls, &(&1 =~ "-A NCC-EGRESS-NEW -j DROP")) == 1
+      assert Enum.count(calls, &(&1 =~ "-I NCC-EGRESS-NEW")) == 11
+      assert Enum.count(calls, &(&1 =~ "-E NCC-EGRESS-NEW NCC-EGRESS")) == 1
     end
 
     assert File.read!(Path.join([dir, "state", "NCC-EGRESS"]))

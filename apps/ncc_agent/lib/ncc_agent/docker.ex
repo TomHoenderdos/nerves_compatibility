@@ -33,6 +33,42 @@ defmodule NccAgent.Docker do
   def present?(config, image_ref),
     do: match?({:ok, _, 0}, cmd(config, ["image", "inspect", image_ref], @inspect_timeout_ms))
 
+  @doc """
+  Whether no container named `name` exists any more. `docker run --rm`
+  removes it on exit, but a CLI that died or detached (dockerd restart,
+  OOM) leaves it running while `run/4` has already returned; one still
+  present is force-removed and asked about again. Only when this answers
+  `true` may the agent read what the container wrote: it could otherwise
+  swap a file for a symlink between the agent's `lstat` and its read.
+  """
+  @spec gone?(Config.t(), String.t()) :: boolean()
+  def gone?(config, name) do
+    case cmd(
+           config,
+           ["container", "inspect", "--format", "{{.State.Status}}", name],
+           @inspect_timeout_ms
+         ) do
+      {:ok, _out, status} when status != 0 ->
+        true
+
+      {:ok, out, 0} ->
+        Logger.warning("container #{name} still exists (#{String.trim(out)}): removing it")
+        _ = cmd(config, ["rm", "-f", name], @kill_timeout_ms)
+
+        match?(
+          {:ok, _, status} when status != 0,
+          cmd(
+            config,
+            ["container", "inspect", "--format", "{{.State.Status}}", name],
+            @inspect_timeout_ms
+          )
+        )
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
   @doc "Kills container `name`, for at most 60 s; a failure is logged."
   @spec kill(Config.t(), String.t()) :: :ok | {:error, term()}
   def kill(config, name) do

@@ -170,17 +170,48 @@ defmodule NccAgent.Updater do
     result
   end
 
+  # A release tarball is a few tens of MiB; the download stops at this
+  # many bytes rather than fill the disk from a bad URL.
+  @max_release_bytes 536_870_912
+
   # sobelow_skip ["Traversal.FileModule"]
   defp download(url, tarball, req_options) do
     File.rm(tarball)
 
-    [url: url, into: File.stream!(tarball), retry: false, receive_timeout: 120_000]
-    |> Keyword.merge(req_options)
-    |> Req.get()
-    |> case do
-      {:ok, %Req.Response{status: 200}} -> :ok
-      {:ok, %Req.Response{status: status}} -> {:error, {:http, status}}
-      {:error, reason} -> {:error, reason}
+    with {:ok, fd} <- File.open(tarball, [:write, :binary]) do
+      try do
+        [url: url, into: sink(fd), retry: false, receive_timeout: 120_000]
+        |> Keyword.merge(req_options)
+        |> Req.get()
+        |> case do
+          {:ok, %Req.Response{status: 200, private: %{ncc_too_large: true}}} ->
+            {:error, :too_large}
+
+          {:ok, %Req.Response{status: 200}} ->
+            :ok
+
+          {:ok, %Req.Response{status: status}} ->
+            {:error, {:http, status}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      after
+        File.close(fd)
+      end
+    end
+  end
+
+  defp sink(fd) do
+    fn {:data, data}, {req, resp} ->
+      written = Map.get(resp.private, :ncc_written, 0) + byte_size(data)
+
+      if written > @max_release_bytes do
+        {:halt, {req, Req.Response.put_private(resp, :ncc_too_large, true)}}
+      else
+        IO.binwrite(fd, data)
+        {:cont, {req, Req.Response.put_private(resp, :ncc_written, written)}}
+      end
     end
   end
 

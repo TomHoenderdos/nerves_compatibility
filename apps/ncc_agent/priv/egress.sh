@@ -3,10 +3,15 @@
 # section 3), in the rootful Docker daemon's DOCKER-USER chain.
 #
 #   egress.sh install   (re)write chain NCC-EGRESS and jump to it first
-#                       from DOCKER-USER; IPv6 too when ip6tables has a
-#                       DOCKER-USER chain
+#                       from DOCKER-USER, and chain NCC-INPUT first from
+#                       INPUT; IPv6 too when ip6tables has a DOCKER-USER
+#                       chain
 #   egress.sh verify    exit 0 only when the ruleset is in place, else
 #                       print why and exit 1
+#
+# The chain is rebuilt as NCC-EGRESS-NEW and swapped in (jump inserted,
+# old jump removed, old chain deleted, new chain renamed), so a build that
+# runs during a reinstall never sees an empty chain.
 #
 # Order of NCC-EGRESS:
 #
@@ -32,9 +37,22 @@
 #   3. Drop RFC1918, CGNAT, link-local (IMDS) and loopback.
 #   4. Accept TCP 443/80 to the Internet; drop everything else.
 #
-# This chain filters what the containers send through FORWARD. Traffic
+# NCC-EGRESS filters what the containers send through FORWARD. Traffic
 # from a container to the builder host itself (172.17.0.1, the VM's own
-# addresses) goes through INPUT instead and is not filtered here.
+# addresses) goes through INPUT instead: chain NCC-INPUT, first in INPUT,
+# accepts DNS to the resolvers (the host may be one) and drops every other
+# new connection arriving on docker0 or a br-* bridge, so nothing listening
+# on the VM (sshd, the agent's docker socket proxy, whatever an operator
+# adds) is reachable from a build. A daemon configured with another bridge
+# name is not covered by it; FORWARD filtering does not depend on it.
+#
+# verify checks the whole policy, not just a few rules: the NCC-EGRESS jump
+# is the first rule of DOCKER-USER, FORWARD jumps to DOCKER-USER, the chain
+# is the conntrack accept, the DNS accepts, exactly the drops and the
+# Internet accepts in order, then DROP, and nothing else; NCC-INPUT the
+# same. With IPv6 enabled on the daemon's default bridge and no ip6tables
+# DOCKER-USER chain to filter it, verify fails (NCC_DOCKER_BRIDGE_IPV6
+# overrides the `docker network inspect` lookup; DOCKER the binary).
 #
 # IPTABLES / IP6TABLES / RESOLVECTL override the binaries, and
 # NCC_DOCKER_DAEMON_JSON / NCC_RESOLV_CONF the files (tests stub them).
@@ -43,9 +61,11 @@ set -euo pipefail
 IPTABLES="${IPTABLES:-iptables}"
 IP6TABLES="${IP6TABLES:-ip6tables}"
 RESOLVECTL="${RESOLVECTL:-resolvectl}"
+DOCKER="${DOCKER:-docker}"
 DAEMON_JSON="${NCC_DOCKER_DAEMON_JSON:-/etc/docker/daemon.json}"
 RESOLV_CONF="${NCC_RESOLV_CONF:-/etc/resolv.conf}"
 CHAIN=NCC-EGRESS
+INPUT_CHAIN=NCC-INPUT
 
 CONNTRACK="-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
 
@@ -154,8 +174,54 @@ V6_TAIL=(
   "-p tcp --dport 80 -j ACCEPT"
 )
 
-V4_REQUIRED=("-d 169.254.0.0/16 -j DROP" "-d 10.0.0.0/8 -j DROP")
-V6_REQUIRED=("-d fc00::/7 -j DROP" "-d fe80::/10 -j DROP")
+# The INPUT side (IPv4 only: the default bridge's v6 is the ip6tables
+# DOCKER-USER case, and containers reach the host over v4): DNS to the
+# resolvers, then no new connection from a bridge to the host.
+INPUT_TAIL=(
+  "-i docker0 -m conntrack --ctstate NEW -j DROP"
+  "-i br-+ -m conntrack --ctstate NEW -j DROP"
+)
+
+# build_chain BIN CHAIN RULE...: (re)create CHAIN with exactly RULE... then
+# a final DROP. The DROP goes in first and the rest are inserted above it,
+# so the chain never ends in an open fall-through.
+build_chain() {
+  local bin="$1" chain="$2"
+  shift 2
+
+  if "$bin" -w 10 -S "$chain" >/dev/null 2>&1; then
+    "$bin" -w 10 -F "$chain"
+  else
+    "$bin" -w 10 -N "$chain"
+  fi
+
+  "$bin" -w 10 -A "$chain" -j DROP
+  local pos=1 rule
+  for rule in "$@"; do
+    # shellcheck disable=SC2086 # each rule is a list of iptables words
+    "$bin" -w 10 -I "$chain" "$pos" $rule
+    pos=$((pos + 1))
+  done
+}
+
+# swap_chain BIN PARENT CHAIN: build CHAIN-NEW is done; make PARENT jump
+# to it first, drop the jump to and the old CHAIN, and rename CHAIN-NEW to
+# CHAIN (the kernel follows the rename in PARENT). A build running during
+# the swap is filtered by one chain or the other at every moment.
+swap_chain() {
+  local bin="$1" parent="$2" chain="$3"
+  local new="$chain-NEW"
+
+  "$bin" -w 10 -I "$parent" 1 -j "$new"
+  while "$bin" -w 10 -C "$parent" -j "$chain" >/dev/null 2>&1; do
+    "$bin" -w 10 -D "$parent" -j "$chain"
+  done
+  if "$bin" -w 10 -S "$chain" >/dev/null 2>&1; then
+    "$bin" -w 10 -F "$chain"
+    "$bin" -w 10 -X "$chain"
+  fi
+  "$bin" -w 10 -E "$new" "$chain"
+}
 
 # install_family BIN RULE...
 install_family() {
@@ -167,72 +233,103 @@ install_family() {
     return 1
   fi
 
-  if ! "$bin" -w 10 -S "$CHAIN" >/dev/null 2>&1; then
-    "$bin" -w 10 -N "$CHAIN"
+  build_chain "$bin" "$CHAIN-NEW" "$@"
+  swap_chain "$bin" DOCKER-USER "$CHAIN"
+}
+
+# install_input BIN DNS_RULE...
+install_input() {
+  local bin="$1"
+  shift
+
+  if ! "$bin" -w 10 -S INPUT >/dev/null 2>&1; then
+    echo "$bin: no INPUT chain" >&2
+    return 1
   fi
 
-  # The final DROP goes in first and the rest are inserted above it, so
-  # the rewritten chain never ends in an open fall-through for longer
-  # than the flush itself.
-  "$bin" -w 10 -F "$CHAIN"
-  "$bin" -w 10 -A "$CHAIN" -j DROP
-  local pos=1 rule
-  for rule in "$@"; do
-    # shellcheck disable=SC2086 # each rule is a list of iptables words
-    "$bin" -w 10 -I "$CHAIN" "$pos" $rule
-    pos=$((pos + 1))
-  done
+  build_chain "$bin" "$INPUT_CHAIN-NEW" "$CONNTRACK" "$@" "${INPUT_TAIL[@]}"
+  swap_chain "$bin" INPUT "$INPUT_CHAIN"
+}
 
-  if ! "$bin" -w 10 -C DOCKER-USER -j "$CHAIN" >/dev/null 2>&1; then
-    "$bin" -w 10 -I DOCKER-USER 1 -j "$CHAIN"
+# Real iptables prints what it was given with the implicit match modules
+# spelled out (`-p tcp -m tcp --dport 443`); drop those so a rule reads as
+# it was written. The conntrack states come back in either order.
+normalise() {
+  sed -E 's/ -m (tcp|udp) --dport/ --dport/; s/RELATED,ESTABLISHED/ESTABLISHED,RELATED/'
+}
+
+# verify_chain BIN PARENT CHAIN TAIL_RULE...: the parent's first rule is
+# the jump to CHAIN, and CHAIN is the conntrack accept, then only DNS
+# accepts (any number, to port 53 only), then exactly TAIL_RULE... in
+# order, then DROP.
+verify_chain() {
+  local bin="$1" parent="$2" chain="$3"
+  shift 3
+  local parent_rules rules rest expected rule line
+
+  if ! parent_rules="$("$bin" -w 10 -S "$parent" 2>&1)"; then
+    echo "$bin: no $parent chain: $parent_rules"
+    return 1
+  fi
+
+  if [ "$(grep -E '^-A ' <<<"$parent_rules" | head -n 1 || true)" != "-A $parent -j $chain" ]; then
+    echo "$bin: the first rule of $parent is not the jump to $chain"
+    return 1
+  fi
+
+  if ! rules="$("$bin" -w 10 -S "$chain" 2>&1)"; then
+    echo "$bin: no $chain chain: $rules"
+    return 1
+  fi
+
+  rules="$(grep -E '^-A ' <<<"$rules" | normalise || true)"
+
+  if [ "$(head -n 1 <<<"$rules")" != "-A $chain $CONNTRACK" ]; then
+    echo "$bin: the first rule of $chain is not the ESTABLISHED,RELATED accept"
+    return 1
+  fi
+
+  rest="$(tail -n +2 <<<"$rules")"
+  while IFS= read -r line; do
+    case "$line" in
+      "-A $chain -d "*" --dport 53 -j ACCEPT" | "-A $chain -p "*" --dport 53 -j ACCEPT") ;;
+      *) break ;;
+    esac
+    rest="$(tail -n +2 <<<"$rest")"
+  done <<<"$rest"
+
+  expected=""
+  for rule in "$@" "-j DROP"; do
+    expected+="-A $chain $rule"$'\n'
+  done
+  expected="${expected%$'\n'}"
+
+  if [ "$rest" != "$expected" ]; then
+    echo "$bin: $chain is not the policy after its DNS accepts (expected, then found):"
+    echo "$expected"
+    echo "---"
+    echo "$rest"
+    return 1
   fi
 }
 
-# verify_family BIN REQUIRED_RULE...
+# verify_family BIN TAIL_RULE...
 verify_family() {
   local bin="$1"
   shift
-  local docker_user chain rule first last
+  local forward
 
-  if ! docker_user="$("$bin" -w 10 -S DOCKER-USER 2>&1)"; then
-    echo "$bin: no DOCKER-USER chain: $docker_user"
+  if ! forward="$("$bin" -w 10 -S FORWARD 2>&1)"; then
+    echo "$bin: no FORWARD chain: $forward"
     return 1
   fi
 
-  if ! grep -qF -- "-j $CHAIN" <<<"$docker_user"; then
-    echo "$bin: DOCKER-USER does not jump to $CHAIN"
+  if ! grep -qxF -- "-A FORWARD -j DOCKER-USER" <<<"$forward"; then
+    echo "$bin: FORWARD does not jump to DOCKER-USER (is the Docker daemon running?)"
     return 1
   fi
 
-  if ! chain="$("$bin" -w 10 -S "$CHAIN" 2>&1)"; then
-    echo "$bin: no $CHAIN chain: $chain"
-    return 1
-  fi
-
-  # Rule 1 (line 2, after `-N`) must be the conntrack accept; iptables-nft
-  # prints the states as RELATED,ESTABLISHED.
-  first="$(sed -n 2p <<<"$chain")"
-  case "$first" in
-    "-A $CHAIN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" | \
-      "-A $CHAIN -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT") ;;
-    *)
-      echo "$bin: the first rule of $CHAIN is not the ESTABLISHED,RELATED accept"
-      return 1
-      ;;
-  esac
-
-  for rule in "$@"; do
-    if ! grep -qxF -- "-A $CHAIN $rule" <<<"$chain"; then
-      echo "$bin: $CHAIN lacks '$rule'"
-      return 1
-    fi
-  done
-
-  last="$(tail -n 1 <<<"$chain")"
-  if [ "$last" != "-A $CHAIN -j DROP" ]; then
-    echo "$bin: $CHAIN does not end in '-j DROP'"
-    return 1
-  fi
+  verify_chain "$bin" DOCKER-USER "$CHAIN" "$@"
 }
 
 ip6_present() {
@@ -243,19 +340,45 @@ ip6_present() {
   return 1
 }
 
+# Without an ip6tables DOCKER-USER chain nothing filters IPv6, so the
+# daemon's default bridge must not have it: ask docker, unless
+# NCC_DOCKER_BRIDGE_IPV6 says. Anything but "false" fails closed.
+bridge_ipv6() {
+  if [ -n "${NCC_DOCKER_BRIDGE_IPV6:-}" ]; then
+    echo "$NCC_DOCKER_BRIDGE_IPV6"
+  elif command -v "$DOCKER" >/dev/null 2>&1; then
+    "$DOCKER" network inspect bridge -f '{{.EnableIPv6}}' 2>/dev/null || echo unknown
+  else
+    echo unknown
+  fi
+}
+
+verify_ipv6_unfiltered_ok() {
+  local v6
+  v6="$(bridge_ipv6)"
+  if [ "$v6" != "false" ]; then
+    echo "egress: IPv6 is '$v6' on the default bridge and ip6tables has no DOCKER-USER chain to filter it"
+    return 1
+  fi
+}
+
 case "${1:-}" in
   install)
     dns_rules
     install_family "$IPTABLES" "$CONNTRACK" ${DNS_V4[@]+"${DNS_V4[@]}"} "${V4_TAIL[@]}"
+    install_input "$IPTABLES" ${DNS_V4[@]+"${DNS_V4[@]}"}
     if ip6_present; then
       install_family "$IP6TABLES" "$CONNTRACK" ${DNS_V6[@]+"${DNS_V6[@]}"} "${V6_TAIL[@]}"
     fi
     echo "egress ruleset installed"
     ;;
   verify)
-    verify_family "$IPTABLES" "${V4_REQUIRED[@]}"
+    verify_family "$IPTABLES" "${V4_TAIL[@]}"
+    verify_chain "$IPTABLES" INPUT "$INPUT_CHAIN" "${INPUT_TAIL[@]}"
     if ip6_present; then
-      verify_family "$IP6TABLES" "${V6_REQUIRED[@]}"
+      verify_family "$IP6TABLES" "${V6_TAIL[@]}"
+    else
+      verify_ipv6_unfiltered_ok
     fi
     echo "egress ruleset in place"
     ;;

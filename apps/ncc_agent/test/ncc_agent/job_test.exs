@@ -10,7 +10,7 @@ defmodule NccAgent.JobTest do
   @fake Path.expand("../support/fake_docker.sh", __DIR__)
   @env ~w(FAKE_DOCKER_EXIT FAKE_DOCKER_RESULT FAKE_DOCKER_ARGV_LOG FAKE_DOCKER_FILE_CONTENT
           FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_SLEEP FAKE_DOCKER_PLANT FAKE_DOCKER_RESULT_LINK
-          FAKE_DOCKER_OUTPUT_BYTES)
+          FAKE_DOCKER_OUTPUT_BYTES FAKE_DOCKER_CONTAINER_PRESENT)
   @lease "5b0c8a8e-1111-4c2d-9e3f-0a1b2c3d4e5f"
   @digest "sha256:" <> String.duplicate("a", 64)
   @content "the archived artifact"
@@ -211,6 +211,69 @@ defmodule NccAgent.JobTest do
 
     argv = argv_log |> File.read!() |> String.split("\n", trim: true)
     assert Enum.count(argv, &(&1 == "run")) == 1
+  end
+
+  # A CLI that died or detached leaves the container running; nothing it
+  # wrote is read then, since it could swap a file for a symlink mid-read.
+  test "a container still present after the run completes with 20 and reads nothing", %{
+    req: req,
+    config: config
+  } do
+    System.put_env("FAKE_DOCKER_CONTAINER_PRESENT", "1")
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    params = complete_params()
+    assert params["exit_code"] == "20"
+    refute Map.has_key?(params, "result")
+    refute Map.has_key?(params, "logs")
+    refute_received {:portal_request, "PUT", _, _, _}
+    refute_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, %{"shas" => _}, _}
+    refute File.exists?(Path.join(Config.path(config, :scratch), "rb-jason-1.4.4-1"))
+  end
+
+  # Sizes are the container's doing; what is over the claim's caps is never
+  # tarred (a sparse file would be written dense) nor sent for the portal
+  # to refuse.
+  test "a file over the claim's size caps is left behind", %{req: req, config: config} do
+    claim = put_in(claim(), ["upload", "max_file_bytes"], 5)
+    assert {:ok, :done} = Job.run(req, claim, config)
+    assert complete_params()["exit_code"] == "0"
+    refute_received {:portal_request, "PUT", _, _, _}
+    refute_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, %{"shas" => _}, _}
+
+    claim = put_in(claim(), ["upload", "max_total_bytes"], 5)
+    assert {:ok, :done} = Job.run(req, claim, config)
+    refute_received {:portal_request, "PUT", _, _, _}
+  end
+
+  test "logs past the count cap are left out of logs.tar.gz", %{req: req, config: config} do
+    Application.put_env(:ncc_agent, :caps, max_logs: 0)
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    params = complete_params()
+    assert params["exit_code"] == "0"
+    refute Map.has_key?(params, "logs")
+  end
+
+  # A build mounts the Hex cache read-write and could leave a hex.config or
+  # a registry snapshot for every later build to trust.
+  test "the shared Hex cache is scrubbed of hex.config and cache.ets before a run", %{
+    req: req,
+    config: config
+  } do
+    hex = Config.path(config, :hex_cache)
+    File.mkdir_p!(Path.join(hex, "packages/hexpm"))
+    File.write!(Path.join(hex, "hex.config"), "planted")
+    File.write!(Path.join(hex, "cache.ets"), "planted")
+    File.write!(Path.join(hex, "packages/hexpm/jason-1.4.4.tar"), "kept")
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    refute File.exists?(Path.join(hex, "hex.config"))
+    refute File.exists?(Path.join(hex, "cache.ets"))
+    assert File.exists?(Path.join(hex, "packages/hexpm/jason-1.4.4.tar"))
   end
 
   test "a timeout completes the lease with exit code 20", %{req: req, config: config} do
