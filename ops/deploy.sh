@@ -111,3 +111,7 @@ sleep_until_up() {
   return 1
 }
 sleep_until_up
+
+if [[ ${2:-portal} == builder ]]; then
+  builder_check_running_egress
+fi
