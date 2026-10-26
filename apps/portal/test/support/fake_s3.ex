@@ -17,6 +17,8 @@ defmodule Portal.Test.FakeS3 do
       `x-amz-meta-sha256` does not match what arrived.
     * `{:get, :status, n}`, `{:put, :status, n}`, `{:list, :status, n}`
       answer that operation with status `n`.
+    * `{:put, :hang}` holds a PUT for 5 s before answering, a store that
+      accepted the connection and stopped responding.
     * `{:list, :no_token}` answers the first listing page with one key,
       `IsTruncated` true and no continuation token (a server bug the client
       must not loop on).
@@ -180,6 +182,10 @@ defmodule Portal.Test.FakeS3.Plug do
     case fault(agent) do
       {:put, :status, n} ->
         error(conn, n, "InternalError")
+
+      {:put, :hang} ->
+        Process.sleep(5_000)
+        error(conn, 503, "SlowDown")
 
       _ ->
         body = conn.assigns.body

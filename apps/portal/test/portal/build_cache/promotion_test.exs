@@ -69,7 +69,7 @@ defmodule Portal.BuildCache.PromotionTest do
     end
   end
 
-  defp promote(result, out, cache, package, version, opts \\ []) do
+  defp promote(result, out, cache, package, version, opts) do
     Promotion.promote(
       result,
       out,
@@ -707,14 +707,16 @@ defmodule Portal.BuildCache.PromotionTest do
 
       promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
         release_checksum: &hex_ok/2,
-        l2: fn dir, slug, key, package ->
-          send(test_pid, {:l2, dir, slug, key, package})
+        l2: fn dir, slug, key, package, opts ->
+          send(test_pid, {:l2, dir, slug, key, package, opts})
           :ok
         end
       )
 
-      assert_receive {:l2, dir, "sha256_x", key, "jason"}
+      assert_receive {:l2, dir, "sha256_x", key, "jason", opts}
       assert key == c["key"]
+      assert opts[:timeout_ms] > 0
+      assert opts[:timeout_ms] <= Promotion.l2_upload_budget_ms()
       assert dir == Path.join(ctx.cache, key)
       assert File.dir?(dir)
     end
@@ -725,7 +727,7 @@ defmodule Portal.BuildCache.PromotionTest do
 
       promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
         release_checksum: &hex_ok/2,
-        l2: fn _, _, _, _ ->
+        l2: fn _, _, _, _, _ ->
           send(test_pid, :l2)
           :ok
         end
@@ -740,11 +742,51 @@ defmodule Portal.BuildCache.PromotionTest do
       counts =
         promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
           release_checksum: &hex_ok/2,
-          l2: fn _, _, _, _ -> raise "boom" end
+          l2: fn _, _, _, _, _ -> raise "boom" end
         )
 
       assert counts.promoted == 1
       assert File.dir?(Path.join(ctx.cache, c["key"]))
+    end
+
+    test "an upload that times out stops the uploads, not the promotions", ctx do
+      test_pid = self()
+      c1 = candidate(ctx.out)
+      c2 = candidate(ctx.out, %{"target" => "rpi4"})
+
+      counts =
+        promote(result([c1, c2]), ctx.out, ctx.cache, "jason", "1.4.5",
+          release_checksum: &hex_ok/2,
+          l2: fn _, _, key, _, _ ->
+            send(test_pid, {:l2, key})
+            {:error, :timeout}
+          end
+        )
+
+      assert counts.promoted == 2
+      assert_received {:l2, _}
+      refute_received {:l2, _}
+      assert File.dir?(Path.join(ctx.cache, c1["key"]))
+      assert File.dir?(Path.join(ctx.cache, c2["key"]))
+    end
+
+    test "which upload results stop the uploads for the call" do
+      for reason <- [
+            :timeout,
+            {:exit, :killed},
+            {:exception, "x"},
+            {:throw, :x},
+            {:status, 500},
+            {:status, 503},
+            %Req.TransportError{reason: :closed},
+            %Mint.TransportError{reason: :timeout}
+          ] do
+        assert Promotion.upload_stops?({:error, reason}), inspect(reason)
+      end
+
+      for result <- [{:ok, 1}, :skipped, {:error, {:status, 404}}, {:error, {:structure, "x"}}] do
+        refute Promotion.upload_stops?(result), inspect(result)
+      end
     end
   end
 end

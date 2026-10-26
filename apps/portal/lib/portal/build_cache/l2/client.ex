@@ -10,6 +10,10 @@ defmodule Portal.BuildCache.L2.Client do
   alias Portal.BuildCache.L2.Config
 
   @connect_timeout 10_000
+  # A send that blocks this long (a store that stopped reading) fails and
+  # closes the socket rather than holding the caller.
+  @send_timeout 30_000
+  @default_timeout_ms 120_000
   @max_pages 50
 
   @spec head(Config.t(), String.t()) ::
@@ -34,15 +38,43 @@ defmodule Portal.BuildCache.L2.Client do
   @doc "Streams the object into `path`, hashing it; the file is gone on every error."
   @spec get(Config.t(), String.t(), Path.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def get(cfg, object, path, opts) do
-    timeout = Keyword.get(opts, :timeout_ms, 120_000)
-    task = Task.async(fn -> do_get(cfg, object, path, Keyword.get(opts, :max_bytes)) end)
+    timeout = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
+
+    case bounded(fn -> do_get(cfg, object, path, Keyword.get(opts, :max_bytes)) end, timeout) do
+      {:error, :timeout} = error -> remove(path, error)
+      {:error, {:exit, _}} = error -> remove(path, error)
+      result -> result
+    end
+  end
+
+  # The request runs in a task killed at `timeout`: Req's receive timeout
+  # measures inactivity, not total time, and nothing at all bounds a send.
+  # Whatever the task raises, throws or exits with comes back as an error.
+  defp bounded(fun, timeout) do
+    task =
+      Task.async(fn ->
+        try do
+          fun.()
+        catch
+          kind, reason -> {:error, caught(kind, reason)}
+        end
+      end)
 
     case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
-      {:exit, reason} -> remove(path, {:error, {:exit, reason}})
-      nil -> remove(path, {:error, :timeout})
+      {:exit, reason} -> {:error, {:exit, reason}}
+      nil -> {:error, :timeout}
     end
   end
+
+  @doc false
+  # A caught `kind, reason` as an error term: `{:exception, message}` for a
+  # raise, `{:exit, reason}` and `{:throw, value}` otherwise.
+  @spec caught(:error | :exit | :throw, term()) :: term()
+  def caught(:error, reason),
+    do: {:exception, Exception.message(Exception.normalize(:error, reason, []))}
+
+  def caught(kind, reason), do: {kind, reason}
 
   # `path` is a host-built staging name under the slug.
   # sobelow_skip ["Traversal.FileModule"]
@@ -55,10 +87,8 @@ defmodule Portal.BuildCache.L2.Client do
           )
 
         finish_get(result, path)
-      rescue
-        e -> remove(path, {:error, {:exception, Exception.message(e)}})
       catch
-        :exit, reason -> remove(path, {:error, {:exit, reason}})
+        kind, reason -> remove(path, {:error, caught(kind, reason)})
       after
         File.close(io)
       end
@@ -130,12 +160,22 @@ defmodule Portal.BuildCache.L2.Client do
     result
   end
 
-  @spec put(Config.t(), String.t(), Path.t(), String.t()) :: :ok | {:error, term()}
+  @doc """
+  Uploads `path` with its SHA-256 in `x-amz-meta-sha256`. Bounded in total
+  time by `opts[:timeout_ms]` (default 120 s), send phase included:
+  `{:error, :timeout}` past it.
+  """
+  @spec put(Config.t(), String.t(), Path.t(), String.t(), keyword()) :: :ok | {:error, term()}
+  def put(cfg, object, path, sha256, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
+    bounded(fn -> do_put(cfg, object, path, sha256, timeout) end, timeout)
+  end
+
   # `path` is the tarball `Portal.BuildCache.L2.Tarball.pack/3` just wrote.
   # sobelow_skip ["Traversal.FileModule"]
-  def put(cfg, object, path, sha256) do
+  defp do_put(cfg, object, path, sha256, timeout) do
     with {:ok, body} <- File.read(path) do
-      case Req.put(req(cfg, receive_timeout: 120_000),
+      case Req.put(req(cfg, receive_timeout: timeout),
              url: object_url(cfg, object),
              body: body,
              headers: [{"content-type", "application/gzip"}, {"x-amz-meta-sha256", sha256}]
@@ -213,7 +253,10 @@ defmodule Portal.BuildCache.L2.Client do
         base_url: cfg.endpoint,
         retry: false,
         redirect: false,
-        connect_options: [timeout: @connect_timeout],
+        connect_options: [
+          timeout: @connect_timeout,
+          transport_opts: [send_timeout: @send_timeout, send_timeout_close: true]
+        ],
         aws_sigv4: [
           access_key_id: cfg.access_key,
           secret_access_key: cfg.secret_key,
