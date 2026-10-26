@@ -19,10 +19,20 @@ defmodule Mix.Tasks.Portal.BuildCache.Push do
 
   @impl true
   def run(args) do
-    {opts, _, _} =
+    {opts, _, invalid} =
       OptionParser.parse(args,
         strict: [root: :string, slug: :string, limit: :integer, max_gb: :float, dry_run: :boolean]
       )
+
+    # Before anything starts: a mistyped bound (`--limt`) must not become an
+    # unbounded push.
+    if invalid != [] do
+      Mix.raise(
+        "Unknown or invalid options: " <>
+          Enum.map_join(invalid, ", ", fn {name, _value} -> name end) <>
+          ". Valid: --root, --slug, --limit, --max-gb, --dry-run"
+      )
+    end
 
     Mix.Task.run("app.config")
 
