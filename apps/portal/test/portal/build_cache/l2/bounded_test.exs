@@ -28,6 +28,26 @@ defmodule Portal.BuildCache.L2.BoundedTest do
     refute_received _
   end
 
+  test "a timeout leaves the process dead and no late message behind" do
+    me = self()
+
+    assert {:error, :timeout} =
+             Bounded.run(
+               fn ->
+                 send(me, {:running, self()})
+                 Process.sleep(300)
+                 send(me, :late)
+               end,
+               timeout_ms: 50
+             )
+
+    assert_received {:running, pid}
+    refute Process.alive?(pid)
+    Process.sleep(400)
+    refute_received :late
+    refute_received _
+  end
+
   test "a raise, a throw and an exit come back as errors" do
     assert {:error, {:exception, msg}} = Bounded.run(fn -> raise "boom" end, timeout_ms: 1_000)
     assert msg =~ "boom"

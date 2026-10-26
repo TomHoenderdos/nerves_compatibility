@@ -17,7 +17,8 @@ defmodule Portal.BuildCache.L2.Tarball do
       `:erl_tar` sees the file, a streaming pre-scan inflates it with `:zlib`
       in bounded pieces, counting the output and discarding it, and refuses
       it (`{:error, :too_large}`) as soon as the count passes
-      `max_extracted_bytes/0` (1 GiB). A stream that does not inflate is
+      `max_extracted_bytes/0` (1 GiB). That bounds the compressed stream's
+      inflated size, and nothing else. A stream that does not inflate is
       `{:error, {:gzip, reason}}`. The pre-scan reads one gzip member, as
       `:erl_tar` does (`compressed_one`), and refuses a file that is not
       gzip at all, which `:erl_tar` would otherwise read as a plain tar.
@@ -28,8 +29,17 @@ defmodule Portal.BuildCache.L2.Tarball do
       with a heap cap and a deadline, so the worst it can do is be killed:
       `{:error, {:unpack, :killed}}` or `{:error, {:unpack, :timeout}}`.
 
-  The pre-scan bounds the tar stream at 1 GiB, which also bounds the header
-  count (two million per GiB); the heap cap bounds what those headers cost.
+  The pre-scan bounds the tar stream at 1 GiB; the heap cap bounds what the
+  headers cost, and the table is refused above 100,000 members
+  (`{:error, :too_many_members}`).
+
+  What extraction writes is bounded by the table, not the pre-scan: `:erl_tar`
+  reports a GNU sparse member (typeflag `S`) as a regular file of its real
+  size and fills the holes with zeros, so a 2 KB stream can describe 1 GiB of
+  output. Inside the bounded process the summed member sizes must therefore
+  stay within both `max_extracted_bytes/0` and the pre-scanned stream size
+  (`{:error, :too_large}` otherwise). `pack/3` never writes a sparse member,
+  so no honest object trips this.
 
   The tarball carries no symlink member at all. `:erl_tar` refuses a symlink
   whose target leaves the extraction directory, which Mix's own links do, and
@@ -52,6 +62,7 @@ defmodule Portal.BuildCache.L2.Tarball do
   @unpack_timeout_ms 120_000
   @prescan_chunk_bytes 1024 * 1024
   @max_depth 64
+  @max_members 100_000
   @max_manifest_bytes 4096
   @manifest ".ncc-links.json"
   @allowed_types [:regular, :directory]
@@ -166,30 +177,30 @@ defmodule Portal.BuildCache.L2.Tarball do
     max = Keyword.get(opts, :max_extracted_bytes, @max_extracted_bytes)
 
     with {:ok, bytes} <- prescan(tar_path, max),
-         :ok <- bounded_unpack(tar_path, staging_dir, max, opts) do
+         :ok <- bounded_unpack(tar_path, staging_dir, max, bytes, opts) do
       {:ok, %{extracted_bytes: bytes}}
     end
   end
 
-  defp bounded_unpack(tar_path, staging_dir, max, opts) do
+  defp bounded_unpack(tar_path, staging_dir, max, bytes, opts) do
     bound = [
       timeout_ms: Keyword.get(opts, :timeout_ms, @unpack_timeout_ms),
       max_heap_bytes: Keyword.get(opts, :max_heap_bytes, Bounded.default_max_heap_bytes())
     ]
 
-    case Bounded.run(fn -> extract_checked(tar_path, staging_dir, max) end, bound) do
+    case Bounded.run(fn -> extract_checked(tar_path, staging_dir, max, bytes) end, bound) do
       {:ok, result} -> result
       {:error, reason} -> {:error, {:unpack, reason}}
     end
   end
 
-  defp extract_checked(tar_path, staging_dir, max) do
+  defp extract_checked(tar_path, staging_dir, max, inflated) do
     # Modes are stripped before the walk: an archive-applied 0o000 directory
     # could not be listed otherwise. `strip_modes/1` follows no link, and the
     # screened archive held none; the manifest's links come after it.
     with {:ok, table} <- table(tar_path),
          :ok <- screen(table),
-         :ok <- extracted_size(table, max),
+         :ok <- extracted_size(table, min(max, inflated)),
          :ok <- extract(tar_path, staging_dir),
          :ok <- staging_dir |> Tree.strip_modes() |> refusal(),
          :ok <- restore_links(staging_dir),
@@ -294,6 +305,8 @@ defmodule Portal.BuildCache.L2.Tarball do
     end
   end
 
+  defp screen(entries) when length(entries) > @max_members, do: {:error, :too_many_members}
+
   defp screen(entries) do
     Enum.reduce_while(entries, :ok, fn {name, type, _size, _mtime, _mode, _uid, _gid}, :ok ->
       cond do
@@ -332,6 +345,8 @@ defmodule Portal.BuildCache.L2.Tarball do
 
   defp safe_show(raw), do: inspect(raw, printable_limit: 200)
 
+  # The table's sizes are what extraction writes (a sparse member's is its
+  # real size), so they may not exceed the bytes the stream inflated to.
   defp extracted_size(entries, max) do
     total = Enum.reduce(entries, 0, fn {_, _, size, _, _, _, _}, sum -> sum + size end)
     if total > max, do: {:error, :too_large}, else: :ok

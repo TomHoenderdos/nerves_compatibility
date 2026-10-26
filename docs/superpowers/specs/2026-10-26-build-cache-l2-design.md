@@ -251,7 +251,10 @@ timeout and kill come back as `{:unpack, :timeout | :killed}`. Modes are
 stripped before the walk, and `strip_modes/1` adds owner read/write (and
 search on directories), so an archive-applied 0o000 can be walked and
 removed. An extraction holding no regular file is `:empty_entry`. The
-result is `{:ok, %{extracted_bytes: n}}`.
+result is `{:ok, %{extracted_bytes: n}}`. The table is refused above
+100,000 members (`:too_many_members`), and inside the bounded process the
+summed member sizes must stay within the pre-scanned size, since `:erl_tar`
+reports a GNU sparse member at its real size (`:too_large`).
 
 ### 4.4 Tree and Staging
 
@@ -332,9 +335,10 @@ enabled, logging the returned counts in one line.
    (sha mismatch, missing header, structural refusal, too large, truncated
    archive) also `Stats.mark_bad(key)` so the object is not retried for 24 h.
 5. Returns `%{listed, candidates, downloaded, discarded, failed, skipped,
-   bytes}`; records downloads and bytes in Stats.
+   bytes, extracted_bytes}`; records downloads and bytes in Stats.
 
-**Amendment (2026-10-26, final review).** The extraction gets
+**Amendment (2026-10-26, final review).** The counts also carry
+`extracted_bytes` (the sum of the pre-scanned sizes) and `list_failed`. The extraction gets
 `timeout_ms: min(remaining, 120_000)` too, so it counts against the
 budget; an extraction killed or timed out by its bound is a refusal, except
 one whose timeout the build's budget cut short (`:budget_spent`, which

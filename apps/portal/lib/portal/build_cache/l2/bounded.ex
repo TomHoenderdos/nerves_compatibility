@@ -11,9 +11,13 @@ defmodule Portal.BuildCache.L2.Bounded do
   member list of millions of entries out of a header flood. That cap counts
   the process's own heap only: binaries over 64 bytes live off-heap and are
   not counted, so a single huge member is not stopped here. That is the job
-  of `Portal.BuildCache.L2.Tarball`'s streaming gzip pre-scan, which runs
-  before this and refuses a tarball that decompresses past
-  `Tarball.max_extracted_bytes/0`.
+  of `Portal.BuildCache.L2.Tarball`: its streaming gzip pre-scan, which runs
+  before this, bounds the inflated size of the compressed stream, and its
+  table-sum check, inside the function run here, bounds what extraction
+  writes (sparse members included).
+
+  On a timeout the process is killed and this waits for its `:DOWN`, so it is
+  dead, and the caller's mailbox clean, when `run/2` returns.
 
   A raise, throw or exit inside the function becomes
   `{:error, {:exception, message}}` rather than a crash.
@@ -62,9 +66,16 @@ defmodule Portal.BuildCache.L2.Bounded do
     after
       timeout ->
         Process.exit(pid, :kill)
-        Process.demonitor(monitor, [:flush])
 
-        # The result may have been sent just before the kill.
+        # Once `:DOWN` arrives the process is dead and nothing more of its
+        # sending can follow; a result sent just before the kill is already
+        # in the mailbox by then.
+        receive do
+          {:DOWN, ^monitor, :process, ^pid, _} -> :ok
+        after
+          5_000 -> Process.demonitor(monitor, [:flush])
+        end
+
         receive do
           {^ref, _late} -> :ok
         after
