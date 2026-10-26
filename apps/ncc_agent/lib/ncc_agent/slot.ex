@@ -94,8 +94,21 @@ defmodule NccAgent.Slot do
     {:noreply, %{state | job: nil}}
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %{job: %{task: %Task{ref: ref}}} = state) do
+  # `Job.run/3` rescues what it can; a task killed from outside still hands
+  # its lease back now rather than when the reaper notices, and its
+  # container does not get to run on unattended.
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{job: %{task: %Task{ref: ref}} = job} = state
+      ) do
     Logger.error("slot #{state.n}: the job crashed: #{inspect(reason)}")
+    if job.container, do: Docker.kill(job.config, job.container)
+
+    case Client.complete(job.req, job.lease_id, @runner_failure, %{}) do
+      {:ok, _} -> :ok
+      {:error, why} -> Logger.warning("handing back #{job.lease_id}: #{inspect(why)}")
+    end
+
     send(self(), :tick)
     {:noreply, %{state | job: nil}}
   end

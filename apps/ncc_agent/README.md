@@ -24,11 +24,12 @@ Read from the environment (in production, `/etc/ncc-agent.env`):
 | `NCC_CPUS`, `NCC_MEMORY` | none | Per-container `docker run --cpus` / `--memory` |
 | `NCC_BUILD_CONCURRENCY` | none | Passed to the worker as its build concurrency |
 | `NCC_DATA_DIR` | `/srv/ncc` | Identity, scratch, Nerves/Hex caches, releases |
-| `NCC_BUILD_USER` | own `uid:gid` | `docker run --user` |
+| `NCC_BUILD_USER` | required non-root | `docker run --user`, the `uid:gid` of the `ncc-build` user; the agent runs as root and refuses `0:*` |
 | `NCC_DOCKER_BIN` | `docker` | Docker CLI to run |
 | `NCC_EGRESS_SCRIPT` | `priv/egress.sh` | Installs the containers' egress ruleset |
 
-A missing or invalid `NCC_PORTAL_URL` or `NCC_SLOTS` stops the release at boot.
+A missing or invalid `NCC_PORTAL_URL`, `NCC_SLOTS` or `NCC_BUILD_USER` stops
+the release at boot.
 
 ## Running in dev against a local portal
 

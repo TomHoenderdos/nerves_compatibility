@@ -37,6 +37,21 @@ defmodule NccAgent.ConfigTest do
     assert Enum.any?(errors, &(&1 =~ "NCC_SLOTS")) and Enum.any?(errors, &(&1 =~ "https"))
   end
 
+  # The agent runs as root; a build as uid 0 on the bind mounts is refused.
+  test "a root or malformed build user is refused" do
+    System.put_env("NCC_PORTAL_URL", "https://portal.test:8443")
+    System.put_env("NCC_BUILD_USER", "0:0")
+    assert {:error, [msg]} = Config.load()
+    assert msg =~ "non-root"
+
+    System.put_env("NCC_BUILD_USER", "ncc-build")
+    assert {:error, [msg]} = Config.load()
+    assert msg =~ "uid:gid"
+
+    System.put_env("NCC_BUILD_USER", "999:999")
+    assert {:ok, %{build_user: "999:999"}} = Config.load()
+  end
+
   test "an https URL without a host is an error" do
     System.put_env("NCC_PORTAL_URL", "https://")
     assert {:error, [msg]} = Config.load()

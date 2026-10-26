@@ -94,10 +94,13 @@ defmodule NccAgent.Client do
   def new(config) do
     %URI{host: host} = URI.parse(config.portal_url)
 
+    # No redirects: a redirect would carry the client certificate, a
+    # result.json or an upload to wherever it points, over whatever scheme.
     Req.new(
       base_url: config.portal_url,
       headers: version_header(),
       retry: false,
+      redirect: false,
       receive_timeout: 60_000,
       connect_options: [
         transport_opts: [

@@ -49,7 +49,7 @@ defmodule NccAgent.Config do
     }
 
     {slots, slot_errors} = parse_slots(System.get_env("NCC_SLOTS", "1"))
-    errors = url_errors(config.portal_url) ++ slot_errors
+    errors = url_errors(config.portal_url) ++ slot_errors ++ user_errors(config.build_user)
     if errors == [], do: {:ok, %{config | slots: slots}}, else: {:error, errors}
   end
 
@@ -75,6 +75,24 @@ defmodule NccAgent.Config do
     case URI.parse(url) do
       %URI{scheme: "https", host: host} when is_binary(host) and host != "" -> []
       _ -> ["NCC_PORTAL_URL must be an https URL with a host, got #{inspect(url)}"]
+    end
+  end
+
+  # The agent runs as root (systemd), so an unset NCC_BUILD_USER would run
+  # every build container as uid 0 on the bind mounts; the release refuses
+  # to start rather than do that quietly.
+  defp user_errors(user) do
+    cond do
+      not Regex.match?(~r/\A[0-9]+:[0-9]+\z/, user) ->
+        ["NCC_BUILD_USER must be uid:gid, got #{inspect(user)}"]
+
+      String.starts_with?(user, "0:") ->
+        [
+          "NCC_BUILD_USER must name a non-root uid (the container would build as root); set it to the ncc-build user's uid:gid"
+        ]
+
+      true ->
+        []
     end
   end
 

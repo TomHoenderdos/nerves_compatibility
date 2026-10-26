@@ -15,10 +15,13 @@
 #   -I CHAIN [N] RULE  insert at position N (default 1)
 #   -C CHAIN RULE    exit 0 when the rule is present, else 1
 #   -D CHAIN RULE    delete the first matching rule (exit 1 if none)
+#   -X CHAIN         delete an empty chain
+#   -E OLD NEW       rename a chain; jumps to it in other chains follow
 #   -S [CHAIN]       print the chain (or every chain)
 #
 # Any command on a missing chain exits 1. With FAKE_IPTABLES_DOCKER_USER=1
-# an empty DOCKER-USER chain is created first if it does not exist.
+# the chains a running Docker daemon leaves are created first if missing:
+# an empty DOCKER-USER, FORWARD jumping to it, and an empty INPUT.
 set -euo pipefail
 
 state="${FAKE_IPTABLES_STATE:?FAKE_IPTABLES_STATE is not set}"
@@ -32,8 +35,10 @@ if [ -n "${FAKE_IPTABLES_DELAY:-}" ]; then
   sleep "$FAKE_IPTABLES_DELAY"
 fi
 
-if [ "${FAKE_IPTABLES_DOCKER_USER:-0}" = "1" ] && [ ! -f "$state/DOCKER-USER" ]; then
-  echo "-N DOCKER-USER" >"$state/DOCKER-USER"
+if [ "${FAKE_IPTABLES_DOCKER_USER:-0}" = "1" ]; then
+  [ -f "$state/DOCKER-USER" ] || echo "-N DOCKER-USER" >"$state/DOCKER-USER"
+  [ -f "$state/FORWARD" ] || printf -- '-N FORWARD\n-A FORWARD -j DOCKER-USER\n' >"$state/FORWARD"
+  [ -f "$state/INPUT" ] || echo "-N INPUT" >"$state/INPUT"
 fi
 
 while [ $# -gt 0 ]; do
@@ -74,6 +79,20 @@ if [ "$op" = "-N" ]; then
   exit 0
 fi
 
+if [ "$op" = "-E" ]; then
+  new="${1:-}"
+  [ -n "$new" ] || { echo "fake iptables: -E needs a new name" >&2; exit 2; }
+  [ -f "$file" ] || { echo "iptables: No chain/target/match by that name." >&2; exit 1; }
+  [ ! -f "$state/$new" ] || { echo "iptables: File exists." >&2; exit 1; }
+  sed -e "s/^-N $chain\$/-N $new/" -e "s/^-A $chain /-A $new /" "$file" >"$state/$new"
+  rm "$file"
+  for f in "$state"/*; do
+    [ -f "$f" ] || continue
+    sed -i -e "s/ -j $chain\$/ -j $new/" "$f"
+  done
+  exit 0
+fi
+
 if [ ! -f "$file" ]; then
   echo "iptables: No chain/target/match by that name." >&2
   exit 1
@@ -109,6 +128,13 @@ case "$op" in
       echo "iptables: Bad rule (does a matching rule exist in that chain?)." >&2
       exit 1
     }
+    ;;
+  -X)
+    if grep -q '^-A ' "$file"; then
+      echo "iptables: Directory not empty." >&2
+      exit 1
+    fi
+    rm "$file"
     ;;
   -D)
     line="-A $chain $*"

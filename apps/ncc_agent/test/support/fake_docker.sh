@@ -2,6 +2,9 @@
 # A stand-in for `docker` in the agent's tests.
 #
 #   image inspect  exit 0 when FAKE_DOCKER_IMAGE_PRESENT=1, else 1
+#   container inspect  print "running" and exit 0 when
+#                  FAKE_DOCKER_CONTAINER_PRESENT=1, else exit 1
+#   rm             echo, exit 0
 #   pull           echo, exit 0
 #   kill           append the container name to FAKE_DOCKER_KILL_LOG, exit 0
 #   ps             append the argv to FAKE_DOCKER_PS_LOG, print FAKE_DOCKER_PS
@@ -22,6 +25,13 @@ set -euo pipefail
 case "${1:-}" in
   image)
     if [ "${2:-}" = "inspect" ] && [ "${FAKE_DOCKER_IMAGE_PRESENT:-0}" = "1" ]; then
+      exit 0
+    fi
+    exit 1
+    ;;
+  container)
+    if [ "${2:-}" = "inspect" ] && [ "${FAKE_DOCKER_CONTAINER_PRESENT:-0}" = "1" ]; then
+      echo running
       exit 0
     fi
     exit 1
