@@ -229,6 +229,16 @@ if portal_available? do
     overrides -> config :portal, Portal.Builder, overrides
   end
 
+  # The shared S3 layer behind the build cache (`Portal.BuildCache.L2`).
+  # Unset endpoint: off. Every other value is required once it is set.
+  config :portal, Portal.BuildCache.L2,
+    endpoint: System.get_env("NCC_BUILD_CACHE_S3_ENDPOINT"),
+    bucket: System.get_env("NCC_BUILD_CACHE_S3_BUCKET"),
+    region: System.get_env("NCC_BUILD_CACHE_S3_REGION"),
+    access_key: System.get_env("NCC_BUILD_CACHE_S3_ACCESS_KEY"),
+    secret_key: System.get_env("NCC_BUILD_CACHE_S3_SECRET_KEY"),
+    read_only: System.get_env("NCC_BUILD_CACHE_S3_READ_ONLY") == "1"
+
   # Megabytes are the human unit; `Portal.Workers.LogRetention` wants bytes. An
   # unparseable or non-positive value leaves the compile-time default alone
   # rather than becoming a budget of zero, which would evict every stored log on

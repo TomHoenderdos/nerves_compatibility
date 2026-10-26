@@ -31,6 +31,9 @@ defmodule Portal.Application do
       # Also precedes the endpoint: it owns the ETS table holding in-flight
       # WebAuthn challenges.
       PortalWeb.WebAuthnSession,
+      # Owns the ETS table of L2 build cache counters and in-flight claims;
+      # before Oban, whose build jobs write it.
+      Portal.BuildCache.L2.Stats,
       # A build node also runs its own ingest queue and its own Nerves cache
       # warm queue; see `Portal.Workers.Ingest` and `Portal.Workers.WarmNerves`.
       {Oban,
@@ -74,6 +77,7 @@ defmodule Portal.Application do
 
     with {:ok, pid} <- Supervisor.start_link(children, opts) do
       :ok = start_boot_egress_check()
+      :ok = Portal.BuildCache.L2.log_state()
       {:ok, pid}
     end
   end
