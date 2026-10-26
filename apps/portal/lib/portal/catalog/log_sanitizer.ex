@@ -212,7 +212,7 @@ defmodule Portal.Catalog.LogSanitizer do
     |> then(&Regex.replace(@unicode_controls, &1, ""))
   end
 
-  # The header `Portal.Builder.log_command/2` writes: two rules of `=` with the
+  # The header `Portal.Builder.log_command/3` writes: two rules of `=` with the
   # command between them, then a blank line. The width is deliberately not
   # pinned — pinning it to 80 meant a one-character change in the builder would
   # silently stop the strip from matching and ship the docker argv to the

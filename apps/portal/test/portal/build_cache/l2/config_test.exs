@@ -48,4 +48,19 @@ defmodule Portal.BuildCache.L2.ConfigTest do
     assert {:ok, %Config{region: "garage"}} = Config.config(Keyword.delete(@full, :region))
     assert {:ok, %Config{read_only?: true}} = Config.config(Keyword.put(@full, :read_only, true))
   end
+
+  test "inspecting a config never shows the secret key" do
+    {:ok, cfg} = Config.config(Keyword.put(@full, :secret_key, "very-secret-value"))
+    refute inspect(cfg) =~ "very-secret-value"
+  end
+
+  test "an endpoint with userinfo or a fragment is refused without echoing the userinfo" do
+    assert {:error, msg} =
+             Config.config(Keyword.put(@full, :endpoint, "http://u:p@100.64.0.2:3900"))
+
+    assert msg =~ "endpoint"
+    refute msg =~ "p@"
+
+    assert {:error, _} = Config.config(Keyword.put(@full, :endpoint, "http://host:3900#frag"))
+  end
 end
