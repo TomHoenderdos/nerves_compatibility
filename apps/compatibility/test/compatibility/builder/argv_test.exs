@@ -26,6 +26,7 @@ defmodule Compatibility.Builder.ArgvTest do
                "ERL_FLAGS=",
                "ELIXIR_ERL_OPTIONS=",
                "NCC_SQUASHFS_PROCESSORS=",
+               "MAKEFLAGS=",
                "NCC_BUILD_CONCURRENCY="
              ])
            )
@@ -43,6 +44,7 @@ defmodule Compatibility.Builder.ArgvTest do
 
     assert ["--cpus", "0.5" | _] = Enum.drop_while(argv, &(&1 != "--cpus"))
     assert "NCC_SQUASHFS_PROCESSORS=1" in argv
+    assert "MAKEFLAGS=-j1" in argv
   end
 
   # Config may hand over numbers rather than strings.
@@ -51,6 +53,7 @@ defmodule Compatibility.Builder.ArgvTest do
 
     assert ["--cpus", "3" | _] = Enum.drop_while(argv, &(&1 != "--cpus"))
     assert "NCC_SQUASHFS_PROCESSORS=3" in argv
+    assert "MAKEFLAGS=-j3" in argv
     assert "NCC_BUILD_CONCURRENCY=2" in argv
   end
 

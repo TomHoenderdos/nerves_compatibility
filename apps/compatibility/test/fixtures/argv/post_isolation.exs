@@ -79,6 +79,8 @@
     "-e",
     "NCC_SQUASHFS_PROCESSORS=2",
     "-e",
+    "MAKEFLAGS=-j2",
+    "-e",
     "NCC_BUILD_CONCURRENCY=2",
     "ncc-worker:local"
   ]

@@ -203,14 +203,17 @@ defmodule Compatibility.Builder.Argv do
   # read ELIXIR_ERL_OPTIONS instead, and that is where the compile parallelism
   # lives.
   #
-  # MAKEFLAGS is deliberately not set. It never capped anything: elixir_make
-  # passes no -j, so a NIF's C code builds serially by default, and
-  # `MAKEFLAGS=-jN` *raised* that to N for a few seconds saved per NIF package.
-  # The price was false failures on Makefiles that are not parallel-safe, which
-  # no user hits because their `mix compile` runs make serially -- circuits_spi
-  # 2.1.0 failed on rpi4 creating obj/ while compiling into it. Frank Hunleth is
-  # fixing the elixir-circuits Makefiles; `MAKEFLAGS=-j#{quota}` can come back
-  # once that has shipped, if the seconds are worth it.
+  # MAKEFLAGS raises make's parallelism to the quota. elixir_make passes no -j,
+  # so without it a NIF's C code builds on one core however many the container
+  # has; duckdbex 0.6.0 (435 C++ files at -O3) took 47 min per 32-bit ARM
+  # target that way and timed out on a loaded host. It is a raise, not a cap:
+  # a user's `mix compile` runs make serially, so a Makefile that is not
+  # parallel-safe fails only here. That happened once (circuits_spi 2.1.0 on
+  # rpi4, creating obj/ while compiling into it) and was removed on 2026-10-06;
+  # the elixir-circuits Makefiles were fixed upstream (order-only directory
+  # prerequisites, released 2026-10-08 to 10-13) and it came back on
+  # 2026-10-26. A NIF failing with "No such file or directory" on an object
+  # file on one target only is that class of bug, not an incompatibility.
   defp cpu_env(spec) do
     case cpu_quota(spec) do
       nil ->
@@ -227,7 +230,9 @@ defmodule Compatibility.Builder.Argv do
           "-e",
           "ELIXIR_ERL_OPTIONS=#{beam_flags}",
           "-e",
-          "NCC_SQUASHFS_PROCESSORS=#{quota}"
+          "NCC_SQUASHFS_PROCESSORS=#{quota}",
+          "-e",
+          "MAKEFLAGS=-j#{quota}"
         ]
     end
   end
