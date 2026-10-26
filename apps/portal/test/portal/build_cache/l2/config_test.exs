@@ -1,0 +1,51 @@
+defmodule Portal.BuildCache.L2.ConfigTest do
+  use ExUnit.Case, async: true
+
+  alias Portal.BuildCache.L2.Config
+
+  @full [
+    endpoint: "http://100.64.0.2:3900",
+    bucket: "ncc-build-cache",
+    region: "garage",
+    access_key: "GK1",
+    secret_key: "s"
+  ]
+
+  test "a full config is on" do
+    assert {:ok,
+            %Config{
+              endpoint: "http://100.64.0.2:3900",
+              bucket: "ncc-build-cache",
+              region: "garage",
+              read_only?: false
+            }} = Config.config(@full)
+  end
+
+  test "no endpoint is off" do
+    assert :off = Config.config([])
+    assert :off = Config.config(endpoint: "", bucket: "b")
+    assert :off = Config.config(endpoint: nil, bucket: "b", access_key: "a", secret_key: "s")
+  end
+
+  test "an endpoint with anything missing is an error, not off" do
+    assert {:error, msg} = Config.config(Keyword.delete(@full, :bucket))
+    assert msg =~ "NCC_BUILD_CACHE_S3_BUCKET"
+    assert {:error, _} = Config.config(Keyword.put(@full, :secret_key, ""))
+  end
+
+  test "the endpoint must be an http(s) URL with a host and no path" do
+    assert {:error, msg} = Config.config(Keyword.put(@full, :endpoint, "100.64.0.2:3900"))
+    assert msg =~ "endpoint"
+
+    assert {:error, _} =
+             Config.config(Keyword.put(@full, :endpoint, "http://100.64.0.2:3900/bucket"))
+
+    assert {:ok, %Config{endpoint: "https://garage.example"}} =
+             Config.config(Keyword.put(@full, :endpoint, "https://garage.example/"))
+  end
+
+  test "region defaults to garage and read_only reads the flag" do
+    assert {:ok, %Config{region: "garage"}} = Config.config(Keyword.delete(@full, :region))
+    assert {:ok, %Config{read_only?: true}} = Config.config(Keyword.put(@full, :read_only, true))
+  end
+end
