@@ -497,10 +497,11 @@ defmodule PortalWeb.Admin.BuildersLive do
                   </td>
                   <td class="text-right">
                     <div
-                      :if={l.state == :failed and l.error != Leases.requeued_locally()}
+                      :if={l.state in [:failed, :queued] and l.error != Leases.requeued_locally()}
                       class="flex justify-end gap-1"
                     >
                       <button
+                        :if={l.state == :failed and l.error != "non-Hex dep"}
                         id={"requeue-#{l.id}"}
                         type="button"
                         phx-click="requeue"

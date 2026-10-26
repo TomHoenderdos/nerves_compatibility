@@ -185,6 +185,95 @@ defmodule PortalWeb.Builder.JobControllerUploadTest do
     assert body["warm"] == [rpi4]
   end
 
+  defp result_upload(map) do
+    path = Path.join(System.tmp_dir!(), "result-#{System.unique_integer([:positive])}.json")
+    File.write!(path, Jason.encode!(map))
+    %Plug.Upload{path: path, filename: "result.json", content_type: "application/json"}
+  end
+
+  # A builder may produce bad results for the package it was leased, never
+  # for another one: `Ingestion` takes the package from result.json.
+  test "a result.json for another package or version is refused and the lease stays held",
+       %{conn: conn, der: der, lease: lease} do
+    for package <- [
+          %{"name" => "phoenix", "version" => "1.4.4"},
+          %{"name" => "jason", "version" => "1.4.3"},
+          %{}
+        ] do
+      result = %{"run_id" => lease.run_id, "package" => package, "systems" => %{}}
+
+      assert %{"error" => "result_mismatch"} =
+               conn
+               |> with_cert(der)
+               |> post("/builder/v1/jobs/#{lease.id}/complete", %{
+                 "exit_code" => "0",
+                 "result" => result_upload(result)
+               })
+               |> json_response(422)
+    end
+
+    assert Ash.get!(Lease, lease.id, domain: Portal.Builders).state == :uploading
+    assert [] = all_enqueued(worker: Portal.Workers.Ingest)
+  end
+
+  test "a failing exit's runner log reaches the request once the lease fails",
+       %{conn: conn, der: der, lease: lease, builder: builder, request: request} do
+    log = Path.join(System.tmp_dir!(), "runner-#{System.unique_integer([:positive])}.log")
+    File.write!(log, "the compiler said no\n")
+    part = %Plug.Upload{path: log, filename: "runner.log", content_type: "text/plain"}
+
+    # Two attempts fail and requeue; the third fails the lease.
+    lease =
+      Enum.reduce(1..2, lease, fn _n, lease ->
+        assert %{"outcome" => "requeued"} =
+                 conn
+                 |> with_cert(der)
+                 |> post("/builder/v1/jobs/#{lease.id}/complete", %{
+                   "exit_code" => "10",
+                   "runner_log" => part
+                 })
+                 |> json_response(202)
+
+        {:ok, lease} = Leases.claim(builder)
+        lease
+      end)
+
+    assert %{"outcome" => "failed"} =
+             conn
+             |> with_cert(der)
+             |> post("/builder/v1/jobs/#{lease.id}/complete", %{
+               "exit_code" => "10",
+               "runner_log" => part
+             })
+             |> json_response(202)
+
+    {:ok, updated} = Portal.ScanRequests.get_request(request.id)
+    assert updated.status == :error
+    assert updated.error_log =~ "the compiler said no"
+  end
+
+  test "a lease may not hold more than max_files entries", %{conn: conn, der: der, lease: lease} do
+    previous = Application.get_env(:portal, Upload, [])
+    Application.put_env(:portal, Upload, Keyword.put(previous, :max_files, 2))
+    on_exit(fn -> Application.put_env(:portal, Upload, previous) end)
+
+    entries = for i <- 1..3, do: {sha("f#{i}"), "f#{i}"}
+
+    # The batch is refused at its third entry; the two verified entries
+    # before it stay, as with any refusal after a stored entry.
+    assert %{"error" => "too_many_files"} =
+             put_tar(conn, der, lease.id, tar(entries)) |> json_response(422)
+
+    assert length(File.ls!(Upload.files_dir(lease.id))) == 2
+
+    [_a, _b, c] = entries
+
+    assert %{"error" => "too_many_files"} =
+             put_tar(conn, der, lease.id, tar([c])) |> json_response(422)
+
+    assert length(File.ls!(Upload.files_dir(lease.id))) == 2
+  end
+
   test "a bad entry answers 422 and keeps the good one", %{conn: conn, der: der, lease: lease} do
     good = sha("g")
     bad = sha("b")
@@ -220,7 +309,7 @@ defmodule PortalWeb.Builder.JobControllerUploadTest do
            |> json_response(409)
   end
 
-  test "a failing exit requeues and cleans up; a policy exit rejects the request",
+  test "a failing exit requeues and keeps the files; a policy exit rejects and cleans up",
        %{conn: conn, der: der, lease: lease, builder: builder, request: request} do
     File.mkdir_p!(Upload.files_dir(lease.id))
 
@@ -230,7 +319,8 @@ defmodule PortalWeb.Builder.JobControllerUploadTest do
              |> post("/builder/v1/jobs/#{lease.id}/complete", %{"exit_code" => "10"})
              |> json_response(202)
 
-    refute File.exists?(Upload.lease_dir(lease.id))
+    # The next attempt's `files/missing` skips what already landed.
+    assert File.exists?(Upload.files_dir(lease.id))
     assert [] = all_enqueued(worker: Portal.Workers.Ingest)
 
     {:ok, lease} = Leases.claim(builder)
@@ -240,6 +330,8 @@ defmodule PortalWeb.Builder.JobControllerUploadTest do
              |> with_cert(der)
              |> post("/builder/v1/jobs/#{lease.id}/complete", %{"exit_code" => "11"})
              |> json_response(202)
+
+    refute File.exists?(Upload.lease_dir(lease.id))
 
     {:ok, updated} = Portal.ScanRequests.get_request(request.id)
     assert updated.status == :rejected

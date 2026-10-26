@@ -202,7 +202,12 @@ defmodule Portal.Builders.UploadTest do
   test "outputs are written and loaded in Portal.Builder.load_run/1's shape", %{lease: lease} do
     dir = Path.join(System.tmp_dir!(), "parts-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(dir, "logs"))
-    File.write!(Path.join(dir, "result.json"), ~s({"run_id":"rb-1","systems":{}}))
+
+    File.write!(
+      Path.join(dir, "result.json"),
+      ~s({"run_id":"rb-1","package":{"name":"jason","version":"1.4.4"},"systems":{}})
+    )
+
     File.write!(Path.join(dir, "logs/host.log"), "host log")
     File.write!(Path.join(dir, "logs/evil"), "nope")
     File.write!(Path.join(dir, "runner.log"), "runner says hi")
@@ -246,7 +251,7 @@ defmodule Portal.Builders.UploadTest do
     assert {:ok,
             %{
               exit_code: 0,
-              result: %{"run_id" => "rb-1"},
+              result: %{"run_id" => "rb-1", "package" => %{"name" => "jason"}},
               files_dir: files,
               output_dir: out,
               log: "runner says hi"

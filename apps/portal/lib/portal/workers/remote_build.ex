@@ -64,7 +64,23 @@ defmodule Portal.Workers.RemoteBuild do
     {:cancel, :no_registry_image}
   end
 
-  defp lease_unless_built(job, %{name: name, digest: digest}) do
+  # The dedup checks and the lease insert run under one advisory lock on the
+  # build: the `:remote` queue runs more than one job, and two of them for
+  # different requests of the same package/version would otherwise both pass
+  # `lease_in_flight?/3` and lease it twice.
+  defp lease_unless_built(job, %{digest: digest} = image) do
+    key = "lease:#{job.package}@#{job.version}@#{digest}"
+
+    {:ok, outcome} =
+      Portal.Repo.transaction(fn ->
+        Portal.Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1::text))", [key])
+        decide(job, image)
+      end)
+
+    outcome
+  end
+
+  defp decide(job, %{name: name, digest: digest}) do
     %{package: package, version: version, scan_request_id: scan_request_id, force: force} = job
 
     cond do
@@ -79,7 +95,8 @@ defmodule Portal.Workers.RemoteBuild do
       # request, past the unique window) would otherwise lease it twice.
       # It waits instead: once that lease is ingested the next run
       # dedups on the run above and marks this request built; if the
-      # lease failed, the next run leases afresh.
+      # lease failed, the next run leases afresh. A `done` lease is in
+      # flight too, until its ingest commits the run or fails it.
       not force and lease_in_flight?(package, version, digest) ->
         Logger.info("RemoteBuild waiting on an open lease for #{package} #{version}")
         Progress.broadcast(scan_request_id, :queued, %{remote: true, waiting_on_lease: true})
@@ -159,7 +176,7 @@ defmodule Portal.Workers.RemoteBuild do
     Lease
     |> Ash.Query.filter(
       package == ^package and version == ^version and image_digest == ^digest and
-        state in [:queued, :leased, :uploading]
+        state in [:queued, :leased, :uploading, :done]
     )
     |> Ash.exists?(domain: Portal.Builders)
   end

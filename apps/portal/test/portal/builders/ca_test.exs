@@ -68,6 +68,16 @@ defmodule Portal.Builders.CATest do
              )
   end
 
+  # The agent generates a P-256 key; signing whatever key a CSR carries
+  # would let a machine enrol with a short RSA key or an odd curve.
+  test "a CSR for anything but a P-256 key is refused", %{key_path: key_path} do
+    {:ok, _} = CA.init(key_path)
+    csr = X509.PrivateKey.new_ec(:secp384r1) |> X509.CSR.new("/CN=x") |> X509.CSR.to_pem()
+    assert {:error, :invalid_csr} = CA.issue_client(csr, "b1", Ecto.UUID.generate())
+    csr = X509.PrivateKey.new_rsa(1024) |> X509.CSR.new("/CN=x") |> X509.CSR.to_pem()
+    assert {:error, :invalid_csr} = CA.issue_client(csr, "b1", Ecto.UUID.generate())
+  end
+
   test "a CSR with a tampered signature is refused", %{key_path: key_path} do
     {:ok, _} = CA.init(key_path)
     der = csr_pem() |> X509.CSR.from_pem!() |> X509.CSR.to_der()
@@ -118,6 +128,21 @@ defmodule Portal.Builders.CATest do
            )
   end
 
+  # The CA dir may be unwritable by the service (wrong owner, disk full);
+  # that must reach the listener as an error, not take the public site down.
+  test "ensure_server_cert in an unwritable CA dir is an error, not a crash", %{
+    key_path: key_path,
+    dir: dir
+  } do
+    {:ok, _} = CA.init(key_path)
+    File.chmod!(dir, 0o500)
+    on_exit(fn -> File.chmod(dir, 0o700) end)
+
+    assert {:error, {:server_cert, _}} = CA.ensure_server_cert("portal.example")
+    File.chmod!(dir, 0o700)
+    assert {:ok, _} = CA.ensure_server_cert("portal.example")
+  end
+
   test "ensure_server_cert reissues when the key file is missing", %{key_path: key_path, dir: dir} do
     {:ok, _} = CA.init(key_path)
     {:ok, %{keyfile: keyfile}} = CA.ensure_server_cert("portal.example")
@@ -148,6 +173,10 @@ defmodule Portal.Builders.CATest do
 
     {:Extension, _, _, [dNSName: ~c"portal.example"]} =
       X509.Certificate.extension(cert, :subject_alt_name)
+
+    # serverAuth only: the TLS layer refuses it as a client certificate.
+    {:Extension, _, _, usages} = X509.Certificate.extension(cert, :ext_key_usage)
+    assert usages == [{1, 3, 6, 1, 5, 5, 7, 3, 1}]
 
     first = File.read!(certfile)
     assert {:ok, _} = CA.ensure_server_cert("portal.example")

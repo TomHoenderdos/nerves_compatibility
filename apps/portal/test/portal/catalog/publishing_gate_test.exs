@@ -55,6 +55,24 @@ defmodule Portal.Catalog.PublishingGateTest do
     assert Catalog.packages_with_precompiled_files() == []
   end
 
+  # The blob endpoint applies the same gate: a file only a non-publishing or
+  # revoked builder uploaded is stored, but not served by sha.
+  test "the blob endpoint follows the gate too" do
+    builder = builder!("gate-blob")
+    _remote = ingest!(builder.id, "remote-blob")
+    assert Catalog.artifact_by_sha256(@sha)
+    refute Catalog.published_sha256?(@sha)
+
+    {:ok, builder} = Builders.set_publishing(builder, true)
+    assert Catalog.published_sha256?(@sha)
+
+    {:ok, _} = Builders.revoke(builder)
+    refute Catalog.published_sha256?(@sha)
+
+    _local = ingest!(nil, "local-blob")
+    assert Catalog.published_sha256?(@sha)
+  end
+
   test "a local run of the same package publishes regardless" do
     builder = builder!("gate2")
     _remote = ingest!(builder.id, "remote-2")

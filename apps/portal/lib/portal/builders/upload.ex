@@ -31,7 +31,11 @@ defmodule Portal.Builders.Upload do
       max_result_bytes: Keyword.get(config, :max_result_bytes, 8_388_608),
       max_logs_bytes: Keyword.get(config, :max_logs_bytes, 67_108_864),
       max_log_bytes: Keyword.get(config, :max_log_bytes, 16_777_216),
-      max_logs_total_bytes: Keyword.get(config, :max_logs_total_bytes, 268_435_456)
+      max_logs_total_bytes: Keyword.get(config, :max_logs_total_bytes, 268_435_456),
+      # The agent sends the last 1 MiB of its runner log; the portal reads
+      # back only its tail (`@log_tail_bytes`), so anything much larger is
+      # not a runner log.
+      max_runner_log_bytes: Keyword.get(config, :max_runner_log_bytes, 2_097_152)
     })
   end
 
@@ -210,7 +214,12 @@ defmodule Portal.Builders.Upload do
         # own and never a concurrent batch's.
         own = {__MODULE__, :incoming, make_ref()}
         Process.put(own, [])
-        state = TarStream.new(callbacks(dir, caps.max_file_bytes, own))
+        # Entries this batch may still add before the lease's dir holds
+        # `max_files`: `files/missing` bounds what the agent asks about, not
+        # what it sends, and every entry is an inode and a sweep step here.
+        budget = {__MODULE__, :budget, make_ref()}
+        Process.put(budget, caps.max_files - stored_count(dir))
+        state = TarStream.new(callbacks(dir, caps.max_file_bytes, own, budget))
 
         try do
           case pump(read_chunk, state, 0, length) do
@@ -219,6 +228,7 @@ defmodule Portal.Builders.Upload do
           end
         after
           Process.delete(own)
+          Process.delete(budget)
         end
 
       {:error, reason} ->
@@ -282,20 +292,30 @@ defmodule Portal.Builders.Upload do
   # The callbacks `throw` to refuse the batch from inside `TarStream` (an
   # entry that is not a sha, a failed write); caught here with whatever file
   # the failure left open.
+  # The free-space floor is measured before a batch; a 512 MiB batch can
+  # cross it on its own, so it is measured again every 64 MiB read.
+  @disk_check_every 67_108_864
+
   defp feed(state, chunk, bytes, length) do
+    before = bytes
     bytes = bytes + byte_size(chunk)
 
-    if bytes > length do
-      {:error, :batch_too_large, state, nil, bytes}
-    else
-      try do
-        case TarStream.feed(state, chunk) do
-          {:ok, state} -> {:ok, state, bytes}
-          {:error, reason} -> {:error, reason, state, nil, bytes}
+    cond do
+      bytes > length ->
+        {:error, :batch_too_large, state, nil, bytes}
+
+      div(before, @disk_check_every) != div(bytes, @disk_check_every) and disk_full?() ->
+        {:error, :insufficient_disk, state, nil, bytes}
+
+      true ->
+        try do
+          case TarStream.feed(state, chunk) do
+            {:ok, state} -> {:ok, state, bytes}
+            {:error, reason} -> {:error, reason, state, nil, bytes}
+          end
+        catch
+          {:upload_abort, reason, open} -> {:error, reason, state, open, bytes}
         end
-      catch
-        {:upload_abort, reason, open} -> {:error, reason, state, open, bytes}
-      end
     end
   end
 
@@ -334,7 +354,7 @@ defmodule Portal.Builders.Upload do
     end
   end
 
-  defp callbacks(dir, max_file_bytes, own) do
+  defp callbacks(dir, max_file_bytes, own, budget) do
     %{
       start: fn name, size ->
         cond do
@@ -344,7 +364,11 @@ defmodule Portal.Builders.Upload do
           size > max_file_bytes ->
             {:skip, :too_large}
 
+          Process.get(budget, 0) < 1 ->
+            abort(:too_many_files, nil)
+
           true ->
+            Process.put(budget, Process.get(budget, 0) - 1)
             {fd, tmp} = open_incoming(dir, own)
             {:ok, {name, tmp, fd, :crypto.hash_init(:sha256)}}
         end
@@ -365,6 +389,16 @@ defmodule Portal.Builders.Upload do
         end
       end
     }
+  end
+
+  # How many entries the lease's dir already holds, `.incoming-*` included:
+  # one `ls`, bounded by `max_files` itself once the cap holds.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp stored_count(dir) do
+    case File.ls(dir) do
+      {:ok, names} -> length(names)
+      {:error, _} -> 0
+    end
   end
 
   # Every path is one `open_incoming/2` built; a published one is already
@@ -425,12 +459,13 @@ defmodule Portal.Builders.Upload do
     _ = File.rm(Path.join(out, "result.json"))
     _ = File.rm_rf(logs_dir)
 
-    with :ok <- mkdir(logs_dir),
+    with :ok <- free_space(),
+         :ok <- mkdir(logs_dir),
          :ok <- size_ok(result.path, caps.max_result_bytes, :result_too_large),
          {:ok, bytes} <- read_result(result.path),
          {:ok, decoded} <- decode(bytes),
          :ok <- write_logs(Map.get(parts, :logs), logs_dir, caps),
-         :ok <- write_runner_log(Map.get(parts, :runner_log), Path.join(out, "runner.log")) do
+         :ok <- write_runner_log(Map.get(parts, :runner_log), Path.join(out, "runner.log"), caps) do
       # result.json last: `load_run/1` only sees a run whose parts all landed.
       case File.write(Path.join(out, "result.json"), bytes) do
         :ok -> {:ok, decoded}
@@ -599,27 +634,81 @@ defmodule Portal.Builders.Upload do
     {:ok, {name, tmp, fd}}
   end
 
-  defp write_runner_log(nil, _path), do: :ok
+  defp free_space, do: if(disk_full?(), do: {:error, :insufficient_disk}, else: :ok)
+
+  defp write_runner_log(nil, _path, _caps), do: :ok
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp write_runner_log(%Plug.Upload{path: src}, dest) do
-    case File.cp(src, dest) do
-      :ok -> :ok
-      {:error, _} -> {:error, :logs_invalid}
+  defp write_runner_log(%Plug.Upload{path: src}, dest, caps) do
+    with :ok <- size_ok(src, caps.max_runner_log_bytes, :runner_log_too_large) do
+      case File.cp(src, dest) do
+        :ok -> :ok
+        {:error, _} -> {:error, :logs_invalid}
+      end
     end
   end
 
-  @doc "The uploaded run in `Portal.Builder.load_run/1`'s shape."
+  @doc """
+  The last 4 KiB of a runner log part a failing `complete` carried, for the
+  request's `error_log`; `nil` when the part is missing, oversized or not a
+  regular file.
+  """
+  @spec read_log_tail(Path.t()) :: String.t() | nil
+  # `path` is the Plug.Upload temp file Plug.Parsers wrote.
+  # sobelow_skip ["Traversal.FileModule"]
+  def read_log_tail(path) do
+    max = caps().max_runner_log_bytes
+
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size <= max ->
+        case read_tail(path) do
+          "" -> nil
+          tail -> tail |> drop_continuation_bytes() |> String.replace_invalid("")
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp drop_continuation_bytes(<<0b10::2, _::6, rest::binary>>),
+    do: drop_continuation_bytes(rest)
+
+  defp drop_continuation_bytes(bin), do: bin
+
+  @doc """
+  Whether `result` is a result.json for the build `lease` names: same
+  package name and version. `Portal.Catalog.Ingestion` takes the package from
+  the result, so one that names another package would become that package's
+  latest run; the complete endpoint refuses it and `load_run/1` refuses it
+  again before ingest.
+  """
+  @spec result_for_lease?(map(), Lease.t()) :: boolean()
+  def result_for_lease?(%{} = result, %Lease{package: package, version: version}) do
+    get_in(result, ["package", "name"]) == package and
+      get_in(result, ["package", "version"]) == version
+  end
+
+  def result_for_lease?(_result, _lease), do: false
+
+  @doc """
+  The uploaded run in `Portal.Builder.load_run/1`'s shape. The result.json
+  must name the lease's package and version (`result_for_lease?/2`), or the
+  upload is `{:error, :result_mismatch}` and never ingested.
+  """
   @spec load_run(String.t()) ::
-          {:ok, Portal.Builder.build_result()} | {:error, :missing_result_json}
+          {:ok, Portal.Builder.build_result()}
+          | {:error, :missing_result_json | :result_mismatch | :lease_not_found}
   # sobelow_skip ["Traversal.FileModule"]
   def load_run(lease_id) do
     out = out_dir(lease_id)
     path = Path.join(out, "result.json")
 
-    with {:ok, %File.Stat{type: :regular}} <- File.lstat(path),
+    with {:ok, %Lease{} = lease} <- lease(lease_id),
+         {:ok, %File.Stat{type: :regular}} <- File.lstat(path),
          {:ok, bytes} <- File.read(path),
-         {:ok, result} <- decode(bytes) do
+         {:ok, result} <- decode(bytes),
+         true <- result_for_lease?(result, lease) || {:error, :result_mismatch} do
       {:ok,
        %{
          exit_code: 0,
@@ -629,7 +718,17 @@ defmodule Portal.Builders.Upload do
          log: read_tail(Path.join(out, "runner.log"))
        }}
     else
+      {:error, reason} when reason in [:result_mismatch, :lease_not_found] -> {:error, reason}
       _ -> {:error, :missing_result_json}
+    end
+  end
+
+  defp lease(lease_id) do
+    with {:ok, id} <- Ecto.UUID.cast(lease_id),
+         {:ok, %Lease{} = lease} <- Ash.get(Lease, id, domain: Portal.Builders) do
+      {:ok, lease}
+    else
+      _ -> {:error, :lease_not_found}
     end
   end
 

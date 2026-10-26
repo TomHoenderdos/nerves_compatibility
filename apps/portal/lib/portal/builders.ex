@@ -17,7 +17,7 @@ defmodule Portal.Builders do
   require Ash.Query
   import Ecto.Query, only: [from: 2]
 
-  alias Portal.Builders.{Builder, BuilderCertificate, CA, EnrolmentToken}
+  alias Portal.Builders.{Builder, BuilderCertificate, CA, EnrolmentToken, Leases}
   alias Portal.Catalog.Run
   alias Portal.Repo
 
@@ -85,8 +85,13 @@ defmodule Portal.Builders do
 
   def enrol(_token, _csr_pem, _attrs), do: {:error, :invalid_token}
 
+  # The token is spent first, by one conditional update: two enrolments
+  # racing on the same token both pass `token_usable/1`, and the second one's
+  # update finds `used_at` set and rolls back as `:token_used`, whatever else
+  # (the builder name's unique index) would have caught it.
   defp enrol_in_transaction(record, csr_pem, attrs) do
-    with {:ok, builder} <- create_builder(record.name, attrs),
+    with :ok <- spend_token(record),
+         {:ok, builder} <- create_builder(record.name, attrs),
          {:ok, issued} <- CA.issue_client(csr_pem, record.name, builder.id),
          {:ok, builder} <- rotate(builder, issued),
          {:ok, _cert} <- record_certificate(builder, issued),
@@ -98,6 +103,18 @@ defmodule Portal.Builders do
     else
       {:error, reason} -> Repo.rollback(reason)
     end
+  end
+
+  defp spend_token(%EnrolmentToken{id: id}) do
+    {count, _} =
+      Repo.update_all(
+        from(t in "builder_enrolment_tokens",
+          where: t.id == type(^id, Ecto.UUID) and is_nil(t.used_at)
+        ),
+        set: [used_at: DateTime.utc_now(), updated_at: DateTime.utc_now()]
+      )
+
+    if count == 1, do: :ok, else: {:error, :token_used}
   end
 
   defp token_record(token) do
@@ -399,15 +416,31 @@ defmodule Portal.Builders do
   # forever and its open request block every later `create_once/1` for its
   # package, so they fail instead (their requests errored), together with
   # every lease still `queued` ("no enrolled builder"), and their packages
-  # join the local rebuild. Answers the failed ones as `{id, package,
-  # scan_request_id}`.
+  # join the local rebuild. Either way its `done` leases whose ingest has not
+  # committed a run yet fail too: `Portal.Workers.Ingest` would drop that
+  # upload as a revoked builder's, so the package goes to the local rebuild
+  # now rather than being left errored. Answers the failed ones as `{id,
+  # package, scan_request_id}`.
   defp settle_leases(builder) do
+    done = fail_done_without_run(builder)
+
     if other_enrolled?(builder) do
       requeue_leases(builder)
-      []
+      done
     else
-      fail_leases(builder)
+      fail_leases(builder) ++ done
     end
+  end
+
+  defp fail_done_without_run(builder) do
+    fail_where(
+      from(l in "builder_leases",
+        where:
+          l.builder_id == type(^builder.id, Ecto.UUID) and l.state == "done" and
+            fragment("NOT EXISTS (SELECT 1 FROM catalog_runs r WHERE r.run_id = ?)", l.run_id)
+      ),
+      "builder revoked"
+    )
   end
 
   defp other_enrolled?(%Builder{id: id}) do
@@ -451,20 +484,28 @@ defmodule Portal.Builders do
     failed
   end
 
+  # Wakes the other builders' long polls the way `Leases.enqueue/1` does,
+  # rather than leaving the requeued leases for their next 25 s poll.
   defp requeue_leases(builder) do
-    Repo.update_all(
-      from(l in "builder_leases",
-        where: l.builder_id == type(^builder.id, Ecto.UUID) and l.state in ["leased", "uploading"]
-      ),
-      set: [
-        state: "queued",
-        builder_id: nil,
-        leased_at: nil,
-        heartbeat_at: nil,
-        phase: nil,
-        updated_at: DateTime.utc_now()
-      ]
-    )
+    {_, ids} =
+      Repo.update_all(
+        from(l in "builder_leases",
+          where:
+            l.builder_id == type(^builder.id, Ecto.UUID) and l.state in ["leased", "uploading"],
+          select: type(l.id, Ecto.UUID)
+        ),
+        set: [
+          state: "queued",
+          builder_id: nil,
+          leased_at: nil,
+          heartbeat_at: nil,
+          phase: nil,
+          updated_at: DateTime.utc_now()
+        ]
+      )
+
+    for id <- ids,
+        do: Phoenix.PubSub.broadcast(Portal.PubSub, Leases.topic(), {:lease_queued, id})
   end
 
   defp rebuild([], _builder), do: {:ok, nil}

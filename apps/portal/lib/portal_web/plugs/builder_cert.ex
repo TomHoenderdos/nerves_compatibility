@@ -18,7 +18,7 @@ defmodule PortalWeb.Plugs.BuilderCert do
         case Builders.by_fingerprint(CA.fingerprint_der(der)) do
           {:ok, builder} ->
             version = conn |> get_req_header("x-ncc-agent-version") |> List.first()
-            assign(conn, :builder, Builders.touch(builder, version))
+            assign(conn, :builder, Builders.touch(builder, bound(version)))
 
           {:error, :revoked} ->
             refuse(conn, 403, "builder_revoked")
@@ -38,4 +38,9 @@ defmodule PortalWeb.Plugs.BuilderCert do
     |> send_resp(status, Jason.encode!(%{error: error}))
     |> halt()
   end
+
+  # The version is the agent's own report, stored and rendered on the admin
+  # page: bounded here as the enrolment body's is.
+  defp bound(nil), do: nil
+  defp bound(version), do: String.slice(version, 0, 64)
 end

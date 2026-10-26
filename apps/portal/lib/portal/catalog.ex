@@ -1286,6 +1286,48 @@ defmodule Portal.Catalog do
   end
 
   @doc """
+  Whether some published build's file manifest names `sha256`: the blob
+  endpoint serves only those. The same gate as `packages_with_precompiled_files/0`
+  and the manifests: an unrevoked run whose builder, if any, is enrolled and
+  publishing (for a carried result, the carrying run's builder too), or a
+  passing unrevoked toolchain build. A blob a non-publishing or revoked
+  builder uploaded has an `Artifact` row and a file but is not served.
+  """
+  @spec published_sha256?(String.t()) :: boolean()
+  # The SQL is a literal; the digest is a bound parameter the caller validated.
+  # sobelow_skip ["SQL.Query"]
+  def published_sha256?(sha256) when is_binary(sha256) do
+    %{rows: rows} =
+      Portal.Repo.query!(
+        """
+        SELECT 1
+        FROM catalog_artifact_memberships m
+        JOIN catalog_system_results s ON s.id = m.system_result_id
+        JOIN catalog_runs r ON r.id = s.run_id
+        LEFT JOIN catalog_runs b ON b.id = s.carried_from_run_id
+        LEFT JOIN builders rb ON rb.id = r.builder_id
+        LEFT JOIN builders bb ON bb.id = b.builder_id
+        WHERE m.sha256 = $1
+          AND r.revoked_at IS NULL
+          AND (s.carried_from_run_id IS NULL OR b.revoked_at IS NULL)
+          AND (r.builder_id IS NULL OR (rb.publishing AND rb.status = 'enrolled'))
+          AND (s.carried_from_run_id IS NULL OR b.builder_id IS NULL OR (bb.publishing AND bb.status = 'enrolled'))
+        UNION ALL
+        SELECT 1
+        FROM catalog_artifact_memberships m
+        JOIN catalog_toolchain_builds t ON t.id = m.toolchain_build_id
+        WHERE m.sha256 = $1
+          AND t.revoked_at IS NULL
+          AND t.status = 'pass'
+        LIMIT 1
+        """,
+        [sha256]
+      )
+
+    rows != []
+  end
+
+  @doc """
   The stored build log for one system of a package's latest run.
 
   Resolves the same run the package page renders. Returns `:error` when the

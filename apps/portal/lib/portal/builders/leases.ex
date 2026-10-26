@@ -20,8 +20,10 @@ defmodule Portal.Builders.Leases do
   @domain Portal.Builders
   @leased_silence_minutes 10
   @uploading_silence_minutes 60
-  # The build's own 2 h wall clock plus 30 minutes of slack.
-  @lease_ceiling_minutes 150
+  # The build's own 2 h wall clock, the agent's 30 minutes for `docker pull`
+  # (`NccAgent.Docker`) and 30 minutes of slack: a lease held longer than
+  # this while still `leased` is a hung attempt however it heartbeats.
+  @lease_ceiling_minutes 180
   @log_tail_bytes 4096
   @phases ~w(pulling building uploading)
   @held [:leased, :uploading]
@@ -80,7 +82,10 @@ defmodule Portal.Builders.Leases do
   statement, serialises one builder's claims: without it two concurrent
   claims from the same builder would both count the same held leases in
   their snapshot and both take one. The claim is still one `UPDATE`, and it
-  starts the attempt clean (bytes, log tail and error of the last one gone).
+  starts the attempt clean (log tail and error of the last one gone).
+  `bytes_uploaded` is kept: a requeued lease keeps its upload dir and what
+  landed there counts against the lease's total across attempts, so the cap
+  is per lease, not per attempt; `fail/2` and `requeue/1` zero it with the dir.
   """
   @spec claim(Builder.t()) :: {:ok, Lease.t()} | :none
   # `sql` is a literal; every value is a bound parameter.
@@ -91,7 +96,7 @@ defmodule Portal.Builders.Leases do
     sql = """
     UPDATE builder_leases
     SET state = 'leased', builder_id = $1, leased_at = now(), heartbeat_at = now(),
-        attempt = attempt + 1, phase = NULL, bytes_uploaded = 0, log_tail = NULL,
+        attempt = attempt + 1, phase = NULL, log_tail = NULL,
         error = NULL, run_id = 'rb-' || package || '-' || version || '-' || $3::text,
         updated_at = now()
     WHERE id = (
@@ -235,14 +240,16 @@ defmodule Portal.Builders.Leases do
   still the attempt it names (held, same builder, same `run_id`); a lease the
   reaper or an admin has moved on answers `{:error, :not_held}`.
   """
-  @spec complete(Lease.t(), integer()) ::
+  @spec complete(Lease.t(), integer(), keyword()) ::
           {:ok, :done | :requeued | :failed | :rejected, Lease.t()}
           | {:error, :not_held | :update_failed}
-  def complete(%Lease{} = lease, 0) do
+  def complete(lease, exit_code, opts \\ [])
+
+  def complete(%Lease{} = lease, 0, _opts) do
     with {:ok, lease} <- end_attempt(lease, state: "done", phase: nil), do: {:ok, :done, lease}
   end
 
-  def complete(%Lease{} = lease, 11) do
+  def complete(%Lease{} = lease, 11, _opts) do
     with {:ok, lease} <- end_attempt(lease, state: "failed", error: "non-Hex dep") do
       Progress.mark(lease.scan_request_id, :rejected, error_reason: "non-Hex dep")
       Progress.broadcast(lease.scan_request_id, :rejected, %{reason: "non-Hex dep"})
@@ -250,7 +257,10 @@ defmodule Portal.Builders.Leases do
     end
   end
 
-  def complete(%Lease{attempt: attempt, max_attempts: max} = lease, exit_code) do
+  # `opts[:error_log]`: the tail of the runner log the agent sent with a
+  # failing exit, stored on the request when the lease fails; the heartbeat's
+  # 4 KiB `log_tail` otherwise.
+  def complete(%Lease{attempt: attempt, max_attempts: max} = lease, exit_code, opts) do
     reason = "worker/runner exit #{exit_code}"
 
     if attempt < max do
@@ -261,7 +271,7 @@ defmodule Portal.Builders.Leases do
       end
     else
       with {:ok, lease} <- end_attempt(lease, state: "failed", error: reason) do
-        fail_request(lease, reason)
+        fail_request(lease, reason, Keyword.get(opts, :error_log))
         {:ok, :failed, lease}
       end
     end
@@ -288,8 +298,12 @@ defmodule Portal.Builders.Leases do
     ]
   end
 
-  defp fail_request(lease, reason) do
-    Progress.mark(lease.scan_request_id, :error, error_reason: reason, error_log: lease.log_tail)
+  defp fail_request(lease, reason, error_log \\ nil) do
+    Progress.mark(lease.scan_request_id, :error,
+      error_reason: reason,
+      error_log: error_log || lease.log_tail
+    )
+
     Progress.broadcast(lease.scan_request_id, :error, %{reason: reason})
   end
 
@@ -316,7 +330,7 @@ defmodule Portal.Builders.Leases do
   @spec fail(Lease.t(), String.t()) :: {:ok, Lease.t()} | {:error, :stale | :update_failed}
   def fail(%Lease{} = lease, reason) do
     case transition(lease.id, [states: [:leased, :uploading, :done]],
-           set: [state: "failed", error: reason]
+           set: [state: "failed", error: reason, bytes_uploaded: 0]
          ) do
       {:ok, lease} ->
         fail_request(lease, reason)
@@ -339,7 +353,7 @@ defmodule Portal.Builders.Leases do
   @spec requeue(Lease.t()) ::
           {:ok, Lease.t()} | {:error, :not_failed | :requeued_locally | :update_failed}
   def requeue(%Lease{} = lease) do
-    set = Keyword.merge(requeue_set(nil), attempt: 0)
+    set = Keyword.merge(requeue_set(nil), attempt: 0, bytes_uploaded: 0)
 
     case transition(lease.id, [states: [:failed], not_error: @requeued_locally], set: set) do
       {:ok, lease} ->
@@ -361,9 +375,12 @@ defmodule Portal.Builders.Leases do
   def requeued_locally, do: @requeued_locally
 
   @doc """
-  Note that a `:failed` lease was handed to a local build: it stays
-  `:failed`, with `error: "requeued locally"`. Only once: a lease already
-  noted, or no longer `:failed`, answers `{:error, :not_failed}`.
+  Note that a `:failed` or still-`:queued` lease was handed to a local build:
+  it becomes (or stays) `:failed` with `error: "requeued locally"`, so the
+  request it holds is released to the local job. A `:queued` lease is the
+  way out when no builder will come back for it (none enrolled, or all
+  silent): the reaper never touches `:queued`. Only once: a lease already
+  noted, or held by a builder, answers `{:error, :not_failed}`.
   """
   @spec mark_requeued_locally(Lease.t()) ::
           {:ok, Lease.t()} | {:error, :not_failed | :update_failed}
@@ -372,10 +389,10 @@ defmodule Portal.Builders.Leases do
       Repo.update_all(
         from(l in "builder_leases",
           where:
-            l.id == type(^lease.id, Ecto.UUID) and l.state == "failed" and
+            l.id == type(^lease.id, Ecto.UUID) and l.state in ["failed", "queued"] and
               (is_nil(l.error) or l.error != @requeued_locally)
         ),
-        set: [error: @requeued_locally, updated_at: now()]
+        set: [state: "failed", error: @requeued_locally, phase: nil, updated_at: now()]
       )
 
     case count do

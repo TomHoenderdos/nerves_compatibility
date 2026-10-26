@@ -234,7 +234,9 @@ defmodule Portal.Builders.LeasesTest do
     assert %{requeued: 0, failed: 0} = Leases.reap(DateTime.add(DateTime.utc_now(), 1, :day))
   end
 
-  test "a claim starts the attempt clean" do
+  # The bytes are kept: a requeued lease keeps its upload dir, and the cap
+  # on `bytes_uploaded` is per lease, not per attempt.
+  test "a claim starts the attempt clean, keeping the bytes already uploaded" do
     queued!()
     b = builder!("clean")
     {:ok, leased} = Leases.claim(b)
@@ -242,7 +244,28 @@ defmodule Portal.Builders.LeasesTest do
     {:ok, _} = Leases.add_bytes(Ash.get!(Lease, leased.id, domain: Portal.Builders), 10)
     {:ok, :requeued, _} = Leases.complete(Ash.get!(Lease, leased.id, domain: Portal.Builders), 10)
 
-    assert {:ok, %Lease{bytes_uploaded: 0, log_tail: nil, error: nil, attempt: 2}} =
+    assert {:ok, %Lease{bytes_uploaded: 10, log_tail: nil, error: nil, attempt: 2}} =
              Leases.claim(b)
+  end
+
+  test "a failed lease zeroes its bytes with its dir, and an admin requeue starts from zero" do
+    queued!()
+    b = builder!("zero")
+    {:ok, leased} = Leases.claim(b)
+    {:ok, _} = Leases.add_bytes(Ash.get!(Lease, leased.id, domain: Portal.Builders), 10)
+    {:ok, failed} = Leases.fail(Ash.get!(Lease, leased.id, domain: Portal.Builders), "boom")
+    assert failed.bytes_uploaded == 0
+    assert {:ok, %Lease{state: :queued, bytes_uploaded: 0, attempt: 0}} = Leases.requeue(failed)
+  end
+
+  # No builder will come back for a queued lease when none is enrolled or
+  # all are silent; the admin hands it to a local build instead.
+  test "a queued lease can be handed to a local build" do
+    lease = queued!()
+
+    assert {:ok, %Lease{state: :failed, error: "requeued locally"}} =
+             Leases.mark_requeued_locally(lease)
+
+    assert {:error, :not_failed} = Leases.mark_requeued_locally(lease)
   end
 end
