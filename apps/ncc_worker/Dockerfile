@@ -24,8 +24,14 @@ RUN mix local.hex --force && \
 # image. The build container runs with --cap-drop=ALL, so those chowns fail and
 # the image build dies. fakeroot fakes the bookkeeping in userspace, which lets
 # the firmware step succeed without the container ever holding CAP_CHOWN.
+#
+# libnl-3-dev and libnl-genl-3-dev: vintage_net_wifi's host build includes
+# <netlink/genl/genl.h>, and so does every package that depends on it
+# (nerves_pack, vintage_net_wizard). Without the headers the host result of
+# all of them is a fail and their host beams are never published (issue #44).
+# The Nerves systems carry their own libnl in the toolchain sysroot.
 RUN sudo apt-get update && \
-    sudo apt-get install -y --no-install-recommends fakeroot && \
+    sudo apt-get install -y --no-install-recommends fakeroot libnl-3-dev libnl-genl-3-dev && \
     sudo rm -rf /var/lib/apt/lists/*
 
 # argus_beam's escript, pinned. The worker calls it by absolute path, so PATH
