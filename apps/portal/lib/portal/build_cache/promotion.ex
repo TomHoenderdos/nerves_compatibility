@@ -84,6 +84,8 @@ defmodule Portal.BuildCache.Promotion do
        place. An existing entry is never replaced. Any refusal or error
        removes the copy; `Portal.Workers.Sweep` prunes staging names
        (`Portal.BuildCache.Staging`) a crash left behind, once old enough.
+       Once renamed, the entry is also offered to the shared L2 cache
+       (`Portal.BuildCache.L2`), best effort.
 
   ## Symlinks
 
@@ -105,7 +107,7 @@ defmodule Portal.BuildCache.Promotion do
   require Logger
 
   alias Compatibility.BuildCacheKey
-  alias Portal.BuildCache.{Staging, Tree}
+  alias Portal.BuildCache.{L2, Staging, Tree}
 
   @type counts :: %{
           promoted: non_neg_integer(),
@@ -128,7 +130,8 @@ defmodule Portal.BuildCache.Promotion do
   `config` key) replaces that container copy with
   `fn source, staging -> :ok | {:error, term}`, and
   `opts[:staging_suffix]` pins the staging name's random suffix: seams for
-  tests.
+  tests. `opts[:l2]` is the L2 upload called after a successful promotion
+  (`Portal.BuildCache.L2.upload/4`), or `false`.
   """
   @spec promote(map(), Path.t(), Path.t() | nil, String.t(), String.t(), keyword()) :: counts()
   def promote(result, out_dir, cache_dir, package, version, opts \\ [])
@@ -159,6 +162,7 @@ defmodule Portal.BuildCache.Promotion do
       targets: built_targets(systems),
       toolchain: toolchain(result),
       copy: Keyword.get_lazy(opts, :copy, fn -> default_copy(opts[:image]) end),
+      l2: Keyword.get(opts, :l2, &L2.upload/4),
       staging_suffix:
         case opts[:staging_suffix] do
           nil -> nil
@@ -513,12 +517,26 @@ defmodule Portal.BuildCache.Promotion do
           "(#{show(c["target"])})"
       )
 
+      upload_to_l2(dest, key, ctx)
       :promoted
     else
       error ->
         _ = File.rm_rf(staging)
         not_promoted(key, ctx, error)
     end
+  end
+
+  # Best effort and after the fact: the entry is already promoted locally,
+  # and a failed or crashing upload must not change that.
+  defp upload_to_l2(_dest, _key, %{l2: false}), do: :ok
+
+  defp upload_to_l2(dest, key, %{l2: fun} = ctx) when is_function(fun, 4) do
+    _ = fun.(dest, Path.basename(ctx.cache), key, ctx.package)
+    :ok
+  rescue
+    e ->
+      Logger.warning("Build cache L2 upload of #{key} raised: #{Exception.message(e)}")
+      :ok
   end
 
   defp not_promoted(key, ctx, error) do

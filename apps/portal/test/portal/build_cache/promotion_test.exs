@@ -76,7 +76,7 @@ defmodule Portal.BuildCache.PromotionTest do
       cache,
       package,
       version,
-      Keyword.put_new(opts, :copy, &local_copy/2)
+      opts |> Keyword.put_new(:copy, &local_copy/2) |> Keyword.put_new(:l2, false)
     )
   end
 
@@ -697,6 +697,54 @@ defmodule Portal.BuildCache.PromotionTest do
                )
 
       assert File.read!(Path.join(taken, "theirs")) == "x"
+    end
+  end
+
+  describe "L2 upload hook" do
+    test "is called with the entry, slug, key and package after a successful promotion", ctx do
+      test_pid = self()
+      c = candidate(ctx.out)
+
+      promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+        release_checksum: &hex_ok/2,
+        l2: fn dir, slug, key, package ->
+          send(test_pid, {:l2, dir, slug, key, package})
+          :ok
+        end
+      )
+
+      assert_receive {:l2, dir, "sha256_x", key, "jason"}
+      assert key == c["key"]
+      assert dir == Path.join(ctx.cache, key)
+      assert File.dir?(dir)
+    end
+
+    test "is not called when nothing was promoted", ctx do
+      test_pid = self()
+      c = candidate(ctx.out, %{"key" => String.duplicate("0", 64)})
+
+      promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+        release_checksum: &hex_ok/2,
+        l2: fn _, _, _, _ ->
+          send(test_pid, :l2)
+          :ok
+        end
+      )
+
+      refute_receive :l2
+    end
+
+    test "an upload that raises does not fail the promotion", ctx do
+      c = candidate(ctx.out)
+
+      counts =
+        promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+          release_checksum: &hex_ok/2,
+          l2: fn _, _, _, _ -> raise "boom" end
+        )
+
+      assert counts.promoted == 1
+      assert File.dir?(Path.join(ctx.cache, c["key"]))
     end
   end
 end
