@@ -34,7 +34,18 @@ install() {
   case "${@: -1}" in "$NCC_HOME"/*) cp "${@: -2:1}" "${@: -1}" ;; esac
 }
 systemctl() { echo "systemctl $*" >> "$EVENTS"; }
-sudo() { echo "sudo $*" >> "$EVENTS"; return "${LOAD_STATUS:-0}"; }
+# Runs what ncc may do to its own home for real, under the temporary home.
+sudo() {
+  echo "sudo $*" >> "$EVENTS"
+  [[ $1 == -u && $2 == ncc ]] || return 99
+  shift 2
+  case "$1" in
+    install) mkdir -p "${@: -1}" ;;
+    tee) cat > "${@: -1}" ;;
+    chmod) command chmod "$2" "$3" ;;
+    *) return "${LOAD_STATUS:-0}" ;;
+  esac
+}
 builder_ncc_home() { echo "$NCC_HOME"; }
 builder_is_nixos() { [[ ${IS_NIXOS:-0} == 1 ]]; }
 builder_install_egress
@@ -245,6 +256,8 @@ class BuilderEgressInstallTest(unittest.TestCase):
             )
             dropin = home / ".config/systemd/user/docker.service.d/ncc-egress.conf"
             lines = events.read_text().splitlines() if events.exists() else []
+            self.home = home
+            self.dropin_mode = dropin.stat().st_mode & 0o777 if dropin.exists() else None
             return result, lines, dropin.read_text() if dropin.exists() else None
 
     def test_installs_rules_loader_and_dropin_then_loads_as_ncc(self):
@@ -261,6 +274,19 @@ class BuilderEgressInstallTest(unittest.TestCase):
             "/opt/nerves_compatibility/builder-egress-load.sh", lines)
         self.assertIn("ExecStartPost=-/opt/nerves_compatibility/builder-egress-load.sh", dropin)
         self.assertIn("systemctl --user -M ncc@ daemon-reload", lines)
+        dir = f"{self.home}/.config/systemd/user/docker.service.d"
+        # ncc writes its own home: root never creates or writes a path ncc
+        # could have swapped for a link into /etc/systemd.
+        self.assertIn(f"sudo -u ncc install -d -m 0755 {dir}", lines)
+        self.assertIn(f"sudo -u ncc tee {dir}/ncc-egress.conf", lines)
+        self.assertIn(f"sudo -u ncc chmod 0644 {dir}/ncc-egress.conf", lines)
+        self.assertLess(
+            lines.index(f"sudo -u ncc tee {dir}/ncc-egress.conf"),
+            lines.index("systemctl --user -M ncc@ daemon-reload"))
+        self.assertFalse(
+            [line for line in lines if line.startswith("install ") and str(self.home) in line],
+            lines)
+        self.assertEqual(self.dropin_mode, 0o644)
         self.assertEqual(
             lines[-1],
             "sudo -u ncc env XDG_RUNTIME_DIR=/run/user/999 "
@@ -313,6 +339,62 @@ builder_check_egress
                 self.assertEqual(result.returncode == 0, expect_ok, result.stderr)
                 if not expect_ok:
                     self.assertIn("egress filter", result.stderr)
+
+    def check_running(self, answer, status="0", portal_env="", **overrides):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+builder_rpc() { printf '%s\n' "$1" > "$EVENTS"; printf '%s\n' "$ANSWER"; return "$RPC_STATUS"; }
+builder_check_running_egress
+echo after
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "events"
+            env_file = Path(directory) / "portal.env"
+            env_file.write_text(portal_env)
+            env = {key: value for key, value in os.environ.items() if key != "NCC_EGRESS_CHECK"}
+            env.update(HELPER=str(HELPER), EVENTS=str(events), ANSWER=answer,
+                       RPC_STATUS=status, NCC_PORTAL_ENV=str(env_file), **overrides)
+            result = subprocess.run(
+                ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=5
+            )
+            return result, events.read_text() if events.exists() else None
+
+    def test_the_running_service_is_asked_after_the_restart(self):
+        result, rpc = self.check_running(":ok")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(rpc, "IO.inspect(Portal.Builder.check_egress())\n")
+        self.assertIn("after", result.stdout)
+
+    def test_a_running_service_without_the_filter_fails_loudly(self):
+        for answer, status in (("{:error, :egress_filter_missing}", "0"),
+                               ("--rpc-eval : RPC failed with reason :nodedown", "1"),
+                               ("", "0")):
+            result, _rpc = self.check_running(answer, status=status)
+            self.assertNotEqual(result.returncode, 0, answer)
+            self.assertNotIn("after", result.stdout)
+            self.assertIn("ERROR: the running ncc-portal finds no build egress filter",
+                          result.stderr)
+            self.assertIn("RestrictNamespaces", result.stderr)
+            self.assertIn("PrivateUsers", result.stderr)
+            if answer:
+                self.assertIn(answer, result.stderr)
+
+    def test_the_rollback_switch_skips_the_running_check(self):
+        for kwargs in ({"portal_env": "NCC_EGRESS_CHECK=0\n"}, {"NCC_EGRESS_CHECK": "0"}):
+            result, rpc = self.check_running("{:error, :egress_filter_missing}", **kwargs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIsNone(rpc)
+
+    def test_deploy_asks_the_running_service_only_after_it_is_up(self):
+        deploy = (Path(__file__).with_name("deploy.sh")).read_text()
+        restart = deploy.index("systemctl restart ncc-portal")
+        up = deploy.rindex("\nsleep_until_up\n")
+        check = deploy.index("builder_check_running_egress")
+        self.assertLess(restart, up)
+        self.assertLess(up, check)
+        self.assertIn("if [[ ${2:-portal} == builder ]]; then\n  builder_check_running_egress",
+                      deploy)
 
 
 if __name__ == "__main__":

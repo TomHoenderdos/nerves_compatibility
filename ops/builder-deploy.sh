@@ -46,7 +46,7 @@ builder_install_egress() {
     return 0
   fi
 
-  local uid home dir tmp
+  local uid home dir
   uid=$(id -u ncc) || return 1
   install -o root -g root -m 0644 "$builder_src/ops/builder-egress.nft" \
     "$builder_egress_rules" || return 1
@@ -61,11 +61,13 @@ builder_install_egress() {
     home=$(builder_ncc_home) || return 1
     [[ -n "$home" ]] || return 1
     dir="$home/.config/systemd/user/docker.service.d"
-    install -d -o ncc -g "$(id -gn ncc)" -m 0755 "$dir" || return 1
-    tmp=$(mktemp) || return 1
-    builder_egress_dropin > "$tmp" || { rm -f "$tmp"; return 1; }
-    install -o root -g root -m 0644 "$tmp" "$dir/ncc-egress.conf" || { rm -f "$tmp"; return 1; }
-    rm -f "$tmp"
+    # As ncc, never as root: ncc owns every component of this path and could
+    # swap one for a link into /etc/systemd, which root would then write
+    # through. The drop-in only configures ncc's own user manager, so ncc
+    # owning it gains ncc nothing.
+    sudo -u ncc install -d -m 0755 "$dir" || return 1
+    builder_egress_dropin | sudo -u ncc tee "$dir/ncc-egress.conf" >/dev/null || return 1
+    sudo -u ncc chmod 0644 "$dir/ncc-egress.conf" || return 1
     systemctl --user -M ncc@ daemon-reload || return 1
   fi
 
@@ -74,8 +76,11 @@ builder_install_egress() {
   sudo -u ncc env XDG_RUNTIME_DIR="/run/user/$uid" "$builder_egress_loader" || return 1
 }
 
-# The new release's own preflight, so a release that would refuse every build
-# is never activated.
+# The new release's own preflight, before any image tag moves or the service
+# restarts. By then the new release is already installed and migrated, so a
+# failure here does not keep it from running: the next restart, crash or
+# reboot starts it, and it then refuses every build (fail closed). The release
+# this deploy replaced is in /opt/nerves_compatibility/portal-previous.tar.gz.
 builder_check_egress() {
   if ! sudo -u ncc bash -c '
     set -euo pipefail
@@ -95,6 +100,36 @@ builder_check_egress() {
     echo 'refusing to activate: the new release finds no build egress filter (ops/README.md, "Egress filter")' >&2
     return 1
   fi
+}
+
+# After the restart, the same preflight asked of the running ncc-portal
+# service, which is where builds run: the eval above runs under sudo, outside
+# the unit's sandboxing, PATH and environment, so it can pass where the
+# service refuses. Loud and non-zero, but after the restart: nothing is
+# rolled back and no queue is paused.
+builder_check_running_egress() {
+  if [[ ${NCC_EGRESS_CHECK:-} == 0 ]] || builder_egress_disabled; then
+    echo 'NCC_EGRESS_CHECK=0: not asking the running service for the build egress filter'
+    return 0
+  fi
+
+  local answer
+  answer=$(builder_rpc 'IO.inspect(Portal.Builder.check_egress())') || true
+  if [[ $(printf '%s\n' "$answer" | tail -n 1) != ':ok' ]]; then
+    cat >&2 <<EOF
+ERROR: the running ncc-portal finds no build egress filter, so it refuses
+every build (each one snoozes 15 minutes), although the deploy-time check
+passed. It answered: ${answer:-nothing}
+The likely cause is the ncc-portal unit itself: RestrictNamespaces= or
+PrivateUsers= (nsenter cannot enter the namespace), a PATH without nsenter
+or nft, or an XDG_RUNTIME_DIR other than /run/user/<uid of ncc>. Check:
+  systemctl show ncc-portal -p RestrictNamespaces -p PrivateUsers -p Environment
+  journalctl -u ncc-portal -n 50
+See ops/README.md, "Egress filter".
+EOF
+    return 1
+  fi
+  echo 'the running ncc-portal finds the build egress filter'
 }
 
 builder_rpc() {

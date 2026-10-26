@@ -53,6 +53,16 @@ fi
 printf '%s' "$LISTING"
 ''',
     "sleep": '#!/usr/bin/env bash\necho sleep >> "$EVENTS"\n',
+    # Records its bound and runs the command, or answers 124 the way a
+    # command that outlived its bound does, for the one TIMEOUT_HANGS names.
+    "timeout": r'''#!/usr/bin/env bash
+echo "timeout ${*:1:4}" >> "$EVENTS"
+shift
+if [[ -n ${TIMEOUT_HANGS:-} && "$*" == *"$TIMEOUT_HANGS"* ]]; then
+  exit 124
+fi
+exec "$@"
+''',
 }
 
 
@@ -107,6 +117,38 @@ class EgressLoaderTest(unittest.TestCase):
         self.assertIn("table inet ncc_egress", loads["load-inet"])
         self.assertIn('define ncc_bridge = "br-test0"', loads["load-bridge"])
         self.assertIn("table bridge ncc_egress", loads["load-bridge"])
+
+    def test_bounds_every_docker_and_nsenter_call(self):
+        result, lines, _loads = self.load()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [line for line in lines if line.startswith(("docker ", "nsenter "))]
+        bounded = [line for line in lines if line.startswith("timeout ")]
+        self.assertEqual(len(calls), 5, lines)
+        self.assertEqual(len(bounded), len(calls), lines)
+        self.assertTrue(all(line.startswith("timeout 10 ") for line in bounded), bounded)
+        self.assertIn("timeout 10 docker info", bounded)
+        self.assertIn("timeout 10 docker network inspect", bounded)
+        self.assertEqual(bounded.count("timeout 10 nsenter -U --preserve-credentials"), 3)
+
+    def test_a_hung_docker_info_is_retried_within_the_overall_wait(self):
+        result, lines, loads = self.load(TIMEOUT_HANGS="docker info", NCC_EGRESS_WAIT_SECONDS="0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not ready", result.stderr)
+        self.assertEqual(loads, {})
+
+    def test_a_hung_nsenter_fails_the_load(self):
+        result, _lines, loads = self.load(TIMEOUT_HANGS="nft -f -")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(loads, {})
+
+    def test_a_hung_listing_fails_the_load(self):
+        result, _lines, _loads = self.load(TIMEOUT_HANGS="nft list table")
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_a_hung_network_inspect_fails_the_load(self):
+        result, _lines, loads = self.load(TIMEOUT_HANGS="docker network inspect")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(loads, {})
 
     def test_waits_for_a_daemon_that_is_still_starting(self):
         result, lines, loads = self.load(INFO_READY_AFTER="3")
