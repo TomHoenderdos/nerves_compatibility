@@ -103,6 +103,12 @@ resolved by the host daemon and must be a path the daemon can see:
 | `NCC_BUILD_MEMORY` | Cap memory per build, e.g. `4g`. Unset means unbounded |
 | `NCC_BUILD_USER` | `--user` for the build container. Unset means our own uid:gid. Set `0:0` on a rootless daemon, where our uid is already 0 inside the namespace |
 | `NCC_BUILD_CACHE` | Shared dependency build cache, one subdirectory per worker image. Unset means off |
+| `NCC_BUILD_CACHE_S3_ENDPOINT` | S3 endpoint of the shared build cache (L2), e.g. `http://100.64.0.2:3900` on the tailnet. Unset means L2 off and builds behave exactly as without it. See [Shared build cache (L2)](#shared-build-cache-l2) |
+| `NCC_BUILD_CACHE_S3_BUCKET` | Bucket name, e.g. `ncc-build-cache`. Required with the endpoint |
+| `NCC_BUILD_CACHE_S3_REGION` | SigV4 region; Garage uses `garage`, the default |
+| `NCC_BUILD_CACHE_S3_ACCESS_KEY` | Key id. The read-write key on home hosts only |
+| `NCC_BUILD_CACHE_S3_SECRET_KEY` | Its secret |
+| `NCC_BUILD_CACHE_S3_READ_ONLY` | `1` reads from L2 and never uploads, for a host holding the read-only key |
 | `NCC_MIN_FREE_GB` | Refuse to start a build with less free space than this on the scratch filesystem; default `25` |
 | `NCC_SCRATCH_MAX_AGE_HOURS` | Age after which `Portal.Workers.Sweep` treats a scratch dir as orphaned; default `3` |
 | `NCC_HEX_CACHE_MAX_GB` | Upper bound on the shared Hex cache `packages/` dir, in GiB (1024³ bytes; default 20). Least recently used (`max(atime, mtime)`) is evicted first; nothing used in the last 2h is evicted |
@@ -159,6 +165,34 @@ Unchecked dependencies for environment prod:
 Remove only the target's own `<build_path>/lib/<pkg>` instead.
 
 The root `config/runtime.exs` owns runtime config. Do not add child-app `runtime.exs` files under `apps/portal/config/`; they are not loaded in an umbrella.
+
+### Shared build cache (L2)
+
+L2 is an S3 bucket (Garage on a homelab host) behind the local build cache. A dependency compiled on one home build host is restored on the others: before every `docker run` the portal syncs the bucket's objects for the worker image into the local cache directory, and after every local promotion it uploads the new entry. The build container still sees only the local directory, read-only at `/build-cache`. With `NCC_BUILD_CACHE_S3_ENDPOINT` unset, or with `NCC_BUILD_CACHE` unset, L2 is off.
+
+Hosts share entries only under the same image digest (the object prefix is the image slug), so run the registry image by digest on every home host. A locally built `ncc-worker:local` has its own slug and shares nothing.
+
+Only hosts holding the read-write key can upload; a host with the read-only key sets `NCC_BUILD_CACHE_S3_READ_ONLY=1` and only reads. That key split is the whole trust story: downloaded entries are re-checked structurally, but their content is trusted because nobody without the read-write key could have written them. See [docs/BUILD_CACHE_L2.md](docs/BUILD_CACHE_L2.md).
+
+Each build's download is bounded: at most 2 GiB and 5 minutes (the bucket listing counts against that), newest objects first, 512 MiB per object. It stops for that build on a transport error, a 401/403/5xx, or 5 consecutive failures, and is skipped when the cache filesystem has less free space than `NCC_MIN_FREE_GB`. The build always proceeds. The outcome is one `Build cache L2 prefetch for <run>: N downloaded, ...` line in the portal log and in the run's `runner.log`. On boot the portal logs `Build cache L2 on: <endpoint>/<bucket>`, `Build cache L2 off`, or a warning when the configuration is incomplete.
+
+The Maintenance tab at `/admin` has a "Build cache L2" card: state, endpoint and bucket, read-only, last upload and download, and counters since boot on that node (the web node on a split deployment, so build-host numbers are in that host's log).
+
+To seed the bucket from an existing local cache, push it once. Locally:
+
+```bash
+mix portal.build_cache.push --limit 500            # also --max-gb G, --slug S, --dry-run
+```
+
+On a deployed host:
+
+```bash
+bin/portal eval 'Portal.BuildCache.L2.Push.run(limit: 500) |> IO.inspect()'
+```
+
+It is resumable: a HEAD per entry is the state, so entries already in the bucket are skipped and a rerun continues where the last one stopped.
+
+`Portal.Workers.Sweep` prunes a staging name (`<key>.tmp.<host>.<hex>`) only if it carries this host's name or none (the older form), and only once it is older than `NCC_SCRATCH_MAX_AGE_HOURS`, so one host never removes another's in-flight download.
 
 ## Database setup
 
