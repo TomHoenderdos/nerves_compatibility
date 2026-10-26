@@ -34,7 +34,7 @@ host_of() {
   case "$1" in
     box-a) echo root@box-a ;;
     box-c) echo root@box-c ;;
-    box-d) echo root@100.108.82.46 ;;
+    box-d) echo root@box-d ;;
     vmi) echo root@100.106.217.14 ;;
   esac
 }
