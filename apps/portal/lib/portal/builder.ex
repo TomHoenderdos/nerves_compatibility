@@ -20,6 +20,7 @@ defmodule Portal.Builder do
   require Logger
 
   alias Compatibility.Builder.Argv
+  alias Portal.BuildCache.L2
 
   # See `read_log/1`.
   @log_tail_bytes 1024 * 1024
@@ -227,8 +228,10 @@ defmodule Portal.Builder do
              nerves_cache(),
              hex_cache()
            ]),
+         {:ok, prefetch_line} <- prefetch_build_cache(job),
          :ok <- write_worker_input(job, work_dir),
-         {:ok, exit_code} <- run_container(job, work_dir, output_dir, files_dir, log_file) do
+         {:ok, exit_code} <-
+           run_container(job, work_dir, output_dir, files_dir, log_file, prefetch_line) do
       result = read_result_json(output_dir)
       log = read_log(log_file)
 
@@ -750,10 +753,10 @@ defmodule Portal.Builder do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
-  defp run_container(job, work_dir, output_dir, files_dir, log_file) do
+  defp run_container(job, work_dir, output_dir, files_dir, log_file, note) do
     args = build_docker_args(job, work_dir, output_dir, files_dir)
     container_name = container_name(job.run_id)
-    log_command(args, log_file)
+    log_command(args, log_file, note)
 
     case run_docker(args, log_file, container_name) do
       {:ok, exit_code} -> {:ok, exit_code}
@@ -853,6 +856,28 @@ defmodule Portal.Builder do
     end
   end
 
+  # Before the container runs, pull what the shared L2 cache has for this
+  # image that the local cache lacks (`Portal.BuildCache.L2.prefetch/3`),
+  # bounded, so the build never waits on it for long. Never an error: the
+  # cache is an optimisation. The summary line is logged and returned for
+  # `runner.log`, where it follows the docker header; "" when L2 is off.
+  defp prefetch_build_cache(job) do
+    with dir when is_binary(dir) <- build_cache_dir(job),
+         true <- L2.enabled?() do
+      counts = L2.prefetch(dir, Path.basename(dir))
+
+      line =
+        "Build cache L2 prefetch for #{job.run_id}: #{counts.downloaded} downloaded, " <>
+          "#{counts.discarded} discarded, #{counts.failed} failed, #{counts.skipped} skipped " <>
+          "of #{counts.candidates} candidates (#{counts.bytes} bytes)"
+
+      Logger.info(line)
+      {:ok, line <> "\n\n"}
+    else
+      _ -> {:ok, ""}
+    end
+  end
+
   # Local images (no registry slash) use the tag directly; remote images use
   # name@digest for reproducibility.
   defp image_ref(%{image_name: name, image_digest: digest}) do
@@ -897,8 +922,11 @@ defmodule Portal.Builder do
   defp container_name(run_id), do: "ncc-#{safe_name(run_id)}"
 
   # log_file is the fixed runner.log path under the run scratch directory from build/2.
+  # `note` follows the header: `Portal.Catalog.LogSanitizer` strips the header
+  # only when it opens the file.
   # sobelow_skip ["Traversal.FileModule"]
-  defp log_command(args, log_file), do: File.write!(log_file, command_log_header(args))
+  defp log_command(args, log_file, note),
+    do: File.write!(log_file, command_log_header(args) <> note)
 
   @doc false
   # Public only so `Portal.Catalog.LogSanitizer`'s tests can assert against the
@@ -919,7 +947,7 @@ defmodule Portal.Builder do
     """
   end
 
-  # Only run_container/5 calls this with the runner.log path constructed by build/2.
+  # Only run_container/6 calls this with the runner.log path constructed by build/2.
   # sobelow_skip ["Traversal.FileModule"]
   defp run_docker(args, log_file, container_name) do
     log_device = File.open!(log_file, [:append])

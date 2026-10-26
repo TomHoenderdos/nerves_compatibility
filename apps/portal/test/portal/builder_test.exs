@@ -819,4 +819,107 @@ defmodule Portal.BuilderTest do
                })
     end
   end
+
+  # Before the container runs, the build pulls what the shared L2 cache holds
+  # for this image into the local slug dir. A fake `docker` on PATH answers
+  # the version check and the run, so this exercises `build/2` end to end
+  # without a daemon.
+  describe "L2 prefetch" do
+    @describetag :capture_log
+
+    alias Portal.BuildCache.L2
+    alias Portal.BuildCache.L2.{Stats, Tarball}
+    alias Portal.Test.FakeS3
+
+    setup %{previous: previous} do
+      tmp = Path.join(System.tmp_dir!(), "builder-l2-#{System.unique_integer([:positive])}")
+      bin = Path.join(tmp, "bin")
+      cache = Path.join(tmp, "build-cache")
+      File.mkdir_p!(bin)
+
+      docker = Path.join(bin, "docker")
+
+      File.write!(docker, """
+      #!/bin/sh
+      case "$1" in
+        version) echo 99.0 ;;
+        *) echo "fake docker $1" ;;
+      esac
+      exit 0
+      """)
+
+      File.chmod!(docker, 0o755)
+
+      old_path = System.get_env("PATH")
+      old_l2 = Application.get_env(:portal, L2)
+      System.put_env("PATH", bin <> ":" <> old_path)
+
+      on_exit(fn ->
+        System.put_env("PATH", old_path)
+
+        if old_l2,
+          do: Application.put_env(:portal, L2, old_l2),
+          else: Application.delete_env(:portal, L2)
+
+        File.rm_rf(tmp)
+      end)
+
+      put_builder(
+        [
+          build_cache: cache,
+          scratch_root: Path.join(tmp, "scratch"),
+          nerves_cache: Path.join(tmp, "nerves"),
+          hex_cache: Path.join(tmp, "hex"),
+          min_free_disk_gb: 0,
+          exec_probe: fn _ -> :ok end,
+          egress_check: false
+        ],
+        previous
+      )
+
+      Stats.reset()
+      {:ok, s} = FakeS3.start()
+      key = String.duplicate("c", 64)
+      src = Path.join(tmp, "src")
+      File.mkdir_p!(Path.join(src, "ebin"))
+      File.write!(Path.join(src, "ebin/Elixir.Jason.beam"), "beam")
+      tar = Path.join(tmp, "entry.tar.gz")
+      {:ok, %{sha256: sha}} = Tarball.pack(src, tar, :any)
+      object = Builder.cache_slug(@build_args.image_digest) <> "/" <> key <> ".tar.gz"
+      FakeS3.put_object(s, object, File.read!(tar), %{"x-amz-meta-sha256" => sha})
+
+      %{s: s, cache: cache, key: key}
+    end
+
+    test "restores the image's entries into the local cache before the run", %{
+      s: s,
+      cache: cache,
+      key: key
+    } do
+      Application.put_env(:portal, L2,
+        endpoint: s.endpoint,
+        bucket: s.bucket,
+        region: s.region,
+        access_key: s.access_key,
+        secret_key: s.secret_key
+      )
+
+      assert {:ok, %{exit_code: 0, log: log}} = Builder.build(@build_args)
+
+      slug_dir = Path.join(cache, Builder.cache_slug(@build_args.image_digest))
+      assert File.read!(Path.join([slug_dir, key, "ebin/Elixir.Jason.beam"])) == "beam"
+      assert log =~ "Build cache L2 prefetch for run-1: 1 downloaded"
+      # The docker header still opens the log, so `LogSanitizer` strips it.
+      assert log =~ ~r/\A=+\nPortal.Builder - Docker Execution Log/
+      refute Portal.Catalog.LogSanitizer.runner_excerpt(log) =~ "Command: docker"
+    end
+
+    test "with L2 off the build neither prefetches nor contacts the store", %{s: s} do
+      Application.delete_env(:portal, L2)
+
+      assert {:ok, %{exit_code: 0, log: log}} = Builder.build(@build_args)
+      refute log =~ "Build cache L2 prefetch"
+      assert FakeS3.requests(s) == []
+    end
+  end
 end

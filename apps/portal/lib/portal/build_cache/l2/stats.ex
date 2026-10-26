@@ -66,14 +66,7 @@ defmodule Portal.BuildCache.L2.Stats do
   @spec snapshot() :: map()
   def snapshot do
     safe(empty_snapshot(), fn ->
-      counters =
-        Map.new(@counters, fn name ->
-          case :ets.lookup(@table, {:counter, name}) do
-            [{_, n}] -> {name, n}
-            [] -> {name, 0}
-          end
-        end)
-
+      counters = Map.new(@counters, &{&1, counter(&1)})
       Map.merge(counters, %{last_upload: last(:upload), last_download: last(:download)})
     end)
   end
@@ -128,6 +121,13 @@ defmodule Portal.BuildCache.L2.Stats do
     case :ets.lookup(@table, {:claim, key}) do
       [{_, pid}] -> not Process.alive?(pid)
       [] -> true
+    end
+  end
+
+  defp counter(name) do
+    case :ets.lookup(@table, {:counter, name}) do
+      [{_, n}] -> n
+      [] -> 0
     end
   end
 

@@ -8,6 +8,8 @@ defmodule Portal.BuildCache.L2.Config do
   one.
   """
 
+  # The secret never reaches a log line or a crash report through `inspect`.
+  @derive {Inspect, except: [:secret_key]}
   @enforce_keys [:endpoint, :bucket, :region, :access_key, :secret_key]
   defstruct [:endpoint, :bucket, :region, :access_key, :secret_key, read_only?: false]
 
@@ -52,16 +54,21 @@ defmodule Portal.BuildCache.L2.Config do
     end
   end
 
+  # No userinfo (credentials belong in the access and secret key, and an
+  # endpoint carrying them would be logged at boot) and no fragment. The
+  # error never echoes the URL, which may hold exactly those credentials.
   defp parse_endpoint(url) do
     case URI.new(url) do
-      {:ok, %URI{scheme: scheme, host: host, path: path, query: nil}}
+      {:ok,
+       %URI{scheme: scheme, host: host, path: path, query: nil, userinfo: nil, fragment: nil}}
       when scheme in ["http", "https"] and is_binary(host) and host != "" and
              path in [nil, "", "/"] ->
         {:ok, String.trim_trailing(url, "/")}
 
       _ ->
         {:error,
-         "build cache L2: endpoint must be http(s)://host[:port] with no path, got #{inspect(url)}"}
+         "build cache L2: the endpoint (NCC_BUILD_CACHE_S3_ENDPOINT) must be http(s)://host[:port] " <>
+           "with no credentials, path, query or fragment"}
     end
   end
 
