@@ -60,7 +60,9 @@ defmodule Portal.Builder do
           optional(:argus) => map() | nil,
           # For `mode: "warm_nerves"`: `%{"name", "version"}` pairs to warm
           # (`Portal.Workers.WarmNerves`); `[]` warms what the template resolves.
-          optional(:nerves_packages) => [%{String.t() => String.t()}] | nil
+          optional(:nerves_packages) => [%{String.t() => String.t()}] | nil,
+          # TCP targets the worker probes before any `mix` (`Portal.EgressCheck`).
+          optional(:egress_probe) => [%{String.t() => String.t() | pos_integer()}] | nil
         }
 
   @type build_result :: %{
@@ -200,7 +202,8 @@ defmodule Portal.Builder do
       mode: mode,
       toolchain: Map.get(args, :toolchain),
       argus: Map.get(args, :argus),
-      nerves_packages: Map.get(args, :nerves_packages)
+      nerves_packages: Map.get(args, :nerves_packages),
+      egress_probe: Map.get(args, :egress_probe)
     }
 
     # Free space first: it is the cheapest check in the chain, and it is the
@@ -689,6 +692,7 @@ defmodule Portal.Builder do
     |> maybe_put("toolchain", Map.get(job, :toolchain))
     |> maybe_put("argus", Map.get(job, :argus))
     |> maybe_put("nerves_packages", Map.get(job, :nerves_packages))
+    |> maybe_put("egress_probe", Map.get(job, :egress_probe))
   end
 
   # A warm run fills the Nerves cache and builds no package.
