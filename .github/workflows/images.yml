@@ -104,6 +104,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          # Only the agent tarballs: docker/build-push-action also uploads its
+          # build record (`*.dockerbuild`), which this step neither needs nor
+          # reliably downloads (the 2026-10-26 run failed after five retries).
+          pattern: ncc-agent-*
           path: artifacts
           merge-multiple: true
       - name: Write images.json
