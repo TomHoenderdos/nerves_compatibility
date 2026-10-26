@@ -30,8 +30,11 @@ RUN mix local.hex --force && \
 # (nerves_pack, vintage_net_wizard). Without the headers the host result of
 # all of them is a fail and their host beams are never published (issue #44).
 # The Nerves systems carry their own libnl in the toolchain sysroot.
+#
+# libsrtp2-dev: ex_webrtc's host build links against libsrtp2 (its own
+# Makefile also hard-codes /opt/homebrew paths, which stays its problem).
 RUN sudo apt-get update && \
-    sudo apt-get install -y --no-install-recommends fakeroot libnl-3-dev libnl-genl-3-dev && \
+    sudo apt-get install -y --no-install-recommends fakeroot libnl-3-dev libnl-genl-3-dev libsrtp2-dev && \
     sudo rm -rf /var/lib/apt/lists/*
 
 # argus_beam's escript, pinned. The worker calls it by absolute path, so PATH
