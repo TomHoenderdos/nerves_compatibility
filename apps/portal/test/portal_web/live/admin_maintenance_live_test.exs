@@ -405,4 +405,35 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
       0 -> n
     end
   end
+
+  describe "build cache L2" do
+    test "shows the L2 build cache off", %{conn: conn} do
+      {_view, html} = live_maintenance(conn)
+      assert html =~ "Build cache L2"
+      assert html =~ "Off"
+    end
+
+    test "shows the L2 endpoint and counters, never the keys", %{conn: conn} do
+      previous = Application.get_env(:portal, Portal.BuildCache.L2, [])
+
+      Application.put_env(:portal, Portal.BuildCache.L2,
+        endpoint: "http://100.64.0.2:3900",
+        bucket: "ncc-build-cache",
+        access_key: "GKVISIBLE",
+        secret_key: "topsecret",
+        read_only: true
+      )
+
+      on_exit(fn -> Application.put_env(:portal, Portal.BuildCache.L2, previous) end)
+      Portal.BuildCache.L2.Stats.reset()
+      Portal.BuildCache.L2.Stats.record(:download_ok, 1234)
+
+      {_view, html} = live_maintenance(conn)
+      assert html =~ "http://100.64.0.2:3900/ncc-build-cache"
+      assert html =~ "read-only"
+      assert html =~ "Downloads"
+      refute html =~ "GKVISIBLE"
+      refute html =~ "topsecret"
+    end
+  end
 end
