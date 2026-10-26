@@ -30,6 +30,13 @@ defmodule Portal.EgressCheckTest do
     end
   end
 
+  defp passing_result(outcomes) do
+    %{
+      "egress_probe" => outcomes,
+      "systems" => %{"host" => %{"status" => "pass"}, "pure_elixir" => %{"status" => "pass"}}
+    }
+  end
+
   describe "run/2" do
     defp deps(overrides) do
       test = self()
@@ -41,7 +48,7 @@ defmodule Portal.EgressCheckTest do
           build: fn args ->
             send(test, {:build, args})
             outcomes = Enum.map(args.egress_probe, &Map.put(&1, "outcome", "timeout"))
-            {:ok, %{exit_code: 0, result: %{"egress_probe" => outcomes}}}
+            {:ok, %{exit_code: 0, result: passing_result(outcomes)}}
           end,
           cleanup: fn run_id ->
             send(test, {:cleanup, run_id})
@@ -83,7 +90,7 @@ defmodule Portal.EgressCheckTest do
         {:ok,
          %{
            exit_code: 0,
-           result: %{"egress_probe" => [Map.put(hd(args.egress_probe), "outcome", "connected")]}
+           result: passing_result([Map.put(hd(args.egress_probe), "outcome", "connected")])
          }}
       end
 
@@ -105,20 +112,74 @@ defmodule Portal.EgressCheckTest do
       assert {:error, _} = report.build
       assert_received {:cleanup, _run_id}
     end
+
+    # The worker probes before deps.get, so every target can read blocked on
+    # a host whose filter also breaks DNS or 443 for honest builds.
+    test "a build that failed fails the check even when every target is blocked" do
+      blocked = fn args -> Enum.map(args.egress_probe, &Map.put(&1, "outcome", "timeout")) end
+
+      for {exit_code, systems} <- [
+            {10, %{"host" => %{"status" => "pass"}}},
+            {0, %{"host" => %{"status" => "fail"}}},
+            {0, %{"host" => %{"status" => "pass"}, "pure_elixir" => %{"status" => "error"}}},
+            {0, %{"pure_elixir" => %{"status" => "pass"}}},
+            {0, %{}},
+            {0, nil}
+          ] do
+        build = fn args ->
+          result = %{"egress_probe" => blocked.(args), "systems" => systems}
+          {:ok, %{exit_code: exit_code, result: result}}
+        end
+
+        report = EgressCheck.run([@v4], deps(%{build: build}))
+
+        refute report.ok?, "passed with exit #{exit_code} and #{inspect(systems)}"
+        assert {:error, _reason} = report.build_result
+        assert Enum.map(report.build, & &1["outcome"]) == ["timeout"]
+        assert EgressCheck.format(report) =~ "egress check FAILED"
+      end
+    end
+
+    test "the report says the build passed" do
+      report = EgressCheck.run([@v4], deps(%{}))
+
+      assert report.build_result == :pass
+      assert EgressCheck.format(report) =~ "build jason 1.4.4: exit 0, every system pass"
+    end
   end
 
-  test "bare_outcome/1 classifies what docker and bash answered" do
-    assert EgressCheck.bare_outcome({"", 0}) == "connected"
-    assert EgressCheck.bare_outcome({"", 124}) == "timeout"
-    assert EgressCheck.bare_outcome({"bash: connect: Connection refused\n", 1}) == "refused"
+  test "bare_outcome/1 classifies what the probe inside the container answered" do
+    assert EgressCheck.bare_outcome({"ncc-egress-probe-exit=0\n", 0}) == "connected"
+    assert EgressCheck.bare_outcome({"ncc-egress-probe-exit=124\n", 124}) == "timeout"
 
-    assert EgressCheck.bare_outcome({"bash: connect: Network is unreachable\n", 1}) ==
-             "unreachable"
+    assert EgressCheck.bare_outcome(
+             {"bash: connect: Connection refused\nncc-egress-probe-exit=1\n", 1}
+           ) == "refused"
 
-    assert EgressCheck.bare_outcome({"bash: connect: No route to host\n", 1}) == "unreachable"
+    assert EgressCheck.bare_outcome(
+             {"bash: connect: Network is unreachable\nncc-egress-probe-exit=1\n", 1}
+           ) == "unreachable"
 
-    assert "error: Unable to find image" <> _ =
-             EgressCheck.bare_outcome({"Unable to find image 'x'\n", 125})
+    assert EgressCheck.bare_outcome(
+             {"bash: connect: No route to host\nncc-egress-probe-exit=1\n", 1}
+           ) == "unreachable"
+  end
+
+  # Without the probe's own exit line the container never ran it: docker
+  # failed, and whatever docker said is no evidence of a drop.
+  test "bare_outcome/1 never reads a docker failure as blocked" do
+    for answer <- [
+          {"Unable to find image 'x'\n", 125},
+          {"", 124},
+          {"docker: Error response from daemon: network is unreachable\n", 125},
+          {"Cannot connect to the Docker daemon\n", 1},
+          {"", 0},
+          {"ncc-egress-probe-exit=124\n", 125}
+        ] do
+      outcome = EgressCheck.bare_outcome(answer)
+      assert "error: " <> _ = outcome
+      refute EgressCheck.blocked?(outcome), "#{inspect(answer)} read as #{outcome}"
+    end
   end
 
   test "blocked?/1 accepts only a drop or a missing route" do
@@ -134,6 +195,7 @@ defmodule Portal.EgressCheckTest do
       preflight: :ok,
       bare: [Map.put(@v4, "outcome", "timeout")],
       build: [Map.put(@v4, "outcome", "connected")],
+      build_result: :pass,
       ok?: false
     }
 

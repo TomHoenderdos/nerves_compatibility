@@ -71,11 +71,22 @@ What a builder deploy does (`builder-deploy.sh`, as root):
 1. Before pausing the queues: copies both rulesets to `/etc/ncc-portal/`
    (root, 644) and the loader to `/opt/nerves_compatibility/` (root, 755); on
    Ubuntu writes `~ncc/.config/systemd/user/docker.service.d/ncc-egress.conf`
-   (`ExecStartPost=-…/builder-egress-load.sh`) and reloads the user manager;
-   runs the loader as `ncc`. Any failure stops the deploy with the running
-   release and queues untouched.
+   (`ExecStartPost=-…/builder-egress-load.sh`) as `ncc`, never as root, and
+   reloads the user manager; runs the loader as `ncc`. Any failure stops the
+   deploy with the running release and queues untouched.
 2. Before moving the image tags: runs the new release's
-   `Portal.Builder.check_egress/0`; a failure stops the deploy there.
+   `Portal.Builder.check_egress/0`; a failure stops the deploy there, with
+   the tags unmoved and the queues resumed on the running release. The new
+   release is already installed and migrated by then, though, so the next
+   restart, crash or reboot starts it, and it refuses every build (fail
+   closed). The release it replaced is
+   `/opt/nerves_compatibility/portal-previous.tar.gz`.
+3. After the restart: asks the running `ncc-portal` service the same
+   question over `rpc` (step 2's `eval` runs outside the unit's sandboxing,
+   PATH and environment). Anything but `:ok` prints an error naming the
+   likely unit settings (`RestrictNamespaces=`, `PrivateUsers=`, PATH,
+   `XDG_RUNTIME_DIR`) and fails the deploy; nothing is rolled back and no
+   queue is paused. Skipped with `NCC_EGRESS_CHECK=0`.
 
 The namespace, and the rules with it, is recreated whenever the daemon
 restarts. On Ubuntu the drop-in reloads them. On NixOS the docker user unit
@@ -127,8 +138,11 @@ cd /tmp && sudo -u ncc bash -c '
 
 It prints the preflight, a bare container's outcome per target and the build
 worker's (`result.json` `egress_probe`), then `egress check PASSED` (exit 0)
-when the filter is loaded and every target timed out or had no route.
-`connected` or `refused` for any target is a failure: the packet got through.
+when the filter is loaded, every target timed out or had no route, and the
+`jason` build itself exited 0 with every system `pass` (a filter that breaks
+DNS or 443 fails the check). `connected` or `refused` for any target is a
+failure: the packet got through. So is a bare probe that never ran (`error:`,
+docker itself failed).
 
 ### Rollback
 
