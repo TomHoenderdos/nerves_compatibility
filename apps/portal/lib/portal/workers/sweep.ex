@@ -16,7 +16,12 @@ defmodule Portal.Workers.Sweep do
     * `build_cache` slugs for worker images that no longer exist
     * `.tmp.<hex>` staging trees inside live slugs, abandoned by
       `NccWorker.BuildCache.store_entry/2` when the container was killed
-      between its `cp -a` and its `File.rename/2`
+      between its `cp -a` and its `File.rename/2`. Staging names are
+      `Portal.BuildCache.Staging`'s (`<key>.tmp.<host>.<hex>`, and a
+      download's `.tar.gz` beside it): only those older than the scratch max
+      age go, and only this host's or the host-less pre-L2 form, since an
+      in-flight L2 download can hold a name for minutes and a shared cache
+      root holds other hosts' staging
 
   `nerves_cache/artifacts` it keeps under a size bound
   (`nerves_cache_max_bytes`, `NCC_NERVES_CACHE_MAX_GB`, default 40 GiB),
@@ -87,6 +92,7 @@ defmodule Portal.Workers.Sweep do
 
   require Logger
 
+  alias Portal.BuildCache.Staging
   alias Portal.Builder
   alias Portal.NervesCache
   alias Portal.Repo
@@ -102,8 +108,6 @@ defmodule Portal.Workers.Sweep do
   # Everything Oban has not finished with. A job in one of these states may still
   # read the directory its args name.
   @live_states ["available", "scheduled", "executing", "retryable"]
-
-  @staging_pattern ~r/\.tmp\.[0-9a-f]+$/
 
   @impl Oban.Worker
   def perform(%Oban.Job{}), do: run()
@@ -124,6 +128,7 @@ defmodule Portal.Workers.Sweep do
       for a failed docker lookup, or a zero-arity function returning either
       (called for each lookup)
     * `:current_digest` — digest the worker image resolves to right now
+    * `:host` — this node's staging host name, defaults to `Portal.BuildCache.Staging.host/0`
     * `:dry_run` — report what would go, delete nothing
     * `:nerves_cache` — defaults to `Portal.Builder.nerves_cache/0`; `nil` skips it
     * `:nerves_cache_max_bytes` — Nerves cache bound, defaults to 40 GiB
@@ -283,14 +288,19 @@ defmodule Portal.Workers.Sweep do
     end
   end
 
-  # `NccWorker.BuildCache.store_entry/2` stages into "<slug>/<key>.tmp.<hex>" and
-  # renames. It cleans up after itself on a returned error, but a SIGKILL between
-  # the `cp -a` and the rename leaves a full copied dep tree inside a *live* slug
-  # — which the keep set above protects, forever.
-  #
-  # These are unambiguous garbage: the rename is atomic, so no reader can ever
-  # find an entry under a `.tmp.` name.
+  # Staging names (`Portal.BuildCache.Staging`): `<key>.tmp.<host>.<hex>` for
+  # a promotion copy or an L2 download being extracted, plus that download's
+  # `.tar.gz`, and the pre-L2 `<key>.tmp.<hex>` form. The rename that
+  # publishes an entry is atomic, so a reader never sees one of these; but
+  # an in-flight download can hold a staging name for several minutes, so
+  # only names older than the scratch max age go, and only our own host's
+  # (or the host-less legacy form): with a shared cache root, another host's
+  # in-flight staging is theirs to finish.
   defp sweep_staging(root, slugs, opts) do
+    now = Keyword.get_lazy(opts, :now_ms, &now_ms/0)
+    max_age = Keyword.get(opts, :max_age_ms, configured_max_age_ms())
+    host = Keyword.get_lazy(opts, :host, &Staging.host/0)
+
     slugs
     |> Enum.flat_map(fn slug ->
       dir = Path.join(root, slug)
@@ -298,14 +308,26 @@ defmodule Portal.Workers.Sweep do
       case list_dir(dir) do
         {:ok, entries} ->
           entries
-          |> Enum.filter(&Regex.match?(@staging_pattern, &1))
+          |> Enum.filter(&Staging.ours?(&1, host))
           |> Enum.map(&Path.join(dir, &1))
+          |> Enum.filter(&staging_stale?(&1, now, max_age))
 
         _ ->
           []
       end
     end)
     |> delete_all(opts, "build-cache staging")
+  end
+
+  # lstat, never stat: a symlink planted under a staging name must not be
+  # followed to decide anything.
+  # `path` is a name under the operator's cache root.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp staging_stale?(path, now, max_age) do
+    case File.lstat(path, time: :posix) do
+      {:ok, %File.Stat{mtime: mtime}} -> now - mtime * 1000 > max_age
+      {:error, _reason} -> false
+    end
   end
 
   defp cache_keep_set(opts) do
