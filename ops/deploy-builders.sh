@@ -134,7 +134,12 @@ install_scripts() {
 start_deploy() {
   local name=$1 logfile
   logfile=/root/deploy_builders_$(date +%Y%m%d%H%M%S)_${sha:0:7}.log
-  on "$name" "cd /tmp && setsid nohup bash -c '/opt/nerves_compatibility/deploy.sh $sha builder; echo DEPLOY_EXIT=\$?' > $logfile 2>&1 < /dev/null &"
+  # `setsid -f` forks the deploy into its own session and returns at once,
+  # and `ssh -n` gives ssh no stdin to hold open. Without both, ssh stayed
+  # attached until deploy.sh finished (measured 2026-10-26: the whole ~10
+  # minutes), so a dropped connection could still take the deploy with it.
+  ssh -n "${SSH_OPTS[@]}" "$(host_of "$name")" \
+    "cd /tmp && setsid -f nohup bash -c '/opt/nerves_compatibility/deploy.sh $sha builder; echo DEPLOY_EXIT=\$?' > $logfile 2>&1 < /dev/null"
   log "$name" "started; log $logfile" >&2
   echo "$logfile"
 }
