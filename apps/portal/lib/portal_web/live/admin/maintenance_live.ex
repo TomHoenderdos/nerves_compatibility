@@ -71,7 +71,8 @@ defmodule PortalWeb.Admin.MaintenanceLive do
         key_loaded?: match?({:ok, _}, Portal.Precompiled.Keys.load()),
         batch: Portal.Precompiled.Batches.latest()
       },
-      toolchains: toolchain_rows()
+      toolchains: toolchain_rows(),
+      build_cache_l2: Portal.BuildCache.L2.status()
     )
   end
 
@@ -488,6 +489,67 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               Copies each file's real mode from its run's footprint into the published manifests. One-off; safe to repeat.
             </span>
           </.form>
+        </div>
+      </section>
+
+      <section id="build-cache-l2" class="card mt-6 border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 class="card-title">Build cache L2</h2>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                The shared S3 layer behind the local dependency build cache: read before every
+                build, written after every promotion. Counters are this node's ({@build_cache_l2.node})
+                since it booted.
+              </p>
+            </div>
+            <span class={[
+              "badge w-fit",
+              case @build_cache_l2.state do
+                :on -> "badge-success"
+                :incomplete -> "badge-error"
+                :off -> "badge-ghost"
+              end
+            ]}>
+              {case @build_cache_l2.state do
+                :on -> "On"
+                :incomplete -> "Incomplete config"
+                :off -> "Off"
+              end}
+            </span>
+          </div>
+          <%= if @build_cache_l2.state == :on do %>
+            <p class="mt-3 text-sm leading-6 text-base-content/70">
+              {@build_cache_l2.endpoint}/{@build_cache_l2.bucket}
+              <%= if @build_cache_l2.read_only? do %>
+                , read-only
+              <% end %>.
+              Last upload {if @build_cache_l2.last_upload,
+                do: format_datetime(@build_cache_l2.last_upload),
+                else: "never"},
+              last download {if @build_cache_l2.last_download,
+                do: format_datetime(@build_cache_l2.last_download),
+                else: "never"}.
+            </p>
+            <div class="mt-5 grid gap-3 sm:grid-cols-4">
+              <PortalWeb.UI.stat_card
+                label="Uploads"
+                value={"#{@build_cache_l2.counters.uploads} (#{@build_cache_l2.counters.upload_failures} failed)"}
+              />
+              <PortalWeb.UI.stat_card
+                label="Downloads"
+                value={"#{@build_cache_l2.counters.downloads} (#{@build_cache_l2.counters.download_failures} failed, #{@build_cache_l2.counters.refused} refused)"}
+              />
+              <PortalWeb.UI.stat_card
+                label="Bytes up"
+                value={to_string(@build_cache_l2.counters.bytes_up)}
+              />
+              <PortalWeb.UI.stat_card
+                label="Bytes down"
+                value={to_string(@build_cache_l2.counters.bytes_down)}
+              />
+            </div>
+          <% end %>
         </div>
       </section>
 
