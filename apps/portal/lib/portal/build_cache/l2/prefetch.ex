@@ -383,7 +383,14 @@ defmodule Portal.BuildCache.L2.Prefetch do
   defp local_io?(_), do: false
 
   defp refusal?(reason)
-       when reason in [:no_sha256_header, :too_large, :empty_archive, :empty, :empty_entry],
+       when reason in [
+              :no_sha256_header,
+              :too_large,
+              :too_many_members,
+              :empty_archive,
+              :empty,
+              :empty_entry
+            ],
        do: true
 
   defp refusal?({tag, _})

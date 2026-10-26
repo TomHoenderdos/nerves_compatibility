@@ -318,6 +318,55 @@ defmodule Portal.BuildCache.L2.TarballTest do
     assert Tarball.max_extracted_bytes() == 1024 * 1024 * 1024
   end
 
+  test "unpack refuses a GNU sparse member whose real size dwarfs the stream", %{
+    tmp: tmp,
+    out: out
+  } do
+    body = sparse_entry("ebin/big", 50 * 1024 * 1024) <> :binary.copy(<<0>>, 1024)
+    path = Path.join(tmp, "sparse.tar.gz")
+    File.write!(path, :zlib.gzip(body))
+    File.mkdir_p!(out)
+
+    # Honesty check: erl_tar itself reports the real size of a 2 KB stream.
+    assert {:ok, [{~c"ebin/big", :regular, 52_428_800, _, _, _, _}]} =
+             :erl_tar.table(String.to_charlist(path), [:compressed, :verbose])
+
+    assert {:error, :too_large} = Tarball.unpack(path, out)
+    assert File.ls!(out) == []
+  end
+
+  test "unpack refuses more than 100,000 members and takes a few", %{tmp: tmp, out: out} do
+    File.mkdir_p!(out)
+    end_blocks = :binary.copy(<<0>>, 1024)
+
+    flood = Path.join(tmp, "many.tar.gz")
+    File.write!(flood, :zlib.gzip(IO.iodata_to_binary([flood_headers(100_001), end_blocks])))
+    assert {:error, :too_many_members} = Tarball.unpack(flood, out)
+    assert File.ls!(out) == []
+
+    few = Path.join(tmp, "few.tar.gz")
+    File.write!(few, :zlib.gzip(IO.iodata_to_binary([flood_headers(3), end_blocks])))
+    assert {:ok, _} = Tarball.unpack(few, out)
+    assert File.exists?(Path.join(out, "m/1"))
+  end
+
+  # A GNU sparse header (typeflag S, magic "ustar  \0", empty sparse map) that
+  # claims `real_size` bytes while carrying none.
+  defp sparse_entry(name, real_size) do
+    <<head::binary-size(148), _chk::binary-size(8), mid::binary-size(101), _magic::binary-size(8),
+      rest::binary>> = ustar_header(name, ?S, 0o644, "")
+
+    <<a::binary-size(327), _::binary-size(12), z::binary>> =
+      <<mid::binary, "ustar  \0", rest::binary>>
+
+    realsize = (real_size |> Integer.to_string(8) |> String.pad_leading(11, "0")) <> <<0>>
+    block = head <> "        " <> a <> realsize <> z
+    chksum = block |> :binary.bin_to_list() |> Enum.sum()
+    chk = (chksum |> Integer.to_string(8) |> String.pad_leading(6, "0")) <> <<0, ?\s>>
+    <<h::binary-size(148), _::binary-size(8), t::binary>> = block
+    h <> chk <> t
+  end
+
   # A single 512-byte ustar header with no data, for a type erl_tar will not write.
   defp ustar_entry(name, typeflag),
     do: ustar_header(name, typeflag, 0o644, "") <> :binary.copy(<<0>>, 1024)
