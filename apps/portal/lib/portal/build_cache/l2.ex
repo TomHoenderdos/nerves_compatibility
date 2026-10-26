@@ -6,7 +6,8 @@ defmodule Portal.BuildCache.L2 do
   spec, sections 3.1 and 5.)
   """
   require Logger
-  alias Portal.BuildCache.L2.{Config, Stats}
+  alias Portal.BuildCache.L2.{Client, Config, Stats, Tarball}
+  alias Portal.BuildCache.Staging
 
   @spec object_key(String.t(), String.t()) :: String.t()
   def object_key(slug, key), do: slug <> "/" <> key <> ".tar.gz"
@@ -18,7 +19,7 @@ defmodule Portal.BuildCache.L2 do
   @spec status() :: map()
   def status do
     base = %{
-      node: Portal.BuildCache.Staging.host(),
+      node: Staging.host(),
       endpoint: nil,
       bucket: nil,
       read_only?: false
@@ -43,6 +44,63 @@ defmodule Portal.BuildCache.L2 do
     |> Map.put(:last_upload, snap.last_upload)
     |> Map.put(:last_download, snap.last_download)
     |> Map.put(:counters, Map.drop(snap, [:last_upload, :last_download]))
+  end
+
+  @doc """
+  Uploads one promoted entry, best effort: `{:ok, bytes}` with the tarball
+  size, `:skipped` when L2 is off or read-only, `{:error, reason}` on any
+  failure, never an exception. Logs its own outcome and records it in `Stats`.
+  """
+  @spec upload(Path.t(), String.t(), String.t(), String.t() | :any, keyword()) ::
+          {:ok, non_neg_integer()} | :skipped | {:error, term()}
+  def upload(entry_dir, slug, key, package, opts \\ []) do
+    case Keyword.get_lazy(opts, :config, &active_config/0) do
+      %Config{read_only?: false} = cfg -> do_upload(cfg, entry_dir, slug, key, package)
+      _ -> :skipped
+    end
+  rescue
+    e -> {:error, {:exception, Exception.message(e)}}
+  end
+
+  defp active_config do
+    case Config.config() do
+      {:ok, cfg} -> cfg
+      _ -> nil
+    end
+  end
+
+  # `entry_dir` is a promoted entry under the operator's cache root; the
+  # tarball is staged beside it, inside the slug dir, and always removed.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp do_upload(cfg, entry_dir, slug, key, package) do
+    object = object_key(slug, key)
+    tar = Staging.name(entry_dir) <> ".tar.gz"
+
+    result =
+      try do
+        with {:ok, %{sha256: sha, bytes: bytes}} <- Tarball.pack(entry_dir, tar, package),
+             :ok <- Client.put(cfg, object, tar, sha) do
+          {:ok, bytes}
+        end
+      after
+        _ = File.rm(tar)
+      end
+
+    case result do
+      {:ok, bytes} ->
+        Stats.record(:upload_ok, bytes)
+        Logger.info("Build cache L2 upload of #{object}: #{bytes} bytes")
+        {:ok, bytes}
+
+      {:error, reason} ->
+        Stats.record(:upload_failed)
+
+        Logger.warning(
+          "Build cache L2 upload of #{object} failed: #{inspect(reason, printable_limit: 200)}"
+        )
+
+        {:error, reason}
+    end
   end
 
   @spec log_state() :: :ok
