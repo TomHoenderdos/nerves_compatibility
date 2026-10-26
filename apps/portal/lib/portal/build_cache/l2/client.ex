@@ -121,7 +121,12 @@ defmodule Portal.BuildCache.L2.Client do
   # `path` is the staging name `get/4` was given.
   # sobelow_skip ["Traversal.FileModule"]
   defp remove(path, result) do
-    _ = File.rm(path)
+    # Only a regular file: never a device, directory or symlink the caller named.
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular}} -> _ = File.rm(path)
+      _ -> :ok
+    end
+
     result
   end
 

@@ -68,19 +68,23 @@ defmodule Portal.BuildCache.L2.ClientTest do
     assert {:error, {:status, 503}} = Client.put(cfg, "slug/k", Path.join(tmp, "src"), "sha")
   end
 
-  test "a write failure comes back as an error and the caller survives", %{
-    s: s,
-    cfg: cfg,
-    tmp: tmp
-  } do
+  test "an open failure comes back as an error", %{s: s, cfg: cfg, tmp: tmp} do
     FakeS3.put_object(s, "slug/k", "body", %{})
-    # A directory cannot be opened for writing, so the failure is in the task.
     assert {:error, _} = Client.get(cfg, "slug/k", tmp, [])
     assert File.dir?(tmp)
+  end
 
-    # /dev/full accepts the open and fails every write with ENOSPC, inside the task.
+  test "a write failure comes back as an error, the caller survives, the device stays", %{
+    s: s,
+    cfg: cfg
+  } do
+    FakeS3.put_object(s, "slug/k", "body", %{})
+
+    # /dev/full opens fine and fails every write with ENOSPC, inside the task.
     if File.exists?("/dev/full") do
       assert {:error, {:exception, _}} = Client.get(cfg, "slug/k", "/dev/full", [])
+      assert Process.alive?(self())
+      assert File.exists?("/dev/full")
     end
   end
 
