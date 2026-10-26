@@ -73,7 +73,7 @@ defmodule Portal.BuildCache.L2.TarballTest do
 
   test "unpack refuses an absolute member", %{tmp: tmp, out: out} do
     File.mkdir_p!(out)
-    assert {:error, _} = Tarball.unpack(hostile(tmp, [{"/tmp/abs", "x"}]), out)
+    assert {:error, {:member_name, _}} = Tarball.unpack(hostile(tmp, [{"/tmp/abs", "x"}]), out)
   end
 
   test "unpack refuses a symlink that leaves the entry", %{
@@ -95,7 +95,7 @@ defmodule Portal.BuildCache.L2.TarballTest do
       )
 
     File.mkdir_p!(out)
-    assert {:error, _} = Tarball.unpack(tar, out)
+    assert {:error, {:member_type, :symlink, _}} = Tarball.unpack(tar, out)
   end
 
   test "unpack refuses a hard link, a device and a fifo entry", %{tmp: tmp, out: out} do
@@ -104,7 +104,8 @@ defmodule Portal.BuildCache.L2.TarballTest do
       path = Path.join(tmp, "typed-#{typeflag}.tar.gz")
       File.write!(path, :zlib.gzip(ustar_entry("ebin/x", typeflag)))
       File.mkdir_p!(out)
-      assert {:error, _} = Tarball.unpack(path, out)
+      assert {:error, {:member_type, type, _}} = Tarball.unpack(path, out)
+      assert type in [:link, :char, :fifo]
       File.rm_rf!(out)
     end
   end
@@ -143,6 +144,14 @@ defmodule Portal.BuildCache.L2.TarballTest do
     {:ok, table} = :erl_tar.table(String.to_charlist(tar), [:compressed, :verbose])
     refute Enum.any?(table, fn {_, type, _, _, _, _, _} -> type == :symlink end)
     assert Enum.count(table, fn {name, _, _, _, _, _, _} -> name == ~c".ncc-links.json" end) == 1
+  end
+
+  test "pack reserves the manifest name", %{entry: entry, tar: tar} do
+    File.write!(Path.join(entry, ".ncc-links.json"), ~s({"priv": "../../../../deps/other/priv"}))
+    assert {:error, {:reserved_name, ".ncc-links.json"}} = Tarball.pack(entry, tar, "jason")
+    File.rm!(Path.join(entry, "priv"))
+    assert {:error, {:reserved_name, ".ncc-links.json"}} = Tarball.pack(entry, tar, "jason")
+    refute File.exists?(tar)
   end
 
   test "pack refuses an entry that holds nothing but links", %{entry: entry, tar: tar} do

@@ -2,7 +2,7 @@ defmodule Portal.BuildCache.L2.Tarball do
   @moduledoc """
   One build cache entry as a gzip tarball, and back.
 
-  `pack/3` is what a home host uploads after a promotion; `unpack/2` is what
+  `pack/3` is what a home host uploads after a promotion; `unpack/3` is what
   it extracts before a build. Both ends apply the same structural rules as
   `Portal.BuildCache.Promotion` (through `Portal.BuildCache.Tree`): only
   directories, regular files with one link, and Mix's own top-level
@@ -29,7 +29,6 @@ defmodule Portal.BuildCache.L2.Tarball do
   @max_manifest_bytes 4096
   @manifest ".ncc-links.json"
   @allowed_types [:regular, :directory]
-  @link_target ~r/\A\.\.\/\.\.\/\.\.\/\.\.\/deps(_[a-z0-9_]+)?\/[a-z][a-z0-9_]*\/(priv|include)\z/
 
   @spec max_object_bytes() :: pos_integer()
   def max_object_bytes, do: @max_object_bytes
@@ -80,6 +79,12 @@ defmodule Portal.BuildCache.L2.Tarball do
   # `Tree.check/2` has already proven every top-level link is Mix's own.
   # sobelow_skip ["Traversal.FileModule"]
   defp split_links(dir, names) do
+    if @manifest in names,
+      do: {:error, {:reserved_name, @manifest}},
+      else: split_links_checked(dir, names)
+  end
+
+  defp split_links_checked(dir, names) do
     {links, files} =
       Enum.split_with(names, fn name ->
         match?({:ok, %File.Stat{type: :symlink}}, File.lstat(Path.join(dir, name)))
@@ -136,7 +141,7 @@ defmodule Portal.BuildCache.L2.Tarball do
          :ok <- extract(tar_path, staging_dir),
          :ok <- restore_links(staging_dir),
          :ok <- refusal(Tree.check(staging_dir, package: :any)) do
-      Tree.strip_modes(staging_dir)
+      staging_dir |> Tree.strip_modes() |> refusal()
     end
   end
 
@@ -212,7 +217,7 @@ defmodule Portal.BuildCache.L2.Tarball do
         with {:ok, links} <- read_manifest(path),
              :ok <- validate_links(staging_dir, links),
              :ok <- create_links(staging_dir, links) do
-          File.rm(path)
+          remove_manifest(path)
         end
 
       {:ok, %File.Stat{type: :regular}} ->
@@ -226,6 +231,14 @@ defmodule Portal.BuildCache.L2.Tarball do
 
       {:error, reason} ->
         {:error, {:links, reason}}
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp remove_manifest(path) do
+    case File.rm(path) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:links, reason}}
     end
   end
 
@@ -249,7 +262,7 @@ defmodule Portal.BuildCache.L2.Tarball do
   end
 
   defp validate_link(staging_dir, name, target) when name in ["priv", "include"] do
-    if link_target?(name, target),
+    if Tree.mix_link?(name, target, :any),
       do: absent(staging_dir, name),
       else: {:error, {:bad_target, Tree.show(target)}}
   end
@@ -264,12 +277,6 @@ defmodule Portal.BuildCache.L2.Tarball do
       _ -> {:error, {:exists, name}}
     end
   end
-
-  defp link_target?(name, target) when is_binary(target) do
-    match?([_, _, ^name], Regex.run(@link_target, target))
-  end
-
-  defp link_target?(_name, _target), do: false
 
   # sobelow_skip ["Traversal.FileModule"]
   defp create_links(staging_dir, links) do

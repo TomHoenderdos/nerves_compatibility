@@ -82,11 +82,8 @@ defmodule Portal.BuildCache.Tree do
 
   # sobelow_skip ["Traversal.FileModule"]
   defp check_link(path, name, true, package) when name in ["priv", "include"] do
-    pkg = if package == :any, do: "[a-z][a-z0-9_]*", else: Regex.escape(package)
-    allowed = ~r/\A\.\.\/\.\.\/\.\.\/\.\.\/deps(_[a-z0-9_]+)?\/#{pkg}\/(priv|include)\z/
-
     with {:ok, target} <- File.read_link(path),
-         [_, _deps, ^name] <- Regex.run(allowed, target) do
+         true <- mix_link?(name, target, package) do
       :ok
     else
       _ -> {:error, "symlink #{show(path)} is not Mix's own #{name} link"}
@@ -94,6 +91,19 @@ defmodule Portal.BuildCache.Tree do
   end
 
   defp check_link(path, _name, _top?, _package), do: {:error, "symlink #{show(path)}"}
+
+  @doc false
+  # Whether `target` is the link Mix makes for `name` (`priv` or `include`)
+  # in a build entry: four levels up into `deps*/<package>/<name>`. One
+  # predicate for the walk above and for the L2 link manifest.
+  @spec mix_link?(term(), term(), String.t() | :any) :: boolean()
+  def mix_link?(name, target, package) when name in ["priv", "include"] and is_binary(target) do
+    pkg = if package == :any, do: "[a-z][a-z0-9_]*", else: Regex.escape(package)
+    allowed = ~r/\A\.\.\/\.\.\/\.\.\/\.\.\/deps(_[a-z0-9_]+)?\/#{pkg}\/(priv|include)\z/
+    match?([_, _deps, ^name], Regex.run(allowed, target))
+  end
+
+  def mix_link?(_name, _target, _package), do: false
 
   # The container chose every mode in the tree. Before it becomes visible,
   # drop setuid, setgid and sticky and group/other write from each directory
