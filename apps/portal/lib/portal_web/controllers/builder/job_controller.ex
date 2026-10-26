@@ -95,6 +95,7 @@ defmodule PortalWeb.Builder.JobController do
 
   defp files_error(:batch_too_large), do: {413, "batch_too_large"}
   defp files_error(:total_exceeded), do: {413, "total_exceeded"}
+  defp files_error(:too_many_files), do: {422, "too_many_files"}
   defp files_error(:insufficient_disk), do: {507, "insufficient_disk"}
   defp files_error(:not_held), do: {409, "lease_not_held"}
   defp files_error({:unsupported_entry, _name}), do: {400, "unsupported_entry"}
@@ -143,14 +144,22 @@ defmodule PortalWeb.Builder.JobController do
          {:ok, exit_code} <- exit_code(params["exit_code"]),
          {:ok, lease} <- Leases.heartbeat(lease.id, lease.builder_id, "uploading", nil),
          {:ok, result} <- write_outputs(lease, exit_code, params),
-         {:ok, outcome, lease} <- end_attempt(lease, exit_code, builder) do
+         :ok <- result_matches(lease, result, builder),
+         {:ok, outcome, lease} <- end_attempt(lease, exit_code, builder, params) do
       warm =
-        if outcome == :done do
-          Progress.broadcast(lease.scan_request_id, :ingesting, %{run_id: lease.run_id})
-          warm_pairs(result, lease)
-        else
-          Upload.cleanup(lease.id)
-          []
+        case outcome do
+          :done ->
+            Progress.broadcast(lease.scan_request_id, :ingesting, %{run_id: lease.run_id})
+            warm_pairs(result, lease)
+
+          # A requeued lease keeps its dir: the next attempt's `files/missing`
+          # skips what already landed. A failed or rejected one is over.
+          :requeued ->
+            []
+
+          _over ->
+            Upload.cleanup(lease.id)
+            []
         end
 
       conn |> put_status(202) |> json(%{accepted: true, outcome: outcome, warm: warm})
@@ -160,17 +169,41 @@ defmodule PortalWeb.Builder.JobController do
       {:error, :ingest_not_enqueued} -> error(conn, 500, "complete_failed")
       {:error, :bad_exit_code} -> error(conn, 400, "bad_exit_code")
       {:error, :result_unparsable} -> error(conn, 422, "result_unparsable")
+      {:error, :result_mismatch} -> error(conn, 422, "result_mismatch")
       {:error, :result_too_large} -> error(conn, 413, "result_too_large")
       {:error, :logs_too_large} -> error(conn, 413, "logs_too_large")
+      {:error, :runner_log_too_large} -> error(conn, 413, "runner_log_too_large")
       {:error, :logs_invalid} -> error(conn, 422, "logs_invalid")
       {:error, :insufficient_disk} -> error(conn, 507, "insufficient_disk")
       {:error, {:io, _reason}} -> error(conn, 500, "storage_failed")
     end
   end
 
+  # The run a builder completes must be the one it was leased: a result.json
+  # naming another package or version would otherwise become that package's
+  # latest run (`Portal.Catalog.Ingestion` takes the name from the result).
+  # Spec section 8 allows a hostile builder bad results for the packages it
+  # claims, and nothing else. `Portal.Builders.Upload.load_run/1` checks the
+  # same thing again at ingest.
+  defp result_matches(_lease, nil, _builder), do: :ok
+
+  defp result_matches(lease, result, builder) do
+    if Upload.result_for_lease?(result, lease) do
+      :ok
+    else
+      Logger.error(
+        "builder #{builder.name} completed lease #{lease.id} (#{lease.package} #{lease.version}) " <>
+          "with a result.json for #{inspect(get_in(result, ["package", "name"]))} " <>
+          "#{inspect(get_in(result, ["package", "version"]))}: refused"
+      )
+
+      {:error, :result_mismatch}
+    end
+  end
+
   # A done lease and its Ingest job commit together: if the enqueue fails the
   # lease stays held and the agent's retry of `complete` lands again.
-  defp end_attempt(lease, 0, builder) do
+  defp end_attempt(lease, 0, builder, _params) do
     args = %{
       "source" => "remote",
       "lease_id" => lease.id,
@@ -199,7 +232,14 @@ defmodule PortalWeb.Builder.JobController do
     end
   end
 
-  defp end_attempt(lease, exit_code, _builder), do: Leases.complete(lease, exit_code)
+  # A failing exit's `runner_log` part is the only account of what went wrong
+  # beyond the heartbeat's 4 KiB tail; its tail goes to the request as
+  # `error_log` the way `Portal.Workers.Build` stores its runner log.
+  defp end_attempt(lease, exit_code, _builder, params),
+    do: Leases.complete(lease, exit_code, error_log: runner_log_tail(params["runner_log"]))
+
+  defp runner_log_tail(%Plug.Upload{path: path}), do: Upload.read_log_tail(path)
+  defp runner_log_tail(_other), do: nil
 
   # Which of the run's reported Nerves cache misses the builder may warm into
   # its own cache, for a `done` completion: the portal's rule
@@ -209,12 +249,30 @@ defmodule PortalWeb.Builder.JobController do
   # and this cache is the builder's own, so it is not applied; a repeat warm
   # only downloads what that cache still lacks. A Hex lookup that fails
   # warms nothing this time.
+  # The Hex owner lookups are bounded (`Portal.NervesCache`: at most 16
+  # candidates, stops at the first outage, cached a day), but each is a network
+  # call and the lease is already `done`: past the deadline the builder warms
+  # nothing this time rather than time out its `complete` and retry it.
+  @warm_deadline_ms 10_000
+
   defp warm_pairs(%{} = result, lease) do
-    Portal.NervesCache.warm_pairs(result, recently_warmed: MapSet.new())
-  rescue
-    e ->
-      Logger.warning("warm pairs for #{lease.id} not computed: #{Exception.message(e)}")
-      []
+    task =
+      Task.async(fn ->
+        Portal.NervesCache.warm_pairs(result, recently_warmed: MapSet.new())
+      end)
+
+    case Task.yield(task, @warm_deadline_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, pairs} when is_list(pairs) ->
+        pairs
+
+      {:exit, reason} ->
+        Logger.warning("warm pairs for #{lease.id} not computed: #{inspect(reason)}")
+        []
+
+      nil ->
+        Logger.warning("warm pairs for #{lease.id} not computed within #{@warm_deadline_ms} ms")
+        []
+    end
   end
 
   defp warm_pairs(_result, _lease), do: []

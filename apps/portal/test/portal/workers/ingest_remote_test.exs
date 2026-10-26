@@ -38,7 +38,7 @@ defmodule Portal.Workers.IngestRemoteTest do
     {:ok, request} =
       Portal.ScanRequests.create_once(%{
         package_name: "jason",
-        version: "1.4.4",
+        version: "1.4.1",
         source: :hex_owner,
         status: :accepted
       })
@@ -46,7 +46,7 @@ defmodule Portal.Workers.IngestRemoteTest do
     {:ok, _} =
       Leases.enqueue(%{
         package: "jason",
-        version: "1.4.4",
+        version: "1.4.1",
         image_name: "i",
         image_digest: "sha256:#{String.duplicate("e", 64)}",
         args: %{},
@@ -176,7 +176,11 @@ defmodule Portal.Workers.IngestRemoteTest do
     request: request
   } do
     # A result.json `Ingestion` cannot map.
-    seed_outputs!(lease, %{"run_id" => lease.run_id, "systems" => "not a map"})
+    seed_outputs!(lease, %{
+      "run_id" => lease.run_id,
+      "package" => %{"name" => "jason", "version" => "1.4.1"},
+      "systems" => "not a map"
+    })
 
     assert {:error, _} = perform_job(Ingest, args(lease, builder), attempt: 1)
 
@@ -193,6 +197,28 @@ defmodule Portal.Workers.IngestRemoteTest do
     assert "ingestion failed: " <> _ = updated.error_reason
     refute File.exists?(Upload.lease_dir(lease.id))
     assert run_for(lease) == nil
+  end
+
+  # The complete endpoint refuses such a result; this is the same check once
+  # more, on what is on disk, before it becomes another package's run.
+  test "a result.json for another package fails the lease instead of being ingested", %{
+    builder: builder,
+    lease: lease,
+    request: request
+  } do
+    result =
+      @fixture_result
+      |> put_in(["run_id"], lease.run_id)
+      |> put_in(["package", "name"], "phoenix")
+
+    seed_outputs!(lease, result)
+
+    assert {:cancel, _} = perform_job(Ingest, args(lease, builder))
+    assert Ash.get!(Lease, lease.id, domain: Portal.Builders).state == :failed
+    assert Portal.Catalog.committed_run(lease.run_id) == {:ok, nil}
+    {:ok, updated} = Portal.ScanRequests.get_request(request.id)
+    assert updated.status == :error
+    refute File.exists?(Upload.lease_dir(lease.id))
   end
 
   test "an upload from a builder revoked since is dropped and fails the lease", %{

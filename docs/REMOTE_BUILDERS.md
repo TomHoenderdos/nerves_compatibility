@@ -250,8 +250,13 @@ the identity lives in `/srv/ncc/{ca.pem,client.pem,client-key.pem}`.
     `DOCKER-USER` (IPv6 too when `ip6tables` has the chain): established
     replies, DNS to the resolvers, then drop RFC1918, `100.64.0.0/10`,
     `169.254.0.0/16` (IMDS) and loopback (`fc00::/7`, `fe80::/10`, `::1`
-    on v6), accept TCP 443/80, drop the rest. The agent fails closed: no
-    ruleset, no claim.
+    on v6), accept TCP 443/80, drop the rest. A reinstall builds the chain
+    as `NCC-EGRESS-NEW` and swaps it in, so a build running meanwhile never
+    sees an empty chain. `verify` (before every claim) checks the whole
+    policy, not a few rules: the jump is the *first* rule of `DOCKER-USER`
+    (a rule ahead of it, ufw-docker style, is a bypass), `FORWARD` jumps to
+    `DOCKER-USER`, and the chain is exactly the rules above in order. The
+    agent fails closed: no ruleset, no claim.
     The resolvers are the ones Docker hands the containers: the `dns` list
     of `/etc/docker/daemon.json`, else the non-loopback `nameserver` lines
     of `/etc/resolv.conf`, else (when that only names systemd-resolved's
@@ -260,16 +265,35 @@ the identity lives in `/srv/ncc/{ca.pem,client.pem,client-key.pem}`.
     lookup. When none can be found the install prints
     `egress: resolver unknown, DNS allowed to any destination` and port 53
     stays open to every address; check the agent's boot log for it.
-    The chain only sees what the containers send *through* the host
+    `NCC-EGRESS` only sees what the containers send *through* the host
     (FORWARD). Traffic from a container to the builder host itself --
-    `172.17.0.1`, the VM's own addresses -- goes through INPUT, not
-    `DOCKER-USER`, and is not filtered by it: keep nothing listening on the
-    VM that a build should not reach, or filter INPUT from `docker0`
-    yourself.
+    `172.17.0.1`, the VM's own addresses -- goes through INPUT, so the
+    script also writes chain `NCC-INPUT` first in `INPUT`: established
+    replies, DNS to the resolvers (the host may be one), then no new
+    connection from `docker0` or a `br-*` bridge. A daemon configured with
+    another bridge name is not covered by it; still keep nothing listening
+    on the VM that a build should not reach. `verify` wants `NCC-INPUT`
+    first in `INPUT` too: a host firewall (ufw) that puts its own chains
+    ahead of it fails the check, and the tab shows `egress: missing`.
+    IPv6: when `ip6tables` has no `DOCKER-USER` chain nothing filters v6,
+    so `verify` then requires the daemon's default bridge to have
+    `EnableIPv6: false` (`docker network inspect bridge`); otherwise the
+    builder claims nothing. Give the daemon `"ip6tables": true` or turn
+    bridge IPv6 off.
     On a daemon using the native nftables backend (`DOCKER-USER` absent)
     the builder never claims and the tab shows `egress: missing`.
     `NCC_EGRESS_SCRIPT` replaces the script for tests only; never set it in
     production.
+  - *Hex cache*: every build mounts `<data>/hex-cache` read-write (the
+    local host does too), and the worker seeds each build's private
+    `HEX_HOME` from it. Before every run the agent removes `hex.config`
+    and `cache.ets` from it (`NccAgent.HexCache`), so a build cannot leave
+    a repo, a key or a registry snapshot for the next build to trust; the
+    `packages/` tarballs stay and are checked against the fresh registry.
+  - *Build user*: the agent refuses to start with `NCC_BUILD_USER` unset
+    or naming uid 0: it runs as root, and the container would otherwise
+    build as root on the bind mounts. The cloud-init sets it to the
+    `ncc-build` user.
 
 ## Operating
 
@@ -281,19 +305,26 @@ the identity lives in `/srv/ncc/{ca.pem,client.pem,client-key.pem}`.
 - **Revoke.** The tab's revoke button shows how many runs it will touch.
   It marks the builder revoked (its certificate is refused from the next
   request on, 403 `builder_revoked`), revokes every run it produced, puts
-  its held leases back to `queued`, and enqueues a full rebuild of those
-  packages pinned to the local `:builds` queue (`BulkRebuild`,
-  `pin_local`). Re-adding the machine means a new token.
+  its held leases back to `queued` (waking the other builders' polls),
+  fails its `done` leases whose upload was not ingested yet (ingest would
+  drop them), and enqueues a full rebuild of all those packages pinned to
+  the local `:builds` queue (`BulkRebuild`, `pin_local`). Re-adding the
+  machine means a new token.
 - **Requeue.** A `failed` lease (three failed attempts, a non-ingestible
   upload, the reaper) can be requeued from the tab with a fresh attempt
-  budget. It goes back to remote builders; to build it locally, rebuild
-  the package from the admin instead.
+  budget; it goes back to remote builders. "Requeue locally" hands a
+  `failed` *or still `queued`* lease to a local build instead: the way out
+  for a lease no builder will come back for (none enrolled, or all silent),
+  which the reaper never touches.
 - **Reaper timings.** Every 5 minutes: a `leased` lease without a
-  heartbeat for 10 minutes or held for more than 2 h 30 min (the 2 h build
-  timeout plus slack), or an `uploading` lease without a heartbeat for 60
-  minutes, is requeued, or failed once its attempts are spent (its request
-  is then errored). A reaped lease that the agent later completes gets 409
-  `lease_not_held`.
+  heartbeat for 10 minutes or held for more than 3 h (the 2 h build
+  timeout, the agent's 30 min pull allowance and slack), or an `uploading`
+  lease without a heartbeat for 60 minutes, is requeued, or failed once
+  its attempts are spent (its request is then errored). A reaped lease
+  that the agent later completes gets 409 `lease_not_held`. A requeued
+  lease keeps its upload dir (the next attempt's `files/missing` skips what
+  landed) and the bytes it holds count against the lease's 2 GiB across
+  attempts.
 - **Routing policy** (tab, "Remote building"): `remote_mode` is `auto`
   (default; on while an enrolled builder was seen within 5 minutes, off
   once none was seen for 15, holding its last decision in between), `on`

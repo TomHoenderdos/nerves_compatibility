@@ -11,14 +11,23 @@ defmodule PortalWeb.Builder.EnrolmentController do
   alias Portal.Builders.{CA, RateLimit}
 
   @enrol_per_minute 10
+  # One fetch per agent boot; the limit only keeps an open route from
+  # being a free file server.
+  @ca_per_minute 30
 
   def ca(conn, _params) do
-    case CA.cert_pem() do
-      {:ok, pem} ->
-        conn |> put_resp_content_type("application/x-pem-file") |> send_resp(200, pem)
+    cond do
+      not RateLimit.allow?({:ca, conn.remote_ip}, @ca_per_minute, :timer.minutes(1)) ->
+        error(conn, 429, "rate_limited")
 
-      {:error, _} ->
-        error(conn, 503, "no_ca")
+      true ->
+        case CA.cert_pem() do
+          {:ok, pem} ->
+            conn |> put_resp_content_type("application/x-pem-file") |> send_resp(200, pem)
+
+          {:error, _} ->
+            error(conn, 503, "no_ca")
+        end
     end
   end
 

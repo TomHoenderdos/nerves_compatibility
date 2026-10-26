@@ -10,6 +10,7 @@ defmodule Portal.Builders.Images do
   """
 
   @digest ~r/\Asha256:[0-9a-f]{64}\z/
+  @sha256 ~r/\A[0-9a-f]{64}\z/
 
   @spec path() :: Path.t()
   def path do
@@ -52,9 +53,12 @@ defmodule Portal.Builders.Images do
     with {:ok, doc} <- load(),
          %{"version" => version, "releases" => %{} = releases} <- Map.get(doc, "agent"),
          true <- is_binary(version) do
+      # The agent downloads and runs what these name (after checking the
+      # sha256): only https URLs and well-formed digests leave this file.
       releases =
         for {arch, %{"url" => url, "sha256" => sha}} <- releases,
-            is_binary(url) and is_binary(sha),
+            is_binary(url) and String.starts_with?(url, "https://") and
+              is_binary(sha) and Regex.match?(@sha256, sha),
             into: %{},
             do: {arch, %{url: url, sha256: sha}}
 

@@ -110,9 +110,26 @@ defmodule Portal.Builders.CA do
     end
   end
 
-  @spec cert_pem() :: {:ok, String.t()} | {:error, term()}
+  @doc """
+  The CA certificate as PEM, for the unauthenticated `ca.pem` route. Reads
+  only `ca.pem`: the private key is not touched to answer a request anyone
+  can send.
+  """
+  @spec cert_pem() :: {:ok, String.t()} | {:error, :not_configured | :missing | :unreadable}
+  # Operator-configured path.
+  # sobelow_skip ["Traversal.FileModule"]
   def cert_pem do
-    with {:ok, %{cert: cert}} <- load(), do: {:ok, X509.Certificate.to_pem(cert)}
+    if key_path() do
+      with {:ok, pem} <- File.read(cert_path()),
+           {:ok, cert} <- X509.Certificate.from_pem(pem) do
+        {:ok, X509.Certificate.to_pem(cert)}
+      else
+        {:error, :enoent} -> {:error, :missing}
+        _ -> {:error, :unreadable}
+      end
+    else
+      {:error, :not_configured}
+    end
   end
 
   @doc "Lowercase hex sha256 of the certificate's DER."
@@ -136,10 +153,17 @@ defmodule Portal.Builders.CA do
     end
   end
 
+  # Only the key the agent generates (`NccAgent.Identity`): a P-256 EC key.
+  # Signing whatever key a CSR carries would let a machine enrol with a
+  # short RSA key or an odd curve, and `X509.Certificate.new/5` raises on
+  # types it cannot encode.
+  @p256_curve {1, 2, 840, 10_045, 3, 1, 7}
+
   defp do_issue_client(csr_pem, name, builder_id) do
     with {:ok, %{key: ca_key, cert: ca_cert}} <- load(),
          {:ok, csr} <- X509.CSR.from_pem(csr_pem),
-         true <- X509.CSR.valid?(csr) do
+         true <- X509.CSR.valid?(csr),
+         true <- p256?(X509.CSR.public_key(csr)) do
       cert =
         X509.Certificate.new(
           X509.CSR.public_key(csr),
@@ -161,6 +185,9 @@ defmodule Portal.Builders.CA do
       _ -> {:error, :invalid_csr}
     end
   end
+
+  defp p256?({{:ECPoint, _point}, {:namedCurve, @p256_curve}}), do: true
+  defp p256?(_key), do: false
 
   @spec expires_at(term()) :: DateTime.t()
   def expires_at(cert) do
@@ -187,24 +214,34 @@ defmodule Portal.Builders.CA do
       certfile = server_cert_path()
       keyfile = server_key_path()
 
-      unless server_cert_current?(certfile, keyfile, host, ca_cert),
-        do: issue_server_cert(host, ca_key, ca_cert, certfile, keyfile)
-
-      {:ok, %{certfile: certfile, keyfile: keyfile}}
+      if server_cert_current?(certfile, keyfile, host, ca_cert) do
+        {:ok, %{certfile: certfile, keyfile: keyfile}}
+      else
+        with :ok <- issue_server_cert(host, ca_key, ca_cert, certfile, keyfile),
+             do: {:ok, %{certfile: certfile, keyfile: keyfile}}
+      end
     end
   end
 
   defp check_host(host), do: if(valid_name?(host), do: :ok, else: {:error, :invalid_host})
 
+  # A CA dir the service cannot write (wrong owner, disk full) is an error
+  # the listener reports and runs without, never a crash of the application
+  # that also serves the public site.
   # sobelow_skip ["Traversal.FileModule"]
   defp issue_server_cert(host, ca_key, ca_cert, certfile, keyfile) do
     key = X509.PrivateKey.new_ec(:secp256r1)
 
+    # serverAuth only: the TLS layer then refuses this certificate as a
+    # client certificate, whether or not a builder row exists for it.
     cert =
       X509.Certificate.new(X509.PublicKey.derive(key), "/CN=#{host}", ca_cert, ca_key,
         template: :server,
         validity: @server_days,
-        extensions: [subject_alt_name: X509.Certificate.Extension.subject_alt_name([host])]
+        extensions: [
+          subject_alt_name: X509.Certificate.Extension.subject_alt_name([host]),
+          ext_key_usage: X509.Certificate.Extension.ext_key_usage([:serverAuth])
+        ]
       )
 
     # Stage both before either goes live. A crash between the renames
@@ -215,6 +252,9 @@ defmodule Portal.Builders.CA do
     File.rename!(key_tmp, keyfile)
     File.rename!(cert_tmp, certfile)
     :ok
+  rescue
+    e in [File.Error, MatchError] ->
+      {:error, {:server_cert, Exception.message(e)}}
   end
 
   # sobelow_skip ["Traversal.FileModule"]

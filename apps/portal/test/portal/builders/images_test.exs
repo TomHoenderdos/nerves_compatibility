@@ -21,7 +21,11 @@ defmodule Portal.Builders.ImagesTest do
    "images": {"ncc-worker": {"name": "ghcr.io/tomhoenderdos/ncc-worker", "tag": "abc",
                              "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}},
    "agent": {"version": "1761400000.abcdefabcdef",
-             "releases": {"x86_64": {"url": "https://example.com/a.tar.gz", "sha256": "aa"}}}}
+             "releases": {"x86_64": {"url": "https://example.com/a.tar.gz",
+                                     "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                          "aarch64": {"url": "http://example.com/b.tar.gz",
+                                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+                          "riscv64": {"url": "https://example.com/c.tar.gz", "sha256": "cc"}}}}
   """
 
   test "reads the worker image and the agent release", %{path: path} do
@@ -30,8 +34,11 @@ defmodule Portal.Builders.ImagesTest do
     assert %{name: "ghcr.io/tomhoenderdos/ncc-worker", digest: "sha256:" <> _, tag: "abc"} =
              Images.worker_image()
 
-    assert %{version: "1761400000.abcdefabcdef", releases: %{"x86_64" => %{url: _, sha256: "aa"}}} =
-             Images.agent()
+    # The agent downloads and runs these: only https URLs with a full sha256
+    # get through (the http one and the short digest are dropped).
+    assert %{version: "1761400000.abcdefabcdef", releases: releases} = Images.agent()
+    assert Map.keys(releases) == ["x86_64"]
+    assert releases["x86_64"].sha256 == String.duplicate("a", 64)
 
     assert Images.min_agent_version() == "1761400000.abcdefabcdef"
   end

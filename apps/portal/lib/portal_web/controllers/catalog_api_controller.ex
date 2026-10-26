@@ -123,10 +123,12 @@ defmodule PortalWeb.CatalogApiController do
   # configured blob store, never taken from request params or stored disk_path.
   # `present?/1` also rejects a symlink before serving a worker-produced
   # artifact, and is the same check the manifest applies to every file it lists.
+  # `published_sha256?/1` is the manifests' publication gate: a blob only a
+  # non-publishing or revoked remote builder uploaded is stored but not served.
   # sobelow_skip ["Traversal.SendFile"]
   def precompiled_file(conn, %{"sha256" => sha256}) do
     with true <- Portal.ArtifactStore.valid_sha256?(sha256),
-         artifact when not is_nil(artifact) <- Catalog.artifact_by_sha256(sha256),
+         true <- Catalog.published_sha256?(sha256),
          true <- Portal.ArtifactStore.present?(sha256) do
       path = Portal.ArtifactStore.blob_path(sha256)
 

@@ -93,6 +93,30 @@ defmodule Portal.Workers.RemoteBuildTest do
     assert [_, _] = Ash.read!(Lease, domain: Portal.Builders)
   end
 
+  # A `done` lease is in flight until its ingest commits the run: a second
+  # job for the same build in that window must not lease it again.
+  test "waits on a done lease whose run is not ingested yet" do
+    args = %{"package" => "jason", "version" => "1.4.4"}
+    assert :ok = perform_job(RemoteBuild, args)
+
+    builder =
+      Portal.Builders.Builder
+      |> Ash.Changeset.for_create(:enrol, %{
+        name: "rb-done",
+        fingerprint: "fp-rb-done",
+        cert_pem: "p",
+        cert_expires_at: DateTime.utc_now(),
+        enrolled_at: DateTime.utc_now()
+      })
+      |> Ash.create!(domain: Portal.Builders)
+
+    {:ok, lease} = Portal.Builders.Leases.claim(builder)
+    {:ok, :done, _} = Portal.Builders.Leases.complete(lease, 0)
+
+    assert {:snooze, 120} = perform_job(RemoteBuild, args)
+    assert [_] = Ash.read!(Lease, domain: Portal.Builders)
+  end
+
   test "the snooze backoff is capped at an hour" do
     assert RemoteBuild.backoff(%Oban.Job{attempt: 40, max_attempts: 60}) <= 3600
   end
