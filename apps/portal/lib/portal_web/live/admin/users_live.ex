@@ -197,12 +197,18 @@ defmodule PortalWeb.Admin.UsersLive do
                 :let={user}
                 field="password_set"
                 label="Password"
-                filter
+                filter={[type: :boolean, labels: %{true => "Set", false => "No password"}]}
                 class="whitespace-nowrap text-sm text-base-content/70"
               >
                 {if user.password_set, do: "Set", else: "No password"}
               </:col>
-              <:col :let={user} field="is_admin" label="Status" filter sort>
+              <:col
+                :let={user}
+                field="is_admin"
+                label="Status"
+                filter={[type: :boolean, labels: %{true => "Admin", false => "Not admin"}]}
+                sort
+              >
                 <div class="flex flex-wrap gap-1">
                   <span :if={user.is_admin} class="badge badge-sm badge-primary">admin</span>
                   <span
