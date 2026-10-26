@@ -864,17 +864,32 @@ defmodule Portal.Builder do
   defp prefetch_build_cache(job) do
     with dir when is_binary(dir) <- build_cache_dir(job),
          true <- L2.enabled?() do
-      counts = L2.prefetch(dir, Path.basename(dir))
-
       line =
-        "Build cache L2 prefetch for #{job.run_id}: #{counts.downloaded} downloaded, " <>
-          "#{counts.discarded} discarded, #{counts.failed} failed, #{counts.skipped} skipped " <>
-          "of #{counts.candidates} candidates (#{counts.bytes} bytes)"
+        if prefetch_space?(dir) do
+          counts = L2.prefetch(dir, Path.basename(dir))
+
+          "Build cache L2 prefetch for #{job.run_id}: #{counts.downloaded} downloaded, " <>
+            "#{counts.discarded} discarded, #{counts.failed} failed, #{counts.skipped} skipped " <>
+            "of #{counts.candidates} candidates (#{counts.bytes} bytes)"
+        else
+          "Build cache L2 prefetch for #{job.run_id} skipped: low disk space on the build cache filesystem"
+        end
 
       Logger.info(line)
       {:ok, line <> "\n\n"}
     else
       _ -> {:ok, ""}
+    end
+  end
+
+  # The prefetch writes up to its byte budget plus the extracted trees into
+  # the cache root, which may be another filesystem than scratch, so it gets
+  # the same headroom check as the build (`:prefetch_min_free_bytes`, default
+  # `min_free_bytes/0`). A cache root `df` cannot measure is not refused.
+  defp prefetch_space?(dir) do
+    case free_bytes(dir) do
+      nil -> true
+      free -> free >= config(:prefetch_min_free_bytes, min_free_bytes())
     end
   end
 

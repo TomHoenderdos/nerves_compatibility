@@ -891,11 +891,7 @@ defmodule Portal.BuilderTest do
       %{s: s, cache: cache, key: key}
     end
 
-    test "restores the image's entries into the local cache before the run", %{
-      s: s,
-      cache: cache,
-      key: key
-    } do
+    defp put_l2(s) do
       Application.put_env(:portal, L2,
         endpoint: s.endpoint,
         bucket: s.bucket,
@@ -903,6 +899,14 @@ defmodule Portal.BuilderTest do
         access_key: s.access_key,
         secret_key: s.secret_key
       )
+    end
+
+    test "restores the image's entries into the local cache before the run", %{
+      s: s,
+      cache: cache,
+      key: key
+    } do
+      put_l2(s)
 
       assert {:ok, %{exit_code: 0, log: log}} = Builder.build(@build_args)
 
@@ -912,6 +916,16 @@ defmodule Portal.BuilderTest do
       # The docker header still opens the log, so `LogSanitizer` strips it.
       assert log =~ ~r/\A=+\nPortal.Builder - Docker Execution Log/
       refute Portal.Catalog.LogSanitizer.runner_excerpt(log) =~ "Command: docker"
+    end
+
+    test "with too little free space under the cache it skips the prefetch", %{s: s} do
+      put_l2(s)
+      current = Application.get_env(:portal, Portal.Builder)
+      put_builder([prefetch_min_free_bytes: 1_000_000_000_000_000_000], current)
+
+      assert {:ok, %{exit_code: 0, log: log}} = Builder.build(@build_args)
+      assert log =~ "Build cache L2 prefetch for run-1 skipped: low disk space"
+      assert FakeS3.requests(s) == []
     end
 
     test "with L2 off the build neither prefetches nor contacts the store", %{s: s} do

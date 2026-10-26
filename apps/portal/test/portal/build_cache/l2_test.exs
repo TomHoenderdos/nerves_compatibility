@@ -190,6 +190,10 @@ defmodule Portal.BuildCache.L2Test do
       bytes
     end
 
+    defp object_gets(s) do
+      for {"GET", path, _query} <- FakeS3.requests(s), String.contains?(path, ".tar.gz"), do: path
+    end
+
     defp key(n), do: String.pad_leading(Integer.to_string(n), 64, "0")
 
     defp sha_meta(body),
@@ -377,23 +381,77 @@ defmodule Portal.BuildCache.L2Test do
       assert Enum.sort(File.ls!(slug_dir)) == [key(1), key(3)]
     end
 
-    test "the time budget stops the loop", %{s: s, cfg: cfg, tmp: tmp, slug_dir: slug_dir} do
+    test "the time budget stops the loop, skipping rather than starting a GET it cannot finish",
+         %{s: s, cfg: cfg, tmp: tmp, slug_dir: slug_dir} do
       for i <- 1..3, do: seed(s, tmp, key(i))
+      FakeS3.on_get(s, fn _ -> Process.sleep(600) end)
+
+      log =
+        capture_log(fn ->
+          result = L2.prefetch(slug_dir, "sha256_abc", config: cfg, budget_ms: 1500)
+          # One GET fits; after it under a second is left, too little to start another.
+          assert %{downloaded: 1, skipped: 2, failed: 0} = result
+        end)
+
+      refute log =~ "failed"
+      assert length(object_gets(s)) == 1
+    end
+
+    test "a listing slower than the budget counts as a failed listing", %{
+      s: s,
+      cfg: cfg,
+      tmp: tmp,
+      slug_dir: slug_dir
+    } do
+      seed(s, tmp, key(1))
       test_pid = self()
 
-      FakeS3.on_get(s, fn _ ->
-        Process.sleep(60)
-        send(test_pid, :get_answered)
+      FakeS3.on_list(s, fn _ ->
+        Process.sleep(1000)
+        send(test_pid, :list_answered)
       end)
 
-      result = L2.prefetch(slug_dir, "sha256_abc", config: cfg, budget_ms: 50)
-      # The client gave up on the GET; let the stub's handler finish before
-      # the test stops the stub under it.
-      assert_receive :get_answered, 2000
+      {micros, result} =
+        :timer.tc(fn -> L2.prefetch(slug_dir, "sha256_abc", config: cfg, budget_ms: 100) end)
+
+      assert %{list_failed: true, downloaded: 0} = result
+      assert micros < 700_000
+      assert %{list_failures: 1} = Stats.snapshot()
+      # Let the stub's handler finish before the test stops the stub under it.
+      assert_receive :list_answered, 3000
       Process.sleep(50)
-      assert result.downloaded < 3
-      assert result.skipped + result.downloaded + result.failed == 3
-      assert result.skipped >= 1
+    end
+
+    test "a store answering 5xx on GET stops the loop at the first object", %{
+      s: s,
+      cfg: cfg,
+      tmp: tmp,
+      slug_dir: slug_dir
+    } do
+      for i <- 1..3, do: seed(s, tmp, key(i))
+      FakeS3.set_fault(s, {:get, :status, 503})
+      assert %{failed: 1, skipped: 2} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      assert length(object_gets(s)) == 1
+      refute Enum.any?(1..3, &Stats.bad?(key(&1)))
+    end
+
+    test "five failures in a row stop the loop; a missing object alone does not", %{
+      s: s,
+      cfg: cfg,
+      tmp: tmp,
+      slug_dir: slug_dir
+    } do
+      for i <- 1..7, do: seed(s, tmp, key(i))
+      # Every object vanishes between the listing and its GET: a 404 each.
+      FakeS3.on_get(s, fn object -> FakeS3.delete_object(s, object) end)
+      assert %{failed: 5, skipped: 2} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      assert length(object_gets(s)) == 5
+    end
+
+    test "an empty object is refused and marked bad", %{s: s, cfg: cfg, slug_dir: slug_dir} do
+      FakeS3.put_object(s, "sha256_abc/#{key(1)}.tar.gz", "", sha_meta(""))
+      assert %{failed: 1} = L2.prefetch(slug_dir, "sha256_abc", config: cfg)
+      assert Stats.bad?(key(1))
     end
 
     test "an object over the per-object cap is skipped", %{
@@ -457,6 +515,60 @@ defmodule Portal.BuildCache.L2Test do
                L2.prefetch(slug_dir, "sha256_abc", config: cfg, budget_bytes: small + 10)
 
       assert File.ls!(slug_dir) == [key(2)]
+    end
+  end
+
+  describe "Prefetch.classify/1" do
+    alias Portal.BuildCache.L2.Prefetch
+
+    test "what the object did is refused; what this host or the store did is not" do
+      for reason <- [
+            :no_sha256_header,
+            :too_large,
+            :empty_archive,
+            :empty,
+            {:sha256_mismatch, "a", "b"},
+            {:tar, :eof},
+            {:tar, {~c"x", :unsafe_path}},
+            {:structure, :symlink},
+            {:member_type, :symlink, "x"},
+            {:member_name, "x"},
+            {:links, {:bad_target, "x"}},
+            {:links, :not_a_map}
+          ] do
+        assert {:refused, _} = Prefetch.classify(reason), inspect(reason)
+      end
+
+      for reason <- [
+            {:tar, :enospc},
+            {:tar, :eacces},
+            {:links, :eacces},
+            {:links, :enospc},
+            {:links, :eio},
+            :not_found,
+            :eexist,
+            {:rename, :exdev}
+          ] do
+        assert {:failed, :go} = Prefetch.classify(reason), inspect(reason)
+      end
+    end
+
+    test "a failing store stops the loop" do
+      for reason <- [
+            :timeout,
+            {:status, 401},
+            {:status, 403},
+            {:status, 500},
+            {:status, 503},
+            {:exit, :killed},
+            {:exception, "boom"},
+            %Req.TransportError{reason: :econnrefused}
+          ] do
+        assert {:failed, :stop} = Prefetch.classify(reason), inspect(reason)
+      end
+
+      assert {:failed, :go} = Prefetch.classify({:status, 404})
+      assert {:failed, :go} = Prefetch.classify({:status, 400})
     end
   end
 end
