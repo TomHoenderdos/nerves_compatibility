@@ -231,26 +231,83 @@ defmodule Portal.Workers.SweepTest do
       assert log =~ "current image digest unresolved"
     end
 
-    test "removes abandoned .tmp staging trees inside a live slug", %{root: root, cache: cache} do
+    defp staging_opts(root, cache) do
+      opts(root,
+        build_cache: cache,
+        current_digest: "sha256:0b9beb41",
+        nerves_cache: nil,
+        hex_cache: nil,
+        host: "box-a"
+      )
+    end
+
+    defp age_posix(path, hours), do: File.touch!(path, div(@now, 1000) - hours * 3600)
+
+    test "removes an old abandoned staging tree of our own host and a legacy one", %{
+      root: root,
+      cache: cache
+    } do
       live = slug(cache, "sha256_0b9beb41", age_hours: 2)
-      staging = Path.join(live, "jason-1.4.1.tmp.a1b2c3d4e5f60718")
+      legacy = Path.join(live, "jason-1.4.1.tmp.a1b2c3d4e5f60718")
+      ours = Path.join(live, "jason-1.4.1.tmp.box-a.a1b2c3d4e5f60718")
+      tarball = Path.join(live, "jason-1.4.1.tmp.box-a.a1b2c3d4e5f60718.tar.gz")
       real = Path.join(live, "jason-1.4.1")
-      File.mkdir_p!(staging)
+      File.mkdir_p!(legacy)
+      File.mkdir_p!(ours)
+      File.write!(tarball, "gz")
       File.mkdir_p!(real)
+      for p <- [legacy, ours, tarball], do: age_posix(p, 4)
+
+      assert :ok = Sweep.run(staging_opts(root, cache))
+
+      refute File.exists?(legacy)
+      refute File.exists?(ours)
+      refute File.exists?(tarball)
+      # The completed entry is the whole reason the cache exists.
+      assert File.exists?(real)
+    end
+
+    test "keeps a staging tree younger than the scratch max age", %{root: root, cache: cache} do
+      live = slug(cache, "sha256_0b9beb41", age_hours: 2)
+      fresh = Path.join(live, "jason-1.4.1.tmp.box-a.a1b2c3d4e5f60718")
+      File.mkdir_p!(fresh)
+      age_posix(fresh, 1)
+
+      assert :ok = Sweep.run(staging_opts(root, cache))
+
+      assert File.exists?(fresh)
+    end
+
+    test "never prunes another host's staging, however old", %{root: root, cache: cache} do
+      live = slug(cache, "sha256_0b9beb41", age_hours: 2)
+      theirs = Path.join(live, "jason-1.4.1.tmp.box-b.a1b2c3d4e5f60718")
+      File.mkdir_p!(theirs)
+      age_posix(theirs, 40)
+
+      assert :ok = Sweep.run(staging_opts(root, cache))
+
+      assert File.exists?(theirs)
+    end
+
+    test "a host name with dots is sanitised the same way on both sides", %{
+      root: root,
+      cache: cache
+    } do
+      live = slug(cache, "sha256_0b9beb41", age_hours: 2)
+      ours = Path.join(live, "jason-1.4.1.tmp.box-home-arpa.a1b2c3d4e5f60718")
+      File.mkdir_p!(ours)
+      age_posix(ours, 4)
 
       assert :ok =
                Sweep.run(
-                 opts(root,
-                   build_cache: cache,
-                   current_digest: "sha256:0b9beb41",
-                   nerves_cache: nil,
-                   hex_cache: nil
+                 Keyword.put(
+                   staging_opts(root, cache),
+                   :host,
+                   Portal.BuildCache.Staging.sanitize_host("box.home.arpa")
                  )
                )
 
-      refute File.exists?(staging)
-      # The completed entry is the whole reason the cache exists.
-      assert File.exists?(real)
+      refute File.exists?(ours)
     end
 
     test "refuses to prune a build cache that overlaps a protected cache", %{
