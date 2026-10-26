@@ -136,6 +136,103 @@ defmodule Portal.BulkRebuildTest do
     assert all_enqueued(worker: Portal.Workers.Backfill) == []
   end
 
+  # The Maintenance page's form, as `opts_from_params/2` turns it into `run/1`
+  # options. Moved from the controller unchanged, so these pin what it did.
+  describe "opts_from_params/2" do
+    test "the defaults, for an empty or forged form" do
+      for params <- [
+            %{},
+            %{"limit" => "0", "what" => "nonsense", "order" => "x", "status" => "x"},
+            %{"limit" => "20001"},
+            %{"limit" => %{"x" => "1"}, "what" => ["full"], "systems" => %{"a" => "b"}}
+          ] do
+        assert BulkRebuild.opts_from_params(params, "admin") == [
+                 limit: 100,
+                 order: :stalest,
+                 status: nil,
+                 what: :full,
+                 dry_run: false,
+                 created_by: "admin"
+               ]
+      end
+    end
+
+    test "reads each field the form has" do
+      assert BulkRebuild.opts_from_params(
+               %{
+                 "limit" => "25",
+                 "order" => "catalog",
+                 "status" => "fail",
+                 "what" => "argus_only",
+                 "mode" => "dry_run"
+               },
+               "admin"
+             ) == [
+               limit: 25,
+               order: :catalog,
+               status: :fail,
+               what: :argus_only,
+               dry_run: true,
+               created_by: "admin"
+             ]
+    end
+
+    test "targets keep only known systems, and none ticked is :no_targets" do
+      params = %{"what" => "targets", "systems" => ["nerves_system_rpi4", "nerves_system_nope"]}
+
+      assert BulkRebuild.opts_from_params(params, "a")[:what] ==
+               {:targets, ["nerves_system_rpi4"]}
+
+      assert BulkRebuild.opts_from_params(%{"what" => "targets"}, "a")[:what] == :no_targets
+
+      assert BulkRebuild.opts_from_params(%{"what" => "targets", "systems" => ["nope"]}, "a")[
+               :what
+             ] == :no_targets
+    end
+  end
+
+  describe "bulk_cancel/2" do
+    setup do
+      :ok = Portal.AdminEvents.subscribe(:sweeps)
+      :ok
+    end
+
+    test "cancels every sweep the query selects, totals the jobs, and announces once" do
+      {:ok, %{sweep_id: a}} = BulkRebuild.run(limit: 1, names: ["bc_a", "bc_a2"])
+      {:ok, %{sweep_id: b}} = BulkRebuild.run(limit: 1, names: ["bc_b"])
+      {:ok, %{sweep_id: c}} = BulkRebuild.run(limit: 1, names: ["bc_c"])
+      flush_sweep_events()
+
+      query = Ash.Query.filter_input(Portal.Catalog.BulkSweep, %{id: [in: [a, b]]})
+
+      assert {:ok, %{ok: 3, failed: []}} = BulkRebuild.bulk_cancel(query, [])
+      assert_receive {:admin_changed, :sweeps}
+      refute_receive {:admin_changed, :sweeps}
+
+      assert %{cancelled: 2} = BulkRebuild.status(a)
+      assert %{cancelled: 1} = BulkRebuild.status(b)
+      assert %{cancelled: 0, intake: 1} = BulkRebuild.status(c)
+    end
+
+    test "nothing waiting cancels nothing and announces nothing" do
+      {:ok, %{sweep_id: a}} = BulkRebuild.run(limit: 1, names: ["bc_done"])
+      {:ok, 1} = BulkRebuild.cancel(a)
+      flush_sweep_events()
+
+      query = Ash.Query.filter_input(Portal.Catalog.BulkSweep, %{id: [in: [a]]})
+      assert {:ok, %{ok: 0, failed: []}} = BulkRebuild.bulk_cancel(query, [])
+      refute_receive {:admin_changed, :sweeps}
+    end
+
+    defp flush_sweep_events do
+      receive do
+        {:admin_changed, :sweeps} -> flush_sweep_events()
+      after
+        0 -> :ok
+      end
+    end
+  end
+
   describe "a completed RemoteBuild job" do
     defp remote_job!(sweep_id, package, state) do
       request_id = Ecto.UUID.generate()

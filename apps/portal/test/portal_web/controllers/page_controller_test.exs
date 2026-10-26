@@ -409,108 +409,12 @@ defmodule PortalWeb.PageControllerTest do
   # checked for the gate as well as for the action.
   test "the new admin routes are all closed to anonymous visitors", %{conn: conn} do
     for path <- [
-          ~p"/admin/update-check",
           ~p"/admin/argus",
-          ~p"/admin/bulk-rebuild",
-          ~p"/admin/bulk-rebuild/#{Ecto.UUID.generate()}/cancel",
           ~p"/admin/maintenance/toolchain-sweep",
           ~p"/admin/maintenance/repair-file-modes"
         ] do
       assert redirected_to(post(recycle(conn), path)) == ~p"/login"
     end
-  end
-
-  test "POST /admin/update-check queues a run, and says so", %{conn: conn} do
-    {conn, _admin} = signed_in_admin(conn, "admin_update_check")
-
-    conn = post(conn, ~p"/admin/update-check", %{})
-
-    assert html_response(conn, 200) =~ "Update check queued"
-    assert Portal.Admin.update_check_status().pending?
-  end
-
-  test "POST /admin/update-check with mode=dry_run queues nothing but a report", %{conn: conn} do
-    {conn, _admin} = signed_in_admin(conn, "admin_update_dry")
-
-    conn = post(conn, ~p"/admin/update-check", %{"mode" => "dry_run"})
-
-    assert html_response(conn, 200) =~ "queues nothing"
-  end
-
-  test "the maintenance section carries the update check", %{conn: conn} do
-    {conn, _admin} = signed_in_admin(conn, "admin_panels")
-
-    maintenance = html_response(get(conn, ~p"/admin/maintenance"), 200)
-    assert maintenance =~ ~s(action="/admin/update-check")
-    assert maintenance =~ "hex.pm update check"
-  end
-
-  test "the maintenance page has the bulk rebuild form", %{conn: conn} do
-    {conn, _} = signed_in_admin(conn, "admin_bulk_form")
-    html = html_response(get(conn, ~p"/admin/maintenance"), 200)
-    assert html =~ ~s(action="/admin/bulk-rebuild")
-    assert html =~ "nerves_system_rpi4"
-    assert html =~ ~r/data-confirm="[^"]*forced Docker builds/
-  end
-
-  test "a bulk rebuild dry run says how many it would queue", %{conn: conn} do
-    {conn, _} = signed_in_admin(conn, "admin_bulk_dry")
-
-    conn =
-      post(conn, ~p"/admin/bulk-rebuild", %{
-        "limit" => "10",
-        "what" => "full",
-        "mode" => "dry_run"
-      })
-
-    assert redirected_to(conn) == ~p"/admin/maintenance"
-    assert html_response(get(conn, ~p"/admin/maintenance"), 200) =~ "would rebuild 0 packages"
-  end
-
-  test "starting a bulk rebuild lists the sweep with a cancel button", %{conn: conn} do
-    {conn, _} = signed_in_admin(conn, "admin_bulk_run")
-
-    {:ok, _} =
-      Portal.Catalog.Ingestion.ingest(
-        %{
-          "package" => %{"name" => "bulkweb", "version" => "1.0.0"},
-          "finished_at" => "2026-10-10T10:00:00Z",
-          "systems" => %{"host" => %{"status" => "pass"}}
-        },
-        %{run_id: "bw-1", image_digest: "sha256:x", files_dir: System.tmp_dir!()}
-      )
-
-    conn =
-      post(conn, ~p"/admin/bulk-rebuild", %{
-        "limit" => "10",
-        "what" => "argus_only",
-        "mode" => "run"
-      })
-
-    # Redirected, so refreshing the page cannot start the sweep again.
-    assert redirected_to(conn) == ~p"/admin/maintenance"
-
-    html = html_response(get(conn, ~p"/admin/maintenance"), 200)
-    assert html =~ "Bulk rebuild queued: 1 package"
-    assert html =~ "argus only"
-    assert html =~ "Remaining"
-    assert html =~ "Cancelled also includes builds stopped"
-    assert html =~ ~r{action="/admin/bulk-rebuild/[0-9a-f-]+/cancel"}
-
-    [sweep] = Portal.BulkRebuild.recent()
-    conn = post(conn, ~p"/admin/bulk-rebuild/#{sweep.id}/cancel")
-    assert redirected_to(conn) == ~p"/admin/maintenance"
-    assert html_response(get(conn, ~p"/admin/maintenance"), 200) =~ "Cancelled 1 waiting jobs."
-  end
-
-  test "targets without any system selected is refused", %{conn: conn} do
-    {conn, _} = signed_in_admin(conn, "admin_bulk_notargets")
-
-    conn =
-      post(conn, ~p"/admin/bulk-rebuild", %{"limit" => "10", "what" => "targets", "mode" => "run"})
-
-    assert redirected_to(conn) == ~p"/admin/maintenance"
-    assert html_response(get(conn, ~p"/admin/maintenance"), 200) =~ "Pick at least one target"
   end
 
   test "POST /admin/argus saves the settings and shows them", %{conn: conn} do

@@ -94,11 +94,7 @@ defmodule PortalWeb.Router do
     get "/admin", PageController, :admin
     get "/admin/failures", PageController, :admin_failures
     get "/admin/argus", PageController, :admin_argus
-    get "/admin/maintenance", PageController, :admin_maintenance
     get "/admin/monitor", PageController, :oban_embed
-    post "/admin/update-check", PageController, :admin_update_check
-    post "/admin/bulk-rebuild", PageController, :admin_bulk_rebuild
-    post "/admin/bulk-rebuild/:id/cancel", PageController, :admin_cancel_sweep
     post "/admin/maintenance/revoke-run", PageController, :admin_revoke_run
     post "/admin/maintenance/toolchain-sweep", PageController, :admin_toolchain_sweep
     post "/admin/maintenance/repair-file-modes", PageController, :admin_repair_file_modes
@@ -203,6 +199,7 @@ defmodule PortalWeb.Router do
       live "/users", PortalWeb.Admin.UsersLive, :index
       live "/queue", PortalWeb.Admin.QueueLive, :index
       live "/builders", PortalWeb.Admin.BuildersLive, :index
+      live "/maintenance", PortalWeb.Admin.MaintenanceLive, :index
     end
   end
 
