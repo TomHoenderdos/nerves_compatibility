@@ -235,7 +235,44 @@ rather than the `nft` file the spec names; the bridge subnet is dropped
 through `172.16.0.0/12` only; the farm is the worker's and the warm list
 comes back at `complete`, as described above.
 
-RE_REVIEW_PLACEHOLDER
+### Re-review of the fixes
+
+Each reviewer re-read the diff of the fixes for its layer (commits
+`77d935f`, `7d18312`), then once more after the follow-ups (`5d8c2cc` and
+the final commit). Outcome:
+
+- **Layer 1:** all six fixes confirmed closed. New low: `CA.stage/3`
+  ignored `IO.binwrite/2`'s result, so an ENOSPC short write could rename a
+  truncated key into place. Fixed (checked write and close).
+- **Layer 2:** all fixes confirmed closed. Three regressions from the fixes,
+  all fixed and re-confirmed: "Requeue locally" of a queued lease dropped
+  its request and leaked its upload dir (now carries `scan_request_id` and
+  cleans up); the lease wake-up broadcasts had moved inside transactions
+  (now sent after commit, from `RemoteBuild` and from revoke); the warm
+  task was linked, so a raise in the Hex lookup killed the request (the task
+  rescues). Final pass: no new findings.
+- **Layer 3:** all fixes confirmed closed. Follow-ups, fixed: the
+  `max_files` budget was per batch, not per lease (batches of one lease now
+  run one at a time; the first version of that lock had the lease id in
+  `:global`'s requester position, which the final pass caught and which is
+  corrected); the same linked warm task; the stored runner-log tail was
+  1 MiB rather than the documented 4 KiB. Noted, not changed: a mismatched
+  result.json is written under `out/` before it is refused (harmless,
+  `load_run/1` re-checks and a later `complete` rewrites it).
+- **Layer 4:** all fixes confirmed closed. Follow-ups, fixed: the committed
+  first version of the INPUT chain ended in DROP as the first rule of
+  `INPUT`, an operator ssh lockout; it is now entered only from
+  `docker0`/`br-+`. A `-NEW` chain left by an install that died mid-swap
+  would have been flushed live by the next install (recovery path added
+  and tested); `Docker.gone?/2` treated an unreachable daemon as a gone
+  container (only "No such container" counts now); `00:1000` passed the
+  root check (integers parsed); enrolment followed redirects with the token
+  (off); the DNS-accept check in verify was a loose glob (anchored regex);
+  one Hex cache per slot so the scrub holds with `NCC_SLOTS > 1`; the upload
+  caps count tar bytes. Final pass: one low residual (a `grep -q` under
+  pipefail in the recovery check), fixed by reading the chain into a
+  variable first.
+
 
 
 ## What an operator still has to do by hand to go live

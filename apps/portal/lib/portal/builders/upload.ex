@@ -116,8 +116,12 @@ defmodule Portal.Builders.Upload do
   # two batches running at once could each spend the whole remainder. The
   # agent sends its batches one after the other anyway; a second connection
   # simply waits.
+  # `:global`'s lock id is `{resource, requester}`: the lease is the
+  # resource and this request process the requester, so only batches of the
+  # same lease queue behind each other, and a request that dies mid-batch
+  # releases the lock.
   defp one_batch_at_a_time(lease_id, fun) do
-    :global.trans({{__MODULE__, :batch}, lease_id}, fun, [node()], :infinity)
+    :global.trans({{__MODULE__, :batch, lease_id}, self()}, fun, [node()], :infinity)
   end
 
   # The reservation is settled in `after`, from a count the reader keeps as
