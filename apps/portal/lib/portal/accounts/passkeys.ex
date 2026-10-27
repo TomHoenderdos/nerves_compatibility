@@ -62,7 +62,18 @@ defmodule Portal.Accounts.Passkeys do
         {:error, :not_found}
 
       passkey ->
-        Ash.destroy!(passkey, domain: Portal.Accounts)
+        # A removed passkey may be a lost or stolen one, so every session it
+        # could have opened ends with it: all of the user's sessions, since a
+        # cookie does not record which credential opened it. The caller keeps
+        # its own (`PortalWeb.UserAuth.restamp_session/2`). One transaction,
+        # so a passkey never goes without its sessions going too.
+        {:ok, _user} =
+          Portal.Repo.transaction(fn ->
+            Ash.destroy!(passkey, domain: Portal.Accounts)
+            {:ok, user} = Portal.Accounts.revoke_sessions(user)
+            user
+          end)
+
         # The last passkey of an admin is their `/admin` access
         # (`PortalWeb.Plugs.RequireAdmin`). An admin page open on it must
         # mount again to find that out, so every one of the user's live

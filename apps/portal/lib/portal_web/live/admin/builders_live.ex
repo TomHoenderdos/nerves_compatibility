@@ -35,6 +35,7 @@ defmodule PortalWeb.Admin.BuildersLive do
        page_description: "Administration.",
        user_id: session["user_id"],
        login_method: session["login_method"],
+       session_started_at: session["session_started_at"],
        token: nil,
        token_form: to_form(%{"name" => ""})
      )

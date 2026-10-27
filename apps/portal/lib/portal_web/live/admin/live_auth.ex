@@ -7,15 +7,18 @@ defmodule PortalWeb.Admin.LiveAuth do
   The re-check is the point. `live_session :admin`'s `on_mount` runs the admin
   policy when the page mounts, and the socket keeps the user it found there.
   A click or a bulk action is checked again here against the user as the
-  database has them now (`PortalWeb.Plugs.RequireAdmin.check_session/2`), as
+  database has them now (`PortalWeb.Plugs.RequireAdmin.check_session/3`), as
   the controller pages these replace checked every request: an admin demoted
   or stripped of their passkey while the page is open is refused on the next
   click, not when the socket happens to reconnect. Cinder's own paging and
   filtering, which never pass through here, are cut off by disconnecting the
   socket instead (`Portal.Accounts.disconnect_live_sockets/1`).
 
-  Each page keeps `:user_id` and `:login_method` from its session in its
-  assigns for this; nothing here reads them from anywhere else.
+  Each page keeps `:user_id`, `:login_method` and `:session_started_at` from
+  its session in its assigns for this; nothing here reads them from anywhere
+  else. The start time is what refuses a click from a page whose sessions
+  were revoked (`Portal.Accounts.revoke_sessions/1`) and that missed the
+  disconnect.
   """
 
   import Phoenix.Component, only: [assign: 3]
@@ -32,9 +35,10 @@ defmodule PortalWeb.Admin.LiveAuth do
           result | {:noreply, Phoenix.LiveView.Socket.t()}
         when result: term()
   def as_admin(socket, fun) do
-    %{user_id: user_id, login_method: login_method} = socket.assigns
+    %{user_id: user_id, login_method: login_method, session_started_at: started_at} =
+      socket.assigns
 
-    case RequireAdmin.check_session(user_id, login_method) do
+    case RequireAdmin.check_session(user_id, login_method, started_at) do
       {:ok, user} -> fun.(assign(socket, :current_user, user), user)
       {:error, refusal} -> refuse(socket, refusal)
     end
@@ -52,11 +56,15 @@ defmodule PortalWeb.Admin.LiveAuth do
 
   Built once at mount, it closes over the session the page was opened with.
   """
-  @spec as_admin_bulk((term(), keyword() -> term()), String.t() | nil, atom() | nil) ::
-          (term(), keyword() -> term())
-  def as_admin_bulk(bulk_fun, user_id, login_method) do
+  @spec as_admin_bulk(
+          (term(), keyword() -> term()),
+          String.t() | nil,
+          atom() | nil,
+          integer() | nil
+        ) :: (term(), keyword() -> term())
+  def as_admin_bulk(bulk_fun, user_id, login_method, started_at) do
     fn query, opts ->
-      case RequireAdmin.check_session(user_id, login_method) do
+      case RequireAdmin.check_session(user_id, login_method, started_at) do
         {:ok, user} -> bulk_fun.(query, Keyword.put(opts, :actor, user))
         {:error, refusal} -> {:error, {:refused, refusal}}
       end

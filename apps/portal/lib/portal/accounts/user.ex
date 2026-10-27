@@ -65,7 +65,13 @@ defmodule Portal.Accounts.User do
     end
 
     update :update_profile do
-      accept([:username, :password_hash, :password_reset_required, :password_set])
+      accept([
+        :username,
+        :password_hash,
+        :password_reset_required,
+        :password_set,
+        :sessions_valid_after
+      ])
     end
 
     # Link or unlink providers. `Portal.Accounts.Identities` is the only
@@ -133,6 +139,15 @@ defmodule Portal.Accounts.User do
       default(false)
       public?(true)
     end
+
+    # Every session that started before this instant is signed out. The
+    # session store is the signed cookie, so there is no server-side session
+    # to delete; `Portal.Accounts.session_user/2` compares this with the
+    # `:session_started_at` each login stamps instead. Nil until the first
+    # revocation, which leaves every session valid, including those from
+    # before sessions carried a start time. Microseconds, so that a
+    # revocation and the login after it rarely share a tick.
+    attribute(:sessions_valid_after, :utc_datetime_usec)
 
     attribute :last_hex_login_at, :utc_datetime do
       public?(true)
