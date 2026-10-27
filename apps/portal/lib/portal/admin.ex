@@ -273,9 +273,9 @@ defmodule Portal.Admin do
          :ok <- not_self(user, actor),
          {:ok, updated, temp} <- Portal.Accounts.set_temporary_password(user) do
       Logger.warning("Temporary password set for #{updated.username} by #{actor.username}")
-      # Their open LiveViews reconnect and mount again on the account as it
-      # now is. The cookie sessions themselves survive: the store is the
-      # signed cookie, so there is no server-side session to end.
+      # `set_temporary_password/1` has already signed out every session
+      # they hold (`sessions_valid_after`); this makes their open LiveViews
+      # reconnect now and meet that, rather than at their next mount.
       Portal.Accounts.disconnect_live_sockets(updated.id)
       {:ok, updated, temp}
     end
@@ -352,6 +352,9 @@ defmodule Portal.Admin do
   Refuses to revoke the actor themself and to revoke the last admin, either
   of which could leave `/admin` with nobody able to open it.
 
+  Signs the revoked user out of every session too
+  (`Portal.Accounts.revoke_sessions/1`).
+
   The checks and the write run in one transaction holding a row lock on every
   admin. Without it, two admins revoking each other at the same moment would
   both count two admins and both succeed, leaving none. Inside the lock the
@@ -372,7 +375,12 @@ defmodule Portal.Admin do
 
       with {:ok, %Portal.Accounts.User{} = user} <- fetch_user(user_id),
            :ok <- revocable(user, actor, admin_ids),
-           {:ok, revoked} <- set_admin_flag(user, false, actor) do
+           {:ok, demoted} <- set_admin_flag(user, false, actor),
+           # Every session the demoted admin holds is signed out, not just
+           # their admin access: a revoke is how an admin is removed in a
+           # hurry, and their passkey-opened sessions are what to end. In the
+           # transaction, so a demotion never commits without it.
+           {:ok, revoked} <- Portal.Accounts.revoke_sessions(demoted) do
         revoked
       else
         {:error, reason} -> Repo.rollback(reason)

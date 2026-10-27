@@ -38,6 +38,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
 
     user_id = session["user_id"]
     login_method = session["login_method"]
+    started_at = session["session_started_at"]
 
     {:ok,
      socket
@@ -46,6 +47,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
        page_description: "Administration.",
        user_id: user_id,
        login_method: login_method,
+       session_started_at: started_at,
        bulk_targets: BulkRebuild.targets(),
        counts_version: 0,
        # Newest first, as `Portal.BulkRebuild.recent/1` listed them. Cinder
@@ -54,7 +56,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
        sweeps_query: Ash.Query.sort(Portal.Catalog.BulkSweep, inserted_at: :desc, id: :desc),
        # Built once, here: it closes over the session the page was opened
        # with, so it can re-check the admin when the bulk bar calls it.
-       bulk_cancel: as_admin_bulk(&BulkRebuild.bulk_cancel/2, user_id, login_method)
+       bulk_cancel: as_admin_bulk(&BulkRebuild.bulk_cancel/2, user_id, login_method, started_at)
      )
      |> load_panels()}
   end

@@ -7,7 +7,7 @@ defmodule PortalWeb.Plugs.RequireAdmin do
   (or `nil`) and the method that session authenticated with (or `nil`);
   `call/2` gates the `:admin` pipeline, `authorise/1` serves
   `PortalWeb.PageController`'s in-action admin checks, and `on_mount/4`
-  re-runs it when a LiveView connects; `check_session/2`, the one the other
+  re-runs it when a LiveView connects; `check_session/3`, the one the other
   three load the user through, serves the admin LiveViews' per-click
   re-checks. They share `check/2` on purpose: the
   Oban dashboard and the buttons that approve scan requests, reorder the queue
@@ -69,7 +69,7 @@ defmodule PortalWeb.Plugs.RequireAdmin do
   def authorise(conn) do
     conn
     |> get_session(:user_id)
-    |> check_session(get_session(conn, :login_method))
+    |> check_session(get_session(conn, :login_method), get_session(conn, :session_started_at))
     |> case do
       {:ok, user} ->
         {:ok, conn, user}
@@ -92,7 +92,7 @@ defmodule PortalWeb.Plugs.RequireAdmin do
   def on_mount(:require_admin_passkey, _params, session, socket) do
     session
     |> Map.get("user_id")
-    |> check_session(Map.get(session, "login_method"))
+    |> check_session(Map.get(session, "login_method"), Map.get(session, "session_started_at"))
     |> case do
       {:ok, _user} ->
         {:cont, socket}
@@ -106,18 +106,20 @@ defmodule PortalWeb.Plugs.RequireAdmin do
   end
 
   @doc """
-  `check/2` for a session's `user_id` and `login_method`, with the user
-  loaded fresh from the database.
+  `check/2` for a session's `user_id`, `login_method` and
+  `session_started_at`, with the user loaded fresh from the database.
 
   The entry point for callers that hold a session's values rather than a conn
   or a socket mid-mount: the admin LiveViews re-check with it on every click
-  (`PortalWeb.Admin.LiveAuth`), so a demotion or a removed passkey counts at
-  once rather than at the next mount. A missing or unknown id is `nil`, which
-  `check/2` refuses.
+  (`PortalWeb.Admin.LiveAuth`), so a demotion, a removed passkey or revoked
+  sessions count at once rather than at the next mount. A missing or unknown
+  id, or a session older than the user's `sessions_valid_after`
+  (`Portal.Accounts.session_user/2`), is `nil`, which `check/2` refuses.
   """
-  @spec check_session(String.t() | nil, atom() | nil) ::
+  @spec check_session(String.t() | nil, atom() | nil, integer() | nil) ::
           {:ok, User.t()} | {:error, refusal()}
-  def check_session(user_id, login_method), do: user_id |> load_user() |> check(login_method)
+  def check_session(user_id, login_method, started_at),
+    do: user_id |> Portal.Accounts.session_user(started_at) |> check(login_method)
 
   @doc """
   Whether this user may exercise admin capability, and where to send them if
@@ -184,13 +186,6 @@ defmodule PortalWeb.Plugs.RequireAdmin do
 
       true ->
         {:error, %{to: ~p"/request-scan", flash: "Admin access is required."}}
-    end
-  end
-
-  defp load_user(user_id) do
-    case Portal.Accounts.get_user(user_id) do
-      {:ok, user} -> user
-      _ -> nil
     end
   end
 end

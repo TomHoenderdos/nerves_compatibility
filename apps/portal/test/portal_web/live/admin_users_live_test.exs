@@ -256,7 +256,9 @@ defmodule PortalWeb.AdminUsersLiveTest do
       assert_receive %Phoenix.Socket.Broadcast{topic: ^other_topic, event: "disconnect"}
       refute_received %Phoenix.Socket.Broadcast{topic: ^own_topic}
 
-      assert {:error, {:redirect, %{to: "/request-scan"}}} = live(other_conn, ~p"/admin/users")
+      # A revoke signs the revoked admin out of every session, not only out
+      # of `/admin`: the gate finds no user and sends them to sign in.
+      assert {:error, {:redirect, %{to: "/login"}}} = live(other_conn, ~p"/admin/users")
     end
 
     test "a refused revoke disconnects nobody", %{conn: conn, admin: admin} do

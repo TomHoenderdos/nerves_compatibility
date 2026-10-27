@@ -3,10 +3,28 @@ defmodule PortalWeb.UserAuth do
   Session handling for logins, and the LiveView `on_mount` hook that assigns
   auth-derived state.
 
-  Controllers derive `current_user` from `get_session(conn, :user_id)` via
-  `Portal.Accounts.get_user/1`. LiveViews mounted outside a controller need
-  the same assign so `<Layouts.app current_user={@current_user} ...>` shows
+  Controllers derive `current_user` from the session through
+  `current_user/1`, LiveViews through the `:assign_current_user` hook, and
+  `PortalWeb.Plugs.RequireAdmin` through the same
+  `Portal.Accounts.session_user/2`. LiveViews mounted outside a controller
+  need the assign so `<Layouts.app current_user={@current_user} ...>` shows
   the signed-in nav state instead of always rendering Login/Register.
+
+  ## Revoking sessions
+
+  The session store is the signed cookie, so no server-side session exists to
+  delete. Each login stamps `:session_started_at` instead, and a session that
+  started before its user's `sessions_valid_after` is treated as signed out
+  everywhere `Portal.Accounts.session_user/2` is asked
+  (`Portal.Accounts.revoke_sessions/1`). An admin password reset, an admin
+  revoke, a password change, a passkey removal and "sign out everywhere" all
+  revoke; the ones a user does to their own account re-stamp the session they
+  did it from (`restamp_session/2`).
+
+  Plain sign-out is not one of them. It clears this browser's cookie and
+  disconnects the user's live sockets, and the user's other browsers stay
+  signed in. A copy of the cookie taken before sign-out stays valid until the
+  user's sessions are next revoked.
 
   A half-finished login lives under `:pending_user_id`, never `:user_id`, so
   it grants nothing anywhere: every plug and hook reads `:user_id` alone.
@@ -42,6 +60,9 @@ defmodule PortalWeb.UserAuth do
     # the day nobody will remember to add it.
     |> configure_session(renew: true)
     |> put_session(:user_id, user.id)
+    # When this session started, for `Portal.Accounts.session_user/2` to hold
+    # against the user's `sessions_valid_after`. Microseconds, matching it.
+    |> put_session(:session_started_at, System.system_time(:microsecond))
     # Names this session's live sockets, so sign-out and a loss of access
     # can disconnect them (`Portal.Accounts.disconnect_live_sockets/1`).
     |> put_session(:live_socket_id, Portal.Accounts.live_socket_id(user.id))
@@ -57,6 +78,59 @@ defmodule PortalWeb.UserAuth do
     # the session. Whatever route this login took, that identity must not
     # outlive it and later mint an account from this session.
     |> delete_session(:pending_identity)
+  end
+
+  @doc """
+  The user this conn's session belongs to, or `nil` if it is signed out or
+  revoked (`Portal.Accounts.session_user/2`).
+  """
+  @spec current_user(Plug.Conn.t()) :: User.t() | nil
+  def current_user(conn) do
+    Portal.Accounts.session_user(
+      get_session(conn, :user_id),
+      get_session(conn, :session_started_at)
+    )
+  end
+
+  @doc """
+  Keeps this session valid across a revocation the user made from it.
+
+  Call it after `Portal.Accounts.revoke_sessions/1`, or any change that
+  revokes, ideally with the user that change returned. The new start is now,
+  or the user's `sessions_valid_after` should the clock have stepped back
+  past it.
+  """
+  @spec restamp_session(Plug.Conn.t(), User.t() | nil) :: Plug.Conn.t()
+  def restamp_session(conn, user \\ nil) do
+    now = System.system_time(:microsecond)
+
+    started =
+      case user do
+        %User{sessions_valid_after: %DateTime{} = cutoff} ->
+          max(now, DateTime.to_unix(cutoff, :microsecond))
+
+        _other ->
+          now
+      end
+
+    put_session(conn, :session_started_at, started)
+  end
+
+  @doc """
+  Drops what signs this session in, leaving the CSRF token and the flash.
+
+  For a session `current_user/1` refused: it grants nothing either way, and
+  clearing it keeps a stale cookie from being carried around.
+  """
+  @spec drop_login(Plug.Conn.t()) :: Plug.Conn.t()
+  def drop_login(conn) do
+    conn
+    |> delete_session(:user_id)
+    |> delete_session(:session_started_at)
+    |> delete_session(:live_socket_id)
+    |> delete_session(:login_method)
+    |> delete_session(:reauth_method)
+    |> delete_session(:reauth_at)
   end
 
   @doc """
@@ -87,11 +161,7 @@ defmodule PortalWeb.UserAuth do
   @spec start_pending(Plug.Conn.t(), User.t()) :: Plug.Conn.t()
   def start_pending(conn, %User{} = user) do
     conn
-    |> delete_session(:user_id)
-    |> delete_session(:live_socket_id)
-    |> delete_session(:login_method)
-    |> delete_session(:reauth_method)
-    |> delete_session(:reauth_at)
+    |> drop_login()
     |> put_session(:pending_user_id, user.id)
     |> put_session(:pending_started_at, System.system_time(:second))
   end
@@ -149,12 +219,11 @@ defmodule PortalWeb.UserAuth do
     end
   end
 
-  defp current_user_from_session(%{"user_id" => user_id}) when is_binary(user_id) do
-    case Portal.Accounts.get_user(user_id) do
-      {:ok, user} -> user
-      _ -> nil
-    end
+  # `live_session`'s session map is the cookie session as the page was
+  # rendered, string-keyed. A connected mount presents it again from the
+  # page, not from the cookie, so it is checked here as well as on the
+  # request that rendered it.
+  defp current_user_from_session(session) do
+    Portal.Accounts.session_user(session["user_id"], session["session_started_at"])
   end
-
-  defp current_user_from_session(_session), do: nil
 end

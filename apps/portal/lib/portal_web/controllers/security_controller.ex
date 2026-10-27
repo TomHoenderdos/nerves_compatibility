@@ -187,13 +187,43 @@ defmodule PortalWeb.SecurityController do
       :ok ->
         Logger.warning("Passkey removed for #{user.username}")
 
+        # The removal signed out every session on the account; the one that
+        # removed it, under a fresh re-authentication, stays.
         conn
+        |> UserAuth.restamp_session()
         |> put_flash(:info, "Passkey removed.")
         |> redirect(to: ~p"/settings/security")
 
       {:error, :not_found} ->
         conn
         |> put_flash(:error, "No such passkey on this account.")
+        |> redirect(to: ~p"/settings/security")
+    end
+  end
+
+  # Not behind `require_fresh_reauth`: it only takes access away, so there is
+  # nothing a stolen session could gain by pressing it.
+  def sign_out_everywhere(conn, _params) do
+    user = conn.assigns.current_user
+
+    case Portal.Accounts.revoke_sessions(user) do
+      {:ok, revoked} ->
+        Logger.warning("All sessions signed out for #{user.username}")
+        # Open pages in other browsers reconnect now and meet the revocation,
+        # rather than at their next mount; this browser's reconnect is let
+        # back in by the re-stamp.
+        Portal.Accounts.disconnect_live_sockets(user.id)
+
+        conn
+        |> UserAuth.restamp_session(revoked)
+        |> put_flash(:info, "Signed out of every other session.")
+        |> redirect(to: ~p"/settings/security")
+
+      {:error, reason} ->
+        Logger.error("Signing out everywhere failed: #{inspect(reason)}")
+
+        conn
+        |> put_flash(:error, "Signing out everywhere failed. Try again.")
         |> redirect(to: ~p"/settings/security")
     end
   end

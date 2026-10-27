@@ -83,6 +83,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
        # see `PortalWeb.Admin.LiveAuth`'s moduledoc.
        user_id: session["user_id"],
        login_method: session["login_method"],
+       session_started_at: session["session_started_at"],
        statuses: @statuses,
        status_options: Enum.map(@statuses, fn {atom, label} -> {label, atom} end),
        severities: @severities,

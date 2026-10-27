@@ -17,7 +17,7 @@ defmodule PortalWeb.Admin.QueueLive do
   A bulk action's per-row work (`Portal.Admin.bulk_approve/2` and friends,
   each a hex.pm lookup per selected row) runs under `Portal.TaskSupervisor`,
   off this process, so a slow or down hex.pm freezes neither this admin's
-  tab nor anyone else's: `as_admin_bulk/3` re-checks the admin, starts the
+  tab nor anyone else's: `as_admin_bulk/4` re-checks the admin, starts the
   task and returns at once, which Cinder reports through `on_success` as a
   "working" flash; the task reports the finished summary itself, straight to
   this process, once it is done.
@@ -25,7 +25,7 @@ defmodule PortalWeb.Admin.QueueLive do
   use PortalWeb, :live_view
 
   import PortalWeb.AdminComponents
-  import PortalWeb.Admin.LiveAuth, except: [as_admin_bulk: 3]
+  import PortalWeb.Admin.LiveAuth, except: [as_admin_bulk: 4]
 
   require Ash.Query
   require Logger
@@ -45,6 +45,7 @@ defmodule PortalWeb.Admin.QueueLive do
 
     user_id = session["user_id"]
     login_method = session["login_method"]
+    started_at = session["session_started_at"]
 
     # Oldest first, as the controller page listed both. Cinder takes the
     # query's sort as the table's default and drops it once a header sort is
@@ -60,6 +61,7 @@ defmodule PortalWeb.Admin.QueueLive do
        page_description: "Administration.",
        user_id: user_id,
        login_method: login_method,
+       session_started_at: started_at,
        queue_form: to_form(%{"package_name" => "", "force" => "false"}),
        approvals_query:
          Ash.Query.filter(oldest_first, source == :anonymous_manual and status == :pending),
@@ -67,10 +69,11 @@ defmodule PortalWeb.Admin.QueueLive do
        # Built once, here: each closes over the session the page was opened
        # with, so it can re-check the admin when the bulk bar calls it.
        bulk: %{
-         approve: as_admin_bulk(&Portal.Admin.bulk_approve/2, user_id, login_method),
-         reject: as_admin_bulk(&Portal.Admin.bulk_reject/2, user_id, login_method),
-         move_up: as_admin_bulk(&Portal.Admin.bulk_move_up/2, user_id, login_method),
-         move_down: as_admin_bulk(&Portal.Admin.bulk_move_down/2, user_id, login_method)
+         approve: as_admin_bulk(&Portal.Admin.bulk_approve/2, user_id, login_method, started_at),
+         reject: as_admin_bulk(&Portal.Admin.bulk_reject/2, user_id, login_method, started_at),
+         move_up: as_admin_bulk(&Portal.Admin.bulk_move_up/2, user_id, login_method, started_at),
+         move_down:
+           as_admin_bulk(&Portal.Admin.bulk_move_down/2, user_id, login_method, started_at)
        }
      )}
   end
@@ -141,7 +144,7 @@ defmodule PortalWeb.Admin.QueueLive do
   def handle_info({:admin_refresh, :queue}, socket),
     do: {:noreply, Cinder.refresh_tables(socket, @tables)}
 
-  # Cinder's `on_success` fires the instant `as_admin_bulk/3` starts the
+  # Cinder's `on_success` fires the instant `as_admin_bulk/4` starts the
   # task, not when the task finishes -- see its moduledoc. `count` is what
   # Cinder itself counted off the selection, before the function ran.
   def handle_info({:bulk_done, %{count: count, result: :working}}, socket),
@@ -201,11 +204,12 @@ defmodule PortalWeb.Admin.QueueLive do
   # blocks the socket that is about to render the "working" flash. The task
   # reports its result straight to this process; `handle_info/2` above turns
   # both messages into the flash the admin sees.
-  defp as_admin_bulk(bulk_fun, user_id, login_method) do
+  defp as_admin_bulk(bulk_fun, user_id, login_method, started_at) do
     LiveAuth.as_admin_bulk(
       fn query, opts -> start_bulk_task(bulk_fun, query, opts) end,
       user_id,
-      login_method
+      login_method,
+      started_at
     )
   end
 

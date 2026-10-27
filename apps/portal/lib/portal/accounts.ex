@@ -57,6 +57,62 @@ defmodule Portal.Accounts do
       :ok
   end
 
+  @doc """
+  The user a session belongs to, or `nil` if it belongs to nobody any more.
+
+  The one check every request and every LiveView mount makes before trusting
+  a session's `user_id`: `PortalWeb.UserAuth` for the signed-in pages and
+  the public LiveViews, `PortalWeb.Plugs.RequireAdmin` for `/admin`.
+  `started_at` is the session's `:session_started_at`, in microseconds; a
+  session older than the user's `sessions_valid_after` is signed out, as is
+  one for an account that no longer exists.
+  """
+  @spec session_user(term(), term()) :: Portal.Accounts.User.t() | nil
+  def session_user(user_id, started_at) do
+    case get_user(user_id) do
+      {:ok, %Portal.Accounts.User{} = user} ->
+        if session_current?(user, started_at), do: user, else: nil
+
+      _missing ->
+        nil
+    end
+  end
+
+  @doc """
+  Whether a session that started at `started_at` (microseconds since the
+  epoch) is still valid for `user`.
+
+  A session with no start time predates the stamp, and counts as started at
+  the epoch: valid while the user has never revoked their sessions, refused
+  from the first revocation on. That is what reaches the sessions signed in
+  before this check existed, which carry no live socket id either.
+  """
+  @spec session_current?(Portal.Accounts.User.t(), term()) :: boolean()
+  def session_current?(%Portal.Accounts.User{sessions_valid_after: nil}, _started_at), do: true
+
+  def session_current?(
+        %Portal.Accounts.User{sessions_valid_after: %DateTime{} = cutoff},
+        started_at
+      ) do
+    started = if is_integer(started_at), do: started_at, else: 0
+    started >= DateTime.to_unix(cutoff, :microsecond)
+  end
+
+  @doc """
+  Signs `user` out of every session they have, in every browser, from the
+  next request or LiveView mount on.
+
+  A caller acting from one of those sessions that should survive re-stamps it
+  afterwards (`PortalWeb.UserAuth.restamp_session/2`). Pair it with
+  `disconnect_live_sockets/1`, which makes open pages notice at once; this is
+  what makes it stick when they reconnect, and reaches sessions the
+  disconnect cannot.
+  """
+  @spec revoke_sessions(Portal.Accounts.User.t()) ::
+          {:ok, Portal.Accounts.User.t()} | {:error, term()}
+  def revoke_sessions(%Portal.Accounts.User{} = user),
+    do: update_profile(user, %{sessions_valid_after: DateTime.utc_now()})
+
   def valid_username?(username) when is_binary(username),
     do: Regex.match?(@username_regex, username)
 
@@ -174,7 +230,8 @@ defmodule Portal.Accounts do
   account so the next login asks for a new password. For an admin handing a
   locked-out user a way back in: there is no email to send a reset link to.
 
-  The password is only ever returned, never stored or logged in clear.
+  The password is only ever returned, never stored or logged in clear. Every
+  session on the account is signed out (`revoke_sessions/1`).
   """
   @spec set_temporary_password(Portal.Accounts.User.t()) ::
           {:ok, Portal.Accounts.User.t(), String.t()} | {:error, term()}
@@ -185,7 +242,10 @@ defmodule Portal.Accounts do
            update_profile(user, %{
              password_hash: Argon2.hash_pwd_salt(temp),
              password_reset_required: true,
-             password_set: true
+             password_set: true,
+             # In the same write as the password: whoever holds a session
+             # on this account is why it is being reset.
+             sessions_valid_after: DateTime.utc_now()
            }) do
       {:ok, updated, temp}
     end
@@ -204,7 +264,8 @@ defmodule Portal.Accounts do
   end
 
   @doc """
-  Replaces a user's password after verifying the current one with Argon2.
+  Replaces a user's password after verifying the current one with Argon2,
+  and signs every session on the account out (`revoke_sessions/1`).
   """
   def change_password(%Portal.Accounts.User{} = user, current_password, new_password) do
     cond do
@@ -215,10 +276,13 @@ defmodule Portal.Accounts do
         {:error, :invalid_password}
 
       true ->
+        # Every other session ends with the old password, in the same write.
+        # The caller keeps its own (`PortalWeb.UserAuth.restamp_session/2`).
         update_profile(user, %{
           password_hash: Argon2.hash_pwd_salt(new_password),
           password_reset_required: false,
-          password_set: true
+          password_set: true,
+          sessions_valid_after: DateTime.utc_now()
         })
     end
   end

@@ -170,6 +170,7 @@ defmodule PortalWeb.PageController do
     case apply_settings_changes(user, params) do
       {:ok, updated} ->
         conn
+        |> keep_session_after_password_change(user, updated)
         |> put_flash(:info, "Account settings updated.")
         |> render_settings(updated)
 
@@ -221,6 +222,11 @@ defmodule PortalWeb.PageController do
   # mounted with. The disconnect makes those sockets reconnect, and without
   # this session's cookie the reconnect is refused and the page reloads.
   # A session from before live socket ids has none to disconnect.
+  #
+  # Sign-out ends this browser's session only, on purpose: the user's other
+  # browsers stay signed in. It does not revoke, so a copy of this cookie
+  # taken earlier stays valid until the user's sessions are next revoked;
+  # "Sign out everywhere" at `/settings/security` is the revoke.
   def logout(conn, _params) do
     if live_socket_id = get_session(conn, :live_socket_id) do
       PortalWeb.Endpoint.broadcast(live_socket_id, "disconnect", %{})
@@ -537,6 +543,15 @@ defmodule PortalWeb.PageController do
     end
   end
 
+  # A password change signs out every session on the account
+  # (`Portal.Accounts.change_password/3`), which would include this one. The
+  # person who just proved the current password stays signed in here.
+  defp keep_session_after_password_change(conn, before, updated) do
+    if updated.sessions_valid_after != before.sessions_valid_after,
+      do: PortalWeb.UserAuth.restamp_session(conn, updated),
+      else: conn
+  end
+
   defp maybe_change_username(user, ""), do: {:ok, user}
 
   defp maybe_change_username(user, username),
@@ -599,15 +614,7 @@ defmodule PortalWeb.PageController do
   # scope has no alias for.
   defp require_admin(conn), do: PortalWeb.Plugs.RequireAdmin.authorise(conn)
 
-  defp current_user(conn) do
-    conn
-    |> get_session(:user_id)
-    |> Portal.Accounts.get_user()
-    |> case do
-      {:ok, user} -> user
-      _ -> nil
-    end
-  end
+  defp current_user(conn), do: PortalWeb.UserAuth.current_user(conn)
 
   defp create_anonymous_requests(conn, packages) do
     user = current_user(conn)

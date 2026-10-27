@@ -103,6 +103,7 @@ defmodule PortalWeb.PasskeyControllerTest do
     assert get_session(conn, :user_id) == user.id
     assert get_session(conn, :reauth_method) == :passkey
     assert get_session(conn, :live_socket_id) == "users_socket:#{user.id}"
+    assert is_integer(get_session(conn, :session_started_at))
   end
 
   test "an admin lands on the admin page", %{conn: conn} do

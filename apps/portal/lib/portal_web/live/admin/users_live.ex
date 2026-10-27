@@ -31,6 +31,7 @@ defmodule PortalWeb.Admin.UsersLive do
        # for the time. `Mfa.reauth_fresh?/3` compares against exactly those.
        user_id: session["user_id"],
        login_method: session["login_method"],
+       session_started_at: session["session_started_at"],
        reauth_method: session["reauth_method"],
        reauth_at: session["reauth_at"],
        temporary_password: nil,

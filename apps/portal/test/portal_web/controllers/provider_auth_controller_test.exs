@@ -38,6 +38,7 @@ defmodule PortalWeb.ProviderAuthControllerTest do
     assert get_session(conn, :user_id) == user.id
     assert get_session(conn, :login_method) == :hex
     assert get_session(conn, :live_socket_id) == "users_socket:#{user.id}"
+    assert is_integer(get_session(conn, :session_started_at))
     assert redirected_to(conn) == ~p"/request-scan"
   end
 
@@ -57,6 +58,7 @@ defmodule PortalWeb.ProviderAuthControllerTest do
     assert get_session(conn, :user_id) == user.id
     assert get_session(conn, :login_method) == :github
     assert get_session(conn, :live_socket_id) == "users_socket:#{user.id}"
+    assert is_integer(get_session(conn, :session_started_at))
   end
 
   test "still pending re-renders the code with a check-again button", %{conn: conn} do

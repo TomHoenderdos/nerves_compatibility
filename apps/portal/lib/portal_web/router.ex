@@ -163,6 +163,7 @@ defmodule PortalWeb.Router do
     post "/settings/security/totp/confirm", SecurityController, :confirm_totp
     post "/settings/security/totp/delete", SecurityController, :delete_totp
     post "/settings/security/recovery-codes", SecurityController, :regenerate_recovery_codes
+    post "/settings/security/sign-out-everywhere", SecurityController, :sign_out_everywhere
   end
 
   scope "/", PortalWeb do

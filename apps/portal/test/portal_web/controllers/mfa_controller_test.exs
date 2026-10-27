@@ -25,6 +25,7 @@ defmodule PortalWeb.MfaControllerTest do
     assert get_session(conn, :user_id) == user.id
     assert get_session(conn, :reauth_method) == :password
     assert get_session(conn, :live_socket_id) == "users_socket:#{user.id}"
+    assert is_integer(get_session(conn, :session_started_at))
     assert is_integer(get_session(conn, :reauth_at))
     assert redirected_to(conn) == ~p"/request-scan"
   end
@@ -60,6 +61,7 @@ defmodule PortalWeb.MfaControllerTest do
     assert get_session(conn, :reauth_method) == :totp
     refute get_session(conn, :pending_user_id)
     assert get_session(conn, :live_socket_id) == "users_socket:#{user.id}"
+    assert is_integer(get_session(conn, :session_started_at))
     assert redirected_to(conn) == ~p"/request-scan"
   end
 

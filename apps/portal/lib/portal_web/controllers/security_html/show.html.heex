@@ -361,6 +361,24 @@
           </p>
         </div>
       </section>
+
+      <section id="sessions" class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-4">
+          <h2 class="text-lg font-semibold tracking-tight">Sessions</h2>
+          <p class="text-sm leading-6 text-base-content/70">
+            Signs this account out of every other browser and device. This one stays signed in.
+            Changing your password or removing a passkey does the same.
+          </p>
+
+          <form method="post" action={~p"/settings/security/sign-out-everywhere"}>
+            <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+            <button type="submit" class="btn btn-outline w-full">
+              <.icon name="hero-arrow-right-start-on-rectangle-mini" class="size-5" />
+              Sign out everywhere else
+            </button>
+          </form>
+        </div>
+      </section>
     </section>
   </div>
 </main>
