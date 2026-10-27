@@ -100,7 +100,13 @@ config :portal, Oban,
        # toolchain (`Portal.Toolchains`), up to `max_per_run`. The sweep
        # itself is a few queries and carries `:maintenance`; the builds it
        # queues run on the build host's single-slot `:toolchain` queue.
-       {"17 3 * * *", Portal.Workers.ToolchainSweep}
+       {"17 3 * * *", Portal.Workers.ToolchainSweep},
+       # Weekly, Monday 04:53: re-fetch every package's hex.pm metadata so the
+       # download counts `/failing` ranks on do not go stale. Enqueues one
+       # `PackageMeta` job per package, 1.5 s apart (~1 h for ~2,500), which
+       # stays under hex.pm's unauthenticated rate limit. Carries `:intake`,
+       # the web host's queue: HTTP calls to hex.pm, not compiles.
+       {"53 4 * * 1", Portal.Workers.HexMetaRefresh}
      ]}
   ]
 

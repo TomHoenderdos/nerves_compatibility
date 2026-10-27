@@ -56,7 +56,9 @@ defmodule Portal.Workers.PackageMetaTest do
       {:ok,
        %{
          links: %{"GitHub" => "https://github.com/michalmuskala/jason"},
-         owners: ["michalmuskala", "ericmj"]
+         owners: ["michalmuskala", "ericmj"],
+         downloads_recent: nil,
+         downloads_all: nil
        }}
     )
 
@@ -68,12 +70,32 @@ defmodule Portal.Workers.PackageMetaTest do
     assert package.hex_owners == ["michalmuskala", "ericmj"]
   end
 
+  test "hex.pm download counts land on the package row" do
+    seed("jason")
+
+    Process.put(
+      {:hex_meta, "jason"},
+      {:ok, %{links: %{}, owners: [], downloads_recent: 1_234, downloads_all: 98_765}}
+    )
+
+    assert :ok = perform("jason")
+
+    package = reload("jason")
+
+    assert package.hex_downloads_recent == 1_234
+    assert package.hex_downloads_all == 98_765
+  end
+
   # Nil is how the backfill finds work and how the page tells "never fetched"
   # apart from "declares no links". A successful fetch has to clear it even when
   # hex.pm had nothing to say about the package.
   test "a fetch that returned nothing still stamps the row as fetched" do
     seed("jason")
-    Process.put({:hex_meta, "jason"}, {:ok, %{links: %{}, owners: []}})
+
+    Process.put(
+      {:hex_meta, "jason"},
+      {:ok, %{links: %{}, owners: [], downloads_recent: nil, downloads_all: nil}}
+    )
 
     assert :ok = perform("jason")
 
@@ -97,7 +119,16 @@ defmodule Portal.Workers.PackageMetaTest do
       })
       |> Ash.create(domain: Portal.Catalog)
 
-    Process.put({:hex_meta, "jason"}, {:ok, %{links: %{"Docs" => "https://x.test"}, owners: []}})
+    Process.put(
+      {:hex_meta, "jason"},
+      {:ok,
+       %{
+         links: %{"Docs" => "https://x.test"},
+         owners: [],
+         downloads_recent: nil,
+         downloads_all: nil
+       }}
+    )
 
     assert :ok = perform("jason")
 

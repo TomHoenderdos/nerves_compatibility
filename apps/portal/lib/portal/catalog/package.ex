@@ -38,7 +38,7 @@ defmodule Portal.Catalog.Package do
     # lookup. Sharing one action would let a stale metadata fetch clobber a
     # freshly ingested `latest_version`.
     update :update_hex_meta do
-      accept([:hex_links, :hex_owners])
+      accept([:hex_links, :hex_owners, :hex_downloads_recent, :hex_downloads_all])
       change(set_attribute(:hex_meta_fetched_at, &DateTime.utc_now/0))
     end
 
@@ -94,6 +94,18 @@ defmodule Portal.Catalog.Package do
     # owner's email address; `Portal.HexPm.package_metadata/1` drops those at
     # the API boundary so they never reach this column.
     attribute :hex_owners, {:array, :string} do
+      public?(true)
+    end
+
+    # Hex.pm download counts: `recent` is its 90-day window, `all` is lifetime.
+    # Ranks failing packages by impact on `/failing`. Nil means unknown -- never
+    # fetched, or hex.pm sent something that was not a count -- and sorts last.
+    # Refreshed weekly by `Portal.Workers.HexMetaRefresh`.
+    attribute :hex_downloads_recent, :integer do
+      public?(true)
+    end
+
+    attribute :hex_downloads_all, :integer do
       public?(true)
     end
 
