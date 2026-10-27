@@ -181,19 +181,23 @@ defmodule Portal.BuildCache.L2.Client do
   # sobelow_skip ["Traversal.FileModule"]
   defp do_put(cfg, object, path, sha256, timeout) do
     with {:ok, body} <- File.read(path) do
-      case once_more_if_closed(fn ->
-             Req.put(req(cfg, receive_timeout: timeout),
-               url: object_url(cfg, object),
-               body: body,
-               headers: [{"content-type", "application/gzip"}, {"x-amz-meta-sha256", sha256}]
-             )
-           end) do
-        {:ok, %Req.Response{status: status}} when status in 200..299 -> :ok
-        {:ok, %Req.Response{status: status}} -> {:error, {:status, status}}
-        {:error, reason} -> {:error, reason}
-      end
+      fn -> send_put(cfg, object, body, sha256, timeout) end
+      |> once_more_if_closed()
+      |> put_result()
     end
   end
+
+  defp send_put(cfg, object, body, sha256, timeout) do
+    Req.put(req(cfg, receive_timeout: timeout),
+      url: object_url(cfg, object),
+      body: body,
+      headers: [{"content-type", "application/gzip"}, {"x-amz-meta-sha256", sha256}]
+    )
+  end
+
+  defp put_result({:ok, %Req.Response{status: status}}) when status in 200..299, do: :ok
+  defp put_result({:ok, %Req.Response{status: status}}), do: {:error, {:status, status}}
+  defp put_result({:error, reason}), do: {:error, reason}
 
   @spec list(Config.t(), String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
   def list(cfg, prefix, opts \\ []),
