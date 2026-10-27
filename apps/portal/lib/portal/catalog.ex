@@ -2326,7 +2326,7 @@ defmodule Portal.Catalog do
   # a time; on production-shaped data the planner reads `catalog_runs` with a
   # seq scan and a small sort, ~3ms.
   #
-  # Public for `Portal.Catalog.HotTickets`, so `/failing` and `/packages/<name>`
+  # Public for `Portal.Catalog.TopFailing`, so `/failing` and `/packages/<name>`
   # share this one rule; `version_tested` and `finished_at` are selected for it.
   @doc false
   def latest_results do

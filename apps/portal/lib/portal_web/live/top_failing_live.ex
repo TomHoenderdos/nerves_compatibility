@@ -1,8 +1,8 @@
-defmodule PortalWeb.HotTicketsLive do
+defmodule PortalWeb.TopFailingLive do
   @moduledoc """
   `/failing`: packages whose latest run fails, ranked by hex.pm downloads, so a
   contributor can pick the fix that helps the most people. Rows come from
-  `Portal.Catalog.HotTickets.list/1`; the same list is `GET /api/failing`.
+  `Portal.Catalog.TopFailing.list/1`; the same list is `GET /api/failing`.
 
   Sort and target live in the URL (`?sort=recent|all&system=<system_pkg>`) so a
   filtered view can be linked.
@@ -10,13 +10,13 @@ defmodule PortalWeb.HotTicketsLive do
   use PortalWeb, :live_view
 
   alias Portal.Catalog
-  alias Portal.Catalog.HotTickets
+  alias Portal.Catalog.TopFailing
 
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
      socket
-     |> assign(:page_title, "Hot tickets")
+     |> assign(:page_title, "Top failing")
      |> assign(
        :page_description,
        "Nerves build failures ranked by hex.pm downloads: the failing packages " <>
@@ -27,13 +27,13 @@ defmodule PortalWeb.HotTicketsLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    opts = HotTickets.opts_from_params(params)
+    opts = TopFailing.opts_from_params(params)
 
     {:noreply,
      socket
      |> assign(:sort, Keyword.fetch!(opts, :sort))
      |> assign(:system, Keyword.get(opts, :system))
-     |> assign(:rows, HotTickets.list(opts))}
+     |> assign(:rows, TopFailing.list(opts))}
   end
 
   @impl true
@@ -63,14 +63,14 @@ defmodule PortalWeb.HotTicketsLive do
     ~H"""
     <Layouts.app flash={@flash} active={:failing} current_user={@current_user}>
       <section class="space-y-6">
-        <PortalWeb.UI.page_header kicker="Diagnostics" title="Hot tickets">
+        <PortalWeb.UI.page_header kicker="Diagnostics" title="Top failing">
           <:subtitle>
             Failing packages, most-downloaded first. Fixing one near the top helps the most projects.
           </:subtitle>
         </PortalWeb.UI.page_header>
 
         <form
-          id="hot-tickets-filters"
+          id="top-failing-filters"
           phx-change="filter"
           class="flex flex-wrap items-center gap-4 text-sm"
         >

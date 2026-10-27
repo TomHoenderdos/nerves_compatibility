@@ -2,7 +2,7 @@ defmodule PortalWeb.CatalogApiController do
   use PortalWeb, :controller
 
   alias Portal.Catalog
-  alias Portal.Catalog.HotTickets
+  alias Portal.Catalog.TopFailing
   alias Portal.Precompiled.{Batches, Manifests, Root}
 
   @badge_grey "#9ca3af"
@@ -36,7 +36,7 @@ defmodule PortalWeb.CatalogApiController do
   end
 
   def failing(conn, params) do
-    opts = HotTickets.opts_from_params(params)
+    opts = TopFailing.opts_from_params(params)
 
     conn
     |> put_cache_headers()
@@ -44,7 +44,7 @@ defmodule PortalWeb.CatalogApiController do
       schema: 1,
       generated_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
       sort: Keyword.fetch!(opts, :sort),
-      packages: HotTickets.list(opts)
+      packages: TopFailing.list(opts)
     })
   end
 

@@ -1,7 +1,7 @@
-defmodule Portal.Catalog.HotTicketsTest do
+defmodule Portal.Catalog.TopFailingTest do
   use Portal.DataCase, async: false
 
-  alias Portal.Catalog.HotTickets
+  alias Portal.Catalog.TopFailing
   alias Portal.Catalog.Ingestion
   alias Portal.Catalog.Package
 
@@ -10,7 +10,7 @@ defmodule Portal.Catalog.HotTicketsTest do
   @compile_error "== Compilation error in file lib/x.ex ==\n** (CompileError) boom"
 
   defp ingest(name, finished_at, systems) do
-    dir = Path.join(System.tmp_dir!(), "hot-#{System.unique_integer([:positive])}")
+    dir = Path.join(System.tmp_dir!(), "top-failing-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf(dir) end)
 
@@ -79,21 +79,21 @@ defmodule Portal.Catalog.HotTicketsTest do
         "nerves_system_x86_64" => error()
       })
 
-      assert Enum.sort(names(HotTickets.list([]))) == ["one_error", "one_fail"]
+      assert Enum.sort(names(TopFailing.list([]))) == ["one_error", "one_fail"]
     end
 
     test "a failing run superseded by a newer passing run is not listed, whatever order they arrived in" do
       ingest("fixed", "2026-07-06T10:00:00Z", %{"nerves_system_rpi4" => pass()})
       ingest("fixed", "2026-07-01T10:00:00Z", %{"nerves_system_rpi4" => fail()})
 
-      assert HotTickets.list([]) == []
+      assert TopFailing.list([]) == []
     end
 
     test "a passing run superseded by a newer failing run is listed" do
       ingest("regressed", "2026-07-01T10:00:00Z", %{"nerves_system_rpi4" => pass()})
       ingest("regressed", "2026-07-06T10:00:00Z", %{"nerves_system_rpi4" => fail()})
 
-      assert names(HotTickets.list([])) == ["regressed"]
+      assert names(TopFailing.list([])) == ["regressed"]
     end
 
     test "a package is listed once even when several targets fail" do
@@ -103,7 +103,7 @@ defmodule Portal.Catalog.HotTicketsTest do
         "nerves_system_x86_64" => error()
       })
 
-      assert names(HotTickets.list([])) == ["multi"]
+      assert names(TopFailing.list([])) == ["multi"]
     end
   end
 
@@ -117,7 +117,7 @@ defmodule Portal.Catalog.HotTicketsTest do
 
       downloads("shape", 1_234, 99_999)
 
-      assert [row] = HotTickets.list([])
+      assert [row] = TopFailing.list([])
 
       assert row.name == "shape"
       assert row.description == "about shape"
@@ -151,7 +151,7 @@ defmodule Portal.Catalog.HotTicketsTest do
         "nerves_system_x86_64" => fail()
       })
 
-      by_name = Map.new(HotTickets.list([]), &{&1.name, &1})
+      by_name = Map.new(TopFailing.list([]), &{&1.name, &1})
 
       assert by_name["mixed"].status == :error
       assert by_name["mixed"].failing_count == 2
@@ -168,7 +168,7 @@ defmodule Portal.Catalog.HotTicketsTest do
       failing("no_data")
 
       assert [%{name: "no_data", downloads_recent: nil, downloads_all: nil}] =
-               HotTickets.list([])
+               TopFailing.list([])
     end
   end
 
@@ -185,24 +185,24 @@ defmodule Portal.Catalog.HotTicketsTest do
     end
 
     test "sort: :recent orders by 90-day downloads, highest first" do
-      assert names(HotTickets.list(sort: :recent)) == ["rising", "middling", "old_giant"]
+      assert names(TopFailing.list(sort: :recent)) == ["rising", "middling", "old_giant"]
     end
 
     test "sort: :all orders by all-time downloads, highest first" do
-      assert names(HotTickets.list(sort: :all)) == ["old_giant", "middling", "rising"]
+      assert names(TopFailing.list(sort: :all)) == ["old_giant", "middling", "rising"]
     end
 
     test "the default sort is :recent" do
-      assert names(HotTickets.list([])) == names(HotTickets.list(sort: :recent))
-      assert hd(names(HotTickets.list([]))) == "rising"
+      assert names(TopFailing.list([])) == names(TopFailing.list(sort: :recent))
+      assert hd(names(TopFailing.list([]))) == "rising"
     end
 
     test "packages without download data sort last under either sort, never first" do
       # Named to sort first alphabetically, so only NULLS LAST keeps it at the end.
       failing("aaa_unknown")
 
-      assert List.last(names(HotTickets.list(sort: :recent))) == "aaa_unknown"
-      assert List.last(names(HotTickets.list(sort: :all))) == "aaa_unknown"
+      assert List.last(names(TopFailing.list(sort: :recent))) == "aaa_unknown"
+      assert List.last(names(TopFailing.list(sort: :all))) == "aaa_unknown"
     end
 
     test "equal download counts fall back to name ascending" do
@@ -211,7 +211,7 @@ defmodule Portal.Catalog.HotTicketsTest do
       failing("tie_a")
       downloads("tie_a", 50_000, 1)
 
-      assert Enum.take(names(HotTickets.list(sort: :recent)), 3) == ["rising", "tie_a", "tie_b"]
+      assert Enum.take(names(TopFailing.list(sort: :recent)), 3) == ["rising", "tie_a", "tie_b"]
     end
   end
 
@@ -222,24 +222,24 @@ defmodule Portal.Catalog.HotTicketsTest do
         downloads(name, n, n)
       end
 
-      assert names(HotTickets.list(limit: 2)) == ["l_three", "l_two"]
+      assert names(TopFailing.list(limit: 2)) == ["l_three", "l_two"]
     end
 
     test "a limit below 1 is clamped to 1, not an empty or unbounded list" do
       failing("z_one")
       failing("z_two")
 
-      assert length(HotTickets.list(limit: 0)) == 1
-      assert length(HotTickets.list(limit: -5)) == 1
+      assert length(TopFailing.list(limit: 0)) == 1
+      assert length(TopFailing.list(limit: -5)) == 1
     end
 
     @tag timeout: :timer.minutes(5)
     test "default limit is 50 and an oversized limit is clamped to 200" do
       for i <- 1..201, do: failing("bulk_#{String.pad_leading("#{i}", 3, "0")}")
 
-      assert length(HotTickets.list([])) == 50
-      assert length(HotTickets.list(limit: 1000)) == 200
-      assert length(HotTickets.list(limit: 200)) == 200
+      assert length(TopFailing.list([])) == 50
+      assert length(TopFailing.list(limit: 1000)) == 200
+      assert length(TopFailing.list(limit: 200)) == 200
     end
   end
 
@@ -261,7 +261,7 @@ defmodule Portal.Catalog.HotTicketsTest do
 
       ingest("not_on_rpi4", "2026-07-05T10:00:00Z", %{"nerves_system_bbb" => fail()})
 
-      rows = HotTickets.list(system: "nerves_system_rpi4")
+      rows = TopFailing.list(system: "nerves_system_rpi4")
 
       assert Enum.sort(names(rows)) == ["errors_on_rpi4", "fails_on_rpi4"]
 
@@ -272,7 +272,7 @@ defmodule Portal.Catalog.HotTicketsTest do
                )
       end
 
-      assert Enum.sort(names(HotTickets.list([]))) ==
+      assert Enum.sort(names(TopFailing.list([]))) ==
                ["errors_on_rpi4", "fails_on_rpi4", "not_on_rpi4", "passes_on_rpi4"]
     end
 
@@ -284,8 +284,8 @@ defmodule Portal.Catalog.HotTicketsTest do
         "nerves_system_x86_64" => fail()
       })
 
-      assert HotTickets.list(system: "nerves_system_rpi4") == []
-      assert names(HotTickets.list(system: "nerves_system_x86_64")) == ["healed"]
+      assert TopFailing.list(system: "nerves_system_rpi4") == []
+      assert names(TopFailing.list(system: "nerves_system_x86_64")) == ["healed"]
     end
   end
 
@@ -293,17 +293,17 @@ defmodule Portal.Catalog.HotTicketsTest do
     # A raw "500" passed straight to `list/1` would hit the non-integer
     # fallback and silently become 50.
     test "a numeric limit string becomes an integer, then list/1 clamps it" do
-      assert HotTickets.opts_from_params(%{"limit" => "500"})[:limit] == 500
-      assert HotTickets.opts_from_params(%{"limit" => "7"})[:limit] == 7
+      assert TopFailing.opts_from_params(%{"limit" => "500"})[:limit] == 500
+      assert TopFailing.opts_from_params(%{"limit" => "7"})[:limit] == 7
     end
 
     test "junk params are dropped so list/1 uses its defaults" do
-      assert HotTickets.opts_from_params(%{"limit" => "5x", "sort" => "bogus", "system" => ""}) ==
+      assert TopFailing.opts_from_params(%{"limit" => "5x", "sort" => "bogus", "system" => ""}) ==
                [sort: :recent]
     end
 
     test "sort=all and a system name come through" do
-      assert HotTickets.opts_from_params(%{"sort" => "all", "system" => "nerves_system_rpi4"}) ==
+      assert TopFailing.opts_from_params(%{"sort" => "all", "system" => "nerves_system_rpi4"}) ==
                [sort: :all, system: "nerves_system_rpi4"]
     end
   end

@@ -1,4 +1,4 @@
-defmodule Portal.Catalog.HotTickets do
+defmodule Portal.Catalog.TopFailing do
   @moduledoc """
   Packages whose latest run fails, ranked by hex.pm downloads: the failures
   worth fixing first. Backs `/failing` and `GET /api/failing`.

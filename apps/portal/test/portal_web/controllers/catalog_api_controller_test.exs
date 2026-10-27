@@ -835,7 +835,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
   end
 
   describe "GET /api/failing" do
-    # The fixture's latest run fails on one system, so `jason` is a hot ticket.
+    # The fixture's latest run fails on one system, so `jason` is a top failing package.
     test "?limit=1 returns one package, cached by the minute", %{conn: conn} do
       ingest_fixture()
 

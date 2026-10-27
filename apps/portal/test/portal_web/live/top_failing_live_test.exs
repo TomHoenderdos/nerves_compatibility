@@ -1,4 +1,4 @@
-defmodule PortalWeb.HotTicketsLiveTest do
+defmodule PortalWeb.TopFailingLiveTest do
   use PortalWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -8,7 +8,7 @@ defmodule PortalWeb.HotTicketsLiveTest do
   require Ash.Query
 
   defp failing(name, system \\ "nerves_system_rpi4") do
-    dir = Path.join(System.tmp_dir!(), "hot-live-#{System.unique_integer([:positive])}")
+    dir = Path.join(System.tmp_dir!(), "top-failing-live-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf(dir) end)
 
@@ -64,7 +64,7 @@ defmodule PortalWeb.HotTicketsLiveTest do
   test "failing packages render in recent-download order by default", %{conn: conn} do
     {:ok, _view, html} = live(conn, ~p"/failing")
 
-    assert html =~ "Hot tickets"
+    assert html =~ "Top failing"
     assert order(html, ["old_giant", "rising"]) == ["rising", "old_giant"]
     assert html =~ "50,000"
   end
@@ -88,7 +88,7 @@ defmodule PortalWeb.HotTicketsLiveTest do
     {:ok, view, _html} = live(conn, ~p"/failing")
 
     view
-    |> form("#hot-tickets-filters", %{"sort" => "all", "system" => ""})
+    |> form("#top-failing-filters", %{"sort" => "all", "system" => ""})
     |> render_change()
 
     assert_patch(view, ~p"/failing?sort=all")

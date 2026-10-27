@@ -38,7 +38,7 @@ mix format
 - `/packages/:name` — package details and latest system results
 - `/packages/:name/log/:system` — stored build log of a failed system
 - `/failure_clusters`, `/stats` — failure clusters and per-system statistics
-- `/failing` — "Hot tickets": failing packages ranked by hex.pm downloads
+- `/failing` — "Top failing": failing packages ranked by hex.pm downloads
 - `/request-scan` — request a scan of a Hex package
 - `/requests/:id` — redirects to the package page
 - `/badge/:name.svg` — SVG compatibility badge
