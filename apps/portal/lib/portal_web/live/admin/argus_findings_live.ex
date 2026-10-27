@@ -10,8 +10,20 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   package or per analysis, each header with its own group action. All take
   `?sort=` and keyboard shortcuts (see the `.TriageKeys` hook), which push the
   same events as the forms do.
+
+  Every event that writes a triage (`triage_check`, `triage_package`,
+  `triage_type`, `triage`, `set_status`, `bulk`) re-runs the admin policy
+  against a freshly loaded user, as the controller actions this replaces did
+  on every request: an admin demoted or stripped of their passkey while the
+  page is open is refused and redirected on the next such event, not when the
+  socket happens to reconnect. The freshly loaded user is the actor every
+  `Catalog.triage_*` call records. Reads -- filtering, sorting, expanding a
+  check, selecting rows -- are not re-checked, the same as the other admin
+  LiveViews leave their own paging and filtering alone.
   """
   use PortalWeb, :live_view
+
+  import PortalWeb.Admin.LiveAuth
 
   alias Portal.Catalog
   alias Portal.Catalog.FindingTriage
@@ -61,12 +73,16 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   @list_views [:findings, :packages, :types]
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
     {:ok,
      socket
      |> assign(
        page_title: "argus findings",
        page_description: "Internal triage of argus findings.",
+       # Kept from the session, for `as_admin/2` to re-check on every write;
+       # see `PortalWeb.Admin.LiveAuth`'s moduledoc.
+       user_id: session["user_id"],
+       login_method: session["login_method"],
        statuses: @statuses,
        status_options: Enum.map(@statuses, fn {atom, label} -> {label, atom} end),
        severities: @severities,
@@ -129,53 +145,43 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     {:noreply, socket |> assign(:expanded, expanded) |> refresh_check(check)}
   end
 
-  def handle_event("triage_check", %{"check" => params}, socket) do
-    case status_atom(params["status"]) do
-      nil ->
-        {:noreply, put_flash(socket, :error, "Choose a status.")}
-
-      status ->
-        changed =
-          Catalog.triage_check!(
-            socket.assigns.filters,
-            check_ident(params),
-            if(params["scope"] == "new", do: :new, else: :all),
-            %{status: status, note: blank_to_nil(params["note"])},
-            socket.assigns.current_user
-          )
-
-        {:noreply, socket |> reload() |> put_flash(:info, "Set #{findings(changed)}.")}
-    end
-  end
+  def handle_event("triage_check", %{"check" => params}, socket),
+    do: as_admin(socket, fn socket, user -> triage_check(socket, params, user) end)
 
   # By package and by type: the header's group action, the same as a check's
   # but for every finding of one package or one type within the filters.
   def handle_event("triage_package", %{"package" => params}, socket),
-    do: triage_group(socket, params, &Catalog.triage_package!/5)
+    do:
+      as_admin(socket, fn socket, user ->
+        triage_group(socket, params, user, &Catalog.triage_package!/5)
+      end)
 
   def handle_event("triage_type", %{"type" => params}, socket),
-    do: triage_group(socket, params, &Catalog.triage_type!/5)
+    do:
+      as_admin(socket, fn socket, user ->
+        triage_group(socket, params, user, &Catalog.triage_type!/5)
+      end)
 
   def handle_event("triage", %{"finding_id" => id, "triage" => triage}, socket) do
-    row =
-      Catalog.triage!(
-        id,
-        %{status: triage["status"], note: blank_to_nil(triage["note"])},
-        socket.assigns.current_user
-      )
+    as_admin(socket, fn socket, user ->
+      row =
+        Catalog.triage!(id, %{status: triage["status"], note: blank_to_nil(triage["note"])}, user)
 
-    {:noreply, socket |> row_changed(row) |> put_flash(:info, "Saved.")}
+      {:noreply, socket |> row_changed(row) |> put_flash(:info, "Saved.")}
+    end)
   end
 
   # From the keyboard: a status only, so the note is kept.
   def handle_event("set_status", %{"id" => id, "status" => status}, socket) do
-    with status when not is_nil(status) <- status_atom(status),
-         %{triage: row} <- Catalog.triage_row(id) do
-      row = Catalog.triage!(row.id, %{status: status}, socket.assigns.current_user)
-      {:noreply, row_changed(socket, row)}
-    else
-      _ -> {:noreply, socket}
-    end
+    as_admin(socket, fn socket, user ->
+      with status when not is_nil(status) <- status_atom(status),
+           %{triage: row} <- Catalog.triage_row(id) do
+        row = Catalog.triage!(row.id, %{status: status}, user)
+        {:noreply, row_changed(socket, row)}
+      else
+        _ -> {:noreply, socket}
+      end
+    end)
   end
 
   # Only rows on the page can be selected, so a stale or forged id never
@@ -203,24 +209,26 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
   end
 
   def handle_event("bulk", %{"bulk" => params}, socket) do
-    case status_atom(params["status"]) do
-      nil ->
-        {:noreply, put_flash(socket, :error, "Choose a status.")}
+    as_admin(socket, fn socket, user ->
+      case status_atom(params["status"]) do
+        nil ->
+          {:noreply, put_flash(socket, :error, "Choose a status.")}
 
-      status ->
-        changed =
-          Catalog.triage_many!(
-            MapSet.to_list(socket.assigns.selected),
-            %{status: status, note: blank_to_nil(params["note"])},
-            socket.assigns.current_user
-          )
+        status ->
+          changed =
+            Catalog.triage_many!(
+              MapSet.to_list(socket.assigns.selected),
+              %{status: status, note: blank_to_nil(params["note"])},
+              user
+            )
 
-        {:noreply,
-         socket
-         |> assign(:selected, MapSet.new())
-         |> reload()
-         |> put_flash(:info, "Set #{findings(changed)}.")}
-    end
+          {:noreply,
+           socket
+           |> assign(:selected, MapSet.new())
+           |> reload()
+           |> put_flash(:info, "Set #{findings(changed)}.")}
+      end
+    end)
   end
 
   @doc "A short stable id for a check (analysis, title and severity), used in DOM ids."
@@ -231,7 +239,26 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
     |> binary_part(0, 16)
   end
 
-  defp triage_group(socket, params, triage!) do
+  defp triage_check(socket, params, user) do
+    case status_atom(params["status"]) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Choose a status.")}
+
+      status ->
+        changed =
+          Catalog.triage_check!(
+            socket.assigns.filters,
+            check_ident(params),
+            if(params["scope"] == "new", do: :new, else: :all),
+            %{status: status, note: blank_to_nil(params["note"])},
+            user
+          )
+
+        {:noreply, socket |> reload() |> put_flash(:info, "Set #{findings(changed)}.")}
+    end
+  end
+
+  defp triage_group(socket, params, user, triage!) do
     with status when not is_nil(status) <- status_atom(params["status"]),
          name when is_binary(name) and name != "" <- params["name"] do
       changed =
@@ -240,7 +267,7 @@ defmodule PortalWeb.Admin.ArgusFindingsLive do
           name,
           if(params["scope"] == "new", do: :new, else: :all),
           %{status: status, note: blank_to_nil(params["note"])},
-          socket.assigns.current_user
+          user
         )
 
       {:noreply, socket |> reload() |> put_flash(:info, "Set #{findings(changed)}.")}

@@ -49,6 +49,105 @@ defmodule PortalWeb.Admin.ArgusFindingsLiveTest do
     assert has_element?(view, "#triage-counts", "1 confirmed")
   end
 
+  # Every write re-checks the admin against the database, not the socket's
+  # stale assign, the same as `PortalWeb.Admin.UsersLive` and the other admin
+  # LiveViews: see `PortalWeb.Admin.LiveAuth`.
+  describe "admin is re-checked on every write" do
+    defp demote(admin) do
+      {:ok, _} =
+        admin
+        |> Ash.Changeset.for_update(:set_admin, %{is_admin: false})
+        |> Ash.update(domain: Portal.Accounts)
+    end
+
+    test "a triage click is refused once demoted, and changes nothing",
+         %{conn: conn, admin: admin} do
+      ingest("1.0.0", ok([finding()]), 1)
+      [%{triage: row}] = Portal.Catalog.triage_list(%{})
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
+
+      demote(admin)
+
+      assert {:error, {:redirect, %{to: "/request-scan"}}} =
+               view
+               |> form("#triage-form-#{row.id}", triage: %{status: "confirmed", note: "real bug"})
+               |> render_change()
+
+      [%{triage: after_}] = Portal.Catalog.triage_list(%{})
+      assert after_.status == :new
+      assert after_.note == nil
+    end
+
+    test "a forged set_status event for a non-admin is refused, and changes nothing",
+         %{conn: conn, admin: admin} do
+      ingest("1.0.0", ok([finding()]), 1)
+      [%{triage: row}] = Portal.Catalog.triage_list(%{})
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
+
+      demote(admin)
+
+      assert {:error, {:redirect, %{to: "/request-scan"}}} =
+               render_hook(view, "set_status", %{"id" => row.id, "status" => "confirmed"})
+
+      assert [%{triage: %{status: :new}}] = Portal.Catalog.triage_list(%{})
+    end
+
+    test "bulk, triage_check, triage_package and triage_type are refused once demoted",
+         %{conn: conn, admin: admin} do
+      ingest("1.0.0", ok([finding()]), 1)
+
+      events = [
+        {"bulk", %{"bulk" => %{"status" => "confirmed", "note" => ""}}},
+        {"triage_check",
+         %{
+           "check" => %{
+             "analysis" => "failure",
+             "title" => "Catch-all rescue swallows exceptions",
+             "severity" => "warning",
+             "status" => "confirmed",
+             "scope" => "all"
+           }
+         }},
+        {"triage_package",
+         %{"package" => %{"name" => "tripkg", "status" => "confirmed", "scope" => "all"}}},
+        {"triage_type",
+         %{"type" => %{"name" => "failure", "status" => "confirmed", "scope" => "all"}}}
+      ]
+
+      # Mount one view per event while the admin is still valid: once demoted,
+      # `on_mount` would itself refuse a fresh mount, and a refusal's redirect
+      # ends the LiveView process, so a single mounted view can't take more
+      # than one of these events either.
+      views = for _ <- events, do: live(conn, ~p"/admin/argus/findings?view=findings")
+
+      demote(admin)
+
+      for {{:ok, view, _}, {event, params}} <- Enum.zip(views, events) do
+        assert {:error, {:redirect, %{to: "/request-scan"}}} = render_hook(view, event, params),
+               "expected #{event} to be refused"
+      end
+
+      assert [%{triage: %{status: :new}}] = Portal.Catalog.triage_list(%{})
+    end
+
+    test "a valid admin's triage still works", %{conn: conn} do
+      ingest("1.0.0", ok([finding()]), 1)
+      [%{triage: row}] = Portal.Catalog.triage_list(%{})
+      {:ok, view, _} = live(conn, ~p"/admin/argus/findings?view=findings")
+
+      view
+      |> form("#triage-form-#{row.id}", triage: %{status: "confirmed", note: "real bug"})
+      |> render_change()
+
+      [%{triage: after_}] = Portal.Catalog.triage_list(%{})
+
+      assert {after_.status, after_.note, after_.updated_by} ==
+               {:confirmed, "real bug", "triage_admin"}
+
+      assert has_element?(view, "#triage-counts", "1 confirmed")
+    end
+  end
+
   test "filters patch the URL", %{conn: conn} do
     ingest("1.0.0", ok([finding()]), 1)
     {:ok, view, _} = live(conn, ~p"/admin/argus/findings")
