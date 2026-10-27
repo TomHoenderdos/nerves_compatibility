@@ -88,7 +88,8 @@ defmodule NccWorker.OptionalDepsTargets do
   @typedoc """
   Every key optional; a missing one runs the real thing.
 
-    * `deps_get` -- `(project_dir, env, log_file)`, `mix deps.get`
+    * `deps_get` -- `(project_dir, env, log_file, timeout_sec)`, `mix deps.get`;
+      `{:error, :timeout}` when it ran out of time
     * `lock_policy` -- `(project_dir)`, `NccWorker.LockPolicy.validate/1`
     * `compile` -- `(project_dir, env, log_file, timeout_sec)`, `mix compile`;
       `{:error, :timeout}` when it ran out of time
@@ -205,15 +206,30 @@ defmodule NccWorker.OptionalDepsTargets do
   defp run_targets(params, r, passing, snapshot, names) do
     Enum.each(passing, &log_header(&1, names))
 
-    {moved, outcomes} =
-      Enum.reduce(passing, {[], []}, fn target, {moved, outcomes} ->
+    {moved, outcomes, broken} =
+      Enum.reduce(passing, {[], [], []}, fn target, {moved, outcomes, broken} ->
+        stale = {target, {:dropped, "stale_build_not_removed"}}
+
         case move_aside(params, r, target) do
-          :ok -> {moved ++ [target], outcomes}
-          {:error, _} -> {moved, outcomes ++ [{target, {:dropped, "stale_build_not_removed"}}]}
+          :ok ->
+            {moved ++ [target], outcomes, broken}
+
+          # Not moved: the first build is where it was.
+          {:error, _} ->
+            {moved, outcomes ++ [stale], broken}
+
+          # Moved, but its links could not be made its own: put back as is.
+          {:moved, {:error, _}} ->
+            {moved ++ [target], outcomes ++ [stale], broken}
+
+          # Moved, and a link lost: nothing safe to put back.
+          {:moved, {:broken, reason}} ->
+            {moved ++ [target], outcomes ++ [stale], [reason | broken]}
         end
       end)
 
-    {fetched, fetch_outcomes} = fetch_serially(params, r, moved)
+    ready = Enum.reject(moved, fn target -> List.keymember?(outcomes, target, 0) end)
+    {fetched, fetch_outcomes} = fetch_serially(params, r, ready)
     lock = if fetched == [], do: nil, else: r.read_lock.(params.project_dir, params.package)
     compile_outcomes = compile_targets(params, r, fetched, lock)
 
@@ -221,13 +237,15 @@ defmodule NccWorker.OptionalDepsTargets do
     outcomes = outcomes ++ fetch_outcomes ++ compile_outcomes
     ordered = Enum.map(passing, fn target -> List.keyfind(outcomes, target, 0) end)
 
-    finish(params, r, snapshot, names, ordered, moved, lock)
+    finish(params, r, snapshot, names, ordered, moved, lock, broken)
   end
 
   defp fetch_serially(params, r, moved) do
     Enum.reduce(moved, {[], []}, fn {_name, %{env: env, log_file: log_file}} = target,
                                     {fetched, outcomes} ->
-      deps_get = fn project_dir, fetch_env -> r.deps_get.(project_dir, fetch_env, log_file) end
+      deps_get = fn project_dir, fetch_env, timeout_sec ->
+        r.deps_get.(project_dir, fetch_env, log_file, timeout_sec)
+      end
 
       case fetch_before_deadline(params, r, env, deps_get) do
         :ok -> {fetched ++ [target], outcomes}
@@ -237,10 +255,18 @@ defmodule NccWorker.OptionalDepsTargets do
   end
 
   # A target not started by the deadline keeps its first build.
+  # Bounded like the compile, by min(per-system timeout, time left): a
+  # stalled Hex fetch would otherwise run into `Portal.Builder`'s 2 h kill.
   defp fetch_before_deadline(params, r, env, deps_get) do
-    if time_left(params, r) > 0,
-      do: fetch(params, r, env, deps_get),
-      else: {:dropped, "timeout"}
+    case min(params.timeout_sec, time_left(params, r)) do
+      timeout_sec when timeout_sec > 0 ->
+        fetch(params, r, env, fn project_dir, fetch_env ->
+          deps_get.(project_dir, fetch_env, timeout_sec)
+        end)
+
+      _ ->
+        {:dropped, "timeout"}
+    end
   end
 
   defp fetch(params, r, env, deps_get) do
@@ -253,6 +279,9 @@ defmodule NccWorker.OptionalDepsTargets do
 
       {:error, {:rm_rf_failed, _reason, _path}} ->
         {:dropped, "stale_build_not_removed"}
+
+      {:error, :timeout} ->
+        {:dropped, "timeout"}
 
       {:error, _reason} ->
         {:dropped, "deps_get_failed"}
@@ -296,8 +325,14 @@ defmodule NccWorker.OptionalDepsTargets do
     timeout_sec = min(params.timeout_sec, time_left(params, r))
 
     with {:time, true} <- {:time, timeout_sec > 0},
-         :ok <- r.compile.(params.project_dir, env, log_file, timeout_sec) do
-      {:kept, r.scan.(build_path, params.package), r.compile_env.(build_path, params.package)}
+         :ok <- r.compile.(params.project_dir, env, log_file, timeout_sec),
+         # A kept target's first build is deleted, so a scan or compile_env
+         # it cannot publish would leave the target with nothing: it goes
+         # back to the first build instead.
+         scan when is_map(scan) and not is_map_key(scan, "errors") <-
+           r.scan.(build_path, params.package),
+         compile_env when is_list(compile_env) <- r.compile_env.(build_path, params.package) do
+      {:kept, scan, compile_env}
     else
       {:time, false} -> {:dropped, "timeout"}
       {:error, :timeout} -> {:dropped, "timeout"}
@@ -315,13 +350,14 @@ defmodule NccWorker.OptionalDepsTargets do
 
   # Without a target that got as far as being moved aside.
   defp finish(params, r, snapshot, names, outcomes),
-    do: finish(params, r, snapshot, names, outcomes, [], nil)
+    do: finish(params, r, snapshot, names, outcomes, [], nil, [])
 
-  defp finish(params, r, snapshot, names, outcomes, moved, lock) do
+  defp finish(params, r, snapshot, names, outcomes, moved, lock, broken) do
     put_back =
       outcomes
       |> Enum.filter(fn {target, _outcome} -> target in moved end)
       |> Enum.map(fn {target, outcome} -> settle(params, r, target, outcome) end)
+      |> Kernel.++(Enum.map(broken, &{:error, &1}))
 
     Enum.each(outcomes, fn {target, outcome} -> log_outcome(target, names, outcome) end)
 
@@ -338,9 +374,81 @@ defmodule NccWorker.OptionalDepsTargets do
   defp move_aside(params, r, {_name, %{env: env}}) do
     {lib, aside} = lib_paths(env, params.package)
 
-    with {:ok, _} <- File.rm_rf(aside) do
-      r.rename.(lib, aside)
+    with {:ok, _} <- File.rm_rf(aside),
+         :ok <- r.rename.(lib, aside) do
+      case own_links(aside) do
+        :ok -> :ok
+        error -> {:moved, error}
+      end
     end
+  end
+
+  # Mix symlinks `_build/<t>/lib/<pkg>/priv` (and `include`) to the
+  # package's source, `deps_<t>/<pkg>/priv`, so the moved-aside first build
+  # would share them with the pass: an elixir_make NIF the pass writes there
+  # lands in the first build too. Each such link in the moved-aside copy is
+  # replaced by a dereferenced copy (modes kept) before anything compiles,
+  # so a put-back first build is its own bytes. The link's own path works
+  # from the aside dir: it sits at the same depth as `lib/<pkg>`.
+  #
+  # `{:error, _}` when the link is still in place (the first build can go
+  # back as it was), `{:broken, reason}` when it is gone and could not be
+  # put back.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp own_links(aside) do
+    Enum.reduce_while(~w(priv include), :ok, fn sub, :ok ->
+      case own_if_link(Path.join(aside, sub)) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp own_if_link(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :symlink}} -> own_link(path)
+      _ -> :ok
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp own_link(path) do
+    copy = Path.join(Path.dirname(path), ".#{Path.basename(path)}.copy")
+    link = Path.join(Path.dirname(path), ".#{Path.basename(path)}.link")
+
+    with {:ok, _} <- File.rm_rf(copy),
+         {:ok, _} <- copy_dereferenced(path, copy),
+         :ok <- File.rename(path, link) do
+      swap_in(copy, link, path)
+    else
+      {:error, reason, _file} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp swap_in(copy, link, path) do
+    case File.rename(copy, path) do
+      :ok ->
+        File.rm(link)
+        :ok
+
+      # Back to the link, so the first build is as the firmware left it.
+      {:error, reason} ->
+        case File.rename(link, path) do
+          :ok -> {:error, reason}
+          {:error, undo} -> {:broken, {:link_lost, path, reason, undo}}
+        end
+    end
+  end
+
+  # A link to nothing has no bytes of its own to keep.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp copy_dereferenced(path, copy) do
+    if File.exists?(path),
+      do: File.cp_r(path, copy, dereference_symlinks: true),
+      else: {:error, :dangling_link}
   end
 
   # A kept target's first build is no longer needed; one left behind only
@@ -444,7 +552,7 @@ defmodule NccWorker.OptionalDepsTargets do
 
   defp default_runners do
     %{
-      deps_get: &deps_get/3,
+      deps_get: &deps_get/4,
       lock_policy: &LockPolicy.validate/1,
       compile: &compile/4,
       scan: &scan/2,
@@ -523,38 +631,40 @@ defmodule NccWorker.OptionalDepsTargets do
     :ok
   end
 
-  defp deps_get(project_dir, env, log_file) do
-    case mix(["deps.get"], project_dir, env, log_file) do
-      0 -> :ok
-      code -> {:error, {:deps_get_failed, "mix deps.get exited with code #{code}"}}
+  defp deps_get(project_dir, env, log_file, timeout_sec) do
+    case bounded_mix("deps.get", project_dir, env, log_file, timeout_sec) do
+      :ok -> :ok
+      {:error, :timeout} -> {:error, :timeout}
+      {:error, message} -> {:error, {:deps_get_failed, message}}
     end
   end
 
-  # `timeout(1)` stops the compile and everything it started at the
-  # per-system timeout, so a dropped target's lib dir is never written to
-  # after it has been put back.
-  defp compile(project_dir, env, log_file, timeout_sec) do
+  # `timeout(1)` stops the compile at the per-system timeout; whatever it
+  # started in process groups of its own is reaped before the first build
+  # goes back (`settle/4`).
+  defp compile(project_dir, env, log_file, timeout_sec),
+    do: bounded_mix("compile", project_dir, env, log_file, timeout_sec)
+
+  defp bounded_mix(task, project_dir, env, log_file, timeout_sec) do
     {command, args} =
       case System.find_executable("timeout") do
-        nil -> {"mix", ["compile"]}
-        timeout -> {timeout, ["--kill-after=10", "#{timeout_sec}", "mix", "compile"]}
+        nil -> {"mix", [task]}
+        timeout -> {timeout, ["--kill-after=10", "#{timeout_sec}", "mix", task]}
       end
 
     started = System.monotonic_time(:second)
     code = cmd(command, args, project_dir, env, log_file)
     timed_out? = System.monotonic_time(:second) - started >= timeout_sec
 
-    compile_outcome(code, command != "mix", timed_out?)
+    compile_outcome(code, command != "mix", timed_out?, task)
   end
 
-  defp compile_outcome(0, _bounded?, _timed_out?), do: :ok
-  defp compile_outcome(@timeout_exit, true, _timed_out?), do: {:error, :timeout}
-  defp compile_outcome(@killed_exit, true, true), do: {:error, :timeout}
+  defp compile_outcome(0, _bounded?, _timed_out?, _task), do: :ok
+  defp compile_outcome(@timeout_exit, true, _timed_out?, _task), do: {:error, :timeout}
+  defp compile_outcome(@killed_exit, true, true, _task), do: {:error, :timeout}
 
-  defp compile_outcome(code, _bounded?, _timed_out?),
-    do: {:error, "mix compile exited with code #{code}"}
-
-  defp mix(args, project_dir, env, log_file), do: cmd("mix", args, project_dir, env, log_file)
+  defp compile_outcome(code, _bounded?, _timed_out?, task),
+    do: {:error, "mix #{task} exited with code #{code}"}
 
   # Literal argument lists for mix or the resolved timeout executable; no
   # shell. log_file is a worker-generated output path.
@@ -579,7 +689,10 @@ defmodule NccWorker.OptionalDepsTargets do
   end
 
   # The compile's own `.app`, not the release copy the first build read:
-  # `mix compile` assembles no release.
+  # `mix compile` assembles no release. The two give the same compile_env:
+  # `Mix.Release` copies an application's `.app` into the release by
+  # consulting it and writing the same term back (`process_app_file/2`), so
+  # its `compile_env` entry is unchanged.
   defp compile_env(build_path, package),
     do:
       AppFile.read_compile_env(Path.join([build_path, "lib", package, "ebin", "#{package}.app"]))
