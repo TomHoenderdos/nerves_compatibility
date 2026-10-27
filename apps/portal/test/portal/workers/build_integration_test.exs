@@ -337,6 +337,89 @@ defmodule Portal.Workers.BuildIntegrationTest do
     assert cache_snapshot(root) == before
   end
 
+  # ecto's own dependency closure has telemetry (Erlang, not pure Elixir), so
+  # it is a firmware package, not `pure_elixir`; its only optional dependency
+  # is jason. systems_filter keeps this to one target so the per-target
+  # optional-dependency pass (`NccWorker.OptionalDepsTargets`, design spec
+  # docs/superpowers/specs/2026-10-27-optional-deps-per-target-design.md) has
+  # exactly one target to recompile with jason added, after the firmware
+  # build has already settled x86_64's status.
+  @tag timeout: :timer.minutes(60)
+  test "a firmware target republishes with its own optional dependencies" do
+    run_id = "it-ecto-optional-#{System.unique_integer([:positive])}"
+    on_exit(fn -> Builder.cleanup(run_id) end)
+
+    image_digest = Builder.image_digest(Builder.docker_image())
+
+    assert {:ok, %{exit_code: 0, result: result, output_dir: output_dir, log: log}} =
+             Builder.build(%{
+               run_id: run_id,
+               package: "ecto",
+               version: "3.14.2",
+               image_digest: image_digest,
+               systems_filter: ["nerves_system_x86_64"]
+             })
+
+    systems = result["systems"]
+    assert map_size(systems) > 0
+
+    for {name, system} <- systems,
+        do: assert(system["status"] == "pass", "#{name}: #{system["log_tail"] || log}")
+
+    # The run-level lock is the status build's, read before the per-target
+    # pass: it never names jason, which only x86_64's own pass adds.
+    refute Map.has_key?(result["deps_lock"] || %{}, "jason")
+
+    assert %{"nerves_system_x86_64" => x86} = systems
+    assert %{"jason" => %{"version" => version, "checksum" => checksum}} = x86["deps_lock"]
+    assert Version.match?(version, "~> 1.0")
+    assert is_binary(checksum)
+
+    x86_log = File.read!(Path.join([output_dir, "logs", "nerves_system_x86_64.log"]))
+    assert x86_log =~ ~r/==> optional dependencies: .*jason/
+    assert x86_log =~ ~r/==> optional dependencies kept: .*jason/
+
+    assert :ok =
+             Ingest.perform(%Oban.Job{
+               args: %{"run_id" => run_id, "image_digest" => image_digest},
+               attempt: 1,
+               max_attempts: 5
+             })
+
+    package = Enum.find(Ash.read!(Package, domain: Portal.Catalog), &(&1.name == "ecto"))
+    assert package, "expected a Package row for ecto"
+
+    assert [run] =
+             Run
+             |> Ash.Query.filter(package_id == ^package.id and version_tested == "3.14.2")
+             |> Ash.read!(domain: Portal.Catalog)
+
+    refute Map.has_key?(run.deps_lock || %{}, "jason")
+
+    system_results =
+      SystemResult
+      |> Ash.Query.filter(run_id == ^run.id)
+      |> Ash.read!(domain: Portal.Catalog)
+
+    assert Enum.all?(system_results, &(&1.status == :pass))
+
+    x86_result = Enum.find(system_results, &(&1.system_pkg == "nerves_system_x86_64"))
+    assert x86_result, "expected a nerves_system_x86_64 SystemResult"
+    assert %{"jason" => %{"version" => version, "checksum" => checksum}} = x86_result.deps_lock
+    assert Version.match?(version, "~> 1.0")
+    assert is_binary(checksum)
+
+    manifest = Portal.Catalog.precompiled_manifest_v2("ecto")
+    assert manifest, "expected a v2 manifest for ecto"
+
+    x86_build =
+      manifest["versions"]["3.14.2"]["builds"]
+      |> Enum.find(&(&1["target"] == "nerves_system_x86_64"))
+
+    assert x86_build, "expected a nerves_system_x86_64 build in the v2 manifest"
+    assert Map.has_key?(x86_build["build"]["deps"], "jason")
+  end
+
   # Every path under the cache root with what a write would change: type,
   # size, mode and mtime (from lstat, so a link is never followed).
   defp cache_snapshot(root) do
