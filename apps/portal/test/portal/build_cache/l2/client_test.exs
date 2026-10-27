@@ -130,4 +130,52 @@ defmodule Portal.BuildCache.L2.ClientTest do
     assert [{"GET", _, query}] = FakeS3.requests(s)
     assert query =~ "list-type=2"
   end
+
+  # The pool hands out a kept-alive connection the server has since closed;
+  # the first request on it fails with `:closed` before a byte is sent. A
+  # proxy in front of the stub closes its first connection right after
+  # accepting it and forwards every later one.
+  test "a request on a connection the server closed is sent again once", %{s: s, cfg: cfg} do
+    FakeS3.put_object(s, "slug/k.tar.gz", "hello")
+    %URI{port: upstream} = URI.parse(cfg.endpoint)
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(listen)
+    proxy = spawn_link(fn -> closing_proxy(listen, upstream, :close_first) end)
+    on_exit(fn -> Process.exit(proxy, :kill) end)
+
+    # The stub signs against its own port, so the forwarded request is
+    # answered 403; what matters is that it was sent again and answered.
+    cfg = %{cfg | endpoint: "http://127.0.0.1:#{port}"}
+    result = Client.list(cfg, "slug/")
+    refute match?({:error, %Req.TransportError{}}, result), inspect(result)
+    assert Enum.any?(FakeS3.requests(s), &match?({"GET", "/" <> _, "list-type=2" <> _}, &1))
+  end
+
+  defp closing_proxy(listen, upstream, mode) do
+    {:ok, client} = :gen_tcp.accept(listen)
+
+    case mode do
+      :close_first ->
+        :gen_tcp.close(client)
+
+      :forward ->
+        {:ok, server} = :gen_tcp.connect(~c"127.0.0.1", upstream, [:binary, active: false])
+        pid = spawn(fn -> pipe(client, server) end)
+        :gen_tcp.controlling_process(client, pid)
+        spawn(fn -> pipe(server, client) end) |> then(&:gen_tcp.controlling_process(server, &1))
+    end
+
+    closing_proxy(listen, upstream, :forward)
+  end
+
+  defp pipe(from, to) do
+    case :gen_tcp.recv(from, 0) do
+      {:ok, data} ->
+        :gen_tcp.send(to, data)
+        pipe(from, to)
+
+      {:error, _} ->
+        :gen_tcp.close(to)
+    end
+  end
 end
