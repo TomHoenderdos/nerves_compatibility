@@ -447,6 +447,17 @@ before the warm refills it.
   `<NCC_NERVES_CACHE>.trusted-v1` by hand on the build host before rolling
   forward again, or the next read-only deploy trusts what those builds wrote.
 
+### Rolling back the portal release past the per-target optional pass
+
+A worker image from 2026-10-27 on writes a `deps_lock` per firmware system
+for the targets it rebuilt with their optional dependencies. A portal release
+from before then drops that key at ingest, so those targets' files would be
+published under the run's lock, which does not name the optional
+dependencies. Rolling back `portal-previous.tar.gz` past that commit
+therefore needs the builders rolled back too (`ncc-worker:previous` retagged
+to `ncc-worker:local` on the build host and the remote builders), or the runs
+ingested in between revoked.
+
 ## Public endpoints
 
 - `/` — dashboard; `/packages` — package browser

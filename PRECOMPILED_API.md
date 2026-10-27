@@ -417,11 +417,11 @@ them.
   package's optional dependencies, so their `build.deps` lacks them and a
   client whose lock has them (decimal next to jason, for example) does not
   match.
-- Per-system entries from firmware runs before this deploy were built
+- Per-system entries from firmware runs before 2026-10-27 were built
   without the package's optional dependencies for every target, the same
-  as a `pure_elixir` entry from before 2026-10-24; a per-target pass added
-  after that only covers runs from this deploy on, and only the targets it
-  kept them for.
+  as a `pure_elixir` entry from before 2026-10-24; the per-target pass
+  added on 2026-10-27 only covers runs from then on, and only the targets
+  it kept them for.
 - Pure Elixir packages have `pure_elixir` entries only from runs after
   2026-10-20; earlier ones archived no files.
 - Entries from runs before 2026-10-23 list the release copy of each BEAM,
