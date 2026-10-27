@@ -18,7 +18,7 @@ defmodule Portal.EgressCheck do
   mean the packet got through. Run from the release, with the targets in
   `NCC_EGRESS_PROBE` as `host:port`, IPv6 in brackets, comma-separated:
 
-      NCC_EGRESS_PROBE='100.126.79.115:5432,[fd7a:115c:a1e0::1]:5432' \\
+      NCC_EGRESS_PROBE='100.64.0.1:5432,[fd7a:115c:a1e0::1]:5432' \\
         bin/portal eval 'Portal.EgressCheck.main()'
   """
 
@@ -60,7 +60,7 @@ defmodule Portal.EgressCheck do
   @spec parse_targets(String.t() | nil) :: {:ok, [target()]} | {:error, String.t()}
   def parse_targets(nil),
     do:
-      {:error, "set NCC_EGRESS_PROBE to host:port pairs, e.g. 100.126.79.115:5432,[fd7a::1]:5432"}
+      {:error, "set NCC_EGRESS_PROBE to host:port pairs, e.g. 100.64.0.1:5432,[fd7a::1]:5432"}
 
   def parse_targets(raw) when is_binary(raw) do
     raw

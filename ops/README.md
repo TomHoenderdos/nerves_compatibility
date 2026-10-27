@@ -8,7 +8,7 @@ once the security workflows have passed on that commit (see `DEPLOY.md`,
 | --- | --- | --- |
 | `wait-for-checks.sh` | in CI | waits for audit, CodeQL, Credo and Sobelow on the commit |
 | `ssh-deploy.sh` | in CI | runs `deploy.sh <sha>` on the web host, or `deploy.sh <sha> builder` on the build host through it |
-| `deploy-builders.sh` | on a laptop | deploys main's head to box-a, box-c, box-d and the main builder (`vmi`): installs that commit's `deploy.sh`/`build-release.sh`, runs `deploy.sh <sha> builder` detached, polls until done; `-n` dry run, `-s` one at a time |
+| `deploy-builders.sh` | on a laptop | deploys main's head to the hosts in `ops/builders.hosts` (not committed; see `builders.hosts.example`): installs that commit's `deploy.sh`/`build-release.sh`, runs `deploy.sh <sha> builder` detached, polls until done; `-n` dry run, `-s` one at a time, `-c <sha>` a given commit, `-f` redeploy a host already on it |
 | `deploy.sh` | on a host | fast-forwards the checkout, builds the release, migrates, restarts |
 | `build-release.sh` | on a host | builds the release in a container matching the host's glibc |
 | `builder-deploy.sh` | on the build host | sourced by `deploy.sh`: installs and loads the egress filter, drains the build queues, swaps the worker image and warms the Nerves cache on it |

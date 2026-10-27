@@ -1,0 +1,5 @@
+# Copy to ops/builders.hosts (not committed) for ops/deploy-builders.sh.
+# One `<name> <ssh destination>` per line, in deploy order.
+host-a root@host-a
+host-b root@host-b
+main-builder root@builder.example.internal

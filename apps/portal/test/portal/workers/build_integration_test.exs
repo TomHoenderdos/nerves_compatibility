@@ -427,8 +427,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
   # ecto's own dependency closure has telemetry (Erlang, not pure Elixir), so
   # it is a firmware package, not `pure_elixir`; its only optional dependency
   # is jason. systems_filter keeps this to one target so the per-target
-  # optional-dependency pass (`NccWorker.OptionalDepsTargets`, design spec
-  # docs/superpowers/specs/2026-10-27-optional-deps-per-target-design.md) has
+  # optional-dependency pass (`NccWorker.OptionalDepsTargets`) has
   # exactly one target to recompile with jason added, after the firmware
   # build has already settled x86_64's status.
   @tag timeout: :timer.minutes(60)
