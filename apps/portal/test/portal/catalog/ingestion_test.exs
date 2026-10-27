@@ -625,6 +625,67 @@ defmodule Portal.Catalog.IngestionTest do
     end
   end
 
+  describe "system deps_lock" do
+    defp ingest_system_deps_lock(sys_deps_lock) do
+      sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+
+      result =
+        load_fixture()
+        |> put_in(["systems", "nerves_system_rpi4", "deps_lock"], sys_deps_lock)
+
+      {:ok, run} =
+        Ingestion.ingest(result, %{
+          run_id: "sys-deps-lock-#{System.unique_integer([:positive])}",
+          image_digest: "sha256:deps",
+          files_dir: seed_files_dir([sha]),
+          scan_request_id: nil,
+          log: "build log"
+        })
+
+      SystemResult
+      |> Ash.Query.filter(run_id == ^run.id and system_pkg == "nerves_system_rpi4")
+      |> Ash.read_one!(domain: Portal.Catalog)
+    end
+
+    # Mirrors the per-target optional-dependency pass: a passing target's own
+    # lock, the run's plus the optional deps it kept.
+    test "a well-formed system deps_lock is stored on that system" do
+      deps_lock = %{
+        "jason" => %{"version" => "1.4.4", "checksum" => "abc"},
+        "telemetry" => %{"version" => "1.3.0", "checksum" => "def"}
+      }
+
+      assert ingest_system_deps_lock(deps_lock).deps_lock == deps_lock
+    end
+
+    # Same all-or-nothing contract as the run's deps_lock: the worker writes
+    # the whole closure or nothing, so a malformed entry drops the whole
+    # system lock rather than failing the ingest or publishing a subset.
+    test "a malformed system deps_lock stores nil rather than failing the ingest" do
+      assert ingest_system_deps_lock(%{"jason" => %{"version" => "1.4.4"}}).deps_lock == nil
+    end
+
+    test "a system with no deps_lock key stores nil" do
+      sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+
+      {:ok, run} =
+        Ingestion.ingest(load_fixture(), %{
+          run_id: "sys-deps-lock-none-#{System.unique_integer([:positive])}",
+          image_digest: "sha256:deps",
+          files_dir: seed_files_dir([sha]),
+          scan_request_id: nil,
+          log: "build log"
+        })
+
+      system =
+        SystemResult
+        |> Ash.Query.filter(run_id == ^run.id and system_pkg == "nerves_system_rpi4")
+        |> Ash.read_one!(domain: Portal.Catalog)
+
+      assert system.deps_lock == nil
+    end
+  end
+
   describe "partial runs" do
     defp full_result(name, version, systems) do
       %{
@@ -780,6 +841,31 @@ defmodule Portal.Catalog.IngestionTest do
       systems = systems_of(second)
       assert systems["nerves_system_rpi4"].carried_from_run_id == first.id
       assert systems["nerves_system_rpi4"].compile_env == compile_env
+    end
+
+    test "a carried-forward system result keeps its own deps_lock" do
+      deps_lock = %{"jason" => %{"version" => "1.4.4", "checksum" => "abc"}}
+
+      first =
+        ingest!(
+          full_result("carrydepslockpkg", "1.0.0", %{
+            "nerves_system_rpi4" => %{"status" => "pass", "deps_lock" => deps_lock},
+            "nerves_system_bbb" => %{"status" => "pass"}
+          })
+        )
+
+      second =
+        ingest!(%{
+          "package" => %{"name" => "carrydepslockpkg", "version" => "1.0.0"},
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "targets",
+          "systems" => %{"nerves_system_bbb" => %{"status" => "pass"}}
+        })
+
+      systems = systems_of(second)
+      assert systems["nerves_system_rpi4"].carried_from_run_id == first.id
+      assert systems["nerves_system_rpi4"].deps_lock == deps_lock
+      assert systems["nerves_system_bbb"].deps_lock == nil
     end
 
     test "keeps the original provenance across a chain of partial runs" do
