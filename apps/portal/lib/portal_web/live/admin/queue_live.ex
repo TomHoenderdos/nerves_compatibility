@@ -13,6 +13,14 @@ defmodule PortalWeb.Admin.QueueLive do
   loaded user, as the controller actions this replaces did on every request:
   an admin demoted or stripped of their passkey while the page is open is
   refused on the next click, not when the socket happens to reconnect.
+
+  A bulk action's per-row work (`Portal.Admin.bulk_approve/2` and friends,
+  each a hex.pm lookup per selected row) runs under `Portal.TaskSupervisor`,
+  off this process, so a slow or down hex.pm freezes neither this admin's
+  tab nor anyone else's: `as_admin_bulk/3` re-checks the admin, starts the
+  task and returns at once, which Cinder reports through `on_success` as a
+  "working" flash; the task reports the finished summary itself, straight to
+  this process, once it is done.
   """
   use PortalWeb, :live_view
 
@@ -147,11 +155,22 @@ defmodule PortalWeb.Admin.QueueLive do
   def handle_info({:admin_refresh, :queue}, socket),
     do: {:noreply, Cinder.refresh_tables(socket, @tables)}
 
-  # Cinder sends the action's own `{:ok, result}` unwrapped, as `result`.
-  def handle_info({:bulk_done, %{result: %{ok: ok, failed: failed}}}, socket) do
+  # Cinder's `on_success` fires the instant `as_admin_bulk/3` starts the
+  # task, not when the task finishes -- see its moduledoc. `count` is what
+  # Cinder itself counted off the selection, before the function ran.
+  def handle_info({:bulk_done, %{count: count, result: :working}}, socket),
+    do: {:noreply, put_flash(socket, :info, "Working on #{count} requests…")}
+
+  # The real summary, sent straight to this process by the task once it
+  # finishes -- same texts a synchronous bulk action gave before the work
+  # moved off this process (see `bulk_message/2`).
+  def handle_info({:bulk_async_result, {:ok, %{ok: ok, failed: failed}}}, socket) do
     {kind, message} = bulk_message(ok, failed)
     {:noreply, socket |> put_flash(kind, message) |> Cinder.refresh_tables(@tables)}
   end
+
+  def handle_info({:bulk_async_result, {:error, reason}}, socket),
+    do: {:noreply, put_flash(socket, :error, AdminMessages.error(reason))}
 
   def handle_info({:bulk_failed, %{reason: {:refused, refusal}}}, socket),
     do: refuse(socket, refusal)
@@ -193,16 +212,46 @@ defmodule PortalWeb.Admin.QueueLive do
 
   # Cinder calls a bulk action as `fun.(query, opts)`, with the actor it was
   # rendered with. That actor is a snapshot from the mount, so the admin is
-  # re-checked here and the freshly loaded user goes in its place. A refusal
+  # re-checked here, synchronously, before anything else happens: a refusal
   # comes back as `{:error, {:refused, refusal}}` and Cinder hands it to
-  # `{:bulk_failed, _}`, which redirects the way a click would.
+  # `{:bulk_failed, _}`, which redirects the way a click would, having
+  # started no work and changed nothing.
+  #
+  # Once the actor checks out, the freshly loaded user goes in its place and
+  # `bulk_fun` -- `Portal.Admin.bulk_approve/2` and friends, each a per-row
+  # hex.pm lookup -- runs under `Portal.TaskSupervisor` instead of inline
+  # here: this function returns at once, so a slow or down hex.pm never
+  # blocks the socket that is about to render the "working" flash. The task
+  # reports its result straight to this process; `handle_info/2` above turns
+  # both messages into the flash the admin sees.
   defp as_admin_bulk(bulk_fun, user_id, login_method) do
     fn query, opts ->
       case RequireAdmin.check(load_user(user_id), login_method) do
-        {:ok, user} -> bulk_fun.(query, Keyword.put(opts, :actor, user))
+        {:ok, user} -> start_bulk_task(bulk_fun, query, Keyword.put(opts, :actor, user))
         {:error, refusal} -> {:error, {:refused, refusal}}
       end
     end
+  end
+
+  defp start_bulk_task(bulk_fun, query, opts) do
+    live_view = self()
+
+    {:ok, _pid} =
+      Task.Supervisor.start_child(Portal.TaskSupervisor, fn ->
+        send(live_view, {:bulk_async_result, run_bulk(bulk_fun, query, opts)})
+      end)
+
+    {:ok, :working}
+  end
+
+  # `bulk_fun` already rescues per row (`Portal.Admin.each_request/3`), but a
+  # crash above that loop -- the read of the query itself, say -- must still
+  # reach the page as a message rather than leave its "working" flash
+  # standing forever with the task simply gone.
+  defp run_bulk(bulk_fun, query, opts) do
+    bulk_fun.(query, opts)
+  rescue
+    e -> {:error, Exception.message(e)}
   end
 
   # A click carries what the button put in it, but a forged one may carry
