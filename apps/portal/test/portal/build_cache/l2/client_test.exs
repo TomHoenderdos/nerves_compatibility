@@ -143,12 +143,8 @@ defmodule Portal.BuildCache.L2.ClientTest do
     proxy = spawn_link(fn -> closing_proxy(listen, upstream, :close_first) end)
     on_exit(fn -> Process.exit(proxy, :kill) end)
 
-    # The stub signs against its own port, so the forwarded request is
-    # answered 403; what matters is that it was sent again and answered.
     cfg = %{cfg | endpoint: "http://127.0.0.1:#{port}"}
-    result = Client.list(cfg, "slug/")
-    refute match?({:error, %Req.TransportError{}}, result), inspect(result)
-    assert Enum.any?(FakeS3.requests(s), &match?({"GET", "/" <> _, "list-type=2" <> _}, &1))
+    assert {:ok, [%{key: "slug/k.tar.gz"}]} = Client.list(cfg, "slug/")
   end
 
   defp closing_proxy(listen, upstream, mode) do

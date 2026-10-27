@@ -877,15 +877,7 @@ defmodule Portal.Builder do
          true <- L2.enabled?() do
       line =
         if prefetch_space?(dir) do
-          counts = L2.prefetch(dir, Path.basename(dir))
-
-          if counts.list_failed do
-            "Build cache L2 prefetch for #{job.run_id} skipped: listing the bucket failed"
-          else
-            "Build cache L2 prefetch for #{job.run_id}: #{counts.downloaded} downloaded, " <>
-              "#{counts.discarded} discarded, #{counts.failed} failed, #{counts.skipped} skipped " <>
-              "of #{counts.candidates} candidates (#{counts.bytes} bytes)"
-          end
+          prefetch_line(job.run_id, L2.prefetch(dir, Path.basename(dir)))
         else
           "Build cache L2 prefetch for #{job.run_id} skipped: low disk space on the build cache filesystem"
         end
@@ -895,6 +887,15 @@ defmodule Portal.Builder do
     else
       _ -> {:ok, ""}
     end
+  end
+
+  defp prefetch_line(run_id, %{list_failed: true}),
+    do: "Build cache L2 prefetch for #{run_id} skipped: listing the bucket failed"
+
+  defp prefetch_line(run_id, counts) do
+    "Build cache L2 prefetch for #{run_id}: #{counts.downloaded} downloaded, " <>
+      "#{counts.discarded} discarded, #{counts.failed} failed, #{counts.skipped} skipped " <>
+      "of #{counts.candidates} candidates (#{counts.bytes} bytes)"
   end
 
   # `prefetch_min_free_bytes/0` before the prefetch starts; the prefetch
