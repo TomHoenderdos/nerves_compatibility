@@ -4,11 +4,12 @@ A Phoenix-served compatibility tracker for Hex.pm packages on Nerves target syst
 
 ## Layout
 
-This repository is a Mix umbrella with three apps:
+This repository is a Mix umbrella with four apps:
 
 - `apps/compatibility` — shared result/index types, validators, and status helpers.
 - `apps/ncc_worker` — the Docker-side worker escript. It creates a temporary Nerves project, builds firmware per system, scans BEAM artifacts, and emits `result.json` plus content-addressed artifacts.
 - `apps/portal` — Phoenix 1.8 + Ash/Postgres + Oban web app. It owns scan intake, accounts and admin UI, the build queue, Catalog persistence, the package browser, badges, the schema-v2 JSON API, and the precompiled artifact API.
+- `apps/ncc_agent` — the remote builder agent. It claims build jobs from the portal, runs the worker image for them, and uploads the results.
 
 ## Common commands
 
@@ -50,6 +51,7 @@ mix format
 
 - `docs/INDEX_FORMAT.md` — schema-v2 JSON API shapes
 - `PRECOMPILED_API.md` — precompiled package API
+- `docs/PRECOMPILED_DEPS_RFC.md` — RFC: precompiled dependencies for Elixir and Erlang projects
 - `SECURITY.md` — reporting vulnerabilities
 
 ## License
