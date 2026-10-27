@@ -66,6 +66,8 @@ defmodule NccWorker.Worker do
             optional(:work_dir) => String.t(),
             optional(:output_dir) => String.t()
           },
+          # Set by `run/1`, not by NCC_INPUT: monotonic seconds at the start.
+          optional(:started_at) => integer(),
           optional(:limits) => %{
             optional(:per_system_timeout_sec) => integer(),
             optional(:log_tail_bytes) => integer()
@@ -259,6 +261,9 @@ defmodule NccWorker.Worker do
   """
   @spec run(input()) :: {:ok, result()} | {:error, term()}
   def run(input) do
+    # The optional pass's 75-minute rule counts from here
+    # (`NccWorker.OptionalDepsTargets`).
+    started_at = System.monotonic_time(:second)
     scope = RunScope.from_input(input)
 
     with :ok <- validate_input(input),
@@ -269,7 +274,7 @@ defmodule NccWorker.Worker do
          {:ok, nerves} <- prepare_nerves_cache(scope, input, paths),
          {:ok, toolchain} <- detect_toolchain(scope) do
       scope
-      |> run_scope(input, paths, toolchain, nerves)
+      |> run_scope(Map.put(input, :started_at, started_at), paths, toolchain, nerves)
       |> EgressProbe.put_result(egress)
     end
   end
@@ -550,7 +555,8 @@ defmodule NccWorker.Worker do
       package: input.package.name,
       systems: systems,
       paths: paths,
-      timeout: timeout
+      timeout: timeout,
+      started_at: Map.get(input, :started_at, System.monotonic_time(:second))
     }
 
     with {:ok, system_results, optional_deps, run_lock} <-
@@ -865,7 +871,9 @@ defmodule NccWorker.Worker do
       systems: results,
       targets: targets,
       timeout_sec: pass.timeout,
-      concurrency: build_concurrency()
+      concurrency: build_concurrency(),
+      budget_sec: optional_pass_budget(),
+      run_elapsed_sec: System.monotonic_time(:second) - pass.started_at
     }
 
     with {:ok, out} <- OptionalDepsTargets.run(params) do
@@ -873,6 +881,16 @@ defmodule NccWorker.Worker do
 
       {:ok, out.systems, Map.put(out.optional_deps, :skipped, skipped),
        %{deps_lock: out.deps_lock, package_checksum: out.package_checksum}}
+    end
+  end
+
+  # The per-target pass's wall-clock budget, NCC_OPTIONAL_PASS_BUDGET_SEC
+  # (default 1200): with NCC_BUILD_CONCURRENCY=1 it could otherwise add
+  # targets x per-system timeout to a run `Portal.Builder` kills at 2 h.
+  defp optional_pass_budget do
+    case Integer.parse(System.get_env("NCC_OPTIONAL_PASS_BUDGET_SEC", "")) do
+      {n, ""} when n >= 0 -> n
+      _ -> 1200
     end
   end
 
