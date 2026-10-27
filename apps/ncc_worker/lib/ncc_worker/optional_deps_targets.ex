@@ -329,8 +329,10 @@ defmodule NccWorker.OptionalDepsTargets do
          # A kept target's first build is deleted, so a scan or compile_env
          # it cannot publish would leave the target with nothing: it goes
          # back to the first build instead.
-         scan when is_map(scan) and not is_map_key(scan, "errors") <-
-           r.scan.(build_path, params.package),
+         # A scan that worked carries `"errors" => []`; only a non-empty
+         # list means it did not.
+         scan when is_map(scan) <- r.scan.(build_path, params.package),
+         [] <- Map.get(scan, "errors", []),
          compile_env when is_list(compile_env) <- r.compile_env.(build_path, params.package) do
       {:kept, scan, compile_env}
     else

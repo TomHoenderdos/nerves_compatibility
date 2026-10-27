@@ -166,7 +166,10 @@ defmodule NccWorker.OptionalDepsTargetsTest do
         deps_get: deps_get_ok(dir),
         lock_policy: fn _ -> :ok end,
         compile: compile_by_target(dir, %{"rpi4" => :ok, "bbb" => :ok}),
-        scan: fn build_path, "pkg" -> %{"rescanned" => Path.basename(build_path)} end,
+        # A real BeamScan result always carries "errors", empty when it worked.
+        scan: fn build_path, "pkg" ->
+          %{"rescanned" => Path.basename(build_path), "errors" => []}
+        end,
         compile_env: fn build_path, "pkg" -> [%{"second" => Path.basename(build_path)}] end,
         reap: fn _build_path -> :ok end
       },
@@ -198,7 +201,7 @@ defmodule NccWorker.OptionalDepsTargetsTest do
 
       assert File.read!(beam(dir, "rpi4")) == "second-rpi4"
       refute File.exists?(aside(dir, "rpi4"))
-      assert rpi4.beam_scan == %{"rescanned" => "rpi4"}
+      assert rpi4.beam_scan == %{"rescanned" => "rpi4", "errors" => []}
       assert rpi4.compile_env == [%{"second" => "rpi4"}]
       assert rpi4.optional_deps == %{added: ["jason"], dropped: [], reason: nil}
 
@@ -818,7 +821,7 @@ defmodule NccWorker.OptionalDepsTargetsTest do
       scan = fn build_path, _pkg ->
         if Path.basename(build_path) == "rpi4",
           do: %{"errors" => ["beam scan failed: :enoent"]},
-          else: %{"rescanned" => "bbb"}
+          else: %{"rescanned" => "bbb", "errors" => []}
       end
 
       compile_env = fn build_path, _pkg ->
