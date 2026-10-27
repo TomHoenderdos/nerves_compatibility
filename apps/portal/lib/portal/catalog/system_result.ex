@@ -49,7 +49,8 @@ defmodule Portal.Catalog.SystemResult do
         :log_path,
         :log_tail,
         :failure_category,
-        :carried_from_run_id
+        :carried_from_run_id,
+        :deps_lock
       ])
     end
 
@@ -124,6 +125,18 @@ defmodule Portal.Catalog.SystemResult do
     end
 
     attribute :dependency_scans, :map do
+      public?(true)
+    end
+
+    # The package's transitive dependency closure as *this system's* build
+    # locked it, same shape as `Run.deps_lock`. A firmware run's per-target
+    # optional-dependency pass can recompile a passing target with the
+    # package's optional deps added and republish that target's files with
+    # them; when it does, the target's lock differs from the run's and this
+    # is where it is recorded. Nil on every system that kept the run's own
+    # build (every system before the pass existed, and any target the pass
+    # did not touch or could not keep).
+    attribute :deps_lock, :map do
       public?(true)
     end
 
