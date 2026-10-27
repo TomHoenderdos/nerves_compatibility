@@ -1,7 +1,9 @@
 defmodule Portal.BuildCache.Promotion do
   @moduledoc """
   Moves dependency build cache candidates a finished build reported into the
-  shared build cache. This is the cache's only writer.
+  shared build cache. It is the only writer that takes a build's own report;
+  the other, `Portal.BuildCache.L2.prefetch/3`, only copies in entries a
+  host already promoted through here.
 
   ## Why the host does this
 
