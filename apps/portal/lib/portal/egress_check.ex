@@ -1,7 +1,7 @@
 defmodule Portal.EgressCheck do
   @moduledoc """
-  The per-host egress check (isolation spec, section 3; `ops/README.md`,
-  "Egress filter"), run on a build host after a deploy that touches the
+  The per-host egress check (isolation spec, section 3; the operator runbook),
+  run on a build host after a deploy that touches the
   filter. It passes only when all four hold:
 
   1. `Portal.Builder.check_egress/0` passes: the filter is loaded.

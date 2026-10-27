@@ -1,6 +1,6 @@
 #!/bin/bash
 # Deploys the main branch to this host. Installed to
-# /opt/nerves_compatibility/deploy.sh; see ops/README.md.
+# /opt/nerves_compatibility/deploy.sh; see the operator runbook.
 #
 # Both hosts run an identical copy of this script and both follow main. The
 # only per-host difference is /etc/ncc-portal/portal.env, which decides the
@@ -117,6 +117,6 @@ if [[ ${2:-portal} == builder ]]; then
 else
   # Remote builders read the registry digest for this commit from images.json;
   # the images workflow publishes it minutes after this deploy, so a miss here
-  # is retried by the ncc-images-sync timer (docs/REMOTE_BUILDERS.md).
+  # is retried by the ncc-images-sync timer (the operator runbook).
   bash "$SRC/ops/images-sync.sh" "$(git rev-parse HEAD)" || echo 'images.json not yet available; the sync timer will retry' >&2
 fi

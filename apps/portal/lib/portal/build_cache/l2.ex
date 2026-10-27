@@ -60,7 +60,7 @@ defmodule Portal.BuildCache.L2 do
   cannot recompute its key. It trusts the bucket instead, and the bucket is
   trustworthy exactly as far as its writers are: only hosts holding the
   read-write key can PUT, and each of them runs Promotion before uploading.
-  The integrity of L2 is the integrity of that key (`docs/BUILD_CACHE_L2.md`:
+  The integrity of L2 is the integrity of that key (the operator runbook:
   read-write on the home hosts only, read-only for anything else).
 
   What the downloader still checks is what a faulty transport could change.

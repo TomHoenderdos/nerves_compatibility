@@ -3,8 +3,8 @@
 
 builder_paused=false
 
-# The build egress filter (isolation spec, section 3; ops/README.md "Egress
-# filter"). Installed from this checkout, which deploy.sh has already moved to
+# The build egress filter (isolation spec, section 3; the operator
+# runbook). Installed from this checkout, which deploy.sh has already moved to
 # the commit being deployed.
 builder_src=${SRC:-/opt/nerves_compatibility/src}
 builder_portal_env=${NCC_PORTAL_ENV:-/etc/ncc-portal/portal.env}
@@ -56,7 +56,7 @@ builder_install_egress() {
     "$builder_egress_loader" || return 1
 
   if builder_is_nixos; then
-    echo 'NixOS: the docker user unit is nix-managed; its ExecStartPost comes from the host nix config (ops/README.md, "Egress filter")'
+    echo 'NixOS: the docker user unit is nix-managed; its ExecStartPost comes from the host nix config (see the operator runbook)'
   else
     home=$(builder_ncc_home) || return 1
     [[ -n "$home" ]] || return 1
@@ -97,7 +97,7 @@ builder_check_egress() {
       IO.puts(:stderr, inspect(error))
       System.halt(1)
   end'; then
-    echo 'refusing to activate: the new release finds no build egress filter (ops/README.md, "Egress filter")' >&2
+    echo 'refusing to activate: the new release finds no build egress filter (see the operator runbook)' >&2
     return 1
   fi
 }
@@ -125,7 +125,7 @@ PrivateUsers= (nsenter cannot enter the namespace), a PATH without nsenter
 or nft, or an XDG_RUNTIME_DIR other than /run/user/<uid of ncc>. Check:
   systemctl show ncc-portal -p RestrictNamespaces -p PrivateUsers -p Environment
   journalctl -u ncc-portal -n 50
-See ops/README.md, "Egress filter".
+See the operator runbook.
 EOF
     return 1
   fi

@@ -46,4 +46,3 @@ iex -S mix run --no-start -e 'Application.ensure_all_started(:ncc_agent)'
 then `NccAgent.Identity.ensure()` enrols. Tests (`mix test apps/ncc_agent/test/`,
 from the root) run against a fake portal and do not read the environment.
 
-See `docs/REMOTE_BUILDERS.md` for the design and operations.

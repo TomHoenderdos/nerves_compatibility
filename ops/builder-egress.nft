@@ -16,7 +16,7 @@
 # reached.
 #
 # Remote builders apply the same policy in DOCKER-USER
-# (apps/ncc_agent/priv/egress.sh, docs/REMOTE_BUILDERS.md); keep the address
+# (apps/ncc_agent/priv/egress.sh, the operator runbook); keep the address
 # lists the same in both.
 #
 # The loader replaces this define with the name `docker network inspect

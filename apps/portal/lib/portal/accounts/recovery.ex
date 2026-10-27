@@ -15,10 +15,10 @@ defmodule Portal.Accounts.Recovery do
   Pass the username that holds `is_admin`, which is not always the one that
   looks like the operator's own name -- an operator can have a separate
   non-admin account too, and clearing factors on the wrong one restores no
-  access at all. `ops/README.md` opens with the query that settles it.
+  access at all. The operator runbook opens with the query that settles it.
 
   For the runnable command, including the environment sourcing this needs to
-  reach the database, see `ops/README.md`.
+  reach the database, see the operator runbook.
   """
 
   require Logger
