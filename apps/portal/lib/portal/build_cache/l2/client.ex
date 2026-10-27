@@ -247,11 +247,21 @@ defmodule Portal.BuildCache.L2.Client do
     end
   end
 
+  # One retry, and only on a connection the server had already closed: the
+  # pool hands out a kept-alive connection the S3 server timed out, and the
+  # request fails before a byte of it is sent. Every request here is
+  # idempotent (GET, HEAD, LIST, and a PUT of a content-addressed object with
+  # the body held in memory), so sending it again on a fresh connection is
+  # safe. A GET retried after its collector already wrote bytes cannot
+  # happen: `:closed` on a stale connection precedes any response.
   defp req(cfg, opts) do
     Req.new(
       [
         base_url: cfg.endpoint,
-        retry: false,
+        retry: &retry_closed?/2,
+        max_retries: 1,
+        retry_delay: 0,
+        retry_log_level: false,
         redirect: false,
         connect_options: [
           timeout: @connect_timeout,
@@ -266,6 +276,9 @@ defmodule Portal.BuildCache.L2.Client do
       ] ++ opts
     )
   end
+
+  defp retry_closed?(_request, %Req.TransportError{reason: :closed}), do: true
+  defp retry_closed?(_request, _response_or_exception), do: false
 
   defp object_url(cfg, object), do: "/" <> cfg.bucket <> "/" <> object
 

@@ -879,9 +879,13 @@ defmodule Portal.Builder do
         if prefetch_space?(dir) do
           counts = L2.prefetch(dir, Path.basename(dir))
 
-          "Build cache L2 prefetch for #{job.run_id}: #{counts.downloaded} downloaded, " <>
-            "#{counts.discarded} discarded, #{counts.failed} failed, #{counts.skipped} skipped " <>
-            "of #{counts.candidates} candidates (#{counts.bytes} bytes)"
+          if counts.list_failed do
+            "Build cache L2 prefetch for #{job.run_id} skipped: listing the bucket failed"
+          else
+            "Build cache L2 prefetch for #{job.run_id}: #{counts.downloaded} downloaded, " <>
+              "#{counts.discarded} discarded, #{counts.failed} failed, #{counts.skipped} skipped " <>
+              "of #{counts.candidates} candidates (#{counts.bytes} bytes)"
+          end
         else
           "Build cache L2 prefetch for #{job.run_id} skipped: low disk space on the build cache filesystem"
         end
