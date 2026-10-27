@@ -8,7 +8,7 @@ defmodule Portal.Workers.IngestQueueTest do
   describe "local_queue/1" do
     test "names a queue after the node" do
       assert Ingest.local_queue(:"portal@box-c") == "ingest_portal_box_c"
-      assert Ingest.local_queue(:portal@vmi3525942) == "ingest_portal_vmi3525942"
+      assert Ingest.local_queue(:portal@vmi1234567) == "ingest_portal_vmi1234567"
     end
 
     test "differs per node, so one host never takes another's ingest" do

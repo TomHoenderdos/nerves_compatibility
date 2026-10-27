@@ -32,7 +32,7 @@ Each build host also runs an ingest queue of its own, named after its node
 scratch dir. It is added at boot and needs no entry in `OBAN_QUEUES`; give every
 build host a distinct node name.
 
-The home build hosts also share a build cache through Garage on box-b; see `docs/BUILD_CACHE_L2.md`.
+The home build hosts also share a build cache through Garage on a homelab host; see `docs/BUILD_CACHE_L2.md`.
 
 ## Remote builders
 

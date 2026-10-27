@@ -2,18 +2,18 @@
 
 ## Overview
 
-The portal's dependency build cache (`NCC_BUILD_CACHE`) is a directory on each build host. L2 adds a shared S3 bucket behind it, served by Garage on `box-b`, so a dependency compiled once on one home host is restored on the others. The local directory is unchanged and is the only thing a build container sees (read-only at `/build-cache`); the worker does not know L2 exists.
+The portal's dependency build cache (`NCC_BUILD_CACHE`) is a directory on each build host. L2 adds a shared S3 bucket behind it, served by Garage on a homelab host (the cache host below), so a dependency compiled once on one home host is restored on the others. The local directory is unchanged and is the only thing a build container sees (read-only at `/build-cache`); the worker does not know L2 exists.
 
 Before each `docker run`, `Portal.Builder` lists the bucket under the worker image's slug and downloads the objects missing locally, newest first, within 2 GiB downloaded, 4 GiB extracted and 5 minutes per build (extraction counts against the time), and stops when the cache filesystem drops below the free-space minimum, checked before every object. Each object is pre-scanned before extraction and refused if it inflates past 1 GiB, if its tar table sums to more than the inflated size (a sparse member), or if it holds more than 100,000 members; the extraction itself runs in a separate process with a heap cap and a deadline. After each local promotion, `Portal.BuildCache.Promotion` uploads the new entry, best effort: each PUT is bounded in total time, all uploads of one promotion share a 2 minute deadline, and the first upload that times out or meets a failing store (5xx, transport error) ends the uploads for that promotion. A failed or slow L2 never fails a build. Only content-addressed image slugs (`sha256_<64 hex>`) are shared; a slug of any other shape is neither uploaded nor prefetched, and the push ignores it. Objects are named `<slug>/<key>.tar.gz` with `x-amz-meta-sha256`; each is a gzip tar of one entry with no symlink members (Mix's `priv`/`include` links travel in a `.ncc-links.json` manifest), and the structure is re-checked on extract with the same walker Promotion uses. Trust rests on the write key: only a holder of the read-write key can put an object there. The `x-amz-meta-sha256` header detects corruption, not tampering, since it travels with the body: `http://` is acceptable only on the tailnet, which encrypts the path, and any other endpoint must be `https://` (the portal logs a warning at boot for plain `http` outside loopback and `100.64.0.0/10`). The operator-facing summary is in [DEPLOY.md](../DEPLOY.md#shared-build-cache-l2).
 
-## Garage on box-b
+## Garage on the cache host
 
 The module below was written against NixOS 25.05 and `pkgs.garage_1`; `garage.toml` keys are stable across 1.x, but option names (notably `environmentFile`) must match the `services.garage` module of your channel. It has not been verified against a NixOS evaluation. `rpc_secret`, the admin token and the tailnet address are yours: generate each secret with `openssl rand -hex 32` and keep them in `/etc/garage/secrets.env` (`GARAGE_RPC_SECRET`, `GARAGE_ADMIN_TOKEN`), outside the store. `garage.toml` is what the module renders (`/etc/garage.toml`).
 
 ```nix
 { config, pkgs, ... }:
 let
-  # The tailnet address of box-b; S3 is served only there.
+  # The tailnet address of the cache host; S3 is served only there.
   tailnetAddr = "100.64.0.2";
 in
 {
@@ -56,7 +56,7 @@ in
 
 ## Layout, bucket and keys
 
-Run on box-b as root; `garage` reads `/etc/garage.toml`.
+Run on the cache host as root; `garage` reads `/etc/garage.toml`.
 
 ```bash
 garage status                                   # note the node id
@@ -109,7 +109,7 @@ Use the first form on a checkout and the second on a deployed release. It is res
 
 ## Verification
 
-On box-b, `garage bucket info ncc-build-cache` shows the object count and size growing after a push or a few builds. On a home host, look for `Build cache L2 upload of <slug>/<key>.tar.gz: N bytes` after a promotion, and `Build cache L2 prefetch for <run>: N downloaded, ...` in the portal log (and in the run's `runner.log`) before a build. The Maintenance tab's counters and last upload/download times should move too. A second host starting a build on a slug the first has filled should report downloads on its first build.
+On the cache host, `garage bucket info ncc-build-cache` shows the object count and size growing after a push or a few builds. On a home host, look for `Build cache L2 upload of <slug>/<key>.tar.gz: N bytes` after a promotion, and `Build cache L2 prefetch for <run>: N downloaded, ...` in the portal log (and in the run's `runner.log`) before a build. The Maintenance tab's counters and last upload/download times should move too. A second host starting a build on a slug the first has filled should report downloads on its first build.
 
 ## Key rotation
 
