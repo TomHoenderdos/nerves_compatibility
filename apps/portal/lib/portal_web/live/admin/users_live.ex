@@ -13,13 +13,12 @@ defmodule PortalWeb.Admin.UsersLive do
   redirected on the next click, not when the socket happens to reconnect.
   """
   use PortalWeb, :live_view
-  use Cinder.UrlSync
 
   import PortalWeb.AdminComponents
+  import PortalWeb.Admin.LiveAuth
 
   alias Portal.Accounts.Mfa
   alias PortalWeb.AdminMessages
-  alias PortalWeb.Plugs.RequireAdmin
 
   @impl true
   def mount(_params, session, socket) do
@@ -44,7 +43,7 @@ defmodule PortalWeb.Admin.UsersLive do
 
   @impl true
   def handle_params(params, uri, socket) do
-    {:noreply, Cinder.UrlSync.handle_params(params, uri, socket)}
+    {:noreply, Cinder.UrlSync.handle_params(sane_page(params), uri, socket)}
   end
 
   @impl true
@@ -90,48 +89,25 @@ defmodule PortalWeb.Admin.UsersLive do
   # it needs the step-up the security settings use on top of the admin
   # policy. Without it, a stolen admin session could quietly hand out admin.
   defp stepped_up(socket, fun) do
-    %{user_id: user_id, login_method: login_method} = socket.assigns
+    as_admin(socket, fn socket, user ->
+      # A temporary password is shown for the action that made it only, as
+      # it was when each action rendered its own response.
+      socket = assign(socket, :temporary_password, nil)
 
-    case RequireAdmin.check(load_user(user_id), login_method) do
-      {:ok, user} ->
-        # A temporary password is shown for the action that made it only, as
-        # it was when each action rendered its own response.
-        socket = assign(socket, current_user: user, temporary_password: nil)
-
-        if Mfa.reauth_fresh?(user, socket.assigns.reauth_method, socket.assigns.reauth_at) do
-          fun.(socket, user)
-        else
-          refuse(socket, %{
-            to: ~p"/settings/security",
-            flash: "Confirm your passkey on this page first, then come back to change admins."
-          })
-        end
-
-      {:error, refusal} ->
-        refuse(socket, refusal)
-    end
+      if Mfa.reauth_fresh?(user, socket.assigns.reauth_method, socket.assigns.reauth_at) do
+        fun.(socket, user)
+      else
+        refuse(socket, %{
+          to: ~p"/settings/security",
+          flash: "Confirm your passkey on this page first, then come back to change admins."
+        })
+      end
+    end)
   end
 
-  # A click carries what the button put in it, but a forged one may carry
-  # anything; a missing or non-string value is refused by the context
-  # function as blank or unknown, not by crashing the page.
-  defp string_param(params, key) do
-    case params[key] do
-      value when is_binary(value) -> value
-      _other -> ""
-    end
-  end
-
-  defp load_user(user_id) do
-    case Portal.Accounts.get_user(user_id) do
-      {:ok, user} -> user
-      _ -> nil
-    end
-  end
-
-  defp refuse(socket, %{to: to, flash: flash}) do
-    {:noreply, socket |> put_flash(:error, flash) |> redirect(to: to)}
-  end
+  @impl true
+  def handle_info({:table_state_change, _table_id, encoded_state}, socket),
+    do: table_state_change(socket, encoded_state)
 
   defp done(socket, kind, message) do
     {:noreply, socket |> put_flash(kind, message) |> Cinder.refresh_table("users")}

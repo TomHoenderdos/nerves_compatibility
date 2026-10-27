@@ -37,7 +37,26 @@ defmodule PortalWeb.ProviderAuthControllerTest do
 
     assert get_session(conn, :user_id) == user.id
     assert get_session(conn, :login_method) == :hex
+    assert get_session(conn, :live_socket_id) == "users_socket:#{user.id}"
     assert redirected_to(conn) == ~p"/request-scan"
+  end
+
+  test "a linked GitHub account signs in", %{conn: conn} do
+    github = %Identity{
+      provider: :github,
+      uid: "4242",
+      username: "frank-gh",
+      profile: %{"login" => "frank-gh"}
+    }
+
+    {:ok, user} = Identities.link(user_fixture(), github)
+    approve(github)
+
+    conn = conn |> start_login("github") |> finish("github")
+
+    assert get_session(conn, :user_id) == user.id
+    assert get_session(conn, :login_method) == :github
+    assert get_session(conn, :live_socket_id) == "users_socket:#{user.id}"
   end
 
   test "still pending re-renders the code with a check-again button", %{conn: conn} do

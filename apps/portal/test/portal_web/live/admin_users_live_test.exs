@@ -63,6 +63,13 @@ defmodule PortalWeb.AdminUsersLiveTest do
       refute html =~ "bob_two"
     end
 
+    test "a malformed page param does not crash the page", %{conn: conn} do
+      for query <- ["page=oops", "page=-1", "page[]=2", "page=99999999999999999999"] do
+        assert {:ok, view, _html} = live(conn, "/admin/users?" <> query)
+        assert render_async(view) =~ "cinder_admin"
+      end
+    end
+
     test "a filter change goes into the URL, so a reload keeps it", %{conn: conn} do
       {:ok, _} = Portal.Accounts.register_user("alice_one", @pw)
       {:ok, _} = Portal.Accounts.register_user("bob_two", @pw)
@@ -226,6 +233,42 @@ defmodule PortalWeb.AdminUsersLiveTest do
       assert {:ok, %{is_admin: true}} = Portal.Accounts.get_user_by_username("ctl_other")
     end
 
+    # The revoked admin's open tabs would otherwise keep paging this very
+    # table on the actor they mounted with. The disconnect makes them
+    # reconnect, and the reconnect is refused by the gate.
+    test "disconnects the revoked admin's live sockets, not the revoker's", %{
+      conn: conn,
+      admin: admin
+    } do
+      {:ok, other} = Portal.Accounts.seed_admin_user("ctl_other", @pw)
+      Portal.Test.AccountsFixtures.add_test_passkey(other)
+      other_topic = "users_socket:#{other.id}"
+      own_topic = "users_socket:#{admin.id}"
+      PortalWeb.Endpoint.subscribe(other_topic)
+      PortalWeb.Endpoint.subscribe(own_topic)
+
+      other_conn = build_conn() |> init_test_session(user_id: other.id, login_method: :passkey)
+      assert {:ok, _view, _html} = live(other_conn, ~p"/admin/users")
+
+      {view, _html} = live_users(fresh(conn))
+      click(view, "revoke_admin", %{"id" => other.id})
+
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^other_topic, event: "disconnect"}
+      refute_received %Phoenix.Socket.Broadcast{topic: ^own_topic}
+
+      assert {:error, {:redirect, %{to: "/request-scan"}}} = live(other_conn, ~p"/admin/users")
+    end
+
+    test "a refused revoke disconnects nobody", %{conn: conn, admin: admin} do
+      {:ok, _} = Portal.Accounts.seed_admin_user("ctl_other", @pw)
+      PortalWeb.Endpoint.subscribe("users_socket:#{admin.id}")
+
+      {view, _html} = live_users(fresh(conn))
+      click(view, "revoke_admin", %{"id" => admin.id})
+
+      refute_receive %Phoenix.Socket.Broadcast{event: "disconnect"}, 50
+    end
+
     test "revoking yourself is refused with the existing text", %{conn: conn, admin: admin} do
       {:ok, _} = Portal.Accounts.seed_admin_user("ctl_other", @pw)
       {view, _html} = live_users(fresh(conn))
@@ -251,6 +294,17 @@ defmodule PortalWeb.AdminUsersLiveTest do
       flash = view |> element("#flash-group") |> render()
       assert flash =~ "fay_six has a temporary password."
       refute flash =~ temp
+    end
+
+    test "disconnects the reset user's live sockets", %{conn: conn} do
+      {:ok, user} = Portal.Accounts.register_user("fay_six", @pw)
+      topic = "users_socket:#{user.id}"
+      PortalWeb.Endpoint.subscribe(topic)
+
+      {view, _html} = live_users(fresh(conn))
+      click(view, "reset_password", %{"username" => user.username})
+
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
     end
 
     test "the next action takes the temporary password off the page", %{conn: conn} do

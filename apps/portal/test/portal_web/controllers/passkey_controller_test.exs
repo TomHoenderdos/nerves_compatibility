@@ -102,6 +102,7 @@ defmodule PortalWeb.PasskeyControllerTest do
     assert json_response(conn, 200)["redirect_to"] == ~p"/request-scan"
     assert get_session(conn, :user_id) == user.id
     assert get_session(conn, :reauth_method) == :passkey
+    assert get_session(conn, :live_socket_id) == "users_socket:#{user.id}"
   end
 
   test "an admin lands on the admin page", %{conn: conn} do

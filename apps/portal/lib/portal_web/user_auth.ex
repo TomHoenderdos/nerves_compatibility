@@ -42,6 +42,9 @@ defmodule PortalWeb.UserAuth do
     # the day nobody will remember to add it.
     |> configure_session(renew: true)
     |> put_session(:user_id, user.id)
+    # Names this session's live sockets, so sign-out and a loss of access
+    # can disconnect them (`Portal.Accounts.disconnect_live_sockets/1`).
+    |> put_session(:live_socket_id, Portal.Accounts.live_socket_id(user.id))
     # How this session was *established*, as opposed to `:reauth_method`,
     # which records the most recent step-up and is overwritten on every one.
     # `PortalWeb.Plugs.RequireAdmin` needs the former: a recovery-code step-up
@@ -85,6 +88,7 @@ defmodule PortalWeb.UserAuth do
   def start_pending(conn, %User{} = user) do
     conn
     |> delete_session(:user_id)
+    |> delete_session(:live_socket_id)
     |> delete_session(:login_method)
     |> delete_session(:reauth_method)
     |> delete_session(:reauth_at)

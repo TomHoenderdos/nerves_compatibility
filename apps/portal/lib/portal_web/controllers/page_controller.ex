@@ -216,7 +216,16 @@ defmodule PortalWeb.PageController do
     end
   end
 
+  # Clearing the cookie ends the session for the next request, not for a
+  # LiveView already connected on it: that keeps working on the user it
+  # mounted with. The disconnect makes those sockets reconnect, and without
+  # this session's cookie the reconnect is refused and the page reloads.
+  # A session from before live socket ids has none to disconnect.
   def logout(conn, _params) do
+    if live_socket_id = get_session(conn, :live_socket_id) do
+      PortalWeb.Endpoint.broadcast(live_socket_id, "disconnect", %{})
+    end
+
     conn
     |> clear_session()
     |> put_flash(:info, "Signed out.")
