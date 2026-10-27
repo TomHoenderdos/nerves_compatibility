@@ -2,8 +2,7 @@
 
 Status: draft, not yet posted. Date: 2026-10-23.
 Authors: Tom Hoenderdos. Prototype: Nerves 2, see "Phases".
-Related: `docs/PRECOMPILED_SIGNING_PROPOSALS.md` for the trust model,
-`PRECOMPILED_API.md` for the wire format.
+Related: `PRECOMPILED_API.md` for the wire format.
 
 ## Summary
 
@@ -81,15 +80,7 @@ package's optional dependencies before building it. The seven packages are
 rebuilt as the portal's sweep reaches them.
 
 Why the portal: it builds every Hex package for every Nerves system already.
-The marginal cost of publishing is storage, a signature, and about 4
-minutes of rendering per 15-minute batch for 3,915 manifests.
-
-To reproduce the A/B measurement, use the demo project `demo-ab2` with its
-`ab.sh` script. `UPLOAD=0 ./ab.sh` runs both legs build-only and checks that
-leg B compiled nothing it fetched. `./ab.sh` with a Raspberry Pi 4 attached
-adds the upload and reboot. The demo project is not published yet. Its
-`mix.exs` and `mix.lock`, which fix the dependency set, will be attached to
-the posted version of this document.
+The marginal cost of publishing is storage and a signature.
 
 ## Prior art
 
@@ -255,20 +246,17 @@ per-package checksums that rules 1 and 4 cite. Neither requires the other.
 
 ## Trust
 
-The threat model is in `docs/PRECOMPILED_SIGNING_PROPOSALS.md`. In short:
-a dependency's code runs in two places, on the developer's machine at
+A dependency's code runs in two places, on the developer's machine at
 compile time through macros and on the device at runtime, and a NIF runs as
 native code inside the VM. Downloading compiled code and running it is what
-an attacker wants a client to do. The portal runs untrusted package code to
-build it, so the builder is the attack surface, not only the wire.
+an attacker wants a client to do.
 
 A malicious package's own files are out of scope. Building it locally runs
 the same code. What precompilation adds is the risk of serving bytes a local
-build would never have produced: files tampered with after the build, files
-poisoned by another package's build on the same host, and files built
-against dependencies or a toolchain the user never locked. Rules 1 to 5
-above address the third. Signing addresses the first. The second needs
-build isolation, which signing cannot provide.
+build would never have produced: files tampered with after the build, and
+files built against dependencies or a toolchain the user never locked.
+Rules 1 to 5 above address the second. Signing addresses the first. Builds
+run sandboxed.
 
 The chain the prototype verifies:
 
@@ -285,21 +273,9 @@ The chain the prototype verifies:
 
 Every hop is a signature or a hash.
 
-The prototype's signer is a single online Ed25519 key on the web host. This
-is proposal 4 of the signing RFC. It defends against tampering in transit, a
-compromised mirror or CDN, and a replayed stale batch. It does not defend
-against a compromised web host, which signs whatever it is given. The
-authors consider that acceptable for an opt-in feature and not acceptable
-for a default-on one. Default-on waits for a proposal with humans in the
-loop.
-
-Of the signing RFC's six prerequisites, numbers 3, 4 and 5 are done: each
-entry records what it was built from, ingestion validates the file metadata
-the worker reports, and one run is published per entry. Number 6 is partly
-done: a run can be revoked and the next batch drops it, but there is no
-image allowlist yet. Numbers 1 and 2 are not done: the shared build cache is
-still writable from inside a build, and the Nerves and Hex caches are not
-read-only.
+The chain defends against tampering in transit, a compromised mirror or
+CDN, and a replayed stale batch. Default-on waits for a signing scheme with
+humans in the loop.
 
 ## Limits
 
@@ -323,11 +299,8 @@ read-only.
 - **`debug_info` and stripped files.** Published files keep `debug_info`.
   A client that wants stripped files for a release gets them from `mix
   release`, as it does for locally compiled dependencies.
-- **Compile-time side effects.** A dependency whose compile step does more
-  than write files under its own `_build` directory, for example one that
-  reads an environment variable or downloads something, is not captured by
-  the key. Nothing in the key notices the difference. This is a known gap,
-  and the same gap exists for any build cache.
+- **Compile-time side effects.** As with any build cache, the key covers
+  only the inputs named above.
 
 ## rebar3
 
@@ -359,27 +332,20 @@ This is an ask, not a plan. Nothing in the prototype touches rebar3.
    pull request against the `nerves` package's `v2` branch,
    https://github.com/nerves-project/nerves/pull/1220. The portal side is in
    the compatibility repository: the manifests say what each build used
-   and publish one run per entry (commit 308050f), publish each build's
-   dependency lock (a615dcf), publish only entries whose files are on the
-   serving host (4fe4624), publish pure Elixir runs from their host build
-   (cfd1ff6), record `compile_env` and the package checksum (6f3e51e,
-   22e60cf, 7336686), and sign batches (6d45000 through f105953). The portal
-   signs with one key. Measure hit rate and fetch time in the wild.
+   and publish one run per entry, publish each build's dependency lock,
+   publish only entries whose files can be served, publish pure Elixir runs
+   from their host build, record `compile_env` and the package checksum, and
+   sign batches. Measure hit rate and fetch time in the wild.
 2. **Mix.** The public state, the inputs manifest and the supported hook
    from "What Mix should add". A library can then do what Nerves does
    without being Nerves.
 3. **Hex.** Option A or B from "What Hex could add". Default-on only after a
-   signing proposal with humans in the loop is live.
+   signing scheme with humans in the loop is live.
 
 ## Open questions
 
 - Who runs builders for host targets: macOS, Linux with glibc, Linux with
   musl, Windows?
-- Should publication require two builders to reproduce the same bytes
-  before an entry is signed?
-- What should happen to a package whose build ran code the builder would
-  not trust, such as a compile step that reaches the network? Refuse to
-  publish, publish with a flag, or publish as today?
 - One archive per package versus one request per file. The request count
   is known. The saving is not, and should be measured before anything
   changes.

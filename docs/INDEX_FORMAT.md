@@ -1,8 +1,7 @@
 # Catalog JSON API (schema version 2)
 
 This document describes the JSON served by the Nerves Compatibility Tracker's
-catalog API. `PortalWeb.CatalogApiController` serves it from
-`Portal.Catalog.latest_by_pkg_json/1` and `Portal.Catalog.stats_json/0`.
+catalog API.
 
 | Endpoint | Shape |
 | --- | --- |
@@ -257,10 +256,8 @@ inspection keep the firmware build path.
 
 Packages seeded in bulk may instead carry a single `registry_deps` system entry
 with `status: "pass"`. This means **assumed compatible from registry data
-alone**: no package in the release's transitive dependency closure on hex.pm
-depends on native build tooling (`elixir_make`, `rustler`,
-`rustler_precompiled`, `zigler`, `cc_precompiler`, `unifex`, `bundlex`) or is a
-`nerves*` package. Nothing was compiled, not even on the host. Package metadata
+alone**: the package was assessed from registry metadata without a build.
+Nothing was compiled, not even on the host. Package metadata
 exposes `native_components.compatibility_basis: "registry_deps"`. A requested
 scan of the package replaces the assessment with a real build.
 
