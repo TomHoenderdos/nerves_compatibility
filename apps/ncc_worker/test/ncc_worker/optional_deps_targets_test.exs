@@ -135,7 +135,7 @@ defmodule NccWorker.OptionalDepsTargetsTest do
 
   # deps.get resolves jason into the root lock, as the real one does.
   defp deps_get_ok(dir) do
-    fn _project_dir, _env, _log_file ->
+    fn _project_dir, _env, _log_file, _timeout ->
       File.write!(Path.join(dir, "mix.lock"), @lock_with_jason)
       :ok
     end
@@ -175,7 +175,7 @@ defmodule NccWorker.OptionalDepsTargetsTest do
   end
 
   defp never("inject"), do: fn _, _ -> flunk("inject ran") end
-  defp never("deps.get"), do: fn _, _, _ -> flunk("deps.get ran") end
+  defp never("deps.get"), do: fn _, _, _, _ -> flunk("deps.get ran") end
   defp never("compile"), do: fn _, _, _, _ -> flunk("compile ran") end
 
   describe "run/2 with one target kept and one dropped" do
@@ -310,7 +310,7 @@ defmodule NccWorker.OptionalDepsTargetsTest do
     # 1: in flight now, 2: most ever in flight, 3: finished.
     counters = :counters.new(3, [])
 
-    deps_get = fn _dir, env, log_file ->
+    deps_get = fn _dir, env, log_file, _timeout ->
       :counters.add(counters, 1, 1)
       in_flight = :counters.get(counters, 1)
       if in_flight > :counters.get(counters, 2), do: :counters.put(counters, 2, in_flight)
@@ -346,7 +346,7 @@ defmodule NccWorker.OptionalDepsTargetsTest do
   end
 
   test "a failed deps.get or lock policy drops that target only", %{dir: dir} do
-    deps_get = fn _dir, env, _log ->
+    deps_get = fn _dir, env, _log, _timeout ->
       case target_of(env) do
         "bbb" ->
           {:error, {:deps_get_failed, "exit code 1"}}
@@ -714,7 +714,7 @@ defmodule NccWorker.OptionalDepsTargetsTest do
       clock = :counters.new(1, [])
       test_pid = self()
 
-      deps_get = fn _dir, env, _log ->
+      deps_get = fn _dir, env, _log, _timeout ->
         send(test_pid, {:deps_get, target_of(env)})
         File.write!(Path.join(dir, "mix.lock"), @lock_with_jason)
         # rpi4's deps.get uses up the whole budget.
@@ -773,6 +773,127 @@ defmodule NccWorker.OptionalDepsTargetsTest do
       refute Map.has_key?(out.systems["nerves_system_x86_64"], :optional_deps)
       assert out.optional_deps.reason == "run_budget_exhausted"
       assert File.read!(Path.join(dir, "mix.exs")) == @mix_exs
+    end
+  end
+
+  describe "final review" do
+    # Mix links `_build/<t>/lib/<pkg>/priv` to `deps_<t>/<pkg>/priv`, so a
+    # pass that writes a NIF there would write into the first build too.
+    test "a put-back first build keeps its own priv bytes behind a symlink", %{dir: dir} do
+      src_priv = Path.join([dir, "deps_rpi4", "pkg", "priv"])
+      nif = Path.join(src_priv, "pkg_nif.so")
+      write!(nif, "first-nif")
+      File.chmod!(nif, 0o755)
+      lib_priv = Path.join([dir, "_build", "rpi4", "lib", "pkg", "priv"])
+      File.ln_s!("../../../../deps_rpi4/pkg/priv", lib_priv)
+      assert File.read!(Path.join(lib_priv, "pkg_nif.so")) == "first-nif"
+
+      compile = fn _dir, env, _log, _timeout ->
+        target = target_of(env)
+
+        if target == "rpi4" do
+          # Mix recreates the link in the new lib dir, the NIF build writes
+          # through it, then the Elixir step fails.
+          write!(beam(dir, "rpi4"), "half-rpi4")
+          File.ln_s!("../../../../deps_rpi4/pkg/priv", lib_priv)
+          File.write!(Path.join(lib_priv, "pkg_nif.so"), "second-nif")
+          {:error, "mix command exited with code 1"}
+        else
+          write!(beam(dir, target), "second-#{target}")
+          :ok
+        end
+      end
+
+      assert {:ok, out} = OptionalDepsTargets.run(params(dir), runners(dir, %{compile: compile}))
+
+      assert out.systems["nerves_system_rpi4"].optional_deps.reason == "target_compile_failed"
+      assert File.read!(beam(dir, "rpi4")) == "first-rpi4"
+      put_back = Path.join(lib_priv, "pkg_nif.so")
+      assert File.read!(put_back) == "first-nif"
+      assert Bitwise.band(File.stat!(put_back).mode, 0o777) == 0o755
+      refute File.exists?(aside(dir, "rpi4"))
+    end
+
+    test "a kept target whose rescan errors goes back to its first build", %{dir: dir} do
+      scan = fn build_path, _pkg ->
+        if Path.basename(build_path) == "rpi4",
+          do: %{"errors" => ["beam scan failed: :enoent"]},
+          else: %{"rescanned" => "bbb"}
+      end
+
+      compile_env = fn build_path, _pkg ->
+        if Path.basename(build_path) == "bbb", do: nil, else: []
+      end
+
+      assert {:ok, out} =
+               OptionalDepsTargets.run(
+                 params(dir),
+                 runners(dir, %{scan: scan, compile_env: compile_env})
+               )
+
+      for target <- @targets do
+        sys = out.systems["nerves_system_#{target}"]
+        assert sys.optional_deps.reason == "target_compile_failed"
+        assert sys.beam_scan == %{"first" => target}
+        refute Map.has_key?(sys, :deps_lock)
+        assert File.read!(beam(dir, target)) == "first-#{target}"
+      end
+    end
+
+    test "deps.get is bounded by min(per-system timeout, time left)", %{dir: dir} do
+      test_pid = self()
+
+      deps_get = fn _dir, env, _log, timeout_sec ->
+        send(test_pid, {:deps_get, target_of(env), timeout_sec})
+        File.write!(Path.join(dir, "mix.lock"), @lock_with_jason)
+        :ok
+      end
+
+      assert {:ok, _} =
+               OptionalDepsTargets.run(
+                 params(dir, %{budget_sec: 100}),
+                 runners(dir, %{deps_get: deps_get, now: fn -> 0 end})
+               )
+
+      assert_received {:deps_get, "rpi4", 100}
+
+      assert {:ok, _} =
+               OptionalDepsTargets.run(
+                 params(dir, %{budget_sec: 5000}),
+                 runners(dir, %{deps_get: deps_get, now: fn -> 0 end})
+               )
+
+      assert_received {:deps_get, "rpi4", 600}
+    end
+
+    test "a deps.get that times out is reaped and the first build goes back", %{dir: dir} do
+      test_pid = self()
+
+      deps_get = fn _dir, env, _log, _timeout ->
+        if target_of(env) == "rpi4" do
+          write!(beam(dir, "rpi4"), "half-rpi4")
+          {:error, :timeout}
+        else
+          File.write!(Path.join(dir, "mix.lock"), @lock_with_jason)
+          :ok
+        end
+      end
+
+      reap = fn build_path ->
+        send(test_pid, {:reap, Path.basename(build_path)})
+        :ok
+      end
+
+      assert {:ok, out} =
+               OptionalDepsTargets.run(
+                 params(dir),
+                 runners(dir, %{deps_get: deps_get, reap: reap})
+               )
+
+      assert out.systems["nerves_system_rpi4"].optional_deps.reason == "timeout"
+      assert_received {:reap, "rpi4"}
+      assert File.read!(beam(dir, "rpi4")) == "first-rpi4"
+      assert out.systems["nerves_system_bbb"].optional_deps.added == ["jason"]
     end
   end
 end
