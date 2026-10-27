@@ -234,11 +234,35 @@ builder_prepare() {
   done
 }
 
+# The worker image images.yml pushes for every main commit, tagged with the
+# commit's sha. Every host that pulls it gets the same image ID, and the build
+# cache is keyed by that ID (`Portal.Builder.cache_slug/1`): only hosts on the
+# same ID share entries through the L2 bucket. A locally built image gets an ID
+# of its own on every host. `NCC_WORKER_FROM_REGISTRY=0` builds locally always.
+builder_registry_image=${NCC_WORKER_REGISTRY:-ghcr.io/tomhoenderdos/ncc-worker}
+
+builder_pull_worker_image() {
+  local sha
+  sha=$(git -C "$builder_src" rev-parse HEAD) || return 1
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] || return 1
+  builder_docker pull -q "$builder_registry_image:$sha" >/dev/null || return 1
+  builder_docker tag "$builder_registry_image:$sha" ncc-worker:deploy || return 1
+  echo "worker image: $builder_registry_image:$sha"
+}
+
 builder_build_image() {
   local uid
   uid=$(id -u ncc)
-  # Build a candidate tag. Existing jobs and failed builds retain the live tag.
-  DOCKER_HOST="unix:///run/user/$uid/docker.sock" make build WORKER_IMAGE=ncc-worker:deploy
+  # A candidate tag either way. Existing jobs and failed builds retain the live
+  # tag. The registry image for this commit exists only once images.yml has run
+  # for it, which starts after CI's own deploy; until then this host builds its
+  # own and shares no build cache entries with the others.
+  if [[ ${NCC_WORKER_FROM_REGISTRY:-1} == 1 ]] && builder_pull_worker_image; then
+    :
+  else
+    echo 'worker image: no registry image for this commit; building locally, so this host shares no build cache entries' >&2
+    DOCKER_HOST="unix:///run/user/$uid/docker.sock" make build WORKER_IMAGE=ncc-worker:deploy
+  fi
   # The same for every toolchain image: `<tag>-deploy` beside the live `<tag>`.
   # A failure here stops the deploy before any tag moves, like the main image.
   DOCKER_HOST="unix:///run/user/$uid/docker.sock" make build-toolchains TOOLCHAIN_SUFFIX=-deploy

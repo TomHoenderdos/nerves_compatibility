@@ -118,6 +118,51 @@ class BuilderDeploymentTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(events, ["egress", "pause", "build", "resume"])
 
+    def run_build_image(self, pull_status="0", **env):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+id() { echo 999; }
+git() { echo 0123456789abcdef0123456789abcdef01234567; }
+docker() {
+  echo "docker $*" >> "$EVENTS"
+  test "$DOCKER_HOST" = unix:///run/user/999/docker.sock
+  [[ $1 != pull ]] || return "$PULL_STATUS"
+}
+make() { echo "make $*" >> "$EVENTS"; }
+builder_build_image
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "events"
+            result = subprocess.run(
+                ["bash", "-c", script],
+                env={**os.environ, "HELPER": str(HELPER), "EVENTS": str(events),
+                     "PULL_STATUS": pull_status, **env},
+                capture_output=True, text=True, timeout=5,
+            )
+            return result, events.read_text().splitlines() if events.exists() else []
+
+    def test_pulls_the_commits_registry_image_instead_of_building(self):
+        result, events = self.run_build_image()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        image = "ghcr.io/tomhoenderdos/ncc-worker:0123456789abcdef0123456789abcdef01234567"
+        self.assertIn(f"docker pull -q {image}", events)
+        self.assertIn(f"docker tag {image} ncc-worker:deploy", events)
+        self.assertNotIn("make build WORKER_IMAGE=ncc-worker:deploy", events)
+
+    def test_builds_locally_when_the_registry_image_is_missing(self):
+        result, events = self.run_build_image(pull_status="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("make build WORKER_IMAGE=ncc-worker:deploy", events)
+        self.assertFalse(any(e.startswith("docker tag") for e in events))
+        self.assertIn("building locally", result.stderr)
+
+    def test_registry_pull_can_be_turned_off(self):
+        result, events = self.run_build_image(NCC_WORKER_FROM_REGISTRY="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(e.startswith("docker pull") for e in events))
+        self.assertIn("make build WORKER_IMAGE=ncc-worker:deploy", events)
+
     def test_rootless_daemon_setting_does_not_leak_into_release_build(self):
         script = r'''
 set -euo pipefail
