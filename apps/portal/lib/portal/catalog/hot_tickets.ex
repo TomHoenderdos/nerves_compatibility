@@ -68,6 +68,30 @@ defmodule Portal.Catalog.HotTickets do
     end)
   end
 
+  @doc """
+  `list/1` options from untrusted string params (`"sort"`, `"limit"`,
+  `"system"`), as `/failing` and `GET /api/failing` receive them. Anything
+  unrecognised is dropped, so `list/1` falls back to its default.
+  """
+  @spec opts_from_params(map()) :: keyword()
+  def opts_from_params(params) when is_map(params) do
+    [
+      sort: if(params["sort"] == "all", do: :all, else: :recent),
+      limit: parse_limit(params["limit"]),
+      system: if(is_binary(params["system"]) and params["system"] != "", do: params["system"])
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp parse_limit(raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {limit, ""} -> limit
+      _ -> nil
+    end
+  end
+
+  defp parse_limit(_raw), do: nil
+
   defp clamp_limit(limit) when is_integer(limit), do: limit |> max(1) |> min(@max_limit)
   defp clamp_limit(_limit), do: @default_limit
 

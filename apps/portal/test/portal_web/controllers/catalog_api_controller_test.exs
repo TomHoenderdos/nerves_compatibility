@@ -833,4 +833,42 @@ defmodule PortalWeb.CatalogApiControllerTest do
       assert build_conn() |> get("/api/precompiled/root.json") |> response(404)
     end
   end
+
+  describe "GET /api/failing" do
+    # The fixture's latest run fails on one system, so `jason` is a hot ticket.
+    test "?limit=1 returns one package, cached by the minute", %{conn: conn} do
+      ingest_fixture()
+
+      conn = get(conn, "/api/failing?limit=1")
+      body = json_response(conn, 200)
+
+      assert ["public, max-age=60"] = get_resp_header(conn, "cache-control")
+      assert body["schema"] == 1
+      assert body["sort"] == "recent"
+      assert is_binary(body["generated_at"])
+      assert [package] = body["packages"]
+      assert package["name"] == "jason"
+      assert package["status"] in ["fail", "error"]
+      assert [%{"system" => system, "status" => status} | _] = package["failing_targets"]
+      assert system =~ "@"
+      assert status in ["fail", "error"]
+    end
+
+    test "invalid params fall back to defaults instead of erroring", %{conn: conn} do
+      ingest_fixture()
+
+      body =
+        conn
+        |> get("/api/failing?sort=bogus&limit=nope&system=")
+        |> json_response(200)
+
+      assert body["sort"] == "recent"
+      assert [%{"name" => "jason"}] = body["packages"]
+    end
+
+    test "?sort=all is echoed back", %{conn: conn} do
+      assert %{"sort" => "all", "packages" => []} =
+               conn |> get("/api/failing?sort=all") |> json_response(200)
+    end
+  end
 end
