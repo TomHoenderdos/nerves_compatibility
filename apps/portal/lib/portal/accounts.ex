@@ -160,9 +160,18 @@ defmodule Portal.Accounts do
     end
   end
 
+  @doc """
+  The user with `id`, or `nil`.
+
+  One lookup by primary key: `session_user/2` runs this on every signed-in
+  request, mount and admin click. The id usually comes out of a session, so
+  one that is not a UUID at all is nobody rather than a cast error.
+  """
+  @spec get_user(term()) :: {:ok, Portal.Accounts.User.t() | nil} | {:error, term()}
   def get_user(id) when is_binary(id) do
-    with {:ok, users} <- Ash.read(Portal.Accounts.User, domain: __MODULE__) do
-      {:ok, Enum.find(users, &(&1.id == id))}
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} -> Ash.get(Portal.Accounts.User, uuid, domain: __MODULE__, error?: false)
+      :error -> {:ok, nil}
     end
   end
 

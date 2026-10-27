@@ -76,10 +76,22 @@ defmodule PortalWeb.Plugs.RequireAdmin do
 
       {:error, refusal} ->
         conn
+        |> drop_refused_login()
         |> put_flash(:error, refusal.flash)
         |> redirect(to: refusal.to)
         |> then(&{:error, &1})
     end
+  end
+
+  # A session that names a user `Portal.Accounts.session_user/2` no longer
+  # accepts -- revoked, or for an account that is gone -- grants nothing, so
+  # its sign-in comes out of the cookie, as `RequireLogin` does it. A live
+  # user who is merely not an admin keeps their session. `on_mount/4` cannot
+  # write the cookie; there the refusal alone has to do.
+  defp drop_refused_login(conn) do
+    if get_session(conn, :user_id) && is_nil(PortalWeb.UserAuth.current_user(conn)),
+      do: PortalWeb.UserAuth.drop_login(conn),
+      else: conn
   end
 
   @doc """

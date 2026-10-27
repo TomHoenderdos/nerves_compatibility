@@ -177,7 +177,8 @@ defmodule PortalWeb.UserAuth do
   The user waiting on a second factor, if the pending session is still valid.
 
   Expiry is checked here rather than at the call sites so there is one place
-  for the five-minute rule to live.
+  for the five-minute rule to live, and so is revocation: a pending sign-in
+  that started before the user's `sessions_valid_after` is refused.
   """
   @spec pending_user(Plug.Conn.t()) :: {:ok, User.t()} | :error
   def pending_user(conn) do
@@ -185,7 +186,12 @@ defmodule PortalWeb.UserAuth do
          started when is_integer(started) <- get_session(conn, :pending_started_at),
          elapsed = System.system_time(:second) - started,
          true <- elapsed >= 0 and elapsed <= @pending_ttl_seconds,
-         {:ok, %User{} = user} <- Portal.Accounts.get_user(user_id) do
+         {:ok, %User{} = user} <- Portal.Accounts.get_user(user_id),
+         # A revocation inside the five minutes ends the half-finished
+         # sign-in too, or its second step would mint a fresh session.
+         # The start is whole seconds, so it is floored: a sign-in begun in
+         # the same second as a revocation is refused, never let through.
+         true <- Portal.Accounts.session_current?(user, started * 1_000_000) do
       {:ok, user}
     else
       _ -> :error

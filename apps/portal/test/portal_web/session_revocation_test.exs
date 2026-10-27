@@ -92,7 +92,14 @@ defmodule PortalWeb.SessionRevocationTest do
 
       {:ok, _} = Portal.Admin.revoke_admin(target.id, actor)
 
-      assert redirected_to(get(conn, ~p"/admin")) == ~p"/login"
+      refused = get(conn, ~p"/admin")
+      assert redirected_to(refused) == ~p"/login"
+      # The admin gate drops the stale sign-in from the cookie, as the
+      # signed-in pages' gate does.
+      refute get_session(refused, :user_id)
+      refute get_session(refused, :session_started_at)
+      refute get_session(refused, :login_method)
+
       assert redirected_to(get(conn, ~p"/settings")) == ~p"/login"
       assert {:error, {:redirect, %{to: "/login"}}} = live(conn, ~p"/admin/users")
     end
@@ -139,12 +146,42 @@ defmodule PortalWeb.SessionRevocationTest do
       other = log_in(user)
       conn = passkey_session(user)
 
-      conn = post(conn, ~p"/settings/security/passkeys/#{passkey.id}/delete")
-      assert redirected_to(conn) == ~p"/settings/security"
-      conn = recycle(conn)
+      posted = post(conn, ~p"/settings/security/passkeys/#{passkey.id}/delete")
+      assert redirected_to(posted) == ~p"/settings/security"
+      conn = recycle(posted)
 
       assert signed_in?(conn)
       refute signed_in?(other)
+
+      # Re-stamped against the cutoff the removal wrote, never before it.
+      cutoff = Ash.reload!(user, domain: Accounts).sessions_valid_after
+      assert get_session(posted, :session_started_at) >= DateTime.to_unix(cutoff, :microsecond)
+    end
+  end
+
+  describe "a pending second-factor sign-in" do
+    # The password step parks the user under `:pending_user_id` for up to
+    # five minutes. A revocation inside that window -- a reset, a revoke,
+    # "sign out everywhere" -- must end that half-finished sign-in as well,
+    # or the second step would mint a fresh, valid session from it.
+    test "is refused at the second step once the user's sessions are revoked" do
+      user = user_fixture()
+      at = ~U[2026-09-18 12:00:00.000000Z]
+      {:ok, %{secret: secret}} = Accounts.Totp.start_enrolment(user)
+      :ok = Accounts.Totp.confirm(user, NimbleTOTP.verification_code(secret, time: at), at)
+
+      conn =
+        init_test_session(build_conn(),
+          pending_user_id: user.id,
+          pending_started_at: System.system_time(:second) - 10
+        )
+
+      {:ok, _} = Accounts.revoke_sessions(user)
+
+      conn = post(conn, ~p"/login/totp", %{"code" => NimbleTOTP.verification_code(secret)})
+
+      assert redirected_to(conn) == ~p"/login"
+      refute get_session(conn, :user_id)
     end
   end
 
