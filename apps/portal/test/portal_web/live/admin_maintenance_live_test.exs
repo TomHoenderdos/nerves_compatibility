@@ -137,6 +137,34 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
       {old_at, _} = :binary.match(html, "sweep-#{old}-remaining")
       assert new_at < old_at
     end
+
+    # Board #12: the counts column used to call `BulkRebuild.status/1` once
+    # per visible row. `sweep_id` only appears in the two queries
+    # `Portal.BulkRebuild.status_many/1` issues (the grouped Oban job count
+    # and the grouped remote lease count); a bounded 2 here regardless of
+    # how many sweeps are on the page proves the page loads counts once,
+    # not per row.
+    test "a page of several sweeps still costs two counts queries, not one per row",
+         %{conn: conn} do
+      for i <- 1..5 do
+        {:ok, _} = Portal.BulkRebuild.run(limit: 1, names: ["maint_bound_#{i}"], created_by: "t")
+      end
+
+      handler = {__MODULE__, make_ref()}
+
+      :telemetry.attach(
+        handler,
+        [:portal, :repo, :query],
+        &__MODULE__.capture_sweep_count_query/4,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      {_view, _html} = live_maintenance(conn)
+
+      assert drain_sweep_count_queries() == 2
+    end
   end
 
   describe "bulk rebuild" do
@@ -361,6 +389,20 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
         |> render_submit()
 
       assert html =~ "Dry run queued. It reports what it would rebuild and queues nothing."
+    end
+  end
+
+  def capture_sweep_count_query(_event, _measurements, metadata, test_pid) do
+    if String.contains?(metadata.query, "sweep_id") do
+      send(test_pid, :sweep_count_query)
+    end
+  end
+
+  defp drain_sweep_count_queries(n \\ 0) do
+    receive do
+      :sweep_count_query -> drain_sweep_count_queries(n + 1)
+    after
+      0 -> n
     end
   end
 end

@@ -12,6 +12,10 @@ defmodule Portal.Builders.Lease do
     custom_indexes do
       index([:state, :priority, :inserted_at], name: "builder_leases_queue_index")
       index([:builder_id])
+      # Served by `Portal.BulkRebuild`'s lookup of a `RemoteBuild` job's
+      # newest lease, keyed by `scan_request_id` once the query casts the
+      # JSON side to uuid instead of casting this column to text.
+      index([:scan_request_id])
     end
   end
 

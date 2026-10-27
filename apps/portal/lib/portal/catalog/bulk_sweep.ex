@@ -44,4 +44,12 @@ defmodule Portal.Catalog.BulkSweep do
 
     create_timestamp(:inserted_at)
   end
+
+  calculations do
+    # Lives on the sweep's Oban jobs and remote leases, not this row; see
+    # `Portal.BulkRebuild.status_many/1` for why.
+    calculate :counts, :map, Portal.Catalog.Calculations.SweepCounts do
+      public?(true)
+    end
+  end
 end
