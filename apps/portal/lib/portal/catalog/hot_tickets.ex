@@ -3,7 +3,7 @@ defmodule Portal.Catalog.HotTickets do
   Packages whose latest run fails, ranked by hex.pm downloads: the failures
   worth fixing first. Backs `/failing` and `GET /api/failing`.
 
-  "Latest run" is the rule `Portal.Catalog.latest_results/0` applies -- newest
+  "Latest run" is `Portal.Catalog.latest_results/0` itself -- newest
   `finished_at`, then newest `inserted_at`, plain `DESC`, no `revoked_at`
   filter -- so this list never disagrees with `/packages/<name>`. A package is
   listed when any target of that run is `:fail` or `:error`.
@@ -14,6 +14,7 @@ defmodule Portal.Catalog.HotTickets do
 
   import Ecto.Query
 
+  alias Portal.Catalog
   alias Portal.Repo
 
   @failing ["fail", "error"]
@@ -98,7 +99,7 @@ defmodule Portal.Catalog.HotTickets do
   defp packages_query(sort, system, limit) do
     downloads_field = if sort == :all, do: :hex_downloads_all, else: :hex_downloads_recent
 
-    from([s, r] in latest_results(),
+    from([s, r] in Catalog.latest_results(),
       join: p in "catalog_packages",
       on: p.id == r.package_id,
       group_by: [p.id, r.id, r.version_tested, r.finished_at],
@@ -153,23 +154,4 @@ defmodule Portal.Catalog.HotTickets do
 
   defp status_atom("fail"), do: :fail
   defp status_atom("error"), do: :error
-
-  # Mirrors `Portal.Catalog.latest_results/0` (private there); keep the two in
-  # step or `/failing` and `/packages/<name>` disagree about a package's latest
-  # run.
-  defp latest_results do
-    latest =
-      from(r in "catalog_runs",
-        distinct: r.package_id,
-        order_by: [asc: r.package_id, desc: r.finished_at, desc: r.inserted_at],
-        select: %{
-          id: r.id,
-          package_id: r.package_id,
-          version_tested: r.version_tested,
-          finished_at: r.finished_at
-        }
-      )
-
-    from(s in "catalog_system_results", join: r in subquery(latest), on: r.id == s.run_id)
-  end
 end

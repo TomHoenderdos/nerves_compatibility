@@ -2325,12 +2325,21 @@ defmodule Portal.Catalog do
   # it does not skip through `catalog_runs_package_latest_index` one package at
   # a time; on production-shaped data the planner reads `catalog_runs` with a
   # seq scan and a small sort, ~3ms.
-  defp latest_results do
+  #
+  # Public for `Portal.Catalog.HotTickets`, so `/failing` and `/packages/<name>`
+  # share this one rule; `version_tested` and `finished_at` are selected for it.
+  @doc false
+  def latest_results do
     latest =
       from(r in "catalog_runs",
         distinct: r.package_id,
         order_by: [asc: r.package_id, desc: r.finished_at, desc: r.inserted_at],
-        select: %{id: r.id, package_id: r.package_id}
+        select: %{
+          id: r.id,
+          package_id: r.package_id,
+          version_tested: r.version_tested,
+          finished_at: r.finished_at
+        }
       )
 
     from(s in "catalog_system_results", join: r in subquery(latest), on: r.id == s.run_id)
