@@ -433,4 +433,69 @@ defmodule NccWorker.JsonWriterTest do
       assert decoded["warm"]["installed"] == ["nerves_system_rpi4-2.0.0"]
     end
   end
+
+  describe "per-system optional dependencies" do
+    defp system(extra) do
+      Map.merge(
+        %{
+          status: :pass,
+          duration_sec: 1.0,
+          firmware_size_bytes: 1,
+          log_tail: "",
+          error: nil
+        },
+        extra
+      )
+    end
+
+    defp with_systems(systems) do
+      %{
+        run_id: "r-opt",
+        package: %{name: "ecto", version: "3.14.2"},
+        image: %{name: "ncc-worker:local", digest: "sha256:x"},
+        toolchain: %{elixir: "1.20.3", erlang: "29", mix: "1.20.3", nerves_bootstrap: "1.17.3"},
+        systems: systems,
+        finished_at: "2026-10-27T10:00:00Z"
+      }
+    end
+
+    @tag :tmp_dir
+    test "writes a system's own deps_lock and optional_deps", %{tmp_dir: dir} do
+      kept =
+        system(%{
+          deps_lock: %{"jason" => %{"version" => "1.4.4", "checksum" => "o-jason"}},
+          optional_deps: %{added: ["jason"], dropped: [], reason: nil}
+        })
+
+      dropped =
+        system(%{optional_deps: %{added: [], dropped: ["jason"], reason: "timeout"}})
+
+      result =
+        with_systems(%{
+          "nerves_system_x86_64" => kept,
+          "nerves_system_rpi4" => dropped,
+          "nerves_system_bbb" => system(%{status: :fail})
+        })
+
+      assert :ok = JsonWriter.write_result(dir, result)
+
+      systems =
+        dir |> Path.join("result.json") |> File.read!() |> JSON.decode!() |> Map.get("systems")
+
+      assert systems["nerves_system_x86_64"]["deps_lock"] == %{
+               "jason" => %{"version" => "1.4.4", "checksum" => "o-jason"}
+             }
+
+      assert systems["nerves_system_x86_64"]["optional_deps"] == %{
+               "added" => ["jason"],
+               "dropped" => [],
+               "reason" => nil
+             }
+
+      refute Map.has_key?(systems["nerves_system_rpi4"], "deps_lock")
+      assert systems["nerves_system_rpi4"]["optional_deps"]["reason"] == "timeout"
+      refute Map.has_key?(systems["nerves_system_bbb"], "deps_lock")
+      refute Map.has_key?(systems["nerves_system_bbb"], "optional_deps")
+    end
+  end
 end
