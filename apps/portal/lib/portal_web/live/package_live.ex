@@ -372,40 +372,45 @@ defmodule PortalWeb.PackageLive do
             </p>
           </div>
 
-          <%= if @argus["status"] == "error" do %>
-            <p class="text-sm text-base-content/70">Analysis could not run for this version.</p>
-            <p class="font-mono text-xs text-base-content/50">{@argus["error"]}</p>
-          <% else %>
-            <% visible = visible_findings(@argus["findings"], @argus_floor) %>
-            <p :if={visible == []} class="text-sm text-base-content/70">
-              No findings at {@argus_floor} or above for: {Enum.join(
-                List.wrap(@argus["analyses"]),
-                ", "
-              )}
-            </p>
-            <% {ignored, shown} = Enum.split_with(visible, & &1["ignored?"]) %>
-            <ul :if={shown != []} class="divide-y divide-base-200">
-              <.argus_finding
-                :for={{finding, i} <- Enum.with_index(shown)}
-                id={"argus-finding-#{i}"}
-                finding={finding}
-              />
-            </ul>
-            <details :if={ignored != []} id="argus-ignored" class="text-sm">
-              <summary class="cursor-pointer text-xs text-base-content/50">
-                {length(ignored)} ignored
-              </summary>
-              <ul class="divide-y divide-base-200 opacity-60">
+          <%= cond do %>
+            <% @argus["status"] == "error" -> %>
+              <p class="text-sm text-base-content/70">Analysis could not run for this version.</p>
+              <p class="font-mono text-xs text-base-content/50">{@argus["error"]}</p>
+            <% @argus["status"] == "skipped" -> %>
+              <p class="text-sm text-base-content/70">
+                Analysis was skipped: {argus_skip_label(@argus["reason"])}.
+              </p>
+            <% true -> %>
+              <% visible = visible_findings(@argus["findings"], @argus_floor) %>
+              <p :if={visible == []} class="text-sm text-base-content/70">
+                No findings at {@argus_floor} or above for: {Enum.join(
+                  List.wrap(@argus["analyses"]),
+                  ", "
+                )}
+              </p>
+              <% {ignored, shown} = Enum.split_with(visible, & &1["ignored?"]) %>
+              <ul :if={shown != []} class="divide-y divide-base-200">
                 <.argus_finding
-                  :for={{finding, i} <- Enum.with_index(ignored)}
-                  id={"argus-ignored-#{i}"}
+                  :for={{finding, i} <- Enum.with_index(shown)}
+                  id={"argus-finding-#{i}"}
                   finding={finding}
                 />
               </ul>
-            </details>
-            <p :if={@argus["truncated"]} class="text-xs text-base-content/50">
-              Showing the first 200 findings argus reported.
-            </p>
+              <details :if={ignored != []} id="argus-ignored" class="text-sm">
+                <summary class="cursor-pointer text-xs text-base-content/50">
+                  {length(ignored)} ignored
+                </summary>
+                <ul class="divide-y divide-base-200 opacity-60">
+                  <.argus_finding
+                    :for={{finding, i} <- Enum.with_index(ignored)}
+                    id={"argus-ignored-#{i}"}
+                    finding={finding}
+                  />
+                </ul>
+              </details>
+              <p :if={@argus["truncated"]} class="text-xs text-base-content/50">
+                Showing the first 200 findings argus reported.
+              </p>
           <% end %>
         </section>
 
@@ -775,7 +780,7 @@ defmodule PortalWeb.PackageLive do
     end
   end
 
-  # Only well-formed `ok` and `error` results render. Anything else -- skipped,
+  # Well-formed `ok`, `error` and `skipped` results render. Anything else --
   # a run from before argus, a map missing its findings -- renders nothing.
   # Findings triaged as ignored are flagged so the template can tuck them away.
   defp argus_view(%{"status" => "ok", "findings" => findings} = argus, name, ignored)
@@ -799,7 +804,16 @@ defmodule PortalWeb.PackageLive do
   end
 
   defp argus_view(%{"status" => "error"} = argus, _name, _ignored), do: argus
+  defp argus_view(%{"status" => "skipped"} = argus, _name, _ignored), do: argus
   defp argus_view(_, _name, _ignored), do: nil
+
+  # Short, admin-facing label for why a skipped run has no findings -- see
+  # `NccWorker.Argus.run/6` for what sets each reason.
+  defp argus_skip_label("disabled"), do: "argus is disabled"
+  defp argus_skip_label("not_requested"), do: "not requested for this package"
+  defp argus_skip_label("host_compile_failed"), do: "the host build did not pass"
+  defp argus_skip_label("no_beams"), do: "no compiled code to analyze"
+  defp argus_skip_label(_), do: "not run for this version"
 
   # Stored findings outlive the argus version that wrote them, so every field
   # the template prints is narrowed to the type it expects. Anything else is

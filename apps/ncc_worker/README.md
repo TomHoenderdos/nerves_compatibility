@@ -82,7 +82,11 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
 5. When `NCC_INPUT` carries `argus` (`{"analyses": ["default", "exposure"], "scope": "firmware", "timeout_seconds": 300}`),
    runs the argus_beam escript over the host-compiled beams (`NccWorker.Argus`) and writes its findings to
    `result.json` as `argus`. `scope: "firmware"` limits this to packages that build firmware. Advisory: it never
-   changes a status or the exit code. Without the key, `argus.status` is `"skipped"`.
+   changes a status or the exit code. When `argus.status` is `"skipped"`, `argus.reason` says why: `"disabled"`
+   (no `argus` key -- the admin turned it off), `"not_requested"` (scope is `"firmware"` and this package is pure
+   Elixir), `"host_compile_failed"` (the host build this would have read beams from did not pass; `argus.error`
+   then carries that build's status, e.g. `"host status: fail"`), or `"no_beams"` (the package's host `ebin` has
+   no `.beam` to analyze, e.g. a pure-metadata package like `nerves_pack`). `nil` otherwise.
    With `"mode": "argus_only"` the run stops after the host compile and this step: no firmware is built, argus
    covers every package (whatever `argus.scope` says), and `result.json` reports `"scope": "argus_only"`.
    Ingestion copies the systems a partial run left out from the previous run of the same version.

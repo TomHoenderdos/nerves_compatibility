@@ -24,6 +24,15 @@ defmodule NccWorker.Argus do
   # `timeout` exits 124 on expiry and 137 when it had to SIGKILL.
   @script ~s(exec timeout -k 10 "$@" 2>"$ARGUS_STDERR_FILE")
 
+  # Machine-readable, for the three ways `run/6` skips without trying to
+  # analyze anything, plus "no_beams" from `analyze/6` below: "disabled" (no
+  # argus config -- the admin turned it off), "host_compile_failed" (the host
+  # build this would have read beams from never passed), "not_requested"
+  # (the configured scope is "firmware" and this package is pure Elixir) and
+  # "no_beams" (the package's ebin has no `.beam` to analyze, e.g. a
+  # pure-metadata package). `nil` for every non-skipped result.
+  @type skip_reason :: String.t() | nil
+
   @type result :: %{
           status: :ok | :error | :skipped,
           version: String.t() | nil,
@@ -31,7 +40,8 @@ defmodule NccWorker.Argus do
           duration_ms: non_neg_integer() | nil,
           findings: [map()],
           truncated: boolean(),
-          error: String.t() | nil
+          error: String.t() | nil,
+          reason: skip_reason()
         }
 
   @spec skipped() :: result()
@@ -43,20 +53,24 @@ defmodule NccWorker.Argus do
       duration_ms: nil,
       findings: [],
       truncated: false,
-      error: nil
+      error: nil,
+      reason: nil
     }
   end
 
   @spec run(Path.t(), String.t(), map() | nil, :firmware | :pure_elixir, map(), keyword()) ::
           result()
   def run(project, package, config, selection, host_result, opts \\ [])
-  def run(_project, _package, nil, _selection, _host, _opts), do: skipped()
+
+  def run(_project, _package, nil, _selection, _host, _opts),
+    do: %{skipped() | reason: "disabled"}
 
   def run(_project, _package, _config, _selection, %{status: status}, _opts)
       when status != :pass,
-      do: skipped()
+      do: %{skipped() | reason: "host_compile_failed", error: "host status: #{status}"}
 
-  def run(_project, _package, %{scope: "firmware"}, :pure_elixir, _host, _opts), do: skipped()
+  def run(_project, _package, %{scope: "firmware"}, :pure_elixir, _host, _opts),
+    do: %{skipped() | reason: "not_requested"}
 
   # The executable is fixed (`sh` running the pinned escript at `@bin`) and every
   # argument goes through argv, never a shell string; package code runs only
@@ -114,29 +128,47 @@ defmodule NccWorker.Argus do
   end
 
   defp analyze(cmd, bin, project, package, analyses, timeout) do
-    if File.dir?(Path.join([project, "_build", "host", "lib", package, "ebin"])) do
-      stderr_file = Path.join(project, ".argus-stderr")
+    ebin = Path.join([project, "_build", "host", "lib", package, "ebin"])
 
-      env = [
-        {"ARGUS_CACHE_DIR", Path.join(project, ".argus-cache")},
-        {"ARGUS_FLOWLOG_DIR", flowlog_dir(project)},
-        {"ARGUS_OFFLINE", "1"},
-        {"ARGUS_STDERR_FILE", stderr_file},
-        {"TYPESAFE_API_KEY", nil}
-      ]
+    cond do
+      not File.dir?(ebin) ->
+        %{status: :error, error: "no host beams for #{package}"}
 
-      argv = [
-        "-c",
-        @script,
-        "argus-run",
-        to_string(timeout),
-        bin | args(project, package, analyses)
-      ]
+      # A pure-metadata package (e.g. nerves_pack 0.7.1/0.7.2) publishes an
+      # ebin with only its `.app` file: argus itself would exit 2 "no beams"
+      # for that, which is correct but not an error -- there is nothing to
+      # find, so this is a skip and argus is never run for it.
+      not has_beam?(ebin) ->
+        %{skipped() | reason: "no_beams"}
 
-      {stdout, status} = cmd.("sh", argv, cd: project, env: env)
-      outcome(status, stdout, timeout, stderr_file, package)
-    else
-      %{status: :error, error: "no host beams for #{package}"}
+      true ->
+        stderr_file = Path.join(project, ".argus-stderr")
+
+        env = [
+          {"ARGUS_CACHE_DIR", Path.join(project, ".argus-cache")},
+          {"ARGUS_FLOWLOG_DIR", flowlog_dir(project)},
+          {"ARGUS_OFFLINE", "1"},
+          {"ARGUS_STDERR_FILE", stderr_file},
+          {"TYPESAFE_API_KEY", nil}
+        ]
+
+        argv = [
+          "-c",
+          @script,
+          "argus-run",
+          to_string(timeout),
+          bin | args(project, package, analyses)
+        ]
+
+        {stdout, status} = cmd.("sh", argv, cd: project, env: env)
+        outcome(status, stdout, timeout, stderr_file, package)
+    end
+  end
+
+  defp has_beam?(ebin) do
+    case File.ls(ebin) do
+      {:ok, names} -> Enum.any?(names, &String.ends_with?(&1, ".beam"))
+      {:error, _} -> false
     end
   end
 

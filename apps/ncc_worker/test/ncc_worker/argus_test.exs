@@ -14,6 +14,8 @@ defmodule NccWorker.ArgusTest do
       File.mkdir_p!(Path.join([lib, app, "ebin"]))
     end
 
+    File.write!(Path.join([lib, "pkg", "ebin", "pkg.beam"]), "")
+
     # A dep directory without an ebin must not become a --dep-ebin.
     File.mkdir_p!(Path.join(lib, "dep_b"))
     on_exit(fn -> File.rm_rf(root) end)
@@ -59,16 +61,29 @@ defmodule NccWorker.ArgusTest do
   end
 
   test "skips when argus is not configured", %{root: root} do
-    assert Argus.run(root, "pkg", nil, :firmware, @pass) == Argus.skipped()
+    result = Argus.run(root, "pkg", nil, :firmware, @pass)
+    assert result.status == :skipped
+    assert result.reason == "disabled"
   end
 
   test "skips when the host compile did not pass", %{root: root} do
-    assert Argus.run(root, "pkg", @config, :firmware, %{status: :fail}).status == :skipped
+    result = Argus.run(root, "pkg", @config, :firmware, %{status: :fail})
+    assert result.status == :skipped
+    assert result.reason == "host_compile_failed"
+    assert result.error == "host status: fail"
+  end
+
+  test "records the host's error status too, not just fail", %{root: root} do
+    result = Argus.run(root, "pkg", @config, :firmware, %{status: :error})
+    assert result.status == :skipped
+    assert result.reason == "host_compile_failed"
+    assert result.error == "host status: error"
   end
 
   test "firmware scope skips pure Elixir packages", %{root: root} do
-    assert Argus.run(root, "pkg", @config, :pure_elixir, @pass, cmd: cmd("[]", 0)).status ==
-             :skipped
+    result = Argus.run(root, "pkg", @config, :pure_elixir, @pass, cmd: cmd("[]", 0))
+    assert result.status == :skipped
+    assert result.reason == "not_requested"
   end
 
   test "all scope runs pure Elixir packages too", %{root: root} do
@@ -149,6 +164,7 @@ defmodule NccWorker.ArgusTest do
     assert result.analyses == ["default", "exposure"]
     assert is_integer(result.duration_ms)
     assert result.error == nil
+    assert result.reason == nil
 
     assert [%{"file" => "lib/pkg/server.ex", "related" => [%{"file" => "lib/pkg/server.ex"}]}] =
              result.findings
@@ -220,6 +236,20 @@ defmodule NccWorker.ArgusTest do
     File.rm_rf!(Path.join([lib, "pkg"]))
     result = Argus.run(root, "pkg", @config, :firmware, @pass, cmd: cmd("[]", 0))
     assert %{status: :error, error: "no host beams for pkg"} = result
+  end
+
+  # nerves_pack 0.7.1/0.7.2 are pure meta-packages: their host ebin exists
+  # (the .app file is there) but has no .beam to analyze. argus itself would
+  # exit 2 "no beams" for that, which is correct but not an error -- there is
+  # nothing to find, so it is a skip, and argus is never invoked for it.
+  test "an ebin with no beam files is skipped, not analyzed", %{root: root, lib: lib} do
+    File.rm!(Path.join([lib, "pkg", "ebin", "pkg.beam"]))
+
+    result = Argus.run(root, "pkg", @config, :firmware, @pass, cmd: cmd("[]", 0))
+
+    assert result.status == :skipped
+    assert result.reason == "no_beams"
+    refute_received {:argv, _argv, _opts}
   end
 
   test "a raising runner is an error, not a crash", %{root: root} do
