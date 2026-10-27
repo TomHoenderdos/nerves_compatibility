@@ -236,4 +236,20 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
   test "unknown package" do
     assert Catalog.precompiled_manifest_v2("no_such_package") == nil
   end
+
+  # The per-target optional-dependency pass can leave a passing target with
+  # its own lock (the run's plus the optional deps it kept); format 2 must
+  # match against that, not the run's.
+  test "a system's own deps_lock wins over the run's in format 2 as well" do
+    system_deps = Map.put(@deps, "jason", %{"version" => "1.4.4", "checksum" => "xyz"})
+
+    ingest_with_artifact(
+      keyed_run()
+      |> put_in(["systems", "nerves_system_rpi4", "deps_lock"], system_deps)
+    )
+
+    v2 = Catalog.precompiled_manifest_v2("jason")
+    assert %{"nerves_system_rpi4" => [rpi4]} = by_target(v2, "1.4.1")
+    assert rpi4["build"]["deps"] == system_deps
+  end
 end

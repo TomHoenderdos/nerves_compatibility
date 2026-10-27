@@ -96,7 +96,8 @@ defmodule Portal.Catalog do
     :system_version,
     :beam_scan,
     :carried_from_run_id,
-    :compile_env
+    :compile_env,
+    :deps_lock
   ]
   @json_fields [
     :run_id,
@@ -2170,7 +2171,11 @@ defmodule Portal.Catalog do
 
   # `deps` is the package's dependency closure as the build locked it: their
   # macros are expanded into its BEAMs, so a client may use the entry only when
-  # its own lock has every one at the same version and checksum.
+  # its own lock has every one at the same version and checksum. A firmware
+  # run's per-target optional-dependency pass can leave a system with its own
+  # lock (the run's plus the optional deps it kept), which takes priority over
+  # the run's; a system without one (every system before the pass existed, a
+  # target the pass did not touch, or a carried row) falls back to the run's.
   defp build_inputs(run, result) do
     toolchain = run.toolchain || %{}
 
@@ -2180,7 +2185,7 @@ defmodule Portal.Catalog do
       "system_version" => result.system_version,
       "run_id" => run.run_id,
       "image_digest" => run.image_digest,
-      "deps" => run.deps_lock,
+      "deps" => result.deps_lock || run.deps_lock,
       "compile_env" => result.compile_env,
       "package_checksum" => run.package_checksum
     }

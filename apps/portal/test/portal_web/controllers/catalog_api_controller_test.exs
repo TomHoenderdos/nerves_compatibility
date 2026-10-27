@@ -255,6 +255,47 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert body["versions"]["1.4.1"]["nerves_system_rpi4"]["build"]["deps"] == deps_lock
   end
 
+  # The per-target optional-dependency pass can leave a passing target with
+  # its own lock (the run's plus the optional deps it kept), which a client
+  # must match against instead of the run's. (A system with none still falls
+  # back to the run's, as asserted above.)
+  test "a system's own deps_lock wins over the run's", %{conn: conn} do
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+    _ = File.rm(ArtifactStore.blob_path(sha))
+
+    dir =
+      Path.join(System.tmp_dir!(), "catalog-api-sysdeps-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, sha), "precompiled-beam")
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    run_lock = %{"decimal" => %{"version" => "2.3.0", "checksum" => "abc"}}
+
+    system_lock = %{
+      "decimal" => %{"version" => "2.3.0", "checksum" => "abc"},
+      "jason" => %{"version" => "1.4.4", "checksum" => "xyz"}
+    }
+
+    result =
+      result_fixture()
+      |> Map.put("deps_lock", run_lock)
+      |> update_in(["systems", "nerves_system_rpi4"], &Map.put(&1, "deps_lock", system_lock))
+
+    {:ok, _} =
+      Ingestion.ingest(result, %{
+        run_id: "sysdeps",
+        image_digest: "sha256:sysdeps",
+        files_dir: dir,
+        log: "l"
+      })
+
+    body = conn |> get("/api/precompiled/manifests/jason.json") |> json_response(200)
+    version = body["versions"]["1.4.1"]
+
+    assert version["nerves_system_rpi4"]["build"]["deps"] == system_lock
+  end
+
   # A partial run copies the systems it did not rebuild from the previous run.
   # Those files were built by that earlier run, under its toolchain, image and
   # dependency lock, so the entry has to describe that run and not the one that
