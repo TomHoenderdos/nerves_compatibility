@@ -39,8 +39,12 @@ defmodule NccWorker.OptionalDepsTargets do
   checked would be worse than a retried run. Everything else drops the
   optional dependencies for the targets it concerns, with one of the reasons
   "deps_get_failed", "lock_policy_violation", "target_compile_failed",
-  "mix_exs_edit_failed", "stale_build_not_removed", "deps_lock_unreadable" or
-  "timeout", and "no_passing_target" in the summary when no target passed.
+  "mix_exs_edit_failed", "stale_build_not_removed", "deps_lock_unreadable",
+  "timeout" (per-system timeout, or the pass's budget ran out) or
+  "run_budget_exhausted" (the run had used more than 75 minutes, so the pass
+  did not start), and "no_passing_target" in the summary when no target
+  passed. A timed-out target's leftover writers are killed before its first
+  build goes back (`reap_writers/1`); one that survives is a revert failure.
 
   Every step that would run `mix`, reach Hex or touch the snapshot goes
   through a runner (`t:runners/0`), so tests replace them and stay offline.
@@ -53,16 +57,23 @@ defmodule NccWorker.OptionalDepsTargets do
           {String.t(), %{env: [{String.t(), String.t()}], log_file: String.t()}}
 
   @type params :: %{
-          project_dir: String.t(),
-          package: String.t(),
+          required(:project_dir) => String.t(),
+          required(:package) => String.t(),
           # From `NccWorker.Project.optional_deps_to_add/1`.
-          deps: [%{app: String.t(), package: String.t(), requirement: String.t()}],
+          required(:deps) => [%{app: String.t(), package: String.t(), requirement: String.t()}],
           # The firmware builds' results, by system name.
-          systems: %{String.t() => map()},
+          required(:systems) => %{String.t() => map()},
           # In system order; the first one's drop reason names the summary's.
-          targets: [target()],
-          timeout_sec: pos_integer(),
-          concurrency: pos_integer()
+          required(:targets) => [target()],
+          required(:timeout_sec) => pos_integer(),
+          required(:concurrency) => pos_integer(),
+          # The pass's wall-clock budget from its start (default 1200 s):
+          # a target not started by then is dropped as "timeout", and each
+          # compile gets at most what is left.
+          optional(:budget_sec) => non_neg_integer(),
+          # How long the run had taken when the pass was called. Over 75
+          # minutes the pass does not start ("run_budget_exhausted").
+          optional(:run_elapsed_sec) => non_neg_integer()
         }
 
   @type summary :: %{added: [String.t()], dropped: [String.t()], reason: String.t() | nil}
@@ -88,6 +99,9 @@ defmodule NccWorker.OptionalDepsTargets do
     * `restore` -- `(snapshot)`, `NccWorker.Project.restore/1`
     * `read_lock` / `package_checksum` -- `(project_dir, package)`,
       `NccWorker.DepsLock`
+    * `reap` -- `(build_path)`, kills what a timed-out compile left running
+      (`reap_writers/1`); `{:error, reason}` when some survive
+    * `now` -- `()`, monotonic seconds, for the budget
   """
   @type runners :: %{optional(atom()) => function()}
 
@@ -96,9 +110,24 @@ defmodule NccWorker.OptionalDepsTargets do
   # timeout; this only catches an image without it.
   @kill_grace_sec 60
 
-  # Exit codes of `timeout(1)`: the command timed out (TERM), or ignored TERM
-  # and was killed.
-  @timeout_exits [124, 137]
+  # `timeout(1)`'s exit when the command timed out (TERM). 137 is a SIGKILL,
+  # which is `--kill-after` only once the time is up; before that it is
+  # mix itself killed (OOM), a failed compile.
+  @timeout_exit 124
+  @killed_exit 137
+
+  # The pass's own wall-clock budget, from its start, unless
+  # NCC_OPTIONAL_PASS_BUDGET_SEC says otherwise (`NccWorker.Worker`).
+  @default_budget_sec 1200
+
+  # Past this much of the run, the pass does not start at all:
+  # `Portal.Builder` kills the container at 2 h, and that kill loses the
+  # whole run, statuses included.
+  @run_budget_sec 75 * 60
+
+  # How long the reaper waits for killed writers to be gone.
+  @reap_wait_ms 5_000
+  @reap_poll_ms 100
 
   @doc """
   Runs the pass. Returns the systems with the pass applied, the run-level
@@ -108,6 +137,8 @@ defmodule NccWorker.OptionalDepsTargets do
           {:ok, outcome()} | {:error, {:optional_deps_revert_failed, term()}}
   def run(params, runners \\ %{}) do
     r = Map.merge(default_runners(), runners)
+    budget_sec = Map.get(params, :budget_sec, @default_budget_sec)
+    params = Map.put(params, :deadline, r.now.() + budget_sec)
 
     # Before the pass can touch mix.lock.
     run_lock = %{
@@ -128,9 +159,21 @@ defmodule NccWorker.OptionalDepsTargets do
         {:ok, params.systems, summary([], Enum.map(params.deps, & &1.app), "no_passing_target")}
 
       passing ->
-        snapshot_and_inject(params, r, passing)
+        if Map.get(params, :run_elapsed_sec, 0) > @run_budget_sec,
+          do: skip_for_run_budget(params, passing),
+          else: snapshot_and_inject(params, r, passing)
     end
   end
+
+  # Nothing is touched: every passing target keeps its first build.
+  defp skip_for_run_budget(params, passing) do
+    names = Enum.map(params.deps, & &1.app)
+    outcomes = Enum.map(passing, &{&1, {:dropped, "run_budget_exhausted"}})
+    Enum.each(outcomes, fn {target, outcome} -> log_outcome(target, names, outcome) end)
+    {:ok, apply_outcomes(params, names, outcomes, nil), summarise(names, outcomes)}
+  end
+
+  defp time_left(params, r), do: params.deadline - r.now.()
 
   defp passing_targets(%{systems: systems, targets: targets}) do
     Enum.filter(targets, fn {name, _target} -> match?(%{status: :pass}, systems[name]) end)
@@ -186,11 +229,18 @@ defmodule NccWorker.OptionalDepsTargets do
                                     {fetched, outcomes} ->
       deps_get = fn project_dir, fetch_env -> r.deps_get.(project_dir, fetch_env, log_file) end
 
-      case fetch(params, r, env, deps_get) do
+      case fetch_before_deadline(params, r, env, deps_get) do
         :ok -> {fetched ++ [target], outcomes}
         {:dropped, _reason} = dropped -> {fetched, outcomes ++ [{target, dropped}]}
       end
     end)
+  end
+
+  # A target not started by the deadline keeps its first build.
+  defp fetch_before_deadline(params, r, env, deps_get) do
+    if time_left(params, r) > 0,
+      do: fetch(params, r, env, deps_get),
+      else: {:dropped, "timeout"}
   end
 
   defp fetch(params, r, env, deps_get) do
@@ -225,28 +275,36 @@ defmodule NccWorker.OptionalDepsTargets do
     |> Enum.zip(fetched)
     |> Enum.map(fn
       {{:ok, outcome}, target} -> {target, outcome}
+      # `compile_target/3` cannot raise or exit, so a task only ever exits
+      # killed by the backstop timeout.
       {{:exit, :timeout}, target} -> {target, {:dropped, "timeout"}}
-      {{:exit, _reason}, target} -> {target, {:dropped, "target_compile_failed"}}
     end)
   end
 
-  defp compile_target(params, r, {_name, %{env: env, log_file: log_file}}) do
-    build_path = build_path(env)
-
-    case safely(fn -> r.compile.(params.project_dir, env, log_file, params.timeout_sec) end) do
-      :ok ->
-        {:kept, r.scan.(build_path, params.package), r.compile_env.(build_path, params.package)}
-
-      {:error, :timeout} ->
-        {:dropped, "timeout"}
-
-      _error ->
-        {:dropped, "target_compile_failed"}
+  # Whatever raises in here (the compile, the scan, the compile_env read)
+  # drops the target rather than crashing the worker: the task is linked to
+  # the caller.
+  defp compile_target(params, r, target) do
+    case safely(fn -> compile_target!(params, r, target) end) do
+      {:error, _reason} -> {:dropped, "target_compile_failed"}
+      outcome -> outcome
     end
   end
 
-  # A runner that raises is a failed compile, not a crashed worker: the task
-  # is linked to the caller.
+  defp compile_target!(params, r, {_name, %{env: env, log_file: log_file}}) do
+    build_path = build_path(env)
+    timeout_sec = min(params.timeout_sec, time_left(params, r))
+
+    with {:time, true} <- {:time, timeout_sec > 0},
+         :ok <- r.compile.(params.project_dir, env, log_file, timeout_sec) do
+      {:kept, r.scan.(build_path, params.package), r.compile_env.(build_path, params.package)}
+    else
+      {:time, false} -> {:dropped, "timeout"}
+      {:error, :timeout} -> {:dropped, "timeout"}
+      _error -> {:dropped, "target_compile_failed"}
+    end
+  end
+
   defp safely(fun) do
     fun.()
   rescue
@@ -288,14 +346,33 @@ defmodule NccWorker.OptionalDepsTargets do
   # A kept target's first build is no longer needed; one left behind only
   # costs disk, since nothing reads that name.
   # sobelow_skip ["Traversal.FileModule"]
-  defp settle(params, _r, {_name, %{env: env}}, {:kept, _scan, _compile_env}) do
+  defp settle(params, _r, {_name, %{env: env, log_file: log_file}}, {:kept, _scan, _ce}) do
     {_lib, aside} = lib_paths(env, params.package)
-    File.rm_rf(aside)
+
+    case File.rm_rf(aside) do
+      {:ok, _} -> :ok
+      {:error, reason, path} -> append_log(log_file, "==> could not remove #{path}: #{reason}")
+    end
+
     :ok
   end
 
+  # A compile that ran out of time leaves writers behind: `timeout(1)` kills
+  # only its own process group, and every port child (make, cc, cargo) gets
+  # one of its own. Each inherits the target's MIX_BUILD_PATH, so they are
+  # found by it and killed before the first build goes back; one that
+  # survives would write into it, so that is a revert failure instead.
+  defp settle(params, r, {_name, %{env: env}} = target, {:dropped, "timeout"}) do
+    case r.reap.(build_path(env)) do
+      :ok -> put_back(params, r, target)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp settle(params, r, target, {:dropped, _reason}), do: put_back(params, r, target)
+
   # sobelow_skip ["Traversal.FileModule"]
-  defp settle(params, r, {_name, %{env: env}}, {:dropped, _reason}) do
+  defp put_back(params, r, {_name, %{env: env}}) do
     {lib, aside} = lib_paths(env, params.package)
 
     case File.rm_rf(lib) do
@@ -376,8 +453,74 @@ defmodule NccWorker.OptionalDepsTargets do
       rename: &File.rename/2,
       restore: &Project.restore/1,
       read_lock: &DepsLock.read/2,
-      package_checksum: &DepsLock.package_checksum/2
+      package_checksum: &DepsLock.package_checksum/2,
+      reap: &reap_writers/1,
+      now: fn -> System.monotonic_time(:second) end
     }
+  end
+
+  @doc false
+  # Kills every process whose environment names `build_path` as its
+  # MIX_BUILD_PATH and waits until none is left. `:ok` without /proc (not
+  # Linux), where there is nothing to look in.
+  @spec reap_writers(String.t()) :: :ok | {:error, {:writers_survived, [String.t()]}}
+  def reap_writers(build_path) do
+    needle = "MIX_BUILD_PATH=" <> build_path <> <<0>>
+
+    case writers(needle) do
+      :no_proc ->
+        :ok
+
+      [] ->
+        :ok
+
+      pids ->
+        kill(pids)
+        wait_for_writers(needle, System.monotonic_time(:millisecond) + @reap_wait_ms)
+    end
+  end
+
+  defp wait_for_writers(needle, until) do
+    case writers(needle) do
+      [] ->
+        :ok
+
+      pids ->
+        if System.monotonic_time(:millisecond) >= until do
+          {:error, {:writers_survived, pids}}
+        else
+          kill(pids)
+          Process.sleep(@reap_poll_ms)
+          wait_for_writers(needle, until)
+        end
+    end
+  end
+
+  # A zombie's environ reads empty, so a killed process stops matching as
+  # soon as it is dead, whether or not its parent has reaped it.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp writers(needle) do
+    own = System.pid()
+
+    case File.ls("/proc") do
+      {:ok, entries} ->
+        for pid <- entries,
+            pid != own,
+            Integer.parse(pid) != :error,
+            {:ok, environ} <- [File.read("/proc/#{pid}/environ")],
+            String.starts_with?(environ, needle) or String.contains?(environ, <<0>> <> needle),
+            do: pid
+
+      {:error, _} ->
+        :no_proc
+    end
+  end
+
+  # Literal kill argv for pids read from /proc; no shell.
+  # sobelow_skip ["CI.System"]
+  defp kill(pids) do
+    System.cmd("kill", ["-KILL" | pids], stderr_to_stdout: true)
+    :ok
   end
 
   defp deps_get(project_dir, env, log_file) do
@@ -397,12 +540,19 @@ defmodule NccWorker.OptionalDepsTargets do
         timeout -> {timeout, ["--kill-after=10", "#{timeout_sec}", "mix", "compile"]}
       end
 
-    case cmd(command, args, project_dir, env, log_file) do
-      0 -> :ok
-      code when command != "mix" and code in @timeout_exits -> {:error, :timeout}
-      code -> {:error, "mix compile exited with code #{code}"}
-    end
+    started = System.monotonic_time(:second)
+    code = cmd(command, args, project_dir, env, log_file)
+    timed_out? = System.monotonic_time(:second) - started >= timeout_sec
+
+    compile_outcome(code, command != "mix", timed_out?)
   end
+
+  defp compile_outcome(0, _bounded?, _timed_out?), do: :ok
+  defp compile_outcome(@timeout_exit, true, _timed_out?), do: {:error, :timeout}
+  defp compile_outcome(@killed_exit, true, true), do: {:error, :timeout}
+
+  defp compile_outcome(code, _bounded?, _timed_out?),
+    do: {:error, "mix compile exited with code #{code}"}
 
   defp mix(args, project_dir, env, log_file), do: cmd("mix", args, project_dir, env, log_file)
 

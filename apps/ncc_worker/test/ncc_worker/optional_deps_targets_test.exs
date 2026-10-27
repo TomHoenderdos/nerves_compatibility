@@ -167,7 +167,8 @@ defmodule NccWorker.OptionalDepsTargetsTest do
         lock_policy: fn _ -> :ok end,
         compile: compile_by_target(dir, %{"rpi4" => :ok, "bbb" => :ok}),
         scan: fn build_path, "pkg" -> %{"rescanned" => Path.basename(build_path)} end,
-        compile_env: fn build_path, "pkg" -> [%{"second" => Path.basename(build_path)}] end
+        compile_env: fn build_path, "pkg" -> [%{"second" => Path.basename(build_path)}] end,
+        reap: fn _build_path -> :ok end
       },
       overrides
     )
@@ -306,14 +307,36 @@ defmodule NccWorker.OptionalDepsTargetsTest do
 
   test "deps.get runs serially per target with that target's env", %{dir: dir} do
     test_pid = self()
+    # 1: in flight now, 2: most ever in flight, 3: finished.
+    counters = :counters.new(3, [])
 
     deps_get = fn _dir, env, log_file ->
+      :counters.add(counters, 1, 1)
+      in_flight = :counters.get(counters, 1)
+      if in_flight > :counters.get(counters, 2), do: :counters.put(counters, 2, in_flight)
       send(test_pid, {:deps_get, target_of(env), log_file})
+      Process.sleep(20)
       File.write!(Path.join(dir, "mix.lock"), @lock_with_jason)
+      :counters.sub(counters, 1, 1)
+      :counters.add(counters, 3, 1)
       :ok
     end
 
-    assert {:ok, _} = OptionalDepsTargets.run(params(dir), runners(dir, %{deps_get: deps_get}))
+    compile = fn _dir, env, _log, _timeout ->
+      send(test_pid, {:compile_after, :counters.get(counters, 3)})
+      write!(beam(dir, target_of(env)), "second")
+      :ok
+    end
+
+    assert {:ok, _} =
+             OptionalDepsTargets.run(
+               params(dir),
+               runners(dir, %{deps_get: deps_get, compile: compile})
+             )
+
+    assert :counters.get(counters, 2) == 1
+    assert_received {:compile_after, 2}
+    assert_received {:compile_after, 2}
 
     rpi4_log = log(dir, "rpi4")
     bbb_log = log(dir, "bbb")
@@ -390,7 +413,10 @@ defmodule NccWorker.OptionalDepsTargetsTest do
   end
 
   test "a failed inject drops the pass for every target", %{dir: dir} do
-    inject = fn _dir, _deps -> {:error, :no_deps_block} end
+    inject = fn dir, _deps ->
+      File.write!(Path.join(dir, "mix.exs"), "half an edit")
+      {:error, :no_deps_block}
+    end
 
     assert {:ok, out} =
              OptionalDepsTargets.run(
@@ -502,6 +528,222 @@ defmodule NccWorker.OptionalDepsTargetsTest do
                  params(dir),
                  runners(dir, %{restore: fn _snapshot -> {:error, :eacces} end})
                )
+    end
+  end
+
+  describe "more drop paths" do
+    test "an unreadable lock after deps.get drops every fetched target", %{dir: dir} do
+      read_lock = fn project_dir, package ->
+        if File.read!(Path.join(project_dir, "mix.lock")) == @lock_with_jason,
+          do: nil,
+          else: NccWorker.DepsLock.read(project_dir, package)
+      end
+
+      assert {:ok, out} =
+               OptionalDepsTargets.run(
+                 params(dir),
+                 runners(dir, %{read_lock: read_lock, compile: never("compile")})
+               )
+
+      for target <- @targets do
+        assert out.systems["nerves_system_#{target}"].optional_deps.reason ==
+                 "deps_lock_unreadable"
+
+        assert File.read!(beam(dir, target)) == "first-#{target}"
+      end
+
+      assert out.deps_lock == %{"telemetry" => %{"version" => "1.3.0", "checksum" => "o-tel"}}
+    end
+
+    test "a move-aside that fails drops that target and the other still runs", %{dir: dir} do
+      rename = fn from, to ->
+        if String.ends_with?(from, "rpi4/lib/pkg"),
+          do: {:error, :exdev},
+          else: File.rename(from, to)
+      end
+
+      assert {:ok, out} = OptionalDepsTargets.run(params(dir), runners(dir, %{rename: rename}))
+
+      assert out.systems["nerves_system_rpi4"].optional_deps.reason == "stale_build_not_removed"
+      assert File.read!(beam(dir, "rpi4")) == "first-rpi4"
+      assert out.systems["nerves_system_bbb"].optional_deps.added == ["jason"]
+      assert File.read!(beam(dir, "bbb")) == "second-bbb"
+    end
+
+    test "a compile, scan or compile_env that raises drops the target", %{dir: dir} do
+      compile = fn _dir, env, _log, _timeout ->
+        target = target_of(env)
+        write!(beam(dir, target), "half-#{target}")
+        if target == "rpi4", do: raise("compile blew up"), else: :ok
+      end
+
+      scan = fn build_path, _pkg ->
+        if Path.basename(build_path) == "bbb", do: raise("scan blew up"), else: %{}
+      end
+
+      assert {:ok, out} =
+               OptionalDepsTargets.run(
+                 params(dir),
+                 runners(dir, %{compile: compile, scan: scan})
+               )
+
+      for target <- @targets do
+        assert out.systems["nerves_system_#{target}"].optional_deps.reason ==
+                 "target_compile_failed"
+
+        assert File.read!(beam(dir, target)) == "first-#{target}"
+      end
+    end
+  end
+
+  describe "reaping a timed-out compile's writers" do
+    test "runs before the first build goes back, only for timed-out targets", %{dir: dir} do
+      test_pid = self()
+
+      reap = fn build_path ->
+        target = Path.basename(build_path)
+
+        send(
+          test_pid,
+          {:reap, target, File.exists?(aside(dir, target)), File.read!(beam(dir, target))}
+        )
+
+        :ok
+      end
+
+      compile =
+        compile_by_target(dir, %{
+          "rpi4" => {:error, :timeout},
+          "bbb" => {:error, "mix command exited with code 1"}
+        })
+
+      assert {:ok, _out} =
+               OptionalDepsTargets.run(params(dir), runners(dir, %{reap: reap, compile: compile}))
+
+      assert_received {:reap, "rpi4", true, "half-rpi4"}
+      refute_received {:reap, "bbb", _, _}
+      assert File.read!(beam(dir, "rpi4")) == "first-rpi4"
+    end
+
+    test "writers that survive are a revert failure, and the first build stays aside",
+         %{dir: dir} do
+      reap = fn _build_path -> {:error, {:writers_survived, ["4242"]}} end
+      compile = compile_by_target(dir, %{"rpi4" => {:error, :timeout}, "bbb" => :ok})
+
+      assert {:error, {:optional_deps_revert_failed, {:writers_survived, ["4242"]}}} =
+               OptionalDepsTargets.run(params(dir), runners(dir, %{reap: reap, compile: compile}))
+
+      assert File.read!(Path.join([aside(dir, "rpi4"), "ebin", "pkg.beam"])) == "first-rpi4"
+      assert File.read!(Path.join(dir, "mix.exs")) == @mix_exs
+      assert File.read!(Path.join(dir, "mix.lock")) == @lock
+    end
+
+    test "reap_writers/1 kills a process carrying the build path", %{dir: dir} do
+      build_path = Path.join([dir, "_build", "reap_me"])
+
+      if File.dir?("/proc") do
+        port =
+          Port.open({:spawn_executable, System.find_executable("sleep")}, [
+            :binary,
+            args: ["30"],
+            env: [{~c"MIX_BUILD_PATH", String.to_charlist(build_path)}]
+          ])
+
+        {:os_pid, os_pid} = Port.info(port, :os_pid)
+        assert :ok = OptionalDepsTargets.reap_writers(build_path)
+
+        environ = File.read("/proc/#{os_pid}/environ")
+        assert environ in [{:error, :enoent}, {:ok, ""}, {:error, :eacces}, {:error, :esrch}]
+      else
+        assert :ok = OptionalDepsTargets.reap_writers(build_path)
+      end
+    end
+  end
+
+  describe "budgets" do
+    test "each compile gets at most what is left of the pass's budget", %{dir: dir} do
+      test_pid = self()
+
+      compile = fn _dir, env, _log, timeout_sec ->
+        send(test_pid, {:timeout, timeout_sec})
+        write!(beam(dir, target_of(env)), "second")
+        :ok
+      end
+
+      assert {:ok, _} =
+               OptionalDepsTargets.run(
+                 params(dir, %{budget_sec: 100}),
+                 runners(dir, %{compile: compile, now: fn -> 5000 end})
+               )
+
+      assert_received {:timeout, 100}
+      assert_received {:timeout, 100}
+    end
+
+    test "targets not started by the deadline keep their first build as timeout",
+         %{dir: dir} do
+      clock = :counters.new(1, [])
+      test_pid = self()
+
+      deps_get = fn _dir, env, _log ->
+        send(test_pid, {:deps_get, target_of(env)})
+        File.write!(Path.join(dir, "mix.lock"), @lock_with_jason)
+        # rpi4's deps.get uses up the whole budget.
+        :counters.put(clock, 1, 200)
+        :ok
+      end
+
+      assert {:ok, out} =
+               OptionalDepsTargets.run(
+                 params(dir, %{budget_sec: 100}),
+                 runners(dir, %{
+                   deps_get: deps_get,
+                   compile: never("compile"),
+                   now: fn -> :counters.get(clock, 1) end
+                 })
+               )
+
+      assert_received {:deps_get, "rpi4"}
+      refute_received {:deps_get, "bbb"}
+
+      for target <- @targets do
+        assert out.systems["nerves_system_#{target}"].optional_deps.reason == "timeout"
+        assert File.read!(beam(dir, target)) == "first-#{target}"
+      end
+
+      assert File.read!(Path.join(dir, "mix.exs")) == @mix_exs
+    end
+
+    test "a run past 75 minutes does not start the pass", %{dir: dir} do
+      p = params(dir, %{run_elapsed_sec: 75 * 60 + 1})
+
+      assert {:ok, out} =
+               OptionalDepsTargets.run(
+                 p,
+                 %{
+                   inject: never("inject"),
+                   deps_get: never("deps.get"),
+                   compile: never("compile")
+                 }
+               )
+
+      for target <- @targets do
+        sys = out.systems["nerves_system_#{target}"]
+
+        assert sys.optional_deps == %{
+                 added: [],
+                 dropped: ["jason"],
+                 reason: "run_budget_exhausted"
+               }
+
+        assert sys.beam_scan == %{"first" => target}
+        assert File.read!(beam(dir, target)) == "first-#{target}"
+        refute File.exists?(aside(dir, target))
+      end
+
+      refute Map.has_key?(out.systems["nerves_system_x86_64"], :optional_deps)
+      assert out.optional_deps.reason == "run_budget_exhausted"
+      assert File.read!(Path.join(dir, "mix.exs")) == @mix_exs
     end
   end
 end
