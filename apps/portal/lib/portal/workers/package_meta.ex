@@ -1,7 +1,7 @@
 defmodule Portal.Workers.PackageMeta do
   @moduledoc """
-  Refreshes one package's hex.pm metadata: the author's declared links, and the
-  package's owners.
+  Refreshes one package's hex.pm metadata: the author's declared links, the
+  package's owners, and its download counts.
 
   Neither is derivable from anything we already hold. A package name says
   nothing about where its source lives, and the owners list exists only on
@@ -37,7 +37,9 @@ defmodule Portal.Workers.PackageMeta do
       package
       |> Ash.Changeset.for_update(:update_hex_meta, %{
         hex_links: meta.links,
-        hex_owners: meta.owners
+        hex_owners: meta.owners,
+        hex_downloads_recent: meta.downloads_recent,
+        hex_downloads_all: meta.downloads_all
       })
       |> Ash.update(domain: @domain)
       |> case do
