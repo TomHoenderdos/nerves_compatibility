@@ -43,7 +43,7 @@ defmodule NccWorker.OptionalDepsTargets do
   "timeout" (per-system timeout, or the pass's budget ran out) or
   "run_budget_exhausted" (the run had used more than 75 minutes, so the pass
   did not start), and "no_passing_target" in the summary when no target
-  passed. A timed-out target's leftover writers are killed before its first
+  passed. A dropped target's leftover writers are killed before its first
   build goes back (`reap_writers/1`); one that survives is a revert failure.
 
   Every step that would run `mix`, reach Hex or touch the snapshot goes
@@ -99,7 +99,7 @@ defmodule NccWorker.OptionalDepsTargets do
     * `restore` -- `(snapshot)`, `NccWorker.Project.restore/1`
     * `read_lock` / `package_checksum` -- `(project_dir, package)`,
       `NccWorker.DepsLock`
-    * `reap` -- `(build_path)`, kills what a timed-out compile left running
+    * `reap` -- `(build_path)`, kills what a dropped target's compile left running
       (`reap_writers/1`); `{:error, reason}` when some survive
     * `now` -- `()`, monotonic seconds, for the budget
   """
@@ -357,19 +357,19 @@ defmodule NccWorker.OptionalDepsTargets do
     :ok
   end
 
-  # A compile that ran out of time leaves writers behind: `timeout(1)` kills
-  # only its own process group, and every port child (make, cc, cargo) gets
-  # one of its own. Each inherits the target's MIX_BUILD_PATH, so they are
-  # found by it and killed before the first build goes back; one that
-  # survives would write into it, so that is a revert failure instead.
-  defp settle(params, r, {_name, %{env: env}} = target, {:dropped, "timeout"}) do
+  # A dropped target's compile may have left writers behind: `timeout(1)`
+  # kills only its own process group and every port child (make, cc, cargo)
+  # gets one of its own; an OOM-killed mix leaves its children; a runner that
+  # raised may have left mix itself running. Each inherits the target's
+  # MIX_BUILD_PATH, so they are found by it and killed before the first build
+  # goes back, whatever the drop reason; one that survives would write into
+  # it, so that is a revert failure instead.
+  defp settle(params, r, {_name, %{env: env}} = target, {:dropped, _reason}) do
     case r.reap.(build_path(env)) do
       :ok -> put_back(params, r, target)
       {:error, reason} -> {:error, reason}
     end
   end
-
-  defp settle(params, r, target, {:dropped, _reason}), do: put_back(params, r, target)
 
   # sobelow_skip ["Traversal.FileModule"]
   defp put_back(params, r, {_name, %{env: env}}) do

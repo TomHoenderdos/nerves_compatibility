@@ -597,8 +597,9 @@ defmodule NccWorker.OptionalDepsTargetsTest do
   end
 
   describe "reaping a timed-out compile's writers" do
-    test "runs before the first build goes back, only for timed-out targets", %{dir: dir} do
+    test "runs before the first build goes back, for every dropped target", %{dir: dir} do
       test_pid = self()
+      write!(beam(dir, "x86_64"), "first-x86_64")
 
       reap = fn build_path ->
         target = Path.basename(build_path)
@@ -611,18 +612,46 @@ defmodule NccWorker.OptionalDepsTargetsTest do
         :ok
       end
 
-      compile =
-        compile_by_target(dir, %{
-          "rpi4" => {:error, :timeout},
-          "bbb" => {:error, "mix command exited with code 1"}
-        })
+      # rpi4 times out, bbb fails (an OOM-killed mix exits 137 the same way),
+      # x86_64's runner raises after the compile started writing.
+      compile = fn _dir, env, _log, _timeout ->
+        target = target_of(env)
+        write!(beam(dir, target), "half-#{target}")
 
-      assert {:ok, _out} =
-               OptionalDepsTargets.run(params(dir), runners(dir, %{reap: reap, compile: compile}))
+        case target do
+          "rpi4" -> {:error, :timeout}
+          "bbb" -> {:error, "mix compile exited with code 137"}
+          "x86_64" -> raise "runner blew up"
+        end
+      end
 
-      assert_received {:reap, "rpi4", true, "half-rpi4"}
-      refute_received {:reap, "bbb", _, _}
-      assert File.read!(beam(dir, "rpi4")) == "first-rpi4"
+      p = params(dir)
+      p = put_in(p.systems["nerves_system_x86_64"], passing("x86_64"))
+
+      assert {:ok, out} =
+               OptionalDepsTargets.run(p, runners(dir, %{reap: reap, compile: compile}))
+
+      for target <- ~w(rpi4 bbb x86_64) do
+        half = "half-#{target}"
+        assert_received {:reap, ^target, true, ^half}
+        assert File.read!(beam(dir, target)) == "first-#{target}"
+      end
+
+      assert out.systems["nerves_system_rpi4"].optional_deps.reason == "timeout"
+      assert out.systems["nerves_system_bbb"].optional_deps.reason == "target_compile_failed"
+      assert out.systems["nerves_system_x86_64"].optional_deps.reason == "target_compile_failed"
+    end
+
+    test "a kept target is not reaped", %{dir: dir} do
+      test_pid = self()
+
+      reap = fn build_path ->
+        send(test_pid, {:reap, Path.basename(build_path)})
+        :ok
+      end
+
+      assert {:ok, _} = OptionalDepsTargets.run(params(dir), runners(dir, %{reap: reap}))
+      refute_received {:reap, _}
     end
 
     test "writers that survive are a revert failure, and the first build stays aside",
@@ -652,8 +681,8 @@ defmodule NccWorker.OptionalDepsTargetsTest do
         {:os_pid, os_pid} = Port.info(port, :os_pid)
         assert :ok = OptionalDepsTargets.reap_writers(build_path)
 
-        environ = File.read("/proc/#{os_pid}/environ")
-        assert environ in [{:error, :enoent}, {:ok, ""}, {:error, :eacces}, {:error, :esrch}]
+        # Gone, or a zombie (its environ reads empty) until it is reaped.
+        assert File.read("/proc/#{os_pid}/environ") in [{:error, :enoent}, {:ok, ""}]
       else
         assert :ok = OptionalDepsTargets.reap_writers(build_path)
       end
