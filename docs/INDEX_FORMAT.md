@@ -9,6 +9,7 @@ catalog API. `PortalWeb.CatalogApiController` serves it from
 | `GET /api/packages` | [Packages](#packages) for every package in the catalog |
 | `GET /api/packages/:name` | [Packages](#packages) holding only `:name`; `404` with `{"error": "package not found"}` when unknown |
 | `GET /api/stats` | [Stats](#stats) |
+| `GET /api/failing` | [Failing](#failing) packages ranked by hex.pm downloads (own `schema: 1`) |
 
 Conventions:
 - All timestamps are ISO 8601 strings (e.g., `"2025-12-23T10:30:00Z"`)
@@ -177,6 +178,65 @@ of a result already counted.
   "last_run_finished_at": "2025-12-23T09:20:15Z"
 }
 ```
+
+---
+
+## Failing
+
+Packages whose latest run has at least one `fail` or `error` target, ranked by
+hex.pm downloads: the failures whose fix helps the most projects. The same list
+is rendered at `/failing`. "Latest run" is the run [Packages](#packages) shows.
+
+This endpoint versions independently of the schema-v2 documents above.
+
+### Parameters
+
+All optional. An invalid value falls back to its default rather than erroring.
+
+- **sort**: `recent` (hex.pm 90-day downloads, default) or `all` (all-time)
+- **limit**: number of packages, `1`..`200` (default `50`; out-of-range values are clamped)
+- **system**: a system package name, e.g. `nerves_system_rpi4`; only packages
+  failing on that target
+
+### Schema
+
+```json
+{
+  "schema": 1,
+  "generated_at": "<iso8601>",
+  "sort": "recent" | "all",
+  "packages": [
+    {
+      "name": "<string>",
+      "description": "<string>" | null,
+      "latest_version": "<string>" | null,
+      "version_tested": "<string>" | null,
+      "last_run_at": "<iso8601>" | null,
+      "downloads_recent": <integer> | null,
+      "downloads_all": <integer> | null,
+      "status": "fail" | "error",
+      "failing_targets": [
+        {
+          "system": "<system_pkg>@<system_version>",
+          "status": "fail" | "error",
+          "failure_category": "<string>" | null
+        }
+      ],
+      "failing_count": <integer>,
+      "total_targets": <integer>
+    }
+  ]
+}
+```
+
+### Fields
+
+- **packages**: Ordered by the chosen download count, highest first; packages
+  hex.pm has no count for come last; ties by name
+  - **downloads_recent / downloads_all**: hex.pm download counts, refreshed weekly
+  - **status**: `error` if any failing target errored, otherwise `fail`
+  - **failing_targets**: Only the `fail` / `error` targets of the latest run
+  - **failing_count / total_targets**: Failing targets out of all targets in that run
 
 ---
 

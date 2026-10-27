@@ -21,6 +21,7 @@ defmodule PortalWeb.SiteNav do
           <.nav_link href="/failure_clusters" active={@active == :clusters}>
             Failure clusters
           </.nav_link>
+          <.nav_link href="/failing" active={@active == :failing}>Top failing</.nav_link>
           <.nav_link href="/stats" active={@active == :stats}>Stats</.nav_link>
           <a
             href="/request-scan"

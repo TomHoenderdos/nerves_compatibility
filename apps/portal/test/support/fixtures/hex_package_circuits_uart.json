@@ -1,0 +1,22 @@
+{
+  "name": "circuits_uart",
+  "latest_version": "1.7.0",
+  "meta": {
+    "links": {
+      "GitHub": "https://github.com/elixir-circuits/circuits_uart",
+      "REUSE Compliance": "https://api.reuse.software/info/github.com/nerves-project/nerves_runtime"
+    }
+  },
+  "owners": [
+    {
+      "username": "fhunleth",
+      "url": "https://hex.pm/api/users/fhunleth"
+    }
+  ],
+  "downloads": {
+    "all": 554833,
+    "day": 768,
+    "recent": 67108,
+    "week": 3796
+  }
+}

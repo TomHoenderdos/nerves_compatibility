@@ -13,8 +13,9 @@ defmodule Portal.HexMetaBackfill do
   wall clock on the `intake` queue, during which each package is an independent
   job that retries on its own without costing the sweep its progress.
 
-  Meant to be run by hand from a remote console, not on a schedule -- links and
-  owners change on the order of years.
+  Run by hand from a remote console to fill gaps. Download counts do go stale,
+  so `Portal.Workers.HexMetaRefresh` also calls this weekly with
+  `only_missing: false`.
   """
 
   require Ash.Query

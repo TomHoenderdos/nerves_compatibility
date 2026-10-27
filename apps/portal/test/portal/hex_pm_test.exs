@@ -86,18 +86,51 @@ defmodule Portal.HexPmTest do
     end
 
     test "a package with neither links nor owners yields empty collections" do
-      assert HexPm.metadata_from_body(%{}) == %{links: %{}, owners: []}
+      assert HexPm.metadata_from_body(%{}) ==
+               %{links: %{}, owners: [], downloads_recent: nil, downloads_all: nil}
     end
 
     # hex.pm sends `null` for both fields on some packages, which `List.wrap/1`
     # and the map guard have to absorb rather than raise on.
     test "nulls upstream are not a crash here" do
-      assert HexPm.metadata_from_body(%{"meta" => %{"links" => nil}, "owners" => nil}) ==
-               %{links: %{}, owners: []}
+      assert HexPm.metadata_from_body(%{
+               "meta" => %{"links" => nil},
+               "owners" => nil,
+               "downloads" => nil
+             }) ==
+               %{links: %{}, owners: [], downloads_recent: nil, downloads_all: nil}
     end
 
     test "a body that is not a map yields empty collections" do
-      assert HexPm.metadata_from_body("nope") == %{links: %{}, owners: []}
+      assert HexPm.metadata_from_body("nope") ==
+               %{links: %{}, owners: [], downloads_recent: nil, downloads_all: nil}
+    end
+
+    # Trimmed from `GET https://hex.pm/api/packages/circuits_uart` on
+    # 2026-10-27 (owner emails removed). `recent` is hex.pm's 90-day count.
+    test "download counts come through from a real body" do
+      body =
+        Path.join(__DIR__, "../support/fixtures/hex_package_circuits_uart.json")
+        |> File.read!()
+        |> Jason.decode!()
+
+      assert %{downloads_recent: 67_108, downloads_all: 554_833} = HexPm.metadata_from_body(body)
+    end
+
+    test "a body without downloads yields nil counts" do
+      assert %{downloads_recent: nil, downloads_all: nil} =
+               HexPm.metadata_from_body(%{"name" => "x"})
+    end
+
+    # These become sort keys on a public page; anything but a non-negative
+    # integer would either crash the cast or rank a package on junk.
+    test "download counts that are not non-negative integers are dropped" do
+      body = %{"downloads" => %{"recent" => "12", "all" => -1}}
+
+      assert %{downloads_recent: nil, downloads_all: nil} = HexPm.metadata_from_body(body)
+
+      assert %{downloads_recent: nil, downloads_all: 5} =
+               HexPm.metadata_from_body(%{"downloads" => %{"recent" => 1.5, "all" => 5}})
     end
   end
 

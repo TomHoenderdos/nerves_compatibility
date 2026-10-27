@@ -342,7 +342,8 @@ defmodule Portal.HexPm do
   @max_owners 25
 
   @doc """
-  Public metadata for one package: its author-declared links and its owners.
+  Public metadata for one package: its author-declared links, its owners, and
+  its download counts (`recent` is hex.pm's 90-day window).
 
   Only the pieces this site renders, and deliberately not everything hex.pm
   returns. `GET /api/packages/<name>` includes an `email` for every owner;
@@ -351,8 +352,14 @@ defmodule Portal.HexPm do
 
   Links are filtered to absolute `http`/`https` URLs -- see the comment above.
   """
-  @spec package_metadata(String.t()) ::
-          {:ok, %{links: %{String.t() => String.t()}, owners: [String.t()]}} | {:error, term()}
+  @type metadata :: %{
+          links: %{String.t() => String.t()},
+          owners: [String.t()],
+          downloads_recent: non_neg_integer() | nil,
+          downloads_all: non_neg_integer() | nil
+        }
+
+  @spec package_metadata(String.t()) :: {:ok, metadata()} | {:error, term()}
   def package_metadata(package_name) when is_binary(package_name) do
     case Req.get("#{@api_url}/packages/#{package_name}") do
       {:ok, %{status: 200, body: package}} when is_map(package) ->
@@ -377,10 +384,14 @@ defmodule Portal.HexPm do
   The metadata boundary itself, split out from the request so it can be tested
   without one. Takes a decoded `GET /api/packages/<name>` body.
   """
-  @spec metadata_from_body(map()) :: %{links: %{String.t() => String.t()}, owners: [String.t()]}
+  @spec metadata_from_body(map()) :: metadata()
   def metadata_from_body(package) when is_map(package) do
+    downloads = Map.get(package, "downloads")
+
     %{
       links: sane_links(get_in(package, ["meta", "links"])),
+      downloads_recent: download_count(downloads, "recent"),
+      downloads_all: download_count(downloads, "all"),
       owners:
         package
         |> Map.get("owners")
@@ -391,7 +402,19 @@ defmodule Portal.HexPm do
     }
   end
 
-  def metadata_from_body(_package), do: %{links: %{}, owners: []}
+  def metadata_from_body(_package),
+    do: %{links: %{}, owners: [], downloads_recent: nil, downloads_all: nil}
+
+  # Download counts become sort keys on a public page, so anything that is not
+  # a non-negative integer is treated as unknown rather than ranked on.
+  defp download_count(downloads, key) when is_map(downloads) do
+    case Map.get(downloads, key) do
+      count when is_integer(count) and count >= 0 -> count
+      _ -> nil
+    end
+  end
+
+  defp download_count(_downloads, _key), do: nil
 
   defp sane_links(links) when is_map(links) do
     links

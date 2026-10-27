@@ -116,4 +116,14 @@ defmodule Portal.ObanConfigTest do
     assert queues[:warm_nerves_portal_box_c] == 1
     assert queues[:ingest_portal_box_c] == 2
   end
+
+  test "the hex metadata refresh is scheduled weekly on the intake queue" do
+    {_mod, opts} = plugin(Oban.Plugins.Cron)
+
+    assert {"53 4 * * 1", Portal.Workers.HexMetaRefresh} =
+             Enum.find(opts[:crontab], &match?({_e, Portal.Workers.HexMetaRefresh}, &1))
+
+    # An HTTP sweep of hex.pm: the web host's queue, never the build box.
+    assert Portal.Workers.HexMetaRefresh.__opts__()[:queue] == :intake
+  end
 end

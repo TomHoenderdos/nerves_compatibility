@@ -2,6 +2,7 @@ defmodule PortalWeb.CatalogApiController do
   use PortalWeb, :controller
 
   alias Portal.Catalog
+  alias Portal.Catalog.TopFailing
   alias Portal.Precompiled.{Batches, Manifests, Root}
 
   @badge_grey "#9ca3af"
@@ -32,6 +33,19 @@ defmodule PortalWeb.CatalogApiController do
     conn
     |> put_cache_headers()
     |> json(Catalog.stats_json())
+  end
+
+  def failing(conn, params) do
+    opts = TopFailing.opts_from_params(params)
+
+    conn
+    |> put_cache_headers()
+    |> json(%{
+      schema: 1,
+      generated_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+      sort: Keyword.fetch!(opts, :sort),
+      packages: TopFailing.list(opts)
+    })
   end
 
   def precompiled_manifest(conn, %{"package" => raw_package}) do
