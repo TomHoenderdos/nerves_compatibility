@@ -46,9 +46,11 @@ mix format
 - `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
 - `/api/failing?sort=recent|all&limit=&system=` — failing packages ranked by downloads (see `docs/INDEX_FORMAT.md`)
 - `/api/precompiled/manifests/:package.json`, `/api/precompiled/files/:sha256` — precompiled artifact API
+- `/api/docs` — the JSON API documented as a page; `/api/openapi.json` — the same as an OpenAPI 3 document
 
 ## Docs
 
+- `/api/openapi.json` (and `/api/docs`) — every JSON API endpoint, its parameters and response schemas, generated from the controllers
 - `docs/INDEX_FORMAT.md` — schema-v2 JSON API shapes
 - `PRECOMPILED_API.md` — precompiled package API
 - `docs/PRECOMPILED_DEPS_RFC.md` — RFC: precompiled dependencies for Elixir and Erlang projects
