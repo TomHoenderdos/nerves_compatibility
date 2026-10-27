@@ -41,12 +41,12 @@ defmodule NccWorker.EgressProbeTest do
     end
 
     assert [
-             %{"address" => "192.0.2.11", "family" => "inet", "outcome" => "timeout"},
+             %{"address" => "100.64.0.1", "family" => "inet", "outcome" => "timeout"},
              %{"address" => "fd00::1", "family" => "inet6", "outcome" => "unreachable"}
            ] =
              EgressProbe.run(
                [
-                 %{"address" => "192.0.2.11", "port" => 5432},
+                 %{"address" => "100.64.0.1", "port" => 5432},
                  %{"address" => "fd00::1", "port" => 5432}
                ],
                connect

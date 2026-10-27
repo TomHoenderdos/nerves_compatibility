@@ -4,12 +4,12 @@ defmodule NccWorker.CLITest do
   alias NccWorker.CLI
 
   test "parse_input/1 keeps egress_probe targets as string-keyed maps" do
-    json = ~s({"run_id":"r1","egress_probe":[{"address":"192.0.2.11","port":5432}]})
+    json = ~s({"run_id":"r1","egress_probe":[{"address":"100.64.0.1","port":5432}]})
 
     assert {:ok,
             %{
               run_id: "r1",
-              egress_probe: [%{"address" => "192.0.2.11", "port" => 5432}]
+              egress_probe: [%{"address" => "100.64.0.1", "port" => 5432}]
             }} = CLI.parse_input(json)
   end
 

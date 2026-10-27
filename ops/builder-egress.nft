@@ -16,8 +16,8 @@
 # reached.
 #
 # Remote builders apply the same policy in DOCKER-USER
-# (docs/superpowers/specs/2026-10-25-remote-builders-design.md, section 5);
-# keep the address lists the same in both.
+# (apps/ncc_agent/priv/egress.sh, docs/REMOTE_BUILDERS.md); keep the address
+# lists the same in both.
 #
 # The loader replaces this define with the name `docker network inspect
 # bridge` reports; docker0 is the default, so the file checks as it stands.

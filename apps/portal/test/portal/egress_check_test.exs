@@ -3,21 +3,21 @@ defmodule Portal.EgressCheckTest do
 
   alias Portal.EgressCheck
 
-  @v4 %{"address" => "192.0.2.11", "port" => 5432}
+  @v4 %{"address" => "100.64.0.1", "port" => 5432}
   @v6 %{"address" => "fd00::1", "port" => 5432}
 
   describe "parse_targets/1" do
     test "reads v4 and bracketed v6 host:port pairs" do
       assert {:ok, [@v4, @v6]} =
-               EgressCheck.parse_targets("192.0.2.11:5432, [fd00::1]:5432")
+               EgressCheck.parse_targets("100.64.0.1:5432, [fd00::1]:5432")
     end
 
     test "refuses names, missing or out-of-range ports, unbracketed v6 and nothing at all" do
       for raw <- [
             "db.internal:5432",
-            "192.0.2.11",
-            "192.0.2.11:0",
-            "192.0.2.11:70000",
+            "100.64.0.1",
+            "100.64.0.1:0",
+            "100.64.0.1:70000",
             "fd00::1:5432",
             "",
             " , "
@@ -74,7 +74,7 @@ defmodule Portal.EgressCheckTest do
 
     test "a target the bare container reached fails the check" do
       bare = fn
-        %{"address" => "192.0.2.11"} -> "connected"
+        %{"address" => "100.64.0.1"} -> "connected"
         _target -> "unreachable"
       end
 
@@ -201,8 +201,8 @@ defmodule Portal.EgressCheckTest do
 
     text = EgressCheck.format(report)
     assert text =~ "preflight: :ok"
-    assert text =~ "bare container -> 192.0.2.11:5432: timeout"
-    assert text =~ "build jason 1.4.4 -> 192.0.2.11:5432: connected"
+    assert text =~ "bare container -> 100.64.0.1:5432: timeout"
+    assert text =~ "build jason 1.4.4 -> 100.64.0.1:5432: connected"
     assert text =~ "egress check FAILED"
   end
 end

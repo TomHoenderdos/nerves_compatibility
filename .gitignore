@@ -47,3 +47,11 @@ portal/var/
 # macOS
 .DS_Store
 .gstack/
+
+# Operator host list for ops/deploy-builders.sh
+/ops/builders.hosts
+
+# Internal plans and specs live in their own private repository
+/docs/superpowers/
+/docs/talks/
+__pycache__/

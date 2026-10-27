@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Deploys one main commit to the build hosts from an operator's laptop:
-# box-a, box-c, box-d (homelab, never deployed by CI) and the main builder
-# build-host (normally deployed by CI; included for a redeploy or a rescue).
+# Deploys one main commit to the build hosts from an operator's laptop: the
+# homelab builders (never deployed by CI) and the main builder (normally
+# deployed by CI; included for a redeploy or a rescue).
+#
+# The hosts come from ops/builders.hosts (or $NCC_BUILDERS_FILE), which is not
+# committed: one `<name> <ssh destination>` per line, in deploy order, `#`
+# comments allowed. See ops/builders.hosts.example.
 #
 #   ops/deploy-builders.sh                  # head of main, every host
-#   ops/deploy-builders.sh -s box-a box-c   # one host at a time, two hosts
-#   ops/deploy-builders.sh -c <sha> box-d   # a specific commit (must be main's head)
-#   ops/deploy-builders.sh -f vmi           # redeploy a host already on the commit
+#   ops/deploy-builders.sh -s host-a host-b # one host at a time, two hosts
+#   ops/deploy-builders.sh -c <sha> host-a  # a specific commit (must be main's head)
+#   ops/deploy-builders.sh -f host-a        # redeploy a host already on the commit
 #   ops/deploy-builders.sh -n               # dry run: preflight only, changes nothing
 #
 # Per host, in order:
@@ -27,16 +31,31 @@
 # Written for the bash 3.2 macOS ships: no associative arrays.
 set -euo pipefail
 
-ORDER=(box-a box-c box-d vmi)
+hosts_file=${NCC_BUILDERS_FILE:-$(dirname "$0")/builders.hosts}
+[[ -r $hosts_file ]] || {
+  echo "no host list at $hosts_file (copy ops/builders.hosts.example)" >&2
+  exit 2
+}
+
+ORDER=()
+DESTS=()
+while read -r name dest _; do
+  [[ -z $name || $name == \#* ]] && continue
+  [[ -n $dest ]] || { echo "$hosts_file: no ssh destination for '$name'" >&2; exit 2; }
+  ORDER+=("$name")
+  DESTS+=("$dest")
+done <"$hosts_file"
+[[ ${#ORDER[@]} -gt 0 ]] || { echo "$hosts_file lists no hosts" >&2; exit 2; }
 
 # ssh destination for a host name; empty for an unknown one.
 host_of() {
-  case "$1" in
-    box-a) echo root@box-a ;;
-    box-c) echo root@box-c ;;
-    box-d) echo root@box-d ;;
-    vmi) echo root@192.0.2.10 ;;
-  esac
+  local i
+  for i in "${!ORDER[@]}"; do
+    if [[ ${ORDER[$i]} == "$1" ]]; then
+      echo "${DESTS[$i]}"
+      return
+    fi
+  done
 }
 
 POLL_SECONDS=60
@@ -44,7 +63,7 @@ MAX_WAIT_SECONDS=$((4 * 60 * 60))
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 
 usage() {
-  echo "usage: $0 [-c <40-char sha>] [-s] [-f] [-n] [box-a|box-c|box-d|vmi ...]" >&2
+  echo "usage: $0 [-c <40-char sha>] [-s] [-f] [-n] [host ...]" >&2
   exit 2
 }
 

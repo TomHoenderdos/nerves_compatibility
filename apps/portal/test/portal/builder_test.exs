@@ -297,7 +297,7 @@ defmodule Portal.BuilderTest do
     end
 
     test "carries egress probe targets when given, and nothing otherwise" do
-      targets = [%{"address" => "192.0.2.11", "port" => 5432}]
+      targets = [%{"address" => "100.64.0.1", "port" => 5432}]
 
       assert Builder.worker_input(Map.put(@input_job, :egress_probe, targets))["egress_probe"] ==
                targets

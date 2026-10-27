@@ -359,7 +359,7 @@ defmodule NccWorker.JsonWriterTest do
 
       probe = [
         %{
-          "address" => "192.0.2.11",
+          "address" => "100.64.0.1",
           "port" => 5432,
           "family" => "inet",
           "outcome" => "timeout"
