@@ -1,19 +1,63 @@
 defmodule PortalWeb.CatalogApiController do
   use PortalWeb, :controller
+  use OpenApiSpex.ControllerSpecs
 
+  alias OpenApiSpex.Schema
   alias Portal.Catalog
   alias Portal.Catalog.TopFailing
   alias Portal.Precompiled.{Batches, Manifests, Root}
 
+  alias PortalWeb.ApiSchemas.{
+    Error,
+    FailingResponse,
+    ManifestV1,
+    ManifestV2,
+    PackagesResponse,
+    SignedEnvelope,
+    StatsResponse
+  }
+
+  # Shared by the operation specs below, which are evaluated at compile time.
+  @package_param [in: :path, type: :string, required: true, description: "Hex package name."]
+
+  @etag_header %{
+    "etag" => %OpenApiSpex.Header{
+      description: "Identifies these exact bytes.",
+      schema: %Schema{type: :string}
+    }
+  }
+
   @badge_grey "#9ca3af"
   @badge_green "#22c55e"
   @badge_yellow "#eab308"
+
+  operation :packages,
+    tags: ["Catalog"],
+    operation_id: "listPackages",
+    summary: "Every package's latest results",
+    description:
+      "The schema-v2 catalog: every package with the per-system results of its latest run. " <>
+        "Served from a cache refreshed at most once a minute.",
+    responses: [ok: {"The catalog", "application/json", PackagesResponse}]
 
   def packages(conn, _params) do
     conn
     |> put_cache_headers()
     |> json(Catalog.latest_by_pkg_json())
   end
+
+  operation :package,
+    tags: ["Catalog"],
+    operation_id: "getPackage",
+    summary: "One package's latest results",
+    description: "The schema-v2 catalog document holding only the named package.",
+    parameters: [
+      name: [in: :path, type: :string, required: true, description: "Hex package name."]
+    ],
+    responses: [
+      ok: {"The package", "application/json", PackagesResponse},
+      not_found: {"No such package in the catalog", "application/json", Error}
+    ]
 
   def package(conn, %{"name" => name}) do
     case Catalog.latest_by_pkg_json(name) do
@@ -29,11 +73,45 @@ defmodule PortalWeb.CatalogApiController do
     end
   end
 
+  operation :stats,
+    tags: ["Catalog"],
+    operation_id: "getStats",
+    summary: "Aggregate result counts",
+    description: "Result counts per status, overall and per Nerves system.",
+    responses: [ok: {"The statistics", "application/json", StatsResponse}]
+
   def stats(conn, _params) do
     conn
     |> put_cache_headers()
     |> json(Catalog.stats_json())
   end
+
+  operation :failing,
+    tags: ["Catalog"],
+    operation_id: "listFailing",
+    summary: "Failing packages ranked by downloads",
+    description:
+      "Packages whose latest run has at least one `fail` or `error` target, ranked by " <>
+        "Hex.pm downloads. An invalid parameter falls back to its default rather than erroring.",
+    parameters: [
+      sort: [
+        in: :query,
+        schema: %Schema{type: :string, enum: ["recent", "all"], default: "recent"},
+        description: "`recent`: 90-day downloads. `all`: all-time downloads."
+      ],
+      limit: [
+        in: :query,
+        schema: %Schema{type: :integer, minimum: 1, maximum: 200, default: 50},
+        description: "Number of packages. Out-of-range values are clamped."
+      ],
+      system: [
+        in: :query,
+        type: :string,
+        description:
+          "A Nerves system package name, e.g. `nerves_system_rpi4`: only packages failing on it."
+      ]
+    ],
+    responses: [ok: {"The ranked packages", "application/json", FailingResponse}]
 
   def failing(conn, params) do
     opts = TopFailing.opts_from_params(params)
@@ -48,9 +126,37 @@ defmodule PortalWeb.CatalogApiController do
     })
   end
 
+  operation :precompiled_manifest,
+    tags: ["Precompiled"],
+    operation_id: "getManifestV1",
+    summary: "Precompiled manifest, format 1",
+    description:
+      "Every published version and target of a package with its files. Kept for existing " <>
+        "clients; new clients use format 2. Once a batch is signed, these are the exact bytes " <>
+        "the newest batch names, with their SHA-256 as the `etag`.",
+    parameters: [package: @package_param],
+    responses: [
+      ok: {"The manifest", "application/json", ManifestV1, headers: @etag_header},
+      not_found: {"The package has no precompiled files", "application/json", Error}
+    ]
+
   def precompiled_manifest(conn, %{"package" => raw_package}) do
     serve_manifest(conn, raw_package, &Batches.manifests/1, &Catalog.precompiled_manifest/1)
   end
+
+  operation :precompiled_manifest_v2,
+    tags: ["Precompiled"],
+    operation_id: "getManifestV2",
+    summary: "Precompiled manifest, format 2",
+    description:
+      "A build list per version: one build per target and toolchain, including toolchain " <>
+        "builds for projects that are not Nerves projects. Once a batch is signed, these are " <>
+        "the exact bytes its `manifests_v2` names, with their SHA-256 as the `etag`.",
+    parameters: [package: @package_param],
+    responses: [
+      ok: {"The manifest", "application/json", ManifestV2, headers: @etag_header},
+      not_found: {"The package has no build format 2 can publish", "application/json", Error}
+    ]
 
   def precompiled_manifest_v2(conn, %{"package" => raw_package}) do
     serve_manifest(conn, raw_package, &Batches.manifests_v2/1, &Catalog.precompiled_manifest_v2/1)
@@ -91,6 +197,18 @@ defmodule PortalWeb.CatalogApiController do
     end
   end
 
+  operation :precompiled_root,
+    tags: ["Precompiled"],
+    operation_id: "getRoot",
+    summary: "Signed root document",
+    description:
+      "Which keys may sign batches and roots, and the thresholds. The payload decodes to a " <>
+        "`RootPayload`.",
+    responses: [
+      ok: {"The signed root", "application/json", SignedEnvelope, headers: @etag_header},
+      not_found: {"This deployment publishes no root document", "application/json", Error}
+    ]
+
   def precompiled_root(conn, _params) do
     case Root.load() do
       {:ok, body} ->
@@ -106,12 +224,44 @@ defmodule PortalWeb.CatalogApiController do
     end
   end
 
+  operation :precompiled_batch,
+    tags: ["Precompiled"],
+    operation_id: "getLatestBatch",
+    summary: "Newest signed batch",
+    description:
+      "The newest batch: the SHA-256 of every package's manifest bytes. The payload decodes " <>
+        "to a `BatchPayload`. The `etag` is `\"batch-<sequence>\"`.",
+    responses: [
+      ok: {"The newest batch", "application/json", SignedEnvelope, headers: @etag_header},
+      service_unavailable: {"No batch has been signed yet", "application/json", Error}
+    ]
+
   def precompiled_batch(conn, _params) do
     case Batches.latest() do
       nil -> conn |> put_status(:service_unavailable) |> json(%{error: "no signed batch yet"})
       batch -> serve_batch(conn, batch)
     end
   end
+
+  operation :precompiled_batch_history,
+    tags: ["Precompiled"],
+    operation_id: "getBatch",
+    summary: "A past signed batch",
+    description:
+      "A batch by its sequence number, in the same envelope as the newest one: to audit " <>
+        "history, or to re-verify a manifest fetched against an older batch.",
+    parameters: [
+      sequence: [
+        in: :path,
+        schema: %Schema{type: :integer, minimum: 1},
+        required: true,
+        description: "The batch's sequence number."
+      ]
+    ],
+    responses: [
+      ok: {"The batch", "application/json", SignedEnvelope, headers: @etag_header},
+      not_found: {"No batch with that sequence", "application/json", Error}
+    ]
 
   def precompiled_batch_history(conn, %{"sequence" => raw}) do
     with {sequence, ""} <- raw |> String.replace_suffix(".json", "") |> Integer.parse(),
@@ -132,6 +282,30 @@ defmodule PortalWeb.CatalogApiController do
   defp send_json_bytes(conn, bytes) do
     conn |> put_resp_content_type("application/json") |> send_resp(200, bytes)
   end
+
+  operation :precompiled_file,
+    tags: ["Precompiled"],
+    operation_id: "getFile",
+    summary: "A precompiled file by SHA-256",
+    description:
+      "The bytes of a file a published manifest lists. Content-addressed: check them " <>
+        "against the digest you asked for.",
+    parameters: [
+      sha256: [
+        in: :path,
+        schema: %Schema{type: :string, pattern: "^[0-9a-f]{64}$"},
+        required: true,
+        description: "Lowercase hex SHA-256 of the file."
+      ]
+    ],
+    responses: [
+      ok:
+        {"The file's bytes", "application/octet-stream", %Schema{type: :string, format: :binary}},
+      # `send_resp/3` with no content type: the body is the bare text below.
+      not_found: %OpenApiSpex.Response{
+        description: "No published file with that digest. The body is the text `Not Found`."
+      }
+    ]
 
   # The request supplies only a validated digest; the path is derived from the
   # configured blob store, never taken from request params or stored disk_path.
@@ -155,6 +329,9 @@ defmodule PortalWeb.CatalogApiController do
       _ -> send_resp(conn, 404, "Not Found")
     end
   end
+
+  # An SVG for READMEs, outside `/api`.
+  operation :badge, false
 
   def badge(conn, %{"name" => raw_name}) do
     name = String.replace_suffix(raw_name, ".svg", "")

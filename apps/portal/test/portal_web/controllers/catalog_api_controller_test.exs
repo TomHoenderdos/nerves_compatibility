@@ -5,6 +5,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
   alias Portal.ArtifactStore
 
   import Portal.PrecompiledFixtures
+  import PortalWeb.ApiSpecAssertions
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
 
@@ -53,6 +54,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
     conn = get(conn, "/api/packages")
     body = json_response(conn, 200)
+    assert_documented_response(conn, "listPackages")
 
     assert body["schema"] == 2
     assert is_binary(body["generated_at"])
@@ -69,9 +71,27 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
     conn = get(conn, "/api/packages/jason")
     body = json_response(conn, 200)
+    assert_documented_response(conn, "getPackage")
 
     assert body["schema"] == 2
     assert Map.keys(body["packages"]) == ["jason"]
+  end
+
+  test "GET /api/packages/:name is a documented 404 for an unknown package", %{conn: conn} do
+    conn = get(conn, "/api/packages/no_such_package")
+
+    assert %{"error" => "package not found"} = json_response(conn, 404)
+    assert_documented_response(conn, "getPackage")
+  end
+
+  # Assessed packages carry `native_components` with only a basis, and a
+  # `registry_deps` entry with no system version: both must still conform.
+  test "an assessed package conforms to the documented shape", %{conn: conn} do
+    {:ok, _run} = Portal.Catalog.RegistryAssessment.record("tiny_pure", "1.2.0", nil)
+
+    conn = get(conn, "/api/packages/tiny_pure")
+    assert json_response(conn, 200)
+    assert_documented_response(conn, "getPackage")
   end
 
   test "GET /api/stats returns schema-v2 aggregate counts", %{conn: conn} do
@@ -79,6 +99,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
     conn = get(conn, "/api/stats")
     body = json_response(conn, 200)
+    assert_documented_response(conn, "getStats")
 
     assert body["schema"] == 2
     assert body["counts"]["total"] == 3
@@ -151,6 +172,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
     conn = get(conn, "/api/precompiled/manifests/jason.json")
     body = json_response(conn, 200)
+    assert_documented_response(conn, "getManifestV1")
 
     assert is_binary(body["updated_at"])
     assert %{"1.4.1" => version} = body["versions"]
@@ -192,10 +214,9 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
     ingest_fixture_with_artifact(result)
 
-    body =
-      conn
-      |> get("/api/precompiled/manifests/#{result["package"]["name"]}.json")
-      |> json_response(200)
+    resp = get(conn, "/api/precompiled/manifests/#{result["package"]["name"]}.json")
+    body = json_response(resp, 200)
+    assert_documented_response(resp, "getManifestV1")
 
     build =
       get_in(body, ["versions", result["package"]["version"], "nerves_system_rpi4", "build"])
@@ -251,7 +272,9 @@ defmodule PortalWeb.CatalogApiControllerTest do
         log: "l"
       })
 
-    body = conn |> get("/api/precompiled/manifests/jason.json") |> json_response(200)
+    resp = get(conn, "/api/precompiled/manifests/jason.json")
+    body = json_response(resp, 200)
+    assert_documented_response(resp, "getManifestV1")
     assert body["versions"]["1.4.1"]["nerves_system_rpi4"]["build"]["deps"] == deps_lock
   end
 
@@ -562,7 +585,9 @@ defmodule PortalWeb.CatalogApiControllerTest do
         log: "l"
       })
 
-    body = conn |> get("/api/precompiled/manifests/jason.json") |> json_response(200)
+    resp = get(conn, "/api/precompiled/manifests/jason.json")
+    body = json_response(resp, 200)
+    assert_documented_response(resp, "getManifestV1")
     assert %{"pure_elixir" => entry} = body["versions"]["1.4.1"]
     assert [%{"path" => "ebin/jason.beam", "sha256" => ^sha}] = entry["ebin"]
     assert entry["build"]["elixir"] == "1.16.0"
@@ -623,7 +648,9 @@ defmodule PortalWeb.CatalogApiControllerTest do
   test "GET /api/precompiled/v2/manifests/:package.json returns format 2", %{conn: conn} do
     ingest_toolchain_build("jason", "1.4.1")
 
-    body = conn |> get("/api/precompiled/v2/manifests/jason.json") |> json_response(200)
+    resp = get(conn, "/api/precompiled/v2/manifests/jason.json")
+    body = json_response(resp, 200)
+    assert_documented_response(resp, "getManifestV2")
 
     assert body["format"] == 2
     assert is_binary(body["updated_at"])
@@ -634,7 +661,17 @@ defmodule PortalWeb.CatalogApiControllerTest do
   test "GET /api/precompiled/v2/manifests is 404 without format-2 builds", %{conn: conn} do
     ingest_fixture_with_artifact()
 
-    assert conn |> get("/api/precompiled/v2/manifests/jason.json") |> json_response(404)
+    resp = get(conn, "/api/precompiled/v2/manifests/jason.json")
+    assert json_response(resp, 404)
+    assert_documented_response(resp, "getManifestV2")
+  end
+
+  test "GET /api/precompiled/manifests is a documented 404 for an unknown package", %{
+    conn: conn
+  } do
+    resp = get(conn, "/api/precompiled/manifests/no_such_package.json")
+    assert json_response(resp, 404)
+    assert_documented_response(resp, "getManifestV1")
   end
 
   test "GET /api/precompiled/files/:sha256 serves artifact blob", %{conn: conn} do
@@ -645,6 +682,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert [content_type] = get_resp_header(conn, "content-type")
     assert content_type =~ "application/octet-stream"
     assert response(conn, 200) == "precompiled-beam"
+    assert_documented_response(conn, "getFile")
   end
 
   test "artifact download refuses symlinks", %{conn: conn} do
@@ -663,7 +701,9 @@ defmodule PortalWeb.CatalogApiControllerTest do
   end
 
   test "invalid blob names return 404", %{conn: conn} do
-    assert conn |> get("/api/precompiled/files/not-a-digest") |> response(404) == "Not Found"
+    resp = get(conn, "/api/precompiled/files/not-a-digest")
+    assert response(resp, 404) == "Not Found"
+    assert_documented_response(resp, "getFile")
   end
 
   test "revoking the newest run falls back to the previous run", %{conn: conn} do
@@ -762,19 +802,24 @@ defmodule PortalWeb.CatalogApiControllerTest do
     test "root.json serves the file next to the key", %{conn: conn, key: key} do
       resp = conn |> get("/api/precompiled/root.json")
       raw = response(resp, 200)
+      assert_documented_response(resp, "getRoot")
       expected_sha = Base.encode16(:crypto.hash(:sha256, raw), case: :lower)
       assert get_resp_header(resp, "etag") == [~s("#{expected_sha}")]
 
-      assert {:ok, _} =
+      assert {:ok, payload} =
                Portal.Precompiled.Envelope.verify(
                  JSON.decode!(raw),
                  %{key.keyid => key.public},
                  1
                )
+
+      assert_api_schema(JSON.decode!(payload), "RootPayload")
     end
 
     test "batch.json is 503 before any batch and the newest after", %{conn: conn, key: key} do
-      assert conn |> get("/api/precompiled/batch.json") |> response(503)
+      empty = get(conn, "/api/precompiled/batch.json")
+      assert response(empty, 503)
+      assert_documented_response(empty, "getLatestBatch")
       ingest_with_artifact()
       {:ok, b1} = Portal.Precompiled.Batches.build_and_sign()
       {:ok, b2} = Portal.Precompiled.Batches.build_and_sign()
@@ -787,12 +832,18 @@ defmodule PortalWeb.CatalogApiControllerTest do
                  1
                )
 
+      assert_documented_response(resp, "getLatestBatch")
+      assert_api_schema(JSON.decode!(payload), "BatchPayload")
       assert JSON.decode!(payload)["sequence"] == b2.sequence
       assert get_resp_header(resp, "etag") == [~s("batch-#{b2.sequence}")]
-      hist = conn |> get("/api/precompiled/batches/#{b1.sequence}.json") |> json_response(200)
+      hist_resp = get(conn, "/api/precompiled/batches/#{b1.sequence}.json")
+      hist = json_response(hist_resp, 200)
+      assert_documented_response(hist_resp, "getBatch")
       assert {:ok, p1} = Portal.Precompiled.Envelope.verify(hist, %{key.keyid => key.public}, 1)
       assert JSON.decode!(p1)["sequence"] == b1.sequence
-      assert conn |> get("/api/precompiled/batches/999.json") |> response(404)
+      missing = get(conn, "/api/precompiled/batches/999.json")
+      assert response(missing, 404)
+      assert_documented_response(missing, "getBatch")
     end
 
     test "manifest endpoint serves the batch's bytes after a new ingest", %{conn: conn} do
@@ -810,6 +861,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
       resp = conn |> get("/api/precompiled/manifests/#{name}.json")
       assert Base.encode16(:crypto.hash(:sha256, response(resp, 200)), case: :lower) == sha
       assert get_resp_header(resp, "etag") == [~s("#{sha}")]
+      assert_documented_response(resp, "getManifestV1")
     end
 
     test "the v2 manifest endpoint serves the batch's format-2 bytes", %{conn: conn} do
@@ -826,11 +878,14 @@ defmodule PortalWeb.CatalogApiControllerTest do
       assert Base.encode16(:crypto.hash(:sha256, response(resp, 200)), case: :lower) == sha
       assert get_resp_header(resp, "etag") == [~s("#{sha}")]
       assert json_response(resp, 200)["format"] == 2
+      assert_documented_response(resp, "getManifestV2")
     end
 
     test "root.json is 404 without a key" do
       Application.put_env(:portal, :precompiled_signing, key_path: nil)
-      assert build_conn() |> get("/api/precompiled/root.json") |> response(404)
+      resp = build_conn() |> get("/api/precompiled/root.json")
+      assert response(resp, 404)
+      assert_documented_response(resp, "getRoot")
     end
   end
 
@@ -841,6 +896,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
       conn = get(conn, "/api/failing?limit=1")
       body = json_response(conn, 200)
+      assert_documented_response(conn, "listFailing")
 
       assert ["public, max-age=60"] = get_resp_header(conn, "cache-control")
       assert body["schema"] == 1
@@ -857,10 +913,9 @@ defmodule PortalWeb.CatalogApiControllerTest do
     test "invalid params fall back to defaults instead of erroring", %{conn: conn} do
       ingest_fixture()
 
-      body =
-        conn
-        |> get("/api/failing?sort=bogus&limit=nope&system=")
-        |> json_response(200)
+      resp = get(conn, "/api/failing?sort=bogus&limit=nope&system=")
+      body = json_response(resp, 200)
+      assert_documented_response(resp, "listFailing")
 
       assert body["sort"] == "recent"
       assert [%{"name" => "jason"}] = body["packages"]

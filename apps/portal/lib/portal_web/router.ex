@@ -19,6 +19,12 @@ defmodule PortalWeb.Router do
     plug :accepts, ["json"]
   end
 
+  # `/api/openapi.json` only: `RenderSpec` reads the spec `PutApiSpec` names.
+  pipeline :api_spec do
+    plug :accepts, ["json"]
+    plug OpenApiSpex.Plug.PutApiSpec, module: PortalWeb.ApiSpec
+  end
+
   # For endpoints a browser calls with `fetch`, not by navigating: they need a
   # session and a CSRF check like any other browser route, but they answer
   # JSON. `:browser` cannot serve them -- it opens with `plug :accepts,
@@ -205,6 +211,16 @@ defmodule PortalWeb.Router do
     end
   end
 
+  # The API's own description. Not part of the spec
+  # (`PortalWeb.ApiSpec.documented_routes/0` leaves it out).
+  scope "/api" do
+    pipe_through :api_spec
+
+    get "/openapi.json", OpenApiSpex.Plug.RenderSpec, []
+  end
+
+  # Every route in this scope must have an `operation` spec on its controller
+  # action; `PortalWeb.ApiSpecTest` fails on one that does not.
   scope "/api", PortalWeb do
     pipe_through :api
 

@@ -524,4 +524,18 @@ defmodule PortalWeb.PageControllerTest do
     conn = post(conn, ~p"/admin/maintenance/revoke-run", %{"run_id" => "nope"})
     assert Phoenix.Flash.get(conn.assigns.flash, :error)
   end
+
+  # Without a query long enough to search, the action answers without asking
+  # Hex.pm, so these run offline. The shape of a non-empty answer is pinned by
+  # the schema's example (`PortalWeb.ApiSpecTest`).
+  describe "GET /api/packages/hex" do
+    for path <- ["/api/packages/hex", "/api/packages/hex?query=a"] do
+      test "#{path} answers the documented empty list", %{conn: conn} do
+        conn = get(conn, unquote(path))
+
+        assert json_response(conn, 200) == %{"packages" => []}
+        PortalWeb.ApiSpecAssertions.assert_documented_response(conn, "searchHexPackages")
+      end
+    end
+  end
 end
