@@ -245,10 +245,10 @@ defmodule PortalWeb.Admin.MaintenanceLive do
   end
 
   # Cinder renders its rows with a `:for`, and LiveView re-renders only the
-  # rows whose record changed. A sweep's row is the same `BulkSweep` before
-  # and after its jobs move, so a refetch alone leaves `sweep_counts/1`'s
-  # numbers as they were. The counter goes into the counts cell, which makes
-  # every row re-render, and so re-read its status, on each refresh.
+  # rows whose record changed. `:counts` is loaded fresh on every refetch, so
+  # a sweep whose jobs moved already renders as a different `BulkSweep`; the
+  # counter is kept anyway; it costs nothing and guards against any case
+  # where Ash returns an `==` struct despite changed job state underneath.
   defp refresh_sweeps(socket) do
     socket
     |> update(:counts_version, &(&1 + 1))
@@ -429,6 +429,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
             <Cinder.collection
               id="sweeps"
               query={@sweeps_query}
+              query_opts={[load: [:counts]]}
               actor={@current_user}
               url_state={@url_state}
               selectable
@@ -621,14 +622,16 @@ defmodule PortalWeb.Admin.MaintenanceLive do
   # Unused in the markup; see `refresh_sweeps/1`.
   attr :version, :integer, required: true
 
-  # One `Portal.BulkRebuild.status/1` per row, so at most a page's worth (10)
-  # per refresh. Remaining is the one number that is exact, so it stands out,
-  # as its column did in the controller page's table.
+  # `:counts` is loaded once for the whole page by `Cinder.collection`'s
+  # `query_opts` (`Portal.Catalog.Calculations.SweepCounts`), not called here
+  # per row. Remaining is the one number that is exact, so it stands out, as
+  # its column did in the controller page's table.
   defp sweep_counts(assigns) do
-    status = BulkRebuild.status(assigns.sweep.id)
-
     assigns =
-      assign(assigns, counts: @counts, values: Map.put(status, :selected, assigns.sweep.selected))
+      assign(assigns,
+        counts: @counts,
+        values: Map.put(assigns.sweep.counts, :selected, assigns.sweep.selected)
+      )
 
     ~H"""
     <dl class="grid grid-cols-4 gap-x-4 gap-y-1 text-sm">

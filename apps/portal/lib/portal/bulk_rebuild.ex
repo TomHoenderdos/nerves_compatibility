@@ -234,11 +234,15 @@ defmodule Portal.BulkRebuild do
     )
   end
 
+  @doc "`status_many/1` for a single sweep; see it for the full semantics."
+  @spec status(String.t()) :: status()
+  def status(sweep_id), do: Map.fetch!(status_many([sweep_id]), sweep_id)
+
   @doc """
-  The sweep's jobs counted by stage: Backfill jobs not yet finished are
-  `intake`; Build jobs are `queued`, `building` or `done`; any kind
-  discarded is `failed` and any kind cancelled is `cancelled`.
-  `remaining` is intake + queued + building.
+  `status/1` for a page of sweeps at once: each sweep's jobs counted by
+  stage. Backfill jobs not yet finished are `intake`; Build jobs are
+  `queued`, `building` or `done`; any kind discarded is `failed` and any
+  kind cancelled is `cancelled`. `remaining` is intake + queued + building.
 
   A `Portal.Workers.RemoteBuild` job counts like a Build job until it
   completes, which it does as soon as it has written its lease. A completed
@@ -251,34 +255,58 @@ defmodule Portal.BulkRebuild do
   discarded, cancelled) once they are older than its `max_age`
   (`config/config.exs`). `done`, `failed` and `cancelled` shrink when that
   happens; `remaining` does not, because unfinished jobs are never pruned.
+
+  Costs two queries total, not two per sweep: one grouped count of Oban jobs
+  and one grouped count of remote leases, both filtered to every id in
+  `sweep_ids` at once. The admin Maintenance page calls this with a page's
+  rows instead of calling `status/1` once per row.
   """
-  @spec status(String.t()) :: status()
-  def status(sweep_id) do
-    counts =
-      Repo.all(
-        from(j in "oban_jobs",
-          where: ^sweep_jobs(sweep_id),
-          group_by: [j.worker, j.state],
-          select: {j.worker, j.state, count()}
-        )
-      )
+  @spec status_many([String.t()]) :: %{String.t() => status()}
+  def status_many([]), do: %{}
 
+  def status_many(sweep_ids) do
     empty = %{intake: 0, queued: 0, building: 0, done: 0, failed: 0, cancelled: 0}
+    by_sweep = Map.new(sweep_ids, &{&1, empty})
 
-    counts
-    |> Enum.reduce(empty, fn {worker, state, n}, acc -> tally(acc, worker, state, n) end)
-    |> then(
-      &Enum.reduce(remote_lease_counts(sweep_id), &1, fn {state, n}, acc ->
-        tally_lease(acc, state, n)
+    by_sweep =
+      Enum.reduce(job_counts(sweep_ids), by_sweep, fn {sweep_id, worker, state, n}, acc ->
+        Map.update(acc, sweep_id, empty, &tally(&1, worker, state, n))
       end)
-    )
-    |> then(&Map.put(&1, :remaining, &1.intake + &1.queued + &1.building))
+
+    remote_lease_counts(sweep_ids)
+    |> Enum.reduce(by_sweep, fn {sweep_id, state, n}, acc ->
+      Map.update(acc, sweep_id, empty, &tally_lease(&1, state, n))
+    end)
+    |> Map.new(fn {sweep_id, counts} ->
+      {sweep_id, Map.put(counts, :remaining, counts.intake + counts.queued + counts.building)}
+    end)
   end
 
   # JSONB containment rather than `meta ->> 'sweep_id'`: Oban's GIN index on
   # `meta` (`oban_jobs_meta_index`) serves `@>`, not a text extraction.
   defp sweep_jobs(sweep_id),
     do: dynamic([j], fragment("? @> ?", j.meta, type(^%{"sweep_id" => sweep_id}, :map)))
+
+  # One `@>` condition per id, ORed together, so a page of sweeps still costs
+  # one query: Postgres can satisfy an OR of indexed conditions with a
+  # BitmapOr plan over the GIN index, same as it would for each id alone.
+  defp sweep_ids_match(sweep_ids) do
+    Enum.reduce(sweep_ids, dynamic(false), fn sweep_id, acc ->
+      dynamic([j], ^acc or fragment("? @> ?", j.meta, type(^%{"sweep_id" => sweep_id}, :map)))
+    end)
+  end
+
+  # Every sweep id's jobs, grouped by sweep id too so one query serves a
+  # whole page.
+  defp job_counts(sweep_ids) do
+    Repo.all(
+      from(j in "oban_jobs",
+        where: ^sweep_ids_match(sweep_ids),
+        group_by: [fragment("? ->> 'sweep_id'", j.meta), j.worker, j.state],
+        select: {fragment("? ->> 'sweep_id'", j.meta), j.worker, j.state, count()}
+      )
+    )
+  end
 
   defp tally(acc, _worker, "cancelled", n), do: add(acc, :cancelled, n)
 
@@ -301,26 +329,28 @@ defmodule Portal.BulkRebuild do
   defp tally(acc, worker, "completed", n) when worker in @build_workers, do: add(acc, :done, n)
   defp tally(acc, _worker, _state, _n), do: acc
 
-  # The sweep's completed RemoteBuild jobs, grouped by the state of the newest
-  # lease for each job's scan request (nil when it wrote none).
-  defp remote_lease_counts(sweep_id) do
+  # Every sweep id's completed RemoteBuild jobs, grouped by sweep id and the
+  # state of the newest lease for each job's scan request (nil when it wrote
+  # none). The JSON side is cast to uuid, not the column to text, so the
+  # lateral lookup can use `builder_leases_scan_request_id_index`.
+  defp remote_lease_counts(sweep_ids) do
     Repo.all(
       from(j in "oban_jobs",
-        where: ^sweep_jobs(sweep_id),
+        where: ^sweep_ids_match(sweep_ids),
         where: j.worker == "Portal.Workers.RemoteBuild" and j.state == "completed",
         left_lateral_join:
           l in fragment(
             """
             SELECT state FROM builder_leases
-            WHERE scan_request_id::text = (? ->> 'scan_request_id')
+            WHERE scan_request_id = (? ->> 'scan_request_id')::uuid
             ORDER BY inserted_at DESC
             LIMIT 1
             """,
             j.args
           ),
         on: true,
-        group_by: l.state,
-        select: {l.state, count()}
+        group_by: [fragment("? ->> 'sweep_id'", j.meta), l.state],
+        select: {fragment("? ->> 'sweep_id'", j.meta), l.state, count()}
       )
     )
   end

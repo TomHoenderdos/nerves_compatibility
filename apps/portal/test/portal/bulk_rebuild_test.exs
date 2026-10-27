@@ -301,6 +301,81 @@ defmodule Portal.BulkRebuildTest do
     end
   end
 
+  # The admin Maintenance page's "Counts" column calls `status_many/1` with
+  # a page's worth of sweep ids instead of calling `status/1` once per row
+  # (board #12). It must count exactly the same way.
+  describe "status_many/1" do
+    test "matches status/1 per sweep for a mix of local, remote, cancelled and Ingest-tagged jobs" do
+      {:ok, %{sweep_id: local_id}} = BulkRebuild.run(limit: 10, names: ["sm_local"])
+
+      remote_id = Ecto.UUID.generate()
+
+      for {package, state} <- [q: :queued, l: :leased, d: :done, f: :failed] do
+        remote_id |> remote_job!(to_string(package), "completed") |> lease!(state)
+      end
+
+      {:ok, %{sweep_id: cancelled_id}} = BulkRebuild.run(limit: 10, names: ["sm_cancel"])
+      {:ok, 1} = BulkRebuild.cancel(cancelled_id)
+
+      # Tagged `announce_sweep`, not `sweep_id`: neither call may count it.
+      ingest_id = Ecto.UUID.generate()
+
+      {:ok, _} =
+        Oban.insert(
+          Portal.Workers.Ingest.new(%{"run_id" => "r-sm"}, meta: %{announce_sweep: ingest_id})
+        )
+
+      ids = [local_id, remote_id, cancelled_id, ingest_id]
+      expected = Map.new(ids, &{&1, BulkRebuild.status(&1)})
+
+      assert BulkRebuild.status_many(ids) == expected
+    end
+
+    test "an empty list is the empty map, with no query" do
+      assert query_count(fn -> BulkRebuild.status_many([]) end) == 0
+    end
+
+    test "one call issues the same bounded number of queries for two sweeps or thirty" do
+      few = for _ <- 1..2, do: Ecto.UUID.generate()
+      many = for _ <- 1..30, do: Ecto.UUID.generate()
+
+      few_queries = query_count(fn -> BulkRebuild.status_many(few) end)
+      many_queries = query_count(fn -> BulkRebuild.status_many(many) end)
+
+      # One grouped query for Oban jobs, one for remote leases.
+      assert few_queries == 2
+      assert many_queries == few_queries
+    end
+  end
+
+  # Counts the `[:portal, :repo, :query]` telemetry events `fun` causes,
+  # the way the admin queue LiveView test counts rows read from a bounded
+  # page -- here, how many statements a call sends, not how many rows.
+  defp query_count(fun) do
+    test_pid = self()
+    handler = {__MODULE__, make_ref()}
+
+    :telemetry.attach(
+      handler,
+      [:portal, :repo, :query],
+      fn _event, _measurements, _metadata, _config -> send(test_pid, :bulk_rebuild_query) end,
+      nil
+    )
+
+    fun.()
+    :telemetry.detach(handler)
+
+    drain_query_count()
+  end
+
+  defp drain_query_count(n \\ 0) do
+    receive do
+      :bulk_rebuild_query -> drain_query_count(n + 1)
+    after
+      0 -> n
+    end
+  end
+
   # The Maintenance page watches `:sweeps` to refresh an in-progress sweep's
   # counts. `run/1` and `cancel/1` are both one-shot writes -- unlike a build
   # or ingest job's own attempt, which the `Portal.AdminEvents.SweepTelemetry`
