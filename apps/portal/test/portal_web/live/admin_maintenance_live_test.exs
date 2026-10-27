@@ -408,9 +408,10 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
 
   describe "build cache L2" do
     test "shows the L2 build cache off", %{conn: conn} do
-      {_view, html} = live_maintenance(conn)
-      assert html =~ "Build cache L2"
-      assert html =~ "Off"
+      {view, _html} = live_maintenance(conn)
+      card = view |> element("#build-cache-l2") |> render()
+      assert card =~ "Build cache L2"
+      assert card =~ "Off"
     end
 
     test "shows the L2 endpoint and counters, never the keys", %{conn: conn} do
@@ -424,7 +425,11 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
         read_only: true
       )
 
-      on_exit(fn -> Application.put_env(:portal, Portal.BuildCache.L2, previous) end)
+      on_exit(fn ->
+        Application.put_env(:portal, Portal.BuildCache.L2, previous)
+        Portal.BuildCache.L2.Stats.reset()
+      end)
+
       Portal.BuildCache.L2.Stats.reset()
       Portal.BuildCache.L2.Stats.record(:download_ok, 1234)
 
