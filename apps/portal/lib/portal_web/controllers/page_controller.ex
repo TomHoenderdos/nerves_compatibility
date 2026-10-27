@@ -1,5 +1,9 @@
 defmodule PortalWeb.PageController do
   use PortalWeb, :controller
+  # Only `hex_package_search/2` is part of the JSON API. `PortalWeb.ApiSpec`
+  # asks for the operations of `/api` routes alone, so the HTML actions here
+  # need no `operation` of their own.
+  use OpenApiSpex.ControllerSpecs
 
   @package_regex ~r/^[a-z][a-z0-9_]*$/
   @max_anonymous_packages 25
@@ -237,6 +241,21 @@ defmodule PortalWeb.PageController do
     |> put_flash(:info, "Signed out.")
     |> redirect(to: ~p"/request-scan")
   end
+
+  operation :hex_package_search,
+    tags: ["Catalog"],
+    operation_id: "searchHexPackages",
+    summary: "Search Hex.pm package names",
+    description:
+      "Package name suggestions from Hex.pm, as the scan request form offers them. A query " <>
+        "shorter than two characters, a missing query, or Hex.pm being unreachable all " <>
+        "answer an empty list.",
+    parameters: [
+      query: [in: :query, type: :string, description: "Part of a package name.", example: "jas"]
+    ],
+    responses: [
+      ok: {"Matching packages", "application/json", PortalWeb.ApiSchemas.HexSearchResponse}
+    ]
 
   def hex_package_search(conn, %{"query" => query}) do
     packages =
