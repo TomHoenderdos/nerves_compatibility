@@ -5,6 +5,8 @@ defmodule Portal.Accounts do
 
   use Ash.Domain
 
+  require Logger
+
   resources do
     resource(Portal.Accounts.User)
     resource(Portal.Accounts.Passkey)
@@ -40,9 +42,19 @@ defmodule Portal.Accounts do
   Sessions signed in before live socket ids existed connect under no id, so
   this does not reach them; they still meet every gate on their next mount.
   """
-  @spec disconnect_live_sockets(String.t()) :: :ok | {:error, term()}
-  def disconnect_live_sockets(user_id) when is_binary(user_id) do
-    PortalWeb.Endpoint.broadcast(live_socket_id(user_id), "disconnect", %{})
+  @spec disconnect_live_sockets(String.t(), module()) :: :ok | {:error, term()}
+  def disconnect_live_sockets(user_id, endpoint \\ PortalWeb.Endpoint) when is_binary(user_id) do
+    endpoint.broadcast(live_socket_id(user_id), "disconnect", %{})
+  rescue
+    # Best-effort: the disconnect only hurries along what the next mount
+    # would refuse anyway, so it must never break the change it follows.
+    # Without a running endpoint -- `bin/portal eval`, `mix run --no-start`,
+    # where the break-glass `Recovery.clear_factors!/1` deletes passkeys --
+    # `broadcast/3` raises `ArgumentError` reading the endpoint's config, and
+    # there are no live sockets to disconnect.
+    error in ArgumentError ->
+      Logger.debug("Live socket disconnect skipped: #{Exception.message(error)}")
+      :ok
   end
 
   def valid_username?(username) when is_binary(username),
