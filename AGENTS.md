@@ -2,11 +2,12 @@
 
 ## Project Structure & Module Organization
 
-This repository is a **Mix umbrella** (top-level `mix.exs`) with three apps under `apps/`:
+This repository is a **Mix umbrella** (top-level `mix.exs`) with four apps under `apps/`:
 
 - `apps/compatibility`: shared compatibility types, JSON schema structs/loaders, validators, and status helpers.
 - `apps/ncc_worker`: Docker-side Nerves project setup, firmware builds, result JSON, BEAM file inspection, and content-addressed artifact archiving. Dockerfile at `apps/ncc_worker/Dockerfile`.
 - `apps/portal`: Phoenix 1.8 + Ash/Postgres + Oban web app for admin UI, accounts, scan-request intake, build queue, Catalog persistence, dynamic package browser, badges, schema-v2 JSON API, and precompiled artifact serving.
+- `apps/ncc_agent`: the remote builder agent, which claims build jobs from the portal, runs the worker image for them, and uploads the results.
 
 Other:
 

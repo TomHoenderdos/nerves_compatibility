@@ -1,6 +1,6 @@
 # Precompiled Package API
 
-The Phoenix portal publishes precompiled package artifacts as a content-addressed HTTP API backed by `Portal.Catalog.Artifact` rows and the artifact store on disk.
+The Phoenix portal publishes precompiled package artifacts as a content-addressed HTTP API.
 
 ## Overview
 
@@ -90,8 +90,8 @@ Response: binary file content with `content-type: application/octet-stream`.
 
 Status codes:
 
-- `200` — file found on disk
-- `404` — artifact row or blob file not available
+- `200` — file found
+- `404` — no published file with that SHA256
 
 ### GET /api/precompiled/root.json
 
@@ -116,8 +116,7 @@ Response: a signed envelope wrapping:
 Status codes:
 
 - `200` — root document found
-- `404` — no `PRECOMPILED_SIGNING_KEY` configured on this host, or
-  `root.json` is missing or unreadable next to the configured key
+- `404` — no root document is published
 
 ### GET /api/precompiled/batch.json
 
@@ -154,7 +153,7 @@ An `etag` header of `"batch-<sequence>"` is set.
 Status codes:
 
 - `200` — a batch has been signed
-- `503` — no batch has been signed yet (no signing key configured, or the first cron run has not fired)
+- `503` — no batch available yet
 
 ### GET /api/precompiled/batches/{sequence}.json
 
@@ -301,8 +300,8 @@ What it lists:
   Format 1 keeps only the newest per target; format 2 keeps each toolchain's.
 - Toolchain builds: a pure-BEAM package version built on a plain Elixir/OTP
   image for `Mix.install` and non-Nerves projects, `target` `pure_elixir` and
-  `system_version` `null`. Only passing, unrevoked builds whose files are all
-  on this host appear.
+  `system_version` `null`. Only passing, unrevoked builds whose files can all
+  be served appear.
 - A build whose `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
   is `null` is left out, since no client can match it (it stays in format 1).
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
@@ -360,9 +359,10 @@ just without the batch to check them against.
   `batches/{sequence}.json`) is `{"payload": base64url(bytes), "signatures":
   [{"keyid": hex, "sig": base64url}]}`, Ed25519 over the raw payload bytes. A
   client verifies the signature before decoding the payload.
-- **Key** — one online Ed25519 key signs both roots and batches, a 1-of-1
-  threshold (`roles.root.threshold` and `roles.batch.threshold` in
-  `root.json`). The `keyid` is the lowercase hex SHA256 of the key's 32 public
+- **Keys and thresholds** — `root.json` lists the Ed25519 keys allowed to sign
+  each role and how many signatures each needs (`roles.root.threshold` and
+  `roles.batch.threshold`). A client accepts a document only when it carries at
+  least that many valid signatures from the role's keys. The `keyid` is the lowercase hex SHA256 of the key's 32 public
   bytes.
 - **Expiry** — `root.json` expires a year after it is written; a batch expires
   7 days after it is issued. A client should refuse an expired document.
@@ -374,30 +374,21 @@ just without the batch to check them against.
   manifest endpoint serves those same stored bytes (not a fresh render) for
   as long as that is the newest batch, so the hash a client checks against
   always matches what it downloads.
-- **Revocation** — there is no separate revoke endpoint. Revoking a run or a
-  toolchain build (or a newer run superseding a carried-forward one) changes
-  what the catalog would render for that package; the next signed batch picks
-  that up, dropping the package from `manifests` and `manifests_v2` entirely
-  or pointing at a different hash in each. A client
-  that verifies against the newest batch stops being told to fetch the
-  revoked bytes from the moment that batch is signed.
+- **Revocation** — there is no separate revoke endpoint. When a build is
+  withdrawn, the next signed batch drops the package from `manifests` and
+  `manifests_v2` or points at a different hash in each. A client that verifies
+  against the newest batch stops being told to fetch the withdrawn bytes from
+  the moment that batch is signed.
 
 ## Deduplication
 
 Files are content-addressed, so identical files across packages, versions, or systems share a single artifact blob.
 
-The portal verifies each uploaded blob's SHA256 before atomically publishing it.
-Mismatched blobs are rejected and are not registered for that build's manifest.
-When ingestion retries after a source file has been moved, the stored blob is
-verified before it is reused. This does not retroactively audit existing files;
-clients should also verify downloaded bytes against the manifest digest.
+The portal verifies each blob's SHA256 before publishing it. Clients should
+also verify downloaded bytes against the manifest digest.
 
 A `.beam` is very often byte-identical across Nerves targets, which makes this
-sharing the common case rather than the exception. Storage and publication are
-therefore two separate records: `catalog_artifacts` holds one row per distinct
-SHA256 saying the bytes are on disk, and `catalog_artifact_memberships` holds one
-row per (system result, SHA256) saying that system's build produced that file.
-The same `sha256` will legitimately appear under several systems in one manifest,
+sharing the common case rather than the exception. The same `sha256` will legitimately appear under several systems in one manifest,
 and `GET /api/precompiled/files/{sha256}` serves the one shared blob for all of
 them.
 
@@ -406,9 +397,7 @@ them.
 - Only packages built after artifact archiving was enabled have manifests.
 - Not every Nerves system is available for every package.
 - Artifacts come only from successful builds with BEAM scan manifests.
-- Manifests list the package's own files. Its dependencies' blobs are stored but
-  are not published, because their per-file manifests are deliberately not
-  retained.
+- Manifests list the package's own files, not its dependencies'.
 - Entries from runs before 2026-09-16 have no toolchain stored, so their
   `build.elixir` and `build.otp` are `null` and a client should skip them.
 - Entries from runs before 2026-10-20 have no dependency lock stored, so their
@@ -429,7 +418,6 @@ them.
   `_build/<target>/lib/<package>/`, whose BEAMs keep it, so a client can
   consolidate protocols a precompiled dependency defines and Dialyzer sees
   its types. The manifest shape is the same either way.
-- An entry appears only once every file it lists can be served from this host.
-  Builds run on other hosts whose blobs are copied here every few minutes, so a
-  fresh build can take that long to show up; until then the manifest keeps
-  offering that version's previous complete build, if it has one.
+- An entry appears only once every file it lists can be served, so a fresh
+  build may be delayed; until then the manifest keeps offering that version's
+  previous complete build, if it has one.

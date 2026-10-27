@@ -57,7 +57,7 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    directory), `deps_lock_unreadable` (the lock could not be read after `deps.get`, so a kept target would have no
    lock of its own to publish against), `timeout` (the per-system timeout, which bounds the pass's `deps.get` as
    well as its compile, or the pass's own budget ran out before the target's `deps.get` or compile could start),
-   or `run_budget_exhausted` (the run had already used more than 75 minutes, so the pass did not start; see
+   or `run_budget_exhausted` (the run had already used too much of its time, so the pass did not start; see
    below). A target whose compile passed but whose rescan reports errors, or whose `.app` yields no
    `compile_env`, is dropped as `target_compile_failed` rather than kept, so it publishes its first build. The run-level `optional_deps` for a firmware run has
    `added` = names kept on at least one target, `dropped` = names dropped on every target that tried, and
@@ -68,14 +68,11 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    the worker's only new error path for this pass, `{:error, {:optional_deps_revert_failed, reason}}` (exit `10`,
    same as every other internal failure) — publishing files nobody checked would be worse than a retried run.
 
-   The pass has its own wall-clock budget from when it starts, `NCC_OPTIONAL_PASS_BUDGET_SEC` seconds (default
-   `1200`, i.e. 20 minutes): a target not yet started by the deadline is dropped as `timeout`, and each compile
-   gets at most whatever is left. `Portal.Builder` does not set this env var in the container it runs, so in
-   production the budget is always the default 1200 seconds. Separately, if the run itself has already taken more
-   than 75 minutes by the time `build_all_systems` returns, the pass does not start at all — nothing is
-   snapshotted, injected or moved — and every passing target is dropped with reason `run_budget_exhausted`; this
-   keeps a slow run from running into `Portal.Builder`'s own two-hour container kill, which would lose the whole
-   run, statuses included, not just the optional dependencies.
+   The pass is bounded by a time budget: a target not yet started by the deadline is dropped as `timeout`, and
+   each compile gets at most whatever is left. Separately, if the run itself has already used too much of its time
+   by the time `build_all_systems` returns, the pass does not start at all — nothing is snapshotted, injected or
+   moved — and every passing target is dropped with reason `run_budget_exhausted`, so a slow run keeps its
+   statuses rather than losing the whole run.
 
    Partial runs (`systems_filter`) run the pass over the targets that were actually built. Toolchain and
    pure-Elixir runs are unaffected by any of this; see above for their own optional-dependency pass.
@@ -128,9 +125,7 @@ Nerves downloads and extracts into the run dir (removing a link never touches it
 way. At the end of the run every farm entry that is a real directory is a miss, and `result.json` carries
 `"nerves_cache": {"misses": [{"name": "nerves_system_rpi4", "version": "2.0.0"}], "lock": [...]}`, where `lock` lists
 the run's `mix.lock` entries whose name starts with `nerves_system_` or `nerves_toolchain_`. The key is absent when
-both lists are empty and for toolchain runs. With `NCC_NERVES_CACHE_RW=1` in the container env (the one-release
-rollback, set by `Portal.Builder`) the cache is mounted read-write, both variables point at `/nerves-cache/artifacts`
-and `/nerves-cache/dl` directly, and nothing is reported. Nothing refers to `/home/nerves/.nerves`.
+both lists are empty and for toolchain runs. Nothing refers to `/home/nerves/.nerves`.
 
 ## Warm mode
 
@@ -182,10 +177,10 @@ See `examples/input.json` and `examples/result.json` for the wire format; the fu
 
 ## Egress probe
 
-With `"egress_probe": [{"address": "100.64.0.1", "port": 5432}, {"address": "fd00::1", "port": 5432}]`
-in `NCC_INPUT`, the worker tries a TCP connect (2 s timeout) to each target before any `mix` runs and writes
+With `"egress_probe": [{"address": "192.0.2.1", "port": 1234}, {"address": "2001:db8::1", "port": 1234}]`
+in `NCC_INPUT`, the worker tries a TCP connect to each target before any `mix` runs and writes
 `result.json` `egress_probe`: one `{"address", "port", "family", "outcome"}` per target, `outcome` one of
-`connected` or `refused` (both mean the packet got through), `timeout` (dropped by the host's egress filter),
+`connected` or `refused` (both mean the packet got through), `timeout` (dropped),
 `unreachable` (no route), `invalid_target`, or the socket error's name. Advisory: it never changes a status or fails
 the run. Only `Portal.EgressCheck` sends it (see the operator runbook); otherwise the key is absent.
 

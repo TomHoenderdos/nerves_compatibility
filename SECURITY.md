@@ -36,16 +36,11 @@ or its precompiled artifacts.
   Sobelow and Credo run on pushes to `main`, pull requests targeting `main`,
   weekly schedules, and manual dispatch. They upload SARIF reports to GitHub
   code scanning even when findings cause a nonzero scan exit status.
-- CodeQL does **not** analyze this project's Elixir or HEEx code. A clean CodeQL
-  result is not a backend security assessment. Dependency audits likewise do
-  not check application authorization, business logic, or runtime configuration.
-  Sobelow findings also need triage; static analysis can miss vulnerabilities
-  and flag safe code.
+- Automated checks do not replace review.
 - These workflows report results; they do not deploy anything themselves.
   [Test and deploy](.github/workflows/deploy.yml) deploys a push to `main` only
   after all four have passed on that exact commit (`ops/wait-for-checks.sh`), so
-  a failing check blocks the deploy. Requiring successful checks before merging
-  is a separate repository ruleset setting.
+  a failing check blocks the deploy.
 
 ## Reporting a Vulnerability
 
@@ -157,9 +152,7 @@ reports, or change production.
   must name the exact rule and document the reviewed caller, validation, or
   execution boundary. Re-review it when a caller or trust boundary changes.
   Worker package execution is intentionally confined to disposable containers;
-  worker evaluation helpers must never be reused by the portal host. The CSP
-  currently restricts base URLs, plugins, and framing; it does not restrict
-  script sources and is not a complete XSS defense.
+  worker evaluation helpers must never be reused by the portal host.
 
   Preserve failing scan status and review the findings. Do not describe an
   uploaded report as a clean scan or suppress findings merely to make CI green.
