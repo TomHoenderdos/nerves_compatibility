@@ -36,7 +36,7 @@ defmodule PortalWeb.ApiSpecTest do
 
       left_out = MapSet.difference(api_paths, documented)
 
-      assert MapSet.subset?(left_out, MapSet.new(["/api/docs", "/api/openapi.json"])),
+      assert left_out == MapSet.new(["/api/docs", "/api/openapi.json"]),
              "left out of the spec: #{inspect(MapSet.to_list(left_out))}"
     end
 

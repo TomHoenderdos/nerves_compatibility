@@ -211,12 +211,19 @@ defmodule PortalWeb.Router do
     end
   end
 
-  # The API's own description. Not part of the spec
-  # (`PortalWeb.ApiSpec.documented_routes/0` leaves it out).
+  # The API's own description: the machine-readable spec, and the same spec
+  # rendered as an HTML page in the site layout. Neither is part of the spec
+  # (`PortalWeb.ApiSpec.documented_routes/0` leaves them out).
   scope "/api" do
     pipe_through :api_spec
 
     get "/openapi.json", OpenApiSpex.Plug.RenderSpec, []
+  end
+
+  scope "/api", PortalWeb do
+    pipe_through :browser
+
+    get "/docs", ApiDocsController, :index
   end
 
   # Every route in this scope must have an `operation` spec on its controller

@@ -23,6 +23,7 @@ defmodule PortalWeb.SiteNav do
           </.nav_link>
           <.nav_link href="/failing" active={@active == :failing}>Top failing</.nav_link>
           <.nav_link href="/stats" active={@active == :stats}>Stats</.nav_link>
+          <.nav_link href="/api/docs" active={@active == :api}>API</.nav_link>
           <a
             href="/request-scan"
             class="rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-content transition hover:brightness-95"
