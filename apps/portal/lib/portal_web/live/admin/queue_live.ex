@@ -28,6 +28,7 @@ defmodule PortalWeb.Admin.QueueLive do
   import PortalWeb.PageHTML, only: [verification_label: 1, request_status_label: 1]
 
   require Ash.Query
+  require Logger
 
   alias Portal.ScanRequests.ScanRequest
   alias PortalWeb.AdminMessages
@@ -159,7 +160,7 @@ defmodule PortalWeb.Admin.QueueLive do
   # task, not when the task finishes -- see its moduledoc. `count` is what
   # Cinder itself counted off the selection, before the function ran.
   def handle_info({:bulk_done, %{count: count, result: :working}}, socket),
-    do: {:noreply, put_flash(socket, :info, "Working on #{count} requests…")}
+    do: {:noreply, put_flash(socket, :info, "Working on #{pluralize(count, "request")}…")}
 
   # The real summary, sent straight to this process by the task once it
   # finishes -- same texts a synchronous bulk action gave before the work
@@ -197,6 +198,9 @@ defmodule PortalWeb.Admin.QueueLive do
 
     {:error, "#{ok} done, #{length(failed)} refused: #{reasons}"}
   end
+
+  defp pluralize(1, word), do: "1 #{word}"
+  defp pluralize(count, word), do: "#{count} #{word}s"
 
   defp queued_message(request, true), do: "Queued a forced rebuild of #{request.package_name}."
   defp queued_message(request, false), do: "Queued #{request.package_name}."
@@ -247,11 +251,23 @@ defmodule PortalWeb.Admin.QueueLive do
   # `bulk_fun` already rescues per row (`Portal.Admin.each_request/3`), but a
   # crash above that loop -- the read of the query itself, say -- must still
   # reach the page as a message rather than leave its "working" flash
-  # standing forever with the task simply gone.
+  # standing forever with the task simply gone. `catch` covers an `exit` or
+  # `throw` the same way: either would otherwise kill this task silently,
+  # with nothing left to tell the page it is gone.
   defp run_bulk(bulk_fun, query, opts) do
     bulk_fun.(query, opts)
   rescue
-    e -> {:error, Exception.message(e)}
+    e ->
+      log_bulk_failure(:error, e, __STACKTRACE__)
+      {:error, Exception.message(e)}
+  catch
+    kind, reason ->
+      log_bulk_failure(kind, reason, __STACKTRACE__)
+      {:error, :error}
+  end
+
+  defp log_bulk_failure(kind, reason, stacktrace) do
+    Logger.error("Bulk action crashed: " <> Exception.format(kind, reason, stacktrace))
   end
 
   # A click carries what the button put in it, but a forged one may carry

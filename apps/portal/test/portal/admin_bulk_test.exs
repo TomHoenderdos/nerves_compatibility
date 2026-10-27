@@ -1,11 +1,15 @@
 defmodule Portal.AdminBulkTest do
   use Portal.DataCase, async: false
   require Ash.Query
+  import ExUnit.CaptureLog
 
   defmodule StubVersions do
     # Simulates the one call in the approve path that can blow up on a row
     # with no help from this module's own logic: `Portal.HexPm` itself.
     def latest_version("boom"), do: raise("simulated hex.pm crash")
+    # A GenServer timeout or similar surfaces as an `exit`, not a raised
+    # exception; `call_one/2` must catch this too, not only `rescue`.
+    def latest_version("boom_exit"), do: exit(:boom)
     def latest_version(_package), do: {:ok, "1.0.0"}
   end
 
@@ -83,16 +87,33 @@ defmodule Portal.AdminBulkTest do
     assert priority(a) == 0 and priority(b) == 0
   end
 
-  test "a row that raises is reported as :error and the rest still process",
+  test "a row that raises is reported as :error, logged with its id and message, and the rest still process",
        %{admin: admin} do
     a = pending("bulk_before_boom")
     boom = pending("boom")
     b = pending("bulk_after_boom")
 
-    assert {:ok, %{ok: 2, failed: [{id, :error}]}} =
-             Portal.Admin.bulk_approve(selected([a.id, boom.id, b.id]), actor: admin)
+    {{:ok, %{ok: 2, failed: [{id, :error}]}}, log} =
+      with_log(fn ->
+        Portal.Admin.bulk_approve(selected([a.id, boom.id, b.id]), actor: admin)
+      end)
 
     assert id == boom.id
+    assert log =~ boom.id
+    assert log =~ "simulated hex.pm crash"
+    assert {:ok, %{status: :queued}} = Portal.ScanRequests.get_request(a.id)
+    assert {:ok, %{status: :queued}} = Portal.ScanRequests.get_request(b.id)
+  end
+
+  test "a row that exits is reported as :error and the rest still process", %{admin: admin} do
+    a = pending("bulk_before_exit")
+    exploder = pending("boom_exit")
+    b = pending("bulk_after_exit")
+
+    assert {:ok, %{ok: 2, failed: [{id, :error}]}} =
+             Portal.Admin.bulk_approve(selected([a.id, exploder.id, b.id]), actor: admin)
+
+    assert id == exploder.id
     assert {:ok, %{status: :queued}} = Portal.ScanRequests.get_request(a.id)
     assert {:ok, %{status: :queued}} = Portal.ScanRequests.get_request(b.id)
   end

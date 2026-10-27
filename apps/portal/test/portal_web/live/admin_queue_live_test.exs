@@ -10,6 +10,9 @@ defmodule PortalWeb.AdminQueueLiveTest do
     # A package named "boom" simulates the one call in the approve path
     # that can crash on a row for reasons of its own: `Portal.HexPm` itself.
     def latest_version("boom"), do: raise("simulated hex.pm crash")
+    # A GenServer timeout or similar surfaces as an `exit`, not a raised
+    # exception; the per-row rescue must catch this too.
+    def latest_version("boom_exit"), do: exit(:boom)
     def latest_version(_package), do: {:ok, "1.0.0"}
   end
 
@@ -21,8 +24,12 @@ defmodule PortalWeb.AdminQueueLiveTest do
       test_pid = Application.fetch_env!(:portal, :bulk_block_test_pid)
       send(test_pid, {:resolver_called, self()})
 
+      # `after` so a test that fails before sending `:continue` cannot leave
+      # this task blocked forever under `Portal.TaskSupervisor`.
       receive do
         :continue -> {:ok, "1.0.0"}
+      after
+        5_000 -> {:ok, "1.0.0"}
       end
     end
   end
@@ -390,7 +397,8 @@ defmodule PortalWeb.AdminQueueLiveTest do
       # would have frozen this render along with everything else on the
       # socket.
       assert_receive {:resolver_called, resolver_pid}, 1000
-      assert render(view) =~ "Working on 1 request"
+      assert render(view) =~ "Working on 1 request…"
+      refute render(view) =~ "Working on 1 requests…"
       refute render(view) =~ "done."
 
       send(resolver_pid, :continue)
@@ -408,6 +416,24 @@ defmodule PortalWeb.AdminQueueLiveTest do
 
       select(view, "approvals-table", a)
       select(view, "approvals-table", boom)
+      select(view, "approvals-table", b)
+      bulk(view, "approvals-table", "Approve")
+
+      assert render(view) =~ "2 done, 1 refused: Admin action failed."
+
+      assert {:ok, %{status: :queued}} = Portal.ScanRequests.get_request(a.id)
+      assert {:ok, %{status: :queued}} = Portal.ScanRequests.get_request(b.id)
+    end
+
+    test "a row that exits during a bulk approve is reported, and the summary still arrives",
+         %{conn: conn} do
+      a = pending("bulk_before_exit")
+      exploder = pending("boom_exit")
+      b = pending("bulk_after_exit")
+      {view, _html} = live_queue(conn)
+
+      select(view, "approvals-table", a)
+      select(view, "approvals-table", exploder)
       select(view, "approvals-table", b)
       bulk(view, "approvals-table", "Approve")
 
@@ -495,18 +521,23 @@ defmodule PortalWeb.AdminQueueLiveTest do
   # The click itself returns the moment the bulk work starts, not when it
   # finishes -- see `PortalWeb.Admin.QueueLive`'s moduledoc. Its summary
   # flash arrives later over a plain message, not through `start_async`, so
-  # `render_async/1` alone would not wait for it; `eventually/1` polls for
-  # the "done"/"refused" text every such flash ends in. Not asserted: an
-  # empty selection (a forged click Cinder itself ignored) runs no bulk
-  # action and so never shows one, and that is as valid an outcome as a
-  # finished one. Either way the table reload a real completion triggers
-  # does go through `start_async`, so it is still awaited below.
+  # `render_async/1` alone would not wait for it. Polling for "done" alone
+  # would risk matching a stale flash left over from an earlier action in
+  # the same test, so this waits for the transition instead: first for the
+  # "Working on" flash a real selection always sets synchronously, then for
+  # it to be gone, which only happens once the task's own summary message
+  # has replaced it. Neither wait is asserted: an empty selection (a forged
+  # click Cinder itself ignored) runs no bulk action and so never shows a
+  # "Working on" flash at all, and that is as valid an outcome as a finished
+  # one. Either way the table reload a real completion triggers does go
+  # through `start_async`, so it is still awaited below.
   defp bulk(view, table, label) do
     view
     |> element("##{table} span[phx-click]", label)
     |> render_click()
 
-    eventually(fn -> render(view) =~ "done" end)
+    eventually(fn -> render(view) =~ "Working on" end)
+    eventually(fn -> not (render(view) =~ "Working on") end)
     render_async(view)
   end
 

@@ -31,11 +31,6 @@ defmodule Portal.Application do
       # Also precedes the endpoint: it owns the ETS table holding in-flight
       # WebAuthn challenges.
       PortalWeb.WebAuthnSession,
-      # Off-process work a LiveView starts and does not wait on, e.g. the
-      # admin Queue page's bulk actions (`PortalWeb.Admin.QueueLive`): a
-      # per-row hex.pm lookup must not run inside the LiveView itself, where
-      # a slow or down hex.pm would freeze the page for everyone watching it.
-      {Task.Supervisor, name: Portal.TaskSupervisor},
       # A build node also runs its own ingest queue and its own Nerves cache
       # warm queue; see `Portal.Workers.Ingest` and `Portal.Workers.WarmNerves`.
       {Oban,
@@ -47,6 +42,13 @@ defmodule Portal.Application do
       # Owns the ETS table of builder rate-limit counters; precedes both
       # endpoints, whose requests count against it.
       Portal.Builders.RateLimit,
+      # Off-process work a LiveView starts and does not wait on, e.g. the
+      # admin Queue page's bulk actions (`PortalWeb.Admin.QueueLive`): a
+      # per-row hex.pm lookup must not run inside the LiveView itself, where
+      # a slow or down hex.pm would freeze the page for everyone watching it.
+      # Placed just before the endpoint, after what it depends on (PubSub,
+      # Oban), so on shutdown its tasks stop before those dependencies do.
+      {Task.Supervisor, name: Portal.TaskSupervisor},
       # Start a worker by calling: Portal.Worker.start_link(arg)
       # {Portal.Worker, arg},
       # Start to serve requests, typically the last entry
