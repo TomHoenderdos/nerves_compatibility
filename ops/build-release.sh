@@ -7,7 +7,7 @@
 # that will not start here.
 #
 # Installed to /opt/nerves_compatibility/build-release.sh on each host. See
-# ops/README.md.
+# the operator runbook.
 set -euo pipefail
 
 SRC=/opt/nerves_compatibility/src

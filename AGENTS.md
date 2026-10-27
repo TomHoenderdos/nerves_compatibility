@@ -10,7 +10,7 @@ This repository is a **Mix umbrella** (top-level `mix.exs`) with three apps unde
 
 Other:
 
-- `docs/`, `PRECOMPILED_API.md`: API and data contracts. `DEPLOY.md`, `ops/`: deployment and the CI deploy scripts.
+- `docs/`, `PRECOMPILED_API.md`: API and data contracts. `ops/`: the CI deploy scripts.
 - `config/`: umbrella runtime/config guarded so the worker Docker image can build without portal files copied into the image.
 
 Do not commit generated paths such as `_build/`, `deps/`, `public/`, `compat_test_results/`, or `*.dets`.

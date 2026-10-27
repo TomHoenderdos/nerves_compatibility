@@ -18,7 +18,7 @@
 #      a host already on the commit with ncc-portal active is skipped (-f overrides)
 #   2. installs that commit's ops/deploy.sh and ops/build-release.sh into
 #      /opt/nerves_compatibility/ (hosts run those copies, not the checkout's;
-#      see ops/README.md "Installing a change")
+#      see the operator runbook)
 #   3. starts `deploy.sh <sha> builder` detached on the host (setsid, stdin
 #      closed, own log under /root), so a dropped ssh cannot kill it halfway;
 #      deploy.sh holds its own flock, so a second run refuses rather than races

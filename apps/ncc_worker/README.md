@@ -187,7 +187,7 @@ in `NCC_INPUT`, the worker tries a TCP connect (2 s timeout) to each target befo
 `result.json` `egress_probe`: one `{"address", "port", "family", "outcome"}` per target, `outcome` one of
 `connected` or `refused` (both mean the packet got through), `timeout` (dropped by the host's egress filter),
 `unreachable` (no route), `invalid_target`, or the socket error's name. Advisory: it never changes a status or fails
-the run. Only `Portal.EgressCheck` sends it (`ops/README.md`, "Egress filter"); otherwise the key is absent.
+the run. Only `Portal.EgressCheck` sends it (see the operator runbook); otherwise the key is absent.
 
 ## Exit codes
 

@@ -3,7 +3,7 @@
 # ops/builder-egress-bridge.nft) into the network namespace rootless dockerd's
 # bridge lives in. Runs as the daemon's own user: from systemd as the docker
 # user unit's ExecStartPost, and from ops/builder-deploy.sh at every builder
-# deploy. See ops/README.md, "Egress filter".
+# deploy. See the operator runbook.
 #
 # rootlesskit runs with --detach-netns, so dockerd itself (docker.pid) sits in
 # the host's network namespace and nsenter into it fails EPERM. The bridge is

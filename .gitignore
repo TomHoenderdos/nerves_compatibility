@@ -55,3 +55,6 @@ portal/var/
 /docs/superpowers/
 /docs/talks/
 __pycache__/
+
+# Operator notes for Claude Code, kept out of the public repo
+/CLAUDE.local.md

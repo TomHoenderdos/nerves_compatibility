@@ -49,11 +49,8 @@ mix format
 ## Docs
 
 - `docs/INDEX_FORMAT.md` — schema-v2 JSON API shapes
-- `docs/PACKAGE_METADATA.md` — package overrides
 - `PRECOMPILED_API.md` — precompiled package API
-- `DEPLOY.md` — running the portal and build worker
 - `SECURITY.md` — reporting vulnerabilities
-- `TODO.md` — known gaps
 
 ## License
 

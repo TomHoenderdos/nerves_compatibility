@@ -4,7 +4,7 @@
 # which Portal.Builders.Images reads. Best-effort: the release lands minutes
 # after the deploy, so a miss is a retry on the next run, not a failure.
 #
-# Usage: images-sync.sh <40-hex sha> [destination]   (see docs/REMOTE_BUILDERS.md)
+# Usage: images-sync.sh <40-hex sha> [destination]   (see the operator runbook)
 set -euo pipefail
 
 sha=${1:-}

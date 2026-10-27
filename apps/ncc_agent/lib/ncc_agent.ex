@@ -5,6 +5,6 @@ defmodule NccAgent do
   talks to the portal's `/builder/v1` API through `NccAgent.Client`.
 
   Configuration comes from the environment (`NccAgent.Config`); see the
-  app's README and `docs/REMOTE_BUILDERS.md`.
+  app's README and the operator runbook.
   """
 end
