@@ -52,7 +52,13 @@ defmodule Portal.Accounts.Passkeys do
     |> Ash.create(domain: Portal.Accounts)
   end
 
-  @spec delete(User.t(), String.t()) :: :ok | {:error, :not_found}
+  @doc """
+  Removes `user`'s passkey `id` and signs every session on the account out
+  (`Portal.Accounts.revoke_sessions/1`), returning the user as revoked so a
+  caller acting from one of those sessions can re-stamp it
+  (`PortalWeb.UserAuth.restamp_session/2`).
+  """
+  @spec delete(User.t(), String.t()) :: {:ok, User.t()} | {:error, :not_found | term()}
   def delete(%User{} = user, id) do
     user
     |> list_for_user()
@@ -67,21 +73,31 @@ defmodule Portal.Accounts.Passkeys do
         # cookie does not record which credential opened it. The caller keeps
         # its own (`PortalWeb.UserAuth.restamp_session/2`). One transaction,
         # so a passkey never goes without its sessions going too.
-        {:ok, _user} =
-          Portal.Repo.transaction(fn ->
-            Ash.destroy!(passkey, domain: Portal.Accounts)
-            {:ok, user} = Portal.Accounts.revoke_sessions(user)
-            user
-          end)
-
-        # The last passkey of an admin is their `/admin` access
-        # (`PortalWeb.Plugs.RequireAdmin`). An admin page open on it must
-        # mount again to find that out, so every one of the user's live
-        # sockets reconnects; one that loses nothing just mounts again.
-        Portal.Accounts.disconnect_live_sockets(user.id)
-        :ok
+        Portal.Repo.transaction(fn -> destroy_and_revoke(passkey, user) end)
+        |> tap(&disconnect_after_commit/1)
     end
   end
+
+  defp destroy_and_revoke(passkey, user) do
+    with :ok <- Ash.destroy(passkey, domain: Portal.Accounts),
+         {:ok, revoked} <- Portal.Accounts.revoke_sessions(user) do
+      revoked
+    else
+      {:error, reason} -> Portal.Repo.rollback(reason)
+    end
+  end
+
+  # After the transaction, so a reconnect cannot read the row before the
+  # revocation commits.
+  defp disconnect_after_commit({:ok, %User{} = user}) do
+    # The last passkey of an admin is their `/admin` access
+    # (`PortalWeb.Plugs.RequireAdmin`). An admin page open on it must
+    # mount again to find that out, so every one of the user's live
+    # sockets reconnects; one that loses nothing just mounts again.
+    Portal.Accounts.disconnect_live_sockets(user.id)
+  end
+
+  defp disconnect_after_commit(_failed), do: :ok
 
   @spec record_use(Passkey.t(), non_neg_integer()) :: {:ok, Passkey.t()} | {:error, term()}
   def record_use(%Passkey{} = passkey, sign_count) do

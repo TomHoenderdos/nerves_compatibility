@@ -68,7 +68,11 @@ defmodule Portal.Accounts.PasskeysTest do
 
     assert Passkeys.delete(stranger, passkey.id) == {:error, :not_found}
     assert Passkeys.count_for_user(owner) == 1
-    assert Passkeys.delete(owner, passkey.id) == :ok
+    # The owner comes back with every session revoked, so the caller can
+    # re-stamp its own against the cutoff that was written.
+    assert {:ok, revoked} = Passkeys.delete(owner, passkey.id)
+    assert revoked.id == owner.id
+    assert %DateTime{} = revoked.sessions_valid_after
     assert Passkeys.count_for_user(owner) == 0
   end
 

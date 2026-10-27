@@ -38,7 +38,7 @@ defmodule Portal.Accounts.Recovery do
     user = fetch_user!(username)
 
     passkeys = Passkeys.list_for_user(user)
-    Enum.each(passkeys, fn passkey -> :ok = Passkeys.delete(user, passkey.id) end)
+    Enum.each(passkeys, fn passkey -> {:ok, _} = Passkeys.delete(user, passkey.id) end)
     :ok = Totp.disable(user)
     {:ok, codes} = RecoveryCodes.generate(user)
 

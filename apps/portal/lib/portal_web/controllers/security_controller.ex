@@ -184,19 +184,26 @@ defmodule PortalWeb.SecurityController do
     # `Passkeys.delete/2` scopes by the owning user, so an id lifted from
     # somebody else's page is simply not found.
     case Passkeys.delete(user, id) do
-      :ok ->
+      {:ok, revoked} ->
         Logger.warning("Passkey removed for #{user.username}")
 
         # The removal signed out every session on the account; the one that
         # removed it, under a fresh re-authentication, stays.
         conn
-        |> UserAuth.restamp_session()
+        |> UserAuth.restamp_session(revoked)
         |> put_flash(:info, "Passkey removed.")
         |> redirect(to: ~p"/settings/security")
 
       {:error, :not_found} ->
         conn
         |> put_flash(:error, "No such passkey on this account.")
+        |> redirect(to: ~p"/settings/security")
+
+      {:error, reason} ->
+        Logger.error("Removing a passkey failed: #{inspect(reason)}")
+
+        conn
+        |> put_flash(:error, "Removing the passkey failed. Try again.")
         |> redirect(to: ~p"/settings/security")
     end
   end
