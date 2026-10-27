@@ -129,8 +129,9 @@ defmodule NccWorker.Worker do
           # (for a firmware run, the first target's reason):
           # "deps_get_failed", "lock_policy_violation", "host_compile_failed",
           # "target_compile_failed", "timeout", "stale_build_not_removed",
-          # "deps_lock_unreadable", "mix_exs_edit_failed" or
-          # "no_passing_target", `nil` when nothing was dropped. Absent for
+          # "deps_lock_unreadable", "mix_exs_edit_failed",
+          # "run_budget_exhausted" or "no_passing_target", `nil` when nothing
+          # was dropped. Absent for
           # argus-only runs.
           # `skipped` were never tried: dev tooling and alternatives on
           # `NccWorker.Project`'s `@optional_deps_never_added`.

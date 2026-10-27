@@ -55,8 +55,11 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    a raise from any runner, or an OOM kill), `mix_exs_edit_failed` (the inject failed, which drops every target),
    `stale_build_not_removed` (the move-aside, or the pass's own cleanup, could not rename or remove the build
    directory), `deps_lock_unreadable` (the lock could not be read after `deps.get`, so a kept target would have no
-   lock of its own to publish against), or `timeout` (the per-system timeout, or the pass's own budget ran out
-   before the target's `deps.get` or compile could start). The run-level `optional_deps` for a firmware run has
+   lock of its own to publish against), `timeout` (the per-system timeout, which bounds the pass's `deps.get` as
+   well as its compile, or the pass's own budget ran out before the target's `deps.get` or compile could start),
+   or `run_budget_exhausted` (the run had already used more than 75 minutes, so the pass did not start; see
+   below). A target whose compile passed but whose rescan reports errors, or whose `.app` yields no
+   `compile_env`, is dropped as `target_compile_failed` rather than kept, so it publishes its first build. The run-level `optional_deps` for a firmware run has
    `added` = names kept on at least one target, `dropped` = names dropped on every target that tried, and
    `reason` = the first target's drop reason, `nil` when something was kept; when no target was passing to begin
    with the run-level reason is `no_passing_target` instead, with every dependency listed in `dropped`. A target
