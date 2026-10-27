@@ -32,6 +32,50 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    `credo`, `dialyxir`, `stream_data`, `excoveralls`, `mix_test_watch`, `benchee`) and alternatives an application
    picks one of (`picosat_elixir`, `simple_sat`); the list is `@optional_deps_never_added` in `NccWorker.Project`.
    `host.log` carries the same lines. The key is absent for argus-only runs.
+
+   A firmware run gets the same idea, but after every target's firmware build has settled its status
+   (`NccWorker.OptionalDepsTargets`): once `build_all_systems` returns, the worker reads the run-level `deps_lock`
+   and `package_checksum` from the project's `mix.lock` as the status build left it (this is what `result.json`
+   reports at the top level for a firmware run; reading it any later would pick up the optional dependencies), then,
+   when there is at least one dependency to add and at least one target with `status: "pass"`, snapshots `mix.exs`
+   and `mix.lock`, injects the optional dependencies once, and for every passing target moves its first build's
+   `_build/<target>/lib/<package>` aside, runs `mix deps.get` and the lock policy serially (the targets share the
+   root `mix.lock`), then `mix compile` (no `mix firmware`) concurrently, bounded by the per-system timeout. A
+   target whose compile passes gets its `beam_scan` and `compile_env` rescanned and keeps the new build, with its
+   own per-system `deps_lock` (shaped like the run's) and `optional_deps: {"added": [...], "dropped": [],
+   "reason": null}`; one that fails anywhere in this gets back exactly its first build, byte for byte, no
+   per-system `deps_lock`, and `optional_deps: {"added": [], "dropped": [...], "reason": "<reason>"}`. `mix.exs`
+   and `mix.lock` are always restored from the snapshot afterwards, so nothing later (argus, the footprint scan,
+   the run-level `deps_lock`) sees the optional dependencies. Nothing in this pass changes a status, a firmware
+   image, `firmware_size_bytes`, `log_tail`, `error`, `dependency_scans` or `cache_candidates` of any system, and
+   its compile is never stored in the build cache (the cache key would describe the lock without the optional
+   dependencies). A system that was not passing when the pass ran gets no `deps_lock` or `optional_deps` key.
+
+   A target's drop reason is one of `deps_get_failed`, `lock_policy_violation`, `target_compile_failed` (including
+   a raise from any runner, or an OOM kill), `mix_exs_edit_failed` (the inject failed, which drops every target),
+   `stale_build_not_removed` (the move-aside, or the pass's own cleanup, could not rename or remove the build
+   directory), `deps_lock_unreadable` (the lock could not be read after `deps.get`, so a kept target would have no
+   lock of its own to publish against), or `timeout` (the per-system timeout, or the pass's own budget ran out
+   before the target's `deps.get` or compile could start). The run-level `optional_deps` for a firmware run has
+   `added` = names kept on at least one target, `dropped` = names dropped on every target that tried, and
+   `reason` = the first target's drop reason, `nil` when something was kept; when no target was passing to begin
+   with the run-level reason is `no_passing_target` instead, with every dependency listed in `dropped`. A target
+   whatever its drop reason leaves no half-compiled lib dir behind: the pass kills anything its compile left
+   running under that target's `MIX_BUILD_PATH` before putting the first build back, and a writer that survives is
+   the worker's only new error path for this pass, `{:error, {:optional_deps_revert_failed, reason}}` (exit `10`,
+   same as every other internal failure) — publishing files nobody checked would be worse than a retried run.
+
+   The pass has its own wall-clock budget from when it starts, `NCC_OPTIONAL_PASS_BUDGET_SEC` seconds (default
+   `1200`, i.e. 20 minutes): a target not yet started by the deadline is dropped as `timeout`, and each compile
+   gets at most whatever is left. `Portal.Builder` does not set this env var in the container it runs, so in
+   production the budget is always the default 1200 seconds. Separately, if the run itself has already taken more
+   than 75 minutes by the time `build_all_systems` returns, the pass does not start at all — nothing is
+   snapshotted, injected or moved — and every passing target is dropped with reason `run_budget_exhausted`; this
+   keeps a slow run from running into `Portal.Builder`'s own two-hour container kill, which would lose the whole
+   run, statuses included, not just the optional dependencies.
+
+   Partial runs (`systems_filter`) run the pass over the targets that were actually built. Toolchain and
+   pure-Elixir runs are unaffected by any of this; see above for their own optional-dependency pass.
 5. When `NCC_INPUT` carries `argus` (`{"analyses": ["default", "exposure"], "scope": "firmware", "timeout_seconds": 300}`),
    runs the argus_beam escript over the host-compiled beams (`NccWorker.Argus`) and writes its findings to
    `result.json` as `argus`. `scope: "firmware"` limits this to packages that build firmware. Advisory: it never
@@ -45,6 +89,9 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    publishes this for clients to match against their own lock. The key is absent for argus-only runs, which build
    nothing, and when the lock cannot be read. It also records `package_checksum`, the package's own outer Hex checksum,
    and each system result's `compile_env` (the `.app` file's compile-time config reads, values as base64url deterministic terms).
+   For a firmware run, the run-level `deps_lock` and `package_checksum` are the status build's, read before the
+   per-target optional pass in step 4; a system that pass kept its optional dependencies for carries its own
+   `deps_lock` instead (same shape), which the precompiled API prefers over the run's for that system's entries.
 7. Writes atomic `/out/result.json` plus per-system logs under `/out/logs/`, and archives compiled files by SHA256 under `/files`.
    The package's own files are its `ebin/` and `priv/` from `_build/<target>/lib/<package>/`, the target's compile
    output with `debug_info` intact, not the release copy, whose BEAMs are stripped (`NccWorker.BeamScan`,

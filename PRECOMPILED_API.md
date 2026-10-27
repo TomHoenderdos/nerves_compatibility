@@ -179,14 +179,18 @@ Status codes:
       package in the package's transitive dependency closure (the package
       itself excluded), as `name => {"version", "checksum"}`, where `checksum`
       is the outer Hex checksum, the last element of a `mix.lock` entry. `{}`
-      for a package with no dependencies. For a `pure_elixir` entry the
-      worker resolves the package's own optional dependencies too, when they
-      build, so they appear here (decimal under jason, jason under ecto); a
-      client whose lock lacks one of them does not match, because the package
-      compiled differently with it loadable. Optional dev tooling (igniter,
-      ex_doc and the like) and alternatives an application picks one of are
-      never added. Per-system entries of a firmware package are built without
-      its optional dependencies.
+      for a package with no dependencies. `deps` is per entry: the worker
+      resolves the package's own optional dependencies too, when they build
+      (decimal under jason, jason under ecto), for a `pure_elixir` entry's
+      host build and, after the firmware builds, per passing Nerves target of
+      a firmware run; a client whose lock lacks one of them does not match,
+      because the package compiled differently with it loadable. Optional dev
+      tooling (igniter, ex_doc and the like) and alternatives an application
+      picks one of are never added. A firmware run's targets are tried
+      independently, so one target's entry can list an optional dependency
+      that another target's entry (of the same run) lacks, when the pass
+      failed for that target — a client should check `deps` per entry, never
+      assume it is the same across a package's targets.
     - `package_checksum` — the package's own outer Hex checksum from the
       build's `mix.lock`, a string, or `null` for runs from before it was
       recorded and for argus-only runs.
@@ -409,10 +413,15 @@ them.
   `build.elixir` and `build.otp` are `null` and a client should skip them.
 - Entries from runs before 2026-10-20 have no dependency lock stored, so their
   `build.deps` is `null` and a client should skip them.
-- `pure_elixir` entries from runs before 2026-10-23, and every per-system
-  entry, were built without the package's optional dependencies, so their
-  `build.deps` lacks them and a client whose lock has them (decimal next to
-  jason, for example) does not match.
+- `pure_elixir` entries from runs before 2026-10-24 were built without the
+  package's optional dependencies, so their `build.deps` lacks them and a
+  client whose lock has them (decimal next to jason, for example) does not
+  match.
+- Per-system entries from firmware runs before this deploy were built
+  without the package's optional dependencies for every target, the same
+  as a `pure_elixir` entry from before 2026-10-24; a per-target pass added
+  after that only covers runs from this deploy on, and only the targets it
+  kept them for.
 - Pure Elixir packages have `pure_elixir` entries only from runs after
   2026-10-20; earlier ones archived no files.
 - Entries from runs before 2026-10-23 list the release copy of each BEAM,
