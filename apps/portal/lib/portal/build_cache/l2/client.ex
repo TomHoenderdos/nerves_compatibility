@@ -19,7 +19,9 @@ defmodule Portal.BuildCache.L2.Client do
   @spec head(Config.t(), String.t()) ::
           {:ok, %{size: non_neg_integer() | nil, sha256: String.t() | nil}} | {:error, term()}
   def head(cfg, object) do
-    case Req.head(req(cfg, receive_timeout: 30_000), url: object_url(cfg, object)) do
+    case once_more_if_closed(fn ->
+           Req.head(req(cfg, receive_timeout: 30_000), url: object_url(cfg, object))
+         end) do
       {:ok, %Req.Response{status: 200} = resp} ->
         {:ok,
          %{size: int_header(resp, "content-length"), sha256: header(resp, "x-amz-meta-sha256")}}
@@ -81,10 +83,14 @@ defmodule Portal.BuildCache.L2.Client do
   defp do_get(cfg, object, path, max_bytes) do
     with {:ok, io} <- File.open(path, [:write, :binary, :raw]) do
       try do
+        # A stale connection fails before any byte reaches the collector,
+        # so the file is still empty when the request is sent again.
         result =
-          Req.get(req(cfg, receive_timeout: 60_000, into: collector(io, max_bytes)),
-            url: object_url(cfg, object)
-          )
+          once_more_if_closed(fn ->
+            Req.get(req(cfg, receive_timeout: 60_000, into: collector(io, max_bytes)),
+              url: object_url(cfg, object)
+            )
+          end)
 
         finish_get(result, path)
       catch
@@ -175,11 +181,13 @@ defmodule Portal.BuildCache.L2.Client do
   # sobelow_skip ["Traversal.FileModule"]
   defp do_put(cfg, object, path, sha256, timeout) do
     with {:ok, body} <- File.read(path) do
-      case Req.put(req(cfg, receive_timeout: timeout),
-             url: object_url(cfg, object),
-             body: body,
-             headers: [{"content-type", "application/gzip"}, {"x-amz-meta-sha256", sha256}]
-           ) do
+      case once_more_if_closed(fn ->
+             Req.put(req(cfg, receive_timeout: timeout),
+               url: object_url(cfg, object),
+               body: body,
+               headers: [{"content-type", "application/gzip"}, {"x-amz-meta-sha256", sha256}]
+             )
+           end) do
         {:ok, %Req.Response{status: status}} when status in 200..299 -> :ok
         {:ok, %Req.Response{status: status}} -> {:error, {:status, status}}
         {:error, reason} -> {:error, reason}
@@ -198,10 +206,12 @@ defmodule Portal.BuildCache.L2.Client do
       [{"list-type", "2"}, {"prefix", prefix}, {"max-keys", Integer.to_string(max)}] ++
         if(token, do: [{"continuation-token", token}], else: [])
 
-    case Req.get(req(cfg, receive_timeout: 30_000, decode_body: false),
-           url: "/" <> cfg.bucket,
-           params: params
-         ) do
+    case once_more_if_closed(fn ->
+           Req.get(req(cfg, receive_timeout: 30_000, decode_body: false),
+             url: "/" <> cfg.bucket,
+             params: params
+           )
+         end) do
       {:ok, %Req.Response{status: 200, body: body}} ->
         {objects, next} = parse_listing(body)
         acc = Enum.reverse(objects) ++ acc
@@ -247,21 +257,11 @@ defmodule Portal.BuildCache.L2.Client do
     end
   end
 
-  # One retry, and only on a connection the server had already closed: the
-  # pool hands out a kept-alive connection the S3 server timed out, and the
-  # request fails before a byte of it is sent. Every request here is
-  # idempotent (GET, HEAD, LIST, and a PUT of a content-addressed object with
-  # the body held in memory), so sending it again on a fresh connection is
-  # safe. A GET retried after its collector already wrote bytes cannot
-  # happen: `:closed` on a stale connection precedes any response.
   defp req(cfg, opts) do
     Req.new(
       [
         base_url: cfg.endpoint,
-        retry: &retry_closed?/2,
-        max_retries: 1,
-        retry_delay: 0,
-        retry_log_level: false,
+        retry: false,
         redirect: false,
         connect_options: [
           timeout: @connect_timeout,
@@ -277,8 +277,20 @@ defmodule Portal.BuildCache.L2.Client do
     )
   end
 
-  defp retry_closed?(_request, %Req.TransportError{reason: :closed}), do: true
-  defp retry_closed?(_request, _response_or_exception), do: false
+  # One retry, and only on a connection the server had already closed: the
+  # pool hands out a kept-alive connection the S3 server timed out, and the
+  # request fails before a byte of it is sent. Every request here is
+  # idempotent (GET, HEAD, LIST, and a PUT of a content-addressed object with
+  # the body in memory), so `fun` builds and sends it again from scratch,
+  # signed afresh. Not Req's own `retry:`: it re-runs the request steps on the
+  # already signed request, and the second SigV4 signature it adds makes the
+  # server answer 403.
+  defp once_more_if_closed(fun) do
+    case fun.() do
+      {:error, %Req.TransportError{reason: :closed}} -> fun.()
+      other -> other
+    end
+  end
 
   defp object_url(cfg, object), do: "/" <> cfg.bucket <> "/" <> object
 
