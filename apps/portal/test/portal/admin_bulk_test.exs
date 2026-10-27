@@ -3,6 +3,9 @@ defmodule Portal.AdminBulkTest do
   require Ash.Query
 
   defmodule StubVersions do
+    # Simulates the one call in the approve path that can blow up on a row
+    # with no help from this module's own logic: `Portal.HexPm` itself.
+    def latest_version("boom"), do: raise("simulated hex.pm crash")
     def latest_version(_package), do: {:ok, "1.0.0"}
   end
 
@@ -78,6 +81,20 @@ defmodule Portal.AdminBulkTest do
              Portal.Admin.bulk_move_up(selected([a.id, b.id]), actor: admin)
 
     assert priority(a) == 0 and priority(b) == 0
+  end
+
+  test "a row that raises is reported as :error and the rest still process",
+       %{admin: admin} do
+    a = pending("bulk_before_boom")
+    boom = pending("boom")
+    b = pending("bulk_after_boom")
+
+    assert {:ok, %{ok: 2, failed: [{id, :error}]}} =
+             Portal.Admin.bulk_approve(selected([a.id, boom.id, b.id]), actor: admin)
+
+    assert id == boom.id
+    assert {:ok, %{status: :queued}} = Portal.ScanRequests.get_request(a.id)
+    assert {:ok, %{status: :queued}} = Portal.ScanRequests.get_request(b.id)
   end
 
   test "a request with no build job is reported, not raised", %{admin: admin} do

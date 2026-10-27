@@ -161,18 +161,35 @@ defmodule Portal.Admin do
   def bulk_move_down(query, _opts), do: each_request(query, &reprioritise(&1.id, :down))
 
   # Oldest first, the order the page lists them in, so a bulk action does
-  # what the same clicks row by row would have done.
+  # what the same clicks row by row would have done. Only `id` is read off
+  # each row -- every `fun` above takes nothing else off the request it is
+  # given -- so a bulk action over hundreds of rows does not pull their
+  # `error_log` along for nothing.
+  #
+  # A row that raises is reported as `{id, :error}` rather than losing the
+  # count of everything before it: without the rescue here, one bad row
+  # would propagate out of `Enum.reduce/3` and the caller (Cinder's bulk
+  # action executor, or the async task `PortalWeb.Admin.QueueLive` runs this
+  # under) would turn the whole bulk action into one opaque failure instead
+  # of reporting the rows that did go through.
   defp each_request(query, fun) do
     query
+    |> Ash.Query.select([:id])
     |> Ash.Query.sort(inserted_at: :asc, id: :asc)
     |> Ash.read!(domain: ScanRequests)
     |> Enum.reduce(%{ok: 0, failed: []}, fn request, acc ->
-      case fun.(request) do
+      case call_one(fun, request) do
         {:ok, _} -> %{acc | ok: acc.ok + 1}
         {:error, reason} -> %{acc | failed: [{request.id, reason} | acc.failed]}
       end
     end)
     |> then(&{:ok, %{&1 | failed: Enum.reverse(&1.failed)}})
+  end
+
+  defp call_one(fun, request) do
+    fun.(request)
+  rescue
+    _ -> {:error, :error}
   end
 
   @doc """

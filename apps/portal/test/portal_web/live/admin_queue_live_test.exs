@@ -7,7 +7,24 @@ defmodule PortalWeb.AdminQueueLiveTest do
   @pw "correct horse battery staple"
 
   defmodule StubVersions do
+    # A package named "boom" simulates the one call in the approve path
+    # that can crash on a row for reasons of its own: `Portal.HexPm` itself.
+    def latest_version("boom"), do: raise("simulated hex.pm crash")
     def latest_version(_package), do: {:ok, "1.0.0"}
+  end
+
+  # Stands in for a hex.pm that has not answered yet: it blocks until the
+  # test says to continue, so a bulk action's test can prove the page keeps
+  # answering while that lookup is still in flight.
+  defmodule BlockingVersions do
+    def latest_version(_package) do
+      test_pid = Application.fetch_env!(:portal, :bulk_block_test_pid)
+      send(test_pid, {:resolver_called, self()})
+
+      receive do
+        :continue -> {:ok, "1.0.0"}
+      end
+    end
   end
 
   setup %{conn: conn} do
@@ -351,6 +368,55 @@ defmodule PortalWeb.AdminQueueLiveTest do
       end
     end
 
+    test "a slow bulk resolver does not freeze the page, and the summary flash arrives once it finishes",
+         %{conn: conn} do
+      Application.put_env(:portal, :bulk_block_test_pid, self())
+      Application.put_env(:portal, :package_version_resolver, BlockingVersions)
+
+      on_exit(fn ->
+        Application.delete_env(:portal, :bulk_block_test_pid)
+        Application.put_env(:portal, :package_version_resolver, StubVersions)
+      end)
+
+      a = pending("slow_pkg")
+      {view, _html} = live_queue(conn)
+      select(view, "approvals-table", a)
+
+      view
+      |> element("#approvals-table span[phx-click]", "Approve")
+      |> render_click()
+
+      # Still blocked inside the task -- the old, synchronous bulk action
+      # would have frozen this render along with everything else on the
+      # socket.
+      assert_receive {:resolver_called, resolver_pid}, 1000
+      assert render(view) =~ "Working on 1 request"
+      refute render(view) =~ "done."
+
+      send(resolver_pid, :continue)
+
+      assert eventually(fn -> render(view) =~ "1 done." end)
+      assert {:ok, %{status: :queued}} = Portal.ScanRequests.get_request(a.id)
+    end
+
+    test "a row that raises during a bulk approve is reported, and the rest still process",
+         %{conn: conn} do
+      a = pending("bulk_before_boom")
+      boom = pending("boom")
+      b = pending("bulk_after_boom")
+      {view, _html} = live_queue(conn)
+
+      select(view, "approvals-table", a)
+      select(view, "approvals-table", boom)
+      select(view, "approvals-table", b)
+      bulk(view, "approvals-table", "Approve")
+
+      assert render(view) =~ "2 done, 1 refused: Admin action failed."
+
+      assert {:ok, %{status: :queued}} = Portal.ScanRequests.get_request(a.id)
+      assert {:ok, %{status: :queued}} = Portal.ScanRequests.get_request(b.id)
+    end
+
     test "bulk move down and up reprioritise every selected build",
          %{conn: conn, admin: admin} do
       {:ok, a} = Portal.Admin.queue_package("bulk_move_a", admin)
@@ -426,11 +492,21 @@ defmodule PortalWeb.AdminQueueLiveTest do
     |> render_click()
   end
 
+  # The click itself returns the moment the bulk work starts, not when it
+  # finishes -- see `PortalWeb.Admin.QueueLive`'s moduledoc. Its summary
+  # flash arrives later over a plain message, not through `start_async`, so
+  # `render_async/1` alone would not wait for it; `eventually/1` polls for
+  # the "done"/"refused" text every such flash ends in. Not asserted: an
+  # empty selection (a forged click Cinder itself ignored) runs no bulk
+  # action and so never shows one, and that is as valid an outcome as a
+  # finished one. Either way the table reload a real completion triggers
+  # does go through `start_async`, so it is still awaited below.
   defp bulk(view, table, label) do
     view
     |> element("##{table} span[phx-click]", label)
     |> render_click()
 
+    eventually(fn -> render(view) =~ "done" end)
     render_async(view)
   end
 
