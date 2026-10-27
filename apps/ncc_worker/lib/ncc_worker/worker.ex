@@ -17,6 +17,7 @@ defmodule NccWorker.Worker do
     LockPolicy,
     LogTail,
     NervesCache,
+    OptionalDepsTargets,
     Project,
     RunScope,
     Scanner,
@@ -114,14 +115,21 @@ defmodule NccWorker.Worker do
           # The package's optional dependencies the generated project did not
           # resolve on its own (`NccWorker.DepsLock.unresolved_optional_deps/2`),
           # and what the best-effort second pass did with them. Statuses and
-          # the pure-Elixir classification come from the build without them;
-          # only the published pure-Elixir files are rebuilt with `added`
-          # loadable, and `deps_lock` then names them. `dropped` were tried
-          # (or, for a firmware build, not tried) and left out; `reason` says
-          # why: "deps_get_failed", "lock_policy_violation",
-          # "host_compile_failed", "stale_build_not_removed",
-          # "mix_exs_edit_failed" or "firmware_build", `nil` when nothing was
-          # dropped. Absent for argus-only runs.
+          # the classification come from the build without them; only the
+          # published files are rebuilt with `added` loadable: a pure-Elixir
+          # package's host build, and then the run's `deps_lock` names them,
+          # or a firmware package's passing targets
+          # (`NccWorker.OptionalDepsTargets`), and then each kept system's own
+          # `deps_lock` does while the run's stays the status build's.
+          # For a firmware run `added` were kept on at least one target and
+          # `dropped` on every target that tried; each passing system carries
+          # its own `optional_deps`. `reason` says why they were dropped
+          # (for a firmware run, the first target's reason):
+          # "deps_get_failed", "lock_policy_violation", "host_compile_failed",
+          # "target_compile_failed", "timeout", "stale_build_not_removed",
+          # "deps_lock_unreadable", "mix_exs_edit_failed" or
+          # "no_passing_target", `nil` when nothing was dropped. Absent for
+          # argus-only runs.
           # `skipped` were never tried: dev tooling and alternatives on
           # `NccWorker.Project`'s `@optional_deps_never_added`.
           optional(:optional_deps) => %{
@@ -131,8 +139,10 @@ defmodule NccWorker.Worker do
             reason: String.t() | nil
           },
           # The package's transitive dependency closure as locked for this
-          # build, itself excluded, keyed by name. Absent when the lock could
-          # not be read and for argus-only runs, which build no files.
+          # build, itself excluded, keyed by name. For a firmware run, the
+          # lock of the status build, read before the per-target optional
+          # pass. Absent when the lock could not be read and for argus-only
+          # runs, which build no files.
           optional(:deps_lock) => %{
             String.t() => %{required(String.t()) => String.t()}
           },
@@ -195,6 +205,19 @@ defmodule NccWorker.Worker do
               # -- present there only when non-empty, rather than nested under
               # each system.
               optional(:cache_candidates) => [cache_candidate()],
+              # Only on a firmware system that kept the optional dependencies
+              # in the per-target pass (`NccWorker.OptionalDepsTargets`): the
+              # closure its published files were built against, shaped like
+              # the run's `deps_lock`, which applies to every other system.
+              optional(:deps_lock) => %{String.t() => %{String.t() => String.t()}},
+              # Only on a firmware system that was passing when the per-target
+              # pass ran: what it did on this target. `reason` as for the
+              # run's `optional_deps`, `nil` when kept.
+              optional(:optional_deps) => %{
+                added: [String.t()],
+                dropped: [String.t()],
+                reason: String.t() | nil
+              },
               status: Compatibility.Types.status(),
               duration_sec: float(),
               phase_timings: map() | nil,
@@ -487,7 +510,7 @@ defmodule NccWorker.Worker do
         pkg_source_dir: pkg_source_dir
       }
 
-      {:ok, finish_project(context, toolchain, github_url, optional_deps)}
+      finish_project(context, toolchain, github_url, optional_deps)
     end
   end
 
@@ -499,38 +522,69 @@ defmodule NccWorker.Worker do
            systems: systems,
            timeout: timeout,
            log_tail_bytes: log_tail_bytes,
-           description: description,
-           release_info: release_info,
-           package_version_hint: package_version_hint,
            host_result: host_result,
            scope: scope,
-           selection: selection,
-           runtime_apps: runtime_apps,
-           source_before: source_before,
-           pkg_source_dir: pkg_source_dir
-         },
+           selection: selection
+         } = context,
          toolchain,
          github_url,
          optional_deps
        ) do
-    system_results =
-      scope
-      |> system_results_for(selection, %{
-        firmware: fn ->
-          build_all_systems(
-            project_dir,
-            systems,
-            paths.output_dir,
-            timeout,
-            log_tail_bytes,
-            input.package.name,
-            host_result
-          )
-        end,
-        pure_elixir: fn -> pure_elixir_result(project_dir, input.package.name) end
-      })
-      |> Map.put("host", host_result)
+    build = %{
+      firmware: fn ->
+        build_all_systems(
+          project_dir,
+          systems,
+          paths.output_dir,
+          timeout,
+          log_tail_bytes,
+          input.package.name,
+          host_result
+        )
+      end,
+      pure_elixir: fn -> pure_elixir_result(project_dir, input.package.name) end
+    }
 
+    target_pass = %{
+      project_dir: project_dir,
+      package: input.package.name,
+      systems: systems,
+      paths: paths,
+      timeout: timeout
+    }
+
+    with {:ok, system_results, optional_deps, run_lock} <-
+           build_systems(scope, selection, build, target_pass, optional_deps) do
+      finish_result(
+        Map.put(system_results, "host", host_result),
+        Map.merge(context, %{
+          toolchain: toolchain,
+          github_url: github_url,
+          optional_deps: optional_deps,
+          run_lock: run_lock
+        })
+      )
+    end
+  end
+
+  defp finish_result(system_results, %{
+         input: input,
+         project_dir: project_dir,
+         systems: systems,
+         description: description,
+         release_info: release_info,
+         package_version_hint: package_version_hint,
+         host_result: host_result,
+         scope: scope,
+         selection: selection,
+         runtime_apps: runtime_apps,
+         source_before: source_before,
+         pkg_source_dir: pkg_source_dir,
+         toolchain: toolchain,
+         github_url: github_url,
+         optional_deps: optional_deps,
+         run_lock: run_lock
+       }) do
     {:ok, source_after} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
     source_changes = NccWorker.SourceScanner.diff(source_before, source_after)
 
@@ -590,9 +644,10 @@ defmodule NccWorker.Worker do
       scope: RunScope.to_string(scope)
     }
 
-    result
-    |> put_optional_deps(optional_deps)
-    |> put_deps_lock(scope, project_dir, input.package.name)
+    {:ok,
+     result
+     |> put_optional_deps(optional_deps)
+     |> put_deps_lock(scope, run_lock, project_dir, input.package.name)}
   end
 
   defp put_optional_deps(result, nil), do: result
@@ -606,10 +661,11 @@ defmodule NccWorker.Worker do
   # loadable, so files built without them match no such application in the
   # precompiled API (see `NccWorker.DepsLock.unresolved_optional_deps/2`).
   #
-  # Only a pure-Elixir package gets the pass: its one set of published files
+  # A pure-Elixir package gets the pass here: its one set of published files
   # is the host build, which this recompiles. A firmware package's files come
-  # from every target's build, which the pass would have to repeat, so it
-  # publishes them without the optional dependencies, as before. Nothing here
+  # from every target's build, so for it this only decides what to add
+  # (`{:per_target, deps, skipped}`) and `NccWorker.OptionalDepsTargets`
+  # recompiles each passing target after the firmware builds. Nothing here
   # touches a status, the host result or the classification: whatever goes
   # wrong, the project is put back and the package rebuilt without them.
   #
@@ -632,31 +688,23 @@ defmodule NccWorker.Worker do
       )
     end
 
-    with {:ok, info} <- optional_deps_pass(deps, selection, project_dir, package_name, paths) do
-      {:ok, Map.put(info, :skipped, skipped)}
+    case optional_deps_pass(deps, selection, project_dir, package_name, paths) do
+      {:ok, {:per_target, deps}} -> {:ok, {:per_target, deps, skipped}}
+      {:ok, info} -> {:ok, Map.put(info, :skipped, skipped)}
+      error -> error
     end
   end
 
-  defp optional_deps_pass(deps, selection, project_dir, package_name, paths) do
-    case deps do
-      [] ->
-        {:ok, optional_deps_info([], [], nil)}
+  # A firmware package gets them per target after its firmware builds
+  # (`NccWorker.OptionalDepsTargets`), so nothing is added here.
+  defp optional_deps_pass(deps, :firmware, _project_dir, _package_name, _paths),
+    do: {:ok, {:per_target, deps}}
 
-      deps when selection == :firmware ->
-        names = Enum.map(deps, & &1.app)
+  defp optional_deps_pass([], _selection, _project_dir, _package_name, _paths),
+    do: {:ok, optional_deps_info([], [], nil)}
 
-        log_host(
-          paths,
-          "Not adding optional dependencies #{Enum.join(names, ", ")}: " <>
-            "firmware targets are built without them"
-        )
-
-        {:ok, optional_deps_info([], names, "firmware_build")}
-
-      deps ->
-        add_optional_deps(project_dir, package_name, deps, paths)
-    end
-  end
+  defp optional_deps_pass(deps, _selection, project_dir, package_name, paths),
+    do: add_optional_deps(project_dir, package_name, deps, paths)
 
   defp add_optional_deps(project_dir, package_name, deps, paths) do
     names = Enum.map(deps, & &1.app)
@@ -767,29 +815,84 @@ defmodule NccWorker.Worker do
   # them, so they are only reusable against the exact tree they were built
   # with (`NccWorker.DepsLock`). An argus-only run publishes nothing, and a lock
   # that cannot be read leaves the key out rather than failing a finished build.
-  defp put_deps_lock(result, :argus_only, _project_dir, _package), do: result
+  #
+  # A firmware run's lock was read before its per-target optional pass
+  # (`run_lock`), so it is the lock the status build saw; any other run's is
+  # read here.
+  defp put_deps_lock(result, :argus_only, _run_lock, _project_dir, _package), do: result
 
-  defp put_deps_lock(result, _scope, project_dir, package) do
-    result =
-      case DepsLock.read(project_dir, package) do
-        nil -> result
-        deps_lock -> Map.put(result, :deps_lock, deps_lock)
-      end
+  defp put_deps_lock(result, _scope, nil, project_dir, package) do
+    run_lock = %{
+      deps_lock: DepsLock.read(project_dir, package),
+      package_checksum: DepsLock.package_checksum(project_dir, package)
+    }
 
-    case DepsLock.package_checksum(project_dir, package) do
-      nil -> result
-      checksum -> Map.put(result, :package_checksum, checksum)
-    end
+    put_deps_lock(result, :full, run_lock, project_dir, package)
   end
+
+  defp put_deps_lock(result, _scope, run_lock, _project_dir, _package) do
+    result
+    |> put_present(:deps_lock, run_lock.deps_lock)
+    |> put_present(:package_checksum, run_lock.package_checksum)
+  end
+
+  defp put_present(result, _key, nil), do: result
+  defp put_present(result, key, value), do: Map.put(result, key, value)
 
   # An argus-only run compiles on the host for argus and stops there: the
   # targets it leaves out are carried over from the previous run at ingest.
-  defp system_results_for(:argus_only, _selection, _build), do: %{}
+  # Returns the systems, the run's `optional_deps` and, for a firmware run,
+  # the lock read before its per-target pass (`nil` otherwise).
+  defp build_systems(:argus_only, _selection, _build, _pass, optional_deps),
+    do: {:ok, %{}, optional_deps, nil}
 
-  defp system_results_for(_scope, :pure_elixir, %{pure_elixir: pure}),
-    do: %{"pure_elixir" => pure.()}
+  defp build_systems(_scope, :pure_elixir, %{pure_elixir: pure}, _pass, optional_deps),
+    do: {:ok, %{"pure_elixir" => pure.()}, optional_deps, nil}
 
-  defp system_results_for(_scope, :firmware, %{firmware: build}), do: build.()
+  defp build_systems(_scope, :firmware, %{firmware: build}, pass, {:per_target, deps, skipped}) do
+    {results, envs} = build.()
+
+    targets =
+      for system <- pass.systems, env = envs[system.name], env != nil do
+        log_file = Path.join([pass.paths.output_dir, "logs", "#{system.name}.log"])
+        {system.name, %{env: env, log_file: log_file}}
+      end
+
+    params = %{
+      project_dir: pass.project_dir,
+      package: pass.package,
+      deps: deps,
+      systems: results,
+      targets: targets,
+      timeout_sec: pass.timeout,
+      concurrency: build_concurrency()
+    }
+
+    with {:ok, out} <- OptionalDepsTargets.run(params) do
+      log_target_pass(pass.paths, out.systems)
+
+      {:ok, out.systems, Map.put(out.optional_deps, :skipped, skipped),
+       %{deps_lock: out.deps_lock, package_checksum: out.package_checksum}}
+    end
+  end
+
+  # One line per target that tried, so host.log says where they were kept.
+  defp log_target_pass(paths, systems) do
+    for {name, %{optional_deps: info}} <- Enum.sort(systems) do
+      line =
+        case info do
+          %{added: [_ | _] = added} ->
+            "Optional dependencies #{Enum.join(added, ", ")} kept on #{name}"
+
+          %{dropped: dropped, reason: reason} ->
+            "Optional dependencies #{Enum.join(dropped, ", ")} dropped on #{name}: #{reason}"
+        end
+
+      log_host(paths, line)
+    end
+
+    :ok
+  end
 
   # Nothing was built for the targets, so there is no firmware to measure.
   defp footprint_for(:argus_only, _selection, _project, _package, _systems),
@@ -865,7 +968,7 @@ defmodule NccWorker.Worker do
             toolchain_build: toolchain_build(project_dir, package_name, host, toolchain)
           }
           |> put_optional_deps(optional_deps)
-          |> put_deps_lock(:toolchain, project_dir, package_name)
+          |> put_deps_lock(:toolchain, nil, project_dir, package_name)
           |> put_requested_toolchain(input[:toolchain])
 
         {:ok, result}
@@ -1072,7 +1175,7 @@ defmodule NccWorker.Worker do
           integer(),
           String.t(),
           map() | nil
-        ) :: map()
+        ) :: {map(), %{String.t() => [{String.t(), String.t()}]}}
   defp build_all_systems(
          project_dir,
          [_, _ | _] = systems,
@@ -1087,26 +1190,22 @@ defmodule NccWorker.Worker do
 
       # See `NccWorker.SeedGate`. Only the seed is prepared up front: a run that
       # stops after it skips seven `mix deps.get`s as well as seven builds.
-      seed_results =
-        build_batch(
-          [{seed, prepare_system(project_dir, seed, output_dir, package_name)}],
-          1,
-          log_tail_bytes,
-          package_name
-        )
+      seed_prepared = [{seed, prepare_system(project_dir, seed, output_dir, package_name)}]
+      seed_results = build_batch(seed_prepared, 1, log_tail_bytes, package_name)
 
       [{_name, seed_result}] = seed_results
 
-      rest_results =
+      {rest_results, rest_prepared} =
         if SeedGate.skip_rest?(seed_result) do
-          Enum.map(rest, &{&1.name, SeedGate.skipped_result(seed.name)})
+          {Enum.map(rest, &{&1.name, SeedGate.skipped_result(seed.name)}), []}
         else
-          rest
-          |> Enum.map(&{&1, prepare_system(project_dir, &1, output_dir, package_name)})
-          |> build_batch(build_concurrency(), log_tail_bytes, package_name)
+          prepared =
+            Enum.map(rest, &{&1, prepare_system(project_dir, &1, output_dir, package_name)})
+
+          {build_batch(prepared, build_concurrency(), log_tail_bytes, package_name), prepared}
         end
 
-      Map.new(seed_results ++ rest_results)
+      {Map.new(seed_results ++ rest_results), prepared_envs(seed_prepared ++ rest_prepared)}
     else
       build_all_systems(project_dir, systems, output_dir, timeout, log_tail_bytes, package_name)
     end
@@ -1157,10 +1256,18 @@ defmodule NccWorker.Worker do
 
     {seed, rest} = split_seed(prepared, concurrency)
 
-    (build_batch(seed, 1, log_tail_bytes, package_name) ++
-       build_batch(rest, concurrency, log_tail_bytes, package_name))
-    |> Map.new()
+    results =
+      (build_batch(seed, 1, log_tail_bytes, package_name) ++
+         build_batch(rest, concurrency, log_tail_bytes, package_name))
+      |> Map.new()
+
+    {results, prepared_envs(prepared)}
   end
+
+  # Each prepared system's build env, by name, for the optional-dependency
+  # pass to build exactly where the firmware build did.
+  defp prepared_envs(prepared),
+    do: Map.new(prepared, fn {system, prep} -> {system.name, prep.env} end)
 
   defp split_seed(prepared, concurrency) when concurrency > 1 and length(prepared) > 1 do
     case Enum.split_with(prepared, fn {_system, prep} -> prep.deps == :ok end) do

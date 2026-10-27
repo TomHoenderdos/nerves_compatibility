@@ -104,8 +104,20 @@ defmodule NccWorker.JsonWriter do
   defp put_present(json, _key, nil), do: json
   defp put_present(json, key, value), do: Map.put(json, key, value)
 
+  # `deps_lock` and `optional_deps` are absent rather than null on a system
+  # the firmware pass did not touch (`NccWorker.OptionalDepsTargets`):
+  # `optional_deps` is only on a system that was passing when the pass ran,
+  # `deps_lock` only on one that kept the optional dependencies, whose files
+  # were built against that lock rather than the run's.
   @spec convert_system_result(map()) :: map()
   defp convert_system_result(system_result) do
+    [:deps_lock, :optional_deps]
+    |> Enum.reduce(base_system_result(system_result), fn key, json ->
+      put_present(json, key, Map.get(system_result, key))
+    end)
+  end
+
+  defp base_system_result(system_result) do
     %{
       status: Compatibility.Types.status_to_string(system_result.status),
       duration_sec: system_result.duration_sec,
