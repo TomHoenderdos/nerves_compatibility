@@ -121,8 +121,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
   # (the same function the worker used) and promotes it into the slug dir,
   # and the mount the container actually saw was readonly throughout.
   test "promotes jason's own build cache candidate before ingest, over a read-only mount" do
-    tmp_cache =
-      Path.join(System.tmp_dir!(), "ncc-build-cache-it-#{System.unique_integer([:positive])}")
+    tmp_cache = unique_tmp_dir("ncc-build-cache-it")
 
     previous = Application.get_env(:portal, Portal.Builder, [])
 
@@ -232,8 +231,8 @@ defmodule Portal.Workers.BuildIntegrationTest do
     )
 
     previous = Application.get_env(:portal, Portal.Builder, [])
-    cache_a = Path.join(System.tmp_dir!(), "ncc-l2-a-#{System.unique_integer([:positive])}")
-    cache_b = Path.join(System.tmp_dir!(), "ncc-l2-b-#{System.unique_integer([:positive])}")
+    cache_a = unique_tmp_dir("ncc-l2-a")
+    cache_b = unique_tmp_dir("ncc-l2-b")
 
     on_exit(fn ->
       Application.put_env(:portal, Portal.BuildCache.L2, previous_l2)
@@ -402,7 +401,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
     assert Enum.any?(template, &String.starts_with?(&1, "nerves_system_x86_64-"))
 
     before = cache_snapshot(root)
-    run_id = "it-circuits-gpio-#{System.unique_integer([:positive])}"
+    run_id = "it-circuits-gpio-#{unique_suffix()}"
     on_exit(fn -> Builder.cleanup(run_id) end)
 
     assert {:ok, %{exit_code: 0, result: result, log: log}} =
@@ -434,7 +433,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
   # build has already settled x86_64's status.
   @tag timeout: :timer.minutes(60)
   test "a firmware target republishes with its own optional dependencies" do
-    run_id = "it-ecto-optional-#{System.unique_integer([:positive])}"
+    run_id = "it-ecto-optional-#{unique_suffix()}"
     on_exit(fn -> Builder.cleanup(run_id) end)
 
     image_digest = Builder.image_digest(Builder.docker_image())
@@ -552,6 +551,17 @@ defmodule Portal.Workers.BuildIntegrationTest do
   end
 
   defp hex64?(name), do: String.match?(name, ~r/\A[0-9a-f]{64}\z/)
+
+  # A host path a container bind-mounts must never repeat from one `mix test`
+  # run to the next. `System.unique_integer/1` is unique only within one VM
+  # and its small values recur across runs. Under Docker Desktop a container
+  # given a recreated path that an earlier run had mounted and deleted saw the
+  # mount as ENOENT, though the host had the directory: the worker then
+  # disabled its build cache and reported no candidate, so nothing was
+  # promoted. Random suffixes never repeat.
+  defp unique_tmp_dir(prefix), do: Path.join(System.tmp_dir!(), "#{prefix}-#{unique_suffix()}")
+
+  defp unique_suffix, do: Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
   defp build_and_ingest(name, version, opts \\ []) do
     {:ok, request} =
