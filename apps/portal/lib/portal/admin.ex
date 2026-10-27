@@ -166,12 +166,16 @@ defmodule Portal.Admin do
   # given -- so a bulk action over hundreds of rows does not pull their
   # `error_log` along for nothing.
   #
-  # A row that raises is reported as `{id, :error}` rather than losing the
-  # count of everything before it: without the rescue here, one bad row
-  # would propagate out of `Enum.reduce/3` and the caller (Cinder's bulk
-  # action executor, or the async task `PortalWeb.Admin.QueueLive` runs this
-  # under) would turn the whole bulk action into one opaque failure instead
-  # of reporting the rows that did go through.
+  # A row that raises, exits or throws is reported as `{id, :error}` rather
+  # than losing the count of everything before it: without the rescue/catch
+  # in `call_one/2`, one bad row would propagate out of `Enum.reduce/3` and
+  # the caller (Cinder's bulk action executor, or the async task
+  # `PortalWeb.Admin.QueueLive` runs this under) would turn the whole bulk
+  # action into one opaque failure instead of reporting the rows that did go
+  # through. `catch` matters as much as `rescue` here: a GenServer timeout
+  # or a stray `exit` inside a row's own call is not a raised exception, and
+  # without it such a row would kill the task running the whole batch,
+  # leaving the admin's "Working on N requests..." flash standing forever.
   defp each_request(query, fun) do
     query
     |> Ash.Query.select([:id])
@@ -189,7 +193,25 @@ defmodule Portal.Admin do
   defp call_one(fun, request) do
     fun.(request)
   rescue
-    _ -> {:error, :error}
+    e ->
+      log_row_failure(request.id, :error, e, __STACKTRACE__)
+      {:error, :error}
+  catch
+    kind, reason ->
+      log_row_failure(request.id, kind, reason, __STACKTRACE__)
+      {:error, :error}
+  end
+
+  # Cinder's own rescue, around the whole bulk click, used to log "Bulk
+  # action failed: ..."; that line disappeared once each row got its own
+  # rescue here instead, so it is replaced with one that also carries the
+  # id of the row that failed -- the one thing a bulk run over hundreds of
+  # rows needs to find which one.
+  defp log_row_failure(request_id, kind, reason, stacktrace) do
+    Logger.error(
+      "Bulk action failed for request #{request_id}: " <>
+        Exception.format(kind, reason, stacktrace)
+    )
   end
 
   @doc """
