@@ -13,6 +13,10 @@ The API consists of:
 
 `https://compatibility.nerves-project.org/`
 
+Request and response shapes are also published as an OpenAPI 3 document at
+`/api/openapi.json` (rendered at `/api/docs`). This document stays the
+reference for what the fields mean and how a client matches and verifies them.
+
 ## Endpoints
 
 ### GET /api/precompiled/manifests/{package_name}.json

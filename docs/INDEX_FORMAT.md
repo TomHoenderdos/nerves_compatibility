@@ -10,6 +10,9 @@ catalog API.
 | `GET /api/stats` | [Stats](#stats) |
 | `GET /api/failing` | [Failing](#failing) packages ranked by hex.pm downloads (own `schema: 1`) |
 
+The same endpoints are described as an OpenAPI 3 document at
+`GET /api/openapi.json`, and rendered as a page at `/api/docs`.
+
 Conventions:
 - All timestamps are ISO 8601 strings (e.g., `"2025-12-23T10:30:00Z"`)
 - Status values are one of: `pass`, `fail`, `error`, `skipped`, `unknown`
