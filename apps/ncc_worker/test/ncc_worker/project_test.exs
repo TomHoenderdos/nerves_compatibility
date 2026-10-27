@@ -444,6 +444,77 @@ defmodule NccWorker.ProjectTest do
     end
   end
 
+  # The firmware pass injects once and resolves per target, so the two halves
+  # of `add_optional_deps/5` are callable on their own. Neither restores
+  # anything: the caller owns the snapshot.
+  describe "inject_optional_deps/2" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "project_inject_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "mix.exs"), @sample_mix_exs)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, project_dir: tmp}
+    end
+
+    test "writes the injected deps into mix.exs and names them", %{project_dir: dir} do
+      deps = [
+        %{app: "shoehorn", package: "shoehorn", requirement: "~> 0.9"},
+        %{app: "decimal", package: "decimal", requirement: "~> 2.0"}
+      ]
+
+      assert {:ok, ["decimal"]} = Project.inject_optional_deps(dir, deps)
+      assert File.read!(Path.join(dir, "mix.exs")) =~ ~s[{:decimal, "~> 2.0"},]
+    end
+
+    test "leaves mix.exs alone when the template declares them all", %{project_dir: dir} do
+      deps = [%{app: "shoehorn", package: "shoehorn", requirement: "~> 0.9"}]
+
+      assert {:ok, []} = Project.inject_optional_deps(dir, deps)
+      assert File.read!(Path.join(dir, "mix.exs")) == @sample_mix_exs
+    end
+
+    test "errors on a mix.exs without a deps block", %{project_dir: dir} do
+      File.write!(Path.join(dir, "mix.exs"), "defmodule Foo do\nend\n")
+      deps = [%{app: "decimal", package: "decimal", requirement: "~> 2.0"}]
+
+      assert {:error, _} = Project.inject_optional_deps(dir, deps)
+    end
+  end
+
+  describe "fetch_optional_deps/4" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "project_fetch_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, project_dir: tmp}
+    end
+
+    test "removes the package's build under the env's build path, then runs deps.get",
+         %{project_dir: dir} do
+      build_path = Path.join([dir, "_build", "rpi4"])
+      stale = Path.join([build_path, "lib", "pkg", "ebin", "pkg.beam"])
+      File.mkdir_p!(Path.dirname(stale))
+      File.write!(stale, "x")
+      env = [{"MIX_TARGET", "rpi4"}, {"MIX_BUILD_PATH", build_path}]
+      test_pid = self()
+
+      deps_get = fn project_dir, got_env ->
+        send(test_pid, {:deps_get, project_dir, got_env, File.exists?(stale)})
+        :ok
+      end
+
+      assert :ok = Project.fetch_optional_deps(dir, "pkg", env, deps_get)
+      assert_received {:deps_get, ^dir, ^env, false}
+    end
+
+    test "returns deps.get's error as is", %{project_dir: dir} do
+      deps_get = fn _dir, _env -> {:error, {:deps_get_failed, "nope"}} end
+
+      assert {:error, {:deps_get_failed, "nope"}} =
+               Project.fetch_optional_deps(dir, "pkg", [], deps_get)
+    end
+  end
+
   describe "optional_deps_to_add/1" do
     # mdns_lite declares igniter optional; adding it drags igniter's whole
     # closure into the key, and the entry misses for every application that

@@ -295,39 +295,67 @@ defmodule NccWorker.Project do
 
   def add_optional_deps(_project_dir, _package_name, [], _env, _deps_get), do: {:ok, []}
 
-  # Edits only the generated worker project's mix.exs, mix.lock and build output.
-  # sobelow_skip ["Traversal.FileModule"]
   def add_optional_deps(project_dir, package_name, deps, env, deps_get) do
-    with {:ok, %{mix_exs: {_path, content}} = snapshot} <- snapshot(project_dir),
-         {:ok, new_content, injected} <- inject_deps(content, deps) do
-      resolve_injected(
-        injected,
-        new_content,
-        snapshot,
-        {project_dir, package_name, env},
-        deps_get
-      )
+    with {:ok, snapshot} <- snapshot(project_dir) do
+      case inject_optional_deps(project_dir, deps) do
+        {:ok, []} ->
+          {:ok, []}
+
+        {:ok, injected} ->
+          fetch_injected(injected, snapshot, {project_dir, package_name, env}, deps_get)
+
+        error ->
+          restore_after(snapshot, error)
+      end
     end
   end
 
-  defp resolve_injected([], _new_content, _snapshot, _project, _deps_get), do: {:ok, []}
+  defp fetch_injected(injected, snapshot, {project_dir, package_name, env}, deps_get) do
+    case fetch_optional_deps(project_dir, package_name, env, deps_get) do
+      :ok -> {:ok, injected}
+      error -> restore_after(snapshot, error)
+    end
+  end
+
+  @doc """
+  The first half of `add_optional_deps/5`: injects the optional dependencies
+  into the project's `mix.exs` and returns the application names it injected.
+  A dependency the template already declares is left alone and not listed;
+  with nothing injected, `mix.exs` is not written. Restores nothing on an
+  error: the caller holds the `snapshot/1`.
+  """
+  @spec inject_optional_deps(String.t(), [map()]) :: {:ok, [String.t()]} | {:error, term()}
+  # Edits only the generated worker project's mix.exs.
+  # sobelow_skip ["Traversal.FileModule"]
+  def inject_optional_deps(project_dir, deps) do
+    mix_exs_path = Path.join(project_dir, "mix.exs")
+
+    with {:ok, content} <- File.read(mix_exs_path),
+         {:ok, new_content, injected} <- inject_deps(content, deps),
+         :ok <- write_injected(mix_exs_path, new_content, injected) do
+      {:ok, injected}
+    end
+  end
+
+  defp write_injected(_path, _content, []), do: :ok
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp resolve_injected(
-         injected,
-         new_content,
-         snapshot,
-         {project_dir, package_name, env},
-         deps_get
-       ) do
-    %{mix_exs: {mix_exs_path, _content}} = snapshot
+  defp write_injected(path, content, _injected), do: File.write(path, content)
 
-    with :ok <- File.write(mix_exs_path, new_content),
-         :ok <- remove_stale_build(env, package_name),
-         :ok <- deps_get.(project_dir, env) do
-      {:ok, injected}
-    else
-      error -> restore_after(snapshot, error)
+  @doc """
+  The second half of `add_optional_deps/5`, for one build env: removes the
+  package's build under that env's `MIX_BUILD_PATH`, then runs `deps_get`
+  with it. Restores nothing on an error.
+  """
+  @spec fetch_optional_deps(
+          String.t(),
+          String.t(),
+          keyword() | list(),
+          (String.t(), list() -> :ok | {:error, term()})
+        ) :: :ok | {:error, term()}
+  def fetch_optional_deps(project_dir, package_name, env, deps_get \\ &run_deps_get/2) do
+    with :ok <- remove_stale_build(env, package_name) do
+      deps_get.(project_dir, env)
     end
   end
 
