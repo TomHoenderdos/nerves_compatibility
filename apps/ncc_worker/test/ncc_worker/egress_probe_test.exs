@@ -36,7 +36,7 @@ defmodule NccWorker.EgressProbeTest do
 
   test "a drop times out and a missing route is unreachable, over v4 and v6" do
     connect = fn
-      {100, 126, 79, 115}, 5432, 2_000 -> {:error, :timeout}
+      {100, 64, 0, 1}, 5432, 2_000 -> {:error, :timeout}
       {0xFD7A, 0x115C, 0xA1E0, 0, 0, 0, 0, 1}, 5432, 2_000 -> {:error, :enetunreach}
     end
 
