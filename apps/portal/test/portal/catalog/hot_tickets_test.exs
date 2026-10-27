@@ -288,4 +288,23 @@ defmodule Portal.Catalog.HotTicketsTest do
       assert names(HotTickets.list(system: "nerves_system_x86_64")) == ["healed"]
     end
   end
+
+  describe "opts_from_params/1" do
+    # A raw "500" passed straight to `list/1` would hit the non-integer
+    # fallback and silently become 50.
+    test "a numeric limit string becomes an integer, then list/1 clamps it" do
+      assert HotTickets.opts_from_params(%{"limit" => "500"})[:limit] == 500
+      assert HotTickets.opts_from_params(%{"limit" => "7"})[:limit] == 7
+    end
+
+    test "junk params are dropped so list/1 uses its defaults" do
+      assert HotTickets.opts_from_params(%{"limit" => "5x", "sort" => "bogus", "system" => ""}) ==
+               [sort: :recent]
+    end
+
+    test "sort=all and a system name come through" do
+      assert HotTickets.opts_from_params(%{"sort" => "all", "system" => "nerves_system_rpi4"}) ==
+               [sort: :all, system: "nerves_system_rpi4"]
+    end
+  end
 end

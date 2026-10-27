@@ -79,6 +79,9 @@ defmodule PortalWeb.HotTicketsLiveTest do
     {:ok, _view, html} = live(conn, ~p"/failing?system=nerves_system_x86_64")
 
     assert order(html, ["old_giant", "rising"]) == ["rising"]
+    # The counts still cover every failing target of the run, not just this one.
+    assert html =~ "Failing targets (all)"
+    assert html =~ ~s(id="system-filter-note")
   end
 
   test "changing the controls patches the URL", %{conn: conn} do

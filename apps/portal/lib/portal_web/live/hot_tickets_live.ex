@@ -93,6 +93,10 @@ defmodule PortalWeb.HotTicketsLive do
           <a href="/api/failing" class="link link-primary text-xs">JSON</a>
         </form>
 
+        <p :if={@system && @rows != []} id="system-filter-note" class="text-sm text-base-content/60">
+          Showing packages failing on {@system}. Counts and top failure cover every failing target of each package's latest run.
+        </p>
+
         <p
           :if={@rows == []}
           class="rounded-2xl border border-base-300 bg-base-100 p-8 text-center text-base-content/60"
@@ -111,8 +115,12 @@ defmodule PortalWeb.HotTicketsLive do
                 <th class="px-5 py-3">Package</th>
                 <th class="px-5 py-3">Recent downloads</th>
                 <th class="px-5 py-3">All downloads</th>
-                <th class="px-5 py-3">Failing targets</th>
-                <th class="px-5 py-3">Top failure</th>
+                <th class="px-5 py-3">
+                  {if @system, do: "Failing targets (all)", else: "Failing targets"}
+                </th>
+                <th class="px-5 py-3">
+                  {if @system, do: "Top failure (all targets)", else: "Top failure"}
+                </th>
                 <th class="px-5 py-3">Version tested</th>
                 <th class="px-5 py-3">Last run</th>
               </tr>
