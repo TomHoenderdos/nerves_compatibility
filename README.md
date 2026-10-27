@@ -55,4 +55,5 @@ mix format
 
 ## License
 
-TBD
+Copyright 2026 Tom Hoenderdos. Licensed under the Apache License, Version 2.0; see
+[LICENSE](LICENSE). Vendored files under `apps/portal/assets/vendor/` keep their own licenses.
