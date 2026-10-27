@@ -22,11 +22,10 @@ defmodule PortalWeb.Admin.MaintenanceLive do
   use PortalWeb, :live_view
 
   import PortalWeb.AdminComponents
-  import PortalWeb.PageHTML, only: [toolchain_dom_id: 1]
+  import PortalWeb.Admin.LiveAuth
 
   alias Portal.BulkRebuild
   alias PortalWeb.AdminMessages
-  alias PortalWeb.Plugs.RequireAdmin
 
   @tables ["sweeps"]
 
@@ -91,20 +90,6 @@ defmodule PortalWeb.Admin.MaintenanceLive do
   def handle_params(params, uri, socket) do
     {:noreply, Cinder.UrlSync.handle_params(sane_page(params), uri, socket)}
   end
-
-  # Cinder turns `page` into an offset unchecked, and one past Postgres's
-  # bigint fails the query and logs an error instead of showing anything. An
-  # absurd one is dropped, which shows the first.
-  defp sane_page(%{"page" => page} = params) when is_binary(page) do
-    case Integer.parse(page) do
-      {n, ""} when n in 1..1_000_000 -> params
-      _ -> Map.delete(params, "page")
-    end
-  end
-
-  defp sane_page(%{"page" => _not_a_string} = params), do: Map.delete(params, "page")
-
-  defp sane_page(params), do: params
 
   # No redirect after these, unlike the controller actions they replace: a
   # LiveView event is not re-sent when the page reloads, so a refresh cannot
@@ -185,12 +170,8 @@ defmodule PortalWeb.Admin.MaintenanceLive do
   def handle_info({:bulk_failed, %{reason: reason}}, socket),
     do: {:noreply, put_flash(socket, :error, AdminMessages.error(reason))}
 
-  # What `use Cinder.UrlSync` would inject, written out so it can sit with
-  # the other `handle_info/2` clauses.
-  def handle_info({:table_state_change, _table_id, encoded_state}, socket) do
-    current_uri = get_in(socket.assigns, [:url_state, :uri])
-    {:noreply, Cinder.UrlSync.update_url(socket, encoded_state, current_uri)}
-  end
+  def handle_info({:table_state_change, _table_id, encoded_state}, socket),
+    do: table_state_change(socket, encoded_state)
 
   defp update_check_message(true),
     do: "Dry run queued. It reports what it would rebuild and queues nothing."
@@ -199,50 +180,6 @@ defmodule PortalWeb.Admin.MaintenanceLive do
 
   defp pluralize(1, word), do: "1 #{word}"
   defp pluralize(count, word), do: "#{count} #{word}s"
-
-  defp as_admin(socket, fun) do
-    %{user_id: user_id, login_method: login_method} = socket.assigns
-
-    case RequireAdmin.check(load_user(user_id), login_method) do
-      {:ok, user} -> fun.(assign(socket, :current_user, user), user)
-      {:error, refusal} -> refuse(socket, refusal)
-    end
-  end
-
-  # Cinder calls a bulk action as `fun.(query, opts)`, with the actor it was
-  # rendered with. That actor is a snapshot from the mount, so the admin is
-  # re-checked here and the freshly loaded user goes in its place. A refusal
-  # comes back as `{:error, {:refused, refusal}}` and Cinder hands it to
-  # `{:bulk_failed, _}`, which redirects the way a click would.
-  defp as_admin_bulk(bulk_fun, user_id, login_method) do
-    fn query, opts ->
-      case RequireAdmin.check(load_user(user_id), login_method) do
-        {:ok, user} -> bulk_fun.(query, Keyword.put(opts, :actor, user))
-        {:error, refusal} -> {:error, {:refused, refusal}}
-      end
-    end
-  end
-
-  # A click carries what the button put in it, but a forged one may carry
-  # anything; a missing or non-string id is refused as not valid, not by
-  # crashing the page.
-  defp string_param(params, key) do
-    case params[key] do
-      value when is_binary(value) -> value
-      _other -> ""
-    end
-  end
-
-  defp load_user(user_id) do
-    case Portal.Accounts.get_user(user_id) do
-      {:ok, user} -> user
-      _ -> nil
-    end
-  end
-
-  defp refuse(socket, %{to: to, flash: flash}) do
-    {:noreply, socket |> put_flash(:error, flash) |> redirect(to: to)}
-  end
 
   # Cinder renders its rows with a `:for`, and LiveView re-renders only the
   # rows whose record changed. `:counts` is loaded fresh on every refetch, so

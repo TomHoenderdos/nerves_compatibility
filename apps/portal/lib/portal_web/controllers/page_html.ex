@@ -6,23 +6,9 @@ defmodule PortalWeb.PageHTML do
   """
   use PortalWeb, :html
 
+  # Also brings `verification_label/1` and `request_status_label/1`, which the
+  # request-scan template shares with the admin Queue tab.
   import PortalWeb.AdminComponents
 
   embed_templates "page_html/*"
-
-  @doc "A toolchain such as `1.19/28` as a DOM id fragment, `1.19-28`."
-  def toolchain_dom_id(toolchain), do: String.replace(toolchain, "/", "-")
-
-  def verification_label(:hex_owner), do: "Hex.pm owner"
-  def verification_label(:github_repo), do: "GitHub repository"
-  def verification_label(:anonymous_turnstile), do: "Anonymous"
-  def verification_label(:anonymous_manual), do: "Manual review"
-  def verification_label(:admin_manual), do: "Admin"
-  def verification_label(source), do: source |> to_string() |> String.replace("_", " ")
-
-  def request_status_label(:pending), do: "Pending review"
-  def request_status_label(:accepted), do: "Accepted"
-  def request_status_label(:queued), do: "Queued"
-  def request_status_label(:rejected), do: "Rejected"
-  def request_status_label(status), do: status |> to_string() |> String.replace("_", " ")
 end

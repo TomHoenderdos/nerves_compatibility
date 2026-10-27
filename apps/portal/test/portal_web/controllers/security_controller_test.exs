@@ -539,6 +539,22 @@ defmodule PortalWeb.SecurityControllerTest do
     assert Passkeys.count_for_user(user) == 0
   end
 
+  # Removing a passkey can take an admin below the `/admin` gate, and an open
+  # admin tab would otherwise keep paging its tables on the actor it mounted
+  # with. The disconnect makes it reconnect, which re-runs the gate.
+  test "removing a passkey disconnects that user's live sockets", %{conn: conn} do
+    user = user_fixture(%{password: @password})
+    passkey = add_passkey(user)
+    topic = "users_socket:#{user.id}"
+    PortalWeb.Endpoint.subscribe(topic)
+
+    conn
+    |> sign_in(user, :passkey)
+    |> post(~p"/settings/security/passkeys/#{passkey.id}/delete")
+
+    assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
+  end
+
   test "another account's passkey id does nothing", %{conn: conn} do
     user = user_fixture(%{password: @password})
     add_passkey(user)

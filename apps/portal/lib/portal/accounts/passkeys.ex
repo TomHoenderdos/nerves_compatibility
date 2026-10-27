@@ -63,6 +63,11 @@ defmodule Portal.Accounts.Passkeys do
 
       passkey ->
         Ash.destroy!(passkey, domain: Portal.Accounts)
+        # The last passkey of an admin is their `/admin` access
+        # (`PortalWeb.Plugs.RequireAdmin`). An admin page open on it must
+        # mount again to find that out, so every one of the user's live
+        # sockets reconnects; one that loses nothing just mounts again.
+        Portal.Accounts.disconnect_live_sockets(user.id)
         :ok
     end
   end

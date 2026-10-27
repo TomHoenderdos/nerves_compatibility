@@ -16,11 +16,11 @@ defmodule PortalWeb.Admin.BuildersLive do
   use PortalWeb, :live_view
 
   import PortalWeb.AdminComponents
+  import PortalWeb.Admin.LiveAuth, except: [as_admin: 2]
 
   alias Portal.Builders
   alias Portal.Builders.{Images, Leases, Routing}
   alias PortalWeb.AdminMessages
-  alias PortalWeb.Plugs.RequireAdmin
 
   @recent_leases 50
 
@@ -190,34 +190,10 @@ defmodule PortalWeb.Admin.BuildersLive do
   def handle_info({:admin_refresh, :builders}, socket), do: {:noreply, load(socket)}
 
   defp as_admin(socket, fun) do
-    %{user_id: user_id, login_method: login_method} = socket.assigns
-
-    case RequireAdmin.check(load_user(user_id), login_method) do
+    PortalWeb.Admin.LiveAuth.as_admin(socket, fn socket, user ->
       # A token is shown for the action that minted it only.
-      {:ok, user} -> fun.(assign(socket, current_user: user, token: nil), user)
-      {:error, refusal} -> refuse(socket, refusal)
-    end
-  end
-
-  # A click carries what the button put in it, but a forged one may carry
-  # anything; a missing or non-string value is refused by the context
-  # function as not found or invalid, not by crashing the page.
-  defp string_param(params, key) do
-    case params[key] do
-      value when is_binary(value) -> value
-      _other -> ""
-    end
-  end
-
-  defp load_user(user_id) do
-    case Portal.Accounts.get_user(user_id) do
-      {:ok, user} -> user
-      _ -> nil
-    end
-  end
-
-  defp refuse(socket, %{to: to, flash: flash}) do
-    {:noreply, socket |> put_flash(:error, flash) |> redirect(to: to)}
+      fun.(assign(socket, :token, nil), user)
+    end)
   end
 
   defp done(socket, kind, message) do

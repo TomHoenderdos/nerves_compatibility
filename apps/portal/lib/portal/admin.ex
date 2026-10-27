@@ -273,6 +273,10 @@ defmodule Portal.Admin do
          :ok <- not_self(user, actor),
          {:ok, updated, temp} <- Portal.Accounts.set_temporary_password(user) do
       Logger.warning("Temporary password set for #{updated.username} by #{actor.username}")
+      # Their open LiveViews reconnect and mount again on the account as it
+      # now is. The cookie sessions themselves survive: the store is the
+      # signed cookie, so there is no server-side session to end.
+      Portal.Accounts.disconnect_live_sockets(updated.id)
       {:ok, updated, temp}
     end
   end
@@ -374,7 +378,16 @@ defmodule Portal.Admin do
         {:error, reason} -> Repo.rollback(reason)
       end
     end)
+    |> tap(&disconnect_after_commit/1)
   end
+
+  # After the transaction, not inside it: the disconnected socket reconnects
+  # at once, and a reconnect that read the row before the commit would still
+  # find an admin and be let back in.
+  defp disconnect_after_commit({:ok, %Portal.Accounts.User{id: id}}),
+    do: Portal.Accounts.disconnect_live_sockets(id)
+
+  defp disconnect_after_commit(_refused), do: :ok
 
   defp fetch_user(user_id) do
     case Ecto.UUID.cast(user_id) do

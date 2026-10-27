@@ -14,6 +14,37 @@ defmodule Portal.Accounts do
 
   @username_regex ~r/^[a-zA-Z0-9_][a-zA-Z0-9_.-]{2,39}$/
 
+  @doc """
+  The id every live socket of `user_id`'s sessions connects under.
+
+  `PortalWeb.UserAuth.complete_login/3` stores it in the session as
+  `:live_socket_id`, where `Phoenix.LiveView.Socket.id/1` reads it on every
+  connect. It names the user, not the session: there is no server-side
+  session to name, since the session store is the signed cookie.
+  """
+  @spec live_socket_id(String.t()) :: String.t()
+  def live_socket_id(user_id) when is_binary(user_id), do: "users_socket:#{user_id}"
+
+  @doc """
+  Closes every live socket `user_id` has open, in every browser.
+
+  A LiveView authenticates once, when it mounts, and its later work --
+  Cinder's paging and filtering, PubSub-driven refreshes -- runs on the actor
+  it mounted with. The client reconnects at once, which mounts again and so
+  re-runs every `on_mount` hook against the database as it is now: an admin
+  page refuses a demoted admin, and a signed-out browser, whose cookie no
+  longer holds the CSRF token the page was rendered with, is told to reload.
+  Called wherever a user's access shrinks: sign-out, admin revoked, password
+  reset, passkey removed.
+
+  Sessions signed in before live socket ids existed connect under no id, so
+  this does not reach them; they still meet every gate on their next mount.
+  """
+  @spec disconnect_live_sockets(String.t()) :: :ok | {:error, term()}
+  def disconnect_live_sockets(user_id) when is_binary(user_id) do
+    PortalWeb.Endpoint.broadcast(live_socket_id(user_id), "disconnect", %{})
+  end
+
   def valid_username?(username) when is_binary(username),
     do: Regex.match?(@username_regex, username)
 

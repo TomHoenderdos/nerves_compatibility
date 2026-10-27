@@ -7,7 +7,9 @@ defmodule PortalWeb.Plugs.RequireAdmin do
   (or `nil`) and the method that session authenticated with (or `nil`);
   `call/2` gates the `:admin` pipeline, `authorise/1` serves
   `PortalWeb.PageController`'s in-action admin checks, and `on_mount/4`
-  re-runs it when a LiveView connects. They share `check/2` on purpose: the
+  re-runs it when a LiveView connects; `check_session/2`, the one the other
+  three load the user through, serves the admin LiveViews' per-click
+  re-checks. They share `check/2` on purpose: the
   Oban dashboard and the buttons that approve scan requests, reorder the queue
   and start update checks are the same privilege, so a second hand-maintained
   copy of this policy would be a second place for it to rot.
@@ -67,8 +69,7 @@ defmodule PortalWeb.Plugs.RequireAdmin do
   def authorise(conn) do
     conn
     |> get_session(:user_id)
-    |> load_user()
-    |> check(get_session(conn, :login_method))
+    |> check_session(get_session(conn, :login_method))
     |> case do
       {:ok, user} ->
         {:ok, conn, user}
@@ -91,8 +92,7 @@ defmodule PortalWeb.Plugs.RequireAdmin do
   def on_mount(:require_admin_passkey, _params, session, socket) do
     session
     |> Map.get("user_id")
-    |> load_user()
-    |> check(Map.get(session, "login_method"))
+    |> check_session(Map.get(session, "login_method"))
     |> case do
       {:ok, _user} ->
         {:cont, socket}
@@ -104,6 +104,20 @@ defmodule PortalWeb.Plugs.RequireAdmin do
         |> then(&{:halt, &1})
     end
   end
+
+  @doc """
+  `check/2` for a session's `user_id` and `login_method`, with the user
+  loaded fresh from the database.
+
+  The entry point for callers that hold a session's values rather than a conn
+  or a socket mid-mount: the admin LiveViews re-check with it on every click
+  (`PortalWeb.Admin.LiveAuth`), so a demotion or a removed passkey counts at
+  once rather than at the next mount. A missing or unknown id is `nil`, which
+  `check/2` refuses.
+  """
+  @spec check_session(String.t() | nil, atom() | nil) ::
+          {:ok, User.t()} | {:error, refusal()}
+  def check_session(user_id, login_method), do: user_id |> load_user() |> check(login_method)
 
   @doc """
   Whether this user may exercise admin capability, and where to send them if

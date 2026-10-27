@@ -25,14 +25,14 @@ defmodule PortalWeb.Admin.QueueLive do
   use PortalWeb, :live_view
 
   import PortalWeb.AdminComponents
-  import PortalWeb.PageHTML, only: [verification_label: 1, request_status_label: 1]
+  import PortalWeb.Admin.LiveAuth, except: [as_admin_bulk: 3]
 
   require Ash.Query
   require Logger
 
   alias Portal.ScanRequests.ScanRequest
   alias PortalWeb.AdminMessages
-  alias PortalWeb.Plugs.RequireAdmin
+  alias PortalWeb.Admin.LiveAuth
 
   @tables ["approvals", "queue"]
 
@@ -79,21 +79,6 @@ defmodule PortalWeb.Admin.QueueLive do
   def handle_params(params, uri, socket) do
     {:noreply, Cinder.UrlSync.handle_params(sane_page(params), uri, socket)}
   end
-
-  # Cinder turns `page` into an offset unchecked, and one past Postgres's
-  # bigint fails the query and logs an error instead of showing anything.
-  # The controller page fell back to a valid page; here an absurd one is
-  # dropped, which shows the first.
-  defp sane_page(%{"page" => page} = params) when is_binary(page) do
-    case Integer.parse(page) do
-      {n, ""} when n in 1..1_000_000 -> params
-      _ -> Map.delete(params, "page")
-    end
-  end
-
-  defp sane_page(%{"page" => _not_a_string} = params), do: Map.delete(params, "page")
-
-  defp sane_page(params), do: params
 
   @impl true
   def handle_event("approve", params, socket) do
@@ -179,13 +164,10 @@ defmodule PortalWeb.Admin.QueueLive do
   def handle_info({:bulk_failed, %{reason: reason}}, socket),
     do: {:noreply, put_flash(socket, :error, AdminMessages.error(reason))}
 
-  # What `use Cinder.UrlSync` would inject, written out so it can sit with
-  # the other `handle_info/2` clauses. Only the queue table syncs its state to
-  # the URL (see the template), so only it sends this.
-  def handle_info({:table_state_change, _table_id, encoded_state}, socket) do
-    current_uri = get_in(socket.assigns, [:url_state, :uri])
-    {:noreply, Cinder.UrlSync.update_url(socket, encoded_state, current_uri)}
-  end
+  # Only the queue table syncs its state to the URL (see the template), so
+  # only it sends this.
+  def handle_info({:table_state_change, _table_id, encoded_state}, socket),
+    do: table_state_change(socket, encoded_state)
 
   defp bulk_message(ok, []), do: {:info, "#{ok} done."}
 
@@ -205,15 +187,6 @@ defmodule PortalWeb.Admin.QueueLive do
   defp queued_message(request, true), do: "Queued a forced rebuild of #{request.package_name}."
   defp queued_message(request, false), do: "Queued #{request.package_name}."
 
-  defp as_admin(socket, fun) do
-    %{user_id: user_id, login_method: login_method} = socket.assigns
-
-    case RequireAdmin.check(load_user(user_id), login_method) do
-      {:ok, user} -> fun.(assign(socket, :current_user, user), user)
-      {:error, refusal} -> refuse(socket, refusal)
-    end
-  end
-
   # Cinder calls a bulk action as `fun.(query, opts)`, with the actor it was
   # rendered with. That actor is a snapshot from the mount, so the admin is
   # re-checked here, synchronously, before anything else happens: a refusal
@@ -229,12 +202,11 @@ defmodule PortalWeb.Admin.QueueLive do
   # reports its result straight to this process; `handle_info/2` above turns
   # both messages into the flash the admin sees.
   defp as_admin_bulk(bulk_fun, user_id, login_method) do
-    fn query, opts ->
-      case RequireAdmin.check(load_user(user_id), login_method) do
-        {:ok, user} -> start_bulk_task(bulk_fun, query, Keyword.put(opts, :actor, user))
-        {:error, refusal} -> {:error, {:refused, refusal}}
-      end
-    end
+    LiveAuth.as_admin_bulk(
+      fn query, opts -> start_bulk_task(bulk_fun, query, opts) end,
+      user_id,
+      login_method
+    )
   end
 
   defp start_bulk_task(bulk_fun, query, opts) do
@@ -268,27 +240,6 @@ defmodule PortalWeb.Admin.QueueLive do
 
   defp log_bulk_failure(kind, reason, stacktrace) do
     Logger.error("Bulk action crashed: " <> Exception.format(kind, reason, stacktrace))
-  end
-
-  # A click carries what the button put in it, but a forged one may carry
-  # anything; a missing or non-string value is refused by the context
-  # function as blank or not found, not by crashing the page.
-  defp string_param(params, key) do
-    case params[key] do
-      value when is_binary(value) -> value
-      _other -> ""
-    end
-  end
-
-  defp load_user(user_id) do
-    case Portal.Accounts.get_user(user_id) do
-      {:ok, user} -> user
-      _ -> nil
-    end
-  end
-
-  defp refuse(socket, %{to: to, flash: flash}) do
-    {:noreply, socket |> put_flash(:error, flash) |> redirect(to: to)}
   end
 
   defp done(socket, kind, message) do
