@@ -59,8 +59,7 @@ defmodule Portal.EgressCheck do
   @doc "Parses `host:port[,…]`, IP literals only, IPv6 in brackets."
   @spec parse_targets(String.t() | nil) :: {:ok, [target()]} | {:error, String.t()}
   def parse_targets(nil),
-    do:
-      {:error, "set NCC_EGRESS_PROBE to host:port pairs, e.g. 100.64.0.1:5432,[fd00::1]:5432"}
+    do: {:error, "set NCC_EGRESS_PROBE to host:port pairs, e.g. 100.64.0.1:5432,[fd00::1]:5432"}
 
   def parse_targets(raw) when is_binary(raw) do
     raw
