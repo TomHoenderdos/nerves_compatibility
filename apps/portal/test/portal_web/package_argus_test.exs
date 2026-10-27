@@ -199,15 +199,31 @@ defmodule PortalWeb.PackageArgusTest do
     refute has_element?(view, "#argus")
   end
 
-  test "skipped, absent and malformed argus render no section", %{conn: conn} do
+  test "absent and malformed argus render no section", %{conn: conn} do
     # `catalog_runs.argus` is a map column, so a non-map never gets past
     # ingestion; the malformed cases are maps missing or mistyping `findings`.
     malformed = [%{"status" => "ok"}, %{"status" => "ok", "findings" => "x"}]
 
-    for argus <- [%{"status" => "skipped"}, :absent | malformed] do
+    for argus <- [:absent | malformed] do
       seed(argus)
       {:ok, view, _} = live(conn, ~p"/packages/argpkg")
       refute has_element?(view, "#argus")
     end
+  end
+
+  test "a skipped run states why, instead of findings", %{conn: conn} do
+    seed(%{"status" => "skipped", "reason" => "host_compile_failed"})
+
+    {:ok, view, _} = live(conn, ~p"/packages/argpkg")
+
+    assert view |> element("#argus") |> render() =~ "the host build did not pass"
+  end
+
+  test "a skipped run with no reason still renders something, not a crash", %{conn: conn} do
+    seed(%{"status" => "skipped"})
+
+    {:ok, view, _} = live(conn, ~p"/packages/argpkg")
+
+    assert has_element?(view, "#argus")
   end
 end

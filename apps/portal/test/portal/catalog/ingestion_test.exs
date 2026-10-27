@@ -547,6 +547,27 @@ defmodule Portal.Catalog.IngestionTest do
     assert old.argus == nil
   end
 
+  test "a skipped argus result's reason is stored verbatim, like every other argus field" do
+    argus = %{
+      "status" => "skipped",
+      "reason" => "host_compile_failed",
+      "error" => "host status: fail"
+    }
+
+    sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+
+    {:ok, run} =
+      Ingestion.ingest(load_fixture() |> Map.put("argus", argus), %{
+        run_id: "argus-skip-1",
+        image_digest: "sha256:argus-skip",
+        files_dir: seed_files_dir([sha]),
+        scan_request_id: nil,
+        log: "build log"
+      })
+
+    assert run.argus == argus
+  end
+
   test "a non-map argus field is dropped rather than failing the ingest" do
     sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
 
