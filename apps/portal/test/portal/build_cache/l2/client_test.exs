@@ -135,6 +135,50 @@ defmodule Portal.BuildCache.L2.ClientTest do
   # the first request on it fails with `:closed` before a byte is sent. A
   # proxy in front of the stub closes its first connection right after
   # accepting it and forwards every later one.
+  test "delete removes the object, signed, and a missing one is ok too", %{s: s, cfg: cfg} do
+    FakeS3.put_object(s, "slug/k.tar.gz", "hello")
+    assert :ok = Client.delete(cfg, "slug/k.tar.gz")
+    assert FakeS3.objects(s) == []
+    assert {"DELETE", "/ncc-test/slug/k.tar.gz", ""} in FakeS3.requests(s)
+    assert :ok = Client.delete(cfg, "slug/k.tar.gz")
+  end
+
+  test "delete answers ok on a 404 and an error on any other status", %{s: s, cfg: cfg} do
+    FakeS3.put_object(s, "slug/k.tar.gz", "hello")
+    FakeS3.set_fault(s, {:delete, :status, 404})
+    assert :ok = Client.delete(cfg, "slug/k.tar.gz")
+    FakeS3.set_fault(s, {:delete, :status, 403})
+    assert {:error, {:status, 403}} = Client.delete(cfg, "slug/k.tar.gz")
+    FakeS3.set_fault(s, {:delete, :status, 500})
+    assert {:error, {:status, 500}} = Client.delete(cfg, "slug/k.tar.gz")
+    assert FakeS3.objects(s) == ["slug/k.tar.gz"]
+  end
+
+  test "a delete signed with the wrong secret is refused", %{s: s, cfg: cfg} do
+    FakeS3.put_object(s, "slug/k.tar.gz", "hello")
+    assert {:error, {:status, 403}} = Client.delete(%{cfg | secret_key: "wrong"}, "slug/k.tar.gz")
+    assert FakeS3.objects(s) == ["slug/k.tar.gz"]
+  end
+
+  test "delete is bounded in time", %{s: s, cfg: cfg} do
+    FakeS3.put_object(s, "slug/k.tar.gz", "hello")
+    FakeS3.on_delete(s, fn _ -> Process.sleep(200) end)
+    # Whichever fires first: the receive timeout or the total bound.
+    assert {:error, reason} = Client.delete(cfg, "slug/k.tar.gz", timeout_ms: 50)
+    assert reason in [:timeout, %Req.TransportError{reason: :timeout}]
+    # Let the stub answer before it stops with the test.
+    Process.sleep(250)
+  end
+
+  test "an unreachable store is an error from delete, not a raise", %{cfg: cfg} do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false])
+    {:ok, port} = :inet.port(listen)
+    :gen_tcp.close(listen)
+
+    assert {:error, _} =
+             Client.delete(%{cfg | endpoint: "http://127.0.0.1:#{port}"}, "slug/k.tar.gz")
+  end
+
   test "a request on a connection the server closed is sent again once", %{s: s, cfg: cfg} do
     FakeS3.put_object(s, "slug/k.tar.gz", "hello")
     %URI{port: upstream} = URI.parse(cfg.endpoint)

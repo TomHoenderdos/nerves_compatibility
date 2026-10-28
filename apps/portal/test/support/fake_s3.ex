@@ -15,8 +15,8 @@ defmodule Portal.Test.FakeS3 do
       plug returns, so the client sees a *complete* short body, not a broken
       connection. That is what a sha mismatch test needs: a body whose
       `x-amz-meta-sha256` does not match what arrived.
-    * `{:get, :status, n}`, `{:put, :status, n}`, `{:list, :status, n}`
-      answer that operation with status `n`.
+    * `{:get, :status, n}`, `{:put, :status, n}`, `{:list, :status, n}`,
+      `{:delete, :status, n}` answer that operation with status `n`.
     * `{:put, :hang}` holds a PUT for 5 s before answering, a store that
       accepted the connection and stopped responding.
     * `{:list, :no_token}` answers the first listing page with one key,
@@ -47,7 +47,7 @@ defmodule Portal.Test.FakeS3 do
   def start(_opts \\ []) do
     {:ok, agent} =
       Agent.start_link(fn ->
-        %{objects: %{}, fault: nil, on_get: nil, on_list: nil, requests: []}
+        %{objects: %{}, fault: nil, on_get: nil, on_list: nil, on_delete: nil, requests: []}
       end)
 
     plug_opts = %{
@@ -91,9 +91,14 @@ defmodule Portal.Test.FakeS3 do
      }}
   end
 
-  @doc "Stores an object directly. `meta` maps full `x-amz-meta-*` header names to values."
-  def put_object(%{agent: agent}, key, body, meta \\ %{}) do
-    Agent.update(agent, &put_in(&1, [:objects, key], new_object(body, meta)))
+  @doc """
+  Stores an object directly. `meta` maps full `x-amz-meta-*` header names to
+  values; `opts[:last_modified]` (a `DateTime`) dates it, default now.
+  """
+  def put_object(%{agent: agent}, key, body, meta \\ %{}, opts \\ []) do
+    object = new_object(body, meta)
+    object = %{object | last_modified: Keyword.get(opts, :last_modified, object.last_modified)}
+    Agent.update(agent, &put_in(&1, [:objects, key], object))
   end
 
   @doc false
@@ -119,6 +124,9 @@ defmodule Portal.Test.FakeS3 do
 
   @doc "`fun.(prefix)` runs before each listing page is answered; nil clears it."
   def on_list(%{agent: agent}, fun), do: Agent.update(agent, &%{&1 | on_list: fun})
+
+  @doc "`fun.(key)` runs before each DELETE is answered; nil clears it."
+  def on_delete(%{agent: agent}, fun), do: Agent.update(agent, &%{&1 | on_delete: fun})
 
   @doc "Every request the stub saw, oldest first, listing GETs included."
   def requests(%{agent: agent}), do: agent |> Agent.get(& &1.requests) |> Enum.reverse()
@@ -230,6 +238,20 @@ defmodule Portal.Test.FakeS3.Plug do
         |> put_meta(meta)
         |> put_resp_content_type("application/gzip", nil)
         |> send_resp(200, body)
+    end
+  end
+
+  # As S3 does, a DELETE of an absent key answers 204 too.
+  defp object(conn, %{agent: agent}, "DELETE", key) do
+    if fun = Agent.get(agent, & &1.on_delete), do: fun.(key)
+
+    case fault(agent) do
+      {:delete, :status, n} ->
+        error(conn, n, "InternalError")
+
+      _ ->
+        Agent.update(agent, &update_in(&1.objects, fn o -> Map.delete(o, key) end))
+        send_resp(conn, 204, "")
     end
   end
 

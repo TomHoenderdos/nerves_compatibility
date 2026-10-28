@@ -199,13 +199,44 @@ defmodule Portal.BuildCache.L2.Client do
   defp put_result({:ok, %Req.Response{status: status}}), do: {:error, {:status, status}}
   defp put_result({:error, reason}), do: {:error, reason}
 
+  @doc """
+  Deletes `object`: `:ok` on any 2xx and on a 404 (already gone), `{:error,
+  reason}` otherwise. Bounded in total time by `opts[:timeout_ms]` (default
+  30 s): `{:error, :timeout}` past it.
+  """
+  @spec delete(Config.t(), String.t(), keyword()) :: :ok | {:error, term()}
+  def delete(cfg, object, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout_ms, 30_000)
+
+    bounded(
+      fn ->
+        fn -> Req.delete(req(cfg, receive_timeout: timeout), url: object_url(cfg, object)) end
+        |> once_more_if_closed()
+        |> delete_result()
+      end,
+      timeout
+    )
+  end
+
+  defp delete_result({:ok, %Req.Response{status: status}}) when status in 200..299, do: :ok
+  defp delete_result({:ok, %Req.Response{status: 404}}), do: :ok
+  defp delete_result({:ok, %Req.Response{status: status}}), do: {:error, {:status, status}}
+  defp delete_result({:error, reason}), do: {:error, reason}
+
+  @doc """
+  Lists the objects under `prefix`, `opts[:max_keys]` (1000) per page and at
+  most `opts[:max_pages]` (#{@max_pages}) pages; past that the listing ends
+  there, short.
+  """
   @spec list(Config.t(), String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
-  def list(cfg, prefix, opts \\ []),
-    do: list_pages(cfg, prefix, Keyword.get(opts, :max_keys, 1000), nil, [], 0)
+  def list(cfg, prefix, opts \\ []) do
+    max_pages = Keyword.get(opts, :max_pages, @max_pages)
+    list_pages(cfg, prefix, Keyword.get(opts, :max_keys, 1000), nil, [], {0, max_pages})
+  end
 
-  defp list_pages(_cfg, _prefix, _max, _token, acc, @max_pages), do: {:ok, Enum.reverse(acc)}
+  defp list_pages(_cfg, _prefix, _max, _token, acc, {limit, limit}), do: {:ok, Enum.reverse(acc)}
 
-  defp list_pages(cfg, prefix, max, token, acc, page) do
+  defp list_pages(cfg, prefix, max, token, acc, {page, limit}) do
     params =
       [{"list-type", "2"}, {"prefix", prefix}, {"max-keys", Integer.to_string(max)}] ++
         if(token, do: [{"continuation-token", token}], else: [])
@@ -221,7 +252,7 @@ defmodule Portal.BuildCache.L2.Client do
         acc = Enum.reverse(objects) ++ acc
 
         if next,
-          do: list_pages(cfg, prefix, max, next, acc, page + 1),
+          do: list_pages(cfg, prefix, max, next, acc, {page + 1, limit}),
           else: {:ok, Enum.reverse(acc)}
 
       {:ok, %Req.Response{status: status}} ->
@@ -284,8 +315,8 @@ defmodule Portal.BuildCache.L2.Client do
   # One retry, and only on a connection the server had already closed: the
   # pool hands out a kept-alive connection the S3 server timed out, and the
   # request fails before a byte of it is sent. Every request here is
-  # idempotent (GET, HEAD, LIST, and a PUT of a content-addressed object with
-  # the body in memory), so `fun` builds and sends it again from scratch,
+  # idempotent (GET, HEAD, LIST, DELETE, and a PUT of a content-addressed
+  # object with the body in memory), so `fun` builds and sends it again from scratch,
   # signed afresh. Not Req's own `retry:`: it re-runs the request steps on the
   # already signed request, and the second SigV4 signature it adds makes the
   # server answer 403.
