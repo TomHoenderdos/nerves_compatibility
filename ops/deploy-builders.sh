@@ -17,14 +17,18 @@
 #   1. preflight: ssh reachable, checkout on main, which commit it runs;
 #      a host already on the commit with ncc-portal active is skipped (-f overrides)
 #   2. installs that commit's ops/deploy.sh and ops/build-release.sh into the
-#      host's fixed deploy directory (hosts run those copies, not the
-#      checkout's; see the operator runbook)
+#      host's NCC_INSTALL_DIR (hosts run those copies, not the checkout's;
+#      see the operator runbook)
 #   3. starts `deploy.sh <sha> builder` detached on the host (setsid, stdin
 #      closed, own log under the deploying user's home), so a dropped ssh
 #      cannot kill it halfway;
 #      deploy.sh holds its own flock, so a second run refuses rather than races
 #   4. polls the log from here (no loop runs on the host) until deploy.sh exits
 #   5. verifies the host is on the commit and ncc-portal is active
+#
+# Every remote command reads the host's layout (NCC_SRC_DIR, NCC_INSTALL_DIR)
+# from its deploy env file, the one deploy.sh reads (ops/deploy.env.example),
+# and stops at once on a host without it.
 #
 # A builder deploy drains its build queues first, up to ~2 h. Without -s every
 # selected host deploys at once, which pauses all build capacity together.
@@ -111,15 +115,22 @@ echo "deploying $(git -C "$repo" log --oneline -1 "$sha")"
 
 log() { printf '[%s %s] %s\n' "$(date +%H:%M:%S)" "$1" "$2"; }
 
+# Prefixed to every remote command. Exported, so the detached deploy.sh's
+# own shell has them too.
+# shellcheck disable=SC2016 # expanded on the host
+REMOTE_ENV='f=/etc/ncc-deploy.env; if [ ! -r "$f" ]; then echo "no host layout: $f is missing (see ops/deploy.env.example)" >&2; exit 78; fi; set -a; . "$f"; set +a; '
+
 # The command string is meant to be built here: every value in it is a
-# validated sha, a fixed path or a log name this script made.
+# validated sha, a variable from the host's env file or a log name this
+# script made.
 # shellcheck disable=SC2029
-on() { ssh "${SSH_OPTS[@]}" "$(host_of "$1")" "$2"; }
+on() { ssh "${SSH_OPTS[@]}" "$(host_of "$1")" "$REMOTE_ENV$2"; }
 
 preflight() {
   local name=$1 state head branch active
-  if ! state=$(on "$name" 'cd /opt/nerves_compatibility/src && git rev-parse HEAD && git branch --show-current && systemctl is-active ncc-portal || true' 2>&1); then
-    log "$name" "unreachable over ssh: $state"
+  # shellcheck disable=SC2016 # expanded on the host
+  if ! state=$(on "$name" 'cd "$NCC_SRC_DIR" && git rev-parse HEAD && git branch --show-current && systemctl is-active ncc-portal || true' 2>&1); then
+    log "$name" "preflight failed over ssh: $state"
     log "$name" "if this is a new host key, verify it and add it to ~/.ssh/known_hosts first"
     return 1
   fi
@@ -144,7 +155,7 @@ install_scripts() {
   local name=$1 f
   for f in deploy.sh build-release.sh; do
     git -C "$repo" show "$sha:ops/$f" |
-      on "$name" "cat > /opt/nerves_compatibility/$f.new && chmod 0755 /opt/nerves_compatibility/$f.new && mv /opt/nerves_compatibility/$f.new /opt/nerves_compatibility/$f"
+      on "$name" "cat > \"\$NCC_INSTALL_DIR/$f.new\" && chmod 0755 \"\$NCC_INSTALL_DIR/$f.new\" && mv \"\$NCC_INSTALL_DIR/$f.new\" \"\$NCC_INSTALL_DIR/$f\""
   done
   log "$name" "installed deploy.sh and build-release.sh from ${sha:0:7}"
 }
@@ -153,13 +164,15 @@ install_scripts() {
 # waits for; deploy.sh's own output never prints it.
 start_deploy() {
   local name=$1 logfile
-  logfile=/root/deploy_builders_$(date +%Y%m%d%H%M%S)_${sha:0:7}.log
+  # In the remote user's home; the remote shell expands $HOME.
+  # shellcheck disable=SC2016
+  logfile='$HOME'/deploy_builders_$(date +%Y%m%d%H%M%S)_${sha:0:7}.log
   # `setsid -f` forks the deploy into its own session and returns at once,
   # and `ssh -n` gives ssh no stdin to hold open. Without both, ssh stayed
   # attached until deploy.sh finished (measured 2026-10-26: the whole ~10
   # minutes), so a dropped connection could still take the deploy with it.
   ssh -n "${SSH_OPTS[@]}" "$(host_of "$name")" \
-    "cd /tmp && setsid -f nohup bash -c '/opt/nerves_compatibility/deploy.sh $sha builder; echo DEPLOY_EXIT=\$?' > $logfile 2>&1 < /dev/null"
+    "${REMOTE_ENV}cd /tmp && setsid -f nohup bash -c '\"\$NCC_INSTALL_DIR\"/deploy.sh $sha builder; echo DEPLOY_EXIT=\$?' > $logfile 2>&1 < /dev/null"
   log "$name" "started; log $logfile" >&2
   echo "$logfile"
 }
@@ -189,7 +202,8 @@ wait_deploy() {
 
 verify() {
   local name=$1 out
-  out=$(on "$name" 'cd /opt/nerves_compatibility/src && git log --oneline -1 && systemctl is-active ncc-portal' 2>&1) || true
+  # shellcheck disable=SC2016 # expanded on the host
+  out=$(on "$name" 'cd "$NCC_SRC_DIR" && git log --oneline -1 && systemctl is-active ncc-portal' 2>&1) || true
   log "$name" "now: ${out//$'\n'/, }"
   [[ $out == "${sha:0:7}"* && $out == *$'\n'active ]]
 }

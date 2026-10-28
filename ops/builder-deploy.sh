@@ -6,11 +6,42 @@ builder_paused=false
 # The build egress filter (isolation spec, section 3; the operator
 # runbook). Installed from this checkout, which deploy.sh has already moved to
 # the commit being deployed.
-builder_src=${SRC:-/opt/nerves_compatibility/src}
-builder_portal_env=${NCC_PORTAL_ENV:-/etc/ncc-portal/portal.env}
-builder_egress_rules=/etc/ncc-portal/builder-egress.nft
-builder_egress_bridge_rules=/etc/ncc-portal/builder-egress-bridge.nft
-builder_egress_loader=/opt/nerves_compatibility/builder-egress-load.sh
+# The host layout (where the checkout, the release and the config files live)
+# comes from the operator's deploy env file, never from this repository: see
+# ops/deploy.env.example. A script deploy.sh starts inherits every variable
+# and reads no file. Without the file it refuses rather than guess a path.
+ncc_layout() {
+  local file=${NCC_DEPLOY_ENV:-/etc/ncc-deploy.env} name missing=()
+  for name in "$@"; do [[ -n ${!name:-} ]] || missing+=("$name"); done
+  [[ ${#missing[@]} -gt 0 ]] || return 0
+  if [[ ! -r $file ]]; then
+    echo "ERROR: no host layout: $file is missing or unreadable; it must set ${missing[*]} (see ops/deploy.env.example)" >&2
+    return 1
+  fi
+  set -a
+  # shellcheck source=/dev/null
+  . "$file"
+  set +a
+  missing=()
+  for name in "$@"; do [[ -n ${!name:-} ]] || missing+=("$name"); done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "ERROR: $file does not set ${missing[*]} (see ops/deploy.env.example)" >&2
+    return 1
+  fi
+}
+
+# deploy.sh has read the env file already; this is for an older installed
+# deploy.sh that predates it, and for the tests.
+ncc_layout NCC_SRC_DIR NCC_INSTALL_DIR NCC_PORTAL_ENV NCC_PORTAL_WORKDIR \
+  NCC_EGRESS_RULESET NCC_EGRESS_BRIDGE_RULESET || return 1
+
+builder_src=$NCC_SRC_DIR
+builder_portal_env=$NCC_PORTAL_ENV
+builder_portal_workdir=$NCC_PORTAL_WORKDIR
+builder_portal_bin=$NCC_INSTALL_DIR/portal/bin/portal
+builder_egress_rules=$NCC_EGRESS_RULESET
+builder_egress_bridge_rules=$NCC_EGRESS_BRIDGE_RULESET
+builder_egress_loader=$NCC_INSTALL_DIR/builder-egress-load.sh
 
 builder_ncc_home() { getent passwd ncc | cut -d: -f6; }
 builder_is_nixos() { [[ -e /etc/NIXOS ]]; }
@@ -85,12 +116,13 @@ builder_install_egress() {
 builder_check_egress() {
   if ! sudo -u ncc bash -c '
     set -euo pipefail
-    cd /var/lib/ncc
+    cd "$1"
     set -a
-    . /etc/ncc-portal/portal.env
+    . "$2"
     set +a
-    exec /opt/nerves_compatibility/portal/bin/portal eval "$1"
-  ' -- 'case Portal.Builder.check_egress() do
+    exec "$3" eval "$4"
+  ' -- "$builder_portal_workdir" "$builder_portal_env" "$builder_portal_bin" \
+    'case Portal.Builder.check_egress() do
     :ok ->
       :ok
 
@@ -136,12 +168,12 @@ EOF
 builder_rpc() {
   sudo -u ncc bash -c '
     set -euo pipefail
-    cd /var/lib/ncc
+    cd "$1"
     set -a
-    . /etc/ncc-portal/portal.env
+    . "$2"
     set +a
-    exec /opt/nerves_compatibility/portal/bin/portal rpc "$1"
-  ' -- "$1"
+    exec "$3" rpc "$4"
+  ' -- "$builder_portal_workdir" "$builder_portal_env" "$builder_portal_bin" "$1"
 }
 
 # The queues to drain, asked of the running release. One from before
@@ -301,13 +333,14 @@ builder_warm_nerves() {
   local status=0
   sudo -u ncc bash -c '
     set -euo pipefail
-    cd /var/lib/ncc
+    cd "$1"
     set -a
-    . /etc/ncc-portal/portal.env
+    . "$2"
     set +a
     export DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/$(id -u)/docker.sock}"
-    exec timeout 60m /opt/nerves_compatibility/portal/bin/portal eval "$1"
-  ' -- 'case Portal.NervesCache.deploy_warm() do
+    exec timeout 60m "$3" eval "$4"
+  ' -- "$builder_portal_workdir" "$builder_portal_env" "$builder_portal_bin" \
+    'case Portal.NervesCache.deploy_warm() do
     :ok ->
       :ok
 

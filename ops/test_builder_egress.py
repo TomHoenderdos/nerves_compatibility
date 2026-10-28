@@ -91,6 +91,7 @@ class EgressLoaderTest(unittest.TestCase):
                 "NCC_EGRESS_RULESET": str(RULESET),
                 "NCC_EGRESS_BRIDGE_RULESET": str(BRIDGE_RULESET),
                 "NCC_EGRESS_WAIT_SECONDS": "60",
+                "NCC_DEPLOY_ENV": str(root / "deploy.env"),
                 "INFO_READY_AFTER": "1",
                 "BRIDGE_NAME": "br-test0",
                 "BRIDGE_LOAD_STATUS": "0",
@@ -104,6 +105,27 @@ class EgressLoaderTest(unittest.TestCase):
             loads = {path.name: path.read_text() for path in state.glob("load-*")}
             lines = events.read_text().splitlines() if events.exists() else []
             return result, lines, loads
+
+    # From systemd's ExecStartPost the loader has no environment: the
+    # rulesets' paths come from the operator's deploy env file.
+    def test_reads_the_ruleset_paths_from_the_deploy_env_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / "deploy.env"
+            env_file.write_text(
+                f"NCC_EGRESS_RULESET={RULESET}\nNCC_EGRESS_BRIDGE_RULESET={BRIDGE_RULESET}\n"
+            )
+            result, _lines, loads = self.load(
+                NCC_DEPLOY_ENV=str(env_file), NCC_EGRESS_RULESET="", NCC_EGRESS_BRIDGE_RULESET=""
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("table inet ncc_egress", loads["load-inet"])
+        self.assertIn("table bridge ncc_egress", loads["load-bridge"])
+
+    def test_without_the_deploy_env_file_nothing_is_loaded(self):
+        result, lines, loads = self.load(NCC_EGRESS_RULESET="", NCC_EGRESS_BRIDGE_RULESET="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no host layout", result.stderr)
+        self.assertEqual((lines, loads), ([], {}))
 
     def test_loads_both_tables_into_the_rootlesskit_child_namespace(self):
         result, lines, loads = self.load()

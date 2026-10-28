@@ -7,26 +7,30 @@ defmodule Portal.Builders.Images do
   A remote lease carries the registry digest from here, so every builder
   means the same image by it. Missing or malformed, every reader answers nil
   and `Portal.Builders.Routing` keeps work local; nothing here ever raises.
+  No path is built in: with `NCC_IMAGES_JSON` unset the file counts as
+  missing, so remote building stays off.
   """
 
   @digest ~r/\Asha256:[0-9a-f]{64}\z/
   @sha256 ~r/\A[0-9a-f]{64}\z/
 
-  @spec path() :: Path.t()
+  @spec path() :: Path.t() | nil
   def path do
     :portal
     |> Application.get_env(__MODULE__, [])
-    |> Keyword.get(:path, "/etc/ncc-portal/images.json")
+    |> Keyword.get(:path)
   end
 
   @spec load() :: {:ok, map()} | {:error, :missing | :invalid}
   # The path is operator configuration, never request input.
   # sobelow_skip ["Traversal.FileModule"]
   def load do
-    with {:ok, bytes} <- File.read(path()),
+    with path when is_binary(path) <- path(),
+         {:ok, bytes} <- File.read(path),
          {:ok, %{} = doc} <- Jason.decode(bytes) do
       {:ok, doc}
     else
+      nil -> {:error, :missing}
       {:error, :enoent} -> {:error, :missing}
       _ -> {:error, :invalid}
     end

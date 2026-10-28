@@ -5,6 +5,12 @@ role=${1:-}
 [[ "$role" == portal || "$role" == builder ]] || { echo 'invalid deployment role' >&2; exit 1; }
 [[ ${GITHUB_SHA:-} =~ ^[0-9a-f]{40}$ ]] || { echo 'invalid commit SHA' >&2; exit 1; }
 [[ ${DEPLOY_HOST:-} =~ ^[a-zA-Z0-9.-]+$ ]] || { echo 'invalid deployment host' >&2; exit 1; }
+# Where the hosts installed deploy.sh: the NCC_REMOTE_DEPLOY Actions secret,
+# never a path in this repository, and a secret so the public run log masks it.
+[[ ${NCC_REMOTE_DEPLOY:-} =~ ^/[A-Za-z0-9._/-]+$ && $NCC_REMOTE_DEPLOY != *..* ]] || {
+  echo "NCC_REMOTE_DEPLOY is unset or not an absolute path: set the Actions secret to the hosts' deploy.sh" >&2
+  exit 1
+}
 : "${DEPLOY_SSH_KEY:?}"
 : "${DEPLOY_KNOWN_HOSTS:?}"
 : "${RUNNER_TEMP:?}"
@@ -38,7 +44,7 @@ Host portal
   IdentityFile $ssh_dir/key
 EOF
 
-set -- /opt/nerves_compatibility/deploy.sh "$GITHUB_SHA"
+set -- "$NCC_REMOTE_DEPLOY" "$GITHUB_SHA"
 if [[ "$role" == builder ]]; then
   [[ ${BUILDER_HOST:-} =~ ^[a-zA-Z0-9.-]+$ ]] || { echo 'invalid builder host' >&2; exit 1; }
   : "${BUILDER_DEPLOY_SSH_KEY:?}"

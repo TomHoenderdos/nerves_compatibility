@@ -38,6 +38,7 @@ sys.exit(int(os.environ["SSH_STATUS"]))
                 "DEPLOY_SSH_KEY": "synthetic-portal-key",
                 "BUILDER_DEPLOY_SSH_KEY": "synthetic-builder-key",
                 "DEPLOY_KNOWN_HOSTS": "synthetic-known-hosts",
+                "NCC_REMOTE_DEPLOY": "/srv/example/deploy.sh",
                 **overrides,
             }
             result = subprocess.run(
@@ -52,7 +53,7 @@ sys.exit(int(os.environ["SSH_STATUS"]))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("ProxyJump portal", data["config"])
         self.assertIn("StrictHostKeyChecking yes", data["config"])
-        self.assertEqual(data["args"], ["builder", "/opt/nerves_compatibility/deploy.sh", "a" * 40, "builder"])
+        self.assertEqual(data["args"], ["builder", "/srv/example/deploy.sh", "a" * 40, "builder"])
         self.assertEqual(data["key_modes"], [0o600, 0o600])
 
     def test_portal_has_no_jump_and_failed_ssh_cleans_up(self):
@@ -60,6 +61,20 @@ sys.exit(int(os.environ["SSH_STATUS"]))
         self.assertEqual(result.returncode, 255)
         self.assertNotIn("ProxyJump", data["config"])
         self.assertEqual(data["key_modes"], [0o600])
+
+    def test_portal_runs_the_configured_remote_script(self):
+        result, data = self.run_ssh("portal")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(data["args"], ["portal", "/srv/example/deploy.sh", "a" * 40])
+
+    # No path in the repository to fall back to: without the secret, nothing runs.
+    def test_a_missing_or_odd_remote_script_never_reaches_ssh(self):
+        for value in ("", "deploy.sh", "/srv/../etc/deploy.sh", "/srv/x;reboot"):
+            with self.subTest(value=value):
+                result, data = self.run_ssh("portal", NCC_REMOTE_DEPLOY=value)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("NCC_REMOTE_DEPLOY", result.stderr)
+                self.assertIsNone(data)
 
     def test_invalid_commit_or_host_never_reaches_ssh(self):
         for overrides in ({"GITHUB_SHA": "main"}, {"BUILDER_HOST": "host\nProxyCommand unsafe"}):

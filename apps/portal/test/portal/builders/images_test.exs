@@ -53,6 +53,19 @@ defmodule Portal.Builders.ImagesTest do
     assert Images.worker_image() == nil
   end
 
+  # No path ships in the repository: a node without NCC_IMAGES_JSON has no
+  # registry image, so Routing keeps every build local.
+  test "an unset path is a missing file, never a crash" do
+    Application.put_env(:portal, Images, path: nil)
+    assert Images.path() == nil
+    assert {:error, :missing} = Images.load()
+    assert Images.worker_image() == nil
+    assert Images.agent() == nil
+
+    Application.put_env(:portal, Images, [])
+    assert {:error, :missing} = Images.load()
+  end
+
   test "a digest that is not sha256:<64 hex> is refused", %{path: path} do
     File.write!(path, String.replace(@doc_json, ~r/sha256:1+/, "sha256:zz"))
     assert Images.worker_image() == nil

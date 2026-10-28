@@ -59,10 +59,10 @@ jobs:
       - name: Validate deployment scripts
         run: |
           # `bash -n a b` parses only `a` (the rest are its arguments): one file per call.
-          for script in ops/deploy.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/builder-egress-load.sh ops/deploy-builders.sh ops/images-sync.sh apps/ncc_agent/priv/egress.sh; do
+          for script in ops/deploy.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/builder-egress-load.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh apps/ncc_agent/priv/egress.sh; do
             bash -n "$script"
           done
-          shellcheck -x ops/deploy.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/builder-egress-load.sh ops/deploy-builders.sh ops/images-sync.sh apps/ncc_agent/priv/egress.sh
+          shellcheck -x ops/deploy.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/builder-egress-load.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh apps/ncc_agent/priv/egress.sh
           python3 -m unittest discover -s ops -p 'test_*.py'
 
   deploy:
@@ -103,6 +103,7 @@ jobs:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          NCC_REMOTE_DEPLOY: ${{ secrets.NCC_REMOTE_DEPLOY }}
         run: bash ops/ssh-deploy.sh portal
       - name: Verify public site
         if: steps.checks.outputs.deploy == 'true'
@@ -120,6 +121,7 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           BUILDER_HOST: ${{ secrets.BUILDER_HOST }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          NCC_REMOTE_DEPLOY: ${{ secrets.NCC_REMOTE_DEPLOY }}
         run: |
           bash ops/ssh-deploy.sh builder
           printf 'Builder release and worker image deployed from `%s`.\n' \

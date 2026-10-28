@@ -19,11 +19,43 @@ if [[ $# -gt 2 || ( $# -ge 1 && ! "$1" =~ ^[0-9a-f]{40}$ ) ||
   exit 1
 fi
 
-SRC=/opt/nerves_compatibility/src
-BIN=/opt/nerves_compatibility/portal/bin/portal
+# The host layout (where the checkout, the release and the config files live)
+# comes from the operator's deploy env file, never from this repository: see
+# ops/deploy.env.example. A script deploy.sh starts inherits every variable
+# and reads no file. Without the file it refuses rather than guess a path.
+ncc_layout() {
+  local file=${NCC_DEPLOY_ENV:-/etc/ncc-deploy.env} name missing=()
+  for name in "$@"; do [[ -n ${!name:-} ]] || missing+=("$name"); done
+  [[ ${#missing[@]} -gt 0 ]] || return 0
+  if [[ ! -r $file ]]; then
+    echo "ERROR: no host layout: $file is missing or unreadable; it must set ${missing[*]} (see ops/deploy.env.example)" >&2
+    return 1
+  fi
+  set -a
+  # shellcheck source=/dev/null
+  . "$file"
+  set +a
+  missing=()
+  for name in "$@"; do [[ -n ${!name:-} ]] || missing+=("$name"); done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "ERROR: $file does not set ${missing[*]} (see ops/deploy.env.example)" >&2
+    return 1
+  fi
+}
+
+layout=(NCC_SRC_DIR NCC_INSTALL_DIR NCC_PORTAL_ENV NCC_PORTAL_WORKDIR)
+if [[ ${2:-portal} == builder ]]; then
+  layout+=(NCC_EGRESS_RULESET NCC_EGRESS_BRIDGE_RULESET)
+else
+  layout+=(NCC_IMAGES_JSON)
+fi
+ncc_layout "${layout[@]}" || exit 1
+
+SRC=$NCC_SRC_DIR
+BIN=$NCC_INSTALL_DIR/portal/bin/portal
 
 # Serialize manual and automated deploys as well as separate Actions runs.
-exec 9>/opt/nerves_compatibility/deploy.lock
+exec 9>"$NCC_INSTALL_DIR/deploy.lock"
 flock -n 9 || { echo 'another deployment is running' >&2; exit 1; }
 
 cd "$SRC"
@@ -73,10 +105,10 @@ echo "deploying $(git log --oneline -1)"
 
 # Preserve the previous release before build-release.sh replaces it. This is
 # an operator rollback artifact; database migrations are not reversed here.
-tar -czf /opt/nerves_compatibility/portal-previous.tar.gz.tmp \
-  -C /opt/nerves_compatibility portal
-mv /opt/nerves_compatibility/portal-previous.tar.gz.tmp \
-  /opt/nerves_compatibility/portal-previous.tar.gz
+tar -czf "$NCC_INSTALL_DIR/portal-previous.tar.gz.tmp" \
+  -C "$NCC_INSTALL_DIR" portal
+mv "$NCC_INSTALL_DIR/portal-previous.tar.gz.tmp" \
+  "$NCC_INSTALL_DIR/portal-previous.tar.gz"
 
 if [[ ${2:-portal} == builder ]]; then
   # shellcheck source=ops/builder-deploy.sh
@@ -85,13 +117,14 @@ if [[ ${2:-portal} == builder ]]; then
   builder_build_image
 fi
 
-/opt/nerves_compatibility/build-release.sh
+"$NCC_INSTALL_DIR/build-release.sh"
 
 # Migrations run through `eval`, which starts the repo but no applications.
 # That is enough for Ecto.Migrator and keeps the deploy independent of
 # whether the service is currently up.
-sudo -u ncc bash -c "cd /var/lib/ncc && set -a && . /etc/ncc-portal/portal.env && set +a && \
-  $BIN eval 'Ecto.Migrator.with_repo(Portal.Repo, &Ecto.Migrator.run(&1, :up, all: true))'"
+sudo -u ncc bash -c 'cd "$1" && set -a && . "$2" && set +a && "$3" eval "$4"' -- \
+  "$NCC_PORTAL_WORKDIR" "$NCC_PORTAL_ENV" "$BIN" \
+  'Ecto.Migrator.with_repo(Portal.Repo, &Ecto.Migrator.run(&1, :up, all: true))'
 
 if [[ ${2:-portal} == builder ]]; then
   builder_activate_image
@@ -118,5 +151,5 @@ else
   # Remote builders read the registry digest for this commit from images.json;
   # the images workflow publishes it minutes after this deploy, so a miss here
   # is retried by the ncc-images-sync timer (the operator runbook).
-  bash "$SRC/ops/images-sync.sh" "$(git rev-parse HEAD)" || echo 'images.json not yet available; the sync timer will retry' >&2
+  bash "$SRC/ops/images-sync.sh" "$(git rev-parse HEAD)" "$NCC_IMAGES_JSON" || echo 'images.json not yet available; the sync timer will retry' >&2
 fi

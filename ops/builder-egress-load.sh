@@ -14,8 +14,33 @@ set -euo pipefail
 # leave sbin out (nft), and NixOS keeps everything in /run/current-system/sw/bin.
 PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin:/run/current-system/sw/bin
 
-ruleset=${NCC_EGRESS_RULESET:-/etc/ncc-portal/builder-egress.nft}
-bridge_ruleset=${NCC_EGRESS_BRIDGE_RULESET:-/etc/ncc-portal/builder-egress-bridge.nft}
+# The host layout (where the checkout, the release and the config files live)
+# comes from the operator's deploy env file, never from this repository: see
+# ops/deploy.env.example. A script deploy.sh starts inherits every variable
+# and reads no file. Without the file it refuses rather than guess a path.
+ncc_layout() {
+  local file=${NCC_DEPLOY_ENV:-/etc/ncc-deploy.env} name missing=()
+  for name in "$@"; do [[ -n ${!name:-} ]] || missing+=("$name"); done
+  [[ ${#missing[@]} -gt 0 ]] || return 0
+  if [[ ! -r $file ]]; then
+    echo "ERROR: no host layout: $file is missing or unreadable; it must set ${missing[*]} (see ops/deploy.env.example)" >&2
+    return 1
+  fi
+  set -a
+  # shellcheck source=/dev/null
+  . "$file"
+  set +a
+  missing=()
+  for name in "$@"; do [[ -n ${!name:-} ]] || missing+=("$name"); done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "ERROR: $file does not set ${missing[*]} (see ops/deploy.env.example)" >&2
+    return 1
+  fi
+}
+
+ncc_layout NCC_EGRESS_RULESET NCC_EGRESS_BRIDGE_RULESET || exit 1
+ruleset=$NCC_EGRESS_RULESET
+bridge_ruleset=$NCC_EGRESS_BRIDGE_RULESET
 wait_seconds=${NCC_EGRESS_WAIT_SECONDS:-60}
 runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 child_pid_file=$runtime/dockerd-rootless/child_pid

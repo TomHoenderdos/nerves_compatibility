@@ -9,6 +9,16 @@ import unittest
 
 HELPER = Path(__file__).with_name("builder-deploy.sh")
 SRC = Path(__file__).resolve().parent.parent
+# A synthetic host layout, as the operator's deploy env file would set it.
+LAYOUT = {
+    "NCC_SRC_DIR": str(SRC),
+    "NCC_INSTALL_DIR": "/test/install",
+    "NCC_PORTAL_ENV": "/test/config/portal.env",
+    "NCC_PORTAL_WORKDIR": "/test/work",
+    "NCC_EGRESS_RULESET": "/test/config/builder-egress.nft",
+    "NCC_EGRESS_BRIDGE_RULESET": "/test/config/builder-egress-bridge.nft",
+}
+BASE_ENV = {**os.environ, **LAYOUT}
 HARNESS = r'''
 set -euo pipefail
 source "$HELPER"
@@ -60,7 +70,7 @@ class BuilderDeploymentTest(unittest.TestCase):
             state = root / "drained"
             state.write_text(drained)
             env = {
-                **os.environ,
+                **BASE_ENV,
                 "HELPER": str(HELPER),
                 "EVENTS": str(events),
                 "DRAINED_FILE": str(state),
@@ -136,7 +146,7 @@ builder_build_image
             events = Path(directory) / "events"
             result = subprocess.run(
                 ["bash", "-c", script],
-                env={**os.environ, "HELPER": str(HELPER), "EVENTS": str(events),
+                env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
                      "PULL_STATUS": pull_status, **env},
                 capture_output=True, text=True, timeout=5,
             )
@@ -177,7 +187,7 @@ builder_activate_image
 test -z "${DOCKER_HOST+x}"
 '''
         result = subprocess.run(
-            ["bash", "-c", script], env={**os.environ, "HELPER": str(HELPER)},
+            ["bash", "-c", script], env={**BASE_ENV, "HELPER": str(HELPER)},
             capture_output=True, text=True, timeout=5,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -199,7 +209,7 @@ builder_warm_nerves
             docker_events = Path(directory) / "docker"
             result = subprocess.run(
                 ["bash", "-c", script],
-                env={**os.environ, "HELPER": str(HELPER), "EVENTS": str(events),
+                env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
                      "DOCKER_EVENTS": str(docker_events), "RUNNING": running,
                      "WARM_STATUS": str(status)},
                 capture_output=True, text=True, timeout=5,
@@ -213,7 +223,9 @@ builder_warm_nerves
         result, args = self.run_warm(0)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(args.startswith("-u\nncc\nbash\n-c\n"), args)
-        self.assertIn("exec timeout 60m /opt/nerves_compatibility/portal/bin/portal eval", args)
+        self.assertIn('exec timeout 60m "$3" eval "$4"', args)
+        self.assertIn("\n--\n/test/work\n/test/config/portal.env\n/test/install/portal/bin/portal\n",
+                      args)
         self.assertIn("Portal.NervesCache.deploy_warm()", args)
         self.assertIn('DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/$(id -u)/docker.sock}"', args)
 
@@ -259,7 +271,7 @@ builder_activate_image
             events = Path(directory) / "events"
             result = subprocess.run(
                 ["bash", "-c", script],
-                env={**os.environ, "HELPER": str(HELPER), "EVENTS": str(events),
+                env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
                      "CHECK_STATUS": check_status},
                 capture_output=True, text=True, timeout=5,
             )
@@ -288,9 +300,8 @@ class BuilderEgressInstallTest(unittest.TestCase):
             env_file = root / "portal.env"
             env_file.write_text(portal_env)
             env = {
-                **os.environ,
+                **BASE_ENV,
                 "HELPER": str(HELPER),
-                "SRC": str(SRC),
                 "EVENTS": str(events),
                 "NCC_HOME": str(home),
                 "NCC_PORTAL_ENV": str(env_file),
@@ -310,14 +321,14 @@ class BuilderEgressInstallTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
             f"install -o root -g root -m 0644 {SRC}/ops/builder-egress.nft "
-            "/etc/ncc-portal/builder-egress.nft", lines)
+            "/test/config/builder-egress.nft", lines)
         self.assertIn(
             f"install -o root -g root -m 0644 {SRC}/ops/builder-egress-bridge.nft "
-            "/etc/ncc-portal/builder-egress-bridge.nft", lines)
+            "/test/config/builder-egress-bridge.nft", lines)
         self.assertIn(
             f"install -o root -g root -m 0755 {SRC}/ops/builder-egress-load.sh "
-            "/opt/nerves_compatibility/builder-egress-load.sh", lines)
-        self.assertIn("ExecStartPost=-/opt/nerves_compatibility/builder-egress-load.sh", dropin)
+            "/test/install/builder-egress-load.sh", lines)
+        self.assertIn("ExecStartPost=-/test/install/builder-egress-load.sh", dropin)
         self.assertIn("systemctl --user -M ncc@ daemon-reload", lines)
         dir = f"{self.home}/.config/systemd/user/docker.service.d"
         # ncc writes its own home: root never creates or writes a path ncc
@@ -335,7 +346,7 @@ class BuilderEgressInstallTest(unittest.TestCase):
         self.assertEqual(
             lines[-1],
             "sudo -u ncc env XDG_RUNTIME_DIR=/run/user/999 "
-            "/opt/nerves_compatibility/builder-egress-load.sh")
+            "/test/install/builder-egress-load.sh")
         self.assertLess(lines.index("systemctl --user -M ncc@ daemon-reload"), len(lines) - 1)
 
     def test_nixos_leaves_the_unit_to_its_nix_config_but_still_loads(self):
@@ -373,13 +384,15 @@ builder_check_egress
                 events = Path(directory) / "events"
                 result = subprocess.run(
                     ["bash", "-c", script],
-                    env={**os.environ, "HELPER": str(HELPER), "EVENTS": str(events),
+                    env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
                          "CHECK_STATUS": status},
                     capture_output=True, text=True, timeout=5,
                 )
                 args = events.read_text()
                 self.assertTrue(args.startswith("-u\nncc\nbash\n-c\n"), args)
-                self.assertIn("/opt/nerves_compatibility/portal/bin/portal eval", args)
+                self.assertIn('exec "$3" eval "$4"', args)
+                self.assertIn("\n--\n/test/work\n/test/config/portal.env\n"
+                              "/test/install/portal/bin/portal\n", args)
                 self.assertIn("Portal.Builder.check_egress()", args)
                 self.assertEqual(result.returncode == 0, expect_ok, result.stderr)
                 if not expect_ok:
@@ -397,7 +410,7 @@ echo after
             events = Path(directory) / "events"
             env_file = Path(directory) / "portal.env"
             env_file.write_text(portal_env)
-            env = {key: value for key, value in os.environ.items() if key != "NCC_EGRESS_CHECK"}
+            env = {key: value for key, value in BASE_ENV.items() if key != "NCC_EGRESS_CHECK"}
             env.update(HELPER=str(HELPER), EVENTS=str(events), ANSWER=answer,
                        RPC_STATUS=status, NCC_PORTAL_ENV=str(env_file), **overrides)
             result = subprocess.run(
