@@ -1,8 +1,35 @@
 # RFC: Precompiled dependencies for Elixir and Erlang projects
 
-Status: draft, not yet posted. Date: 2026-10-23.
+Status: draft, not yet posted. Date: 2026-10-23. Updated 2026-10-27, see
+"Since this RFC".
 Authors: Tom Hoenderdos. Prototype: Nerves 2, see "Phases".
 Related: `PRECOMPILED_API.md` for the wire format.
+
+## Since this RFC
+
+This document was written on 2026-10-23, before manifest format 2 shipped on
+2026-10-24. The body below is left as written; what has changed since:
+
+- **Client.** The client is no longer a pull request against `nerves`. It is
+  [elixir_precompiled](https://github.com/TomHoenderdos/elixir_precompiled),
+  which verifies the signed chain in "Trust". The root document travels in
+  the elixir_precompiled archive instead of the `nerves` package, and the
+  portal also serves it at `/api/precompiled/root.json`.
+- **Format 2.** `/api/precompiled/v2/manifests/<package>.json` publishes a
+  build list rather than one entry per target, and relaxes or adds rules to
+  "What makes a build reusable" (`PRECOMPILED_API.md`, "Matching a format-2
+  build to a project", has them in order):
+  - Elixir matches on major.minor, with the running patch at least the built
+    patch, instead of exactly. OTP stays an exact major match.
+  - Each build records `dep_env`, the Mix env it compiled the package under
+    (always `prod`), and matches only a project that compiles the dependency
+    under that env. This is the environment check "Limits" asks for.
+  - Every dependency the package declares, optional ones included, that is
+    in the project's lock must also be in the build's lock.
+- **Toolchain builds.** Pure-BEAM package versions are also built on plain
+  Elixir/OTP images and served in format 2 as `pure_elixir` builds, for
+  `Mix.install` and projects that are not Nerves projects. Native code on
+  hosts stays out of scope, as in "Limits".
 
 ## Summary
 
@@ -261,7 +288,8 @@ run sandboxed.
 The chain the prototype verifies:
 
 1. A root document shipped inside the `nerves` package names the keys that
-   may sign batches and roots.
+   may sign batches and roots. (Now shipped with elixir_precompiled; see
+   "Since this RFC".)
 2. A signed batch index names every published package and the SHA-256 of
    its manifest bytes. It expires after 7 days and carries a sequence
    number that only increases. The client refuses an expired batch and a
@@ -336,6 +364,7 @@ This is an ask, not a plan. Nothing in the prototype touches rebar3.
    publish only entries whose files can be served, publish pure Elixir runs
    from their host build, record `compile_env` and the package checksum, and
    sign batches. Measure hit rate and fetch time in the wild.
+   (The client has since moved to elixir_precompiled; see "Since this RFC".)
 2. **Mix.** The public state, the inputs manifest and the supported hook
    from "What Mix should add". A library can then do what Nerves does
    without being Nerves.

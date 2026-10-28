@@ -24,6 +24,7 @@ Use the root `Makefile`:
 - `make dev` starts the Phoenix portal server.
 - `make test` runs the umbrella test suite.
 - `make test-integration` runs the Docker-backed Portal build integration test.
+- `make test-remote-e2e` runs a real `ncc_agent` process against the builder API with a fake docker; `make test-remote-integration` does the same through the real worker container.
 - `make format` runs `mix format` across the umbrella.
 
 For umbrella-level work (run from repo root):
@@ -52,7 +53,7 @@ Use standard Elixir formatting via `mix format`; do not hand-align code. Module 
 
 ## Testing Guidelines
 
-Each umbrella app has its own ExUnit suite. Run focused tests in the app you changed, then broaden when touching shared contracts such as result JSON, index formats, Docker mounts, artifact paths, or exit codes. Run `make test-integration` after worker image, portal builder, or runner-worker JSON contract changes.
+Each umbrella app has its own ExUnit suite. Run focused tests in the app you changed, then broaden when touching shared contracts such as result JSON, index formats, Docker mounts, artifact paths, or exit codes. Run `make test-integration` after worker image, portal builder, or runner-worker JSON contract changes. Run `make test-remote-e2e` after changes to the builder API, the agent, or remote ingest.
 
 ## Commit & Pull Request Guidelines
 

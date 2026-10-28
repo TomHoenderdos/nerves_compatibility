@@ -11,6 +11,8 @@ This repository is a Mix umbrella with four apps:
 - `apps/portal` — Phoenix 1.8 + Ash/Postgres + Oban web app. It owns scan intake, accounts and admin UI, the build queue, Catalog persistence, the package browser, badges, the schema-v2 JSON API, and the precompiled artifact API.
 - `apps/ncc_agent` — the remote builder agent. It claims build jobs from the portal, runs the worker image for them, and uploads the results.
 
+[elixir_precompiled](https://github.com/TomHoenderdos/elixir_precompiled) is a client that consumes the precompiled API.
+
 ## Common commands
 
 ```bash
@@ -19,6 +21,8 @@ make build-clean               # same, with --no-cache
 make dev                       # start the Phoenix portal on http://localhost:4001
 make test                      # run umbrella tests
 make test-integration          # real Docker -> Portal.Catalog integration test
+make test-remote-e2e           # real ncc_agent process + fake docker -> lease -> ingest
+make test-remote-integration   # same through the real worker container (needs Docker)
 make format                    # mix format
 ```
 
@@ -45,7 +49,9 @@ mix format
 - `/badge/:name.svg` — SVG compatibility badge
 - `/api/packages`, `/api/packages/:name`, `/api/stats` — schema-v2 JSON API
 - `/api/failing?sort=recent|all&limit=&system=` — failing packages ranked by downloads (see `docs/INDEX_FORMAT.md`)
-- `/api/precompiled/manifests/:package.json`, `/api/precompiled/files/:sha256` — precompiled artifact API
+- `/api/packages/hex?query=` — Hex.pm package search used by the scan request form
+- `/api/precompiled/manifests/:package.json` (format 1), `/api/precompiled/v2/manifests/:package.json` (format 2), `/api/precompiled/files/:sha256` — precompiled artifact API
+- `/api/precompiled/root.json`, `/api/precompiled/batch.json`, `/api/precompiled/batches/:sequence.json` — signed precompiled trust root and batches
 - `/api/docs` — the JSON API documented as a page; `/api/openapi.json` — the same as an OpenAPI 3 document
 
 ## Docs

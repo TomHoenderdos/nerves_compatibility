@@ -9,6 +9,7 @@ catalog API.
 | `GET /api/packages/:name` | [Packages](#packages) holding only `:name`; `404` with `{"error": "package not found"}` when unknown |
 | `GET /api/stats` | [Stats](#stats) |
 | `GET /api/failing` | [Failing](#failing) packages ranked by hex.pm downloads (own `schema: 1`) |
+| `GET /api/packages/hex?query=<text>` | [Hex search](#hex-search) suggestions for the scan request form |
 
 The same endpoints are described as an OpenAPI 3 document at
 `GET /api/openapi.json`, and rendered as a page at `/api/docs`.
@@ -16,6 +17,8 @@ The same endpoints are described as an OpenAPI 3 document at
 Conventions:
 - All timestamps are ISO 8601 strings (e.g., `"2025-12-23T10:30:00Z"`)
 - Status values are one of: `pass`, `fail`, `error`, `skipped`, `unknown`
+- A `200` from `/api/packages`, `/api/packages/:name`, `/api/stats` and
+  `/api/failing` carries `cache-control: public, max-age=60`
 
 ---
 
@@ -38,7 +41,7 @@ The latest test results for each package across all systems.
       "systems": {
         "<system_pkg>@<system_version>": {
           "system_pkg": "<string>",
-          "system_version": "<string>",
+          "system_version": "<string>" | null,
           "status": "<pass|fail|error|skipped|unknown>",
           "firmware_size_bytes": <integer> | null,
           "hex_version_tested": "<string>",
@@ -62,10 +65,17 @@ The latest test results for each package across all systems.
   - **native_components**: What native code the package carries, or `null`.
     `compatibility_basis` is set for assessed results (see below)
   - **systems**: Map of system key to the result of the package's latest run
-    - **Key format**: `"<system_pkg>@<system_version>"`
+    - **Key format**: `"<system_pkg>@<system_version>"`, with nothing after
+      the `@` when `system_version` is `null` (`"pure_elixir@"`, `"host@"`)
     - **system_pkg**: Name of the Nerves system package, or an assessment
-      entry (`host`, `pure_elixir`, `registry_deps`, `nerves_tooling`)
-    - **system_version**: Version of the Nerves system
+      entry (`host`, `pure_elixir`, `registry_deps`, `nerves_tooling`). A
+      package skipped administratively (retired, or a language the builder
+      does not attempt) carries the placeholder `forced@admin@unknown`
+      instead, so its run still has one entry
+    - **system_version**: Version of the Nerves system, or `null`: always for
+      `host`, assessment entries and the `forced@admin@unknown` placeholder,
+      and for a Nerves system whose version the build never got far enough to
+      record
     - **status**: Test result status
     - **firmware_size_bytes**: Firmware image size, when one was built
     - **hex_version_tested**: Version of the hex package that was tested
@@ -151,6 +161,9 @@ of a result already counted.
   - **Key format**: `"<system_pkg>@<system_version>"`
   - Assessment entries (`pure_elixir`, `registry_deps`, `nerves_tooling`; see below) are not
     Nerves systems and are omitted here. They still count in **counts**.
+  - The `host` compile result (`"host@"`) and the `forced@admin@unknown`
+    placeholder (`"forced@admin@unknown@"`) are not omitted: they appear here
+    next to the Nerves systems
   - **pass, fail, error, skipped, unknown**: Counts per status
 - **last_run_finished_at**: Timestamp of the most recently completed run
 
@@ -239,6 +252,27 @@ All optional. An invalid value falls back to its default rather than erroring.
   - **status**: `error` if any failing target errored, otherwise `fail`
   - **failing_targets**: Only the `fail` / `error` targets of the latest run
   - **failing_count / total_targets**: Failing targets out of all targets in that run
+
+---
+
+## Hex search
+
+Package name suggestions from hex.pm, used by the scan request form. Not part
+of the schema-v2 documents and not cached.
+
+- **query**: the search text. Fewer than two characters (after trimming), a
+  missing `query`, or a hex.pm failure all return an empty list
+
+```json
+{
+  "packages": [
+    {"name": "<string>", "description": "<string>", "url": "<string>"}
+  ]
+}
+```
+
+At most 8 packages, in hex.pm's order. `description` is `""` when hex.pm has
+none, and `url` is the package's hex.pm page.
 
 ---
 

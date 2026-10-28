@@ -185,8 +185,9 @@ defmodule PortalWeb.CatalogApiController do
 
   # The bytes the newest batch signed over, when a batch exists, from the map
   # of the format asked for (`Batches.manifests/1` or `Batches.manifests_v2/1`).
-  # Before the first batch the live render stands in; a client that verifies
-  # batches cannot use it, one that does not (today's script) still can.
+  # Before the first batch, or for a package the newest batch does not name,
+  # the live render stands in, without an etag; a client that verifies
+  # batches (elixir_precompiled) cannot use it, one that does not still can.
   defp stored_manifest(package, batch_map) do
     with %{} = batch <- Batches.latest(),
          sha when is_binary(sha) <- batch_map.(batch)[package],

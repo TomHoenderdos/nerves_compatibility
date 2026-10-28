@@ -3,10 +3,12 @@ defmodule Mix.Tasks.Portal.Precompiled.Keygen do
   @moduledoc """
   Writes `signing.key` (mode 0600) and `root.json` into `--out DIR`, prints the
   keyid and public key. Point `PRECOMPILED_SIGNING_KEY` at `DIR/signing.key`
-  on the web host, and copy `root.json` into the nerves package at
-  `priv/precompiled/root.json`. Refuses to overwrite an existing key.
+  on the portal host; the portal serves the `root.json` next to it at
+  `/api/precompiled/root.json`, and the client (elixir_precompiled) ships a
+  copy as its trust anchor. `--years N` sets the root's expiry (default 1).
+  Refuses to overwrite an existing key.
 
-      mix portal.precompiled.keygen --out /etc/ncc/precompiled
+      mix portal.precompiled.keygen --out DIR
   """
   use Mix.Task
   alias Portal.Precompiled.{Envelope, Keys, Root}

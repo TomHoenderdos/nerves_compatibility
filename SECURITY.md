@@ -1,8 +1,9 @@
 # Security Policy
 
 This policy covers the Nerves Compatibility Tracker: the portal, build worker,
-shared compatibility library, and their dependencies. It applies to human
-contributors and LLM agents. Repository workflows are in [AGENTS.md](AGENTS.md).
+remote builder agent, shared compatibility library, and their dependencies. It
+applies to human contributors and LLM agents. Repository workflows are in
+[AGENTS.md](AGENTS.md).
 
 ## Supported Versions
 
@@ -37,7 +38,7 @@ or its precompiled artifacts.
   weekly schedules, and manual dispatch. They upload SARIF reports to GitHub
   code scanning even when findings cause a nonzero scan exit status.
 - Automated checks do not replace review.
-- These workflows report results; they do not deploy anything themselves.
+- The check workflows report results; they do not deploy anything themselves.
   [Test and deploy](.github/workflows/deploy.yml) deploys a push to `main` only
   after all four have passed on that exact commit (`ops/wait-for-checks.sh`), so
   a failing check blocks the deploy.
@@ -145,6 +146,7 @@ reports, or change production.
   mix credo
   mix sobelow --root apps/portal --private --skip --strict --exit low
   mix sobelow --root apps/ncc_worker --no-router --private --skip --strict --exit low
+  mix sobelow --root apps/ncc_agent --no-router --private --skip --strict --exit low
   mix sobelow --root apps/compatibility --no-router --private --skip --strict --exit low
   ```
 

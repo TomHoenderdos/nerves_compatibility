@@ -122,6 +122,10 @@ Status codes:
 - `200` — root document found
 - `404` — no root document is published
 
+An `etag` header of the SHA256 of the envelope bytes is set. The reference
+client, [elixir_precompiled](https://github.com/TomHoenderdos/elixir_precompiled),
+ships a copy of `root.json` as its trust anchor.
+
 ### GET /api/precompiled/batch.json
 
 Returns the newest signed batch: every package with precompiled files and the SHA256 of its manifest bytes. See Trust.
@@ -355,9 +359,11 @@ of every package's manifest bytes; `manifests/{package}.json` (and
 `v2/manifests/{package}.json` for `manifests_v2`) serves exactly those bytes, so a client can hash what it downloaded and compare it to the
 batch entry instead of trusting the connection; `files/{sha256}` is
 content-addressed, so each file is its own proof once its manifest entry is
-trusted. A client that skips this chain (today's install script) can still use
-`manifests/{package}.json` directly — it is served from the same stored bytes,
-just without the batch to check them against.
+trusted. The reference client,
+[elixir_precompiled](https://github.com/TomHoenderdos/elixir_precompiled),
+verifies this chain. A client that skips it can still use
+`manifests/{package}.json` directly — once a batch exists it is served from
+the same stored bytes, just without the batch to check them against.
 
 - **Envelope** — every signed document (`root.json`, `batch.json`,
   `batches/{sequence}.json`) is `{"payload": base64url(bytes), "signatures":
@@ -368,8 +374,8 @@ just without the batch to check them against.
   `roles.batch.threshold`). A client accepts a document only when it carries at
   least that many valid signatures from the role's keys. The `keyid` is the lowercase hex SHA256 of the key's 32 public
   bytes.
-- **Expiry** — `root.json` expires a year after it is written; a batch expires
-  7 days after it is issued. A client should refuse an expired document.
+- **Expiry** — `root.json` expires a year after it is written by default; a
+  batch expires 7 days after it is issued. A client should refuse an expired document.
 - **Sequence** — a batch's `sequence` increases by exactly one each time a new
   batch is signed. A client that has already seen a higher sequence should
   refuse a lower one.
@@ -377,7 +383,10 @@ just without the batch to check them against.
   SHA256 of the manifest JSON as it existed when that batch was built; the
   manifest endpoint serves those same stored bytes (not a fresh render) for
   as long as that is the newest batch, so the hash a client checks against
-  always matches what it downloads.
+  always matches what it downloads, and sets an `etag` of that SHA256. Before
+  the first batch is signed, and for a package the newest batch does not name
+  yet, the endpoint serves a fresh render instead, without an `etag`; a client
+  that verifies batches cannot use it.
 - **Revocation** — there is no separate revoke endpoint. When a build is
   withdrawn, the next signed batch drops the package from `manifests` and
   `manifests_v2` or points at a different hash in each. A client that verifies
