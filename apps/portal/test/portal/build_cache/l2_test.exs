@@ -747,4 +747,75 @@ defmodule Portal.BuildCache.L2Test do
       assert {:failed, :go} = Prefetch.classify({:status, 400})
     end
   end
+
+  describe "maybe_evict/1" do
+    @describetag :capture_log
+
+    setup do
+      {:ok, s} = FakeS3.start()
+
+      for i <- 0..9 do
+        FakeS3.put_object(s, "#{@slug}/#{i}.tar.gz", String.duplicate("x", 100), %{},
+          last_modified: DateTime.add(~U[2026-01-01 00:00:00Z], i, :second)
+        )
+      end
+
+      %{s: s, cfg: %{s.config | max_bytes: 1000}}
+    end
+
+    defp await(pid) do
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
+    end
+
+    test "starts an eviction in the background", %{s: s, cfg: cfg} do
+      assert {:started, pid} = L2.maybe_evict(config: cfg)
+      await(pid)
+      assert length(FakeS3.objects(s)) == 7
+    end
+
+    test "runs at most once an hour", %{s: s, cfg: cfg} do
+      now = System.monotonic_time(:millisecond)
+      assert {:started, pid} = L2.maybe_evict(config: cfg, now_ms: now)
+      await(pid)
+
+      assert :skipped = L2.maybe_evict(config: cfg, now_ms: now + 1_000)
+      assert :skipped = L2.maybe_evict(config: cfg, now_ms: now + :timer.hours(1) - 1)
+      assert {:started, pid} = L2.maybe_evict(config: cfg, now_ms: now + :timer.hours(1))
+      await(pid)
+
+      assert L2.evict_interval_ms() == :timer.hours(1)
+      assert Enum.count(FakeS3.requests(s), &match?({"GET", _, _}, &1)) == 2
+    end
+
+    test "never waits for the eviction", %{s: s, cfg: cfg} do
+      FakeS3.on_list(s, fn _ -> Process.sleep(1_000) end)
+
+      {micros, {:started, pid}} = :timer.tc(fn -> L2.maybe_evict(config: cfg) end)
+      assert micros < 500_000
+      assert Process.alive?(pid)
+      await(pid)
+    end
+
+    test "never evicts with no max, read-only, or L2 off", %{s: s, cfg: cfg} do
+      assert :skipped = L2.maybe_evict(config: %{cfg | max_bytes: nil})
+      assert :skipped = L2.maybe_evict(config: %{cfg | read_only?: true})
+      assert :skipped = L2.maybe_evict(config: nil)
+
+      Application.delete_env(:portal, L2)
+      assert :skipped = L2.maybe_evict()
+
+      put(@full ++ [max_gb: "1", read_only: true])
+      assert :skipped = L2.maybe_evict()
+
+      assert FakeS3.requests(s) == []
+    end
+
+    test "status carries max_bytes", %{cfg: _cfg} do
+      put(@full ++ [max_gb: "40"])
+      assert %{max_bytes: 40_000_000_000} = L2.status()
+      put(@full)
+      assert %{max_bytes: nil} = L2.status()
+    end
+  end
 end

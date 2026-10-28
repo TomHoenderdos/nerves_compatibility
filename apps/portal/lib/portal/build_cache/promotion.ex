@@ -91,7 +91,10 @@ defmodule Portal.BuildCache.Promotion do
        (`Portal.BuildCache.L2`), best effort, under one upload deadline per
        call (`l2_upload_budget_ms/0`): once it passes, or once an upload
        times out or finds the store failing, the remaining entries of the
-       call are promoted locally and not uploaded.
+       call are promoted locally and not uploaded. After the uploads of a call
+       that promoted anything, `Portal.BuildCache.L2.maybe_evict/1` may start
+       a background eviction of the bucket's oldest objects; nothing waits
+       for it.
 
   ## Symlinks
 
@@ -148,7 +151,10 @@ defmodule Portal.BuildCache.Promotion do
   `opts[:staging_suffix]` pins the staging name's random suffix: seams for
   tests. `opts[:l2]` is the L2 upload called after a successful promotion
   (`Portal.BuildCache.L2.upload/5`, called as `fun.(dir, slug, key, package,
-  timeout_ms: remaining)`), or `false`.
+  timeout_ms: remaining)`), or `false`. `opts[:l2_evict]` is the 0-arity
+  eviction request made once after those uploads when anything was promoted
+  (default `Portal.BuildCache.L2.maybe_evict/0`); it is never made when
+  `opts[:l2]` is `false`.
   """
   @spec promote(map(), Path.t(), Path.t() | nil, String.t(), String.t(), keyword()) :: counts()
   def promote(result, out_dir, cache_dir, package, version, opts \\ [])
@@ -180,6 +186,7 @@ defmodule Portal.BuildCache.Promotion do
       toolchain: toolchain(result),
       copy: Keyword.get_lazy(opts, :copy, fn -> default_copy(opts[:image]) end),
       l2: Keyword.get(opts, :l2, &L2.upload/5),
+      l2_evict: Keyword.get(opts, :l2_evict, &L2.maybe_evict/0),
       staging_suffix:
         case opts[:staging_suffix] do
           nil -> nil
@@ -204,6 +211,7 @@ defmodule Portal.BuildCache.Promotion do
         %{acc | counts: count(acc.counts, outcome), hex: hex, l2: l2}
       end)
 
+    request_eviction(counts, ctx)
     log_ignored(length(extra), limit, ctx)
     log_mismatches(counts, ctx)
 
@@ -588,6 +596,22 @@ defmodule Portal.BuildCache.Promotion do
       %{l2 | stopped?: upload_stops?(result)}
     end
   end
+
+  # After the uploads, never instead of them: the eviction runs in the
+  # background (`L2.maybe_evict/1`), and whatever the request does, the
+  # promotion's counts stand.
+  defp request_eviction(%{promoted: n}, %{l2: fun, l2_evict: evict})
+       when n > 0 and is_function(fun, 5) and is_function(evict, 0) do
+    _ = evict.()
+    :ok
+  rescue
+    e -> Logger.warning("Build cache L2 eviction request raised: #{Exception.message(e)}")
+  catch
+    kind, reason ->
+      Logger.warning("Build cache L2 eviction request failed: #{show({kind, reason})}")
+  end
+
+  defp request_eviction(_counts, _ctx), do: :ok
 
   defp skip_upload(%{logged?: true} = l2, _key, _ctx), do: l2
 

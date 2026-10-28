@@ -736,6 +736,62 @@ defmodule Portal.BuildCache.PromotionTest do
       refute_receive :l2
     end
 
+    test "asks for an eviction once the uploads of the call are done", ctx do
+      test_pid = self()
+      c1 = candidate(ctx.out)
+      c2 = candidate(ctx.out, %{"target" => "rpi4"})
+
+      promote(result([c1, c2]), ctx.out, ctx.cache, "jason", "1.4.5",
+        release_checksum: &hex_ok/2,
+        l2: fn _, _, key, _, _ ->
+          send(test_pid, {:l2, key})
+          :ok
+        end,
+        l2_evict: fn -> send(test_pid, :evict) end
+      )
+
+      assert_received {:l2, _}
+      assert_received {:l2, _}
+      assert {:messages, [:evict]} = Process.info(self(), :messages)
+    end
+
+    test "asks for no eviction with L2 off or nothing promoted", ctx do
+      test_pid = self()
+      c = candidate(ctx.out)
+      evict = fn -> send(test_pid, :evict) end
+
+      promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+        release_checksum: &hex_ok/2,
+        l2: false,
+        l2_evict: evict
+      )
+
+      refute_received :evict
+
+      bad = candidate(ctx.out, %{"key" => String.duplicate("0", 64)})
+
+      promote(result([bad]), ctx.out, ctx.cache, "jason", "1.4.5",
+        release_checksum: &hex_ok/2,
+        l2: fn _, _, _, _, _ -> :ok end,
+        l2_evict: evict
+      )
+
+      refute_received :evict
+    end
+
+    test "an eviction request that raises does not fail the promotion", ctx do
+      c = candidate(ctx.out)
+
+      counts =
+        promote(result([c]), ctx.out, ctx.cache, "jason", "1.4.5",
+          release_checksum: &hex_ok/2,
+          l2: fn _, _, _, _, _ -> :ok end,
+          l2_evict: fn -> raise "boom" end
+        )
+
+      assert counts.promoted == 1
+    end
+
     test "an upload that raises does not fail the promotion", ctx do
       c = candidate(ctx.out)
 

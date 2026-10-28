@@ -23,6 +23,15 @@ defmodule Portal.BuildCache.L2 do
   renamed an entry into the local cache, and stores it with its SHA-256 in
   the `x-amz-meta-sha256` metadata. Nothing else writes the bucket.
 
+  ## Eviction
+
+  With `NCC_BUILD_CACHE_S3_MAX_GB` set (`Config.max_bytes`), a store with a
+  hard quota is kept under it: after a promotion's uploads, at most once an
+  hour per node (`maybe_evict/1`), `Portal.BuildCache.L2.Evict` deletes the
+  oldest objects once the bucket is above 90 % of the mark, down to 75 %. It
+  runs in the background under `Portal.TaskSupervisor`, so no build waits
+  for it. A read-only config never evicts.
+
   ## Reading: the slug listing, not a build plan
 
   The cache keys a build needs are computed inside the container, after
@@ -93,7 +102,7 @@ defmodule Portal.BuildCache.L2 do
   local cache holds.
   """
   require Logger
-  alias Portal.BuildCache.L2.{Client, Config, Prefetch, Stats, Tarball}
+  alias Portal.BuildCache.L2.{Client, Config, Evict, Prefetch, Stats, Tarball}
   alias Portal.BuildCache.Staging
 
   @shareable_slug ~r/\Asha256_[0-9a-f]{64}\z/
@@ -119,13 +128,21 @@ defmodule Portal.BuildCache.L2 do
       node: Staging.host(),
       endpoint: nil,
       bucket: nil,
-      read_only?: false
+      read_only?: false,
+      max_bytes: nil
     }
 
     {state, base} =
       case Config.config() do
         {:ok, cfg} ->
-          {:on, %{base | endpoint: cfg.endpoint, bucket: cfg.bucket, read_only?: cfg.read_only?}}
+          {:on,
+           %{
+             base
+             | endpoint: cfg.endpoint,
+               bucket: cfg.bucket,
+               read_only?: cfg.read_only?,
+               max_bytes: cfg.max_bytes
+           }}
 
         :off ->
           {:off, base}
@@ -215,6 +232,44 @@ defmodule Portal.BuildCache.L2 do
 
         {:error, reason}
     end
+  end
+
+  @evict_interval_ms :timer.hours(1)
+
+  @spec evict_interval_ms() :: pos_integer()
+  def evict_interval_ms, do: @evict_interval_ms
+
+  @doc """
+  Starts `Portal.BuildCache.L2.Evict.run/2` in the background, at most once
+  per `evict_interval_ms/0` on this node, and returns without waiting for it:
+  `{:started, pid}`, or `:skipped` when the config is off, read-only or has
+  no `max_bytes`, when an eviction already started within the interval, or
+  when the task cannot be started. Never raises.
+
+  Options: `:config` (default the active one), `:now_ms` (monotonic ms,
+  default now); the rest go to `Evict.run/2`.
+  """
+  @spec maybe_evict(keyword()) :: {:started, pid()} | :skipped
+  def maybe_evict(opts \\ []) do
+    {now, opts} = Keyword.pop_lazy(opts, :now_ms, fn -> System.monotonic_time(:millisecond) end)
+
+    with {%Config{read_only?: false, max_bytes: max} = cfg, opts} when is_integer(max) <-
+           Keyword.pop_lazy(opts, :config, &active_config/0),
+         true <- Stats.claim_evict(now, @evict_interval_ms),
+         {:ok, pid} <-
+           Task.Supervisor.start_child(Portal.TaskSupervisor, fn -> Evict.run(cfg, opts) end) do
+      {:started, pid}
+    else
+      _ -> :skipped
+    end
+  rescue
+    e ->
+      Logger.warning("Build cache L2 eviction not started: #{Exception.message(e)}")
+      :skipped
+  catch
+    kind, reason ->
+      Logger.warning("Build cache L2 eviction not started: #{show({kind, reason})}")
+      :skipped
   end
 
   @doc """
