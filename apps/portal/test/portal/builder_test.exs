@@ -766,6 +766,43 @@ defmodule Portal.BuilderTest do
     end
   end
 
+  describe "Hex cache mount" do
+    defp hex_mounts(argv) do
+      argv
+      |> Enum.chunk_every(2, 1)
+      |> Enum.filter(&match?(["--mount", _], &1))
+      |> Enum.map(&List.last/1)
+    end
+
+    test "every build, a warm one included, mounts it read-only", %{previous: previous} do
+      put_builder([hex_cache: "/srv/hex", hex_cache_rw: nil], previous)
+
+      assert "type=bind,source=/srv/hex,target=/hex-cache,readonly" in hex_mounts(args())
+      refute "NCC_HEX_CACHE_RW=1" in args()
+
+      warm =
+        Builder.build_docker_args(
+          Map.put(@job, :mode, "warm_nerves"),
+          "/scratch/work",
+          "/scratch/out",
+          "/scratch/files"
+        )
+
+      assert "type=bind,source=/srv/hex,target=/hex-cache,readonly" in hex_mounts(warm)
+    end
+
+    test "NCC_HEX_CACHE_RW=1 mounts it read-write and tells the worker", %{previous: previous} do
+      put_builder([hex_cache: "/srv/hex", hex_cache_rw: true], previous)
+
+      assert "type=bind,source=/srv/hex,target=/hex-cache" in hex_mounts(args())
+      assert "NCC_HEX_CACHE_RW=1" in args()
+      assert Builder.hex_cache_mode() == :rw
+
+      put_builder([hex_cache_rw: nil], previous)
+      assert Builder.hex_cache_mode() == :readonly
+    end
+  end
+
   describe "warm runs" do
     test "worker_input/1 sends the mode and pairs and no package" do
       pairs = [%{"name" => "nerves_system_rpi4", "version" => "2.0.0"}]

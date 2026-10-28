@@ -129,6 +129,40 @@ defmodule Compatibility.Builder.ArgvTest do
     assert_raise FunctionClauseError, fn -> Argv.build(%{input | nerves_cache_mode: :bogus}) end
   end
 
+  # A build runs untrusted package code, so it only ever reads the shared Hex
+  # cache; the host-side promotion (`Compatibility.HexCache`) is its writer.
+  test "a build mounts the Hex cache read-only at /hex-cache", %{input: input} do
+    argv = Argv.build(input)
+
+    assert "type=bind,source=/srv/ncc/hex-cache,target=/hex-cache,readonly" in argv
+    refute "type=bind,source=/srv/ncc/hex-cache,target=/hex-cache" in argv
+    refute "NCC_HEX_CACHE_RW=1" in argv
+  end
+
+  test "an explicit read-only Hex cache mode is the default", %{input: input} do
+    assert Argv.build(Map.put(input, :hex_cache_mode, :readonly)) == Argv.build(input)
+  end
+
+  # The one-release rollback: read-write as before, and the worker is told so
+  # it uses the mounted cache as its HEX_HOME again.
+  test "the Hex cache read-write fallback mounts it read-write and tells the worker", %{
+    input: input
+  } do
+    argv = Argv.build(Map.put(input, :hex_cache_mode, :rw))
+
+    assert "type=bind,source=/srv/ncc/hex-cache,target=/hex-cache" in argv
+    refute "type=bind,source=/srv/ncc/hex-cache,target=/hex-cache,readonly" in argv
+    index = Enum.find_index(argv, &(&1 == "NCC_HEX_CACHE_RW=1"))
+    assert index, "expected -e NCC_HEX_CACHE_RW=1"
+    assert Enum.at(argv, index - 1) == "-e"
+  end
+
+  test "an unknown Hex cache mode raises rather than mounting read-write", %{input: input} do
+    assert_raise FunctionClauseError, fn ->
+      Argv.build(Map.put(input, :hex_cache_mode, :bogus))
+    end
+  end
+
   # Shared with `Portal.Builder.safe_name/1` and the agent's scratch layout.
   test "safe_name/1 and container_name/1 are the one run-id transform" do
     assert Argv.safe_name("rb-jason-1.4.4-1700000000000") == "rb-jason-1.4.4-1700000000000"

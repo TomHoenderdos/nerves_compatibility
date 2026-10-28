@@ -166,6 +166,10 @@ if portal_available? do
     # Anything else, or unset, keeps it read-only.
     nerves_cache_rw: if(System.get_env("NCC_NERVES_CACHE_RW") == "1", do: true),
     hex_cache: System.get_env("NCC_HEX_CACHE"),
+    # `1` mounts the Hex cache read-write into builds and has the worker use it
+    # as its HEX_HOME, as before the isolation work: the one-release rollback.
+    # Anything else, or unset, keeps it read-only.
+    hex_cache_rw: if(System.get_env("NCC_HEX_CACHE_RW") == "1", do: true),
     build_cache: System.get_env("NCC_BUILD_CACHE"),
     cpus: System.get_env("NCC_BUILD_CPUS"),
     memory: System.get_env("NCC_BUILD_MEMORY"),

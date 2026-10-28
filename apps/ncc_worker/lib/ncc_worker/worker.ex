@@ -13,6 +13,7 @@ defmodule NccWorker.Worker do
     DepsLock,
     EgressProbe,
     Footprint,
+    HexCache,
     HexHome,
     HexMetadata,
     LockPolicy,
@@ -274,12 +275,33 @@ defmodule NccWorker.Worker do
          # `deps.get` would (isolation spec, section 3). Advisory.
          egress = EgressProbe.run(input[:egress_probe]),
          {:ok, nerves} <- prepare_nerves_cache(scope, input, paths),
+         {:ok, hex} <- prepare_hex_cache(scope, paths),
          {:ok, toolchain} <- detect_toolchain(scope) do
       scope
       |> run_scope(Map.put(input, :started_at, started_at), paths, toolchain, nerves)
+      |> put_hex_cache(hex, paths)
       |> EgressProbe.put_result(egress)
     end
   end
+
+  # Before any `mix` runs, like the Nerves cache: `/hex-cache` is read-only,
+  # so every `mix` this run starts must inherit a writable `HEX_HOME`
+  # (`NccWorker.HexCache`). A warm run sets its own empty one
+  # (`NccWorker.WarmNerves`) and reports nothing.
+  defp prepare_hex_cache(:warm_nerves, _paths), do: {:ok, nil}
+
+  defp prepare_hex_cache(_scope, paths) do
+    with {:ok, layout} <- HexCache.prepare(work_dir: paths.work_dir) do
+      :ok = HexCache.export_env(layout)
+      {:ok, layout}
+    end
+  end
+
+  # Every scope's project is `<work_dir>/proj`, the toolchain run's included.
+  defp put_hex_cache({:ok, result}, layout, paths) when is_map(layout),
+    do: {:ok, HexCache.put_report(result, layout, Path.join(paths.work_dir, "proj"))}
+
+  defp put_hex_cache(other, _layout, _paths), do: other
 
   defp run_scope(:toolchain, input, paths, toolchain, _nerves),
     do: toolchain_run(input, paths, toolchain)

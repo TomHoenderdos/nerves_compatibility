@@ -352,6 +352,107 @@ defmodule Portal.Workers.BuildTest do
     end
   end
 
+  describe "Hex cache promotion" do
+    @tarball "the bytes Hex serves for jason 1.4.5"
+
+    setup do
+      root = Path.join(System.tmp_dir!(), "build-hex-#{System.unique_integer([:positive])}")
+      scratch = Path.join(root, "scratch")
+      hex = Path.join(root, "hex-cache")
+      File.mkdir_p!(scratch)
+      File.mkdir_p!(Path.join([hex, "packages", "hexpm"]))
+      on_exit(fn -> File.rm_rf(root) end)
+
+      Application.put_env(:portal, Portal.Builder, scratch_root: scratch, hex_cache: hex)
+      on_exit(fn -> Application.delete_env(:portal, Portal.Builder) end)
+      on_exit(fn -> Application.delete_env(:portal, Portal.HexCache) end)
+      Process.put(:stub_scratch_root, scratch)
+
+      # What the container left in its per-run HEX_HOME, next to /out.
+      Process.put(:stub_fill_out, fn out ->
+        dir = Path.join([Path.dirname(out), "work", "hex-home", "packages", "hexpm"])
+        File.mkdir_p!(dir)
+        File.write!(Path.join(dir, "jason-1.4.5.tar"), @tarball)
+      end)
+
+      used = Path.join([hex, "packages", "hexpm", "decimal-2.1.1.tar"])
+      File.write!(used, "decimal")
+      File.touch!(used, 1_000_000_000)
+
+      report = %{
+        "misses" => [
+          %{
+            "name" => "jason",
+            "version" => "1.4.5",
+            "outer_checksum" => "not trusted",
+            "path" => "hex-home/packages/hexpm/jason-1.4.5.tar"
+          }
+        ],
+        "hits" => [%{"name" => "decimal", "version" => "2.1.1"}]
+      }
+
+      files_dir = files_dir_with([])
+
+      set_response(
+        {:ok,
+         %{
+           exit_code: 0,
+           result: Map.put(fixture_result(), "hex_cache", report),
+           files_dir: files_dir,
+           output_dir: files_dir,
+           log: "ok"
+         }}
+      )
+
+      %{hex: hex, used: used}
+    end
+
+    defp build_jason_for_hex do
+      perform_job(Build, %{
+        "package" => "jason",
+        "version" => "1.4.5",
+        "image_digest" => "sha256:deadbeef"
+      })
+    end
+
+    test "a successful build promotes its verified downloads before the ingest", ctx do
+      checksum = :crypto.hash(:sha256, @tarball) |> Base.encode16(case: :lower)
+
+      Application.put_env(:portal, Portal.HexCache,
+        release_checksum: fn "jason", "1.4.5" -> {:ok, checksum} end
+      )
+
+      assert :ok = build_jason_for_hex()
+
+      assert File.read!(Path.join([ctx.hex, "packages", "hexpm", "jason-1.4.5.tar"])) == @tarball
+      assert File.stat!(ctx.used, time: :posix).mtime > 1_000_000_000
+      assert_enqueued(worker: Ingest)
+    end
+
+    test "a download Hex does not vouch for stays out", ctx do
+      Application.put_env(:portal, Portal.HexCache,
+        release_checksum: fn "jason", "1.4.5" -> {:ok, String.duplicate("0", 64)} end
+      )
+
+      capture_log(fn -> assert :ok = build_jason_for_hex() end)
+
+      refute File.exists?(Path.join([ctx.hex, "packages", "hexpm", "jason-1.4.5.tar"]))
+      assert_enqueued(worker: Ingest)
+    end
+
+    test "a promotion that raises still enqueues the ingest", ctx do
+      Application.put_env(:portal, Portal.HexCache,
+        release_checksum: fn _, _ -> raise "hex lookup exploded" end
+      )
+
+      log = capture_log(fn -> assert :ok = build_jason_for_hex() end)
+
+      assert log =~ "Hex cache promotion failed"
+      assert_enqueued(worker: Ingest)
+      refute File.exists?(Path.join([ctx.hex, "packages", "hexpm", "jason-1.4.5.tar"]))
+    end
+  end
+
   describe "ingest retries" do
     test "a request completion error remains retryable after the run commits" do
       {:ok, run} =

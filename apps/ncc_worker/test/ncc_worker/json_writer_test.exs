@@ -417,6 +417,35 @@ defmodule NccWorker.JsonWriterTest do
     end
 
     @tag :tmp_dir
+    test "writes a build's Hex cache misses and hits, and leaves the key out without", %{
+      tmp_dir: dir
+    } do
+      report = %{
+        misses: [
+          %{
+            "name" => "plug",
+            "version" => "1.16.0",
+            "outer_checksum" => String.duplicate("a", 64),
+            "path" => "hex-home/packages/hexpm/plug-1.16.0.tar"
+          }
+        ],
+        hits: [%{"name" => "jason", "version" => "1.4.4"}]
+      }
+
+      assert :ok = JsonWriter.write_result(dir, nerves_result(%{hex_cache: report}))
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+
+      assert decoded["hex_cache"] == %{
+               "misses" => report.misses,
+               "hits" => [%{"name" => "jason", "version" => "1.4.4"}]
+             }
+
+      assert :ok = JsonWriter.write_result(dir, nerves_result(%{}))
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      refute Map.has_key?(decoded, "hex_cache")
+    end
+
+    @tag :tmp_dir
     test "a warm run writes its warm report and a null package", %{tmp_dir: dir} do
       warm = %{installed: ["nerves_system_rpi4-2.0.0"], resolved: ["nerves_system_rpi4-2.0.0"]}
 

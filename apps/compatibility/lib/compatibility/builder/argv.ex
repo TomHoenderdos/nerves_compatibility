@@ -15,7 +15,12 @@ defmodule Compatibility.Builder.Argv do
   as `:nerves_cache_mode` says: `:readonly` for every build, `:warm` (read-write)
   for the warm run that is its only writer, and `:rw` (read-write, plus
   `NCC_NERVES_CACHE_RW=1` so the worker skips its symlink farm) for the
-  one-release rollback.
+  one-release rollback. The Hex cache is mounted at `/hex-cache` as
+  `:hex_cache_mode` says: `:readonly` (the default) for every build, whose
+  worker seeds a per-run `HEX_HOME` from it (`NccWorker.HexCache`) and whose
+  downloads only the host promotes (`Compatibility.HexCache`), and `:rw`
+  (read-write, plus `NCC_HEX_CACHE_RW=1` so the worker uses it as its
+  `HEX_HOME` again) for the one-release rollback.
   """
 
   @type paths :: %{
@@ -30,6 +35,7 @@ defmodule Compatibility.Builder.Argv do
         }
 
   @type nerves_cache_mode :: :readonly | :warm | :rw
+  @type hex_cache_mode :: :readonly | :rw
 
   @type spec :: %{
           required(:container_name) => String.t(),
@@ -37,6 +43,7 @@ defmodule Compatibility.Builder.Argv do
           required(:image) => String.t(),
           required(:paths) => paths(),
           required(:nerves_cache_mode) => nerves_cache_mode(),
+          optional(:hex_cache_mode) => hex_cache_mode(),
           optional(:cpus) => String.t() | number() | nil,
           optional(:memory) => String.t() | number() | nil,
           optional(:build_concurrency) => String.t() | pos_integer() | nil
@@ -48,15 +55,17 @@ defmodule Compatibility.Builder.Argv do
     paths = Map.fetch!(spec, :paths)
     image = Map.fetch!(spec, :image)
     nerves_cache_mode = Map.fetch!(spec, :nerves_cache_mode)
+    hex_cache_mode = Map.get(spec, :hex_cache_mode, :readonly)
 
     validate_paths!(paths)
     validate_image!(image)
 
     flags(spec) ++
       limits(spec) ++
-      mounts(paths, nerves_cache_mode) ++
+      mounts(paths, nerves_cache_mode, hex_cache_mode) ++
       env() ++
       nerves_cache_env(nerves_cache_mode) ++
+      hex_cache_env(hex_cache_mode) ++
       build_cache_env(paths) ++
       cpu_env(spec) ++ concurrency_env(spec) ++ [image]
   end
@@ -119,7 +128,7 @@ defmodule Compatibility.Builder.Argv do
     end)
   end
 
-  defp mounts(paths, nerves_cache_mode) do
+  defp mounts(paths, nerves_cache_mode, hex_cache_mode) do
     List.flatten([
       bind(Map.fetch!(paths, :work), "/work"),
       bind(Map.fetch!(paths, :out), "/out"),
@@ -130,7 +139,7 @@ defmodule Compatibility.Builder.Argv do
       bind(Map.fetch!(paths, :tmp), "/tmp"),
       bind(Map.fetch!(paths, :cache), "/home/nerves/.cache"),
       nerves_cache_mount(Map.fetch!(paths, :nerves_cache), nerves_cache_mode),
-      bind(Map.fetch!(paths, :hex_cache), "/hex-cache"),
+      hex_cache_mount(Map.fetch!(paths, :hex_cache), hex_cache_mode),
       build_cache_mount(Map.get(paths, :build_cache))
     ])
   end
@@ -151,6 +160,20 @@ defmodule Compatibility.Builder.Argv do
   # the mounted cache, as builds did before the farm.
   defp nerves_cache_env(:rw), do: ["-e", "NCC_NERVES_CACHE_RW=1"]
   defp nerves_cache_env(mode) when mode in [:readonly, :warm], do: []
+
+  # Read-only for a build: one that could write here could leave a
+  # `hex.config` naming its own mirror, or a registry cache with its own
+  # checksums, for every later build on the host to trust. The worker
+  # resolves through a per-run `HEX_HOME` seeded from it instead
+  # (`NccWorker.HexCache`), and the host promotes what a build downloaded
+  # only after checking it against Hex (`Compatibility.HexCache`).
+  defp hex_cache_mount(dir, :readonly),
+    do: ["--mount", "type=bind,source=#{dir},target=/hex-cache,readonly"]
+
+  defp hex_cache_mount(dir, :rw), do: bind(dir, "/hex-cache")
+
+  defp hex_cache_env(:rw), do: ["-e", "NCC_HEX_CACHE_RW=1"]
+  defp hex_cache_env(:readonly), do: []
 
   defp build_cache_mount(nil), do: []
 

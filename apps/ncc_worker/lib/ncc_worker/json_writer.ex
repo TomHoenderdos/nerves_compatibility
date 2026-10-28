@@ -71,7 +71,9 @@ defmodule NccWorker.JsonWriter do
     # `requested_toolchain` for every run but a toolchain one
     # (`NccWorker.Worker.toolchain_build/4`), `nerves_cache` for a run with
     # no Nerves cache misses or locked Nerves packages
-    # (`NccWorker.NervesCache.report/2`), `warm` for every run but a warm
+    # (`NccWorker.NervesCache.report/2`), `hex_cache` for a run that neither
+    # downloaded a Hex tarball nor used a cached one
+    # (`NccWorker.HexCache.report/2`), `warm` for every run but a warm
     # one (`NccWorker.WarmNerves`), and `egress_probe` for every run that was
     # not asked to probe (`NccWorker.EgressProbe`).
     json =
@@ -82,6 +84,7 @@ defmodule NccWorker.JsonWriter do
         :toolchain_build,
         :requested_toolchain,
         :nerves_cache,
+        :hex_cache,
         :warm,
         :egress_probe
       ]

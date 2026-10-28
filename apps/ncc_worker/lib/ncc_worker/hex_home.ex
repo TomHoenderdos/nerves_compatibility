@@ -34,6 +34,12 @@ defmodule NccWorker.HexHome do
   shared directory rather than in the build's own tree, because the two are
   separate mounts and a cross-device rename fails with `:exdev`.
 
+  The "shared" home is whatever `HEX_HOME` the worker runs with. For a build
+  that is no longer the host's `/hex-cache`, which is read-only, but the
+  run's own home that `NccWorker.HexCache` seeds from it: the targets share
+  that run's tarballs and registry, never another run's, and a download lands
+  in the run's dir for the host to verify and promote.
+
   Every failure path here returns `nil` or `:ok`. The worst case is a build
   that falls back to the shared `HEX_HOME` and might hit the original race, or
   one that leaves the shared registry a little staler than it found it. Neither

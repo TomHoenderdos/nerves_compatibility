@@ -9,8 +9,9 @@ defmodule Portal.Workers.Build do
     2. Run the build via `Portal.Builder.build/2`.
     3. Map the worker/runner exit code to an outcome (see `classify/1`).
     4. On success, promote the build cache candidates the build reported
-       (`Portal.BuildCache.Promotion`) and queue a Nerves cache warm for its
-       allowlisted misses (`Portal.NervesCache.request_warm/3`), both
+       (`Portal.BuildCache.Promotion`) and the Hex tarballs it downloaded
+       (`Portal.HexCache`), and queue a Nerves cache warm for its
+       allowlisted misses (`Portal.NervesCache.request_warm/3`), all
        best-effort, then enqueue `Portal.Workers.Ingest` and leave the scratch
        dir in place for it to read.
     5. Update the linked `ScanRequest` status (rejected / error; `built` is the
@@ -63,6 +64,7 @@ defmodule Portal.Workers.Build do
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Run
   alias Portal.Catalog.ToolingSkip
+  alias Portal.HexCache
   alias Portal.NervesCache
   alias Portal.Repo
   alias Portal.Workers.{Ingest, Progress}
@@ -251,6 +253,7 @@ defmodule Portal.Workers.Build do
 
       result ->
         promote_cache(result, run_id, image_digest, package, version)
+        promote_hex_cache(result, run_id, package, version)
         request_nerves_warm(result, image_digest, package, version)
 
         # No cleanup: the scratch dir is what the ingest job reads, and it owns
@@ -295,6 +298,23 @@ defmodule Portal.Workers.Build do
       if refused > 0,
         do:
           Logger.warning("Refused #{refused} build cache candidate(s) from #{package} #{version}")
+    end)
+  end
+
+  # Before ingest for the same reason: the downloads sit in the scratch dir.
+  # Best-effort: a tarball not promoted is only fetched again by a later build.
+  defp promote_hex_cache(result, run_id, package, version) do
+    safely("Hex cache promotion", fn ->
+      case HexCache.promote(result, run_id) do
+        %{promoted: 0, refused: 0} ->
+          :ok
+
+        %{promoted: promoted, refused: refused, skipped: skipped} ->
+          Logger.info(
+            "Hex cache after #{package} #{version}: promoted #{promoted}, " <>
+              "refused #{refused}, skipped #{skipped}"
+          )
+      end
     end)
   end
 

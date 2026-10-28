@@ -69,9 +69,10 @@ defmodule NccAgent.Config do
   def path(config, :csr), do: Path.join(config.data_dir, "client.csr")
   def path(config, :scratch), do: Path.join(config.data_dir, "scratch")
   def path(config, :nerves_cache), do: Path.join(config.data_dir, "nerves-cache")
-  # One Hex cache per slot: a build mounts it read-write for its whole run,
-  # and the scrub between runs (`NccAgent.HexCache`) only holds when no
-  # other slot's container is writing the same dir meanwhile.
+  # One Hex cache per slot: the scrub before a run (`NccAgent.HexCache`)
+  # only holds when no other slot's container is writing the same dir
+  # meanwhile, as builds did before the mount was read-only. Each slot's
+  # promotion writes only its own dir too.
   def path(%{slot: n} = config, :hex_cache) when is_integer(n),
     do: Path.join([config.data_dir, "hex-cache", "slot-#{n}"])
 

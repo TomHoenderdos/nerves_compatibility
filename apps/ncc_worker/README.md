@@ -144,6 +144,39 @@ way. At the end of the run every farm entry that is a real directory is a miss, 
 the run's `mix.lock` entries whose name starts with `nerves_system_` or `nerves_toolchain_`. The key is absent when
 both lists are empty and for toolchain runs. Nothing refers to `/home/nerves/.nerves`.
 
+## Hex cache
+
+`/hex-cache` is the host's shared Hex cache, mounted read-only into every build; the container's `HEX_HOME` names
+it. Before any `mix` runs (every mode but `warm_nerves`, which uses an empty `HEX_HOME` of its own), the worker
+(`NccWorker.HexCache`) points `HEX_HOME` at `/work/hex-home` instead: a real `packages/hexpm/` with one symlink per
+tarball in `/hex-cache/packages/hexpm/`, and nothing else. Hex keeps three things under `HEX_HOME`: the tarballs,
+which it uses only when their outer checksum matches its signed registry (one that does not is removed, which removes
+the link, and fetched again); its registry cache `cache.bin` (`cache.ets` before Hex 2.6), which it reads back without
+verifying it; and `hex.config`, which can name a mirror or switch registry verification off. So only the tarballs are
+seeded, and every run fetches the registry itself. Whatever Hex downloads lands in the run dir, never the shared one.
+
+At the end of the run `result.json` carries
+
+```json
+"hex_cache": {
+  "misses": [{"name": "plug", "version": "1.16.0", "outer_checksum": "<sha256 of the file>",
+              "path": "hex-home/packages/hexpm/plug-1.16.0.tar"}],
+  "hits": [{"name": "jason", "version": "1.4.4"}]
+}
+```
+
+where `misses` are the tarballs the run downloaded (`path` is relative to `/work`) and `hits` the run's `mix.lock`
+entries whose cached tarball it used. The key is absent when both lists are empty. After the container exits and
+before ingest, the host (`Portal.HexCache`, and `NccAgent.HexCache` on a remote builder, both through
+`Compatibility.HexCache`) moves each miss into the shared cache only when the file is a regular, unlinked file within
+16 MiB whose bytes hash to the outer checksum Hex.pm publishes for that release; it rebuilds the source path from the
+validated name and version and ignores the reported checksum and path. Each hit's times are refreshed, since a
+read-only mount no longer moves a file's atime and the hex sweep evicts by last use.
+
+`NCC_HEX_CACHE_RW=1` on the host is the one-release rollback: the cache is mounted read-write, the worker is told so
+(`-e NCC_HEX_CACHE_RW=1`) and keeps `/hex-cache` as its `HEX_HOME`, and no `hex_cache` is reported. Nothing needs
+wiping afterwards: the worker never seeds the registry cache or `hex.config`, and Hex checks every seeded tarball.
+
 ## Warm mode
 
 With `"mode": "warm_nerves"` and `"nerves_packages": [{"name": "nerves_system_rpi4", "version": "2.0.0"}]` (and no

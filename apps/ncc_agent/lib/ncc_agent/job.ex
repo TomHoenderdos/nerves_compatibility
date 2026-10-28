@@ -17,7 +17,9 @@ defmodule NccAgent.Job do
   (`NccWorker.NervesCache`); the agent only keeps the cache dir real
   (`NccAgent.NervesCache.prepare_cache/1`). After a `done` completion the
   portal's answer names the cache misses worth warming (`warm`), and
-  `NccAgent.NervesCache.warm/4` runs them.
+  `NccAgent.NervesCache.warm/4` runs them. Before that, the Hex tarballs the
+  run downloaded into its own `HEX_HOME` are promoted into the slot's
+  read-only Hex cache once Hex.pm vouches for them (`NccAgent.HexCache.promote/3`).
 
   A runner-side failure (a timeout, a failed pull, a crash, an upload of
   the run's files that still fails after its retries) completes the lease
@@ -120,6 +122,7 @@ defmodule NccAgent.Job do
 
     case complete(req, lease_id, exit_code, scratch) do
       {:ok, :done, pairs} when exit_code == 0 ->
+        HexCache.promote(config, dirs.work, dirs.out)
         warm(config, claim, pairs)
         {:ok, :done}
 

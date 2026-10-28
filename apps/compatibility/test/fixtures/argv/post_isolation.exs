@@ -3,8 +3,10 @@
 # `Compatibility.Builder.ArgvTest` checks `Argv.build/1`, `Portal.BuilderTest`
 # checks the portal's builder from equivalent config, and a remote build agent
 # checks its own. Post-isolation (isolation spec sections 4 and 1): read-only
-# root, pids limit, per-run /tmp and ~/.cache, read-only build cache, and the
-# Nerves cache read-only at /nerves-cache. Section 3 (egress) is not reflected
+# root, pids limit, per-run /tmp and ~/.cache, read-only build cache, the
+# Nerves cache read-only at /nerves-cache, and the Hex cache read-only at
+# /hex-cache (`HEX_HOME` still names it: the worker reads it as the cache to
+# seed its per-run `HEX_HOME` from). Section 3 (egress) is not reflected
 # here. Change it only together with the sandbox, and expect every builder's
 # test to follow.
 %{
@@ -57,7 +59,7 @@
     "--mount",
     "type=bind,source=/srv/ncc/nerves-cache,target=/nerves-cache,readonly",
     "--mount",
-    "type=bind,source=/srv/ncc/hex-cache,target=/hex-cache",
+    "type=bind,source=/srv/ncc/hex-cache,target=/hex-cache,readonly",
     "--mount",
     "type=bind,source=/srv/ncc/build-cache/sha256_deadbeef,target=/build-cache,readonly",
     "-e",

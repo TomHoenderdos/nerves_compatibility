@@ -37,14 +37,18 @@ defmodule Portal.Workers.Sweep do
   build's to plant.
 
   `hex_cache/packages` it keeps under a
-  size bound (`hex_cache_max_bytes`, `NCC_HEX_CACHE_MAX_GB`): the cache is
-  read-write inside every build container, so a package that depends on
-  everything on Hex could otherwise fill the disk. An evicted tarball is simply
+  size bound (`hex_cache_max_bytes`, `NCC_HEX_CACHE_MAX_GB`): every tarball a
+  build downloads that Hex.pm vouches for is promoted into it
+  (`Portal.HexCache`), and under the `NCC_HEX_CACHE_RW=1` rollback builds write
+  it directly, so a package that depends on everything on Hex could otherwise
+  fill the disk. An evicted tarball is simply
   fetched again. Every regular file under `packages/` counts, whatever its name,
   and the least recently used goes first, by `max(atime, mtime)`: Hex does not
   rewrite a cached tarball on a cache hit (a 304), so mtime alone is
   first-download order, while `relatime` still moves atime at least daily — fine
-  resolution for an hourly sweep. A timestamp in the future counts as the epoch,
+  resolution for an hourly sweep. A read-only mount moves no atime, so the
+  promotion step touches each tarball a build reports using
+  (`Compatibility.HexCache.touch/2`). A timestamp in the future counts as the epoch,
   so a hostile file cannot push every real tarball out ahead of itself. Nothing
   used in the last two hours (the build wall clock) is evicted, even over the
   bound. At the cache root, regular files other than `cache.ets` and

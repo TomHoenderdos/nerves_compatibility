@@ -791,6 +791,7 @@ defmodule Portal.Builder do
       memory: config(:memory, nil),
       build_concurrency: config(:build_concurrency, nil),
       nerves_cache_mode: nerves_cache_mode(job),
+      hex_cache_mode: hex_cache_mode(),
       paths: %{
         work: work_dir,
         out: output_dir,
@@ -818,6 +819,21 @@ defmodule Portal.Builder do
       config(:nerves_cache_rw, false) == true -> :rw
       true -> :readonly
     end
+  end
+
+  @doc """
+  How every container mounts the Hex cache (`Compatibility.Builder.Argv`):
+  read-only, its downloads promoted by the host afterwards
+  (`Portal.HexCache.promote/3`), unless `NCC_HEX_CACHE_RW=1`
+  (`:hex_cache_rw`) restores the pre-isolation read-write mount for one
+  release. No marker is needed on the way back as the Nerves cache has: the
+  worker never seeds the registry cache or `hex.config` from the shared
+  dir, and Hex checks every tarball it takes from there against the signed
+  registry, so what rw builds leave behind is never trusted.
+  """
+  @spec hex_cache_mode() :: :readonly | :rw
+  def hex_cache_mode do
+    if config(:hex_cache_rw, false) == true, do: :rw, else: :readonly
   end
 
   # Under the NCC_NERVES_CACHE_RW=1 rollback the container writes the Nerves

@@ -99,9 +99,10 @@ defmodule NccWorker.WarmNerves do
 
   Every `mix` the warm spawns, `Project.create/3`'s included, resolves through
   a fresh, empty `HEX_HOME` at `<work_dir>/hex-home`, never the shared
-  `/hex-cache`: every build mounts that read-write and could plant a
-  `hex.config`, registry cache or tarball there for the one container that
-  writes the Nerves cache to fetch and run.
+  `/hex-cache`: under the `NCC_HEX_CACHE_RW=1` rollback every build mounts
+  that read-write and could plant a `hex.config`, registry cache or tarball
+  there for the one container that writes the Nerves cache to fetch and run.
+  `NccWorker.Worker` exports no seeded `HEX_HOME` for a warm run.
   """
   @spec run(map(), map(), map(), NervesCache.layout(), keyword()) ::
           {:ok, map()} | {:error, term()}

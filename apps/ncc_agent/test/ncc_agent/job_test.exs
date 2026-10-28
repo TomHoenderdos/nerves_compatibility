@@ -10,7 +10,8 @@ defmodule NccAgent.JobTest do
   @fake Path.expand("../support/fake_docker.sh", __DIR__)
   @env ~w(FAKE_DOCKER_EXIT FAKE_DOCKER_RESULT FAKE_DOCKER_ARGV_LOG FAKE_DOCKER_FILE_CONTENT
           FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_SLEEP FAKE_DOCKER_PLANT FAKE_DOCKER_RESULT_LINK
-          FAKE_DOCKER_OUTPUT_BYTES FAKE_DOCKER_CONTAINER_PRESENT FAKE_DOCKER_DOWN)
+          FAKE_DOCKER_OUTPUT_BYTES FAKE_DOCKER_CONTAINER_PRESENT FAKE_DOCKER_DOWN
+          FAKE_DOCKER_HEX_TARBALL)
   @lease "5b0c8a8e-1111-4c2d-9e3f-0a1b2c3d4e5f"
   @digest "sha256:" <> String.duplicate("a", 64)
   @content "the archived artifact"
@@ -294,6 +295,62 @@ defmodule NccAgent.JobTest do
     refute File.exists?(Path.join(hex, "hex.config"))
     refute File.exists?(Path.join(hex, "cache.ets"))
     assert File.exists?(Path.join(hex, "packages/hexpm/jason-1.4.4.tar"))
+  end
+
+  # The cache is read-only in the container; after a done run the agent
+  # promotes what it downloaded, checked against Hex.pm (`Compatibility.HexCache`).
+  describe "Hex cache promotion" do
+    setup do
+      on_exit(fn -> Application.delete_env(:ncc_agent, NccAgent.HexCache) end)
+
+      System.put_env("FAKE_DOCKER_HEX_TARBALL", "jason tarball")
+
+      System.put_env(
+        "FAKE_DOCKER_RESULT",
+        ~s({"status":"pass","hex_cache":{"misses":[{"name":"jason","version":"1.4.4"}]}})
+      )
+
+      :ok
+    end
+
+    defp hex_sha, do: :crypto.hash(:sha256, "jason tarball") |> Base.encode16(case: :lower)
+
+    test "a done run's verified download lands in the slot's cache", %{
+      req: req,
+      config: config
+    } do
+      Application.put_env(:ncc_agent, NccAgent.HexCache,
+        release_checksum: fn "jason", "1.4.4" -> {:ok, hex_sha()} end
+      )
+
+      assert {:ok, :done} = Job.run(req, claim(), config)
+
+      assert File.read!(
+               Path.join(Config.path(config, :hex_cache), "packages/hexpm/jason-1.4.4.tar")
+             ) == "jason tarball"
+    end
+
+    test "nothing is promoted that Hex.pm does not vouch for, or from a failed run", %{
+      req: req,
+      config: config
+    } do
+      tarball = Path.join(Config.path(config, :hex_cache), "packages/hexpm/jason-1.4.4.tar")
+
+      Application.put_env(:ncc_agent, NccAgent.HexCache,
+        release_checksum: fn _, _ -> {:ok, String.duplicate("0", 64)} end
+      )
+
+      assert {:ok, :done} = Job.run(req, claim(), config)
+      refute File.exists?(tarball)
+
+      Application.put_env(:ncc_agent, NccAgent.HexCache,
+        release_checksum: fn _, _ -> {:ok, hex_sha()} end
+      )
+
+      System.put_env("FAKE_DOCKER_EXIT", "10")
+      assert {:ok, _} = Job.run(req, claim(), config)
+      refute File.exists?(tarball)
+    end
   end
 
   test "a timeout completes the lease with exit code 20", %{req: req, config: config} do

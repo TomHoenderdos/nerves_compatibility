@@ -113,6 +113,76 @@ defmodule Portal.Workers.BuildIntegrationTest do
     assert request.status == :built
   end
 
+  # The Hex cache is read-only in the container too: the worker seeds a
+  # per-run HEX_HOME from it and Hex downloads what it lacks into the run dir.
+  # With an empty cache every tarball is such a miss, and the host promotes
+  # each one only once its bytes hash to the checksum Hex.pm publishes.
+  test "a build fetches through a read-only Hex cache and the host promotes its downloads" do
+    tmp_hex = unique_tmp_dir("ncc-hex-cache-it")
+    previous = Application.get_env(:portal, Portal.Builder, [])
+    Application.put_env(:portal, Portal.Builder, Keyword.put(previous, :hex_cache, tmp_hex))
+
+    on_exit(fn ->
+      Application.put_env(:portal, Portal.Builder, previous)
+      File.rm_rf(tmp_hex)
+    end)
+
+    {:ok, request} =
+      ScanRequests.create_once(%{
+        package_name: "jason",
+        version: "1.4.1",
+        source: :hex_owner,
+        status: :accepted
+      })
+
+    image_digest = Builder.image_digest(Builder.docker_image())
+
+    job = %Oban.Job{
+      args: %{
+        "package" => "jason",
+        "version" => "1.4.1",
+        "image_digest" => image_digest,
+        "scan_request_id" => request.id
+      },
+      attempt: 1,
+      max_attempts: 3
+    }
+
+    assert :ok = Build.perform(job)
+
+    ingest_job =
+      all_enqueued(worker: Ingest) |> Enum.find(&(&1.args["scan_request_id"] == request.id))
+
+    assert ingest_job
+    assert {:ok, %{result: result}} = Builder.load_run(ingest_job.args["run_id"])
+
+    assert %{"misses" => [_ | _] = misses} = result["hex_cache"]
+    assert Enum.any?(misses, &(&1["name"] == "jason" and &1["version"] == "1.4.1"))
+
+    tarball = Path.join([tmp_hex, "packages", "hexpm", "jason-1.4.1.tar"])
+    assert File.regular?(tarball), "expected the host to promote jason-1.4.1.tar"
+
+    assert :crypto.hash(:sha256, File.read!(tarball)) |> Base.encode16(case: :lower) ==
+             result["package_checksum"]
+
+    # Hex's registry cache and config never reach the shared dir.
+    refute File.exists?(Path.join(tmp_hex, "cache.bin"))
+    refute File.exists?(Path.join(tmp_hex, "cache.ets"))
+    refute File.exists?(Path.join(tmp_hex, "hex.config"))
+
+    mount_job = %{
+      run_id: ingest_job.args["run_id"],
+      image_name: Builder.docker_image(),
+      image_digest: image_digest
+    }
+
+    mount_args = Builder.build_docker_args(mount_job, "/work", "/out", "/files")
+    assert "type=bind,source=#{tmp_hex},target=/hex-cache,readonly" in mount_args
+
+    assert :ok = Ingest.perform(%Oban.Job{args: ingest_job.args, attempt: 1, max_attempts: 5})
+    Repo.delete!(ingest_job)
+  end
+
   # Build sandbox isolation spec, section 2: the container's /build-cache is
   # mounted read-only; the only writer is Portal.BuildCache.Promotion, which
   # runs on the host before Portal.Workers.Build hands the run off to ingest.

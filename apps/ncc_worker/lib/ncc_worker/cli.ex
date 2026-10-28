@@ -21,6 +21,7 @@ defmodule NccWorker.CLI do
   alias NccWorker.Project
   alias NccWorker.Systems
   alias NccWorker.FileArchiver
+  alias NccWorker.HexCache
 
   @spec main(list(String.t())) :: no_return()
   def main(args) do
@@ -85,6 +86,8 @@ defmodule NccWorker.CLI do
          {:ok, package} <- get_package(input),
          {:ok, nerves} <- NervesCache.prepare(:build, work_dir: work_dir),
          :ok <- NervesCache.export_env(nerves),
+         {:ok, hex} <- HexCache.prepare(work_dir: work_dir),
+         :ok <- HexCache.export_env(hex),
          {:ok, project_dir} <-
            Project.create(work_dir, nil, Systems.targets(Systems.default())),
          {:ok, _} <-

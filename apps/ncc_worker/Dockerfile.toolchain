@@ -27,7 +27,8 @@ ENV HOME=/home/nerves \
     LANG=C.UTF-8
 
 # The archives land in MIX_HOME, which the image keeps. At run time the portal
-# points HEX_HOME at the shared /hex-cache mount; the archives do not move.
+# points HEX_HOME at the shared, read-only /hex-cache mount, and the worker at a
+# per-run home seeded from it (NccWorker.HexCache); the archives do not move.
 RUN mix local.hex --force && \
     mix local.rebar --force
 
