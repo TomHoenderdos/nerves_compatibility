@@ -454,14 +454,14 @@ defmodule Portal.Workers.BuildTest do
       assert_enqueued(worker: Ingest)
     end
 
-    test "a promotion that raises still enqueues the ingest", ctx do
+    test "a lookup that raises promotes nothing and still enqueues the ingest", ctx do
       Application.put_env(:portal, Portal.HexCache,
         release_checksum: fn _, _ -> raise "hex lookup exploded" end
       )
 
       log = capture_log(fn -> assert :ok = build_jason_for_hex() end)
 
-      assert log =~ "Hex cache promotion failed"
+      assert log =~ "hex lookup exploded"
       assert_enqueued(worker: Ingest)
       refute File.exists?(Path.join([ctx.hex, "packages", "hexpm", "jason-1.4.5.tar"]))
     end

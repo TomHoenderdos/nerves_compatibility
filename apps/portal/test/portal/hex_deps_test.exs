@@ -27,8 +27,9 @@ defmodule Portal.HexDepsTest do
   end
 
   defmodule Client do
-    def get(url, _opts) do
+    def get(url, opts) do
       send(self(), {:fetched, URI.parse(url).path})
+      send(self(), {:opts, opts})
 
       case Process.get({:body, URI.parse(url).path}) do
         {:error, _reason} = error -> error
@@ -206,6 +207,31 @@ defmodule Portal.HexDepsTest do
       )
 
       assert {:ok, _} = checksum("jason", "1.4.4", context)
+    end
+
+    # Correctly signed, but for another package: the CDN or a mirror must not
+    # be able to answer for jason with plug's checksums.
+    test "a signed resource for another package name is unavailable", context do
+      serve(
+        "jason",
+        resource("plug", [{"1.4.4", [], %{outer_checksum: @outer}}], context.private)
+      )
+
+      assert checksum("jason", "1.4.4", context) == {:error, :hex_registry_unavailable}
+    end
+
+    test "follows no redirect and refuses a body over the cap", context do
+      serve(
+        "jason",
+        resource("jason", [{"1.4.4", [], %{outer_checksum: @outer}}], context.private)
+      )
+
+      assert checksum("jason", "1.4.4", context, max_bytes: 16) ==
+               {:error, :hex_registry_unavailable}
+
+      assert_received {:opts, opts}
+      assert opts[:redirect] == false
+      assert is_function(opts[:into], 2)
     end
   end
 

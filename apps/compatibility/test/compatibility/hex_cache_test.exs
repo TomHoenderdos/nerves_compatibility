@@ -278,6 +278,37 @@ defmodule Compatibility.HexCacheTest do
       end)
     end
 
+    # The lookup's own HTTP timeouts are per phase; this bound is the whole
+    # call, so `max_overrun_ms/0` holds whatever the lookup does.
+    test "a lookup that hangs is cut off at the lookup timeout", %{tmp_dir: tmp} do
+      {source, root} = dirs(tmp)
+      File.write!(Path.join(source, "jason-1.4.4.tar"), @tarball)
+
+      lookup = fn _name, _version ->
+        Process.sleep(5_000)
+        {:ok, sha(@tarball)}
+      end
+
+      started = System.monotonic_time(:millisecond)
+
+      capture_log(fn ->
+        assert %{promoted: 0, skipped: 1} =
+                 hc_promote([miss("jason", "1.4.4")], source, root, lookup, lookup_timeout_ms: 50)
+      end)
+
+      assert System.monotonic_time(:millisecond) - started < 2_000
+    end
+
+    test "a lookup that raises skips, it does not crash the caller", %{tmp_dir: tmp} do
+      {source, root} = dirs(tmp)
+      File.write!(Path.join(source, "jason-1.4.4.tar"), @tarball)
+
+      capture_log(fn ->
+        assert %{promoted: 0, skipped: 1} =
+                 hc_promote([miss("jason", "1.4.4")], source, root, fn _, _ -> raise "boom" end)
+      end)
+    end
+
     test "a file over the size cap is refused unread", %{tmp_dir: tmp} do
       {source, root} = dirs(tmp)
       File.write!(Path.join(source, "jason-1.4.4.tar"), @tarball)
@@ -413,6 +444,7 @@ defmodule Compatibility.HexCacheTest do
 
       locked = HexCache.locked_pairs(result)
 
+      # A narrowing, not a guarantee: deps_lock is the container's own word too.
       assert MapSet.equal?(
                locked,
                MapSet.new([{"jason", "1.4.4"}, {"decimal", "2.1.1"}, {"x", "1.0.0"}])

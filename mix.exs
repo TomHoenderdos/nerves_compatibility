@@ -25,7 +25,9 @@ defmodule NervesCompatibility.MixProject do
       # The remote builder agent: ships its own ERTS so a builder host needs
       # only Docker, not an Erlang install.
       ncc_agent: [
-        applications: [compatibility: :permanent, ncc_agent: :permanent],
+        # hex_core is code only for the agent (`NccAgent.HexRegistry`):
+        # loaded, never started, so neither is the `:ssh` its `.app` lists.
+        applications: [compatibility: :permanent, ncc_agent: :permanent, hex_core: :load],
         include_executables_for: [:unix],
         include_erts: true,
         # env.sh.eex, plus overlays/ (the systemd unit, the env example)

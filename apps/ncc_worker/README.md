@@ -174,7 +174,8 @@ signed Hex registry (`repo.hex.pm/packages/<name>`, the same check Hex makes) li
 source path from the validated name and version and ignores the reported checksum and path. Registry answers are kept
 per package for an hour; a rate limit or outage skips the rest of that promotion. A hit's times are refreshed, since a
 read-only mount no longer moves a file's atime and the hex sweep evicts by last use, but only for a release the run's
-own `package`, `deps_lock` or a system's `deps_lock` names.
+own `package`, `deps_lock` or a system's `deps_lock` names. Those are written by the container too, so this narrows what
+a run can keep warm rather than guaranteeing it; it never changes what the cache holds.
 
 The read-only mount is only for an image that says its worker does this: both Dockerfiles set
 `LABEL ncc.hex-cache=seeded`, and the host (`Portal.Builder`, and the remote agent) reads that label off the exact

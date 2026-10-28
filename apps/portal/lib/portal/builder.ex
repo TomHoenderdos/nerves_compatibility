@@ -880,16 +880,19 @@ defmodule Portal.Builder do
         known
 
       pinned ->
-        case read_hex_cache_label(ref) do
-          {:ok, _label} = answer ->
-            if pinned == :unknown, do: :persistent_term.put(key, answer)
-            answer
-
-          _failed ->
-            :error
-        end
+        ref |> read_hex_cache_label() |> keep_answer(key, pinned == :unknown)
     end
   end
+
+  # Only an answer is kept, and only for a digest-pinned ref; a failure is
+  # asked about again next time.
+  defp keep_answer({:ok, _label} = answer, key, true) do
+    :persistent_term.put(key, answer)
+    answer
+  end
+
+  defp keep_answer({:ok, _label} = answer, _key, false), do: answer
+  defp keep_answer(_failed, _key, _keep?), do: :error
 
   defp read_hex_cache_label(ref) do
     case config(:hex_cache_image_label, &inspect_hex_cache_label/1) do

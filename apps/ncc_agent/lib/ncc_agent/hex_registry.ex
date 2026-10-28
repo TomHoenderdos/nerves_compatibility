@@ -19,6 +19,8 @@ defmodule NccAgent.HexRegistry do
   @repo_url "https://repo.hex.pm"
   @table __MODULE__
   @ttl_seconds 3600
+  # The largest package resource on the registry is a few hundred KiB.
+  @max_bytes 8 * 1024 * 1024
 
   @type error :: :unknown_release | :hex_registry_unavailable
 
@@ -79,8 +81,12 @@ defmodule NccAgent.HexRegistry do
     ArgumentError -> :miss
   end
 
+  # Expired rows go on every store, so the table holds at most an hour of
+  # packages however long the agent runs.
   defp store(name, versions) do
-    :ets.insert(@table, {name, versions, System.system_time(:second) + @ttl_seconds})
+    now = System.system_time(:second)
+    :ets.select_delete(@table, [{{:_, :_, :"$1"}, [{:"=<", :"$1", now}], [true]}])
+    :ets.insert(@table, {name, versions, now + @ttl_seconds})
   rescue
     ArgumentError -> false
   end
@@ -91,19 +97,45 @@ defmodule NccAgent.HexRegistry do
     client = Keyword.get(opts, :client, Req)
     key = Keyword.get(opts, :public_key, :hex_core.default_config()[:repo_public_key])
     half = div(Compatibility.HexCache.lookup_timeout_ms(), 2)
+    max_bytes = Keyword.get(opts, :max_bytes, @max_bytes)
 
     # `compressed: false`, `decode_body: false`: `:hex_core` gunzips itself.
+    # No redirect: the resource is served from repo.hex.pm and nowhere else.
+    # The body is capped while it streams in, and again here for a client
+    # that ignores `:into`.
     case client.get("#{@repo_url}/packages/#{name}",
            compressed: false,
            decode_body: false,
            retry: false,
+           redirect: false,
            receive_timeout: half,
-           connect_options: [timeout: half]
+           connect_options: [timeout: half],
+           into: capped(max_bytes)
          ) do
-      {:ok, %{status: 200, body: body}} when is_binary(body) -> unpack(name, body, key)
-      {:ok, %{status: status}} when status in [403, 404] -> {:error, :unknown_release}
-      {:ok, %{status: status}} -> unavailable(name, "HTTP #{status}")
-      {:error, reason} -> unavailable(name, inspect(reason))
+      {:ok, %{status: 200, body: body}} when is_binary(body) and byte_size(body) <= max_bytes ->
+        unpack(name, body, key)
+
+      {:ok, %{status: 200}} ->
+        unavailable(name, "over #{max_bytes} bytes")
+
+      {:ok, %{status: status}} when status in [403, 404] ->
+        {:error, :unknown_release}
+
+      {:ok, %{status: status}} ->
+        unavailable(name, "HTTP #{status}")
+
+      {:error, reason} ->
+        unavailable(name, inspect(reason))
+    end
+  end
+
+  defp capped(max_bytes) do
+    fn {:data, data}, {req, resp} ->
+      body = if is_binary(resp.body), do: resp.body <> data, else: data
+
+      if byte_size(body) > max_bytes,
+        do: {:halt, {req, %{resp | body: :too_large}}},
+        else: {:cont, {req, %{resp | body: body}}}
     end
   end
 

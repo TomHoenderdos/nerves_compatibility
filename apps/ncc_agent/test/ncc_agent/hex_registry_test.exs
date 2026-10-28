@@ -25,9 +25,10 @@ defmodule NccAgent.HexRegistryTest do
   end
 
   defmodule Client do
-    def get(url, _opts) do
+    def get(url, opts) do
       path = URI.parse(url).path
       send(self(), {:fetched, path})
+      send(self(), {:opts, opts})
 
       case Process.get({:body, path}) do
         {:error, _reason} = error -> error
@@ -47,8 +48,13 @@ defmodule NccAgent.HexRegistryTest do
     Process.put({:body, "/packages/#{name}"}, body)
   end
 
-  defp checksum(name, version, ctx),
-    do: HexRegistry.outer_checksum(name, version, client: Client, public_key: ctx.public)
+  defp checksum(name, version, ctx, opts \\ []),
+    do:
+      HexRegistry.outer_checksum(
+        name,
+        version,
+        [client: Client, public_key: ctx.public] ++ opts
+      )
 
   test "the signed registry's checksum, once per package", ctx do
     serve("jason", [%{version: "1.4.4", outer_checksum: @outer}], ctx.private)
@@ -93,5 +99,46 @@ defmodule NccAgent.HexRegistryTest do
 
     serve("jason", [%{version: "1.4.4", outer_checksum: @outer}], ctx.private)
     assert {:ok, _} = checksum("jason", "1.4.4", ctx)
+  end
+
+  test "a resource signed by another key is unavailable", ctx do
+    other = :public_key.generate_key({:rsa, 2048, 65_537})
+    serve("jason", [%{version: "1.4.4", outer_checksum: @outer}], other)
+    assert checksum("jason", "1.4.4", ctx) == {:error, :hex_registry_unavailable}
+  end
+
+  test "a correctly signed resource for another package name is unavailable", ctx do
+    releases = [
+      %{version: "1.4.4", outer_checksum: @outer, inner_checksum: <<0::256>>, dependencies: []}
+    ]
+
+    body =
+      :hex_registry.build_package(
+        %{name: "plug", repository: "hexpm", releases: releases},
+        ctx.private
+      )
+
+    Process.put({:body, "/packages/jason"}, body)
+
+    assert checksum("jason", "1.4.4", ctx) == {:error, :hex_registry_unavailable}
+  end
+
+  test "follows no redirect and refuses a body over the cap", ctx do
+    serve("jason", [%{version: "1.4.4", outer_checksum: @outer}], ctx.private)
+
+    assert checksum("jason", "1.4.4", ctx, max_bytes: 16) == {:error, :hex_registry_unavailable}
+    assert_received {:opts, opts}
+    assert opts[:redirect] == false
+    assert is_function(opts[:into], 2)
+  end
+
+  # Without a sweep every package a builder ever promoted stays resident.
+  test "storing an answer sweeps expired rows", ctx do
+    :ets.insert(HexRegistry, {"stale", %{}, System.system_time(:second) - 1})
+    serve("jason", [%{version: "1.4.4", outer_checksum: @outer}], ctx.private)
+
+    assert {:ok, _} = checksum("jason", "1.4.4", ctx)
+    assert :ets.lookup(HexRegistry, "stale") == []
+    assert [_] = :ets.lookup(HexRegistry, "jason")
   end
 end

@@ -38,6 +38,8 @@ defmodule Portal.HexDeps do
   @repository "hexpm"
   @table __MODULE__
   @ttl_seconds 3600
+  # The largest package resource on the registry is a few hundred KiB.
+  @max_bytes 8 * 1024 * 1024
 
   @type dep :: %{
           package: String.t(),
@@ -163,15 +165,30 @@ defmodule Portal.HexDeps do
 
     # `compressed: false` and `decode_body: false` for the reason documented in
     # `Portal.HexRegistry`: `:hex_core` gunzips the body itself.
+    # No redirect: the resource is served from repo.hex.pm and nowhere else.
+    # The body is capped while it streams in (`capped/1`), and again here for
+    # a client that ignores `:into`.
+    max_bytes = Keyword.get(opts, :max_bytes, @max_bytes)
+
     request_opts =
       Keyword.merge(
-        [compressed: false, decode_body: false, receive_timeout: 30_000],
+        [
+          compressed: false,
+          decode_body: false,
+          receive_timeout: 30_000,
+          redirect: false,
+          into: capped(max_bytes)
+        ],
         Keyword.take(opts, [:receive_timeout, :retry, :connect_options])
       )
 
     case client.get("#{@repo_url}/packages/#{name}", request_opts) do
-      {:ok, %{status: 200, body: body}} when is_binary(body) ->
+      {:ok, %{status: 200, body: body}} when is_binary(body) and byte_size(body) <= max_bytes ->
         unpack(name, body, key)
+
+      {:ok, %{status: 200}} ->
+        Logger.warning("Hex registry /packages/#{name} is over #{max_bytes} bytes")
+        {:error, :hex_registry_unavailable}
 
       # The CDN answers 403/404 for a package that does not exist. That is a
       # fact about the package, not an outage, so it must not trigger a retry.
@@ -185,6 +202,20 @@ defmodule Portal.HexDeps do
       {:error, reason} ->
         Logger.warning("Hex registry /packages/#{name} failed: #{inspect(reason)}")
         {:error, :hex_registry_unavailable}
+    end
+  end
+
+  @doc false
+  # A Req `:into` that collects the body and stops the download once it is
+  # over `max_bytes`, leaving `:too_large` as the body.
+  @spec capped(pos_integer()) :: (term(), term() -> term())
+  def capped(max_bytes) do
+    fn {:data, data}, {req, resp} ->
+      body = if is_binary(resp.body), do: resp.body <> data, else: data
+
+      if byte_size(body) > max_bytes,
+        do: {:halt, {req, %{resp | body: :too_large}}},
+        else: {:cont, {req, %{resp | body: body}}}
     end
   end
 

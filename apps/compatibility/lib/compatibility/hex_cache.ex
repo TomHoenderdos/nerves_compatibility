@@ -181,6 +181,7 @@ defmodule Compatibility.HexCache do
       root: root,
       lookup: lookup,
       max_bytes: Keyword.get(opts, :max_bytes, @max_bytes),
+      lookup_timeout_ms: Keyword.get(opts, :lookup_timeout_ms, @lookup_timeout_ms),
       deadline: System.monotonic_time(:millisecond) + Keyword.get(opts, :budget_ms, @budget_ms)
     }
 
@@ -209,7 +210,11 @@ defmodule Compatibility.HexCache do
   and `Portal.Workers.Sweep` evicts by last use. Only a regular file in real
   directories is touched, and only for a pair in `locked`
   (`locked_pairs/1`): a hit is the container's word, and a run could
-  otherwise name every cached release to keep it from eviction.
+  otherwise name every cached release to keep it from eviction. That is a
+  narrowing, not a guarantee: the `deps_lock` `locked_pairs/1` reads is in
+  `result.json` too, so a hostile run can still list what it likes there. It
+  then keeps a few hundred tarballs warm per run at most (the hit cap), and
+  never changes what is in the cache.
   """
   @spec touch(term(), Path.t(), MapSet.t({String.t(), String.t()})) :: non_neg_integer()
   def touch(hits, root, locked) when is_list(hits) do
@@ -274,7 +279,7 @@ defmodule Compatibility.HexCache do
     source = Path.join(ctx.source, tarball_name(name, version))
 
     with :ok <- check_source(source, ctx.max_bytes),
-         {:ok, expected} <- published(pair, ctx.lookup),
+         {:ok, expected} <- published(pair, ctx.lookup, ctx.lookup_timeout_ms),
          :ok <- in_time(name, version, ctx),
          {:ok, bytes} <- read(source, ctx.max_bytes),
          :ok <- same_checksum(bytes, expected) do
@@ -347,8 +352,8 @@ defmodule Compatibility.HexCache do
   end
 
   # Step 3.
-  defp published({name, version}, lookup) do
-    case lookup.(name, version) do
+  defp published({name, version}, lookup, timeout_ms) do
+    case bounded(fn -> lookup.(name, version) end, timeout_ms) do
       {:ok, checksum} when is_binary(checksum) ->
         checksum = String.downcase(checksum)
 
@@ -361,6 +366,26 @@ defmodule Compatibility.HexCache do
 
       other ->
         {:hex_down, other}
+    end
+  end
+
+  # The lookup's HTTP timeouts are per phase (connect, then each receive), so
+  # they bound nothing in total. This does: the lookup runs in a process of
+  # its own, killed at `timeout_ms`, and a raise or exit there is an answer
+  # like any other failure rather than a crash of the caller.
+  defp bounded(fun, timeout_ms) do
+    {pid, ref} = spawn_monitor(fn -> exit({:answer, fun.()}) end)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, {:answer, answer}} -> answer
+      {:DOWN, ^ref, :process, ^pid, reason} -> {:error, {:lookup_crashed, reason}}
+    after
+      timeout_ms ->
+        Process.exit(pid, :kill)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} -> {:error, :lookup_timeout}
+        end
     end
   end
 
