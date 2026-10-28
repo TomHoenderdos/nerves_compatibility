@@ -9,7 +9,8 @@ defmodule Portal.BuildCache.L2.Config do
 
   `max_bytes` is the size the bucket is kept under
   (`Portal.BuildCache.L2.Evict`), from `NCC_BUILD_CACHE_S3_MAX_GB` in GB of
-  10^9 bytes; nil, so no eviction, when unset or not a positive whole number.
+  10^9 bytes; nil, so no eviction, when unset or not a positive whole number
+  (`max_gb_warning/1` names the refused value for the boot log).
   """
 
   # The secret never reaches a log line or a crash report through `inspect`.
@@ -62,6 +63,26 @@ defmodule Portal.BuildCache.L2.Config do
   end
 
   @gb 1_000_000_000
+
+  @doc """
+  A warning for a `max_gb` that is set but refused (below 1, or not a whole
+  number), so eviction is off; nil when it is unset or valid.
+  """
+  @spec max_gb_warning(keyword()) :: String.t() | nil
+  def max_gb_warning(env \\ Application.get_env(:portal, Portal.BuildCache.L2, [])) do
+    case env[:max_gb] do
+      nil -> nil
+      gb when is_binary(gb) -> if present(gb), do: refused(gb)
+      gb -> refused(gb)
+    end
+  end
+
+  defp refused(gb) do
+    if max_bytes(gb) == nil,
+      do:
+        "build cache L2: NCC_BUILD_CACHE_S3_MAX_GB #{inspect(gb, printable_limit: 40)} " <>
+          "is not a whole number of GB of at least 1; eviction is off"
+  end
 
   defp max_bytes(gb) when is_integer(gb) and gb > 0, do: gb * @gb
 

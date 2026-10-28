@@ -755,7 +755,9 @@ defmodule Portal.BuildCache.L2Test do
       {:ok, s} = FakeS3.start()
 
       for i <- 0..9 do
-        FakeS3.put_object(s, "#{@slug}/#{i}.tar.gz", String.duplicate("x", 100), %{},
+        hex = String.pad_leading("#{i}", 64, "0")
+
+        FakeS3.put_object(s, "#{@slug}/#{hex}.tar.gz", String.duplicate("x", 100), %{},
           last_modified: DateTime.add(~U[2026-01-01 00:00:00Z], i, :second)
         )
       end
@@ -795,6 +797,32 @@ defmodule Portal.BuildCache.L2Test do
       assert micros < 500_000
       assert Process.alive?(pid)
       await(pid)
+    end
+
+    test "gives the hour back when the task cannot start", %{cfg: cfg} do
+      now = System.monotonic_time(:millisecond)
+
+      log =
+        capture_log(fn ->
+          assert :skipped =
+                   L2.maybe_evict(config: cfg, now_ms: now, task_supervisor: :no_such_supervisor)
+        end)
+
+      assert log =~ "eviction not started"
+      assert {:started, pid} = L2.maybe_evict(config: cfg, now_ms: now + 1)
+      await(pid)
+    end
+
+    test "log_state warns about a refused max_gb" do
+      for bad <- ["0", "-1", "abc", "1.5"] do
+        put(@full ++ [max_gb: bad])
+        assert capture_log(fn -> L2.log_state() end) =~ "NCC_BUILD_CACHE_S3_MAX_GB"
+      end
+
+      for ok <- ["10", "", nil] do
+        put(@full ++ [max_gb: ok])
+        refute capture_log(fn -> L2.log_state() end) =~ "NCC_BUILD_CACHE_S3_MAX_GB"
+      end
     end
 
     test "never evicts with no max, read-only, or L2 off", %{s: s, cfg: cfg} do

@@ -67,6 +67,18 @@ defmodule Portal.BuildCache.L2.ConfigTest do
     end
   end
 
+  test "max_gb_warning names a set but refused max_gb only" do
+    for bad <- ["0", "-2", "1.5", "x", 0, -1, 0.5] do
+      assert Config.max_gb_warning(Keyword.put(@full, :max_gb, bad)) =~
+               "NCC_BUILD_CACHE_S3_MAX_GB",
+             inspect(bad)
+    end
+
+    for ok <- [nil, "", " ", "1", 3] do
+      assert Config.max_gb_warning(Keyword.put(@full, :max_gb, ok)) == nil, inspect(ok)
+    end
+  end
+
   test "inspecting a config never shows the secret key" do
     {:ok, cfg} = Config.config(Keyword.put(@full, :secret_key, "very-secret-value"))
     refute inspect(cfg) =~ "very-secret-value"

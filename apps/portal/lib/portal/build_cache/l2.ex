@@ -247,7 +247,8 @@ defmodule Portal.BuildCache.L2 do
   when the task cannot be started. Never raises.
 
   Options: `:config` (default the active one), `:now_ms` (monotonic ms,
-  default now); the rest go to `Evict.run/2`.
+  default now), `:task_supervisor` (default `Portal.TaskSupervisor`); the
+  rest go to `Evict.run/2`. A run that cannot be started gives its hour back.
   """
   @spec maybe_evict(keyword()) :: {:started, pid()} | :skipped
   def maybe_evict(opts \\ []) do
@@ -256,8 +257,7 @@ defmodule Portal.BuildCache.L2 do
     with {%Config{read_only?: false, max_bytes: max} = cfg, opts} when is_integer(max) <-
            Keyword.pop_lazy(opts, :config, &active_config/0),
          true <- Stats.claim_evict(now, @evict_interval_ms),
-         {:ok, pid} <-
-           Task.Supervisor.start_child(Portal.TaskSupervisor, fn -> Evict.run(cfg, opts) end) do
+         {:ok, pid} <- start_evict(cfg, opts, now) do
       {:started, pid}
     else
       _ -> :skipped
@@ -270,6 +270,26 @@ defmodule Portal.BuildCache.L2 do
     kind, reason ->
       Logger.warning("Build cache L2 eviction not started: #{show({kind, reason})}")
       :skipped
+  end
+
+  # A run that cannot start gives the hour back, so the next promotion asks again.
+  defp start_evict(cfg, opts, now) do
+    {sup, opts} = Keyword.pop(opts, :task_supervisor, Portal.TaskSupervisor)
+
+    case Task.Supervisor.start_child(sup, fn -> Evict.run(cfg, opts) end) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      other ->
+        Stats.release_evict(now)
+        Logger.warning("Build cache L2 eviction not started: #{show(other)}")
+        other
+    end
+  catch
+    kind, reason ->
+      Stats.release_evict(now)
+      Logger.warning("Build cache L2 eviction not started: #{show({kind, reason})}")
+      :error
   end
 
   @doc """
@@ -328,6 +348,8 @@ defmodule Portal.BuildCache.L2 do
         Logger.info(
           "Build cache L2 on: #{cfg.endpoint}/#{cfg.bucket}#{if cfg.read_only?, do: " (read-only)", else: ""}"
         )
+
+        if msg = Config.max_gb_warning(), do: Logger.warning(msg)
 
         if Config.insecure_endpoint?(cfg) do
           Logger.warning(
