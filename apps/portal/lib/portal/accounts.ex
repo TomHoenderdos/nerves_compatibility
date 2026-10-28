@@ -37,7 +37,7 @@ defmodule Portal.Accounts do
   page refuses a demoted admin, and a signed-out browser, whose cookie no
   longer holds the CSRF token the page was rendered with, is told to reload.
   Called wherever a user's access shrinks: sign-out, admin revoked, password
-  reset, passkey or authenticator app removed, recovery codes replaced,
+  reset or change, passkey or authenticator app removed, recovery codes replaced,
   provider unlinked.
 
   Sessions signed in before live socket ids existed connect under no id, so
@@ -319,13 +319,19 @@ defmodule Portal.Accounts do
 
       true ->
         # Every other session ends with the old password, in the same write.
-        # The caller keeps its own (`PortalWeb.UserAuth.restamp_session/2`).
-        update_profile(user, %{
-          password_hash: Argon2.hash_pwd_salt(new_password),
-          password_reset_required: false,
-          password_set: true,
-          sessions_valid_after: DateTime.utc_now()
-        })
+        # The caller keeps its own (`PortalWeb.UserAuth.restamp_session/2`);
+        # the others' open pages notice at once rather than on their next
+        # mount.
+        with {:ok, changed} <-
+               update_profile(user, %{
+                 password_hash: Argon2.hash_pwd_salt(new_password),
+                 password_reset_required: false,
+                 password_set: true,
+                 sessions_valid_after: DateTime.utc_now()
+               }) do
+          disconnect_live_sockets(changed.id)
+          {:ok, changed}
+        end
     end
   end
 

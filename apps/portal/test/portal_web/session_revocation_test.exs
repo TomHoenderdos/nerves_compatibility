@@ -162,6 +162,29 @@ defmodule PortalWeb.SessionRevocationTest do
       refute signed_in?(other)
       refute live_signed_in?(other)
     end
+
+    test "disconnects the account's open live sockets" do
+      user = user_fixture()
+      conn = log_in(user)
+      topic = subscribe_disconnect(user)
+
+      post(conn, ~p"/settings", %{
+        "current_password" => @password,
+        "new_password" => @new_password
+      })
+
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
+    end
+
+    test "a refused change disconnects nothing" do
+      user = user_fixture()
+      conn = log_in(user)
+      topic = subscribe_disconnect(user)
+
+      post(conn, ~p"/settings", %{"current_password" => "wrong", "new_password" => @new_password})
+
+      refute_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}, 100
+    end
   end
 
   describe "removing a passkey" do
