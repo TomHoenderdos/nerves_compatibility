@@ -22,7 +22,8 @@ defmodule Portal.BuildCache.L2.Stats do
     refused: :refused,
     discarded: :discarded,
     list_failed: :list_failures,
-    evicted: :evictions
+    evicted: :evictions,
+    evict_list_failed: :evict_list_failures
   }
   @counters Map.values(@events) ++ [:bytes_up, :bytes_down, :evicted_bytes]
 
@@ -35,6 +36,7 @@ defmodule Portal.BuildCache.L2.Stats do
           | :discarded
           | :list_failed
           | :evicted
+          | :evict_list_failed
 
   def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
 
@@ -93,6 +95,19 @@ defmodule Portal.BuildCache.L2.Stats do
         :ets.select_replace(@table, [
           {{key, :"$1"}, [{:"=<", :"$1", now_ms - interval_ms}], [{:const, {key, now_ms}}]}
         ]) == 1
+    end)
+  end
+
+  @doc """
+  Gives back the eviction slot `claim_evict/2` dated `now_ms`, for a run
+  that could not be started; a slot dated otherwise is left alone.
+  """
+  @spec release_evict(integer()) :: :ok
+  def release_evict(now_ms) do
+    safe(:ok, fn ->
+      key = {:last, :evict}
+      _ = :ets.select_delete(@table, [{{key, :"$1"}, [{:"=:=", :"$1", now_ms}], [true]}])
+      :ok
     end)
   end
 

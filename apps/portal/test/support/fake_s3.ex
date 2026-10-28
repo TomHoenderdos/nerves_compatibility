@@ -19,6 +19,9 @@ defmodule Portal.Test.FakeS3 do
       `{:delete, :status, n}` answer that operation with status `n`.
     * `{:put, :hang}` holds a PUT for 5 s before answering, a store that
       accepted the connection and stopped responding.
+    * `{:list, :repeat_first}` answers the first listing page twice: its
+      continuation token leads to the same page again, whose token then
+      continues normally (a store that repeats keys across pages).
     * `{:list, :no_token}` answers the first listing page with one key,
       `IsTruncated` true and no continuation token (a server bug the client
       must not loop on).
@@ -268,7 +271,8 @@ defmodule Portal.Test.FakeS3.Plug do
 
   defp list_page(conn, agent, q, fault) do
     prefix = q["prefix"] || ""
-    after_key = q["continuation-token"]
+    {after_key, first_of_repeat?} = continuation(fault, q["continuation-token"])
+
     no_token? = fault == {:list, :no_token} and after_key == nil
     max = if no_token?, do: 1, else: String.to_integer(q["max-keys"] || "1000")
 
@@ -283,10 +287,7 @@ defmodule Portal.Test.FakeS3.Plug do
     {page, rest} = Enum.split(entries, max)
     truncated? = rest != []
 
-    token =
-      if truncated? and not no_token?,
-        do: "<NextContinuationToken>#{elem(List.last(page), 0)}</NextContinuationToken>",
-        else: ""
+    token = next_token(truncated? and not no_token?, first_of_repeat?, page)
 
     contents =
       Enum.map_join(page, fn {k, o} ->
@@ -302,6 +303,18 @@ defmodule Portal.Test.FakeS3.Plug do
 
     conn |> put_resp_content_type("application/xml") |> send_resp(200, xml)
   end
+
+  # The key to list after, and whether this is the first page of a
+  # `{:list, :repeat_first}` fault (whose token "repeat" lists it again).
+  defp continuation({:list, :repeat_first}, nil), do: {nil, true}
+  defp continuation({:list, :repeat_first}, "repeat"), do: {nil, false}
+  defp continuation(_fault, token), do: {token, false}
+
+  defp next_token(false, _repeat?, _page), do: ""
+  defp next_token(true, true, _page), do: "<NextContinuationToken>repeat</NextContinuationToken>"
+
+  defp next_token(true, false, page),
+    do: "<NextContinuationToken>#{elem(List.last(page), 0)}</NextContinuationToken>"
 
   defp fault(agent), do: Agent.get(agent, & &1.fault)
 

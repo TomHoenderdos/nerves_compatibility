@@ -3,9 +3,15 @@ defmodule Portal.BuildCache.L2.Evict do
   Keeps the L2 bucket under its size mark (`Config.max_bytes`), so that a
   store with a hard quota keeps accepting uploads.
 
-  `run/2` lists the whole bucket and sums the sizes. Above the high mark (90 %
-  of `max_bytes`) it deletes objects oldest first (by `LastModified`, ties by
-  key) until the total is at or below the low mark (75 %). Age is the upload
+  `run/2` lists the whole bucket and sums the sizes of every object in it,
+  each key counted once. Above the high mark (90 % of `max_bytes`) it
+  deletes objects oldest first (by `LastModified`, ties by key) until the
+  total is at or below the low mark (75 %). Only cache entries are ever
+  deleted: keys of the form `<slug>/<64 hex>.tar.gz` with a shareable slug
+  (`Portal.BuildCache.L2.shareable_slug?/1`). Anything else in the bucket
+  counts toward the total but stays; when those objects alone exceed the low
+  mark, the run deletes nothing and warns, since emptying the cache could not
+  bring the bucket down. Age is the upload
   time: an entry many builds restore is as old as one nobody uses, since S3
   keeps no read times. A deleted entry costs one rebuild on the next host
   that needs it, which then uploads it again.
@@ -13,8 +19,10 @@ defmodule Portal.BuildCache.L2.Evict do
   A run is bounded: at most `default_budget_ms/0` (listing included) and
   `default_max_deletes/0` deletes, and it ends at the first delete that
   fails, since a store refusing one will likely refuse the next. A listing
-  reads at most 200 pages of 1000 keys; past that the total is short and the
-  run evicts less than it would, never more.
+  reads at most 200 pages of 1000 keys; one cut there is warned about, its
+  total is short, and the oldest-first ranking is over the listed part only
+  (S3 lists in key order, not by age), so the run may evict less than it
+  should and not the bucket's oldest objects.
 
   Nothing here raises: every failure ends the run with a summary saying why
   (`stopped`). Two hosts evicting at once is harmless, a DELETE of a deleted
@@ -25,19 +33,26 @@ defmodule Portal.BuildCache.L2.Evict do
   """
   require Logger
 
+  alias Portal.BuildCache.L2
   alias Portal.BuildCache.L2.{Bounded, Client, Config, Stats}
 
   @default_budget_ms 120_000
   @default_max_deletes 5_000
   @max_pages 200
   @delete_timeout_ms 30_000
+  @entry ~r/\A([^\/]+)\/[0-9a-f]{64}\.tar\.gz\z/
 
   @type summary :: %{
           listed: non_neg_integer(),
           total_bytes: non_neg_integer(),
           deleted: non_neg_integer(),
           freed_bytes: non_neg_integer(),
-          stopped: nil | :budget | :max_deletes | {:delete_failed | :list_failed, term()}
+          stopped:
+            nil
+            | :budget
+            | :max_deletes
+            | {:unevictable, non_neg_integer()}
+            | {:delete_failed | :list_failed, term()}
         }
 
   @spec default_budget_ms() :: pos_integer()
@@ -50,7 +65,8 @@ defmodule Portal.BuildCache.L2.Evict do
   Evicts down to the low mark (see the moduledoc). Options: `:budget_ms`
   (#{@default_budget_ms}), `:max_deletes` (#{@default_max_deletes}) and
   `:clock`, a `fn -> ms end` read at the start and before every delete
-  (default monotonic time).
+  (default monotonic time); `:max_pages` (200) and `:max_keys` (1000) shape
+  the listing.
   """
   @spec run(Config.t() | term(), keyword()) :: summary()
   def run(cfg, opts \\ [])
@@ -70,7 +86,7 @@ defmodule Portal.BuildCache.L2.Evict do
     }
 
     cfg
-    |> list(budget)
+    |> list(budget, Keyword.get(opts, :max_pages, @max_pages), Keyword.get(opts, :max_keys, 1000))
     |> evict(max, ctx)
     |> report(cfg)
   rescue
@@ -85,32 +101,66 @@ defmodule Portal.BuildCache.L2.Evict do
 
   # The listing runs in a process of its own so that a store answering every
   # page slowly cannot hold the run past its budget.
-  defp list(cfg, budget) do
-    case Bounded.run(fn -> Client.list(cfg, "", max_pages: @max_pages) end,
+  defp list(cfg, budget, max_pages, max_keys) do
+    case Bounded.run(
+           fn -> Client.list_all(cfg, "", max_pages: max_pages, max_keys: max_keys) end,
            timeout_ms: budget
          ) do
-      {:ok, {:ok, objects}} -> {:ok, objects}
-      {:ok, {:error, reason}} -> {:error, reason}
-      {:error, reason} -> {:error, reason}
+      {:ok, {:ok, objects, truncated?}} ->
+        if truncated? do
+          Logger.warning(
+            "Build cache L2 eviction: the bucket listing stopped at #{max_pages} pages; " <>
+              "the total is short and only the listed objects are ranked"
+          )
+        end
+
+        {:ok, objects}
+
+      {:ok, {:error, reason}} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   defp evict({:error, reason}, _max, _ctx) do
-    Stats.record(:list_failed)
+    Stats.record(:evict_list_failed)
     %{empty() | stopped: {:list_failed, reason}}
   end
 
   defp evict({:ok, objects}, max, ctx) do
+    # A store that repeats keys across pages must not inflate the total.
+    objects = Enum.uniq_by(objects, & &1.key)
     total = objects |> Enum.map(& &1.size) |> Enum.sum()
     summary = %{empty() | listed: length(objects), total_bytes: total}
 
     # Above 90 %: total / max > 9 / 10, in integers.
     if total * 10 > max * 9 do
-      objects
-      |> Enum.sort_by(&{DateTime.to_unix(&1.last_modified, :microsecond), &1.key})
-      |> delete_oldest(total, summary, ctx)
+      {entries, others} = Enum.split_with(objects, &entry?(&1.key))
+      kept = others |> Enum.map(& &1.size) |> Enum.sum()
+
+      if kept > ctx.low do
+        Logger.warning(
+          "Build cache L2 eviction in #{ctx.cfg.bucket}: #{kept} bytes of objects outside " <>
+            "the cache layout exceed the low mark of #{ctx.low} bytes; nothing deleted"
+        )
+
+        %{summary | stopped: {:unevictable, kept}}
+      else
+        entries
+        |> Enum.sort_by(&{DateTime.to_unix(&1.last_modified, :microsecond), &1.key})
+        |> delete_oldest(total, summary, ctx)
+      end
     else
       summary
+    end
+  end
+
+  defp entry?(key) do
+    case Regex.run(@entry, key) do
+      [_, slug] -> L2.shareable_slug?(slug)
+      nil -> false
     end
   end
 

@@ -9,6 +9,7 @@ defmodule Portal.BuildCache.L2.EvictTest do
   alias Portal.Test.FakeS3
 
   @t0 ~U[2026-01-01 00:00:00Z]
+  @slug "sha256_" <> String.duplicate("ab", 32)
 
   setup do
     Stats.reset()
@@ -29,8 +30,9 @@ defmodule Portal.BuildCache.L2.EvictTest do
     end
   end
 
-  defp key(i),
-    do: "sha256_#{String.duplicate("ab", 32)}/#{String.pad_leading("#{9 - i}", 3, "0")}.tar.gz"
+  defp key(i), do: entry(String.pad_leading("#{9 - i}", 64, "0"))
+
+  defp entry(hex), do: "#{@slug}/#{hex}.tar.gz"
 
   defp cfg(s, max_bytes), do: %{s.config | max_bytes: max_bytes}
 
@@ -52,13 +54,67 @@ defmodule Portal.BuildCache.L2.EvictTest do
     assert %{evictions: 3, evicted_bytes: 300} = Stats.snapshot()
   end
 
-  test "objects of the same age go in key order", %{s: s} do
-    for k <- ["s/d", "s/b", "s/a", "s/c"] do
+  test "objects of the same age go in key order, and only cache entries go", %{s: s} do
+    [a, b, c] = for ch <- ~w(a b c), do: entry(String.duplicate(ch, 64))
+
+    # Older than every entry, and still kept: none of these is a cache entry.
+    outside = [
+      "notes.txt",
+      "#{@slug}/#{String.duplicate("a", 64)}.tar",
+      "#{@slug}/#{String.duplicate("A", 64)}.tar.gz",
+      "sha256_#{String.duplicate("0", 64)}/#{String.duplicate("a", 64)}.tar.gz",
+      "unknown/#{String.duplicate("a", 64)}.tar.gz"
+    ]
+
+    for k <- outside do
+      FakeS3.put_object(s, k, "x", %{}, last_modified: DateTime.add(@t0, -3600, :second))
+    end
+
+    for k <- [c, b, a] do
       FakeS3.put_object(s, k, String.duplicate("x", 100), %{}, last_modified: @t0)
     end
 
-    assert %{deleted: 1, stopped: nil} = Evict.run(cfg(s, 420))
-    assert FakeS3.objects(s) == ["s/b", "s/c", "s/d"]
+    # 305 bytes against a mark of 320: above 288, down to at most 240.
+    assert %{listed: 8, total_bytes: 305, deleted: 1, stopped: nil} = Evict.run(cfg(s, 320))
+    assert FakeS3.objects(s) == Enum.sort([b, c | outside])
+  end
+
+  test "objects outside the layout over the low mark stop the run with a warning", %{s: s} do
+    FakeS3.put_object(s, "other/big", String.duplicate("x", 800), %{})
+    seed(s, 2)
+
+    log =
+      capture_log(fn ->
+        assert %{total_bytes: 1000, deleted: 0, stopped: {:unevictable, 800}} =
+                 Evict.run(cfg(s, 1000))
+      end)
+
+    assert log =~ "[warning]"
+    assert log =~ "outside the cache layout"
+    assert deletes(s) == []
+  end
+
+  test "a key listed twice counts once", %{s: s} do
+    seed(s, 9)
+    FakeS3.set_fault(s, {:list, :repeat_first})
+
+    # 900 bytes, not above the high mark, though the first page comes twice.
+    assert %{listed: 9, total_bytes: 900, deleted: 0} =
+             Evict.run(cfg(s, 1000), max_keys: 3)
+
+    assert Enum.count(FakeS3.requests(s), &match?({"GET", _, _}, &1)) == 4
+  end
+
+  test "a listing cut at the page cap is warned about", %{s: s} do
+    seed(s, 10)
+
+    log =
+      capture_log(fn ->
+        assert %{listed: 4, total_bytes: 400, deleted: 0} =
+                 Evict.run(cfg(s, 1000), max_keys: 2, max_pages: 2)
+      end)
+
+    assert log =~ "listing stopped at 2 pages"
   end
 
   test "does nothing at or under the high mark and logs nothing", %{s: s} do
@@ -133,6 +189,7 @@ defmodule Portal.BuildCache.L2.EvictTest do
     assert log =~ "[warning]"
     assert log =~ "listing"
     assert length(FakeS3.objects(s)) == 10
+    assert %{evict_list_failures: 1, list_failures: 0} = Stats.snapshot()
   end
 
   test "an unreachable store is a summary, not a raise", %{s: s} do

@@ -46,6 +46,14 @@ defmodule Portal.BuildCache.L2.StatsTest do
     assert Stats.claim_evict(0, 100)
   end
 
+  test "release_evict gives back only the slot it names" do
+    assert Stats.claim_evict(1_000, 100)
+    Stats.release_evict(999)
+    refute Stats.claim_evict(1_010, 100)
+    Stats.release_evict(1_000)
+    assert Stats.claim_evict(1_020, 100)
+  end
+
   test "a claim is exclusive until released, and a dead claimant does not hold it" do
     assert Stats.claim("k")
     refute Stats.claim("k")
@@ -78,6 +86,7 @@ defmodule Portal.BuildCache.L2.StatsTest do
       assert :ok = Stats.release("k")
       assert :ok = Stats.reset()
       refute Stats.claim_evict(0, 100)
+      assert :ok = Stats.release_evict(0)
       assert Stats.snapshot().uploads == 0
     after
       {:ok, _} = Supervisor.restart_child(Portal.Supervisor, Stats)

@@ -226,15 +226,24 @@ defmodule Portal.BuildCache.L2.Client do
   @doc """
   Lists the objects under `prefix`, `opts[:max_keys]` (1000) per page and at
   most `opts[:max_pages]` (#{@max_pages}) pages; past that the listing ends
-  there, short.
+  there, short (`list_all/3` says when).
   """
   @spec list(Config.t(), String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
   def list(cfg, prefix, opts \\ []) do
+    with {:ok, objects, _truncated?} <- list_all(cfg, prefix, opts), do: {:ok, objects}
+  end
+
+  @doc "As `list/3`, and whether the page cap ended the listing with more to come."
+  @spec list_all(Config.t(), String.t(), keyword()) ::
+          {:ok, [map()], boolean()} | {:error, term()}
+  def list_all(cfg, prefix, opts \\ []) do
     max_pages = Keyword.get(opts, :max_pages, @max_pages)
     list_pages(cfg, prefix, Keyword.get(opts, :max_keys, 1000), nil, [], {0, max_pages})
   end
 
-  defp list_pages(_cfg, _prefix, _max, _token, acc, {limit, limit}), do: {:ok, Enum.reverse(acc)}
+  # Reached only with a continuation token in hand: the cap cut the listing.
+  defp list_pages(_cfg, _prefix, _max, _token, acc, {limit, limit}),
+    do: {:ok, Enum.reverse(acc), true}
 
   defp list_pages(cfg, prefix, max, token, acc, {page, limit}) do
     params =
@@ -253,7 +262,7 @@ defmodule Portal.BuildCache.L2.Client do
 
         if next,
           do: list_pages(cfg, prefix, max, next, acc, {page + 1, limit}),
-          else: {:ok, Enum.reverse(acc)}
+          else: {:ok, Enum.reverse(acc), false}
 
       {:ok, %Req.Response{status: status}} ->
         {:error, {:status, status}}
