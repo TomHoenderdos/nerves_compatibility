@@ -31,6 +31,11 @@ defmodule NccWorker.Argus do
   # (the configured scope is "firmware" and this package is pure Elixir) and
   # "no_beams" (the package's ebin has no `.beam` to analyze, e.g. a
   # pure-metadata package). `nil` for every non-skipped result.
+  #
+  # One more reason is set outside this module entirely: `"deps_get_failed"`,
+  # written straight onto `Argus.skipped()` by `NccWorker.Worker` when the
+  # package's own `deps.get` failed deterministically before a host compile,
+  # and therefore this module, ever ran -- see `Worker.deps_get_outcome/5`.
   @type skip_reason :: String.t() | nil
 
   @type result :: %{

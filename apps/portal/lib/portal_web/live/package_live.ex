@@ -826,6 +826,10 @@ defmodule PortalWeb.PackageLive do
   defp argus_skip_label("not_requested"), do: "not requested for this package"
   defp argus_skip_label("host_compile_failed"), do: "the host build did not pass"
   defp argus_skip_label("no_beams"), do: "no compiled code to analyze"
+
+  defp argus_skip_label("deps_get_failed"),
+    do: "the package's own dependencies could not be fetched"
+
   defp argus_skip_label(_), do: "not run for this version"
 
   # Stored findings outlive the argus version that wrote them, so every field

@@ -830,6 +830,45 @@ defmodule Portal.Catalog.IngestionTest do
       assert second.overall_status == :pass
     end
 
+    # NccWorker.Worker.deps_get_verdict/3's argus_only shape for a
+    # deterministic deps.get failure: no system entries at all, not even
+    # "host". Every system of the previous run -- including host -- must
+    # carry forward untouched; none of them may flip to "error" just
+    # because an advisory argus sweep could not fetch the package's deps.
+    test "an argus-only deps_get_failed verdict (no systems) carries every previous status, none flip to error" do
+      first =
+        ingest!(
+          full_result("depsgetargus", "1.0.0", %{
+            "host" => %{"status" => "pass"},
+            "nerves_system_rpi4" => %{"status" => "pass", "firmware_size_bytes" => 123},
+            "nerves_system_bbb" => %{"status" => "fail", "log_tail" => "boom"}
+          })
+        )
+
+      second =
+        ingest!(%{
+          "package" => %{"name" => "depsgetargus", "version" => "1.0.0"},
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "argus_only",
+          "systems" => %{},
+          "argus" => %{"status" => "skipped", "reason" => "deps_get_failed"}
+        })
+
+      systems = systems_of(second)
+      assert Map.keys(systems) |> Enum.sort() == ~w(host nerves_system_bbb nerves_system_rpi4)
+      assert Enum.all?(Map.values(systems), &(&1.carried_from_run_id == first.id))
+      refute Enum.any?(Map.values(systems), &(&1.status == :error))
+
+      assert systems["host"].status == :pass
+      assert systems["nerves_system_rpi4"].status == :pass
+      assert systems["nerves_system_rpi4"].firmware_size_bytes == 123
+      assert systems["nerves_system_bbb"].status == :fail
+      assert systems["nerves_system_bbb"].log_tail == "boom"
+
+      assert second.overall_status == :pass
+      assert second.argus == %{"status" => "skipped", "reason" => "deps_get_failed"}
+    end
+
     test "an argus-only run keeps the previous run's footprint" do
       first =
         ingest!(%{

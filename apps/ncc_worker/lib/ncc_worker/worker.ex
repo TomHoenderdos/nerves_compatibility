@@ -500,6 +500,9 @@ defmodule NccWorker.Worker do
        ) do
     scope = RunScope.from_input(input)
 
+    {system_results, argus} =
+      deps_get_outcome(scope, systems, paths.output_dir, log_tail_bytes, output)
+
     %{
       run_id: input.run_id,
       package: %{
@@ -512,12 +515,28 @@ defmodule NccWorker.Worker do
       },
       image: input.image,
       toolchain: toolchain,
-      systems: deps_get_error_systems(systems, paths.output_dir, log_tail_bytes, output),
-      argus: Argus.skipped(),
+      systems: system_results,
+      argus: argus,
       finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
       scope: RunScope.to_string(scope)
     }
   end
+
+  # An argus_only run only ever follows a same-version full run
+  # (`Portal.Workers.Build.scope_args/3` picks this mode only when
+  # `latest_version_tested(package)` already equals the requested version).
+  # A deterministic verdict here must not name a single system: ingestion's
+  # carry-forward (`Portal.Catalog.Ingestion.carry_candidates/4`) only
+  # copies systems the new run did NOT report, so naming them `status:
+  # :error` would overwrite that previous run's real statuses -- flipping a
+  # passing package to error from what is supposed to be an advisory sweep.
+  # No systems also means no per-system logs. Argus itself is marked
+  # skipped with a reason, the same vocabulary every other skip uses.
+  defp deps_get_outcome(:argus_only, _systems, _output_dir, _log_tail_bytes, _output),
+    do: {%{}, %{Argus.skipped() | reason: "deps_get_failed"}}
+
+  defp deps_get_outcome(_scope, systems, output_dir, log_tail_bytes, output),
+    do: {deps_get_error_systems(systems, output_dir, log_tail_bytes, output), Argus.skipped()}
 
   defp deps_get_error_systems(systems, output_dir, log_tail_bytes, output) do
     log_tail = truncate_tail(output, log_tail_bytes)

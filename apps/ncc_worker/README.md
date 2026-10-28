@@ -16,7 +16,13 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    built (`systems_filter` respected, so a `targets` run only records those) gets `"status": "error"`,
    `"error": "deps_get_failed"`, and the `deps.get` output as its `log_tail` and stored log, `result.json` is
    written and the exit code is `0`, same reasoning as a toolchain run's failed host compile below — nothing about
-   retrying the same `mix.exs` three times a day would ever change the outcome.
+   retrying the same `mix.exs` three times a day would ever change the outcome. An `argus_only` run is the one
+   exception: it reports `"systems": {}` — not even `"host"` — instead, so `Portal.Catalog.Ingestion`'s
+   carry-forward for a partial run copies every system of the package's previous run untouched rather than
+   overwriting their real statuses with `"error"` from what is meant to be an advisory sweep; `"argus"` is marked
+   skipped with `"reason": "deps_get_failed"`. This can only run on top of a same-version previous run —
+   `Portal.Workers.Build.scope_args/3` picks `argus_only` only when one already exists — so there is always
+   something to carry.
 3. Rejects the run if `mix.lock` contains any non-Hex deps (exit 11).
 4. Compiles the package on the host. If that passes and the whole dependency closure is pure Elixir
    (`NccWorker.BuildSelection`), records an assumed-compatible `pure_elixir` result instead of building firmware.
@@ -91,8 +97,10 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    changes a status or the exit code. When `argus.status` is `"skipped"`, `argus.reason` says why: `"disabled"`
    (no `argus` key -- the admin turned it off), `"not_requested"` (scope is `"firmware"` and this package is pure
    Elixir), `"host_compile_failed"` (the host build this would have read beams from did not pass; `argus.error`
-   then carries that build's status, e.g. `"host status: fail"`), or `"no_beams"` (the package's host `ebin` has
-   no `.beam` to analyze, e.g. a pure-metadata package like `nerves_pack`). `nil` otherwise.
+   then carries that build's status, e.g. `"host status: fail"`), `"no_beams"` (the package's host `ebin` has
+   no `.beam` to analyze, e.g. a pure-metadata package like `nerves_pack`), or `"deps_get_failed"` (the package's
+   own `mix deps.get` failed deterministically before a host compile ever ran -- see step 2's `argus_only`
+   exception). `nil` otherwise.
    With `"mode": "argus_only"` the run stops after the host compile and this step: no firmware is built, argus
    covers every package (whatever `argus.scope` says), and `result.json` reports `"scope": "argus_only"`.
    Ingestion copies the systems a partial run left out from the previous run of the same version.

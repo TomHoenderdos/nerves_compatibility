@@ -84,5 +84,34 @@ defmodule NccWorker.WorkerTest do
 
       refute Map.has_key?(result.systems, "host")
     end
+
+    # An argus_only run only ever follows a same-version full run
+    # (`Portal.Workers.Build.scope_args/3` pins `latest_version_tested(package)`
+    # against the requested version before it will pick this mode). A
+    # deterministic verdict here must not name any system: ingestion's
+    # carry-forward (`Portal.Catalog.Ingestion.carry_candidates/4`) only
+    # copies systems the new run did NOT report, so naming them with
+    # `status: :error` would overwrite the previous run's real statuses --
+    # flipping a passing package to error from an advisory sweep. Argus
+    # itself is advisory and never changes a status.
+    test "argus_only scope: deterministic verdict has no systems and argus is skipped with a reason",
+         %{tmp_dir: tmp_dir} do
+      output = """
+      ** (RuntimeError) reckon_db supports Erlang/OTP 28; this is OTP 29.
+          (reckon_db 2.3.0) mix.exs:4: Reckon.Db.MixProject.__info__/1
+      """
+
+      ctx = Map.update!(context(tmp_dir), :input, &Map.put(&1, :mode, "argus_only"))
+
+      assert {:ok, result} = Worker.deps_get_verdict(ctx, @systems, output)
+
+      assert result.scope == "argus_only"
+      assert result.systems == %{}
+      assert result.argus.status == :skipped
+      assert result.argus.reason == "deps_get_failed"
+
+      refute File.exists?(Path.join([tmp_dir, "logs", "nerves_system_rpi0.log"]))
+      refute File.exists?(Path.join([tmp_dir, "logs", "nerves_system_x86_64.log"]))
+    end
   end
 end
