@@ -67,7 +67,9 @@ defmodule Portal.BuildCache.L2.ClientTest do
         Client.put(cfg, "slug/k", Path.join(tmp, "src"), "sha", timeout_ms: 200)
       end)
 
-    assert {:error, :timeout} = result
+    # The total bound and Req's receive timeout are both 200 ms, so either
+    # can fire first; what matters is that the call returns in time.
+    assert result in [{:error, :timeout}, {:error, %Req.TransportError{reason: :timeout}}]
     assert micros < 1_000_000
     assert Process.alive?(self())
   end
