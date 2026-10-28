@@ -80,6 +80,14 @@ defmodule Portal.Builder do
   @spec docker_image() :: String.t()
   def docker_image, do: config(:docker_image, "ncc-worker:local")
 
+  @doc """
+  The OCI runtime builds run under: `nil` for docker's default (runc), or
+  `"runsc"` for gVisor. `Compatibility.Builder.Argv.runtime_args/1` rejects
+  anything else.
+  """
+  @spec runtime() :: Compatibility.Builder.Argv.runtime()
+  def runtime, do: config(:runtime, nil)
+
   @doc "Root directory for per-run scratch dirs."
   @spec scratch_root() :: Path.t()
   def scratch_root, do: config(:scratch_root, Path.expand("~/.ncc-scratch"))
@@ -795,6 +803,7 @@ defmodule Portal.Builder do
       cpus: config(:cpus, nil),
       memory: config(:memory, nil),
       build_concurrency: config(:build_concurrency, nil),
+      runtime: runtime(),
       nerves_cache_mode: nerves_cache_mode(job),
       hex_cache_mode: Map.get_lazy(job, :hex_cache_mode, fn -> resolved_hex_cache_mode!(job) end),
       paths: %{

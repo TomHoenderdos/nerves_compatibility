@@ -22,6 +22,7 @@ defmodule Portal.EgressCheck do
         bin/portal eval 'Portal.EgressCheck.main()'
   """
 
+  alias Compatibility.Builder.Argv
   alias Portal.Builder
 
   @package "jason"
@@ -131,31 +132,36 @@ defmodule Portal.EgressCheck do
   end
 
   @doc false
-  # The worker image and the host's build user on the bridge every build uses,
-  # and none of a build's other sandboxing: this checks the filter, not the
-  # container hardening. `address` and `port` were validated by
+  # The worker image, the host's build user and the builds' runtime, on the
+  # bridge every build uses, and none of a build's other sandboxing: this
+  # checks the filter, not the container hardening. The runtime is shared
+  # because gVisor's netstack is a different network path than runc's. `address` and `port` were validated by
   # `parse_targets/1`, and reach bash as positional arguments, never as script.
   # The script prints its own exit status, so `bare_outcome/1` can tell a
   # probe that ran (and timed out) from docker failing to run it at all.
   # sobelow_skip ["CI.System"]
   @spec bare_probe(target()) :: String.t()
   def bare_probe(%{"address" => address, "port" => port}) do
-    args = [
-      "run",
-      "--rm",
-      "--pull=never",
-      "--cap-drop=ALL",
-      "--security-opt=no-new-privileges",
-      "--user",
-      Builder.run_as_user(),
-      "--entrypoint",
-      "bash",
-      Builder.docker_image(),
-      "-c",
-      @bare_script,
-      address,
-      Integer.to_string(port)
-    ]
+    args =
+      [
+        "run",
+        "--rm",
+        "--pull=never",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges"
+      ] ++
+        Argv.runtime_args(Builder.runtime()) ++
+        [
+          "--user",
+          Builder.run_as_user(),
+          "--entrypoint",
+          "bash",
+          Builder.docker_image(),
+          "-c",
+          @bare_script,
+          address,
+          Integer.to_string(port)
+        ]
 
     "docker" |> System.cmd(args, stderr_to_stdout: true) |> bare_outcome()
   end

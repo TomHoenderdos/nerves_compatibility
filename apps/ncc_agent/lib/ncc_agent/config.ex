@@ -8,6 +8,8 @@ defmodule NccAgent.Config do
           cpus: String.t() | nil,
           memory: String.t() | nil,
           build_concurrency: String.t() | nil,
+          # OCI runtime for builds: nil (docker's default, runc) or "runsc".
+          runtime: Compatibility.Builder.Argv.runtime(),
           data_dir: Path.t(),
           build_user: String.t(),
           docker_bin: String.t(),
@@ -29,6 +31,7 @@ defmodule NccAgent.Config do
       cpus: nil,
       memory: nil,
       build_concurrency: nil,
+      runtime: nil,
       data_dir: "/srv/ncc",
       build_user: own_user(),
       docker_bin: "docker",

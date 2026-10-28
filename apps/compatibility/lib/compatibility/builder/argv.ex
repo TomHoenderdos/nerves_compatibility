@@ -23,6 +23,10 @@ defmodule Compatibility.Builder.Argv do
   `HEX_HOME` again) for the one-release rollback, and `:legacy` (read-write,
   no env) for an image without the `ncc.hex-cache=seeded` label, whose
   worker writes `/hex-cache` itself. `hex_cache_mode/2` picks one.
+
+  `:runtime` selects the OCI runtime: `nil` is docker's default (runc) and
+  leaves the argv exactly as it was, `"runsc"` runs the build under gVisor.
+  Nothing else is accepted (`runtime_args/1`).
   """
 
   @type paths :: %{
@@ -50,8 +54,11 @@ defmodule Compatibility.Builder.Argv do
           optional(:hex_cache_mode) => hex_cache_mode(),
           optional(:cpus) => String.t() | number() | nil,
           optional(:memory) => String.t() | number() | nil,
-          optional(:build_concurrency) => String.t() | pos_integer() | nil
+          optional(:build_concurrency) => String.t() | pos_integer() | nil,
+          optional(:runtime) => runtime()
         }
+
+  @type runtime :: nil | String.t()
 
   @doc "The argument list for `docker`, starting with `run` and ending with the image."
   @spec build(spec()) :: [String.t()]
@@ -115,7 +122,24 @@ defmodule Compatibility.Builder.Argv do
       # host's pid table.
       "--pids-limit",
       "4096"
-    ]
+    ] ++ runtime_args(Map.get(spec, :runtime))
+  end
+
+  @doc """
+  The `docker run` flags for an OCI runtime: none for `nil` (docker's default,
+  runc), `--runtime=runsc` for gVisor. An allowlist, not a pass-through: any
+  other value raises, so a typo or a free-form name can never pick a runtime
+  with a weaker sandbox or smuggle in another flag. Every `docker run` that
+  should share the builds' runtime (the egress check's bare probe) takes its
+  flag from here.
+  """
+  @spec runtime_args(runtime()) :: [String.t()]
+  def runtime_args(nil), do: []
+  def runtime_args("runsc"), do: ["--runtime=runsc"]
+
+  def runtime_args(runtime) do
+    raise ArgumentError,
+          "unsupported container runtime #{inspect(runtime)}; expected nil or \"runsc\""
   end
 
   # Buildroot cross-compiles will use every core they are given. On a host that
