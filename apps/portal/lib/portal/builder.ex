@@ -229,6 +229,11 @@ defmodule Portal.Builder do
          :ok <- check_scratch_exec(scratch_root()),
          :ok <- check_egress(),
          {:ok, _version} <- check_docker(),
+         # After docker answers: the label is read through it. A failure is
+         # a runner error, retried like docker being unavailable, never a
+         # reason to mount the cache read-write.
+         {:ok, hex_cache_mode} <- hex_cache_mode(job),
+         job = Map.put(job, :hex_cache_mode, hex_cache_mode),
          :ok <-
            ensure_directories([
              work_dir,
@@ -791,7 +796,7 @@ defmodule Portal.Builder do
       memory: config(:memory, nil),
       build_concurrency: config(:build_concurrency, nil),
       nerves_cache_mode: nerves_cache_mode(job),
-      hex_cache_mode: hex_cache_mode(job),
+      hex_cache_mode: Map.get_lazy(job, :hex_cache_mode, fn -> resolved_hex_cache_mode!(job) end),
       paths: %{
         work: work_dir,
         out: output_dir,
@@ -821,6 +826,16 @@ defmodule Portal.Builder do
     end
   end
 
+  defp resolved_hex_cache_mode!(job) do
+    case hex_cache_mode(job) do
+      {:ok, mode} ->
+        mode
+
+      {:error, reason} ->
+        raise ArgumentError, "cannot tell how to mount the Hex cache: #{inspect(reason)}"
+    end
+  end
+
   @doc """
   How the container for `job` mounts the Hex cache
   (`Compatibility.Builder.Argv.hex_cache_mode/2`): read-only, its downloads
@@ -836,38 +851,50 @@ defmodule Portal.Builder do
   The label is read from the exact reference `docker run` is given. A
   digest-pinned one cannot change, so its answer is kept for the node's
   life; a tag can move, so it is asked about per build, one `docker image
-  inspect` beside a build that takes minutes. `:hex_cache_image_label`
-  (a fixed value, or `fn ref -> value end`) replaces the inspect in tests.
+  inspect` beside a build that takes minutes. Only an answer is kept: an
+  inspect that fails (the image not pulled yet, the daemon hiccuping) says
+  nothing about the image, so it is `{:error, {:hex_cache_label, ref}}`,
+  never the read-write mount, and asked again next time.
+  `:hex_cache_image_label` (a fixed label, or `fn ref -> {:ok, label} |
+  :error end`) replaces the inspect in tests.
   """
-  @spec hex_cache_mode(map()) :: Argv.hex_cache_mode()
+  @spec hex_cache_mode(map()) :: {:ok, Argv.hex_cache_mode()} | {:error, term()}
   def hex_cache_mode(job) do
-    if config(:hex_cache_rw, false) == true,
-      do: :rw,
-      else: Argv.hex_cache_mode(hex_cache_label(image_ref(job)), false)
+    if config(:hex_cache_rw, false) == true do
+      {:ok, :rw}
+    else
+      ref = image_ref(job)
+
+      case hex_cache_label(ref) do
+        {:ok, label} -> {:ok, Argv.hex_cache_mode(label, false)}
+        :error -> {:error, {:hex_cache_label, ref}}
+      end
+    end
   end
 
   defp hex_cache_label(ref) do
-    if String.contains?(ref, "@sha256:") do
-      key = {__MODULE__, :hex_cache_label, ref}
+    key = {__MODULE__, :hex_cache_label, ref}
 
-      case :persistent_term.get(key, :unknown) do
-        :unknown ->
-          label = read_hex_cache_label(ref)
-          :persistent_term.put(key, label)
-          label
+    case String.contains?(ref, "@sha256:") && :persistent_term.get(key, :unknown) do
+      {:ok, _label} = known ->
+        known
 
-        label ->
-          label
-      end
-    else
-      read_hex_cache_label(ref)
+      pinned ->
+        case read_hex_cache_label(ref) do
+          {:ok, _label} = answer ->
+            if pinned == :unknown, do: :persistent_term.put(key, answer)
+            answer
+
+          _failed ->
+            :error
+        end
     end
   end
 
   defp read_hex_cache_label(ref) do
     case config(:hex_cache_image_label, &inspect_hex_cache_label/1) do
       fun when is_function(fun, 1) -> fun.(ref)
-      value -> value
+      value -> {:ok, value}
     end
   end
 
@@ -879,11 +906,11 @@ defmodule Portal.Builder do
     case System.cmd("docker", ["image", "inspect", "--format", format, ref],
            stderr_to_stdout: true
          ) do
-      {out, 0} -> String.trim(out)
-      _ -> nil
+      {out, 0} -> {:ok, String.trim(out)}
+      _ -> :error
     end
   rescue
-    _ -> nil
+    _ -> :error
   end
 
   # Under the NCC_NERVES_CACHE_RW=1 rollback the container writes the Nerves

@@ -188,7 +188,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
     }
 
     # The image carries `ncc.hex-cache=seeded`, read through docker here.
-    assert Builder.hex_cache_mode(mount_job) == :readonly
+    assert Builder.hex_cache_mode(mount_job) == {:ok, :readonly}
     mount_args = Builder.build_docker_args(mount_job, "/work", "/out", "/files")
     assert "type=bind,source=#{tmp_hex},target=/hex-cache,readonly" in mount_args
 

@@ -796,10 +796,10 @@ defmodule Portal.BuilderTest do
 
       assert "type=bind,source=/srv/hex,target=/hex-cache" in hex_mounts(args())
       assert "NCC_HEX_CACHE_RW=1" in args()
-      assert Builder.hex_cache_mode(@job) == :rw
+      assert Builder.hex_cache_mode(@job) == {:ok, :rw}
 
       put_builder([hex_cache_rw: nil], previous)
-      assert Builder.hex_cache_mode(@job) == :readonly
+      assert Builder.hex_cache_mode(@job) == {:ok, :readonly}
     end
 
     # A lease or a queued job can name an image from before the seeded
@@ -814,13 +814,13 @@ defmodule Portal.BuilderTest do
           hex_cache_rw: nil,
           hex_cache_image_label: fn ref ->
             send(parent, {:inspected, ref})
-            nil
+            {:ok, nil}
           end
         ],
         previous
       )
 
-      assert Builder.hex_cache_mode(@job) == :legacy
+      assert Builder.hex_cache_mode(@job) == {:ok, :legacy}
       assert_received {:inspected, "ncc-worker"}
 
       assert "type=bind,source=/srv/hex,target=/hex-cache" in hex_mounts(args())
@@ -838,7 +838,7 @@ defmodule Portal.BuilderTest do
           hex_cache_rw: nil,
           hex_cache_image_label: fn ref ->
             send(parent, {:inspected, ref})
-            "seeded"
+            {:ok, "seeded"}
           end
         ],
         previous
@@ -846,8 +846,8 @@ defmodule Portal.BuilderTest do
 
       job = %{@job | image_name: "registry.example/ncc-worker", image_digest: digest}
 
-      assert Builder.hex_cache_mode(job) == :readonly
-      assert Builder.hex_cache_mode(job) == :readonly
+      assert Builder.hex_cache_mode(job) == {:ok, :readonly}
+      assert Builder.hex_cache_mode(job) == {:ok, :readonly}
       assert_received {:inspected, "registry.example/ncc-worker@" <> ^digest}
       refute_received {:inspected, _}
 
@@ -864,7 +864,46 @@ defmodule Portal.BuilderTest do
         previous
       )
 
-      assert Builder.hex_cache_mode(@job) == :rw
+      assert Builder.hex_cache_mode(@job) == {:ok, :rw}
+    end
+
+    # An inspect that fails says nothing about the image: it must neither
+    # downgrade the build to the read-write mount nor be remembered.
+    test "a failed inspect is an error, never the legacy mount, and is not kept", %{
+      previous: previous
+    } do
+      parent = self()
+      digest = "sha256:" <> String.duplicate("d", 64)
+      job = %{@job | image_name: "registry.example/ncc-worker", image_digest: digest}
+
+      put_builder(
+        [
+          hex_cache_rw: nil,
+          hex_cache_image_label: fn ref ->
+            send(parent, {:inspected, ref})
+            :error
+          end
+        ],
+        previous
+      )
+
+      assert {:error, {:hex_cache_label, _ref}} = Builder.hex_cache_mode(job)
+      assert_raise ArgumentError, fn -> Builder.build_docker_args(job, "/w", "/o", "/f") end
+
+      put_builder(
+        [
+          hex_cache_rw: nil,
+          hex_cache_image_label: fn ref ->
+            send(parent, {:inspected, ref})
+            {:ok, "seeded"}
+          end
+        ],
+        previous
+      )
+
+      assert Builder.hex_cache_mode(job) == {:ok, :readonly}
+      assert_received {:inspected, _}
+      assert_received {:inspected, _}
     end
   end
 

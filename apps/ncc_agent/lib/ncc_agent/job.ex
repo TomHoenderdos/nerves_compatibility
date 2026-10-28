@@ -198,11 +198,16 @@ defmodule NccAgent.Job do
 
     image = image_ref(claim["image"])
 
-    case ensure_image(config, image, runner_log) do
-      :ok ->
-        argv = Argv.build(argv_spec(config, claim, dirs, hex_cache_mode(config, image)))
-        Heartbeat.set_phase(hb, "building")
-        run_container(claim, config, argv, runner_log)
+    with :ok <- ensure_image(config, image, runner_log),
+         {:ok, hex_cache_mode} <- hex_cache_mode(config, image) do
+      argv = Argv.build(argv_spec(config, claim, dirs, hex_cache_mode))
+      Heartbeat.set_phase(hb, "building")
+      run_container(claim, config, argv, runner_log)
+    else
+      :inspect_failed ->
+        Logger.error("job #{claim["run_id"]} could not inspect #{image}")
+        File.write!(runner_log, "[agent] could not inspect #{image}\n", [:append])
+        @runner_failure
 
       {:error, reason} ->
         Logger.error("job #{claim["run_id"]} could not pull #{image}: #{reason}")
@@ -216,11 +221,17 @@ defmodule NccAgent.Job do
   # writes /hex-cache itself and keeps the read-write mount
   # (`Compatibility.Builder.Argv.hex_cache_mode/2`), and `prepare/1`'s scrub
   # still runs for it. One `docker image inspect` per job, beside the one
-  # `ensure_image/3` makes; a build takes minutes.
-  defp hex_cache_mode(%{hex_cache_rw: true}, _image), do: :rw
+  # `ensure_image/3` makes; a build takes minutes. Docker not answering says
+  # nothing about the image, so it runs no build, least of all on the
+  # read-write mount: the lease completes with 20 and the portal retries.
+  defp hex_cache_mode(%{hex_cache_rw: true}, _image), do: {:ok, :rw}
 
-  defp hex_cache_mode(config, image),
-    do: Argv.hex_cache_mode(Docker.image_label(config, image, Argv.hex_cache_label()), false)
+  defp hex_cache_mode(config, image) do
+    case Docker.image_label(config, image, Argv.hex_cache_label()) do
+      {:ok, label} -> {:ok, Argv.hex_cache_mode(label, false)}
+      :error -> :inspect_failed
+    end
+  end
 
   # sobelow_skip ["Traversal.FileModule"]
   defp run_container(claim, config, argv, runner_log) do

@@ -34,16 +34,17 @@ defmodule NccAgent.Docker do
     do: match?({:ok, _, 0}, cmd(config, ["image", "inspect", image_ref], @inspect_timeout_ms))
 
   @doc """
-  The value of label `key` on `image_ref`, `nil` when the image lacks it or
-  docker cannot say.
+  The value of label `key` on `image_ref`: `{:ok, value}` when docker
+  answered (for a missing label, `"<no value>"` or `""`), `:error` when it
+  did not.
   """
-  @spec image_label(Config.t(), String.t(), String.t()) :: String.t() | nil
+  @spec image_label(Config.t(), String.t(), String.t()) :: {:ok, String.t()} | :error
   def image_label(config, image_ref, key) do
     format = "{{index .Config.Labels \"#{key}\"}}"
 
     case cmd(config, ["image", "inspect", "--format", format, image_ref], @inspect_timeout_ms) do
-      {:ok, out, 0} -> String.trim(out)
-      _ -> nil
+      {:ok, out, 0} -> {:ok, String.trim(out)}
+      _ -> :error
     end
   end
 

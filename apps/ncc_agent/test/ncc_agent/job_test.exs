@@ -11,7 +11,7 @@ defmodule NccAgent.JobTest do
   @env ~w(FAKE_DOCKER_EXIT FAKE_DOCKER_RESULT FAKE_DOCKER_ARGV_LOG FAKE_DOCKER_FILE_CONTENT
           FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_SLEEP FAKE_DOCKER_PLANT FAKE_DOCKER_RESULT_LINK
           FAKE_DOCKER_OUTPUT_BYTES FAKE_DOCKER_CONTAINER_PRESENT FAKE_DOCKER_DOWN
-          FAKE_DOCKER_HEX_TARBALL FAKE_DOCKER_HEX_LABEL)
+          FAKE_DOCKER_HEX_TARBALL FAKE_DOCKER_HEX_LABEL FAKE_DOCKER_INSPECT_FAIL)
   @lease "5b0c8a8e-1111-4c2d-9e3f-0a1b2c3d4e5f"
   @digest "sha256:" <> String.duplicate("a", 64)
   @content "the archived artifact"
@@ -332,6 +332,20 @@ defmodule NccAgent.JobTest do
       assert "type=bind,source=#{hex},target=/hex-cache" in argv
       refute "type=bind,source=#{hex},target=/hex-cache,readonly" in argv
       refute "NCC_HEX_CACHE_RW=1" in argv
+    end
+
+    # Docker not answering says nothing about the image: no build on the
+    # read-write mount, but a runner failure the portal retries.
+    test "an inspect that fails runs nothing and completes with 20", %{
+      req: req,
+      config: config,
+      argv_log: argv_log
+    } do
+      System.put_env("FAKE_DOCKER_INSPECT_FAIL", "1")
+
+      assert {:ok, _} = Job.run(req, claim(), config)
+      assert complete_params()["exit_code"] == "20"
+      refute File.exists?(argv_log) and File.read!(argv_log) =~ "run"
     end
 
     test "NCC_HEX_CACHE_RW=1 is the rollback here too", %{
