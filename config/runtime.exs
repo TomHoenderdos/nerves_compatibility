@@ -237,7 +237,10 @@ if portal_available? do
     region: System.get_env("NCC_BUILD_CACHE_S3_REGION"),
     access_key: System.get_env("NCC_BUILD_CACHE_S3_ACCESS_KEY"),
     secret_key: System.get_env("NCC_BUILD_CACHE_S3_SECRET_KEY"),
-    read_only: System.get_env("NCC_BUILD_CACHE_S3_READ_ONLY") == "1"
+    read_only: System.get_env("NCC_BUILD_CACHE_S3_READ_ONLY") == "1",
+    # The bucket's size mark in GB (10^9 bytes): above 90 % of it the oldest
+    # objects are deleted down to 75 % (`Portal.BuildCache.L2.Evict`).
+    max_gb: System.get_env("NCC_BUILD_CACHE_S3_MAX_GB")
 
   # Megabytes are the human unit; `Portal.Workers.LogRetention` wants bytes. An
   # unparseable or non-positive value leaves the compile-time default alone

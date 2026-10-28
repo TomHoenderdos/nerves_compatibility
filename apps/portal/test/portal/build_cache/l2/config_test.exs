@@ -49,6 +49,24 @@ defmodule Portal.BuildCache.L2.ConfigTest do
     assert {:ok, %Config{read_only?: true}} = Config.config(Keyword.put(@full, :read_only, true))
   end
 
+  test "max_gb is a positive whole number of GB, nil otherwise" do
+    assert {:ok, %Config{max_bytes: nil}} = Config.config(@full)
+
+    assert {:ok, %Config{max_bytes: 100_000_000_000}} =
+             Config.config(Keyword.put(@full, :max_gb, "100"))
+
+    assert {:ok, %Config{max_bytes: 2_000_000_000}} =
+             Config.config(Keyword.put(@full, :max_gb, " 2 "))
+
+    assert {:ok, %Config{max_bytes: 5_000_000_000}} =
+             Config.config(Keyword.put(@full, :max_gb, 5))
+
+    for bad <- ["", "0", "-3", "1.5", "10GB", "abc", 0, -1, 1.5] do
+      assert {:ok, %Config{max_bytes: nil}} = Config.config(Keyword.put(@full, :max_gb, bad)),
+             inspect(bad)
+    end
+  end
+
   test "inspecting a config never shows the secret key" do
     {:ok, cfg} = Config.config(Keyword.put(@full, :secret_key, "very-secret-value"))
     refute inspect(cfg) =~ "very-secret-value"

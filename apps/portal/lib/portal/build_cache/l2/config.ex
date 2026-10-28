@@ -6,12 +6,24 @@ defmodule Portal.BuildCache.L2.Config do
   other required value missing is an error the caller logs once at boot and
   then treats as off: a half-configured cache must not look like a working
   one.
+
+  `max_bytes` is the size the bucket is kept under
+  (`Portal.BuildCache.L2.Evict`), from `NCC_BUILD_CACHE_S3_MAX_GB` in GB of
+  10^9 bytes; nil, so no eviction, when unset or not a positive whole number.
   """
 
   # The secret never reaches a log line or a crash report through `inspect`.
   @derive {Inspect, except: [:secret_key]}
   @enforce_keys [:endpoint, :bucket, :region, :access_key, :secret_key]
-  defstruct [:endpoint, :bucket, :region, :access_key, :secret_key, read_only?: false]
+  defstruct [
+    :endpoint,
+    :bucket,
+    :region,
+    :access_key,
+    :secret_key,
+    read_only?: false,
+    max_bytes: nil
+  ]
 
   @type t :: %__MODULE__{
           endpoint: String.t(),
@@ -19,7 +31,8 @@ defmodule Portal.BuildCache.L2.Config do
           region: String.t(),
           access_key: String.t(),
           secret_key: String.t(),
-          read_only?: boolean()
+          read_only?: boolean(),
+          max_bytes: pos_integer() | nil
         }
 
   @spec config(keyword()) :: {:ok, t()} | :off | {:error, String.t()}
@@ -42,10 +55,24 @@ defmodule Portal.BuildCache.L2.Config do
          region: present(env[:region]) || "garage",
          access_key: access_key,
          secret_key: secret_key,
-         read_only?: env[:read_only] == true
+         read_only?: env[:read_only] == true,
+         max_bytes: max_bytes(env[:max_gb])
        }}
     end
   end
+
+  @gb 1_000_000_000
+
+  defp max_bytes(gb) when is_integer(gb) and gb > 0, do: gb * @gb
+
+  defp max_bytes(gb) when is_binary(gb) do
+    case Integer.parse(String.trim(gb)) do
+      {n, ""} when n > 0 -> n * @gb
+      _ -> nil
+    end
+  end
+
+  defp max_bytes(_), do: nil
 
   defp required(env, key, var) do
     case present(env[key]) do
