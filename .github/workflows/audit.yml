@@ -27,6 +27,8 @@ concurrency:
 jobs:
   deps-audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -39,6 +41,11 @@ jobs:
           elixir-version: "1.20"
           otp-version: "28"
 
+      # A pull_request run saves under its own refs/pull/<n>/merge scope, which
+      # only that pull request's later runs can restore; the push and schedule
+      # runs on main restore only what runs on main saved. Keep it that way: a
+      # pull_request_target or workflow_run trigger here would run pull request
+      # code in main's scope and let it seed the deps this audit trusts.
       - uses: actions/cache@v4
         with:
           path: |

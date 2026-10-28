@@ -3,7 +3,15 @@ name: Images and agent releases
 # Publishes what a remote builder needs to mean the same thing as a local
 # build host: the worker image by registry digest, and the agent release per
 # architecture, all described in one images.json the web host reads
-# (Portal.Builders.Images). Runs only after the test workflow passed on main.
+# (Portal.Builders.Images). Runs only after the test workflow passed on a
+# push to main of this repository.
+#
+# `branches: [main]` below is not that gate: it matches the triggering run's
+# head branch *name*, which a pull request from a fork named `main` also has,
+# and "Test and deploy" runs on pull_request. Every job therefore repeats the
+# full check in its own `if:` (ops/test_workflow_gates.py pins it). The check
+# also keeps untrusted code out of this workflow's default-branch context,
+# whose cache token could otherwise write cache entries main's runs restore.
 on:
   workflow_run:
     workflows: ["Test and deploy"]
@@ -25,7 +33,13 @@ env:
 jobs:
   worker-image:
     name: Push ncc-worker
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -59,7 +73,13 @@ jobs:
 
   agent-release:
     name: Agent release (${{ matrix.arch }})
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     strategy:
       matrix:
         include:
@@ -69,6 +89,8 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - id: sha
         run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
@@ -98,6 +120,13 @@ jobs:
   publish:
     name: Release and images.json
     needs: [worker-image, agent-release]
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-24.04
     permissions:
       contents: write
