@@ -6,8 +6,8 @@
 # built it, and both hosts are Ubuntu 24.04. Anything else produces a release
 # that will not start here.
 #
-# Installed to /opt/nerves_compatibility/build-release.sh on each host. See
-# the operator runbook.
+# Installed at a fixed operator-chosen path on each host. See the operator
+# runbook.
 set -euo pipefail
 
 SRC=/opt/nerves_compatibility/src

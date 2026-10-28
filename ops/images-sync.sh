@@ -1,8 +1,9 @@
 #!/bin/bash
 # Fetches images.json for the deployed commit from the GitHub release the
-# images workflow publishes (agent-<sha>) into /etc/ncc-portal/images.json,
-# which Portal.Builders.Images reads. Best-effort: the release lands minutes
-# after the deploy, so a miss is a retry on the next run, not a failure.
+# images workflow publishes (agent-<sha>) into the destination
+# Portal.Builders.Images reads (`$dest`, operator-configured). Best-effort:
+# the release lands minutes after the deploy, so a miss is a retry on the
+# next run, not a failure.
 #
 # Usage: images-sync.sh <40-hex sha> [destination]   (see the operator runbook)
 set -euo pipefail

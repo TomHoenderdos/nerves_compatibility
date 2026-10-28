@@ -1,8 +1,8 @@
 defmodule Portal.Builders.Images do
   @moduledoc """
   The registry digests and agent releases CI published for the deployed
-  commit, read from `images.json` (`NCC_IMAGES_JSON`, default
-  `/etc/ncc-portal/images.json`, written by `ops/images-sync.sh`).
+  commit, read from `images.json` (the path `NCC_IMAGES_JSON` points at,
+  written by `ops/images-sync.sh`).
 
   A remote lease carries the registry digest from here, so every builder
   means the same image by it. Missing or malformed, every reader answers nil

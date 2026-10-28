@@ -80,7 +80,8 @@ builder_install_egress() {
 # restarts. By then the new release is already installed and migrated, so a
 # failure here does not keep it from running: the next restart, crash or
 # reboot starts it, and it then refuses every build (fail closed). The release
-# this deploy replaced is in /opt/nerves_compatibility/portal-previous.tar.gz.
+# this deploy replaced is in deploy.sh's own backup tarball, beside the
+# deploy directory.
 builder_check_egress() {
   if ! sudo -u ncc bash -c '
     set -euo pipefail

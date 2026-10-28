@@ -1,10 +1,12 @@
 defmodule Mix.Tasks.Portal.BuilderCa.Init do
   @shortdoc "Create the remote-builder CA key and certificate"
   @moduledoc """
-      mix portal.builder_ca.init --key /etc/ncc-portal/builder-ca/ca-key.pem
+      mix portal.builder_ca.init --key PATH
 
-  Writes the key (mode 600) and `ca.pem` beside it; refuses to overwrite.
-  On a release: `bin/portal eval 'Portal.Builders.CA.init("/etc/ncc-portal/builder-ca/ca-key.pem")'`.
+  `PATH` is wherever the operator wants the CA key to live (the same path
+  `NCC_BUILDER_CA_KEY` points at in prod). Writes the key (mode 600) and
+  `ca.pem` beside it; refuses to overwrite.
+  On a release: `bin/portal eval 'Portal.Builders.CA.init("PATH")'`.
   """
   use Mix.Task
 

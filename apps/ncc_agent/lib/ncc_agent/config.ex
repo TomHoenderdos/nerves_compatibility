@@ -1,5 +1,5 @@
 defmodule NccAgent.Config do
-  @moduledoc "The agent's configuration, from `/etc/ncc-agent.env` through the environment."
+  @moduledoc "The agent's configuration, read from the environment (an EnvironmentFile populates it under systemd in production)."
 
   @type t :: %{
           portal_url: String.t() | nil,

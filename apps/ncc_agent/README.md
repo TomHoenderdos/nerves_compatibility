@@ -14,7 +14,8 @@ days of expiry.
 
 ## Configuration
 
-Read from the environment (in production, `/etc/ncc-agent.env`):
+Read from the environment (in production, populated from the file
+`ncc-agent.service`'s `EnvironmentFile=` points at):
 
 | Key | Default | Meaning |
 | --- | --- | --- |

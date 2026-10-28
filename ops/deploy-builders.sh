@@ -16,11 +16,12 @@
 # Per host, in order:
 #   1. preflight: ssh reachable, checkout on main, which commit it runs;
 #      a host already on the commit with ncc-portal active is skipped (-f overrides)
-#   2. installs that commit's ops/deploy.sh and ops/build-release.sh into
-#      /opt/nerves_compatibility/ (hosts run those copies, not the checkout's;
-#      see the operator runbook)
+#   2. installs that commit's ops/deploy.sh and ops/build-release.sh into the
+#      host's fixed deploy directory (hosts run those copies, not the
+#      checkout's; see the operator runbook)
 #   3. starts `deploy.sh <sha> builder` detached on the host (setsid, stdin
-#      closed, own log under /root), so a dropped ssh cannot kill it halfway;
+#      closed, own log under the deploying user's home), so a dropped ssh
+#      cannot kill it halfway;
 #      deploy.sh holds its own flock, so a second run refuses rather than races
 #   4. polls the log from here (no loop runs on the host) until deploy.sh exits
 #   5. verifies the host is on the commit and ncc-portal is active
@@ -136,8 +137,8 @@ preflight() {
   log "$name" "on ${head:0:7}, ncc-portal $active"
 }
 
-# The hosts run /opt/nerves_compatibility/{deploy,build-release}.sh, not the
-# checkout's copies, so a deploy of a commit that changed them must ship them
+# The hosts run their own installed copies of deploy.sh/build-release.sh, not
+# the checkout's, so a deploy of a commit that changed them must ship them
 # first. Taken from the commit being deployed, never from this working tree.
 install_scripts() {
   local name=$1 f
