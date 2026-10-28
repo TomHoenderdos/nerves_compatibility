@@ -9,6 +9,7 @@ defmodule NccWorker.Worker do
     BeamScan,
     BuildCache,
     BuildSelection,
+    DepsGetClassifier,
     DepsLock,
     EgressProbe,
     Footprint,
@@ -441,7 +442,7 @@ defmodule NccWorker.Worker do
 
     with {:ok, project_dir} <-
            Project.create(paths.work_dir, input[:systems_override], Systems.targets(systems)),
-         {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
+         {:ok, _} <- add_package(project_dir, input, systems, context),
          :ok <- LockPolicy.validate(project_dir) do
       if retired_info do
         skipped_retired(context)
@@ -449,6 +450,101 @@ defmodule NccWorker.Worker do
         context |> Map.merge(%{project_dir: project_dir, systems: systems}) |> evaluate_project()
       end
     end
+  end
+
+  # Wraps `Project.add_package/3` so a `deps.get` failure for the package
+  # under test -- not a Nerves system or toolchain dep, those are
+  # `Project.create/3`'s problem -- gets classified before it can reach the
+  # `with` above as a bare `{:error, _}`. `deps_get_verdict/3` turns a
+  # deterministic failure into `{:ok, result}` with every `with` clause below
+  # (LockPolicy, `evaluate_project/1`) short-circuited away, same effect as
+  # if a later verdict had already been reached; a transient one, or any
+  # other `add_package` error, passes through unchanged for the `with` to
+  # report as today (exit 10).
+  defp add_package(project_dir, input, systems, context) do
+    case Project.add_package(project_dir, input.package, host_env(project_dir)) do
+      {:error, {:deps_get_failed, output}} -> deps_get_verdict(context, systems, output)
+      other -> other
+    end
+  end
+
+  @doc false
+  # Classifies a `deps.get` failure for the package under test
+  # (`NccWorker.DepsGetClassifier`). Transient stays `{:error, {:deps_get_failed,
+  # output}}` so the caller's `with` reports it like any other internal
+  # failure (exit 10, retried). Deterministic becomes a normal verdict: every
+  # system this run would have built (respecting `systems_filter`) is
+  # recorded `status: "error"`, `error: "deps_get_failed"`, so the portal
+  # ingests it once instead of retrying something that will never change.
+  @spec deps_get_verdict(map(), [Systems.t()], String.t()) ::
+          {:ok, result()} | {:error, {:deps_get_failed, String.t()}}
+  def deps_get_verdict(context, systems, output) do
+    case DepsGetClassifier.classify(output) do
+      :transient -> {:error, {:deps_get_failed, output}}
+      :deterministic -> {:ok, deps_get_failure_result(context, systems, output)}
+    end
+  end
+
+  defp deps_get_failure_result(
+         %{
+           input: input,
+           paths: paths,
+           toolchain: toolchain,
+           log_tail_bytes: log_tail_bytes,
+           description: description,
+           github_url: github_url,
+           package_version_hint: package_version_hint
+         },
+         systems,
+         output
+       ) do
+    scope = RunScope.from_input(input)
+
+    %{
+      run_id: input.run_id,
+      package: %{
+        name: input.package.name,
+        version: package_version_hint || "unknown",
+        description: description,
+        github_url: github_url,
+        dependencies: [],
+        footprint: empty_footprint()
+      },
+      image: input.image,
+      toolchain: toolchain,
+      systems: deps_get_error_systems(systems, paths.output_dir, log_tail_bytes, output),
+      argus: Argus.skipped(),
+      finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+      scope: RunScope.to_string(scope)
+    }
+  end
+
+  defp deps_get_error_systems(systems, output_dir, log_tail_bytes, output) do
+    log_tail = truncate_tail(output, log_tail_bytes)
+
+    Map.new(systems, fn system ->
+      write_deps_get_log(output_dir, system.name, output)
+
+      {system.name,
+       %{
+         status: :error,
+         duration_sec: 0.0,
+         firmware_size_bytes: nil,
+         log_tail: log_tail,
+         system_version: nil,
+         beam_scan: nil,
+         dependency_scans: nil,
+         error: "deps_get_failed"
+       }}
+    end)
+  end
+
+  # Same fixed `logs/<system name>.log` convention `build_all_systems/6` and
+  # `compile_host/4` use, so `Portal.Catalog.Ingestion.stage_logs/2` finds it.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp write_deps_get_log(output_dir, system_name, output) do
+    log_file = Path.join([output_dir, "logs", "#{system_name}.log"])
+    :ok = File.write!(log_file, output)
   end
 
   defp evaluate_project(%{

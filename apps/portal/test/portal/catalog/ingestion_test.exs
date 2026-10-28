@@ -518,6 +518,73 @@ defmodule Portal.Catalog.IngestionTest do
 
       assert logs_by_system(run.id) == %{}
     end
+
+    # NccWorker.Worker.deps_get_verdict/3's shape for a deterministic
+    # `deps.get` failure of the package under test: every system the run
+    # would have built is `"status": "error"`, `"error": "deps_get_failed"`,
+    # no `"host"` key. Confirms ingestion needs no change for it to land as a
+    # one-time `:error` run with every system's log stored, instead of being
+    # retried forever (the bug this verdict shape fixes).
+    test "a deterministic deps_get_failed verdict ingests as one error run with every log stored" do
+      systems = %{
+        "nerves_system_rpi4" => %{
+          "status" => "error",
+          "duration_sec" => 0.0,
+          "firmware_size_bytes" => nil,
+          "log_tail" => "reckon_db supports Erlang/OTP 28; this is OTP 29.",
+          "system_version" => nil,
+          "beam_scan" => nil,
+          "dependency_scans" => nil,
+          "error" => "deps_get_failed"
+        },
+        "nerves_system_x86_64" => %{
+          "status" => "error",
+          "duration_sec" => 0.0,
+          "firmware_size_bytes" => nil,
+          "log_tail" => "reckon_db supports Erlang/OTP 28; this is OTP 29.",
+          "system_version" => nil,
+          "beam_scan" => nil,
+          "dependency_scans" => nil,
+          "error" => "deps_get_failed"
+        }
+      }
+
+      output_dir =
+        seed_output_dir(%{
+          "nerves_system_rpi4" => "reckon_db supports Erlang/OTP 28; this is OTP 29.",
+          "nerves_system_x86_64" => "reckon_db supports Erlang/OTP 28; this is OTP 29."
+        })
+
+      result =
+        load_fixture()
+        |> Map.put("systems", systems)
+        |> Map.put("scope", "full")
+
+      {:ok, run} =
+        Ingestion.ingest(result, %{
+          run_id: "deps-get-failed-1",
+          image_digest: "sha256:deadbeef",
+          files_dir: seed_files_dir([]),
+          output_dir: output_dir,
+          scan_request_id: nil,
+          log: "build log"
+        })
+
+      assert run.overall_status == :error
+
+      system_results =
+        SystemResult
+        |> Ash.Query.filter(run_id == ^run.id)
+        |> Ash.read!(domain: Portal.Catalog)
+
+      assert length(system_results) == 2
+      assert Enum.all?(system_results, &(&1.status == :error))
+      assert Enum.all?(system_results, &(&1.log_tail =~ "reckon_db supports Erlang/OTP 28"))
+
+      logs = logs_by_system(run.id)
+      assert Map.keys(logs) |> Enum.sort() == ["nerves_system_rpi4", "nerves_system_x86_64"]
+      assert logs["nerves_system_rpi4"].body =~ "reckon_db supports Erlang/OTP 28"
+    end
   end
 
   test "stores the argus result on the run, and nil when the worker sent none" do

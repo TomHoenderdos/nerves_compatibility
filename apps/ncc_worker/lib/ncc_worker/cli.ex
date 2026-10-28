@@ -7,9 +7,11 @@ defmodule NccWorker.CLI do
 
   Exit codes:
   - 0: Worker completed and wrote `result.json`, whatever the builds' verdicts
-    (a toolchain run whose host compile failed included)
-  - 10: Worker internal failure: no `result.json` (e.g. `mix new` or
-    `deps.get` failed)
+    (a toolchain run whose host compile failed included, and a full/targets
+    run whose own `deps.get` failed deterministically -- see
+    `NccWorker.DepsGetClassifier`)
+  - 10: Worker internal failure: no `result.json` (e.g. `mix new` failed, or
+    `deps.get` failed in a way `NccWorker.DepsGetClassifier` calls transient)
   - 11: Policy violation
   """
 
@@ -27,14 +29,19 @@ defmodule NccWorker.CLI do
         ["setup"] -> setup_only()
         _ -> run()
       end
-      |> case do
-        :ok -> 0
-        {:error, :policy_violation} -> 11
-        {:error, _} -> 10
-      end
+      |> exit_code()
 
     System.halt(exit_code)
   end
+
+  @doc """
+  Maps `run/0`'s or `setup_only/0`'s outcome to a process exit code. Public
+  and pure (no `System.halt/1`) so a test can call it directly.
+  """
+  @spec exit_code(:ok | {:error, term()}) :: 0 | 10 | 11
+  def exit_code(:ok), do: 0
+  def exit_code({:error, :policy_violation}), do: 11
+  def exit_code({:error, _reason}), do: 10
 
   @spec run() :: :ok | {:error, term()}
   defp run() do

@@ -7,7 +7,16 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
 ## What it does
 
 1. Reads a job from `NCC_INPUT` (default `/work/input.json`).
-2. Generates a fresh Nerves project and adds the target package.
+2. Generates a fresh Nerves project and adds the target package. If that package's own `mix deps.get` fails,
+   `NccWorker.DepsGetClassifier` names the failure transient (DNS, a refused or dropped connection, a timeout, a
+   TLS error, or an HTTP 5xx/429 from `hex.pm`/`repo.hex.pm`: a retry could succeed, so the run stays an internal
+   failure and exits `10` as before) or deterministic (everything else, defaulting to deterministic when nothing
+   matches: a dependency's own `mix.exs` raising, a version resolution conflict, a package that does not exist).
+   A deterministic failure is recorded as a normal verdict instead of retried: every system this run would have
+   built (`systems_filter` respected, so a `targets` run only records those) gets `"status": "error"`,
+   `"error": "deps_get_failed"`, and the `deps.get` output as its `log_tail` and stored log, `result.json` is
+   written and the exit code is `0`, same reasoning as a toolchain run's failed host compile below — nothing about
+   retrying the same `mix.exs` three times a day would ever change the outcome.
 3. Rejects the run if `mix.lock` contains any non-Hex deps (exit 11).
 4. Compiles the package on the host. If that passes and the whole dependency closure is pure Elixir
    (`NccWorker.BuildSelection`), records an assumed-compatible `pure_elixir` result instead of building firmware.
@@ -171,7 +180,9 @@ no Hex metadata fetch; `toolchain.nerves_bootstrap` is `"absent"`. `result.json`
 `file_manifest` only for `pass`, and those files are archived by SHA256 from `_build/host/lib/<package>`. A failed
 host compile is `status: "error"`: `result.json` is still written and the exit code is `0`, so the portal ingests the
 verdict (as a `fail` row). A compile failure is deterministic for that package, version and toolchain, so it is
-recorded, not retried. A `deps.get` failure exits `10` without a result, as in a full run, and that is retried.
+recorded, not retried. A `deps.get` failure here always exits `10` without a result and is retried — toolchain
+mode does not run it through `NccWorker.DepsGetClassifier`; only a full, targets or argus-only run does (see
+"What it does" above).
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 
@@ -186,8 +197,11 @@ the run. Only `Portal.EgressCheck` sends it (see the operator runbook); otherwis
 
 ## Exit codes
 
-- `0` — success (some systems may still have failed; check `result.json`)
-- `10` — internal failure: no `result.json` was written (a toolchain run whose compile failed exits `0`)
+- `0` — success (some systems may still have failed; check `result.json`) — a toolchain run whose compile failed
+  exits `0`, and so does a full/targets/argus-only run whose own `deps.get` failed deterministically
+  (`NccWorker.DepsGetClassifier`)
+- `10` — internal failure: no `result.json` was written (includes a `deps.get` failure classified transient, and
+  always a toolchain run's own `deps.get` failure)
 - `11` — policy violation (non-Hex dependency in `mix.lock`)
 
 ## Develop
