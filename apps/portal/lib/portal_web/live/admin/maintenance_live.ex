@@ -530,8 +530,12 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               last download {if @build_cache_l2.last_download,
                 do: format_datetime(@build_cache_l2.last_download),
                 else: "never"}.
+              <%= if @build_cache_l2.max_bytes do %>
+                Above 90% of {div(@build_cache_l2.max_bytes, 1_000_000_000)} GB the oldest objects
+                are deleted, down to 75%, at most hourly.
+              <% end %>
             </p>
-            <div class="mt-5 grid gap-3 sm:grid-cols-4">
+            <div class="mt-5 grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
               <PortalWeb.UI.stat_card
                 label="Uploads"
                 value={"#{@build_cache_l2.counters.uploads} (#{@build_cache_l2.counters.upload_failures} failed)"}
@@ -547,6 +551,10 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               <PortalWeb.UI.stat_card
                 label="Bytes down"
                 value={to_string(@build_cache_l2.counters.bytes_down)}
+              />
+              <PortalWeb.UI.stat_card
+                label="Evictions"
+                value={"#{@build_cache_l2.counters.evictions} (#{@build_cache_l2.counters.evicted_bytes} bytes)"}
               />
             </div>
           <% end %>

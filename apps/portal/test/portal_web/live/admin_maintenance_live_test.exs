@@ -407,6 +407,50 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
   end
 
   describe "build cache L2" do
+    test "shows the eviction counters and the size mark", %{conn: conn} do
+      previous = Application.get_env(:portal, Portal.BuildCache.L2, [])
+
+      Application.put_env(:portal, Portal.BuildCache.L2,
+        endpoint: "http://192.0.2.10:3900",
+        bucket: "ncc-build-cache",
+        access_key: "GK1",
+        secret_key: "s",
+        max_gb: "50"
+      )
+
+      on_exit(fn ->
+        Application.put_env(:portal, Portal.BuildCache.L2, previous)
+        Portal.BuildCache.L2.Stats.reset()
+      end)
+
+      Portal.BuildCache.L2.Stats.reset()
+      Portal.BuildCache.L2.Stats.record(:evicted, 4096)
+
+      {view, _html} = live_maintenance(conn)
+      card = view |> element("#build-cache-l2") |> render()
+      assert card =~ "Evictions"
+      assert card =~ "1 (4096 bytes)"
+      assert card =~ "50 GB"
+    end
+
+    test "shows no size mark when none is set", %{conn: conn} do
+      previous = Application.get_env(:portal, Portal.BuildCache.L2, [])
+
+      Application.put_env(:portal, Portal.BuildCache.L2,
+        endpoint: "http://192.0.2.10:3900",
+        bucket: "ncc-build-cache",
+        access_key: "GK1",
+        secret_key: "s"
+      )
+
+      on_exit(fn -> Application.put_env(:portal, Portal.BuildCache.L2, previous) end)
+
+      {view, _html} = live_maintenance(conn)
+      card = view |> element("#build-cache-l2") |> render()
+      assert card =~ "Evictions"
+      refute card =~ "oldest objects"
+    end
+
     test "shows the L2 build cache off", %{conn: conn} do
       {view, _html} = live_maintenance(conn)
       card = view |> element("#build-cache-l2") |> render()
