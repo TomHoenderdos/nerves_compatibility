@@ -168,10 +168,13 @@ At the end of the run `result.json` carries
 where `misses` are the tarballs the run downloaded (`path` is relative to `/work`) and `hits` the run's `mix.lock`
 entries whose cached tarball it used. The key is absent when both lists are empty. After the container exits and
 before ingest, the host (`Portal.HexCache`, and `NccAgent.HexCache` on a remote builder, both through
-`Compatibility.HexCache`) moves each miss into the shared cache only when the file is a regular, unlinked file within
-16 MiB whose bytes hash to the outer checksum Hex.pm publishes for that release; it rebuilds the source path from the
-validated name and version and ignores the reported checksum and path. Each hit's times are refreshed, since a
-read-only mount no longer moves a file's atime and the hex sweep evicts by last use.
+`Compatibility.HexCache`) moves each miss into the shared cache only when every directory from the run's work dir down
+is a real directory and the file is a regular, unlinked file within 16 MiB whose bytes hash to the outer checksum the
+signed Hex registry (`repo.hex.pm/packages/<name>`, the same check Hex makes) lists for that release; it rebuilds the
+source path from the validated name and version and ignores the reported checksum and path. Registry answers are kept
+per package for an hour; a rate limit or outage skips the rest of that promotion. A hit's times are refreshed, since a
+read-only mount no longer moves a file's atime and the hex sweep evicts by last use, but only for a release the run's
+own `package`, `deps_lock` or a system's `deps_lock` names.
 
 The read-only mount is only for an image that says its worker does this: both Dockerfiles set
 `LABEL ncc.hex-cache=seeded`, and the host (`Portal.Builder`, and the remote agent) reads that label off the exact

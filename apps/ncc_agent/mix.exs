@@ -33,6 +33,9 @@ defmodule NccAgent.MixProject do
     [
       {:compatibility, in_umbrella: true},
       {:req, "~> 0.7"},
+      # The signed registry's checksums (`NccAgent.HexRegistry`); the portal
+      # already uses this version.
+      {:hex_core, "~> 0.20.1"},
       {:x509, "~> 0.9"},
       {:jason, "~> 1.2"},
       {:bandit, "~> 1.5", only: :test},

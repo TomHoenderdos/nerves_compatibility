@@ -379,6 +379,11 @@ defmodule Portal.Workers.BuildTest do
       File.write!(used, "decimal")
       File.touch!(used, 1_000_000_000)
 
+      # Named as a hit but in no lock the run reports.
+      unlocked = Path.join([hex, "packages", "hexpm", "telemetry-1.3.0.tar"])
+      File.write!(unlocked, "telemetry")
+      File.touch!(unlocked, 1_000_000_000)
+
       report = %{
         "misses" => [
           %{
@@ -388,8 +393,16 @@ defmodule Portal.Workers.BuildTest do
             "path" => "hex-home/packages/hexpm/jason-1.4.5.tar"
           }
         ],
-        "hits" => [%{"name" => "decimal", "version" => "2.1.1"}]
+        "hits" => [
+          %{"name" => "decimal", "version" => "2.1.1"},
+          %{"name" => "telemetry", "version" => "1.3.0"}
+        ]
       }
+
+      result =
+        fixture_result()
+        |> Map.put("hex_cache", report)
+        |> Map.put("deps_lock", %{"decimal" => %{"version" => "2.1.1", "checksum" => "c"}})
 
       files_dir = files_dir_with([])
 
@@ -397,14 +410,14 @@ defmodule Portal.Workers.BuildTest do
         {:ok,
          %{
            exit_code: 0,
-           result: Map.put(fixture_result(), "hex_cache", report),
+           result: result,
            files_dir: files_dir,
            output_dir: files_dir,
            log: "ok"
          }}
       )
 
-      %{hex: hex, used: used}
+      %{hex: hex, used: used, unlocked: unlocked}
     end
 
     defp build_jason_for_hex do
@@ -426,6 +439,7 @@ defmodule Portal.Workers.BuildTest do
 
       assert File.read!(Path.join([ctx.hex, "packages", "hexpm", "jason-1.4.5.tar"])) == @tarball
       assert File.stat!(ctx.used, time: :posix).mtime > 1_000_000_000
+      assert File.stat!(ctx.unlocked, time: :posix).mtime == 1_000_000_000
       assert_enqueued(worker: Ingest)
     end
 

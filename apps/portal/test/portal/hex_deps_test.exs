@@ -78,7 +78,7 @@ defmodule Portal.HexDepsTest do
     )
 
     assert {:ok, [old, new]} = releases("tortoise", context)
-    assert old == %{version: "0.9.0", retired?: true, deps: []}
+    assert old == %{version: "0.9.0", retired?: true, deps: [], outer_checksum: nil}
     assert new.version == "0.10.0"
     refute new.retired?
 
@@ -139,6 +139,74 @@ defmodule Portal.HexDepsTest do
     assert {:ok, _} = releases("jason", context, cache: false)
     assert_received {:fetched, "/packages/jason"}
     assert_received {:fetched, "/packages/jason"}
+  end
+
+  describe "outer_checksum/3" do
+    defp checksum(name, version, context, opts \\ []) do
+      HexDeps.outer_checksum(name, version, [client: Client, public_key: context.public] ++ opts)
+    end
+
+    @outer :crypto.hash(:sha256, "jason 1.4.4 tarball")
+
+    test "the signed registry's outer checksum, in lowercase hex", context do
+      serve(
+        "jason",
+        resource("jason", [{"1.4.4", [], %{outer_checksum: @outer}}], context.private)
+      )
+
+      assert checksum("jason", "1.4.4", context) == {:ok, Base.encode16(@outer, case: :lower)}
+
+      # Served from the cache: a cold Hex cache asks once per package.
+      assert checksum("jason", "1.4.4", context) == {:ok, Base.encode16(@outer, case: :lower)}
+      assert_received {:fetched, "/packages/jason"}
+      refute_received {:fetched, "/packages/jason"}
+    end
+
+    test "a version the cached resource lacks is asked about once more", context do
+      serve(
+        "jason",
+        resource("jason", [{"1.4.3", [], %{outer_checksum: @outer}}], context.private)
+      )
+
+      assert {:ok, _} = checksum("jason", "1.4.3", context)
+
+      serve(
+        "jason",
+        resource(
+          "jason",
+          [{"1.4.3", [], %{outer_checksum: @outer}}, {"1.4.4", [], %{outer_checksum: @outer}}],
+          context.private
+        )
+      )
+
+      assert {:ok, _} = checksum("jason", "1.4.4", context)
+      assert checksum("jason", "9.9.9", context) == {:error, :unknown_release}
+    end
+
+    test "an unknown package or a release without a checksum is unknown", context do
+      assert checksum("nope", "1.0.0", context) == {:error, :unknown_release}
+
+      serve("jason", resource("jason", [{"1.4.4", [], %{}}], context.private))
+      assert checksum("jason", "1.4.4", context) == {:error, :unknown_release}
+    end
+
+    # A rate limit, an outage or a bad signature means try a later build,
+    # never "this tarball is wrong", and nothing of it is remembered.
+    test "a 429, a 5xx or a bad signature is unavailable and not cached", context do
+      serve("jason", {:status, 429})
+      assert checksum("jason", "1.4.4", context) == {:error, :hex_registry_unavailable}
+
+      other = :public_key.generate_key({:rsa, 2048, 65_537})
+      serve("jason", resource("jason", [{"1.4.4", [], %{outer_checksum: @outer}}], other))
+      assert checksum("jason", "1.4.4", context) == {:error, :hex_registry_unavailable}
+
+      serve(
+        "jason",
+        resource("jason", [{"1.4.4", [], %{outer_checksum: @outer}}], context.private)
+      )
+
+      assert {:ok, _} = checksum("jason", "1.4.4", context)
+    end
   end
 
   # Reads skip an expired row but never remove it; the periodic sweep does.

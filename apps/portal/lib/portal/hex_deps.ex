@@ -45,7 +45,12 @@ defmodule Portal.HexDeps do
           optional: boolean(),
           repository: String.t()
         }
-  @type release :: %{version: String.t(), retired?: boolean(), deps: [dep()]}
+  @type release :: %{
+          version: String.t(),
+          retired?: boolean(),
+          deps: [dep()],
+          outer_checksum: String.t() | nil
+        }
   @type error :: :hex_registry_unavailable | :hex_registry_undecodable | :not_found
 
   @doc """
@@ -54,8 +59,8 @@ defmodule Portal.HexDeps do
   Options: `:client` (module exposing `get/2`, default `Req`), `:public_key`
   (default hex.pm's), `:cache` (default `true`). The first two exist for tests,
   as in `Portal.HexRegistry.snapshot/1`. `:receive_timeout` (default 30 s) and
-  `:retry` (default Req's) pass through to the request, for a caller with
-  someone waiting on the answer.
+  `:retry` (default Req's) and `:connect_options` pass through to the
+  request, for a caller with someone waiting on the answer.
   """
   @spec releases(String.t(), keyword()) :: {:ok, [release()]} | {:error, error()}
   def releases(name, opts \\ []) when is_binary(name) do
@@ -64,6 +69,44 @@ defmodule Portal.HexDeps do
     case cache? && cached(name) do
       {:ok, releases} -> {:ok, releases}
       _ -> fetch_and_store(name, opts, cache?)
+    end
+  end
+
+  @doc """
+  The outer checksum (lowercase hex SHA-256 of the tarball) the signed
+  registry lists for `name` at `version`: what Hex itself checks a cached
+  or downloaded tarball against, read from the CDN rather than the API, so
+  a cold Hex cache costs one cached request per package and no API quota
+  (`Portal.HexCache`). A version the cached resource lacks is asked about
+  once more, uncached, since it may have been published within the hour.
+
+  `{:error, :unknown_release}` for a package or release the registry does
+  not list, or one without an outer checksum (which Hex cannot use either);
+  `{:error, :hex_registry_unavailable}` for anything that says "ask later":
+  a 429, a 5xx, a transport error or a resource that does not verify.
+  Neither is cached. Options as for `releases/2`.
+  """
+  @spec outer_checksum(String.t(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, :unknown_release | :hex_registry_unavailable}
+  def outer_checksum(name, version, opts \\ []) when is_binary(name) and is_binary(version) do
+    with {:ok, releases} <- releases(name, opts),
+         :miss <- find_checksum(releases, version),
+         {:ok, releases} <- fetch_and_store(name, opts, Keyword.get(opts, :cache, true)),
+         :miss <- find_checksum(releases, version) do
+      {:error, :unknown_release}
+    else
+      {:ok, checksum} -> {:ok, checksum}
+      :no_checksum -> {:error, :unknown_release}
+      {:error, :not_found} -> {:error, :unknown_release}
+      {:error, _reason} -> {:error, :hex_registry_unavailable}
+    end
+  end
+
+  defp find_checksum(releases, version) do
+    case Enum.find(releases, &(&1.version == version)) do
+      nil -> :miss
+      %{outer_checksum: checksum} when is_binary(checksum) -> {:ok, checksum}
+      _release -> :no_checksum
     end
   end
 
@@ -123,7 +166,7 @@ defmodule Portal.HexDeps do
     request_opts =
       Keyword.merge(
         [compressed: false, decode_body: false, receive_timeout: 30_000],
-        Keyword.take(opts, [:receive_timeout, :retry])
+        Keyword.take(opts, [:receive_timeout, :retry, :connect_options])
       )
 
     case client.get("#{@repo_url}/packages/#{name}", request_opts) do
@@ -169,6 +212,7 @@ defmodule Portal.HexDeps do
     %{
       version: release.version,
       retired?: Map.has_key?(release, :retired),
+      outer_checksum: checksum_hex(Map.get(release, :outer_checksum)),
       deps:
         release
         |> Map.get(:dependencies, [])
@@ -182,6 +226,10 @@ defmodule Portal.HexDeps do
         end)
     }
   end
+
+  # 32 bytes in the protobuf; anything else is no checksum Hex could match.
+  defp checksum_hex(<<_::256>> = bytes), do: Base.encode16(bytes, case: :lower)
+  defp checksum_hex(_other), do: nil
 
   defp public_key, do: :hex_core.default_config()[:repo_public_key]
 

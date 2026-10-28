@@ -7,8 +7,9 @@ defmodule NccAgent.HexCache do
   registry cache or `hex.config` (`NccWorker.HexCache`), and reports what it
   had to download. After a run the portal completed as `done`, `promote/3`
   moves those downloads in, each only once its own bytes hash to the
-  checksum Hex.pm publishes for the release (`Compatibility.HexCache`), as
-  the local host does (`Portal.HexCache`).
+  checksum the signed Hex registry lists for the release
+  (`NccAgent.HexRegistry`, `Compatibility.HexCache`), as the local host does
+  (`Portal.HexCache`).
 
   `prepare/1` still removes `hex.config` and `cache.ets` before every run.
   Builds from before the read-only mount wrote the cache, and could have
@@ -22,7 +23,6 @@ defmodule NccAgent.HexCache do
   alias NccAgent.Config
 
   @scrubbed ~w(hex.config cache.ets)
-  @api_url "https://hex.pm/api"
 
   @doc "Makes the cache dir a real directory and removes what a build must not hand the next."
   @spec prepare(Config.t()) :: :ok
@@ -55,10 +55,10 @@ defmodule NccAgent.HexCache do
   @doc """
   Promotes the Hex tarballs the run in `work_dir` downloaded, as its
   `result.json` (in `out_dir`) lists them, into the slot's cache, and
-  refreshes the cached tarballs it used. Best effort: a tarball not promoted
-  is only fetched again by a later build. `config :ncc_agent,
-  NccAgent.HexCache, release_checksum: fun` replaces the Hex.pm lookup in
-  tests.
+  refreshes the cached tarballs it used and its result's lock names. Best
+  effort: a tarball not promoted is only fetched again by a later build.
+  `config :ncc_agent, NccAgent.HexCache, release_checksum: fun` replaces the
+  registry lookup in tests.
   """
   @spec promote(Config.t(), Path.t(), Path.t()) :: :ok
   # `out_dir` and `work_dir` are the run's own scratch binds; result.json was
@@ -66,12 +66,17 @@ defmodule NccAgent.HexCache do
   # sobelow_skip ["Traversal.FileModule"]
   def promote(config, work_dir, out_dir) do
     with {:ok, json} <- File.read(Path.join(out_dir, "result.json")),
-         {:ok, %{"hex_cache" => %{} = report}} <- Jason.decode(json) do
+         {:ok, %{"hex_cache" => %{} = report} = result} <- Jason.decode(json) do
       root = Config.path(config, :hex_cache)
       source = Compatibility.HexCache.packages_dir(Path.join(work_dir, "hex-home"))
+      locked = Compatibility.HexCache.locked_pairs(result)
 
-      counts = Compatibility.HexCache.promote(report["misses"], source, root, lookup())
-      _ = Compatibility.HexCache.touch(report["hits"], root)
+      counts =
+        Compatibility.HexCache.promote(report["misses"], source, root, lookup(),
+          trusted: work_dir
+        )
+
+      _ = Compatibility.HexCache.touch(report["hits"], root, locked)
 
       if counts.promoted + counts.refused > 0,
         do:
@@ -89,28 +94,6 @@ defmodule NccAgent.HexCache do
   defp lookup do
     :ncc_agent
     |> Application.get_env(__MODULE__, [])
-    |> Keyword.get(:release_checksum, &release_checksum/2)
-  end
-
-  # Each part is one path segment, so nothing in it may add another. Fails
-  # fast: the slot stays busy until promotion ends.
-  defp release_checksum(name, version) do
-    url =
-      "#{@api_url}/packages/#{URI.encode(name, &URI.char_unreserved?/1)}" <>
-        "/releases/#{URI.encode(version, &URI.char_unreserved?/1)}"
-
-    case Req.get(url, retry: false, receive_timeout: 5_000, connect_options: [timeout: 5_000]) do
-      {:ok, %{status: 200, body: %{"checksum" => checksum}}} when is_binary(checksum) ->
-        {:ok, checksum}
-
-      {:ok, %{status: 404}} ->
-        {:error, :unknown_release}
-
-      {:ok, %{status: status}} ->
-        {:error, {:status, status}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    |> Keyword.get(:release_checksum, &NccAgent.HexRegistry.outer_checksum/2)
   end
 end

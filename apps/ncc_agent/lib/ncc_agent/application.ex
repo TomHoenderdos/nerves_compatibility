@@ -13,6 +13,9 @@ defmodule NccAgent.Application do
 
   @impl true
   def start(_type, _args) do
+    # Owned by this process, which lives as long as the application.
+    NccAgent.HexRegistry.create_table()
+
     children =
       if Application.get_env(:ncc_agent, :load_config, true) do
         case NccAgent.Config.load() do

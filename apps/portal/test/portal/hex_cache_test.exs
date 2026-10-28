@@ -39,6 +39,26 @@ defmodule Portal.HexCacheTest do
              @tarball
   end
 
+  # The container owns work/: a symlinked hex-home would have the host read
+  # (and promote) whatever it points at.
+  test "a symlinked hex-home in the run's work dir is refused", %{tmp_dir: tmp} do
+    elsewhere = Path.join([tmp, "elsewhere", "packages", "hexpm"])
+    File.mkdir_p!(elsewhere)
+    File.write!(Path.join(elsewhere, "jason-1.4.4.tar"), @tarball)
+
+    work = Path.join([tmp, "scratch", "run-1", "work"])
+    File.mkdir_p!(work)
+    File.ln_s!(Path.join(tmp, "elsewhere"), Path.join(work, "hex-home"))
+
+    result = %{"hex_cache" => %{"misses" => [%{"name" => "jason", "version" => "1.4.4"}]}}
+
+    capture_log(fn ->
+      assert %{promoted: 0, refused: 1} = Portal.HexCache.promote(result, "run-1", opts(tmp))
+    end)
+
+    refute File.exists?(Path.join([tmp, "hex-cache", "packages", "hexpm", "jason-1.4.4.tar"]))
+  end
+
   test "a run without a report, or with a malformed one, promotes nothing", %{tmp_dir: tmp} do
     zero = %{promoted: 0, refused: 0, skipped: 0, ignored: 0, touched: 0}
 

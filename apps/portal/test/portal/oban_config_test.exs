@@ -23,10 +23,12 @@ defmodule Portal.ObanConfigTest do
 
     # The job also spends, outside the container's wall clock, the L2
     # prefetch before it, and the L2 uploads and the Hex cache promotion
-    # after it, each under a budget of its own. Rescue must wait out all four.
+    # after it, each under a budget of its own. Rescue must wait out all four,
+    # the promotion's bounded overrun past its budget included.
     assert opts[:rescue_after] >
              Builder.total_timeout_ms() + Prefetch.budget_ms() +
-               Promotion.l2_upload_budget_ms() + Compatibility.HexCache.budget_ms()
+               Promotion.l2_upload_budget_ms() + Compatibility.HexCache.budget_ms() +
+               Compatibility.HexCache.max_overrun_ms()
   end
 
   test "the sweeper is scheduled, and on a queue the build host actually runs" do
