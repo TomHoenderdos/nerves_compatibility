@@ -34,6 +34,17 @@ defmodule Portal.Workers.BuildIntegrationTest do
   setup do
     assert docker_running?(), "docker daemon is not running"
     assert image_built?(), "#{Builder.docker_image()} not built — run: make build"
+
+    # Read the Hex cache label off the real image, not the unit tests' stand-in.
+    previous = Application.get_env(:portal, Portal.Builder, [])
+
+    Application.put_env(
+      :portal,
+      Portal.Builder,
+      Keyword.delete(previous, :hex_cache_image_label)
+    )
+
+    on_exit(fn -> Application.put_env(:portal, Portal.Builder, previous) end)
     :ok
   end
 
@@ -176,11 +187,62 @@ defmodule Portal.Workers.BuildIntegrationTest do
       image_digest: image_digest
     }
 
+    # The image carries `ncc.hex-cache=seeded`, read through docker here.
+    assert Builder.hex_cache_mode(mount_job) == :readonly
     mount_args = Builder.build_docker_args(mount_job, "/work", "/out", "/files")
     assert "type=bind,source=#{tmp_hex},target=/hex-cache,readonly" in mount_args
 
     assert :ok = Ingest.perform(%Oban.Job{args: ingest_job.args, attempt: 1, max_attempts: 5})
     Repo.delete!(ingest_job)
+  end
+
+  # A tarball in the shared cache that does not match the registry, as a
+  # build from before the read-only mount could have left: Hex rejects it,
+  # removes only the seeded link, and fetches the real one into the run's
+  # own HEX_HOME. The shared file is never written by the container.
+  test "a planted tarball in the shared Hex cache is refetched into the run, not rewritten" do
+    tmp_hex = unique_tmp_dir("ncc-hex-planted-it")
+    planted = Path.join([tmp_hex, "packages", "hexpm", "jason-1.4.0.tar"])
+    File.mkdir_p!(Path.dirname(planted))
+    File.write!(planted, "not the jason 1.4.0 Hex serves")
+    File.touch!(planted, 1_000_000_000)
+
+    previous = Application.get_env(:portal, Portal.Builder, [])
+    Application.put_env(:portal, Portal.Builder, Keyword.put(previous, :hex_cache, tmp_hex))
+    run_id = "it-hex-planted-#{unique_suffix()}"
+
+    on_exit(fn ->
+      Application.put_env(:portal, Portal.Builder, previous)
+      Builder.cleanup(run_id)
+      File.rm_rf(tmp_hex)
+    end)
+
+    assert {:ok, %{exit_code: 0, result: result, log: log}} =
+             Builder.build(%{
+               run_id: run_id,
+               package: "jason",
+               version: "1.4.0",
+               image_digest: Builder.image_digest(Builder.docker_image())
+             })
+
+    assert Enum.all?(result["systems"], fn {_name, s} -> s["status"] == "pass" end), log
+
+    assert %{"misses" => misses} = result["hex_cache"]
+    assert Enum.any?(misses, &(&1["name"] == "jason" and &1["version"] == "1.4.0"))
+
+    # The shared file is exactly as planted.
+    assert File.read!(planted) == "not the jason 1.4.0 Hex serves"
+    assert File.stat!(planted, time: :posix).mtime == 1_000_000_000
+
+    # The run's copy is the real tarball, a regular file in its own home.
+    fetched =
+      Path.join([Builder.scratch_root(), run_id, "work", "hex-home", "packages", "hexpm"])
+      |> Path.join("jason-1.4.0.tar")
+
+    assert {:ok, %File.Stat{type: :regular}} = File.lstat(fetched)
+
+    assert :crypto.hash(:sha256, File.read!(fetched)) |> Base.encode16(case: :lower) ==
+             result["package_checksum"]
   end
 
   # Build sandbox isolation spec, section 2: the container's /build-cache is

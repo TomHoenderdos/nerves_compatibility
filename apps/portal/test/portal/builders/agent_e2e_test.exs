@@ -71,7 +71,9 @@ defmodule Portal.Builders.AgentE2ETest do
         {"FAKE_DOCKER_RESULT", result},
         # The fake names the file by the sha256 of its content: this is @sha.
         {"FAKE_DOCKER_FILE_CONTENT", "precompiled-beam"},
-        {"FAKE_DOCKER_IMAGE_PRESENT", "1"}
+        {"FAKE_DOCKER_IMAGE_PRESENT", "1"},
+        # A current worker image, so the run takes the read-only Hex mount.
+        {"FAKE_DOCKER_HEX_LABEL", "seeded"}
       ])
 
     lease =
