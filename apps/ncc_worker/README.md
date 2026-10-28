@@ -173,9 +173,18 @@ before ingest, the host (`Portal.HexCache`, and `NccAgent.HexCache` on a remote 
 validated name and version and ignores the reported checksum and path. Each hit's times are refreshed, since a
 read-only mount no longer moves a file's atime and the hex sweep evicts by last use.
 
-`NCC_HEX_CACHE_RW=1` on the host is the one-release rollback: the cache is mounted read-write, the worker is told so
-(`-e NCC_HEX_CACHE_RW=1`) and keeps `/hex-cache` as its `HEX_HOME`, and no `hex_cache` is reported. Nothing needs
-wiping afterwards: the worker never seeds the registry cache or `hex.config`, and Hex checks every seeded tarball.
+The read-only mount is only for an image that says its worker does this: both Dockerfiles set
+`LABEL ncc.hex-cache=seeded`, and the host (`Portal.Builder`, and the remote agent) reads that label off the exact
+image it is about to run. An image without it, such as a lease created before the deploy that introduced it, keeps
+the old read-write mount, without `NCC_HEX_CACHE_RW` (`Compatibility.Builder.Argv.hex_cache_mode/2`), because its
+worker writes `/hex-cache/packages` itself and would fail every `deps.get` on a read-only mount.
+
+`NCC_HEX_CACHE_RW=1` on the host (the portal's environment, or a remote agent's) is the one-release rollback: the cache
+is mounted read-write, the worker is told so (`-e NCC_HEX_CACHE_RW=1`) and keeps `/hex-cache` as its `HEX_HOME`, and no
+`hex_cache` is reported. Nothing needs wiping afterwards: the worker never seeds the registry cache or `hex.config`, and
+Hex checks every seeded tarball. Rolling back only the worker image, to one whose worker writes `/hex-cache` itself,
+needs `NCC_HEX_CACHE_RW=1` set too: the missing label already keeps such an image on the read-write mount, but the
+variable makes that hold whatever the image's labels say.
 
 ## Warm mode
 

@@ -11,7 +11,7 @@ defmodule NccAgent.JobTest do
   @env ~w(FAKE_DOCKER_EXIT FAKE_DOCKER_RESULT FAKE_DOCKER_ARGV_LOG FAKE_DOCKER_FILE_CONTENT
           FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_SLEEP FAKE_DOCKER_PLANT FAKE_DOCKER_RESULT_LINK
           FAKE_DOCKER_OUTPUT_BYTES FAKE_DOCKER_CONTAINER_PRESENT FAKE_DOCKER_DOWN
-          FAKE_DOCKER_HEX_TARBALL)
+          FAKE_DOCKER_HEX_TARBALL FAKE_DOCKER_HEX_LABEL)
   @lease "5b0c8a8e-1111-4c2d-9e3f-0a1b2c3d4e5f"
   @digest "sha256:" <> String.duplicate("a", 64)
   @content "the archived artifact"
@@ -38,6 +38,8 @@ defmodule NccAgent.JobTest do
     argv_log = Path.join(dir, "argv.log")
     System.put_env("FAKE_DOCKER_ARGV_LOG", argv_log)
     System.put_env("FAKE_DOCKER_FILE_CONTENT", @content)
+    # A current worker image; the tests about older ones unset it.
+    System.put_env("FAKE_DOCKER_HEX_LABEL", "seeded")
     System.put_env("FAKE_DOCKER_RESULT", ~s({"status":"pass","nerves_cache":{"misses":[]}}))
 
     # Retries back off by nothing here.
@@ -295,6 +297,54 @@ defmodule NccAgent.JobTest do
     refute File.exists?(Path.join(hex, "hex.config"))
     refute File.exists?(Path.join(hex, "cache.ets"))
     assert File.exists?(Path.join(hex, "packages/hexpm/jason-1.4.4.tar"))
+  end
+
+  describe "Hex cache mount" do
+    defp run_argv(req, config, argv_log) do
+      assert {:ok, _} = Job.run(req, claim(), config)
+      argv_log |> File.read!() |> String.split("\n", trim: true)
+    end
+
+    test "a seeded image gets the read-only mount", %{
+      req: req,
+      config: config,
+      argv_log: argv_log
+    } do
+      hex = Config.path(config, :hex_cache)
+      argv = run_argv(req, config, argv_log)
+
+      assert "type=bind,source=#{hex},target=/hex-cache,readonly" in argv
+      refute "NCC_HEX_CACHE_RW=1" in argv
+    end
+
+    # A lease keeps the image it was created with, so an updated agent can
+    # be handed one from before the seeded HEX_HOME. Its worker writes
+    # /hex-cache itself and would fail every deps.get on a read-only mount.
+    test "an image without the label keeps the read-write mount and no env", %{
+      req: req,
+      config: config,
+      argv_log: argv_log
+    } do
+      System.delete_env("FAKE_DOCKER_HEX_LABEL")
+      hex = Config.path(config, :hex_cache)
+      argv = run_argv(req, config, argv_log)
+
+      assert "type=bind,source=#{hex},target=/hex-cache" in argv
+      refute "type=bind,source=#{hex},target=/hex-cache,readonly" in argv
+      refute "NCC_HEX_CACHE_RW=1" in argv
+    end
+
+    test "NCC_HEX_CACHE_RW=1 is the rollback here too", %{
+      req: req,
+      config: config,
+      argv_log: argv_log
+    } do
+      hex = Config.path(config, :hex_cache)
+      argv = run_argv(req, Map.put(config, :hex_cache_rw, true), argv_log)
+
+      assert "type=bind,source=#{hex},target=/hex-cache" in argv
+      assert "NCC_HEX_CACHE_RW=1" in argv
+    end
   end
 
   # The cache is read-only in the container; after a done run the agent

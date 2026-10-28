@@ -30,6 +30,17 @@ defmodule NccAgent.ConfigTest do
     assert String.ends_with?(config.egress_script, "egress.sh")
   end
 
+  test "NCC_HEX_CACHE_RW=1, and only 1, turns the Hex cache rollback on" do
+    System.put_env("NCC_PORTAL_URL", "https://portal.test:8443")
+    assert {:ok, %{hex_cache_rw: false}} = Config.load()
+
+    System.put_env("NCC_HEX_CACHE_RW", "true")
+    assert {:ok, %{hex_cache_rw: false}} = Config.load()
+
+    System.put_env("NCC_HEX_CACHE_RW", "1")
+    assert {:ok, %{hex_cache_rw: true}} = Config.load()
+  end
+
   test "slots must be 1..16 and the url https" do
     System.put_env("NCC_PORTAL_URL", "http://portal.test")
     System.put_env("NCC_SLOTS", "40")

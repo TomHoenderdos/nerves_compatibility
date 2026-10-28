@@ -32,6 +32,9 @@ ENV HOME=/home/nerves \
 RUN mix local.hex --force && \
     mix local.rebar --force
 
+# See the main Dockerfile: this image's worker seeds a per-run HEX_HOME too.
+LABEL ncc.hex-cache=seeded
+
 # Every directory the portal bind-mounts, created here because the container
 # runs --read-only (see the main Dockerfile).
 RUN mkdir -p /work /out /files /tmp /hex-cache /nerves-cache /build-cache && \

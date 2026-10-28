@@ -18,9 +18,11 @@ defmodule Compatibility.Builder.Argv do
   one-release rollback. The Hex cache is mounted at `/hex-cache` as
   `:hex_cache_mode` says: `:readonly` (the default) for every build, whose
   worker seeds a per-run `HEX_HOME` from it (`NccWorker.HexCache`) and whose
-  downloads only the host promotes (`Compatibility.HexCache`), and `:rw`
+  downloads only the host promotes (`Compatibility.HexCache`), `:rw`
   (read-write, plus `NCC_HEX_CACHE_RW=1` so the worker uses it as its
-  `HEX_HOME` again) for the one-release rollback.
+  `HEX_HOME` again) for the one-release rollback, and `:legacy` (read-write,
+  no env) for an image without the `ncc.hex-cache=seeded` label, whose
+  worker writes `/hex-cache` itself. `hex_cache_mode/2` picks one.
   """
 
   @type paths :: %{
@@ -35,7 +37,9 @@ defmodule Compatibility.Builder.Argv do
         }
 
   @type nerves_cache_mode :: :readonly | :warm | :rw
-  @type hex_cache_mode :: :readonly | :rw
+  @type hex_cache_mode :: :readonly | :rw | :legacy
+
+  @hex_cache_label "ncc.hex-cache"
 
   @type spec :: %{
           required(:container_name) => String.t(),
@@ -170,10 +174,33 @@ defmodule Compatibility.Builder.Argv do
   defp hex_cache_mount(dir, :readonly),
     do: ["--mount", "type=bind,source=#{dir},target=/hex-cache,readonly"]
 
-  defp hex_cache_mount(dir, :rw), do: bind(dir, "/hex-cache")
+  defp hex_cache_mount(dir, mode) when mode in [:rw, :legacy], do: bind(dir, "/hex-cache")
 
+  # Only the rollback tells the worker. An unlabelled image predates the
+  # variable and ignores it, so `:legacy` sends nothing.
   defp hex_cache_env(:rw), do: ["-e", "NCC_HEX_CACHE_RW=1"]
-  defp hex_cache_env(:readonly), do: []
+  defp hex_cache_env(mode) when mode in [:readonly, :legacy], do: []
+
+  @doc """
+  The image label that says the image's worker seeds a per-run `HEX_HOME`
+  from a read-only `/hex-cache` (`NccWorker.HexCache`). Both worker
+  Dockerfiles set it to `seeded`.
+  """
+  @spec hex_cache_label() :: String.t()
+  def hex_cache_label, do: @hex_cache_label
+
+  @doc """
+  The Hex cache mode for an image whose `hex_cache_label/0` reads `label`
+  (`nil` when absent or unknown), with the `NCC_HEX_CACHE_RW=1` rollback
+  `rw?` taking precedence. Only a `seeded` image gets the read-only mount:
+  an older one would write into it and fail its `deps.get`, which the run
+  would publish as the package failing to build. A lease keeps the image it
+  was created with, so a host can be asked to run one from before the label.
+  """
+  @spec hex_cache_mode(String.t() | nil, boolean()) :: hex_cache_mode()
+  def hex_cache_mode(_label, true), do: :rw
+  def hex_cache_mode("seeded", false), do: :readonly
+  def hex_cache_mode(_label, false), do: :legacy
 
   defp build_cache_mount(nil), do: []
 

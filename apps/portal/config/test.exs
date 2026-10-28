@@ -23,7 +23,10 @@ config :portal, Portal.Builder,
   nerves_cache: Path.join(System.tmp_dir!(), "ncc-test-nerves-cache"),
   hex_cache: Path.join(System.tmp_dir!(), "ncc-test-hex-cache"),
   # No rootless daemon here, nor in the integration test.
-  egress_check: false
+  egress_check: false,
+  # What `Portal.Builder.hex_cache_mode/1` would read off a current worker
+  # image, without asking docker; the integration test asks for real.
+  hex_cache_image_label: "seeded"
 
 config :portal, :artifact_store, path: Path.join(System.tmp_dir!(), "ncc-test-artifacts")
 

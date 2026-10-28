@@ -796,10 +796,75 @@ defmodule Portal.BuilderTest do
 
       assert "type=bind,source=/srv/hex,target=/hex-cache" in hex_mounts(args())
       assert "NCC_HEX_CACHE_RW=1" in args()
-      assert Builder.hex_cache_mode() == :rw
+      assert Builder.hex_cache_mode(@job) == :rw
 
       put_builder([hex_cache_rw: nil], previous)
-      assert Builder.hex_cache_mode() == :readonly
+      assert Builder.hex_cache_mode(@job) == :readonly
+    end
+
+    # A lease or a queued job can name an image from before the seeded
+    # HEX_HOME: its worker writes /hex-cache/packages itself, so it keeps
+    # the read-write mount, and the rollback env would mean nothing to it.
+    test "an image without the seeded label keeps the read-write mount", %{previous: previous} do
+      parent = self()
+
+      put_builder(
+        [
+          hex_cache: "/srv/hex",
+          hex_cache_rw: nil,
+          hex_cache_image_label: fn ref ->
+            send(parent, {:inspected, ref})
+            nil
+          end
+        ],
+        previous
+      )
+
+      assert Builder.hex_cache_mode(@job) == :legacy
+      assert_received {:inspected, "ncc-worker"}
+
+      assert "type=bind,source=/srv/hex,target=/hex-cache" in hex_mounts(args())
+      refute "NCC_HEX_CACHE_RW=1" in args()
+    end
+
+    test "the label of the exact image run is read, once per digest-pinned image", %{
+      previous: previous
+    } do
+      parent = self()
+      digest = "sha256:" <> String.duplicate("c", 64)
+
+      put_builder(
+        [
+          hex_cache_rw: nil,
+          hex_cache_image_label: fn ref ->
+            send(parent, {:inspected, ref})
+            "seeded"
+          end
+        ],
+        previous
+      )
+
+      job = %{@job | image_name: "registry.example/ncc-worker", image_digest: digest}
+
+      assert Builder.hex_cache_mode(job) == :readonly
+      assert Builder.hex_cache_mode(job) == :readonly
+      assert_received {:inspected, "registry.example/ncc-worker@" <> ^digest}
+      refute_received {:inspected, _}
+
+      # A tag can move, so a local name is asked about every time.
+      Builder.hex_cache_mode(@job)
+      Builder.hex_cache_mode(@job)
+      assert_received {:inspected, "ncc-worker"}
+      assert_received {:inspected, "ncc-worker"}
+    end
+
+    test "the rollback does not ask docker at all", %{previous: previous} do
+      put_builder(
+        [hex_cache_rw: true, hex_cache_image_label: fn _ -> flunk("inspected") end],
+        previous
+      )
+
+      assert Builder.hex_cache_mode(@job) == :rw
     end
   end
 

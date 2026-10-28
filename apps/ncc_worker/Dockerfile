@@ -69,6 +69,11 @@ RUN set -eux; \
     cd /; \
     rm -rf /tmp/argus_warm /tmp/argus-warm-*
 
+# The host mounts /hex-cache read-only only for an image carrying this label:
+# its worker seeds a per-run HEX_HOME from the mount (NccWorker.HexCache),
+# where an older one writes the mount itself (Compatibility.Builder.Argv).
+LABEL ncc.hex-cache=seeded
+
 # Create every directory the portal bind-mounts. The container runs
 # --read-only; runc creates mount points before the root goes read-only, so
 # a missing one would probably still work, but pre-creating costs nothing

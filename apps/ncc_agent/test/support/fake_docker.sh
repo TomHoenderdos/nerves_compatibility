@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # A stand-in for `docker` in the agent's tests.
 #
-#   image inspect  exit 0 when FAKE_DOCKER_IMAGE_PRESENT=1, else 1
+#   image inspect  exit 0 when FAKE_DOCKER_IMAGE_PRESENT=1, else 1; with
+#                  --format, print FAKE_DOCKER_HEX_LABEL (default "<no value>",
+#                  docker's answer for a missing label) and exit 0
 #   container inspect  print "running" and exit 0 when
 #                  FAKE_DOCKER_CONTAINER_PRESENT=1; print the daemon's
 #                  connection error and exit 1 when FAKE_DOCKER_DOWN=1;
@@ -28,6 +30,10 @@ set -euo pipefail
 
 case "${1:-}" in
   image)
+    if [ "${2:-}" = "inspect" ] && [ "${3:-}" = "--format" ]; then
+      printf '%s\n' "${FAKE_DOCKER_HEX_LABEL:-<no value>}"
+      exit 0
+    fi
     if [ "${2:-}" = "inspect" ] && [ "${FAKE_DOCKER_IMAGE_PRESENT:-0}" = "1" ]; then
       exit 0
     fi

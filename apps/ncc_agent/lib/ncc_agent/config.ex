@@ -12,6 +12,9 @@ defmodule NccAgent.Config do
           build_user: String.t(),
           docker_bin: String.t(),
           egress_script: Path.t(),
+          # `NCC_HEX_CACHE_RW=1`: the one-release rollback to a read-write
+          # Hex cache mount (`Compatibility.Builder.Argv`).
+          hex_cache_rw: boolean(),
           # The slot a job runs in, set by `NccAgent.Slot` on the job's copy.
           slot: pos_integer() | nil
         }
@@ -30,6 +33,7 @@ defmodule NccAgent.Config do
       build_user: own_user(),
       docker_bin: "docker",
       egress_script: Path.join(to_string(:code.priv_dir(:ncc_agent)), "egress.sh"),
+      hex_cache_rw: false,
       slot: nil
     }
   end
@@ -48,7 +52,8 @@ defmodule NccAgent.Config do
         data_dir: System.get_env("NCC_DATA_DIR", defaults.data_dir),
         build_user: System.get_env("NCC_BUILD_USER") || defaults.build_user,
         docker_bin: System.get_env("NCC_DOCKER_BIN", defaults.docker_bin),
-        egress_script: System.get_env("NCC_EGRESS_SCRIPT") || defaults.egress_script
+        egress_script: System.get_env("NCC_EGRESS_SCRIPT") || defaults.egress_script,
+        hex_cache_rw: System.get_env("NCC_HEX_CACHE_RW") == "1"
     }
 
     {slots, slot_errors} = parse_slots(System.get_env("NCC_SLOTS", "1"))

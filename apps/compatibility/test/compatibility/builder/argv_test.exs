@@ -157,6 +157,29 @@ defmodule Compatibility.Builder.ArgvTest do
     assert Enum.at(argv, index - 1) == "-e"
   end
 
+  # An image from before the seeded HEX_HOME writes /hex-cache/packages
+  # itself; read-only it would fail every deps.get. It keeps the old mount,
+  # and the rollback env means nothing to it.
+  test "an unseeded image keeps the read-write mount without the rollback env", %{
+    input: input
+  } do
+    argv = Argv.build(Map.put(input, :hex_cache_mode, :legacy))
+
+    assert "type=bind,source=/srv/ncc/hex-cache,target=/hex-cache" in argv
+    refute "type=bind,source=/srv/ncc/hex-cache,target=/hex-cache,readonly" in argv
+    refute "NCC_HEX_CACHE_RW=1" in argv
+  end
+
+  test "hex_cache_mode/2 reads the image label, the rollback first" do
+    assert Argv.hex_cache_label() == "ncc.hex-cache"
+    assert Argv.hex_cache_mode("seeded", false) == :readonly
+    assert Argv.hex_cache_mode("seeded", true) == :rw
+    assert Argv.hex_cache_mode(nil, false) == :legacy
+    assert Argv.hex_cache_mode("", false) == :legacy
+    assert Argv.hex_cache_mode("<no value>", false) == :legacy
+    assert Argv.hex_cache_mode(nil, true) == :rw
+  end
+
   test "an unknown Hex cache mode raises rather than mounting read-write", %{input: input} do
     assert_raise FunctionClauseError, fn ->
       Argv.build(Map.put(input, :hex_cache_mode, :bogus))

@@ -791,7 +791,7 @@ defmodule Portal.Builder do
       memory: config(:memory, nil),
       build_concurrency: config(:build_concurrency, nil),
       nerves_cache_mode: nerves_cache_mode(job),
-      hex_cache_mode: hex_cache_mode(),
+      hex_cache_mode: hex_cache_mode(job),
       paths: %{
         work: work_dir,
         out: output_dir,
@@ -822,18 +822,68 @@ defmodule Portal.Builder do
   end
 
   @doc """
-  How every container mounts the Hex cache (`Compatibility.Builder.Argv`):
-  read-only, its downloads promoted by the host afterwards
-  (`Portal.HexCache.promote/3`), unless `NCC_HEX_CACHE_RW=1`
-  (`:hex_cache_rw`) restores the pre-isolation read-write mount for one
-  release. No marker is needed on the way back as the Nerves cache has: the
-  worker never seeds the registry cache or `hex.config` from the shared
-  dir, and Hex checks every tarball it takes from there against the signed
-  registry, so what rw builds leave behind is never trusted.
+  How the container for `job` mounts the Hex cache
+  (`Compatibility.Builder.Argv.hex_cache_mode/2`): read-only, its downloads
+  promoted by the host afterwards (`Portal.HexCache.promote/3`), when the
+  image it runs carries the `ncc.hex-cache=seeded` label; read-write without
+  telling the worker for an image without it, whose worker writes the cache
+  itself; and read-write with `NCC_HEX_CACHE_RW=1` (`:hex_cache_rw`) for the
+  one-release rollback. No marker is needed on the way back as the Nerves
+  cache has: the worker never seeds the registry cache or `hex.config` from
+  the shared dir, and Hex checks every tarball it takes from there against
+  the signed registry, so what rw builds leave behind is never trusted.
+
+  The label is read from the exact reference `docker run` is given. A
+  digest-pinned one cannot change, so its answer is kept for the node's
+  life; a tag can move, so it is asked about per build, one `docker image
+  inspect` beside a build that takes minutes. `:hex_cache_image_label`
+  (a fixed value, or `fn ref -> value end`) replaces the inspect in tests.
   """
-  @spec hex_cache_mode() :: :readonly | :rw
-  def hex_cache_mode do
-    if config(:hex_cache_rw, false) == true, do: :rw, else: :readonly
+  @spec hex_cache_mode(map()) :: Argv.hex_cache_mode()
+  def hex_cache_mode(job) do
+    if config(:hex_cache_rw, false) == true,
+      do: :rw,
+      else: Argv.hex_cache_mode(hex_cache_label(image_ref(job)), false)
+  end
+
+  defp hex_cache_label(ref) do
+    if String.contains?(ref, "@sha256:") do
+      key = {__MODULE__, :hex_cache_label, ref}
+
+      case :persistent_term.get(key, :unknown) do
+        :unknown ->
+          label = read_hex_cache_label(ref)
+          :persistent_term.put(key, label)
+          label
+
+        label ->
+          label
+      end
+    else
+      read_hex_cache_label(ref)
+    end
+  end
+
+  defp read_hex_cache_label(ref) do
+    case config(:hex_cache_image_label, &inspect_hex_cache_label/1) do
+      fun when is_function(fun, 1) -> fun.(ref)
+      value -> value
+    end
+  end
+
+  # One argv, no shell; `ref` is the configured image and its digest.
+  # sobelow_skip ["CI.System"]
+  defp inspect_hex_cache_label(ref) do
+    format = "{{index .Config.Labels \"#{Argv.hex_cache_label()}\"}}"
+
+    case System.cmd("docker", ["image", "inspect", "--format", format, ref],
+           stderr_to_stdout: true
+         ) do
+      {out, 0} -> String.trim(out)
+      _ -> nil
+    end
+  rescue
+    _ -> nil
   end
 
   # Under the NCC_NERVES_CACHE_RW=1 rollback the container writes the Nerves

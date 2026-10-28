@@ -34,6 +34,20 @@ defmodule NccAgent.Docker do
     do: match?({:ok, _, 0}, cmd(config, ["image", "inspect", image_ref], @inspect_timeout_ms))
 
   @doc """
+  The value of label `key` on `image_ref`, `nil` when the image lacks it or
+  docker cannot say.
+  """
+  @spec image_label(Config.t(), String.t(), String.t()) :: String.t() | nil
+  def image_label(config, image_ref, key) do
+    format = "{{index .Config.Labels \"#{key}\"}}"
+
+    case cmd(config, ["image", "inspect", "--format", format, image_ref], @inspect_timeout_ms) do
+      {:ok, out, 0} -> String.trim(out)
+      _ -> nil
+    end
+  end
+
+  @doc """
   Whether no container named `name` exists any more. `docker run --rm`
   removes it on exit, but a CLI that died or detached (dockerd restart,
   OOM) leaves it running while `run/4` has already returned; one still

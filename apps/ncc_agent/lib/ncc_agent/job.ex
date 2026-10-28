@@ -138,8 +138,8 @@ defmodule NccAgent.Job do
   (a remote builder has none; `Portal.BuildCache.Promotion` is host-side).
   `NccAgent.ArgvParityTest` pins the result to the shared fixture. Pure.
   """
-  @spec argv_spec(Config.t(), map(), dirs()) :: Argv.spec()
-  def argv_spec(config, claim, dirs) do
+  @spec argv_spec(Config.t(), map(), dirs(), Argv.hex_cache_mode()) :: Argv.spec()
+  def argv_spec(config, claim, dirs, hex_cache_mode \\ :readonly) do
     %{
       container_name: Argv.container_name(claim["run_id"]),
       user: config.build_user,
@@ -148,6 +148,7 @@ defmodule NccAgent.Job do
       memory: config.memory,
       build_concurrency: config.build_concurrency,
       nerves_cache_mode: :readonly,
+      hex_cache_mode: hex_cache_mode,
       paths: %{
         work: dirs.work,
         out: dirs.out,
@@ -195,20 +196,31 @@ defmodule NccAgent.Job do
     Fs.chown(config, Map.values(dirs), ["-R"])
     Fs.chown(config, [Config.path(config, :hex_cache)], [])
 
-    spec = argv_spec(config, claim, dirs)
-    argv = Argv.build(spec)
+    image = image_ref(claim["image"])
 
-    case ensure_image(config, spec.image, runner_log) do
+    case ensure_image(config, image, runner_log) do
       :ok ->
+        argv = Argv.build(argv_spec(config, claim, dirs, hex_cache_mode(config, image)))
         Heartbeat.set_phase(hb, "building")
         run_container(claim, config, argv, runner_log)
 
       {:error, reason} ->
-        Logger.error("job #{claim["run_id"]} could not pull #{spec.image}: #{reason}")
+        Logger.error("job #{claim["run_id"]} could not pull #{image}: #{reason}")
         File.write!(runner_log, "[agent] pull failed: #{reason}\n", [:append])
         @runner_failure
     end
   end
+
+  # Read off the image after it is present, since a lease keeps the image it
+  # was created with and that can predate the seeded HEX_HOME: such a worker
+  # writes /hex-cache itself and keeps the read-write mount
+  # (`Compatibility.Builder.Argv.hex_cache_mode/2`), and `prepare/1`'s scrub
+  # still runs for it. One `docker image inspect` per job, beside the one
+  # `ensure_image/3` makes; a build takes minutes.
+  defp hex_cache_mode(%{hex_cache_rw: true}, _image), do: :rw
+
+  defp hex_cache_mode(config, image),
+    do: Argv.hex_cache_mode(Docker.image_label(config, image, Argv.hex_cache_label()), false)
 
   # sobelow_skip ["Traversal.FileModule"]
   defp run_container(claim, config, argv, runner_log) do

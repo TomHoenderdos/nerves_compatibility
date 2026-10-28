@@ -33,6 +33,13 @@ defmodule NccWorker.DockerfileTest do
     assert File.read!(@toolchain_dockerfile) =~ ~r/mkdir -p[^\n]*\s\/nerves-cache(\s|$)/m
   end
 
+  # The host mounts /hex-cache read-only only for an image that says its
+  # worker seeds a per-run HEX_HOME (`Compatibility.Builder.Argv`).
+  test "both images carry the seeded Hex cache label", %{text: text} do
+    assert text =~ ~r/^LABEL ncc\.hex-cache=seeded$/m
+    assert File.read!(@toolchain_dockerfile) =~ ~r/^LABEL ncc\.hex-cache=seeded$/m
+  end
+
   test "makes the home and app directories readable, not writable, by any uid", %{text: text} do
     assert text =~ "chmod -R a+rX /home/nerves /app"
     refute text =~ "a+rwX"
