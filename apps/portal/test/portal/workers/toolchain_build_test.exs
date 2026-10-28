@@ -220,8 +220,9 @@ defmodule Portal.Workers.ToolchainBuildTest do
     Process.put(:stub_runner_log, "docker: daemon went away\n")
     Process.put(:stub_build_response, {:error, {:docker_execution_failed, :closed}})
 
+    previous_builder = Application.get_env(:portal, Portal.Builder)
     Application.put_env(:portal, Portal.Builder, scratch_root: root)
-    on_exit(fn -> Application.delete_env(:portal, Portal.Builder) end)
+    on_exit(fn -> restore_builder_env(previous_builder) end)
 
     capture_log(fn ->
       assert {:error, _} = perform_job(ToolchainBuild, @args, attempt: 2)
@@ -253,4 +254,11 @@ defmodule Portal.Workers.ToolchainBuildTest do
 
     assert [%{status: :pass}] = rows("jason")
   end
+
+  # Puts back the Portal.Builder config the test found, the test.exs defaults
+  # included (the image label stub among them). Deleting it instead left every
+  # later test without those defaults, so a Portal.BuilderTest that ran
+  # afterwards asked a real Docker daemon for the image label.
+  defp restore_builder_env(nil), do: Application.delete_env(:portal, Portal.Builder)
+  defp restore_builder_env(previous), do: Application.put_env(:portal, Portal.Builder, previous)
 end

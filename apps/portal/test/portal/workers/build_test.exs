@@ -261,8 +261,9 @@ defmodule Portal.Workers.BuildTest do
       File.mkdir_p!(scratch)
       on_exit(fn -> File.rm_rf(root) end)
 
+      previous_builder = Application.get_env(:portal, Portal.Builder)
       Application.put_env(:portal, Portal.Builder, scratch_root: scratch, build_cache: cache)
-      on_exit(fn -> Application.delete_env(:portal, Portal.Builder) end)
+      on_exit(fn -> restore_builder_env(previous_builder) end)
       on_exit(fn -> Application.delete_env(:portal, Portal.BuildCache.Promotion) end)
       Process.put(:stub_scratch_root, scratch)
 
@@ -363,8 +364,9 @@ defmodule Portal.Workers.BuildTest do
       File.mkdir_p!(Path.join([hex, "packages", "hexpm"]))
       on_exit(fn -> File.rm_rf(root) end)
 
+      previous_builder = Application.get_env(:portal, Portal.Builder)
       Application.put_env(:portal, Portal.Builder, scratch_root: scratch, hex_cache: hex)
-      on_exit(fn -> Application.delete_env(:portal, Portal.Builder) end)
+      on_exit(fn -> restore_builder_env(previous_builder) end)
       on_exit(fn -> Application.delete_env(:portal, Portal.HexCache) end)
       Process.put(:stub_scratch_root, scratch)
 
@@ -651,8 +653,9 @@ defmodule Portal.Workers.BuildTest do
       File.mkdir_p!(root)
       on_exit(fn -> File.rm_rf(root) end)
 
+      previous_builder = Application.get_env(:portal, Portal.Builder)
       Application.put_env(:portal, Portal.Builder, scratch_root: root)
-      on_exit(fn -> Application.delete_env(:portal, Portal.Builder) end)
+      on_exit(fn -> restore_builder_env(previous_builder) end)
       Process.put(:stub_scratch_root, root)
 
       set_response({:error, :docker_unavailable})
@@ -686,8 +689,9 @@ defmodule Portal.Workers.BuildTest do
       File.mkdir_p!(root)
       on_exit(fn -> File.rm_rf(root) end)
 
+      previous_builder = Application.get_env(:portal, Portal.Builder)
       Application.put_env(:portal, Portal.Builder, scratch_root: root)
-      on_exit(fn -> Application.delete_env(:portal, Portal.Builder) end)
+      on_exit(fn -> restore_builder_env(previous_builder) end)
       Process.put(:stub_scratch_root, root)
 
       set_response({:error, {:insufficient_disk, 1_000_000, 20_000_000_000}})
@@ -726,8 +730,9 @@ defmodule Portal.Workers.BuildTest do
       File.mkdir_p!(root)
       on_exit(fn -> File.rm_rf(root) end)
 
+      previous_builder = Application.get_env(:portal, Portal.Builder)
       Application.put_env(:portal, Portal.Builder, scratch_root: root)
-      on_exit(fn -> Application.delete_env(:portal, Portal.Builder) end)
+      on_exit(fn -> restore_builder_env(previous_builder) end)
       Process.put(:stub_scratch_root, root)
 
       set_response({:error, :scratch_noexec})
@@ -769,8 +774,9 @@ defmodule Portal.Workers.BuildTest do
       root = Path.join(System.tmp_dir!(), "build-scratch-#{System.unique_integer([:positive])}")
       File.mkdir_p!(root)
       on_exit(fn -> File.rm_rf(root) end)
+      previous_builder = Application.get_env(:portal, Portal.Builder)
       Application.put_env(:portal, Portal.Builder, scratch_root: root)
-      on_exit(fn -> Application.delete_env(:portal, Portal.Builder) end)
+      on_exit(fn -> restore_builder_env(previous_builder) end)
       Process.put(:stub_scratch_root, root)
 
       set_response({:error, :egress_filter_missing})
@@ -1413,4 +1419,11 @@ defmodule Portal.Workers.BuildTest do
       refute_receive {:admin_changed, :sweeps}
     end
   end
+
+  # Puts back the Portal.Builder config the test found, the test.exs defaults
+  # included (the image label stub among them). Deleting it instead left every
+  # later test without those defaults, so a Portal.BuilderTest that ran
+  # afterwards asked a real Docker daemon for the image label.
+  defp restore_builder_env(nil), do: Application.delete_env(:portal, Portal.Builder)
+  defp restore_builder_env(previous), do: Application.put_env(:portal, Portal.Builder, previous)
 end
