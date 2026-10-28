@@ -6,8 +6,10 @@ defmodule Portal.BuildCache.L2.Stats do
   Nothing here is durable and nothing here may break a build: every public
   function tolerates the table being absent (during a restart of this process)
   and answers with a neutral default. Rows are `{:counter, name}` (integer),
-  `{:last, :upload | :download}` (unix ms), `{:claim, key}` (the holder pid)
-  and `{:bad, key}` (unix ms until which the object is not fetched again).
+  `{:last, :upload | :download}` (unix ms), `{:last, :evict}` (monotonic ms
+  of the last eviction start, `claim_evict/2`), `{:claim, key}` (the holder
+  pid) and `{:bad, key}` (unix ms until which the object is not fetched
+  again).
   """
   use GenServer
 
@@ -19,9 +21,10 @@ defmodule Portal.BuildCache.L2.Stats do
     download_failed: :download_failures,
     refused: :refused,
     discarded: :discarded,
-    list_failed: :list_failures
+    list_failed: :list_failures,
+    evicted: :evictions
   }
-  @counters Map.values(@events) ++ [:bytes_up, :bytes_down]
+  @counters Map.values(@events) ++ [:bytes_up, :bytes_down, :evicted_bytes]
 
   @type event ::
           :upload_ok
@@ -31,6 +34,7 @@ defmodule Portal.BuildCache.L2.Stats do
           | :refused
           | :discarded
           | :list_failed
+          | :evicted
 
   def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
 
@@ -55,6 +59,9 @@ defmodule Portal.BuildCache.L2.Stats do
           bump(:bytes_down, bytes)
           :ets.insert(@table, {{:last, :download}, now})
 
+        :evicted ->
+          bump(:evicted_bytes, bytes)
+
         _ ->
           :ok
       end
@@ -68,6 +75,24 @@ defmodule Portal.BuildCache.L2.Stats do
     safe(empty_snapshot(), fn ->
       counters = Map.new(@counters, &{&1, counter(&1)})
       Map.merge(counters, %{last_upload: last(:upload), last_download: last(:download)})
+    end)
+  end
+
+  @doc """
+  Takes this node's eviction slot at `now_ms` (monotonic): true when no
+  eviction started in the `interval_ms` before it, and the slot is then
+  dated `now_ms`. Atomic, so of two promotions asking at once only one gets
+  it. False when the table is absent.
+  """
+  @spec claim_evict(integer(), non_neg_integer()) :: boolean()
+  def claim_evict(now_ms, interval_ms) do
+    safe(false, fn ->
+      key = {:last, :evict}
+
+      :ets.insert_new(@table, {key, now_ms}) or
+        :ets.select_replace(@table, [
+          {{key, :"$1"}, [{:"=<", :"$1", now_ms - interval_ms}], [{:const, {key, now_ms}}]}
+        ]) == 1
     end)
   end
 

@@ -29,6 +29,23 @@ defmodule Portal.BuildCache.L2.StatsTest do
     assert %DateTime{} = s.last_download
   end
 
+  test "counts evicted objects and their bytes" do
+    assert %{evictions: 0, evicted_bytes: 0} = Stats.snapshot()
+    Stats.record(:evicted, 300)
+    Stats.record(:evicted, 200)
+    assert %{evictions: 2, evicted_bytes: 500} = Stats.snapshot()
+  end
+
+  test "claim_evict lets one run through per interval" do
+    assert Stats.claim_evict(1_000, 100)
+    refute Stats.claim_evict(1_050, 100)
+    refute Stats.claim_evict(1_099, 100)
+    assert Stats.claim_evict(1_100, 100)
+    refute Stats.claim_evict(1_150, 100)
+    Stats.reset()
+    assert Stats.claim_evict(0, 100)
+  end
+
   test "a claim is exclusive until released, and a dead claimant does not hold it" do
     assert Stats.claim("k")
     refute Stats.claim("k")
@@ -60,6 +77,7 @@ defmodule Portal.BuildCache.L2.StatsTest do
       assert :ok = Stats.mark_bad("k")
       assert :ok = Stats.release("k")
       assert :ok = Stats.reset()
+      refute Stats.claim_evict(0, 100)
       assert Stats.snapshot().uploads == 0
     after
       {:ok, _} = Supervisor.restart_child(Portal.Supervisor, Stats)
