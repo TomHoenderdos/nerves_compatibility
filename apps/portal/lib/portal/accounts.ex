@@ -37,7 +37,8 @@ defmodule Portal.Accounts do
   page refuses a demoted admin, and a signed-out browser, whose cookie no
   longer holds the CSRF token the page was rendered with, is told to reload.
   Called wherever a user's access shrinks: sign-out, admin revoked, password
-  reset, passkey removed.
+  reset, passkey or authenticator app removed, recovery codes replaced,
+  provider unlinked.
 
   Sessions signed in before live socket ids existed connect under no id, so
   this does not reach them; they still meet every gate on their next mount.
@@ -112,6 +113,38 @@ defmodule Portal.Accounts do
           {:ok, Portal.Accounts.User.t()} | {:error, term()}
   def revoke_sessions(%Portal.Accounts.User{} = user),
     do: update_profile(user, %{sessions_valid_after: DateTime.utc_now()})
+
+  @doc """
+  Runs `change` and `revoke_sessions/1` in one transaction, then disconnects
+  the user's live sockets (`disconnect_live_sockets/1`).
+
+  For taking a second factor or a recovery code set away: whatever that
+  credential could have opened ends with it, and since a cookie does not
+  record which credential opened it, that is every session on the account.
+  One transaction, so the credential never goes without its sessions going
+  too. The disconnect waits for the commit, so a reconnect cannot read the
+  row before the revocation lands.
+
+  `change` returns `:ok` or `{:error, reason}`; an error rolls both back.
+  The user comes back revoked, for a caller acting from one of those
+  sessions to re-stamp it (`PortalWeb.UserAuth.restamp_session/2`).
+  """
+  @spec revoke_sessions_with(Portal.Accounts.User.t(), (-> :ok | {:error, term()})) ::
+          {:ok, Portal.Accounts.User.t()} | {:error, term()}
+  def revoke_sessions_with(%Portal.Accounts.User{} = user, change) when is_function(change, 0) do
+    Portal.Repo.transaction(fn ->
+      with :ok <- change.(),
+           {:ok, revoked} <- revoke_sessions(user) do
+        revoked
+      else
+        {:error, reason} -> Portal.Repo.rollback(reason)
+      end
+    end)
+    |> tap(fn
+      {:ok, %Portal.Accounts.User{id: id}} -> disconnect_live_sockets(id)
+      _failed -> :ok
+    end)
+  end
 
   def valid_username?(username) when is_binary(username),
     do: Regex.match?(@username_regex, username)

@@ -88,8 +88,15 @@ defmodule Portal.Accounts.Identities do
         {:error, :last_way_in}
 
       true ->
-        with {:ok, user} <- update_links(user, unlink_attrs(provider)) do
+        # Every session the provider could have opened ends with it, in the
+        # same write: all of them, since a cookie does not record which way
+        # in opened it. The user comes back revoked for the caller to keep
+        # its own (`PortalWeb.UserAuth.restamp_session/2`).
+        attrs = Map.put(unlink_attrs(provider), :sessions_valid_after, DateTime.utc_now())
+
+        with {:ok, user} <- update_links(user, attrs) do
           Logger.info("Unlinked #{provider} from user #{user.id}")
+          Portal.Accounts.disconnect_live_sockets(user.id)
           {:ok, user}
         end
     end

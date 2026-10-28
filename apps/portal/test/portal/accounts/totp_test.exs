@@ -133,6 +133,25 @@ defmodule Portal.Accounts.TotpTest do
     assert Totp.verify(user, "000000", @t0) == {:error, :not_enrolled}
   end
 
+  test "removing a confirmed authenticator revokes every session" do
+    user = user_fixture()
+    enrol(user)
+
+    assert {:ok, revoked} = Totp.remove(user)
+    refute Totp.confirmed?(user)
+    assert %DateTime{} = revoked.sessions_valid_after
+    refute Portal.Accounts.session_current?(revoked, System.system_time(:microsecond) - 1_000_000)
+  end
+
+  test "removing an enrolment never confirmed revokes nothing" do
+    user = user_fixture()
+    {:ok, _} = Totp.start_enrolment(user)
+
+    assert {:ok, same} = Totp.remove(user)
+    assert Totp.get_secret(user) == :error
+    assert is_nil(same.sessions_valid_after)
+  end
+
   test "disable removes the secret entirely" do
     user = user_fixture()
     enrol(user)

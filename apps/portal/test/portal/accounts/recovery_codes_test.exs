@@ -20,6 +20,23 @@ defmodule Portal.Accounts.RecoveryCodesTest do
     assert RecoveryCodes.remaining(user) == 10
   end
 
+  test "replacing a set with unused codes revokes every session" do
+    user = user_fixture()
+    {:ok, _old} = RecoveryCodes.generate(user)
+
+    assert {:ok, codes, revoked} = RecoveryCodes.regenerate(user)
+    assert length(codes) == 10
+    assert %DateTime{} = revoked.sessions_valid_after
+  end
+
+  test "the first set revokes nothing" do
+    user = user_fixture()
+
+    assert {:ok, _codes, same} = RecoveryCodes.regenerate(user)
+    assert is_nil(same.sessions_valid_after)
+    assert is_nil(Ash.reload!(user, domain: Portal.Accounts).sessions_valid_after)
+  end
+
   test "regenerating replaces every previous code" do
     user = user_fixture()
     {:ok, [old | _]} = RecoveryCodes.generate(user)

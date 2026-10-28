@@ -28,10 +28,37 @@ defmodule Portal.Accounts.RecoveryCodes do
   the user immediately; there is no second chance to read it.
   """
   @spec generate(User.t()) :: {:ok, [String.t()]}
-  def generate(%User{id: user_id} = user) do
-    user |> all_for_user() |> Enum.each(&Ash.destroy!(&1, domain: Portal.Accounts))
+  def generate(%User{} = user) do
+    {:ok, codes, _user} = regenerate(user)
+    {:ok, codes}
+  end
 
+  @doc """
+  `generate/1`, returning the user as well.
+
+  Discarding a set that still holds unused codes takes a way in away, and a
+  printed sheet may be why it is being replaced, so every session on the
+  account ends with it (`Portal.Accounts.revoke_sessions_with/2`); the user
+  comes back revoked for the caller to re-stamp its own session. A first
+  set, or one already spent, takes nothing away and revokes nothing.
+  """
+  @spec regenerate(User.t()) :: {:ok, [String.t()], User.t()}
+  def regenerate(%User{} = user) do
     codes = Enum.map(1..@count, fn _ -> new_code() end)
+
+    {:ok, user} =
+      if remaining(user) > 0 do
+        Portal.Accounts.revoke_sessions_with(user, fn -> replace(user, codes) end)
+      else
+        :ok = replace(user, codes)
+        {:ok, user}
+      end
+
+    {:ok, Enum.map(codes, &format/1), user}
+  end
+
+  defp replace(%User{id: user_id} = user, codes) do
+    user |> all_for_user() |> Enum.each(&Ash.destroy!(&1, domain: Portal.Accounts))
 
     for code <- codes do
       RecoveryCode
@@ -39,7 +66,7 @@ defmodule Portal.Accounts.RecoveryCodes do
       |> Ash.create!(domain: Portal.Accounts)
     end
 
-    {:ok, Enum.map(codes, &format/1)}
+    :ok
   end
 
   @doc """

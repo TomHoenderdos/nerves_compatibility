@@ -197,19 +197,22 @@ defmodule PortalWeb.ProviderAuthController do
   defp finish_unlink(conn, provider) do
     label = provider_label(provider)
 
-    {kind, text} =
+    {conn, kind, text} =
       case Identities.unlink(conn.assigns.current_user, provider) do
-        {:ok, _} ->
-          {:info, "#{label} unlinked."}
+        # The unlink signed out every session on the account; the one that
+        # did it, under a fresh step-up, stays.
+        {:ok, revoked} ->
+          {UserAuth.restamp_session(conn, revoked), :info, "#{label} unlinked."}
 
         {:error, :last_way_in} ->
-          {:error, "#{label} is your only way to sign in. Set a password or add a passkey first."}
+          {conn, :error,
+           "#{label} is your only way to sign in. Set a password or add a passkey first."}
 
         {:error, :not_linked} ->
-          {:error, "#{label} is not linked."}
+          {conn, :error, "#{label} is not linked."}
 
         {:error, _} ->
-          {:error, "Unlinking #{label} failed. Try again."}
+          {conn, :error, "Unlinking #{label} failed. Try again."}
       end
 
     conn |> put_flash(kind, text) |> redirect(to: security())

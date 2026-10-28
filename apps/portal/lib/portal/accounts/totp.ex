@@ -140,13 +140,36 @@ defmodule Portal.Accounts.Totp do
     end
   end
 
+  @doc """
+  Removes `user`'s authenticator app, returning the user.
+
+  A confirmed one is a second factor, and may be on a lost or stolen phone,
+  so every session on the account ends with it
+  (`Portal.Accounts.revoke_sessions_with/2`); the user comes back revoked for
+  the caller to re-stamp its own session. An enrolment never confirmed was
+  never a factor, and goes without revoking anything.
+  """
+  @spec remove(User.t()) :: {:ok, User.t()} | {:error, term()}
+  def remove(%User{} = user) do
+    case get_secret(user) do
+      {:ok, %TotpSecret{confirmed_at: %DateTime{}} = secret} ->
+        Portal.Accounts.revoke_sessions_with(user, fn ->
+          Ash.destroy(secret, domain: Portal.Accounts)
+        end)
+
+      {:ok, secret} ->
+        Ash.destroy!(secret, domain: Portal.Accounts)
+        {:ok, user}
+
+      :error ->
+        {:ok, user}
+    end
+  end
+
+  @doc "`remove/1` for callers that do not need the user back."
   @spec disable(User.t()) :: :ok
   def disable(%User{} = user) do
-    case get_secret(user) do
-      {:ok, secret} -> Ash.destroy!(secret, domain: Portal.Accounts)
-      :error -> :ok
-    end
-
+    {:ok, _user} = remove(user)
     :ok
   end
 

@@ -287,24 +287,42 @@ defmodule PortalWeb.SecurityController do
 
   def delete_totp(conn, _params) do
     user = conn.assigns.current_user
-    Totp.disable(user)
-    Logger.warning("TOTP removed for #{user.username}")
 
-    conn
-    |> put_flash(:info, "Authenticator app removed.")
-    |> redirect(to: ~p"/settings/security")
+    case Totp.remove(user) do
+      {:ok, revoked} ->
+        Logger.warning("TOTP removed for #{user.username}")
+
+        # Removing a confirmed authenticator signed out every session on the
+        # account; the one that removed it, under a fresh re-authentication,
+        # stays.
+        conn
+        |> UserAuth.restamp_session(revoked)
+        |> put_flash(:info, "Authenticator app removed.")
+        |> redirect(to: ~p"/settings/security")
+
+      {:error, reason} ->
+        Logger.error("Removing TOTP failed: #{inspect(reason)}")
+
+        conn
+        |> put_flash(:error, "Removing the authenticator app failed. Try again.")
+        |> redirect(to: ~p"/settings/security")
+    end
   end
 
   # --- Recovery codes --------------------------------------------------------
 
   def regenerate_recovery_codes(conn, _params) do
     user = conn.assigns.current_user
-    {:ok, codes} = RecoveryCodes.generate(user)
+    {:ok, codes, revoked} = RecoveryCodes.regenerate(user)
     Logger.warning("Recovery codes regenerated for #{user.username}")
 
-    # Rendered straight into this one response: never stored, never put in the
-    # session, never carried across a redirect. See the module doc.
-    render_page(conn, new_recovery_codes: codes)
+    # Replacing a set with unused codes signed out every session on the
+    # account; this one stays. Rendered straight into this one response:
+    # never stored, never put in the session, never carried across a
+    # redirect. See the module doc.
+    conn
+    |> UserAuth.restamp_session(revoked)
+    |> render_page(new_recovery_codes: codes)
   end
 
   # --- The step-up gate ------------------------------------------------------

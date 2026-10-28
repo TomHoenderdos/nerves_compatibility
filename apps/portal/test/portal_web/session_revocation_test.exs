@@ -35,6 +35,31 @@ defmodule PortalWeb.SessionRevocationTest do
     )
   end
 
+  # A session that re-authenticated with `method` a moment ago, as the
+  # step-up gate on `/settings/security` and the provider routes wants.
+  defp fresh_session(user, method) do
+    init_test_session(build_conn(),
+      user_id: user.id,
+      login_method: :password,
+      session_started_at: System.system_time(:microsecond),
+      reauth_method: method,
+      reauth_at: System.system_time(:second)
+    )
+  end
+
+  defp confirm_totp(user) do
+    at = ~U[2026-09-18 12:00:00.000000Z]
+    {:ok, %{secret: secret}} = Accounts.Totp.start_enrolment(user)
+    :ok = Accounts.Totp.confirm(user, NimbleTOTP.verification_code(secret, time: at), at)
+    secret
+  end
+
+  defp subscribe_disconnect(user) do
+    topic = Accounts.live_socket_id(user.id)
+    PortalWeb.Endpoint.subscribe(topic)
+    topic
+  end
+
   defp signed_in?(conn), do: conn |> get(~p"/settings") |> Map.fetch!(:status) == 200
 
   # The public LiveView's mount resolves `current_user` from the session; the
@@ -146,16 +171,132 @@ defmodule PortalWeb.SessionRevocationTest do
       other = log_in(user)
       conn = passkey_session(user)
 
+      topic = subscribe_disconnect(user)
+
       posted = post(conn, ~p"/settings/security/passkeys/#{passkey.id}/delete")
       assert redirected_to(posted) == ~p"/settings/security"
       conn = recycle(posted)
 
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
       assert signed_in?(conn)
       refute signed_in?(other)
 
       # Re-stamped against the cutoff the removal wrote, never before it.
       cutoff = Ash.reload!(user, domain: Accounts).sessions_valid_after
       assert get_session(posted, :session_started_at) >= DateTime.to_unix(cutoff, :microsecond)
+    end
+  end
+
+  describe "removing the authenticator app" do
+    test "keeps the remover's session, refuses every other one and disconnects their sockets" do
+      user = user_fixture()
+      other = log_in(user)
+      confirm_totp(user)
+      # Adding the factor revoked nothing.
+      assert signed_in?(other)
+      conn = fresh_session(user, :totp)
+      topic = subscribe_disconnect(user)
+
+      posted = post(conn, ~p"/settings/security/totp/delete")
+      assert redirected_to(posted) == ~p"/settings/security"
+      conn = recycle(posted)
+
+      refute Accounts.Totp.confirmed?(user)
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
+      assert signed_in?(conn)
+      assert live_signed_in?(conn)
+      refute signed_in?(other)
+      refute live_signed_in?(other)
+
+      cutoff = Ash.reload!(user, domain: Accounts).sessions_valid_after
+      assert get_session(posted, :session_started_at) >= DateTime.to_unix(cutoff, :microsecond)
+    end
+
+    test "dropping an enrolment never confirmed revokes nothing" do
+      user = user_fixture()
+      other = log_in(user)
+      {:ok, _} = Accounts.Totp.start_enrolment(user)
+
+      posted = post(fresh_session(user, :password), ~p"/settings/security/totp/delete")
+      assert redirected_to(posted) == ~p"/settings/security"
+
+      assert signed_in?(other)
+      assert is_nil(Ash.reload!(user, domain: Accounts).sessions_valid_after)
+    end
+  end
+
+  describe "regenerating recovery codes" do
+    test "keeps the current session, refuses every other one and disconnects their sockets" do
+      user = user_fixture()
+      {:ok, _old_codes} = Accounts.RecoveryCodes.generate(user)
+      other = log_in(user)
+      conn = fresh_session(user, :password)
+      topic = subscribe_disconnect(user)
+
+      posted = post(conn, ~p"/settings/security/recovery-codes")
+      assert html_response(posted, 200)
+      conn = recycle(posted)
+
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
+      assert signed_in?(conn)
+      assert live_signed_in?(conn)
+      refute signed_in?(other)
+      refute live_signed_in?(other)
+    end
+
+    test "the first set revokes nothing" do
+      user = user_fixture()
+      other = log_in(user)
+
+      posted = post(fresh_session(user, :password), ~p"/settings/security/recovery-codes")
+      assert html_response(posted, 200)
+
+      assert signed_in?(other)
+      assert is_nil(Ash.reload!(user, domain: Accounts).sessions_valid_after)
+    end
+  end
+
+  describe "unlinking a sign-in provider" do
+    test "keeps the current session, refuses every other one and disconnects their sockets" do
+      identity = %Accounts.Identity{
+        provider: :github,
+        uid: 4242,
+        username: "octo",
+        profile: %{"id" => 4242, "login" => "octo"}
+      }
+
+      {:ok, user} = Accounts.Identities.link(user_fixture(), identity)
+      other = log_in(user)
+      # Adding the provider revoked nothing.
+      assert signed_in?(other)
+      conn = fresh_session(user, :password)
+      topic = subscribe_disconnect(user)
+
+      posted = post(conn, ~p"/settings/providers/github/unlink")
+      assert redirected_to(posted) == ~p"/settings/security"
+      conn = recycle(posted)
+
+      reloaded = Ash.reload!(user, domain: Accounts)
+      assert is_nil(reloaded.github_id)
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
+      assert signed_in?(conn)
+      assert live_signed_in?(conn)
+      refute signed_in?(other)
+      refute live_signed_in?(other)
+
+      cutoff = reloaded.sessions_valid_after
+      assert get_session(posted, :session_started_at) >= DateTime.to_unix(cutoff, :microsecond)
+    end
+
+    test "a refused unlink revokes nothing" do
+      user = user_fixture()
+      other = log_in(user)
+
+      posted = post(fresh_session(user, :password), ~p"/settings/providers/hex/unlink")
+      assert redirected_to(posted) == ~p"/settings/security"
+
+      assert signed_in?(other)
+      assert is_nil(Ash.reload!(user, domain: Accounts).sessions_valid_after)
     end
   end
 

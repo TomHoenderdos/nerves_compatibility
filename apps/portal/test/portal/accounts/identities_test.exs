@@ -123,6 +123,17 @@ defmodule Portal.Accounts.IdentitiesTest do
       assert {:ok, nil} = Identities.find_user(hex("a"))
     end
 
+    test "unlink revokes every session in the same write" do
+      {:ok, user} = Identities.link(user_fixture(), hex("a"))
+      assert is_nil(user.sessions_valid_after)
+
+      assert {:ok, user} = Identities.unlink(user, :hex)
+      assert %DateTime{} = user.sessions_valid_after
+
+      assert Ash.reload!(user, domain: Portal.Accounts).sessions_valid_after ==
+               user.sessions_valid_after
+    end
+
     test "unlink refuses to remove the last way in" do
       {:ok, user} = Identities.sign_in(hex("solo"))
       assert {:error, :last_way_in} = Identities.unlink(user, :hex)

@@ -75,9 +75,17 @@ defmodule Portal.Accounts.User do
     end
 
     # Link or unlink providers. `Portal.Accounts.Identities` is the only
-    # caller; it owns the rules about when that is allowed.
+    # caller; it owns the rules about when that is allowed. An unlink revokes
+    # the account's sessions in the same write.
     update :set_links do
-      accept([:hex_username, :hex_profile, :github_username, :github_profile, :github_id])
+      accept([
+        :hex_username,
+        :hex_profile,
+        :github_username,
+        :github_profile,
+        :github_id,
+        :sessions_valid_after
+      ])
     end
   end
 
