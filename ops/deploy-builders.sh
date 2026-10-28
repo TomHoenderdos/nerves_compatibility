@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploys one main commit to the build hosts from an operator's laptop: the
-# homelab builders (never deployed by CI) and the main builder (normally
+# operator's own builders (never deployed by CI) and the main builder (normally
 # deployed by CI; included for a redeploy or a rescue).
 #
 # The hosts come from ops/builders.hosts (or $NCC_BUILDERS_FILE), which is not

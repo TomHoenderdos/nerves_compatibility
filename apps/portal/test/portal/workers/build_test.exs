@@ -852,7 +852,7 @@ defmodule Portal.Workers.BuildTest do
     ================================================================================
     Portal.Builder - Docker Execution Log
     Started: 2026-09-10T08:00:00Z
-    Command: docker run --rm -v /var/lib/ncc/scratch/x:/work ncc-worker:local
+    Command: docker run --rm -v /data/ncc-scratch/x:/work ncc-worker:local
     ================================================================================
 
     """
@@ -908,7 +908,7 @@ defmodule Portal.Workers.BuildTest do
       assert reloaded.status == :error
       assert reloaded.error_log =~ "Compilation error"
       refute reloaded.error_log =~ "docker run"
-      refute reloaded.error_log =~ "/var/lib/ncc/scratch"
+      refute reloaded.error_log =~ "/data/ncc-scratch"
     end
 
     test "a builder error reads runner.log off disk before cleanup" do

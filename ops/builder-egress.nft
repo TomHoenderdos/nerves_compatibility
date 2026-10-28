@@ -50,7 +50,7 @@ table inet ncc_egress {
 		# Hex.pm, GitHub and the distribution mirrors.
 		tcp dport { 80, 443 } accept
 
-		# Public resolvers: the homelab daemons hand containers 1.1.1.1 and
+		# Public resolvers: the self-hosted builders' daemons hand containers 1.1.1.1 and
 		# 9.9.9.9 rather than the slirp4netns resolver.
 		meta l4proto { tcp, udp } th dport 53 accept
 

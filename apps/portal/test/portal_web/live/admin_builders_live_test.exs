@@ -70,7 +70,7 @@ defmodule PortalWeb.Admin.BuildersLiveTest do
   end
 
   test "toggles publishing, revokes, requeues and saves the routing policy", %{conn: conn} do
-    builder = enrol!("box-act")
+    builder = enrol!("builder-act")
     enqueue!()
     {:ok, lease} = Leases.claim(builder)
     # A reaped attempt: unlike a non-Hex-dep rejection, worth a remote retry.

@@ -537,8 +537,8 @@ defmodule Portal.Builder do
   defp egress_missing(reason) do
     Logger.error(
       "Build egress filter missing (#{inspect(reason)}); refusing to build. " <>
-        "Load it as the daemon's user with " <>
-        "/opt/nerves_compatibility/builder-egress-load.sh, or set " <>
+        "Run the builder's egress loader (ops/builder-egress-load.sh) as the " <>
+        "daemon's user, or set " <>
         "NCC_EGRESS_CHECK=0 on a host without a rootless daemon"
     )
 

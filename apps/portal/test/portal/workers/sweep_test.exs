@@ -235,7 +235,7 @@ defmodule Portal.Workers.SweepTest do
         current_digest: "sha256:0b9beb41",
         nerves_cache: nil,
         hex_cache: nil,
-        host: "box-a"
+        host: "host-a"
       )
     end
 
@@ -247,8 +247,8 @@ defmodule Portal.Workers.SweepTest do
     } do
       live = slug(cache, "sha256_0b9beb41", age_hours: 2)
       legacy = Path.join(live, "jason-1.4.1.tmp.a1b2c3d4e5f60718")
-      ours = Path.join(live, "jason-1.4.1.tmp.box-a.a1b2c3d4e5f60718")
-      tarball = Path.join(live, "jason-1.4.1.tmp.box-a.a1b2c3d4e5f60718.tar.gz")
+      ours = Path.join(live, "jason-1.4.1.tmp.host-a.a1b2c3d4e5f60718")
+      tarball = Path.join(live, "jason-1.4.1.tmp.host-a.a1b2c3d4e5f60718.tar.gz")
       real = Path.join(live, "jason-1.4.1")
       File.mkdir_p!(legacy)
       File.mkdir_p!(ours)
@@ -267,7 +267,7 @@ defmodule Portal.Workers.SweepTest do
 
     test "keeps a staging tree younger than the scratch max age", %{root: root, cache: cache} do
       live = slug(cache, "sha256_0b9beb41", age_hours: 2)
-      fresh = Path.join(live, "jason-1.4.1.tmp.box-a.a1b2c3d4e5f60718")
+      fresh = Path.join(live, "jason-1.4.1.tmp.host-a.a1b2c3d4e5f60718")
       File.mkdir_p!(fresh)
       age_posix(fresh, 1)
 
@@ -278,7 +278,7 @@ defmodule Portal.Workers.SweepTest do
 
     test "never prunes another host's staging, however old", %{root: root, cache: cache} do
       live = slug(cache, "sha256_0b9beb41", age_hours: 2)
-      theirs = Path.join(live, "jason-1.4.1.tmp.box-b.a1b2c3d4e5f60718")
+      theirs = Path.join(live, "jason-1.4.1.tmp.host-b.a1b2c3d4e5f60718")
       File.mkdir_p!(theirs)
       age_posix(theirs, 40)
 

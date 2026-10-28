@@ -109,12 +109,12 @@ defmodule Portal.ObanConfigTest do
   test "the Nerves cache warm runs one at a time, on the build node's own queue" do
     queues =
       [queues: [builds: 3, ingest: 2]]
-      |> Portal.Workers.Ingest.with_local_queue(:"portal@box-c")
-      |> Portal.Workers.WarmNerves.with_local_queue(:"portal@box-c")
+      |> Portal.Workers.Ingest.with_local_queue(:"portal@host-c")
+      |> Portal.Workers.WarmNerves.with_local_queue(:"portal@host-c")
       |> Keyword.fetch!(:queues)
 
-    assert queues[:warm_nerves_portal_box_c] == 1
-    assert queues[:ingest_portal_box_c] == 2
+    assert queues[:warm_nerves_portal_host_c] == 1
+    assert queues[:ingest_portal_host_c] == 2
   end
 
   test "the hex metadata refresh is scheduled weekly on the intake queue" do

@@ -120,7 +120,7 @@ defmodule Portal.Catalog.LogSanitizerTest do
       ================================================================================
       Portal.Builder - Docker Execution Log
       Started: 2026-09-10T08:00:00Z
-      Command: docker run --rm -v /var/lib/ncc/scratch/x:/work ncc-worker:local
+      Command: docker run --rm -v /data/ncc-scratch/x:/work ncc-worker:local
       ================================================================================
 
       == Compilation error in file lib/x.ex ==
@@ -129,7 +129,7 @@ defmodule Portal.Catalog.LogSanitizerTest do
       excerpt = LogSanitizer.runner_excerpt(raw)
 
       refute excerpt =~ "docker run"
-      refute excerpt =~ "/var/lib/ncc/scratch"
+      refute excerpt =~ "/data/ncc-scratch"
       assert excerpt =~ "Compilation error"
     end
 

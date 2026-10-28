@@ -87,15 +87,15 @@ defmodule Portal.Workers.WarmNervesTest do
 
   describe "the node-local queue" do
     test "is named after the node" do
-      assert WarmNerves.local_queue(:"portal@box-c") == "warm_nerves_portal_box_c"
+      assert WarmNerves.local_queue(:"portal@host-c") == "warm_nerves_portal_host_c"
       assert WarmNerves.local_queue() == WarmNerves.local_queue(node())
     end
 
     test "a build node gets it with concurrency 1" do
       config = [queues: [builds: 3, ingest: 2]]
 
-      assert WarmNerves.with_local_queue(config, :"portal@box-c")[:queues] ==
-               [builds: 3, ingest: 2, warm_nerves_portal_box_c: 1]
+      assert WarmNerves.with_local_queue(config, :"portal@host-c")[:queues] ==
+               [builds: 3, ingest: 2, warm_nerves_portal_host_c: 1]
     end
 
     test "a web-only node and test mode are left alone" do

@@ -7,12 +7,12 @@ defmodule Portal.Workers.IngestQueueTest do
 
   describe "local_queue/1" do
     test "names a queue after the node" do
-      assert Ingest.local_queue(:"portal@box-c") == "ingest_portal_box_c"
-      assert Ingest.local_queue(:portal@build-host) == "ingest_portal_build-host"
+      assert Ingest.local_queue(:"portal@host-c") == "ingest_portal_host_c"
+      assert Ingest.local_queue(:portal@buildhost1) == "ingest_portal_buildhost1"
     end
 
     test "differs per node, so one host never takes another's ingest" do
-      refute Ingest.local_queue(:"portal@box-a") == Ingest.local_queue(:"portal@box-c")
+      refute Ingest.local_queue(:"portal@host-a") == Ingest.local_queue(:"portal@host-c")
     end
 
     test "defaults to this node" do
@@ -26,24 +26,24 @@ defmodule Portal.Workers.IngestQueueTest do
     # its ingest on the local queue; leaving that queue out would restart the
     # node in the middle of that ingest.
     test "a build node drains builds, the shared ingest queue, its own and its warm queue" do
-      assert Ingest.builder_queues(:"portal@box-c", builds: 3, ingest: 2) ==
-               ["builds", "ingest", "ingest_portal_box_c", "warm_nerves_portal_box_c"]
+      assert Ingest.builder_queues(:"portal@host-c", builds: 3, ingest: 2) ==
+               ["builds", "ingest", "ingest_portal_host_c", "warm_nerves_portal_host_c"]
     end
 
     # Only when the node runs it: `Oban.check_queue/1` finds no producer for a
     # queue the node does not run, and the deploy then refuses to go ahead.
     test "a build node running the toolchain queue drains it too" do
-      assert Ingest.builder_queues(:"portal@box-c", builds: 3, ingest: 2, toolchain: 1) ==
+      assert Ingest.builder_queues(:"portal@host-c", builds: 3, ingest: 2, toolchain: 1) ==
                [
                  "builds",
                  "ingest",
-                 "ingest_portal_box_c",
-                 "warm_nerves_portal_box_c",
+                 "ingest_portal_host_c",
+                 "warm_nerves_portal_host_c",
                  "toolchain"
                ]
 
-      assert Ingest.builder_queues(:"portal@box-c", builds: 3, toolchain: 0) ==
-               ["builds", "ingest", "ingest_portal_box_c", "warm_nerves_portal_box_c"]
+      assert Ingest.builder_queues(:"portal@host-c", builds: 3, toolchain: 0) ==
+               ["builds", "ingest", "ingest_portal_host_c", "warm_nerves_portal_host_c"]
     end
   end
 
@@ -51,8 +51,8 @@ defmodule Portal.Workers.IngestQueueTest do
     test "a build node's Oban config gains its own ingest queue" do
       config = [repo: Portal.Repo, queues: [builds: 3, ingest: 3]]
 
-      assert Ingest.with_local_queue(config, :"portal@box-c")[:queues] ==
-               [builds: 3, ingest: 3, ingest_portal_box_c: 3]
+      assert Ingest.with_local_queue(config, :"portal@host-c")[:queues] ==
+               [builds: 3, ingest: 3, ingest_portal_host_c: 3]
     end
 
     test "a web-only node's config is left alone" do
@@ -66,10 +66,10 @@ defmodule Portal.Workers.IngestQueueTest do
     end
 
     test "a queue an operator already listed is not added twice" do
-      config = [queues: [builds: 1, ingest_portal_box_c: 4]]
+      config = [queues: [builds: 1, ingest_portal_host_c: 4]]
 
-      assert Ingest.with_local_queue(config, :"portal@box-c")[:queues] ==
-               [builds: 1, ingest_portal_box_c: 4]
+      assert Ingest.with_local_queue(config, :"portal@host-c")[:queues] ==
+               [builds: 1, ingest_portal_host_c: 4]
     end
 
     # Without distribution every build host is `nonode@nohost` and they would all
@@ -87,7 +87,7 @@ defmodule Portal.Workers.IngestQueueTest do
 
     test "a named build node starts quietly" do
       assert capture_log(fn ->
-               Ingest.with_local_queue([queues: [builds: 1]], :"portal@box-c")
+               Ingest.with_local_queue([queues: [builds: 1]], :"portal@host-c")
              end) ==
                ""
     end

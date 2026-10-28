@@ -47,10 +47,10 @@ defmodule Portal.Builders.CATest do
     {:ok, _} = CA.init(key_path)
 
     assert {:ok, %{pem: pem, fingerprint: fp, expires_at: expires}} =
-             CA.issue_client(csr_pem(), "box-a", "b1d2")
+             CA.issue_client(csr_pem(), "builder-a", "b1d2")
 
     cert = X509.Certificate.from_pem!(pem)
-    assert X509.Certificate.subject(cert, "CN") == ["box-a"]
+    assert X509.Certificate.subject(cert, "CN") == ["builder-a"]
     assert X509.Certificate.subject(cert, "serialNumber") == ["b1d2"]
     assert fp == CA.fingerprint(cert)
     assert DateTime.diff(expires, DateTime.utc_now(), :day) in 364..366
@@ -99,7 +99,7 @@ defmodule Portal.Builders.CATest do
       assert {:error, :invalid_name} = CA.issue_client(csr_pem(), bad, "id")
     end
 
-    assert CA.valid_name?("box-a.1_x")
+    assert CA.valid_name?("builder-a.1_x")
   end
 
   test "ensure_server_cert refuses hosts that are not plain names", %{key_path: key_path} do

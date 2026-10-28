@@ -20,20 +20,20 @@ defmodule Portal.BuildCache.StagingTest do
   test "parse/1 reads the legacy form, the host form and the download form" do
     assert {:ok, %{host: nil, download?: false}} = Staging.parse("k.tmp.a1b2c3d4e5f60718")
 
-    assert {:ok, %{host: "box-b", download?: false}} =
-             Staging.parse("k.tmp.box-b.a1b2c3d4e5f60718")
+    assert {:ok, %{host: "host-b", download?: false}} =
+             Staging.parse("k.tmp.host-b.a1b2c3d4e5f60718")
 
-    assert {:ok, %{host: "box-b", download?: true}} =
-             Staging.parse("k.tmp.box-b.a1b2c3d4e5f60718.tar.gz")
+    assert {:ok, %{host: "host-b", download?: true}} =
+             Staging.parse("k.tmp.host-b.a1b2c3d4e5f60718.tar.gz")
 
     assert :error = Staging.parse("k")
     assert :error = Staging.parse(String.duplicate("a", 64))
   end
 
   test "ours?/2 is true for the legacy form and our own host only" do
-    assert Staging.ours?("k.tmp.a1b2c3d4e5f60718", "box-a")
-    assert Staging.ours?("k.tmp.box-a.a1b2c3d4e5f60718", "box-a")
-    refute Staging.ours?("k.tmp.box-b.a1b2c3d4e5f60718", "box-a")
-    refute Staging.ours?("k", "box-a")
+    assert Staging.ours?("k.tmp.a1b2c3d4e5f60718", "host-a")
+    assert Staging.ours?("k.tmp.host-a.a1b2c3d4e5f60718", "host-a")
+    refute Staging.ours?("k.tmp.host-b.a1b2c3d4e5f60718", "host-a")
+    refute Staging.ours?("k", "host-a")
   end
 end

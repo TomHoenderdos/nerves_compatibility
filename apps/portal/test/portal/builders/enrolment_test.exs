@@ -24,7 +24,7 @@ defmodule Portal.Builders.EnrolmentTest do
   defp csr, do: X509.CSR.new(X509.PrivateKey.new_ec(:secp256r1), "/CN=x") |> X509.CSR.to_pem()
 
   test "a token is shown once, enrols once, and names the CA" do
-    {:ok, %{token: token}} = Builders.create_token("box-a", "admin")
+    {:ok, %{token: token}} = Builders.create_token("builder-a", "admin")
     [id, secret, prefix] = String.split(token, ".")
     assert String.length(prefix) == 16
     assert byte_size(Base.url_decode64!(secret, padding: false)) == 32
@@ -34,7 +34,7 @@ defmodule Portal.Builders.EnrolmentTest do
     assert {:ok, %{builder: builder, cert_pem: pem, expires_at: expires}} =
              Builders.enrol(token, csr(), %{agent_version: "1.a", slots: 2})
 
-    assert builder.name == "box-a" and builder.publishing == false and builder.slots == 2
+    assert builder.name == "builder-a" and builder.publishing == false and builder.slots == 2
     assert builder.fingerprint == CA.fingerprint(X509.Certificate.from_pem!(pem))
     assert DateTime.diff(expires, DateTime.utc_now(), :day) in 364..366
 
@@ -51,20 +51,20 @@ defmodule Portal.Builders.EnrolmentTest do
   end
 
   test "an expired token is refused" do
-    {:ok, %{token: token, record: record}} = Builders.create_token("box-b", "admin")
+    {:ok, %{token: token, record: record}} = Builders.create_token("builder-b", "admin")
     record |> Ash.Changeset.for_update(:expire_now, %{}) |> Ash.update!(domain: Builders)
     assert {:error, :token_expired} = Builders.enrol(token, csr(), %{})
   end
 
   test "a second token for the same name cannot enrol while the first builder exists" do
-    {:ok, %{token: t1}} = Builders.create_token("box-c", "admin")
+    {:ok, %{token: t1}} = Builders.create_token("builder-c", "admin")
     {:ok, _} = Builders.enrol(t1, csr(), %{})
-    {:ok, %{token: t2}} = Builders.create_token("box-c", "admin")
+    {:ok, %{token: t2}} = Builders.create_token("builder-c", "admin")
     assert {:error, :name_taken} = Builders.enrol(t2, csr(), %{})
   end
 
   test "lookup by fingerprint honours current, superseded-within-24h and revoked" do
-    {:ok, %{token: token}} = Builders.create_token("box-d", "admin")
+    {:ok, %{token: token}} = Builders.create_token("builder-d", "admin")
     {:ok, %{builder: builder}} = Builders.enrol(token, csr(), %{})
     assert {:ok, %Builder{id: id}} = Builders.by_fingerprint(builder.fingerprint)
     assert id == builder.id
@@ -107,7 +107,7 @@ defmodule Portal.Builders.EnrolmentTest do
   end
 
   test "touch writes last_seen_at at most once a minute" do
-    {:ok, %{token: token}} = Builders.create_token("box-e", "admin")
+    {:ok, %{token: token}} = Builders.create_token("builder-e", "admin")
     {:ok, %{builder: builder}} = Builders.enrol(token, csr(), %{})
     first = Builders.touch(builder, "1.a")
     assert %DateTime{} = first.last_seen_at
