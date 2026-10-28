@@ -16,6 +16,10 @@ defmodule NccAgent.ArgvParityTest do
              "../../../compatibility/test/fixtures/argv/post_isolation.exs",
              __DIR__
            )
+  @runsc_fixture Path.expand(
+                   "../../../compatibility/test/fixtures/argv/post_isolation_runsc.exs",
+                   __DIR__
+                 )
 
   setup_all do
     {fixture, _binding} = Code.eval_file(@fixture)
@@ -34,6 +38,7 @@ defmodule NccAgent.ArgvParityTest do
         memory: input.memory,
         build_concurrency: input.build_concurrency
     }
+    |> Map.put(:runtime, Map.get(input, :runtime))
   end
 
   defp claim(input, image) do
@@ -49,25 +54,29 @@ defmodule NccAgent.ArgvParityTest do
     argv |> List.delete_at(index) |> List.delete_at(index - 1)
   end
 
-  test "the agent's argv is the shared fixture's without the build cache", %{
-    input: input,
-    argv: argv
-  } do
-    config = config(input)
-    assert Config.path(config, :nerves_cache) == input.paths.nerves_cache
-    assert Config.path(config, :hex_cache) == input.paths.hex_cache
+  for {label, fixture} <- [{"runc", @fixture}, {"runsc", @runsc_fixture}] do
+    @tag fixture: fixture
+    test "the agent's argv is the shared #{label} fixture's without the build cache", %{
+      fixture: fixture
+    } do
+      {%{input: input, argv: argv}, _binding} = Code.eval_file(fixture)
 
-    expected =
-      argv
-      |> drop_pair("type=bind,source=#{input.paths.build_cache},target=/build-cache,readonly")
-      |> drop_pair("NCC_BUILD_CACHE=/build-cache")
+      config = config(input)
+      assert Config.path(config, :nerves_cache) == input.paths.nerves_cache
+      assert Config.path(config, :hex_cache) == input.paths.hex_cache
 
-    dirs = Map.take(input.paths, [:work, :out, :files, :tmp, :cache])
-    spec = Job.argv_spec(config, claim(input, input.image), dirs)
+      expected =
+        argv
+        |> drop_pair("type=bind,source=#{input.paths.build_cache},target=/build-cache,readonly")
+        |> drop_pair("NCC_BUILD_CACHE=/build-cache")
 
-    assert Argv.build(spec) == expected
-    refute Enum.any?(expected, &String.contains?(&1, "build-cache"))
-    refute Enum.any?(expected, &String.contains?(&1, "/home/nerves/.nerves"))
+      dirs = Map.take(input.paths, [:work, :out, :files, :tmp, :cache])
+      spec = Job.argv_spec(config, claim(input, input.image), dirs)
+
+      assert Argv.build(spec) == expected
+      refute Enum.any?(expected, &String.contains?(&1, "build-cache"))
+      refute Enum.any?(expected, &String.contains?(&1, "/home/nerves/.nerves"))
+    end
   end
 
   test "a registry image is run by digest", %{input: input} do

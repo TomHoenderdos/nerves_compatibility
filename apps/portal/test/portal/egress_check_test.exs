@@ -206,3 +206,71 @@ defmodule Portal.EgressCheckTest do
     assert text =~ "egress check FAILED"
   end
 end
+
+defmodule Portal.EgressCheck.BareProbeRuntimeTest do
+  # Not async: swaps `docker` on PATH and the builder's app env.
+  use ExUnit.Case, async: false
+
+  alias Portal.EgressCheck
+
+  @target %{"address" => "100.64.0.1", "port" => 5432}
+
+  # A fake `docker` that records its argv NUL-separated, since the probe script
+  # passed with `-c` spans several lines.
+  setup do
+    tmp = Path.join(System.tmp_dir!(), "bare-probe-#{System.unique_integer([:positive])}")
+    bin = Path.join(tmp, "bin")
+    log = Path.join(tmp, "argv")
+    File.mkdir_p!(bin)
+
+    docker = Path.join(bin, "docker")
+    File.write!(docker, "#!/bin/sh\nprintf '%s\\0' \"$@\" > '#{log}'\nexit 0\n")
+    File.chmod!(docker, 0o755)
+
+    old_path = System.get_env("PATH")
+    previous = Application.get_env(:portal, Portal.Builder, [])
+    System.put_env("PATH", bin <> ":" <> old_path)
+
+    on_exit(fn ->
+      System.put_env("PATH", old_path)
+      Application.put_env(:portal, Portal.Builder, previous)
+      File.rm_rf(tmp)
+    end)
+
+    {:ok, log: log, previous: previous}
+  end
+
+  defp probe_argv(log, runtime, previous) do
+    Application.put_env(
+      :portal,
+      Portal.Builder,
+      Keyword.merge(previous, docker_image: "ncc-worker:local", runtime: runtime)
+    )
+
+    EgressCheck.bare_probe(@target)
+    log |> File.read!() |> String.split(<<0>>, trim: true)
+  end
+
+  # The bare probe is the control half of the egress check. Under a different
+  # runtime than builds use, it would measure a network path no build takes.
+  test "the bare probe runs under runsc when builds do", %{log: log, previous: previous} do
+    argv = probe_argv(log, "runsc", previous)
+
+    assert ["run" | _] = argv
+    assert Enum.count(argv, &String.starts_with?(&1, "--runtime")) == 1
+    runtime_at = Enum.find_index(argv, &(&1 == "--runtime=runsc"))
+    image_at = Enum.find_index(argv, &(&1 == "ncc-worker:local"))
+    assert runtime_at, "expected --runtime=runsc in #{inspect(argv)}"
+    assert runtime_at < image_at, "--runtime must come before the image, not in its command"
+  end
+
+  test "the bare probe passes no runtime flag when none is configured", %{
+    log: log,
+    previous: previous
+  } do
+    argv = probe_argv(log, nil, previous)
+
+    assert ["run" | _] = argv
+    refute Enum.any?(argv, &String.starts_with?(&1, "--runtime"))
+  end
+end

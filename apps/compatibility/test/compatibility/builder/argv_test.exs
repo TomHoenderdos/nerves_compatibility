@@ -4,6 +4,7 @@ defmodule Compatibility.Builder.ArgvTest do
   alias Compatibility.Builder.Argv
 
   @fixture Path.expand("../../fixtures/argv/post_isolation.exs", __DIR__)
+  @runsc_fixture Path.expand("../../fixtures/argv/post_isolation_runsc.exs", __DIR__)
 
   setup_all do
     {fixture, _binding} = Code.eval_file(@fixture)
@@ -12,6 +13,59 @@ defmodule Compatibility.Builder.ArgvTest do
 
   test "builds exactly the argv the parity fixture pins", %{input: input, argv: argv} do
     assert Argv.build(input) == argv
+  end
+
+  describe "runtime" do
+    defp runsc_fixture do
+      {fixture, _binding} = Code.eval_file(@runsc_fixture)
+      fixture
+    end
+
+    # No runtime key and an explicit nil are both today's runc build, byte for
+    # byte: opting out must not change a single flag.
+    test "a nil runtime builds exactly the runc fixture's argv", %{input: input, argv: argv} do
+      refute Map.has_key?(input, :runtime)
+      assert Argv.build(Map.put(input, :runtime, nil)) == argv
+      refute Enum.any?(Argv.build(input), &String.starts_with?(&1, "--runtime"))
+    end
+
+    test "runsc builds exactly the argv the runsc fixture pins" do
+      %{input: input, argv: argv} = runsc_fixture()
+      assert input.runtime == "runsc"
+      assert Argv.build(input) == argv
+    end
+
+    # The two fixtures must differ by the one flag, placed after the run flags
+    # and before the image: docker reads anything after the image as the
+    # container's command, where `--runtime` would do nothing.
+    test "runsc adds only --runtime=runsc, right after the run flags", %{argv: runc_argv} do
+      %{input: input} = runsc_fixture()
+      argv = Argv.build(input)
+
+      assert List.delete(argv, "--runtime=runsc") == runc_argv
+      assert Enum.count(argv, &String.starts_with?(&1, "--runtime")) == 1
+
+      assert ["--pids-limit", "4096", "--runtime=runsc" | _] =
+               Enum.drop_while(argv, &(&1 != "--pids-limit"))
+    end
+
+    # An allowlist, not a pass-through: a free-form runtime name reaching
+    # docker could select a runtime with a weaker sandbox, or inject a flag.
+    test "any other runtime raises rather than reaching docker", %{input: input} do
+      for bad <- [
+            "runc",
+            "RUNSC",
+            "runsc ",
+            " runsc",
+            "runsc --privileged",
+            "",
+            "--privileged",
+            :runsc,
+            "io.containerd.runc.v2"
+          ] do
+        assert_raise ArgumentError, fn -> Argv.build(Map.put(input, :runtime, bad)) end
+      end
+    end
   end
 
   test "leaves out the limits and the CPU env when nothing caps the build", %{input: input} do
