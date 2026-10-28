@@ -28,7 +28,7 @@ Read from the environment (in production, populated from the file
 | `NCC_BUILD_USER` | required non-root | `docker run --user`, the `uid:gid` of the `ncc-build` user; `0:*` is refused |
 | `NCC_DOCKER_BIN` | `docker` | Docker CLI to run |
 | `NCC_EGRESS_SCRIPT` | `priv/egress.sh` | Installs the containers' egress ruleset |
-| `NCC_DNS_SERVERS` | none | Space-separated resolvers builds may use |
+| `NCC_DNS_SERVERS` | none | Space-separated resolvers builds may use; unset, they come from `daemon.json`, `resolv.conf` or `resolvectl`, and the egress install fails (no slot claims) when none is usable |
 
 A missing or invalid `NCC_PORTAL_URL`, `NCC_SLOTS` or `NCC_BUILD_USER` stops
 the release at boot.

@@ -13,11 +13,12 @@ defmodule NccAgent.EgressTest do
     System.put_env("IP6TABLES", "/bin/false")
     System.put_env("FAKE_IPTABLES_LOG", Path.join(dir, "log"))
     System.put_env("FAKE_IPTABLES_STATE", Path.join(dir, "state"))
-    # No resolver to find unless a test plants one: the host's own files
-    # stay out of it.
+    # The host's own files stay out of it: one documentation-range resolver
+    # unless a test plants others (install refuses to run without one).
     System.put_env("NCC_DOCKER_DAEMON_JSON", Path.join(dir, "daemon.json"))
     System.put_env("NCC_RESOLV_CONF", Path.join(dir, "resolv.conf"))
     System.put_env("RESOLVECTL", Path.join(dir, "resolvectl"))
+    File.write!(Path.join(dir, "resolv.conf"), "nameserver 192.0.2.53\n")
     # No IPv6 on the default bridge unless a test says otherwise.
     System.put_env("NCC_DOCKER_BRIDGE_IPV6", "false")
 
@@ -77,8 +78,8 @@ defmodule NccAgent.EgressTest do
     assert File.read!(Path.join([dir, "state", "NCC-EGRESS"])) == """
            -N NCC-EGRESS
            -A NCC-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-           -A NCC-EGRESS -p udp --dport 53 -j ACCEPT
-           -A NCC-EGRESS -p tcp --dport 53 -j ACCEPT
+           -A NCC-EGRESS -d 192.0.2.53/32 -p udp --dport 53 -j ACCEPT
+           -A NCC-EGRESS -d 192.0.2.53/32 -p tcp --dport 53 -j ACCEPT
            -A NCC-EGRESS -d 10.0.0.0/8 -j DROP
            -A NCC-EGRESS -d 172.16.0.0/12 -j DROP
            -A NCC-EGRESS -d 192.168.0.0/16 -j DROP
@@ -98,8 +99,8 @@ defmodule NccAgent.EgressTest do
     assert File.read!(Path.join([dir, "state", "NCC-INPUT"])) == """
            -N NCC-INPUT
            -A NCC-INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-           -A NCC-INPUT -p udp --dport 53 -j ACCEPT
-           -A NCC-INPUT -p tcp --dport 53 -j ACCEPT
+           -A NCC-INPUT -d 192.0.2.53/32 -p udp --dport 53 -j ACCEPT
+           -A NCC-INPUT -d 192.0.2.53/32 -p tcp --dport 53 -j ACCEPT
            -A NCC-INPUT -j DROP
            """
 
@@ -181,7 +182,7 @@ defmodule NccAgent.EgressTest do
     # A rule the policy does not name is not tolerated either.
     File.write!(
       chain,
-      String.replace(File.read!(chain), "-j DROP\n", "-d 1.2.3.4/32 -j ACCEPT\n-j DROP\n",
+      String.replace(File.read!(chain), "-j DROP\n", "-d 198.51.100.4/32 -j ACCEPT\n-j DROP\n",
         global: false
       )
     )
@@ -458,14 +459,189 @@ defmodule NccAgent.EgressTest do
     refute bare_dns?(rules)
   end
 
-  test "with no resolver to be found DNS stays open to any destination, and install says so", %{
-    dir: dir
-  } do
-    File.write!(Path.join(dir, "resolv.conf"), "nameserver 127.0.0.53\n")
+  # A resolvectl stub that prints OUTPUT and exits STATUS.
+  defp resolvectl!(dir, output, status \\ 0) do
+    path = Path.join(dir, "resolvectl")
+
+    File.write!(path, """
+    #!/usr/bin/env bash
+    cat <<'OUT'
+    #{output}
+    OUT
+    exit #{status}
+    """)
+
+    File.chmod!(path, 0o755)
+  end
+
+  # Install refuses: non-zero, says why, and creates or inserts nothing, so
+  # whatever ruleset was live before stays exactly as it was.
+  defp refuses_install!(dir) do
+    {out, status} = System.cmd(@script, ["install"], stderr_to_stdout: true)
+    assert status != 0
+    assert out =~ "egress: no DNS resolver found"
+    refute out =~ "egress ruleset installed"
+    log = Path.join(dir, "log")
+    calls = if File.exists?(log), do: File.read!(log), else: ""
+    refute calls =~ "--dport 53"
+    refute calls =~ " -N "
+    refute calls =~ " -I "
+    refute File.exists?(Path.join([dir, "state", "NCC-EGRESS-NEW"]))
+    refute File.exists?(Path.join([dir, "state", "NCC-INPUT-NEW"]))
+  end
+
+  describe "with no usable resolver install fails and opens no DNS" do
+    test "an empty resolv.conf", %{dir: dir} do
+      File.write!(Path.join(dir, "resolv.conf"), "")
+      refuses_install!(dir)
+      refute File.exists?(Path.join([dir, "state", "NCC-EGRESS"]))
+      assert {:error, why} = Egress.install()
+      assert why =~ "no DNS resolver found"
+      assert {:error, _} = Egress.verify()
+    end
+
+    test "no resolv.conf at all", %{dir: dir} do
+      File.rm!(Path.join(dir, "resolv.conf"))
+      refuses_install!(dir)
+    end
+
+    test "only 127.0.0.53 and no resolvectl", %{dir: dir} do
+      File.write!(Path.join(dir, "resolv.conf"), "nameserver 127.0.0.53\n")
+      refuses_install!(dir)
+    end
+
+    test "only 127.0.0.53 and resolvectl failing", %{dir: dir} do
+      File.write!(Path.join(dir, "resolv.conf"), "nameserver 127.0.0.53\n")
+      resolvectl!(dir, "", 1)
+      refuses_install!(dir)
+    end
+
+    test "only 127.0.0.53 and resolvectl naming nothing", %{dir: dir} do
+      File.write!(Path.join(dir, "resolv.conf"), "nameserver 127.0.0.53\n")
+      resolvectl!(dir, "Global\n       Protocols: -LLMNR")
+      refuses_install!(dir)
+    end
+
+    test "only 127.0.0.53 and resolvectl naming only unusable addresses", %{dir: dir} do
+      File.write!(Path.join(dir, "resolv.conf"), "nameserver 127.0.0.53\n")
+
+      resolvectl!(
+        dir,
+        "Current DNS Server: 127.0.0.53\n" <>
+          "       DNS Servers: ::1 fe80::1%eth0 169.254.169.254 0.0.0.0 ::"
+      )
+
+      refuses_install!(dir)
+    end
+
+    test "only loopback nameservers", %{dir: dir} do
+      File.write!(Path.join(dir, "resolv.conf"), """
+      nameserver 127.0.0.1
+      nameserver 127.0.1.1
+      nameserver ::1
+      nameserver 0:0:0:0:0:0:0:1
+      """)
+
+      refuses_install!(dir)
+    end
+
+    test "only link-local, unspecified, multicast or malformed nameservers", %{dir: dir} do
+      File.write!(Path.join(dir, "resolv.conf"), """
+      nameserver 169.254.169.254
+      nameserver fe80::1
+      nameserver FEBF::53
+      nameserver 0.0.0.0
+      nameserver 0.1.2.3
+      nameserver ::
+      nameserver ::ffff:7f00:1
+      nameserver 224.0.0.251
+      nameserver ff02::fb
+      nameserver 255.255.255.255
+      nameserver 999.1.1.1
+      nameserver 192.0.2.053
+      nameserver 10.0.0.0/8
+      nameserver 192.0.2.1;true
+      nameserver :::
+      nameserver 1:2:3:4:5:6:7:8:9
+      nameserver 2001:db8::1::2
+      nameserver 2001:db8:
+      nameserver 12345::1
+      nameserver ::ffff:192.0.2.1
+      nameserver dns.example
+      nameserver
+      garbage line
+      """)
+
+      refuses_install!(dir)
+    end
+
+    test "NCC_DNS_SERVERS naming only a range or garbage", %{dir: dir} do
+      System.put_env("NCC_DNS_SERVERS", "0.0.0.0/0 ::/0 any")
+      refuses_install!(dir)
+    end
+
+    test "a ruleset already in place is left exactly as it was", %{dir: dir} do
+      :ok = Egress.install()
+      state = Path.join(dir, "state")
+      before = for f <- File.ls!(state), into: %{}, do: {f, File.read!(Path.join(state, f))}
+      File.write!(Path.join(dir, "resolv.conf"), "nameserver 127.0.0.53\n")
+      File.write!(Path.join(dir, "log"), "")
+
+      refuses_install!(dir)
+      assert File.read!(Path.join(dir, "log")) == ""
+      now = for f <- File.ls!(state), into: %{}, do: {f, File.read!(Path.join(state, f))}
+      assert now == before
+      assert :ok = Egress.verify()
+    end
+  end
+
+  test "only usable resolver addresses become rules", %{dir: dir} do
+    ip6tables!(dir)
+
+    File.write!(Path.join(dir, "resolv.conf"), """
+    nameserver 169.254.169.254
+    nameserver 0.0.0.0
+    nameserver 999.1.1.1
+    nameserver 198.51.100.7
+    nameserver fe80::1
+    nameserver ::
+    nameserver 2001:db8::53
+    """)
 
     {out, 0} = System.cmd(@script, ["install"], stderr_to_stdout: true)
-    assert out =~ "egress: resolver unknown, DNS allowed to any destination"
-    assert bare_dns?(chain(dir))
+    assert out =~ "egress ruleset installed"
+    dns = fn rules -> rules |> String.split("\n") |> Enum.filter(&(&1 =~ "--dport 53")) end
+
+    assert dns.(chain(dir)) == [
+             "-A NCC-EGRESS -d 198.51.100.7/32 -p udp --dport 53 -j ACCEPT",
+             "-A NCC-EGRESS -d 198.51.100.7/32 -p tcp --dport 53 -j ACCEPT"
+           ]
+
+    assert dns.(chain(dir, "state6")) == [
+             "-A NCC-EGRESS -d 2001:db8::53/128 -p udp --dport 53 -j ACCEPT",
+             "-A NCC-EGRESS -d 2001:db8::53/128 -p tcp --dport 53 -j ACCEPT"
+           ]
+
+    assert :ok = Egress.verify()
+  end
+
+  test "verify fails on a DNS accept to any destination or to a range", %{dir: dir} do
+    :ok = Egress.install()
+    file = Path.join([dir, "state", "NCC-EGRESS"])
+    installed = File.read!(file)
+
+    # What an install before this check wrote when it found no resolver.
+    File.write!(file, String.replace(installed, "-d 192.0.2.53/32 ", ""))
+    assert {:error, why} = Egress.verify()
+    assert why =~ "not the policy"
+
+    File.write!(file, String.replace(installed, "192.0.2.53/32", "0.0.0.0/0"))
+    assert {:error, _} = Egress.verify()
+
+    File.write!(file, String.replace(installed, "192.0.2.53/32", "192.0.2.0/24"))
+    assert {:error, _} = Egress.verify()
+
+    File.write!(file, installed)
     assert :ok = Egress.verify()
   end
 end

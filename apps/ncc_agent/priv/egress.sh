@@ -28,12 +28,14 @@
 #      resolver is usually a private address (the VPC resolver), and DNS
 #      is the one private destination a build needs. The resolvers are, in
 #      order: NCC_DNS_SERVERS (space-separated, for operators and tests);
-#      the `dns` list of /etc/docker/daemon.json; the non-loopback
-#      `nameserver` lines of /etc/resolv.conf; and, when the only one there
-#      is 127.0.0.53 (systemd-resolved), the "Current DNS Server" / "DNS
-#      Servers" of `resolvectl status`. IPv4 ones go to iptables, IPv6 ones
-#      to ip6tables. When none can be determined DNS is allowed to any
-#      destination, and install says so.
+#      the `dns` list of /etc/docker/daemon.json; the usable `nameserver`
+#      lines of /etc/resolv.conf; and, when the only one there is
+#      127.0.0.53 (systemd-resolved), the "Current DNS Server" / "DNS
+#      Servers" of `resolvectl status`. Each must be an IPv4 or IPv6
+#      literal and not loopback, unspecified, link-local, multicast,
+#      broadcast or v4-mapped. IPv4 ones go to iptables, IPv6 ones to
+#      ip6tables. When none is found install fails before touching any
+#      chain: DNS is never opened to any destination.
 #   3. Drop RFC1918, CGNAT, link-local (IMDS) and loopback.
 #   4. Accept TCP 443/80 to the Internet; drop everything else.
 #
@@ -70,10 +72,67 @@ INPUT_CHAIN=NCC-INPUT
 
 CONNTRACK="-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
 
-# Only plain addresses ever become rule words.
-is_v4() { [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; }
-is_v6() { [[ "$1" =~ ^[0-9A-Fa-f:]+$ ]] && [[ "$1" == *:* ]]; }
-is_loopback() { [[ "$1" == 127.* || "$1" == "::1" ]]; }
+# Only plain addresses ever become rule words: a dotted quad of decimal
+# octets 0-255 without leading zeros (which some parsers read as octal),
+# or an IPv6 address in hex groups (no embedded dotted quad, no zone).
+is_v4() {
+  local octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])'
+  [[ "$1" =~ ^$octet(\.$octet){3}$ ]]
+}
+
+# The eight groups of an IPv6 literal, each as four lowercase hex digits
+# separated by `:`; fails when $1 is not one.
+expand_v6() {
+  local ip="${1,,}" head tail groups=() h=() t=() g out=()
+  [[ "$ip" =~ ^[0-9a-f:]+$ ]] || return 1
+  [[ "$ip" != *:::* ]] || return 1
+
+  if [[ "$ip" == *::* ]]; then
+    head="${ip%%::*}"
+    tail="${ip#*::}"
+    [[ "$tail" != *::* ]] || return 1
+    [ -z "$head" ] || IFS=: read -r -a h <<<"$head"
+    [ -z "$tail" ] || IFS=: read -r -a t <<<"$tail"
+    [ $((${#h[@]} + ${#t[@]})) -le 7 ] || return 1
+    groups=(${h[@]+"${h[@]}"})
+    for ((g = ${#h[@]} + ${#t[@]}; g < 8; g++)); do groups+=(0); done
+    groups+=(${t[@]+"${t[@]}"})
+  else
+    [[ "$ip" != :* && "$ip" != *: ]] || return 1
+    IFS=: read -r -a groups <<<"$ip"
+    [ ${#groups[@]} -eq 8 ] || return 1
+  fi
+
+  for g in "${groups[@]}"; do
+    [[ "$g" =~ ^[0-9a-f]{1,4}$ ]] || return 1
+    out+=("$(printf '%04x' "$((16#$g))")")
+  done
+  local IFS=:
+  echo "${out[*]}"
+}
+
+is_v6() { expand_v6 "$1" >/dev/null; }
+
+# A resolver a build container could never usefully (or safely) be sent
+# to: loopback and unspecified are the builder itself, link-local is the
+# metadata service, multicast and broadcast are not one resolver, and
+# v4-mapped v6 would reach a v4 address the v4 chain never checked.
+is_unusable() {
+  local ip="$1" full
+  if is_v4 "$ip"; then
+    [[ "$ip" =~ ^(0|127)\. || "$ip" =~ ^169\.254\. ]] && return 0
+    [ "${ip%%.*}" -ge 224 ] && return 0
+    return 1
+  fi
+  full="$(expand_v6 "$ip")" || return 0
+  case "$full" in
+    0000:0000:0000:0000:0000:0000:0000:000[01]) return 0 ;; # :: and ::1
+    0000:0000:0000:0000:0000:ffff:*) return 0 ;;            # v4-mapped
+    fe[89ab]?:*) return 0 ;;                                # fe80::/10
+    ff??:*) return 0 ;;                                     # multicast
+  esac
+  return 1
+}
 
 # The addresses (one per line) in the `"dns": [...]` list of daemon.json.
 daemon_dns() {
@@ -112,7 +171,7 @@ resolvers() {
       while IFS= read -r line; do [ -n "$line" ] && from_conf+=("$line"); done < <(resolv_conf_dns)
 
       for line in "${from_conf[@]}"; do
-        is_loopback "$line" || candidates+=("$line")
+        is_unusable "$line" || candidates+=("$line")
       done
 
       if [ ${#candidates[@]} -eq 0 ] && [ "${from_conf[*]}" = "127.0.0.53" ]; then
@@ -121,20 +180,22 @@ resolvers() {
     fi
   fi
 
-  for line in "${candidates[@]}"; do
-    if { is_v4 "$line" || is_v6 "$line"; } && ! is_loopback "$line"; then
+  for line in ${candidates[@]+"${candidates[@]}"}; do
+    if { is_v4 "$line" || is_v6 "$line"; } && ! is_unusable "$line"; then
       echo "$line"
     fi
   done | awk '!seen[$0]++'
 }
 
-DNS_ANY_V4=("-p udp --dport 53 -j ACCEPT" "-p tcp --dport 53 -j ACCEPT")
-DNS_ANY_V6=("${DNS_ANY_V4[@]}")
 DNS_V4=()
 DNS_V6=()
 
-# Fills DNS_V4 / DNS_V6 with the per-resolver accepts, or the any-destination
-# ones when no resolver is known.
+# Fills DNS_V4 / DNS_V6 with the per-resolver accepts. With no usable
+# resolver install stops here, before its first iptables call, so the live
+# ruleset (if any) stays as it was and none is half-built: port 53 is
+# never opened to any destination or range instead, since a build can do
+# nothing without DNS anyway and an open port 53 is a tunnel out of the
+# sandbox. The agent then claims nothing until an install succeeds.
 dns_rules() {
   local found=0 ip
   while IFS= read -r ip; do
@@ -148,9 +209,9 @@ dns_rules() {
   done < <(resolvers)
 
   if [ "$found" = 0 ]; then
-    echo "egress: resolver unknown, DNS allowed to any destination"
-    DNS_V4=("${DNS_ANY_V4[@]}")
-    DNS_V6=("${DNS_ANY_V6[@]}")
+    echo "egress: no DNS resolver found (NCC_DNS_SERVERS, the dns list of $DAEMON_JSON," \
+      "the nameservers of $RESOLV_CONF, resolvectl); not installing. Set NCC_DNS_SERVERS." >&2
+    exit 1
   fi
 }
 
@@ -307,9 +368,12 @@ normalise() {
   sed -E 's/ -m (tcp|udp) --dport/ --dport/; s/RELATED,ESTABLISHED/ESTABLISHED,RELATED/'
 }
 
-# A DNS accept as install writes it: to one resolver (-d) or to any.
+# A DNS accept as install writes it: to one resolver (-d x/32 or x/128).
+# One to any destination or to a range, which an older install wrote when
+# it found no resolver, is not, so verify fails on it and the slot
+# reinstalls.
 dns_accept() {
-  [[ "$1" =~ ^-A\ [A-Z-]+(\ -d\ [0-9A-Fa-f.:/]+)?\ -p\ (udp|tcp)\ --dport\ 53\ -j\ ACCEPT$ ]]
+  [[ "$1" =~ ^-A\ [A-Z-]+\ -d\ ([0-9.]+/32|[0-9A-Fa-f:]+/128)\ -p\ (udp|tcp)\ --dport\ 53\ -j\ ACCEPT$ ]]
 }
 
 # verify_chain BIN PARENT CHAIN TERMINAL JUMPS_VAR TAIL_RULE...: the
