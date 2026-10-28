@@ -545,13 +545,18 @@ defmodule PortalWeb.PackageLive do
       <%!--
       `readonly` rather than a <pre>: it keeps the text selectable and
       keyboard-copyable for anyone the clipboard hook cannot serve -- no JS, an
-      insecure context, or a denied clipboard permission.
+      insecure context, or a denied clipboard permission. Selecting it all on
+      click used to be a plain `onclick="this.select()"` attribute, but CSP's
+      `script-src` has no `nonce` mechanism for inline event-handler
+      attributes (only for `<script>` elements), so a strict policy blocks it
+      outright; `.SelectOnClick` below does the same thing from the bundle.
       --%>
       <input
         type="text"
         readonly
         value={@snippet}
-        onclick="this.select()"
+        phx-hook=".SelectOnClick"
+        id={"snippet-#{String.downcase(@label)}"}
         class="w-full rounded-lg border border-base-300 bg-base-200/50 px-3 py-2 font-mono text-xs text-base-content/80 outline-none focus:border-primary"
       />
     </div>
@@ -578,6 +583,14 @@ defmodule PortalWeb.PackageLive do
         },
         destroyed() {
           clearTimeout(this.resetTimer)
+        }
+      }
+    </script>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".SelectOnClick">
+      export default {
+        mounted() {
+          this.el.addEventListener("click", () => this.el.select())
         }
       }
     </script>

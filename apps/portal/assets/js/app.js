@@ -25,6 +25,7 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/portal"
 import topbar from "../vendor/topbar"
 import {initWebAuthn} from "./webauthn"
+import {initPackagePicker} from "./package_picker"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 // `disconnectedTimeout` is how long a socket may be down before the
@@ -89,6 +90,7 @@ window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 liveSocket.connect()
 
 initWebAuthn()
+initPackagePicker()
 
 // The bulk rebuild Start button confirms through phoenix_html's
 // `data-confirm`, whose text is fixed when the page renders. Starting a sweep

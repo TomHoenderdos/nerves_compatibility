@@ -18,7 +18,7 @@
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
     <script defer phx-track-static type="text/javascript" src={~p"/assets/js/app.js"}>
     </script>
-    <script>
+    <script nonce={@csp_nonce}>
       (() => {
         const setTheme = (theme) => {
           if (theme === "system") {
@@ -55,7 +55,7 @@
       <script
         async
         data-cfasync="false"
-        src="https://analytics.tomhoenderdos.nl/script.js"
+        src={PortalWeb.Layouts.umami_script_host() <> "/script.js"}
         data-website-id={umami_id}
         data-performance="true"
       >

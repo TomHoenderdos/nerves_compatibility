@@ -3,16 +3,20 @@ defmodule PortalWeb.Router do
 
   import Oban.Web.Router
 
+  # Sobelow's Config.CSP check only recognises a policy passed straight to
+  # `put_secure_browser_headers/2`'s own headers map. It cannot see the
+  # policy `PortalWeb.Plugs.ContentSecurityPolicy` sets right after, so it
+  # flags all three pipelines below as missing one; each pipeline really does
+  # ship one. See `PortalWeb.Plugs.ContentSecurityPolicy`'s moduledoc.
+  # sobelow_skip ["Config.CSP"]
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
     plug :fetch_live_flash
     plug :put_root_layout, html: {PortalWeb.Layouts, :root}
     plug :protect_from_forgery
-
-    plug :put_secure_browser_headers, %{
-      "content-security-policy" => "base-uri 'self'; object-src 'none'; frame-ancestors 'self'"
-    }
+    plug :put_secure_browser_headers
+    plug PortalWeb.Plugs.ContentSecurityPolicy
   end
 
   pipeline :api do
@@ -33,6 +37,7 @@ defmodule PortalWeb.Router do
   # opposite direction. Adding "json" to `:browser` instead would teach every
   # HTML route in the app to negotiate JSON, which is not a trade worth making
   # for two endpoints.
+  # sobelow_skip ["Config.CSP"]
   pipeline :browser_json do
     plug :accepts, ["json"]
     plug :fetch_session
@@ -42,10 +47,8 @@ defmodule PortalWeb.Router do
     # same session key `:browser` reads back.
     plug :fetch_live_flash
     plug :protect_from_forgery
-
-    plug :put_secure_browser_headers, %{
-      "content-security-policy" => "base-uri 'self'; object-src 'none'; frame-ancestors 'self'"
-    }
+    plug :put_secure_browser_headers
+    plug PortalWeb.Plugs.ContentSecurityPolicy
   end
 
   pipeline :admin do
@@ -66,15 +69,14 @@ defmodule PortalWeb.Router do
   # `RequireLogin` is safe here only because `:fetch_live_flash` is above it —
   # it announces the bounce to `/login` with `put_flash/3`, which raises
   # without a fetched flash.
+  # sobelow_skip ["Config.CSP"]
   pipeline :authenticated_json do
     plug :accepts, ["json"]
     plug :fetch_session
     plug :fetch_live_flash
     plug :protect_from_forgery
-
-    plug :put_secure_browser_headers, %{
-      "content-security-policy" => "base-uri 'self'; object-src 'none'; frame-ancestors 'self'"
-    }
+    plug :put_secure_browser_headers
+    plug PortalWeb.Plugs.ContentSecurityPolicy
 
     plug PortalWeb.Plugs.RequireLogin
   end
@@ -192,7 +194,10 @@ defmodule PortalWeb.Router do
     # this dashboard open before the passkey requirement shipped keeps
     # reconnecting to it. `Oban.Web.Router.__options__/2` appends its own
     # `Oban.Web.Authentication` after ours, so ours decides first.
-    oban_dashboard("/oban", on_mount: [{PortalWeb.Plugs.RequireAdmin, :require_admin_passkey}])
+    oban_dashboard("/oban",
+      csp_nonce_assign_key: :csp_nonce,
+      on_mount: [{PortalWeb.Plugs.RequireAdmin, :require_admin_passkey}]
+    )
 
     # Same reasoning as the Oban dashboard: the pipeline guards the first HTTP
     # request, the on_mount guards every LiveView reconnect after it.

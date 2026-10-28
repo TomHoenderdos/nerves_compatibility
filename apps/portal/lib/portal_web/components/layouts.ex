@@ -29,6 +29,18 @@ defmodule PortalWeb.Layouts do
   def title_suffix, do: @title_suffix
   def default_title, do: @default_title
 
+  @umami_script_host "https://analytics.tomhoenderdos.nl"
+
+  @doc """
+  Origin of the Umami analytics tag `root.html.heex` renders.
+
+  Exposed as a function for the same reason as `title_suffix/0`:
+  `PortalWeb.Plugs.ContentSecurityPolicy` has to allow this exact origin in
+  `script-src` whenever the tag can render, and a literal in both places
+  would drift.
+  """
+  def umami_script_host, do: @umami_script_host
+
   @doc """
   The `<head>` metadata that is not the title: description, canonical URL, and
   Open Graph.
