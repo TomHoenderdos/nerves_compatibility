@@ -56,7 +56,7 @@
     "--mount",
     "type=bind,source=/srv/ncc/nerves-cache,target=/nerves-cache,readonly",
     "--mount",
-    "type=bind,source=/srv/ncc/hex-cache,target=/hex-cache",
+    "type=bind,source=/srv/ncc/hex-cache,target=/hex-cache,readonly",
     "--mount",
     "type=bind,source=/srv/ncc/build-cache/sha256_deadbeef,target=/build-cache,readonly",
     "-e",
