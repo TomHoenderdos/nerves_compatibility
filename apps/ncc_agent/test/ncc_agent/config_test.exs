@@ -41,6 +41,21 @@ defmodule NccAgent.ConfigTest do
     assert {:ok, %{hex_cache_rw: true}} = Config.load()
   end
 
+  test "NCC_DOCKER_RUNTIME picks the build runtime; unset or empty leaves docker's default" do
+    System.put_env("NCC_PORTAL_URL", "https://portal.test:8443")
+    assert {:ok, %{docker_runtime: nil}} = Config.load()
+
+    System.put_env("NCC_DOCKER_RUNTIME", "")
+    assert {:ok, %{docker_runtime: nil}} = Config.load()
+
+    System.put_env("NCC_DOCKER_RUNTIME", "runsc")
+    assert {:ok, %{docker_runtime: "runsc"}} = Config.load()
+
+    System.put_env("NCC_DOCKER_RUNTIME", "kata")
+    assert {:error, [msg]} = Config.load()
+    assert msg =~ "NCC_DOCKER_RUNTIME"
+  end
+
   test "slots must be 1..16 and the url https" do
     System.put_env("NCC_PORTAL_URL", "http://portal.test")
     System.put_env("NCC_SLOTS", "40")

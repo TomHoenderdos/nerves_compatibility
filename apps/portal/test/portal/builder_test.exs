@@ -683,6 +683,28 @@ defmodule Portal.BuilderTest do
     end
   end
 
+  describe "docker runtime" do
+    test "unset passes no --runtime flag", %{previous: previous} do
+      put_builder([docker_runtime: nil], previous)
+
+      refute Enum.any?(args(), &String.starts_with?(&1, "--runtime"))
+    end
+
+    test "NCC_DOCKER_RUNTIME reaches builds and warm runs alike", %{previous: previous} do
+      put_builder([docker_runtime: "runsc"], previous)
+      warm = Map.put(@job, :mode, "warm_nerves")
+
+      assert "--runtime=runsc" in args()
+
+      assert "--runtime=runsc" in Builder.build_docker_args(
+               warm,
+               "/scratch/work",
+               "/scratch/out",
+               "/scratch/files"
+             )
+    end
+  end
+
   describe "Nerves cache mount" do
     defp mounts(argv) do
       argv

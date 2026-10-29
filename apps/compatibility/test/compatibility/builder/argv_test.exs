@@ -75,6 +75,28 @@ defmodule Compatibility.Builder.ArgvTest do
     end
   end
 
+  # Unset is the rootless host of today: no flag, so the daemon's own default
+  # runtime decides, exactly as before the option existed.
+  test "no runtime means no --runtime flag and the argv of today", %{input: input, argv: argv} do
+    assert Argv.build(Map.put(input, :runtime, nil)) == argv
+    refute Enum.any?(argv, &String.starts_with?(&1, "--runtime"))
+  end
+
+  test "a runtime is passed to docker right after the sandbox flags", %{input: input} do
+    for runtime <- ["runsc", "runc"] do
+      argv = Argv.build(Map.put(input, :runtime, runtime))
+
+      assert ["--pids-limit", "4096", "--runtime=" <> ^runtime | _] =
+               Enum.drop_while(argv, &(&1 != "--pids-limit"))
+    end
+  end
+
+  test "an unknown runtime raises", %{input: input} do
+    for runtime <- ["", "kata", "runsc --debug", "--privileged", :runsc] do
+      assert_raise ArgumentError, fn -> Argv.build(Map.put(input, :runtime, runtime)) end
+    end
+  end
+
   test "memory-only and build_concurrency-only, without cpus", %{input: input} do
     argv =
       input

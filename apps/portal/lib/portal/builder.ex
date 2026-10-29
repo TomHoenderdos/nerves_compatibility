@@ -795,6 +795,7 @@ defmodule Portal.Builder do
       cpus: config(:cpus, nil),
       memory: config(:memory, nil),
       build_concurrency: config(:build_concurrency, nil),
+      runtime: config(:docker_runtime, nil),
       nerves_cache_mode: nerves_cache_mode(job),
       hex_cache_mode: Map.get_lazy(job, :hex_cache_mode, fn -> resolved_hex_cache_mode!(job) end),
       paths: %{

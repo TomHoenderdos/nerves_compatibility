@@ -174,6 +174,14 @@ if portal_available? do
     cpus: System.get_env("NCC_BUILD_CPUS"),
     memory: System.get_env("NCC_BUILD_MEMORY"),
     build_concurrency: System.get_env("NCC_BUILD_CONCURRENCY"),
+    # The OCI runtime builds and warm runs start with (`runsc` for gVisor,
+    # `runc`). Unset or empty passes no `--runtime`, leaving the daemon's
+    # default; `Compatibility.Builder.Argv` refuses anything else.
+    docker_runtime:
+      case System.get_env("NCC_DOCKER_RUNTIME") do
+        "" -> nil
+        runtime -> runtime
+      end,
     run_as_user: System.get_env("NCC_BUILD_USER"),
     # `Portal.Builder.min_free_bytes/0` parses this, so the string is fine.
     min_free_disk_gb: System.get_env("NCC_MIN_FREE_GB"),

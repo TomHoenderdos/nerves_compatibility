@@ -70,6 +70,14 @@ defmodule NccAgent.ArgvParityTest do
     refute Enum.any?(expected, &String.contains?(&1, "/home/nerves/.nerves"))
   end
 
+  test "the agent's runtime reaches the argv", %{input: input} do
+    dirs = Map.take(input.paths, [:work, :out, :files, :tmp, :cache])
+    config = %{config(input) | docker_runtime: "runsc"}
+    argv = config |> Job.argv_spec(claim(input, input.image), dirs) |> Argv.build()
+
+    assert "--runtime=runsc" in argv
+  end
+
   test "a registry image is run by digest", %{input: input} do
     dirs = Map.take(input.paths, [:work, :out, :files, :tmp, :cache])
     claim = claim(input, "ghcr.io/tomhoenderdos/ncc-worker")

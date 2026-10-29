@@ -23,6 +23,10 @@ defmodule Compatibility.Builder.Argv do
   `HEX_HOME` again) for the one-release rollback, and `:legacy` (read-write,
   no env) for an image without the `ncc.hex-cache=seeded` label, whose
   worker writes `/hex-cache` itself. `hex_cache_mode/2` picks one.
+
+  `:runtime`, when given, is the OCI runtime docker starts the container
+  with: `"runsc"` (gVisor) or `"runc"`. Unset leaves it to the daemon's
+  default, as before the option existed.
   """
 
   @type paths :: %{
@@ -41,6 +45,8 @@ defmodule Compatibility.Builder.Argv do
 
   @hex_cache_label "ncc.hex-cache"
 
+  @runtimes ["runsc", "runc"]
+
   @type spec :: %{
           required(:container_name) => String.t(),
           required(:user) => String.t(),
@@ -48,6 +54,7 @@ defmodule Compatibility.Builder.Argv do
           required(:paths) => paths(),
           required(:nerves_cache_mode) => nerves_cache_mode(),
           optional(:hex_cache_mode) => hex_cache_mode(),
+          optional(:runtime) => String.t() | nil,
           optional(:cpus) => String.t() | number() | nil,
           optional(:memory) => String.t() | number() | nil,
           optional(:build_concurrency) => String.t() | pos_integer() | nil
@@ -63,6 +70,7 @@ defmodule Compatibility.Builder.Argv do
 
     validate_paths!(paths)
     validate_image!(image)
+    validate_runtime!(Map.get(spec, :runtime))
 
     flags(spec) ++
       limits(spec) ++
@@ -95,6 +103,15 @@ defmodule Compatibility.Builder.Argv do
     end
   end
 
+  # Only names docker knows as a runtime on our hosts: the value becomes part
+  # of a flag, so anything else could carry options of its own.
+  defp validate_runtime!(runtime) when runtime in [nil | @runtimes], do: :ok
+
+  defp validate_runtime!(runtime) do
+    raise ArgumentError,
+          "runtime must be one of #{inspect(@runtimes)} or nil, got: #{inspect(runtime)}"
+  end
+
   defp flags(spec) do
     [
       "run",
@@ -115,8 +132,11 @@ defmodule Compatibility.Builder.Argv do
       # host's pid table.
       "--pids-limit",
       "4096"
-    ]
+    ] ++ runtime_flag(Map.get(spec, :runtime))
   end
+
+  defp runtime_flag(nil), do: []
+  defp runtime_flag(runtime), do: ["--runtime=#{runtime}"]
 
   # Buildroot cross-compiles will use every core they are given. On a host that
   # shares the machine with other services, an unbounded build starves them, so
@@ -180,6 +200,10 @@ defmodule Compatibility.Builder.Argv do
   # variable and ignores it, so `:legacy` sends nothing.
   defp hex_cache_env(:rw), do: ["-e", "NCC_HEX_CACHE_RW=1"]
   defp hex_cache_env(mode) when mode in [:readonly, :legacy], do: []
+
+  @doc "The runtimes `:runtime` accepts besides nil."
+  @spec runtimes() :: [String.t()]
+  def runtimes, do: @runtimes
 
   @doc """
   The image label that says the image's worker seeds a per-run `HEX_HOME`
