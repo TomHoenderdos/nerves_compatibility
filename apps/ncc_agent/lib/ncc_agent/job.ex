@@ -147,7 +147,6 @@ defmodule NccAgent.Job do
       cpus: config.cpus,
       memory: config.memory,
       build_concurrency: config.build_concurrency,
-      runtime: config.docker_runtime,
       nerves_cache_mode: :readonly,
       hex_cache_mode: hex_cache_mode,
       paths: %{

@@ -14,6 +14,19 @@ defmodule Compatibility.Builder.ArgvTest do
     assert Argv.build(input) == argv
   end
 
+  # Untrusted package code runs in the gVisor sentry, never on the host
+  # kernel directly, and there is no other runtime to fall back to.
+  test "always runs the container under runsc", %{input: input} do
+    for spec <- [input, %{input | nerves_cache_mode: :warm}, Map.drop(input, [:cpus, :memory])] do
+      argv = Argv.build(spec)
+
+      assert ["--pids-limit", "4096", "--runtime=runsc" | _] =
+               Enum.drop_while(argv, &(&1 != "--pids-limit"))
+
+      assert Enum.count(argv, &String.starts_with?(&1, "--runtime")) == 1
+    end
+  end
+
   test "leaves out the limits and the CPU env when nothing caps the build", %{input: input} do
     argv = input |> Map.drop([:cpus, :memory, :build_concurrency]) |> Argv.build()
 
@@ -72,28 +85,6 @@ defmodule Compatibility.Builder.ArgvTest do
   test "an image starting with a dash raises", %{input: input} do
     assert_raise ArgumentError, fn ->
       Argv.build(%{input | image: "-x"})
-    end
-  end
-
-  # Unset is the rootless host of today: no flag, so the daemon's own default
-  # runtime decides, exactly as before the option existed.
-  test "no runtime means no --runtime flag and the argv of today", %{input: input, argv: argv} do
-    assert Argv.build(Map.put(input, :runtime, nil)) == argv
-    refute Enum.any?(argv, &String.starts_with?(&1, "--runtime"))
-  end
-
-  test "a runtime is passed to docker right after the sandbox flags", %{input: input} do
-    for runtime <- ["runsc", "runc"] do
-      argv = Argv.build(Map.put(input, :runtime, runtime))
-
-      assert ["--pids-limit", "4096", "--runtime=" <> ^runtime | _] =
-               Enum.drop_while(argv, &(&1 != "--pids-limit"))
-    end
-  end
-
-  test "an unknown runtime raises", %{input: input} do
-    for runtime <- ["", "kata", "runsc --debug", "--privileged", :runsc] do
-      assert_raise ArgumentError, fn -> Argv.build(Map.put(input, :runtime, runtime)) end
     end
   end
 

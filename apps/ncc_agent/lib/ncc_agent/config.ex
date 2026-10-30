@@ -1,8 +1,6 @@
 defmodule NccAgent.Config do
   @moduledoc "The agent's configuration, read from the environment (an EnvironmentFile populates it under systemd in production)."
 
-  alias Compatibility.Builder.Argv
-
   @type t :: %{
           portal_url: String.t() | nil,
           enrolment_token: String.t() | nil,
@@ -13,9 +11,6 @@ defmodule NccAgent.Config do
           data_dir: Path.t(),
           build_user: String.t(),
           docker_bin: String.t(),
-          # `NCC_DOCKER_RUNTIME`: the OCI runtime builds start with
-          # (`Compatibility.Builder.Argv`); nil leaves the daemon's default.
-          docker_runtime: String.t() | nil,
           egress_script: Path.t(),
           # `NCC_HEX_CACHE_RW=1`: the one-release rollback to a read-write
           # Hex cache mount (`Compatibility.Builder.Argv`).
@@ -37,7 +32,6 @@ defmodule NccAgent.Config do
       data_dir: "/srv/ncc",
       build_user: own_user(),
       docker_bin: "docker",
-      docker_runtime: nil,
       egress_script: Path.join(to_string(:code.priv_dir(:ncc_agent)), "egress.sh"),
       hex_cache_rw: false,
       slot: nil
@@ -58,17 +52,12 @@ defmodule NccAgent.Config do
         data_dir: System.get_env("NCC_DATA_DIR", defaults.data_dir),
         build_user: System.get_env("NCC_BUILD_USER") || defaults.build_user,
         docker_bin: System.get_env("NCC_DOCKER_BIN", defaults.docker_bin),
-        docker_runtime: blank_to_nil(System.get_env("NCC_DOCKER_RUNTIME")),
         egress_script: System.get_env("NCC_EGRESS_SCRIPT") || defaults.egress_script,
         hex_cache_rw: System.get_env("NCC_HEX_CACHE_RW") == "1"
     }
 
     {slots, slot_errors} = parse_slots(System.get_env("NCC_SLOTS", "1"))
-
-    errors =
-      url_errors(config.portal_url) ++
-        slot_errors ++ user_errors(config.build_user) ++ runtime_errors(config.docker_runtime)
-
+    errors = url_errors(config.portal_url) ++ slot_errors ++ user_errors(config.build_user)
     if errors == [], do: {:ok, %{config | slots: slots}}, else: {:error, errors}
   end
 
@@ -119,19 +108,6 @@ defmodule NccAgent.Config do
     else
       _ -> ["NCC_BUILD_USER must be uid:gid, got #{inspect(user)}"]
     end
-  end
-
-  defp blank_to_nil(""), do: nil
-  defp blank_to_nil(value), do: value
-
-  # Every job would raise in `Compatibility.Builder.Argv` instead; the
-  # release refuses to start rather than fail each build as a runner error.
-  defp runtime_errors(runtime) do
-    if runtime in [nil | Argv.runtimes()],
-      do: [],
-      else: [
-        "NCC_DOCKER_RUNTIME must be one of #{inspect(Argv.runtimes())}, got #{inspect(runtime)}"
-      ]
   end
 
   defp parse_slots(value) do

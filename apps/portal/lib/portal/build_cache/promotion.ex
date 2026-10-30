@@ -116,6 +116,7 @@ defmodule Portal.BuildCache.Promotion do
   require Logger
 
   alias Compatibility.BuildCacheKey
+  alias Compatibility.Builder.Argv
   alias Portal.BuildCache.{L2, Staging, Tree}
 
   @l2_upload_budget_ms 120_000
@@ -675,6 +676,7 @@ defmodule Portal.BuildCache.Promotion do
       "--security-opt=no-new-privileges",
       "--pids-limit",
       "64",
+      Argv.runtime_flag(),
       "--user",
       Portal.Builder.run_as_user(),
       "--mount",

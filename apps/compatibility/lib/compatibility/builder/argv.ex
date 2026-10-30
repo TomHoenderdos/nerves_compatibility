@@ -24,9 +24,8 @@ defmodule Compatibility.Builder.Argv do
   no env) for an image without the `ncc.hex-cache=seeded` label, whose
   worker writes `/hex-cache` itself. `hex_cache_mode/2` picks one.
 
-  `:runtime`, when given, is the OCI runtime docker starts the container
-  with: `"runsc"` (gVisor) or `"runc"`. Unset leaves it to the daemon's
-  default, as before the option existed.
+  Every container runs under gVisor (`runtime_flag/0`), with no other
+  runtime to fall back to: a host without `runsc` fails every build.
   """
 
   @type paths :: %{
@@ -45,7 +44,7 @@ defmodule Compatibility.Builder.Argv do
 
   @hex_cache_label "ncc.hex-cache"
 
-  @runtimes ["runsc", "runc"]
+  @runtime_flag "--runtime=runsc"
 
   @type spec :: %{
           required(:container_name) => String.t(),
@@ -54,7 +53,6 @@ defmodule Compatibility.Builder.Argv do
           required(:paths) => paths(),
           required(:nerves_cache_mode) => nerves_cache_mode(),
           optional(:hex_cache_mode) => hex_cache_mode(),
-          optional(:runtime) => String.t() | nil,
           optional(:cpus) => String.t() | number() | nil,
           optional(:memory) => String.t() | number() | nil,
           optional(:build_concurrency) => String.t() | pos_integer() | nil
@@ -70,7 +68,6 @@ defmodule Compatibility.Builder.Argv do
 
     validate_paths!(paths)
     validate_image!(image)
-    validate_runtime!(Map.get(spec, :runtime))
 
     flags(spec) ++
       limits(spec) ++
@@ -103,15 +100,6 @@ defmodule Compatibility.Builder.Argv do
     end
   end
 
-  # Only names docker knows as a runtime on our hosts: the value becomes part
-  # of a flag, so anything else could carry options of its own.
-  defp validate_runtime!(runtime) when runtime in [nil | @runtimes], do: :ok
-
-  defp validate_runtime!(runtime) do
-    raise ArgumentError,
-          "runtime must be one of #{inspect(@runtimes)} or nil, got: #{inspect(runtime)}"
-  end
-
   defp flags(spec) do
     [
       "run",
@@ -131,12 +119,20 @@ defmodule Compatibility.Builder.Argv do
       # A runaway `make -j` or a fork bomb dies here rather than exhausting the
       # host's pid table.
       "--pids-limit",
-      "4096"
-    ] ++ runtime_flag(Map.get(spec, :runtime))
+      "4096",
+      # Package code that escapes the container lands in the gVisor sentry,
+      # not on the host kernel. Under the kvm platform the pids limit above
+      # is not enforced; only `--memory` bounds a fork bomb there.
+      @runtime_flag
+    ]
   end
 
-  defp runtime_flag(nil), do: []
-  defp runtime_flag(runtime), do: ["--runtime=#{runtime}"]
+  @doc """
+  The `docker run` flag every ncc container starts with: a build, a warm
+  run, the egress probe and the build-cache promotion copy alike.
+  """
+  @spec runtime_flag() :: String.t()
+  def runtime_flag, do: @runtime_flag
 
   # Buildroot cross-compiles will use every core they are given. On a host that
   # shares the machine with other services, an unbounded build starves them, so
@@ -200,10 +196,6 @@ defmodule Compatibility.Builder.Argv do
   # variable and ignores it, so `:legacy` sends nothing.
   defp hex_cache_env(:rw), do: ["-e", "NCC_HEX_CACHE_RW=1"]
   defp hex_cache_env(mode) when mode in [:readonly, :legacy], do: []
-
-  @doc "The runtimes `:runtime` accepts besides nil."
-  @spec runtimes() :: [String.t()]
-  def runtimes, do: @runtimes
 
   @doc """
   The image label that says the image's worker seeds a per-run `HEX_HOME`

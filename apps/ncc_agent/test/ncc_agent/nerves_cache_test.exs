@@ -118,7 +118,7 @@ defmodule NccAgent.NervesCacheTest do
     argv_log = Path.join(dir, "argv.log")
     System.put_env("FAKE_DOCKER_ARGV_LOG", argv_log)
     System.put_env("FAKE_DOCKER_RESULT", ~s({"scope":"warm_nerves"}))
-    config = %{config | docker_bin: @fake, docker_runtime: "runsc"}
+    config = %{config | docker_bin: @fake}
 
     assert :skipped = NervesCache.warm(config, claim(), [pair("evil", "1.0.0")])
     assert :skipped = NervesCache.warm(config, claim(), [])
