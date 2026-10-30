@@ -15,6 +15,10 @@ defmodule Portal.EgressCheckTest do
     assert ["run", "--rm", "--pull=never" | _] = args
     assert Argv.runtime_flag() in args
     assert "--cap-drop=ALL" in args
+    # The builders' docker-ncc authz policy refuses a container without a
+    # memory limit or with a writable root.
+    assert "--read-only" in args
+    assert args |> Enum.chunk_every(2, 1) |> Enum.member?(["--memory", "256m"])
     assert Enum.take(args, -2) == ["100.64.0.1", "5432"]
   end
 

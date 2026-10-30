@@ -677,6 +677,10 @@ defmodule Portal.BuildCache.Promotion do
       "--pids-limit",
       "64",
       Argv.runtime_flag(),
+      # The builders' daemon refuses a container without a memory limit
+      # (homelab modules/ncc-authz.rego); `cp` needs little.
+      "--memory",
+      "256m",
       "--user",
       Portal.Builder.run_as_user(),
       "--mount",

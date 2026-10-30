@@ -156,6 +156,12 @@ defmodule Portal.EgressCheck do
       "--cap-drop=ALL",
       "--security-opt=no-new-privileges",
       Argv.runtime_flag(),
+      # The builders' daemon refuses a container without both (homelab
+      # modules/ncc-authz.rego); the probe needs neither a writable root nor
+      # much memory.
+      "--read-only",
+      "--memory",
+      "256m",
       "--user",
       Builder.run_as_user(),
       "--entrypoint",

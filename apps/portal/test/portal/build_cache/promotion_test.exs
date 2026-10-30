@@ -652,6 +652,7 @@ defmodule Portal.BuildCache.PromotionTest do
       assert "--cap-drop=ALL" in args
       assert "--security-opt=no-new-privileges" in args
       assert Argv.runtime_flag() in args
+      assert args |> Enum.chunk_every(2, 1) |> Enum.member?(["--memory", "256m"])
       assert "type=bind,source=/scratch/run/out,target=/src,readonly" in args
       assert "type=bind,source=/cache/slug/k.tmp.x,target=/dst" in args
       refute Enum.any?(args, &String.contains?(&1, "source=/scratch/run/out/build-cache"))
