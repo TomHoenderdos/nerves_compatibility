@@ -16,6 +16,7 @@ SRC = Path(__file__).resolve().parent.parent
 # reaches the same daemon only over mTLS, where the authz policy allows build
 # containers and little else.
 ROOT_SOCKET = "unix:///run/docker-ncc/docker.sock"
+SYSTEM_SOCKET = "unix:///var/run/docker.sock"
 PORTAL_DOCKER = {
     "DOCKER_HOST": "tcp://127.0.0.1:2376",
     "DOCKER_TLS_VERIFY": "1",
@@ -473,6 +474,12 @@ class RootlessDaemonGoneTest(unittest.TestCase):
             self.assertNotRegex(example, rf"(?m)^{gone}=", gone)
 
 
+    # D10: the web host builds its release on its system dockerd, and says so.
+    def test_the_deploy_env_example_shows_the_web_hosts_daemon(self):
+        example = (Path(__file__).parent / "deploy.env.example").read_text()
+        self.assertRegex(example, r"(?m)^#\s*DOCKER_HOST=unix:///var/run/docker\.sock$")
+
+
 class ReleaseBuildDaemonTest(unittest.TestCase):
     """build-release.sh runs a trusted hexpm/elixir container with no runtime
     flag. It runs as root on docker-ncc's root socket (D7), the one path the
@@ -508,6 +515,21 @@ class ReleaseBuildDaemonTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([e for e in events if e.startswith("docker")],
                          [f"docker run @{ROOT_SOCKET}"])
+
+    # D10: a web host's deploy env names its system dockerd, and the release
+    # builds there; a builder's never does.
+    def test_a_web_hosts_release_build_runs_on_its_system_dockerd(self):
+        result, events = self.build(deploy_env=f"DOCKER_HOST={SYSTEM_SOCKET}\n", DOCKER_HOST="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([e for e in events if e.startswith("docker")],
+                         [f"docker run @{SYSTEM_SOCKET}"])
+
+    def test_a_builders_release_build_never_runs_on_the_system_dockerd(self):
+        result, events = self.build(deploy_env=f"DOCKER_HOST={ROOT_SOCKET}\n", DOCKER_HOST="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        docker = [e for e in events if e.startswith("docker")]
+        self.assertTrue(docker)
+        self.assertFalse([e for e in docker if SYSTEM_SOCKET in e], docker)
 
     # From the deploy env file, like the rest of the host layout.
     def test_release_build_reads_the_socket_from_the_deploy_env_file(self):
