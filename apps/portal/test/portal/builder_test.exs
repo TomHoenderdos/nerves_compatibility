@@ -368,6 +368,12 @@ defmodule Portal.BuilderTest do
         drop comment "ncc_egress_v1"
       }
     }
+    table bridge ncc_egress_icc {
+      chain build_icc {
+        type filter hook forward priority filter - 10; policy accept;
+        meta ibrname "ncc0" drop comment "ncc_egress_icc_v1"
+      }
+    }
     """
 
     # A stand-in for the builder's root status helper (homelab
@@ -480,7 +486,25 @@ defmodule Portal.BuilderTest do
     end
 
     test "probe_egress/1 reads the table from the status socket" do
-      assert :ok = Builder.probe_egress(socket: egress_status_socket(@egress_listing))
+      assert :ok =
+               Builder.probe_egress(
+                 socket: egress_status_socket(@egress_listing),
+                 expected_hashes: [Builder.egress_listing_sha256(@egress_listing)]
+               )
+    end
+
+    # What the builders' status helper really lists (homelab
+    # modules/ncc-gvisor.nix, nft 1.1.6), captured from the built units. The
+    # release's expected set must hold its hash, or every build is refused.
+    test "the release expects the builders' reviewed filter" do
+      listing = File.read!(Path.expand("../fixtures/egress/status_listing.txt", __DIR__))
+
+      assert Builder.egress_table_complete?(listing)
+
+      assert Builder.egress_listing_sha256(listing) in Application.fetch_env!(
+               :portal,
+               Portal.Builder
+             )[:egress_table_hashes]
     end
 
     test "probe_egress/1 reports what nft said when the table is absent" do

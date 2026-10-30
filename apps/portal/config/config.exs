@@ -185,7 +185,13 @@ config :portal, Portal.Builder,
   hex_cache_max_bytes: 20 * 1024 * 1024 * 1024,
   # Refuse to build on a host whose egress filter is not loaded
   # (`Portal.Builder.check_egress/0`). `NCC_EGRESS_CHECK=0` turns it off.
-  egress_check: true
+  egress_check: true,
+  # The builders' reviewed filter: `Portal.Builder.egress_listing_sha256/1` of
+  # what the status helper lists (homelab modules/ncc-gvisor.nix, nft 1.1.6).
+  # A listing with any other hash refuses builds; the refusal logs the hash.
+  # Change only together with that ruleset. Not overridable from the
+  # environment.
+  egress_table_hashes: ["489413f926bd75f21dfa134a79b641781a586b66927c040bae61f1a853c1c765"]
 
 # Where the "Open an issue" link in the UI points.
 #

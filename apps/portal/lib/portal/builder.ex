@@ -35,6 +35,7 @@ defmodule Portal.Builder do
   # ops/test_builder_egress.py checks all three agree.
   @egress_table "ncc_egress"
   @egress_marker "ncc_egress_v1"
+  @egress_icc_marker "ncc_egress_icc_v1"
 
   # Listing an nftables table takes CAP_NET_ADMIN, which the portal does not
   # have. On a builder a root helper answers every connection to this socket
@@ -46,6 +47,9 @@ defmodule Portal.Builder do
   # bounds the whole read to this many milliseconds and fails closed past it.
   # Overridable per call (`:timeout_ms`) so tests use a short bound.
   @egress_probe_timeout_ms :timer.seconds(10)
+
+  # The helper's answer is two short tables; anything much longer is not one.
+  @egress_status_max_bytes 64 * 1024
 
   @type build_args :: %{
           required(:run_id) => String.t(),
@@ -601,11 +605,15 @@ defmodule Portal.Builder do
   end
 
   @doc false
-  # Reads `inet ncc_egress` from the root status helper's socket (`:socket`,
-  # `@egress_status_socket` by default). The helper takes no input and
-  # writes nft's output, then closes. The whole read is bounded by
-  # `:timeout_ms`: a wedged helper fails closed instead of blocking the
-  # caller's `:builds` slot forever.
+  # Reads the filter from the root status helper's socket (`:socket`,
+  # `@egress_status_socket` by default): `nft -s list` of `inet ncc_egress`
+  # and the bridge icc table, written by the helper, which takes no input,
+  # then closed. Passes only a complete listing whose normalised sha256
+  # (`egress_listing_sha256/1`) is in `:expected_hashes`, by default the
+  # release's `:egress_table_hashes`: a table that is present but weakened
+  # has another hash. The whole read is bounded by `:timeout_ms` and
+  # `@egress_status_max_bytes`: a wedged or runaway helper fails closed
+  # instead of blocking the caller's `:builds` slot.
   @spec probe_egress(keyword()) :: :ok | {:error, term()}
   def probe_egress(opts \\ []) do
     socket =
@@ -613,45 +621,85 @@ defmodule Portal.Builder do
         config(:egress_status_socket, @egress_status_socket)
       end)
 
+    expected =
+      Keyword.get_lazy(opts, :expected_hashes, fn -> config(:egress_table_hashes, []) end)
+
     timeout_ms = Keyword.get(opts, :timeout_ms, @egress_probe_timeout_ms)
     deadline = System.monotonic_time(:millisecond) + timeout_ms
 
     case :gen_tcp.connect({:local, socket}, 0, [:binary, active: false], timeout_ms) do
       {:ok, conn} ->
-        result = read_status(conn, deadline, [])
+        result = read_status(conn, deadline, [], 0)
         :gen_tcp.close(conn)
-        with {:ok, listing} <- result, do: egress_listing_result(listing)
+        with {:ok, listing} <- result, do: egress_listing_result(listing, expected)
 
       {:error, reason} ->
         {:error, {:status_socket, socket, reason}}
     end
   end
 
-  defp read_status(conn, deadline, acc) do
+  defp read_status(_conn, _deadline, _acc, size) when size > @egress_status_max_bytes,
+    do: {:error, :egress_status_oversized}
+
+  defp read_status(conn, deadline, acc, size) do
     case :gen_tcp.recv(conn, 0, max(deadline - System.monotonic_time(:millisecond), 0)) do
-      {:ok, data} -> read_status(conn, deadline, [acc | data])
+      {:ok, data} -> read_status(conn, deadline, [acc | data], size + byte_size(data))
       {:error, :closed} -> {:ok, IO.iodata_to_binary(acc)}
       {:error, :timeout} -> {:error, :timeout}
       {:error, reason} -> {:error, {:status_socket, reason}}
     end
   end
 
-  defp egress_listing_result(listing) do
+  defp egress_listing_result(listing, expected) do
+    hash = egress_listing_sha256(listing)
+
     cond do
-      egress_table_complete?(listing) -> :ok
-      String.starts_with?(listing, "Error") -> {:error, {:nft_failed, String.trim(listing)}}
-      true -> {:error, :egress_table_incomplete}
+      String.starts_with?(String.trim_leading(listing), "Error") ->
+        {:error, {:nft_failed, listing |> String.trim() |> String.slice(0, 500)}}
+
+      not egress_table_complete?(listing) ->
+        {:error, :egress_table_incomplete}
+
+      expected == [] ->
+        {:error, {:no_expected_egress_hashes, hash}}
+
+      hash not in expected ->
+        {:error, {:unexpected_egress_table, hash}}
+
+      true ->
+        :ok
     end
   end
 
+  @doc """
+  The sha256 the release's `:egress_table_hashes` holds for a status
+  listing: each line without a trailing `# handle N` and right-trimmed,
+  leading and trailing blank lines dropped, joined with "\\n", lowercase hex.
+  """
+  @spec egress_listing_sha256(String.t()) :: String.t()
+  def egress_listing_sha256(listing) do
+    listing
+    |> String.split("\n")
+    |> Enum.map(&(&1 |> String.replace(~r/\s*# handle \d+$/, "") |> String.trim_trailing()))
+    |> Enum.drop_while(&(&1 == ""))
+    |> Enum.reverse()
+    |> Enum.drop_while(&(&1 == ""))
+    |> Enum.reverse()
+    |> Enum.join("\n")
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
   @doc false
-  # The table, its forward hook, and the final drop of the ruleset version
-  # this release expects.
+  # The table, its forward hook, the final drop of the ruleset version this
+  # release expects, and the bridge table's drop between containers.
   @spec egress_table_complete?(String.t()) :: boolean()
   def egress_table_complete?(listing) do
     String.contains?(listing, "table inet #{@egress_table}") and
       String.contains?(listing, "hook forward") and
-      String.contains?(listing, ~s(comment "#{@egress_marker}"))
+      String.contains?(listing, ~s(comment "#{@egress_marker}")) and
+      String.contains?(listing, "table bridge ") and
+      String.contains?(listing, ~s(drop comment "#{@egress_icc_marker}"))
   end
 
   # `~/.ncc-scratch` does not exist until the first build creates it, and `df` on
