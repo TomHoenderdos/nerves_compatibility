@@ -34,7 +34,11 @@ ncc_layout() {
   fi
 }
 
-ncc_layout NCC_SRC_DIR NCC_INSTALL_DIR || exit 1
+# DOCKER_HOST names docker-ncc's root-only unix socket, the one path its authz
+# policy leaves unrestricted, which this trusted container with no runtime
+# flag needs. Without it the docker CLI would fall back to
+# /var/run/docker.sock, a daemon that is not there or runs no builds.
+ncc_layout NCC_SRC_DIR NCC_INSTALL_DIR DOCKER_HOST || exit 1
 
 SRC=$NCC_SRC_DIR
 DEST=$NCC_INSTALL_DIR/portal
