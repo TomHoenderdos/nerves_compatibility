@@ -8,7 +8,16 @@ import unittest
 
 
 HELPER = Path(__file__).with_name("builder-deploy.sh")
+RELEASE_BUILD = Path(__file__).with_name("build-release.sh")
 SRC = Path(__file__).resolve().parent.parent
+# Builds run on the rootful docker-ncc daemon (#40). ncc's socket may only run
+# build containers (Unit 2b): pulling, building, loading and tagging images
+# goes through a root-only endpoint of the same daemon, which the deploy env
+# file names.
+NCC_SOCKET = "unix:///run/docker-ncc/docker.sock"
+ADMIN_HOST = "unix:///test/docker-ncc-admin.sock"
+# The system dockerd: trusted, runc, never the one builds run on.
+SYSTEM_SOCKET = "unix:///var/run/docker.sock"
 # A synthetic host layout, as the operator's deploy env file would set it.
 LAYOUT = {
     "NCC_SRC_DIR": str(SRC),
@@ -17,8 +26,11 @@ LAYOUT = {
     "NCC_PORTAL_WORKDIR": "/test/work",
     "NCC_EGRESS_RULESET": "/test/config/builder-egress.nft",
     "NCC_EGRESS_BRIDGE_RULESET": "/test/config/builder-egress-bridge.nft",
+    "NCC_DOCKER_ADMIN_HOST": ADMIN_HOST,
 }
 BASE_ENV = {**os.environ, **LAYOUT}
+BASE_ENV.pop("DOCKER_HOST", None)
+BASE_ENV.pop("XDG_RUNTIME_DIR", None)
 HARNESS = r'''
 set -euo pipefail
 source "$HELPER"
@@ -136,21 +148,76 @@ id() { echo 999; }
 git() { echo 0123456789abcdef0123456789abcdef01234567; }
 docker() {
   echo "docker $*" >> "$EVENTS"
-  test "$DOCKER_HOST" = unix:///run/user/999/docker.sock
+  echo "docker ${DOCKER_HOST-unset}" >> "$HOSTS"
   [[ $1 != pull ]] || return "$PULL_STATUS"
 }
-make() { echo "make $*" >> "$EVENTS"; }
+make() { echo "make $*" >> "$EVENTS"; echo "make ${DOCKER_HOST-unset}" >> "$HOSTS"; }
+sudo() { echo "sudo $*" >> "$HOSTS"; }
 builder_build_image
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "events"
+            hosts = Path(directory) / "hosts"
+            result = subprocess.run(
+                ["bash", "-c", script],
+                env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
+                     "HOSTS": str(hosts), "PULL_STATUS": pull_status, **env},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.hosts = hosts.read_text().splitlines() if hosts.exists() else []
+            return result, events.read_text().splitlines() if events.exists() else []
+
+    # ncc's socket may not build, load or tag (Unit 2b); a rootless socket no
+    # longer exists. Every image change goes through the root-only endpoint,
+    # as root: whichever way the image arrives.
+    def test_every_image_change_goes_to_docker_ncc_through_its_admin_endpoint(self):
+        for overrides in ({}, {"pull_status": "1"}, {"NCC_WORKER_FROM_REGISTRY": "0"}):
+            result, events = self.run_build_image(**overrides)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(events, overrides)
+            self.assertEqual(
+                sorted(set(self.hosts)),
+                sorted({f"{line.split()[0]} {ADMIN_HOST}" for line in self.hosts}),
+                (overrides, self.hosts))
+            self.assertFalse([h for h in self.hosts if h.startswith("sudo")], self.hosts)
+
+    def test_a_builder_deploy_without_the_admin_endpoint_refuses(self):
+        script = 'set -euo pipefail\nsource "$HELPER"\necho sourced\n'
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["bash", "-c", script],
+                env={**BASE_ENV, "HELPER": str(HELPER), "NCC_DOCKER_ADMIN_HOST": "",
+                     "NCC_DEPLOY_ENV": str(Path(directory) / "missing.env")},
+                capture_output=True, text=True, timeout=5,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("sourced", result.stdout)
+        self.assertIn("NCC_DOCKER_ADMIN_HOST", result.stderr)
+
+    def test_activation_moves_every_tag_through_the_admin_endpoint(self):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+builder_check_egress() { :; }
+builder_warm_nerves() { :; }
+builder_toolchain_tags() { echo ncc-toolchain:rpi4; }
+id() { echo 999; }
+docker() { echo "docker $* @${DOCKER_HOST-unset}" >> "$EVENTS"; }
+builder_activate_image
 '''
         with tempfile.TemporaryDirectory() as directory:
             events = Path(directory) / "events"
             result = subprocess.run(
                 ["bash", "-c", script],
-                env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
-                     "PULL_STATUS": pull_status, **env},
+                env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events)},
                 capture_output=True, text=True, timeout=5,
             )
-            return result, events.read_text().splitlines() if events.exists() else []
+            lines = events.read_text().splitlines() if events.exists() else []
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"docker tag ncc-worker:deploy ncc-worker:local @{ADMIN_HOST}", lines)
+        self.assertIn(f"docker tag ncc-toolchain:rpi4-deploy ncc-toolchain:rpi4 @{ADMIN_HOST}",
+                      lines)
+        self.assertTrue(all(line.endswith(f" @{ADMIN_HOST}") for line in lines), lines)
 
     def test_pulls_the_commits_registry_image_instead_of_building(self):
         result, events = self.run_build_image()
@@ -173,14 +240,16 @@ builder_build_image
         self.assertFalse(any(e.startswith("docker pull") for e in events))
         self.assertIn("make build WORKER_IMAGE=ncc-worker:deploy", events)
 
-    def test_rootless_daemon_setting_does_not_leak_into_release_build(self):
+    # deploy.sh runs build-release.sh after this, which must not inherit the
+    # admin endpoint (it never targets docker-ncc).
+    def test_admin_endpoint_setting_does_not_leak_into_release_build(self):
         script = r'''
 set -euo pipefail
 source "$HELPER"
 unset DOCKER_HOST
 id() { echo 999; }
-make() { test "$DOCKER_HOST" = unix:///run/user/999/docker.sock; }
-docker() { test "$DOCKER_HOST" = unix:///run/user/999/docker.sock; }
+make() { test "$DOCKER_HOST" = "$NCC_DOCKER_ADMIN_HOST"; }
+docker() { test "$DOCKER_HOST" = "$NCC_DOCKER_ADMIN_HOST"; }
 sudo() { :; }
 builder_build_image
 builder_activate_image
@@ -219,7 +288,7 @@ builder_warm_nerves
             )
             return result, events.read_text() if events.exists() else ""
 
-    def test_deploy_warm_runs_the_new_release_as_ncc_on_its_rootless_daemon(self):
+    def test_deploy_warm_runs_the_new_release_as_ncc(self):
         result, args = self.run_warm(0)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(args.startswith("-u\nncc\nbash\n-c\n"), args)
@@ -227,7 +296,50 @@ builder_warm_nerves
         self.assertIn("\n--\n/test/work\n/test/config/portal.env\n/test/install/portal/bin/portal\n",
                       args)
         self.assertIn("Portal.NervesCache.deploy_warm()", args)
-        self.assertIn('DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/$(id -u)/docker.sock}"', args)
+
+    # The warm container is a build container: it runs on ncc's docker-ncc
+    # socket, the one the authz policy holds to runsc, whatever portal.env says
+    # or leaves out, and never on the admin endpoint the deploy itself uses.
+    def test_deploy_warm_runs_on_ncc_socket_of_docker_ncc(self):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+# sudo resets the environment: the deploy's own variables do not reach ncc.
+sudo() {
+  [[ $1 == -u && $2 == ncc ]] || return 99
+  shift 2
+  env -i PATH="$PATH" EVENTS="$EVENTS" "$@"
+}
+builder_warm_nerves
+'''
+        for portal_env in ("", f"DOCKER_HOST={NCC_SOCKET}\n"):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "work").mkdir()
+                bin_dir = root / "install/portal/bin"
+                bin_dir.mkdir(parents=True)
+                portal = bin_dir / "portal"
+                portal.write_text('#!/bin/sh\necho "${DOCKER_HOST-unset}" > "$EVENTS"\n')
+                portal.chmod(0o755)
+                stubs = root / "stubs"
+                stubs.mkdir()
+                (stubs / "timeout").write_text('#!/bin/sh\nshift\nexec "$@"\n')
+                (stubs / "timeout").chmod(0o755)
+                env_file = root / "portal.env"
+                env_file.write_text(portal_env)
+                events = root / "events"
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
+                         "PATH": f"{stubs}:{os.environ['PATH']}",
+                         "NCC_INSTALL_DIR": str(root / "install"),
+                         "NCC_PORTAL_WORKDIR": str(root / "work"),
+                         "NCC_PORTAL_ENV": str(env_file), "DOCKER_HOST": ADMIN_HOST},
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("Nerves cache warm failed", result.stderr)
+                self.assertEqual(events.read_text().strip(), NCC_SOCKET, repr(portal_env))
 
     def test_a_failed_deploy_warm_warns_and_does_not_fail_the_deploy(self):
         result, _args = self.run_warm(1)
@@ -297,6 +409,16 @@ class BuilderEgressInstallTest(unittest.TestCase):
             events = root / "events"
             home = root / "home"
             home.mkdir()
+            install_dir = root / "install"
+            install_dir.mkdir()
+            # Stands in for the loader the install stub does not overwrite:
+            # records how it was run.
+            loader = install_dir / "builder-egress-load.sh"
+            loader.write_text(
+                '#!/usr/bin/env bash\n'
+                'echo "loader XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR-unset}" >> "$EVENTS"\n'
+                'exit "${LOAD_STATUS:-0}"\n')
+            loader.chmod(0o755)
             env_file = root / "portal.env"
             env_file.write_text(portal_env)
             env = {
@@ -304,20 +426,20 @@ class BuilderEgressInstallTest(unittest.TestCase):
                 "HELPER": str(HELPER),
                 "EVENTS": str(events),
                 "NCC_HOME": str(home),
+                "NCC_INSTALL_DIR": str(install_dir),
                 "NCC_PORTAL_ENV": str(env_file),
                 **overrides,
             }
             result = subprocess.run(
                 ["bash", "-c", INSTALL_HARNESS], env=env, capture_output=True, text=True, timeout=5
             )
-            dropin = home / ".config/systemd/user/docker.service.d/ncc-egress.conf"
             lines = events.read_text().splitlines() if events.exists() else []
-            self.home = home
-            self.dropin_mode = dropin.stat().st_mode & 0o777 if dropin.exists() else None
-            return result, lines, dropin.read_text() if dropin.exists() else None
+            self.loader = str(loader)
+            self.home_contents = sorted(str(p) for p in home.rglob("*"))
+            return result, lines
 
-    def test_installs_rules_loader_and_dropin_then_loads_as_ncc(self):
-        result, lines, dropin = self.install()
+    def test_installs_rules_and_loader_then_loads_as_root(self):
+        result, lines = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
             f"install -o root -g root -m 0644 {SRC}/ops/builder-egress.nft "
@@ -327,50 +449,44 @@ class BuilderEgressInstallTest(unittest.TestCase):
             "/test/config/builder-egress-bridge.nft", lines)
         self.assertIn(
             f"install -o root -g root -m 0755 {SRC}/ops/builder-egress-load.sh "
-            "/test/install/builder-egress-load.sh", lines)
-        self.assertIn("ExecStartPost=-/test/install/builder-egress-load.sh", dropin)
-        self.assertIn("systemctl --user -M ncc@ daemon-reload", lines)
-        dir = f"{self.home}/.config/systemd/user/docker.service.d"
-        # ncc writes its own home: root never creates or writes a path ncc
-        # could have swapped for a link into /etc/systemd.
-        self.assertIn(f"sudo -u ncc install -d -m 0755 {dir}", lines)
-        self.assertIn(f"sudo -u ncc tee {dir}/ncc-egress.conf", lines)
-        self.assertIn(f"sudo -u ncc chmod 0644 {dir}/ncc-egress.conf", lines)
-        self.assertLess(
-            lines.index(f"sudo -u ncc tee {dir}/ncc-egress.conf"),
-            lines.index("systemctl --user -M ncc@ daemon-reload"))
-        self.assertFalse(
-            [line for line in lines if line.startswith("install ") and str(self.home) in line],
-            lines)
-        self.assertEqual(self.dropin_mode, 0o644)
-        self.assertEqual(
-            lines[-1],
-            "sudo -u ncc env XDG_RUNTIME_DIR=/run/user/999 "
-            "/test/install/builder-egress-load.sh")
-        self.assertLess(lines.index("systemctl --user -M ncc@ daemon-reload"), len(lines) - 1)
+            f"{self.loader}", lines)
+        # The filter sits in the host's namespace now: root loads it directly,
+        # with no user runtime dir, after every file is in place.
+        self.assertEqual(lines[-1], "loader XDG_RUNTIME_DIR=unset")
+        self.assertEqual(lines.count("loader XDG_RUNTIME_DIR=unset"), 1, lines)
+
+    # Nothing of the rootless daemon is left to configure: no user unit, no
+    # drop-in in ncc's home, nothing run as ncc.
+    def test_install_touches_neither_ncc_nor_its_user_manager(self):
+        for nixos in ("0", "1"):
+            result, lines = self.install(IS_NIXOS=nixos)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse([line for line in lines if line.startswith("sudo")], lines)
+            self.assertFalse([line for line in lines if "--user" in line], lines)
+            self.assertEqual(self.home_contents, [], nixos)
 
     def test_nixos_leaves_the_unit_to_its_nix_config_but_still_loads(self):
-        result, lines, dropin = self.install(IS_NIXOS="1")
+        result, lines = self.install(IS_NIXOS="1")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIsNone(dropin)
         self.assertFalse(any(line.startswith("systemctl") for line in lines))
-        self.assertTrue(lines[-1].startswith("sudo -u ncc env XDG_RUNTIME_DIR=/run/user/999"))
+        self.assertEqual(lines[-1], "loader XDG_RUNTIME_DIR=unset")
         self.assertIn("nix", result.stdout)
 
     def test_the_rollback_switch_leaves_the_filter_alone(self):
-        result, lines, dropin = self.install(portal_env="NCC_EGRESS_CHECK=0\n")
+        result, lines = self.install(portal_env="NCC_EGRESS_CHECK=0\n")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(lines, [])
-        self.assertIsNone(dropin)
+        self.assertEqual(self.home_contents, [])
 
     def test_a_failed_load_fails_the_install(self):
-        result, _lines, _dropin = self.install(LOAD_STATUS="1")
+        result, lines = self.install(LOAD_STATUS="1")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("loader XDG_RUNTIME_DIR=unset", lines)
 
     def test_a_failed_copy_stops_before_loading(self):
-        result, lines, _dropin = self.install(INSTALL_STATUS="1")
+        result, lines = self.install(INSTALL_STATUS="1")
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(any(line.startswith("sudo") for line in lines))
+        self.assertFalse(any(line.startswith(("sudo", "loader")) for line in lines), lines)
 
     def test_check_runs_the_new_release_as_ncc(self):
         script = r'''
@@ -433,8 +549,10 @@ echo after
             self.assertNotIn("after", result.stdout)
             self.assertIn("ERROR: the running ncc-portal finds no build egress filter",
                           result.stderr)
-            self.assertIn("RestrictNamespaces", result.stderr)
-            self.assertIn("PrivateUsers", result.stderr)
+            # The table sits in the host's namespace: advice about entering
+            # the rootless daemon's namespace would send the operator astray.
+            for stale in ("nsenter", "XDG_RUNTIME_DIR", "/run/user/"):
+                self.assertNotIn(stale, result.stderr)
             if answer:
                 self.assertIn(answer, result.stderr)
 
@@ -453,6 +571,59 @@ echo after
         self.assertLess(up, check)
         self.assertIn("if [[ ${2:-portal} == builder ]]; then\n  builder_check_running_egress",
                       deploy)
+
+
+class RootlessDaemonGoneTest(unittest.TestCase):
+    # Big bang (#40, D0): no rootless fallback anywhere in what deploys a builder.
+    def test_no_deploy_script_still_talks_to_a_rootless_daemon(self):
+        ops = Path(__file__).parent
+        files = sorted([*ops.glob("*.sh"), *ops.glob("*.nft"), ops / "deploy.env.example"])
+        self.assertTrue(files)
+        for path in files:
+            text = path.read_text()
+            for stale in ("/run/user/", "dockerd-rootless", "XDG_RUNTIME_DIR", "nsenter",
+                          "systemctl --user"):
+                self.assertNotIn(stale, text, f"{path.name} still mentions {stale}")
+
+    def test_the_deploy_env_example_names_the_admin_endpoint(self):
+        example = (Path(__file__).parent / "deploy.env.example").read_text()
+        self.assertRegex(example, r"(?m)^NCC_DOCKER_ADMIN_HOST=\S+")
+
+
+class ReleaseBuildDaemonTest(unittest.TestCase):
+    """build-release.sh runs a trusted hexpm/elixir container with no runtime
+    flag: docker-ncc's authz policy denies it, and it must not land there."""
+
+    def build(self, **overrides):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            src = root / "src"
+            (src / "_build/prod/rel/portal/bin").mkdir(parents=True)
+            (root / "install").mkdir()
+            stubs = root / "stubs"
+            stubs.mkdir()
+            for name, body in {
+                "docker": 'echo "docker $1 @${DOCKER_HOST-unset}" >> "$EVENTS"\n',
+                "chown": 'echo "chown $*" >> "$EVENTS"\n',
+            }.items():
+                (stubs / name).write_text("#!/bin/sh\n" + body)
+                (stubs / name).chmod(0o755)
+            events = root / "events"
+            env = {**BASE_ENV, "PATH": f"{stubs}:{os.environ['PATH']}", "EVENTS": str(events),
+                   "NCC_SRC_DIR": str(src), "NCC_INSTALL_DIR": str(root / "install"),
+                   "NCC_DEPLOY_ENV": str(root / "missing.env"), **overrides}
+            result = subprocess.run(
+                ["bash", str(RELEASE_BUILD)], env=env, capture_output=True, text=True, timeout=10
+            )
+            return result, events.read_text().splitlines() if events.exists() else []
+
+    def test_release_build_runs_on_the_system_daemon_whatever_the_caller_exports(self):
+        for inherited in (None, NCC_SOCKET, ADMIN_HOST):
+            overrides = {} if inherited is None else {"DOCKER_HOST": inherited}
+            result, events = self.build(**overrides)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual([e for e in events if e.startswith("docker")],
+                             [f"docker run @{SYSTEM_SOCKET}"], inherited)
 
 
 if __name__ == "__main__":

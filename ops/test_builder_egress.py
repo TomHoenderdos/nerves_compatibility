@@ -1,4 +1,4 @@
-"""Check the build egress loader and its rulesets without a rootless daemon."""
+"""Check the build egress loader and its rulesets without a docker-ncc daemon."""
 
 import os
 from pathlib import Path
@@ -14,6 +14,11 @@ LOADER = OPS / "builder-egress-load.sh"
 RULESET = OPS / "builder-egress.nft"
 BRIDGE_RULESET = OPS / "builder-egress-bridge.nft"
 MARKER = "ncc_egress_v1"
+# The root-only endpoint of the docker-ncc daemon (the deploy env file's
+# NCC_DOCKER_ADMIN_HOST). ncc's own socket may not inspect networks (#40,
+# Unit 2b), so the loader, which runs as root, asks through this one.
+ADMIN_HOST = "unix:///test/docker-ncc-admin.sock"
+NCC_SOCKET = "unix:///run/docker-ncc/docker.sock"
 
 # What `nft list table inet ncc_egress` prints for a loaded table, trimmed.
 LISTING = (
@@ -27,9 +32,10 @@ LISTING = (
 
 STUBS = {
     # `docker info` succeeds from its INFO_READY_AFTER-th call on, the way a
-    # daemon that is still starting answers.
+    # daemon that is still starting answers. Records the daemon it was sent to.
     "docker": r'''#!/usr/bin/env bash
 echo "docker $*" >> "$EVENTS"
+echo "${DOCKER_HOST-unset}" >> "$STATE/docker-hosts"
 case "$1" in
   info)
     count=$(( $(cat "$STATE/info" 2>/dev/null || echo 0) + 1 ))
@@ -39,10 +45,12 @@ case "$1" in
   network) printf '%s\n' "$BRIDGE_NAME" ;;
 esac
 ''',
-    # The first `nft -f -` is the inet table, the second the bridge table.
-    "nsenter": r'''#!/usr/bin/env bash
-echo "nsenter $*" >> "$EVENTS"
-if [[ "${*: -2}" == "-f -" ]]; then
+    # nft straight in the host's network namespace, where docker-ncc's bridge
+    # lives. The first `nft -f -` is the inet table, the second the bridge
+    # table.
+    "nft": r'''#!/usr/bin/env bash
+echo "nft $*" >> "$EVENTS"
+if [[ "$*" == "-f -" ]]; then
   if [[ -e "$STATE/load-inet" ]]; then
     cat > "$STATE/load-bridge"
     exit "$BRIDGE_LOAD_STATUS"
@@ -52,6 +60,8 @@ if [[ "${*: -2}" == "-f -" ]]; then
 fi
 printf '%s' "$LISTING"
 ''',
+    # There is no namespace to enter any more: any call is a regression.
+    "nsenter": '#!/usr/bin/env bash\necho "nsenter $*" >> "$EVENTS"\nexit 1\n',
     "sleep": '#!/usr/bin/env bash\necho sleep >> "$EVENTS"\n',
     # Records its bound and runs the command, or answers 124 the way a
     # command that outlived its bound does, for the one TIMEOUT_HANGS names.
@@ -67,7 +77,7 @@ exec "$@"
 
 
 class EgressLoaderTest(unittest.TestCase):
-    def load(self, child_pid="4242", **overrides):
+    def load(self, **overrides):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             stubs = root / "bin"
@@ -78,18 +88,17 @@ class EgressLoaderTest(unittest.TestCase):
                 path.chmod(0o755)
             state = root / "state"
             state.mkdir()
-            runtime = root / "run"
-            (runtime / "dockerd-rootless").mkdir(parents=True)
-            (runtime / "dockerd-rootless" / "child_pid").write_text(child_pid + "\n")
             events = root / "events"
             env = {
                 **os.environ,
                 "PATH": f"{stubs}:{os.environ['PATH']}",
-                "XDG_RUNTIME_DIR": str(runtime),
+                # ncc's socket, as portal.env or an operator's shell exports it.
+                "DOCKER_HOST": NCC_SOCKET,
                 "EVENTS": str(events),
                 "STATE": str(state),
                 "NCC_EGRESS_RULESET": str(RULESET),
                 "NCC_EGRESS_BRIDGE_RULESET": str(BRIDGE_RULESET),
+                "NCC_DOCKER_ADMIN_HOST": ADMIN_HOST,
                 "NCC_EGRESS_WAIT_SECONDS": "60",
                 "NCC_DEPLOY_ENV": str(root / "deploy.env"),
                 "INFO_READY_AFTER": "1",
@@ -98,28 +107,34 @@ class EgressLoaderTest(unittest.TestCase):
                 "LISTING": LISTING,
                 **overrides,
             }
-            env.pop("DOCKER_HOST", None)
+            # A system unit's ExecStartPost has no user runtime dir.
+            env.pop("XDG_RUNTIME_DIR", None)
             result = subprocess.run(
                 ["bash", str(LOADER)], env=env, capture_output=True, text=True, timeout=10
             )
             loads = {path.name: path.read_text() for path in state.glob("load-*")}
             lines = events.read_text().splitlines() if events.exists() else []
+            hosts = state / "docker-hosts"
+            self.docker_hosts = hosts.read_text().splitlines() if hosts.exists() else []
             return result, lines, loads
 
     # From systemd's ExecStartPost the loader has no environment: the
-    # rulesets' paths come from the operator's deploy env file.
-    def test_reads_the_ruleset_paths_from_the_deploy_env_file(self):
+    # rulesets' paths and the daemon come from the operator's deploy env file.
+    def test_reads_the_ruleset_paths_and_daemon_from_the_deploy_env_file(self):
         with tempfile.TemporaryDirectory() as directory:
             env_file = Path(directory) / "deploy.env"
             env_file.write_text(
                 f"NCC_EGRESS_RULESET={RULESET}\nNCC_EGRESS_BRIDGE_RULESET={BRIDGE_RULESET}\n"
+                f"NCC_DOCKER_ADMIN_HOST={ADMIN_HOST}\n"
             )
             result, _lines, loads = self.load(
-                NCC_DEPLOY_ENV=str(env_file), NCC_EGRESS_RULESET="", NCC_EGRESS_BRIDGE_RULESET=""
+                NCC_DEPLOY_ENV=str(env_file), NCC_EGRESS_RULESET="",
+                NCC_EGRESS_BRIDGE_RULESET="", NCC_DOCKER_ADMIN_HOST="",
             )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("table inet ncc_egress", loads["load-inet"])
         self.assertIn("table bridge ncc_egress", loads["load-bridge"])
+        self.assertEqual(set(self.docker_hosts), {ADMIN_HOST})
 
     def test_without_the_deploy_env_file_nothing_is_loaded(self):
         result, lines, loads = self.load(NCC_EGRESS_RULESET="", NCC_EGRESS_BRIDGE_RULESET="")
@@ -127,38 +142,52 @@ class EgressLoaderTest(unittest.TestCase):
         self.assertIn("no host layout", result.stderr)
         self.assertEqual((lines, loads), ([], {}))
 
-    # The bridge is in rootlesskit's detached namespace, bind-mounted at
-    # <state dir>/netns where only rootlesskit's own mount namespace sees it.
-    # The child itself (child_pid) is not reliably in it: on rootlesskit 2.3.6
-    # it sat in the host's network namespace after a boot.
-    def test_loads_both_tables_into_the_detached_namespace(self):
+    # Without it the loader would ask whatever DOCKER_HOST names, and filter
+    # the bridge of a daemon that runs no builds.
+    def test_without_the_docker_ncc_admin_endpoint_nothing_is_loaded(self):
+        result, lines, loads = self.load(NCC_DOCKER_ADMIN_HOST="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("NCC_DOCKER_ADMIN_HOST", result.stderr)
+        self.assertEqual((lines, loads), ([], {}))
+
+    def test_loads_both_tables_into_the_host_namespace(self):
         result, lines, loads = self.load()
         self.assertEqual(result.returncode, 0, result.stderr)
-        enter = re.compile(
-            r"^nsenter -U --preserve-credentials -m -t 4242 -- "
-            r"nsenter --net=/\S+/run/dockerd-rootless/netns (.*)$"
-        )
-        entered = [m.group(1) for m in map(enter.match, lines) if m]
-        self.assertIn("nft -f -", entered)
-        self.assertIn("nft list table inet ncc_egress", entered)
-        self.assertFalse(any(" -n -t " in line for line in lines), lines)
+        self.assertEqual(lines.count("nft -f -"), 2, lines)
+        self.assertIn("nft list table inet ncc_egress", lines)
+        self.assertFalse([line for line in lines if line.startswith("nsenter")], lines)
         self.assertIn('define ncc_bridge = "br-test0"', loads["load-inet"])
         self.assertNotIn('define ncc_bridge = "docker0"', loads["load-inet"])
         self.assertIn("table inet ncc_egress", loads["load-inet"])
         self.assertIn('define ncc_bridge = "br-test0"', loads["load-bridge"])
         self.assertIn("table bridge ncc_egress", loads["load-bridge"])
 
-    def test_bounds_every_docker_and_nsenter_call(self):
+    # box-a also runs the system dockerd, whose docker0 is not the build
+    # bridge; and ncc's own socket may not inspect networks.
+    def test_reads_the_bridge_of_docker_ncc_through_its_admin_endpoint(self):
         result, lines, _loads = self.load()
         self.assertEqual(result.returncode, 0, result.stderr)
-        calls = [line for line in lines if line.startswith(("docker ", "nsenter "))]
+        self.assertTrue([line for line in lines if line.startswith("docker network inspect")],
+                        lines)
+        self.assertEqual(set(self.docker_hosts), {ADMIN_HOST})
+
+    def test_loads_without_a_rootless_runtime_dir(self):
+        result, _lines, loads = self.load()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("load-inet", loads)
+        self.assertNotIn("/run/user/", result.stdout + result.stderr)
+
+    def test_bounds_every_docker_and_nft_call(self):
+        result, lines, _loads = self.load()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [line for line in lines if line.startswith(("docker ", "nft "))]
         bounded = [line for line in lines if line.startswith("timeout ")]
         self.assertEqual(len(calls), 5, lines)
         self.assertEqual(len(bounded), len(calls), lines)
         self.assertTrue(all(line.startswith("timeout 10 ") for line in bounded), bounded)
         self.assertIn("timeout 10 docker info", bounded)
         self.assertIn("timeout 10 docker network inspect", bounded)
-        self.assertEqual(bounded.count("timeout 10 nsenter -U --preserve-credentials"), 3)
+        self.assertEqual(sum(line.startswith("timeout 10 nft ") for line in bounded), 3, bounded)
 
     def test_a_hung_docker_info_is_retried_within_the_overall_wait(self):
         result, lines, loads = self.load(TIMEOUT_HANGS="docker info", NCC_EGRESS_WAIT_SECONDS="0")
@@ -166,7 +195,7 @@ class EgressLoaderTest(unittest.TestCase):
         self.assertIn("not ready", result.stderr)
         self.assertEqual(loads, {})
 
-    def test_a_hung_nsenter_fails_the_load(self):
+    def test_a_hung_nft_load_fails_the_load(self):
         result, _lines, loads = self.load(TIMEOUT_HANGS="nft -f -")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(loads, {})
@@ -190,19 +219,13 @@ class EgressLoaderTest(unittest.TestCase):
         result, lines, loads = self.load(INFO_READY_AFTER="1000", NCC_EGRESS_WAIT_SECONDS="0")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not ready", result.stderr)
-        self.assertFalse(any(line.startswith("nsenter") for line in lines))
+        self.assertFalse(any(line.startswith(("nft", "nsenter")) for line in lines))
         self.assertEqual(loads, {})
 
     def test_refuses_a_bridge_name_nft_would_read_as_rules(self):
         result, _lines, loads = self.load(BRIDGE_NAME='docker0"; flush ruleset; #')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unexpected bridge name", result.stderr)
-        self.assertEqual(loads, {})
-
-    def test_refuses_a_child_pid_that_is_not_a_number(self):
-        result, _lines, loads = self.load(child_pid="42 1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("unexpected child_pid", result.stderr)
         self.assertEqual(loads, {})
 
     def test_a_loaded_table_without_the_final_drop_fails(self):
