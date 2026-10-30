@@ -108,6 +108,35 @@ class LayoutGuardTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "/x/portal/bin/portal")
 
+    # D10: every host's release build needs DOCKER_HOST, so a web host whose
+    # env file predates it stops before the checkout moves, not halfway.
+    def test_a_web_deploy_without_docker_host_refuses_before_the_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "install").mkdir()
+            (root / "src").mkdir()
+            env_file = root / "deploy.env"
+            env_file.write_text(
+                f"NCC_SRC_DIR={root}/src\nNCC_INSTALL_DIR={root}/install\n"
+                f"NCC_PORTAL_ENV={root}/portal.env\nNCC_PORTAL_WORKDIR={root}\n"
+                f"NCC_IMAGES_JSON={root}/images.json\n"
+            )
+            bindir = root / "bin"
+            bindir.mkdir()
+            for tool in ("git", "flock"):
+                (bindir / tool).write_text(f'#!/bin/bash\necho {tool} >> "$EVENTS"\n')
+                (bindir / tool).chmod(0o755)
+            events = root / "events"
+            env = clean_env(PATH=f"{bindir}:{os.environ['PATH']}", EVENTS=str(events),
+                            NCC_DEPLOY_ENV=str(env_file))
+            result = subprocess.run(
+                ["bash", str(OPS / "deploy.sh"), "a" * 40], env=env, capture_output=True,
+                text=True, timeout=10,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("DOCKER_HOST", result.stderr)
+            self.assertFalse(events.exists(), events.read_text() if events.exists() else "")
+
     def test_deploy_takes_its_lock_and_checkout_from_the_env_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

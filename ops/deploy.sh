@@ -43,10 +43,11 @@ ncc_layout() {
   fi
 }
 
-layout=(NCC_SRC_DIR NCC_INSTALL_DIR NCC_PORTAL_ENV NCC_PORTAL_WORKDIR)
-if [[ ${2:-portal} == builder ]]; then
-  layout+=(DOCKER_HOST)
-else
+# DOCKER_HOST on every host: build-release.sh builds the release on that
+# daemon (docker-ncc on a builder, the system dockerd on the web host), so an
+# env file without it stops here, before the checkout moves.
+layout=(NCC_SRC_DIR NCC_INSTALL_DIR NCC_PORTAL_ENV NCC_PORTAL_WORKDIR DOCKER_HOST)
+if [[ ${2:-portal} != builder ]]; then
   layout+=(NCC_IMAGES_JSON)
 fi
 ncc_layout "${layout[@]}" || exit 1
