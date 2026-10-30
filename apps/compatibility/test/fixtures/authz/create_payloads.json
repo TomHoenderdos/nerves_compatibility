@@ -1,0 +1,783 @@
+{
+  "ncc_authz_fixtures": {
+    "build": {
+      "argv": [
+        "run",
+        "--rm",
+        "--pull=never",
+        "--name",
+        "ncc-11111111-2222-3333-4444-555555555555",
+        "--user",
+        "950:950",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--read-only",
+        "--pids-limit",
+        "4096",
+        "--runtime=runsc",
+        "--cpus",
+        "2",
+        "--memory",
+        "4g",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/work,target=/work",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/out,target=/out",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/files,target=/files",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/tmp,target=/tmp",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/cache,target=/home/nerves/.cache",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/nerves-cache,target=/nerves-cache,readonly",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/hex-cache,target=/hex-cache,readonly",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/build-cache/sha256_deadbeef,target=/build-cache,readonly",
+        "-e",
+        "NCC_INPUT=/work/input.json",
+        "-e",
+        "LANG=C.UTF-8",
+        "-e",
+        "HOME=/home/nerves",
+        "-e",
+        "HEX_HOME=/hex-cache",
+        "-e",
+        "TAR_OPTIONS=--no-same-owner",
+        "-e",
+        "NCC_BUILD_CACHE=/build-cache",
+        "-e",
+        "ERL_FLAGS=+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none",
+        "-e",
+        "ELIXIR_ERL_OPTIONS=+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none",
+        "-e",
+        "NCC_SQUASHFS_PROCESSORS=2",
+        "-e",
+        "MAKEFLAGS=-j2",
+        "-e",
+        "NCC_BUILD_CONCURRENCY=2",
+        "ncc-worker:local"
+      ],
+      "request": {
+        "Body": {
+          "AttachStderr": true,
+          "AttachStdin": false,
+          "AttachStdout": true,
+          "Cmd": null,
+          "Domainname": "",
+          "Entrypoint": null,
+          "Env": [
+            "ELIXIR_ERL_OPTIONS=+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none",
+            "ERL_FLAGS=+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none",
+            "HEX_HOME=/hex-cache",
+            "HOME=/home/nerves",
+            "LANG=C.UTF-8",
+            "MAKEFLAGS=-j2",
+            "NCC_BUILD_CACHE=/build-cache",
+            "NCC_BUILD_CONCURRENCY=2",
+            "NCC_INPUT=/work/input.json",
+            "NCC_SQUASHFS_PROCESSORS=2",
+            "TAR_OPTIONS=--no-same-owner"
+          ],
+          "HostConfig": {
+            "AutoRemove": true,
+            "Binds": null,
+            "BlkioDeviceReadBps": [],
+            "BlkioDeviceReadIOps": [],
+            "BlkioDeviceWriteBps": [],
+            "BlkioDeviceWriteIOps": [],
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": [],
+            "CapAdd": null,
+            "CapDrop": [
+              "ALL"
+            ],
+            "Cgroup": "",
+            "CgroupParent": "",
+            "CgroupnsMode": "",
+            "ConsoleSize": [
+              0,
+              0
+            ],
+            "ContainerIDFile": "",
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpuShares": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "Devices": [],
+            "Dns": null,
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": null,
+            "GroupAdd": null,
+            "IOMaximumBandwidth": 0,
+            "IOMaximumIOps": 0,
+            "IpcMode": "",
+            "Isolation": "",
+            "Links": null,
+            "LogConfig": {
+              "Config": {},
+              "Type": ""
+            },
+            "MaskedPaths": null,
+            "Memory": 4294967296,
+            "MemoryReservation": 0,
+            "MemorySwap": 0,
+            "MemorySwappiness": -1,
+            "Mounts": [
+              {
+                "Source": "/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/work",
+                "Target": "/work",
+                "Type": "bind"
+              },
+              {
+                "Source": "/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/out",
+                "Target": "/out",
+                "Type": "bind"
+              },
+              {
+                "Source": "/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/files",
+                "Target": "/files",
+                "Type": "bind"
+              },
+              {
+                "Source": "/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/tmp",
+                "Target": "/tmp",
+                "Type": "bind"
+              },
+              {
+                "Source": "/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/cache",
+                "Target": "/home/nerves/.cache",
+                "Type": "bind"
+              },
+              {
+                "ReadOnly": true,
+                "Source": "/var/lib/ncc/nerves-cache",
+                "Target": "/nerves-cache",
+                "Type": "bind"
+              },
+              {
+                "ReadOnly": true,
+                "Source": "/var/lib/ncc/hex-cache",
+                "Target": "/hex-cache",
+                "Type": "bind"
+              },
+              {
+                "ReadOnly": true,
+                "Source": "/var/lib/ncc/build-cache/sha256_deadbeef",
+                "Target": "/build-cache",
+                "Type": "bind"
+              }
+            ],
+            "NanoCpus": 2000000000,
+            "NetworkMode": "default",
+            "OomKillDisable": false,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "PidsLimit": 4096,
+            "PortBindings": {},
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyPaths": null,
+            "ReadonlyRootfs": true,
+            "RestartPolicy": {
+              "MaximumRetryCount": 0,
+              "Name": "no"
+            },
+            "Runtime": "runsc",
+            "SecurityOpt": [
+              "no-new-privileges"
+            ],
+            "ShmSize": 0,
+            "UTSMode": "",
+            "Ulimits": null,
+            "UsernsMode": "",
+            "VolumeDriver": "",
+            "VolumesFrom": null
+          },
+          "Hostname": "",
+          "Image": "ncc-worker:local",
+          "Labels": {},
+          "NetworkingConfig": {
+            "EndpointsConfig": {
+              "default": {
+                "Aliases": null,
+                "DNSNames": null,
+                "DriverOpts": null,
+                "EndpointID": "",
+                "Gateway": "",
+                "GlobalIPv6Address": "",
+                "GlobalIPv6PrefixLen": 0,
+                "GwPriority": 0,
+                "IPAMConfig": null,
+                "IPAddress": "",
+                "IPPrefixLen": 0,
+                "IPv6Gateway": "",
+                "Links": null,
+                "MacAddress": "",
+                "NetworkID": ""
+              }
+            }
+          },
+          "OpenStdin": false,
+          "StdinOnce": false,
+          "Tty": false,
+          "User": "950:950",
+          "Volumes": {},
+          "WorkingDir": ""
+        },
+        "Method": "POST",
+        "Path": "/v1.47/containers/create?name=ncc-11111111-2222-3333-4444-555555555555"
+      }
+    },
+    "docker_cli": "29.8.2",
+    "egress_probe": {
+      "argv": [
+        "run",
+        "--rm",
+        "--pull=never",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--runtime=runsc",
+        "--read-only",
+        "--memory",
+        "256m",
+        "--user",
+        "950:950",
+        "--entrypoint",
+        "bash",
+        "ncc-worker:local",
+        "-c",
+        "probe",
+        "192.0.2.1",
+        "5432"
+      ],
+      "request": {
+        "Body": {
+          "AttachStderr": true,
+          "AttachStdin": false,
+          "AttachStdout": true,
+          "Cmd": [
+            "-c",
+            "probe",
+            "192.0.2.1",
+            "5432"
+          ],
+          "Domainname": "",
+          "Entrypoint": [
+            "bash"
+          ],
+          "Env": [],
+          "HostConfig": {
+            "AutoRemove": true,
+            "Binds": null,
+            "BlkioDeviceReadBps": [],
+            "BlkioDeviceReadIOps": [],
+            "BlkioDeviceWriteBps": [],
+            "BlkioDeviceWriteIOps": [],
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": [],
+            "CapAdd": null,
+            "CapDrop": [
+              "ALL"
+            ],
+            "Cgroup": "",
+            "CgroupParent": "",
+            "CgroupnsMode": "",
+            "ConsoleSize": [
+              0,
+              0
+            ],
+            "ContainerIDFile": "",
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpuShares": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "Devices": [],
+            "Dns": null,
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": null,
+            "GroupAdd": null,
+            "IOMaximumBandwidth": 0,
+            "IOMaximumIOps": 0,
+            "IpcMode": "",
+            "Isolation": "",
+            "Links": null,
+            "LogConfig": {
+              "Config": {},
+              "Type": ""
+            },
+            "MaskedPaths": null,
+            "Memory": 268435456,
+            "MemoryReservation": 0,
+            "MemorySwap": 0,
+            "MemorySwappiness": -1,
+            "NanoCpus": 0,
+            "NetworkMode": "default",
+            "OomKillDisable": false,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "PidsLimit": 0,
+            "PortBindings": {},
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyPaths": null,
+            "ReadonlyRootfs": true,
+            "RestartPolicy": {
+              "MaximumRetryCount": 0,
+              "Name": "no"
+            },
+            "Runtime": "runsc",
+            "SecurityOpt": [
+              "no-new-privileges"
+            ],
+            "ShmSize": 0,
+            "UTSMode": "",
+            "Ulimits": null,
+            "UsernsMode": "",
+            "VolumeDriver": "",
+            "VolumesFrom": null
+          },
+          "Hostname": "",
+          "Image": "ncc-worker:local",
+          "Labels": {},
+          "NetworkingConfig": {
+            "EndpointsConfig": {
+              "default": {
+                "Aliases": null,
+                "DNSNames": null,
+                "DriverOpts": null,
+                "EndpointID": "",
+                "Gateway": "",
+                "GlobalIPv6Address": "",
+                "GlobalIPv6PrefixLen": 0,
+                "GwPriority": 0,
+                "IPAMConfig": null,
+                "IPAddress": "",
+                "IPPrefixLen": 0,
+                "IPv6Gateway": "",
+                "Links": null,
+                "MacAddress": "",
+                "NetworkID": ""
+              }
+            }
+          },
+          "OpenStdin": false,
+          "StdinOnce": false,
+          "Tty": false,
+          "User": "950:950",
+          "Volumes": {},
+          "WorkingDir": ""
+        },
+        "Method": "POST",
+        "Path": "/v1.47/containers/create"
+      }
+    },
+    "promotion_copy": {
+      "argv": [
+        "run",
+        "--rm",
+        "--pull=never",
+        "--name",
+        "ncc-promote-0123456789abcdef",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--pids-limit",
+        "64",
+        "--runtime=runsc",
+        "--memory",
+        "256m",
+        "--user",
+        "950:950",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/out,target=/src,readonly",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/build-cache/sha256_deadbeef/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.tmp.builder-1.0123456789abcdef,target=/dst",
+        "--entrypoint",
+        "cp",
+        "ncc-worker:local",
+        "-a",
+        "/src/build-cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/.",
+        "/dst"
+      ],
+      "request": {
+        "Body": {
+          "AttachStderr": true,
+          "AttachStdin": false,
+          "AttachStdout": true,
+          "Cmd": [
+            "-a",
+            "/src/build-cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/.",
+            "/dst"
+          ],
+          "Domainname": "",
+          "Entrypoint": [
+            "cp"
+          ],
+          "Env": [],
+          "HostConfig": {
+            "AutoRemove": true,
+            "Binds": null,
+            "BlkioDeviceReadBps": [],
+            "BlkioDeviceReadIOps": [],
+            "BlkioDeviceWriteBps": [],
+            "BlkioDeviceWriteIOps": [],
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": [],
+            "CapAdd": null,
+            "CapDrop": [
+              "ALL"
+            ],
+            "Cgroup": "",
+            "CgroupParent": "",
+            "CgroupnsMode": "",
+            "ConsoleSize": [
+              0,
+              0
+            ],
+            "ContainerIDFile": "",
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpuShares": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "Devices": [],
+            "Dns": null,
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": null,
+            "GroupAdd": null,
+            "IOMaximumBandwidth": 0,
+            "IOMaximumIOps": 0,
+            "IpcMode": "",
+            "Isolation": "",
+            "Links": null,
+            "LogConfig": {
+              "Config": {},
+              "Type": ""
+            },
+            "MaskedPaths": null,
+            "Memory": 268435456,
+            "MemoryReservation": 0,
+            "MemorySwap": 0,
+            "MemorySwappiness": -1,
+            "Mounts": [
+              {
+                "ReadOnly": true,
+                "Source": "/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/out",
+                "Target": "/src",
+                "Type": "bind"
+              },
+              {
+                "Source": "/var/lib/ncc/build-cache/sha256_deadbeef/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.tmp.builder-1.0123456789abcdef",
+                "Target": "/dst",
+                "Type": "bind"
+              }
+            ],
+            "NanoCpus": 0,
+            "NetworkMode": "none",
+            "OomKillDisable": false,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "PidsLimit": 64,
+            "PortBindings": {},
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyPaths": null,
+            "ReadonlyRootfs": true,
+            "RestartPolicy": {
+              "MaximumRetryCount": 0,
+              "Name": "no"
+            },
+            "Runtime": "runsc",
+            "SecurityOpt": [
+              "no-new-privileges"
+            ],
+            "ShmSize": 0,
+            "UTSMode": "",
+            "Ulimits": null,
+            "UsernsMode": "",
+            "VolumeDriver": "",
+            "VolumesFrom": null
+          },
+          "Hostname": "",
+          "Image": "ncc-worker:local",
+          "Labels": {},
+          "NetworkingConfig": {
+            "EndpointsConfig": {}
+          },
+          "OpenStdin": false,
+          "StdinOnce": false,
+          "Tty": false,
+          "User": "950:950",
+          "Volumes": {},
+          "WorkingDir": ""
+        },
+        "Method": "POST",
+        "Path": "/v1.47/containers/create?name=ncc-promote-0123456789abcdef"
+      }
+    },
+    "warm_nerves": {
+      "argv": [
+        "run",
+        "--rm",
+        "--pull=never",
+        "--name",
+        "ncc-warm_nerves-1730000000000",
+        "--user",
+        "950:950",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--read-only",
+        "--pids-limit",
+        "4096",
+        "--runtime=runsc",
+        "--cpus",
+        "2",
+        "--memory",
+        "4g",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/work,target=/work",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/out,target=/out",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/files,target=/files",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/tmp,target=/tmp",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/cache,target=/home/nerves/.cache",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/nerves-cache,target=/nerves-cache",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/hex-cache,target=/hex-cache,readonly",
+        "--mount",
+        "type=bind,source=/var/lib/ncc/build-cache/sha256_deadbeef,target=/build-cache,readonly",
+        "-e",
+        "NCC_INPUT=/work/input.json",
+        "-e",
+        "LANG=C.UTF-8",
+        "-e",
+        "HOME=/home/nerves",
+        "-e",
+        "HEX_HOME=/hex-cache",
+        "-e",
+        "TAR_OPTIONS=--no-same-owner",
+        "-e",
+        "NCC_BUILD_CACHE=/build-cache",
+        "-e",
+        "ERL_FLAGS=+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none",
+        "-e",
+        "ELIXIR_ERL_OPTIONS=+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none",
+        "-e",
+        "NCC_SQUASHFS_PROCESSORS=2",
+        "-e",
+        "MAKEFLAGS=-j2",
+        "-e",
+        "NCC_BUILD_CONCURRENCY=2",
+        "ncc-worker:local"
+      ],
+      "request": {
+        "Body": {
+          "AttachStderr": true,
+          "AttachStdin": false,
+          "AttachStdout": true,
+          "Cmd": null,
+          "Domainname": "",
+          "Entrypoint": null,
+          "Env": [
+            "ELIXIR_ERL_OPTIONS=+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none",
+            "ERL_FLAGS=+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none",
+            "HEX_HOME=/hex-cache",
+            "HOME=/home/nerves",
+            "LANG=C.UTF-8",
+            "MAKEFLAGS=-j2",
+            "NCC_BUILD_CACHE=/build-cache",
+            "NCC_BUILD_CONCURRENCY=2",
+            "NCC_INPUT=/work/input.json",
+            "NCC_SQUASHFS_PROCESSORS=2",
+            "TAR_OPTIONS=--no-same-owner"
+          ],
+          "HostConfig": {
+            "AutoRemove": true,
+            "Binds": null,
+            "BlkioDeviceReadBps": [],
+            "BlkioDeviceReadIOps": [],
+            "BlkioDeviceWriteBps": [],
+            "BlkioDeviceWriteIOps": [],
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": [],
+            "CapAdd": null,
+            "CapDrop": [
+              "ALL"
+            ],
+            "Cgroup": "",
+            "CgroupParent": "",
+            "CgroupnsMode": "",
+            "ConsoleSize": [
+              0,
+              0
+            ],
+            "ContainerIDFile": "",
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpuShares": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "Devices": [],
+            "Dns": null,
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": null,
+            "GroupAdd": null,
+            "IOMaximumBandwidth": 0,
+            "IOMaximumIOps": 0,
+            "IpcMode": "",
+            "Isolation": "",
+            "Links": null,
+            "LogConfig": {
+              "Config": {},
+              "Type": ""
+            },
+            "MaskedPaths": null,
+            "Memory": 4294967296,
+            "MemoryReservation": 0,
+            "MemorySwap": 0,
+            "MemorySwappiness": -1,
+            "Mounts": [
+              {
+                "Source": "/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/work",
+                "Target": "/work",
+                "Type": "bind"
+              },
+              {
+                "Source": "/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/out",
+                "Target": "/out",
+                "Type": "bind"
+              },
+              {
+                "Source": "/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/files",
+                "Target": "/files",
+                "Type": "bind"
+              },
+              {
+                "Source": "/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/tmp",
+                "Target": "/tmp",
+                "Type": "bind"
+              },
+              {
+                "Source": "/var/lib/ncc/scratch/ncc-11111111-2222-3333-4444-555555555555/cache",
+                "Target": "/home/nerves/.cache",
+                "Type": "bind"
+              },
+              {
+                "Source": "/var/lib/ncc/nerves-cache",
+                "Target": "/nerves-cache",
+                "Type": "bind"
+              },
+              {
+                "ReadOnly": true,
+                "Source": "/var/lib/ncc/hex-cache",
+                "Target": "/hex-cache",
+                "Type": "bind"
+              },
+              {
+                "ReadOnly": true,
+                "Source": "/var/lib/ncc/build-cache/sha256_deadbeef",
+                "Target": "/build-cache",
+                "Type": "bind"
+              }
+            ],
+            "NanoCpus": 2000000000,
+            "NetworkMode": "default",
+            "OomKillDisable": false,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "PidsLimit": 4096,
+            "PortBindings": {},
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyPaths": null,
+            "ReadonlyRootfs": true,
+            "RestartPolicy": {
+              "MaximumRetryCount": 0,
+              "Name": "no"
+            },
+            "Runtime": "runsc",
+            "SecurityOpt": [
+              "no-new-privileges"
+            ],
+            "ShmSize": 0,
+            "UTSMode": "",
+            "Ulimits": null,
+            "UsernsMode": "",
+            "VolumeDriver": "",
+            "VolumesFrom": null
+          },
+          "Hostname": "",
+          "Image": "ncc-worker:local",
+          "Labels": {},
+          "NetworkingConfig": {
+            "EndpointsConfig": {
+              "default": {
+                "Aliases": null,
+                "DNSNames": null,
+                "DriverOpts": null,
+                "EndpointID": "",
+                "Gateway": "",
+                "GlobalIPv6Address": "",
+                "GlobalIPv6PrefixLen": 0,
+                "GwPriority": 0,
+                "IPAMConfig": null,
+                "IPAddress": "",
+                "IPPrefixLen": 0,
+                "IPv6Gateway": "",
+                "Links": null,
+                "MacAddress": "",
+                "NetworkID": ""
+              }
+            }
+          },
+          "OpenStdin": false,
+          "StdinOnce": false,
+          "Tty": false,
+          "User": "950:950",
+          "Volumes": {},
+          "WorkingDir": ""
+        },
+        "Method": "POST",
+        "Path": "/v1.47/containers/create?name=ncc-warm_nerves-1730000000000"
+      }
+    }
+  }
+}

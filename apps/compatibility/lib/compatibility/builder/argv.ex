@@ -23,6 +23,9 @@ defmodule Compatibility.Builder.Argv do
   `HEX_HOME` again) for the one-release rollback, and `:legacy` (read-write,
   no env) for an image without the `ncc.hex-cache=seeded` label, whose
   worker writes `/hex-cache` itself. `hex_cache_mode/2` picks one.
+
+  Every container runs under gVisor (`runtime_flag/0`), with no other
+  runtime to fall back to: a host without `runsc` fails every build.
   """
 
   @type paths :: %{
@@ -40,6 +43,8 @@ defmodule Compatibility.Builder.Argv do
   @type hex_cache_mode :: :readonly | :rw | :legacy
 
   @hex_cache_label "ncc.hex-cache"
+
+  @runtime_flag "--runtime=runsc"
 
   @type spec :: %{
           required(:container_name) => String.t(),
@@ -114,9 +119,20 @@ defmodule Compatibility.Builder.Argv do
       # A runaway `make -j` or a fork bomb dies here rather than exhausting the
       # host's pid table.
       "--pids-limit",
-      "4096"
+      "4096",
+      # Package code that escapes the container lands in the gVisor sentry,
+      # not on the host kernel. Under the kvm platform the pids limit above
+      # is not enforced; only `--memory` bounds a fork bomb there.
+      @runtime_flag
     ]
   end
+
+  @doc """
+  The `docker run` flag every ncc container starts with: a build, a warm
+  run, the egress probe and the build-cache promotion copy alike.
+  """
+  @spec runtime_flag() :: String.t()
+  def runtime_flag, do: @runtime_flag
 
   # Buildroot cross-compiles will use every core they are given. On a host that
   # shares the machine with other services, an unbounded build starves them, so

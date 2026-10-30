@@ -133,6 +133,7 @@ defmodule NccAgent.NervesCacheTest do
     refute argv =~ "NCC_NERVES_CACHE_RW"
     refute argv =~ "build-cache"
     assert argv =~ "--read-only\n"
+    assert argv =~ "--runtime=runsc\n"
     assert argv =~ "ncc-rb-jason-1.4.4-1-warm\n"
 
     [input] =

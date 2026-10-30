@@ -6,6 +6,7 @@ defmodule Portal.BuildCache.PromotionTest do
   import ExUnit.CaptureLog
 
   alias Compatibility.BuildCacheKey
+  alias Compatibility.Builder.Argv
   alias Portal.BuildCache.Promotion
 
   @outer "b0c823996102bcd0239b3c2444eb00409b72f6a140c1950bc8b457d836b30684"
@@ -650,6 +651,8 @@ defmodule Portal.BuildCache.PromotionTest do
       assert "--read-only" in args
       assert "--cap-drop=ALL" in args
       assert "--security-opt=no-new-privileges" in args
+      assert Argv.runtime_flag() in args
+      assert args |> Enum.chunk_every(2, 1) |> Enum.member?(["--memory", "256m"])
       assert "type=bind,source=/scratch/run/out,target=/src,readonly" in args
       assert "type=bind,source=/cache/slug/k.tmp.x,target=/dst" in args
       refute Enum.any?(args, &String.contains?(&1, "source=/scratch/run/out/build-cache"))

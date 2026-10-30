@@ -1,10 +1,26 @@
 defmodule Portal.EgressCheckTest do
   use ExUnit.Case, async: true
 
+  alias Compatibility.Builder.Argv
   alias Portal.EgressCheck
 
   @v4 %{"address" => "100.64.0.1", "port" => 5432}
   @v6 %{"address" => "fd00::1", "port" => 5432}
+
+  # gVisor's netstack is another network path than runc's: the probe checks
+  # the filter on the one builds take.
+  test "bare_args/1 probes the target under the builds' runtime, with the target as arguments" do
+    args = EgressCheck.bare_args(%{"address" => "192.0.2.1", "port" => 5432})
+
+    assert ["run", "--rm", "--pull=never" | _] = args
+    assert Argv.runtime_flag() in args
+    assert "--cap-drop=ALL" in args
+    # The builders' docker-ncc authz policy refuses a container without a
+    # memory limit or with a writable root.
+    assert "--read-only" in args
+    assert args |> Enum.chunk_every(2, 1) |> Enum.member?(["--memory", "256m"])
+    assert Enum.take(args, -2) == ["192.0.2.1", "5432"]
+  end
 
   describe "parse_targets/1" do
     test "reads v4 and bracketed v6 host:port pairs" do
