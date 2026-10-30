@@ -191,7 +191,7 @@ config :portal, Portal.Builder,
   # A listing with any other hash refuses builds; the refusal logs the hash.
   # Change only together with that ruleset. Not overridable from the
   # environment.
-  egress_table_hashes: ["489413f926bd75f21dfa134a79b641781a586b66927c040bae61f1a853c1c765"]
+  egress_table_hashes: ["ac690f8147aefe1fff9d11b6604cc71cde01ee6b631abd8d857df7fe7d6ca15e"]
 
 # Where the "Open an issue" link in the UI points.
 #
