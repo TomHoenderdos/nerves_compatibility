@@ -1,0 +1,29 @@
+table inet ncc_egress {
+	chain build_forward {
+		type filter hook forward priority filter - 10; policy accept;
+		oifname "ncc0" ct state established,related accept
+		oifname "ncc0" drop
+		iifname != "ncc0" accept
+		ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 } drop
+		ip6 daddr { ::1, ::ffff:0.0.0.0/96, 64:ff9b::/96, fc00::/7, fe80::/10, ff00::/8 } drop
+		tcp dport { 80, 443 } accept
+		meta l4proto { 6, 17 } th dport 53 accept
+		drop comment "ncc_egress_v1"
+	}
+
+	chain build_input {
+		type filter hook input priority filter - 10; policy accept;
+		iifname "ncc0" drop
+	}
+
+	chain build_nat {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname != "ncc0" ip saddr 172.30.0.0/24 masquerade
+	}
+}
+table bridge ncc_egress_icc {
+	chain build_icc {
+		type filter hook forward priority filter - 10; policy accept;
+		meta ibrname "ncc0" drop comment "ncc_egress_icc_v1"
+	}
+}

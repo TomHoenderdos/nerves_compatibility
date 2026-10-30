@@ -28,23 +28,28 @@ defmodule Portal.Builder do
   @total_timeout_ms :timer.hours(2)
   @zero_digest "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
-  # The build egress filter (isolation spec, section 3; ops/builder-egress.nft).
-  # The preflight looks for this marker, the comment on the ruleset's final
-  # drop, so a table that is present but older or emptied does not pass. Bump
-  # it in ops/builder-egress.nft and ops/builder-egress-load.sh together;
-  # ops/test_builder_egress.py checks all three agree.
+  # The build egress filter (isolation spec, section 3), declared in the
+  # builder host's configuration. The preflight looks for this marker, the
+  # comment on the ruleset's final drop, so a table that is present but older
+  # or emptied does not pass. Bump it together with that ruleset and the
+  # release's `:egress_table_hashes`.
   @egress_table "ncc_egress"
   @egress_marker "ncc_egress_v1"
+  @egress_icc_marker "ncc_egress_icc_v1"
 
-  # Where `nsenter` and `nft` live when the service's PATH leaves sbin out
-  # (a plain systemd service) or is a NixOS unit's narrow `path`.
-  @egress_tool_dirs ["/usr/sbin", "/sbin", "/usr/local/sbin", "/run/current-system/sw/bin"]
+  # Listing an nftables table takes CAP_NET_ADMIN, which the portal does not
+  # have. On a builder a root helper answers every connection to this socket
+  # with `nft -s list` of the filter's tables and nothing else; the builder
+  # host's configuration runs it. `:egress_status_socket` overrides it.
+  @egress_status_socket "/run/ncc-egress/status.sock"
 
-  # A hung `nsenter`/`nft` (a wedged mount namespace, a stuck daemon) must not
-  # block a `:builds` slot forever; `probe_egress/1` bounds the call to this
-  # many milliseconds and fails closed past it. Overridable per call
-  # (`:timeout_ms`) so tests use a short bound.
+  # A hung helper must not block a `:builds` slot forever; `probe_egress/1`
+  # bounds the whole read to this many milliseconds and fails closed past it.
+  # Overridable per call (`:timeout_ms`) so tests use a short bound.
   @egress_probe_timeout_ms :timer.seconds(10)
+
+  # The helper's answer is two short tables; anything much longer is not one.
+  @egress_status_max_bytes 64 * 1024
 
   @type build_args :: %{
           required(:run_id) => String.t(),
@@ -147,9 +152,8 @@ defmodule Portal.Builder do
   @doc """
   Whether builds on this host need the egress filter (`check_egress/0`).
 
-  On unless `NCC_EGRESS_CHECK=0` (`:egress_check`), which is for a host with no
-  rootless daemon (a laptop, the integration test) and is the section-3
-  rollback.
+  On unless `NCC_EGRESS_CHECK=0` (`:egress_check`), which is for a host without
+  docker-ncc and its filter (a laptop, the integration test).
   """
   @spec egress_check?() :: boolean()
   def egress_check?, do: config(:egress_check, true) != false
@@ -543,8 +547,9 @@ defmodule Portal.Builder do
   end
 
   @doc """
-  The egress preflight: `:ok` when the build egress filter is loaded in
-  rootless dockerd's network namespace, or when `egress_check?/0` is off.
+  The egress preflight: `:ok` when the build egress filter is loaded in the
+  host's network namespace, where docker-ncc's bridge lives, or when
+  `egress_check?/0` is off.
 
   Otherwise logs why and returns `{:error, :egress_filter_missing}`, which
   every worker that builds snoozes on: a host whose filter is missing refuses
@@ -564,14 +569,13 @@ defmodule Portal.Builder do
     end
   end
 
-  defp egress_probe_result, do: config(:egress_filter_probe, &__MODULE__.probe_egress/0).()
+  defp egress_probe_result, do: (config(:egress_filter_probe, nil) || (&probe_egress/0)).()
 
   defp egress_missing(reason) do
     Logger.error(
       "Build egress filter missing (#{inspect(reason)}); refusing to build. " <>
-        "Run the builder's egress loader (ops/builder-egress-load.sh) as the " <>
-        "daemon's user, or set " <>
-        "NCC_EGRESS_CHECK=0 on a host without a rootless daemon"
+        "Check that ncc-egress (nftables) and ncc-egress-status.socket are up, or set " <>
+        "NCC_EGRESS_CHECK=0 on a host without docker-ncc"
     )
 
     {:error, :egress_filter_missing}
@@ -581,8 +585,8 @@ defmodule Portal.Builder do
   Logs the egress filter's state once at boot, on a node that runs builds
   (`Portal.Application`), where an operator looks first.
 
-  At boot the portal usually comes up before the rootless daemon and its
-  `ExecStartPost` loader do, so a missing filter is probed again every
+  At boot the portal can come up before the filter and its status helper
+  do, so a missing filter is probed again every
   `:interval_ms` for up to `:attempts` tries (`boot_egress_retry/0`, about a
   minute) before the "missing" error is logged. Builds themselves never
   wait: each one runs `check_egress/0` on its own.
@@ -628,128 +632,101 @@ defmodule Portal.Builder do
   end
 
   @doc false
-  # Lists `inet ncc_egress` inside the network namespace the bridge lives in.
-  # With `--detach-netns` that namespace is bind-mounted at `netns`, next to
-  # `child_pid` in rootlesskit's state dir, and only rootlesskit's own mount
-  # namespace sees the mount. dockerd stays in the host's network namespace,
-  # and the child is not reliably in the bridge's either (on rootlesskit
-  # 2.3.6 it was in the host's after a boot), so the probe enters the child's
-  # user and mount namespaces and then the bind-mounted network namespace. `opts` (`:child_pid_file`, `:find`, `:timeout_ms`) are for
-  # tests. The pid file is rootlesskit's own and both tools are found on PATH
-  # or fixed sbin dirs; the pid is checked to be digits; nothing in the argv
-  # comes from a package or a request. The `nsenter`/`nft` call itself runs in
-  # a separate task bounded by `:timeout_ms` (`@egress_probe_timeout_ms` by
-  # default): a wedged namespace or daemon fails closed instead of blocking
-  # the caller's `:builds` slot forever.
+  # Reads the filter from the root status helper's socket (`:socket`,
+  # `@egress_status_socket` by default): `nft -s list` of `inet ncc_egress`
+  # and the bridge icc table, written by the helper, which takes no input,
+  # then closed. Passes only a complete listing whose normalised sha256
+  # (`egress_listing_sha256/1`) is in `:expected_hashes`, by default the
+  # release's `:egress_table_hashes`: a table that is present but weakened
+  # has another hash. The whole read is bounded by `:timeout_ms` and
+  # `@egress_status_max_bytes`: a wedged or runaway helper fails closed
+  # instead of blocking the caller's `:builds` slot.
   @spec probe_egress(keyword()) :: :ok | {:error, term()}
   def probe_egress(opts \\ []) do
-    find = Keyword.get(opts, :find, &find_egress_tool/1)
-    pid_file = Keyword.get_lazy(opts, :child_pid_file, &rootlesskit_child_pid_file/0)
+    socket =
+      Keyword.get_lazy(opts, :socket, fn ->
+        config(:egress_status_socket, @egress_status_socket)
+      end)
+
+    expected =
+      Keyword.get_lazy(opts, :expected_hashes, fn -> config(:egress_table_hashes, []) end)
+
     timeout_ms = Keyword.get(opts, :timeout_ms, @egress_probe_timeout_ms)
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
 
-    netns = Path.join(Path.dirname(pid_file), "netns")
+    case :gen_tcp.connect({:local, socket}, 0, [:binary, active: false], timeout_ms) do
+      {:ok, conn} ->
+        result = read_status(conn, deadline, [], 0)
+        :gen_tcp.close(conn)
+        with {:ok, listing} <- result, do: egress_listing_result(listing, expected)
 
-    with {:ok, pid} <- read_child_pid(pid_file),
-         {:ok, nsenter} <- egress_tool(find, "nsenter"),
-         {:ok, nft} <- egress_tool(find, "nft") do
-      bounded_list_egress_table([nsenter, nft, pid, netns], timeout_ms)
+      {:error, reason} ->
+        {:error, {:status_socket, socket, reason}}
     end
   end
 
-  # Runs the actual nft call in its own task so a hang can be abandoned
-  # (`Task.shutdown/2`) instead of blocking the caller past `timeout_ms`.
-  # `Task.shutdown(:brutal_kill)` only stops the Elixir task; it does not
-  # reliably reap `nsenter` itself, but it is what bounds `check_egress/0`'s
-  # caller, which is the load-bearing property here. The task is linked
-  # (`Task.async/1`): a raise inside it would kill the caller through the
-  # link, before `Task.yield/2` could return `{:exit, _}`, so that branch is
-  # not what keeps a crash safe. `list_egress_table/3`'s own `rescue` is: it
-  # turns the failures `System.cmd/3` raises into `{:error, _}` inside the
-  # task.
-  defp bounded_list_egress_table([nsenter, nft, pid, netns], timeout_ms) do
-    task = Task.async(fn -> list_egress_table(nsenter, nft, pid, netns) end)
+  defp read_status(_conn, _deadline, _acc, size) when size > @egress_status_max_bytes,
+    do: {:error, :egress_status_oversized}
 
-    case Task.yield(task, timeout_ms) do
-      {:ok, result} ->
-        result
-
-      {:exit, reason} ->
-        {:error, {:probe_crashed, reason}}
-
-      nil ->
-        Task.shutdown(task, :brutal_kill)
-        {:error, :timeout}
+  defp read_status(conn, deadline, acc, size) do
+    case :gen_tcp.recv(conn, 0, max(deadline - System.monotonic_time(:millisecond), 0)) do
+      {:ok, data} -> read_status(conn, deadline, [acc | data], size + byte_size(data))
+      {:error, :closed} -> {:ok, IO.iodata_to_binary(acc)}
+      {:error, :timeout} -> {:error, :timeout}
+      {:error, reason} -> {:error, {:status_socket, reason}}
     end
   end
 
-  # Fixed argv built from the two resolved tool paths, the rootlesskit
-  # child's own pid and the `netns` path next to its pid file; nothing here
-  # comes from a package or a request. Runs inside the bounded task started
-  # by `bounded_list_egress_table/2`.
-  # sobelow_skip ["CI.System"]
-  defp list_egress_table(nsenter, nft, pid, netns) do
-    args =
-      ["-U", "--preserve-credentials", "-m", "-t", pid, "--"] ++
-        [nsenter, "--net=" <> netns, nft, "list", "table", "inet"]
+  defp egress_listing_result(listing, expected) do
+    hash = egress_listing_sha256(listing)
 
-    case System.cmd(nsenter, args ++ [@egress_table], stderr_to_stdout: true) do
-      {out, 0} ->
-        if egress_table_complete?(out), do: :ok, else: {:error, :egress_table_incomplete}
+    cond do
+      String.starts_with?(String.trim_leading(listing), "Error") ->
+        {:error, {:nft_failed, listing |> String.trim() |> String.slice(0, 500)}}
 
-      {out, status} ->
-        {:error, {:nft_failed, status, String.trim(out)}}
+      not egress_table_complete?(listing) ->
+        {:error, :egress_table_incomplete}
+
+      expected == [] ->
+        {:error, {:no_expected_egress_hashes, hash}}
+
+      hash not in expected ->
+        {:error, {:unexpected_egress_table, hash}}
+
+      true ->
+        :ok
     end
-  rescue
-    e in ErlangError -> {:error, {:probe_failed, Exception.message(e)}}
+  end
+
+  @doc """
+  The sha256 the release's `:egress_table_hashes` holds for a status
+  listing: each line without a trailing `# handle N` and right-trimmed,
+  leading and trailing blank lines dropped, joined with "\\n", lowercase hex.
+  """
+  @spec egress_listing_sha256(String.t()) :: String.t()
+  def egress_listing_sha256(listing) do
+    listing
+    |> String.split("\n")
+    |> Enum.map(&(&1 |> String.replace(~r/\s*# handle \d+$/, "") |> String.trim_trailing()))
+    |> Enum.drop_while(&(&1 == ""))
+    |> Enum.reverse()
+    |> Enum.drop_while(&(&1 == ""))
+    |> Enum.reverse()
+    |> Enum.join("\n")
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
   end
 
   @doc false
-  # The table, its forward hook, and the final drop of the ruleset version
-  # this release expects.
+  # The table, its forward hook, the final drop of the ruleset version this
+  # release expects, and the bridge table's drop between containers.
   @spec egress_table_complete?(String.t()) :: boolean()
   def egress_table_complete?(listing) do
     String.contains?(listing, "table inet #{@egress_table}") and
       String.contains?(listing, "hook forward") and
-      String.contains?(listing, ~s(comment "#{@egress_marker}"))
-  end
-
-  # A system service gets no XDG_RUNTIME_DIR; the rootless daemon's runtime
-  # dir is the user's /run/user/<uid> either way.
-  defp rootlesskit_child_pid_file do
-    config(:rootlesskit_child_pid_file, nil) ||
-      Path.join([
-        System.get_env("XDG_RUNTIME_DIR") || "/run/user/#{elem(current_user(), 0)}",
-        "dockerd-rootless",
-        "child_pid"
-      ])
-  end
-
-  # The path is rootlesskit's pid file under the service user's runtime dir
-  # or operator config.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp read_child_pid(path) do
-    case File.read(path) do
-      {:ok, content} ->
-        pid = String.trim(content)
-        if pid =~ ~r/\A\d+\z/, do: {:ok, pid}, else: {:error, {:child_pid_invalid, path}}
-
-      {:error, reason} ->
-        {:error, {:child_pid_unreadable, path, reason}}
-    end
-  end
-
-  defp egress_tool(find, name) do
-    case find.(name) do
-      path when is_binary(path) -> {:ok, path}
-      _ -> {:error, {:missing_executable, name}}
-    end
-  end
-
-  # Fixed directory list joined with a fixed tool name.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp find_egress_tool(name) do
-    System.find_executable(name) ||
-      @egress_tool_dirs |> Enum.map(&Path.join(&1, name)) |> Enum.find(&File.regular?/1)
+      String.contains?(listing, ~s(comment "#{@egress_marker}")) and
+      String.contains?(listing, "table bridge ") and
+      String.contains?(listing, ~s(drop comment "#{@egress_icc_marker}"))
   end
 
   # `~/.ncc-scratch` does not exist until the first build creates it, and `df` on
@@ -1055,11 +1032,10 @@ defmodule Portal.Builder do
   def worker_image_ref(image_digest),
     do: image_ref(%{image_name: docker_image(), image_digest: image_digest})
 
-  # Matching our own uid keeps bind-mounted output owned by us on a normal
-  # daemon. Under rootless Docker it does the opposite: the daemon runs in a
-  # user namespace where our uid is already 0, so passing it literally lands
-  # container writes on a subuid we cannot read back. Rootless hosts set
-  # "0:0", which maps to the service user outside the namespace.
+  # Matching our own uid keeps bind-mounted output owned by us, and it is the
+  # one user the build daemon's authorization policy lets a container run as.
+  # `:run_as_user` (`NCC_BUILD_USER`) overrides it for a host whose daemon
+  # maps users differently.
   @doc "The `--user` every container this module starts runs as."
   @spec run_as_user() :: String.t()
   def run_as_user do

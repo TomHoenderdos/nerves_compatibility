@@ -185,7 +185,13 @@ config :portal, Portal.Builder,
   hex_cache_max_bytes: 20 * 1024 * 1024 * 1024,
   # Refuse to build on a host whose egress filter is not loaded
   # (`Portal.Builder.check_egress/0`). `NCC_EGRESS_CHECK=0` turns it off.
-  egress_check: true
+  egress_check: true,
+  # The builders' reviewed filter: `Portal.Builder.egress_listing_sha256/1` of
+  # what the status helper on the build hosts lists (nft 1.1.6).
+  # A listing with any other hash refuses builds; the refusal logs the hash.
+  # Change only together with that ruleset. Not overridable from the
+  # environment.
+  egress_table_hashes: ["ac690f8147aefe1fff9d11b6604cc71cde01ee6b631abd8d857df7fe7d6ca15e"]
 
 # Where the "Open an issue" link in the UI points.
 #

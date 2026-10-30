@@ -84,9 +84,9 @@ defmodule Portal.Application do
 
   # A build node whose egress filter is missing refuses every build
   # (`Portal.Builder.check_egress/0`); say so once at boot rather than only in
-  # each refusal. Only where builds run: the web host has no rootless daemon.
-  # Off the boot path, since it shells out and, at boot, waits up to a minute
-  # for a rootless daemon that starts after the portal
+  # each refusal. Only where builds run: the web host has no build daemon.
+  # Off the boot path, since at boot it waits up to a minute for a filter
+  # and status helper that start after the portal
   # (`Portal.Builder.boot_egress_check/1`).
   defp start_boot_egress_check do
     oban = Application.fetch_env!(:portal, Oban)

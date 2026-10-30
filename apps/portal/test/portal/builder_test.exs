@@ -394,33 +394,59 @@ defmodule Portal.BuilderTest do
     end
   end
 
-  # The build egress filter lives in rootless dockerd's network namespace
-  # (ops/builder-egress.nft). A host without it must refuse to build rather
-  # than run package code with the private network in reach (isolation spec, section 3).
+  # The build egress filter lives in the host's network namespace, and the
+  # portal reads it through the root status helper. A host without it must
+  # refuse to build rather than run package code with the private network in
+  # reach (isolation spec, section 3).
   describe "egress preflight" do
     @egress_listing """
     table inet ncc_egress {
       chain build_forward {
         type filter hook forward priority filter - 10; policy accept;
-        iifname != "docker0" accept
+        iifname != "ncc0" accept
         drop comment "ncc_egress_v1"
+      }
+    }
+    table bridge ncc_egress_icc {
+      chain build_icc {
+        type filter hook forward priority filter - 10; policy accept;
+        meta ibrname "ncc0" drop comment "ncc_egress_icc_v1"
       }
     }
     """
 
-    defp egress_tmp do
-      dir = Path.join(System.tmp_dir!(), "egress-#{System.unique_integer([:positive])}")
-      File.mkdir_p!(dir)
-      on_exit(fn -> File.rm_rf(dir) end)
-      dir
-    end
+    # A stand-in for the builder's root status helper: a unix socket that
+    # answers each connection
+    # with `reply` and closes, or with nothing at all when `reply` is :hang.
+    # Short path: a unix socket path is limited to ~100 bytes.
+    defp egress_status_socket(reply) do
+      path = "/tmp/ncc-egress-#{System.unique_integer([:positive])}.sock"
+      File.rm(path)
 
-    defp fake_nsenter(dir, body) do
-      path = Path.join(dir, "nsenter")
-      File.write!(path, "#!/bin/sh\necho \"$*\" > #{dir}/args\n" <> body)
-      File.chmod!(path, 0o755)
+      {:ok, listen} =
+        :gen_tcp.listen(0, [:binary, ifaddr: {:local, path}, active: false, reuseaddr: true])
+
+      server = spawn(fn -> serve_egress_status(listen, reply) end)
+      :ok = :gen_tcp.controlling_process(listen, server)
+
+      on_exit(fn ->
+        Process.exit(server, :kill)
+        File.rm(path)
+      end)
+
       path
     end
+
+    defp serve_egress_status(listen, reply) do
+      with {:ok, conn} <- :gen_tcp.accept(listen) do
+        answer_egress_status(conn, reply)
+        :gen_tcp.close(conn)
+        serve_egress_status(listen, reply)
+      end
+    end
+
+    defp answer_egress_status(_conn, :hang), do: Process.sleep(5_000)
+    defp answer_egress_status(conn, reply), do: :ok = :gen_tcp.send(conn, reply)
 
     test "a missing filter refuses the build before anything is written", %{previous: previous} do
       root = Path.join(System.tmp_dir!(), "egress-root-#{System.unique_integer([:positive])}")
@@ -498,98 +524,82 @@ defmodule Portal.BuilderTest do
              )
     end
 
-    test "probe_egress/1 lists the table in rootlesskit's detached namespace" do
-      dir = egress_tmp()
-      pid_file = Path.join(dir, "child_pid")
-      File.write!(pid_file, "4242\n")
-      nsenter = fake_nsenter(dir, "cat <<'EOF'\n#{@egress_listing}EOF\n")
-
+    test "probe_egress/1 reads the table from the status socket" do
       assert :ok =
                Builder.probe_egress(
-                 child_pid_file: pid_file,
-                 find: fn
-                   "nsenter" -> nsenter
-                   "nft" -> "/usr/sbin/nft"
-                 end
+                 socket: egress_status_socket(@egress_listing),
+                 expected_hashes: [Builder.egress_listing_sha256(@egress_listing)]
                )
+    end
 
-      # The child's user and mount namespaces, then the bridge's network
-      # namespace through the bind mount only that mount namespace has: the
-      # child itself is not reliably in it.
-      assert File.read!(Path.join(dir, "args")) ==
-               "-U --preserve-credentials -m -t 4242 -- #{nsenter} --net=#{dir}/netns " <>
-                 "/usr/sbin/nft list table inet ncc_egress\n"
+    # What the builders' status helper really lists (nft 1.1.6), captured
+    # from the builder host's configuration. The
+    # release's expected set must hold its hash, or every build is refused.
+    test "the release expects the builders' reviewed filter" do
+      listing = File.read!(Path.expand("../fixtures/egress/status_listing.txt", __DIR__))
+
+      assert Builder.egress_table_complete?(listing)
+
+      assert Builder.egress_listing_sha256(listing) in Application.fetch_env!(
+               :portal,
+               Portal.Builder
+             )[:egress_table_hashes]
     end
 
     test "probe_egress/1 reports what nft said when the table is absent" do
-      dir = egress_tmp()
-      pid_file = Path.join(dir, "child_pid")
-      File.write!(pid_file, "4242\n")
-      nsenter = fake_nsenter(dir, "echo 'Error: No such file or directory' >&2\nexit 1\n")
+      socket = egress_status_socket("Error: No such file or directory\n")
 
-      assert {:error, {:nft_failed, 1, "Error: No such file or directory"}} =
-               Builder.probe_egress(child_pid_file: pid_file, find: fn _ -> nsenter end)
+      assert {:error, {:nft_failed, "Error: No such file or directory"}} =
+               Builder.probe_egress(socket: socket)
     end
 
     test "probe_egress/1 refuses a table without the marker" do
-      dir = egress_tmp()
-      pid_file = Path.join(dir, "child_pid")
-      File.write!(pid_file, "4242\n")
-      nsenter = fake_nsenter(dir, "echo 'table inet ncc_egress {'\necho '}'\n")
-
-      assert {:error, :egress_table_incomplete} =
-               Builder.probe_egress(child_pid_file: pid_file, find: fn _ -> nsenter end)
+      socket = egress_status_socket("table inet ncc_egress {\n}\n")
+      assert {:error, :egress_table_incomplete} = Builder.probe_egress(socket: socket)
     end
 
-    test "probe_egress/1 fails closed on a missing or malformed child_pid" do
-      dir = egress_tmp()
-      missing = Path.join(dir, "absent")
+    test "probe_egress/1 fails closed without the status socket" do
+      missing = "/tmp/ncc-egress-absent-#{System.unique_integer([:positive])}.sock"
 
-      assert {:error, {:child_pid_unreadable, ^missing, :enoent}} =
-               Builder.probe_egress(child_pid_file: missing, find: fn _ -> "/bin/true" end)
-
-      garbled = Path.join(dir, "child_pid")
-      File.write!(garbled, "42 1\n")
-
-      assert {:error, {:child_pid_invalid, ^garbled}} =
-               Builder.probe_egress(child_pid_file: garbled, find: fn _ -> "/bin/true" end)
+      assert {:error, {:status_socket, ^missing, _reason}} =
+               Builder.probe_egress(socket: missing)
     end
 
-    test "probe_egress/1 names the tool it could not find" do
-      dir = egress_tmp()
-      pid_file = Path.join(dir, "child_pid")
-      File.write!(pid_file, "4242\n")
-
-      assert {:error, {:missing_executable, "nsenter"}} =
-               Builder.probe_egress(child_pid_file: pid_file, find: fn _ -> nil end)
-
-      assert {:error, {:missing_executable, "nft"}} =
-               Builder.probe_egress(
-                 child_pid_file: pid_file,
-                 find: fn
-                   "nsenter" -> "/usr/bin/nsenter"
-                   "nft" -> nil
-                 end
-               )
-    end
-
-    test "probe_egress/1 fails closed when the probe hangs past its bound" do
-      dir = egress_tmp()
-      pid_file = Path.join(dir, "child_pid")
-      File.write!(pid_file, "4242\n")
-      nsenter = fake_nsenter(dir, "sleep 5\n")
-
+    test "probe_egress/1 fails closed when the helper hangs past its bound" do
+      socket = egress_status_socket(:hang)
       started = System.monotonic_time(:millisecond)
 
-      assert {:error, :timeout} =
-               Builder.probe_egress(
-                 child_pid_file: pid_file,
-                 find: fn _ -> nsenter end,
-                 timeout_ms: 100
-               )
+      assert {:error, :timeout} = Builder.probe_egress(socket: socket, timeout_ms: 100)
 
-      # Bounded by timeout_ms, not by the stub's 5s sleep.
+      # Bounded by timeout_ms, not by the helper's 5s sleep.
       assert System.monotonic_time(:millisecond) - started < 1000
+    end
+
+    # The real probe, end to end: no table in the host namespace, no build.
+    test "a host whose table is absent refuses the build", %{previous: previous} do
+      root = Path.join(System.tmp_dir!(), "egress-root-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(root) end)
+      socket = egress_status_socket("Error: No such file or directory\n")
+
+      put_builder(
+        [
+          scratch_root: root,
+          min_free_disk_gb: 0,
+          exec_probe: fn _path -> :ok end,
+          egress_check: true,
+          egress_filter_probe: nil,
+          egress_status_socket: socket
+        ],
+        previous
+      )
+
+      log =
+        capture_log(fn ->
+          assert {:error, :egress_filter_missing} = Builder.build(@build_args)
+        end)
+
+      assert log =~ "No such file or directory"
+      refute File.exists?(Path.join(root, "run-1"))
     end
 
     test "check_egress/0 fails closed and logs a probe timeout like any other probe failure",
@@ -656,11 +666,17 @@ defmodule Portal.BuilderTest do
       refute_received :probed
     end
 
-    # At boot the portal usually comes up before the rootless daemon and its
-    # ExecStartPost loader do.
+    # At boot the portal can come up before the egress status helper's
+    # socket does.
     test "boot_egress_check/1 waits for a daemon that loads the filter after boot",
          %{previous: previous} do
-      probe = probe_answering([{:error, :no_child_pid}, {:error, :no_child_pid}, :ok])
+      probe =
+        probe_answering([
+          {:error, {:status_socket, "/run/ncc-egress/status.sock", :enoent}},
+          {:error, {:status_socket, "/run/ncc-egress/status.sock", :enoent}},
+          :ok
+        ])
+
       put_builder([egress_check: true, egress_filter_probe: probe], previous)
 
       log =

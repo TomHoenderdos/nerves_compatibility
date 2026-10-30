@@ -94,5 +94,5 @@ config :phoenix_live_view,
   # Enable helpful, but potentially expensive runtime checks
   enable_expensive_runtime_checks: true
 
-# A laptop has no rootless daemon to filter (`Portal.Builder.check_egress/0`).
+# A laptop has no egress filter or status helper (`Portal.Builder.check_egress/0`).
 config :portal, Portal.Builder, egress_check: false

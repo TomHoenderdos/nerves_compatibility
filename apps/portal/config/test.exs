@@ -22,7 +22,7 @@ config :portal, Portal.Builder,
   scratch_root: Path.join(System.tmp_dir!(), "ncc-test-scratch"),
   nerves_cache: Path.join(System.tmp_dir!(), "ncc-test-nerves-cache"),
   hex_cache: Path.join(System.tmp_dir!(), "ncc-test-hex-cache"),
-  # No rootless daemon here, nor in the integration test.
+  # No egress status helper here, nor in the integration test.
   egress_check: false,
   # Every build container needs one (`Portal.Builder.check_memory_limit/0`).
   memory: "8g",
