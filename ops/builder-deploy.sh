@@ -3,9 +3,6 @@
 
 builder_paused=false
 
-# The build egress filter (isolation spec, section 3; the operator
-# runbook). Installed from this checkout, which deploy.sh has already moved to
-# the commit being deployed.
 # The host layout (where the checkout, the release and the config files live)
 # comes from the operator's deploy env file, never from this repository: see
 # ops/deploy.env.example. A script deploy.sh starts inherits every variable
@@ -32,22 +29,19 @@ ncc_layout() {
 
 # deploy.sh has read the env file already; this is for an older installed
 # deploy.sh that predates it, and for the tests.
+# DOCKER_HOST names docker-ncc's root-only unix socket, where every image pull,
+# build, load and tag below goes, as root. Without it the docker CLI would fall
+# back to /var/run/docker.sock, a daemon that runs no builds.
 ncc_layout NCC_SRC_DIR NCC_INSTALL_DIR NCC_PORTAL_ENV NCC_PORTAL_WORKDIR \
-  NCC_EGRESS_RULESET NCC_EGRESS_BRIDGE_RULESET || return 1
+  DOCKER_HOST || return 1
 
 builder_src=$NCC_SRC_DIR
 builder_portal_env=$NCC_PORTAL_ENV
 builder_portal_workdir=$NCC_PORTAL_WORKDIR
 builder_portal_bin=$NCC_INSTALL_DIR/portal/bin/portal
-builder_egress_rules=$NCC_EGRESS_RULESET
-builder_egress_bridge_rules=$NCC_EGRESS_BRIDGE_RULESET
-builder_egress_loader=$NCC_INSTALL_DIR/builder-egress-load.sh
-
-builder_ncc_home() { getent passwd ncc | cut -d: -f6; }
-builder_is_nixos() { [[ -e /etc/NIXOS ]]; }
 
 # `NCC_EGRESS_CHECK=0` in portal.env is the rollback: it turns the portal's
-# preflight off, and here it stops a deploy from putting the filter back.
+# preflight off, and here the check of the running service.
 builder_egress_disabled() {
   [[ -r "$builder_portal_env" ]] || return 1
   (
@@ -56,55 +50,6 @@ builder_egress_disabled() {
     . "$builder_portal_env"
     [[ ${NCC_EGRESS_CHECK:-} == 0 ]]
   )
-}
-
-builder_egress_dropin() {
-  cat <<EOF
-# Installed by ops/builder-deploy.sh. Rootless dockerd recreates its network
-# namespace on every start, and the build egress filter goes with it; reload
-# it once the daemon answers. "-": a failed load leaves the daemon up, and the
-# portal's preflight then refuses builds instead.
-[Service]
-ExecStartPost=-$builder_egress_loader
-EOF
-}
-
-# Called from an `if`, where `set -e` does not apply, so every step checks its
-# own status.
-builder_install_egress() {
-  if builder_egress_disabled; then
-    echo 'NCC_EGRESS_CHECK=0: leaving the build egress filter alone'
-    return 0
-  fi
-
-  local uid home dir
-  uid=$(id -u ncc) || return 1
-  install -o root -g root -m 0644 "$builder_src/ops/builder-egress.nft" \
-    "$builder_egress_rules" || return 1
-  install -o root -g root -m 0644 "$builder_src/ops/builder-egress-bridge.nft" \
-    "$builder_egress_bridge_rules" || return 1
-  install -o root -g root -m 0755 "$builder_src/ops/builder-egress-load.sh" \
-    "$builder_egress_loader" || return 1
-
-  if builder_is_nixos; then
-    echo 'NixOS: the docker user unit is nix-managed; its ExecStartPost comes from the host nix config (see the operator runbook)'
-  else
-    home=$(builder_ncc_home) || return 1
-    [[ -n "$home" ]] || return 1
-    dir="$home/.config/systemd/user/docker.service.d"
-    # As ncc, never as root: ncc owns every component of this path and could
-    # swap one for a link into /etc/systemd, which root would then write
-    # through. The drop-in only configures ncc's own user manager, so ncc
-    # owning it gains ncc nothing.
-    sudo -u ncc install -d -m 0755 "$dir" || return 1
-    builder_egress_dropin | sudo -u ncc tee "$dir/ncc-egress.conf" >/dev/null || return 1
-    sudo -u ncc chmod 0644 "$dir/ncc-egress.conf" || return 1
-    systemctl --user -M ncc@ daemon-reload || return 1
-  fi
-
-  # Now as well: the namespace that exists today has no rules on a host's
-  # first deploy of this, and an older ruleset on every later one.
-  sudo -u ncc env XDG_RUNTIME_DIR="/run/user/$uid" "$builder_egress_loader" || return 1
 }
 
 # The new release's own preflight, before any image tag moves or the service
@@ -153,10 +98,11 @@ builder_check_running_egress() {
 ERROR: the running ncc-portal finds no build egress filter, so it refuses
 every build (each one snoozes 15 minutes), although the deploy-time check
 passed. It answered: ${answer:-nothing}
-The likely cause is the ncc-portal unit itself: RestrictNamespaces= or
-PrivateUsers= (nsenter cannot enter the namespace), a PATH without nsenter
-or nft, or an XDG_RUNTIME_DIR other than /run/user/<uid of ncc>. Check:
-  systemctl show ncc-portal -p RestrictNamespaces -p PrivateUsers -p Environment
+The table is NixOS's, in the host's network namespace, and the eval found
+it there, so the likely cause is the ncc-portal unit itself: its sandboxing,
+PATH or environment. Check:
+  nft list table inet ncc_egress
+  systemctl show ncc-portal -p PrivateNetwork -p RestrictAddressFamilies -p Environment
   journalctl -u ncc-portal -n 50
 See the operator runbook.
 EOF
@@ -235,14 +181,6 @@ builder_prepare() {
     return 1
   fi
 
-  # Before the pause: a host that cannot load its egress filter keeps its
-  # running release and queues, rather than draining into a release whose
-  # preflight would refuse every build.
-  if ! builder_install_egress; then
-    echo 'could not install the build egress filter; leaving the running release in place' >&2
-    return 1
-  fi
-
   builder_paused=true
   trap builder_cleanup EXIT
   trap 'exit 130' INT
@@ -284,8 +222,6 @@ builder_pull_worker_image() {
 }
 
 builder_build_image() {
-  local uid
-  uid=$(id -u ncc)
   # A candidate tag either way. Existing jobs and failed builds retain the live
   # tag. The registry image for this commit exists only once images.yml has run
   # for it, which starts after CI's own deploy; until then this host builds its
@@ -294,26 +230,22 @@ builder_build_image() {
     :
   else
     echo 'worker image: no registry image for this commit; building locally, so this host shares no build cache entries' >&2
-    DOCKER_HOST="unix:///run/user/$uid/docker.sock" make build WORKER_IMAGE=ncc-worker:deploy
+    make build WORKER_IMAGE=ncc-worker:deploy
   fi
   # The same for every toolchain image: `<tag>-deploy` beside the live `<tag>`.
   # A failure here stops the deploy before any tag moves, like the main image.
-  DOCKER_HOST="unix:///run/user/$uid/docker.sock" make build-toolchains TOOLCHAIN_SUFFIX=-deploy
+  make build-toolchains TOOLCHAIN_SUFFIX=-deploy
 }
 
 # The live toolchain tags, one per line, from the Makefile's TOOLCHAIN_IMAGES.
 builder_toolchain_tags() {
-  local uid
-  uid=$(id -u ncc)
-  # Reads the Makefile only, but runs under the rootless daemon like every
-  # other make and docker call here, so the deploy tests can assert on it.
-  DOCKER_HOST="unix:///run/user/$uid/docker.sock" make -s toolchain-tags
+  make -s toolchain-tags
 }
 
+# On the daemon DOCKER_HOST names, as root: the portal's mTLS identity may not
+# load or tag an image.
 builder_docker() {
-  local uid
-  uid=$(id -u ncc)
-  DOCKER_HOST="unix:///run/user/$uid/docker.sock" docker "$@"
+  docker "$@"
 }
 
 # Fills the Nerves cache with what the template resolves on the image just
@@ -329,6 +261,11 @@ builder_docker() {
 # clock, while `docker run --rm` goes on writing the cache with nothing left
 # to stop it, and its ncc- name keeps Portal.Workers.Sweep from evicting;
 # builder_kill_warm stops it.
+# The warm container is a build container, so it runs as the portal's builds
+# do: on docker-ncc's mTLS listener, where the authz policy holds it to runsc,
+# never on the root socket. The eval runs under sudo, outside the ncc-portal
+# unit whose NixOS environment sets that identity, so it is set here, after
+# portal.env, which must not override it.
 builder_warm_nerves() {
   local status=0
   sudo -u ncc bash -c '
@@ -337,7 +274,7 @@ builder_warm_nerves() {
     set -a
     . "$2"
     set +a
-    export DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/$(id -u)/docker.sock}"
+    export DOCKER_HOST=tcp://127.0.0.1:2376 DOCKER_TLS_VERIFY=1 DOCKER_CERT_PATH=/etc/ncc/docker-tls
     exec timeout 60m "$3" eval "$4"
   ' -- "$builder_portal_workdir" "$builder_portal_env" "$builder_portal_bin" \
     'case Portal.NervesCache.deploy_warm() do

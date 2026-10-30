@@ -61,10 +61,10 @@ jobs:
       - name: Validate deployment scripts
         run: |
           # `bash -n a b` parses only `a` (the rest are its arguments): one file per call.
-          for script in ops/deploy.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/builder-egress-load.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh apps/ncc_agent/priv/egress.sh; do
+          for script in ops/deploy.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh apps/ncc_agent/priv/egress.sh; do
             bash -n "$script"
           done
-          shellcheck -x ops/deploy.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/builder-egress-load.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh apps/ncc_agent/priv/egress.sh
+          shellcheck -x ops/deploy.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh apps/ncc_agent/priv/egress.sh
           python3 -m unittest discover -s ops -p 'test_*.py'
 
   deploy:

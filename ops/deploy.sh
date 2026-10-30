@@ -45,7 +45,7 @@ ncc_layout() {
 
 layout=(NCC_SRC_DIR NCC_INSTALL_DIR NCC_PORTAL_ENV NCC_PORTAL_WORKDIR)
 if [[ ${2:-portal} == builder ]]; then
-  layout+=(NCC_EGRESS_RULESET NCC_EGRESS_BRIDGE_RULESET)
+  layout+=(DOCKER_HOST)
 else
   layout+=(NCC_IMAGES_JSON)
 fi
