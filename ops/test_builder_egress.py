@@ -127,13 +127,21 @@ class EgressLoaderTest(unittest.TestCase):
         self.assertIn("no host layout", result.stderr)
         self.assertEqual((lines, loads), ([], {}))
 
-    def test_loads_both_tables_into_the_rootlesskit_child_namespace(self):
+    # The bridge is in rootlesskit's detached namespace, bind-mounted at
+    # <state dir>/netns where only rootlesskit's own mount namespace sees it.
+    # The child itself (child_pid) is not reliably in it: on rootlesskit 2.3.6
+    # it sat in the host's network namespace after a boot.
+    def test_loads_both_tables_into_the_detached_namespace(self):
         result, lines, loads = self.load()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("nsenter -U --preserve-credentials -n -t 4242 nft -f -", lines)
-        self.assertIn(
-            "nsenter -U --preserve-credentials -n -t 4242 nft list table inet ncc_egress", lines
+        enter = re.compile(
+            r"^nsenter -U --preserve-credentials -m -t 4242 -- "
+            r"nsenter --net=/\S+/run/dockerd-rootless/netns (.*)$"
         )
+        entered = [m.group(1) for m in map(enter.match, lines) if m]
+        self.assertIn("nft -f -", entered)
+        self.assertIn("nft list table inet ncc_egress", entered)
+        self.assertFalse(any(" -n -t " in line for line in lines), lines)
         self.assertIn('define ncc_bridge = "br-test0"', loads["load-inet"])
         self.assertNotIn('define ncc_bridge = "docker0"', loads["load-inet"])
         self.assertIn("table inet ncc_egress", loads["load-inet"])

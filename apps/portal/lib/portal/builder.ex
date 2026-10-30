@@ -601,9 +601,13 @@ defmodule Portal.Builder do
   end
 
   @doc false
-  # Lists `inet ncc_egress` inside the namespace of rootlesskit's child, the
-  # one the bridge lives in: with `--detach-netns` dockerd itself stays in the
-  # host namespace. `opts` (`:child_pid_file`, `:find`, `:timeout_ms`) are for
+  # Lists `inet ncc_egress` inside the network namespace the bridge lives in.
+  # With `--detach-netns` that namespace is bind-mounted at `netns`, next to
+  # `child_pid` in rootlesskit's state dir, and only rootlesskit's own mount
+  # namespace sees the mount. dockerd stays in the host's network namespace,
+  # and the child is not reliably in the bridge's either (on rootlesskit
+  # 2.3.6 it was in the host's after a boot), so the probe enters the child's
+  # user and mount namespaces and then the bind-mounted network namespace. `opts` (`:child_pid_file`, `:find`, `:timeout_ms`) are for
   # tests. The pid file is rootlesskit's own and both tools are found on PATH
   # or fixed sbin dirs; the pid is checked to be digits; nothing in the argv
   # comes from a package or a request. The `nsenter`/`nft` call itself runs in
@@ -616,10 +620,12 @@ defmodule Portal.Builder do
     pid_file = Keyword.get_lazy(opts, :child_pid_file, &rootlesskit_child_pid_file/0)
     timeout_ms = Keyword.get(opts, :timeout_ms, @egress_probe_timeout_ms)
 
+    netns = Path.join(Path.dirname(pid_file), "netns")
+
     with {:ok, pid} <- read_child_pid(pid_file),
          {:ok, nsenter} <- egress_tool(find, "nsenter"),
          {:ok, nft} <- egress_tool(find, "nft") do
-      bounded_list_egress_table(nsenter, nft, pid, timeout_ms)
+      bounded_list_egress_table([nsenter, nft, pid, netns], timeout_ms)
     end
   end
 
@@ -633,8 +639,8 @@ defmodule Portal.Builder do
   # not what keeps a crash safe. `list_egress_table/3`'s own `rescue` is: it
   # turns the failures `System.cmd/3` raises into `{:error, _}` inside the
   # task.
-  defp bounded_list_egress_table(nsenter, nft, pid, timeout_ms) do
-    task = Task.async(fn -> list_egress_table(nsenter, nft, pid) end)
+  defp bounded_list_egress_table([nsenter, nft, pid, netns], timeout_ms) do
+    task = Task.async(fn -> list_egress_table(nsenter, nft, pid, netns) end)
 
     case Task.yield(task, timeout_ms) do
       {:ok, result} ->
@@ -649,12 +655,15 @@ defmodule Portal.Builder do
     end
   end
 
-  # Fixed argv built from the two resolved tool paths and the rootlesskit
-  # child's own pid; nothing here comes from a package or a request. Runs
-  # inside the bounded task started by `bounded_list_egress_table/4`.
+  # Fixed argv built from the two resolved tool paths, the rootlesskit
+  # child's own pid and the `netns` path next to its pid file; nothing here
+  # comes from a package or a request. Runs inside the bounded task started
+  # by `bounded_list_egress_table/2`.
   # sobelow_skip ["CI.System"]
-  defp list_egress_table(nsenter, nft, pid) do
-    args = ["-U", "--preserve-credentials", "-n", "-t", pid, nft, "list", "table", "inet"]
+  defp list_egress_table(nsenter, nft, pid, netns) do
+    args =
+      ["-U", "--preserve-credentials", "-m", "-t", pid, "--"] ++
+        [nsenter, "--net=" <> netns, nft, "list", "table", "inet"]
 
     case System.cmd(nsenter, args ++ [@egress_table], stderr_to_stdout: true) do
       {out, 0} ->

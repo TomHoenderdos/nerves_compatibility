@@ -1,7 +1,7 @@
 #!/usr/sbin/nft -f
 # Build egress filter (isolation spec, section 3). Loaded by
 # ops/builder-egress-load.sh into the network namespace rootless dockerd's
-# bridge lives in (rootlesskit's child, dockerd-rootless/child_pid), never
+# bridge lives in (rootlesskit's detached one, dockerd-rootless/netns), never
 # into the host's.
 #
 # Only this table: dockerd keeps its NAT and filter rules in iptables-nft

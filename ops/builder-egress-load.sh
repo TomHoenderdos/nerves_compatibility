@@ -5,9 +5,14 @@
 # user unit's ExecStartPost, and from ops/builder-deploy.sh at every builder
 # deploy. See the operator runbook.
 #
-# rootlesskit runs with --detach-netns, so dockerd itself (docker.pid) sits in
-# the host's network namespace and nsenter into it fails EPERM. The bridge is
-# in the namespace of rootlesskit's child, dockerd-rootless/child_pid.
+# rootlesskit runs with --detach-netns: the bridge lives in a detached
+# network namespace, bind-mounted at dockerd-rootless/netns inside
+# rootlesskit's own mount namespace and nowhere else. dockerd (docker.pid)
+# sits in the host's network namespace, and its child
+# (dockerd-rootless/child_pid) is not reliably in the bridge's either: on
+# rootlesskit 2.3.6 it was in the host's after a boot and in the bridge's
+# after a later daemon restart. `nsenter -n -t child_pid` then fails EPERM.
+# The child's user and mount namespaces plus the bind mount always work.
 set -euo pipefail
 
 # Appended, so a caller's PATH still wins: the systemd user manager's PATH may
@@ -44,6 +49,7 @@ bridge_ruleset=$NCC_EGRESS_BRIDGE_RULESET
 wait_seconds=${NCC_EGRESS_WAIT_SECONDS:-60}
 runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 child_pid_file=$runtime/dockerd-rootless/child_pid
+netns=$runtime/dockerd-rootless/netns
 export DOCKER_HOST=${DOCKER_HOST:-unix://$runtime/docker.sock}
 # Portal.Builder's @egress_marker; the preflight looks for the same comment.
 marker=ncc_egress_v1
@@ -75,7 +81,7 @@ bridge=$(bounded docker network inspect bridge --format '{{index .Options "com.d
 # parser, which is what the define below hands it to.
 [[ $bridge =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || { echo "unexpected bridge name: $bridge" >&2; exit 1; }
 
-in_netns() { bounded nsenter -U --preserve-credentials -n -t "$pid" "$@"; }
+in_netns() { bounded nsenter -U --preserve-credentials -m -t "$pid" -- nsenter --net="$netns" "$@"; }
 with_bridge() { sed "s/^define ncc_bridge = .*/define ncc_bridge = \"$bridge\"/" "$1"; }
 
 with_bridge "$ruleset" | in_netns nft -f -
@@ -91,4 +97,4 @@ if ! with_bridge "$bridge_ruleset" | in_netns nft -f -; then
     'containers on the bridge can still reach each other' >&2
 fi
 
-echo "egress filter $marker loaded on $bridge in the namespace of pid $pid"
+echo "egress filter $marker loaded on $bridge in the detached namespace of rootlesskit child $pid"

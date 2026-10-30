@@ -460,7 +460,7 @@ defmodule Portal.BuilderTest do
              )
     end
 
-    test "probe_egress/1 lists the table in the rootlesskit child's namespace" do
+    test "probe_egress/1 lists the table in rootlesskit's detached namespace" do
       dir = egress_tmp()
       pid_file = Path.join(dir, "child_pid")
       File.write!(pid_file, "4242\n")
@@ -475,8 +475,12 @@ defmodule Portal.BuilderTest do
                  end
                )
 
+      # The child's user and mount namespaces, then the bridge's network
+      # namespace through the bind mount only that mount namespace has: the
+      # child itself is not reliably in it.
       assert File.read!(Path.join(dir, "args")) ==
-               "-U --preserve-credentials -n -t 4242 /usr/sbin/nft list table inet ncc_egress\n"
+               "-U --preserve-credentials -m -t 4242 -- #{nsenter} --net=#{dir}/netns " <>
+                 "/usr/sbin/nft list table inet ncc_egress\n"
     end
 
     test "probe_egress/1 reports what nft said when the table is absent" do
