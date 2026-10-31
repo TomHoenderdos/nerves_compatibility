@@ -225,6 +225,7 @@ defmodule Portal.Builder do
     # downstream `:enospc` from `IO.binwrite/2` — which is the exception that
     # took the host down.
     with :ok <- distrust_rw_cache(job),
+         :ok <- check_memory_limit(),
          :ok <- check_free_space(scratch_root()),
          :ok <- check_scratch_exec(scratch_root()),
          :ok <- check_egress(),
@@ -512,6 +513,32 @@ defmodule Portal.Builder do
       e in ErlangError -> {:error, e.original}
     after
       File.rm(path)
+    end
+  end
+
+  @doc """
+  The memory limit preflight: `:ok` when `NCC_BUILD_MEMORY` (`:memory`) is a
+  positive size `docker run --memory` reads (`Argv.memory_limit?/1`).
+
+  Otherwise logs why and returns `{:error, :build_memory_limit_missing}`,
+  which every worker that builds snoozes on, as for a missing egress filter:
+  docker-ncc's authz policy denies a container without a memory limit, and
+  under gVisor's kvm platform, which does not enforce `--pids-limit`, it is
+  the only bound on a fork bomb.
+  """
+  @spec check_memory_limit() :: :ok | {:error, :build_memory_limit_missing}
+  def check_memory_limit do
+    memory = config(:memory, nil)
+
+    if Argv.memory_limit?(memory) do
+      :ok
+    else
+      Logger.error(
+        "NCC_BUILD_MEMORY is #{inspect(memory)}, not a memory limit such as 8g; " <>
+          "refusing to build: every build container needs one"
+      )
+
+      {:error, :build_memory_limit_missing}
     end
   end
 

@@ -24,6 +24,8 @@ config :portal, Portal.Builder,
   hex_cache: Path.join(System.tmp_dir!(), "ncc-test-hex-cache"),
   # No rootless daemon here, nor in the integration test.
   egress_check: false,
+  # Every build container needs one (`Portal.Builder.check_memory_limit/0`).
+  memory: "8g",
   # What `Portal.Builder.hex_cache_mode/1` would read off a current worker
   # image, without asking docker; the integration test asks for real.
   hex_cache_image_label: "seeded"

@@ -211,6 +211,17 @@ defmodule Portal.Workers.Build do
         Builder.cleanup(run_id)
         {:snooze, 900}
 
+      {:error, :build_memory_limit_missing} ->
+        # `NCC_BUILD_MEMORY` is unset (`Portal.Builder.check_memory_limit/0`
+        # logged it). A host misconfiguration, as for a missing egress filter:
+        # snooze so the request stays `:queued` until an operator sets it.
+        Logger.error(
+          "No build memory limit on this host; refusing to build #{package} #{version}"
+        )
+
+        Builder.cleanup(run_id)
+        {:snooze, 900}
+
       {:error, reason} ->
         # Runner-side failure (docker unavailable, scratch setup, wall-clock
         # timeout). Treat as retryable.

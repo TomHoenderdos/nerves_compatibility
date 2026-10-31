@@ -17,7 +17,7 @@ defmodule Compatibility.Builder.ArgvTest do
   # Untrusted package code runs in the gVisor sentry, never on the host
   # kernel directly, and there is no other runtime to fall back to.
   test "always runs the container under runsc", %{input: input} do
-    for spec <- [input, %{input | nerves_cache_mode: :warm}, Map.drop(input, [:cpus, :memory])] do
+    for spec <- [input, %{input | nerves_cache_mode: :warm}, Map.drop(input, [:cpus])] do
       argv = Argv.build(spec)
 
       assert ["--pids-limit", "4096", "--runtime=runsc" | _] =
@@ -27,11 +27,11 @@ defmodule Compatibility.Builder.ArgvTest do
     end
   end
 
-  test "leaves out the limits and the CPU env when nothing caps the build", %{input: input} do
-    argv = input |> Map.drop([:cpus, :memory, :build_concurrency]) |> Argv.build()
+  test "leaves out the CPU cap and its env when nothing caps the CPUs", %{input: input} do
+    argv = input |> Map.drop([:cpus, :build_concurrency]) |> Argv.build()
 
     refute "--cpus" in argv
-    refute "--memory" in argv
+    assert ["--memory", "4g" | _] = Enum.drop_while(argv, &(&1 != "--memory"))
 
     refute Enum.any?(
              argv,
@@ -70,6 +70,43 @@ defmodule Compatibility.Builder.ArgvTest do
     assert "NCC_BUILD_CONCURRENCY=2" in argv
   end
 
+  # docker-ncc's authz policy denies a container without one, and under
+  # gVisor's kvm platform, which enforces no pids limit, it is the only bound
+  # on a fork bomb. No caller may start a container without it.
+  test "a spec without a memory limit raises", %{input: input} do
+    for spec <- [Map.delete(input, :memory), %{input | memory: nil}, %{input | memory: ""}] do
+      assert_raise ArgumentError, ~r/memory/, fn -> Argv.build(spec) end
+    end
+  end
+
+  test "a malformed memory limit raises", %{input: input} do
+    for memory <- ["4 g", "-1g", "lots", "0", "0.0g", "4x"] do
+      assert_raise ArgumentError, ~r/memory/, fn -> Argv.build(%{input | memory: memory}) end
+    end
+  end
+
+  # docker reads 0 as no limit at all.
+  test "memory_limit?/1 accepts a positive size as docker reads one" do
+    for ok <- [
+          "4g",
+          "512m",
+          "8G",
+          "4gb",
+          "4GiB",
+          "1.5g",
+          "1048576",
+          "100k",
+          "6000000b",
+          4_294_967_296
+        ] do
+      assert Argv.memory_limit?(ok), inspect(ok)
+    end
+
+    for bad <- [nil, "", " ", "4 g", "-1g", "0", "0g", "0.0", 0, -1, 1.5, "lots", "4x", :atom] do
+      refute Argv.memory_limit?(bad), inspect(bad)
+    end
+  end
+
   test "a spec without a required path raises", %{input: input} do
     assert_raise KeyError, fn ->
       Argv.build(%{input | paths: Map.delete(input.paths, :tmp)})
@@ -88,11 +125,10 @@ defmodule Compatibility.Builder.ArgvTest do
     end
   end
 
-  test "memory-only and build_concurrency-only, without cpus", %{input: input} do
+  test "memory and build_concurrency without cpus", %{input: input} do
     argv =
       input
       |> Map.drop([:cpus])
-      |> Map.put(:memory, "4g")
       |> Map.put(:build_concurrency, "2")
       |> Argv.build()
 

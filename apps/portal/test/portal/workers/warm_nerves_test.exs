@@ -148,6 +148,15 @@ defmodule Portal.Workers.WarmNervesTest do
       assert_received {:cleanup, _run_id}
     end
 
+    test "a host without a build memory limit snoozes rather than spending attempts" do
+      Process.put(:warm_response, {:error, :build_memory_limit_missing})
+
+      assert {:snooze, 900} =
+               perform_job(WarmNerves, %{"image_digest" => "sha256:x", "pairs" => @pairs})
+
+      assert_received {:cleanup, _run_id}
+    end
+
     test "malformed args are cancelled" do
       assert {:cancel, _} = perform_job(WarmNerves, %{"image_digest" => "sha256:x"})
       refute_received {:warm_build, _}

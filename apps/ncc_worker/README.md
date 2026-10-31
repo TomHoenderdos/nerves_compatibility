@@ -188,7 +188,9 @@ is mounted read-write, the worker is told so (`-e NCC_HEX_CACHE_RW=1`) and keeps
 `hex_cache` is reported. Nothing needs wiping afterwards: the worker never seeds the registry cache or `hex.config`, and
 Hex checks every seeded tarball. Rolling back only the worker image, to one whose worker writes `/hex-cache` itself,
 needs `NCC_HEX_CACHE_RW=1` set too: the missing label already keeps such an image on the read-write mount, but the
-variable makes that hold whatever the image's labels say.
+variable makes that hold whatever the image's labels say. On a builder whose docker daemon enforces the builders'
+authorization policy, that rollback is not available: the policy refuses a build container with the Hex cache mounted
+read-write, so every build there fails until the variable is unset again.
 
 ## Warm mode
 

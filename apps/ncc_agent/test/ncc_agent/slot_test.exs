@@ -25,7 +25,8 @@ defmodule NccAgent.SlotTest do
         data_dir: Path.join(dir, "data"),
         enrolment_token: "id.c2VjcmV0c2VjcmV0.#{ca.prefix}",
         docker_bin: @fake,
-        egress_script: egress_stub(dir, "exit 0")
+        egress_script: egress_stub(dir, "exit 0"),
+        memory: "4g"
     }
 
     Config.put(config)

@@ -25,7 +25,11 @@ defmodule Compatibility.Builder.Argv do
   worker writes `/hex-cache` itself. `hex_cache_mode/2` picks one.
 
   Every container runs under gVisor (`runtime_flag/0`), with no other
-  runtime to fall back to: a host without `runsc` fails every build.
+  runtime to fall back to: a host without `runsc` fails every build. Every
+  container also has a memory limit (`:memory`, `memory_limit?/1`), and a
+  spec without one raises: docker-ncc's authz policy denies a container
+  without it, and under gVisor's kvm platform, which does not enforce the
+  pids limit, it is the only bound on a fork bomb.
   """
 
   @type paths :: %{
@@ -54,7 +58,7 @@ defmodule Compatibility.Builder.Argv do
           required(:nerves_cache_mode) => nerves_cache_mode(),
           optional(:hex_cache_mode) => hex_cache_mode(),
           optional(:cpus) => String.t() | number() | nil,
-          optional(:memory) => String.t() | number() | nil,
+          required(:memory) => String.t() | pos_integer(),
           optional(:build_concurrency) => String.t() | pos_integer() | nil
         }
 
@@ -68,6 +72,7 @@ defmodule Compatibility.Builder.Argv do
 
     validate_paths!(paths)
     validate_image!(image)
+    validate_memory!(Map.get(spec, :memory))
 
     flags(spec) ++
       limits(spec) ++
@@ -89,6 +94,31 @@ defmodule Compatibility.Builder.Argv do
               "path contains a comma, which `--mount` would read as a separator: #{inspect(value)}"
       end
     end)
+  end
+
+  @doc """
+  Whether `value` is a memory limit `docker run --memory` reads as a positive
+  size: a number of bytes, or one with a `k`, `m`, `g`, `t` or `p` unit (and
+  an optional `i`/`b`). docker reads `0` as no limit at all, so that is not
+  one.
+  """
+  @spec memory_limit?(term()) :: boolean()
+  def memory_limit?(value) when is_integer(value), do: value > 0
+
+  def memory_limit?(value) when is_binary(value) do
+    case Regex.run(~r/\A([0-9]+(?:\.[0-9]+)?)[kmgtp]?i?b?\z/i, value) do
+      [_, number] -> String.trim(number, "0") not in ["", "."]
+      nil -> false
+    end
+  end
+
+  def memory_limit?(_value), do: false
+
+  defp validate_memory!(memory) do
+    unless memory_limit?(memory) do
+      raise ArgumentError,
+            "every ncc container needs a memory limit (`docker run --memory`), got #{inspect(memory)}"
+    end
   end
 
   # docker reads a leading `-` as the start of another flag rather than the
@@ -136,8 +166,8 @@ defmodule Compatibility.Builder.Argv do
 
   # Buildroot cross-compiles will use every core they are given. On a host that
   # shares the machine with other services, an unbounded build starves them, so
-  # deployments can cap what a single build may take. Unset means unbounded,
-  # which is the historical behaviour and stays the default.
+  # deployments can cap what a single build may take. An unset CPU cap means
+  # unbounded; the memory limit is never unset (`validate_memory!/1`).
   defp limits(spec) do
     [{:cpus, "--cpus"}, {:memory, "--memory"}]
     |> Enum.flat_map(fn {key, flag} ->

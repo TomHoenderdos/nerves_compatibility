@@ -156,7 +156,9 @@ if portal_available? do
   # Every path here is handed to `docker run --mount source=`, so it is resolved
   # by the *host* daemon, not by this process. They must be host paths.
   #
-  # NCC_BUILD_CPUS/NCC_BUILD_MEMORY cap a single build; unset means unbounded.
+  # NCC_BUILD_CPUS caps a single build's CPUs; unset means unbounded.
+  # NCC_BUILD_MEMORY caps its memory and is required on a node that builds:
+  # without it `Portal.Builder.check_memory_limit/0` refuses every build.
   builder_env = [
     docker_image: System.get_env("NCC_DOCKER_IMAGE"),
     scratch_root: System.get_env("NCC_SCRATCH_ROOT"),

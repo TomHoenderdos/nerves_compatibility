@@ -107,6 +107,15 @@ defmodule Portal.Workers.ToolchainBuildTest do
     assert rows("jason") == []
   end
 
+  test "a host without a build memory limit snoozes and cleans up" do
+    Process.put(:stub_build_response, {:error, :build_memory_limit_missing})
+
+    log = capture_log(fn -> assert {:snooze, 900} = perform_job(ToolchainBuild, @args) end)
+
+    assert log =~ "No build memory limit"
+    assert_received {:cleanup, _run_id}
+  end
+
   test "a missing egress filter snoozes and cleans up" do
     Process.put(:stub_build_response, {:error, :egress_filter_missing})
 

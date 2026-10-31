@@ -22,17 +22,29 @@ Read from the environment (in production, populated from the file
 | `NCC_PORTAL_URL` | required | The portal's builder endpoint, `https://host:8443` |
 | `NCC_ENROLMENT_TOKEN` | none | One-time token from `/admin` → Builders; needed only until enrolled |
 | `NCC_SLOTS` | `1` | Concurrent builds, 1..16 |
-| `NCC_CPUS`, `NCC_MEMORY` | none | Per-container `docker run --cpus` / `--memory` |
+| `NCC_MEMORY` | required | Per-container `docker run --memory`, a positive size such as `8g`; every build container gets it |
+| `NCC_CPUS` | none | Per-container `docker run --cpus` |
 | `NCC_BUILD_CONCURRENCY` | none | Passed to the worker as its build concurrency |
 | `NCC_DATA_DIR` | `/srv/ncc` | Identity, scratch, Nerves/Hex caches, releases |
 | `NCC_BUILD_USER` | required non-root | `docker run --user`, the `uid:gid` of the `ncc-build` user; `0:*` is refused |
 | `NCC_DOCKER_BIN` | `docker` | Docker CLI to run |
 | `NCC_EGRESS_SCRIPT` | `priv/egress.sh` | Installs the containers' egress ruleset |
-| `NCC_HEX_CACHE_RW` | unset | `1` mounts the slot's Hex cache read-write and tells the worker so: the one-release rollback, as on the portal host (`apps/ncc_worker/README.md`, "Hex cache") |
+| `NCC_HEX_CACHE_RW` | unset | `1` mounts the slot's Hex cache read-write and tells the worker so: the one-release rollback, as on the portal host (`apps/ncc_worker/README.md`, "Hex cache"). A docker daemon that enforces the builders' authorization policy refuses that read-write mount |
 | `NCC_DNS_SERVERS` | none | Space-separated resolvers builds may use; unset, they come from `daemon.json`, `resolv.conf` or `resolvectl`, and the egress install fails (no slot claims) when none is usable |
 
-A missing or invalid `NCC_PORTAL_URL`, `NCC_SLOTS` or `NCC_BUILD_USER` stops
-the release at boot.
+A missing or invalid `NCC_PORTAL_URL`, `NCC_MEMORY`, `NCC_SLOTS` or
+`NCC_BUILD_USER` stops the release at boot.
+
+## Host requirements
+
+Every container the agent starts runs under gVisor (`docker run
+--runtime=runsc`, `Compatibility.Builder.Argv`), with no fallback: the
+builder VM's docker daemon needs `runsc` installed and registered as a
+runtime, best as its default runtime (`"default-runtime": "runsc"` in
+`daemon.json`), and a daemon without it fails every build. The memory limit
+is mandatory because under gVisor's `kvm` platform the container's
+`--pids-limit` is not enforced, so `--memory` is the only bound on a fork
+bomb.
 
 ## Running in dev against a local portal
 

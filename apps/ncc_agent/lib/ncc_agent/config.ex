@@ -57,7 +57,11 @@ defmodule NccAgent.Config do
     }
 
     {slots, slot_errors} = parse_slots(System.get_env("NCC_SLOTS", "1"))
-    errors = url_errors(config.portal_url) ++ slot_errors ++ user_errors(config.build_user)
+
+    errors =
+      url_errors(config.portal_url) ++
+        memory_errors(config.memory) ++ slot_errors ++ user_errors(config.build_user)
+
     if errors == [], do: {:ok, %{config | slots: slots}}, else: {:error, errors}
   end
 
@@ -91,6 +95,18 @@ defmodule NccAgent.Config do
       %URI{scheme: "https", host: host} when is_binary(host) and host != "" -> []
       _ -> ["NCC_PORTAL_URL must be an https URL with a host, got #{inspect(url)}"]
     end
+  end
+
+  # docker-ncc's authz policy denies a build container without a memory
+  # limit, and under gVisor's kvm platform, which does not enforce the pids
+  # limit, it is the only bound on a fork bomb: the release refuses to start
+  # rather than hand docker every build to deny.
+  defp memory_errors(memory) do
+    if Compatibility.Builder.Argv.memory_limit?(memory),
+      do: [],
+      else: [
+        "NCC_MEMORY is required: a positive memory limit for every build container, such as 8g (got #{inspect(memory)})"
+      ]
   end
 
   # The agent runs as root (systemd), so an unset NCC_BUILD_USER would run

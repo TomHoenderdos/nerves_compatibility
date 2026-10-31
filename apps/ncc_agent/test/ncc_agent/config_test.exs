@@ -11,10 +11,18 @@ defmodule NccAgent.ConfigTest do
     end)
 
     for {k, _} <- System.get_env(), String.starts_with?(k, "NCC_"), do: System.delete_env(k)
+    # Required, like the portal URL; the tests below that are not about it
+    # start from a valid one.
+    System.put_env("NCC_MEMORY", "8g")
     :ok
   end
 
-  test "requires the portal url and defaults the rest" do
+  test "requires the portal url and the memory limit, and defaults the rest" do
+    System.delete_env("NCC_MEMORY")
+    assert {:error, [url, memory]} = Config.load()
+    assert url =~ "NCC_PORTAL_URL"
+    assert memory =~ "NCC_MEMORY"
+    System.put_env("NCC_MEMORY", "8g")
     assert {:error, [msg]} = Config.load()
     assert msg =~ "NCC_PORTAL_URL"
     System.put_env("NCC_PORTAL_URL", "https://portal.test:8443")
@@ -25,6 +33,7 @@ defmodule NccAgent.ConfigTest do
              config.docker_bin == "docker"
 
     assert config.build_user =~ ~r/^\d+:\d+$/
+    assert config.memory == "8g"
     assert Config.path(config, :cert) == "/tmp/ncc-x/client.pem"
     assert Config.path(config, :nerves_cache) == "/tmp/ncc-x/nerves-cache"
     assert String.ends_with?(config.egress_script, "egress.sh")
@@ -65,6 +74,23 @@ defmodule NccAgent.ConfigTest do
 
     System.put_env("NCC_BUILD_USER", "999:999")
     assert {:ok, %{build_user: "999:999"}} = Config.load()
+  end
+
+  # docker-ncc's authz policy denies a build container without a memory
+  # limit, and under gVisor's kvm platform, which enforces no pids limit, it
+  # is the only bound on a fork bomb: the agent refuses to start without one.
+  test "a missing, zero or malformed memory limit is refused" do
+    System.put_env("NCC_PORTAL_URL", "https://portal.test:8443")
+
+    for memory <- [nil, "", "0", "8 GB please"] do
+      if memory, do: System.put_env("NCC_MEMORY", memory), else: System.delete_env("NCC_MEMORY")
+      assert {:error, [msg]} = Config.load(), inspect(memory)
+      assert msg =~ "NCC_MEMORY"
+      assert msg =~ "runsc" or msg =~ "memory limit"
+    end
+
+    System.put_env("NCC_MEMORY", "12g")
+    assert {:ok, %{memory: "12g"}} = Config.load()
   end
 
   test "an https URL without a host is an error" do

@@ -96,6 +96,8 @@ defmodule Portal.Workers.WarmNerves do
   defp outcome({:error, {:insufficient_disk, _free, _needed}}, _pairs), do: {:snooze, 900}
   defp outcome({:error, :scratch_noexec}, _pairs), do: {:snooze, 900}
   defp outcome({:error, :egress_filter_missing}, _pairs), do: {:snooze, 900}
+  # Not one that resolves itself, but an operator's to fix, as for the filter.
+  defp outcome({:error, :build_memory_limit_missing}, _pairs), do: {:snooze, 900}
   defp outcome({:error, reason}, _pairs), do: {:error, reason}
 
   defp describe([]), do: "the template"

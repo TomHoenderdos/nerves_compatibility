@@ -11,7 +11,7 @@ defmodule NccAgent.NervesCacheTest do
 
   setup do
     dir = Path.join(System.tmp_dir!(), "nc-#{System.unique_integer([:positive])}")
-    config = %{Config.defaults() | data_dir: dir, portal_url: "https://x"}
+    config = %{Config.defaults() | data_dir: dir, portal_url: "https://x", memory: "4g"}
     entry = Path.join([dir, "nerves-cache", "artifacts", "nerves_system_rpi4-1.30.0"])
     File.mkdir_p!(entry)
     File.write!(Path.join(entry, ".fingerprint"), "fp")

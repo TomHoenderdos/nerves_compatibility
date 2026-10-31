@@ -116,7 +116,9 @@ defmodule Portal.Builders.AgentHarness do
         {"ELIXIR_ERL_OPTIONS", "-ncc_agent load_config true"},
         {"NCC_PORTAL_URL", "https://localhost:#{port}"},
         {"NCC_DATA_DIR", data_dir},
-        {"NCC_SLOTS", "1"}
+        {"NCC_SLOTS", "1"},
+        # Required: the agent refuses to start without a memory limit.
+        {"NCC_MEMORY", "4g"}
       ] ++ env
 
     mix = System.find_executable("mix")

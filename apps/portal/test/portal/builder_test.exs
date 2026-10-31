@@ -337,6 +337,44 @@ defmodule Portal.BuilderTest do
   # helpers there, so a scratch root mounted noexec breaks every firmware
   # build in a way that reads as the package's fault. Probe it for real
   # (write a script, run it) rather than parsing mount options.
+  # docker-ncc's authz policy denies a container without a memory limit, and
+  # under gVisor's kvm platform it is the only bound on a fork bomb: a host
+  # that sets none refuses every build, as for a missing egress filter.
+  describe "memory limit preflight" do
+    test "an unset NCC_BUILD_MEMORY refuses the build before anything is written",
+         %{previous: previous} do
+      root = Path.join(System.tmp_dir!(), "memory-root-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(root) end)
+
+      for memory <- [nil, "", "0", "lots"] do
+        put_builder(
+          [scratch_root: root, min_free_disk_gb: 0, exec_probe: fn _ -> :ok end, memory: memory],
+          previous
+        )
+
+        log =
+          capture_log(fn ->
+            assert {:error, :build_memory_limit_missing} = Builder.build(@build_args)
+          end)
+
+        assert log =~ "NCC_BUILD_MEMORY"
+        assert log =~ "refusing to build"
+        assert log =~ inspect(memory)
+        refute File.exists?(Path.join(root, "run-1"))
+      end
+    end
+
+    test "check_memory_limit/0 passes a positive size", %{previous: previous} do
+      put_builder([memory: "8g"], previous)
+      assert :ok = Builder.check_memory_limit()
+    end
+
+    test "every argv carries the configured memory limit", %{previous: previous} do
+      put_builder([memory: "6g"], previous)
+      assert ["--memory", "6g" | _] = Enum.drop_while(args(), &(&1 != "--memory"))
+    end
+  end
+
   describe "exec preflight" do
     test "probe_exec/1 passes on a filesystem that allows exec" do
       assert :ok = Builder.probe_exec(System.tmp_dir!())

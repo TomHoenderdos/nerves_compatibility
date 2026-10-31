@@ -164,6 +164,12 @@ defmodule Portal.Workers.ToolchainBuild do
     {:snooze, 900}
   end
 
+  defp handle({:error, :build_memory_limit_missing}, job, run_id, _digest) do
+    Logger.error("No build memory limit on this host; refusing toolchain build #{describe(job)}")
+    builder().cleanup(run_id)
+    {:snooze, 900}
+  end
+
   defp handle({:error, reason}, job, run_id, image_digest) do
     # Read before cleanup removes it.
     log = excerpt_from_file(Builder.runner_log_path(run_id))

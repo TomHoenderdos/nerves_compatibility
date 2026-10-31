@@ -803,6 +803,46 @@ defmodule Portal.Workers.BuildTest do
       assert updated.status == :queued
     end
 
+    test "a host without a build memory limit snoozes on the last attempt" do
+      {:ok, request} =
+        ScanRequests.create_once(%{
+          package_name: "sealed",
+          source: :hex_owner,
+          status: :accepted
+        })
+
+      root = Path.join(System.tmp_dir!(), "build-scratch-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf(root) end)
+      previous_builder = Application.get_env(:portal, Portal.Builder)
+      Application.put_env(:portal, Portal.Builder, scratch_root: root)
+      on_exit(fn -> restore_builder_env(previous_builder) end)
+      Process.put(:stub_scratch_root, root)
+
+      set_response({:error, :build_memory_limit_missing})
+
+      job = %Oban.Job{
+        args: %{
+          "package" => "sealed",
+          "version" => "1.0.0",
+          "image_digest" => "sha256:x",
+          "scan_request_id" => request.id
+        },
+        # The last attempt: a plain {:error, _} would mark the request
+        # `:error` for a host condition the operator has to fix.
+        attempt: 3,
+        max_attempts: 3
+      }
+
+      log = capture_log(fn -> assert {:snooze, 900} = Build.perform(job) end)
+
+      assert log =~ "No build memory limit on this host; refusing to build sealed 1.0.0"
+      assert File.ls!(root) == []
+
+      {:ok, updated} = ScanRequests.get_request(request.id)
+      assert updated.status == :queued
+    end
+
     test "a crashing build still frees the scratch dir and marks the request" do
       {:ok, request} =
         ScanRequests.create_once(%{
