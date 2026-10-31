@@ -47,6 +47,11 @@ builder_pause() { echo pause >> "$EVENTS"; return "$PAUSE_STATUS"; }
 builder_resume() { echo resume >> "$EVENTS"; return "$RESUME_STATUS"; }
 builder_queues_drained() { cat "$DRAINED_FILE"; }
 sleep() { echo wait >> "$EVENTS"; echo true > "$DRAINED_FILE"; }
+docker() {
+  echo "docker $* @${DOCKER_HOST-unset}" >> "$DOCKER_EVENTS"
+  [[ $1 != info ]] || printf '%s\n' "$DEFAULT_RUNTIME"
+  return "$INFO_STATUS"
+}
 builder_prepare
 echo build >> "$EVENTS"
 exit "$BUILD_STATUS"
@@ -57,24 +62,51 @@ class BuilderDeploymentTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             events = root / "events"
+            docker_events = root / "docker"
             state = root / "drained"
             state.write_text(drained)
             env = {
                 **BASE_ENV,
                 "HELPER": str(HELPER),
                 "EVENTS": str(events),
+                "DOCKER_EVENTS": str(docker_events),
                 "DRAINED_FILE": str(state),
                 "AVAILABLE": "true",
                 "PAUSE_STATUS": "0",
                 "RESUME_STATUS": "0",
                 "BUILD_STATUS": "0",
+                "DEFAULT_RUNTIME": "runsc",
+                "INFO_STATUS": "0",
                 "NCC_DEPLOY_DRAIN_SECONDS": "60",
                 **overrides,
             }
             result = subprocess.run(
                 ["bash", "-c", HARNESS], env=env, capture_output=True, text=True, timeout=5
             )
+            self.docker_calls = (
+                docker_events.read_text().splitlines() if docker_events.exists() else []
+            )
             return result, events.read_text().splitlines() if events.exists() else []
+
+    # Every build container needs runsc, and the authz policy denies any
+    # other: a daemon whose default runtime is not runsc is not set up for
+    # this release. Refuse before any queue pauses or image moves.
+    def test_prepare_asks_docker_host_for_its_default_runtime(self):
+        result, events = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.docker_calls,
+                         [f"docker info --format {{{{.DefaultRuntime}}}} @{ROOT_SOCKET}"])
+        self.assertEqual(events, ["pause", "build", "resume"])
+
+    def test_a_daemon_without_runsc_as_default_refuses_before_anything_moves(self):
+        for overrides in ({"DEFAULT_RUNTIME": "runc"}, {"DEFAULT_RUNTIME": "", "INFO_STATUS": "1"}):
+            result, events = self.run_deploy(**overrides)
+            self.assertNotEqual(result.returncode, 0, overrides)
+            self.assertEqual(events, [], overrides)
+            self.assertIn("runsc", result.stderr)
+            self.assertIn(ROOT_SOCKET, result.stderr)
+            if overrides["DEFAULT_RUNTIME"]:
+                self.assertIn("'runc'", result.stderr)
 
     def test_waits_for_running_jobs_before_building(self):
         result, events = self.run_deploy(drained="false")
@@ -417,14 +449,101 @@ builder_activate_image
     def test_activation_warms_the_cache_after_moving_the_tags(self):
         result, lines = self.run_activation()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(lines[0], "check")
+        tags = [i for i, line in enumerate(lines) if line.startswith("docker tag")]
+        self.assertTrue(tags, lines)
+        self.assertLess(lines.index("check"), tags[0])
         self.assertEqual(lines[-1], "warm")
         self.assertIn("docker tag ncc-worker:deploy ncc-worker:local", lines[:-1])
 
     def test_a_failed_egress_check_moves_no_tag(self):
         result, lines = self.run_activation(check_status="1")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(lines, ["check"])
+        self.assertIn("check", lines)
+        self.assertFalse([line for line in lines if line.startswith("docker tag")], lines)
+        self.assertNotIn("warm", lines)
+
+    # On a daemon with no live image yet, a failed check must not leave the
+    # new release, which the next restart starts, with no image at all.
+    def test_a_daemon_without_a_live_image_gets_the_candidate_before_the_check(self):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+builder_check_egress() { echo check >> "$EVENTS"; return "$CHECK_STATUS"; }
+builder_docker() {
+  echo "docker $*" >> "$EVENTS"
+  case "$*" in
+    "image inspect ncc-worker:local"*|"image inspect ncc-toolchain:rpi4") return 1 ;;
+  esac
+}
+builder_toolchain_tags() { echo ncc-toolchain:rpi4; }
+builder_warm_nerves() { echo warm >> "$EVENTS"; }
+builder_activate_image
+'''
+        for status in ("1", "0"):
+            with tempfile.TemporaryDirectory() as directory:
+                events = Path(directory) / "events"
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
+                         "CHECK_STATUS": status},
+                    capture_output=True, text=True, timeout=5,
+                )
+                lines = events.read_text().splitlines()
+            self.assertEqual(result.returncode == 0, status == "0", result.stderr)
+            check = lines.index("check")
+            self.assertIn("docker tag ncc-worker:deploy ncc-worker:local", lines[:check])
+            self.assertIn("docker tag ncc-toolchain:rpi4-deploy ncc-toolchain:rpi4",
+                          lines[:check])
+            self.assertFalse([line for line in lines if "previous" in line], lines)
+
+    # A failed activation leaves the old release running in memory, whose
+    # argv the daemon's authz policy denies: resuming its queues would burn
+    # every build's retries. So the queues stay paused, and the deploy says so.
+    def run_failed_activation(self, check_status="1", inspect_status="0"):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+builder_queues_available() { echo true; }
+builder_pause() { echo pause >> "$EVENTS"; }
+builder_resume() { echo resume >> "$EVENTS"; }
+builder_queues_drained() { echo true; }
+builder_check_runtime() { :; }
+builder_check_egress() { echo check >> "$EVENTS"; return "$CHECK_STATUS"; }
+builder_docker() {
+  [[ "$*" != "image inspect ncc-worker:deploy" ]] || return "$INSPECT_STATUS"
+}
+builder_toolchain_tags() { :; }
+builder_warm_nerves() { echo warm >> "$EVENTS"; }
+builder_prepare
+builder_activate_image
+echo activated >> "$EVENTS"
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "events"
+            result = subprocess.run(
+                ["bash", "-c", script],
+                env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
+                     "CHECK_STATUS": check_status, "INSPECT_STATUS": inspect_status},
+                capture_output=True, text=True, timeout=5,
+            )
+            return result, events.read_text().splitlines() if events.exists() else []
+
+    def test_a_failed_egress_check_keeps_the_queues_paused(self):
+        result, events = self.run_failed_activation()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(events, ["pause", "check"])
+        self.assertIn("queues stay paused", result.stderr)
+
+    def test_a_missing_candidate_keeps_the_queues_paused(self):
+        result, events = self.run_failed_activation(check_status="0", inspect_status="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("resume", events)
+        self.assertIn("queues stay paused", result.stderr)
+
+    def test_a_successful_activation_resumes_the_queues(self):
+        result, events = self.run_failed_activation(check_status="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(events, ["pause", "check", "warm", "activated", "resume"])
 
 
 class BuilderEgressCheckTest(unittest.TestCase):
@@ -493,6 +612,9 @@ echo after
             # the rootless daemon's namespace would send the operator astray.
             for stale in ("nsenter", "XDG_RUNTIME_DIR", "/run/user/"):
                 self.assertNotIn(stale, result.stderr)
+            # Not every builder runs NixOS; every one has the status socket.
+            self.assertNotIn("NixOS", result.stderr)
+            self.assertIn("ncc-egress-status.socket", result.stderr)
             if answer:
                 self.assertIn(answer, result.stderr)
 

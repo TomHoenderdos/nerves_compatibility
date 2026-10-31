@@ -2,6 +2,10 @@
 # Sourced by deploy.sh only for a builder release.
 
 builder_paused=false
+# Set while the new worker image is being activated. A failure there leaves
+# the old release running in memory, and docker-ncc's authz policy denies its
+# argv: resuming its queues would only burn every build's retries.
+builder_activating=false
 
 # The host layout (where the checkout, the release and the config files live)
 # comes from the operator's deploy env file, never from this repository: see
@@ -52,12 +56,13 @@ builder_egress_disabled() {
   )
 }
 
-# The new release's own preflight, before any image tag moves or the service
-# restarts. By then the new release is already installed and migrated, so a
-# failure here does not keep it from running: the next restart, crash or
-# reboot starts it, and it then refuses every build (fail closed). The release
-# this deploy replaced is in deploy.sh's own backup tarball, beside the
-# deploy directory.
+# The new release's own preflight, before any live image tag moves (except on
+# a daemon that has none yet) or the service restarts. By then the new
+# release is already installed and migrated, so a failure here does not keep
+# it from running: the next restart, crash or reboot starts it, and it then
+# refuses every build (fail closed). Until then the queues stay paused
+# (builder_cleanup). The release this deploy replaced is in deploy.sh's own
+# backup tarball, beside the deploy directory.
 builder_check_egress() {
   if ! sudo -u ncc bash -c '
     set -euo pipefail
@@ -98,10 +103,12 @@ builder_check_running_egress() {
 ERROR: the running ncc-portal finds no build egress filter, so it refuses
 every build (each one snoozes 15 minutes), although the deploy-time check
 passed. It answered: ${answer:-nothing}
-The table is NixOS's, in the host's network namespace, and the eval found
-it there, so the likely cause is the ncc-portal unit itself: its sandboxing,
-PATH or environment. Check:
+The table is the host configuration's, in the host's network namespace, and
+the deploy-time eval found it there, so the likely cause is the ncc-portal
+unit itself (its sandboxing, PATH or environment) or the status socket it
+reads the table through. Check:
   nft list table inet ncc_egress
+  systemctl status ncc-egress-status.socket
   systemctl show ncc-portal -p PrivateNetwork -p RestrictAddressFamilies -p Environment
   journalctl -u ncc-portal -n 50
 See the operator runbook.
@@ -162,7 +169,18 @@ builder_resume() {
 builder_cleanup() {
   local result=$?
   trap - EXIT
-  if [[ "$builder_paused" == true ]]; then
+  if [[ "$builder_paused" == true && "$builder_activating" == true ]]; then
+    cat >&2 <<'EOF'
+ERROR: the deploy failed while activating the new worker image, after the new
+release was installed and migrated. The builder queues stay paused: the
+release still running is the old one, and docker-ncc's authz policy denies
+its builds. ncc-worker:local exists either way, so the next restart of
+ncc-portal starts the new release with an image; that release refuses every
+build until its egress check passes. Fix the cause, then restart ncc-portal
+and run the deploy again. See the operator runbook.
+EOF
+    [[ "$result" -ne 0 ]] || result=1
+  elif [[ "$builder_paused" == true ]]; then
     if ! builder_resume; then
       echo 'failed to resume builder queues; operator intervention required' >&2
       result=1
@@ -171,9 +189,23 @@ builder_cleanup() {
   exit "$result"
 }
 
+# Every build container runs under runsc, and docker-ncc's authz policy
+# denies any other runtime: a daemon whose default is not runsc is not set
+# up for this release. Asked before any queue pauses or image moves.
+builder_check_runtime() {
+  local runtime
+  runtime=$(builder_docker info --format '{{.DefaultRuntime}}') || runtime=''
+  if [[ "$runtime" != runsc ]]; then
+    echo "refusing deployment: the docker daemon at $DOCKER_HOST has default runtime '${runtime:-unknown}', not runsc (see the operator runbook)" >&2
+    return 1
+  fi
+}
+
 builder_prepare() {
   local timeout=${NCC_DEPLOY_DRAIN_SECONDS:-7500}
   [[ "$timeout" =~ ^[0-9]+$ ]] || { echo 'invalid drain timeout' >&2; return 1; }
+
+  builder_check_runtime || return 1
 
   # Respect an operator's existing pause; never unpause it as a side effect.
   if [[ $(builder_queues_available) != true ]]; then
@@ -306,7 +338,7 @@ builder_kill_warm() {
 }
 
 builder_activate_image() {
-  builder_check_egress || return 1
+  builder_activating=true
   local tags tag
   tags=$(builder_toolchain_tags)
   # Check every candidate before moving any tag, so a missing one leaves all
@@ -316,18 +348,34 @@ builder_activate_image() {
     builder_docker image inspect "$tag-deploy" >/dev/null
   done
   # The first deploy on a new build daemon finds no live image, so there is
-  # no previous to keep.
-  if builder_docker image inspect ncc-worker:local >/dev/null 2>&1; then
-    builder_docker tag ncc-worker:local ncc-worker:previous
+  # no previous to keep. The candidate becomes live before the egress check:
+  # the new release is installed already, and if the check fails, the next
+  # restart still starts it with an image to build with.
+  # Space-separated, so an empty list is still set under bash 3's nounset.
+  local fresh=' '
+  if ! builder_docker image inspect ncc-worker:local >/dev/null 2>&1; then
+    builder_docker tag ncc-worker:deploy ncc-worker:local
+    fresh+='ncc-worker:local '
   fi
-  builder_docker tag ncc-worker:deploy ncc-worker:local
   for tag in $tags; do
     # A toolchain added in this deploy has no live tag yet, so no previous.
-    if builder_docker image inspect "$tag" >/dev/null 2>&1; then
-      builder_docker tag "$tag" "$tag-previous"
+    if ! builder_docker image inspect "$tag" >/dev/null 2>&1; then
+      builder_docker tag "$tag-deploy" "$tag"
+      fresh+="$tag "
     fi
-    builder_docker tag "$tag-deploy" "$tag"
+  done
+  builder_check_egress || return 1
+  if [[ $fresh != *" ncc-worker:local "* ]]; then
+    builder_docker tag ncc-worker:local ncc-worker:previous
+    builder_docker tag ncc-worker:deploy ncc-worker:local
+  fi
+  for tag in $tags; do
+    if [[ $fresh != *" $tag "* ]]; then
+      builder_docker tag "$tag" "$tag-previous"
+      builder_docker tag "$tag-deploy" "$tag"
+    fi
   done
   # The live tags have moved; warm the cache on the image builds will now use.
   builder_warm_nerves
+  builder_activating=false
 }
