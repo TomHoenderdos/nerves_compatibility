@@ -307,15 +307,19 @@ builder_kill_warm() {
 
 builder_activate_image() {
   builder_check_egress || return 1
-  builder_docker image inspect ncc-worker:local >/dev/null
   local tags tag
   tags=$(builder_toolchain_tags)
   # Check every candidate before moving any tag, so a missing one leaves all
   # the live tags where they were.
+  builder_docker image inspect ncc-worker:deploy >/dev/null
   for tag in $tags; do
     builder_docker image inspect "$tag-deploy" >/dev/null
   done
-  builder_docker tag ncc-worker:local ncc-worker:previous
+  # The first deploy on a new build daemon finds no live image, so there is
+  # no previous to keep.
+  if builder_docker image inspect ncc-worker:local >/dev/null 2>&1; then
+    builder_docker tag ncc-worker:local ncc-worker:previous
+  fi
   builder_docker tag ncc-worker:deploy ncc-worker:local
   for tag in $tags; do
     # A toolchain added in this deploy has no live tag yet, so no previous.

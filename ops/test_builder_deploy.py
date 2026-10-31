@@ -200,6 +200,64 @@ builder_activate_image
                       lines)
         self.assertTrue(all(line.endswith(f" @{ROOT_SOCKET}") for line in lines), lines)
 
+    # The first deploy on a new build daemon finds no live tag to keep as
+    # previous; it still activates the candidate.
+    def test_activation_on_a_daemon_without_a_live_image(self):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+builder_check_egress() { :; }
+builder_warm_nerves() { echo warm >> "$EVENTS"; }
+builder_toolchain_tags() { echo ncc-toolchain:rpi4; }
+docker() {
+  echo "docker $*" >> "$EVENTS"
+  case "$*" in
+    "image inspect ncc-worker:local"*|"image inspect ncc-toolchain:rpi4") return 1 ;;
+  esac
+}
+builder_activate_image
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "events"
+            result = subprocess.run(
+                ["bash", "-c", script],
+                env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events)},
+                capture_output=True, text=True, timeout=5,
+            )
+            lines = events.read_text().splitlines() if events.exists() else []
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("docker tag ncc-worker:local ncc-worker:previous", lines)
+        self.assertIn("docker tag ncc-worker:deploy ncc-worker:local", lines)
+        self.assertIn("docker tag ncc-toolchain:rpi4-deploy ncc-toolchain:rpi4", lines)
+        self.assertEqual(lines[-1], "warm")
+
+    def test_activation_without_a_candidate_moves_no_tag(self):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+builder_check_egress() { :; }
+builder_warm_nerves() { echo warm >> "$EVENTS"; }
+builder_toolchain_tags() { echo ncc-toolchain:rpi4; }
+docker() {
+  echo "docker $*" >> "$EVENTS"
+  case "$*" in
+    "image inspect ncc-worker:deploy"*) return 1 ;;
+  esac
+}
+builder_activate_image
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "events"
+            result = subprocess.run(
+                ["bash", "-c", script],
+                env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events)},
+                capture_output=True, text=True, timeout=5,
+            )
+            lines = events.read_text().splitlines() if events.exists() else []
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(line.startswith("docker tag") for line in lines), lines)
+        self.assertNotIn("warm", lines)
+
     def test_pulls_the_commits_registry_image_instead_of_building(self):
         result, events = self.run_build_image()
         self.assertEqual(result.returncode, 0, result.stderr)
