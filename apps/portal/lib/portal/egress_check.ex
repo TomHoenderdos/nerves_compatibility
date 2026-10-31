@@ -18,8 +18,17 @@ defmodule Portal.EgressCheck do
   mean the packet got through. Run from the release, with the targets in
   `NCC_EGRESS_PROBE` as `host:port`, IPv6 in brackets, comma-separated:
 
-      NCC_EGRESS_PROBE='100.64.0.1:5432,[fd00::1]:5432' \\
+      NCC_EGRESS_PROBE='192.0.2.1:5432,[fd00::1]:5432' \\
         bin/portal eval 'Portal.EgressCheck.main()'
+
+  Its containers have to reach the build daemon the way the ncc-portal
+  service's do, over docker-ncc's mTLS listener, where the authorization
+  policy admits them. An `eval` run by hand (under `sudo -u ncc`, say) does
+  not inherit the unit's environment, so export the same identity first, as
+  `ops/builder-deploy.sh` does for its warm run:
+
+      export DOCKER_HOST=tcp://127.0.0.1:2376 DOCKER_TLS_VERIFY=1 \\
+        DOCKER_CERT_PATH=/etc/ncc/docker-tls
   """
 
   alias Compatibility.Builder.Argv
