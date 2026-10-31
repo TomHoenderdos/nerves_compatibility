@@ -54,6 +54,8 @@ defmodule Compatibility.Builder.AuthzFixtureTest do
            regenerate
   end
 
+  # The egress probe's and the promotion copy's argv are the portal's, so
+  # `Portal.AuthzFixtureTest` checks those against the code that builds them.
   test "every authz fixture asks docker-ncc for runsc", %{fixtures: fixtures} do
     for name <- ["build", "warm_nerves", "egress_probe", "promotion_copy"] do
       assert get_in(fixtures, [name, "request", "Body", "HostConfig", "Runtime"]) == "runsc",

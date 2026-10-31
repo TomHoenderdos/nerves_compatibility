@@ -9,7 +9,8 @@ warm argv come from `Compatibility.Builder.Argv.build/1` on the pinned input
 of ../argv/post_isolation.exs, with the builders' host layout (uid 950,
 /var/lib/ncc/*). The egress probe and the promotion
 copy are transcribed from `Portal.EgressCheck.bare_args/1` and
-`Portal.BuildCache.Promotion.copy_args/5`.
+`Portal.BuildCache.Promotion.copy_args/5`, and `Portal.AuthzFixtureTest`
+checks the transcription against those functions.
 
 Needs elixirc, a docker CLI and nothing listening: the CLI talks to a fake
 daemon on a temporary unix socket that records the body and refuses.
