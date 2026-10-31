@@ -533,17 +533,21 @@ defmodule Portal.BuilderTest do
     end
 
     # What the builders' status helper really lists (nft 1.1.6), captured
-    # from the builder host's configuration. The
-    # release's expected set must hold its hash, or every build is refused.
-    test "the release expects the builders' reviewed filter" do
-      listing = File.read!(Path.expand("../fixtures/egress/status_listing.txt", __DIR__))
+    # from the builder host's configuration, and the same ruleset as a
+    # builder with nft 1.0.9 lists it, which spells the protocol set
+    # `{ tcp, udp }` where 1.1.6 prints `{ 6, 17 }`. The release's expected
+    # set must hold exactly their hashes: without one, every build on such a
+    # builder is refused; with any other, a ruleset nobody reviewed passes.
+    test "the release expects the builders' reviewed filter and nothing else" do
+      hashes =
+        for name <- ["status_listing.txt", "status_listing_nft_1_0_9.txt"] do
+          listing = File.read!(Path.expand("../fixtures/egress/" <> name, __DIR__))
+          assert Builder.egress_table_complete?(listing), name
+          Builder.egress_listing_sha256(listing)
+        end
 
-      assert Builder.egress_table_complete?(listing)
-
-      assert Builder.egress_listing_sha256(listing) in Application.fetch_env!(
-               :portal,
-               Portal.Builder
-             )[:egress_table_hashes]
+      assert Enum.sort(hashes) ==
+               Enum.sort(Application.fetch_env!(:portal, Portal.Builder)[:egress_table_hashes])
     end
 
     test "probe_egress/1 reports what nft said when the table is absent" do

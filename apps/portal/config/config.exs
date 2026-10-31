@@ -187,11 +187,19 @@ config :portal, Portal.Builder,
   # (`Portal.Builder.check_egress/0`). `NCC_EGRESS_CHECK=0` turns it off.
   egress_check: true,
   # The builders' reviewed filter: `Portal.Builder.egress_listing_sha256/1` of
-  # what the status helper on the build hosts lists (nft 1.1.6).
+  # what the status helper on the build hosts lists. One ruleset, two
+  # renderings: nft 1.1.6's, and that of a builder with nft 1.0.9, which
+  # spells the DNS rule's protocol set `{ tcp, udp }` rather than `{ 6, 17 }`
+  # (both listings are fixtures under test/fixtures/egress).
   # A listing with any other hash refuses builds; the refusal logs the hash.
   # Change only together with that ruleset. Not overridable from the
   # environment.
-  egress_table_hashes: ["ac690f8147aefe1fff9d11b6604cc71cde01ee6b631abd8d857df7fe7d6ca15e"]
+  egress_table_hashes: [
+    # nft 1.1.6
+    "ac690f8147aefe1fff9d11b6604cc71cde01ee6b631abd8d857df7fe7d6ca15e",
+    # nft 1.0.9
+    "3d3101f9587c8634749e68cc521f98d6f2866f1d8d26a37f3de943443f34c721"
+  ]
 
 # Where the "Open an issue" link in the UI points.
 #
