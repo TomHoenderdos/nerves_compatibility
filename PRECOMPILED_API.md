@@ -375,7 +375,7 @@ the same stored bytes, just without the batch to check them against.
   least that many valid signatures from the role's keys. The `keyid` is the lowercase hex SHA256 of the key's 32 public
   bytes.
 - **Expiry** — `root.json` expires a year after it is written by default; a
-  batch expires 7 days after it is issued. A client should refuse an expired document.
+  batch expires 24 hours after it is issued, and a new one is signed every 15 minutes. A client should refuse an expired document, and the reference client also refuses a batch issued more than 24 hours ago.
 - **Sequence** — a batch's `sequence` increases by exactly one each time a new
   batch is signed. A client that has already seen a higher sequence should
   refuse a lower one.

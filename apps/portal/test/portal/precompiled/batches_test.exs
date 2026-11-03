@@ -55,8 +55,8 @@ defmodule Portal.Precompiled.BatchesTest do
     assert DateTime.diff(
              DateTime.from_iso8601(doc["expires"]) |> elem(1),
              DateTime.from_iso8601(doc["issued"]) |> elem(1),
-             :day
-           ) == 7
+             :hour
+           ) == 24
 
     sha = doc["manifests"][name]
     {:ok, bytes} = Manifests.read(sha)

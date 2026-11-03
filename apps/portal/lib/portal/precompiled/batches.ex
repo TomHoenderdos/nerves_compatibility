@@ -9,7 +9,10 @@ defmodule Portal.Precompiled.Batches do
   alias Portal.Catalog
   alias Portal.Precompiled.{Batch, Envelope, Keys, Manifests}
 
-  @ttl_days 7
+  # A batch is signed every 15 minutes; clients refuse one older than 24 hours
+  # anyway (freshness bound), so a longer lifetime only widens the window in
+  # which an old, validly signed batch can be replayed.
+  @ttl_hours 24
 
   @spec build_and_sign() ::
           {:ok, Batch.t()} | {:error, :no_signing_key | :signing_key_unreadable | term()}
@@ -36,7 +39,7 @@ defmodule Portal.Precompiled.Batches do
       |> Enum.reduce({%{}, %{}}, fn name, acc -> add_package(acc, name) end)
 
     issued = DateTime.utc_now()
-    expires = DateTime.add(issued, @ttl_days, :day)
+    expires = DateTime.add(issued, @ttl_hours, :hour)
     # No locking: this runs from one Oban cron job with a uniqueness
     # constraint (Task 7), so concurrent calls do not occur in production,
     # and `unique_sequence` turns any race into an error, not duplicate data.
