@@ -1572,7 +1572,10 @@ defmodule NccWorker.Worker do
           prep
           |> run_firmware(log_tail_bytes, package_name)
           |> store_cache(prep)
-          |> Map.put(:system_version, extract_system_version(prep.log_file, system.name))
+          |> Map.put(
+            :system_version,
+            system_version(prep.project_dir, prep.log_file, system.name)
+          )
 
         {:error, exit_code} ->
           failed_system_result(
@@ -1959,13 +1962,32 @@ defmodule NccWorker.Worker do
     result
   end
 
+  @doc """
+  The version of `system_name` the target was built against, or `nil`.
+
+  The project's `mix.lock` is the authority: it is what `mix deps.get`
+  resolved and what the firmware build then compiled. The deps.get listing in
+  the target's log is only a fallback for a lock that does not name the
+  system. It cannot be the source: Hex 2.6.0 stopped printing unchanged
+  dependencies after resolution, so with every system already in the lock
+  the listing names none of them, and a build recorded without a
+  `system_version` matches no precompiled client.
+  """
+  @spec system_version(String.t(), String.t(), String.t()) :: String.t() | nil
+  def system_version(project_dir, log_file, system_name) do
+    case DepsLock.versions(project_dir) do
+      {:ok, %{^system_name => version}} -> version
+      _ -> extract_system_version(log_file, system_name)
+    end
+  end
+
   @spec extract_system_version(String.t(), String.t()) :: String.t() | nil
   # Reads a worker-generated per-system log in the configured output mount.
   # sobelow_skip ["Traversal.FileModule"]
   defp extract_system_version(log_file, system_name) do
     case File.read(log_file) do
       {:ok, content} ->
-        # Look for pattern like "  nerves_system_rpi4 1.32.0" in the dependency list
+        # "  nerves_system_rpi4 1.32.0" in the listing Hex printed before 2.6.0
         regex = ~r/^  #{Regex.escape(system_name)} ([\d.]+)$/m
 
         case Regex.run(regex, content) do
