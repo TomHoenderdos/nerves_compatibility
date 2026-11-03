@@ -4,6 +4,7 @@ defmodule Portal.Catalog.PublishingGateTest do
   alias Portal.Builders
   alias Portal.Builders.Builder
   alias Portal.Catalog
+  alias Portal.Precompiled.{Batches, Keys, Manifests}
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
   @sha "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
@@ -79,5 +80,30 @@ defmodule Portal.Catalog.PublishingGateTest do
     _local = ingest!(nil, "local-1")
     assert %{versions: %{"1.4.1" => _}} = Catalog.precompiled_manifest("jason")
     assert Catalog.packages_with_precompiled_files() == ["jason"]
+  end
+
+  # The flag lives on the builder's row, not the run's, and the package stays
+  # in the batch through its local run, so only a fingerprint that carries the
+  # builder's state notices that the remote run left the manifest.
+  @tag :tmp_dir
+  test "the next batch follows a change to the flag", %{tmp_dir: dir} do
+    old = Application.get_env(:portal, :precompiled_signing)
+    on_exit(fn -> Application.put_env(:portal, :precompiled_signing, old) end)
+    key_path = Path.join(dir, "signing.key")
+    Keys.write!(key_path, Keys.generate())
+    Application.put_env(:portal, :precompiled_signing, key_path: key_path)
+
+    builder = builder!("gate-batch")
+    {:ok, builder} = Builders.set_publishing(builder, true)
+    _local = ingest!(nil, "local-batch")
+    _remote = ingest!(builder.id, "remote-batch")
+
+    {:ok, b1} = Batches.build_and_sign()
+    {:ok, _} = Builders.set_publishing(builder, false)
+    {:ok, b2} = Batches.build_and_sign()
+
+    assert Batches.manifests(b2)["jason"] != Batches.manifests(b1)["jason"]
+    assert {:ok, bytes} = Manifests.read(Batches.manifests(b2)["jason"])
+    assert {:ok, ^bytes} = Manifests.render("jason")
   end
 end

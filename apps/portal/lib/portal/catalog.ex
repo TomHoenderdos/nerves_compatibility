@@ -1068,13 +1068,99 @@ defmodule Portal.Catalog do
   @doc """
   Both manifest formats of a package from one load of its runs, toolchain
   builds and memberships, for the batch, which renders both for every package.
+
+  `absent` lists the stored shas of the package that this host did not hold
+  when it rendered: the only filesystem input of the manifests, since a blob
+  that is present stays present (the store only adds blobs).
   """
-  @spec precompiled_manifests(String.t()) :: %{v1: map() | nil, v2: map() | nil}
+  @spec precompiled_manifests(String.t()) :: %{
+          v1: map() | nil,
+          v2: map() | nil,
+          absent: [String.t()]
+        }
   def precompiled_manifests(package_name) do
     case precompiled_sources(package_name) do
-      nil -> %{v1: nil, v2: nil}
-      sources -> %{v1: manifest_v1(sources), v2: manifest_v2(sources)}
+      nil ->
+        %{v1: nil, v2: nil, absent: []}
+
+      sources ->
+        %{v1: manifest_v1(sources), v2: manifest_v2(sources), absent: sources.absent_shas}
     end
+  end
+
+  # Per package, a digest of every row `precompiled_sources/1` reads, and of
+  # the builder state it filters runs by. `xmin` is the transaction that last
+  # wrote the row, so it changes on any update, including the plain SQL ones
+  # that leave `updated_at` alone (`Portal.Catalog.ManifestModeRepair`
+  # rewrites `beam_scan` that way). The columns that decide publication
+  # (revocation, carried-from, builder publishing and status, toolchain build
+  # status) are in it as values too. Memberships are only ever inserted and
+  # deleted, and number millions, so they are an order-independent count and
+  # sum of row hashes rather than a sorted digest. `format/2` keeps a NULL
+  # column's place, so no two rows' fields can shift into each other.
+  @precompiled_fingerprints_sql """
+  WITH runs AS (
+    SELECT r.package_id,
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s', r.id, r.xmin, r.updated_at,
+                                 r.revoked_at, r.builder_id, b.publishing, b.status),
+                          ',' ORDER BY r.id)) AS fp
+    FROM catalog_runs r
+    LEFT JOIN builders b ON b.id = r.builder_id
+    GROUP BY r.package_id
+  ), results AS (
+    SELECT r.package_id,
+           md5(string_agg(format('%s|%s|%s|%s|%s', s.id, s.xmin, s.updated_at,
+                                 s.carried_from_run_id, pg_column_size(s.beam_scan)),
+                          ',' ORDER BY s.id)) AS fp
+    FROM catalog_system_results s
+    JOIN catalog_runs r ON r.id = s.run_id
+    GROUP BY r.package_id
+  ), result_files AS (
+    SELECT r.package_id, count(*) AS n,
+           sum(hashtextextended(format('%s|%s|%s|%s', m.id, m.xmin, m.system_result_id, m.sha256), 0)) AS h
+    FROM catalog_artifact_memberships m
+    JOIN catalog_system_results s ON s.id = m.system_result_id
+    JOIN catalog_runs r ON r.id = s.run_id
+    GROUP BY r.package_id
+  ), toolchain AS (
+    SELECT t.package_id,
+           md5(string_agg(format('%s|%s|%s|%s|%s', t.id, t.xmin, t.updated_at, t.status,
+                                 t.revoked_at),
+                          ',' ORDER BY t.id)) AS fp
+    FROM catalog_toolchain_builds t
+    GROUP BY t.package_id
+  ), toolchain_files AS (
+    SELECT t.package_id, count(*) AS n,
+           sum(hashtextextended(format('%s|%s|%s|%s', m.id, m.xmin, m.toolchain_build_id, m.sha256), 0)) AS h
+    FROM catalog_artifact_memberships m
+    JOIN catalog_toolchain_builds t ON t.id = m.toolchain_build_id
+    GROUP BY t.package_id
+  )
+  SELECT p.name,
+         md5(format('%s/%s/%s/%s/%s/%s/%s/%s', p.id, runs.fp, results.fp, rf.n, rf.h,
+                    tc.fp, tf.n, tf.h))
+  FROM catalog_packages p
+  LEFT JOIN runs ON runs.package_id = p.id
+  LEFT JOIN results ON results.package_id = p.id
+  LEFT JOIN result_files rf ON rf.package_id = p.id
+  LEFT JOIN toolchain tc ON tc.package_id = p.id
+  LEFT JOIN toolchain_files tf ON tf.package_id = p.id
+  WHERE runs.package_id IS NOT NULL OR tc.package_id IS NOT NULL
+  """
+
+  @doc """
+  A fingerprint per package name of every database input of
+  `precompiled_manifests/1`: equal fingerprints at two times mean the package's
+  rows did not change in between, so its manifests are the same bytes unless
+  one of its `absent` blobs arrived. One query over the catalog, which reads no
+  `beam_scan` value, for `Portal.Precompiled.Batches`. Read it before the
+  manifests it vouches for: a write in between then only makes the next
+  fingerprint differ.
+  """
+  @spec precompiled_fingerprints() :: %{String.t() => String.t()}
+  def precompiled_fingerprints do
+    %{rows: rows} = Repo.query!(@precompiled_fingerprints_sql, [], timeout: :timer.minutes(2))
+    Map.new(rows, fn [name, fingerprint] -> {name, fingerprint} end)
   end
 
   @doc """
@@ -1898,14 +1984,17 @@ defmodule Portal.Catalog do
         shas_by_toolchain_build_id =
           toolchain_builds |> Enum.map(& &1.id) |> manifest_shas_for_toolchain_builds()
 
+        stored = stored_shas(Map.merge(shas_by_system_result_id, shas_by_toolchain_build_id))
+        present = MapSet.filter(stored, &ArtifactStore.present?/1)
+
         %{
           runs: runs,
           results: results,
           shas_by_system_result_id: shas_by_system_result_id,
           toolchain_builds: toolchain_builds,
           shas_by_toolchain_build_id: shas_by_toolchain_build_id,
-          present_shas:
-            present_shas(Map.merge(shas_by_system_result_id, shas_by_toolchain_build_id))
+          present_shas: present,
+          absent_shas: stored |> MapSet.difference(present) |> Enum.sort()
         }
 
       _ ->
@@ -2254,12 +2343,12 @@ defmodule Portal.Catalog do
   # Builders ingest into the shared database but keep blobs in their own store,
   # and the web host pulls them minutes later, so a row can name a blob this
   # host cannot serve yet. Each distinct sha is checked once per request, with
-  # the same test the file endpoint applies before it serves one.
-  defp present_shas(shas_by_system_result_id) do
-    shas_by_system_result_id
+  # the same test the file endpoint applies before it serves one
+  # (`precompiled_sources/1`).
+  defp stored_shas(shas_by_owner_id) do
+    shas_by_owner_id
     |> Map.values()
     |> Enum.reduce(MapSet.new(), &MapSet.union/2)
-    |> MapSet.filter(&ArtifactStore.present?/1)
   end
 
   # `path` and `mode` come from JSON the build container wrote, which the

@@ -34,6 +34,18 @@ defmodule Portal.Precompiled.ManifestsTest do
     assert Manifests.read(String.duplicate("0", 64)) == :error
   end
 
+  test "store leaves a blob that already holds the bytes as it is" do
+    {:ok, sha} = Manifests.store("unchanged manifest")
+    {:ok, before} = File.stat(ArtifactStore.blob_path(sha))
+
+    assert {:ok, ^sha} = Manifests.store("unchanged manifest")
+
+    # A put publishes a fresh copy by rename, which would be a new inode.
+    {:ok, now} = File.stat(ArtifactStore.blob_path(sha))
+    assert now.inode == before.inode
+    assert {:ok, "unchanged manifest"} = Manifests.read(sha)
+  end
+
   test "store repairs a blob that was already present with the wrong bytes" do
     sha = Base.encode16(:crypto.hash(:sha256, "hello"), case: :lower)
     File.mkdir_p!(ArtifactStore.path())

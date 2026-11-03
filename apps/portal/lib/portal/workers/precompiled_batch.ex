@@ -1,7 +1,11 @@
 defmodule Portal.Workers.PrecompiledBatch do
   @moduledoc """
-  Every 15 minutes, render every precompiled manifest to bytes and sign a
-  batch naming them. Runs on `:maintenance`, which only the web host serves:
+  Every 15 minutes, sign a batch naming every package's precompiled manifest
+  bytes, rendering only the packages whose inputs changed since the last batch
+  (`Portal.Precompiled.Batches`). The job must finish inside its slot: the
+  uniqueness below skips a cron insert while the previous job is still
+  executing, which is how a ~15-minute render of every package made the
+  cadence 30 minutes. Runs on `:maintenance`, which only the web host serves:
   the signing key and the rsynced artifact files live there. Without a key
   configured the job cancels; builders never sign. A key that is configured
   but unreadable (wrong owner, bad path) errors instead, so Oban retries and

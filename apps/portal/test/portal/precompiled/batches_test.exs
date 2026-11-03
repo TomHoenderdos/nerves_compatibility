@@ -6,6 +6,9 @@ defmodule Portal.Precompiled.BatchesTest do
   alias Portal.ArtifactStore
   alias Portal.Precompiled.{Batches, Envelope, Keys, Manifests}
 
+  # The one file `ingest_with_artifact/1` stores.
+  @artifact_sha "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+
   setup %{tmp_dir: dir} do
     old = Application.get_env(:portal, :precompiled_signing)
     on_exit(fn -> Application.put_env(:portal, :precompiled_signing, old) end)
@@ -112,6 +115,102 @@ defmodule Portal.Precompiled.BatchesTest do
              |> Ash.create(domain: Portal.Precompiled)
   end
 
+  describe "a package whose inputs did not change since the last batch" do
+    test "is not loaded again, and the batch names the same stored bytes" do
+      run = ingest_with_artifact()
+      name = run["package"]["name"]
+      ingest_toolchain_build("tc_memo_a_#{System.unique_integer([:positive])}", "0.1.0")
+      ingest_toolchain_build("tc_memo_b_#{System.unique_integer([:positive])}", "0.1.0")
+
+      {first, {:ok, b1}} = count_queries(fn -> Batches.build_and_sign() end)
+      {second, {:ok, b2}} = count_queries(fn -> Batches.build_and_sign() end)
+
+      assert Batches.manifests(b2) == Batches.manifests(b1)
+      assert Batches.manifests_v2(b2) == Batches.manifests_v2(b1)
+      assert map_size(Batches.manifests_v2(b2)) == 2
+      assert_stored_bytes_are_fresh_renders(b2)
+      assert Map.has_key?(Batches.manifests(b2), name)
+
+      # Three packages took a handful of queries each the first time. The
+      # second batch reads the fingerprints and the package list, and signs:
+      # a count that does not grow with the catalog.
+      assert first > 12
+      assert second <= 6, "second batch ran #{second} queries"
+    end
+
+    test "a revoked run drops out of the next batch" do
+      run = ingest_with_artifact()
+      name = run["package"]["name"]
+      {:ok, b1} = Batches.build_and_sign()
+      assert Map.has_key?(Batches.manifests(b1), name)
+
+      {:ok, _} = Portal.Catalog.revoke_run(run["run_id"])
+
+      {:ok, b2} = Batches.build_and_sign()
+      refute Map.has_key?(Batches.manifests(b2), name)
+    end
+
+    test "a raw rewrite of a result's file manifest in another transaction is picked up" do
+      run = ingest_with_artifact()
+      name = run["package"]["name"]
+      {:ok, b1} = Batches.build_and_sign()
+
+      # What `Portal.Catalog.ManifestModeRepair` does: plain SQL, so
+      # `updated_at` stays as it was.
+      {:ok, _} =
+        Repo.transaction(fn ->
+          Repo.query!(
+            """
+            UPDATE catalog_system_results s
+            SET beam_scan = jsonb_set(s.beam_scan, '{footprint,file_manifest,ebin,0,mode}', '33261')
+            FROM catalog_runs r
+            WHERE r.id = s.run_id AND r.run_id = $1
+              AND s.beam_scan->'footprint'->'file_manifest' IS NOT NULL
+            """,
+            [run["run_id"]]
+          )
+        end)
+
+      {:ok, b2} = Batches.build_and_sign()
+      assert Batches.manifests(b2)[name] != Batches.manifests(b1)[name]
+      assert_stored_bytes_are_fresh_renders(b2)
+    end
+
+    test "a file that reaches the store after a batch is published by the next one" do
+      run = ingest_with_artifact()
+      name = run["package"]["name"]
+      blob = ArtifactStore.blob_path(@artifact_sha)
+      File.rm!(blob)
+
+      {{:ok, b1}, log} = with_log(fn -> Batches.build_and_sign() end)
+      assert log =~ "Dropping #{name}"
+      refute Map.has_key?(Batches.manifests(b1), name)
+
+      File.write!(blob, "precompiled-beam")
+
+      {:ok, b2} = Batches.build_and_sign()
+      assert Map.has_key?(Batches.manifests(b2), name)
+      assert_stored_bytes_are_fresh_renders(b2)
+    end
+
+    test "a manifest whose stored bytes went missing or wrong is stored again" do
+      run = ingest_with_artifact()
+      name = run["package"]["name"]
+      {:ok, b1} = Batches.build_and_sign()
+      sha = Batches.manifests(b1)[name]
+      File.write!(ArtifactStore.blob_path(sha), "wrong bytes")
+
+      {:ok, b2} = Batches.build_and_sign()
+      assert Batches.manifests(b2)[name] == sha
+      assert_stored_bytes_are_fresh_renders(b2)
+
+      File.rm!(ArtifactStore.blob_path(sha))
+      {:ok, b3} = Batches.build_and_sign()
+      assert Batches.manifests(b3)[name] == sha
+      assert_stored_bytes_are_fresh_renders(b3)
+    end
+  end
+
   test "a package whose manifest fails to store is dropped with a warning" do
     result = ingest_with_artifact()
     name = result["package"]["name"]
@@ -122,6 +221,13 @@ defmodule Portal.Precompiled.BatchesTest do
     # read+execute, but ArtifactStore.put's staging write needs write too,
     # so that's the step that fails -- not render/1 finding nothing.
     store_dir = ArtifactStore.path()
+
+    # The fixture renders the same bytes in every test, and a store that
+    # already holds them is not written again, so take them out first.
+    {:ok, bytes} = Manifests.render(name)
+
+    _ =
+      File.rm(ArtifactStore.blob_path(Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)))
 
     on_exit(fn -> File.chmod!(store_dir, 0o755) end)
     File.chmod!(store_dir, 0o500)
@@ -136,5 +242,48 @@ defmodule Portal.Precompiled.BatchesTest do
     assert log =~ name
     assert log =~ "[warning]"
     assert log =~ "eacces"
+  end
+
+  # Every manifest the batch names, in both formats, is in the store as exactly
+  # the bytes a fresh render of the package gives now.
+  defp assert_stored_bytes_are_fresh_renders(batch) do
+    for {name, sha} <- Batches.manifests(batch) do
+      assert {:ok, bytes} = Manifests.read(sha)
+      assert {:ok, ^bytes} = Manifests.render(name)
+    end
+
+    for {name, sha} <- Batches.manifests_v2(batch) do
+      assert {:ok, bytes} = Manifests.read(sha)
+      assert {:ok, ^bytes} = Manifests.render_v2(name)
+    end
+  end
+
+  # Repo queries this process runs inside `fun`.
+  defp count_queries(fun) do
+    id = {__MODULE__, make_ref()}
+    me = self()
+
+    :ok =
+      :telemetry.attach(
+        id,
+        [:portal, :repo, :query],
+        fn _event, _measurements, _meta, pid -> if self() == pid, do: send(pid, {id, :query}) end,
+        me
+      )
+
+    try do
+      result = fun.()
+      {drain(id, 0), result}
+    after
+      :telemetry.detach(id)
+    end
+  end
+
+  defp drain(id, n) do
+    receive do
+      {^id, :query} -> drain(id, n + 1)
+    after
+      0 -> n
+    end
   end
 end

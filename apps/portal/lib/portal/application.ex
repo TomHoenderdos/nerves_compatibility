@@ -14,6 +14,8 @@ defmodule Portal.Application do
     :ok = Portal.HexPm.create_package_owners_table()
     # And the memo of pairs already warmed `Portal.NervesCache.recently_warmed/2` checks.
     :ok = Portal.NervesCache.create_warmed_table()
+    # And the memo of unchanged precompiled manifests `Portal.Precompiled.Batches` reuses.
+    :ok = Portal.Precompiled.Batches.create_memo_table()
 
     # Before the Oban child below starts, so no sweep job's completion can run
     # before this handler is in place to hear it.
