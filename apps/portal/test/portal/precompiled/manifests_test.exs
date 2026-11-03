@@ -60,6 +60,19 @@ defmodule Portal.Precompiled.ManifestsTest do
     assert result["package"]["name"] in Catalog.packages_with_precompiled_files()
   end
 
+  test "store cleans up its temp file when the put returns an error" do
+    bytes = "refused-#{System.unique_integer([:positive])}"
+    sha = Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+    glob_pattern = Path.join(System.tmp_dir!(), "manifest-#{sha}-*")
+    File.mkdir_p!(ArtifactStore.path())
+    # A symlink at the destination is refused, not followed.
+    :ok = File.ln_s("/nonexistent-target", ArtifactStore.blob_path(sha))
+    on_exit(fn -> File.rm(ArtifactStore.blob_path(sha)) end)
+
+    assert {:error, :invalid_source} = Manifests.store(bytes)
+    assert Path.wildcard(glob_pattern) == []
+  end
+
   test "store cleans up temp file on ArtifactStore.put failure" do
     leak_bytes = "leak"
     leak_sha = Base.encode16(:crypto.hash(:sha256, leak_bytes), case: :lower)

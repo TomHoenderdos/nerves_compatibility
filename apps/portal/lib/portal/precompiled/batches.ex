@@ -13,7 +13,8 @@ defmodule Portal.Precompiled.Batches do
   job still running and was skipped.
 
   A batch now remembers, per package, the fingerprint of its rows
-  (`Portal.Catalog.precompiled_fingerprints/0`), the manifest shas it stored,
+  (`Portal.Catalog.precompiled_fingerprints/0`, read before and after the
+  renders, and remembered only when the two agree), the manifest shas it stored,
   and the package's blobs this host lacked. The next batch reuses those shas
   when the fingerprint is equal, none of those blobs has arrived since, and
   each stored manifest still hashes to its name; anything else renders the
@@ -65,16 +66,19 @@ defmodule Portal.Precompiled.Batches do
   end
 
   defp do_build(key) do
-    # Before any manifest is read: a write after this point makes the next
-    # batch's fingerprint differ from the one remembered with it.
+    # Read before any manifest and again after the last one: a package is
+    # remembered only when both reads agree, so no write that landed while it
+    # was rendered, even one undone again by the second read, can leave a
+    # memo entry vouching for bytes its fingerprint does not describe.
     fingerprints = Catalog.precompiled_fingerprints()
     names = Catalog.packages_with_precompiled_files()
 
-    {manifests, manifests_v2} =
-      Enum.reduce(names, {%{}, %{}}, fn name, acc ->
+    {manifests, manifests_v2, rendered} =
+      Enum.reduce(names, {%{}, %{}, []}, fn name, acc ->
         add_package(acc, name, Map.get(fingerprints, name))
       end)
 
+    remember(rendered, Catalog.precompiled_fingerprints())
     forget_all_but(names)
 
     issued = DateTime.utc_now()
@@ -137,8 +141,8 @@ defmodule Portal.Precompiled.Batches do
     acc
   end
 
-  defp put_shas({v1_acc, v2_acc}, name, v1_sha, v2_sha),
-    do: {put_sha(v1_acc, name, v1_sha), put_sha(v2_acc, name, v2_sha)}
+  defp put_shas({v1_acc, v2_acc, rendered}, name, v1_sha, v2_sha),
+    do: {put_sha(v1_acc, name, v1_sha), put_sha(v2_acc, name, v2_sha), rendered}
 
   defp put_sha(acc, _name, nil), do: acc
   defp put_sha(acc, name, sha), do: Map.put(acc, name, sha)
@@ -148,14 +152,15 @@ defmodule Portal.Precompiled.Batches do
   # toolchain build format 2 only), so only a package with neither, or a
   # manifest that fails to store, is worth a warning. A failed store is not
   # remembered, so the next batch renders and stores the package again.
-  defp render_package(acc, name, fingerprint) do
+  defp render_package({v1_acc, v2_acc, rendered}, name, fingerprint) do
     %{v1: v1, v2: v2, absent: absent} = Manifests.render_both(name)
     v1_sha = store(name, v1, "format 1")
     v2_sha = store(name, v2, "format 2")
 
-    if v1_sha != :error and v2_sha != :error and fingerprint != nil do
-      true = :ets.insert(@memo, {name, fingerprint, v1_sha, v2_sha, absent})
-    end
+    acc =
+      if v1_sha != :error and v2_sha != :error and fingerprint != nil,
+        do: {v1_acc, v2_acc, [{name, fingerprint, v1_sha, v2_sha, absent} | rendered]},
+        else: {v1_acc, v2_acc, rendered}
 
     if v1 == :none and v2 == :none,
       do: drop_none(acc, name),
@@ -177,6 +182,17 @@ defmodule Portal.Precompiled.Batches do
 
   defp ok_sha(:error), do: nil
   defp ok_sha(sha), do: sha
+
+  # Packages whose fingerprint changed during the batch are left for the next
+  # one to render again.
+  defp remember(rendered, fingerprints_after) do
+    for {name, fingerprint, _v1, _v2, _absent} = entry <- rendered,
+        Map.get(fingerprints_after, name) == fingerprint do
+      true = :ets.insert(@memo, entry)
+    end
+
+    :ok
+  end
 
   # A package that has nothing to publish any more leaves the memo.
   defp forget_all_but(names) do

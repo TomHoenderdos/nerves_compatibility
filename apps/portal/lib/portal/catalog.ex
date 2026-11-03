@@ -1092,7 +1092,9 @@ defmodule Portal.Catalog do
   # the builder state it filters runs by. `xmin` is the transaction that last
   # wrote the row, so it changes on any update, including the plain SQL ones
   # that leave `updated_at` alone (`Portal.Catalog.ManifestModeRepair`
-  # rewrites `beam_scan` that way). The columns that decide publication
+  # rewrites `beam_scan` that way). A builder's `xmin` is in it too: by value
+  # alone, publishing turned on and off again would read as no change. The
+  # columns that decide publication
   # (revocation, carried-from, builder publishing and status, toolchain build
   # status) are in it as values too. Memberships are only ever inserted and
   # deleted, and number millions, so they are an order-independent count and
@@ -1101,8 +1103,9 @@ defmodule Portal.Catalog do
   @precompiled_fingerprints_sql """
   WITH runs AS (
     SELECT r.package_id,
-           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s', r.id, r.xmin, r.updated_at,
-                                 r.revoked_at, r.builder_id, b.publishing, b.status),
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s', r.id, r.xmin, r.updated_at,
+                                 r.revoked_at, r.builder_id, b.publishing, b.status,
+                                 b.xmin, b.updated_at),
                           ',' ORDER BY r.id)) AS fp
     FROM catalog_runs r
     LEFT JOIN builders b ON b.id = r.builder_id

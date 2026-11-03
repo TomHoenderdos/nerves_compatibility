@@ -87,11 +87,7 @@ defmodule Portal.Catalog.PublishingGateTest do
   # builder's state notices that the remote run left the manifest.
   @tag :tmp_dir
   test "the next batch follows a change to the flag", %{tmp_dir: dir} do
-    old = Application.get_env(:portal, :precompiled_signing)
-    on_exit(fn -> Application.put_env(:portal, :precompiled_signing, old) end)
-    key_path = Path.join(dir, "signing.key")
-    Keys.write!(key_path, Keys.generate())
-    Application.put_env(:portal, :precompiled_signing, key_path: key_path)
+    signing_key!(dir)
 
     builder = builder!("gate-batch")
     {:ok, builder} = Builders.set_publishing(builder, true)
@@ -105,5 +101,64 @@ defmodule Portal.Catalog.PublishingGateTest do
     assert Batches.manifests(b2)["jason"] != Batches.manifests(b1)["jason"]
     assert {:ok, bytes} = Manifests.read(Batches.manifests(b2)["jason"])
     assert {:ok, ^bytes} = Manifests.render("jason")
+  end
+
+  # A-B-A: the flag flips right after a batch read its fingerprints, so that
+  # batch renders the other state, and flips back before the next batch.
+  # Neither the remembered fingerprint nor the reverted flag may let the next
+  # batch reuse what was rendered in between.
+  for start <- [false, true] do
+    @tag :tmp_dir
+    @tag start: start
+    test "a flag flipped during a batch and back (starting #{start}) is not remembered", %{
+      tmp_dir: dir,
+      start: start
+    } do
+      signing_key!(dir)
+      builder = builder!("gate-aba-#{start}")
+      {:ok, builder} = Builders.set_publishing(builder, start)
+      _local = ingest!(nil, "local-aba")
+      _remote = ingest!(builder.id, "remote-aba")
+      {:ok, start_bytes} = Manifests.render("jason")
+
+      flip_after_first_fingerprint_read(fn -> Builders.set_publishing(builder, not start) end)
+      {:ok, _b1} = Batches.build_and_sign()
+
+      {:ok, builder} = Builders.get_builder(builder.id)
+      {:ok, _} = Builders.set_publishing(builder, start)
+      {:ok, b2} = Batches.build_and_sign()
+
+      assert {:ok, ^start_bytes} = Manifests.read(Batches.manifests(b2)["jason"])
+    end
+  end
+
+  defp signing_key!(dir) do
+    old = Application.get_env(:portal, :precompiled_signing)
+    on_exit(fn -> Application.put_env(:portal, :precompiled_signing, old) end)
+    key_path = Path.join(dir, "signing.key")
+    Keys.write!(key_path, Keys.generate())
+    Application.put_env(:portal, :precompiled_signing, key_path: key_path)
+  end
+
+  # Runs `flip` once, in this process, right after the first fingerprint query
+  # of the batch that follows returns.
+  defp flip_after_first_fingerprint_read(flip) do
+    me = self()
+    id = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        id,
+        [:portal, :repo, :query],
+        fn _event, _measurements, meta, _ ->
+          if self() == me and not Process.get(id, false) and meta.query =~ "WITH runs AS" do
+            Process.put(id, true)
+            {:ok, _} = flip.()
+          end
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(id) end)
   end
 end

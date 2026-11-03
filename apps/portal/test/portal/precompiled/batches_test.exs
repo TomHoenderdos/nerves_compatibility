@@ -132,10 +132,11 @@ defmodule Portal.Precompiled.BatchesTest do
       assert Map.has_key?(Batches.manifests(b2), name)
 
       # Three packages took a handful of queries each the first time. The
-      # second batch reads the fingerprints and the package list, and signs:
+      # second batch reads the fingerprints (before and after) and the package
+      # list, and signs:
       # a count that does not grow with the catalog.
       assert first > 12
-      assert second <= 6, "second batch ran #{second} queries"
+      assert second <= 7, "second batch ran #{second} queries"
     end
 
     test "a revoked run drops out of the next batch" do

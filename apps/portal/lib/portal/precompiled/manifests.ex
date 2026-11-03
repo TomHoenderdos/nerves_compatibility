@@ -60,25 +60,15 @@ defmodule Portal.Precompiled.Manifests do
   defp put(sha, bytes) do
     tmp = Path.join(System.tmp_dir!(), "manifest-#{sha}-#{System.unique_integer([:positive])}")
 
-    case File.write(tmp, bytes) do
-      :ok ->
-        try do
-          case ArtifactStore.put(sha, tmp) do
-            {:ok, _} ->
-              {:ok, sha}
-
-            {:error, reason} ->
-              cleanup_tmp(tmp)
-              {:error, reason}
-          end
-        rescue
-          e ->
-            cleanup_tmp(tmp)
-            reraise e, __STACKTRACE__
-        end
-
-      {:error, reason} ->
-        {:error, reason}
+    # `after`, not `rescue`: the staging file goes whatever the put does,
+    # including an exit or throw. A put that succeeded has moved it already.
+    try do
+      with :ok <- File.write(tmp, bytes),
+           {:ok, _} <- ArtifactStore.put(sha, tmp) do
+        {:ok, sha}
+      end
+    after
+      cleanup_tmp(tmp)
     end
   end
 
@@ -94,12 +84,8 @@ defmodule Portal.Precompiled.Manifests do
   # sobelow_skip ["Traversal.FileModule"]
   # Path is a temporary file created and named by this module.
   defp cleanup_tmp(path) do
-    case File.rm(path) do
-      :ok -> :ok
-      {:error, _} -> File.rm!(path)
-    end
-  rescue
-    _ -> :ok
+    _ = File.rm(path)
+    :ok
   end
 
   defp ok_or_error({:ok, bin}), do: {:ok, bin}
