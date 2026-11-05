@@ -10,9 +10,12 @@
 # Only `docker-<64 hex id>.scope` cgroups directly under an
 # `ncc-builds.slice` are considered: docker-ncc puts every build container
 # there and nothing else runs in it. (Another dockerd's containers are
-# `docker-<id>.scope` too, elsewhere; they are never matched.) No such
-# slice at all exits 3: the reaper would otherwise pass silently on a host
-# where it protects nothing. Each run ends with a "scanned N" line. A scope
+# `docker-<id>.scope` too, elsewhere; they are never matched.) A host whose
+# systemd does not know ncc-builds.slice exits 3: the reaper would otherwise
+# pass silently where it protects nothing. A known slice with no cgroup is
+# idle (systemd creates it with its first scope, so after boot it is absent
+# until the first build): 0 scopes, exit 0. Each run ends with one summary
+# line. A scope
 # is killed once it has been active for longer than NCC_REAPER_MAX_AGE_SECONDS
 # (default 9000, 2 h 30 min). No build runs that long: Portal.Builder's wall
 # clock is 2 h, and its own stop of a timed-out container takes minutes.
@@ -54,6 +57,11 @@ reaper_active_since() {
   return 0
 }
 
+# systemd's LoadState of the build slice: `loaded` where it is declared.
+reaper_slice_state() {
+  systemctl show -P LoadState ncc-builds.slice 2>/dev/null
+}
+
 # Unix seconds, now.
 reaper_now() {
   date +%s
@@ -77,15 +85,21 @@ reaper_main() {
   fi
   shopt -s nullglob
   # A host whose build slice is elsewhere, or not set up, would otherwise
-  # pass every run while reaping nothing.
+  # pass every run while reaping nothing; an idle declared slice is fine.
   # The first path has no glob, so nullglob keeps it whether it exists or not.
   local slices=() slice
   for slice in "$reaper_cgroup_root"/ncc-builds.slice "$reaper_cgroup_root"/*/ncc-builds.slice; do
     [[ -d $slice ]] && slices+=("$slice")
   done
   if [[ ${#slices[@]} -eq 0 ]]; then
-    echo "no ncc-builds.slice under $reaper_cgroup_root: is docker-ncc's cgroup parent set? nothing reaped" >&2
-    return 3
+    local state
+    state=$(reaper_slice_state)
+    if [[ $state != loaded ]]; then
+      echo "ncc-builds.slice is not a loaded systemd unit (LoadState '${state:-unknown}'): is docker-ncc's cgroup parent set? nothing reaped" >&2
+      return 3
+    fi
+    echo "scanned 0 build container scopes: ncc-builds.slice not active"
+    return 0
   fi
   for scope in "$reaper_cgroup_root"/ncc-builds.slice/docker-*.scope \
                "$reaper_cgroup_root"/*/ncc-builds.slice/docker-*.scope; do

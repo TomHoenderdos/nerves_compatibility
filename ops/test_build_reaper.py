@@ -17,6 +17,10 @@ set -uo pipefail
 source "$HELPER"
 reaper_cgroup_root=$ROOT
 systemctl() {
+  if [[ $* == "show -P LoadState ncc-builds.slice" ]]; then
+    echo "${LOAD_STATE-loaded}"
+    return 0
+  fi
   echo "systemctl $*" >> "$EVENTS"
   case $* in
     *"docker-$OLD.scope") echo "@$(( NOW - 3 * 3600 ))" ;;
@@ -103,11 +107,23 @@ class BuildReaperTest(unittest.TestCase):
 
     # A host without the slice (docker-ncc's cgroup parent unset, or another
     # layout) would otherwise pass every run while protecting nothing.
-    def test_no_build_slice_at_all_fails_loudly(self):
+    # systemd creates the slice's cgroup with its first scope, so an idle
+    # builder after boot has a declared slice and no cgroup for it.
+    def test_a_declared_slice_with_no_cgroup_yet_is_idle(self):
         result = self.reap([f"system.slice/docker-{OLD}.scope"])
-        self.assertEqual(result.returncode, 3)
-        self.assertIn("no ncc-builds.slice", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(),
+                         "scanned 0 build container scopes: ncc-builds.slice not active")
         self.assertEqual(self.killed, [])
+
+    # A host whose systemd does not know the slice would otherwise pass
+    # every run while protecting nothing.
+    def test_an_undeclared_slice_fails_loudly(self):
+        for state in ("not-found", "masked", ""):
+            result = self.reap([f"system.slice/docker-{OLD}.scope"], LOAD_STATE=state)
+            self.assertEqual(result.returncode, 3, state)
+            self.assertIn("not a loaded systemd unit", result.stderr)
+            self.assertEqual(self.killed, [], state)
 
     def test_a_systemd_without_unix_timestamps_kills_nothing(self):
         scopes = [f"ncc.slice/ncc-builds.slice/docker-{OLD}.scope"]
