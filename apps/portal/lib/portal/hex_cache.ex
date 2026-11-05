@@ -60,6 +60,48 @@ defmodule Portal.HexCache do
   def promote(_result, _run_id, _opts),
     do: %{promoted: 0, refused: 0, skipped: 0, ignored: 0, touched: 0}
 
+  @doc """
+  The bytes of the cached tarball of `name` at `version`, read once and only
+  from a regular file in real directories no larger than
+  `Compatibility.StaticPriv.max_tarball_bytes/0`; `:miss` otherwise. Nothing
+  here says the bytes are the release's: `Portal.HexDeps.tarball/3`, the one
+  caller, uses them only when they hash to the registry's outer checksum.
+  Options: `:hex_cache`, the cache root.
+  """
+  @spec cached_tarball(String.t(), String.t(), keyword()) :: {:ok, binary()} | :miss
+  def cached_tarball(name, version, opts \\ []) do
+    root = Keyword.get_lazy(opts, :hex_cache, &Builder.hex_cache/0)
+    max = Compatibility.StaticPriv.max_tarball_bytes()
+
+    with {:ok, {name, version}} <-
+           Compatibility.HexCache.pair(%{"name" => name, "version" => version}),
+         path =
+           Path.join(
+             Compatibility.HexCache.packages_dir(root),
+             Compatibility.HexCache.tarball_name(name, version)
+           ),
+         true <- real_file?(root, path),
+         {:ok, bytes} when is_binary(bytes) and byte_size(bytes) <= max <- read(path, max) do
+      {:ok, bytes}
+    else
+      _ -> :miss
+    end
+  end
+
+  # `packages` and `packages/hexpm` below the operator's root, and the file
+  # itself, by `lstat`: the cache's one writer creates nothing else.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp real_file?(root, path) do
+    dirs = [Path.join(root, "packages"), Compatibility.HexCache.packages_dir(root)]
+
+    Enum.all?(dirs, &match?({:ok, %File.Stat{type: :directory}}, File.lstat(&1))) and
+      match?({:ok, %File.Stat{type: :regular}}, File.lstat(path))
+  end
+
+  # The path is built from a validated name and version under the cache root.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read(path, max), do: File.open(path, [:read, :raw, :binary], &IO.binread(&1, max + 1))
+
   defp default_lookup do
     :portal
     |> Application.get_env(__MODULE__, [])
