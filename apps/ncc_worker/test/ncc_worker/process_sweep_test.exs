@@ -347,6 +347,42 @@ defmodule NccWorker.ProcessSweepTest do
     end
   end
 
+  describe "use_erlang_resolver/0" do
+    # The native resolver is a port program, `inet_gethost`, that the BEAM
+    # starts through `erl_child_setup` the first time it looks a name up, and
+    # restarts when it dies: a sweep would find it every time. With Erlang's
+    # own resolver it never exists. Checked on a fresh node, since the test
+    # node may already have started it.
+    test "a worker that resolved a name never starts the native resolver" do
+      {:ok, peer, node} =
+        :peer.start_link(%{
+          connection: :standard_io,
+          args: Enum.flat_map(:code.get_path(), &[~c"-pa", &1])
+        })
+
+      on_exit(fn -> if Process.alive?(peer), do: :peer.stop(peer) end)
+
+      assert :ok = :peer.call(peer, ProcessSweep, :use_erlang_resolver, [])
+      assert [:file, :dns] = :peer.call(peer, :inet_db, :res_option, [:lookup])
+      assert {:ok, _} = :peer.call(peer, :inet, :gethostbyname, [~c"localhost"])
+
+      children = :peer.call(peer, :supervisor, :which_children, [:kernel_safe_sup])
+      refute List.keymember?(children, :inet_gethost_native_sup, 0)
+      _ = node
+    end
+
+    test "a child of erl_child_setup is still a stray" do
+      root =
+        proc_root([
+          {@beam, "beam.smp", 0},
+          {9, "erl_child_setup", @beam},
+          {50, "inet_gethost", 9}
+        ])
+
+      assert [%{pid: 50, comm: "inet_gethost"}] = ProcessSweep.strays(root, @beam)
+    end
+  end
+
   describe "portal_build?/1" do
     test "is true when NCC_INPUT is set, whatever its value" do
       assert ProcessSweep.portal_build?(fn "NCC_INPUT" -> "/work/input.json" end)
