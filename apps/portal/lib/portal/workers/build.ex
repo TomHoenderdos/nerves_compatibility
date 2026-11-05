@@ -12,8 +12,9 @@ defmodule Portal.Workers.Build do
        (`Portal.BuildCache.Promotion`) and the Hex tarballs it downloaded
        (`Portal.HexCache`), and queue a Nerves cache warm for its
        allowlisted misses (`Portal.NervesCache.request_warm/3`), all
-       best-effort, then enqueue `Portal.Workers.Ingest` and leave the scratch
-       dir in place for it to read.
+       best-effort, then enqueue `Portal.Workers.Ingest` with this job's own
+       `package` and `version`, which the ingest checks the result against,
+       and leave the scratch dir in place for it to read.
     5. Update the linked `ScanRequest` status (rejected / error; `built` is the
        ingest job's to set).
     6. Broadcast progress to `"request:<scan_request_id>"` over `Portal.PubSub`.
@@ -111,7 +112,7 @@ defmodule Portal.Workers.Build do
   # already recorded this attempt's new state, so the Maintenance page never
   # reloads `Portal.BulkRebuild.status/1` while this job still shows
   # `executing`. It is threaded through here only so a successful build can
-  # hand it to the `Ingest` job it enqueues (see `enqueue_ingest/4` below).
+  # hand it to the `Ingest` job it enqueues (see `enqueue_ingest/5` below).
   defp do_perform(args, attempt, max_attempts, sweep_id) do
     package = args["package"]
     version = args["version"]
@@ -312,7 +313,7 @@ defmodule Portal.Workers.Build do
 
         # No cleanup: the scratch dir is what the ingest job reads, and it owns
         # removing it once the rows are committed.
-        enqueue_ingest(run_id, image_digest, scan_request_id, sweep_id)
+        enqueue_ingest(package, version, run_id, image_digest, {scan_request_id, sweep_id})
     end
   end
 
@@ -408,9 +409,18 @@ defmodule Portal.Workers.Build do
   # and would be double-counted by `status/1`. `announce_sweep` is not one of
   # those queries' keys -- it only reaches `Portal.AdminEvents.SweepTelemetry`,
   # which broadcasts on either key.
-  defp enqueue_ingest(run_id, image_digest, scan_request_id, sweep_id) do
+  #
+  # `package` and `version` are what this job was queued to build, not what
+  # the build's result.json says: the ingest checks the result against them
+  # and records the run under them (see `Portal.Workers.Ingest`).
+  defp enqueue_ingest(package, version, run_id, image_digest, {scan_request_id, sweep_id}) do
     args =
-      %{"run_id" => run_id, "image_digest" => image_digest}
+      %{
+        "run_id" => run_id,
+        "image_digest" => image_digest,
+        "package" => package,
+        "version" => version
+      }
       |> maybe_put("scan_request_id", scan_request_id)
 
     meta = if sweep_id, do: %{announce_sweep: sweep_id}, else: %{}

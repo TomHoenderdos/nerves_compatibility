@@ -131,6 +131,24 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    own `/tmp` rather than the shared cache, so a multi-target run still compiles a shared dependency once and
    restores it for the other targets without trusting the container to fill the shared cache itself.
 
+## Process sweep
+
+Before the compiled files are archived and `result.json` is written, `NccWorker.ProcessSweep` stops every process in
+the container except the worker's own BEAM and that BEAM's `erl_child_setup` helper: every program the worker
+launched has returned by then, so nothing else belongs. It scans `/proc`, sends `SIGKILL` to each other pid by number
+(never to a process group or `-1`), and scans again, for up to 20 rounds. Zombies are already dead and are neither
+killed nor counted. `erl_child_setup` is a direct child of the BEAM named `erl_child_setup`; of several such, only
+the one that started first is kept, since the real helper starts with the BEAM, before any package code runs.
+
+If anything other than those two is still running after the last round, the result passes nothing: every system is
+reported `"status": "error"` with an `error` naming the processes, no build cache candidates are reported, and a
+toolchain run's `toolchain_build` is `"error"` with no `file_manifest`. `result.json` is still written and the exit
+code is still `0`, so the portal records that verdict instead of retrying.
+
+The sweep only runs as the container's worker: on Linux, with a `/proc`, and with the BEAM as pid 1, which it is as
+the container's entrypoint. Run anywhere else, such as on a developer machine, the escript does not sweep. The proc
+root, the kill function and the enabled check are options of `NccWorker.ProcessSweep.sweep/1`, for its tests.
+
 ## Nerves cache
 
 `/nerves-cache` is the build host's shared Nerves cache, mounted read-only into a build. Before any `mix` runs, the

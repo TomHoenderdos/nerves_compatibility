@@ -79,7 +79,9 @@ defmodule Portal.Catalog.RegistryAssessment do
              run_id: run_id,
              image_digest: @image_digest,
              files_dir: System.tmp_dir!(),
-             scan_request_id: scan_request_id
+             scan_request_id: scan_request_id,
+             package: name,
+             version: version
            }) do
       enqueue_package_meta(name)
       {:ok, run}

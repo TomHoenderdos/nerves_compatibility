@@ -28,6 +28,25 @@ defmodule Portal.Workers.Ingest do
   and the queued `version`) goes to `Portal.Catalog.Ingestion.ingest_toolchain/2`
   instead. It writes no `Run`, so none of a run's follow-up applies: no scan
   request to mark, no progress broadcast, no package metadata refresh.
+
+  ## The job's identity
+
+  Ingest checks the result against the job it was enqueued for. A local build's
+  job carries the `package` and `version` its `Portal.Workers.Build` was queued
+  with, and a toolchain build's job the `package`, `version` and `toolchain` its
+  `Portal.Workers.ToolchainBuild` was queued with. Before anything is recorded,
+  `result.json` has to name the same package and version, and for a toolchain
+  build have been built on that toolchain; the rows, and the package metadata
+  refresh after them, are then written under the job's identity, not the
+  result's (`Portal.Catalog.Ingestion`).
+
+  A job whose result names something else, or that does not carry its
+  identity (one enqueued before jobs did), is refused: nothing is recorded,
+  the scratch dir is removed, a `security:` line naming both sides is logged,
+  the scan request is marked errored and the job is cancelled, since a retry
+  would read the same result. Resuming a run that is already committed does
+  not read `result.json`, so it needs no identity. A remote build's upload is
+  tied to its lease instead (`Portal.Builders.Upload`) and is not checked here.
   """
 
   use Oban.Worker,
@@ -147,7 +166,10 @@ defmodule Portal.Workers.Ingest do
 
     case builder().load_run(run_id) do
       {:ok, build} ->
-        ingest_toolchain(build, args, job)
+        case toolchain_identity(args) do
+          nil -> refuse_unidentified(%{kind: :local}, run_id, nil, build.result)
+          identity -> ingest_toolchain(build, args, identity, job)
+        end
 
       {:error, reason} ->
         Logger.error("Ingest found no toolchain build output for #{run_id}: #{inspect(reason)}")
@@ -185,7 +207,24 @@ defmodule Portal.Workers.Ingest do
   defp source(%{"source" => "remote", "lease_id" => lease_id} = args),
     do: %{kind: :remote, lease_id: lease_id, builder_id: args["builder_id"]}
 
-  defp source(_args), do: %{kind: :local}
+  defp source(args), do: %{kind: :local, identity: run_identity(args)}
+
+  # What a local job was queued to build: nil when it does not say.
+  defp run_identity(%{"package" => package, "version" => version})
+       when is_binary(package) and package != "" and is_binary(version) and version != "",
+       do: %{package: package, version: version}
+
+  defp run_identity(_args), do: nil
+
+  defp toolchain_identity(%{"toolchain" => toolchain} = args)
+       when is_binary(toolchain) and toolchain != "" do
+    case run_identity(args) do
+      nil -> nil
+      identity -> Map.put(identity, :toolchain, toolchain)
+    end
+  end
+
+  defp toolchain_identity(_args), do: nil
 
   # A remote build outlives its request's jobs by as long as it takes, so the
   # request may be gone by the time its upload is ingested (deleted by hand,
@@ -272,6 +311,10 @@ defmodule Portal.Workers.Ingest do
     Progress.broadcast(scan_request_id, :error, %{reason: message})
   end
 
+  # A local build's result is only taken against the identity its job carries.
+  defp ingest(%{kind: :local, identity: nil} = source, build, run_id, _digest, request, _, _),
+    do: refuse_unidentified(source, run_id, request, build.result)
+
   defp ingest(source, build, run_id, image_digest, scan_request_id, attempt, max_attempts) do
     ingest_opts = %{
       run_id: run_id,
@@ -283,9 +326,19 @@ defmodule Portal.Workers.Ingest do
       builder_id: Map.get(source, :builder_id)
     }
 
+    ingest_opts =
+      case source do
+        %{identity: %{} = identity} -> Map.merge(ingest_opts, identity)
+        _remote -> ingest_opts
+      end
+
     case safe_ingest(&Ingestion.ingest/2, build.result, ingest_opts) do
       {:ok, run} ->
-        complete(source, run, scan_request_id, get_in(build.result, ["package", "name"]))
+        package = Map.get(ingest_opts, :package) || get_in(build.result, ["package", "name"])
+        complete(source, run, scan_request_id, package)
+
+      {:error, {:identity_mismatch, job, reported}} ->
+        refuse_mismatch(source, run_id, scan_request_id, job, reported)
 
       {:error, reason} ->
         Logger.error("Ingestion failed for #{run_id}: #{inspect(reason)}")
@@ -325,7 +378,7 @@ defmodule Portal.Workers.Ingest do
 
   # Re-ingesting a committed toolchain build is an upsert of the same row, so
   # unlike a run there is no committed-row check before it.
-  defp ingest_toolchain(build, args, %Oban.Job{attempt: attempt, max_attempts: max_attempts}) do
+  defp ingest_toolchain(build, args, identity, %Oban.Job{} = job) do
     run_id = args["run_id"]
 
     opts = %{
@@ -333,8 +386,9 @@ defmodule Portal.Workers.Ingest do
       image_digest: args["image_digest"],
       files_dir: build.files_dir,
       output_dir: build.output_dir,
-      version: args["version"],
-      toolchain: args["toolchain"],
+      package: identity.package,
+      version: identity.version,
+      toolchain: identity.toolchain,
       builder_version: args["builder_version"]
     }
 
@@ -343,10 +397,58 @@ defmodule Portal.Workers.Ingest do
         Builder.cleanup(run_id)
         :ok
 
+      {:error, {:identity_mismatch, job_identity, reported}} ->
+        refuse_mismatch(%{kind: :local}, run_id, nil, job_identity, reported)
+
       {:error, reason} ->
         Logger.error("Toolchain ingestion failed for #{run_id}: #{inspect(reason)}")
-        if attempt >= max_attempts, do: Builder.cleanup(run_id)
+        if job.attempt >= job.max_attempts, do: Builder.cleanup(run_id)
         {:error, reason}
+    end
+  end
+
+  # Refusals. Retrying cannot change what the result or the job says, so the
+  # job is cancelled; the scratch dir goes with it, as on a last attempt.
+  defp refuse_unidentified(source, run_id, scan_request_id, result) do
+    reported = describe_identity(reported_identity(result))
+
+    refuse(
+      source,
+      run_id,
+      scan_request_id,
+      "the ingest job for #{run_id} does not say what it built (result.json: #{reported})"
+    )
+  end
+
+  defp refuse_mismatch(source, run_id, scan_request_id, job, reported) do
+    refuse(
+      source,
+      run_id,
+      scan_request_id,
+      "the ingest job for #{run_id} is for #{describe_identity(job)}, " <>
+        "but result.json is for #{describe_identity(reported)}"
+    )
+  end
+
+  defp refuse(source, run_id, scan_request_id, message) do
+    Logger.error("security: #{message}; recording nothing")
+    cleanup(source, run_id)
+    reason = "ingest refused: #{message}"
+    error_request(scan_request_id, reason)
+    {:cancel, reason}
+  end
+
+  defp reported_identity(%{"package" => %{} = package}),
+    do: %{package: package["name"], version: package["version"]}
+
+  defp reported_identity(_result), do: %{package: nil, version: nil}
+
+  defp describe_identity(identity) do
+    base = "#{inspect(identity[:package])} #{inspect(identity[:version])}"
+
+    case Map.fetch(identity, :toolchain) do
+      {:ok, toolchain} -> "#{base} on #{inspect(toolchain)}"
+      :error -> base
     end
   end
 

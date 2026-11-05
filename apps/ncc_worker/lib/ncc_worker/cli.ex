@@ -3,7 +3,10 @@ defmodule NccWorker.CLI do
   CLI entrypoint for the NCC worker.
 
   Reads input from NCC_INPUT environment variable (default: /work/input.json),
-  runs the worker, and writes results to the output directory.
+  runs the worker, and writes results to the output directory. Before the
+  compiled files are archived and `result.json` is written, every other
+  process in the container is stopped (`NccWorker.ProcessSweep`); a result
+  where that fails passes nothing.
 
   Exit codes:
   - 0: Worker completed and wrote `result.json`, whatever the builds' verdicts
@@ -22,6 +25,7 @@ defmodule NccWorker.CLI do
   alias NccWorker.Systems
   alias NccWorker.FileArchiver
   alias NccWorker.HexCache
+  alias NccWorker.ProcessSweep
 
   @spec main(list(String.t())) :: no_return()
   def main(args) do
@@ -49,6 +53,9 @@ defmodule NccWorker.CLI do
     with {:ok, input_path} <- get_input_path(),
          {:ok, input} <- read_input(input_path),
          {:ok, result} <- Worker.run(input),
+         # Nothing but the worker may still run while the files are archived
+         # and result.json is written (`NccWorker.ProcessSweep`).
+         result = ProcessSweep.enforce(result),
          {:ok, output_dir} <- get_output_dir(input),
          {:ok, work_dir} <- get_work_dir_for_result(input),
          {:ok, files_dir} <- get_files_dir(input),

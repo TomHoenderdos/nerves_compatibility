@@ -30,6 +30,26 @@ defmodule Portal.Toolchains do
   def max_per_run, do: Keyword.get(config(), :max_per_run, 300)
 
   @doc """
+  The toolchain string for the Elixir and OTP versions a build reports, e.g.
+  `"1.19/28"` for Elixir `"1.19.1"` on OTP `"28"`. Only the Elixir
+  major.minor and the OTP major count, as in the configured toolchains. Nil
+  when either is not a version string.
+  """
+  @spec from_versions(term(), term()) :: String.t() | nil
+  def from_versions(elixir, otp) when is_binary(elixir) and is_binary(otp) do
+    with [major, minor | _] <- String.split(elixir, "."),
+         [otp_major | _] <- String.split(otp, "."),
+         toolchain = "#{major}.#{minor}/#{otp_major}",
+         true <- Regex.match?(@toolchain, toolchain) do
+      toolchain
+    else
+      _ -> nil
+    end
+  end
+
+  def from_versions(_elixir, _otp), do: nil
+
+  @doc """
   Parse `NCC_TOOLCHAINS`: comma-separated `toolchain=image` pairs, e.g.
   `"1.20/29=ncc-worker:local,1.19/28=ncc-worker:elixir-1.19-otp-28"`.
 

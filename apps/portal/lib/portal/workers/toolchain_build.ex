@@ -2,7 +2,9 @@ defmodule Portal.Workers.ToolchainBuild do
   @moduledoc """
   Oban worker (queue `:toolchain`) that builds one pure-BEAM package version on
   one toolchain image (`mode: "toolchain"`, `NCC_INPUT.toolchain`) and hands the
-  result to `Portal.Workers.Ingest` with `kind: "toolchain"`.
+  result to `Portal.Workers.Ingest` with `kind: "toolchain"` and its own
+  `package`, `version` and `toolchain`, which the ingest checks the result
+  against.
 
   Enqueued by `Portal.Workers.ToolchainSweep`. Args: `package`, `version`,
   `toolchain` (`"1.19/28"`), `image` (the tag the sweeping node has configured
@@ -192,8 +194,11 @@ defmodule Portal.Workers.ToolchainBuild do
       "kind" => "toolchain",
       "run_id" => run_id,
       "image_digest" => image_digest,
-      # The row's version is the one the sweep queued, not whatever the result
-      # reports, so the row and the sweep's backlog agree on the identity.
+      # The package, version and toolchain this job was queued for, not
+      # whatever the result reports: the ingest checks the result against
+      # them and keys the row on them, so the row and the sweep's backlog
+      # agree on the identity (see `Portal.Workers.Ingest`).
+      "package" => args["package"],
       "version" => args["version"],
       "toolchain" => args["toolchain"],
       "builder_version" => args["builder_version"]
