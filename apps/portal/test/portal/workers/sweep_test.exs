@@ -33,6 +33,7 @@ defmodule Portal.Workers.SweepTest do
         max_age_ms: :timer.hours(3),
         live_run_ids: MapSet.new(),
         running_containers: MapSet.new(),
+        overdue_containers: {:ok, []},
         build_cache: nil,
         hex_cache: nil,
         nerves_cache: nil
@@ -42,6 +43,37 @@ defmodule Portal.Workers.SweepTest do
   end
 
   defp age(hours), do: @now - hours * @hour
+
+  # No build runs past the wall clock, so a container that does is one
+  # whose stop failed or whose builder died (`Portal.Builder.Stop`).
+  describe "overdue build containers" do
+    test "are reported with their age", %{root: root} do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [[:portal, :builder, :container_overdue]])
+
+      overdue = {:ok, [{"ncc-hung-1.0.0-1", :timer.hours(15)}]}
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert :ok = Sweep.run(opts(root, overdue_containers: overdue))
+        end)
+
+      assert log =~ "ncc-hung-1.0.0-1"
+      assert log =~ "900 minutes"
+
+      assert_received {[:portal, :builder, :container_overdue], ^ref, %{age_ms: 54_000_000},
+                       %{container: "ncc-hung-1.0.0-1"}}
+    end
+
+    test "a docker that cannot say reports nothing", %{root: root} do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert :ok = Sweep.run(opts(root, overdue_containers: :error))
+        end)
+
+      refute log =~ "overdue"
+    end
+  end
 
   describe "scratch sweeping" do
     test "removes a dir older than the cutoff with nothing claiming it", %{root: root} do

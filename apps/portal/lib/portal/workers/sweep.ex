@@ -68,6 +68,10 @@ defmodule Portal.Workers.Sweep do
   real directories by `File.lstat/2`, and nothing but a regular file is ever
   removed.
 
+  Each sweep also reports, as errors, the `ncc-*` containers running past the
+  build ceiling plus a grace (`Portal.Builder.Stop.overdue/2`): a container
+  whose stop failed or whose builder died. It kills none of them.
+
   ## Why queue `:ingest`
 
   Only the build host has these directories, and it is the only host running
@@ -102,6 +106,7 @@ defmodule Portal.Workers.Sweep do
 
   alias Portal.BuildCache.Staging
   alias Portal.Builder
+  alias Portal.Builder.Stop
   alias Portal.NervesCache
   alias Portal.Repo
 
@@ -132,6 +137,8 @@ defmodule Portal.Workers.Sweep do
     * `:max_age_ms` — scratch retention (and hex cache root junk), defaults to 3h
     * `:hex_cache_max_bytes` — hex cache retention, defaults to 20 GiB
     * `:live_run_ids` — `MapSet` of sanitized run ids with a live ingest job
+    * `:overdue_containers` — `Portal.Builder.Stop.overdue/2`'s answer, which
+      is reported (`Portal.Builder.Stop.report_overdue/1`)
     * `:running_containers` — `MapSet` of docker container names, `:error`
       for a failed docker lookup, or a zero-arity function returning either
       (called for each lookup)
@@ -149,6 +156,7 @@ defmodule Portal.Workers.Sweep do
   """
   @spec run(keyword()) :: :ok
   def run(opts \\ []) do
+    report_overdue(opts)
     scratch = sweep_scratch(opts)
     cache = sweep_build_cache(opts)
     hex = sweep_hex_cache(opts)
@@ -163,6 +171,17 @@ defmodule Portal.Workers.Sweep do
     )
 
     :ok
+  end
+
+  # No build runs past the wall clock, so a build container that does is one
+  # whose stop failed or whose builder died: logged as an error, never killed
+  # from here.
+  defp report_overdue(opts) do
+    opts
+    |> Keyword.get_lazy(:overdue_containers, fn ->
+      Stop.overdue(DateTime.utc_now(), limit_ms: Stop.overdue_limit_ms())
+    end)
+    |> Stop.report_overdue()
   end
 
   # ── Scratch ────────────────────────────────────────────────────────────────
