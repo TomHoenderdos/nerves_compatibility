@@ -91,7 +91,7 @@ defmodule Portal.Catalog.CoverageTest do
   defp gap(row, package), do: Enum.find(row.gaps, &(&1.package == package))
 
   describe "what counts as covered" do
-    test "a passing build of the latest stable version on the current builder version" do
+    test "a passing build of the latest stable version" do
       package!("jason", 1_000, ["1.4.5"])
       build!("jason", "1.4.5", :pass)
 
@@ -131,13 +131,29 @@ defmodule Portal.Catalog.CoverageTest do
       assert %{reason: :no_host_build} = gap(row, "jason")
     end
 
-    # A bumped builder version is a new recipe: the old builds are not what
-    # the manifest serves for it.
-    test "a build from another builder version does not cover" do
+    # Coverage counts what a client gets: the manifest serves every passing,
+    # non-revoked build, whichever recipe version made it.
+    test "a passing build from an older builder version still covers" do
       package!("jason", 1_000, ["1.4.5"])
       build!("jason", "1.4.5", :pass, builder_version: 1)
 
-      assert %{covered: 0} = report() |> toolchain("1.19/28")
+      assert %{covered: 1, gaps: []} = report() |> toolchain("1.19/28")
+    end
+
+    # A newer recipe's failure does not take away the build already served.
+    test "a served build covers even when a newer recipe's build of it failed" do
+      package!("jason", 1_000, ["1.4.5"])
+      build!("jason", "1.4.5", :pass, builder_version: 1)
+      build!("jason", "1.4.5", :fail, builder_version: 2)
+
+      assert %{covered: 1, gaps: []} = report() |> toolchain("1.19/28")
+    end
+
+    test "an older recipe's failure alone is still failed" do
+      package!("jason", 1_000, ["1.4.5"])
+      build!("jason", "1.4.5", :fail, builder_version: 1)
+
+      assert %{reason: :failed} = report() |> toolchain("1.19/28") |> gap("jason")
     end
   end
 
@@ -151,7 +167,7 @@ defmodule Portal.Catalog.CoverageTest do
 
     test "builds of other versions only is no build for the version" do
       package!("req", 5_000, ["0.7.4", "0.7.5"])
-      build!("req", "0.7.4", :pass)
+      build!("req", "0.7.4", :pass, builder_version: 1)
 
       assert %{version: "0.7.5", reason: :no_build_for_version} =
                report() |> toolchain("1.19/28") |> gap("req")
