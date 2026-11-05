@@ -168,6 +168,11 @@ defmodule NccWorker.Worker do
           optional(:warm) => NccWorker.WarmNerves.warm(),
           # The outcome per `NCC_INPUT.egress_probe` target, when it had any.
           optional(:egress_probe) => [NccWorker.EgressProbe.outcome()],
+          # How the process sweep went: "ok", "skipped" or "tainted", set by
+          # the CLI (`NccWorker.ProcessSweep.enforce_and_report/2`) after
+          # `run/1` returns. Informational: the container's own account, for
+          # monitoring; the portal does not trust it.
+          optional(:process_sweep) => String.t(),
           run_id: String.t(),
           # nil for a "warm_nerves" run.
           package:

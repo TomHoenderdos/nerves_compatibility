@@ -40,13 +40,21 @@ defmodule Portal.Workers.Ingest do
   refresh after them, are then written under the job's identity, not the
   result's (`Portal.Catalog.Ingestion`).
 
-  A job whose result names something else, or that does not carry its
-  identity (one enqueued before jobs did), is refused: nothing is recorded,
-  the scratch dir is removed, a `security:` line naming both sides is logged,
-  the scan request is marked errored and the job is cancelled, since a retry
-  would read the same result. Resuming a run that is already committed does
-  not read `result.json`, so it needs no identity. A remote build's upload is
-  tied to its lease instead (`Portal.Builders.Upload`) and is not checked here.
+  A remote build's identity is its lease's `package` and `version`. Its
+  upload is checked against them when the builder completes the lease and
+  again when it is loaded (`Portal.Builders.Upload.load_run/1`), and they are
+  handed to `Portal.Catalog.Ingestion` like a local job's, so its rows are
+  written under the lease's identity too.
+
+  The identity is required on every path. A job whose result names something
+  else, or that does not carry its identity (one enqueued before jobs did),
+  is refused: nothing is recorded, a `security:` line naming both sides is
+  logged, the scan request is marked errored and the job is cancelled, since
+  a retry would read the same result. A local build's scratch dir is
+  removed; a remote build's lease is failed with the refusal as its error,
+  which errors its request and removes its upload, as an ingest that runs
+  out of attempts does. Resuming a run that is already committed does not
+  read `result.json`, so it needs no identity.
   """
 
   use Oban.Worker,
@@ -205,7 +213,12 @@ defmodule Portal.Workers.Ingest do
   # dir on this node, or a remote builder's upload dir on the web host
   # (`Portal.Builders.Upload`, enqueued by the builder's `complete` call).
   defp source(%{"source" => "remote", "lease_id" => lease_id} = args),
-    do: %{kind: :remote, lease_id: lease_id, builder_id: args["builder_id"]}
+    do: %{
+      kind: :remote,
+      lease_id: lease_id,
+      builder_id: args["builder_id"],
+      identity: Upload.lease_identity(lease_id)
+    }
 
   defp source(args), do: %{kind: :local, identity: run_identity(args)}
 
@@ -283,6 +296,10 @@ defmodule Portal.Workers.Ingest do
       {:ok, build} ->
         ingest(source, build, run_id, image_digest, scan_request_id, attempt, max_attempts)
 
+      # An upload whose result.json names another build than its lease.
+      {:error, {:identity_mismatch, job, reported}} ->
+        refuse_mismatch(source, run_id, scan_request_id, job, reported)
+
       {:error, reason} ->
         # The output is gone, so there is nothing a retry could read. Fail
         # the request rather than looping on an empty directory.
@@ -311,34 +328,31 @@ defmodule Portal.Workers.Ingest do
     Progress.broadcast(scan_request_id, :error, %{reason: message})
   end
 
-  # A local build's result is only taken against the identity its job carries.
-  defp ingest(%{kind: :local, identity: nil} = source, build, run_id, _digest, request, _, _),
+  # A result is only taken against the identity its job (or lease) carries.
+  defp ingest(%{identity: nil} = source, build, run_id, _digest, request, _, _),
     do: refuse_unidentified(source, run_id, request, build.result)
 
   defp ingest(source, build, run_id, image_digest, scan_request_id, attempt, max_attempts) do
-    ingest_opts = %{
-      run_id: run_id,
-      image_digest: image_digest,
-      files_dir: build.files_dir,
-      output_dir: build.output_dir,
-      scan_request_id: scan_request_id,
-      log: build.log,
-      builder_id: Map.get(source, :builder_id)
-    }
-
     ingest_opts =
-      case source do
-        %{identity: %{} = identity} -> Map.merge(ingest_opts, identity)
-        _remote -> ingest_opts
-      end
+      Map.merge(source.identity, %{
+        run_id: run_id,
+        image_digest: image_digest,
+        files_dir: build.files_dir,
+        output_dir: build.output_dir,
+        scan_request_id: scan_request_id,
+        log: build.log,
+        builder_id: Map.get(source, :builder_id)
+      })
 
     case safe_ingest(&Ingestion.ingest/2, build.result, ingest_opts) do
       {:ok, run} ->
-        package = Map.get(ingest_opts, :package) || get_in(build.result, ["package", "name"])
-        complete(source, run, scan_request_id, package)
+        complete(source, run, scan_request_id, ingest_opts.package)
 
       {:error, {:identity_mismatch, job, reported}} ->
         refuse_mismatch(source, run_id, scan_request_id, job, reported)
+
+      {:error, {:identity_missing, _keys}} ->
+        refuse_unidentified(source, run_id, scan_request_id, build.result)
 
       {:error, reason} ->
         Logger.error("Ingestion failed for #{run_id}: #{inspect(reason)}")
@@ -347,7 +361,7 @@ defmodule Portal.Workers.Ingest do
         # of the build a retry can work from.
         if attempt >= max_attempts,
           do:
-            ingest_exhausted(
+            give_up(
               source,
               run_id,
               scan_request_id,
@@ -358,17 +372,18 @@ defmodule Portal.Workers.Ingest do
     end
   end
 
-  # A remote lease is failed rather than left `:done` with nothing behind
-  # it; `Leases.fail/2` errors the request and drops the upload itself. A
-  # lease that has already moved on gets the local treatment.
-  defp ingest_exhausted(%{kind: :remote, lease_id: lease_id} = source, run_id, request, message) do
+  # Drops the output and errors the request, for a last failed attempt or a
+  # refusal. A remote lease is failed rather than left `:done` with nothing
+  # behind it; `Leases.fail/2` errors the request and drops the upload
+  # itself. A lease that has already moved on gets the local treatment.
+  defp give_up(%{kind: :remote, lease_id: lease_id} = source, run_id, request, message) do
     case Leases.fail_by_id(lease_id, message) do
       {:ok, _lease} -> :ok
       {:error, _} -> cleanup_and_error(source, run_id, request, message)
     end
   end
 
-  defp ingest_exhausted(source, run_id, scan_request_id, message),
+  defp give_up(source, run_id, scan_request_id, message),
     do: cleanup_and_error(source, run_id, scan_request_id, message)
 
   defp cleanup_and_error(source, run_id, scan_request_id, message) do
@@ -400,6 +415,9 @@ defmodule Portal.Workers.Ingest do
       {:error, {:identity_mismatch, job_identity, reported}} ->
         refuse_mismatch(%{kind: :local}, run_id, nil, job_identity, reported)
 
+      {:error, {:identity_missing, _keys}} ->
+        refuse_unidentified(%{kind: :local}, run_id, nil, build.result)
+
       {:error, reason} ->
         Logger.error("Toolchain ingestion failed for #{run_id}: #{inspect(reason)}")
         if job.attempt >= job.max_attempts, do: Builder.cleanup(run_id)
@@ -408,7 +426,7 @@ defmodule Portal.Workers.Ingest do
   end
 
   # Refusals. Retrying cannot change what the result or the job says, so the
-  # job is cancelled; the scratch dir goes with it, as on a last attempt.
+  # job is cancelled; the output goes with it, as on a last attempt.
   defp refuse_unidentified(source, run_id, scan_request_id, result) do
     reported = describe_identity(reported_identity(result))
 
@@ -432,9 +450,8 @@ defmodule Portal.Workers.Ingest do
 
   defp refuse(source, run_id, scan_request_id, message) do
     Logger.error("security: #{message}; recording nothing")
-    cleanup(source, run_id)
     reason = "ingest refused: #{message}"
-    error_request(scan_request_id, reason)
+    give_up(source, run_id, scan_request_id, reason)
     {:cancel, reason}
   end
 

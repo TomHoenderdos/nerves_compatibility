@@ -19,15 +19,25 @@ defmodule Portal.Catalog.Ingestion do
 
   ## The job's identity
 
-  A caller that knows what was queued passes it as `:package` and `:version`
-  (and, for `ingest_toolchain/2`, `:toolchain`). Ingest then checks the result
+  Every caller says what the job was enqueued for: `:package` and `:version`,
+  and for `ingest_toolchain/2` `:toolchain` as well. Ingest checks the result
   against the job it was enqueued for: when `result.json` names another
   package, version or toolchain, nothing is staged or written and the call
   returns `{:error, {:identity_mismatch, job, result}}`, each side a map of
   `:package`, `:version` and, for a toolchain build, `:toolchain`. When they
-  agree, the rows are written under the job's identity. `Portal.Workers.Ingest`
-  always passes it; without `:package` the result's own identity is used, as
-  for the portal's own synthesized results and in tests.
+  agree, the rows are written under the job's identity.
+
+  The identity is required on every path: a call without it, or with a blank
+  one, returns `{:error, {:identity_missing, keys}}` naming the missing keys,
+  again before anything is staged or written. The result's own identity is
+  never used in its place. `Portal.Workers.Ingest` passes the identity its
+  job carries (for a remote build, its lease's), and the portal's own
+  synthesized results (`Portal.Catalog.RegistryAssessment`,
+  `Portal.Catalog.ToolingSkip`) pass the package and version they record.
+
+  The worker's top-level `process_sweep` field is the container's own account
+  of its process sweep, for monitoring only, and is not read here: a sweep
+  that failed shows in the per-system statuses and the toolchain verdict.
   """
 
   require Logger
@@ -72,8 +82,8 @@ defmodule Portal.Catalog.Ingestion do
           optional(:scan_request_id) => String.t() | nil,
           optional(:builder_id) => String.t() | nil,
           optional(:log) => String.t() | nil,
-          optional(:package) => String.t(),
-          optional(:version) => String.t()
+          required(:package) => String.t(),
+          required(:version) => String.t()
         }
 
   @type toolchain_opts :: %{
@@ -82,8 +92,8 @@ defmodule Portal.Catalog.Ingestion do
           required(:files_dir) => Path.t(),
           required(:toolchain) => String.t(),
           required(:builder_version) => pos_integer(),
-          optional(:version) => String.t() | nil,
-          optional(:package) => String.t(),
+          required(:package) => String.t(),
+          required(:version) => String.t(),
           optional(:output_dir) => Path.t() | nil
         }
 
@@ -108,12 +118,16 @@ defmodule Portal.Catalog.Ingestion do
   connection out from under the ingest and every large package failed with
   `tcp recv: closed`. Filesystem work does not belong in a transaction.
 
-  With `:package` and `:version` in `opts`, the result must name the same
-  package and version (see "The job's identity" above), checked before
-  anything is staged.
+  `opts` must carry the job's `:package` and `:version`, and the result must
+  name the same package and version (see "The job's identity" above), both
+  checked before anything is staged.
   """
   @spec ingest(map(), ingest_opts()) ::
-          {:ok, Run.t()} | {:error, {:identity_mismatch, identity(), identity()} | term()}
+          {:ok, Run.t()}
+          | {:error,
+             {:identity_mismatch, identity(), identity()}
+             | {:identity_missing, [atom()]}
+             | term()}
   def ingest(result, opts) when is_map(result) do
     with :ok <- check_identity(result, opts, [:package, :version]) do
       stage_and_write_run(result, opts)
@@ -136,22 +150,26 @@ defmodule Portal.Catalog.Ingestion do
     )
   end
 
-  # Checks the result against the job's identity when the caller passed one.
-  # A result that names no package at all is not checked here: `do_ingest/4`
-  # and `do_ingest_toolchain/4` raise on it, as they always have, and the
-  # worker retries it like any other unmappable result.
-  defp check_identity(result, %{package: package} = opts, keys) when is_binary(package) do
-    case result_identity(result, keys) do
-      %{package: nil} ->
-        :ok
-
-      reported ->
-        job = Map.new(keys, &{&1, Map.get(opts, &1)})
-        if reported == job, do: :ok, else: {:error, {:identity_mismatch, job, reported}}
+  # Checks the result against the job's identity, which the caller must
+  # pass in full. A result that names no package at all is not checked here:
+  # `do_ingest/4` and `do_ingest_toolchain/4` raise on it, as they always
+  # have, and the worker retries it like any other unmappable result.
+  defp check_identity(result, opts, keys) do
+    case Enum.reject(keys, &present?(Map.get(opts, &1))) do
+      [] -> check_reported(result, Map.new(keys, &{&1, Map.fetch!(opts, &1)}), keys)
+      missing -> {:error, {:identity_missing, missing}}
     end
   end
 
-  defp check_identity(_result, _opts, _keys), do: :ok
+  defp check_reported(result, job, keys) do
+    case result_identity(result, keys) do
+      %{package: nil} -> :ok
+      ^job -> :ok
+      reported -> {:error, {:identity_mismatch, job, reported}}
+    end
+  end
+
+  defp present?(value), do: is_binary(value) and value != ""
 
   defp result_identity(result, keys) do
     package = Map.get(result, "package")
@@ -184,13 +202,13 @@ defmodule Portal.Catalog.Ingestion do
   stops passing, or produces other files, must not keep publishing the old ones.
 
   `opts.version` is the version the job was queued for, which keys the row so
-  it matches the sweep's backlog; the result's `package.version` is used only
-  when the option is absent.
+  it matches the sweep's backlog.
 
-  With `:package` in `opts` as well, the result must name the same package and
-  version, and its `toolchain_build`'s `elixir` and `otp` must be the job's
-  `toolchain` (`Portal.Toolchains.from_versions/2`), checked before anything
-  is staged (see "The job's identity" above).
+  `opts` must carry the job's `:package`, `:version` and `:toolchain`; the
+  result must name the same package and version, and its `toolchain_build`'s
+  `elixir` and `otp` must be the job's `toolchain`
+  (`Portal.Toolchains.from_versions/2`), all checked before anything is
+  staged (see "The job's identity" above).
 
   A later non-pass verdict for the same identity overwrites a pass row, and its
   memberships with it. The sweep never re-queues an identity that has a pass
@@ -198,7 +216,10 @@ defmodule Portal.Catalog.Ingestion do
   """
   @spec ingest_toolchain(map(), toolchain_opts()) ::
           {:ok, ToolchainBuild.t()}
-          | {:error, {:identity_mismatch, identity(), identity()} | term()}
+          | {:error,
+             {:identity_mismatch, identity(), identity()}
+             | {:identity_missing, [atom()]}
+             | term()}
   def ingest_toolchain(result, opts) when is_map(result) do
     with :ok <- check_identity(result, opts, [:package, :version, :toolchain]) do
       stage_toolchain_build(result, opts)
@@ -277,7 +298,7 @@ defmodule Portal.Catalog.Ingestion do
     ToolchainBuild
     |> Ash.Changeset.for_create(:upsert, %{
       package_id: package_id,
-      version: Map.get(opts, :version) || get_in(result, ["package", "version"]) || "unknown",
+      version: opts.version,
       toolchain: opts.toolchain,
       builder_version: opts.builder_version,
       status: status,
@@ -299,9 +320,13 @@ defmodule Portal.Catalog.Ingestion do
   # this package, version and toolchain: it is stored as a `:fail` verdict so
   # the live window for failures applies. `:error` rows mean the build never
   # produced a result, and only `Portal.Workers.ToolchainBuild` writes those.
-  # Processes the worker could not stop after the build
-  # (`NccWorker.ProcessSweep`) are a `:fail` as well, under their own label.
+  # Processes the worker could not stop after the build, or a portal build
+  # whose sweep could not run at all (`NccWorker.ProcessSweep`), are a
+  # `:fail` as well, under their own label.
   defp toolchain_verdict("error", "processes survived the sweep" <> _ = reason),
+    do: {:fail, "worker: " <> reason}
+
+  defp toolchain_verdict("error", "process sweep could not run" <> _ = reason),
     do: {:fail, "worker: " <> reason}
 
   defp toolchain_verdict("error", reason),
@@ -334,18 +359,15 @@ defmodule Portal.Catalog.Ingestion do
     |> insert_memberships(:upsert_toolchain, :unique_toolchain_build_sha256)
   end
 
-  # The job's package when the caller passed one, which `check_identity/3` has
-  # already held the result to. A result without a name is unmappable either
-  # way.
+  # The job's package, which `check_identity/3` has already held the result
+  # to. A result without a name is unmappable either way.
   defp package_name(package_info, opts) do
-    result_name = package_info["name"] || raise "result.json missing package.name"
-    Map.get(opts, :package) || result_name
+    _ = package_info["name"] || raise "result.json missing package.name"
+    opts.package
   end
 
-  defp with_job_version(package_info, %{version: version}) when is_binary(version),
+  defp with_job_version(package_info, %{version: version}),
     do: Map.put(package_info, "version", version)
-
-  defp with_job_version(package_info, _opts), do: package_info
 
   defp do_ingest(result, opts, staged, logs) do
     package_info = result |> Map.get("package", %{}) |> with_job_version(opts)

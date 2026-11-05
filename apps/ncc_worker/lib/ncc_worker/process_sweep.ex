@@ -24,9 +24,18 @@ defmodule NccWorker.ProcessSweep do
   started first is kept: the real helper is forked while the BEAM boots,
   before any package code runs.
 
-  Only active in the container's worker: on Linux, with a `/proc`, and when
-  the BEAM is pid 1, which it is as the container's entrypoint. Anywhere else,
-  such as a developer machine running the escript, it does nothing.
+  It can only run in the container's worker: on Linux, with a `/proc`, and
+  when the BEAM is pid 1, which it is as the container's entrypoint
+  (`environment/0`). A portal build, one given its input through `NCC_INPUT`
+  (`portal_build?/1`), does not fail open when the sweep cannot run: its
+  result is made non-pass the same way, with a reason starting
+  `"process sweep could not run: "`. A run without `NCC_INPUT`, such as a
+  developer machine running the escript, is not swept and says so on stderr.
+
+  `enforce_and_report/2`, which the CLI runs, also records how the sweep went
+  as the result's top-level `process_sweep`: `"ok"`, `"skipped"` or
+  `"tainted"`. That field is the container's own account, for monitoring: the
+  portal does not trust it, only the verdicts it reads.
   """
 
   @allowed_helper "erl_child_setup"
@@ -41,8 +50,13 @@ defmodule NccWorker.ProcessSweep do
           start_time: non_neg_integer()
         }
 
+  @typedoc "How the sweep went, as the result's `process_sweep`."
+  @type status :: String.t()
+
   @type option ::
           {:enabled?, boolean()}
+          | {:environment, :ok | {:unavailable, String.t()}}
+          | {:portal_build?, boolean()}
           | {:proc_root, Path.t()}
           | {:self_pid, pos_integer()}
           | {:kill, ([pos_integer()] -> any())}
@@ -57,17 +71,50 @@ defmodule NccWorker.ProcessSweep do
   """
   @spec enforce(map(), [option()]) :: map()
   def enforce(result, opts \\ []) do
-    case sweep(opts) do
-      :ok ->
-        result
+    {_status, result} = outcome(result, opts)
+    result
+  end
 
-      :skipped ->
-        result
+  @doc """
+  `enforce/2`, with how the sweep went put in the result as `:process_sweep`
+  (`"ok"`, `"skipped"` or `"tainted"`), which `result.json` carries at its
+  top level.
+
+  When the sweep cannot run (`environment/0`), a portal build
+  (`:portal_build?`, default `portal_build?/1`) is `"tainted"` with the
+  reason `"process sweep could not run: <why>"`; any other run is
+  `"skipped"`, unchanged but for the field, with a line on stderr. Survivors
+  are `"tainted"` either way.
+
+  Options are `sweep/1`'s, plus `:portal_build?` and `:environment` (what
+  `environment/0` would answer), for tests.
+  """
+  @spec enforce_and_report(map(), [option()]) :: map()
+  def enforce_and_report(result, opts \\ []) do
+    {status, result} = outcome(result, opts)
+    Map.put(result, :process_sweep, status)
+  end
+
+  @spec outcome(map(), [option()]) :: {status(), map()}
+  defp outcome(result, opts) do
+    case run(opts) do
+      :ok ->
+        {"ok", result}
+
+      {:unavailable, why} ->
+        if Keyword.get_lazy(opts, :portal_build?, fn -> portal_build?() end) do
+          reason = "process sweep could not run: #{why}"
+          IO.puts(:stderr, "Process sweep: #{reason}")
+          {"tainted", taint(result, reason)}
+        else
+          IO.puts(:stderr, "Process sweep skipped: #{why} (no NCC_INPUT, not a portal build)")
+          {"skipped", result}
+        end
 
       {:error, {:survivors, survivors}} ->
         reason = survivors_reason(survivors)
         IO.puts(:stderr, "Process sweep: #{reason}")
-        taint(result, reason)
+        {"tainted", taint(result, reason)}
     end
   end
 
@@ -85,16 +132,35 @@ defmodule NccWorker.ProcessSweep do
   """
   @spec sweep([option()]) :: :ok | :skipped | {:error, {:survivors, [proc()]}}
   def sweep(opts \\ []) do
-    if Keyword.get_lazy(opts, :enabled?, &container_worker?/0) do
-      do_sweep(
-        Keyword.get(opts, :proc_root, "/proc"),
-        Keyword.get_lazy(opts, :self_pid, fn -> String.to_integer(System.pid()) end),
-        Keyword.get(opts, :kill, &kill/1),
-        Keyword.get(opts, :rounds, @default_rounds),
-        Keyword.get(opts, :interval_ms, @default_interval_ms)
-      )
-    else
-      :skipped
+    case run(opts) do
+      {:unavailable, _why} -> :skipped
+      outcome -> outcome
+    end
+  end
+
+  defp run(opts) do
+    case availability(opts) do
+      :ok ->
+        do_sweep(
+          Keyword.get(opts, :proc_root, "/proc"),
+          Keyword.get_lazy(opts, :self_pid, fn -> String.to_integer(System.pid()) end),
+          Keyword.get(opts, :kill, &kill/1),
+          Keyword.get(opts, :rounds, @default_rounds),
+          Keyword.get(opts, :interval_ms, @default_interval_ms)
+        )
+
+      {:unavailable, _why} = unavailable ->
+        unavailable
+    end
+  end
+
+  # `:enabled?` overrides the environment check outright; `:environment`
+  # stands in for its answer.
+  defp availability(opts) do
+    case Keyword.fetch(opts, :enabled?) do
+      {:ok, true} -> :ok
+      {:ok, false} -> {:unavailable, "disabled"}
+      :error -> Keyword.get_lazy(opts, :environment, &environment/0)
     end
   end
 
@@ -240,9 +306,30 @@ defmodule NccWorker.ProcessSweep do
   pid 1.
   """
   @spec container_worker?() :: boolean()
-  def container_worker? do
-    :os.type() == {:unix, :linux} and File.dir?("/proc/self") and System.pid() == "1"
+  def container_worker?, do: environment() == :ok
+
+  @doc """
+  `:ok` when the sweep can run here (see `container_worker?/0`), or
+  `{:unavailable, why}` naming the first thing that is missing.
+  """
+  @spec environment() :: :ok | {:unavailable, String.t()}
+  def environment do
+    cond do
+      :os.type() != {:unix, :linux} -> {:unavailable, "not Linux (#{inspect(:os.type())})"}
+      not File.dir?("/proc/self") -> {:unavailable, "no /proc"}
+      System.pid() != "1" -> {:unavailable, "the BEAM is pid #{System.pid()}, not 1"}
+      true -> :ok
+    end
   end
+
+  @doc """
+  Whether this run is a portal build: `NCC_INPUT` is set, whatever it names.
+  The portal's runners always set it; a run without it reads the default
+  input path and is someone running the escript by hand. `getenv` is for
+  tests.
+  """
+  @spec portal_build?((String.t() -> String.t() | nil)) :: boolean()
+  def portal_build?(getenv \\ &System.get_env/1), do: getenv.("NCC_INPUT") != nil
 
   # The shell's `kill` builtin, so the image needs no procps. One signal per
   # listed pid; one that has exited meanwhile only makes the command fail,

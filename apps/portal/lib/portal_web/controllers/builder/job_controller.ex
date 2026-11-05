@@ -179,12 +179,11 @@ defmodule PortalWeb.Builder.JobController do
     end
   end
 
-  # The run a builder completes must be the one it was leased: a result.json
-  # naming another package or version would otherwise become that package's
-  # latest run (`Portal.Catalog.Ingestion` takes the name from the result).
-  # Spec section 8 allows a hostile builder bad results for the packages it
-  # claims, and nothing else. `Portal.Builders.Upload.load_run/1` checks the
-  # same thing again at ingest.
+  # The run a builder completes must be the one it was leased. Spec section 8
+  # allows a hostile builder bad results for the packages it claims, and
+  # nothing else. `Portal.Builders.Upload.load_run/1` checks the same thing
+  # again at ingest, and `Portal.Catalog.Ingestion` once more against the
+  # lease's identity.
   defp result_matches(_lease, nil, _builder), do: :ok
 
   defp result_matches(lease, result, builder) do

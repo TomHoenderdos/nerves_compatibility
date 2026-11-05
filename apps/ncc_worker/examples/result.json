@@ -30,5 +30,6 @@
       "error": null
     }
   },
-  "finished_at": "2025-12-24T10:30:00Z"
+  "finished_at": "2025-12-24T10:30:00Z",
+  "process_sweep": "ok"
 }

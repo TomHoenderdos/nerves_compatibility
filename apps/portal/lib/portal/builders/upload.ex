@@ -699,10 +699,10 @@ defmodule Portal.Builders.Upload do
 
   @doc """
   Whether `result` is a result.json for the build `lease` names: same
-  package name and version. `Portal.Catalog.Ingestion` takes the package from
-  the result, so one that names another package would become that package's
-  latest run; the complete endpoint refuses it and `load_run/1` refuses it
-  again before ingest.
+  package name and version. The complete endpoint refuses one that is not,
+  `load_run/1` refuses it again before ingest, and `Portal.Workers.Ingest`
+  hands the lease's identity (`lease_identity/1`) to
+  `Portal.Catalog.Ingestion`, which checks it once more.
   """
   @spec result_for_lease?(map(), Lease.t()) :: boolean()
   def result_for_lease?(%{} = result, %Lease{package: package, version: version}) do
@@ -713,13 +713,30 @@ defmodule Portal.Builders.Upload do
   def result_for_lease?(_result, _lease), do: false
 
   @doc """
+  The package and version the lease `lease_id` was handed out to build, the
+  identity its upload is ingested under; nil when there is no such lease.
+  """
+  @spec lease_identity(term()) :: %{package: String.t(), version: String.t()} | nil
+  def lease_identity(lease_id) do
+    case lease(lease_id) do
+      {:ok, %Lease{package: package, version: version}} -> %{package: package, version: version}
+      {:error, :lease_not_found} -> nil
+    end
+  end
+
+  @doc """
   The uploaded run in `Portal.Builder.load_run/1`'s shape. The result.json
   must name the lease's package and version (`result_for_lease?/2`), or the
-  upload is `{:error, :result_mismatch}` and never ingested.
+  upload is `{:error, {:identity_mismatch, lease, result}}`, each side a map
+  of `:package` and `:version`, and never ingested.
   """
   @spec load_run(String.t()) ::
           {:ok, Portal.Builder.build_result()}
-          | {:error, :missing_result_json | :result_mismatch | :lease_not_found}
+          | {:error,
+             :missing_result_json
+             | :lease_not_found
+             | {:identity_mismatch, Portal.Catalog.Ingestion.identity(),
+                Portal.Catalog.Ingestion.identity()}}
   # sobelow_skip ["Traversal.FileModule"]
   def load_run(lease_id) do
     out = out_dir(lease_id)
@@ -729,7 +746,7 @@ defmodule Portal.Builders.Upload do
          {:ok, %File.Stat{type: :regular}} <- File.lstat(path),
          {:ok, bytes} <- File.read(path),
          {:ok, result} <- decode(bytes),
-         true <- result_for_lease?(result, lease) || {:error, :result_mismatch} do
+         :ok <- check_result(result, lease) do
       {:ok,
        %{
          exit_code: 0,
@@ -739,8 +756,25 @@ defmodule Portal.Builders.Upload do
          log: read_tail(Path.join(out, "runner.log"))
        }}
     else
-      {:error, reason} when reason in [:result_mismatch, :lease_not_found] -> {:error, reason}
+      {:error, {:identity_mismatch, _, _}} = mismatch -> mismatch
+      {:error, :lease_not_found} -> {:error, :lease_not_found}
       _ -> {:error, :missing_result_json}
+    end
+  end
+
+  defp check_result(result, %Lease{} = lease) do
+    if result_for_lease?(result, lease) do
+      :ok
+    else
+      package =
+        case result do
+          %{"package" => %{} = package} -> package
+          _ -> %{}
+        end
+
+      {:error,
+       {:identity_mismatch, %{package: lease.package, version: lease.version},
+        %{package: package["name"], version: package["version"]}}}
     end
   end
 

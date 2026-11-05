@@ -6,7 +6,8 @@ defmodule NccWorker.CLI do
   runs the worker, and writes results to the output directory. Before the
   compiled files are archived and `result.json` is written, every other
   process in the container is stopped (`NccWorker.ProcessSweep`); a result
-  where that fails passes nothing.
+  where that fails, or a portal build (`NCC_INPUT` set) where the sweep cannot
+  run, passes nothing. `result.json` records how it went as `process_sweep`.
 
   Exit codes:
   - 0: Worker completed and wrote `result.json`, whatever the builds' verdicts
@@ -55,7 +56,7 @@ defmodule NccWorker.CLI do
          {:ok, result} <- Worker.run(input),
          # Nothing but the worker may still run while the files are archived
          # and result.json is written (`NccWorker.ProcessSweep`).
-         result = ProcessSweep.enforce(result),
+         result = ProcessSweep.enforce_and_report(result),
          {:ok, output_dir} <- get_output_dir(input),
          {:ok, work_dir} <- get_work_dir_for_result(input),
          {:ok, files_dir} <- get_files_dir(input),

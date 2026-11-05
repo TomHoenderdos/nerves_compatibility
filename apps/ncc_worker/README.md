@@ -145,9 +145,18 @@ reported `"status": "error"` with an `error` naming the processes (`"processes s
 toolchain run's `toolchain_build` is `"error"` with no `file_manifest`. `result.json` is still written and the exit
 code is still `0`, so the portal records that verdict instead of retrying.
 
-The sweep only runs as the container's worker: on Linux, with a `/proc`, and with the BEAM as pid 1, which it is as
-the container's entrypoint. Run anywhere else, such as on a developer machine, the escript does not sweep. The proc
-root, the kill function and the enabled check are options of `NccWorker.ProcessSweep.sweep/1`, for its tests.
+The sweep can only run as the container's worker: on Linux, with a `/proc`, and with the BEAM as pid 1, which it is
+as the container's entrypoint. A portal build, one with `NCC_INPUT` set (the image sets it, and so do the portal's
+runners), does not fail open when it cannot: the result is made non-pass exactly as for survivors, with the reason
+`"process sweep could not run: <why>"`, which the portal also stores under `"worker: …"`. A run without `NCC_INPUT`,
+such as the escript on a developer machine, is not swept and says so on stderr (`Process sweep skipped: …`). The proc
+root, the kill function, the environment check and the portal-build check are options of
+`NccWorker.ProcessSweep.enforce_and_report/2`, for its tests.
+
+`result.json` records how the sweep went as a top-level `"process_sweep"`: `"ok"` (swept, nothing else left),
+`"skipped"` (could not run, and not a portal build) or `"tainted"` (survivors, or a portal build where it could not
+run). The field is informational: it is the container's own account of itself, for monitoring. The portal does not
+trust it or act on it; what it records comes from the per-system statuses and the toolchain build's verdict.
 
 ## Nerves cache
 
