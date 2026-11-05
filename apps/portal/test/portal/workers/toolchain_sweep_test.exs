@@ -332,7 +332,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                "version" => "1.0.0",
                "toolchain" => "1.19/28",
                "image" => "ncc-worker:elixir-1.19-otp-28",
-               "builder_version" => 1
+               "builder_version" => 1,
+               "variant" => "with"
              }
     end
 

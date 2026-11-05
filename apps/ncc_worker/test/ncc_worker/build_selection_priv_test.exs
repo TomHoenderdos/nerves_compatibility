@@ -282,4 +282,65 @@ defmodule NccWorker.BuildSelectionPrivTest do
       assert {:skip, _} = BuildSelection.portable?(root, "sample", nif, tarball: tarball)
     end
   end
+
+  # How Mix really lays it out: the built `priv` is a symlink into the
+  # package's source dir, `deps/<package>/priv`. Judged through the link, file
+  # by file, against the tarball all the same.
+  describe "priv as Mix links it" do
+    defp linked_project(root, source_files) do
+      built = project(root)
+      File.rm_rf!(Path.join(built, "priv"))
+      source_priv = Path.join([root, "deps", "sample", "priv"])
+
+      for {path, content} <- source_files do
+        full = Path.join(source_priv, path)
+        File.mkdir_p!(Path.dirname(full))
+        File.write!(full, content)
+        File.chmod!(full, 0o644)
+      end
+
+      File.mkdir_p!(source_priv)
+      File.ln_s!("../../../../deps/sample/priv", Path.join(built, "priv"))
+      built
+    end
+
+    test "static data behind the link is portable", %{tmp_dir: root} do
+      linked_project(root, %{"static/app.js" => "console.log(1)", "data.json" => "{}"})
+
+      tarball =
+        hex_tarball(root, %{"priv/static/app.js" => "console.log(1)", "priv/data.json" => "{}"})
+
+      assert BuildSelection.portable?(root, "sample", scan(2), tarball: tarball) == :ok
+    end
+
+    # The source dir is exactly where a dependency's compile hook can write.
+    test "a file planted in the linked source dir is not", %{tmp_dir: root} do
+      linked_project(root, %{"data.json" => "{}", "planted.json" => "{}"})
+      tarball = hex_tarball(root, %{"priv/data.json" => "{}"})
+
+      assert {:skip, _} = BuildSelection.portable?(root, "sample", scan(2), tarball: tarball)
+    end
+
+    test "a symlink inside the linked dir is not", %{tmp_dir: root} do
+      linked_project(root, %{"data.json" => "{}"})
+      File.ln_s!("data.json", Path.join([root, "deps", "sample", "priv", "alias.json"]))
+      tarball = hex_tarball(root, %{"priv/data.json" => "{}", "priv/alias.json" => "{}"})
+
+      assert {:skip, _} = BuildSelection.portable?(root, "sample", scan(2), tarball: tarball)
+    end
+
+    # Only Mix's own link is followed: a priv pointing anywhere else is not
+    # the package's priv.
+    test "a priv linked anywhere but the package's source priv is not", %{tmp_dir: root} do
+      built = project(root)
+      File.rm_rf!(Path.join(built, "priv"))
+      elsewhere = Path.join(root, "elsewhere")
+      File.mkdir_p!(elsewhere)
+      File.write!(Path.join(elsewhere, "data.json"), "{}")
+      File.ln_s!(elsewhere, Path.join(built, "priv"))
+      tarball = hex_tarball(root, %{"priv/data.json" => "{}"})
+
+      assert {:skip, _} = BuildSelection.portable?(root, "sample", scan(1), tarball: tarball)
+    end
+  end
 end

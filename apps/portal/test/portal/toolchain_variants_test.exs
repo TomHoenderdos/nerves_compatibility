@@ -221,16 +221,17 @@ defmodule Portal.ToolchainVariantsTest do
     defp dropped(reason),
       do: %{"added" => [], "dropped" => ["decimal"], "skipped" => [], "reason" => reason}
 
-    # A Hex hiccup or a slow mirror is not a verdict about the package: the
-    # pass row would otherwise stand for a "with" build forever.
-    test "is built again once the retry window has passed, for a transient reason" do
+    # The pass row would otherwise stand for a "with" build forever. But a
+    # drop that happens the same way every time must not be rebuilt every day:
+    # it comes back after a week, or when the recipe changed.
+    test "is built again a week after its last attempt" do
       for {reason, name} <- [{"deps_get_failed", "dropa"}, {"timeout", "dropb"}] do
         run!(name, "1.0.0")
 
         row!(name, "1.0.0", :pass,
           variant: :with,
           optional_deps: dropped(reason),
-          finished_at: ago(2 * @day)
+          finished_at: ago(7 * @day + 3600)
         )
       end
 
@@ -240,27 +241,45 @@ defmodule Portal.ToolchainVariantsTest do
              ]
     end
 
-    test "is not built again inside the retry window" do
-      run!("jason", "1.4.5")
+    test "is not built again within the week" do
+      for {age, name} <- [{3600, "hour"}, {2 * @day, "days"}, {7 * @day - 3600, "almost"}] do
+        run!(name, "1.0.0")
 
-      row!("jason", "1.4.5", :pass,
-        variant: :with,
-        optional_deps: dropped("timeout"),
-        finished_at: ago(3600)
-      )
+        row!(name, "1.0.0", :pass,
+          variant: :with,
+          optional_deps: dropped("deps_get_failed"),
+          finished_at: ago(age)
+        )
+      end
 
       assert backlog() == []
     end
 
-    # A compile failure with decimal loadable is a verdict: retrying it builds
-    # the same failure.
-    test "is not built again when the reason is a verdict" do
+    # A new recipe is a new build: nothing about the old attempt carries over,
+    # however recent it was.
+    test "is built again at once by a new builder version" do
+      run!("jason", "1.4.5")
+
+      row!("jason", "1.4.5", :pass,
+        variant: :with,
+        optional_deps: dropped("deps_get_failed"),
+        finished_at: ago(3600)
+      )
+
+      assert Catalog.toolchain_backlog("1.19/28", 2, 100) == [
+               %{package: "jason", version: "1.4.5", variant: :with}
+             ]
+    end
+
+    # A compile failure with decimal loadable is a verdict: within the week it
+    # is not retried either.
+    test "a verdict reason is not built again within the week" do
       run!("jason", "1.4.5")
 
       row!("jason", "1.4.5", :pass,
         variant: :with,
         optional_deps: dropped("host_compile_failed"),
-        finished_at: ago(30 * @day)
+        finished_at: ago(2 * @day)
       )
 
       assert backlog() == []
