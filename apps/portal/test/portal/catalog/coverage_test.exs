@@ -277,4 +277,91 @@ defmodule Portal.Catalog.CoverageTest do
       assert percent == 0.0
     end
   end
+
+  describe "a version with only skipped builds" do
+    # Skipped means the toolchain build judged the package not portable: by
+    # design there is no host build, which is not a failure of one.
+    test "is no host build" do
+      package!("esbuild", 3_000, ["0.10.0"])
+      build!("esbuild", "0.10.0", :skipped)
+
+      assert %{reason: :no_host_build} = report() |> toolchain("1.19/28") |> gap("esbuild")
+    end
+  end
+
+  describe "the optional-deps check" do
+    # `repo.hex.pm` as `Portal.HexDeps.releases/2` answers it: jason declares
+    # decimal optional, ex_doc optional (dev tooling the worker never adds) and
+    # telemetry required.
+    defp release(version, deps \\ []),
+      do: %{version: version, retired?: false, deps: deps, outer_checksum: nil}
+
+    defp dep(package, requirement, optional),
+      do: %{package: package, requirement: requirement, optional: optional, repository: "hexpm"}
+
+    @json_deps [
+      %{package: "decimal", requirement: "~> 1.0 or ~> 2.0", optional: true, repository: "hexpm"},
+      %{package: "ex_doc", requirement: ">= 0.0.0", optional: true, repository: "hexpm"},
+      %{package: "telemetry", requirement: "~> 1.0", optional: false, repository: "hexpm"}
+    ]
+
+    defp hex_releases do
+      releases = %{
+        "decimal" => [release("1.9.0"), release("2.2.0"), release("2.3.0"), release("3.0.0-rc.0")],
+        "plain" => [release("1.0.0", [dep("telemetry", "~> 1.0", false)])]
+      }
+
+      fn
+        "json" <> _ ->
+          {:ok, [release("1.4.5", @json_deps)]}
+
+        name ->
+          case Map.fetch(releases, name) do
+            {:ok, found} -> {:ok, found}
+            :error -> {:error, :not_found}
+          end
+      end
+    end
+
+    defp lock(deps) do
+      Map.new(deps, fn {name, version} ->
+        {Atom.to_string(name), %{"version" => version, "checksum" => "c-#{name}"}}
+      end)
+    end
+
+    # The real check, not a stand-in: a build counts as "with" only when it
+    # holds every declared optional Hex dependency, the worker's never-added
+    # tooling aside, at the newest version its requirement allows.
+    test "counts a build as with only when it holds each optional dependency at its newest match" do
+      package!("json_newest", 400, ["1.4.5"])
+      build!("json_newest", "1.4.5", :pass, deps_lock: lock(decimal: "2.3.0", telemetry: "1.3.0"))
+      package!("json_stale", 300, ["1.4.5"])
+      build!("json_stale", "1.4.5", :pass, deps_lock: lock(decimal: "2.2.0", telemetry: "1.3.0"))
+      package!("json_none", 200, ["1.4.5"])
+      build!("json_none", "1.4.5", :pass, deps_lock: lock(telemetry: "1.3.0"))
+      package!("plain", 100, ["1.0.0"])
+      build!("plain", "1.0.0", :pass, deps_lock: lock(telemetry: "1.3.0"))
+
+      row = Coverage.report(hex_releases: hex_releases()) |> toolchain("1.19/28")
+
+      assert %{total: 4, covered: 4, covered_with_optional: 2, percent_with_optional: 50.0} = row
+      assert %{reason: :no_optional_deps_build} = gap(row, "json_stale")
+      assert %{reason: :no_optional_deps_build} = gap(row, "json_none")
+      refute gap(row, "json_newest")
+      refute gap(row, "plain")
+    end
+
+    test "any served build of the version that holds them is enough" do
+      package!("json_two", 400, ["1.4.5"])
+      build!("json_two", "1.4.5", :pass, deps_lock: lock(telemetry: "1.3.0"))
+
+      build!("json_two", "1.4.5", :pass,
+        builder_version: 1,
+        deps_lock: lock(decimal: "2.3.0", telemetry: "1.3.0")
+      )
+
+      row = Coverage.report(hex_releases: hex_releases()) |> toolchain("1.19/28")
+      assert %{covered_with_optional: 1, gaps: []} = row
+    end
+  end
 end

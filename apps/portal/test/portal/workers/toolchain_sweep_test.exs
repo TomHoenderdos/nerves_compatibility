@@ -119,10 +119,10 @@ defmodule Portal.Workers.ToolchainSweepTest do
       backlog = Catalog.toolchain_backlog("1.19/28", 1, 100)
 
       assert Enum.sort_by(backlog, & &1.package) == [
-               %{package: "no_native", version: "1.0.0"},
-               %{package: "old_error", version: "1.0.0"},
-               %{package: "old_fail", version: "1.0.0"},
-               %{package: "wanted", version: "1.0.0"}
+               %{package: "no_native", version: "1.0.0", variant: :with},
+               %{package: "old_error", version: "1.0.0", variant: :with},
+               %{package: "old_fail", version: "1.0.0", variant: :with},
+               %{package: "wanted", version: "1.0.0", variant: :with}
              ]
     end
 
@@ -132,7 +132,7 @@ defmodule Portal.Workers.ToolchainSweepTest do
       toolchain_row!("other", "1.0.0", :pass, builder_version: 2)
 
       assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [
-               %{package: "other", version: "1.0.0"}
+               %{package: "other", version: "1.0.0", variant: :with}
              ]
 
       assert Catalog.toolchain_backlog("1.20/29", 1, 100) == []
@@ -153,14 +153,14 @@ defmodule Portal.Workers.ToolchainSweepTest do
       run!("tie", "2.1.0", finished_at: ~U[2026-08-01 00:00:00Z])
 
       assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [
-               %{package: "many", version: "1.4.0"},
-               %{package: "many", version: "1.3.0"},
-               %{package: "many", version: "1.2.0"},
-               %{package: "many", version: "1.1.0"},
-               %{package: "many", version: "1.0.0"},
-               %{package: "single", version: "0.1.0"},
-               %{package: "tie", version: "2.1.0"},
-               %{package: "tie", version: "2.0.0"}
+               %{package: "many", version: "1.4.0", variant: :with},
+               %{package: "many", version: "1.3.0", variant: :with},
+               %{package: "many", version: "1.2.0", variant: :with},
+               %{package: "many", version: "1.1.0", variant: :with},
+               %{package: "many", version: "1.0.0", variant: :with},
+               %{package: "single", version: "0.1.0", variant: :with},
+               %{package: "tie", version: "2.1.0", variant: :with},
+               %{package: "tie", version: "2.0.0", variant: :with}
              ]
 
       assert length(Catalog.toolchain_backlog("1.19/28", 1, 2)) == 2
@@ -171,7 +171,7 @@ defmodule Portal.Workers.ToolchainSweepTest do
       run!("twice", "1.0.0", finished_at: ~U[2026-10-02 00:00:00Z])
 
       assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [
-               %{package: "twice", version: "1.0.0"}
+               %{package: "twice", version: "1.0.0", variant: :with}
              ]
     end
   end
@@ -207,8 +207,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
       downloads!("obscure", 40)
 
       assert backlog() == [
-               %{package: "popular", version: "1.0.0"},
-               %{package: "obscure", version: "9.0.0"}
+               %{package: "popular", version: "1.0.0", variant: :with},
+               %{package: "obscure", version: "9.0.0", variant: :with}
              ]
     end
 
@@ -222,9 +222,9 @@ defmodule Portal.Workers.ToolchainSweepTest do
       release_downloads!("jason", "1.5.0-alpha.1", 10)
 
       assert backlog() == [
-               %{package: "jason", version: "1.4.4"},
-               %{package: "jason", version: "1.4.5"},
-               %{package: "jason", version: "1.5.0-alpha.1"}
+               %{package: "jason", version: "1.4.4", variant: :with},
+               %{package: "jason", version: "1.4.5", variant: :with},
+               %{package: "jason", version: "1.5.0-alpha.1", variant: :with}
              ]
     end
 
@@ -238,9 +238,9 @@ defmodule Portal.Workers.ToolchainSweepTest do
       downloads!("some", 10)
 
       assert backlog() == [
-               %{package: "some", version: "1.0.0"},
-               %{package: "zero", version: "1.0.0"},
-               %{package: "unknown", version: "1.0.0"}
+               %{package: "some", version: "1.0.0", variant: :with},
+               %{package: "zero", version: "1.0.0", variant: :with},
+               %{package: "unknown", version: "1.0.0", variant: :with}
              ]
     end
 
@@ -253,9 +253,9 @@ defmodule Portal.Workers.ToolchainSweepTest do
       release_downloads!("jason", "1.4.4", nil)
 
       assert backlog() == [
-               %{package: "jason", version: "1.4.3"},
-               %{package: "jason", version: "1.4.5"},
-               %{package: "jason", version: "1.4.4"}
+               %{package: "jason", version: "1.4.3", variant: :with},
+               %{package: "jason", version: "1.4.5", variant: :with},
+               %{package: "jason", version: "1.4.4", variant: :with}
              ]
     end
 
@@ -270,8 +270,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
       release_downloads!("small", "1.0.0", 1_000_000)
 
       assert backlog() == [
-               %{package: "big", version: "1.0.0"},
-               %{package: "small", version: "1.0.0"}
+               %{package: "big", version: "1.0.0", variant: :with},
+               %{package: "small", version: "1.0.0", variant: :with}
              ]
     end
 
@@ -283,8 +283,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
       end
 
       assert Catalog.toolchain_backlog("1.19/28", 1, 2) == [
-               %{package: "d", version: "1.0.0"},
-               %{package: "b", version: "1.0.0"}
+               %{package: "d", version: "1.0.0", variant: :with},
+               %{package: "b", version: "1.0.0", variant: :with}
              ]
     end
 
@@ -297,7 +297,7 @@ defmodule Portal.Workers.ToolchainSweepTest do
       downloads!("popular", 9_000_000)
       release_downloads!("popular", "1.1.0", 9_000_000)
 
-      assert backlog() == [%{package: "popular", version: "1.0.0"}]
+      assert backlog() == [%{package: "popular", version: "1.0.0", variant: :with}]
     end
   end
 
