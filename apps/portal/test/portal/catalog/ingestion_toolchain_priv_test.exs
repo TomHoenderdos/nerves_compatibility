@@ -6,10 +6,13 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
   # file is published only when it is byte for byte the tarball's own, and a
   # build with any priv file that is not publishes nothing at all.
   use Portal.DataCase, async: false
+  use Oban.Testing, repo: Portal.Repo
 
   require Ash.Query
 
   alias Portal.Catalog.{ArtifactMembership, Ingestion, ToolchainBuild}
+  alias Portal.Test.FakeHexDeps
+  alias Portal.Workers.Ingest
 
   @domain Portal.Catalog
 
@@ -370,6 +373,184 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
         ingest(name, "beam-#{name}", [{"priv/big.bin", big}], %{"priv/big.bin" => big}, &opts/3)
 
       assert_nothing_published(name, outcome)
+    end
+  end
+
+  # The ingest job builds its own options, so there the host's Hex answers
+  # come from `config :portal, :hex_deps`, whose test double reads them from
+  # the test process (the job runs inline in it).
+  describe "ingested by the job" do
+    defp answer_hex(tarball, registry_checksum) do
+      Process.put({FakeHexDeps, :tarball}, tarball)
+      Process.put({FakeHexDeps, :outer_checksum}, registry_checksum)
+    end
+
+    # The run's scratch dir as a finished build leaves it for the ingest.
+    defp scratch_run(name, beam, priv_built, package_checksum) do
+      run_id = "tc-priv-#{System.unique_integer([:positive])}"
+      scratch = Path.join(Portal.Builder.scratch_root(), Portal.Builder.safe_name(run_id))
+      files = Path.join(scratch, "files")
+      File.mkdir_p!(Path.join(scratch, "out"))
+      File.mkdir_p!(files)
+      on_exit(fn -> File.rm_rf(scratch) end)
+
+      for content <- [beam | Enum.map(priv_built, &elem(&1, 1))],
+          do: File.write!(Path.join(files, sha(content)), content)
+
+      result = result(name, beam, priv_built, package_checksum)
+      File.write!(Path.join([scratch, "out", "result.json"]), Jason.encode!(result))
+      {run_id, scratch}
+    end
+
+    defp job_args(run_id, extra) do
+      Map.merge(
+        %{
+          "kind" => "toolchain",
+          "run_id" => run_id,
+          "image_digest" => "sha256:toolchain",
+          "version" => "1.0.0",
+          "toolchain" => "1.19/28",
+          "builder_version" => 1,
+          "variant" => "with"
+        },
+        extra
+      )
+    end
+
+    defp rows(name) do
+      ToolchainBuild
+      |> Ash.Query.filter(package.name == ^name)
+      |> Ash.read!(domain: @domain)
+    end
+
+    # Toolchain builds only run locally today, and the job's toolchain clause
+    # does not look at its source; a job that says "remote" must not route a
+    # build around the check either way.
+    test "a remote build's tampered priv file is refused" do
+      name = unique()
+      beam = "beam-#{name}"
+      tarball = hex_tarball(%{"priv/data.json" => ~s({"v": 1})})
+      built = [{"priv/data.json", ~s({"v": 2, "n": "#{name}"})}]
+      {run_id, _scratch} = scratch_run(name, beam, built, sha(tarball))
+      answer_hex({:ok, tarball}, {:ok, sha(tarball)})
+
+      remote = %{
+        "source" => "remote",
+        "lease_id" => Ecto.UUID.generate(),
+        "builder_id" => Ecto.UUID.generate()
+      }
+
+      perform_job(Ingest, job_args(run_id, remote))
+
+      assert {false, []} = published?(name)
+      assert Enum.all?(rows(name), &(&1.status != :pass))
+    end
+
+    # Hex being slow is not news about the build: nothing is published and
+    # nothing recorded, and the job fails so Oban runs it again while the
+    # scratch dir is still there to read.
+    test "a tarball fetch that times out publishes nothing and is retried" do
+      name = unique()
+      beam = "beam-#{name}"
+      js = "js-#{name}"
+      tarball = hex_tarball(%{"priv/app.js" => js})
+      {run_id, scratch} = scratch_run(name, beam, [{"priv/app.js", js}], sha(tarball))
+      answer_hex({:error, :timeout}, {:ok, sha(tarball)})
+
+      assert {:error, _reason} = perform_job(Ingest, job_args(run_id, %{}), attempt: 1)
+
+      assert {false, []} = published?(name)
+      assert rows(name) == []
+      assert File.regular?(Path.join([scratch, "files", sha(js)]))
+      assert File.regular?(Path.join([scratch, "out", "result.json"]))
+    end
+  end
+
+  # What the host reads is what Hex serves, and Hex serves what anyone
+  # publishes: the tarball is bounded before it is unpacked, by the bytes it
+  # really inflates to, not by what its tar headers claim.
+  describe "a tarball bounded before it is read" do
+    @mib 1024 * 1024
+
+    defp tar_of(entries) do
+      path = Path.join(System.tmp_dir!(), "priv-tar-#{System.unique_integer([:positive])}")
+      :ok = :erl_tar.create(String.to_charlist(path), entries)
+      on_exit(fn -> File.rm(path) end)
+      File.read!(path)
+    end
+
+    # The outer tar around `contents`, the bytes of contents.tar.gz as given.
+    defp outer_around(contents) do
+      tar_of([
+        {~c"VERSION", "3"},
+        {~c"CHECKSUM", String.duplicate("0", 64)},
+        {~c"metadata.config", ~s({<<"name">>,<<"x">>}.\n)},
+        {~c"contents.tar.gz", contents}
+      ])
+    end
+
+    # A gzip stream of `head` followed by `mib` MiB of zeros, deflated a MiB at
+    # a time so the test never holds the inflated bytes.
+    defp gzip_bomb(head, mib) do
+      z = :zlib.open()
+      :ok = :zlib.deflateInit(z, :best_compression, :deflated, 31, 8, :default)
+      zeros = :binary.copy(<<0>>, @mib)
+      first = :zlib.deflate(z, head)
+      body = for _ <- 1..mib, do: :zlib.deflate(z, zeros)
+      last = :zlib.deflate(z, [], :finish)
+      :zlib.close(z)
+      IO.iodata_to_binary([first, body, last])
+    end
+
+    defp ingest_outer(name, js, outer) do
+      beam = "beam-#{name}"
+      files_dir = files_dir_with([beam, js])
+      result = result(name, beam, [{"priv/app.js", js}], sha(outer))
+      Ingestion.ingest_toolchain(result, opts(files_dir, {:ok, outer}, {:ok, sha(outer)}))
+    end
+
+    test "a served tarball over 8 MiB is refused" do
+      name = unique()
+      js = "js-#{name}"
+      noise = :crypto.strong_rand_bytes(8 * @mib + 1)
+      contents = :zlib.gzip(tar_of([{~c"priv/app.js", js}, {~c"lib/noise.bin", noise}]))
+      outer = outer_around(contents)
+      assert byte_size(outer) > 8 * @mib
+
+      assert_nothing_published(name, ingest_outer(name, js, outer))
+    end
+
+    test "a contents tar of 50,000 entries is refused" do
+      name = unique()
+      js = "js-#{name}"
+      empties = for i <- 1..50_000, do: {String.to_charlist("lib/e#{i}"), ""}
+      contents = :zlib.gzip(tar_of([{~c"priv/app.js", js} | empties]))
+
+      assert_nothing_published(name, ingest_outer(name, js, outer_around(contents)))
+    end
+
+    # The tar inside declares one small file; the gzip stream around it goes
+    # on to inflate to 200 MiB of zeros, which a tar reader takes for the end
+    # of the archive. Only counting what really inflates catches it.
+    test "a contents.tar.gz that inflates to 200 MiB is refused, and quickly" do
+      name = unique()
+      js = "js-#{name}"
+      contents = gzip_bomb(tar_of([{~c"priv/app.js", js}]), 200)
+      outer = outer_around(contents)
+
+      {micros, outcome} = :timer.tc(fn -> ingest_outer(name, js, outer) end)
+
+      assert_nothing_published(name, outcome)
+      assert micros < 2_000_000
+    end
+
+    test "inflating stops one chunk past the cap" do
+      cap = 4 * @mib
+      bomb = gzip_bomb(tar_of([{~c"priv/app.js", "x"}]), 64)
+
+      assert {:error, {:over_cap, inflated}} = Compatibility.StaticPriv.inflate(bomb, cap)
+      assert inflated > cap
+      assert inflated <= cap + Compatibility.StaticPriv.inflate_chunk_bytes()
     end
   end
 end

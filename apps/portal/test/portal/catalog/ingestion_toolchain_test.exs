@@ -34,7 +34,37 @@ defmodule Portal.Catalog.IngestionToolchainTest do
   defp entry(path, {sha, content}),
     do: %{"path" => path, "sha256" => sha, "size" => byte_size(content), "mode" => 33_188}
 
+  # The release as Hex serves it: an outer tar around contents.tar.gz with
+  # the build's priv file, which the host checks the build against at ingest
+  # (Portal.Catalog.ToolchainPriv). Put where Portal.Test.FakeHexDeps answers
+  # from, for the ingest and the inline job alike; returns its outer checksum.
+  defp hex_release!({_sha, priv}) do
+    contents = in_memory_tar([{~c"priv/data.txt", priv}], [:compressed])
+
+    outer =
+      in_memory_tar([
+        {~c"VERSION", "3"},
+        {~c"CHECKSUM", String.duplicate("0", 64)},
+        {~c"metadata.config", ~s({<<"name">>,<<"x">>}.\n)},
+        {~c"contents.tar.gz", contents}
+      ])
+
+    checksum = :crypto.hash(:sha256, outer) |> Base.encode16(case: :lower)
+    Process.put({Portal.Test.FakeHexDeps, :tarball}, {:ok, outer})
+    Process.put({Portal.Test.FakeHexDeps, :outer_checksum}, {:ok, checksum})
+    checksum
+  end
+
+  defp in_memory_tar(entries, options \\ []) do
+    path = Path.join(System.tmp_dir!(), "hex-release-#{System.unique_integer([:positive])}.tar")
+    on_exit(fn -> File.rm(path) end)
+    :ok = :erl_tar.create(String.to_charlist(path), entries, options)
+    File.read!(path)
+  end
+
   defp pass_result(name, beam, priv) do
+    checksum = hex_release!(priv)
+
     %{
       "run_id" => "ignored",
       "scope" => "toolchain",
@@ -42,14 +72,14 @@ defmodule Portal.Catalog.IngestionToolchainTest do
       "package" => %{"name" => name, "version" => "1.4.4", "description" => "JSON"},
       "systems" => %{},
       "deps_lock" => %{"decimal" => %{"version" => "2.1.1", "checksum" => "abc"}},
-      "package_checksum" => "outer",
+      "package_checksum" => checksum,
       "toolchain_build" => %{
         "status" => "pass",
         "reason" => nil,
         "elixir" => "1.19.1",
         "otp" => "28",
         "deps_lock" => %{"decimal" => %{"version" => "2.1.1", "checksum" => "abc"}},
-        "package_checksum" => "outer",
+        "package_checksum" => checksum,
         "compile_env" => [%{"app" => name, "path" => ["k"], "value" => "g2o"}],
         "file_manifest" => %{
           "ebin" => [entry("ebin/#{name}.beam", beam)],
@@ -138,7 +168,7 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert tb.elixir == "1.19.1" and tb.otp == "28"
     assert tb.image_digest == "sha256:toolchain"
     assert tb.deps_lock == %{"decimal" => %{"version" => "2.1.1", "checksum" => "abc"}}
-    assert tb.package_checksum == "outer"
+    assert {:ok, tb.package_checksum} == Process.get({Portal.Test.FakeHexDeps, :outer_checksum})
     assert tb.compile_env == [%{"app" => name, "path" => ["k"], "value" => "g2o"}]
     assert %{"ebin" => [_], "priv" => [_]} = tb.file_manifest
     assert tb.finished_at == ~U[2026-10-24 10:00:00.000000Z]
