@@ -23,7 +23,37 @@ defmodule Portal.Application do
     # before this handler is in place to hear it.
     :ok = Portal.AdminEvents.SweepTelemetry.attach()
 
-    children = [
+    children = children()
+
+    # The remote builders' endpoint. It listens (mTLS) only with a CA and
+    # `server: true`; `configure/0` installs its certificates first, or turns
+    # the listener off, so a CA problem never stops the public site.
+    _ = Portal.Builders.Listener.configure()
+    children = children ++ [PortalWeb.BuilderEndpoint]
+
+    # After the endpoint, so the warm-up never delays serving; the Repo and the
+    # Cache it fills are both up by then.
+    children =
+      if Portal.Catalog.Warmup.enabled?(),
+        do: children ++ [Portal.Catalog.Warmup],
+        else: children
+
+    # See https://hexdocs.pm/elixir/Supervisor.html
+    # for other strategies and supported options
+    opts = [strategy: :one_for_one, name: Portal.Supervisor]
+
+    with {:ok, pid} <- Supervisor.start_link(children, opts) do
+      :ok = start_boot_egress_check()
+      :ok = Portal.BuildCache.L2.log_state()
+      {:ok, pid}
+    end
+  end
+
+  # The children up to the public endpoint, in start order. Public so a test
+  # can check the order (`Portal.OrphanRescue` before Oban).
+  @doc false
+  def children do
+    [
       PortalWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:portal, :dns_cluster_query) || :ignore},
       Portal.Repo,
@@ -65,29 +95,6 @@ defmodule Portal.Application do
       # Start to serve requests, typically the last entry
       PortalWeb.Endpoint
     ]
-
-    # The remote builders' endpoint. It listens (mTLS) only with a CA and
-    # `server: true`; `configure/0` installs its certificates first, or turns
-    # the listener off, so a CA problem never stops the public site.
-    _ = Portal.Builders.Listener.configure()
-    children = children ++ [PortalWeb.BuilderEndpoint]
-
-    # After the endpoint, so the warm-up never delays serving; the Repo and the
-    # Cache it fills are both up by then.
-    children =
-      if Portal.Catalog.Warmup.enabled?(),
-        do: children ++ [Portal.Catalog.Warmup],
-        else: children
-
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: Portal.Supervisor]
-
-    with {:ok, pid} <- Supervisor.start_link(children, opts) do
-      :ok = start_boot_egress_check()
-      :ok = Portal.BuildCache.L2.log_state()
-      {:ok, pid}
-    end
   end
 
   # A build node whose egress filter is missing refuses every build

@@ -23,6 +23,12 @@ defmodule Portal.OrphanRescue do
   concurrent Lifeline on another node would make the same transition; the
   `state = 'executing'` guard makes either one a no-op for the other.
 
+  It assumes node names are unique per running node: distribution is on and
+  each node is `portal@<host>`, so epmd refuses a second node of the same
+  name. A non-distributed node would be named by its bare hostname, which
+  nothing keeps unique; two such nodes on one host would rescue each other's
+  jobs (for these workers, at worst a second run of an idempotent job).
+
   This is a direct update on `Oban.Job` because Oban has no public API for it:
   `Oban.retry_job/2` skips `executing` rows, and `Oban.cancel_job/2` needs a
   running instance and would only wait for the next tick.
@@ -63,6 +69,9 @@ defmodule Portal.OrphanRescue do
   @doc "The workers whose orphans are rescued at boot."
   def workers, do: @workers
 
+  # Boot waits on these; a stalled database must not hold it for the pool's default.
+  @timeout 5_000
+
   def child_spec(opts) do
     %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}, restart: :temporary}
   end
@@ -70,23 +79,31 @@ defmodule Portal.OrphanRescue do
   @doc """
   Runs the rescue for this node, read from the Oban options (`:oban`, default
   the `:portal` app's), and returns `:ignore`. Skipped while Oban runs in a
-  testing mode. A failure is logged and never stops the boot: Lifeline is
-  still there behind it.
+  testing mode. A failure of any kind (raise, exit or throw) is logged and
+  never stops the boot: Lifeline is still there behind it. `:run` replaces
+  `rescue_orphans/2`, for tests.
   """
   def start_link(opts \\ []) do
     oban = Keyword.get_lazy(opts, :oban, fn -> Application.fetch_env!(:portal, Oban) end)
+    run = Keyword.get(opts, :run, &rescue_orphans/2)
 
     if Keyword.get(oban, :testing, :disabled) == :disabled do
       try do
-        node = Oban.Config.new(oban).node
-        _ = rescue_orphans(node, Keyword.keys(Keyword.get(oban, :queues) || []))
-      rescue
-        e -> Logger.error("Orphaned job rescue failed: " <> Exception.message(e))
+        _ = run.(node_name(oban), Keyword.keys(Keyword.get(oban, :queues) || []))
+      catch
+        kind, reason ->
+          Logger.error("Orphaned job rescue failed: " <> Exception.format(kind, reason))
       end
     end
 
     :ignore
   end
+
+  @doc """
+  The node name this node's Oban stamps into `attempted_by`, from the same
+  options it starts with.
+  """
+  def node_name(oban \\ Application.fetch_env!(:portal, Oban)), do: Oban.Config.new(oban).node
 
   @doc """
   Moves the `executing` jobs of `workers/0` on `queues` attempted by `node`
@@ -105,16 +122,40 @@ defmodule Portal.OrphanRescue do
       from(j in Oban.Job,
         where: j.state == "executing",
         where: j.worker in ^workers,
+        where: j.queue in ^queues,
         where: fragment("?[1] = ?", j.attempted_by, ^node),
         select: j.id
       )
 
     {_, rescued} =
-      Repo.update_all(where(base, [j], j.attempt < j.max_attempts), set: [state: "available"])
+      Repo.update_all(where(base, [j], j.attempt < j.max_attempts), [set: [state: "available"]],
+        timeout: @timeout
+      )
 
+    now = DateTime.utc_now()
+    error = "orphaned by node restart: #{node} restarted while the job was executing"
+
+    # The entry Oban itself appends on a failed attempt (`Oban.Job.format_attempt/1`).
     {_, discarded} =
-      Repo.update_all(where(base, [j], j.attempt >= j.max_attempts),
-        set: [state: "discarded", discarded_at: DateTime.utc_now()]
+      Repo.update_all(
+        from(j in where(base, [j], j.attempt >= j.max_attempts),
+          update: [
+            set: [
+              state: "discarded",
+              discarded_at: ^now,
+              errors:
+                fragment(
+                  "? || ARRAY[jsonb_build_object('attempt', ?, 'at', ?::text, 'error', ?::text)]",
+                  j.errors,
+                  j.attempt,
+                  ^DateTime.to_iso8601(now),
+                  ^error
+                )
+            ]
+          ]
+        ),
+        [],
+        timeout: @timeout
       )
 
     if rescued != [] or discarded != [] do

@@ -69,6 +69,53 @@ defmodule Portal.OrphanRescueTest do
     job = reload(job)
     assert job.state == "discarded"
     assert job.discarded_at
+
+    # The shape Oban appends on a failed attempt, so Oban Web shows why.
+    assert [%{"attempt" => 1, "at" => at, "error" => "orphaned by node restart" <> _}] =
+             job.errors
+
+    assert {:ok, _, _} = DateTime.from_iso8601(at)
+  end
+
+  # Oban's `attempt_range` check constraint keeps `attempt <= max_attempts`, so
+  # a row past it cannot exist; a batch on its last attempt is the edge.
+  test "a batch orphaned on its last attempt is discarded" do
+    job =
+      executing("Portal.Workers.PrecompiledBatch", "maintenance", @this_node,
+        attempt: 3,
+        max_attempts: 3
+      )
+
+    assert %{rescued: [], discarded: [id]} =
+             OrphanRescue.rescue_orphans(@this_node, [:maintenance])
+
+    assert id == job.id
+    assert reload(job).state == "discarded"
+  end
+
+  test "a row on a queue this node does not run is left alone, whatever its worker" do
+    job = executing("Portal.Workers.PrecompiledBatch", "elsewhere", @this_node)
+
+    assert %{rescued: [], discarded: []} =
+             OrphanRescue.rescue_orphans(@this_node, [:maintenance])
+
+    assert reload(job).state == "executing"
+  end
+
+  test "the default node name is the one this node's Oban stamps into attempted_by" do
+    assert OrphanRescue.node_name() == Oban.config(Oban).node
+  end
+
+  test "it is started after the Repo and before Oban" do
+    ids =
+      Enum.map(Portal.Application.children(), fn child ->
+        Supervisor.child_spec(child, []).id
+      end)
+
+    index = &Enum.find_index(ids, fn id -> id == &1 end)
+
+    assert index.(Portal.Repo) < index.(OrphanRescue)
+    assert index.(OrphanRescue) < index.(Oban)
   end
 
   test "workers off the allowlist are left to Lifeline" do
@@ -107,6 +154,18 @@ defmodule Portal.OrphanRescueTest do
                )
 
       assert reload(job).state == "available"
+    end
+
+    test "a rescue that exits, throws or raises never stops the boot" do
+      oban = oban_opts(testing: :disabled, node: @this_node, queues: [maintenance: 1])
+
+      for run <- [
+            fn _, _ -> exit(:repo_down) end,
+            fn _, _ -> throw(:boom) end,
+            fn _, _ -> raise "boom" end
+          ] do
+        assert :ignore = OrphanRescue.start_link(oban: oban, run: run)
+      end
     end
 
     test "does nothing while Oban runs in testing mode" do
