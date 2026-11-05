@@ -388,7 +388,8 @@ defmodule PortalWeb.CatalogApiController do
     ],
     responses: [
       ok:
-        {"The file's bytes", "application/octet-stream", %Schema{type: :string, format: :binary}},
+        {"The file's bytes", "application/octet-stream", %Schema{type: :string, format: :binary},
+         headers: @etag_header},
       not_modified: @not_modified,
       # `send_resp/3` with no content type: the body is the bare text below.
       not_found: %OpenApiSpex.Response{

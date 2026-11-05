@@ -39,14 +39,21 @@ defmodule Portal.Precompiled.Content do
       length(entries) > @max ->
         {:error, "more than #{@max} origins"}
 
-      bad = Enum.find(entries, &(not origin?(&1))) ->
-        {:error,
-         "#{inspect(bad)} is not an https origin without userinfo, query, fragment " <>
-           "or trailing slash"}
+      (bad = Enum.reject(entries, &origin?/1)) != [] ->
+        {:error, bad_entries_message(bad)}
 
       true ->
         {:ok, Enum.uniq(entries)}
     end
+  end
+
+  # Names every bad entry, not just the first: a single typo-laden setting
+  # should not take two boot cycles (fix one, discover the next) to clean up.
+  defp bad_entries_message(bad) do
+    names = Enum.map_join(bad, ", ", &inspect/1)
+    verb = if length(bad) == 1, do: "is", else: "are"
+
+    "#{names} #{verb} not an https origin without userinfo, query, fragment or trailing slash"
   end
 
   @spec origin?(String.t()) :: boolean()

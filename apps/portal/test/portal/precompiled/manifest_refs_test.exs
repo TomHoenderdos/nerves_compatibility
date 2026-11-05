@@ -89,6 +89,16 @@ defmodule Portal.Precompiled.ManifestRefsTest do
     assert :ok = ManifestRefs.record(1, %{}, %{})
   end
 
+  test "a DB error returns {:error, _} rather than raising" do
+    sha = String.duplicate("c", 64)
+
+    Portal.Repo.query!("""
+    ALTER TABLE precompiled_manifest_refs ADD CONSTRAINT ncc_test_always_fail CHECK (false)
+    """)
+
+    assert {:error, _reason} = ManifestRefs.record(1, %{"x" => sha}, %{})
+  end
+
   test "malformed input is never named" do
     refute ManifestRefs.named?("not-a-sha", 1)
     refute ManifestRefs.named?(String.duplicate("A", 64), 1)

@@ -28,8 +28,19 @@ defmodule PortalWeb.PrecompiledHTTP do
   def etag(bytes) when is_binary(bytes),
     do: bytes |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower) |> quote_sha()
 
+  # Every caller already has a validated digest (the route's own 64-hex path
+  # match, or `ArtifactStore.valid_sha256?/1`): this guard is a backstop
+  # against ever quoting something else as if it were an etag.
   @spec quote_sha(String.t()) :: String.t()
-  def quote_sha(sha) when is_binary(sha), do: ~s("#{sha}")
+  def quote_sha(sha) when is_binary(sha) do
+    if valid_sha256?(sha) do
+      ~s("#{sha}")
+    else
+      raise ArgumentError, "quote_sha/1 expects a lowercase hex sha256, got: #{inspect(sha)}"
+    end
+  end
+
+  defp valid_sha256?(sha), do: Regex.match?(~r/\A[0-9a-f]{64}\z/, sha)
 
   @spec put_validators(Plug.Conn.t(), String.t(), policy()) :: Plug.Conn.t()
   def put_validators(conn, etag, policy) do
@@ -43,6 +54,12 @@ defmodule PortalWeb.PrecompiledHTTP do
     conn |> get_req_header("if-none-match") |> Enum.any?(&names?(&1, etag))
   end
 
+  # RFC 9110 9.3.2 Appendix defines `If-None-Match` as a comma-separated list
+  # of entity tags; a bare "," cannot appear inside one because an entity tag
+  # is always a quoted string (`"..."`) or, weak, `W/"..."`. Splitting on ","
+  # unconditionally is therefore safe here: it can only misparse a quoted etag
+  # that itself embeds a comma, and every etag this module issues is a plain
+  # hex sha256, which never does.
   defp names?(header, etag) do
     header
     |> String.split(",")

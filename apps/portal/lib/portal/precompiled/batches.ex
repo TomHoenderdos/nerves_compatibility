@@ -124,10 +124,10 @@ defmodule Portal.Precompiled.Batches do
     # One transaction: once a client can see the batch, every sha it names is
     # servable by sha, and a batch whose insert fails leaves no refs behind.
     Portal.Repo.transaction(fn ->
-      :ok = ManifestRefs.record(sequence, manifests, manifests_v2)
-
-      case Ash.create(changeset, domain: Portal.Precompiled) do
-        {:ok, batch} -> batch
+      with :ok <- ManifestRefs.record(sequence, manifests, manifests_v2),
+           {:ok, batch} <- Ash.create(changeset, domain: Portal.Precompiled) do
+        batch
+      else
         {:error, error} -> Portal.Repo.rollback(error)
       end
     end)

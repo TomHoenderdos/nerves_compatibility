@@ -18,6 +18,18 @@ defmodule PortalWeb.PrecompiledHTTPTest do
     assert PrecompiledHTTP.quote_sha(@sha) == @etag
   end
 
+  test "quote_sha refuses anything that is not a 64-hex sha256" do
+    for bad <- [
+          "",
+          "not-a-sha",
+          String.duplicate("a", 63),
+          String.duplicate("a", 65),
+          @sha <> "Z"
+        ] do
+      assert_raise ArgumentError, fn -> PrecompiledHTTP.quote_sha(bad) end
+    end
+  end
+
   test "the four cache policies" do
     assert PrecompiledHTTP.cache_control(:immutable) == "public, max-age=31536000, immutable"
     assert PrecompiledHTTP.cache_control(:revalidate) == "public, max-age=60, must-revalidate"

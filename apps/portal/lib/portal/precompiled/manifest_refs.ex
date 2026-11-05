@@ -23,9 +23,11 @@ defmodule Portal.Precompiled.ManifestRefs do
 
   @doc """
   Records the shas a batch names. `Portal.Precompiled.Batches` calls it in the
-  transaction that inserts the batch, so no batch exists without its refs.
+  transaction that inserts the batch, so no batch exists without its refs:
+  an `{:error, _}` here must roll that transaction back, never raise out of it.
   """
-  @spec record(pos_integer(), %{String.t() => String.t()}, %{String.t() => String.t()}) :: :ok
+  @spec record(pos_integer(), %{String.t() => String.t()}, %{String.t() => String.t()}) ::
+          :ok | {:error, term()}
   def record(sequence, v1, v2) when is_integer(sequence) do
     pairs =
       (for(sha <- Map.values(v1), do: {sha, 1}) ++ for(sha <- Map.values(v2), do: {sha, 2}))
@@ -36,8 +38,12 @@ defmodule Portal.Precompiled.ManifestRefs do
         :ok
 
       {shas, formats} ->
-        _ = Portal.Repo.query!(@insert, [shas, formats, sequence])
-        :ok
+        # sobelow_skip ["SQL.Query"]
+        # The statement is a module constant; shas, formats and sequence are bound parameters.
+        case Portal.Repo.query(@insert, [shas, formats, sequence]) do
+          {:ok, _result} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
     end
   end
 

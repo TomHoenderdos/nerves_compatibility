@@ -38,6 +38,14 @@ defmodule Portal.Precompiled.ContentTest do
     end
   end
 
+  test "two bad entries are both named in the one error" do
+    assert {:error, msg} =
+             Content.parse("https://ok.example,http://portal.example,https://cdn.example/")
+
+    assert msg =~ inspect("http://portal.example")
+    assert msg =~ inspect("https://cdn.example/")
+  end
+
   test "refuses more than eight" do
     raw = Enum.map_join(1..9, ",", &"https://cdn#{&1}.example")
     assert {:error, _} = Content.parse(raw)

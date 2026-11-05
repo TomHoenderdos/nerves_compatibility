@@ -856,6 +856,18 @@ defmodule PortalWeb.CatalogApiControllerTest do
       assert_api_schema(JSON.decode!(payload), "RootPayload")
     end
 
+    test "HEAD root.json answers the GET headers with no body", %{conn: conn} do
+      get_resp = get(conn, "/api/precompiled/root.json")
+      head_resp = build_conn() |> head("/api/precompiled/root.json")
+
+      assert head_resp.status == 200
+      assert head_resp.resp_body == ""
+      assert get_resp_header(head_resp, "etag") == get_resp_header(get_resp, "etag")
+
+      assert get_resp_header(head_resp, "cache-control") ==
+               get_resp_header(get_resp, "cache-control")
+    end
+
     test "batch.json is 503 before any batch and the newest after", %{conn: conn, key: key} do
       empty = get(conn, "/api/precompiled/batch.json")
       assert response(empty, 503)
