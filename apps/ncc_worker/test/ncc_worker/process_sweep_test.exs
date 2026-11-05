@@ -219,5 +219,27 @@ defmodule NccWorker.ProcessSweepTest do
       assert %{status: "error", file_manifest: nil, reason: reason} = tainted.toolchain_build
       assert reason =~ "40 (sh)"
     end
+
+    # The portal tells this verdict from a failed compile by its reason's
+    # start, so the toolchain build's reason begins with it.
+    test "gives a toolchain build the sweep's own reason" do
+      root = proc_root([{@beam, "beam.smp", 0}, {9, "erl_child_setup", @beam}, {40, "sh", 9}])
+
+      opts = [
+        enabled?: true,
+        proc_root: root,
+        self_pid: @beam,
+        kill: fn _pids -> :ok end,
+        rounds: 1,
+        interval_ms: 0
+      ]
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        send(self(), {:tainted, ProcessSweep.enforce(result(), opts)})
+      end)
+
+      assert_received {:tainted, tainted}
+      assert "processes survived the sweep" <> _ = tainted.toolchain_build.reason
+    end
   end
 end

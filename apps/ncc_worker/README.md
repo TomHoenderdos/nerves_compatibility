@@ -141,7 +141,7 @@ killed nor counted. `erl_child_setup` is a direct child of the BEAM named `erl_c
 the one that started first is kept, since the real helper starts with the BEAM, before any package code runs.
 
 If anything other than those two is still running after the last round, the result passes nothing: every system is
-reported `"status": "error"` with an `error` naming the processes, no build cache candidates are reported, and a
+reported `"status": "error"` with an `error` naming the processes (`"processes survived the sweep and could not be stopped: …"`, a start the portal stores as its own `"worker: …"` reason rather than a failed compile), no build cache candidates are reported, and a
 toolchain run's `toolchain_build` is `"error"` with no `file_manifest`. `result.json` is still written and the exit
 code is still `0`, so the portal records that verdict instead of retrying.
 

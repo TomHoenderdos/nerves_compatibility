@@ -299,6 +299,11 @@ defmodule Portal.Catalog.Ingestion do
   # this package, version and toolchain: it is stored as a `:fail` verdict so
   # the live window for failures applies. `:error` rows mean the build never
   # produced a result, and only `Portal.Workers.ToolchainBuild` writes those.
+  # Processes the worker could not stop after the build
+  # (`NccWorker.ProcessSweep`) are a `:fail` as well, under their own label.
+  defp toolchain_verdict("error", "processes survived the sweep" <> _ = reason),
+    do: {:fail, "worker: " <> reason}
+
   defp toolchain_verdict("error", reason),
     do: {:fail, "compile failed: " <> (reason || "unknown")}
 

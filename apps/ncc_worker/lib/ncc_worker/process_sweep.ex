@@ -232,7 +232,7 @@ defmodule NccWorker.ProcessSweep do
   defp survivors_reason(survivors) do
     listed = survivors |> Enum.take(10) |> Enum.map_join(", ", &"#{&1.pid} (#{&1.comm})")
     more = if length(survivors) > 10, do: " and #{length(survivors) - 10} more", else: ""
-    "processes still running after the build could not be stopped: #{listed}#{more}"
+    "processes survived the sweep and could not be stopped: #{listed}#{more}"
   end
 
   @doc """

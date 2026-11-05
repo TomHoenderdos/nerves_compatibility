@@ -231,6 +231,26 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert memberships(tb) == []
   end
 
+  # Processes left running after the build are not a compile failure: the
+  # worker's own reason is stored under its own label.
+  test "a build the worker's process sweep failed is stored with the sweep's reason" do
+    name = unique_name()
+
+    result =
+      skipped_result(name)
+      |> put_in(["toolchain_build", "status"], "error")
+      |> put_in(
+        ["toolchain_build", "reason"],
+        "processes survived the sweep and could not be stopped: 40 (sh)"
+      )
+
+    assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(files_dir_with([])))
+
+    assert tb.status == :fail
+    assert tb.reason == "worker: processes survived the sweep and could not be stopped: 40 (sh)"
+    assert memberships(tb) == []
+  end
+
   test "a rebuild that no longer passes drops the previous build's memberships" do
     name = unique_name()
     beam = blob("beam-#{name}")
