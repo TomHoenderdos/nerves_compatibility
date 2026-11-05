@@ -98,7 +98,11 @@ defmodule NccWorker.BuildSelection do
   defp portable_priv(project, package, _scan, opts) do
     case Keyword.fetch(opts, :tarball) do
       {:ok, tarball} ->
-        StaticPriv.check(Path.join([project, "_build", "host", "lib", package, "priv"]), tarball)
+        StaticPriv.check(
+          Path.join([project, "_build", "host", "lib", package, "priv"]),
+          Path.join([project, "deps", package, "priv"]),
+          tarball
+        )
 
       :error ->
         {:skip, "ships priv files"}

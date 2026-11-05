@@ -8,8 +8,8 @@ defmodule NccWorker.StaticPriv do
   produced: a compile hook can write into `priv`, and a dependency's hook
   into the package's source dir as well as its build. So the reference is the
   package's own Hex tarball, never `deps/<package>`, and a priv file is static
-  only when it is (under the build's `priv`, or the directory Mix links it
-  to):
+  only when it is (under the build's `priv`, or the package's `deps` priv
+  when Mix links it there):
 
     * a regular file with one link, not executable, here and in the tarball
     * in the tarball's `contents.tar.gz` at `priv/<path>`, byte for byte
@@ -43,12 +43,13 @@ defmodule NccWorker.StaticPriv do
 
   @doc """
   `:ok` when every file under `priv_dir` (the built package's `priv`) is
-  static data its Hex `tarball` carries, `{:skip, reason}` otherwise. A
-  `nil` tarball is one the worker could not find or trust.
+  static data its Hex `tarball` carries, `{:skip, reason}` otherwise.
+  `source_priv` is `deps/<package>/priv`, the one directory `priv_dir` may be
+  a link to. A `nil` tarball is one the worker could not find or trust.
   """
-  @spec check(Path.t(), Path.t() | nil) :: :ok | {:skip, String.t()}
-  def check(priv_dir, tarball) do
-    with {:ok, root} <- priv_root(priv_dir),
+  @spec check(Path.t(), Path.t(), Path.t() | nil) :: :ok | {:skip, String.t()}
+  def check(priv_dir, source_priv, tarball) do
+    with {:ok, root} <- priv_root(priv_dir, source_priv),
          {:ok, files} <- built_files(root),
          :ok <- within_caps(files),
          :ok <- no_native_names(files),
@@ -62,28 +63,35 @@ defmodule NccWorker.StaticPriv do
 
   # The directory the build's `priv` is. Mix links `_build/<env>/lib/<app>/priv`
   # to the dependency's own `priv` rather than copying it, so that one link is
-  # followed, to a real directory; everything under it is judged with `lstat`.
-  # `nil` for a build without `priv`.
+  # followed, and only to `source_priv` as a real directory; everything under
+  # it is judged with `lstat`. `nil` for a build without `priv`.
   # sobelow_skip ["Traversal.FileModule"]
-  defp priv_root(priv_dir) do
+  defp priv_root(priv_dir, source_priv) do
     case File.lstat(priv_dir) do
       {:ok, %File.Stat{type: :directory}} -> {:ok, priv_dir}
-      {:ok, %File.Stat{type: :symlink}} -> linked_root(priv_dir)
+      {:ok, %File.Stat{type: :symlink}} -> linked_root(priv_dir, source_priv)
       {:error, :enoent} -> {:ok, nil}
       _ -> {:skip, "priv could not be read"}
     end
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp linked_root(priv_dir) do
+  defp linked_root(priv_dir, source_priv) do
     with {:ok, target} <- File.read_link(priv_dir),
          root = Path.expand(target, Path.dirname(priv_dir)),
-         {:ok, %File.Stat{type: :directory}} <- File.lstat(root) do
+         true <- root == Path.expand(source_priv),
+         true <- Enum.all?([Path.dirname(Path.dirname(root)), Path.dirname(root), root], &dir?/1) do
       {:ok, root}
     else
+      false -> {:skip, "ships a priv linked outside the package's own priv"}
       _ -> {:skip, "priv could not be read"}
     end
   end
+
+  # A real directory, not a link to one: `deps`, `deps/<package>` and its
+  # `priv` all are, so the link resolves where its path says.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp dir?(path), do: match?({:ok, %File.Stat{type: :directory}}, File.lstat(path))
 
   # `{relative path, size}` of every file under `root`, read with `lstat` so a
   # link is seen as one.

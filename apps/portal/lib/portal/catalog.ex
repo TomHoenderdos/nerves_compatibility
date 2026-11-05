@@ -1227,8 +1227,9 @@ defmodule Portal.Catalog do
   # decision, and only a `builder_version` bump makes a new identity to build
   # again. Two rows are verdicts no longer: a `pass` that dropped its optional
   # dependencies for a transient reason (a Hex hiccup or a slow fetch) once it
-  # is a day old ($3), and a `skipped` for shipping priv files, which the worker
-  # now judges file by file. Either stays as it is until the new build
+  # is 7 days old ($4), so a reason that repeats costs one build a week, and a
+  # `skipped` for shipping priv files, which the worker now judges file by
+  # file. Either stays as it is until the new build
   # replaces it.
   @toolchain_candidates_sql """
   SELECT e.package, e.version, v.variant, e.finished_at, e.recent
@@ -1284,7 +1285,7 @@ defmodule Portal.Catalog do
             t.status = 'pass'
             AND NOT (
               coalesce(t.optional_deps ->> 'reason', '') IN ('deps_get_failed', 'timeout')
-              AND coalesce(t.finished_at, t.updated_at) <= $3::timestamp
+              AND coalesce(t.finished_at, t.updated_at) <= $4::timestamp
             )
           )
           OR (t.status = 'skipped' AND t.reason IS DISTINCT FROM 'ships priv files')
