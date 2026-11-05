@@ -62,8 +62,9 @@ than cache by default and bypass a list:
   lived (`public, max-age=60, must-revalidate`, revalidated by `etag`)
 - `/manifests/<package>.json`, `/v2/manifests/<package>.json`: change with
   every batch (`private, max-age=60`)
-- every other path this API serves (the HTML site, `/api/packages`, admin
-  routes, the builder API, and anything added later) — none of it is
+- every other path under the origin (and anything outside `/api/precompiled`,
+  such as the site, `/api/packages` and admin routes; the builder API runs on
+  its own endpoint) — none of it is
   content-addressed, so none of it belongs on a pull zone built for this API
 
 ## 4. Turn it on
@@ -94,8 +95,10 @@ file blob on the strength of a newer batch existing:
 
 - **Withdrawn manifests stay servable by sha.** When a build is withdrawn,
   the next batch simply stops naming its manifest sha in `manifests` /
-  `manifests_v2`; the old manifest and its files are not deleted and the
-  by-sha routes keep serving them. This is safe because withdrawal is
+  `manifests_v2`; the old manifest is not deleted and the by-sha routes keep
+  serving it. Its files may stop being served by the source (`files/<sha>`
+  only serves published files), but a CDN copy can outlive that; purge them
+  when a revoked builder's files must be pulled. This is safe because withdrawal is
   enforced client-side by the batch, not by the server refusing old bytes: a
   verified client only ever asks for a sha the *current* batch it checked
   names, so a sha no current batch names is simply never requested by a

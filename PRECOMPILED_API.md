@@ -102,8 +102,10 @@ The manifest bytes whose SHA256 a signed batch named, in `manifests` (first
 path) or `manifests_v2` (second path). Content-addressed: the URL never
 changes meaning, so the response is `cache-control: public,
 max-age=31536000, immutable` with the quoted SHA256 as `etag` (`304` on
-`If-None-Match`). Any sha any batch has named stays servable, so a client
-holding an older (still fresh) batch can fetch what it names. A batch that
+`If-None-Match`). Any sha a batch has named since these routes exist stays
+servable, so a client holding an older (still fresh) batch can fetch what it
+names; a sha named only by batches signed before then answers `404` (those
+batches carry no `content`, so clients never ask for it by sha). A batch that
 lists `content` origins (see `batch.json`) is the signal that these paths
 exist, at the source and at each content origin; the reference client tries
 each content origin, then the source's by-sha path, then the per-name path,
