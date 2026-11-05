@@ -601,7 +601,12 @@ defmodule Portal.Workers.BuildIntegrationTest do
 
     assert :ok =
              Ingest.perform(%Oban.Job{
-               args: %{"run_id" => run_id, "image_digest" => image_digest},
+               args: %{
+                 "run_id" => run_id,
+                 "image_digest" => image_digest,
+                 "package" => "ecto",
+                 "version" => "3.14.2"
+               },
                attempt: 1,
                max_attempts: 5
              })

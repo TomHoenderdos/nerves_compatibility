@@ -354,13 +354,20 @@ defmodule NccWorker.ProcessSweepTest do
     # own resolver it never exists. Checked on a fresh node, since the test
     # node may already have started it.
     test "a worker that resolved a name never starts the native resolver" do
+      # Not linked: the test process's exit would otherwise race the stop.
       {:ok, peer, node} =
-        :peer.start_link(%{
+        :peer.start(%{
           connection: :standard_io,
           args: Enum.flat_map(:code.get_path(), &[~c"-pa", &1])
         })
 
-      on_exit(fn -> if Process.alive?(peer), do: :peer.stop(peer) end)
+      on_exit(fn ->
+        try do
+          :peer.stop(peer)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
 
       assert :ok = :peer.call(peer, ProcessSweep, :use_erlang_resolver, [])
       assert [:file, :dns] = :peer.call(peer, :inet_db, :res_option, [:lookup])
