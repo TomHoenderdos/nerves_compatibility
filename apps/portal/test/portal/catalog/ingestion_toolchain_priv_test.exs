@@ -327,4 +327,49 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
     refute_received {:tarball_fetched, _, _}
     assert {true, [_beam]} = published?(name)
   end
+
+  # The worker's verdict comes from the sandbox that ran the package: a pass
+  # status says the worker found the priv portable, and the host checks again
+  # all the same, with the same rules, on files the tarball carries byte for
+  # byte.
+  describe "refused on the host even when the worker reported the build portable" do
+    test "native code by its magic" do
+      name = unique()
+      elf = <<0x7F, "ELF", 2, 1, 1, 0>> <> name
+
+      outcome =
+        ingest(name, "beam-#{name}", [{"priv/x.dat", elf}], %{"priv/x.dat" => elf}, &opts/3)
+
+      assert_nothing_published(name, outcome)
+    end
+
+    test "native code by its name" do
+      name = unique()
+      lib = "not really native #{name}"
+
+      outcome =
+        ingest(name, "beam-#{name}", [{"priv/nif.so", lib}], %{"priv/nif.so" => lib}, &opts/3)
+
+      assert_nothing_published(name, outcome)
+    end
+
+    test "more than 500 priv files" do
+      name = unique()
+      files = for i <- 1..501, do: {"priv/data/#{i}.txt", "#{name} #{i}"}
+
+      outcome = ingest(name, "beam-#{name}", files, Map.new(files), &opts/3)
+
+      assert_nothing_published(name, outcome)
+    end
+
+    test "more than 10 MiB of priv files" do
+      name = unique()
+      big = name <> :binary.copy("a", 10 * 1024 * 1024)
+
+      outcome =
+        ingest(name, "beam-#{name}", [{"priv/big.bin", big}], %{"priv/big.bin" => big}, &opts/3)
+
+      assert_nothing_published(name, outcome)
+    end
+  end
 end
