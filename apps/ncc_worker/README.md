@@ -154,6 +154,9 @@ which it uses only when their outer checksum matches its signed registry (one th
 the link, and fetched again); its registry cache `cache.bin` (`cache.ets` before Hex 2.6), which it reads back without
 verifying it; and `hex.config`, which can name a mirror or switch registry verification off. So only the tarballs are
 seeded, and every run fetches the registry itself. Whatever Hex downloads lands in the run dir, never the shared one.
+Within a run each target gets its own `HEX_HOME` seeded from the run's (`NccWorker.HexHome`), and the registry cache
+one target fetched is copied back for the next, under its own name: `cache.bin` for the Hex the images pin
+(`HEX_VERSION` in both Dockerfiles, 2.6.0), `cache.ets` for an older one, never one under the other's name.
 
 At the end of the run `result.json` carries
 

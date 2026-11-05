@@ -40,6 +40,24 @@ defmodule NccWorker.DockerfileTest do
     assert File.read!(@toolchain_dockerfile) =~ ~r/^LABEL ncc\.hex-cache=seeded$/m
   end
 
+  # Hex is pinned, never the floating latest: Hex 2.6 renamed its registry
+  # cache, and `NccWorker.HexHome` shares that file between targets only under
+  # the name the pinned Hex uses. A bump to a Hex `HexHome.registry_file/1`
+  # does not know fails here until someone checks what it writes.
+  test "both images pin the same Hex, whose registry file HexHome shares", %{text: text} do
+    pins =
+      for t <- [text, File.read!(@toolchain_dockerfile)] do
+        refute t =~ ~r/mix local\.hex --force/
+        assert [_, version] = Regex.run(~r/^ARG HEX_VERSION=(\S+)$/m, t)
+        assert t =~ ~r/mix local\.hex \$\{HEX_VERSION\} --force/
+        version
+      end
+
+    assert [version] = Enum.uniq(pins)
+    assert {:ok, name} = NccWorker.HexHome.registry_file(version)
+    assert name == hd(NccWorker.HexHome.registry_files())
+  end
+
   test "makes the home and app directories readable, not writable, by any uid", %{text: text} do
     assert text =~ "chmod -R a+rX /home/nerves /app"
     refute text =~ "a+rwX"

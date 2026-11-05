@@ -51,8 +51,9 @@ defmodule Portal.Workers.Sweep do
   (`Compatibility.HexCache.touch/2`). A timestamp in the future counts as the epoch,
   so a hostile file cannot push every real tarball out ahead of itself. Nothing
   used in the last two hours (the build wall clock) is evicted, even over the
-  bound. At the cache root, regular files other than `cache.ets` and
-  `hex.config` go once older than the scratch max age.
+  bound. At the cache root, regular files other than the registry cache
+  (`cache.bin`, `cache.ets` before Hex 2.6) and `hex.config` go once older
+  than the scratch max age.
 
   The hex sweep runs only while no build container (`ncc-*`) is running, and
   does nothing if docker cannot say. Builds are the only writers of
@@ -424,13 +425,14 @@ defmodule Portal.Workers.Sweep do
   @future_tolerance_ms :timer.minutes(5)
 
   # The only regular files at the cache root that Hex itself owns. Anything
-  # else there is either a `.cache.ets.<n>` temp left by a failed
-  # `HexHome.publish` or something a build wrote to dodge the bound.
-  @hex_root_keep ["cache.ets", "hex.config"]
+  # else there is either a temp left by a failed write (`.cache.bin.<n>` or
+  # `.cache.ets.<n>` from `HexHome.publish`, `cache.bin.<pid>.tmp` from Hex
+  # 2.6 itself) or something a build wrote to dodge the bound.
+  @hex_root_keep ["cache.bin", "cache.ets", "hex.config"]
 
   # Everything under `packages/` counts toward the bound, whatever its name, so
   # a build cannot dodge it with `packages/hexpm/x.bin`. At the root only
-  # `cache.ets` (the signed registry) and `hex.config` are kept for good; other
+  # the registry cache and `hex.config` are kept for good; other
   # regular files there go once they are older than the scratch max age.
   defp sweep_hex_cache(opts) do
     root = Keyword.get_lazy(opts, :hex_cache, &Builder.hex_cache/0)

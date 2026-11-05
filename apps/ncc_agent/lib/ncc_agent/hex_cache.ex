@@ -11,7 +11,8 @@ defmodule NccAgent.HexCache do
   (`NccAgent.HexRegistry`, `Compatibility.HexCache`), as the local host does
   (`Portal.HexCache`).
 
-  `prepare/1` still removes `hex.config` and `cache.ets` before every run.
+  `prepare/1` still removes `hex.config` and the registry cache (`cache.bin`,
+  `cache.ets` before Hex 2.6) before every run.
   Builds from before the read-only mount wrote the cache, and could have
   left either for a later build to trust; the worker no longer reads them,
   so the scrub only keeps an older worker image safe. The dir is per slot
@@ -22,7 +23,7 @@ defmodule NccAgent.HexCache do
 
   alias NccAgent.Config
 
-  @scrubbed ~w(hex.config cache.ets)
+  @scrubbed ~w(hex.config cache.bin cache.ets)
 
   @doc "Makes the cache dir a real directory and removes what a build must not hand the next."
   @spec prepare(Config.t()) :: :ok

@@ -15,7 +15,11 @@ ENV PATH="/home/nerves/.elixir/bin:${PATH}"
 # is pinned: its `mix nerves.new` template is the project every package is
 # built in, and 1.17.3 is the first with `--prerelease` (NccWorker.Project).
 ARG NERVES_BOOTSTRAP_VERSION=1.17.3
-RUN mix local.hex --force && \
+# Hex is pinned, not the latest: 2.6 renamed its registry cache, which
+# NccWorker.HexHome shares between targets by name. Bump it together with
+# HexHome.registry_file/1 (NccWorker.DockerfileTest checks the two agree).
+ARG HEX_VERSION=2.6.0
+RUN mix local.hex ${HEX_VERSION} --force && \
     mix local.rebar --force && \
     mix archive.install hex nerves_bootstrap ${NERVES_BOOTSTRAP_VERSION} --force && \
     mix archive.install hex igniter_new --force

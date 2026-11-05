@@ -282,7 +282,7 @@ defmodule NccAgent.JobTest do
 
   # A build mounts the Hex cache read-write and could leave a hex.config or
   # a registry snapshot for every later build to trust.
-  test "the shared Hex cache is scrubbed of hex.config and cache.ets before a run", %{
+  test "the shared Hex cache is scrubbed of hex.config and both registry caches before a run", %{
     req: req,
     config: config
   } do
@@ -290,12 +290,14 @@ defmodule NccAgent.JobTest do
     File.mkdir_p!(Path.join(hex, "packages/hexpm"))
     File.write!(Path.join(hex, "hex.config"), "planted")
     File.write!(Path.join(hex, "cache.ets"), "planted")
+    File.write!(Path.join(hex, "cache.bin"), "planted")
     File.write!(Path.join(hex, "packages/hexpm/jason-1.4.4.tar"), "kept")
 
     assert {:ok, :done} = Job.run(req, claim(), config)
 
     refute File.exists?(Path.join(hex, "hex.config"))
     refute File.exists?(Path.join(hex, "cache.ets"))
+    refute File.exists?(Path.join(hex, "cache.bin"))
     assert File.exists?(Path.join(hex, "packages/hexpm/jason-1.4.4.tar"))
   end
 

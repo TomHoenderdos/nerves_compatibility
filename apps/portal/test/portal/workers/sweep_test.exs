@@ -416,9 +416,10 @@ defmodule Portal.Workers.SweepTest do
   end
 
   describe "hex cache size bound" do
-    # The cache is `packages/hexpm/<name>-<version>.tar` next to `cache.ets`.
-    # Tarballs are content-addressed by Hex and re-fetched on demand, so
-    # evicting the oldest is safe; `cache.ets` is the registry and never goes.
+    # The cache is `packages/hexpm/<name>-<version>.tar` next to the registry
+    # cache (`cache.bin`, `cache.ets` before Hex 2.6). Tarballs are
+    # content-addressed by Hex and re-fetched on demand, so evicting the oldest
+    # is safe; the registry never goes.
     #
     # Lives in its own tmp dir rather than under `root`: `sweep_scratch` would
     # otherwise see a `hex` dir inside the scratch root and warn about it as
@@ -561,15 +562,22 @@ defmodule Portal.Workers.SweepTest do
       hex: hex
     } do
       ets = Path.join(hex, "cache.ets")
+      # Hex 2.6's registry cache.
+      bin = Path.join(hex, "cache.bin")
+      File.write!(bin, "registry")
       config = Path.join(hex, "hex.config")
       File.write!(config, "config")
 
-      for path <- [ets, config], do: File.touch!(path, posix_ago(24 * 30))
+      for path <- [ets, bin, config], do: File.touch!(path, posix_ago(24 * 30))
 
       junk = hex_file(hex, "junk", 100, atime: posix_ago(5), mtime: posix_ago(5))
 
       temp =
         hex_file(hex, ".cache.ets.12345", 100, atime: posix_ago(24), mtime: posix_ago(24))
+
+      bin_temps =
+        for name <- [".cache.bin.12345", "cache.bin.4242.tmp"],
+            do: hex_file(hex, name, 100, atime: posix_ago(24), mtime: posix_ago(24))
 
       fresh = hex_file(hex, "fresh", 100, atime: posix_ago(1), mtime: posix_ago(1))
       dir = Path.join(hex, "somedir")
@@ -580,8 +588,10 @@ defmodule Portal.Workers.SweepTest do
 
       refute File.exists?(junk)
       refute File.exists?(temp)
+      for path <- bin_temps, do: refute(File.exists?(path))
       assert File.exists?(fresh)
       assert File.exists?(ets)
+      assert File.exists?(bin)
       assert File.exists?(config)
       assert File.dir?(dir)
       assert File.dir?(Path.join(hex, "packages"))

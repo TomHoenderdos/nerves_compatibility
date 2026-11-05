@@ -92,6 +92,55 @@ defmodule NccWorker.HexHomeTest do
     refute File.exists?(Path.join(c.shared, "cache.ets"))
   end
 
+  # Hex 2.6 renamed its registry cache to `cache.bin` (a header, a CRC32 and
+  # one term) and reads `cache.ets` only when there is no `cache.bin`. The
+  # image runs 2.6, so `cache.bin` is the file the targets share.
+  test "seeds and publishes Hex 2.6's cache.bin", c do
+    File.write!(Path.join(c.shared, "cache.bin"), "bin-v1")
+
+    a = HexHome.prepare(c.project, "rpi4")
+    assert File.read!(Path.join(a, "cache.bin")) == "bin-v1"
+
+    File.write!(Path.join(a, "cache.bin"), "bin-v2")
+    assert :ok = HexHome.publish(a)
+    assert File.read!(Path.join(c.shared, "cache.bin")) == "bin-v2"
+
+    b = HexHome.prepare(c.project, "x86_64")
+    assert File.read!(Path.join(b, "cache.bin")) == "bin-v2"
+  end
+
+  test "a host build's first cache.bin warms the targets after it", c do
+    host = HexHome.prepare(c.project, "host")
+    File.write!(Path.join(host, "cache.bin"), "fetched")
+    HexHome.publish(host)
+
+    assert Enum.sort(File.ls!(c.shared)) == ["cache.bin", "packages"]
+    assert File.read!(Path.join(HexHome.prepare(c.project, "rpi4"), "cache.bin")) == "fetched"
+  end
+
+  # Each file keeps its own name: a Hex that cannot parse a format never finds
+  # it under the name it reads.
+  test "keeps each registry file under its own name", c do
+    File.write!(Path.join(c.shared, "cache.bin"), "bin")
+    File.write!(Path.join(c.shared, "cache.ets"), "ets")
+
+    dir = HexHome.prepare(c.project, "rpi4")
+    assert File.read!(Path.join(dir, "cache.bin")) == "bin"
+    assert File.read!(Path.join(dir, "cache.ets")) == "ets"
+
+    File.write!(Path.join(dir, "cache.bin"), "bin-2")
+    HexHome.publish(dir)
+    assert File.read!(Path.join(c.shared, "cache.bin")) == "bin-2"
+    assert File.read!(Path.join(c.shared, "cache.ets")) == "ets"
+  end
+
+  test "knows the registry file of the Hex versions it was checked against" do
+    assert HexHome.registry_file("2.6.0") == {:ok, "cache.bin"}
+    assert HexHome.registry_file("2.5.1") == {:ok, "cache.ets"}
+    assert HexHome.registry_file("2.7.0") == :error
+    assert HexHome.registry_file("not a version") == :error
+  end
+
   test "falls back to the ambient HEX_HOME when there is no shared cache", c do
     System.delete_env("HEX_HOME")
     assert HexHome.prepare(c.project, "rpi4") == nil

@@ -4,9 +4,9 @@ defmodule NccWorker.HexHome do
   of the cache shared.
 
   The container mounts one host directory at `/hex-cache` and points `HEX_HOME`
-  at it, so every concurrent build wrote to the same `cache.ets`. Hex keeps its
-  registry in that single file and rewrites it wholesale from
-  `Hex.Registry.Server.persist/2`, which is not atomic and does not lock. Two
+  at it, so every concurrent build wrote to the same `cache.ets`. Hex kept its
+  registry in that single file and rewrote it wholesale from
+  `Hex.Registry.Server.persist/2`, which was not atomic and did not lock. Two
   mix processes persisting at the same moment left one of them matching on
   `{:error, :eaccess}`, and because that crash surfaces as a non-zero `mix`
   exit, the package was recorded as failing to build. It read as a property of
@@ -23,7 +23,19 @@ defmodule NccWorker.HexHome do
   What stays shared is `packages/`, the 22k downloaded tarballs, by symlink.
   Those are content-addressed, written once under a name that already encodes
   the version, and re-downloading them is what the cache exists to avoid.
-  `cache.ets` is copied in instead, because it is the file being written.
+  The registry cache is copied in instead, because it is the file being
+  written.
+
+  Hex 2.6 renamed that file: it writes `cache.bin` (a header, a CRC32 and one
+  term, replaced by rename), reads `cache.ets` only when there is no
+  `cache.bin`, and leaves `cache.ets` where it is; 2.5 and earlier read and
+  write only `cache.ets`, an ETS file. Both are seeded and published, each
+  under its own name and never under the other's, so a Hex only ever finds
+  the format it reads. Sharing only `cache.ets` after the image moved to 2.6
+  shared nothing: every target fetched the whole registry again. The image
+  pins Hex, and `registry_file/1` names the file of each Hex release line this
+  was checked against, so a bump to one it does not know fails
+  `NccWorker.DockerfileTest` until someone checks.
 
   Publishing back is a copy to a temporary name in the shared directory
   followed by `rename`, which is atomic within a filesystem: a reader either
@@ -46,7 +58,12 @@ defmodule NccWorker.HexHome do
   is worth failing a build over.
   """
 
-  @registry "cache.ets"
+  # Hex release line => the registry cache it reads and writes, from
+  # `Hex.Registry.Server`'s `@filename`. Add a line only after reading that
+  # release's source.
+  @registry_by_hex %{{2, 5} => "cache.ets", {2, 6} => "cache.bin"}
+  # Newest first: the file the pinned Hex uses leads.
+  @registries ["cache.bin", "cache.ets"]
   @config "hex.config"
 
   # Not `.hex`: typedstruct's mix.exs (0.5.4) reads `<deps_path>/../.hex` to
@@ -70,7 +87,7 @@ defmodule NccWorker.HexHome do
          false <- Path.expand(dir) == Path.expand(shared),
          :ok <- File.mkdir_p(dir) do
       link_packages(shared, dir)
-      seed(shared, dir, @registry)
+      Enum.each(@registries, &seed(shared, dir, &1))
       seed(shared, dir, @config)
       dir
     else
@@ -79,31 +96,56 @@ defmodule NccWorker.HexHome do
   end
 
   @doc """
+  The registry cache file `hex_version` reads and writes, or `:error` for a
+  Hex release line nobody has checked.
+  """
+  @spec registry_file(String.t()) :: {:ok, String.t()} | :error
+  def registry_file(hex_version) do
+    with {:ok, %Version{major: major, minor: minor}} <- Version.parse(hex_version),
+         {:ok, name} <- Map.fetch(@registry_by_hex, {major, minor}) do
+      {:ok, name}
+    else
+      _ -> :error
+    end
+  end
+
+  @doc "Every registry cache name this module shares, newest Hex first."
+  @spec registry_files() :: [String.t()]
+  def registry_files, do: @registries
+
+  @doc """
   Copies this build's registry back over the shared one so the next build
   starts warm. Never raises: a stale shared registry costs a refetch.
   """
   @spec publish(String.t() | nil) :: :ok
   def publish(nil), do: :ok
 
-  # dir is a private HEX_HOME returned by prepare/2; shared root comes from the worker environment.
-  # sobelow_skip ["Traversal.FileModule"]
   def publish(dir) do
-    with shared when is_binary(shared) <- shared_root(),
-         src = Path.join(dir, @registry),
-         true <- File.regular?(src) do
-      tmp = Path.join(shared, ".#{@registry}.#{:erlang.unique_integer([:positive])}")
-
-      with :ok <- File.cp(src, tmp),
-           :ok <- File.rename(tmp, Path.join(shared, @registry)) do
-        :ok
-      else
-        _ -> File.rm(tmp)
-      end
+    with shared when is_binary(shared) <- shared_root() do
+      Enum.each(@registries, &publish(dir, shared, &1))
     end
 
     :ok
   rescue
     _ -> :ok
+  end
+
+  # dir is a private HEX_HOME returned by prepare/2; shared root comes from the
+  # worker environment; name is one of @registries.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp publish(dir, shared, name) do
+    src = Path.join(dir, name)
+
+    if File.regular?(src) do
+      tmp = Path.join(shared, ".#{name}.#{:erlang.unique_integer([:positive])}")
+
+      with :ok <- File.cp(src, tmp),
+           :ok <- File.rename(tmp, Path.join(shared, name)) do
+        :ok
+      else
+        _ -> File.rm(tmp)
+      end
+    end
   end
 
   # The worker's own environment still points at the mounted cache: only the
@@ -130,7 +172,7 @@ defmodule NccWorker.HexHome do
     end
   end
 
-  # Called by prepare/2 with fixed cache.ets/hex.config names and worker-owned cache directories.
+  # Called by prepare/2 with fixed registry/hex.config names and worker-owned cache directories.
   # sobelow_skip ["Traversal.FileModule"]
   defp seed(shared, dir, name) do
     src = Path.join(shared, name)
