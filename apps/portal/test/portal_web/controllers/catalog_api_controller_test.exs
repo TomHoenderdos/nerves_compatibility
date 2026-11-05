@@ -685,6 +685,46 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert_documented_response(conn, "getFile")
   end
 
+  test "a precompiled file is immutable and revalidates by its sha", %{conn: conn} do
+    sha = ingest_fixture_with_artifact()
+    resp = get(conn, "/api/precompiled/files/#{sha}")
+    assert response(resp, 200) == "precompiled-beam"
+    assert get_resp_header(resp, "cache-control") == ["public, max-age=31536000, immutable"]
+    assert get_resp_header(resp, "etag") == [~s("#{sha}")]
+
+    again =
+      build_conn()
+      |> put_req_header("if-none-match", ~s("#{sha}"))
+      |> get("/api/precompiled/files/#{sha}")
+
+    assert response(again, 304) == ""
+    assert_documented_response(again, "getFile")
+  end
+
+  # Absent now (rsync lag, a builder not publishing yet) may be present in a
+  # minute: a CDN must not remember the 404.
+  test "every precompiled 404 is no-store", %{conn: conn} do
+    unknown = String.duplicate("a", 64)
+
+    for path <- [
+          "/api/precompiled/files/#{unknown}",
+          "/api/precompiled/files/not-a-digest",
+          "/api/precompiled/manifests/no_such_package.json",
+          "/api/precompiled/v2/manifests/no_such_package.json"
+        ] do
+      resp = get(conn, path)
+      assert resp.status == 404, path
+      assert get_resp_header(resp, "cache-control") == ["no-store"], path
+    end
+  end
+
+  test "the live render before a batch is private too", %{conn: conn} do
+    ingest_fixture_with_artifact()
+    resp = get(conn, "/api/precompiled/manifests/jason.json")
+    assert json_response(resp, 200)
+    assert get_resp_header(resp, "cache-control") == ["private, max-age=60"]
+  end
+
   test "artifact download refuses symlinks", %{conn: conn} do
     sha = ingest_fixture_with_artifact()
     path = ArtifactStore.blob_path(sha)
@@ -955,6 +995,22 @@ defmodule PortalWeb.CatalogApiControllerTest do
       assert get_resp_header(resp, "etag") == [~s("#{sha}")]
       assert json_response(resp, 200)["format"] == 2
       assert_documented_response(resp, "getManifestV2")
+    end
+
+    test "a per-name manifest is private to the client and answers 304 by its sha" do
+      first = ingest_with_artifact()
+      name = first["package"]["name"]
+      {:ok, batch} = Portal.Precompiled.Batches.build_and_sign()
+      sha = Portal.Precompiled.Batches.manifests(batch)[name]
+      path = "/api/precompiled/manifests/#{name}.json"
+
+      resp = build_conn() |> get(path)
+      assert get_resp_header(resp, "cache-control") == ["private, max-age=60"]
+      assert get_resp_header(resp, "etag") == [~s("#{sha}")]
+
+      again = build_conn() |> put_req_header("if-none-match", ~s("#{sha}")) |> get(path)
+      assert response(again, 304) == ""
+      assert_documented_response(again, "getManifestV1")
     end
 
     test "root.json is 404 without a key" do

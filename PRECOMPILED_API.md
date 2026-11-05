@@ -69,9 +69,14 @@ Response:
 }
 ```
 
+Served with `cache-control: private, max-age=60`: the bytes change with
+every batch, so shared caches must not keep them. `If-None-Match` with the
+`etag` answers `304`. A `404` is `no-store`.
+
 Status codes:
 
 - `200` — manifest found
+- `304` — `If-None-Match` names the current bytes
 - `404` — package has no precompiled manifest
 
 ### GET /api/precompiled/v2/manifests/{package_name}.json
@@ -79,9 +84,14 @@ Status codes:
 Manifest format 2: see "Manifest format 2" below for the shape and how a
 client matches a build.
 
+Served with `cache-control: private, max-age=60`: the bytes change with
+every batch, so shared caches must not keep them. `If-None-Match` with the
+`etag` answers `304`. A `404` is `no-store`.
+
 Status codes:
 
 - `200` — manifest found
+- `304` — `If-None-Match` names the current bytes
 - `404` — package has no build that format 2 can publish
 
 ### GET /api/precompiled/files/{sha256}
@@ -92,9 +102,15 @@ Example: `/api/precompiled/files/96b613f9050e8e3fba6639d9695a65386c699ccac6608d2
 
 Response: binary file content with `content-type: application/octet-stream`.
 
+`cache-control: public, max-age=31536000, immutable` and an `etag` of the
+quoted SHA256; `If-None-Match` with it answers `304`. A `404` carries
+`cache-control: no-store`, so a cache in front never remembers that a file
+was missing after it arrives.
+
 Status codes:
 
 - `200` — file found
+- `304` — `If-None-Match` names the current bytes
 - `404` — no published file with that SHA256
 
 ### GET /api/precompiled/root.json

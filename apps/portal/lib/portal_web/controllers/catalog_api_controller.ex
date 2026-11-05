@@ -143,6 +143,7 @@ defmodule PortalWeb.CatalogApiController do
     parameters: [package: @package_param],
     responses: [
       ok: {"The manifest", "application/json", ManifestV1, headers: @etag_header},
+      not_modified: @not_modified,
       not_found: {"The package has no precompiled files", "application/json", Error}
     ]
 
@@ -161,6 +162,7 @@ defmodule PortalWeb.CatalogApiController do
     parameters: [package: @package_param],
     responses: [
       ok: {"The manifest", "application/json", ManifestV2, headers: @etag_header},
+      not_modified: @not_modified,
       not_found: {"The package has no build format 2 can publish", "application/json", Error}
     ]
 
@@ -168,23 +170,28 @@ defmodule PortalWeb.CatalogApiController do
     serve_manifest(conn, raw_package, &Batches.manifests_v2/1, &Catalog.precompiled_manifest_v2/1)
   end
 
+  # Per-name manifests change with every batch, so shared caches (a CDN) must
+  # not store them: clients fetch by-sha manifests from content origins and
+  # only these from the source.
   defp serve_manifest(conn, raw_package, batch_map, live) do
     package = String.replace_suffix(raw_package, ".json", "")
 
     case stored_manifest(package, batch_map) do
       {:ok, sha, bytes} ->
-        conn
-        |> put_cache_headers()
-        |> put_resp_header("etag", ~s("#{sha}"))
-        |> send_json_bytes(bytes)
+        PrecompiledHTTP.send_bytes(conn, bytes, PrecompiledHTTP.quote_sha(sha), :private_short)
 
       :none ->
         case live.(package) do
           nil ->
-            conn |> put_status(:not_found) |> json(%{error: "precompiled manifest not found"})
+            conn
+            |> PrecompiledHTTP.no_store()
+            |> put_status(:not_found)
+            |> json(%{error: "precompiled manifest not found"})
 
           manifest ->
-            conn |> put_cache_headers() |> json(manifest)
+            conn
+            |> put_resp_header("cache-control", PrecompiledHTTP.cache_control(:private_short))
+            |> json(manifest)
         end
     end
   end
@@ -298,17 +305,14 @@ defmodule PortalWeb.CatalogApiController do
     PrecompiledHTTP.send_bytes(conn, bytes, PrecompiledHTTP.etag(bytes), :revalidate)
   end
 
-  defp send_json_bytes(conn, bytes) do
-    conn |> put_resp_content_type("application/json") |> send_resp(200, bytes)
-  end
-
   operation :precompiled_file,
     tags: ["Precompiled"],
     operation_id: "getFile",
     summary: "A precompiled file by SHA-256",
     description:
       "The bytes of a file a published manifest lists. Content-addressed: check them " <>
-        "against the digest you asked for.",
+        "against the digest you asked for. Immutable: served with a one-year `cache-control` " <>
+        "and its SHA-256 as the `etag`.",
     parameters: [
       sha256: [
         in: :path,
@@ -320,6 +324,7 @@ defmodule PortalWeb.CatalogApiController do
     responses: [
       ok:
         {"The file's bytes", "application/octet-stream", %Schema{type: :string, format: :binary}},
+      not_modified: @not_modified,
       # `send_resp/3` with no content type: the body is the bare text below.
       not_found: %OpenApiSpex.Response{
         description: "No published file with that digest. The body is the text `Not Found`."
@@ -337,15 +342,19 @@ defmodule PortalWeb.CatalogApiController do
     with true <- Portal.ArtifactStore.valid_sha256?(sha256),
          true <- Catalog.published_sha256?(sha256),
          true <- Portal.ArtifactStore.present?(sha256) do
-      path = Portal.ArtifactStore.blob_path(sha256)
+      etag = PrecompiledHTTP.quote_sha(sha256)
+      conn = PrecompiledHTTP.put_validators(conn, etag, :immutable)
 
-      conn
-      |> put_cache_headers()
-      |> put_resp_content_type("application/octet-stream")
-      |> put_resp_header("x-content-type-options", "nosniff")
-      |> send_file(200, path)
+      if PrecompiledHTTP.not_modified?(conn, etag) do
+        send_resp(conn, 304, "")
+      else
+        conn
+        |> put_resp_content_type("application/octet-stream")
+        |> put_resp_header("x-content-type-options", "nosniff")
+        |> send_file(200, Portal.ArtifactStore.blob_path(sha256))
+      end
     else
-      _ -> send_resp(conn, 404, "Not Found")
+      _ -> conn |> PrecompiledHTTP.no_store() |> send_resp(404, "Not Found")
     end
   end
 
