@@ -221,6 +221,45 @@ defmodule Portal.Workers.IngestRemoteTest do
     refute File.exists?(Upload.lease_dir(lease.id))
   end
 
+  # Ingest checks the result against the job it was enqueued for, which for
+  # a remote build is its lease: refused the way a local build's job is, with
+  # the lease failed under the refusal's reason.
+  test "a result.json for another package than its lease is refused like a local one", %{
+    builder: builder,
+    lease: lease,
+    request: request
+  } do
+    result =
+      @fixture_result
+      |> put_in(["run_id"], lease.run_id)
+      |> put_in(["package", "name"], "phoenix")
+
+    seed_outputs!(lease, result)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:cancel, "ingest refused: " <> _} = perform_job(Ingest, args(lease, builder))
+      end)
+
+    assert log =~ "security:"
+    assert log =~ ~s("jason" "1.4.1")
+    assert log =~ ~s("phoenix" "1.4.1")
+
+    assert %Lease{state: :failed, error: "ingest refused: " <> _} =
+             Ash.get!(Lease, lease.id, domain: Portal.Builders)
+
+    assert Portal.Catalog.committed_run(lease.run_id) == {:ok, nil}
+
+    refute Portal.Catalog.Package
+           |> Ash.Query.filter(name == "phoenix")
+           |> Ash.exists?(domain: Portal.Catalog)
+
+    {:ok, updated} = Portal.ScanRequests.get_request(request.id)
+    assert updated.status == :error
+    assert "ingest refused: " <> _ = updated.error_reason
+    refute File.exists?(Upload.lease_dir(lease.id))
+  end
+
   test "an upload from a builder revoked since is dropped and fails the lease", %{
     builder: builder,
     lease: lease,

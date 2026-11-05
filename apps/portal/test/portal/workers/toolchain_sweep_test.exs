@@ -45,7 +45,13 @@ defmodule Portal.Workers.ToolchainSweepTest do
           "finished_at" => DateTime.to_iso8601(finished_at),
           "systems" => %{"host" => %{"status" => Keyword.get(opts, :host, "pass")}}
         },
-        %{run_id: run_id, image_digest: "sha256:x", files_dir: System.tmp_dir!()}
+        %{
+          package: name,
+          version: version,
+          run_id: run_id,
+          image_digest: "sha256:x",
+          files_dir: System.tmp_dir!()
+        }
       )
 
     run_id

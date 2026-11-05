@@ -26,7 +26,13 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
           "finished_at" => "2026-10-10T10:00:00Z",
           "systems" => %{"host" => %{"status" => "pass"}}
         },
-        %{run_id: "#{name}-1", image_digest: "sha256:x", files_dir: System.tmp_dir!()}
+        %{
+          package: name,
+          version: "1.0.0",
+          run_id: "#{name}-1",
+          image_digest: "sha256:x",
+          files_dir: System.tmp_dir!()
+        }
       )
   end
 

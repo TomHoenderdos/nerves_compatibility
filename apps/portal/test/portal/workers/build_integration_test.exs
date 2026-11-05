@@ -226,6 +226,8 @@ defmodule Portal.Workers.BuildIntegrationTest do
              })
 
     assert Enum.all?(result["systems"], fn {_name, s} -> s["status"] == "pass" end), log
+    # A real container run sweeps its processes (`NccWorker.ProcessSweep`).
+    assert result["process_sweep"] == "ok", log
 
     assert %{"misses" => misses} = result["hex_cache"]
     assert Enum.any?(misses, &(&1["name"] == "jason" and &1["version"] == "1.4.0"))

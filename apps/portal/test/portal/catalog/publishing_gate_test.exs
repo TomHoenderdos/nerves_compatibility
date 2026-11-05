@@ -31,6 +31,8 @@ defmodule Portal.Catalog.PublishingGateTest do
 
     {:ok, run} =
       Catalog.Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: run_id,
         image_digest: "sha256:#{run_id}",
         files_dir: dir,

@@ -91,6 +91,8 @@ defmodule Portal.Catalog.ManifestModeRepairTest do
 
     {:ok, run} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: result["run_id"],
         image_digest: "sha256:mmr",
         files_dir: dir,

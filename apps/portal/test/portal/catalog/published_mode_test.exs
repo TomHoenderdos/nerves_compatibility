@@ -53,6 +53,8 @@ defmodule Portal.Catalog.PublishedModeTest do
 
     {:ok, _run} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: result["run_id"],
         image_digest: "sha256:pm",
         files_dir: dir,

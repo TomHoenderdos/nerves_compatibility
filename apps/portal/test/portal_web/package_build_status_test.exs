@@ -42,6 +42,8 @@ defmodule PortalWeb.PackageBuildStatusTest do
           "systems" => %{"nerves_system_rpi0" => %{"status" => "pass"}}
         },
         %{
+          package: name,
+          version: "1.0.0",
           run_id: "#{name}-#{System.unique_integer([:positive])}",
           image_digest: "sha256:x",
           files_dir: dir,

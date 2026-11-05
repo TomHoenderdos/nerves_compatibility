@@ -17,6 +17,8 @@ defmodule Portal.Catalog.Phase1aQueriesTest do
 
     {:ok, _} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "#{name}-#{version}",
         image_digest: "sha256:x",
         files_dir: dir,

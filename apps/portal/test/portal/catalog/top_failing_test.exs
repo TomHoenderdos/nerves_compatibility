@@ -22,6 +22,8 @@ defmodule Portal.Catalog.TopFailingTest do
           "systems" => systems
         },
         %{
+          package: name,
+          version: "1.0.0",
           run_id: "#{name}-#{System.unique_integer([:positive])}",
           image_digest: "sha256:x",
           files_dir: dir,

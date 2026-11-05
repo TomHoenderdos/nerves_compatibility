@@ -57,6 +57,8 @@ defmodule PortalWeb.PackageArgusTest do
 
     {:ok, _} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "argpkg-#{n}",
         image_digest: "sha256:x",
         files_dir: files,

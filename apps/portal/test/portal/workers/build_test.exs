@@ -86,6 +86,8 @@ defmodule Portal.Workers.BuildTest do
           "systems" => %{"host" => %{"status" => "pass"}}
         },
         %{
+          package: name,
+          version: version,
           run_id: "prev-#{System.unique_integer([:positive])}",
           image_digest: "sha256:x",
           files_dir: System.tmp_dir!()
@@ -474,6 +476,8 @@ defmodule Portal.Workers.BuildTest do
     test "a request completion error remains retryable after the run commits" do
       {:ok, run} =
         Portal.Catalog.Ingestion.ingest(fixture_result(), %{
+          package: "jason",
+          version: "1.4.1",
           run_id: "completion-error",
           image_digest: "sha256:retry",
           files_dir: files_dir_with([])
@@ -499,6 +503,8 @@ defmodule Portal.Workers.BuildTest do
 
         {:ok, run} =
           Portal.Catalog.Ingestion.ingest(fixture_result(), %{
+            package: "jason",
+            version: "1.4.1",
             run_id: run_id,
             image_digest: "sha256:retry",
             files_dir: files_dir,
@@ -1536,6 +1542,8 @@ defmodule Portal.Workers.BuildTest do
     test "an ingest job with announce_sweep in meta announces :sweeps when it finishes" do
       {:ok, run} =
         Portal.Catalog.Ingestion.ingest(fixture_result(), %{
+          package: "jason",
+          version: "1.4.1",
           run_id: "sweep-committed",
           image_digest: "sha256:retry",
           files_dir: files_dir_with([])
@@ -1550,6 +1558,8 @@ defmodule Portal.Workers.BuildTest do
     test "an ingest job without announce_sweep does not announce" do
       {:ok, run} =
         Portal.Catalog.Ingestion.ingest(fixture_result(), %{
+          package: "jason",
+          version: "1.4.1",
           run_id: "sweep-committed2",
           image_digest: "sha256:retry2",
           files_dir: files_dir_with([])

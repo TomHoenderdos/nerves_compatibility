@@ -21,7 +21,13 @@ defmodule Portal.Catalog.ManifestBackfillTest do
           "finished_at" => "2026-07-06T10:00:00Z",
           "systems" => %{"nerves_system_rpi4" => %{"status" => "pass"}}
         },
-        %{run_id: "mb-#{name}", image_digest: "sha256:x", files_dir: dir}
+        %{
+          package: name,
+          version: "1.0.0",
+          run_id: "mb-#{name}",
+          image_digest: "sha256:x",
+          files_dir: dir
+        }
       )
 
     system_result =

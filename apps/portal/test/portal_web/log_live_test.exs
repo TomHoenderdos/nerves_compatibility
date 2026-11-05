@@ -25,6 +25,8 @@ defmodule PortalWeb.LogLiveTest do
           "systems" => %{"nerves_system_rpi4" => %{"status" => "fail"}}
         },
         %{
+          package: "logpkg",
+          version: "1.0.0",
           run_id: "logpkg-1",
           image_digest: "sha256:x",
           files_dir: files,

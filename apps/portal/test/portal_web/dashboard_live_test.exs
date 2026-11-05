@@ -30,7 +30,14 @@ defmodule PortalWeb.DashboardLiveTest do
             "nerves_system_rpi0" => %{"status" => "fail", "log_tail" => "Exec format error"}
           }
         },
-        %{run_id: "dashfail-1", image_digest: "sha256:x", files_dir: dir, log: "l"}
+        %{
+          package: "dashfail",
+          version: "1.0.0",
+          run_id: "dashfail-1",
+          image_digest: "sha256:x",
+          files_dir: dir,
+          log: "l"
+        }
       )
 
     {:ok, _view, html} = live(conn, ~p"/")
@@ -51,7 +58,14 @@ defmodule PortalWeb.DashboardLiveTest do
             "finished_at" => "2026-07-04T10:00:00Z",
             "systems" => systems
           },
-          %{run_id: "#{name}-1", image_digest: "sha256:x", files_dir: dir, log: "l"}
+          %{
+            package: name,
+            version: "1.0.0",
+            run_id: "#{name}-1",
+            image_digest: "sha256:x",
+            files_dir: dir,
+            log: "l"
+          }
         )
     end
 

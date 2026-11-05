@@ -376,6 +376,30 @@ defmodule NccWorker.JsonWriterTest do
     end
   end
 
+  describe "process_sweep" do
+    @tag :tmp_dir
+    test "writes how the process sweep went, and leaves the key out without", %{tmp_dir: dir} do
+      base = %{
+        run_id: "sweep",
+        package: %{name: "jason", version: "1.4.4"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{},
+        finished_at: "2026-11-06T10:00:00Z"
+      }
+
+      for status <- ["ok", "skipped", "tainted"] do
+        assert :ok = JsonWriter.write_result(dir, Map.put(base, :process_sweep, status))
+        decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+        assert decoded["process_sweep"] == status
+      end
+
+      assert :ok = JsonWriter.write_result(dir, base)
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      refute Map.has_key?(decoded, "process_sweep")
+    end
+  end
+
   describe "nerves_cache" do
     defp nerves_result(extra) do
       Map.merge(

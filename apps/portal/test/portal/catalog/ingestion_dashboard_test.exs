@@ -35,6 +35,8 @@ defmodule Portal.Catalog.IngestionDashboardTest do
   test "ingestion stores log_tail, failure_category, and native_components" do
     {:ok, _run} =
       Ingestion.ingest(@result, %{
+        package: @result["package"]["name"],
+        version: @result["package"]["version"],
         run_id: "dashpkg-1",
         image_digest: "sha256:x",
         files_dir: files_dir(),

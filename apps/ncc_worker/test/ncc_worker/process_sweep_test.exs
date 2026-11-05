@@ -242,4 +242,127 @@ defmodule NccWorker.ProcessSweepTest do
       assert "processes survived the sweep" <> _ = tainted.toolchain_build.reason
     end
   end
+
+  # `enforce_and_report/2` is what the CLI runs: the sweep's verdict on the
+  # result plus a top-level `process_sweep` saying how it went. A portal
+  # build (NCC_INPUT set) whose sweep cannot run is tainted; a manual run
+  # without NCC_INPUT is only told on stderr that nothing was swept.
+  describe "enforce_and_report/2" do
+    defp report_result do
+      %{
+        run_id: "r",
+        systems: %{
+          "host" => %{status: :pass, error: nil, cache_candidates: [%{"key" => "k"}]},
+          "nerves_system_rpi4" => %{status: :pass, error: nil}
+        },
+        toolchain_build: %{status: "pass", reason: nil, file_manifest: %{"ebin" => []}}
+      }
+    end
+
+    defp report(opts) do
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        send(self(), {:reported, ProcessSweep.enforce_and_report(report_result(), opts)})
+      end)
+      |> then(fn stderr ->
+        assert_received {:reported, result}
+        {result, stderr}
+      end)
+    end
+
+    test "a portal build that swept clean reports ok and keeps its verdicts" do
+      root = proc_root([{@beam, "beam.smp", 0}, {9, "erl_child_setup", @beam}])
+
+      {result, _stderr} =
+        report(
+          portal_build?: true,
+          environment: :ok,
+          proc_root: root,
+          self_pid: @beam,
+          interval_ms: 0
+        )
+
+      assert result == Map.put(report_result(), :process_sweep, "ok")
+    end
+
+    test "a portal build whose sweep cannot run is tainted, with the sweep's own reason" do
+      {result, stderr} =
+        report(portal_build?: true, environment: {:unavailable, "the BEAM is pid 42, not 1"})
+
+      assert result.process_sweep == "tainted"
+      assert stderr =~ "process sweep could not run: the BEAM is pid 42, not 1"
+
+      for {_name, sys} <- result.systems do
+        assert sys.status == :error
+        assert sys.error == "process sweep could not run: the BEAM is pid 42, not 1"
+        refute Map.has_key?(sys, :cache_candidates)
+      end
+
+      assert %{status: "error", file_manifest: nil, reason: reason} = result.toolchain_build
+      assert "process sweep could not run: " <> _ = reason
+    end
+
+    test "a manual run whose sweep cannot run is skipped, says so, and is otherwise unchanged" do
+      {result, stderr} =
+        report(portal_build?: false, environment: {:unavailable, "not Linux"})
+
+      assert result == Map.put(report_result(), :process_sweep, "skipped")
+      assert stderr =~ "Process sweep skipped"
+      assert stderr =~ "not Linux"
+    end
+
+    test "survivors taint the result and report tainted" do
+      root = proc_root([{@beam, "beam.smp", 0}, {9, "erl_child_setup", @beam}, {40, "sh", 9}])
+
+      {result, stderr} =
+        report(
+          portal_build?: true,
+          environment: :ok,
+          proc_root: root,
+          self_pid: @beam,
+          kill: fn _pids -> :ok end,
+          rounds: 1,
+          interval_ms: 0
+        )
+
+      assert result.process_sweep == "tainted"
+      assert stderr =~ "40 (sh)"
+      assert "processes survived the sweep" <> _ = result.toolchain_build.reason
+    end
+
+    test "survivors in a manual run are still tainted" do
+      root = proc_root([{@beam, "beam.smp", 0}, {9, "erl_child_setup", @beam}, {40, "sh", 9}])
+
+      {result, _stderr} =
+        report(
+          portal_build?: false,
+          environment: :ok,
+          proc_root: root,
+          self_pid: @beam,
+          kill: fn _pids -> :ok end,
+          rounds: 1,
+          interval_ms: 0
+        )
+
+      assert result.process_sweep == "tainted"
+    end
+  end
+
+  describe "portal_build?/1" do
+    test "is true when NCC_INPUT is set, whatever its value" do
+      assert ProcessSweep.portal_build?(fn "NCC_INPUT" -> "/work/input.json" end)
+      assert ProcessSweep.portal_build?(fn "NCC_INPUT" -> "/elsewhere/in.json" end)
+    end
+
+    test "is false when NCC_INPUT is unset" do
+      refute ProcessSweep.portal_build?(fn "NCC_INPUT" -> nil end)
+    end
+  end
+
+  describe "environment/0" do
+    test "names why the sweep cannot run outside the container's worker" do
+      # The test BEAM is never pid 1.
+      assert {:unavailable, why} = ProcessSweep.environment()
+      assert is_binary(why) and why != ""
+    end
+  end
 end

@@ -26,7 +26,14 @@ defmodule PortalWeb.FailureClustersLiveTest do
             }
           }
         },
-        %{run_id: "fcpkg-1", image_digest: "sha256:x", files_dir: dir, log: "l"}
+        %{
+          package: "fcpkg",
+          version: "1.0.0",
+          run_id: "fcpkg-1",
+          image_digest: "sha256:x",
+          files_dir: dir,
+          log: "l"
+        }
       )
 
     {:ok, _v, html} = live(conn, ~p"/failure_clusters")

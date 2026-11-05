@@ -31,7 +31,14 @@ defmodule PortalWeb.IndexPlaceholdersTest do
           "finished_at" => "2026-07-05T10:00:00Z",
           "systems" => %{"nerves_system_rpi0" => %{"status" => "pass"}}
         },
-        %{run_id: "#{name}-1", image_digest: "sha256:x", files_dir: dir, log: "l"}
+        %{
+          package: name,
+          version: "1.0.0",
+          run_id: "#{name}-1",
+          image_digest: "sha256:x",
+          files_dir: dir,
+          log: "l"
+        }
       )
   end
 

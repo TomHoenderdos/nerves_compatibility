@@ -17,6 +17,8 @@ defmodule Portal.BulkRebuildTest do
           }
         },
         %{
+          package: name,
+          version: "1.0.0",
           run_id: "bulk-#{System.unique_integer([:positive])}",
           image_digest: "sha256:x",
           files_dir: System.tmp_dir!()

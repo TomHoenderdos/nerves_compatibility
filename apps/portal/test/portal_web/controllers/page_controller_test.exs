@@ -470,7 +470,13 @@ defmodule PortalWeb.PageControllerTest do
           "finished_at" => "2026-10-20T10:00:00Z",
           "systems" => %{"host" => %{"status" => "pass"}}
         },
-        %{run_id: "portable-run", image_digest: "sha256:x", files_dir: System.tmp_dir!()}
+        %{
+          package: "portable",
+          version: "1.0.0",
+          run_id: "portable-run",
+          image_digest: "sha256:x",
+          files_dir: System.tmp_dir!()
+        }
       )
 
     {conn, _admin} = signed_in_admin(conn, "admin_toolchains")

@@ -16,7 +16,14 @@ defmodule Portal.Catalog.StatsJsonTest do
           "finished_at" => finished_at,
           "systems" => systems
         },
-        %{run_id: run_id, image_digest: "sha256:x", files_dir: dir, log: "l"}
+        %{
+          package: name,
+          version: "1.0.0",
+          run_id: run_id,
+          image_digest: "sha256:x",
+          files_dir: dir,
+          log: "l"
+        }
       )
   end
 
@@ -84,7 +91,13 @@ defmodule Portal.Catalog.StatsJsonTest do
           "scope" => "argus_only",
           "systems" => %{"host" => %{"status" => "pass"}}
         },
-        %{run_id: "c-2", image_digest: "sha256:x", files_dir: System.tmp_dir!()}
+        %{
+          package: "carried",
+          version: "1.0.0",
+          run_id: "c-2",
+          image_digest: "sha256:x",
+          files_dir: System.tmp_dir!()
+        }
       )
 
     stats = Catalog.stats_json()

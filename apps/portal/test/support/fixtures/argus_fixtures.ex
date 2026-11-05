@@ -55,6 +55,8 @@ defmodule Portal.Test.ArgusFixtures do
 
     {:ok, run} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "#{package}-#{tag}",
         image_digest: "sha256:x",
         files_dir: files,

@@ -35,6 +35,8 @@ defmodule PortalWeb.ContentSecurityPolicyTest do
 
     {:ok, _run} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "csp-test-#{name}-1",
         image_digest: "sha256:csp-test",
         files_dir: dir,

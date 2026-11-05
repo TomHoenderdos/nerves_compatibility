@@ -23,6 +23,8 @@ defmodule Portal.PrecompiledFixtures do
 
     {:ok, _run} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: result["run_id"],
         image_digest: "sha256:precompiled",
         files_dir: dir,
@@ -83,6 +85,8 @@ defmodule Portal.PrecompiledFixtures do
 
     {:ok, build} =
       Ingestion.ingest_toolchain(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "tc-#{System.unique_integer([:positive])}",
         image_digest: "sha256:toolchain",
         files_dir: dir,

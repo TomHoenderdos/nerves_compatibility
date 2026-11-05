@@ -18,6 +18,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
     {:ok, _run} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "catalog-api-jason-1.4.1",
         image_digest: "sha256:api",
         files_dir: dir,
@@ -266,6 +268,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
     {:ok, _} =
       Ingestion.ingest(Map.put(result_fixture(), "deps_lock", deps_lock), %{
+        package: "jason",
+        version: "1.4.1",
         run_id: "deps",
         image_digest: "sha256:deps",
         files_dir: dir,
@@ -307,6 +311,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
     {:ok, _} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "sysdeps",
         image_digest: "sha256:sysdeps",
         files_dir: dir,
@@ -367,6 +373,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
       {:ok, _} =
         Ingestion.ingest(result, %{
+          package: result["package"]["name"],
+          version: result["package"]["version"],
           run_id: run_id,
           image_digest: digest,
           files_dir: dir,
@@ -414,6 +422,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
       {:ok, _} =
         Ingestion.ingest(result, %{
+          package: result["package"]["name"],
+          version: result["package"]["version"],
           run_id: run_id,
           image_digest: "sha256:x",
           files_dir: dir,
@@ -465,6 +475,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
     {:ok, _} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "partial",
         image_digest: "sha256:x",
         files_dir: dir,
@@ -505,6 +517,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
       {:ok, _} =
         Ingestion.ingest(result, %{
+          package: result["package"]["name"],
+          version: result["package"]["version"],
           run_id: run_id,
           image_digest: "sha256:x",
           files_dir: dir,
@@ -547,6 +561,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
     {:ok, _} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "unsafe",
         image_digest: "sha256:x",
         files_dir: dir,
@@ -579,6 +595,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
     {:ok, _} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "pure",
         image_digest: "sha256:x",
         files_dir: dir,
@@ -625,6 +643,8 @@ defmodule PortalWeb.CatalogApiControllerTest do
 
     {:ok, _run} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "catalog-api-shared-jason-1.4.1",
         image_digest: "sha256:shared",
         files_dir: dir,
@@ -798,7 +818,14 @@ defmodule PortalWeb.CatalogApiControllerTest do
           "scope" => "targets",
           "systems" => %{"host" => %{"status" => "pass"}}
         },
-        %{run_id: "run-b", image_digest: "sha256:b", files_dir: System.tmp_dir!(), log: "l"}
+        %{
+          package: name,
+          version: version,
+          run_id: "run-b",
+          image_digest: "sha256:b",
+          files_dir: System.tmp_dir!(),
+          log: "l"
+        }
       )
 
     body = conn |> get("/api/precompiled/manifests/#{name}.json") |> json_response(200)

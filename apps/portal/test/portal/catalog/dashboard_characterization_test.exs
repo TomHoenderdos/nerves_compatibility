@@ -28,7 +28,14 @@ defmodule Portal.Catalog.DashboardCharacterizationTest do
           "finished_at" => finished_at,
           "systems" => systems
         },
-        %{run_id: run_id, image_digest: "sha256:x", files_dir: dir, log: "l"}
+        %{
+          package: name,
+          version: "1.0.0",
+          run_id: run_id,
+          image_digest: "sha256:x",
+          files_dir: dir,
+          log: "l"
+        }
       )
   end
 

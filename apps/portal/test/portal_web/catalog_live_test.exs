@@ -18,6 +18,8 @@ defmodule PortalWeb.CatalogLiveTest do
 
     {:ok, _run} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "catalog-live-jason-1.4.1",
         image_digest: "sha256:live",
         files_dir: dir,

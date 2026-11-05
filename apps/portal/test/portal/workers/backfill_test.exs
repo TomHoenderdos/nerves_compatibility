@@ -176,6 +176,8 @@ defmodule Portal.Workers.BackfillTest do
 
       {:ok, run} =
         Portal.Catalog.Ingestion.ingest(result, %{
+          package: result["package"]["name"],
+          version: result["package"]["version"],
           run_id: "#{package}-docker-#{version}",
           image_digest: digest,
           files_dir: System.tmp_dir!(),

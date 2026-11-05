@@ -21,6 +21,8 @@ defmodule Portal.Catalog.SystemLogTest do
           "systems" => %{"nerves_system_rpi4" => %{"status" => "pass"}}
         },
         %{
+          package: "slpkg",
+          version: "1.0.0",
           run_id: "slpkg-#{System.unique_integer([:positive])}",
           image_digest: "sha256:x",
           files_dir: dir,
@@ -99,6 +101,8 @@ defmodule Portal.Catalog.SystemLogTest do
             "systems" => %{"nerves_system_rpi4" => %{"status" => "fail"}}
           },
           %{
+            package: package,
+            version: "1.0.0",
             run_id: run_id,
             image_digest: "sha256:x",
             files_dir: files,

@@ -15,7 +15,14 @@ defmodule PortalWeb.StatsLiveTest do
           "finished_at" => "2026-07-06T10:00:00Z",
           "systems" => %{"nerves_system_rpi4" => %{"status" => "pass"}}
         },
-        %{run_id: "statpkg-1", image_digest: "sha256:x", files_dir: dir, log: "l"}
+        %{
+          package: "statpkg",
+          version: "1.0.0",
+          run_id: "statpkg-1",
+          image_digest: "sha256:x",
+          files_dir: dir,
+          log: "l"
+        }
       )
 
     {:ok, _v, html} = live(conn, ~p"/stats")
@@ -46,7 +53,14 @@ defmodule PortalWeb.StatsLiveTest do
             }
           }
         },
-        %{run_id: "skippkg-1", image_digest: "sha256:x", files_dir: dir, log: "l"}
+        %{
+          package: "skippkg",
+          version: "1.0.0",
+          run_id: "skippkg-1",
+          image_digest: "sha256:x",
+          files_dir: dir,
+          log: "l"
+        }
       )
 
     {:ok, view, html} = live(conn, ~p"/stats")

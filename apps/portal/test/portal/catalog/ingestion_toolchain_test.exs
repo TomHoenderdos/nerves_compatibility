@@ -78,8 +78,10 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     }
   end
 
-  defp opts(files_dir, run_id \\ "tc-#{System.unique_integer([:positive])}") do
+  defp opts(name, files_dir, run_id \\ "tc-#{System.unique_integer([:positive])}") do
     %{
+      package: name,
+      version: "1.4.4",
       run_id: run_id,
       image_digest: "sha256:toolchain",
       files_dir: files_dir,
@@ -125,7 +127,7 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert {:ok, %ToolchainBuild{} = tb} =
              Ingestion.ingest_toolchain(
                pass_result(name, beam, priv),
-               opts(files_dir_with([beam, priv]))
+               opts(name, files_dir_with([beam, priv]))
              )
 
     assert tb.package_id == pkg.id
@@ -166,9 +168,9 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     result = pass_result(name, beam, priv)
     files_dir = files_dir_with([beam, priv])
 
-    assert {:ok, first} = Ingestion.ingest_toolchain(result, opts(files_dir, "tc-a"))
+    assert {:ok, first} = Ingestion.ingest_toolchain(result, opts(name, files_dir, "tc-a"))
     # The blobs have left files_dir by now, as on an Oban retry.
-    assert {:ok, second} = Ingestion.ingest_toolchain(result, opts(files_dir, "tc-a"))
+    assert {:ok, second} = Ingestion.ingest_toolchain(result, opts(name, files_dir, "tc-a"))
 
     assert first.id == second.id
     assert length(memberships(second)) == 2
@@ -183,7 +185,7 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert {:ok, tb} =
              Ingestion.ingest_toolchain(
                pass_result(name, beam, priv),
-               opts(files_dir_with([beam, priv]))
+               opts(name, files_dir_with([beam, priv]))
              )
 
     pkg = Ash.get!(Package, tb.package_id, domain: @domain)
@@ -194,7 +196,8 @@ defmodule Portal.Catalog.IngestionToolchainTest do
   test "a skipped build stores its reason and no memberships" do
     name = unique_name()
 
-    assert {:ok, tb} = Ingestion.ingest_toolchain(skipped_result(name), opts(files_dir_with([])))
+    assert {:ok, tb} =
+             Ingestion.ingest_toolchain(skipped_result(name), opts(name, files_dir_with([])))
 
     assert tb.status == :skipped
     assert tb.reason == "os-specific source"
@@ -202,15 +205,16 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert memberships(tb) == []
   end
 
-  test "the row is keyed on the queued version, the result's only without one" do
+  test "each version a job names gets its own row" do
     name = unique_name()
-    queued = Map.put(opts(files_dir_with([])), :version, "1.4.5")
+    queued = Map.put(opts(name, files_dir_with([])), :version, "1.4.5")
 
-    assert {:ok, tb} = Ingestion.ingest_toolchain(skipped_result(name), queued)
+    queued_result = put_in(skipped_result(name), ["package", "version"], "1.4.5")
+    assert {:ok, tb} = Ingestion.ingest_toolchain(queued_result, queued)
     assert tb.version == "1.4.5"
 
     assert {:ok, fallback} =
-             Ingestion.ingest_toolchain(skipped_result(name), opts(files_dir_with([])))
+             Ingestion.ingest_toolchain(skipped_result(name), opts(name, files_dir_with([])))
 
     assert fallback.version == "1.4.4"
     refute fallback.id == tb.id
@@ -224,7 +228,7 @@ defmodule Portal.Catalog.IngestionToolchainTest do
       |> put_in(["toolchain_build", "status"], "error")
       |> put_in(["toolchain_build", "reason"], "host compile failed")
 
-    assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(files_dir_with([])))
+    assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
 
     assert tb.status == :fail
     assert tb.reason == "compile failed: host compile failed"
@@ -244,10 +248,27 @@ defmodule Portal.Catalog.IngestionToolchainTest do
         "processes survived the sweep and could not be stopped: 40 (sh)"
       )
 
-    assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(files_dir_with([])))
+    assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
 
     assert tb.status == :fail
     assert tb.reason == "worker: processes survived the sweep and could not be stopped: 40 (sh)"
+    assert memberships(tb) == []
+  end
+
+  # A portal build whose sweep could not run at all is no more trusted than
+  # one with survivors, and is stored under the same label.
+  test "a build whose process sweep could not run is stored with the sweep's reason" do
+    name = unique_name()
+
+    result =
+      skipped_result(name)
+      |> put_in(["toolchain_build", "status"], "error")
+      |> put_in(["toolchain_build", "reason"], "process sweep could not run: not linux")
+
+    assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+
+    assert tb.status == :fail
+    assert tb.reason == "worker: process sweep could not run: not linux"
     assert memberships(tb) == []
   end
 
@@ -259,10 +280,11 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     {:ok, passed} =
       Ingestion.ingest_toolchain(
         pass_result(name, beam, priv),
-        opts(files_dir_with([beam, priv]))
+        opts(name, files_dir_with([beam, priv]))
       )
 
-    {:ok, skipped} = Ingestion.ingest_toolchain(skipped_result(name), opts(files_dir_with([])))
+    {:ok, skipped} =
+      Ingestion.ingest_toolchain(skipped_result(name), opts(name, files_dir_with([])))
 
     assert passed.id == skipped.id
     assert memberships(skipped) == []
@@ -276,7 +298,7 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     {:ok, previous} =
       Ingestion.ingest_toolchain(
         pass_result(name, beam, priv),
-        opts(files_dir_with([beam, priv]), "tc-first")
+        opts(name, files_dir_with([beam, priv]), "tc-first")
       )
 
     new_beam = blob("beam2-#{name}")
@@ -286,7 +308,7 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert {:error, {:artifacts_unstaged, [^missing_sha]}} =
              Ingestion.ingest_toolchain(
                pass_result(name, new_beam, new_priv),
-               opts(files_dir_with([new_beam]), "tc-second")
+               opts(name, files_dir_with([new_beam]), "tc-second")
              )
 
     assert [row] =
@@ -309,7 +331,7 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert {:error, {:artifacts_unstaged, [_]}} =
              Ingestion.ingest_toolchain(
                pass_result(name, beam, priv),
-               opts(files_dir_with([beam]))
+               opts(name, files_dir_with([beam]))
              )
 
     refute ToolchainBuild
@@ -324,7 +346,8 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     manifest = get_in(pass_result(name, beam, priv), ["toolchain_build", "file_manifest"])
     result = put_in(skipped_result(name), ["toolchain_build", "file_manifest"], manifest)
 
-    assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(files_dir_with([beam, priv])))
+    assert {:ok, tb} =
+             Ingestion.ingest_toolchain(result, opts(name, files_dir_with([beam, priv])))
 
     assert tb.status == :skipped
     assert tb.file_manifest == nil

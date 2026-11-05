@@ -37,6 +37,8 @@ defmodule Portal.Catalog.IngestionTest do
 
     {:ok, run} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "fixture-jason-1.4.1",
         image_digest: "sha256:deadbeef",
         files_dir: files_dir,
@@ -88,6 +90,8 @@ defmodule Portal.Catalog.IngestionTest do
 
     {:ok, run1} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "rid-shared-1",
         image_digest: "sha256:1",
         files_dir: seed_files_dir([sha]),
@@ -101,6 +105,8 @@ defmodule Portal.Catalog.IngestionTest do
 
     {:ok, run2} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "rid-shared-2",
         image_digest: "sha256:2",
         files_dir: seed_files_dir([sha]),
@@ -140,6 +146,8 @@ defmodule Portal.Catalog.IngestionTest do
 
     {:ok, run} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "rid-linked",
         image_digest: "sha256:1",
         files_dir: files_dir,
@@ -156,6 +164,8 @@ defmodule Portal.Catalog.IngestionTest do
 
     {:ok, run} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "rid-forced",
         image_digest: "sha256:1",
         files_dir: files_dir,
@@ -171,6 +181,8 @@ defmodule Portal.Catalog.IngestionTest do
 
     {:ok, run1} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "rid-a",
         image_digest: "sha256:1",
         files_dir: files_dir,
@@ -181,6 +193,8 @@ defmodule Portal.Catalog.IngestionTest do
       Ingestion.ingest(
         Map.put(result, "package", Map.put(result["package"], "version", "1.4.2")),
         %{
+          package: result["package"]["name"],
+          version: "1.4.2",
           run_id: "rid-b",
           image_digest: "sha256:2",
           files_dir: files_dir,
@@ -224,6 +238,8 @@ defmodule Portal.Catalog.IngestionTest do
 
     {:ok, run} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: run_id,
         image_digest: "sha256:1",
         files_dir: files_dir,
@@ -316,6 +332,8 @@ defmodule Portal.Catalog.IngestionTest do
     sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
 
     Ingestion.ingest(load_fixture(), %{
+      package: "jason",
+      version: "1.4.1",
       run_id: "log-jason-#{System.unique_integer([:positive])}",
       image_digest: "sha256:deadbeef",
       files_dir: seed_files_dir([sha]),
@@ -338,6 +356,8 @@ defmodule Portal.Catalog.IngestionTest do
 
       {:ok, run} =
         Ingestion.ingest(load_fixture() |> Map.put("forced_status", "fail"), %{
+          package: "jason",
+          version: "1.4.1",
           run_id: "rid-failed-log",
           image_digest: "sha256:1",
           files_dir: files_dir,
@@ -430,6 +450,8 @@ defmodule Portal.Catalog.IngestionTest do
       {ingest, log} =
         with_log(fn ->
           Ingestion.ingest(result, %{
+            package: result["package"]["name"],
+            version: result["package"]["version"],
             run_id: "traversal-#{System.unique_integer([:positive])}",
             image_digest: "sha256:deadbeef",
             files_dir: seed_files_dir([]),
@@ -464,6 +486,8 @@ defmodule Portal.Catalog.IngestionTest do
       {ingest, log} =
         with_log(fn ->
           Ingestion.ingest(result, %{
+            package: result["package"]["name"],
+            version: result["package"]["version"],
             run_id: "traversal-#{System.unique_integer([:positive])}",
             image_digest: "sha256:deadbeef",
             files_dir: seed_files_dir([]),
@@ -491,6 +515,8 @@ defmodule Portal.Catalog.IngestionTest do
       {ingest, log} =
         with_log(fn ->
           Ingestion.ingest(result, %{
+            package: result["package"]["name"],
+            version: result["package"]["version"],
             run_id: "symlink-#{System.unique_integer([:positive])}",
             image_digest: "sha256:deadbeef",
             files_dir: seed_files_dir([]),
@@ -510,6 +536,8 @@ defmodule Portal.Catalog.IngestionTest do
 
       assert {:ok, run} =
                Ingestion.ingest(load_fixture(), %{
+                 package: "jason",
+                 version: "1.4.1",
                  run_id: "no-out-#{System.unique_integer([:positive])}",
                  image_digest: "sha256:deadbeef",
                  files_dir: seed_files_dir([sha]),
@@ -562,6 +590,8 @@ defmodule Portal.Catalog.IngestionTest do
 
       {:ok, run} =
         Ingestion.ingest(result, %{
+          package: result["package"]["name"],
+          version: result["package"]["version"],
           run_id: "deps-get-failed-1",
           image_digest: "sha256:deadbeef",
           files_dir: seed_files_dir([]),
@@ -593,6 +623,8 @@ defmodule Portal.Catalog.IngestionTest do
 
     {:ok, run} =
       Ingestion.ingest(load_fixture() |> Map.put("argus", argus), %{
+        package: "jason",
+        version: "1.4.1",
         run_id: "argus-1",
         image_digest: "sha256:argus",
         files_dir: seed_files_dir([sha]),
@@ -604,6 +636,8 @@ defmodule Portal.Catalog.IngestionTest do
 
     {:ok, old} =
       Ingestion.ingest(load_fixture(), %{
+        package: "jason",
+        version: "1.4.1",
         run_id: "argus-2",
         image_digest: "sha256:argus2",
         files_dir: seed_files_dir([sha]),
@@ -625,6 +659,8 @@ defmodule Portal.Catalog.IngestionTest do
 
     {:ok, run} =
       Ingestion.ingest(load_fixture() |> Map.put("argus", argus), %{
+        package: "jason",
+        version: "1.4.1",
         run_id: "argus-skip-1",
         image_digest: "sha256:argus-skip",
         files_dir: seed_files_dir([sha]),
@@ -640,6 +676,8 @@ defmodule Portal.Catalog.IngestionTest do
 
     {:ok, run} =
       Ingestion.ingest(load_fixture() |> Map.put("argus", "garbage"), %{
+        package: "jason",
+        version: "1.4.1",
         run_id: "argus-3",
         image_digest: "sha256:argus3",
         files_dir: seed_files_dir([sha]),
@@ -656,6 +694,8 @@ defmodule Portal.Catalog.IngestionTest do
 
       {:ok, run} =
         Ingestion.ingest(result, %{
+          package: result["package"]["name"],
+          version: result["package"]["version"],
           run_id: "deps-lock-#{System.unique_integer([:positive])}",
           image_digest: "sha256:deps",
           files_dir: seed_files_dir([sha]),
@@ -723,6 +763,8 @@ defmodule Portal.Catalog.IngestionTest do
 
       {:ok, run} =
         Ingestion.ingest(result, %{
+          package: result["package"]["name"],
+          version: result["package"]["version"],
           run_id: "sys-deps-lock-#{System.unique_integer([:positive])}",
           image_digest: "sha256:deps",
           files_dir: seed_files_dir([sha]),
@@ -758,6 +800,8 @@ defmodule Portal.Catalog.IngestionTest do
 
       {:ok, run} =
         Ingestion.ingest(load_fixture(), %{
+          package: "jason",
+          version: "1.4.1",
           run_id: "sys-deps-lock-none-#{System.unique_integer([:positive])}",
           image_digest: "sha256:deps",
           files_dir: seed_files_dir([sha]),
@@ -787,6 +831,8 @@ defmodule Portal.Catalog.IngestionTest do
     defp ingest!(result) do
       {:ok, run} =
         Ingestion.ingest(result, %{
+          package: result["package"]["name"],
+          version: result["package"]["version"],
           run_id: "r-#{System.unique_integer([:positive])}",
           image_digest: "sha256:x",
           files_dir: System.tmp_dir!()

@@ -23,6 +23,8 @@ defmodule Portal.Catalog.FailingVersionStreaksTest do
 
     {:ok, _} =
       Ingestion.ingest(result, %{
+        package: result["package"]["name"],
+        version: result["package"]["version"],
         run_id: "#{name}-#{version}#{run_suffix}",
         image_digest: "sha256:x",
         files_dir: dir,

@@ -68,7 +68,13 @@ defmodule Portal.Workers.RemoteBuildTest do
           "finished_at" => "2026-10-10T10:00:00Z",
           "systems" => %{"host" => %{"status" => "pass"}}
         },
-        %{run_id: "r", image_digest: digest, files_dir: System.tmp_dir!()}
+        %{
+          package: "jason",
+          version: "1.4.4",
+          run_id: "r",
+          image_digest: digest,
+          files_dir: System.tmp_dir!()
+        }
       )
 
     assert :ok = perform_job(RemoteBuild, %{"package" => "jason", "version" => "1.4.4"})

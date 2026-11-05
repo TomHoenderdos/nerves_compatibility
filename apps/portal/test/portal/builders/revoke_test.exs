@@ -33,6 +33,8 @@ defmodule Portal.Builders.RevokeTest do
           "systems" => %{"host" => %{"status" => "pass"}}
         },
         %{
+          package: name,
+          version: version,
           run_id: "r-#{name}-#{System.unique_integer([:positive])}",
           image_digest: "sha256:x",
           files_dir: System.tmp_dir!(),

@@ -15,6 +15,8 @@ defmodule PortalWeb.PackageCarriedTest do
           "systems" => systems
         },
         %{
+          package: "carriedpage",
+          version: "1.0.0",
           run_id: "cp-#{System.unique_integer([:positive])}",
           image_digest: "sha256:x",
           files_dir: System.tmp_dir!()

@@ -97,9 +97,13 @@ defmodule Portal.Workers.ToolchainIntegrationTest do
     assert build.exit_code == 0, "#{image} exited #{build.exit_code}:\n#{build.log}"
     assert %{"scope" => "toolchain", "toolchain_build" => tb} = build.result
     assert tb["status"] == "pass", inspect(tb)
+    # A real container run sweeps its processes (`NccWorker.ProcessSweep`).
+    assert build.result["process_sweep"] == "ok", build.log
 
     assert {:ok, %ToolchainBuild{} = row} =
              Ingestion.ingest_toolchain(build.result, %{
+               package: @package,
+               version: @version,
                files_dir: build.files_dir,
                output_dir: build.output_dir,
                toolchain: toolchain,
