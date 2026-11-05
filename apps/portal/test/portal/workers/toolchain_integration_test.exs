@@ -76,6 +76,70 @@ defmodule Portal.Workers.ToolchainIntegrationTest do
     write_client_check(v2, Enum.find(rows, &(&1.toolchain == "1.19/28")))
   end
 
+  # A package that ships static priv data: its priv files are published with
+  # the build once the host has checked each one against the release's own
+  # Hex tarball. Asks the real Hex CDN and registry for that tarball, since
+  # the test config's stand-in for them answers nothing.
+  test "builds phoenix_html with its static priv JavaScript and publishes it" do
+    package = "phoenix_html"
+    version = "4.4.0"
+    %{image: image, elixir: elixir, otp: otp} = List.last(@toolchains)
+    toolchain = "#{elixir}/#{otp}"
+    run_id = "toolchain-it-#{package}-#{System.unique_integer([:positive])}"
+    image_digest = Builder.image_digest(image)
+
+    assert {:ok, build} =
+             Builder.build(%{
+               package: package,
+               version: version,
+               run_id: run_id,
+               image: image,
+               image_digest: image_digest,
+               mode: "toolchain",
+               toolchain: %{elixir: elixir, otp: otp},
+               optional_deps: "include"
+             })
+
+    on_exit(fn -> Builder.cleanup(run_id) end)
+
+    assert build.exit_code == 0, "#{image} exited #{build.exit_code}:\n#{build.log}"
+
+    assert %{"toolchain_build" => %{"status" => "pass"} = tb} = build.result,
+           inspect(build.result)
+
+    assert Enum.any?(tb["file_manifest"]["priv"], &(&1["path"] == "priv/static/phoenix_html.js")),
+           inspect(tb["file_manifest"]["priv"])
+
+    assert {:ok, %ToolchainBuild{status: :pass} = row} =
+             Ingestion.ingest_toolchain(build.result, %{
+               files_dir: build.files_dir,
+               output_dir: build.output_dir,
+               toolchain: toolchain,
+               builder_version: 1,
+               image_digest: image_digest,
+               run_id: run_id,
+               version: version,
+               variant: :with,
+               hex_outer_checksum: &Portal.HexDeps.outer_checksum/2,
+               hex_tarball: &Portal.HexDeps.tarball/2
+             })
+
+    assert %{"versions" => %{^version => %{"builds" => builds}}} =
+             Catalog.precompiled_manifest_v2(package)
+
+    assert [served] =
+             Enum.filter(builds, &(&1["target"] == "pure_elixir" and &1["build"]["otp"] == otp))
+
+    assert [js] = Enum.filter(served["priv"], &(&1["path"] == "priv/static/phoenix_html.js"))
+    assert js["mode"] == 33_188
+
+    assert ArtifactMembership
+           |> Ash.Query.filter(toolchain_build_id == ^row.id and sha256 == ^js["sha256"])
+           |> Ash.exists?(domain: Portal.Catalog)
+
+    IO.puts("phoenix_html #{version} on #{toolchain}: pass, serves priv/static/phoenix_html.js")
+  end
+
   defp build_and_ingest(%{image: image, elixir: elixir, otp: otp}) do
     toolchain = "#{elixir}/#{otp}"
     run_id = "toolchain-it-#{@package}-#{elixir}-#{otp}-#{System.unique_integer([:positive])}"
