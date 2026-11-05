@@ -1203,85 +1203,123 @@ defmodule Portal.Catalog do
     List.flatten(rows)
   end
 
-  # Package versions a toolchain build is wanted for (`toolchain_backlog/3`),
-  # one row per version with the newest `finished_at` of its qualifying runs
-  # and the package's hex.pm recent downloads.
+  # Toolchain builds wanted (`toolchain_backlog/3`): one row per package
+  # version and variant, with the newest `finished_at` of the version's
+  # qualifying runs and the package's hex.pm recent downloads.
   #
-  # A version qualifies on a passing `host` compile in a full run that is not
-  # revoked. A full run is one without carried systems: a partial run's other
-  # results are copies of an earlier run, so only a full one shows the package
-  # compiled from scratch on this image. Pure BEAM means the package records no
-  # NIF language and no port language, read as `native_breakdown/0` reads them;
-  # a package with no `native_components` at all counts as pure, since the
-  # worker writes the map whenever it can see the source.
+  # A version qualifies on a passing `host` compile of its own in a run that is
+  # not revoked. Its own: a partial run carries the results it did not build
+  # from an earlier run, host included for a targets run, and a copy shows
+  # nothing about this image. The run's other systems do not matter, so a
+  # targets or argus-only run that compiled the host itself counts. Pure BEAM
+  # means the package records no NIF language and no port language, read as
+  # `native_breakdown/0` reads them; a package with no `native_components` at
+  # all counts as pure, since the worker writes the map whenever it can see the
+  # source.
   #
-  # A live row for the identity removes the version: `pass` and `skipped` at any
-  # age, `error` younger than a day ($3), `fail` younger than 7 days ($4), and
-  # any revoked row, whatever its status. A revoke is a human decision, and only
-  # a `builder_version` bump makes a new identity to build again.
+  # The `with` variant is wanted for every qualifying version, the `without`
+  # one only once a passing, unrevoked `with` build reports an optional
+  # dependency it added: for a package with none the two builds are the same.
+  #
+  # A live row for the identity, variant included, removes it: `pass` and
+  # `skipped` at any age, `error` younger than a day ($3), `fail` younger than
+  # 7 days ($4), and any revoked row, whatever its status. A revoke is a human
+  # decision, and only a `builder_version` bump makes a new identity to build
+  # again. Two rows are verdicts no longer: a `pass` that dropped its optional
+  # dependencies for a transient reason (a Hex hiccup or a slow fetch) once it
+  # is a day old ($3), and a `skipped` for shipping priv files, which the worker
+  # now judges file by file. Either stays as it is until the new build
+  # replaces it.
   @toolchain_candidates_sql """
-  SELECT p.name AS package, r.version_tested AS version, max(r.finished_at) AS finished_at,
-         p.hex_downloads_recent AS recent
-  FROM catalog_packages p
-  JOIN catalog_runs r ON r.package_id = p.id
-  JOIN catalog_system_results s ON s.run_id = r.id
-  WHERE s.system_pkg = 'host'
-    AND s.status = 'pass'
-    AND r.revoked_at IS NULL
-    AND NOT EXISTS (
-      SELECT 1 FROM catalog_system_results c
-      WHERE c.run_id = r.id AND c.carried_from_run_id IS NOT NULL
-    )
-    AND p.native_components ->> 'nif_language' IS NULL
-    AND NOT EXISTS (
-      SELECT 1
-      FROM jsonb_array_elements_text(
-        CASE
-          WHEN jsonb_typeof(p.native_components -> 'port_languages') = 'array'
-          THEN p.native_components -> 'port_languages'
-        END
-      ) AS l(lang)
-      WHERE l.lang IS NOT NULL
+  SELECT e.package, e.version, v.variant, e.finished_at, e.recent
+  FROM (
+    SELECT p.id AS package_id, p.name AS package, r.version_tested AS version,
+           max(r.finished_at) AS finished_at, p.hex_downloads_recent AS recent
+    FROM catalog_packages p
+    JOIN catalog_runs r ON r.package_id = p.id
+    JOIN catalog_system_results s ON s.run_id = r.id
+    WHERE s.system_pkg = 'host'
+      AND s.status = 'pass'
+      AND s.carried_from_run_id IS NULL
+      AND r.revoked_at IS NULL
+      AND p.native_components ->> 'nif_language' IS NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(
+          CASE
+            WHEN jsonb_typeof(p.native_components -> 'port_languages') = 'array'
+            THEN p.native_components -> 'port_languages'
+          END
+        ) AS l(lang)
+        WHERE l.lang IS NOT NULL
+      )
+    GROUP BY p.id, p.name, r.version_tested
+  ) e
+  CROSS JOIN (VALUES ('with'), ('without')) AS v(variant)
+  WHERE (
+      v.variant = 'with'
+      OR EXISTS (
+        SELECT 1 FROM catalog_toolchain_builds w
+        WHERE w.package_id = e.package_id
+          AND w.version = e.version
+          AND w.toolchain = $1
+          AND w.builder_version = $2
+          AND w.variant = 'with'
+          AND w.status = 'pass'
+          AND w.revoked_at IS NULL
+          AND jsonb_typeof(w.optional_deps -> 'added') = 'array'
+          AND jsonb_array_length(w.optional_deps -> 'added') > 0
+      )
     )
     AND NOT EXISTS (
       SELECT 1 FROM catalog_toolchain_builds t
-      WHERE t.package_id = p.id
-        AND t.version = r.version_tested
+      WHERE t.package_id = e.package_id
+        AND t.version = e.version
         AND t.toolchain = $1
         AND t.builder_version = $2
+        AND t.variant = v.variant
         AND (
           t.revoked_at IS NOT NULL
-          OR t.status IN ('pass', 'skipped')
+          OR (
+            t.status = 'pass'
+            AND NOT (
+              coalesce(t.optional_deps ->> 'reason', '') IN ('deps_get_failed', 'timeout')
+              AND coalesce(t.finished_at, t.updated_at) <= $3::timestamp
+            )
+          )
+          OR (t.status = 'skipped' AND t.reason IS DISTINCT FROM 'ships priv files')
           OR (t.status = 'error' AND coalesce(t.finished_at, t.updated_at) > $3::timestamp)
           OR (t.status = 'fail' AND coalesce(t.finished_at, t.updated_at) > $4::timestamp)
         )
     )
-  GROUP BY p.id, p.name, r.version_tested
   """
 
   @doc """
-  Package versions to build on `toolchain` at `builder_version`, at most
-  `limit` of them: every version with a passing `host` compile on a full,
-  non-revoked run, of a package with no native components, that has no live
-  `Portal.Catalog.ToolchainBuild` for the identity (see the query's comment for
-  what is live).
+  Toolchain builds to make on `toolchain` at `builder_version`, at most
+  `limit` of them, each a package version and its optional-deps `variant`
+  (see `Portal.Catalog.ToolchainBuild`): every version whose own `host`
+  compile passed on a non-revoked run, of a package with no native
+  components, is wanted `:with` its optional dependencies, and also
+  `:without` them once a `:with` build reports adding one. A variant with a
+  live `Portal.Catalog.ToolchainBuild` of its own is left out (see the
+  query's comment for what is live).
 
   Most wanted first, so a capped sweep builds what projects resolve before
   what nobody asks for: by the package's hex.pm recent downloads, then, within
   a package, by the release's own downloads
   (`Portal.Catalog.ReleaseDownloads`), then newest run first, with version
-  breaking a tie. An unknown count sorts after every known one, zero
-  included: it is not known demand.
+  breaking a tie and `:with` ahead of `:without`. An unknown count sorts
+  after every known one, zero included: it is not known demand.
   """
   @spec toolchain_backlog(String.t(), pos_integer(), non_neg_integer()) :: [
-          %{package: String.t(), version: String.t()}
+          %{package: String.t(), version: String.t(), variant: :with | :without}
         ]
   def toolchain_backlog(toolchain, builder_version, limit) do
     %{rows: rows} =
       Repo.query!(
         """
         WITH candidates AS (#{@toolchain_candidates_sql})
-        SELECT c.package, c.version
+        SELECT c.package, c.version, c.variant
         FROM candidates c
         LEFT JOIN catalog_release_downloads d
           ON d.package = c.package AND d.version = c.version
@@ -1289,14 +1327,20 @@ defmodule Portal.Catalog do
                  d.downloads DESC NULLS LAST,
                  c.finished_at DESC NULLS LAST,
                  c.version DESC,
+                 c.variant = 'without',
                  c.package
         LIMIT $5
         """,
         toolchain_params(toolchain, builder_version) ++ [limit]
       )
 
-    Enum.map(rows, fn [package, version] -> %{package: package, version: version} end)
+    Enum.map(rows, fn [package, version, variant] ->
+      %{package: package, version: version, variant: variant(variant)}
+    end)
   end
+
+  defp variant("with"), do: :with
+  defp variant("without"), do: :without
 
   @doc """
   The backlog versions whose release downloads are worth asking hex.pm for
@@ -1345,9 +1389,15 @@ defmodule Portal.Catalog do
       Repo.query!(
         """
         WITH candidates AS (#{@toolchain_candidates_sql}),
+        -- Both variants of a version share its release's downloads.
+        versions AS (
+          SELECT package, recent, max(finished_at) AS finished_at, version
+          FROM candidates
+          GROUP BY package, recent, version
+        ),
         top AS (
           SELECT package, recent
-          FROM candidates
+          FROM versions
           WHERE recent IS NOT NULL
           GROUP BY package, recent
           ORDER BY recent DESC, package
@@ -1358,7 +1408,7 @@ defmodule Portal.Catalog do
                  row_number() OVER (
                    PARTITION BY c.package ORDER BY c.finished_at DESC NULLS LAST, c.version DESC
                  ) AS rank
-          FROM candidates c
+          FROM versions c
           JOIN top t ON t.package = c.package
         )
         SELECT package, recent, finished_at, version
@@ -1381,7 +1431,8 @@ defmodule Portal.Catalog do
   @doc """
   Per configured toolchain (`Portal.Toolchains.images/0`), at the current
   `builder_version`: how many non-revoked toolchain builds have each status,
-  and how many versions `toolchain_backlog/3` would still build.
+  and how many builds `toolchain_backlog/3` would still make (a version
+  wanted with and without its optional dependencies counts twice).
   """
   @spec toolchain_counts() :: %{
           String.t() => %{

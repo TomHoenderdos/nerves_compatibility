@@ -45,7 +45,8 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    `stale_build_not_removed`, `mix_exs_edit_failed` or `firmware_build`. `skipped` lists optional dependencies never
    tried because most applications do not lock them: dev tooling (`igniter`, `sourceror`, `rewrite`, `ex_doc`,
    `credo`, `dialyxir`, `stream_data`, `excoveralls`, `mix_test_watch`, `benchee`) and alternatives an application
-   picks one of (`picosat_elixir`, `simple_sat`); the list is `@optional_deps_never_added` in `NccWorker.Project`.
+   picks one of (`picosat_elixir`, `simple_sat`); the list is `Compatibility.OptionalDeps.never_added/0`, which the
+   portal's coverage report reads too.
    `host.log` carries the same lines. The key is absent for argus-only runs.
 
    A firmware run gets the same idea, but after every target's firmware build has settled its status
@@ -249,11 +250,28 @@ With `"mode": "toolchain"` (and an informational `"toolchain": {"elixir": "1.19"
 `requested_toolchain`) the worker answers one question on a toolchain image: are the package's own beams, built by
 this Elixir and OTP, the same on every OS and architecture? Such an image has no nerves_bootstrap and possibly an
 OTP Nerves 2 does not accept, so the run uses a plain `mix new` project (`NccWorker.Project.create_plain/2`), adds
-the package, applies the lock policy (exit 11), runs the same optional-dependency pass as a pure-Elixir full run,
-compiles once on the host in `prod` and judges `_build/host/lib/<package>` with
-`NccWorker.BuildSelection.portable?/3`. No firmware, no argus (`argus.status` is `"skipped"`), no Nerves systems,
-no Hex metadata fetch; `toolchain.nerves_bootstrap` is `"absent"`. `result.json` has `"scope": "toolchain"`,
-`"systems": {}`, the usual top-level `deps_lock`, `package_checksum` and `optional_deps`, and:
+the package, applies the lock policy (exit 11), compiles once on the host in `prod`, runs the same
+optional-dependency pass as a pure-Elixir full run and judges `_build/host/lib/<package>` with
+`NccWorker.BuildSelection.portable?/4`. No firmware, no argus (`argus.status` is `"skipped"`), no Nerves systems,
+no Hex metadata fetch; `toolchain.nerves_bootstrap` is `"absent"`.
+
+`"optional_deps"` in `NCC_INPUT` picks the build: `"include"` (the default, also when absent) runs the
+optional-dependency pass, `"exclude"` skips it entirely, so the package is built and published without its optional
+dependencies, and `result.json`'s `optional_deps` is `{"added": [], "dropped": [], "skipped": [], "reason":
+"not_requested"}`. The portal queues a version `"include"` first and `"exclude"` only when that build added one.
+
+A package that ships `priv` files is portable only when they are static data (`NccWorker.StaticPriv`): every file
+under `_build/host/lib/<package>/priv` is a regular file with one link, executable neither there nor in the
+tarball, carried byte for byte at `priv/<path>` in the `contents.tar.gz` of the package's own Hex tarball, and not
+native code by name (`.so`, `.dylib`, `.dll`, `.a`, `.o`, `.node`) or magic (ELF, Mach-O, PE, `ar`), with at most
+500 files and 10 MiB in all; the beam rules and the native-source check (`c_src`, `native`, `zig_src`, `go_src`
+and the rest) still apply first and after. The tarball is the one `deps.get` left in the run's Hex cache, used only
+while its SHA-256 is the outer checksum the lock names; the source dir is never the reference, since a compile hook
+can write there too. A file that fails names itself in the skip reason, and a tarball that is missing or cannot be
+read skips the package as `"ships priv files that could not be checked against its Hex tarball"`.
+
+`result.json` has `"scope": "toolchain"`, `"systems": {}`, the usual top-level `deps_lock`, `package_checksum` and
+`optional_deps`, and:
 
 ```json
 "toolchain_build": {

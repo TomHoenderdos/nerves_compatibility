@@ -59,6 +59,9 @@ defmodule NccWorker.Worker do
             optional(:elixir) => String.t(),
             optional(:otp) => String.t()
           },
+          # For "toolchain": "include" (the default) runs the optional
+          # dependencies pass, "exclude" builds the package without it.
+          optional(:optional_deps) => String.t(),
           optional(:argus) => %{
             optional(:analyses) => [String.t()],
             optional(:scope) => String.t(),
@@ -85,7 +88,7 @@ defmodule NccWorker.Worker do
 
   # A "toolchain" run's verdict (`toolchain_build/4`): one prod host compile
   # in a plain `mix new` project on a toolchain image, judged by
-  # `NccWorker.BuildSelection.portable?/3`. `reason` is portable?'s reason for
+  # `NccWorker.BuildSelection.portable?/4`. `reason` is portable?'s reason for
   # "skipped" and what failed for "error", nil for "pass". `deps_lock`,
   # `package_checksum` and `compile_env` describe the build ("pass" and
   # "skipped"); `file_manifest` lists the package's own files under
@@ -133,10 +136,11 @@ defmodule NccWorker.Worker do
           # "target_compile_failed", "timeout", "stale_build_not_removed",
           # "deps_lock_unreadable", "mix_exs_edit_failed",
           # "run_budget_exhausted" or "no_passing_target", `nil` when nothing
-          # was dropped. Absent for
+          # was dropped. A toolchain run asked for `optional_deps: "exclude"`
+          # never tries: everything empty and "not_requested". Absent for
           # argus-only runs.
           # `skipped` were never tried: dev tooling and alternatives on
-          # `NccWorker.Project`'s `@optional_deps_never_added`.
+          # `Compatibility.OptionalDeps.never_added/0`.
           optional(:optional_deps) => %{
             added: [String.t()],
             dropped: [String.t()],
@@ -1096,10 +1100,11 @@ defmodule NccWorker.Worker do
   # OTP, the same on every OS and architecture? A toolchain image has no
   # nerves_bootstrap and an OTP Nerves 2 may not accept, so the project is a
   # plain `mix new` one: the package, the optional-dependency pass a
-  # pure-Elixir full run gets, one prod host compile and the
-  # `BuildSelection.portable?/3` verdict. No firmware, no argus, no systems,
-  # and no Hex metadata fetch: the portal only queues versions a full run has
-  # already checked.
+  # pure-Elixir full run gets (unless the input's `optional_deps` is
+  # "exclude": the portal builds a version both ways), one prod host compile
+  # and the `BuildSelection.portable?/4` verdict. No firmware, no argus, no
+  # systems, and no Hex metadata fetch: the portal only queues versions a full
+  # run has already checked.
   defp toolchain_run(input, paths, toolchain) do
     package_name = input.package.name
     log_tail_bytes = get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes
@@ -1110,7 +1115,13 @@ defmodule NccWorker.Worker do
       host = compile_host(project_dir, paths.output_dir, log_tail_bytes, package_name)
 
       with {:ok, optional_deps} <-
-             toolchain_optional_deps(host, project_dir, package_name, paths) do
+             toolchain_optional_deps(
+               input[:optional_deps],
+               host,
+               project_dir,
+               package_name,
+               paths
+             ) do
         result =
           %{
             run_id: input.run_id,
@@ -1138,11 +1149,17 @@ defmodule NccWorker.Worker do
   end
 
   # The same best-effort pass as a pure-Elixir full run, after the build
-  # without them has passed. A failed compile is the verdict already.
-  defp toolchain_optional_deps(%{status: :pass}, project_dir, package_name, paths),
+  # without them has passed. A failed compile is the verdict already. A build
+  # asked for without them never starts the pass, and says so in the shape
+  # the pass reports.
+  defp toolchain_optional_deps("exclude", _host, _project_dir, _package_name, _paths),
+    do: {:ok, Map.put(optional_deps_info([], [], "not_requested"), :skipped, [])}
+
+  defp toolchain_optional_deps(_request, %{status: :pass}, project_dir, package_name, paths),
     do: resolve_optional_deps(:toolchain, :pure_elixir, project_dir, package_name, paths)
 
-  defp toolchain_optional_deps(_host, _project_dir, _package_name, _paths), do: {:ok, nil}
+  defp toolchain_optional_deps(_request, _host, _project_dir, _package_name, _paths),
+    do: {:ok, nil}
 
   defp put_requested_toolchain(result, requested) when is_map(requested),
     do: Map.put(result, :requested_toolchain, requested)
@@ -1184,7 +1201,9 @@ defmodule NccWorker.Worker do
         compile_env: AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
     }
 
-    case BuildSelection.portable?(project_dir, package_name, scan) do
+    tarball = package_tarball(project_dir, package_name)
+
+    case BuildSelection.portable?(project_dir, package_name, scan, tarball: tarball) do
       :ok ->
         manifest = BeamScan.normalize(scan)["footprint"]["file_manifest"]
         %{build | status: "pass", file_manifest: manifest}
@@ -1194,7 +1213,20 @@ defmodule NccWorker.Worker do
     end
   end
 
-  # The raw `BeamScanner` result, which `portable?/3` reads. A missing or
+  # The package's own Hex tarball, the reference `BuildSelection.portable?/4`
+  # judges its priv files against. `deps.get` left it in the run's Hex cache
+  # (`NccWorker.HexCache`), whose `HEX_HOME` every `mix` here inherits, and
+  # it is used only while it is still the tarball the lock names.
+  defp package_tarball(project_dir, package_name) do
+    with {:ok, release} <- DepsLock.package_release(project_dir, package_name),
+         home when is_binary(home) and home != "" <- System.get_env("HEX_HOME") do
+      HexCache.package_tarball(home, release.name, release.version, release.checksum)
+    else
+      _ -> nil
+    end
+  end
+
+  # The raw `BeamScanner` result, which `portable?/4` reads. A missing or
   # unreadable build reads as no beams, so it is skipped rather than passed.
   defp scan_host_app(app_dir) do
     if File.dir?(app_dir), do: BeamScanner.analyze(app_dir), else: %{beam_count: 0}

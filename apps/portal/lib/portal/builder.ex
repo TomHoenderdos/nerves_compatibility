@@ -64,6 +64,9 @@ defmodule Portal.Builder do
           # For `mode: "toolchain"`: the toolchain the run was queued for,
           # e.g. `%{elixir: "1.19", otp: "28"}`.
           optional(:toolchain) => %{elixir: String.t(), otp: String.t()} | nil,
+          # For `mode: "toolchain"`: `"include"` runs the worker's optional
+          # dependencies pass, `"exclude"` builds without it.
+          optional(:optional_deps) => String.t() | nil,
           optional(:argus) => map() | nil,
           # For `mode: "warm_nerves"`: `%{"name", "version"}` pairs to warm
           # (`Portal.Workers.WarmNerves`); `[]` warms what the template resolves.
@@ -227,6 +230,7 @@ defmodule Portal.Builder do
       systems_filter: Map.get(args, :systems_filter),
       mode: mode,
       toolchain: Map.get(args, :toolchain),
+      optional_deps: Map.get(args, :optional_deps),
       argus: Map.get(args, :argus),
       nerves_packages: Map.get(args, :nerves_packages),
       egress_probe: Map.get(args, :egress_probe)
@@ -768,6 +772,7 @@ defmodule Portal.Builder do
     |> maybe_put("systems_filter", job.systems_filter)
     |> maybe_put("mode", Map.get(job, :mode))
     |> maybe_put("toolchain", Map.get(job, :toolchain))
+    |> maybe_put("optional_deps", Map.get(job, :optional_deps))
     |> maybe_put("argus", Map.get(job, :argus))
     |> maybe_put("nerves_packages", Map.get(job, :nerves_packages))
     |> maybe_put("egress_probe", Map.get(job, :egress_probe))

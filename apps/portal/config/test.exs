@@ -43,6 +43,9 @@ config :portal, :identity_providers, %{
 # Anonymous intake asks hex.pm whether each name exists; tests script it.
 config :portal, :hex_package_lookup, Portal.Test.FakeHexLookup
 
+# The admin coverage report reads optional dependencies from repo.hex.pm.
+config :portal, :hex_deps, Portal.Test.FakeHexDeps
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :portal, PortalWeb.Endpoint,

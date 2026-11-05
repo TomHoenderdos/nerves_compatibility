@@ -62,6 +62,25 @@ defmodule NccWorker.DepsLock do
   end
 
   @doc """
+  The package's own Hex release as locked: its Hex name, version and outer
+  checksum, which name and verify its tarball in the Hex cache
+  (`NccWorker.HexCache.package_tarball/4`). `:error` when the lock is missing
+  or has no Hex entry with an outer checksum for the package.
+  """
+  @spec package_release(String.t(), String.t()) ::
+          {:ok, %{name: String.t(), version: String.t(), checksum: String.t()}} | :error
+  def package_release(project_dir, package) do
+    with {:ok, lock} <- read_lock(project_dir),
+         {:ok, name} <- lock_name(lock, package),
+         {:hex, hex_name, version, _inner, _managers, _deps, _repo, outer}
+         when is_binary(version) and is_binary(outer) <- lock[name] do
+      {:ok, %{name: to_string(hex_name), version: version, checksum: outer}}
+    else
+      _ -> :error
+    end
+  end
+
+  @doc """
   The package's optional dependencies the lock did not resolve, as
   `%{app, package, requirement}`, for `NccWorker.Project.add_optional_deps/3`
   to add to the generated project. `[]` when the lock is missing or does not
