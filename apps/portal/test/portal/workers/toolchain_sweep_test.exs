@@ -139,7 +139,9 @@ defmodule Portal.Workers.ToolchainSweepTest do
       assert Catalog.toolchain_backlog("1.19/28", 2, 100) == []
     end
 
-    test "the newest three versions of each package come first" do
+    # With no demand known anywhere, the newest run comes first, and version
+    # breaks a tie between runs that finished together.
+    test "without download counts the newest version comes first" do
       for {version, day} <- [{"1.0.0", 1}, {"1.1.0", 2}, {"1.2.0", 3}, {"1.3.0", 4}, {"1.4.0", 5}] do
         run!("many", version,
           finished_at: DateTime.new!(~D[2026-10-01], ~T[00:00:00]) |> DateTime.add(day, :day)
@@ -147,19 +149,18 @@ defmodule Portal.Workers.ToolchainSweepTest do
       end
 
       run!("single", "0.1.0", finished_at: ~U[2026-09-01 00:00:00Z])
+      run!("tie", "2.0.0", finished_at: ~U[2026-08-01 00:00:00Z])
+      run!("tie", "2.1.0", finished_at: ~U[2026-08-01 00:00:00Z])
 
-      backlog = Catalog.toolchain_backlog("1.19/28", 1, 100)
-
-      assert Enum.take(backlog, 4) |> Enum.sort_by(&{&1.package, &1.version}) == [
-               %{package: "many", version: "1.2.0"},
-               %{package: "many", version: "1.3.0"},
+      assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [
                %{package: "many", version: "1.4.0"},
-               %{package: "single", version: "0.1.0"}
-             ]
-
-      assert Enum.drop(backlog, 4) == [
+               %{package: "many", version: "1.3.0"},
+               %{package: "many", version: "1.2.0"},
                %{package: "many", version: "1.1.0"},
-               %{package: "many", version: "1.0.0"}
+               %{package: "many", version: "1.0.0"},
+               %{package: "single", version: "0.1.0"},
+               %{package: "tie", version: "2.1.0"},
+               %{package: "tie", version: "2.0.0"}
              ]
 
       assert length(Catalog.toolchain_backlog("1.19/28", 1, 2)) == 2
@@ -172,6 +173,131 @@ defmodule Portal.Workers.ToolchainSweepTest do
       assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [
                %{package: "twice", version: "1.0.0"}
              ]
+    end
+  end
+
+  describe "Catalog.toolchain_backlog/3 demand order" do
+    defp downloads!(name, recent) do
+      Package
+      |> Ash.Query.filter(name == ^name)
+      |> Ash.read_one!(domain: Catalog)
+      |> Ash.Changeset.for_update(:update_hex_meta, %{hex_downloads_recent: recent})
+      |> Ash.update!(domain: Catalog)
+    end
+
+    defp release_downloads!(name, version, downloads) do
+      Portal.Catalog.ReleaseDownloads
+      |> Ash.Changeset.for_create(:upsert, %{
+        package: name,
+        version: version,
+        downloads: downloads,
+        fetched_at: DateTime.utc_now()
+      })
+      |> Ash.create!(domain: Catalog)
+    end
+
+    defp backlog, do: Catalog.toolchain_backlog("1.19/28", 1, 100)
+
+    # What a fresh project resolves is what users ask for: a popular package's
+    # older release before an obscure package's brand new one.
+    test "a high-download package's version comes before a low-download package's newer one" do
+      run!("popular", "1.0.0", finished_at: ~U[2026-01-01 00:00:00Z])
+      run!("obscure", "9.0.0", finished_at: ~U[2026-10-30 00:00:00Z])
+      downloads!("popular", 5_000_000)
+      downloads!("obscure", 40)
+
+      assert backlog() == [
+               %{package: "popular", version: "1.0.0"},
+               %{package: "obscure", version: "9.0.0"}
+             ]
+    end
+
+    test "within a package, the more downloaded release comes first, whatever its age" do
+      run!("jason", "1.4.4", finished_at: ~U[2026-03-01 00:00:00Z])
+      run!("jason", "1.4.5", finished_at: ~U[2026-10-01 00:00:00Z])
+      run!("jason", "1.5.0-alpha.1", finished_at: ~U[2026-10-20 00:00:00Z])
+      downloads!("jason", 1_000_000)
+      release_downloads!("jason", "1.4.4", 900_000)
+      release_downloads!("jason", "1.4.5", 50_000)
+      release_downloads!("jason", "1.5.0-alpha.1", 10)
+
+      assert backlog() == [
+               %{package: "jason", version: "1.4.4"},
+               %{package: "jason", version: "1.4.5"},
+               %{package: "jason", version: "1.5.0-alpha.1"}
+             ]
+    end
+
+    # Unknown demand is not zero demand, but it is not known demand either:
+    # it goes after every known count, and newest-first among itself.
+    test "an unknown package count sorts after every known one, zero included" do
+      run!("unknown", "1.0.0", finished_at: ~U[2026-10-30 00:00:00Z])
+      run!("zero", "1.0.0", finished_at: ~U[2026-01-01 00:00:00Z])
+      run!("some", "1.0.0", finished_at: ~U[2026-01-01 00:00:00Z])
+      downloads!("zero", 0)
+      downloads!("some", 10)
+
+      assert backlog() == [
+               %{package: "some", version: "1.0.0"},
+               %{package: "zero", version: "1.0.0"},
+               %{package: "unknown", version: "1.0.0"}
+             ]
+    end
+
+    test "within a package, a release with no fetched count sorts after the counted ones" do
+      run!("jason", "1.4.3", finished_at: ~U[2026-01-01 00:00:00Z])
+      run!("jason", "1.4.4", finished_at: ~U[2026-02-01 00:00:00Z])
+      run!("jason", "1.4.5", finished_at: ~U[2026-10-01 00:00:00Z])
+      downloads!("jason", 1_000_000)
+      release_downloads!("jason", "1.4.3", 5)
+      release_downloads!("jason", "1.4.4", nil)
+
+      assert backlog() == [
+               %{package: "jason", version: "1.4.3"},
+               %{package: "jason", version: "1.4.5"},
+               %{package: "jason", version: "1.4.4"}
+             ]
+    end
+
+    # Release counts break ties inside a package, never across: a package
+    # ranks by its own recent downloads first.
+    test "a release count never lifts a version above a more downloaded package" do
+      run!("big", "1.0.0", finished_at: ~U[2026-01-01 00:00:00Z])
+      run!("small", "1.0.0", finished_at: ~U[2026-01-01 00:00:00Z])
+      downloads!("big", 1_000)
+      downloads!("small", 10)
+      release_downloads!("big", "1.0.0", 1)
+      release_downloads!("small", "1.0.0", 1_000_000)
+
+      assert backlog() == [
+               %{package: "big", version: "1.0.0"},
+               %{package: "small", version: "1.0.0"}
+             ]
+    end
+
+    # A capped sweep takes the most wanted versions, not an arbitrary slice.
+    test "the limit keeps the most wanted versions" do
+      for {name, recent} <- [{"a", 1}, {"b", 300}, {"c", 20}, {"d", 4_000}] do
+        run!(name, "1.0.0")
+        downloads!(name, recent)
+      end
+
+      assert Catalog.toolchain_backlog("1.19/28", 1, 2) == [
+               %{package: "d", version: "1.0.0"},
+               %{package: "b", version: "1.0.0"}
+             ]
+    end
+
+    # Demand only reorders: a version with a live build stays out however
+    # popular it is.
+    test "demand never brings back a version that already has a live build" do
+      run!("popular", "1.0.0")
+      run!("popular", "1.1.0")
+      toolchain_row!("popular", "1.1.0", :pass)
+      downloads!("popular", 9_000_000)
+      release_downloads!("popular", "1.1.0", 9_000_000)
+
+      assert backlog() == [%{package: "popular", version: "1.0.0"}]
     end
   end
 

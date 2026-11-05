@@ -3,6 +3,8 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
   use Oban.Testing, repo: Portal.Repo
   import Phoenix.LiveViewTest
 
+  require Ash.Query
+
   @pw "correct horse battery staple"
 
   setup %{conn: conn} do
@@ -489,6 +491,87 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
       assert html =~ "Downloads"
       refute html =~ "GKVISIBLE"
       refute html =~ "topsecret"
+    end
+  end
+
+  describe "precompiled coverage" do
+    setup do
+      previous = Application.fetch_env!(:portal, Portal.Toolchains)
+
+      Application.put_env(
+        :portal,
+        Portal.Toolchains,
+        Keyword.merge(previous,
+          builder_version: 1,
+          images: [%{toolchain: "1.19/28", image: "ncc-worker:elixir-1.19-otp-28"}]
+        )
+      )
+
+      on_exit(fn -> Application.put_env(:portal, Portal.Toolchains, previous) end)
+      :ok
+    end
+
+    defp ranked!(name, recent) do
+      built!(name)
+
+      Portal.Catalog.Package
+      |> Ash.Query.filter(name == ^name)
+      |> Ash.read_one!(domain: Portal.Catalog)
+      |> Ash.Changeset.for_update(:update_hex_meta, %{hex_downloads_recent: recent})
+      |> Ash.update!(domain: Portal.Catalog)
+    end
+
+    defp toolchain_pass!(name) do
+      package =
+        Portal.Catalog.Package
+        |> Ash.Query.filter(name == ^name)
+        |> Ash.read_one!(domain: Portal.Catalog)
+
+      Portal.Catalog.ToolchainBuild
+      |> Ash.Changeset.for_create(:create, %{
+        package_id: package.id,
+        version: "1.0.0",
+        toolchain: "1.19/28",
+        builder_version: 1,
+        status: :pass,
+        finished_at: DateTime.utc_now()
+      })
+      |> Ash.create!(domain: Portal.Catalog)
+    end
+
+    test "shows each toolchain's coverage of the most downloaded packages, and the gaps",
+         %{conn: conn} do
+      ranked!("cov_built", 2_000)
+      toolchain_pass!("cov_built")
+      ranked!("cov_missing", 9_000)
+
+      {view, _html} = live_maintenance(conn)
+
+      assert has_element?(view, "#coverage")
+      row = ~s(#coverage [data-toolchain="1.19/28"])
+      assert has_element?(view, row)
+      assert has_element?(view, row <> ~s( [data-column="covered"]), "50.0%")
+      assert has_element?(view, row <> ~s( [data-column="covered_with_optional"]))
+
+      assert has_element?(
+               view,
+               ~s(#coverage [data-gap="cov_missing"][data-toolchain="1.19/28"][data-reason="no_host_build"])
+             )
+
+      assert has_element?(view, ~s(#coverage [data-gap="cov_missing"]), "1.0.0")
+      refute has_element?(view, ~s(#coverage [data-gap="cov_built"]))
+    end
+
+    test "an empty catalog shows the toolchains at zero, not an error", %{conn: conn} do
+      {view, _html} = live_maintenance(conn)
+
+      assert has_element?(
+               view,
+               ~s(#coverage [data-toolchain="1.19/28"] [data-column="covered"]),
+               "0.0%"
+             )
+
+      refute has_element?(view, "#coverage [data-gap]")
     end
   end
 end
