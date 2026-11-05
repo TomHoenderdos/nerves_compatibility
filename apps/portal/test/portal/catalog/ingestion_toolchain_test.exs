@@ -256,7 +256,9 @@ defmodule Portal.Catalog.IngestionToolchainTest do
   end
 
   # A portal build whose sweep could not run at all is no more trusted than
-  # one with survivors, and is stored under the same label.
+  # one with survivors, and is stored under the same label. It says nothing
+  # about the package, though: the image or runtime it ran on did it, so it
+  # is an error the backlog retries after a day, not a week-long verdict.
   test "a build whose process sweep could not run is stored with the sweep's reason" do
     name = unique_name()
 
@@ -267,7 +269,7 @@ defmodule Portal.Catalog.IngestionToolchainTest do
 
     assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
 
-    assert tb.status == :fail
+    assert tb.status == :error
     assert tb.reason == "worker: process sweep could not run: not linux"
     assert memberships(tb) == []
   end

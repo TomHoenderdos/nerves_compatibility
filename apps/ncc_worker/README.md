@@ -148,7 +148,8 @@ code is still `0`, so the portal records that verdict instead of retrying.
 The sweep can only run as the container's worker: on Linux, with a `/proc`, and with the BEAM as pid 1, which it is
 as the container's entrypoint. A portal build, one with `NCC_INPUT` set (the image sets it, and so do the portal's
 runners), does not fail open when it cannot: the result is made non-pass exactly as for survivors, with the reason
-`"process sweep could not run: <why>"`, which the portal also stores under `"worker: …"`. A run without `NCC_INPUT`,
+`"process sweep could not run: <why>"`, which the portal also stores under `"worker: …"`, as an error it retries
+rather than a verdict on the package. A run without `NCC_INPUT`,
 such as the escript on a developer machine, is not swept and says so on stderr (`Process sweep skipped: …`). The proc
 root, the kill function, the environment check and the portal-build check are options of
 `NccWorker.ProcessSweep.enforce_and_report/2`, for its tests.

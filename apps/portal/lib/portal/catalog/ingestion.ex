@@ -318,16 +318,19 @@ defmodule Portal.Catalog.Ingestion do
 
   # The worker's `"error"` is a failed host compile, which is deterministic for
   # this package, version and toolchain: it is stored as a `:fail` verdict so
-  # the live window for failures applies. `:error` rows mean the build never
-  # produced a result, and only `Portal.Workers.ToolchainBuild` writes those.
-  # Processes the worker could not stop after the build, or a portal build
-  # whose sweep could not run at all (`NccWorker.ProcessSweep`), are a
-  # `:fail` as well, under their own label.
+  # the live window for failures applies. `:error` rows mean the build gave
+  # no usable result: `Portal.Workers.ToolchainBuild` writes those, and so
+  # does a portal build whose process sweep could not run at all (below).
+  # Processes the worker could not stop after the build
+  # (`NccWorker.ProcessSweep`) are a `:fail`, under the worker's own label.
   defp toolchain_verdict("error", "processes survived the sweep" <> _ = reason),
     do: {:fail, "worker: " <> reason}
 
+  # A sweep that could not run at all is the image's or the runtime's doing,
+  # not the package's: an `:error`, which the backlog retries after a day,
+  # rather than a verdict that would hold every package back for a week.
   defp toolchain_verdict("error", "process sweep could not run" <> _ = reason),
-    do: {:fail, "worker: " <> reason}
+    do: {:error, "worker: " <> reason}
 
   defp toolchain_verdict("error", reason),
     do: {:fail, "compile failed: " <> (reason || "unknown")}
