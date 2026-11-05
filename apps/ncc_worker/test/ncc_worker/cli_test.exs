@@ -22,6 +22,19 @@ defmodule NccWorker.CLITest do
     end
   end
 
+  # Anything else would run as the default and record the wrong variant.
+  test "parse_input/1 refuses an optional_deps value that is no variant" do
+    for value <- [~s("maybe"), ~s(""), ~s("INCLUDE"), "1", "true", "[]"] do
+      json = ~s({"run_id":"r1","mode":"toolchain","optional_deps":#{value}})
+      assert {:error, _} = CLI.parse_input(json), value
+    end
+  end
+
+  test "parse_input/1 takes a run without optional_deps as before" do
+    assert {:ok, input} = CLI.parse_input(~s({"run_id":"r1","mode":"toolchain"}))
+    refute Map.has_key?(input, :optional_deps)
+  end
+
   test "parse_input/1 reports malformed JSON" do
     assert {:error, {:invalid_json, _}} = CLI.parse_input("{")
   end

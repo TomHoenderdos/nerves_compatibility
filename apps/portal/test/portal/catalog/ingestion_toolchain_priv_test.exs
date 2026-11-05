@@ -553,4 +553,49 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
       assert inflated <= cap + Compatibility.StaticPriv.inflate_chunk_bytes()
     end
   end
+
+  # A priv file is checked as a priv file whichever key the manifest lists it
+  # under: listed under ebin it would otherwise skip the host's check.
+  describe "a priv/ path listed under another key" do
+    defp ebin_listed(name, beam, priv_path, content, checksum) do
+      result = result(name, beam, [], checksum)
+
+      put_in(result, ["toolchain_build", "file_manifest", "ebin"], [
+        entry("ebin/#{name}.beam", beam),
+        entry(priv_path, content)
+      ])
+    end
+
+    test "is checked against the tarball like any priv file" do
+      name = unique()
+      beam = "beam-#{name}"
+      tampered = "tampered-#{name}"
+      tarball = hex_tarball(%{"priv/app.js" => "original"})
+      checksum = sha(tarball)
+
+      result = ebin_listed(name, beam, "priv/app.js", tampered, checksum)
+      files_dir = files_dir_with([beam, tampered])
+
+      outcome =
+        Ingestion.ingest_toolchain(result, opts(files_dir, {:ok, tarball}, {:ok, checksum}))
+
+      assert_nothing_published(name, outcome)
+    end
+
+    test "is refused as native code even when the tarball carries it" do
+      name = unique()
+      beam = "beam-#{name}"
+      lib = "not really native #{name}"
+      tarball = hex_tarball(%{"priv/nif.so" => lib})
+      checksum = sha(tarball)
+
+      result = ebin_listed(name, beam, "priv/nif.so", lib, checksum)
+      files_dir = files_dir_with([beam, lib])
+
+      outcome =
+        Ingestion.ingest_toolchain(result, opts(files_dir, {:ok, tarball}, {:ok, checksum}))
+
+      assert_nothing_published(name, outcome)
+    end
+  end
 end

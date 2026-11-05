@@ -94,6 +94,19 @@ defmodule Portal.ObanConfigTest do
     assert Portal.Workers.ReleaseDownloadsRefresh.__opts__()[:queue] == :intake
   end
 
+  # The admin coverage view reads what this stored; computing it asks the
+  # Hex registry about every ranked package, so not on every page load.
+  test "the coverage report is refreshed hourly, on the queue the web host runs" do
+    {_mod, opts} = plugin(Oban.Plugins.Cron)
+
+    assert {expr, Portal.Workers.CoverageRefresh} =
+             Enum.find(opts[:crontab], &match?({_e, Portal.Workers.CoverageRefresh}, &1))
+
+    assert [minute, "*", "*", "*", "*"] = String.split(expr)
+    assert {_, ""} = Integer.parse(minute)
+    assert Portal.Workers.CoverageRefresh.__opts__()[:queue] == :intake
+  end
+
   describe "the hex.pm update check" do
     defp update_check_entry do
       {_mod, opts} = plugin(Oban.Plugins.Cron)

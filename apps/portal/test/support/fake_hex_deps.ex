@@ -12,7 +12,15 @@ defmodule Portal.Test.FakeHexDeps do
   ingest job reads when it runs inline; Hex is unreachable otherwise.
   """
 
-  def releases(_name, _opts \\ []), do: {:error, :not_found}
+  # `{#{inspect(__MODULE__)}, :releases}` holds `%{name => [release]}` for a
+  # test that needs a package's declared dependencies; any other name is one
+  # the registry does not list.
+  def releases(name, _opts \\ []) do
+    case Process.get({__MODULE__, :releases}, %{}) do
+      %{^name => releases} -> {:ok, releases}
+      _ -> {:error, :not_found}
+    end
+  end
 
   def outer_checksum(_name, _version, _opts \\ []),
     do: Process.get({__MODULE__, :outer_checksum}, {:error, :hex_registry_unavailable})
