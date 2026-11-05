@@ -18,6 +18,12 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
           type: :string,
           description: "The Mix env the package was compiled under as a dependency."
         },
+        mix_target: %Schema{
+          type: :string,
+          description:
+            "The `MIX_TARGET` the files were compiled under: the system's target name " <>
+              "(`rpi4` for `nerves_system_rpi4`), or `host`."
+        },
         system_version: %Schema{
           type: :string,
           nullable: true,
@@ -40,6 +46,7 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
         :elixir,
         :otp,
         :dep_env,
+        :mix_target,
         :system_version,
         :run_id,
         :image_digest,

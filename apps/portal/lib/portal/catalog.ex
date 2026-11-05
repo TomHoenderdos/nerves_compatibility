@@ -2082,7 +2082,12 @@ defmodule Portal.Catalog do
         files != nil do
       built_by = built_by(runs_by_id, result)
       version = Map.fetch!(runs_by_id, result.run_id).version_tested
-      build = built_by |> build_inputs(result) |> Map.put("dep_env", "prod")
+
+      build =
+        built_by
+        |> build_inputs(result)
+        |> Map.put("dep_env", "prod")
+        |> Map.put("mix_target", mix_target(result.system_pkg))
 
       {version, built_by.finished_at,
        Map.merge(files, %{"target" => result.system_pkg, "build" => build})}
@@ -2100,6 +2105,7 @@ defmodule Portal.Catalog do
         "elixir" => tb.elixir,
         "otp" => tb.otp,
         "dep_env" => "prod",
+        "mix_target" => "host",
         "system_version" => nil,
         "deps" => tb.deps_lock,
         "compile_env" => tb.compile_env,
@@ -2112,6 +2118,13 @@ defmodule Portal.Catalog do
        Map.merge(files, %{"target" => "pure_elixir", "build" => build})}
     end
   end
+
+  # The MIX_TARGET a build was compiled under. The worker sets it from
+  # `NccWorker.Systems`, whose target for `nerves_system_<x>` is always `<x>`;
+  # pure_elixir and toolchain builds are host builds. A client checks it for a
+  # dependency that reads `Mix.target()` at compile time.
+  defp mix_target("nerves_system_" <> name), do: name
+  defp mix_target(_), do: "host"
 
   defp matchable?({_version, _finished_at, %{"build" => build}}) do
     Enum.all?(["elixir", "otp", "deps", "package_checksum", "compile_env"], &(build[&1] != nil))

@@ -51,6 +51,7 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
              "elixir" => "1.16.0",
              "otp" => "26",
              "dep_env" => "prod",
+             "mix_target" => "rpi4",
              "system_version" => "1.24.0",
              "deps" => @deps,
              "compile_env" => [],
@@ -65,6 +66,7 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
              "elixir" => "1.19.1",
              "otp" => "28",
              "dep_env" => "prod",
+             "mix_target" => "host",
              "system_version" => nil,
              "deps" => @deps,
              "compile_env" => [],
@@ -73,6 +75,19 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
            } = tc["build"]
 
     assert "tc-" <> _ = tc["build"]["run_id"]
+  end
+
+  test "format 2 records the MIX_TARGET each build was compiled under; format 1 does not" do
+    ingest_with_artifact(keyed_run())
+    ingest_toolchain_build("jason", "1.4.1", finished_at: "2026-10-24T10:00:00Z")
+
+    v2 = Catalog.precompiled_manifest_v2("jason")
+    assert %{"nerves_system_rpi4" => [rpi4], "pure_elixir" => [tc]} = by_target(v2, "1.4.1")
+    assert rpi4["build"]["mix_target"] == "rpi4"
+    assert tc["build"]["mix_target"] == "host"
+
+    v1 = Catalog.precompiled_manifest("jason")
+    refute Map.has_key?(v1.versions["1.4.1"]["nerves_system_rpi4"]["build"], "mix_target")
   end
 
   test "a package with only a toolchain build has a format-2 manifest and no format-1 one" do

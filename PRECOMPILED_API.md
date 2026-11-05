@@ -328,7 +328,7 @@ toolchain:
           ],
           "priv": [],
           "build": {
-            "elixir": "1.20.3", "otp": "29", "dep_env": "prod",
+            "elixir": "1.20.3", "otp": "29", "dep_env": "prod", "mix_target": "host",
             "system_version": null,
             "deps": {"decimal": {"version": "2.3.0", "checksum": "..."}},
             "compile_env": [],
@@ -339,7 +339,7 @@ toolchain:
         {
           "target": "nerves_system_rpi4",
           "ebin": [...], "priv": [...],
-          "build": {"elixir": "1.18.4", "otp": "27", "dep_env": "prod", "system_version": "2.2.1", "...": "..."}
+          "build": {"elixir": "1.18.4", "otp": "27", "dep_env": "prod", "mix_target": "rpi4", "system_version": "2.2.1", "...": "..."}
         }
       ]
     }
@@ -360,6 +360,11 @@ toolchain:
   meaning) plus `dep_env`, the Mix env the package was compiled under as a
   dependency. Every build the portal makes is `"prod"`, which is what Mix
   compiles a dependency as unless the project overrides its `env:`.
+- `build.mix_target` — the `MIX_TARGET` the files were compiled under: the
+  Nerves system's target name (`nerves_system_rpi4` → `rpi4`) or `host` for
+  `pure_elixir`. A client compares it with its own target only for a
+  dependency that reads `Mix.target()` at compile time. Builds signed before
+  2026-11 lack it; a client then assumes that same conventional name.
 - `updated_at` — the newest `finished_at` among the builds listed.
 
 What it lists:
