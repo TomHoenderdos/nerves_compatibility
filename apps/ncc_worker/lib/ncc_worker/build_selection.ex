@@ -6,7 +6,7 @@ defmodule NccWorker.BuildSelection do
   Unavailable or ambiguous evidence always keeps firmware builds enabled.
   """
 
-  alias NccWorker.BuildCache
+  alias NccWorker.{BuildCache, StaticPriv}
 
   @spec select(String.t(), String.t(), String.t(), map(), [{String.t(), String.t()}]) ::
           :pure_elixir | :firmware
@@ -43,13 +43,21 @@ defmodule NccWorker.BuildSelection do
   OS-specific dependencies locally. `scan` is the `BeamScanner.analyze/1`
   result for `_build/host/lib/<package>`. Checks run in order and the first
   failure is the reason; anything missing or unreadable fails closed.
+
+  Priv files are portable when they are static data the package's own Hex
+  tarball carries byte for byte (`NccWorker.StaticPriv`), so a package that
+  ships them needs `tarball:`, the path of that tarball (`nil` for one the
+  caller could not find or trust). Without the option at all the package is
+  skipped as "ships priv files", the verdict from before the files were
+  judged one by one.
   """
-  @spec portable?(String.t(), String.t(), map()) :: :ok | {:skip, String.t()}
-  def portable?(project, package, scan) do
+  @spec portable?(String.t(), String.t(), map(), keyword()) :: :ok | {:skip, String.t()}
+  def portable?(project, package, scan, opts \\ []) do
     deps = Path.join(project, "deps")
     source = Path.join(deps, package)
 
     with :ok <- portable_scan(scan),
+         :ok <- portable_priv(project, package, scan, opts),
          :ok <- check(not nerves_source?(source), "nerves-specific source"),
          :ok <-
            check(
@@ -72,20 +80,30 @@ defmodule NccWorker.BuildSelection do
     with :ok <- portable_languages(languages),
          :ok <- no_calls(scan, :nif_calls?, :nif_evidence, "calls a NIF or port driver"),
          :ok <- no_calls(scan, :shell_calls?, :shell_evidence, "calls a shell"),
-         :ok <- no_calls(scan, :os_exec_calls?, :os_exec_evidence, "runs an OS command"),
-         :ok <-
-           no_calls(
-             scan,
-             :executable_lookup_calls?,
-             :executable_lookup_evidence,
-             "calls an executable lookup"
-           ) do
-      check(match?(%{footprint: %{priv: %{file_count: 0}}}, scan), "ships priv files")
+         :ok <- no_calls(scan, :os_exec_calls?, :os_exec_evidence, "runs an OS command") do
+      no_calls(
+        scan,
+        :executable_lookup_calls?,
+        :executable_lookup_evidence,
+        "calls an executable lookup"
+      )
     end
   end
 
   defp portable_scan(%{beam_count: 0}), do: {:skip, "no compiled beams"}
   defp portable_scan(_scan), do: {:skip, "beam scan incomplete"}
+
+  defp portable_priv(_project, _package, %{footprint: %{priv: %{file_count: 0}}}, _opts), do: :ok
+
+  defp portable_priv(project, package, _scan, opts) do
+    case Keyword.fetch(opts, :tarball) do
+      {:ok, tarball} ->
+        StaticPriv.check(Path.join([project, "_build", "host", "lib", package, "priv"]), tarball)
+
+      :error ->
+        {:skip, "ships priv files"}
+    end
+  end
 
   defp portable_languages(languages) do
     case Enum.reject(languages, &(&1 in @portable_languages)) do

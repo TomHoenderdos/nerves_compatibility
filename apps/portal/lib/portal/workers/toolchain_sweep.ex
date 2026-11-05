@@ -2,9 +2,13 @@ defmodule Portal.Workers.ToolchainSweep do
   @moduledoc """
   Oban worker (queue `:maintenance`, daily cron and the admin Maintenance
   button) that enqueues a `Portal.Workers.ToolchainBuild` for every package
-  version still missing a build on a configured toolchain
-  (`Portal.Catalog.toolchain_backlog/3`), at most
+  version and optional-deps variant still missing a build on a configured
+  toolchain (`Portal.Catalog.toolchain_backlog/3`), at most
   `Portal.Toolchains.max_per_run/0` in total.
+
+  A `with` build is queued ahead of a `without` one (a lower Oban priority):
+  it is the build a fresh project resolves, and the `without` build is only
+  wanted because a `with` build exists.
 
   The cap is shared round-robin: each toolchain's backlog is taken in its own
   priority order (most downloaded first, see `Catalog.toolchain_backlog/3`)
@@ -68,18 +72,19 @@ defmodule Portal.Workers.ToolchainSweep do
     end
   end
 
-  defp build_args(%{package: package, version: version}, image, builder_version) do
+  defp build_args(%{package: package, version: version, variant: variant}, image, builder_version) do
     %{
       package: package,
       version: version,
       toolchain: image.toolchain,
       image: image.image,
-      builder_version: builder_version
+      builder_version: builder_version,
+      variant: variant
     }
   end
 
   defp enqueue(args) do
-    case args |> ToolchainBuild.new() |> Oban.insert() do
+    case args |> ToolchainBuild.new(priority: priority(args.variant)) |> Oban.insert() do
       {:ok, %Oban.Job{conflict?: true}} ->
         {args.toolchain, :pending}
 
@@ -89,12 +94,15 @@ defmodule Portal.Workers.ToolchainSweep do
       {:error, reason} ->
         Logger.error(
           "Toolchain sweep could not enqueue #{args.package} #{args.version} " <>
-            "on #{args.toolchain}: #{inspect(reason)}"
+            "(#{args.variant}) on #{args.toolchain}: #{inspect(reason)}"
         )
 
         {args.toolchain, :failed}
     end
   end
+
+  defp priority(:with), do: 0
+  defp priority(:without), do: 1
 
   # [[a1, a2, a3], [b1]] -> [a1, b1, a2, a3]
   defp round_robin(lists) do

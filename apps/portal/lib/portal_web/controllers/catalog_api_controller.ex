@@ -377,7 +377,8 @@ defmodule PortalWeb.CatalogApiController do
     description:
       "The bytes of a file a published manifest lists. Content-addressed: check them " <>
         "against the digest you asked for. Immutable: served with a one-year `cache-control` " <>
-        "and its SHA-256 as the `etag`.",
+        "and its SHA-256 as the `etag`. Always a download (`content-disposition: attachment`) " <>
+        "under a `sandbox` content security policy, whatever the bytes are.",
     parameters: [
       sha256: [
         in: :path,
@@ -403,6 +404,9 @@ defmodule PortalWeb.CatalogApiController do
   # artifact, and is the same check the manifest applies to every file it lists.
   # `published_sha256?/1` is the manifests' publication gate: a blob only a
   # non-publishing or revoked remote builder uploaded is stored but not served.
+  # A package's priv files are published too, and one can be HTML or SVG: from
+  # this origin it must never render, so it is an attachment, under a CSP that
+  # sandboxes it and loads nothing, with sniffing off.
   # sobelow_skip ["Traversal.SendFile"]
   def precompiled_file(conn, %{"sha256" => sha256}) do
     with true <- Portal.ArtifactStore.valid_sha256?(sha256),
@@ -417,6 +421,8 @@ defmodule PortalWeb.CatalogApiController do
         conn
         |> put_resp_content_type("application/octet-stream")
         |> put_resp_header("x-content-type-options", "nosniff")
+        |> put_resp_header("content-disposition", ~s(attachment; filename="#{sha256}"))
+        |> put_resp_header("content-security-policy", "default-src 'none'; sandbox")
         |> send_file(200, Portal.ArtifactStore.blob_path(sha256))
       end
     else

@@ -24,8 +24,8 @@ defmodule Portal.Workers.Ingest do
   a last attempt that still cannot ingest. A request deleted while the build
   ran leaves the run unlinked instead of failing it.
 
-  A toolchain build (`kind: "toolchain"`, with `toolchain`, `builder_version`
-  and the queued `version`) goes to `Portal.Catalog.Ingestion.ingest_toolchain/2`
+  A toolchain build (`kind: "toolchain"`, with `toolchain`, `builder_version`,
+  the queued `version` and `variant`) goes to `Portal.Catalog.Ingestion.ingest_toolchain/2`
   instead. It writes no `Run`, so none of a run's follow-up applies: no scan
   request to mark, no progress broadcast, no package metadata refresh.
   """
@@ -335,7 +335,9 @@ defmodule Portal.Workers.Ingest do
       output_dir: build.output_dir,
       version: args["version"],
       toolchain: args["toolchain"],
-      builder_version: args["builder_version"]
+      builder_version: args["builder_version"],
+      # An ingest queued before variants existed recorded a with build.
+      variant: if(args["variant"] == "without", do: :without, else: :with)
     }
 
     case safe_ingest(&Ingestion.ingest_toolchain/2, build.result, opts) do

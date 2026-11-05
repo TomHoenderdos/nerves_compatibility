@@ -17,9 +17,21 @@ defmodule Portal.Catalog.ToolchainBuild do
   `Portal.Catalog.ArtifactMembership` rows owned by this build record which
   blobs it produced.
 
-  The identity is `(package_id, version, toolchain, builder_version)`: a new
-  build of the same inputs replaces the row (`:upsert`), and bumping
-  `builder_version` keeps older builds side by side.
+  ## Variants
+
+  A package compiles differently when one of its optional dependencies is
+  loadable, and a client takes a build only when its lock agrees with the
+  build's on them (decimal next to jason, or no decimal at all). So a version
+  is built per `variant`: `:with` adds every optional dependency a fresh lock
+  would (the worker's optional-dependency pass), `:without` leaves the pass
+  out. `optional_deps` is what the worker reported doing, and a `:with` build
+  that kept one is what makes the `:without` build wanted
+  (`Portal.Catalog.toolchain_backlog/3`). A row written before variants
+  existed was built the `:with` way, which is the default.
+
+  The identity is `(package_id, version, toolchain, builder_version,
+  variant)`: a new build of the same inputs replaces the row (`:upsert`), and
+  bumping `builder_version` keeps older builds side by side.
   """
 
   use Ash.Resource,
@@ -37,6 +49,7 @@ defmodule Portal.Catalog.ToolchainBuild do
     :package_checksum,
     :compile_env,
     :file_manifest,
+    :optional_deps,
     :finished_at
   ]
 
@@ -54,11 +67,11 @@ defmodule Portal.Catalog.ToolchainBuild do
     defaults([:read])
 
     create :create do
-      accept([:package_id, :version, :toolchain, :builder_version | @mutable])
+      accept([:package_id, :version, :toolchain, :builder_version, :variant | @mutable])
     end
 
     create :upsert do
-      accept([:package_id, :version, :toolchain, :builder_version | @mutable])
+      accept([:package_id, :version, :toolchain, :builder_version, :variant | @mutable])
       upsert?(true)
       upsert_identity(:unique_identity)
       # Every mutable field, so a rebuild fully replaces the previous outcome:
@@ -73,7 +86,7 @@ defmodule Portal.Catalog.ToolchainBuild do
   end
 
   identities do
-    identity(:unique_identity, [:package_id, :version, :toolchain, :builder_version])
+    identity(:unique_identity, [:package_id, :version, :toolchain, :builder_version, :variant])
   end
 
   attributes do
@@ -95,6 +108,15 @@ defmodule Portal.Catalog.ToolchainBuild do
     attribute :builder_version, :integer do
       allow_nil?(false)
       public?(true)
+    end
+
+    # `:with` or `:without` the package's optional dependencies; see the
+    # moduledoc.
+    attribute :variant, :atom do
+      allow_nil?(false)
+      public?(true)
+      default(:with)
+      constraints(one_of: [:with, :without])
     end
 
     attribute :status, :atom do
@@ -139,6 +161,12 @@ defmodule Portal.Catalog.ToolchainBuild do
     end
 
     attribute :file_manifest, :map do
+      public?(true)
+    end
+
+    # The worker's `optional_deps` report: `added`, `dropped`, `skipped` and
+    # `reason`, as `result.json` has them.
+    attribute :optional_deps, :map do
       public?(true)
     end
 

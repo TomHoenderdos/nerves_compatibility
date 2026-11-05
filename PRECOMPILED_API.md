@@ -126,6 +126,13 @@ Example: `/api/precompiled/files/96b613f9050e8e3fba6639d9695a65386c699ccac6608d2
 
 Response: binary file content with `content-type: application/octet-stream`.
 
+Every file is served as a download, whatever its bytes: a package's priv files
+are published too, and one can be HTML or SVG. The response carries
+`content-disposition: attachment; filename="<sha256>"`,
+`content-security-policy: default-src 'none'; sandbox` and
+`x-content-type-options: nosniff`, so a browser never renders it from this
+origin.
+
 `cache-control: public, max-age=31536000, immutable` and an `etag` of the
 quoted SHA256; `If-None-Match` with it answers `304`. A `404` carries
 `cache-control: no-store`, so a cache in front never remembers that a file
@@ -378,11 +385,22 @@ What it lists:
 - Toolchain builds: a pure-BEAM package version built on a plain Elixir/OTP
   image for `Mix.install` and non-Nerves projects, `target` `pure_elixir` and
   `system_version` `null`. Only passing, unrevoked builds whose files can all
-  be served appear.
+  be served appear. A version is built once with every optional dependency a
+  fresh lock would add (as for the `deps` of other entries), and, when that
+  build added any, once more without them: two builds whose `deps` differ by
+  those dependencies, so a project that locks them and one that does not each
+  find theirs. A toolchain build's files include the package's `priv` when it
+  is static data: regular, non-executable files the package's own Hex tarball
+  carries byte for byte, none of them native code (by name or by ELF, Mach-O,
+  PE or `ar` magic), at most 500 files and 10 MiB in all, from a package with
+  no native sources. A package whose `priv` is anything else has no toolchain
+  build.
 - A build whose `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
   is `null` is left out, since no client can match it (it stays in format 1).
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
-  `system_version` and `deps`: the newest wins. Two versions of one Nerves
+  `system_version` and `deps`: the newest wins. A toolchain build with and one
+  without the package's optional dependencies differ in `deps`, so both are
+  listed. Two versions of one Nerves
   system are two builds, because a client takes a system build only at its own
   system version.
 
@@ -497,6 +515,10 @@ them.
   it kept them for.
 - Pure Elixir packages have `pure_elixir` entries only from runs after
   2026-10-20; earlier ones archived no files.
+- Toolchain builds before 2026-11-05 were made only with the package's
+  optional dependencies, and none was made of a package that ships priv
+  files; the build without them, and the build of a package with static
+  priv data, appear as the toolchain backlog reaches each version.
 - Entries from runs before 2026-10-23 list the release copy of each BEAM,
   stripped of `debug_info`. Later runs list the target's compile output,
   `_build/<target>/lib/<package>/`, whose BEAMs keep it, so a client can

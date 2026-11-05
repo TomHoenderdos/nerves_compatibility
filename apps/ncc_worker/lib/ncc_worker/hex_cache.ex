@@ -148,6 +148,21 @@ defmodule NccWorker.HexCache do
     end
   end
 
+  @doc """
+  The cached tarball of `name` `version` under `home` (a `HEX_HOME`), when
+  its SHA-256 is `outer_checksum`: what Hex checks a cached tarball against,
+  and the last element of a `mix.lock` entry. `nil` when it is missing, does
+  not match, or the name is not one Hex would cache.
+  """
+  @spec package_tarball(Path.t(), String.t(), String.t(), String.t()) :: Path.t() | nil
+  def package_tarball(home, name, version, outer_checksum) do
+    file = "#{name}-#{version}.tar"
+    path = Path.join([home, "packages", "hexpm", file])
+
+    if Regex.match?(@tarball, file) and checksum(path) == String.downcase(outer_checksum),
+      do: path
+  end
+
   # The tarball names in the run's dir, split into regular files (downloaded
   # in this run) and links (seeded and left alone).
   # sobelow_skip ["Traversal.FileModule"]

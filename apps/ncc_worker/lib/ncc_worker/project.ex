@@ -11,32 +11,13 @@ defmodule NccWorker.Project do
   ## Optional dependencies that are never added
 
   `add_optional_deps/5` adds a package's unresolved optional dependencies so
-  its published files match an application that has them in its lock. Not
-  every optional dependency is one an application has. A client matches an
-  entry only when every dependency in its `build.deps` that the client also
-  locks agrees, and the entry carries the whole closure of what was added, so
-  an optional dependency most applications do not lock makes the entry miss
-  for all of them. `@optional_deps_never_added` names those, and
-  `optional_deps_to_add/1` sets them aside:
-
-    * dev and code-generation tooling packages declare optional so their
-      installers and tasks work in an app that has it: `igniter`,
-      `sourceror`, `rewrite` (mdns_lite declares `igniter`, which would drag
-      its whole closure into the key), `ex_doc`, `credo`, `dialyxir`,
-      `stream_data`, `excoveralls`, `mix_test_watch`, `benchee`.
-    * alternatives an application picks one of: `picosat_elixir` and
-      `simple_sat` (crux declares both), where adding both builds a tree no
-      application has.
-
-  A module attribute rather than config: it describes what a real
-  application's lock looks like, not a deployment choice, and the result's
-  `optional_deps.skipped` lists what it set aside.
+  its published files match an application that has them in its lock.
+  `optional_deps_to_add/1` sets aside the ones most applications do not lock
+  (dev tooling, and alternatives an application picks one of):
+  `Compatibility.OptionalDeps.never_added/0`, which the portal reads too.
   """
 
-  @optional_deps_never_added ~w(
-    igniter sourceror rewrite ex_doc credo dialyxir stream_data excoveralls
-    mix_test_watch benchee picosat_elixir simple_sat
-  )
+  @optional_deps_never_added Compatibility.OptionalDeps.never_added()
 
   @doc """
   Creates a new Nerves project in the specified work directory.
@@ -205,8 +186,8 @@ defmodule NccWorker.Project do
   @doc """
   Splits optional dependencies from `NccWorker.DepsLock.unresolved_optional_deps/2`
   into `{to_add, skipped}`, where `skipped` holds the application names on
-  `@optional_deps_never_added` (see the module doc), matched by application
-  or Hex package name.
+  `Compatibility.OptionalDeps.never_added/0` (see the module doc), matched by
+  application or Hex package name.
   """
   @spec optional_deps_to_add([map()]) :: {[map()], [String.t()]}
   def optional_deps_to_add(deps) do

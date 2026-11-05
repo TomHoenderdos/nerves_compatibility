@@ -6,11 +6,14 @@ defmodule Portal.Workers.ToolchainBuild do
 
   Enqueued by `Portal.Workers.ToolchainSweep`. Args: `package`, `version`,
   `toolchain` (`"1.19/28"`), `image` (the tag the sweeping node has configured
-  for it) and `builder_version` (`Portal.Toolchains.builder_version/0` at sweep
-  time). The image and its digest are resolved here, on the build host that
-  has the images: the toolchain's image in this node's own
-  `Portal.Toolchains.images/0`, and the job's `image` only when this node does
-  not configure the toolchain at all.
+  for it), `builder_version` (`Portal.Toolchains.builder_version/0` at sweep
+  time) and `variant` (`"with"` or `"without"` the package's optional
+  dependencies, see `Portal.Catalog.ToolchainBuild`), which the worker gets as
+  `optional_deps: "include" | "exclude"`. A job without a `variant`, queued
+  before variants existed, is a `with` build. The image and its digest are
+  resolved here, on the build host that has the images: the toolchain's image
+  in this node's own `Portal.Toolchains.images/0`, and the job's `image` only
+  when this node does not configure the toolchain at all.
 
   Exit-code contract, as `Portal.Workers.Build`'s:
 
@@ -43,7 +46,7 @@ defmodule Portal.Workers.ToolchainBuild do
     # One build per identity while one is pending or running. A `Build` job for
     # the same package and version is another worker, so it never conflicts.
     unique: [
-      keys: [:package, :version, :toolchain, :builder_version],
+      keys: [:package, :version, :toolchain, :builder_version, :variant],
       period: :infinity,
       states: :incomplete
     ]
@@ -118,9 +121,16 @@ defmodule Portal.Workers.ToolchainBuild do
       image: image,
       image_digest: image_digest,
       mode: "toolchain",
-      toolchain: toolchain
+      toolchain: toolchain,
+      optional_deps: optional_deps(variant(args))
     })
   end
+
+  defp variant(%{"variant" => "without"}), do: :without
+  defp variant(_args), do: :with
+
+  defp optional_deps(:with), do: "include"
+  defp optional_deps(:without), do: "exclude"
 
   defp handle({:ok, %{exit_code: 0, result: result}}, job, run_id, image_digest)
        when is_map(result) do
@@ -196,7 +206,8 @@ defmodule Portal.Workers.ToolchainBuild do
       # reports, so the row and the sweep's backlog agree on the identity.
       "version" => args["version"],
       "toolchain" => args["toolchain"],
-      "builder_version" => args["builder_version"]
+      "builder_version" => args["builder_version"],
+      "variant" => Atom.to_string(variant(args))
     }
 
     # This node's own queue: the scratch dir the ingest reads is on this disk.
@@ -223,6 +234,7 @@ defmodule Portal.Workers.ToolchainBuild do
         version: args["version"],
         toolchain: args["toolchain"],
         builder_version: args["builder_version"],
+        variant: variant(args),
         status: status,
         reason: reason,
         image_digest: image_digest,
@@ -251,11 +263,13 @@ defmodule Portal.Workers.ToolchainBuild do
 
   # A pass or skipped row of the same identity stays as it is.
   defp kept?(package_id, args) do
+    variant = variant(args)
+
     Portal.Catalog.ToolchainBuild
     |> Ash.Query.filter(
       package_id == ^package_id and version == ^args["version"] and
         toolchain == ^args["toolchain"] and builder_version == ^args["builder_version"] and
-        status in [:pass, :skipped]
+        variant == ^variant and status in [:pass, :skipped]
     )
     |> Ash.exists?(domain: Portal.Catalog)
   end
@@ -316,7 +330,7 @@ defmodule Portal.Workers.ToolchainBuild do
   def split_toolchain(_toolchain), do: :error
 
   defp describe(%Oban.Job{args: args}),
-    do: "#{args["package"]} #{args["version"]} on #{args["toolchain"]}"
+    do: "#{args["package"]} #{args["version"]} (#{variant(args)}) on #{args["toolchain"]}"
 
   defp run_id(package, version),
     do: "tc-#{package}-#{version}-#{System.system_time(:millisecond)}"

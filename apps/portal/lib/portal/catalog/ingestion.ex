@@ -69,7 +69,8 @@ defmodule Portal.Catalog.Ingestion do
           required(:toolchain) => String.t(),
           required(:builder_version) => pos_integer(),
           optional(:version) => String.t() | nil,
-          optional(:output_dir) => Path.t() | nil
+          optional(:output_dir) => Path.t() | nil,
+          optional(:variant) => :with | :without
         }
 
   @doc """
@@ -115,13 +116,16 @@ defmodule Portal.Catalog.Ingestion do
 
   The blobs named in `toolchain_build.file_manifest` are moved into the artifact
   store first, outside the transaction, as `ingest/2` does. The row is then
-  upserted on `(package, version, toolchain, builder_version)`, and its
+  upserted on `(package, version, toolchain, builder_version, variant)`, and its
   memberships are made to match this build's manifest exactly: a rebuild that
   stops passing, or produces other files, must not keep publishing the old ones.
 
   `opts.version` is the version the job was queued for, which keys the row so
   it matches the sweep's backlog; the result's `package.version` is used only
   when the option is absent (an ingest job enqueued before it existed).
+  `opts.variant` is the optional-deps variant the job built (`:with` when
+  absent, for the same reason), and the result's `optional_deps` report is
+  stored on the row as it is.
 
   A later non-pass verdict for the same identity overwrites a pass row, and its
   memberships with it. The sweep never re-queues an identity that has a pass
@@ -204,6 +208,7 @@ defmodule Portal.Catalog.Ingestion do
       version: Map.get(opts, :version) || get_in(result, ["package", "version"]) || "unknown",
       toolchain: opts.toolchain,
       builder_version: opts.builder_version,
+      variant: Map.get(opts, :variant, :with),
       status: status,
       reason: reason,
       elixir: build["elixir"],
@@ -214,10 +219,14 @@ defmodule Portal.Catalog.Ingestion do
       package_checksum: package_checksum(build["package_checksum"]),
       compile_env: compile_env(build["compile_env"]),
       file_manifest: file_manifest(build["file_manifest"]),
+      optional_deps: optional_deps(result["optional_deps"]),
       finished_at: parse_datetime(result["finished_at"])
     })
     |> Ash.create(domain: @domain)
   end
+
+  defp optional_deps(%{} = optional_deps), do: optional_deps
+  defp optional_deps(_), do: nil
 
   # The worker's `"error"` is a failed host compile, which is deterministic for
   # this package, version and toolchain: it is stored as a `:fail` verdict so
