@@ -229,7 +229,7 @@ dependencies, and `result.json`'s `optional_deps` is `{"added": [], "dropped": [
 "not_requested"}`. The portal queues a version `"include"` first and `"exclude"` only when that build added one.
 
 A package that ships `priv` files is portable only when they are static data (`NccWorker.StaticPriv`): every file
-under `_build/host/lib/<package>/priv` is a regular file with one link, executable neither there nor in the
+under `_build/host/lib/<package>/priv` (or `deps/<package>/priv`, the only link target followed there) is a regular file with one link, executable neither there nor in the
 tarball, carried byte for byte at `priv/<path>` in the `contents.tar.gz` of the package's own Hex tarball, and not
 native code by name (`.so`, `.dylib`, `.dll`, `.a`, `.o`, `.node`) or magic (ELF, Mach-O, PE, `ar`), with at most
 500 files and 10 MiB in all; the beam rules and the native-source check (`c_src`, `native`, `zig_src`, `go_src`
