@@ -5,7 +5,7 @@ defmodule PortalWeb.CatalogApiController do
   alias OpenApiSpex.Schema
   alias Portal.Catalog
   alias Portal.Catalog.TopFailing
-  alias Portal.Precompiled.{Batches, Manifests, Root}
+  alias Portal.Precompiled.{Batches, ManifestRefs, Manifests, Root}
   alias PortalWeb.PrecompiledHTTP
 
   alias PortalWeb.ApiSchemas.{
@@ -209,6 +209,71 @@ defmodule PortalWeb.CatalogApiController do
     else
       _ -> :none
     end
+  end
+
+  @by_sha_param [
+    in: :path,
+    schema: %Schema{type: :string, pattern: "^[0-9a-f]{64}\\.json$"},
+    required: true,
+    description: "Lowercase hex SHA-256 of the manifest bytes, then `.json`."
+  ]
+
+  operation :precompiled_manifest_by_sha,
+    tags: ["Precompiled"],
+    operation_id: "getManifestV1BySha",
+    summary: "Precompiled manifest, format 1, by SHA-256",
+    description:
+      "The format-1 manifest bytes a signed batch named with this SHA-256 in `manifests`. " <>
+        "Content-addressed and immutable, so caches and content origins may keep it forever.",
+    parameters: [sha: @by_sha_param],
+    responses: [
+      ok: {"The manifest", "application/json", ManifestV1, headers: @etag_header},
+      not_modified: @not_modified,
+      not_found:
+        {"No batch named a format-1 manifest with this digest", "application/json", Error}
+    ]
+
+  def precompiled_manifest_by_sha(conn, %{"sha" => raw}), do: serve_by_sha(conn, raw, 1)
+
+  operation :precompiled_manifest_v2_by_sha,
+    tags: ["Precompiled"],
+    operation_id: "getManifestV2BySha",
+    summary: "Precompiled manifest, format 2, by SHA-256",
+    description:
+      "The format-2 manifest bytes a signed batch named with this SHA-256 in `manifests_v2`. " <>
+        "Content-addressed and immutable, so caches and content origins may keep it forever.",
+    parameters: [sha: @by_sha_param],
+    responses: [
+      ok: {"The manifest", "application/json", ManifestV2, headers: @etag_header},
+      not_modified: @not_modified,
+      not_found:
+        {"No batch named a format-2 manifest with this digest", "application/json", Error}
+    ]
+
+  def precompiled_manifest_v2_by_sha(conn, %{"sha" => raw}), do: serve_by_sha(conn, raw, 2)
+
+  # Only a sha some signed batch named in this format (`ManifestRefs`), and
+  # only bytes that still hash to it: a CDN pins whatever this returns for a
+  # year, and the store also holds file blobs that only `files/` may serve.
+  # Every miss looks the same, so the route is no oracle for what the store holds.
+  defp serve_by_sha(conn, raw, format) do
+    with sha when is_binary(sha) <- by_sha_name(raw),
+         true <- ManifestRefs.named?(sha, format),
+         {:ok, bytes} <- Manifests.read_intact(sha) do
+      PrecompiledHTTP.send_bytes(conn, bytes, PrecompiledHTTP.quote_sha(sha), :immutable)
+    else
+      _ ->
+        conn
+        |> PrecompiledHTTP.no_store()
+        |> put_status(:not_found)
+        |> json(%{error: "precompiled manifest not found"})
+    end
+  end
+
+  # The digest is checked as 64 lowercase hex before anything looks it up.
+  defp by_sha_name(raw) do
+    sha = String.replace_suffix(raw, ".json", "")
+    if sha != raw and Portal.ArtifactStore.valid_sha256?(sha), do: sha
   end
 
   operation :precompiled_root,

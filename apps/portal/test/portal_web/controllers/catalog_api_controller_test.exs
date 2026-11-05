@@ -1013,6 +1013,120 @@ defmodule PortalWeb.CatalogApiControllerTest do
       assert_documented_response(again, "getManifestV1")
     end
 
+    defp sha_of(body), do: Base.encode16(:crypto.hash(:sha256, body), case: :lower)
+
+    test "a format-1 manifest by sha: the batch's bytes, immutable, 304 on its etag" do
+      name = ingest_with_artifact()["package"]["name"]
+      {:ok, batch} = Portal.Precompiled.Batches.build_and_sign()
+      sha = Portal.Precompiled.Batches.manifests(batch)[name]
+      path = "/api/precompiled/manifests/by-sha/#{sha}.json"
+
+      resp = build_conn() |> get(path)
+      assert sha_of(response(resp, 200)) == sha
+      assert get_resp_header(resp, "cache-control") == ["public, max-age=31536000, immutable"]
+      assert get_resp_header(resp, "etag") == [~s("#{sha}")]
+      assert_documented_response(resp, "getManifestV1BySha")
+
+      again = build_conn() |> put_req_header("if-none-match", ~s("#{sha}")) |> get(path)
+      assert response(again, 304) == ""
+      assert_documented_response(again, "getManifestV1BySha")
+    end
+
+    test "a format-2 manifest by sha, and not under the format-1 path" do
+      name = "tc_bysha_#{System.unique_integer([:positive])}"
+      ingest_toolchain_build(name, "0.3.0")
+      {:ok, batch} = Portal.Precompiled.Batches.build_and_sign()
+      sha = Portal.Precompiled.Batches.manifests_v2(batch)[name]
+
+      resp = build_conn() |> get("/api/precompiled/v2/manifests/by-sha/#{sha}.json")
+      assert sha_of(response(resp, 200)) == sha
+      assert json_response(resp, 200)["format"] == 2
+      assert_documented_response(resp, "getManifestV2BySha")
+
+      wrong = build_conn() |> get("/api/precompiled/manifests/by-sha/#{sha}.json")
+      assert response(wrong, 404)
+      assert get_resp_header(wrong, "cache-control") == ["no-store"]
+      assert get_resp_header(wrong, "etag") == []
+      assert_documented_response(wrong, "getManifestV1BySha")
+    end
+
+    test "a manifest an older batch named stays servable by sha" do
+      first = ingest_with_artifact()
+      name = first["package"]["name"]
+      {:ok, b1} = Portal.Precompiled.Batches.build_and_sign()
+      old = Portal.Precompiled.Batches.manifests(b1)[name]
+
+      ingest_with_artifact(
+        first
+        |> Map.put("run_id", "run-2")
+        |> Map.put("finished_at", "2026-10-21T12:00:00Z")
+      )
+
+      {:ok, b2} = Portal.Precompiled.Batches.build_and_sign()
+      refute Portal.Precompiled.Batches.manifests(b2)[name] == old
+      resp = build_conn() |> get("/api/precompiled/manifests/by-sha/#{old}.json")
+      assert sha_of(response(resp, 200)) == old
+    end
+
+    # The store holds file blobs too; by-sha must not serve one past the
+    # files route's publication gate.
+    test "a file blob is not a manifest" do
+      ingest_with_artifact()
+      {:ok, _} = Portal.Precompiled.Batches.build_and_sign()
+      file_sha = "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+      assert Portal.ArtifactStore.present?(file_sha)
+
+      for prefix <- [
+            "/api/precompiled/manifests/by-sha/",
+            "/api/precompiled/v2/manifests/by-sha/"
+          ] do
+        resp = build_conn() |> get(prefix <> file_sha <> ".json")
+        assert response(resp, 404)
+        assert get_resp_header(resp, "cache-control") == ["no-store"]
+        assert get_resp_header(resp, "etag") == []
+      end
+    end
+
+    test "bytes that no longer hash to the name are never served" do
+      name = ingest_with_artifact()["package"]["name"]
+      {:ok, batch} = Portal.Precompiled.Batches.build_and_sign()
+      sha = Portal.Precompiled.Batches.manifests(batch)[name]
+      File.write!(Portal.ArtifactStore.blob_path(sha), ~s({"versions":{}}))
+
+      resp = build_conn() |> get("/api/precompiled/manifests/by-sha/#{sha}.json")
+      assert response(resp, 404)
+      assert get_resp_header(resp, "cache-control") == ["no-store"]
+      assert get_resp_header(resp, "etag") == []
+    end
+
+    test "malformed names are 404 no-store" do
+      upper = String.duplicate("A", 64)
+      short = String.duplicate("a", 63)
+      ok = String.duplicate("a", 64)
+
+      for raw <- [
+            "#{upper}.json",
+            "#{short}.json",
+            ok,
+            "#{ok}.json.json",
+            "#{ok}.JSON",
+            "..%2F#{ok}.json"
+          ] do
+        resp = build_conn() |> get("/api/precompiled/manifests/by-sha/#{raw}")
+        assert resp.status == 404, raw
+        assert get_resp_header(resp, "cache-control") == ["no-store"], raw
+        assert get_resp_header(resp, "etag") == [], raw
+      end
+    end
+
+    # Hex names match ^[a-z][a-z0-9_]*$, so no package is called "by-sha";
+    # the per-name route still owns that one-segment path regardless.
+    test "the by-sha prefix does not shadow the per-name route" do
+      resp = build_conn() |> get("/api/precompiled/manifests/by-sha.json")
+      assert resp.private[:phoenix_action] == :precompiled_manifest
+      assert response(resp, 404)
+    end
+
     test "root.json is 404 without a key" do
       Application.put_env(:portal, :precompiled_signing, key_path: nil)
       resp = build_conn() |> get("/api/precompiled/root.json")

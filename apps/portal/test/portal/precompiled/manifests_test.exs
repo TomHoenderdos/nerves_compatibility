@@ -55,6 +55,15 @@ defmodule Portal.Precompiled.ManifestsTest do
     assert {:ok, "hello"} = Manifests.read(sha)
   end
 
+  test "read_intact returns bytes only when they hash to the name" do
+    {:ok, sha} = Manifests.store(~s({"format":2}))
+    assert {:ok, ~s({"format":2})} = Manifests.read_intact(sha)
+    File.write!(Portal.ArtifactStore.blob_path(sha), "tampered")
+    assert :error = Manifests.read_intact(sha)
+    refute Manifests.intact?(sha)
+    assert :error = Manifests.read_intact(String.duplicate("c", 64))
+  end
+
   test "packages_with_precompiled_files lists only packages with stored files" do
     result = ingest_with_artifact()
     assert result["package"]["name"] in Catalog.packages_with_precompiled_files()

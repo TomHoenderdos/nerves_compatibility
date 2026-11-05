@@ -44,14 +44,20 @@ defmodule Portal.Precompiled.Manifests do
     if read(sha) == {:ok, bytes}, do: {:ok, sha}, else: put(sha, bytes)
   end
 
-  @doc "Whether the store holds bytes under `sha` that hash to it."
-  @spec intact?(String.t()) :: boolean()
-  def intact?(sha) do
-    case read(sha) do
-      {:ok, bytes} -> sha256(bytes) == sha
-      :error -> false
+  @doc "The bytes stored under `sha`, only when they hash to it."
+  @spec read_intact(String.t()) :: {:ok, binary()} | :error
+  def read_intact(sha) do
+    with {:ok, bytes} <- read(sha),
+         true <- sha256(bytes) == sha do
+      {:ok, bytes}
+    else
+      _ -> :error
     end
   end
+
+  @doc "Whether the store holds bytes under `sha` that hash to it."
+  @spec intact?(String.t()) :: boolean()
+  def intact?(sha), do: match?({:ok, _}, read_intact(sha))
 
   defp sha256(bytes), do: Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
 

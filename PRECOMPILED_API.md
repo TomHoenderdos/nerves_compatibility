@@ -94,6 +94,26 @@ Status codes:
 - `304` — `If-None-Match` names the current bytes
 - `404` — package has no build that format 2 can publish
 
+### GET /api/precompiled/manifests/by-sha/{sha256}.json and /api/precompiled/v2/manifests/by-sha/{sha256}.json
+
+The manifest bytes whose SHA256 a signed batch named, in `manifests` (first
+path) or `manifests_v2` (second path). Content-addressed: the URL never
+changes meaning, so the response is `cache-control: public,
+max-age=31536000, immutable` with the quoted SHA256 as `etag` (`304` on
+`If-None-Match`). Any sha any batch has named stays servable, so a client
+holding an older (still fresh) batch can fetch what it names. A batch that
+lists `content` origins (see `batch.json`) is the signal that these paths
+exist, at the source and at each content origin; the reference client tries
+each content origin, then the source's by-sha path, then the per-name path,
+and keeps only bytes that hash to the batch entry.
+
+Status codes:
+
+- `200` — the manifest bytes
+- `304` — `If-None-Match` names them
+- `404` — malformed digest, no batch named it in this format, or the stored
+  bytes no longer hash to it; `cache-control: no-store`
+
 ### GET /api/precompiled/files/{sha256}
 
 Returns artifact content by SHA256.
@@ -415,7 +435,9 @@ the same stored bytes, just without the batch to check them against.
   always matches what it downloads, and sets an `etag` of that SHA256. Before
   the first batch is signed, and for a package the newest batch does not name
   yet, the endpoint serves a fresh render instead, without an `etag`; a client
-  that verifies batches cannot use it.
+  that verifies batches cannot use it. The same bytes stay reachable by
+  digest at `manifests/by-sha/{sha256}.json` and
+  `v2/manifests/by-sha/{sha256}.json` after newer batches name other bytes.
 - **Revocation** — there is no separate revoke endpoint. When a build is
   withdrawn, the next signed batch drops the package from `manifests` and
   `manifests_v2` or points at a different hash in each. A client that verifies

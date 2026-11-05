@@ -237,6 +237,12 @@ defmodule PortalWeb.Router do
     pipe_through :api
 
     get "/packages/hex", PageController, :hex_package_search
+    get "/precompiled/manifests/by-sha/:sha", CatalogApiController, :precompiled_manifest_by_sha
+
+    get "/precompiled/v2/manifests/by-sha/:sha",
+        CatalogApiController,
+        :precompiled_manifest_v2_by_sha
+
     get "/precompiled/manifests/:package", CatalogApiController, :precompiled_manifest
     get "/precompiled/v2/manifests/:package", CatalogApiController, :precompiled_manifest_v2
     get "/precompiled/files/:sha256", CatalogApiController, :precompiled_file
