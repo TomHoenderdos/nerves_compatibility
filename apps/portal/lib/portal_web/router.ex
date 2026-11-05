@@ -194,7 +194,10 @@ defmodule PortalWeb.Router do
     # this dashboard open before the passkey requirement shipped keeps
     # reconnecting to it. `Oban.Web.Router.__options__/2` appends its own
     # `Oban.Web.Authentication` after ours, so ours decides first.
+    # `PortalWeb.ObanResolver`: no queue scaling, whose Pro-only controls
+    # the custom Oban engine would otherwise expose.
     oban_dashboard("/oban",
+      resolver: PortalWeb.ObanResolver,
       csp_nonce_assign_key: :csp_nonce,
       on_mount: [{PortalWeb.Plugs.RequireAdmin, :require_admin_passkey}]
     )

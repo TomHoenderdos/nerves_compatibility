@@ -140,13 +140,24 @@ defmodule Portal.EgressCheck do
     |> Enum.join("\n")
   end
 
+  # The probe bounds its own connect; this bounds docker itself, which a
+  # wedged daemon can block (`Portal.Builder.Cmd`).
+  @bare_timeout_ms :timer.minutes(2)
+
   @doc false
   # The script prints its own exit status, so `bare_outcome/1` can tell a
   # probe that ran (and timed out) from docker failing to run it at all.
   # sobelow_skip ["CI.System"]
   @spec bare_probe(target()) :: String.t()
   def bare_probe(target) do
-    "docker" |> System.cmd(bare_args(target), stderr_to_stdout: true) |> bare_outcome()
+    with exe when is_binary(exe) <- System.find_executable("docker"),
+         {:ok, out, status} <- Portal.Builder.Cmd.run(exe, bare_args(target), @bare_timeout_ms) do
+      bare_outcome({out, status})
+    else
+      nil -> "error: the probe did not run: no docker executable"
+      {:error, :timeout} -> "error: the probe did not run: docker did not answer in time"
+      {:error, reason} -> "error: the probe did not run: #{inspect(reason)}"
+    end
   end
 
   @doc false

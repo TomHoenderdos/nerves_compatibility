@@ -704,34 +704,35 @@ defmodule Portal.BuildCache.Promotion do
   defp container_copy(out_dir, staging, key, image) do
     name = copy_container_name()
     args = copy_args(out_dir, staging, key, image, name)
-    task = Task.async(fn -> docker(args) end)
 
-    case Task.yield(task, @copy_timeout_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {_out, 0}} ->
+    case docker(args) do
+      {:ok, _out, 0} ->
         :ok
 
-      {:ok, {out, status}} ->
+      {:ok, out, status} ->
         {:error, {:copy_container, status, String.slice(out, 0, 500)}}
 
-      {:exit, reason} ->
-        {:error, {:copy_container, reason}}
-
-      nil ->
-        # Off this process, every docker call under a deadline: a `docker
-        # kill` of a hung gVisor sandbox can itself hang (`Portal.Builder.Stop`).
+      {:error, :timeout} ->
+        # The docker CLI is killed (`Portal.Builder.Cmd`); the container is
+        # stopped off this process, every docker call under a deadline: a
+        # `docker kill` of a wedged gVisor sandbox can itself hang
+        # (`Portal.Builder.Stop`).
         Portal.Builder.Stop.start(name)
         {:error, {:copy_container, :timeout}}
+
+      {:error, reason} ->
+        {:error, {:copy_container, reason}}
     end
   end
 
   # Every argument is host-built: the operator's scratch and cache paths, the
   # host-recomputed key, the configured worker image and a host-random name.
-  # Passed as a list, no shell.
-  # sobelow_skip ["CI.System"]
+  # Passed as a list, no shell, under `@copy_timeout_ms`.
   defp docker(args) do
-    System.cmd("docker", args, stderr_to_stdout: true)
-  rescue
-    e -> {Exception.message(e), -1}
+    case System.find_executable("docker") do
+      nil -> {:error, :docker_not_found}
+      exe -> Portal.Builder.Cmd.run(exe, args, @copy_timeout_ms)
+    end
   end
 
   # sobelow_skip ["Traversal.FileModule"]
