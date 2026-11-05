@@ -151,13 +151,41 @@ builder_pause() {
   end)"
 }
 
+# `true` or `false`, then one `orphan ...` line per job the producer still
+# lists as running although its row is no longer executing under it
+# (Portal.BuilderDrain): a process that hung after Lifeline rescued its row
+# and another node retried it. Orphans do not hold the drain: restarting
+# this node loses nothing of them. A running release from before
+# Portal.BuilderDrain answers from the producer's running list alone.
 builder_queues_drained() {
-  builder_rpc "IO.puts(Enum.all?($builder_queues, fn queue ->
-    case Oban.check_queue(queue: queue) do
-      %{paused: true, running: []} -> true
-      _ -> false
-    end
-  end))"
+  builder_rpc "queues = $builder_queues
+  if Code.ensure_loaded?(Portal.BuilderDrain) and
+       function_exported?(Portal.BuilderDrain, :report, 1) do
+    Portal.BuilderDrain.report(queues)
+  else
+    IO.puts(Enum.all?(queues, fn queue ->
+      case Oban.check_queue(queue: queue) do
+        %{paused: true, running: []} -> true
+        _ -> false
+      end
+    end))
+  end"
+}
+
+# Named in the deploy log, never killed from here: the restart ends their
+# processes; a build container that outlives them is Portal.Builder.Stop's
+# and the operator's.
+builder_report_orphans() {
+  local orphans=$1
+  [[ -n "$orphans" ]] || return 0
+  cat >&2 <<EOF
+warning: the builder queues list jobs that no longer run here: their rows
+were rescued, retried elsewhere, discarded or deleted, so they do not hold
+the drain. They were not killed; the restart ends their processes. If a
+build container named below still runs afterwards, it is stuck (see the
+operator runbook, "hung build container"):
+$orphans
+EOF
 }
 
 builder_resume() {
@@ -221,10 +249,13 @@ builder_prepare() {
   builder_pause
 
   local deadline=$((SECONDS + timeout))
-  local drained
+  local answer drained orphans
   while true; do
-    drained=$(builder_queues_drained)
+    answer=$(builder_queues_drained)
+    drained=$(printf '%s\n' "$answer" | head -n 1)
+    orphans=$(printf '%s\n' "$answer" | grep '^orphan ' || true)
     if [[ "$drained" == true ]]; then
+      builder_report_orphans "$orphans"
       echo 'builder queues are paused and active jobs have finished'
       return 0
     fi

@@ -151,6 +151,56 @@ class BuilderDeploymentTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(events, ["pause", "build", "resume"])
 
+    # A job whose process hung on this node after its row was rescued and
+    # retried elsewhere stays in the producer's running list. The running
+    # release reports it as an orphan (Portal.BuilderDrain) instead of a
+    # job to wait for: the drain completes and the deploy log names it.
+    # Nothing is killed from here.
+    ORPHAN = ("orphan queue=builds job=4242 worker=Portal.Workers.Build state=available "
+              "attempted_by=node-b,uuid container=ncc-jason-1.4.1-*")
+
+    def test_an_orphaned_job_does_not_hold_the_drain_and_is_named(self):
+        result, events = self.run_deploy(drained=f"true\n{self.ORPHAN}\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(events, ["pause", "build", "resume"])
+        self.assertIn("job=4242", result.stderr)
+        self.assertIn("ncc-jason-1.4.1-*", result.stderr)
+        self.assertIn("not killed", result.stderr)
+        self.assertNotIn("kill", " ".join(self.docker_calls))
+
+    def test_a_live_job_beside_an_orphan_is_still_waited_for(self):
+        result, events = self.run_deploy(drained=f"false\n{self.ORPHAN}\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(events, ["pause", "wait", "build", "resume"])
+
+    def test_an_orphan_line_alone_is_not_a_verdict(self):
+        result, events = self.run_deploy(drained=f"{self.ORPHAN}\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(events, ["pause", "resume"])
+
+    # The drain question goes to the running release, which may predate
+    # Portal.BuilderDrain: it then answers as before, from the producer's
+    # running list alone.
+    def test_the_drain_query_falls_back_for_an_older_running_release(self):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+builder_rpc() { printf '%s' "$1" > "$OUT"; }
+builder_queues_drained
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "rpc"
+            result = subprocess.run(
+                ["bash", "-c", script],
+                env={**BASE_ENV, "HELPER": str(HELPER), "OUT": str(out)},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expression = out.read_text()
+        self.assertIn("Portal.BuilderDrain.report(", expression)
+        self.assertIn("function_exported?(Portal.BuilderDrain, :report, 1)", expression)
+        self.assertIn("%{paused: true, running: []}", expression)
+
     def run_build_image(self, pull_status="0", **env):
         script = r'''
 set -euo pipefail
