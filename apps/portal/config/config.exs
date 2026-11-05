@@ -31,6 +31,10 @@ config :portal,
 
 config :portal, Oban,
   repo: Portal.Repo,
+  # Oban's Basic engine, except that an attempt that comes back after its
+  # row was rescued (Lifeline below) and finished elsewhere cannot overwrite
+  # it: `Portal.Oban.OwnedAckEngine`.
+  engine: Portal.Oban.OwnedAckEngine,
   # Deliberately empty: `config/runtime.exs` owns the queue list so a deploy can
   # give each host its own set. Config deep-merges keyword lists, so anything
   # named here would survive the runtime override and run on every node.

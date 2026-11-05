@@ -587,6 +587,92 @@ defmodule Portal.Workers.BuildTest do
     end
   end
 
+  # A build whose `docker kill` hung came back fifteen hours late, after
+  # Lifeline had rescued its row and a later attempt had finished it. What
+  # it writes besides Oban's own ack (`Portal.Oban.OwnedAckEngine`) -- the
+  # scan request, an ingest job -- it may write only while its row is still
+  # executing under it.
+  describe "a late attempt whose row was rescued" do
+    @describetag :capture_log
+
+    @mine ["portal@builder-a", "11111111-1111-1111-1111-111111111111"]
+
+    defp rescued_attempt(request, state, attempted_by) do
+      row =
+        Portal.Repo.insert!(%Oban.Job{
+          worker: "Portal.Workers.Build",
+          queue: "builds",
+          state: state,
+          args: %{},
+          attempt: 3,
+          max_attempts: 3,
+          attempted_at: DateTime.utc_now(),
+          attempted_by: attempted_by
+        })
+
+      %Oban.Job{
+        id: row.id,
+        attempted_by: @mine,
+        args: %{
+          "package" => "late",
+          "version" => "1.0.0",
+          "image_digest" => "sha256:x",
+          "scan_request_id" => request.id
+        },
+        attempt: 3,
+        max_attempts: 3
+      }
+    end
+
+    defp request! do
+      {:ok, request} =
+        ScanRequests.create_once(%{package_name: "late", source: :hex_owner, status: :accepted})
+
+      request
+    end
+
+    test "a timed-out attempt leaves the request as the later attempt left it" do
+      request = request!()
+      set_response({:error, {:docker_execution_failed, "wall-clock timeout"}})
+      job = rescued_attempt(request, "discarded", ["portal@builder-b", "b"])
+
+      assert {:cancel, :stale_attempt} = Build.perform(job)
+      {:ok, after_late} = ScanRequests.get_request(request.id)
+      assert after_late.status == request.status
+    end
+
+    test "a succeeded attempt enqueues no ingest" do
+      request = request!()
+      files_dir = files_dir_with([])
+
+      set_response(
+        {:ok,
+         %{
+           exit_code: 0,
+           result: fixture_result(),
+           files_dir: files_dir,
+           output_dir: files_dir,
+           log: ""
+         }}
+      )
+
+      job = rescued_attempt(request, "executing", ["portal@builder-b", "b"])
+
+      assert {:cancel, :stale_attempt} = Build.perform(job)
+      refute_enqueued(worker: Ingest)
+    end
+
+    test "the attempt that still owns its row goes on as before" do
+      request = request!()
+      set_response({:error, {:docker_execution_failed, "wall-clock timeout"}})
+      job = rescued_attempt(request, "executing", @mine)
+
+      assert {:error, _} = Build.perform(job)
+      {:ok, updated} = ScanRequests.get_request(request.id)
+      assert updated.status == :error
+    end
+  end
+
   describe "perform/1 retryable failure (exit 10)" do
     test "returns error to trigger retry; request not yet errored on early attempt" do
       {:ok, request} =

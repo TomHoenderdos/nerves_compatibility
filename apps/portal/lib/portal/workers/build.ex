@@ -69,9 +69,36 @@ defmodule Portal.Workers.Build do
   alias Portal.Repo
   alias Portal.Workers.{Ingest, Progress}
 
+  # The attempt this process runs, for `stale_attempt?/0`.
+  @attempt_key {__MODULE__, :attempt}
+
   @impl Oban.Worker
-  def perform(%Oban.Job{meta: meta, args: args, attempt: attempt, max_attempts: max_attempts}) do
+  def perform(
+        %Oban.Job{meta: meta, args: args, attempt: attempt, max_attempts: max_attempts} = job
+      ) do
+    Process.put(@attempt_key, {job.id, job.attempted_by})
     do_perform(args, attempt, max_attempts, meta["sweep_id"])
+  end
+
+  # Whether this attempt's row has stopped being its own while the build ran:
+  # rescued by Lifeline, retried or finished elsewhere. A build whose `docker
+  # kill` hung once came back fifteen hours late and, writing as if it still
+  # owned the job, marked its scan request after a later attempt had settled
+  # it. Oban's own ack is guarded the same way (`Portal.Oban.OwnedAckEngine`).
+  # A job no producer fetched (`Oban.Testing.perform_job/3`) has no
+  # `attempted_by` and is always its own.
+  defp stale_attempt? do
+    case Process.get(@attempt_key) do
+      {id, attempted_by} when is_integer(id) and is_list(attempted_by) ->
+        not Repo.exists?(
+          from(j in Oban.Job,
+            where: j.id == ^id and j.state == "executing" and j.attempted_by == ^attempted_by
+          )
+        )
+
+      _ ->
+        false
+    end
   end
 
   # `sweep_id` is not for this job to announce itself -- a global telemetry
@@ -165,7 +192,19 @@ defmodule Portal.Workers.Build do
       }
       |> Map.merge(scope_args(package, version, args))
 
-    case builder().build(build_args) do
+    result = builder().build(build_args)
+
+    case if(stale_attempt?(), do: :stale_attempt, else: result) do
+      :stale_attempt ->
+        # Its scratch dir is this attempt's own; nothing else is.
+        Logger.warning(
+          "Build of #{package} #{version} returned after its job was rescued and taken over; " <>
+            "recording nothing: #{inspect(result, limit: 5)}"
+        )
+
+        Builder.cleanup(run_id)
+        {:cancel, :stale_attempt}
+
       {:ok, %{exit_code: exit_code} = build} ->
         handle_outcome(classify(exit_code), build, ctx)
 
