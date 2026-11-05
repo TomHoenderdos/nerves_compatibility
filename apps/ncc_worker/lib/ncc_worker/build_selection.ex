@@ -46,8 +46,8 @@ defmodule NccWorker.BuildSelection do
 
   Priv files are portable when they are static data the package's own Hex
   tarball carries byte for byte (`NccWorker.StaticPriv`), so a package that
-  ships them needs `tarball:`, the path of that tarball (`nil` for one the
-  caller could not find or trust). Without the option at all the package is
+  ships them needs `tarball:`, the path of that tarball or `{:binary, bytes}`
+  for one already read (`nil` for one the caller could not find or trust). Without the option at all the package is
   skipped as "ships priv files", the verdict from before the files were
   judged one by one.
   """

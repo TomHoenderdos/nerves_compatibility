@@ -393,8 +393,13 @@ What it lists:
   is static data: regular, non-executable files the package's own Hex tarball
   carries byte for byte, none of them native code (by name or by ELF, Mach-O,
   PE or `ar` magic), at most 500 files and 10 MiB in all, from a package with
-  no native sources. A package whose `priv` is anything else has no toolchain
-  build.
+  no native sources. The builder judges this inside its container, and the
+  portal judges it again on the host at ingest, with the same rules, against
+  the tarball it fetches itself: its SHA-256 must be the outer checksum the
+  signed Hex registry lists, which must also be the build's
+  `package_checksum`, and each file must hash to its manifest `sha256`. A
+  build that fails publishes none of its files, beams included. A package
+  whose `priv` is anything else has no toolchain build.
 - A build whose `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
   is `null` is left out, since no client can match it (it stays in format 1).
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),

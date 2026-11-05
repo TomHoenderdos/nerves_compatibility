@@ -1211,11 +1211,14 @@ defmodule NccWorker.Worker do
   # The package's own Hex tarball, the reference `BuildSelection.portable?/4`
   # judges its priv files against. `deps.get` left it in the run's Hex cache
   # (`NccWorker.HexCache`), whose `HEX_HOME` every `mix` here inherits, and
-  # it is used only while it is still the tarball the lock names.
+  # it is used only while it is still the tarball the lock names: read once,
+  # its bytes are both what is checked against the lock and what is judged.
   defp package_tarball(project_dir, package_name) do
     with {:ok, release} <- DepsLock.package_release(project_dir, package_name),
-         home when is_binary(home) and home != "" <- System.get_env("HEX_HOME") do
-      HexCache.package_tarball(home, release.name, release.version, release.checksum)
+         home when is_binary(home) and home != "" <- System.get_env("HEX_HOME"),
+         bytes when is_binary(bytes) <-
+           HexCache.package_tarball(home, release.name, release.version, release.checksum) do
+      {:binary, bytes}
     else
       _ -> nil
     end

@@ -104,6 +104,87 @@ defmodule Portal.HexDeps do
     end
   end
 
+  @doc """
+  The bytes of the Hex tarball of `name` at `version`, for a caller that
+  checks them against `outer_checksum/3` itself (`Portal.Catalog.ToolchainPriv`).
+
+  The shared Hex cache is read first (`Portal.HexCache.cached_tarball/2`),
+  and its copy is used only when it hashes to the registry's outer checksum.
+  Otherwise the tarball comes from `repo.hex.pm/tarballs`, the CDN Hex itself
+  downloads from, without a redirect and capped at
+  `Compatibility.StaticPriv.max_tarball_bytes/0` while it streams in. What the
+  CDN serves is returned unchecked: the caller's own comparison is what tells
+  a tampered tarball from an outage.
+
+  `{:error, :unknown_release}` for a release the CDN does not serve,
+  `{:error, :tarball_too_large}` for one over the cap and
+  `{:error, :hex_registry_unavailable}` for anything that says "ask later".
+  Options as for `releases/2`, and `:hex_cache` (the cache root, default the
+  configured one). Never raises.
+  """
+  @spec tarball(String.t(), String.t(), keyword()) ::
+          {:ok, binary()}
+          | {:error, :unknown_release | :tarball_too_large | :hex_registry_unavailable}
+  def tarball(name, version, opts \\ []) when is_binary(name) and is_binary(version) do
+    case Compatibility.HexCache.pair(%{"name" => name, "version" => version}) do
+      {:ok, _pair} -> cached_or_fetched(name, version, opts)
+      :error -> {:error, :unknown_release}
+    end
+  end
+
+  defp cached_or_fetched(name, version, opts) do
+    with {:ok, bytes} <- Portal.HexCache.cached_tarball(name, version, opts),
+         {:ok, checksum} <- outer_checksum(name, version, opts),
+         true <- sha256(bytes) == checksum do
+      {:ok, bytes}
+    else
+      _ -> fetch_tarball(name, version, opts)
+    end
+  end
+
+  defp fetch_tarball(name, version, opts) do
+    client = Keyword.get(opts, :client, Req)
+    max_bytes = Compatibility.StaticPriv.max_tarball_bytes()
+    file = Compatibility.HexCache.tarball_name(name, version)
+
+    request_opts =
+      Keyword.merge(
+        [
+          compressed: false,
+          decode_body: false,
+          receive_timeout: 30_000,
+          redirect: false,
+          into: capped(max_bytes)
+        ],
+        Keyword.take(opts, [:receive_timeout, :retry, :connect_options])
+      )
+
+    case client.get("#{@repo_url}/tarballs/#{file}", request_opts) do
+      {:ok, %{status: 200, body: body}} when is_binary(body) and byte_size(body) <= max_bytes ->
+        {:ok, body}
+
+      {:ok, %{status: 200}} ->
+        {:error, :tarball_too_large}
+
+      {:ok, %{status: status}} when status in [403, 404] ->
+        {:error, :unknown_release}
+
+      {:ok, %{status: status}} ->
+        Logger.warning("Hex tarball #{file} failed: HTTP #{status}")
+        {:error, :hex_registry_unavailable}
+
+      {:error, reason} ->
+        Logger.warning("Hex tarball #{file} failed: #{inspect(reason, limit: 5)}")
+        {:error, :hex_registry_unavailable}
+    end
+  rescue
+    error ->
+      Logger.warning("Hex tarball #{name} #{version} failed: #{Exception.message(error)}")
+      {:error, :hex_registry_unavailable}
+  end
+
+  defp sha256(bytes), do: :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+
   defp find_checksum(releases, version) do
     case Enum.find(releases, &(&1.version == version)) do
       nil -> :miss

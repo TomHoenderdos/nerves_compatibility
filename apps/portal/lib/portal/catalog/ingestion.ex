@@ -34,7 +34,8 @@ defmodule Portal.Catalog.Ingestion do
     Run,
     SystemLog,
     SystemResult,
-    ToolchainBuild
+    ToolchainBuild,
+    ToolchainPriv
   }
 
   alias Portal.Repo
@@ -70,7 +71,9 @@ defmodule Portal.Catalog.Ingestion do
           required(:builder_version) => pos_integer(),
           optional(:version) => String.t() | nil,
           optional(:output_dir) => Path.t() | nil,
-          optional(:variant) => :with | :without
+          optional(:variant) => :with | :without,
+          optional(:hex_outer_checksum) => (String.t(), String.t() -> term()),
+          optional(:hex_tarball) => (String.t(), String.t() -> term())
         }
 
   @doc """
@@ -130,11 +133,38 @@ defmodule Portal.Catalog.Ingestion do
   A later non-pass verdict for the same identity overwrites a pass row, and its
   memberships with it. The sweep never re-queues an identity that has a pass
   row, so that only happens through a manual re-enqueue.
+
+  A pass build with priv files is checked on the host first
+  (`Portal.Catalog.ToolchainPriv`, which `opts.hex_outer_checksum` and
+  `opts.hex_tarball` feed). A refused build is stored as a `fail` with the
+  reason and no files at all; a check Hex could not answer returns
+  `{:error, reason}` before anything is written, for the job to retry.
   """
   @spec ingest_toolchain(map(), toolchain_opts()) ::
           {:ok, ToolchainBuild.t()} | {:error, term()}
   def ingest_toolchain(result, opts) when is_map(result) do
     build = result |> toolchain_build_map() |> gate_manifest()
+
+    case ToolchainPriv.verify(result, build, opts) do
+      :ok -> stage_toolchain_build(result, build, opts)
+      {:refused, reason} -> stage_toolchain_build(result, refused(build, reason), opts)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # A build whose priv files the host refused publishes none of its files,
+  # beams included: its beams read data that is not published with them. It
+  # is stored as a `fail`, a verdict the sweep leaves alone for 7 days rather
+  # than one it re-queues at once.
+  defp refused(build, reason) do
+    Map.merge(build, %{
+      "status" => "fail",
+      "reason" => "priv refused on the host: " <> reason,
+      "file_manifest" => nil
+    })
+  end
+
+  defp stage_toolchain_build(result, build, opts) do
     wanted = build |> Map.get("file_manifest") |> shas_from_manifest()
     staged = stage_shas(wanted, opts.files_dir)
 

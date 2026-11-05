@@ -235,8 +235,13 @@ native code by name (`.so`, `.dylib`, `.dll`, `.a`, `.o`, `.node`) or magic (ELF
 500 files and 10 MiB in all; the beam rules and the native-source check (`c_src`, `native`, `zig_src`, `go_src`
 and the rest) still apply first and after. The tarball is the one `deps.get` left in the run's Hex cache, used only
 while its SHA-256 is the outer checksum the lock names; the source dir is never the reference, since a compile hook
-can write there too. A file that fails names itself in the skip reason, and a tarball that is missing or cannot be
-read skips the package as `"ships priv files that could not be checked against its Hex tarball"`.
+can write there too. It is read once, and the bytes hashed are the bytes judged. A file that fails names itself in
+the skip reason, and a tarball that is missing or cannot be read skips the package as `"ships priv files that could
+not be checked against its Hex tarball"`. The rules are `Compatibility.StaticPriv`, shared with the portal, which
+applies them again on the host at ingest to the files the build hands over, against a tarball it fetches itself and
+the outer checksum the signed registry lists: a pass here is the container's word, and a build the host refuses
+publishes nothing. The tarball is bounded before it is unpacked: at most 8 MiB, a `contents.tar.gz` that inflates to
+at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
 
 `result.json` has `"scope": "toolchain"`, `"systems": {}`, the usual top-level `deps_lock`, `package_checksum` and
 `optional_deps`, and:

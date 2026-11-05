@@ -149,19 +149,38 @@ defmodule NccWorker.HexCache do
   end
 
   @doc """
-  The cached tarball of `name` `version` under `home` (a `HEX_HOME`), when
-  its SHA-256 is `outer_checksum`: what Hex checks a cached tarball against,
-  and the last element of a `mix.lock` entry. `nil` when it is missing, does
-  not match, or the name is not one Hex would cache.
+  The bytes of the cached tarball of `name` `version` under `home` (a
+  `HEX_HOME`), when their SHA-256 is `outer_checksum`: what Hex checks a
+  cached tarball against, and the last element of a `mix.lock` entry. The
+  file is read once, and the bytes that were hashed are the bytes returned,
+  so what is judged against is what was checked. `nil` when it is missing,
+  over `Compatibility.StaticPriv.max_tarball_bytes/0`, does not match, or the
+  name is not one Hex would cache.
   """
-  @spec package_tarball(Path.t(), String.t(), String.t(), String.t()) :: Path.t() | nil
+  @spec package_tarball(Path.t(), String.t(), String.t(), String.t()) :: binary() | nil
   def package_tarball(home, name, version, outer_checksum) do
     file = "#{name}-#{version}.tar"
-    path = Path.join([home, "packages", "hexpm", file])
 
-    if Regex.match?(@tarball, file) and checksum(path) == String.downcase(outer_checksum),
-      do: path
+    with true <- Regex.match?(@tarball, file),
+         {:ok, bytes} <- read_tarball(Path.join([home, "packages", "hexpm", file])),
+         true <- sha256(bytes) == String.downcase(outer_checksum) do
+      bytes
+    else
+      _ -> nil
+    end
   end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_tarball(path) do
+    max = Compatibility.StaticPriv.max_tarball_bytes()
+
+    case File.open(path, [:read, :raw, :binary], &IO.binread(&1, max + 1)) do
+      {:ok, bytes} when is_binary(bytes) and byte_size(bytes) <= max -> {:ok, bytes}
+      _ -> :error
+    end
+  end
+
+  defp sha256(bytes), do: :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
 
   # The tarball names in the run's dir, split into regular files (downloaded
   # in this run) and links (seeded and left alone).
