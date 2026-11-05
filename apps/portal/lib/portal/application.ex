@@ -38,6 +38,10 @@ defmodule Portal.Application do
       # Owns the ETS table of L2 build cache counters and in-flight claims;
       # before Oban, whose build jobs write it.
       Portal.BuildCache.L2.Stats,
+      # Before Oban, so no producer of this node exists yet: the short cron
+      # jobs still `executing` under this node's name were orphaned by its
+      # last shutdown, and would block their own schedule until Lifeline.
+      Portal.OrphanRescue,
       # A build node also runs its own ingest queue and its own Nerves cache
       # warm queue; see `Portal.Workers.Ingest` and `Portal.Workers.WarmNerves`.
       {Oban,
