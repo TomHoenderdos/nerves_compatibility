@@ -90,11 +90,64 @@ defmodule Portal.Oban.OwnedAckEngineTest do
       assert reload(job) == before
     end
 
+    # Lifeline's rescue leaves attempted_by as it was, so this same producer
+    # can fetch the row again with an identical attempted_by; only the
+    # attempt number tells the two attempts apart.
+    test "does not touch a row this producer re-fetched as a later attempt" do
+      job = row("executing", @mine, 3)
+      before = reload(job)
+
+      for ack <- [
+            &Engine.complete_job(&1, &2),
+            &Engine.error_job(&1, &2, 60),
+            &Engine.discard_job(&1, &2),
+            &Engine.snooze_job(&1, &2, 60),
+            &Engine.cancel_job(&1, &2)
+          ] do
+        assert :ok = ack.(conf(), attempt(%{job | attempt: 2}, @mine))
+        assert reload(job) == before
+      end
+    end
+
     test "does not touch a row rescued back to available" do
       job = row("available", @mine)
       assert :ok = Engine.complete_job(conf(), attempt(job, @mine))
       assert reload(job).state == "available"
     end
+  end
+
+  # The five acks above are every write the executor makes for an attempt.
+  # An Oban upgrade that adds an engine callback fails this pin, so a new
+  # ack cannot bypass the ownership check unnoticed.
+  test "the engine behaviour has exactly the callbacks this engine was written against" do
+    assert Enum.sort(Oban.Engine.behaviour_info(:callbacks)) ==
+             Enum.sort(
+               init: 2,
+               put_meta: 4,
+               check_meta: 3,
+               refresh: 2,
+               shutdown: 2,
+               insert_job: 3,
+               insert_job: 5,
+               insert_all_jobs: 3,
+               insert_all_jobs: 5,
+               stage_jobs: 3,
+               fetch_jobs: 3,
+               prune_jobs: 3,
+               rescue_jobs: 3,
+               check_available: 1,
+               complete_job: 2,
+               discard_job: 2,
+               error_job: 3,
+               snooze_job: 3,
+               cancel_job: 2,
+               cancel_all_jobs: 2,
+               delete_job: 2,
+               delete_all_jobs: 2,
+               retry_job: 2,
+               retry_all_jobs: 2,
+               update_job: 3
+             )
   end
 
   test "is the engine the portal's Oban runs" do

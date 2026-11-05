@@ -2,8 +2,11 @@ defmodule Portal.Oban.OwnedAckEngine do
   @moduledoc """
   `Oban.Engines.Basic`, except that an attempt's ack (complete, error,
   discard, snooze, cancel) writes only while the job's row is still
-  `executing` under that attempt: `attempted_by`, the `[node, producer
-  uuid]` its fetch stamped, unchanged.
+  `executing` under that attempt: the same `attempt` number and the same
+  `attempted_by` (`[node, producer uuid]`) its fetch stamped. Both are
+  needed: Lifeline's rescue keeps `attempted_by`, so the same producer can
+  fetch the row again with an identical one, and only the attempt number,
+  which every fetch increments, tells the two attempts apart.
 
   Basic acks by id alone. A build whose `docker kill` hung returned fifteen
   hours late, after `Oban.Plugins.Lifeline` had rescued its row and a later
@@ -85,13 +88,13 @@ defmodule Portal.Oban.OwnedAckEngine do
   # to own it by and is acked as Basic would.
   defp owned(_conf, %Job{attempted_by: nil}, _ack, write), do: write.()
 
-  defp owned(conf, %Job{id: id, attempted_by: attempted_by} = job, ack, write) do
+  defp owned(conf, %Job{id: id, attempt: attempt, attempted_by: attempted_by} = job, ack, write) do
     {:ok, :ok} =
       Repo.transaction(conf, fn ->
         query =
           Job
           |> where([j], j.id == ^id and j.state == "executing")
-          |> where([j], j.attempted_by == ^attempted_by)
+          |> where([j], j.attempt == ^attempt and j.attempted_by == ^attempted_by)
           |> select([j], j.id)
           |> lock("FOR UPDATE")
 

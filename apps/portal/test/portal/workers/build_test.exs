@@ -3,6 +3,7 @@ defmodule Portal.Workers.BuildTest do
   use Oban.Testing, repo: Portal.Repo
 
   import ExUnit.CaptureLog
+  import Ecto.Query, only: [from: 2]
 
   require Ash.Query
 
@@ -660,6 +661,20 @@ defmodule Portal.Workers.BuildTest do
 
       assert {:cancel, :stale_attempt} = Build.perform(job)
       refute_enqueued(worker: Ingest)
+    end
+
+    # Lifeline keeps attempted_by, so this producer's re-fetch of the row
+    # looks the same but for the attempt number.
+    test "a row re-fetched by the same producer as a later attempt is not its own" do
+      request = request!()
+      set_response({:error, {:docker_execution_failed, "wall-clock timeout"}})
+      job = rescued_attempt(request, "executing", @mine)
+      Portal.Repo.update_all(from(j in Oban.Job, where: j.id == ^job.id), set: [attempt: 3])
+      job = %{job | attempt: 2}
+
+      assert {:cancel, :stale_attempt} = Build.perform(job)
+      {:ok, after_late} = ScanRequests.get_request(request.id)
+      assert after_late.status == request.status
     end
 
     test "the attempt that still owns its row goes on as before" do

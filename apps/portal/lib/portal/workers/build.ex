@@ -76,7 +76,7 @@ defmodule Portal.Workers.Build do
   def perform(
         %Oban.Job{meta: meta, args: args, attempt: attempt, max_attempts: max_attempts} = job
       ) do
-    Process.put(@attempt_key, {job.id, job.attempted_by})
+    Process.put(@attempt_key, {job.id, attempt, job.attempted_by})
     do_perform(args, attempt, max_attempts, meta["sweep_id"])
   end
 
@@ -84,15 +84,19 @@ defmodule Portal.Workers.Build do
   # rescued by Lifeline, retried or finished elsewhere. A build whose `docker
   # kill` hung once came back fifteen hours late and, writing as if it still
   # owned the job, marked its scan request after a later attempt had settled
-  # it. Oban's own ack is guarded the same way (`Portal.Oban.OwnedAckEngine`).
+  # it. Oban's own ack is guarded the same way (`Portal.Oban.OwnedAckEngine`),
+  # and for the same reason by the attempt number as well: Lifeline keeps
+  # `attempted_by`, so a re-fetch by this producer carries the same one.
   # A job no producer fetched (`Oban.Testing.perform_job/3`) has no
   # `attempted_by` and is always its own.
   defp stale_attempt? do
     case Process.get(@attempt_key) do
-      {id, attempted_by} when is_integer(id) and is_list(attempted_by) ->
+      {id, attempt, attempted_by} when is_integer(id) and is_list(attempted_by) ->
         not Repo.exists?(
           from(j in Oban.Job,
-            where: j.id == ^id and j.state == "executing" and j.attempted_by == ^attempted_by
+            where:
+              j.id == ^id and j.state == "executing" and j.attempt == ^attempt and
+                j.attempted_by == ^attempted_by
           )
         )
 
