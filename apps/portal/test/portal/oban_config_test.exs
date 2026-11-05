@@ -73,6 +73,27 @@ defmodule Portal.ObanConfigTest do
     assert Portal.Workers.LeaseReaper.__opts__()[:queue] == :maintenance
   end
 
+  test "release downloads refresh weekly, on the queue the web host runs" do
+    {_mod, opts} = plugin(Oban.Plugins.Cron)
+
+    assert {expr, Portal.Workers.ReleaseDownloadsRefresh} =
+             Enum.find(opts[:crontab], &match?({_e, Portal.Workers.ReleaseDownloadsRefresh}, &1))
+
+    # Once a week: minute, hour and day of week fixed, every day of month.
+    assert [minute, hour, "*", "*", weekday] = String.split(expr)
+    assert {_, ""} = Integer.parse(minute)
+    assert {_, ""} = Integer.parse(hour)
+    assert {_, ""} = Integer.parse(weekday)
+
+    # Not on top of the package metadata refresh, which talks to the same
+    # rate-limited API for about an hour.
+    {meta_expr, _} =
+      Enum.find(opts[:crontab], &match?({_e, Portal.Workers.HexMetaRefresh}, &1))
+
+    refute expr == meta_expr
+    assert Portal.Workers.ReleaseDownloadsRefresh.__opts__()[:queue] == :intake
+  end
+
   describe "the hex.pm update check" do
     defp update_check_entry do
       {_mod, opts} = plugin(Oban.Plugins.Cron)
