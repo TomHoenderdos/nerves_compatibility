@@ -717,7 +717,9 @@ defmodule Portal.BuildCache.Promotion do
         {:error, {:copy_container, reason}}
 
       nil ->
-        _ = docker(["kill", name])
+        # Off this process, every docker call under a deadline: a `docker
+        # kill` of a hung gVisor sandbox can itself hang (`Portal.Builder.Stop`).
+        Portal.Builder.Stop.start(name)
         {:error, {:copy_container, :timeout}}
     end
   end

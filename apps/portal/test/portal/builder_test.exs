@@ -1142,4 +1142,107 @@ defmodule Portal.BuilderTest do
       assert FakeS3.requests(s) == []
     end
   end
+
+  # A build container under gVisor once hung so that `docker kill` never
+  # returned, and the build job's process with it, for thirteen hours past
+  # the wall clock. Past the deadline `build/2` returns at once: the
+  # `docker run` client is SIGKILLed and the container's stop goes on in
+  # `Portal.Builder.Stop`, off the job's process.
+  describe "wall-clock timeout" do
+    @describetag :capture_log
+
+    setup %{previous: previous} do
+      tmp = Path.join(System.tmp_dir!(), "builder-timeout-#{System.unique_integer([:positive])}")
+      bin = Path.join(tmp, "bin")
+      File.mkdir_p!(bin)
+      docker = Path.join(bin, "docker")
+      id = String.duplicate("b", 64)
+
+      File.write!(docker, """
+      #!/bin/sh
+      case "$1" in
+        version) echo 99.0 ;;
+        run) echo $$ > #{tmp}/run.pid; exec sleep 30 ;;
+        kill) [ -e #{tmp}/kill.works ] && { touch #{tmp}/gone; exit 0; }
+              echo $$ > #{tmp}/kill.pid; exec sleep 30 ;;
+        ps) [ -e #{tmp}/gone ] || printf '#{id}\\tncc-run-1\\n' ;;
+      esac
+      exit 0
+      """)
+
+      File.chmod!(docker, 0o755)
+      old_path = System.get_env("PATH")
+      System.put_env("PATH", bin <> ":" <> old_path)
+
+      on_exit(fn ->
+        System.put_env("PATH", old_path)
+        File.rm_rf(tmp)
+      end)
+
+      put_builder(
+        [
+          scratch_root: Path.join(tmp, "scratch"),
+          nerves_cache: Path.join(tmp, "nerves"),
+          hex_cache: Path.join(tmp, "hex"),
+          min_free_disk_gb: 0,
+          exec_probe: fn _ -> :ok end,
+          egress_check: false,
+          memory: "1g",
+          hex_cache_image_label: "",
+          stop_kill_timeout_ms: 5_000,
+          stop_await_ms: 0,
+          stop_wait_ms: 200,
+          stop_poll_ms: 50
+        ],
+        previous
+      )
+
+      %{tmp: tmp}
+    end
+
+    defp pid_alive?(file) do
+      pid = file |> File.read!() |> String.trim()
+      match?({_, 0}, System.cmd("kill", ["-0", pid], stderr_to_stdout: true))
+    end
+
+    test "returns promptly and kills the docker run client although docker kill hangs", %{
+      tmp: tmp
+    } do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:portal, :builder, :container_stop]])
+      started = System.monotonic_time(:millisecond)
+
+      assert {:error, {:docker_execution_failed, message}} =
+               Builder.build(@build_args, timeout_ms: 300)
+
+      assert System.monotonic_time(:millisecond) - started < 3_000
+      assert message =~ "wall-clock timeout"
+      refute pid_alive?(Path.join(tmp, "run.pid")), "the docker run client is still running"
+
+      # The stop goes on elsewhere: the hung kill is cut off at its own
+      # deadline and the container, still listed, is reported running.
+      assert_receive {[:portal, :builder, :container_stop], ^ref, _,
+                      %{container: "ncc-run-1", outcome: :still_running}},
+                     10_000
+
+      refute pid_alive?(Path.join(tmp, "kill.pid")), "the hung docker kill is still running"
+      log = File.read!(Path.join([tmp, "scratch", "run-1", "out", "runner.log"]))
+      assert log =~ "Wall-clock timeout exceeded"
+    end
+
+    # The caller removes the scratch dir next: a container docker can kill
+    # is gone before the build returns.
+    test "waits briefly for a container docker kills", %{tmp: tmp, previous: previous} do
+      File.touch!(Path.join(tmp, "kill.works"))
+      put_builder([stop_await_ms: 5_000], Application.get_env(:portal, Portal.Builder, previous))
+      ref = :telemetry_test.attach_event_handlers(self(), [[:portal, :builder, :container_stop]])
+
+      assert {:error, {:docker_execution_failed, _}} = Builder.build(@build_args, timeout_ms: 300)
+
+      assert_received {[:portal, :builder, :container_stop], ^ref, _,
+                       %{container: "ncc-run-1", outcome: :killed}}
+
+      log = File.read!(Path.join([tmp, "scratch", "run-1", "out", "runner.log"]))
+      assert log =~ "Wall-clock timeout exceeded"
+    end
+  end
 end

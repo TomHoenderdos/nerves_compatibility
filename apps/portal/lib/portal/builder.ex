@@ -21,6 +21,7 @@ defmodule Portal.Builder do
 
   alias Compatibility.Builder.Argv
   alias Portal.BuildCache.L2
+  alias Portal.Builder.{Cmd, Stop}
 
   # See `read_log/1`.
   @log_tail_bytes 1024 * 1024
@@ -171,14 +172,23 @@ defmodule Portal.Builder do
   """
   @spec check_docker() :: {:ok, String.t()} | {:error, String.t()}
   def check_docker do
-    case System.cmd("docker", ["version", "--format", "{{.Server.Version}}"],
-           stderr_to_stdout: true
-         ) do
-      {version, 0} -> {:ok, String.trim(version)}
-      {error, _} -> {:error, "Docker not available: #{error}"}
+    case docker_cmd(["version", "--format", "{{.Server.Version}}"]) do
+      {:ok, version, 0} -> {:ok, String.trim(version)}
+      {:ok, error, _status} -> {:error, "Docker not available: #{error}"}
+      {:error, reason} -> {:error, "Docker not available: #{inspect(reason)}"}
     end
-  rescue
-    e in ErlangError -> {:error, "Docker not available: #{Exception.message(e)}"}
+  end
+
+  # Every short docker call a build makes, under a deadline: a daemon stuck
+  # on one container can block every CLI call that touches it, and the
+  # caller is a `:builds` slot (`Portal.Builder.Cmd`).
+  @docker_cmd_timeout_ms :timer.minutes(1)
+
+  defp docker_cmd(args) do
+    case System.find_executable("docker") do
+      nil -> {:error, :docker_not_found}
+      exe -> Cmd.run(exe, args, @docker_cmd_timeout_ms)
+    end
   end
 
   @doc """
@@ -252,7 +262,15 @@ defmodule Portal.Builder do
          {:ok, prefetch_line} <- prefetch_build_cache(job),
          :ok <- write_worker_input(job, work_dir),
          {:ok, exit_code} <-
-           run_container(job, work_dir, output_dir, files_dir, log_file, prefetch_line) do
+           run_container(
+             job,
+             work_dir,
+             output_dir,
+             files_dir,
+             log_file,
+             prefetch_line,
+             opts[:timeout_ms] || @total_timeout_ms
+           ) do
       result = read_result_json(output_dir)
       log = read_log(log_file)
 
@@ -336,12 +354,10 @@ defmodule Portal.Builder do
   """
   @spec image_digest(String.t()) :: String.t()
   def image_digest(image_name) do
-    case System.cmd("docker", ["inspect", "--format={{.Id}}", image_name], stderr_to_stdout: true) do
-      {id, 0} -> id |> String.trim() |> normalize_digest()
-      {_error, _} -> @zero_digest
+    case docker_cmd(["inspect", "--format={{.Id}}", image_name]) do
+      {:ok, id, 0} -> id |> String.trim() |> normalize_digest()
+      _ -> @zero_digest
     end
-  rescue
-    _ -> @zero_digest
   end
 
   @doc """
@@ -394,12 +410,10 @@ defmodule Portal.Builder do
   """
   @spec fetch_running_containers() :: {:ok, MapSet.t(String.t())} | :error
   def fetch_running_containers do
-    case System.cmd("docker", ["ps", "--format", "{{.Names}}"], stderr_to_stdout: true) do
-      {out, 0} -> {:ok, out |> String.split("\n", trim: true) |> MapSet.new(&String.trim/1)}
-      {_out, _status} -> :error
+    case docker_cmd(["ps", "--format", "{{.Names}}"]) do
+      {:ok, out, 0} -> {:ok, out |> String.split("\n", trim: true) |> MapSet.new(&String.trim/1)}
+      _ -> :error
     end
-  rescue
-    _ -> :error
   end
 
   @doc """
@@ -782,12 +796,12 @@ defmodule Portal.Builder do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
-  defp run_container(job, work_dir, output_dir, files_dir, log_file, note) do
+  defp run_container(job, work_dir, output_dir, files_dir, log_file, note, timeout_ms) do
     args = build_docker_args(job, work_dir, output_dir, files_dir)
     container_name = container_name(job.run_id)
     log_command(args, log_file, note)
 
-    case run_docker(args, log_file, container_name) do
+    case run_docker(args, log_file, container_name, timeout_ms) do
       {:ok, exit_code} -> {:ok, exit_code}
       {:error, reason} -> {:error, {:docker_execution_failed, reason}}
     end
@@ -919,14 +933,10 @@ defmodule Portal.Builder do
   defp inspect_hex_cache_label(ref) do
     format = "{{index .Config.Labels \"#{Argv.hex_cache_label()}\"}}"
 
-    case System.cmd("docker", ["image", "inspect", "--format", format, ref],
-           stderr_to_stdout: true
-         ) do
-      {out, 0} -> {:ok, String.trim(out)}
+    case docker_cmd(["image", "inspect", "--format", format, ref]) do
+      {:ok, out, 0} -> {:ok, String.trim(out)}
       _ -> :error
     end
-  rescue
-    _ -> :error
   end
 
   # Under the NCC_NERVES_CACHE_RW=1 rollback the container writes the Nerves
@@ -1087,35 +1097,25 @@ defmodule Portal.Builder do
 
   # Only run_container/6 calls this with the runner.log path constructed by build/2.
   # sobelow_skip ["Traversal.FileModule"]
-  defp run_docker(args, log_file, container_name) do
+  defp run_docker(args, log_file, container_name, timeout_ms) do
     log_device = File.open!(log_file, [:append])
-    deadline = System.monotonic_time(:millisecond) + @total_timeout_ms
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
 
     try do
-      port =
-        Port.open(
-          {:spawn_executable, System.find_executable("docker")},
-          [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            args: Enum.map(args, &String.to_charlist/1)
-          ]
-        )
-
-      receive_docker_output(port, log_device, deadline, container_name)
+      port = Cmd.open(System.find_executable("docker"), args)
+      receive_docker_output(port, log_device, deadline, container_name, timeout_ms)
     after
       File.close(log_device)
     end
   end
 
-  defp receive_docker_output(port, log_device, deadline, container_name) do
+  defp receive_docker_output(port, log_device, deadline, container_name, timeout_ms) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
       {^port, {:data, data}} ->
         IO.binwrite(log_device, data)
-        receive_docker_output(port, log_device, deadline, container_name)
+        receive_docker_output(port, log_device, deadline, container_name, timeout_ms)
 
       {^port, {:exit_status, status}} ->
         footer = """
@@ -1130,28 +1130,44 @@ defmodule Portal.Builder do
         {:ok, status}
     after
       remaining ->
-        force_kill_container(container_name, log_device)
-        Port.close(port)
+        stop_timed_out(port, container_name, log_device)
 
         {:error,
-         "Docker command exceeded #{div(@total_timeout_ms, 1000)}s wall-clock timeout; " <>
-           "container #{container_name} was killed"}
+         "Docker command exceeded #{div(timeout_ms, 1000)}s wall-clock timeout; " <>
+           "container #{container_name} is being stopped"}
     end
   end
 
-  defp force_kill_container(container_name, log_device) do
-    _ = System.cmd("docker", ["kill", container_name], stderr_to_stdout: true)
+  # How long a timed-out build waits for its container's stop, so the
+  # caller's scratch cleanup does not race a container docker can kill.
+  @stop_await_ms :timer.seconds(45)
+
+  # Nothing here waits on docker beyond `@stop_await_ms`. A gVisor sandbox can hang so that `docker
+  # kill` never returns, and a `System.cmd/3` of it once held this process,
+  # the Oban job's, for thirteen hours: the job was rescued and retried
+  # elsewhere while this node's producer still listed it as running, which
+  # blocked the next deploy's drain. The `docker run` client is SIGKILLed
+  # (closing its port alone leaves it blocked on the daemon), and the
+  # container is stopped by `Portal.Builder.Stop` in a task of its own,
+  # every docker call there under its own deadline; a stop that takes longer
+  # than `@stop_await_ms` goes on without this process.
+  defp stop_timed_out(port, container_name, log_device) do
+    Cmd.kill(port)
+
+    Logger.error(
+      "Build container #{container_name} exceeded the wall clock; stopping it off the job's process"
+    )
 
     try do
       IO.write(
         log_device,
-        "\n[builder] Wall-clock timeout exceeded - killed container #{container_name}\n"
+        "\n[builder] Wall-clock timeout exceeded - stopping container #{container_name}\n"
       )
     rescue
       _ -> :ok
     end
 
-    :ok
+    Stop.start(container_name, config(:stop_await_ms, @stop_await_ms))
   end
 
   # output_dir is constructed from the configured scratch root and a sanitized run ID.
