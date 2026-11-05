@@ -819,6 +819,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
     test "batch.json is 503 before any batch and the newest after", %{conn: conn, key: key} do
       empty = get(conn, "/api/precompiled/batch.json")
       assert response(empty, 503)
+      assert get_resp_header(empty, "cache-control") == ["no-store"]
       assert_documented_response(empty, "getLatestBatch")
       ingest_with_artifact()
       {:ok, b1} = Portal.Precompiled.Batches.build_and_sign()
@@ -835,7 +836,9 @@ defmodule PortalWeb.CatalogApiControllerTest do
       assert_documented_response(resp, "getLatestBatch")
       assert_api_schema(JSON.decode!(payload), "BatchPayload")
       assert JSON.decode!(payload)["sequence"] == b2.sequence
-      assert get_resp_header(resp, "etag") == [~s("batch-#{b2.sequence}")]
+      raw = response(resp, 200)
+      assert get_resp_header(resp, "etag") == [PortalWeb.PrecompiledHTTP.etag(raw)]
+      assert get_resp_header(resp, "cache-control") == ["public, max-age=60, must-revalidate"]
       hist_resp = get(conn, "/api/precompiled/batches/#{b1.sequence}.json")
       hist = json_response(hist_resp, 200)
       assert_documented_response(hist_resp, "getBatch")
@@ -843,7 +846,80 @@ defmodule PortalWeb.CatalogApiControllerTest do
       assert JSON.decode!(p1)["sequence"] == b1.sequence
       missing = get(conn, "/api/precompiled/batches/999.json")
       assert response(missing, 404)
+      assert get_resp_header(missing, "cache-control") == ["no-store"]
       assert_documented_response(missing, "getBatch")
+    end
+
+    test "root.json answers 304 to its own etag", %{conn: conn} do
+      first = get(conn, "/api/precompiled/root.json")
+      [etag] = get_resp_header(first, "etag")
+      assert get_resp_header(first, "cache-control") == ["public, max-age=60, must-revalidate"]
+
+      again =
+        build_conn() |> put_req_header("if-none-match", etag) |> get("/api/precompiled/root.json")
+
+      assert response(again, 304) == ""
+      assert get_resp_header(again, "etag") == [etag]
+      assert get_resp_header(again, "cache-control") == ["public, max-age=60, must-revalidate"]
+      assert_documented_response(again, "getRoot")
+    end
+
+    test "root.json 404 is not cacheable" do
+      Application.put_env(:portal, :precompiled_signing, key_path: nil)
+      resp = build_conn() |> get("/api/precompiled/root.json")
+      assert get_resp_header(resp, "cache-control") == ["no-store"]
+    end
+
+    test "batch.json etag is stable, answers 304, and moves with a new batch" do
+      ingest_with_artifact()
+      {:ok, _} = Portal.Precompiled.Batches.build_and_sign()
+
+      a = build_conn() |> get("/api/precompiled/batch.json")
+      b = build_conn() |> get("/api/precompiled/batch.json")
+      [etag] = get_resp_header(a, "etag")
+      assert get_resp_header(b, "etag") == [etag]
+      assert etag == PortalWeb.PrecompiledHTTP.etag(response(a, 200))
+
+      for inm <- [etag, "W/" <> etag, ~s("nope", #{etag})] do
+        resp =
+          build_conn()
+          |> put_req_header("if-none-match", inm)
+          |> get("/api/precompiled/batch.json")
+
+        assert response(resp, 304) == ""
+        assert_documented_response(resp, "getLatestBatch")
+      end
+
+      # The tag a client cached before this change names no current bytes.
+      old_style =
+        build_conn()
+        |> put_req_header("if-none-match", ~s("batch-1"))
+        |> get("/api/precompiled/batch.json")
+
+      assert response(old_style, 200) != ""
+
+      {:ok, _} = Portal.Precompiled.Batches.build_and_sign()
+
+      newer =
+        build_conn()
+        |> put_req_header("if-none-match", etag)
+        |> get("/api/precompiled/batch.json")
+
+      body = response(newer, 200)
+      refute get_resp_header(newer, "etag") == [etag]
+      assert get_resp_header(newer, "etag") == [PortalWeb.PrecompiledHTTP.etag(body)]
+    end
+
+    test "batches/<n>.json answers 304 to its own etag" do
+      ingest_with_artifact()
+      {:ok, b1} = Portal.Precompiled.Batches.build_and_sign()
+      path = "/api/precompiled/batches/#{b1.sequence}.json"
+      [etag] = build_conn() |> get(path) |> get_resp_header("etag")
+
+      resp = build_conn() |> put_req_header("if-none-match", etag) |> get(path)
+      assert response(resp, 304) == ""
+      assert get_resp_header(resp, "cache-control") == ["public, max-age=60, must-revalidate"]
+      assert_documented_response(resp, "getBatch")
     end
 
     test "manifest endpoint serves the batch's bytes after a new ingest", %{conn: conn} do

@@ -120,9 +120,12 @@ Response: a signed envelope wrapping:
 Status codes:
 
 - `200` — root document found
+- `304` — `If-None-Match` names the current bytes
 - `404` — no root document is published
 
-An `etag` header of the SHA256 of the envelope bytes is set. The reference
+An `etag` header of the SHA256 of the envelope bytes is set, with
+`cache-control: public, max-age=60, must-revalidate`. A request whose
+`If-None-Match` names that tag is answered `304` with no body. The reference
 client, [elixir_precompiled](https://github.com/TomHoenderdos/elixir_precompiled),
 ships a copy of `root.json` as its trust anchor.
 
@@ -156,20 +159,30 @@ other: a run without a recorded toolchain, dependency lock or package checksum
 is format 1 only, and a toolchain build is format 2 only. A batch signed before
 format 2 has no `manifests_v2`; a client falls back to `manifests`.
 
-An `etag` header of `"batch-<sequence>"` is set.
+An `etag` header of the SHA256 of the envelope bytes (quoted, strong) is set,
+with `cache-control: public, max-age=60, must-revalidate`. Send it back as
+`If-None-Match` and an unchanged batch is answered `304` with no body; the
+weak form `W/"<sha>"` matches too. Tags of the old form `"batch-<sequence>"`
+no longer match and get the full batch once. A `503` carries
+`cache-control: no-store`.
 
 Status codes:
 
 - `200` — a batch has been signed
+- `304` — `If-None-Match` names the current bytes
 - `503` — no batch available yet
 
 ### GET /api/precompiled/batches/{sequence}.json
 
 Returns a past batch by its sequence number, in the same envelope shape as `batch.json`. Used to audit history, or to re-verify a manifest that was fetched against an older batch.
 
+Same `etag`, `304` and `cache-control` as `batch.json`; a `404` carries
+`cache-control: no-store`.
+
 Status codes:
 
 - `200` — batch found
+- `304` — `If-None-Match` names the current bytes
 - `404` — no batch with that sequence
 
 ## Response fields (format 1, kept for existing clients)

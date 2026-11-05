@@ -6,6 +6,7 @@ defmodule PortalWeb.CatalogApiController do
   alias Portal.Catalog
   alias Portal.Catalog.TopFailing
   alias Portal.Precompiled.{Batches, Manifests, Root}
+  alias PortalWeb.PrecompiledHTTP
 
   alias PortalWeb.ApiSchemas.{
     Error,
@@ -25,6 +26,11 @@ defmodule PortalWeb.CatalogApiController do
       description: "Identifies these exact bytes.",
       schema: %Schema{type: :string}
     }
+  }
+
+  @not_modified %OpenApiSpex.Response{
+    description: "The `If-None-Match` tag names these bytes; no body.",
+    headers: @etag_header
   }
 
   @badge_grey "#9ca3af"
@@ -207,21 +213,20 @@ defmodule PortalWeb.CatalogApiController do
         "`RootPayload`.",
     responses: [
       ok: {"The signed root", "application/json", SignedEnvelope, headers: @etag_header},
+      not_modified: @not_modified,
       not_found: {"This deployment publishes no root document", "application/json", Error}
     ]
 
   def precompiled_root(conn, _params) do
     case Root.load() do
       {:ok, body} ->
-        sha = Base.encode16(:crypto.hash(:sha256, body), case: :lower)
-
-        conn
-        |> put_cache_headers()
-        |> put_resp_header("etag", ~s("#{sha}"))
-        |> send_json_bytes(body)
+        PrecompiledHTTP.send_bytes(conn, body, PrecompiledHTTP.etag(body), :revalidate)
 
       {:error, :no_root} ->
-        conn |> put_status(:not_found) |> json(%{error: "no root document"})
+        conn
+        |> PrecompiledHTTP.no_store()
+        |> put_status(:not_found)
+        |> json(%{error: "no root document"})
     end
   end
 
@@ -231,16 +236,24 @@ defmodule PortalWeb.CatalogApiController do
     summary: "Newest signed batch",
     description:
       "The newest batch: the SHA-256 of every package's manifest bytes. The payload decodes " <>
-        "to a `BatchPayload`. The `etag` is `\"batch-<sequence>\"`.",
+        "to a `BatchPayload`. The `etag` is the SHA-256 of the envelope bytes; send it as " <>
+        "`If-None-Match` to get a 304 while the batch is unchanged.",
     responses: [
       ok: {"The newest batch", "application/json", SignedEnvelope, headers: @etag_header},
+      not_modified: @not_modified,
       service_unavailable: {"No batch has been signed yet", "application/json", Error}
     ]
 
   def precompiled_batch(conn, _params) do
     case Batches.latest() do
-      nil -> conn |> put_status(:service_unavailable) |> json(%{error: "no signed batch yet"})
-      batch -> serve_batch(conn, batch)
+      nil ->
+        conn
+        |> PrecompiledHTTP.no_store()
+        |> put_status(:service_unavailable)
+        |> json(%{error: "no signed batch yet"})
+
+      batch ->
+        serve_batch(conn, batch)
     end
   end
 
@@ -261,6 +274,7 @@ defmodule PortalWeb.CatalogApiController do
     ],
     responses: [
       ok: {"The batch", "application/json", SignedEnvelope, headers: @etag_header},
+      not_modified: @not_modified,
       not_found: {"No batch with that sequence", "application/json", Error}
     ]
 
@@ -269,15 +283,19 @@ defmodule PortalWeb.CatalogApiController do
          %{} = batch <- Batches.get(sequence) do
       serve_batch(conn, batch)
     else
-      _ -> conn |> put_status(:not_found) |> json(%{error: "batch not found"})
+      _ ->
+        conn
+        |> PrecompiledHTTP.no_store()
+        |> put_status(:not_found)
+        |> json(%{error: "batch not found"})
     end
   end
 
+  # The tag is the sha of the bytes served: a client that cached the envelope
+  # gets a 304 for exactly as long as these bytes are the answer.
   defp serve_batch(conn, batch) do
-    conn
-    |> put_cache_headers()
-    |> put_resp_header("etag", ~s("batch-#{batch.sequence}"))
-    |> send_json_bytes(Batches.envelope(batch))
+    bytes = Batches.envelope(batch)
+    PrecompiledHTTP.send_bytes(conn, bytes, PrecompiledHTTP.etag(bytes), :revalidate)
   end
 
   defp send_json_bytes(conn, bytes) do
