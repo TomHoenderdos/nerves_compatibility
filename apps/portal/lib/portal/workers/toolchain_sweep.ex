@@ -7,10 +7,10 @@ defmodule Portal.Workers.ToolchainSweep do
   `Portal.Toolchains.max_per_run/0` in total.
 
   The cap is shared round-robin: each toolchain's backlog is taken in its own
-  priority order (newest three versions per package first) and the toolchains
-  take turns, so one toolchain with a long backlog cannot starve the others
-  inside a run. A toolchain with less backlog than its share leaves the rest
-  to the others.
+  priority order (most downloaded first, see `Catalog.toolchain_backlog/3`)
+  and the toolchains take turns, so one toolchain with a long backlog cannot
+  starve the others inside a run. A toolchain with less backlog than its
+  share leaves the rest to the others.
 
   Jobs are inserted one at a time rather than with `Oban.insert_all/1`, which
   does not check `unique`: a build the previous sweep enqueued and the

@@ -328,6 +328,72 @@ defmodule Portal.HexPm do
     end
   end
 
+  @doc """
+  hex.pm's all-time download count for one release
+  (`GET /api/packages/:name/releases/:version`), for
+  `Portal.Workers.ReleaseDownloadsRefresh`.
+
+  `{:ok, nil}` when the release answered without a non-negative integer
+  count: the count becomes a sort key, and anything else is unknown, not a
+  rank. A 429 is `:rate_limited`, told apart so the caller can stop its run,
+  and asked once: Req's default retries a 429 with backoff, which here would
+  only pile more requests into the window that refused them. Every other
+  failure, the connection's included, is `:hex_api_unavailable`.
+
+  Options: `:base_url` (default hex.pm's API) and `:receive_timeout` (default
+  15 s), for tests.
+  """
+  @spec release_downloads(String.t(), String.t(), keyword()) ::
+          {:ok, non_neg_integer() | nil}
+          | {:error, :unknown_release | :rate_limited | :hex_api_unavailable}
+  def release_downloads(name, version, opts \\ []) when is_binary(name) and is_binary(version) do
+    base_url = Keyword.get(opts, :base_url, @api_url)
+
+    # Each part is one path segment, so nothing in it may add another.
+    url =
+      "#{base_url}/packages/#{URI.encode(name, &URI.char_unreserved?/1)}" <>
+        "/releases/#{URI.encode(version, &URI.char_unreserved?/1)}"
+
+    # The body is decoded here rather than by Req, so a body that is not JSON
+    # is an answer to classify, not an exception.
+    request = [
+      retry: false,
+      decode_body: false,
+      receive_timeout: Keyword.get(opts, :receive_timeout, 15_000),
+      connect_options: [timeout: 5_000]
+    ]
+
+    case Req.get(url, request) do
+      {:ok, %{status: 200, body: body}} ->
+        case Jason.decode(body) do
+          {:ok, release} when is_map(release) ->
+            {:ok, release_download_count(Map.get(release, "downloads"))}
+
+          _ ->
+            Logger.warning("Hex release downloads for #{name} #{version}: not a release body")
+            {:error, :hex_api_unavailable}
+        end
+
+      {:ok, %{status: 404}} ->
+        {:error, :unknown_release}
+
+      {:ok, %{status: 429}} ->
+        Logger.warning("Hex release downloads for #{name} #{version}: rate limited")
+        {:error, :rate_limited}
+
+      {:ok, %{status: status}} ->
+        Logger.warning("Hex release downloads for #{name} #{version} failed: HTTP #{status}")
+        {:error, :hex_api_unavailable}
+
+      {:error, reason} ->
+        Logger.warning("Hex release downloads for #{name} #{version} failed: #{inspect(reason)}")
+        {:error, :hex_api_unavailable}
+    end
+  end
+
+  defp release_download_count(count) when is_integer(count) and count >= 0, do: count
+  defp release_download_count(_count), do: nil
+
   # A package's `meta.links` is a free-form map the package author writes in
   # their own mix.exs, and it arrives here as whatever they put there. Both
   # halves of that are load-bearing:
