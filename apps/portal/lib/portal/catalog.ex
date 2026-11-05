@@ -35,6 +35,7 @@ defmodule Portal.Catalog do
     Cache,
     Package,
     PackageOverride,
+    ReleaseDownloads,
     Run,
     SystemLog,
     SystemResult,
@@ -120,6 +121,7 @@ defmodule Portal.Catalog do
     resource(FindingTriage)
     resource(BulkSweep)
     resource(ToolchainBuild)
+    resource(ReleaseDownloads)
   end
 
   @doc """
@@ -1202,7 +1204,8 @@ defmodule Portal.Catalog do
   end
 
   # Package versions a toolchain build is wanted for (`toolchain_backlog/3`),
-  # one row per version with the newest `finished_at` of its qualifying runs.
+  # one row per version with the newest `finished_at` of its qualifying runs
+  # and the package's hex.pm recent downloads.
   #
   # A version qualifies on a passing `host` compile in a full run that is not
   # revoked. A full run is one without carried systems: a partial run's other
@@ -1217,7 +1220,8 @@ defmodule Portal.Catalog do
   # any revoked row, whatever its status. A revoke is a human decision, and only
   # a `builder_version` bump makes a new identity to build again.
   @toolchain_candidates_sql """
-  SELECT p.name AS package, r.version_tested AS version, max(r.finished_at) AS finished_at
+  SELECT p.name AS package, r.version_tested AS version, max(r.finished_at) AS finished_at,
+         p.hex_downloads_recent AS recent
   FROM catalog_packages p
   JOIN catalog_runs r ON r.package_id = p.id
   JOIN catalog_system_results s ON s.run_id = r.id
@@ -1262,9 +1266,12 @@ defmodule Portal.Catalog do
   `Portal.Catalog.ToolchainBuild` for the identity (see the query's comment for
   what is live).
 
-  The newest three versions of each package come first, newest run first, then
-  the rest the same way, so a capped sweep spreads over packages before it
-  works back through any one package's history.
+  Most wanted first, so a capped sweep builds what projects resolve before
+  what nobody asks for: by the package's hex.pm recent downloads, then, within
+  a package, by the release's own downloads
+  (`Portal.Catalog.ReleaseDownloads`), then newest run first, with version
+  breaking a tie. An unknown count sorts after every known one, zero
+  included: it is not known demand.
   """
   @spec toolchain_backlog(String.t(), pos_integer(), non_neg_integer()) :: [
           %{package: String.t(), version: String.t()}
@@ -1273,17 +1280,16 @@ defmodule Portal.Catalog do
     %{rows: rows} =
       Repo.query!(
         """
-        WITH candidates AS (#{@toolchain_candidates_sql}),
-        ranked AS (
-          SELECT package, version, finished_at,
-                 row_number() OVER (
-                   PARTITION BY package ORDER BY finished_at DESC NULLS LAST, version DESC
-                 ) AS rank
-          FROM candidates
-        )
-        SELECT package, version
-        FROM ranked
-        ORDER BY rank > 3, finished_at DESC NULLS LAST, package, version
+        WITH candidates AS (#{@toolchain_candidates_sql})
+        SELECT c.package, c.version
+        FROM candidates c
+        LEFT JOIN catalog_release_downloads d
+          ON d.package = c.package AND d.version = c.version
+        ORDER BY c.recent DESC NULLS LAST,
+                 d.downloads DESC NULLS LAST,
+                 c.finished_at DESC NULLS LAST,
+                 c.version DESC,
+                 c.package
         LIMIT $5
         """,
         toolchain_params(toolchain, builder_version) ++ [limit]
@@ -1291,6 +1297,86 @@ defmodule Portal.Catalog do
 
     Enum.map(rows, fn [package, version] -> %{package: package, version: version} end)
   end
+
+  @doc """
+  The backlog versions whose release downloads are worth asking hex.pm for
+  (`Portal.Workers.ReleaseDownloadsRefresh`): across every configured
+  toolchain at the current `builder_version`, the `top_packages` packages
+  with the most recent downloads that still have backlog, and of each at
+  most `versions_per_package`, newest run first.
+
+  A package without a recent download count is left out: release counts only
+  order versions inside a package, and a package with no count of its own
+  sorts after every counted one whatever its releases say. The result is
+  most downloaded package first, and never holds more than
+  `top_packages * versions_per_package` entries.
+  """
+  @spec toolchain_backlog_to_rank(pos_integer(), pos_integer()) :: [
+          %{package: String.t(), version: String.t()}
+        ]
+  def toolchain_backlog_to_rank(top_packages, versions_per_package) do
+    builder_version = Portal.Toolchains.builder_version()
+
+    # Each toolchain's rows are bounded by the same caps, so the merge below
+    # holds at most toolchains * caps rows.
+    rows =
+      for %{toolchain: toolchain} <- Portal.Toolchains.images(),
+          row <- backlog_to_rank(toolchain, builder_version, top_packages, versions_per_package),
+          uniq: true,
+          do: row
+
+    rows
+    |> Enum.group_by(fn {package, recent, _finished_at, _version} -> {package, recent} end)
+    |> Enum.sort_by(fn {{package, recent}, _rows} -> {-recent, package} end)
+    |> Enum.take(top_packages)
+    |> Enum.flat_map(fn {{package, _recent}, versions} ->
+      versions
+      |> Enum.uniq_by(fn {_package, _recent, _finished_at, version} -> version end)
+      |> Enum.sort(&newer_run?/2)
+      |> Enum.take(versions_per_package)
+      |> Enum.map(fn {_package, _recent, _finished_at, version} ->
+        %{package: package, version: version}
+      end)
+    end)
+  end
+
+  defp backlog_to_rank(toolchain, builder_version, top_packages, versions_per_package) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        WITH candidates AS (#{@toolchain_candidates_sql}),
+        top AS (
+          SELECT package, recent
+          FROM candidates
+          WHERE recent IS NOT NULL
+          GROUP BY package, recent
+          ORDER BY recent DESC, package
+          LIMIT $5
+        ),
+        ranked AS (
+          SELECT c.package, c.recent, c.finished_at, c.version,
+                 row_number() OVER (
+                   PARTITION BY c.package ORDER BY c.finished_at DESC NULLS LAST, c.version DESC
+                 ) AS rank
+          FROM candidates c
+          JOIN top t ON t.package = c.package
+        )
+        SELECT package, recent, finished_at, version
+        FROM ranked
+        WHERE rank <= $6
+        """,
+        toolchain_params(toolchain, builder_version) ++ [top_packages, versions_per_package]
+      )
+
+    Enum.map(rows, &List.to_tuple/1)
+  end
+
+  # Newest run first, no run time last, version breaking a tie: the order the
+  # query above ranks a package's versions in, kept across toolchains.
+  defp newer_run?({_, _, same, a}, {_, _, same, b}), do: a >= b
+  defp newer_run?({_, _, nil, _}, _other), do: false
+  defp newer_run?(_row, {_, _, nil, _}), do: true
+  defp newer_run?({_, _, a, _}, {_, _, b, _}), do: NaiveDateTime.compare(a, b) == :gt
 
   @doc """
   Per configured toolchain (`Portal.Toolchains.images/0`), at the current

@@ -1,7 +1,9 @@
 defmodule PortalWeb.Admin.MaintenanceLive do
   @moduledoc """
   Admin Maintenance tab: the hex.pm update check, bulk rebuilds with their
-  sweeps in a Cinder table, precompiled signing and the toolchain backlog.
+  sweeps in a Cinder table, precompiled signing, the toolchain backlog and
+  how much of the most downloaded packages the toolchain builds cover
+  (`Portal.Catalog.Coverage`).
 
   The sweeps' counts follow along live from two `Portal.AdminEvents` topics.
   On `:sweeps`, `Portal.BulkRebuild` announces a sweep that starts or is
@@ -25,6 +27,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
   import PortalWeb.Admin.LiveAuth
 
   alias Portal.BulkRebuild
+  alias Portal.Catalog.Coverage
   alias PortalWeb.AdminMessages
 
   @tables ["sweeps"]
@@ -72,6 +75,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
         batch: Portal.Precompiled.Batches.latest()
       },
       toolchains: toolchain_rows(),
+      coverage: Coverage.report(),
       build_cache_l2: Portal.BuildCache.L2.status()
     )
   end
@@ -183,6 +187,13 @@ defmodule PortalWeb.Admin.MaintenanceLive do
 
   defp pluralize(1, word), do: "1 #{word}"
   defp pluralize(count, word), do: "#{count} #{word}s"
+
+  defp format_percent(percent), do: :erlang.float_to_binary(percent, decimals: 1) <> "%"
+
+  defp gap_reason(:no_host_build), do: "No build of any version"
+  defp gap_reason(:no_build_for_version), do: "No build of this version"
+  defp gap_reason(:failed), do: "Build failed"
+  defp gap_reason(:no_optional_deps_build), do: "Built without optional deps"
 
   # Cinder renders its rows with a `:for`, and LiveView re-renders only the
   # rows whose record changed. `:counts` is loaded fresh on every refetch, so
@@ -610,6 +621,73 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               </tbody>
             </table>
           </div>
+        </div>
+      </section>
+
+      <section id="coverage" class="card mt-6 border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body">
+          <h2 class="card-title">Precompiled coverage</h2>
+          <p class="mt-1 text-sm leading-6 text-base-content/70">
+            Of the {@coverage.top_n} most downloaded packages on hex.pm, how many have a served
+            build of their latest stable version per toolchain, and how many of those builds
+            carry the package's optional dependencies.
+          </p>
+
+          <div class="mt-5 overflow-x-auto">
+            <table class="table table-sm">
+              <thead>
+                <tr>
+                  <th>Toolchain</th>
+                  <th class="text-right">Ranked</th>
+                  <th class="text-right">Covered</th>
+                  <th class="text-right">With optional deps</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={row <- @coverage.toolchains} data-toolchain={row.toolchain}>
+                  <td class="font-mono">{row.toolchain}</td>
+                  <td class="text-right tabular-nums">{row.total}</td>
+                  <td data-column="covered" class="text-right tabular-nums">
+                    {row.covered} ({format_percent(row.percent)})
+                  </td>
+                  <td data-column="covered_with_optional" class="text-right tabular-nums">
+                    {row.covered_with_optional} ({format_percent(row.percent_with_optional)})
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <details :for={row <- @coverage.toolchains} :if={row.gaps != []} class="mt-4">
+            <summary class="cursor-pointer text-sm font-medium">
+              <span class="font-mono">{row.toolchain}</span>: {pluralize(length(row.gaps), "gap")}
+            </summary>
+            <div class="mt-2 overflow-x-auto">
+              <table class="table table-sm">
+                <thead>
+                  <tr>
+                    <th>Package</th>
+                    <th>Version</th>
+                    <th class="text-right">Recent downloads</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    :for={gap <- row.gaps}
+                    data-gap={gap.package}
+                    data-toolchain={row.toolchain}
+                    data-reason={gap.reason}
+                  >
+                    <td class="font-mono">{gap.package}</td>
+                    <td class="font-mono">{gap.version || "-"}</td>
+                    <td class="text-right tabular-nums">{gap.downloads}</td>
+                    <td>{gap_reason(gap.reason)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
         </div>
       </section>
     </.admin_layout>

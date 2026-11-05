@@ -110,7 +110,14 @@ config :portal, Oban,
        # `PackageMeta` job per package, 1.5 s apart (~1 h for ~2,500), which
        # stays under hex.pm's unauthenticated rate limit. Carries `:intake`,
        # the web host's queue: HTTP calls to hex.pm, not compiles.
-       {"53 4 * * 1", Portal.Workers.HexMetaRefresh}
+       {"53 4 * * 1", Portal.Workers.HexMetaRefresh},
+       # Weekly, Tuesday 02:37: fetch the per-release download counts the
+       # toolchain backlog orders a package's versions by. A day after the
+       # metadata refresh, so it picks its packages by fresh recent counts
+       # and stays out of that hour of hex.pm requests, and before the 03:17
+       # sweep, which then builds in the new order. At most 1,000 requests,
+       # 1.5 s apart. Carries `:intake`, the web host's queue.
+       {"37 2 * * 2", Portal.Workers.ReleaseDownloadsRefresh}
      ]}
   ]
 
