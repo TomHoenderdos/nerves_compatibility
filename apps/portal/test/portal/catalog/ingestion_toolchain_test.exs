@@ -339,6 +339,7 @@ defmodule Portal.Catalog.IngestionToolchainTest do
         "run_id" => "tc-worker",
         "image_digest" => "sha256:toolchain",
         "kind" => "toolchain",
+        "package" => name,
         "version" => "1.4.4",
         "toolchain" => "1.19/28",
         "builder_version" => 1
