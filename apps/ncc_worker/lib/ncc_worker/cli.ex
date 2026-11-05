@@ -30,6 +30,10 @@ defmodule NccWorker.CLI do
 
   @spec main(list(String.t())) :: no_return()
   def main(args) do
+    # Before any lookup, so the native resolver never runs
+    # (`NccWorker.ProcessSweep`).
+    :ok = ProcessSweep.use_erlang_resolver()
+
     exit_code =
       case args do
         ["setup"] -> setup_only()

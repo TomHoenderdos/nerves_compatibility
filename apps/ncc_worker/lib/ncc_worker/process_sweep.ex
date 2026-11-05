@@ -32,6 +32,12 @@ defmodule NccWorker.ProcessSweep do
   `"process sweep could not run: "`. A run without `NCC_INPUT`, such as a
   developer machine running the escript, is not swept and says so on stderr.
 
+  The worker's own name lookups never start a process: the CLI switches the
+  BEAM to Erlang's own resolver (`use_erlang_resolver/0`) before anything
+  looks a name up. The native one is a port program, `inet_gethost`, that the
+  BEAM starts through `erl_child_setup` and restarts when it dies, which a
+  sweep would find every time; it is not allowed, so it must never run.
+
   `enforce_and_report/2`, which the CLI runs, also records how the sweep went
   as the result's top-level `process_sweep`: `"ok"`, `"skipped"` or
   `"tainted"`. That field is the container's own account, for monitoring: the
@@ -300,6 +306,15 @@ defmodule NccWorker.ProcessSweep do
     more = if length(survivors) > 10, do: " and #{length(survivors) - 10} more", else: ""
     "processes survived the sweep and could not be stopped: #{listed}#{more}"
   end
+
+  @doc """
+  Resolves names with Erlang's own resolver, `/etc/hosts` then DNS as
+  `/etc/resolv.conf` configures it, instead of the native `inet_gethost` port
+  program, so no lookup the worker makes leaves a process for the sweep to
+  find. Run before anything looks a name up.
+  """
+  @spec use_erlang_resolver() :: :ok
+  def use_erlang_resolver, do: :inet_db.set_lookup([:file, :dns])
 
   @doc """
   Whether this is the container's worker: Linux, a `/proc`, and the BEAM as

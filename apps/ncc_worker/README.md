@@ -140,6 +140,10 @@ launched has returned by then, so nothing else belongs. It scans `/proc`, sends 
 killed nor counted. `erl_child_setup` is a direct child of the BEAM named `erl_child_setup`; of several such, only
 the one that started first is kept, since the real helper starts with the BEAM, before any package code runs.
 
+The worker resolves names with Erlang's own resolver (`/etc/hosts`, then DNS as `/etc/resolv.conf` sets it), never
+the native `inet_gethost` port program, which the BEAM would start under `erl_child_setup` and restart whenever it is
+killed: the sweep would always find it.
+
 If anything other than those two is still running after the last round, the result passes nothing: every system is
 reported `"status": "error"` with an `error` naming the processes (`"processes survived the sweep and could not be stopped: …"`, a start the portal stores as its own `"worker: …"` reason rather than a failed compile), no build cache candidates are reported, and a
 toolchain run's `toolchain_build` is `"error"` with no `file_manifest`. `result.json` is still written and the exit
