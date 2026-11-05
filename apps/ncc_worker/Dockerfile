@@ -14,7 +14,7 @@ ENV PATH="/home/nerves/.elixir/bin:${PATH}"
 # Install Hex, Rebar, Nerves Bootstrap, and Igniter archives. nerves_bootstrap
 # is pinned: its `mix nerves.new` template is the project every package is
 # built in, and 1.17.3 is the first with `--prerelease` (NccWorker.Project).
-ARG NERVES_BOOTSTRAP_VERSION=1.17.3
+ARG NERVES_BOOTSTRAP_VERSION=1.17.4
 # Hex is pinned, not the latest: 2.6 renamed its registry cache, which
 # NccWorker.HexHome shares between targets by name. Bump it together with
 # HexHome.registry_file/1 (NccWorker.DockerfileTest checks the two agree).
@@ -52,7 +52,7 @@ RUN sudo apt-get update && \
 # (argus runs an engine only from a cache its own uid owns) and runs argus
 # with ARGUS_OFFLINE=1. See NccWorker.Argus. The run fails the image build
 # when the bundle cannot be fetched or does not run here.
-ARG ARGUS_VERSION=0.24.0
+ARG ARGUS_VERSION=0.25.0
 RUN set -eux; \
     mix escript.install hex argus_beam ${ARGUS_VERSION} --force; \
     /home/nerves/.mix/escripts/argus version; \

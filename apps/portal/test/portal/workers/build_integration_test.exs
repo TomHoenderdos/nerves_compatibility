@@ -102,7 +102,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
     {_request, _package, run} = build_and_ingest("jason", "1.4.3")
 
     assert run.argus["status"] == "ok", inspect(run.argus)
-    assert run.argus["version"] == "0.24.0"
+    assert run.argus["version"] == "0.25.0"
     assert is_list(run.argus["findings"])
   end
 
