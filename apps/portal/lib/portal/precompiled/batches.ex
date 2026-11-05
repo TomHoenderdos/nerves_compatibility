@@ -25,7 +25,7 @@ defmodule Portal.Precompiled.Batches do
   require Ash.Query
   require Logger
   alias Portal.{ArtifactStore, Catalog}
-  alias Portal.Precompiled.{Batch, Envelope, Keys, Manifests}
+  alias Portal.Precompiled.{Batch, Envelope, Keys, ManifestRefs, Manifests}
 
   # `{name, fingerprint, v1_sha | nil, v2_sha | nil, absent_shas}` per package.
   @memo Module.concat(__MODULE__, Memo)
@@ -104,16 +104,26 @@ defmodule Portal.Precompiled.Batches do
 
     %{"signatures" => signatures} = Envelope.sign(payload, [{key.keyid, key.private}])
 
-    Batch
-    |> Ash.Changeset.for_create(:create, %{
-      sequence: sequence,
-      issued_at: issued,
-      expires_at: expires,
-      payload: payload,
-      signatures: signatures,
-      manifest_count: map_size(manifests)
-    })
-    |> Ash.create(domain: Portal.Precompiled)
+    changeset =
+      Ash.Changeset.for_create(Batch, :create, %{
+        sequence: sequence,
+        issued_at: issued,
+        expires_at: expires,
+        payload: payload,
+        signatures: signatures,
+        manifest_count: map_size(manifests)
+      })
+
+    # One transaction: once a client can see the batch, every sha it names is
+    # servable by sha, and a batch whose insert fails leaves no refs behind.
+    Portal.Repo.transaction(fn ->
+      :ok = ManifestRefs.record(sequence, manifests, manifests_v2)
+
+      case Ash.create(changeset, domain: Portal.Precompiled) do
+        {:ok, batch} -> batch
+        {:error, error} -> Portal.Repo.rollback(error)
+      end
+    end)
   end
 
   defp add_package(acc, name, fingerprint) do

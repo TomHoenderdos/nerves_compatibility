@@ -4,5 +4,6 @@ defmodule Portal.Precompiled do
 
   resources do
     resource(Portal.Precompiled.Batch)
+    resource(Portal.Precompiled.ManifestRef)
   end
 end

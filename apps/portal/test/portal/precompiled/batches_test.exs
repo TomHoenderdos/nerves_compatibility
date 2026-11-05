@@ -131,12 +131,12 @@ defmodule Portal.Precompiled.BatchesTest do
       assert_stored_bytes_are_fresh_renders(b2)
       assert Map.has_key?(Batches.manifests(b2), name)
 
-      # Three packages took a handful of queries each the first time. The
-      # second batch reads the fingerprints (before and after) and the package
-      # list, and signs:
+      # Three packages took a handful of queries each the first time.
+      # The second batch reads the fingerprints (before and after) and the
+      # package list, records the named shas in one statement, and signs:
       # a count that does not grow with the catalog.
       assert first > 12
-      assert second <= 7, "second batch ran #{second} queries"
+      assert second <= 8, "second batch ran #{second} queries"
     end
 
     test "a revoked run drops out of the next batch" do
