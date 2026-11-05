@@ -538,6 +538,7 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
       ranked!("cov_built", 2_000)
       toolchain_pass!("cov_built")
       ranked!("cov_missing", 9_000)
+      assert :ok = perform_job(Portal.Workers.CoverageRefresh, %{})
 
       {view, _html} = live_maintenance(conn)
 
@@ -557,6 +558,7 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
     end
 
     test "an empty catalog shows the toolchains at zero, not an error", %{conn: conn} do
+      assert :ok = perform_job(Portal.Workers.CoverageRefresh, %{})
       {view, _html} = live_maintenance(conn)
 
       assert has_element?(
@@ -566,6 +568,107 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
              )
 
       refute has_element?(view, "#coverage [data-gap]")
+    end
+
+    # The report needs the Hex registry for every ranked package. Computing it
+    # on page load, or on every click that reloads the page's panels, would be
+    # that many registry requests per admin click: a job computes it and the
+    # page shows what it stored, and how old that is.
+    defmodule CountingHexDeps do
+      def releases(name, _opts \\ []) do
+        :counters.add(:persistent_term.get({__MODULE__, :calls}), 1, 1)
+        send(:persistent_term.get({__MODULE__, :test}), {:hex_called, name})
+        {:error, :not_found}
+      end
+
+      def calls, do: :counters.get(:persistent_term.get({__MODULE__, :calls}), 1)
+    end
+
+    defp count_hex_calls do
+      previous = Application.get_env(:portal, :hex_deps)
+      :persistent_term.put({CountingHexDeps, :calls}, :counters.new(1, []))
+      :persistent_term.put({CountingHexDeps, :test}, self())
+      Application.put_env(:portal, :hex_deps, CountingHexDeps)
+
+      on_exit(fn ->
+        Application.put_env(:portal, :hex_deps, previous)
+        :persistent_term.erase({CountingHexDeps, :calls})
+        :persistent_term.erase({CountingHexDeps, :test})
+      end)
+    end
+
+    test "opening the page asks Hex nothing", %{conn: conn} do
+      ranked!("cov_quiet", 9_000)
+      toolchain_pass!("cov_quiet")
+      count_hex_calls()
+
+      {_view, _html} = live_maintenance(conn)
+
+      assert CountingHexDeps.calls() == 0
+    end
+
+    test "the update check button asks Hex nothing about coverage", %{conn: conn} do
+      ranked!("cov_quiet", 9_000)
+      toolchain_pass!("cov_quiet")
+      count_hex_calls()
+
+      {view, _html} = live_maintenance(conn)
+
+      view
+      |> form("#update-check")
+      |> put_submitter(~s(button[name="mode"][value="run"]))
+      |> render_submit()
+
+      assert CountingHexDeps.calls() == 0
+    end
+
+    test "shows the stored report and when it was computed", %{conn: conn} do
+      ranked!("cov_built", 2_000)
+      toolchain_pass!("cov_built")
+      assert :ok = perform_job(Portal.Workers.CoverageRefresh, %{})
+
+      # A later change is not on the page until the next refresh.
+      ranked!("cov_later", 9_000)
+
+      {view, _html} = live_maintenance(conn)
+
+      assert has_element?(view, "#coverage-computed-at")
+
+      assert has_element?(
+               view,
+               ~s(#coverage [data-toolchain="1.19/28"] [data-column="covered"]),
+               "100.0%"
+             )
+
+      refute has_element?(view, ~s(#coverage [data-gap="cov_later"]))
+    end
+
+    test "before any report the page says so", %{conn: conn} do
+      {view, _html} = live_maintenance(conn)
+
+      assert has_element?(view, "#coverage-none")
+      refute has_element?(view, "#coverage [data-toolchain]")
+    end
+
+    test "the refresh button queues a refresh and computes nothing itself", %{conn: conn} do
+      count_hex_calls()
+      {view, _html} = live_maintenance(conn)
+
+      view |> element("#coverage-refresh") |> render_click()
+
+      assert_enqueued(worker: Portal.Workers.CoverageRefresh)
+      assert CountingHexDeps.calls() == 0
+    end
+
+    test "an admin demoted while the page is open cannot queue a refresh",
+         %{conn: conn, admin: admin} do
+      {view, _html} = live_maintenance(conn)
+      demote!(admin)
+
+      view |> element("#coverage-refresh") |> render_click()
+
+      assert_redirect(view, "/request-scan")
+      refute_enqueued(worker: Portal.Workers.CoverageRefresh)
     end
   end
 end

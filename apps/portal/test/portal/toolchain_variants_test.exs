@@ -331,7 +331,7 @@ defmodule Portal.ToolchainVariantsTest do
     # the version is built again, and that build decides.
     test "are built again" do
       run!("withpriv", "1.0.0")
-      row!("withpriv", "1.0.0", :skipped, reason: "ships priv files")
+      row!("withpriv", "1.0.0", :skipped, reason: "ships priv files", finished_at: ago(8 * @day))
 
       assert backlog() == [%{package: "withpriv", version: "1.0.0", variant: :with}]
     end
@@ -345,7 +345,12 @@ defmodule Portal.ToolchainVariantsTest do
 
     test "the sweep queues the build and leaves the stored row alone" do
       run!("withpriv", "1.0.0")
-      row = row!("withpriv", "1.0.0", :skipped, reason: "ships priv files")
+
+      row =
+        row!("withpriv", "1.0.0", :skipped,
+          reason: "ships priv files",
+          finished_at: ago(8 * @day)
+        )
 
       assert :ok = perform_job(ToolchainSweep, %{})
 
@@ -460,6 +465,125 @@ defmodule Portal.ToolchainVariantsTest do
     test "a job without a variant builds with" do
       assert :ok = perform_job(Portal.Workers.ToolchainBuild, @job_args)
       assert_received {:build_args, %{optional_deps: "include"}}
+    end
+  end
+
+  # Rows written before builds recorded their optional dependencies say
+  # nothing about them. The registry does: a package that declares one
+  # still needs its without build.
+  describe "a with build from before optional dependencies were recorded" do
+    defp declares(name, deps) do
+      releases = [%{version: "1.4.5", retired?: false, deps: deps, outer_checksum: nil}]
+      current = Process.get({Portal.Test.FakeHexDeps, :releases}, %{})
+      Process.put({Portal.Test.FakeHexDeps, :releases}, Map.put(current, name, releases))
+    end
+
+    defp dep(package, optional),
+      do: %{package: package, requirement: ">= 0.0.0", optional: optional, repository: "hexpm"}
+
+    test "gets a without build when the package declares an optional Hex dependency" do
+      run!("jason", "1.4.5")
+      row!("jason", "1.4.5", :pass, variant: :with, optional_deps: nil)
+      declares("jason", [dep("decimal", true), dep("telemetry", false)])
+
+      assert backlog() == [%{package: "jason", version: "1.4.5", variant: :without}]
+    end
+
+    test "gets none when the package declares no optional dependency" do
+      run!("plain", "1.4.5")
+      row!("plain", "1.4.5", :pass, variant: :with, optional_deps: nil)
+      declares("plain", [dep("telemetry", false)])
+
+      assert backlog() == []
+    end
+
+    # Dev tooling the worker never adds would make a without build identical
+    # to the with build.
+    test "gets none when its only optional dependencies are ones never added" do
+      run!("tooled", "1.4.5")
+      row!("tooled", "1.4.5", :pass, variant: :with, optional_deps: nil)
+      declares("tooled", [dep("ex_doc", true), dep("credo", true)])
+
+      assert backlog() == []
+    end
+  end
+
+  # A re-opened identity comes back once a week at most: a rebuild that
+  # fails again must not put it back in every sweep.
+  describe "a re-opened identity" do
+    defmodule FailingBuilder do
+      def build(_args, _opts \\ []) do
+        {:ok,
+         %{
+           exit_code: 10,
+           result: nil,
+           files_dir: "/scratch/files",
+           output_dir: "/scratch/out",
+           log: "boom"
+         }}
+      end
+
+      def cleanup(_run_id), do: :ok
+      def image_digest(_image), do: "sha256:toolchain-image"
+    end
+
+    setup do
+      Application.put_env(:portal, :build_runner, FailingBuilder)
+      on_exit(fn -> Application.delete_env(:portal, :build_runner) end)
+      :ok
+    end
+
+    defp fail_last_attempt(package, version) do
+      args = %{
+        "package" => package,
+        "version" => version,
+        "toolchain" => "1.19/28",
+        "image" => "ncc-worker:elixir-1.19-otp-28",
+        "builder_version" => 1,
+        "variant" => "with"
+      }
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        perform_job(Portal.Workers.ToolchainBuild, args, attempt: 2)
+      end)
+    end
+
+    test "a priv skip is not re-opened within the week" do
+      run!("fresh", "1.0.0")
+      row!("fresh", "1.0.0", :skipped, reason: "ships priv files", finished_at: ago(2 * @day))
+
+      assert backlog() == []
+    end
+
+    test "a priv skip whose rebuild fails stays out for the week" do
+      run!("withpriv", "1.0.0")
+      row!("withpriv", "1.0.0", :skipped, reason: "ships priv files", finished_at: ago(30 * @day))
+      assert [%{package: "withpriv"}] = backlog()
+
+      fail_last_attempt("withpriv", "1.0.0")
+
+      assert backlog() == []
+    end
+
+    test "a dropped with build whose rebuild fails stays out for the week" do
+      run!("jason", "1.4.5")
+
+      row!("jason", "1.4.5", :pass,
+        variant: :with,
+        optional_deps: %{
+          "added" => [],
+          "dropped" => ["decimal"],
+          "skipped" => [],
+          "reason" => "timeout"
+        },
+        finished_at: ago(30 * @day)
+      )
+
+      assert [%{package: "jason", variant: :with}] = backlog()
+
+      fail_last_attempt("jason", "1.4.5")
+
+      assert backlog() == []
     end
   end
 end

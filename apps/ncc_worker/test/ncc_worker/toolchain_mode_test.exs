@@ -171,4 +171,31 @@ defmodule NccWorker.ToolchainModeTest do
                :ok
     end
   end
+
+  # The without variant never starts the optional dependencies pass, and
+  # says so in the same shape the pass reports, so the portal can tell a build
+  # made without them from one whose pass dropped them.
+  describe "toolchain_optional_deps/5" do
+    test "an excluded build reports the pass as not requested", %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+
+      assert {:ok, %{added: [], dropped: [], skipped: [], reason: "not_requested"}} =
+               Worker.toolchain_optional_deps("exclude", passing_host(), project, "sample", %{})
+    end
+
+    test "an excluded build reports the same after a failed compile", %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      host = %{status: :fail, error: "boom"}
+
+      assert {:ok, %{reason: "not_requested"}} =
+               Worker.toolchain_optional_deps("exclude", host, project, "sample", %{})
+    end
+
+    test "an included build with a failed compile reports no pass", %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      host = %{status: :fail, error: "boom"}
+
+      assert {:ok, nil} = Worker.toolchain_optional_deps("include", host, project, "sample", %{})
+    end
+  end
 end
