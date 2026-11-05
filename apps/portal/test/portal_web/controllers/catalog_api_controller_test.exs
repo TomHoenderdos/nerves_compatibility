@@ -685,6 +685,21 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert_documented_response(conn, "getFile")
   end
 
+  # Static priv data is published now, and a package can ship HTML or SVG as
+  # priv. Served from this origin it must never render: a download, in a
+  # sandbox that runs no script, whatever its bytes.
+  test "a precompiled file is a download that can never render", %{conn: conn} do
+    sha = ingest_fixture_with_artifact()
+    conn = get(conn, "/api/precompiled/files/#{sha}")
+
+    assert response(conn, 200) == "precompiled-beam"
+    assert [disposition] = get_resp_header(conn, "content-disposition")
+    assert disposition =~ ~r/\Aattachment\b/
+    assert [csp] = get_resp_header(conn, "content-security-policy")
+    assert csp =~ ~r/(\A|;\s*)sandbox(\s*;|\z)/
+    assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+  end
+
   test "a precompiled file is immutable and revalidates by its sha", %{conn: conn} do
     sha = ingest_fixture_with_artifact()
     resp = get(conn, "/api/precompiled/files/#{sha}")

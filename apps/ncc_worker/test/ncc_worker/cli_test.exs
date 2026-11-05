@@ -13,6 +13,15 @@ defmodule NccWorker.CLITest do
             }} = CLI.parse_input(json)
   end
 
+  # A toolchain build is queued per optional-deps variant: "include" runs the
+  # optional dependencies pass, "exclude" builds without it.
+  test "parse_input/1 keeps the optional_deps variant" do
+    for variant <- ["include", "exclude"] do
+      json = ~s({"run_id":"r1","mode":"toolchain","optional_deps":"#{variant}"})
+      assert {:ok, %{mode: "toolchain", optional_deps: ^variant}} = CLI.parse_input(json)
+    end
+  end
+
   test "parse_input/1 reports malformed JSON" do
     assert {:error, {:invalid_json, _}} = CLI.parse_input("{")
   end

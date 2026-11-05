@@ -1,0 +1,446 @@
+defmodule Portal.ToolchainVariantsTest do
+  # A client asks for a precompiled build whose optional dependencies match its
+  # own lock exactly: an application with decimal next to jason needs jason
+  # built with decimal loadable, one without needs it built without. So a
+  # toolchain build is made per variant: "with" every optional dependency a
+  # fresh lock would add, and, for a package that has any, "without" them.
+  #
+  # Not async: swaps the `Portal.Toolchains` application env.
+  use Portal.DataCase, async: false
+  use Oban.Testing, repo: Portal.Repo
+
+  require Ash.Query
+
+  alias Portal.Catalog
+  alias Portal.Catalog.{Ingestion, Package, ToolchainBuild}
+  alias Portal.Workers.{Ingest, ToolchainSweep}
+
+  @pure %{"nif_language" => nil, "port_languages" => [], "compatibility_basis" => "pure_elixir"}
+  @day 86_400
+
+  setup do
+    previous = Application.fetch_env!(:portal, Portal.Toolchains)
+
+    Application.put_env(
+      :portal,
+      Portal.Toolchains,
+      Keyword.merge(previous,
+        builder_version: 1,
+        images: [%{toolchain: "1.19/28", image: "ncc-worker:elixir-1.19-otp-28"}]
+      )
+    )
+
+    on_exit(fn -> Application.put_env(:portal, Portal.Toolchains, previous) end)
+    :ok
+  end
+
+  defp run!(name, version, opts \\ []) do
+    result = %{
+      "package" => %{"name" => name, "version" => version, "native_components" => @pure},
+      "finished_at" => Keyword.get(opts, :finished_at, "2026-10-20T10:00:00Z"),
+      "scope" => Keyword.get(opts, :scope, "full"),
+      "systems" => Keyword.get(opts, :systems, %{"host" => %{"status" => "pass"}})
+    }
+
+    {:ok, run} =
+      Ingestion.ingest(result, %{
+        run_id: "run-#{name}-#{version}-#{System.unique_integer([:positive])}",
+        image_digest: "sha256:x",
+        files_dir: System.tmp_dir!()
+      })
+
+    run
+  end
+
+  defp package!(name),
+    do: Package |> Ash.Query.filter(name == ^name) |> Ash.read_one!(domain: Catalog)
+
+  defp row!(name, version, status, opts \\ []) do
+    ToolchainBuild
+    |> Ash.Changeset.for_create(:create, %{
+      package_id: package!(name).id,
+      version: version,
+      toolchain: "1.19/28",
+      builder_version: 1,
+      variant: Keyword.get(opts, :variant, :with),
+      optional_deps: Keyword.get(opts, :optional_deps),
+      status: status,
+      reason: Keyword.get(opts, :reason),
+      finished_at: Keyword.get(opts, :finished_at, DateTime.utc_now())
+    })
+    |> Ash.create!(domain: Catalog)
+  end
+
+  defp ago(seconds), do: DateTime.add(DateTime.utc_now(), -seconds, :second)
+
+  defp backlog, do: Catalog.toolchain_backlog("1.19/28", 1, 100)
+
+  # What the worker reports for a "with" build that kept decimal.
+  @kept_decimal %{"added" => ["decimal"], "dropped" => [], "skipped" => [], "reason" => nil}
+  @no_optional %{"added" => [], "dropped" => [], "skipped" => [], "reason" => nil}
+
+  describe "a toolchain build per variant" do
+    test "with and without are separate builds of one version" do
+      run!("jason", "1.4.5")
+      with_row = row!("jason", "1.4.5", :pass, variant: :with, optional_deps: @kept_decimal)
+      without_row = row!("jason", "1.4.5", :pass, variant: :without, optional_deps: @no_optional)
+
+      refute with_row.id == without_row.id
+      assert with_row.variant == :with
+      assert without_row.variant == :without
+      assert with_row.optional_deps == @kept_decimal
+    end
+
+    test "rebuilding a variant replaces that variant's row only" do
+      run!("jason", "1.4.5")
+      pkg = package!("jason")
+
+      attrs = %{
+        package_id: pkg.id,
+        version: "1.4.5",
+        toolchain: "1.19/28",
+        builder_version: 1,
+        variant: :without,
+        status: :error,
+        reason: "timeout"
+      }
+
+      with_row = row!("jason", "1.4.5", :pass, variant: :with)
+
+      {:ok, a} =
+        ToolchainBuild |> Ash.Changeset.for_create(:upsert, attrs) |> Ash.create(domain: Catalog)
+
+      {:ok, b} =
+        ToolchainBuild
+        |> Ash.Changeset.for_create(:upsert, %{attrs | status: :pass, reason: nil})
+        |> Ash.create(domain: Catalog)
+
+      assert a.id == b.id and b.status == :pass
+      assert Ash.get!(ToolchainBuild, with_row.id, domain: Catalog).status == :pass
+    end
+
+    # Every row built before variants existed was built the "with" way.
+    test "a row written without a variant is a with build" do
+      run!("jason", "1.4.5")
+      pkg = package!("jason")
+
+      row =
+        ToolchainBuild
+        |> Ash.Changeset.for_create(:create, %{
+          package_id: pkg.id,
+          version: "1.4.5",
+          toolchain: "1.19/28",
+          builder_version: 1,
+          status: :pass
+        })
+        |> Ash.create!(domain: Catalog)
+
+      assert row.variant == :with
+    end
+
+    test "ingesting a build records its variant and the optional dependencies it reports" do
+      dir = Path.join(System.tmp_dir!(), "variant-files-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      result = %{
+        "scope" => "toolchain",
+        "finished_at" => "2026-11-01T10:00:00Z",
+        "package" => %{"name" => "variantpkg", "version" => "1.0.0"},
+        "systems" => %{},
+        "optional_deps" => @no_optional,
+        "toolchain_build" => %{
+          "status" => "skipped",
+          "reason" => "nerves-specific source",
+          "elixir" => "1.19.1",
+          "otp" => "28",
+          "deps_lock" => %{},
+          "package_checksum" => "outer",
+          "compile_env" => [],
+          "file_manifest" => nil
+        }
+      }
+
+      opts = %{
+        run_id: "tc-variant",
+        image_digest: "sha256:t",
+        files_dir: dir,
+        output_dir: dir,
+        toolchain: "1.19/28",
+        builder_version: 1,
+        version: "1.0.0",
+        variant: :without
+      }
+
+      assert {:ok, row} = Ingestion.ingest_toolchain(result, opts)
+      assert row.variant == :without
+      assert row.optional_deps == @no_optional
+    end
+  end
+
+  describe "the backlog per variant" do
+    test "a version never built is wanted with its optional dependencies first" do
+      run!("jason", "1.4.5")
+      assert backlog() == [%{package: "jason", version: "1.4.5", variant: :with}]
+    end
+
+    # The case that started this: jason 1.4.5 is built with decimal, and an
+    # application without decimal still gets no hit.
+    test "a with build that kept an optional dependency makes the without build wanted" do
+      run!("jason", "1.4.5")
+      row!("jason", "1.4.5", :pass, variant: :with, optional_deps: @kept_decimal)
+
+      assert backlog() == [%{package: "jason", version: "1.4.5", variant: :without}]
+    end
+
+    test "a package without optional dependencies is built once" do
+      run!("telemetry", "1.3.0")
+      row!("telemetry", "1.3.0", :pass, variant: :with, optional_deps: @no_optional)
+
+      assert backlog() == []
+    end
+
+    test "a version with both variants built is done" do
+      run!("jason", "1.4.5")
+      row!("jason", "1.4.5", :pass, variant: :with, optional_deps: @kept_decimal)
+      row!("jason", "1.4.5", :pass, variant: :without, optional_deps: @no_optional)
+
+      assert backlog() == []
+    end
+
+    test "each variant's own row decides whether it is live" do
+      run!("jason", "1.4.5")
+      row!("jason", "1.4.5", :pass, variant: :with, optional_deps: @kept_decimal)
+      row!("jason", "1.4.5", :fail, variant: :without, finished_at: ago(2 * @day))
+
+      assert backlog() == []
+    end
+  end
+
+  describe "a with build whose optional dependencies were dropped" do
+    defp dropped(reason),
+      do: %{"added" => [], "dropped" => ["decimal"], "skipped" => [], "reason" => reason}
+
+    # A Hex hiccup or a slow mirror is not a verdict about the package: the
+    # pass row would otherwise stand for a "with" build forever.
+    test "is built again once the retry window has passed, for a transient reason" do
+      for {reason, name} <- [{"deps_get_failed", "dropa"}, {"timeout", "dropb"}] do
+        run!(name, "1.0.0")
+
+        row!(name, "1.0.0", :pass,
+          variant: :with,
+          optional_deps: dropped(reason),
+          finished_at: ago(2 * @day)
+        )
+      end
+
+      assert Enum.sort_by(backlog(), & &1.package) == [
+               %{package: "dropa", version: "1.0.0", variant: :with},
+               %{package: "dropb", version: "1.0.0", variant: :with}
+             ]
+    end
+
+    test "is not built again inside the retry window" do
+      run!("jason", "1.4.5")
+
+      row!("jason", "1.4.5", :pass,
+        variant: :with,
+        optional_deps: dropped("timeout"),
+        finished_at: ago(3600)
+      )
+
+      assert backlog() == []
+    end
+
+    # A compile failure with decimal loadable is a verdict: retrying it builds
+    # the same failure.
+    test "is not built again when the reason is a verdict" do
+      run!("jason", "1.4.5")
+
+      row!("jason", "1.4.5", :pass,
+        variant: :with,
+        optional_deps: dropped("host_compile_failed"),
+        finished_at: ago(30 * @day)
+      )
+
+      assert backlog() == []
+    end
+  end
+
+  describe "liveness judged on the host result itself" do
+    # A targets or argus-only run carries the other systems from the run
+    # before it. Its own host compile is fresh evidence and must count.
+    test "a run whose own host passed counts, even when it carried other systems" do
+      run!("starved", "1.0.0",
+        systems: %{"host" => %{"status" => "fail"}, "nerves_system_rpi4" => %{"status" => "pass"}}
+      )
+
+      run!("starved", "1.0.0",
+        scope: "argus_only",
+        finished_at: "2026-10-21T10:00:00Z",
+        systems: %{"host" => %{"status" => "pass"}}
+      )
+
+      assert backlog() == [%{package: "starved", version: "1.0.0", variant: :with}]
+    end
+
+    # A host result copied from a revoked run is not evidence of anything.
+    # (A guard: it holds before and after the change.)
+    test "a host result carried from a revoked run does not count" do
+      first =
+        run!("carried", "1.0.0",
+          systems: %{
+            "host" => %{"status" => "pass"},
+            "nerves_system_rpi4" => %{"status" => "pass"}
+          }
+        )
+
+      run!("carried", "1.0.0",
+        scope: "targets",
+        finished_at: "2026-10-21T10:00:00Z",
+        systems: %{"nerves_system_rpi4" => %{"status" => "pass"}}
+      )
+
+      Catalog.revoke_run(first.run_id)
+
+      assert backlog() == []
+    end
+  end
+
+  describe "packages skipped for shipping priv files" do
+    # Static priv data is portable now. The stored verdict is not flipped:
+    # the version is built again, and that build decides.
+    test "are built again" do
+      run!("withpriv", "1.0.0")
+      row!("withpriv", "1.0.0", :skipped, reason: "ships priv files")
+
+      assert backlog() == [%{package: "withpriv", version: "1.0.0", variant: :with}]
+    end
+
+    test "any other skip reason stays a verdict" do
+      run!("shellout", "1.0.0")
+      row!("shellout", "1.0.0", :skipped, reason: "calls System.cmd/3")
+
+      assert backlog() == []
+    end
+
+    test "the sweep queues the build and leaves the stored row alone" do
+      run!("withpriv", "1.0.0")
+      row = row!("withpriv", "1.0.0", :skipped, reason: "ships priv files")
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert_enqueued(
+        worker: Portal.Workers.ToolchainBuild,
+        args: %{"package" => "withpriv", "version" => "1.0.0", "variant" => "with"}
+      )
+
+      stored = Ash.get!(ToolchainBuild, row.id, domain: Catalog)
+      assert stored.status == :skipped
+      assert stored.reason == "ships priv files"
+    end
+  end
+
+  describe "enqueueing variants" do
+    test "with goes ahead of without in the queue" do
+      run!("jason", "1.4.5")
+      row!("jason", "1.4.5", :pass, variant: :with, optional_deps: @kept_decimal)
+      run!("decimal", "2.3.0")
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      [without] =
+        all_enqueued(worker: Portal.Workers.ToolchainBuild)
+        |> Enum.filter(&(&1.args["package"] == "jason"))
+
+      [with] =
+        all_enqueued(worker: Portal.Workers.ToolchainBuild)
+        |> Enum.filter(&(&1.args["package"] == "decimal"))
+
+      assert without.args["variant"] == "without"
+      assert with.args["variant"] == "with"
+      assert with.priority < without.priority
+    end
+
+    test "the two variants of one version are separate jobs, each unique" do
+      args = %{
+        "package" => "jason",
+        "version" => "1.4.5",
+        "toolchain" => "1.19/28",
+        "image" => "ncc-worker:elixir-1.19-otp-28",
+        "builder_version" => 1
+      }
+
+      assert {:ok, %{conflict?: false}} =
+               Oban.insert(Portal.Workers.ToolchainBuild.new(Map.put(args, "variant", "with")))
+
+      assert {:ok, %{conflict?: false}} =
+               Oban.insert(Portal.Workers.ToolchainBuild.new(Map.put(args, "variant", "without")))
+
+      assert {:ok, %{conflict?: true}} =
+               Oban.insert(Portal.Workers.ToolchainBuild.new(Map.put(args, "variant", "without")))
+    end
+  end
+
+  describe "building a variant" do
+    defmodule VariantBuilder do
+      def build(args, _opts \\ []) do
+        send(self(), {:build_args, args})
+
+        {:ok,
+         %{
+           exit_code: 0,
+           result: %{"toolchain_build" => %{"status" => "pass"}},
+           files_dir: "/scratch/files",
+           output_dir: "/scratch/out",
+           log: ""
+         }}
+      end
+
+      def cleanup(_run_id), do: :ok
+      def image_digest(_image), do: "sha256:toolchain-image"
+    end
+
+    setup do
+      Application.put_env(:portal, :build_runner, VariantBuilder)
+      on_exit(fn -> Application.delete_env(:portal, :build_runner) end)
+      :ok
+    end
+
+    @job_args %{
+      "package" => "jason",
+      "version" => "1.4.5",
+      "toolchain" => "1.19/28",
+      "image" => "ncc-worker:elixir-1.19-otp-28",
+      "builder_version" => 1
+    }
+
+    test "with runs the optional dependencies pass, without leaves it out" do
+      for {variant, expected} <- [{"with", "include"}, {"without", "exclude"}] do
+        assert :ok =
+                 perform_job(
+                   Portal.Workers.ToolchainBuild,
+                   Map.put(@job_args, "variant", variant)
+                 )
+
+        assert_received {:build_args, %{optional_deps: ^expected}}
+      end
+    end
+
+    test "the ingest is told which variant it records" do
+      assert :ok =
+               perform_job(
+                 Portal.Workers.ToolchainBuild,
+                 Map.put(@job_args, "variant", "without")
+               )
+
+      assert_enqueued(worker: Ingest, args: %{"kind" => "toolchain", "variant" => "without"})
+    end
+
+    # Jobs queued before variants existed carry none: they were with builds.
+    test "a job without a variant builds with" do
+      assert :ok = perform_job(Portal.Workers.ToolchainBuild, @job_args)
+      assert_received {:build_args, %{optional_deps: "include"}}
+    end
+  end
+end
