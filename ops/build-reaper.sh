@@ -10,8 +10,10 @@
 # Only `docker-<64 hex id>.scope` cgroups directly under an
 # `ncc-builds.slice` are considered: docker-ncc puts every build container
 # there and nothing else runs in it. (Another dockerd's containers are
-# `docker-<id>.scope` too, elsewhere; they are never matched.) A scope is
-# killed once it has been active for longer than NCC_REAPER_MAX_AGE_SECONDS
+# `docker-<id>.scope` too, elsewhere; they are never matched.) No such
+# slice at all exits 3: the reaper would otherwise pass silently on a host
+# where it protects nothing. Each run ends with a "scanned N" line. A scope
+# is killed once it has been active for longer than NCC_REAPER_MAX_AGE_SECONDS
 # (default 9000, 2 h 30 min). No build runs that long: Portal.Builder's wall
 # clock is 2 h, and its own stop of a timed-out container takes minutes.
 # Docker is not asked anything: a wedged container can block it too.
@@ -31,21 +33,30 @@
 #     WantedBy=timers.target
 #
 # Install a root-owned copy (0755). Each kill is logged to the journal.
+#
+# It is also what stops a timed-out build container whose stop no portal
+# process waits for: Portal.Builder.Stop runs in a task of the node that
+# ran the build, and in a release `eval` (the deploy-time warm) in a
+# process that dies with the eval.
 
 set -uo pipefail
 
 reaper_cgroup_root=/sys/fs/cgroup
 
-# Microseconds since boot at which systemd unit $1 became active, or nothing.
+# Unix seconds at which systemd unit $1 became active, or nothing. Wall
+# clock against wall clock (reaper_now): systemd's monotonic stamps are
+# CLOCK_MONOTONIC, which stops during suspend, and /proc/uptime is
+# CLOCK_BOOTTIME, which does not. `--timestamp=unix` needs systemd 248.
 reaper_active_since() {
-  systemctl show -P ActiveEnterTimestampMonotonic "$1" 2>/dev/null
+  local stamp
+  stamp=$(systemctl show -P ActiveEnterTimestamp --timestamp=unix "$1" 2>/dev/null) || return 0
+  [[ $stamp =~ ^@([0-9]+)$ ]] && printf '%s\n' "${BASH_REMATCH[1]}"
+  return 0
 }
 
-# Microseconds since boot, now.
+# Unix seconds, now.
 reaper_now() {
-  local uptime
-  read -r uptime _ < /proc/uptime || return 1
-  printf '%s\n' "$(( ${uptime%.*} * 1000000 ))"
+  date +%s
 }
 
 reaper_kill_scope() {
@@ -58,29 +69,47 @@ reaper_main() {
     echo "refusing: NCC_REAPER_MAX_AGE_SECONDS must be a whole number of seconds, at least 3600" >&2
     return 2
   fi
-  local now status=0 scope unit id since age
-  now=$(reaper_now) || { echo 'cannot read the uptime' >&2; return 1; }
+  local now status=0 scope unit id since age scanned=0 killed=0
+  now=$(reaper_now)
+  if [[ ! $now =~ ^[0-9]+$ ]]; then
+    echo 'cannot read the clock' >&2
+    return 1
+  fi
   shopt -s nullglob
+  # A host whose build slice is elsewhere, or not set up, would otherwise
+  # pass every run while reaping nothing.
+  # The first path has no glob, so nullglob keeps it whether it exists or not.
+  local slices=() slice
+  for slice in "$reaper_cgroup_root"/ncc-builds.slice "$reaper_cgroup_root"/*/ncc-builds.slice; do
+    [[ -d $slice ]] && slices+=("$slice")
+  done
+  if [[ ${#slices[@]} -eq 0 ]]; then
+    echo "no ncc-builds.slice under $reaper_cgroup_root: is docker-ncc's cgroup parent set? nothing reaped" >&2
+    return 3
+  fi
   for scope in "$reaper_cgroup_root"/ncc-builds.slice/docker-*.scope \
                "$reaper_cgroup_root"/*/ncc-builds.slice/docker-*.scope; do
     unit=${scope##*/}
     id=${unit#docker-}
     id=${id%.scope}
     [[ $id =~ ^[0-9a-f]{64}$ ]] || continue
+    scanned=$((scanned + 1))
     since=$(reaper_active_since "$unit")
     if [[ ! $since =~ ^[0-9]+$ ]] || (( since == 0 )); then
       echo "skipping $unit: systemd does not say when it started" >&2
       continue
     fi
-    age=$(( (now - since) / 1000000 ))
+    age=$(( now - since ))
     (( age > max_age )) || continue
     if reaper_kill_scope "$scope"; then
       echo "killed build container ${id:0:12} ($unit): active for ${age}s, past ${max_age}s"
+      killed=$((killed + 1))
     else
       echo "could not kill build container ${id:0:12} ($unit)" >&2
       status=1
     fi
   done
+  echo "scanned $scanned build container scopes in ${#slices[@]} slice(s), killed $killed"
   return "$status"
 }
 

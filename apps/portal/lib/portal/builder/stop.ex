@@ -49,8 +49,11 @@ defmodule Portal.Builder.Stop do
   Stops `container` in a task under `Portal.TaskSupervisor`, waiting at
   most `await_ms` for it: long enough for a container docker can kill, so
   the caller's cleanup does not race it, and never on a hung one. Where the
-  supervisor is not running (a release `eval`) the task is an unlinked
-  process and is not waited for.
+  supervisor is not running (a release `eval`, such as the deploy-time
+  Nerves cache warm) the task is an unlinked process, is not waited for and
+  dies with the eval's VM; a container it has not stopped by then is left
+  to the host's build reaper (`ops/build-reaper.sh`), as is any container
+  whose node died mid-build.
   """
   @spec start(String.t(), non_neg_integer()) :: :ok
   def start(container, await_ms \\ 0) do
