@@ -183,7 +183,8 @@ Response: a signed envelope wrapping:
   "manifests_v2": {
     "circuits_gpio": "1f0c...",
     "jason": "8a2e..."
-  }
+  },
+  "content": ["https://cdn.example"]
 }
 ```
 
@@ -194,6 +195,16 @@ know `manifests` keep verifying. A package can be in one map and not the
 other: a run without a recorded toolchain, dependency lock or package checksum
 is format 1 only, and a toolchain build is format 2 only. A batch signed before
 format 2 has no `manifests_v2`; a client falls back to `manifests`.
+
+`content`, when present, lists content origins: https URLs that serve this
+API's content-addressed paths under their own prefix
+(`<origin>/files/<sha256>`, `<origin>/manifests/by-sha/<sha256>.json`,
+`<origin>/v2/manifests/by-sha/<sha256>.json`). It is signed with the rest of
+the payload, so only the portal's key can add an origin. A client may fetch
+those paths there first and must fall back to the source; everything is
+checked against the hashes the batch and manifests name. Its presence also
+says the source serves the by-sha paths. Absent when no origin is
+configured. `version` stays `1`: like `manifests_v2`, it is an added field.
 
 An `etag` header of the SHA256 of the envelope bytes (quoted, strong) is set,
 with `cache-control: public, max-age=60, must-revalidate`. Send it back as

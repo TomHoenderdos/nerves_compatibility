@@ -29,6 +29,13 @@ defmodule PortalWeb.ApiSchemas.BatchPayload do
             "Format-2 manifest SHA-256 keyed by package name. Absent from batches signed " <>
               "before format 2.",
           additionalProperties: %Schema{type: :string}
+        },
+        content: %Schema{
+          type: :array,
+          items: %Schema{type: :string, format: :uri},
+          description:
+            "Content origins (https) that also serve `files/` and the by-sha manifest " <>
+              "paths. Absent when none are configured; clients then use the source only."
         }
       },
       required: [:version, :sequence, :issued, :expires, :manifests]

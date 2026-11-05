@@ -21,11 +21,16 @@ defmodule Portal.Precompiled.Batches do
   package again. Equal inputs give equal bytes, so a reused sha names exactly
   what a render would store now. The memo lives in this node's memory only, so
   the first batch after a restart renders everything, as every batch used to.
+
+  Content origins (`Portal.Precompiled.Content`) are read for every batch and
+  go into the payload only; no manifest depends on them, so they are not part
+  of the fingerprint and a change takes effect at the next batch without
+  invalidating the memo.
   """
   require Ash.Query
   require Logger
   alias Portal.{ArtifactStore, Catalog}
-  alias Portal.Precompiled.{Batch, Envelope, Keys, ManifestRefs, Manifests}
+  alias Portal.Precompiled.{Batch, Content, Envelope, Keys, ManifestRefs, Manifests}
 
   # `{name, fingerprint, v1_sha | nil, v2_sha | nil, absent_shas}` per package.
   @memo Module.concat(__MODULE__, Memo)
@@ -93,14 +98,16 @@ defmodule Portal.Precompiled.Batches do
       end
 
     payload =
-      JSON.encode!(%{
+      %{
         "version" => 1,
         "sequence" => sequence,
         "issued" => DateTime.to_iso8601(issued),
         "expires" => DateTime.to_iso8601(expires),
         "manifests" => manifests,
         "manifests_v2" => manifests_v2
-      })
+      }
+      |> put_content(Content.origins())
+      |> JSON.encode!()
 
     %{"signatures" => signatures} = Envelope.sign(payload, [{key.keyid, key.private}])
 
@@ -192,6 +199,11 @@ defmodule Portal.Precompiled.Batches do
 
   defp ok_sha(:error), do: nil
   defp ok_sha(sha), do: sha
+
+  # Additive: a client that does not know `content` ignores it, and without
+  # origins the payload is byte-for-byte what it was before the field existed.
+  defp put_content(doc, []), do: doc
+  defp put_content(doc, origins), do: Map.put(doc, "content", origins)
 
   # Packages whose fingerprint changed during the batch are left for the next
   # one to render again.

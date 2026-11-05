@@ -130,6 +130,10 @@ if portal_available? do
 
   config :portal, :precompiled_signing, key_path: System.get_env("PRECOMPILED_SIGNING_KEY")
 
+  # CDN/mirror origins signed into each batch as `content`; see
+  # docs/PRECOMPILED_CDN.md. Parsed and validated by Portal.Precompiled.Content.
+  config :portal, :precompiled_content_origins, System.get_env("NCC_PRECOMPILED_CONTENT_ORIGINS")
+
   if key = System.get_env("NCC_BUILDER_CA_KEY"),
     do: config(:portal, Portal.Builders.CA, key_path: key)
 

@@ -245,6 +245,58 @@ defmodule Portal.Precompiled.BatchesTest do
     assert log =~ "eacces"
   end
 
+  describe "content origins" do
+    setup do
+      old = Application.get_env(:portal, :precompiled_content_origins)
+      on_exit(fn -> Application.put_env(:portal, :precompiled_content_origins, old) end)
+    end
+
+    test "unset: the payload has no content field" do
+      Application.put_env(:portal, :precompiled_content_origins, nil)
+      ingest_with_artifact()
+      {:ok, batch} = Batches.build_and_sign()
+      refute Map.has_key?(JSON.decode!(batch.payload), "content")
+    end
+
+    test "set: content is signed into the payload", %{key: key} do
+      Application.put_env(
+        :portal,
+        :precompiled_content_origins,
+        "https://cdn.example,https://mirror.example/p"
+      )
+
+      ingest_with_artifact()
+      {:ok, batch} = Batches.build_and_sign()
+      {:ok, payload} = Envelope.verify(Batches.envelope(batch), %{key.keyid => key.public}, 1)
+      doc = JSON.decode!(payload)
+      assert doc["content"] == ["https://cdn.example", "https://mirror.example/p"]
+      assert doc["version"] == 1
+    end
+
+    test "invalid: the batch still signs, without content" do
+      Application.put_env(:portal, :precompiled_content_origins, "http://cdn.example")
+      ingest_with_artifact()
+      {result, _log} = with_log(fn -> Batches.build_and_sign() end)
+      assert {:ok, batch} = result
+      refute Map.has_key?(JSON.decode!(batch.payload), "content")
+    end
+
+    # Origins are a payload field, not a manifest input: changing them must
+    # not need the memo busted, and must not be hidden by it.
+    test "changing origins changes the next batch, and the memo still reuses manifests" do
+      ingest_with_artifact()
+      Application.put_env(:portal, :precompiled_content_origins, "https://cdn.example")
+      {_, {:ok, b1}} = count_queries(fn -> Batches.build_and_sign() end)
+      Application.put_env(:portal, :precompiled_content_origins, "https://mirror.example")
+      {second, {:ok, b2}} = count_queries(fn -> Batches.build_and_sign() end)
+
+      assert JSON.decode!(b2.payload)["content"] == ["https://mirror.example"]
+      assert Batches.manifests(b2) == Batches.manifests(b1)
+      assert second <= 8, "second batch ran #{second} queries"
+      assert_stored_bytes_are_fresh_renders(b2)
+    end
+  end
+
   # Every manifest the batch names, in both formats, is in the store as exactly
   # the bytes a fresh render of the package gives now.
   defp assert_stored_bytes_are_fresh_renders(batch) do

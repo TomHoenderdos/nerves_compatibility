@@ -863,6 +863,10 @@ defmodule PortalWeb.CatalogApiControllerTest do
       assert_documented_response(empty, "getLatestBatch")
       ingest_with_artifact()
       {:ok, b1} = Portal.Precompiled.Batches.build_and_sign()
+
+      old = Application.get_env(:portal, :precompiled_content_origins)
+      on_exit(fn -> Application.put_env(:portal, :precompiled_content_origins, old) end)
+      Application.put_env(:portal, :precompiled_content_origins, "https://cdn.example")
       {:ok, b2} = Portal.Precompiled.Batches.build_and_sign()
       resp = conn |> get("/api/precompiled/batch.json")
 
@@ -888,6 +892,26 @@ defmodule PortalWeb.CatalogApiControllerTest do
       assert response(missing, 404)
       assert get_resp_header(missing, "cache-control") == ["no-store"]
       assert_documented_response(missing, "getBatch")
+    end
+
+    test "batch.json payload with content conforms to BatchPayload", %{key: key} do
+      old = Application.get_env(:portal, :precompiled_content_origins)
+      on_exit(fn -> Application.put_env(:portal, :precompiled_content_origins, old) end)
+      Application.put_env(:portal, :precompiled_content_origins, "https://cdn.example")
+      ingest_with_artifact()
+      {:ok, _} = Portal.Precompiled.Batches.build_and_sign()
+
+      resp = build_conn() |> get("/api/precompiled/batch.json")
+
+      {:ok, payload} =
+        Portal.Precompiled.Envelope.verify(
+          json_response(resp, 200),
+          %{key.keyid => key.public},
+          1
+        )
+
+      assert JSON.decode!(payload)["content"] == ["https://cdn.example"]
+      assert_api_schema(JSON.decode!(payload), "BatchPayload")
     end
 
     test "root.json answers 304 to its own etag", %{conn: conn} do

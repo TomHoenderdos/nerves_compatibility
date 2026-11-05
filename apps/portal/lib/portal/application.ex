@@ -16,6 +16,8 @@ defmodule Portal.Application do
     :ok = Portal.NervesCache.create_warmed_table()
     # And the memo of unchanged precompiled manifests `Portal.Precompiled.Batches` reuses.
     :ok = Portal.Precompiled.Batches.create_memo_table()
+    # Logs once at boot when NCC_PRECOMPILED_CONTENT_ORIGINS is invalid.
+    _ = Portal.Precompiled.Content.origins()
 
     # Before the Oban child below starts, so no sweep job's completion can run
     # before this handler is in place to hear it.
