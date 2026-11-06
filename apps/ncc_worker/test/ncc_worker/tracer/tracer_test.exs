@@ -77,6 +77,39 @@ defmodule NccWorker.TracerTest do
     assert %{"status" => "compile_failed"} = traced.report.ending
   end
 
+  test "a requested package outside the closure fails the judge compile before it compiles",
+       %{tmp_dir: dir} do
+    proj =
+      TracerFixtures.project(dir, ["fx_here"], %{
+        "fx_here" => %{files: %{"lib/fx_here.ex" => "defmodule FxHere do\nend\n"}}
+      })
+
+    for packages <- [["fx_elsewhere"], [], ["fx_here", "fx_elsewhere"]] do
+      traced = TracerFixtures.trace(proj, packages)
+      assert {:ok, status} = traced.result
+      assert status != 0, inspect(packages)
+      assert %{"status" => "package_not_in_closure"} = traced.report.ending
+      assert traced.report.windows == []
+      refute File.exists?(Path.join(proj, "_build/host/lib/fx_here/ebin"))
+    end
+  end
+
+  test "a Hex package name resolves to its OTP application", %{tmp_dir: dir} do
+    proj =
+      TracerFixtures.project(dir, ["fx_app"], %{
+        "fx_app" => %{
+          hex_name: "fx_hex_name",
+          files: %{"lib/fx_app.ex" => "defmodule FxApp do\nend\n"}
+        }
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_hex_name"])
+    assert {:ok, 0} = traced.result, traced.log
+    assert traced.report.problems == []
+    assert %{"packages" => ["fx_app"]} = traced.report.closure
+    assert Enum.map(traced.report.windows, & &1.app) == ["fx_app"]
+  end
+
   # Mix prunes the code path to a dependency's own applications before it
   # compiles it, so a module of an app the dependency does not list (httpc,
   # in inets) cannot be loaded from inside its compile. The tracer loads
@@ -195,13 +228,90 @@ defmodule NccWorker.TracerTest do
              Tracer.run(dir, ["x"], trace_dir: Path.join(dir, "trace"), run_started_at: started)
   end
 
-  test "install/1 writes every tracer module", %{tmp_dir: dir} do
+  test "install/1 writes every tracer module, read-only", %{tmp_dir: dir} do
     assert {:ok, ebin} = Tracer.install(Path.join(dir, "ebin"))
+    assert %{mode: dir_mode} = File.stat!(ebin)
+    assert Bitwise.band(dir_mode, 0o222) == 0
 
     for m <-
           ~w(ncc_tracer ncc_tracer_channels ncc_tracer_stack Elixir.Mix.Tasks.Ncc.TraceCompile) do
-      assert File.regular?(Path.join(ebin, m <> ".beam")), m
+      path = Path.join(ebin, m <> ".beam")
+      assert File.regular?(path), m
+      assert Bitwise.band(File.stat!(path).mode, 0o222) == 0, m
     end
+
+    # A second install over a sealed dir (a rerun) works, and so does removal.
+    assert {:ok, ^ebin} = Tracer.install(ebin)
+    File.chmod!(ebin, 0o755)
+  end
+
+  test "tracer beams changed during the judge compile fail the run", %{tmp_dir: dir} do
+    body = """
+    defmodule FxPatch do
+      ebin = :ncc_tracer |> :code.which() |> List.to_string() |> Path.dirname()
+      beam = Path.join(ebin, "ncc_tracer_stack.beam")
+      IO.puts("PLAIN_WRITE=\#{inspect(File.write(beam, "x"))}")
+      File.chmod!(ebin, 0o755)
+      File.chmod!(beam, 0o644)
+      File.write!(beam, "x")
+    end
+    """
+
+    proj =
+      TracerFixtures.project(dir, ["fx_patch"], %{
+        "fx_patch" => TracerFixtures.lib("fx_patch", body)
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_patch"])
+    assert {:error, {:tracer_modified, ["ncc_tracer_stack.beam"]}} = traced.result, traced.log
+    assert traced.log =~ "PLAIN_WRITE={:error, :eacces}"
+  end
+
+  # The BEAM starts every port program (System.cmd, rebar3, make) in a
+  # process group of its own, so timeout(1)'s group kill misses them; every
+  # process still carrying the judge compile's MIX_BUILD_PATH is reaped
+  # instead (/proc, so Linux: the worker's own platform).
+  @tag skip: if(File.dir?("/proc/self"), do: false, else: "needs /proc")
+  test "processes the judge compile left behind are killed", %{tmp_dir: dir} do
+    pid_file = Path.join(dir, "bg.pid")
+
+    body = """
+    defmodule FxBg do
+      {pid, 0} = System.cmd("sh", ["-c", "sleep 120 > /dev/null 2>&1 & echo $!"])
+      File.write!(#{inspect(pid_file)}, String.trim(pid))
+    end
+    """
+
+    proj = TracerFixtures.project(dir, ["fx_bg"], %{"fx_bg" => TracerFixtures.lib("fx_bg", body)})
+    traced = TracerFixtures.trace(proj, ["fx_bg"])
+    assert {:ok, 0} = traced.result, traced.log
+
+    os_pid = File.read!(pid_file)
+    # Gone, or a zombie (its environ reads empty) until it is reaped.
+    assert File.read("/proc/#{os_pid}/environ") in [{:error, :enoent}, {:ok, ""}]
+  end
+
+  test "the judge compile's leftover processes are reaped by build path, and survivors fail it",
+       %{tmp_dir: dir} do
+    proj =
+      TracerFixtures.project(dir, ["fx_reap"], %{
+        "fx_reap" => %{files: %{"lib/fx_reap.ex" => "defmodule FxReap do\nend\n"}}
+      })
+
+    test_pid = self()
+    build_path = proj |> TracerFixtures.env() |> Map.new() |> Map.fetch!("MIX_BUILD_PATH")
+
+    reap = fn path ->
+      send(test_pid, {:reaped, path})
+      {:error, {:writers_survived, ["4242"]}}
+    end
+
+    traced = TracerFixtures.trace(proj, ["fx_reap"], reap: reap)
+    assert_received {:reaped, ^build_path}
+    assert {:error, {:writers_survived, ["4242"]}} = traced.result
+
+    traced = TracerFixtures.trace(proj, ["fx_reap"], reap: fn _ -> :ok end)
+    assert {:ok, 0} = traced.result
   end
 
   test "a missing or garbled trace file is a problem, not a crash", %{tmp_dir: dir} do

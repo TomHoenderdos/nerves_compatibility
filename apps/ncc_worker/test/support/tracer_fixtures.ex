@@ -41,7 +41,8 @@ defmodule NccWorker.TracerFixtures do
         native: Keyword.get(opts, :native, []),
         log_file: log,
         timeout_ms: Keyword.get(opts, :timeout_ms, 240_000),
-        extra_env: Keyword.get(opts, :extra_env, [])
+        extra_env: Keyword.get(opts, :extra_env, []),
+        reap: Keyword.get(opts, :reap, &NccWorker.OptionalDepsTargets.reap_writers/1)
       )
 
     %{result: result, report: Report.read(trace_dir), log: File.read!(log)}
@@ -83,10 +84,15 @@ defmodule NccWorker.TracerFixtures do
     """
   end
 
+  # `hex_name:` gives the dependency the Hex package name a Hex dependency
+  # carries in its `:hex` option, for a package whose name is not its app's.
   defp dep_entry(name, path, deps) do
-    case get_in(deps, [name, :manager]) do
-      :rebar3 -> "{:#{name}, path: #{inspect(path)}, manager: :rebar3}"
-      _ -> "{:#{name}, path: #{inspect(path)}}"
+    spec = Map.get(deps, name, %{})
+    hex = if h = spec[:hex_name], do: ", hex: :#{h}", else: ""
+
+    case spec[:manager] do
+      :rebar3 -> "{:#{name}, path: #{inspect(path)}, manager: :rebar3#{hex}}"
+      _ -> "{:#{name}, path: #{inspect(path)}#{hex}}"
     end
   end
 

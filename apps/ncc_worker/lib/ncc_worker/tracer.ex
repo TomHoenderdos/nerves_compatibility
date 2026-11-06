@@ -22,6 +22,8 @@ defmodule NccWorker.Tracer do
   `run_started_at:`, the run's start in monotonic seconds).
   """
 
+  alias NccWorker.OptionalDepsTargets
+
   @modules [
     :ncc_tracer,
     :ncc_tracer_channels,
@@ -52,7 +54,8 @@ defmodule NccWorker.Tracer do
          {:ok, timeout} <- executable("timeout"),
          {:ok, elixir} <- executable("elixir"),
          :ok <- reset(trace_dir),
-         {:ok, ebin} <- install(Path.join(trace_dir, "ebin")) do
+         {:ok, ebin} <- install(Path.join(trace_dir, "ebin")),
+         {:ok, installed} <- digests(ebin) do
       env =
         Keyword.get(opts, :env, []) ++
           trace_env(trace_dir, packages, opts) ++ Keyword.get(opts, :extra_env, [])
@@ -61,7 +64,11 @@ defmodule NccWorker.Tracer do
         ["--kill-after=10", "#{timeout_sec}", elixir] ++
           ["-pa", ebin, "-S", "mix", "ncc.trace_compile"]
 
-      exec(timeout, args, project_dir, env, timeout_sec, opts)
+      result = exec(timeout, args, project_dir, env, timeout_sec, opts)
+      reaped = reap(env, opts)
+      checked = unchanged(ebin, installed)
+      :ok = unseal(ebin)
+      Enum.find([result, reaped, checked], result, &match?({:error, _}, &1))
     end
   end
 
@@ -94,16 +101,64 @@ defmodule NccWorker.Tracer do
     end
   end
 
-  @doc "Writes the tracer's beams into `ebin`."
+  @doc """
+  Writes the tracer's beams into `ebin`, replacing whatever was there, and
+  leaves the files and the dir read-only. That stops a package's
+  compile-time code from rewriting them by accident; one that deliberately
+  makes them writable again is caught by `run/3`, which compares the files
+  with what it installed once the compile is over, and by the report
+  reader, which compares the md5s each child VM's tracer reports with the
+  Mix VM's.
+  """
   @spec install(String.t()) :: {:ok, String.t()} | {:error, term()}
   # The worker's own run dir; module names are a fixed list.
   # sobelow_skip ["Traversal.FileModule"]
   def install(ebin) do
+    _ = File.chmod(ebin, 0o755)
+    File.rm_rf!(ebin)
     File.mkdir_p!(ebin)
-    Enum.each(@modules, &File.write!(Path.join(ebin, "#{&1}.beam"), object_code!(&1)))
+
+    for module <- @modules do
+      path = Path.join(ebin, "#{module}.beam")
+      File.write!(path, object_code!(module))
+      File.chmod!(path, 0o444)
+    end
+
+    File.chmod!(ebin, 0o555)
     {:ok, ebin}
   rescue
     e -> {:error, {:install_failed, Exception.message(e)}}
+  end
+
+  # Writable again, so the run dir can be removed; the files stay read-only.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp unseal(ebin) do
+    _ = File.chmod(ebin, 0o755)
+    :ok
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp digests(ebin) do
+    {:ok, Map.new(File.ls!(ebin), &{&1, :crypto.hash(:sha256, File.read!(Path.join(ebin, &1)))})}
+  rescue
+    e -> {:error, {:tracer_unreadable, Exception.message(e)}}
+  end
+
+  # Every file installed is still there with the same content, and none
+  # was added.
+  defp unchanged(ebin, installed) do
+    case digests(ebin) do
+      {:ok, ^installed} ->
+        :ok
+
+      {:ok, now} ->
+        names = Map.keys(installed) ++ Map.keys(now)
+        changed = names |> Enum.uniq() |> Enum.sort() |> Enum.reject(&(installed[&1] == now[&1]))
+        {:error, {:tracer_modified, changed}}
+
+      {:error, _} = error ->
+        error
+    end
   end
 
   # From the code server rather than a path: inside the worker escript the
@@ -118,6 +173,8 @@ defmodule NccWorker.Tracer do
 
   # sobelow_skip ["Traversal.FileModule"]
   defp reset(dir) do
+    # A sealed ebin left by an earlier run cannot be emptied until writable.
+    _ = File.chmod(Path.join(dir, "ebin"), 0o755)
     File.rm_rf!(dir)
     File.mkdir_p!(dir)
     :ok
@@ -142,11 +199,15 @@ defmodule NccWorker.Tracer do
   end
 
   defp exec(timeout, args, project_dir, env, timeout_sec, opts) do
-    into = log_sink(Keyword.get(opts, :log_file))
-    task = Task.async(fn -> cmd(timeout, args, project_dir, env, into) end)
+    caller = self()
+    ref = make_ref()
+    log = Keyword.get(opts, :log_file)
+    task = Task.async(fn -> cmd(caller, ref, timeout, [args, project_dir, env], log) end)
     backstop = (timeout_sec + 10) * 1000 + @backstop_ms
+    outcome = Task.yield(task, backstop) || Task.shutdown(task, :brutal_kill)
+    kill_group(ref)
 
-    case Task.yield(task, backstop) || Task.shutdown(task, :brutal_kill) do
+    case outcome do
       {:ok, {:ok, @timeout_exit}} -> {:error, :timeout}
       {:ok, {:ok, @killed_exit}} -> {:error, :killed}
       {:ok, result} -> result
@@ -155,21 +216,83 @@ defmodule NccWorker.Tracer do
     end
   end
 
+  # The BEAM starts every port program (System.cmd, rebar3, a Makefile's
+  # cc) in a process group of its own, so kill_group/1 does not reach them.
+  # Whatever still carries the judge compile's MIX_BUILD_PATH once it is
+  # over is killed (`OptionalDepsTargets.reap_writers/1`, /proc, so Linux);
+  # one that survives fails the run.
+  defp reap(env, opts) do
+    reap = Keyword.get(opts, :reap, &OptionalDepsTargets.reap_writers/1)
+
+    case List.keyfind(env, "MIX_BUILD_PATH", 0) do
+      {_, build_path} when is_binary(build_path) -> reap.(build_path)
+      _ -> :ok
+    end
+  end
+
+  # `timeout(1)` makes itself the leader of a new process group, so its pid
+  # is the group's id. Whatever the compile left running in the group (a
+  # backgrounded job, a port program) is killed here, after a normal exit
+  # as after a timeout. That reaches only what forked without a port: a
+  # port program, or a process that started a session of its own (setsid),
+  # has left the group; reap/2 kills those by build path, and the worker's
+  # `NccWorker.ProcessSweep` stops anything left before the run ends.
+  # Literal kill argv for a pid the port reported; no shell.
+  # sobelow_skip ["CI.System"]
+  defp kill_group(ref) do
+    receive do
+      {^ref, :os_pid, pid} ->
+        _ = System.cmd("kill", ["-KILL", "--", "-#{pid}"], stderr_to_stdout: true)
+        :ok
+    after
+      0 -> :ok
+    end
+  end
+
   # The judge compile runs package code, as the host compile does; the
   # executables are the image's timeout and elixir and the arguments are
-  # fixed.
+  # fixed. A port rather than System.cmd, for timeout(1)'s pid.
   # sobelow_skip ["CI.System"]
-  defp cmd(command, args, project_dir, env, into) do
-    {_output, status} =
-      System.cmd(command, args, cd: project_dir, env: env, stderr_to_stdout: true, into: into)
+  defp cmd(caller, ref, command, [args, project_dir, env], log) do
+    port =
+      Port.open({:spawn_executable, command}, [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        :hide,
+        args: args,
+        cd: project_dir,
+        env: port_env(env)
+      ])
 
-    {:ok, status}
+    with {:os_pid, pid} <- Port.info(port, :os_pid), do: send(caller, {ref, :os_pid, pid})
+    {:ok, with_log(log, &collect(port, &1))}
   rescue
     e -> {:error, {:cmd_failed, Exception.message(e)}}
   end
 
+  defp port_env(env) do
+    for {name, value} <- env do
+      {String.to_charlist(name), if(value, do: String.to_charlist(value), else: false)}
+    end
+  end
+
+  defp collect(port, device) do
+    receive do
+      {^port, {:data, data}} ->
+        if device, do: IO.binwrite(device, data)
+        collect(port, device)
+
+      {^port, {:exit_status, status}} ->
+        status
+    end
+  end
+
   # The caller's own log file in the run's output dir.
-  defp log_sink(nil), do: ""
+  defp with_log(nil, fun), do: fun.(nil)
+
   # sobelow_skip ["Traversal.FileModule"]
-  defp log_sink(path), do: File.stream!(path, [:append])
+  defp with_log(path, fun) do
+    File.open!(path, [:append, :binary], fun)
+  end
 end

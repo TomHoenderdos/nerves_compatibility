@@ -36,6 +36,11 @@ traced(Token, Packages, Native) ->
         ok ->
             _ = ncc_tracer:finish(Token, ok),
             ok;
+        {not_in_closure, Missing} ->
+            _ = ncc_tracer:finish(Token, package_not_in_closure),
+            io:format(standard_error, "ncc.trace_compile: not in the project's dependencies: ~ts~n",
+                      [lists:join(", ", [atom_to_list(M) || M <- Missing])]),
+            erlang:exit({shutdown, 1});
         {failed, Class, Reason, Stack} ->
             _ = ncc_tracer:finish(Token, compile_failed),
             erlang:raise(Class, Reason, Stack)
@@ -47,12 +52,48 @@ traced(Token, Packages, Native) ->
 compile(Token, Packages, Native) ->
     try
         Deps = 'Elixir.Mix.Dep':load_and_cache(),
-        Ordered = closure_order(Packages, Deps),
-        _ = ncc_tracer:closure(Token, Packages, [dep_info(D) || D <- Ordered]),
-        DepConfig = 'Elixir.Mix.Project':deps_config(),
-        lists:foreach(fun(D) -> compile_dep(Token, D, Native, DepConfig) end, Ordered)
+        case resolve(Packages, Deps) of
+            {ok, Apps} -> compile_closure(Token, Apps, Deps, Native);
+            {error, Missing} -> {not_in_closure, Missing}
+        end
     catch
         Class:Reason:Stack -> {failed, Class, Reason, Stack}
+    end.
+
+compile_closure(Token, Apps, Deps, Native) ->
+    Ordered = closure_order(Apps, Deps),
+    _ = ncc_tracer:closure(Token, Apps, [dep_info(D) || D <- Ordered]),
+    DepConfig = 'Elixir.Mix.Project':deps_config(),
+    lists:foreach(fun(D) -> compile_dep(Token, D, Native, DepConfig) end, Ordered).
+
+%% Each requested package as the OTP app of one of the project's
+%% dependencies: by app name, else by the Hex package name in the
+%% dependency's `:hex` option (a package whose name is not its app's). No
+%% package, or one that is no dependency, is an error: nothing is compiled
+%% and the trace ends `package_not_in_closure`, never a clean, empty trace.
+resolve([], _Deps) -> {error, []};
+resolve(Names, Deps) ->
+    Found = [{Name, app_of(Name, Deps)} || Name <- Names],
+    case [Name || {Name, none} <- Found] of
+        [] -> {ok, lists:uniq([App || {_, App} <- Found])};
+        Missing -> {error, Missing}
+    end.
+
+app_of(Name, Deps) ->
+    ByApp = [maps:get(app, D) || D <- Deps, maps:get(app, D) =:= Name],
+    ByHex = [maps:get(app, D) || D <- Deps, hex_name(D) =:= Name],
+    case ByApp ++ ByHex of
+        [App | _] -> App;
+        [] -> none
+    end.
+
+hex_name(Dep) ->
+    case opt(hex, Dep) of
+        undefined -> {no_hex_name};
+        Name when is_atom(Name) -> Name;
+        Name when is_binary(Name) -> binary_to_atom(Name);
+        Name when is_list(Name) -> list_to_atom(Name);
+        _ -> {no_hex_name}
     end.
 
 compile_dep(Token, Dep, Native, DepConfig) ->
