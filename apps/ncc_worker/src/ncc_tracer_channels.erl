@@ -5,9 +5,11 @@
 -export([patterns/0, classify/3, chars/1, term_bin/1]).
 
 -define(READS, [{file, read_file}, {file, read_file_info}, {file, read_link_info},
-                {file, read_link}, {file, list_dir}, {file, list_dir_all},
-                {file, consult}, {prim_file, read_file}, {prim_file, read_file_info},
-                {prim_file, list_dir}, {prim_file, read_link},
+                {file, read_link}, {file, read_link_all}, {file, list_dir},
+                {file, list_dir_all}, {file, consult}, {prim_file, read_file},
+                {prim_file, read_file_info}, {prim_file, read_link_info},
+                {prim_file, list_dir}, {prim_file, list_dir_all}, {prim_file, read_link},
+                {prim_file, read_link_all},
                 {erl_prim_loader, get_file}, {erl_prim_loader, list_dir},
                 {erl_prim_loader, read_file_info}]).
 -define(WRITES, [{file, write_file}, {file, make_dir}, {file, write_file_info},
@@ -25,12 +27,17 @@ patterns() ->
      {os, find_executable, 1}, {os, find_executable, 2},
      {file, read_file, 1}, {file, read_file, 2}, {file, read_file_info, 1},
      {file, read_file_info, 2}, {file, read_link_info, 1}, {file, read_link_info, 2},
-     {file, read_link, 1}, {file, list_dir, 1}, {file, list_dir_all, 1},
+     {file, read_link, 1}, {file, read_link_all, 1}, {file, list_dir, 1},
+     {file, list_dir_all, 1},
      {file, open, 2}, {file, consult, 1}, {file, get_cwd, 0}, {file, get_cwd, 1},
      {filelib, wildcard, 1}, {filelib, wildcard, 2},
      {prim_file, read_file, 1}, {prim_file, read_file_info, 1},
      {prim_file, read_file_info, 2}, {prim_file, list_dir, 1}, {prim_file, open, 2},
      {prim_file, read_link, 1}, {prim_file, get_cwd, 0},
+     %% The link and directory reads behind File.lstat/read_link, which R4's
+     %% mix.exs allowlist (File) relies on seeing, in every entry point.
+     {prim_file, read_link_info, 1}, {prim_file, read_link_info, 2},
+     {prim_file, read_link_all, 1}, {prim_file, list_dir_all, 1}, {prim_file, get_cwd, 1},
      %% Changing the working directory changes what every later relative
      %% path names, so the judge must see it (Rev 2 review, Task 6).
      {file, set_cwd, 1}, {prim_file, set_cwd, 1},

@@ -59,6 +59,35 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert {:file_read, %{path: "a"}} = classify(:file, :open, ["a", [:read, :binary]])
   end
 
+  test "System.user_home, File.lstat and File.read_link reach a channel (R4 allowlist)" do
+    patterns = :ncc_tracer_channels.patterns()
+
+    for mfa <- [
+          {:init, :get_argument, 1},
+          {:file, :read_link_info, 1},
+          {:file, :read_link_info, 2},
+          {:file, :read_link, 1},
+          {:file, :read_link_all, 1},
+          {:prim_file, :read_link_info, 1},
+          {:prim_file, :read_link_info, 2},
+          {:prim_file, :read_link, 1},
+          {:prim_file, :read_link_all, 1},
+          {:prim_file, :list_dir_all, 1},
+          {:prim_file, :get_cwd, 1}
+        ] do
+      assert mfa in patterns, inspect(mfa)
+    end
+
+    assert {:env, %{name: "home"}} = classify(:init, :get_argument, [:home])
+    assert {:file_read, %{path: "/l"}} = classify(:file, :read_link_info, ["/l", [time: :posix]])
+    assert {:file_read, %{path: "/l"}} = classify(:file, :read_link, ["/l"])
+    assert {:file_read, %{path: "/l"}} = classify(:file, :read_link_all, ["/l"])
+    assert {:file_read, %{path: "/l"}} = classify(:prim_file, :read_link_info, [~c"/l"])
+    assert {:file_read, %{path: "/l"}} = classify(:prim_file, :read_link_all, [~c"/l"])
+    assert {:file_read, %{path: "/d"}} = classify(:prim_file, :list_dir_all, [~c"/d"])
+    assert {:file_read, %{cwd: true}} = classify(:prim_file, :get_cwd, [~c"c:"])
+  end
+
   test "changing the working directory is its own channel" do
     assert {:cwd, %{path: "/x"}} = classify(:file, :set_cwd, ["/x"])
     assert {:cwd, %{path: "rel"}} = classify(:prim_file, :set_cwd, [~c"rel"])

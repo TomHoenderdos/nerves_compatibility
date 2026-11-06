@@ -104,6 +104,28 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert calls > 0
   end
 
+  test "System.user_home, File.lstat and File.read_link in a module body are user events",
+       %{tmp_dir: dir} do
+    {lines, _out} =
+      compile_fixture(dir, "fx_home.ex", """
+      defmodule FxHome do
+        @home System.user_home()
+        @lstat File.lstat("/nonexistent-ncc")
+        @link File.read_link("/nonexistent-ncc")
+        def all, do: {@home, @lstat, @link}
+      end
+      """)
+
+    events =
+      for %{"user" => %{"file" => file}} = e <- kind(lines, "event"),
+          String.ends_with?(file || "", "fx_home.ex"),
+          do: {e["channel"], e["mfa"], e["user"]["line"]}
+
+    assert {"env", "init:get_argument/1", 2} in events
+    assert {"file_read", "file:read_link_info/2", 3} in events
+    assert {"file_read", "file:read_link/1", 4} in events
+  end
+
   test "a task spawned by a module body is a user process", %{tmp_dir: dir} do
     {lines, _} =
       compile_fixture(dir, "fx_task.ex", """
