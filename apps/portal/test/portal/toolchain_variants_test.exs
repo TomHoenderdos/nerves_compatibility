@@ -568,6 +568,25 @@ defmodule Portal.ToolchainVariantsTest do
       assert backlog() == []
     end
 
+    # The manifest serves finished_at as the build's date: a retry that kept
+    # the old row must not make an old build look new. The attempt is
+    # recorded on its own.
+    test "a kept row's finished_at is unchanged by the failed retry" do
+      run!("withpriv", "1.0.0")
+      finished_at = ago(30 * @day)
+      row!("withpriv", "1.0.0", :skipped, reason: "ships priv files", finished_at: finished_at)
+
+      fail_last_attempt("withpriv", "1.0.0")
+
+      assert [row] =
+               Portal.Catalog.ToolchainBuild
+               |> Ash.read!(domain: Portal.Catalog)
+               |> Enum.filter(&(&1.version == "1.0.0" and &1.status == :skipped))
+
+      assert DateTime.compare(row.finished_at, finished_at) == :eq
+      assert DateTime.diff(DateTime.utc_now(), row.attempted_at) < 60
+    end
+
     test "a dropped with build whose rebuild fails stays out for the week" do
       run!("jason", "1.4.5")
 
