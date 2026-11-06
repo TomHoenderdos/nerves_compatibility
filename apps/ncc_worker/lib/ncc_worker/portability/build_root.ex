@@ -24,26 +24,41 @@ defmodule NccWorker.Portability.BuildRoot do
   judge turns into "portability could not be judged": never a pass.
   """
 
-  alias NccWorker.Portability.Etf
+  alias NccWorker.Portability.{Context, Etf}
 
   @max_literal_bytes 64 * 1024 * 1024
   @max_file_bytes 256 * 1024 * 1024
   @chunks ~w(StrT AtU8 Atom LitT Attr)
 
+  @source_extensions ~w(.ex .exs .erl .hrl)
+
+  @type observation :: {:observe, String.t(), String.t()}
+
+  @doc """
+  `:ok` when no root appears outside the allowed shapes, `{:observe,
+  observations}` when the only other occurrences are bare closure source
+  paths (each `{:observe, "build_root_source_path", "<root>/..."}`, once),
+  else the first refusal or error.
+  """
   @spec check(String.t(), [String.t()], (String.t() -> boolean())) ::
-          :ok | {:refuse, String.t()} | {:error, String.t()}
+          :ok | {:observe, [observation()]} | {:refuse, String.t()} | {:error, String.t()}
   def check(ebin, roots, closure_file?) do
     roots = needles(roots)
 
-    with :ok <- each(files(ebin, "*.beam"), &check_beam(&1, roots, closure_file?)) do
-      each(files(ebin, "*.app"), &check_app(&1, roots))
+    with {:ok, observed} <- each(files(ebin, "*.beam"), &check_beam(&1, roots, closure_file?)),
+         {:ok, []} <- each(files(ebin, "*.app"), &check_app(&1, roots)) do
+      observed
+      |> Enum.uniq()
+      |> Enum.map(&{:observe, "build_root_source_path", snippet_text(&1, roots)})
+      |> then(&if(&1 == [], do: :ok, else: {:observe, &1}))
     end
   end
 
   defp each(paths, fun) do
-    Enum.reduce_while(paths, :ok, fn path, :ok ->
+    Enum.reduce_while(paths, {:ok, []}, fn path, {:ok, acc} ->
       case fun.(path) do
-        :ok -> {:cont, :ok}
+        :ok -> {:cont, {:ok, acc}}
+        {:ok, observed} -> {:cont, {:ok, acc ++ observed}}
         other -> {:halt, other}
       end
     end)
@@ -68,8 +83,9 @@ defmodule NccWorker.Portability.BuildRoot do
          :ok <- search_bytes(chunks["StrT"], roots, module, "string table"),
          :ok <- search_bytes(chunks["AtU8"], roots, module, "atom table"),
          :ok <- search_bytes(chunks["Atom"], roots, module, "atom table"),
-         :ok <- literals(chunks["LitT"], roots, closure_file?, module) do
-      attributes(chunks["Attr"], roots, closure_file?, module)
+         {:ok, observed} <- literals(chunks["LitT"], roots, closure_file?, module),
+         :ok <- attributes(chunks["Attr"], roots, closure_file?, module) do
+      {:ok, observed}
     end
   end
 
@@ -131,22 +147,46 @@ defmodule NccWorker.Portability.BuildRoot do
 
   defp search_bytes(nil, _roots, _module, _where), do: :ok
 
-  defp literals(nil, _roots, _closure_file?, _module), do: :ok
+  defp literals(nil, _roots, _closure_file?, _module), do: {:ok, []}
 
-  # One entry at a time, so only one decoded literal is in memory.
+  # One entry at a time, so only one decoded literal is in memory. A whole
+  # literal that is exactly a closure source file's path is observed, not
+  # refused (controller ruling on Ecto's runtime-built `file:` fields); the
+  # same path anywhere else still goes through `scan/4`.
   defp literals(chunk, roots, closure_file?, module) do
     result =
-      fold_literal_table(chunk, :ok, fn tree, :ok ->
-        case scan(tree, false, roots, closure_file?) do
-          nil -> {:cont, :ok}
-          offending -> {:halt, refusal(module, offending, roots)}
-        end
+      fold_literal_table(chunk, {:ok, []}, fn tree, {:ok, observed} ->
+        literal_outcome(tree, observed, roots, closure_file?, module)
       end)
 
     case result do
       {:ok, outcome} -> outcome
       {:error, _} = error -> error
     end
+  end
+
+  defp literal_outcome({:string, s} = tree, observed, roots, closure_file?, module) do
+    if contains_root?(s, roots) and source_path?(s, closure_file?),
+      do: {:cont, {:ok, [s | observed]}},
+      else: scan_outcome(tree, observed, roots, closure_file?, module)
+  end
+
+  defp literal_outcome(tree, observed, roots, closure_file?, module),
+    do: scan_outcome(tree, observed, roots, closure_file?, module)
+
+  defp scan_outcome(tree, observed, roots, closure_file?, module) do
+    case scan(tree, false, roots, closure_file?) do
+      nil -> {:cont, {:ok, observed}}
+      offending -> {:halt, refusal(module, offending, roots)}
+    end
+  end
+
+  # The real path of a closure source file: the string itself, not a
+  # directory, a prefix, a path inside a longer text, or a `_build` or other
+  # symlinked path that only resolves into the closure.
+  defp source_path?(s, closure_file?) do
+    Path.type(s) == :absolute and Path.extname(s) in @source_extensions and
+      Context.realpath(s) == s and closure_file?.(s)
   end
 
   @doc """
@@ -294,12 +334,10 @@ defmodule NccWorker.Portability.BuildRoot do
 
   # The offending string with each root shown as `<root>`, so the reason
   # names what was baked rather than where this run happened to build.
-  defp snippet(s, roots) do
-    s
-    |> :binary.replace(roots, "<root>", [:global])
-    |> inspect(printable_limit: 120)
-    |> String.slice(0, 160)
-  end
+  defp snippet(s, roots),
+    do: s |> snippet_text(roots) |> inspect(printable_limit: 120) |> String.slice(0, 160)
+
+  defp snippet_text(s, roots), do: :binary.replace(s, roots, "<root>", [:global])
 
   # The .app has no allowed shape: any root in it refuses.
   defp check_app(path, roots) do

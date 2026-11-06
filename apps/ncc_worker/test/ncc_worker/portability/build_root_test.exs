@@ -3,7 +3,7 @@ defmodule NccWorker.Portability.BuildRootTest do
 
   import Bitwise
 
-  alias NccWorker.Portability.{BuildRoot, Etf}
+  alias NccWorker.Portability.{BuildRoot, Context, Etf}
 
   @moduletag :tmp_dir
 
@@ -178,6 +178,62 @@ defmodule NccWorker.Portability.BuildRootTest do
       improper = :erlang.term_to_binary([1 | root])
       write_beam(Path.join(root, "i"), "i", [{"LitT", lit_t([improper])}])
       assert {:refuse, _} = BuildRoot.check(Path.join(root, "i"), [root], fn _ -> true end)
+    end
+
+    test "a bare closure source path (Ecto's runtime-built file: field) is an observation",
+         %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxEctoLike do
+          def expr(params), do: %{params: params, file: __ENV__.file, line: __ENV__.line}
+          def rel, do: Path.relative_to_cwd(__ENV__.file)
+        end
+        """)
+
+      assert {:observe, [{:observe, "build_root_source_path", "<root>/deps/fx/lib/fx.ex"}]} =
+               BuildRoot.check(ebin, [root], ok?)
+    end
+
+    test "only a bare closure source file is an observation; other bare paths refuse",
+         %{tmp_dir: root} do
+      {_ebin, _ok?} = compile(root, "defmodule FxSrc do\n  def x, do: :ok\nend\n")
+      # Like Context.closure_file?/2: the real path is a regular file under deps/fx.
+      fx = Context.realpath(Path.join(root, "deps/fx"))
+
+      ok? = fn p ->
+        real = Context.realpath(p)
+        is_binary(real) and String.starts_with?(real, fx <> "/") and File.regular?(real)
+      end
+
+      source = Path.join(root, "deps/fx/lib/fx.ex")
+      readme = Path.join(root, "deps/fx/README.md")
+      outside = Path.join(root, "other/lib/o.ex")
+      File.mkdir_p!(Path.dirname(outside))
+      File.write!(outside, "")
+
+      linked = Path.join(root, "_build/host/lib/fx/lib")
+      File.mkdir_p!(Path.dirname(linked))
+      File.ln_s!(Path.join(root, "deps/fx/lib"), linked)
+
+      for {name, literal} <- [
+            {"symlinked", Path.join(linked, "fx.ex")},
+            {"build", Path.join(root, "_build/host/lib/fx/ebin")},
+            {"embedded", "at " <> source <> ":3"},
+            {"prefix", source <> ".bak"},
+            {"dotted", Path.join(root, "deps/fx/lib/../lib/fx.ex")},
+            {"not_source", readme},
+            {"outside", outside},
+            {"dir", Path.join(root, "deps/fx/lib")}
+          ] do
+        dir = Path.join(root, "bare_" <> name)
+        write_beam(dir, "m", [{"LitT", lit_t([:erlang.term_to_binary(literal)])}])
+        assert {:refuse, _} = BuildRoot.check(dir, [root], ok?), name
+      end
+
+      dir = Path.join(root, "bare_ok")
+      bins = Enum.map([source, source], &:erlang.term_to_binary/1)
+      write_beam(dir, "m", [{"LitT", lit_t(bins)}])
+      assert {:observe, [_]} = BuildRoot.check(dir, [root], ok?)
     end
 
     test "a beam without any root passes", %{tmp_dir: root} do
