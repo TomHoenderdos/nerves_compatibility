@@ -5,7 +5,7 @@ defmodule Mix.Tasks.Portal.BuilderCa.Init do
 
   `PATH` is wherever the operator wants the CA key to live (the same path
   `NCC_BUILDER_CA_KEY` points at in prod). Writes the key (mode 600) and
-  `ca.pem` beside it; refuses to overwrite.
+  `ca.pem` beside it; refuses when either exists.
   On a release: `bin/portal eval 'Portal.Builders.CA.init("PATH")'`.
   """
   use Mix.Task
@@ -17,8 +17,11 @@ defmodule Mix.Tasks.Portal.BuilderCa.Init do
     key = opts[:key] || Mix.raise("--key PATH is required")
 
     case Portal.Builders.CA.init(key) do
-      {:ok, %{cert_path: cert}} -> Mix.shell().info("wrote #{key} and #{cert}")
-      {:error, :exists} -> Mix.raise("#{key} exists; refusing to overwrite")
+      {:ok, %{cert_path: cert}} ->
+        Mix.shell().info("wrote #{key} and #{cert}")
+
+      {:error, :exists} ->
+        Mix.raise("#{key} or the ca.pem beside it exists; refusing to overwrite")
     end
   end
 end

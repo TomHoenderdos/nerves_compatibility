@@ -34,6 +34,20 @@ defmodule Portal.Builders.CATest do
     assert {:error, :exists} = CA.init(key_path)
   end
 
+  # A ca.pem without its key is a leftover the operator should look at (an
+  # old CA builders may still trust), not something init replaces quietly.
+  test "init refuses a leftover ca.pem even when the key is missing", %{
+    dir: dir,
+    key_path: key_path
+  } do
+    cert_path = Path.join(dir, "ca.pem")
+    File.write!(cert_path, "leftover")
+    assert {:error, :exists} = CA.init(key_path)
+    assert File.read!(cert_path) == "leftover"
+    refute File.exists?(key_path)
+    assert Path.wildcard(Path.join(dir, "*")) == [cert_path]
+  end
+
   test "unconfigured and missing CAs are distinguishable", %{key_path: key_path} do
     assert {:error, :missing} = CA.load()
     Application.put_env(:portal, CA, [])

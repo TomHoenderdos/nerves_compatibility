@@ -40,14 +40,18 @@ defmodule Portal.Builders.CA do
   @spec valid_name?(term()) :: boolean()
   def valid_name?(name), do: is_binary(name) and Regex.match?(@name_pattern, name)
 
-  @doc "Create the CA at `key_path` (key mode 600, `ca.pem` beside it). Refuses an existing key."
+  @doc """
+  Create the CA at `key_path` (key mode 600, `ca.pem` beside it). Refuses
+  when either file exists: a `ca.pem` left without its key may still be the
+  CA some builders trust, so it is the operator's to remove, not init's.
+  """
   @spec init(Path.t()) :: {:ok, %{key_path: Path.t(), cert_path: Path.t()}} | {:error, :exists}
   # The path is operator input to a mix task or `bin/portal eval`, never a request.
   # sobelow_skip ["Traversal.FileModule"]
   def init(key_path) do
     cert_path = Path.join(Path.dirname(key_path), "ca.pem")
 
-    if File.exists?(key_path) do
+    if File.exists?(key_path) or File.exists?(cert_path) do
       {:error, :exists}
     else
       key = X509.PrivateKey.new_ec(:secp256r1)
@@ -60,8 +64,9 @@ defmodule Portal.Builders.CA do
     end
   end
 
-  # A hard link fails if the key appeared meanwhile, so two inits cannot
-  # both win; the key goes live first and the certificate follows at once.
+  # A hard link fails if the file appeared meanwhile, so two inits cannot
+  # both win and neither overwrites; the key goes live first and the
+  # certificate follows at once.
   # sobelow_skip ["Traversal.FileModule"]
   defp publish_ca(key_tmp, cert_tmp, key_path, cert_path) do
     case :file.make_link(String.to_charlist(key_tmp), String.to_charlist(key_path)) do
@@ -78,13 +83,20 @@ defmodule Portal.Builders.CA do
 
   # sobelow_skip ["Traversal.FileModule"]
   defp publish_ca_cert(cert_tmp, key_path, cert_path) do
-    case File.rename(cert_tmp, cert_path) do
+    result = :file.make_link(String.to_charlist(cert_tmp), String.to_charlist(cert_path))
+    File.rm(cert_tmp)
+
+    case result do
       :ok ->
         {:ok, %{key_path: key_path, cert_path: cert_path}}
 
+      {:error, :eexist} ->
+        File.rm(key_path)
+        {:error, :exists}
+
       {:error, reason} ->
         File.rm(key_path)
-        raise File.Error, reason: reason, action: "rename", path: cert_path
+        raise File.Error, reason: reason, action: "link", path: cert_path
     end
   end
 
