@@ -41,12 +41,20 @@ ncc_layout() {
 ncc_layout NCC_SRC_DIR NCC_INSTALL_DIR DOCKER_HOST || exit 1
 
 SRC=$NCC_SRC_DIR
-DEST=$NCC_INSTALL_DIR/portal
+# The default is the single-release layout; ops/blue-green.sh passes the idle
+# colour's directory. Never anywhere outside the install dir: the copy below
+# starts with rm -rf.
+DEST=${1:-$NCC_INSTALL_DIR/portal}
+if [[ $DEST != "$NCC_INSTALL_DIR"/* ]]; then
+  echo "ERROR: release destination $DEST must be under $NCC_INSTALL_DIR" >&2
+  exit 1
+fi
+BUILD_SHA=$(git -C "$SRC" rev-parse HEAD)
 BUILDER=hexpm/elixir:1.20.3-erlang-28.5.0.5-ubuntu-noble-20260810
 
 docker run --rm \
   -v "$SRC":/src -w /src \
-  -e MIX_ENV=prod -e HOME=/src/.buildhome \
+  -e MIX_ENV=prod -e HOME=/src/.buildhome -e NCC_BUILD_SHA="$BUILD_SHA" \
   "$BUILDER" \
   bash -euo pipefail -c '
     # archive.ubuntu.com and security.ubuntu.com answer plain HTTP from these

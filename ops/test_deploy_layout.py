@@ -184,6 +184,21 @@ class LayoutGuardTest(unittest.TestCase):
             self.assertTrue(any(line.startswith("curl ") and str(dest) in line for line in events),
                             events)
 
+    def test_build_release_stamps_the_sha_and_refuses_a_dest_outside_the_install_dir(self):
+        layout = ("NCC_SRC_DIR=/nowhere/src\nNCC_INSTALL_DIR=/nowhere/install\n"
+                  "DOCKER_HOST=unix:///var/run/docker.sock\n")
+        result, events = self.run_script("build-release.sh", ["/elsewhere/portal"],
+                                         env_file_text=layout)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be under", result.stderr)
+        self.assertEqual(events, [])
+
+        result, events = self.run_script("build-release.sh", ["/nowhere/install/releases/green"],
+                                         env_file_text=layout)
+        docker = [e for e in events if e.startswith("docker ")]
+        self.assertEqual(len(docker), 1, events)
+        self.assertIn("-e NCC_BUILD_SHA=", docker[0])
+
     def test_the_layout_function_is_the_same_in_every_script(self):
         def body(script):
             text = (OPS / script).read_text()

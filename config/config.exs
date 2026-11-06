@@ -6,3 +6,8 @@ import Config
 if File.exists?(Path.expand("../apps/portal/config/config.exs", __DIR__)) do
   import_config "../apps/portal/config/config.exs"
 end
+
+# The commit a release was built from, stamped by ops/build-release.sh and read
+# at compile time by `PortalWeb.HealthController`: a blue/green deploy checks
+# that the release answering is the one it just built.
+config :portal, :build_sha, System.get_env("NCC_BUILD_SHA")

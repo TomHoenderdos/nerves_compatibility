@@ -146,6 +146,12 @@ defmodule PortalWeb.Router do
     get "/robots.txt", SitemapController, :robots
   end
 
+  # No pipeline: a deploy probes this over plain HTTP on loopback, with no
+  # session, cookie or `accept` header (`ops/blue-green.sh`).
+  scope "/", PortalWeb do
+    get "/health", HealthController, :show
+  end
+
   scope "/", PortalWeb do
     pipe_through :authenticated
 
