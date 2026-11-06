@@ -66,6 +66,65 @@ defmodule Portal.Builders.ImagesTest do
     assert {:error, :missing} = Images.load()
   end
 
+  @amd "sha256:" <> String.duplicate("1", 64)
+  @arm "sha256:" <> String.duplicate("2", 64)
+  @index "sha256:" <> String.duplicate("3", 64)
+
+  defp write_worker!(path, worker) do
+    File.write!(path, Jason.encode!(%{"commit" => "abc", "images" => %{"ncc-worker" => worker}}))
+  end
+
+  test "an images.json from before multi-arch images is the x86_64 digest alone", %{path: path} do
+    File.write!(path, @doc_json)
+
+    assert %{digest: @amd, index: nil, platforms: platforms} = image = Images.worker_image()
+    assert platforms == %{"x86_64" => @amd}
+    assert Images.platform_digest(image, "x86_64") == @amd
+    assert Images.platform_digest(image, "aarch64") == nil
+  end
+
+  test "reads one platform digest per architecture beside the index", %{path: path} do
+    write_worker!(path, %{
+      "name" => "ghcr.io/tomhoenderdos/ncc-worker",
+      "tag" => "abc",
+      "digest" => @amd,
+      "index" => @index,
+      "platforms" => %{"x86_64" => @amd, "aarch64" => @arm, "riscv64" => "sha256:zz"}
+    })
+
+    image = Images.worker_image()
+    assert %{digest: @amd, index: @index} = image
+    # A malformed platform digest never leaves this file.
+    assert image.platforms == %{"x86_64" => @amd, "aarch64" => @arm}
+    assert Images.platform_digest(image, "aarch64") == @arm
+    assert Images.platform_digest(image, "riscv64") == nil
+    assert Images.platform_digest(nil, "x86_64") == nil
+  end
+
+  # `digest` is what a portal from before multi-arch images reads as the one
+  # image to run: it has to be the x86_64 platform's, or that portal would
+  # hand x86_64 builders some other image.
+  test "a top-level digest that is not the x86_64 platform's is refused", %{path: path} do
+    write_worker!(path, %{
+      "name" => "ghcr.io/tomhoenderdos/ncc-worker",
+      "digest" => @index,
+      "platforms" => %{"x86_64" => @amd, "aarch64" => @arm}
+    })
+
+    assert Images.worker_image() == nil
+  end
+
+  test "a malformed index is dropped, not trusted", %{path: path} do
+    write_worker!(path, %{
+      "name" => "ghcr.io/tomhoenderdos/ncc-worker",
+      "digest" => @amd,
+      "index" => "latest",
+      "platforms" => %{"x86_64" => @amd}
+    })
+
+    assert %{index: nil} = Images.worker_image()
+  end
+
   test "a digest that is not sha256:<64 hex> is refused", %{path: path} do
     File.write!(path, String.replace(@doc_json, ~r/sha256:1+/, "sha256:zz"))
     assert Images.worker_image() == nil

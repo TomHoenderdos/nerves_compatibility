@@ -9,7 +9,9 @@ defmodule Portal.Workers.RemoteBuild do
   recorded as skipped, an existing run at the same image digest dedups
   unless `force`, and `Build.scope_args/3` decides the scope. The digest is
   the registry one from `Portal.Builders.Images`, which every builder pulls
-  by, not this host's local image.
+  by, not this host's local image. The lease carries one platform digest per
+  architecture (`args["image_platforms"]`) and the claim pins it to the
+  claiming builder's; a run at any of them dedups.
   """
   use Oban.Worker,
     queue: :remote,
@@ -92,11 +94,15 @@ defmodule Portal.Workers.RemoteBuild do
     end
   end
 
-  defp decide(job, %{name: name, digest: digest}) do
+  # A run or lease at any platform digest of the image counts: the version
+  # is checked for this image whichever architecture built it, and a claim
+  # moves a lease's `image_digest` to the claiming architecture's.
+  defp decide(job, %{name: name, digest: digest, platforms: platforms}) do
     %{package: package, version: version, scan_request_id: scan_request_id, force: force} = job
+    digests = Map.values(platforms)
 
     cond do
-      not force and run_exists?(package, version, digest) ->
+      not force and run_exists?(package, version, digests) ->
         Logger.info("RemoteBuild dedup: run already exists for #{package} #{version}")
         Progress.mark(scan_request_id, :built)
         Progress.broadcast(scan_request_id, :done, %{deduped: true})
@@ -109,17 +115,19 @@ defmodule Portal.Workers.RemoteBuild do
       # dedups on the run above and marks this request built; if the
       # lease failed, the next run leases afresh. A `done` lease is in
       # flight too, until its ingest commits the run or fails it.
-      not force and lease_in_flight?(package, version, digest) ->
+      not force and lease_in_flight?(package, version, digests) ->
         Logger.info("RemoteBuild waiting on an open lease for #{package} #{version}")
         Progress.broadcast(scan_request_id, :queued, %{remote: true, waiting_on_lease: true})
         {:snooze, 120}
 
       true ->
-        lease(package, version, name, digest, job.args, scan_request_id, job.priority, force)
+        image = %{name: name, digest: digest, platforms: platforms}
+        lease(package, version, image, job.args, scan_request_id, job.priority, force)
     end
   end
 
-  defp lease(package, version, name, digest, args, scan_request_id, priority, force) do
+  defp lease(package, version, image, args, scan_request_id, priority, force) do
+    %{name: name, digest: digest, platforms: platforms} = image
     scope = Build.scope_args(package, version, args)
 
     lease_args = %{
@@ -128,7 +136,11 @@ defmodule Portal.Workers.RemoteBuild do
       # Read when the lease is written, so an admin change applies from the
       # next lease on.
       "argus" => Portal.Settings.worker_argus(Portal.Settings.get()),
-      "force" => force
+      "force" => force,
+      # One platform digest per architecture: the claim pins the lease to
+      # the claiming builder's (`Portal.Builders.Leases.claim/2`). Until
+      # then `image_digest` names the x86_64 one.
+      "image_platforms" => platforms
     }
 
     with {:ok, lease} <-
@@ -184,19 +196,19 @@ defmodule Portal.Workers.RemoteBuild do
     end
   end
 
-  defp lease_in_flight?(package, version, digest) do
+  defp lease_in_flight?(package, version, digests) do
     Lease
     |> Ash.Query.filter(
-      package == ^package and version == ^version and image_digest == ^digest and
+      package == ^package and version == ^version and image_digest in ^digests and
         state in [:queued, :leased, :uploading, :done]
     )
     |> Ash.exists?(domain: Portal.Builders)
   end
 
-  defp run_exists?(package, version, digest) do
+  defp run_exists?(package, version, digests) do
     Run
     |> Ash.Query.filter(
-      version_tested == ^version and image_digest == ^digest and package.name == ^package
+      version_tested == ^version and image_digest in ^digests and package.name == ^package
     )
     |> Ash.read!(domain: Portal.Catalog)
     |> Enum.any?()

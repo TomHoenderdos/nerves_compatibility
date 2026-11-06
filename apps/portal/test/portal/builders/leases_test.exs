@@ -58,6 +58,54 @@ defmodule Portal.Builders.LeasesTest do
     assert {:ok, _} = Leases.claim(builder!("two", 1))
   end
 
+  @amd "sha256:" <> String.duplicate("1", 64)
+  @arm "sha256:" <> String.duplicate("2", 64)
+
+  defp queued_multiarch!(package, platforms) do
+    {:ok, lease} =
+      Leases.enqueue(%{
+        package: package,
+        version: "1.4.4",
+        image_name: "i",
+        image_digest: @amd,
+        args: %{"image_platforms" => platforms},
+        scan_request_id: nil,
+        priority: 5
+      })
+
+    lease
+  end
+
+  test "a claim pins the lease to the claiming architecture's platform digest" do
+    lease = queued_multiarch!("a", %{"x86_64" => @amd, "aarch64" => @arm})
+
+    assert {:ok, %Lease{id: id, image_digest: @arm}} = Leases.claim(builder!("arm"), "aarch64")
+    assert id == lease.id
+
+    # Handed back, the next claimant pins it to its own platform afresh.
+    {:ok, :requeued, _} = Leases.complete(Ash.get!(Lease, id, domain: Portal.Builders), 10)
+    assert {:ok, %Lease{id: ^id, image_digest: @amd}} = Leases.claim(builder!("amd"), "x86_64")
+  end
+
+  test "a lease without a digest for the claiming architecture stays queued" do
+    amd_only = queued_multiarch!("a", %{"x86_64" => @amd})
+    # A lease queued before multi-arch images names one x86_64 image.
+    legacy = queued!("b")
+
+    assert :none = Leases.claim(builder!("arm"), "aarch64")
+    assert {:ok, %Lease{id: first}} = Leases.claim(builder!("amd1"), "x86_64")
+    assert {:ok, %Lease{id: second, image_digest: "sha256:d"}} = Leases.claim(builder!("amd2"))
+    assert Enum.sort([first, second]) == Enum.sort([amd_only.id, legacy.id])
+  end
+
+  test "an arm64 builder skips the leases it cannot run for one it can" do
+    queued_multiarch!("amd-only", %{"x86_64" => @amd})
+    both = queued_multiarch!("both", %{"x86_64" => @amd, "aarch64" => @arm})
+
+    assert {:ok, %Lease{id: id, image_digest: @arm}} = Leases.claim(builder!("arm"), "aarch64")
+    assert id == both.id
+  end
+
   test "claim is atomic across two concurrent claimants" do
     queued!("only")
     b1 = builder!("c1")

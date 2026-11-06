@@ -96,11 +96,19 @@ defmodule Portal.Builders.Leases do
   `bytes_uploaded` is kept: a requeued lease keeps its upload dir and what
   landed there counts against the lease's total across attempts, so the cap
   is per lease, not per attempt; `fail/2` and `requeue/1` zero it with the dir.
+
+  `arch` is the claiming builder's architecture (`x86_64`, `aarch64`). Only a
+  lease whose `args["image_platforms"]` names a digest for it is claimable,
+  and the claim sets the lease's `image_digest` to that platform digest, so
+  the attempt runs, and its run is recorded under, the exact image this
+  architecture pulls. A lease queued before multi-arch images carries no
+  `image_platforms`: it names one x86_64 image, and only an x86_64 builder
+  claims it, unchanged.
   """
-  @spec claim(Builder.t()) :: {:ok, Lease.t()} | :none
+  @spec claim(Builder.t(), String.t()) :: {:ok, Lease.t()} | :none
   # `sql` is a literal; every value is a bound parameter.
   # sobelow_skip ["SQL.Query"]
-  def claim(%Builder{id: builder_id, slots: slots}) do
+  def claim(%Builder{id: builder_id, slots: slots}, arch \\ "x86_64") when is_binary(arch) do
     ms = System.system_time(:millisecond)
 
     sql = """
@@ -108,10 +116,13 @@ defmodule Portal.Builders.Leases do
     SET state = 'leased', builder_id = $1, leased_at = now(), heartbeat_at = now(),
         attempt = attempt + 1, phase = NULL, log_tail = NULL,
         error = NULL, run_id = 'rb-' || package || '-' || version || '-' || $3::text,
+        image_digest = COALESCE(args -> 'image_platforms' ->> $4::text, image_digest),
         updated_at = now()
     WHERE id = (
       SELECT id FROM builder_leases
       WHERE state = 'queued'
+        AND (args -> 'image_platforms' ->> $4::text IS NOT NULL
+             OR (args -> 'image_platforms' IS NULL AND $4::text = 'x86_64'))
       ORDER BY priority ASC, inserted_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED)
@@ -124,7 +135,7 @@ defmodule Portal.Builders.Leases do
       Repo.transaction(fn ->
         Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1::text))", [builder_id])
 
-        Repo.query!(sql, [Ecto.UUID.dump!(builder_id), slots, Integer.to_string(ms)]).rows
+        Repo.query!(sql, [Ecto.UUID.dump!(builder_id), slots, Integer.to_string(ms), arch]).rows
       end)
 
     case rows do
@@ -139,24 +150,24 @@ defmodule Portal.Builders.Leases do
   end
 
   @doc """
-  `claim/1`, and when nothing is queued wait up to `timeout_ms` for one
+  `claim/2`, and when nothing is queued wait up to `timeout_ms` for one
   `enqueue/1` broadcast and claim once more. Wake-ups left in the mailbox are
   drained before returning, so a long-lived caller does not accumulate them.
   """
-  @spec claim_or_wait(Builder.t(), non_neg_integer()) :: {:ok, Lease.t()} | :none
-  def claim_or_wait(builder, timeout_ms) do
+  @spec claim_or_wait(Builder.t(), non_neg_integer(), String.t()) :: {:ok, Lease.t()} | :none
+  def claim_or_wait(builder, timeout_ms, arch \\ "x86_64") do
     # Subscribed before the first claim, so a lease queued between the two is
     # either claimed outright or wakes the wait.
     subscribe()
 
     try do
-      case claim(builder) do
+      case claim(builder, arch) do
         {:ok, lease} ->
           {:ok, lease}
 
         :none ->
           receive do
-            {:lease_queued, _id} -> claim(builder)
+            {:lease_queued, _id} -> claim(builder, arch)
           after
             timeout_ms -> :none
           end

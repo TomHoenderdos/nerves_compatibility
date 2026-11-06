@@ -34,13 +34,39 @@ defmodule PortalWeb.Builder.JobController do
 
       true ->
         record_egress(builder, "ok")
-
-        case Leases.claim_or_wait(builder, Leases.long_poll_ms()) do
-          :none -> send_resp(conn, 204, "")
-          {:ok, lease} -> json(conn, claim_body(lease))
-        end
+        claim_for_arch(conn, builder, arch(params))
     end
   end
+
+  defp claim_for_arch(conn, _builder, :error), do: error(conn, 400, "bad_arch")
+
+  defp claim_for_arch(conn, builder, {:ok, arch}) do
+    record_arch(builder, arch)
+
+    # The lease carries its own platform digests, but an architecture the
+    # deployed image has none for gets told so rather than an empty poll it
+    # would repeat for ever. Without images.json at all no lease is written,
+    # and what is queued already still names its digests.
+    image = Images.worker_image()
+
+    if image && is_nil(Images.platform_digest(image, arch)) do
+      conn |> put_status(409) |> json(%{error: "no_image_for_arch", arch: arch})
+    else
+      case Leases.claim_or_wait(builder, Leases.long_poll_ms(), arch) do
+        :none -> send_resp(conn, 204, "")
+        {:ok, lease} -> json(conn, claim_body(lease))
+      end
+    end
+  end
+
+  # An agent from before multi-arch images names none, and every one of
+  # them runs on x86_64.
+  defp arch(%{"arch" => arch}) when is_binary(arch) do
+    if Regex.match?(~r/\A[a-z0-9_]{1,32}\z/, arch), do: {:ok, arch}, else: :error
+  end
+
+  defp arch(%{"arch" => _}), do: :error
+  defp arch(_params), do: {:ok, "x86_64"}
 
   def heartbeat(conn, %{"lease_id" => id} = params) do
     case Leases.heartbeat(id, conn.assigns.builder.id, params["phase"], params["log_tail"]) do
@@ -354,6 +380,19 @@ defmodule PortalWeb.Builder.JobController do
         Logger.warning(
           "could not record egress #{status} for #{builder.name}: #{inspect(reason)}"
         )
+    end
+  end
+
+  # As `record_egress/2`: only on change, and a failed write only logged.
+  defp record_arch(%{arch: arch}, arch), do: :ok
+
+  defp record_arch(builder, arch) do
+    case Builders.set_arch(builder, arch) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("could not record arch #{arch} for #{builder.name}: #{inspect(reason)}")
     end
   end
 
