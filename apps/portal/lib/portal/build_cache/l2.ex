@@ -7,7 +7,7 @@ defmodule Portal.BuildCache.L2 do
 
   Objects are named `<slug>/<key>.tar.gz` (`object_key/2`): the slug is the
   worker image digest (`Portal.Builder.cache_slug/1`), the key the worker's
-  64-hex cache key, the body `Portal.BuildCache.L2.Tarball`'s gzip tarball.
+  64-hex cache key, the body `Compatibility.BuildCache.Tarball`'s gzip tarball.
   L2 is on only with a complete `Portal.BuildCache.L2.Config` and a local
   cache to restore into (`enabled?/0`).
 
@@ -102,21 +102,16 @@ defmodule Portal.BuildCache.L2 do
   local cache holds.
   """
   require Logger
-  alias Portal.BuildCache.L2.{Client, Config, Evict, Prefetch, Stats, Tarball}
+  alias Compatibility.BuildCache.Tarball
+  alias Portal.BuildCache.L2.{Client, Config, Evict, Prefetch, Stats}
   alias Portal.BuildCache.Staging
-
-  @shareable_slug ~r/\Asha256_[0-9a-f]{64}\z/
-  @zero_slug "sha256_" <> String.duplicate("0", 64)
 
   @doc "Whether `slug` names one image by content: `sha256_<64 hex>`, not all zeros."
   @spec shareable_slug?(term()) :: boolean()
-  def shareable_slug?(slug) when is_binary(slug),
-    do: slug != @zero_slug and Regex.match?(@shareable_slug, slug)
-
-  def shareable_slug?(_slug), do: false
+  defdelegate shareable_slug?(slug), to: Compatibility.BuildCache
 
   @spec object_key(String.t(), String.t()) :: String.t()
-  def object_key(slug, key), do: slug <> "/" <> key <> ".tar.gz"
+  defdelegate object_key(slug, key), to: Compatibility.BuildCache
 
   @doc "On only with a complete config and a local cache to restore into."
   @spec enabled?() :: boolean()

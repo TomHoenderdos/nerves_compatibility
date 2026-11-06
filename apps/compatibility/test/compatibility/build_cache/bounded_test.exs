@@ -1,7 +1,7 @@
-defmodule Portal.BuildCache.L2.BoundedTest do
+defmodule Compatibility.BuildCache.BoundedTest do
   use ExUnit.Case, async: true
 
-  alias Portal.BuildCache.L2.Bounded
+  alias Compatibility.BuildCache.Bounded
 
   test "returns the function's result" do
     assert {:ok, 42} = Bounded.run(fn -> 42 end, timeout_ms: 1_000)

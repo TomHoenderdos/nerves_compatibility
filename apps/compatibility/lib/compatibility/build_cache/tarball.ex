@@ -1,10 +1,10 @@
-defmodule Portal.BuildCache.L2.Tarball do
+defmodule Compatibility.BuildCache.Tarball do
   @moduledoc """
   One build cache entry as a gzip tarball, and back.
 
   `pack/3` is what a home host uploads after a promotion; `unpack/3` is what
   it extracts before a build. Both ends apply the same structural rules as
-  `Portal.BuildCache.Promotion` (through `Portal.BuildCache.Tree`): only
+  `Portal.BuildCache.Promotion` (through `Compatibility.BuildCache.Tree`): only
   directories, regular files with one link, and Mix's own top-level
   `priv`/`include` links.
 
@@ -25,7 +25,7 @@ defmodule Portal.BuildCache.L2.Tarball do
     * a header flood, millions of empty members, which `:erl_tar.table/2`
       would turn into a member list of hundreds of megabytes. Everything
       after the pre-scan (table, screen, extraction, manifest, modes, walk)
-      runs in `Portal.BuildCache.L2.Bounded`, a separate unlinked process
+      runs in `Compatibility.BuildCache.Bounded`, a separate unlinked process
       with a heap cap and a deadline, so the worst it can do is be killed:
       `{:error, {:unpack, :killed}}` or `{:error, {:unpack, :timeout}}`.
 
@@ -54,8 +54,8 @@ defmodule Portal.BuildCache.L2.Tarball do
   section 3.2).
   """
 
-  alias Portal.BuildCache.L2.Bounded
-  alias Portal.BuildCache.Tree
+  alias Compatibility.BuildCache.Bounded
+  alias Compatibility.BuildCache.Tree
 
   @max_object_bytes 512 * 1024 * 1024
   @max_extracted_bytes 1024 * 1024 * 1024
@@ -151,7 +151,7 @@ defmodule Portal.BuildCache.L2.Tarball do
 
     if links == %{},
       do: members,
-      else: members ++ [{String.to_charlist(@manifest), Jason.encode!(links)}]
+      else: members ++ [{String.to_charlist(@manifest), JSON.encode!(links)}]
   end
 
   defp create(tar_path, members) do
@@ -401,7 +401,7 @@ defmodule Portal.BuildCache.L2.Tarball do
   # sobelow_skip ["Traversal.FileModule"]
   defp read_manifest(path) do
     with {:ok, json} <- File.read(path),
-         {:ok, links} when is_map(links) <- Jason.decode(json) do
+         {:ok, links} when is_map(links) <- JSON.decode(json) do
       {:ok, links}
     else
       _ -> {:error, {:links, :not_a_map}}

@@ -1,10 +1,12 @@
-defmodule Portal.BuildCache.Tree do
+defmodule Compatibility.BuildCache.Tree do
   @moduledoc """
   The structural check every build cache entry passes before it becomes
   visible, and the mode stripping that follows it. Moved out of
   `Portal.BuildCache.Promotion` (its moduledoc, steps 7 and 8, explains each
-  rule) so the L2 download path (`Portal.BuildCache.L2`) runs exactly the
-  same code over what it extracted. `package: :any` is for that path, which
+  rule) so the L2 download paths, the portal's (`Portal.BuildCache.L2`) and a
+  remote builder's (`NccAgent.BuildCache`), run exactly the same code over
+  what they extracted. It lives in this shared app so both run one copy.
+  `package: :any` is for those paths, which
   does not know which package an entry belongs to and so accepts Mix's
   `priv`/`include` link for any package name.
   """
@@ -116,7 +118,7 @@ defmodule Portal.BuildCache.Tree do
   # That lstat-then-chmod is only safe because it runs on a host-private
   # copy no build can change between the two: Promotion's staging copy
   # (`Portal.BuildCache.Promotion`'s moduledoc, step 6) or the L2 download
-  # staging dir `Portal.BuildCache.L2.Tarball.unpack/3` extracts into. The
+  # staging dir `Compatibility.BuildCache.Tarball.unpack/3` extracts into. The
   # names are rechecked here rather than trusted.
   @keep_mode 0o755
   @dir_floor 0o700

@@ -1,4 +1,4 @@
-defmodule Portal.BuildCache.L2.Bounded do
+defmodule Compatibility.BuildCache.Bounded do
   @moduledoc """
   Runs a function over untrusted input in a process of its own, bounded in
   time and in heap, so that what the input makes it do cannot take the
@@ -11,7 +11,7 @@ defmodule Portal.BuildCache.L2.Bounded do
   member list of millions of entries out of a header flood. That cap counts
   the process's own heap only: binaries over 64 bytes live off-heap and are
   not counted, so a single huge member is not stopped here. That is the job
-  of `Portal.BuildCache.L2.Tarball`: its streaming gzip pre-scan, which runs
+  of `Compatibility.BuildCache.Tarball`: its streaming gzip pre-scan, which runs
   before this, bounds the inflated size of the compressed stream, and its
   table-sum check, inside the function run here, bounds what extraction
   writes (sparse members included).

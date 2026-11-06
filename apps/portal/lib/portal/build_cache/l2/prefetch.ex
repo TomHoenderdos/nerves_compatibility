@@ -7,14 +7,15 @@ defmodule Portal.BuildCache.L2.Prefetch do
   moduledoc.
   """
   require Logger
-  alias Portal.BuildCache.L2.{Client, Config, Stats, Tarball}
+  alias Compatibility.BuildCache
+  alias Compatibility.BuildCache.{Install, Tarball}
+  alias Portal.BuildCache.L2.{Client, Config, Stats}
   alias Portal.BuildCache.Staging
 
   @budget_bytes 2 * 1024 * 1024 * 1024
   @extracted_budget_bytes 4 * 1024 * 1024 * 1024
   @budget_ms :timer.minutes(5)
   @object_timeout_ms 120_000
-  @key_pattern ~r/\A[0-9a-f]{64}\z/
   # Under this much time left a GET is not started: it would be cut short and
   # logged as a failure for nothing.
   @min_get_ms 1_000
@@ -121,23 +122,13 @@ defmodule Portal.BuildCache.L2.Prefetch do
   defp candidates(objects, prefix, local, max_object) do
     objects
     |> Enum.flat_map(fn obj ->
-      hex = object_hex(obj.key, prefix)
+      hex = BuildCache.object_hex(obj.key, prefix)
 
       if hex && obj.size <= max_object && not MapSet.member?(local, hex) && not Stats.bad?(hex),
         do: [{hex, obj}],
         else: []
     end)
     |> Enum.sort_by(fn {_hex, obj} -> obj.last_modified end, {:desc, DateTime})
-  end
-
-  defp object_hex(key, prefix) do
-    with ^prefix <> rest <- key,
-         [hex, ""] <- String.split(rest, ".tar.gz", parts: 2),
-         true <- Regex.match?(@key_pattern, hex) do
-      hex
-    else
-      _ -> nil
-    end
   end
 
   # `slug_dir` is the per-image directory under the operator's cache root.
@@ -264,19 +255,18 @@ defmodule Portal.BuildCache.L2.Prefetch do
   end
 
   # Staging names built by `download_one/5`. The GET and the extraction
-  # each get what is left of the build's budget, at most 120 s.
-  # sobelow_skip ["Traversal.FileModule"]
+  # each get what is left of the build's budget, at most 120 s. Verifying,
+  # extracting and publishing are `Compatibility.BuildCache.Install`'s, the
+  # same code a remote builder runs.
   defp fetch_and_publish(cfg, obj, tar, staging, dest, deadline) do
     with {:ok, %{bytes: bytes} = got} <- get(cfg, obj, tar, deadline),
-         :ok <- verify_sha(got),
-         :ok <- File.mkdir(staging),
-         {:ok, %{extracted_bytes: extracted}} <- unpack(tar, staging, deadline) do
-      _ = File.rm(tar)
+         :ok <- Install.verify_sha(got.sha256_computed, got.sha256_header) do
+      timeout = object_timeout(deadline)
 
-      case publish(staging, dest) do
-        :ok -> {:ok, bytes, extracted}
-        :discarded -> {:discarded, bytes, extracted}
-        {:error, reason} -> {:error, reason}
+      case Install.install(tar, staging, dest, timeout_ms: timeout) do
+        {:ok, extracted} -> {:ok, bytes, extracted}
+        {:discarded, extracted} -> {:discarded, bytes, extracted}
+        {:error, reason} -> {:error, budget_spent(reason, timeout)}
       end
     end
   end
@@ -293,14 +283,10 @@ defmodule Portal.BuildCache.L2.Prefetch do
   # An extraction that runs out of time is the archive's fault only when it
   # had the full per-object time; cut short by the build's budget, it is the
   # budget that ran out, and the object is not marked bad for it.
-  defp unpack(tar, staging, deadline) do
-    timeout = object_timeout(deadline)
+  defp budget_spent({:unpack, :timeout}, timeout) when timeout < @object_timeout_ms,
+    do: :budget_spent
 
-    case Tarball.unpack(tar, staging, timeout_ms: timeout) do
-      {:error, {:unpack, :timeout}} when timeout < @object_timeout_ms -> {:error, :budget_spent}
-      other -> other
-    end
-  end
+  defp budget_spent(reason, _timeout), do: reason
 
   defp object_timeout(deadline),
     do:
@@ -308,35 +294,6 @@ defmodule Portal.BuildCache.L2.Prefetch do
       |> Kernel.-(System.monotonic_time(:millisecond))
       |> max(0)
       |> min(@object_timeout_ms)
-
-  defp verify_sha(%{sha256_header: nil}), do: {:error, :no_sha256_header}
-
-  defp verify_sha(%{sha256_computed: computed, sha256_header: header}) do
-    if computed == String.downcase(header),
-      do: :ok,
-      else: {:error, {:sha256_mismatch, computed, header}}
-  end
-
-  # An entry that exists by now (a local promotion, another node on a shared
-  # root) wins; rename(2) refuses a non-empty directory, which closes the
-  # window between the lstat and the rename.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp publish(staging, dest) do
-    case File.lstat(dest) do
-      {:ok, _} -> :discarded
-      {:error, :enoent} -> rename(staging, dest)
-      {:error, reason} -> {:error, {:lstat, reason}}
-    end
-  end
-
-  # sobelow_skip ["Traversal.FileModule"]
-  defp rename(staging, dest) do
-    case File.rename(staging, dest) do
-      :ok -> :ok
-      {:error, reason} when reason in [:eexist, :enotempty] -> :discarded
-      {:error, reason} -> {:error, {:rename, reason}}
-    end
-  end
 
   # A refused object is marked bad so this node does not fetch it again for
   # a day; a failed transfer is only counted.

@@ -1034,7 +1034,8 @@ defmodule Portal.BuilderTest do
     @describetag :capture_log
 
     alias Portal.BuildCache.L2
-    alias Portal.BuildCache.L2.{Stats, Tarball}
+    alias Compatibility.BuildCache.Tarball
+    alias Portal.BuildCache.L2.Stats
     alias Portal.Test.FakeS3
 
     setup %{previous: previous} do

@@ -117,7 +117,8 @@ defmodule Portal.BuildCache.Promotion do
 
   alias Compatibility.BuildCacheKey
   alias Compatibility.Builder.Argv
-  alias Portal.BuildCache.{L2, Staging, Tree}
+  alias Compatibility.BuildCache.Tree
+  alias Portal.BuildCache.{L2, Staging}
 
   @l2_upload_budget_ms 120_000
 

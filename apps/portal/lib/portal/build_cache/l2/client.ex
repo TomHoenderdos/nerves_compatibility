@@ -177,7 +177,7 @@ defmodule Portal.BuildCache.L2.Client do
     bounded(fn -> do_put(cfg, object, path, sha256, timeout) end, timeout)
   end
 
-  # `path` is the tarball `Portal.BuildCache.L2.Tarball.pack/3` just wrote.
+  # `path` is the tarball `Compatibility.BuildCache.Tarball.pack/3` just wrote.
   # sobelow_skip ["Traversal.FileModule"]
   defp do_put(cfg, object, path, sha256, timeout) do
     with {:ok, body} <- File.read(path) do

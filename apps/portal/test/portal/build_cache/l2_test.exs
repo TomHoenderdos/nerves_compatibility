@@ -4,7 +4,8 @@ defmodule Portal.BuildCache.L2Test do
   import ExUnit.CaptureLog
 
   alias Portal.BuildCache.L2
-  alias Portal.BuildCache.L2.{Stats, Tarball}
+  alias Compatibility.BuildCache.Tarball
+  alias Portal.BuildCache.L2.Stats
   alias Portal.Test.FakeS3
 
   @slug "sha256_" <> String.duplicate("ab", 32)

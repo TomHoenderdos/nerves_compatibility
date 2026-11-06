@@ -1,7 +1,7 @@
-defmodule Portal.BuildCache.L2.TarballTest do
+defmodule Compatibility.BuildCache.TarballTest do
   use ExUnit.Case, async: true
 
-  alias Portal.BuildCache.L2.Tarball
+  alias Compatibility.BuildCache.Tarball
 
   setup do
     tmp = Path.join(System.tmp_dir!(), "tarball-#{System.unique_integer([:positive])}")

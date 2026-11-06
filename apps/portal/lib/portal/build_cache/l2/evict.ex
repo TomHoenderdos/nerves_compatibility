@@ -34,7 +34,8 @@ defmodule Portal.BuildCache.L2.Evict do
   require Logger
 
   alias Portal.BuildCache.L2
-  alias Portal.BuildCache.L2.{Bounded, Client, Config, Stats}
+  alias Compatibility.BuildCache.Bounded
+  alias Portal.BuildCache.L2.{Client, Config, Stats}
 
   @default_budget_ms 120_000
   @default_max_deletes 5_000

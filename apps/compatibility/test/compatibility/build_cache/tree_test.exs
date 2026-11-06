@@ -1,7 +1,7 @@
-defmodule Portal.BuildCache.TreeTest do
+defmodule Compatibility.BuildCache.TreeTest do
   use ExUnit.Case, async: true
 
-  alias Portal.BuildCache.Tree
+  alias Compatibility.BuildCache.Tree
 
   setup do
     dir = Path.join(System.tmp_dir!(), "tree-#{System.unique_integer([:positive])}")
