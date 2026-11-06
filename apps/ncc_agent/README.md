@@ -46,6 +46,20 @@ is mandatory because under gVisor's `kvm` platform the container's
 `--pids-limit` is not enforced, so `--memory` is the only bound on a fork
 bomb.
 
+## Architectures
+
+The agent runs on x86_64 and aarch64 (arm64) Linux; CI publishes a release
+for each and the worker image for both (`linux/amd64`, `linux/arm64`). gVisor
+runs only images of the host's own architecture, so every claim names this
+VM's (`NccAgent.Updater.arch/0`) and the portal hands out the worker image's
+platform digest for it: `images.json` lists one per architecture under
+`images.ncc-worker.platforms`, and the run is recorded under the digest that
+ran. A portal whose image has no digest for this architecture answers the
+claim `no_image_for_arch`; the slot logs it and asks again a minute later,
+and the admin Builders page shows the builder's architecture with "(no
+image)". An agent from before this names no architecture and counts as
+x86_64.
+
 ## Running in dev against a local portal
 
 From the umbrella root, with the portal's builder endpoint up and a token

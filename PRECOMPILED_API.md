@@ -252,7 +252,11 @@ Status codes:
   - `build` — what the files were built with: `elixir`, `otp`, `system_version`,
     `run_id`, `image_digest`. A client should use an entry only when `elixir`
     and `otp` equal its own; `elixir` and `otp` are `null` for runs from before
-    the toolchain was recorded.
+    the toolchain was recorded. `image_digest` names the worker image the run
+    ran in; for a remote build that is the image's platform digest for the
+    builder's architecture, so x86_64 and arm64 builds of the same worker
+    image name different digests. It identifies the run and is no
+    compatibility condition.
     - `deps` — the dependency tree the files were compiled against: every
       package in the package's transitive dependency closure (the package
       itself excluded), as `name => {"version", "checksum"}`, where `checksum`

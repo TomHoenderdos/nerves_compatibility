@@ -4,8 +4,18 @@ defmodule Portal.Builders.Images do
   commit, read from `images.json` (the path `NCC_IMAGES_JSON` points at,
   written by `ops/images-sync.sh`).
 
-  A remote lease carries the registry digest from here, so every builder
-  means the same image by it. Missing or malformed, every reader answers nil
+  A remote lease carries the registry digests from here, one platform
+  digest per architecture (`worker_image/0`), so every builder of an
+  architecture means the same image by it.
+
+      "images": {"ncc-worker": {
+        "name": "ghcr.io/<owner>/ncc-worker", "tag": "<commit>",
+        "digest": "sha256:<x86_64 platform manifest>",
+        "index": "sha256:<manifest list>",
+        "platforms": {"x86_64": "sha256:<...>", "aarch64": "sha256:<...>"}}}
+
+  `index` and `platforms` are optional: without them `digest` is the one
+  (x86_64) image, as in a file from before multi-arch images. Missing or malformed, every reader answers nil
   and `Portal.Builders.Routing` keeps work local; nothing here ever raises.
   No path is built in: with `NCC_IMAGES_JSON` unset the file counts as
   missing, so remote building stays off.
