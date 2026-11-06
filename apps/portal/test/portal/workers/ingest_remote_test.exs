@@ -150,6 +150,68 @@ defmodule Portal.Workers.IngestRemoteTest do
     |> Ash.read_one!(domain: Portal.Catalog)
   end
 
+  # A remote builder only ever reads the shared build cache. What its worker
+  # compiled and reported as cache candidates is never promoted into this
+  # host's cache nor uploaded to L2: only `Portal.Workers.Build` runs
+  # `Portal.BuildCache.Promotion`, and Ingest ignores the result's `cache`.
+  test "a remote run's build cache candidates are never promoted or uploaded", %{
+    builder: builder,
+    lease: lease
+  } do
+    {:ok, s3} = Portal.Test.FakeS3.start()
+    cache = Path.join(System.tmp_dir!(), "remote-cache-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(cache)
+    builder_config = Application.get_env(:portal, Portal.Builder, [])
+    l2_config = Application.get_env(:portal, Portal.BuildCache.L2)
+    Application.put_env(:portal, Portal.Builder, Keyword.put(builder_config, :build_cache, cache))
+
+    Application.put_env(:portal, Portal.BuildCache.L2,
+      endpoint: s3.endpoint,
+      bucket: s3.bucket,
+      region: s3.region,
+      access_key: s3.access_key,
+      secret_key: s3.secret_key
+    )
+
+    on_exit(fn ->
+      Application.put_env(:portal, Portal.Builder, builder_config)
+
+      if l2_config,
+        do: Application.put_env(:portal, Portal.BuildCache.L2, l2_config),
+        else: Application.delete_env(:portal, Portal.BuildCache.L2)
+
+      File.rm_rf(cache)
+    end)
+
+    key = String.duplicate("d", 64)
+
+    candidate = %{
+      "key" => key,
+      "dep" => "jason",
+      "dep_lock" => "1.4.1 x y",
+      "target" => "host",
+      "elixir" => "1.19.0",
+      "otp" => "28",
+      "closure" => []
+    }
+
+    result =
+      @fixture_result
+      |> put_in(["run_id"], lease.run_id)
+      |> Map.put("cache", %{"candidates" => [candidate]})
+
+    seed_outputs!(lease, result)
+    planted = Path.join([Upload.out_dir(lease.id), "build-cache", key, "ebin"])
+    File.mkdir_p!(planted)
+    File.write!(Path.join(planted, "Elixir.Jason.beam"), "planted")
+
+    assert :ok = perform_job(Ingest, args(lease, builder))
+    assert run_for(lease)
+
+    assert File.ls!(cache) == []
+    assert Portal.Test.FakeS3.requests(s3) == []
+  end
+
   # The request can go while the remote build runs; the run is kept,
   # unlinked, instead of tripping the scan_request_id foreign key on every
   # attempt and losing the upload.

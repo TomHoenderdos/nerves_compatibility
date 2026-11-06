@@ -12,9 +12,11 @@ defmodule Portal.BuildCache.L2.Prefetch do
   alias Portal.BuildCache.L2.{Client, Config, Stats}
   alias Portal.BuildCache.Staging
 
-  @budget_bytes 2 * 1024 * 1024 * 1024
-  @extracted_budget_bytes 4 * 1024 * 1024 * 1024
-  @budget_ms :timer.minutes(5)
+  # One budget for this prefetch and a remote builder's (`NccAgent.BuildCache`).
+  @budget Compatibility.BuildCache.prefetch_budget()
+  @budget_bytes @budget.bytes
+  @extracted_budget_bytes @budget.extracted_bytes
+  @budget_ms @budget.ms
   @object_timeout_ms 120_000
   # Under this much time left a GET is not started: it would be cut short and
   # logged as a failure for nothing.
@@ -99,8 +101,11 @@ defmodule Portal.BuildCache.L2.Prefetch do
   end
 
   # The same shape as `Client.get/4`: a task killed at the deadline, and
-  # nothing inside it can take the caller down.
-  defp bounded_list(cfg, prefix, deadline) do
+  # nothing inside it can take the caller down. Also the listing behind a
+  # remote builder's offer (`Portal.BuildCache.L2.Remote`).
+  @doc false
+  @spec bounded_list(Config.t(), String.t(), integer()) :: {:ok, [map()]} | {:error, term()}
+  def bounded_list(cfg, prefix, deadline) do
     task =
       Task.async(fn ->
         try do

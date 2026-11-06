@@ -9,11 +9,18 @@ defmodule PortalWeb.Builder.JobController do
 
   require Logger
 
+  alias Portal.BuildCache.L2
   alias Portal.Builders
   alias Portal.Builders.{Images, Leases, RateLimit, Upload}
   alias Portal.Workers.{Ingest, Progress}
 
   @claims_per_minute 60
+  # One offer per lease is what an agent asks for; a few slots' worth of
+  # retries fit well within this.
+  @offers_per_minute 30
+  # The keys a builder already holds for one slug. Each is 64 bytes of JSON
+  # and change, so this stays well inside the parser's 8 MB.
+  @max_have 20_000
   @read_opts [length: 1_048_576, read_length: 262_144, read_timeout: 60_000]
 
   def claim(conn, params) do
@@ -75,6 +82,45 @@ defmodule PortalWeb.Builder.JobController do
       {:error, :update_failed} -> error(conn, 500, "heartbeat_failed")
     end
   end
+
+  @doc """
+  The L2 build cache entries the builder may fetch before it starts the
+  lease's container (`Portal.BuildCache.L2.Remote.offer/3`): presigned GETs
+  for the lease's own image slug, leaving out the keys in `have` (the ones
+  already in the builder's local cache). Only for a lease the builder holds
+  and has not started uploading; an empty list whenever L2 is off.
+  """
+  def build_cache(conn, %{"lease_id" => id} = params) do
+    builder = conn.assigns.builder
+
+    with true <-
+           RateLimit.allow?({:build_cache, builder.id}, @offers_per_minute, :timer.minutes(1)) ||
+             {:error, :rate_limited},
+         {:ok, %{state: :leased} = lease} <- Leases.held(id, builder.id),
+         {:ok, have} <- have(params["have"]) do
+      slug = Portal.Builder.cache_slug(lease.image_digest || "unknown")
+      offer = L2.Remote.offer(slug, have)
+
+      Logger.info(
+        "build cache offer for lease #{lease.id} (#{builder.name}): " <>
+          "#{length(offer.entries)} entries of #{slug}"
+      )
+
+      json(conn, %{slug: slug, entries: offer.entries, expires_at: offer.expires_at})
+    else
+      {:error, :rate_limited} -> error(conn, 429, "rate_limited")
+      {:error, :bad_have} -> error(conn, 422, "bad_have")
+      _ -> error(conn, 409, "lease_not_held")
+    end
+  end
+
+  defp have(nil), do: {:ok, []}
+
+  defp have(keys) when is_list(keys) and length(keys) <= @max_have do
+    if Enum.all?(keys, &is_binary/1), do: {:ok, keys}, else: {:error, :bad_have}
+  end
+
+  defp have(_keys), do: {:error, :bad_have}
 
   def missing(conn, %{"lease_id" => id} = params) do
     with {:ok, lease} <- Leases.held(id, conn.assigns.builder.id),

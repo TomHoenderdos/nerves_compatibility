@@ -384,8 +384,71 @@ defmodule Portal.Test.FakeS3.SigV4 do
     |> hex()
   end
 
-  @doc "Checks the Authorization header of `conn` against the request it carries."
+  @doc """
+  Checks the Authorization header of `conn` against the request it carries,
+  or, for a request without one, its presigned query string (`X-Amz-*`,
+  `UNSIGNED-PAYLOAD`), refusing one past its `X-Amz-Expires`.
+  """
   def verify(conn, access_key, secret_key, region) do
+    if Plug.Conn.get_req_header(conn, "authorization") == [] and
+         String.contains?(conn.query_string, "X-Amz-Signature="),
+       do: verify_presigned(conn, access_key, secret_key, region),
+       else: verify_header(conn, access_key, secret_key, region)
+  end
+
+  defp verify_presigned(conn, access_key, secret_key, region) do
+    query = conn.query_string |> URI.query_decoder() |> Enum.to_list()
+    q = Map.new(query)
+
+    with "AWS4-HMAC-SHA256" <- q["X-Amz-Algorithm"] || {:error, "no algorithm"},
+         [key | _] <- String.split(q["X-Amz-Credential"] || "", "/"),
+         true <- key == access_key || {:error, "unknown access key"},
+         amz_date when is_binary(amz_date) <- q["X-Amz-Date"],
+         {expires, ""} <- Integer.parse(q["X-Amz-Expires"] || ""),
+         {:ok, signed_at} <- parse_amz_date(amz_date),
+         true <-
+           DateTime.compare(DateTime.add(signed_at, expires), DateTime.utc_now()) == :gt ||
+             {:error, "expired"},
+         sig when is_binary(sig) <- q["X-Amz-Signature"] do
+      headers =
+        for name <- String.split(q["X-Amz-SignedHeaders"] || "", ";"),
+            do: {name, conn |> Plug.Conn.get_req_header(name) |> Enum.join(",")}
+
+      expected =
+        signature(%{
+          method: conn.method,
+          path: conn.request_path,
+          query: Enum.reject(query, fn {k, _} -> k == "X-Amz-Signature" end),
+          headers: headers,
+          payload_hash: "UNSIGNED-PAYLOAD",
+          amz_date: amz_date,
+          region: region,
+          service: "s3",
+          secret_key: secret_key
+        })
+
+      if Plug.Crypto.secure_compare(expected, sig),
+        do: :ok,
+        else: {:error, "signature mismatch"}
+    else
+      {:error, _} = error -> error
+      other -> {:error, "bad presigned query: #{inspect(other)}"}
+    end
+  end
+
+  defp parse_amz_date(
+         <<y::binary-4, mo::binary-2, d::binary-2, "T", h::binary-2, mi::binary-2, s::binary-2,
+           "Z">>
+       ) do
+    case DateTime.from_iso8601("#{y}-#{mo}-#{d}T#{h}:#{mi}:#{s}Z") do
+      {:ok, dt, _} -> {:ok, dt}
+      _ -> {:error, "bad date"}
+    end
+  end
+
+  defp parse_amz_date(_), do: {:error, "bad date"}
+
+  defp verify_header(conn, access_key, secret_key, region) do
     with [auth] <- Plug.Conn.get_req_header(conn, "authorization"),
          {:ok, parts} <- parse_auth(auth),
          true <- parts.access_key == access_key || {:error, "unknown access key"},

@@ -16,6 +16,22 @@ defmodule Compatibility.BuildCache do
   @key ~r/\A[0-9a-f]{64}\z/
   @sha256 ~r/\A[0-9a-f]{64}\z/
 
+  @budget_bytes 2 * 1024 * 1024 * 1024
+  @extracted_budget_bytes 4 * 1024 * 1024 * 1024
+  @budget_ms 5 * 60 * 1000
+
+  @doc """
+  One build's prefetch budget, the same for a home host and a remote builder:
+  at most 2 GiB downloaded, 4 GiB extracted and 5 minutes, listing included.
+  """
+  @spec prefetch_budget() :: %{
+          bytes: pos_integer(),
+          extracted_bytes: pos_integer(),
+          ms: pos_integer()
+        }
+  def prefetch_budget,
+    do: %{bytes: @budget_bytes, extracted_bytes: @extracted_budget_bytes, ms: @budget_ms}
+
   @doc "Whether `slug` names one image by content: `sha256_<64 hex>`, not all zeros."
   @spec shareable_slug?(term()) :: boolean()
   def shareable_slug?(slug) when is_binary(slug),
