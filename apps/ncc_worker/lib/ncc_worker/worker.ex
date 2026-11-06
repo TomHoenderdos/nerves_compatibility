@@ -1072,7 +1072,12 @@ defmodule NccWorker.Worker do
 
   # The host compile's BEAMs are the package's files on every target, so they
   # are scanned and archived like a firmware build's, and published as
-  # precompiled files that fit any system.
+  # precompiled files that fit any system. A client on any OS takes them, so
+  # they are published only when the package's own source is OS-agnostic
+  # (`BuildCache.os_agnostic?/1`, the check a toolchain build's
+  # `BuildSelection.portable?/4` makes): a module body that reads `:os.type()`
+  # bakes this Linux build host into the beams. Otherwise the scan keeps no
+  # `file_manifest`, so nothing is archived or published; the status stands.
   @doc false
   @spec pure_elixir_result(String.t(), String.t()) :: map()
   def pure_elixir_result(project_dir, package_name) do
@@ -1086,18 +1091,35 @@ defmodule NccWorker.Worker do
 
     compile_env = AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
 
+    {beam_scan, unpublished} =
+      gate_os_specific(beam_scan, Path.join([project_dir, "deps", package_name]))
+
     %{
       status: :pass,
       duration_sec: 0.0,
       firmware_size_bytes: nil,
       log_tail:
         "Assumed compatible: host compilation passed and the resolved package and " <>
-          "its dependencies contain only pure Elixir. No firmware targets were built.",
+          "its dependencies contain only pure Elixir. No firmware targets were built." <>
+          unpublished,
       compile_env: compile_env,
       beam_scan: beam_scan,
       error: nil
     }
   end
+
+  defp gate_os_specific(%{"footprint" => %{} = footprint} = scan, source_dir) do
+    case BuildCache.os_agnostic?(source_dir) do
+      :ok ->
+        {scan, ""}
+
+      {:error, {file, needle}} ->
+        {Map.put(scan, "footprint", Map.delete(footprint, "file_manifest")),
+         " Files not published: OS-specific (#{file}: #{needle})."}
+    end
+  end
+
+  defp gate_os_specific(scan, _source_dir), do: {scan, ""}
 
   # A toolchain run (`mode: "toolchain"`, `NccWorker.RunScope`) answers one
   # question: are the package's own beams, built by this image's Elixir and

@@ -238,10 +238,18 @@ defmodule NccWorker.ReleaseArtifactsTest do
     assert File.read!(Path.join(archive, digest)) == beam
   end
 
+  # The package's own source, as `mix deps.get` leaves it under deps/.
+  defp write_source(project, package, body) do
+    lib = Path.join([project, "deps", package, "lib"])
+    File.mkdir_p!(lib)
+    File.write!(Path.join(lib, "#{package}.ex"), body)
+  end
+
   test "a pure Elixir result carries the host build's file manifest", %{project: project} do
     beam = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.beam"])
     File.mkdir_p!(Path.dirname(beam))
     File.write!(beam, "pure beam")
+    write_source(project, "plain", "defmodule Plain do\n  def hi, do: :hi\nend\n")
 
     assert %{status: :pass, beam_scan: scan} =
              NccWorker.Worker.pure_elixir_result(project, "plain")
@@ -251,6 +259,56 @@ defmodule NccWorker.ReleaseArtifactsTest do
 
     assert %{beam_scan: %{"errors" => [_]}} =
              NccWorker.Worker.pure_elixir_result(project, "missing")
+  end
+
+  # A module body that reads the OS bakes the build host into the beams, so a
+  # Linux build must not be served to a macOS project. The status stands; only
+  # the files are not published: no manifest, so nothing is archived.
+  test "a pure Elixir result of OS-specific source publishes no files", %{
+    project: project,
+    archive: archive,
+    tmp_dir: work_dir
+  } do
+    beam = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.beam"])
+    File.mkdir_p!(Path.dirname(beam))
+    File.write!(beam, "pure beam")
+
+    write_source(project, "plain", """
+    defmodule Plain do
+      @os :os.type()
+      def os, do: @os
+    end
+    """)
+
+    assert %{status: :pass, beam_scan: scan, log_tail: log_tail} =
+             NccWorker.Worker.pure_elixir_result(project, "plain")
+
+    refute Map.has_key?(scan["footprint"], "file_manifest")
+    assert log_tail =~ "OS-specific"
+
+    result = %{
+      package: %{name: "plain"},
+      systems: %{"pure_elixir" => %{beam_scan: scan}, "host" => %{beam_scan: nil}}
+    }
+
+    assert {:ok, %{files_archived: 0}} =
+             FileArchiver.archive_manifest_files(archive, result, work_dir)
+
+    assert File.ls!(archive) == []
+  end
+
+  # No source to judge fails closed, as `BuildCache.os_agnostic?/1` does.
+  test "a pure Elixir result without the package source publishes no files", %{
+    project: project
+  } do
+    beam = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.beam"])
+    File.mkdir_p!(Path.dirname(beam))
+    File.write!(beam, "pure beam")
+
+    assert %{status: :pass, beam_scan: scan} =
+             NccWorker.Worker.pure_elixir_result(project, "plain")
+
+    refute Map.has_key?(scan["footprint"], "file_manifest")
   end
 
   test "a pure Elixir result records the host build's compile_env", %{project: project} do
