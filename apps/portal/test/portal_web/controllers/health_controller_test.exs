@@ -17,6 +17,42 @@ defmodule PortalWeb.HealthControllerTest do
     assert HealthController.color(:nonode@nohost) == nil
   end
 
+  describe "force_ssl in prod" do
+    # The options of config/prod.exs: Apache sends X-Forwarded-Proto, but
+    # ops/blue-green.sh probes a colour's own port by the public Host name
+    # without it, and /health must answer that rather than redirect.
+    @prod_force_ssl [
+      rewrite_on: [:x_forwarded_proto],
+      exclude: [paths: ["/health"], hosts: ["localhost", "127.0.0.1"]]
+    ]
+
+    defp force_ssl(path) do
+      Plug.SSL.call(
+        Plug.Test.conn(:get, path) |> Map.put(:host, "example.test"),
+        Plug.SSL.init(@prod_force_ssl)
+      )
+    end
+
+    test "GET /health by the public name over plain http is not redirected" do
+      conn = force_ssl("/health")
+      refute conn.halted
+      assert conn.status == nil
+      assert Plug.Conn.get_resp_header(conn, "location") == []
+    end
+
+    test "any other path by the public name over plain http is redirected" do
+      conn = force_ssl("/packages")
+      assert conn.halted
+      assert conn.status == 301
+      assert Plug.Conn.get_resp_header(conn, "location") == ["https://example.test/packages"]
+    end
+
+    test "these are the options config/prod.exs sets" do
+      prod = Config.Reader.read!(Path.expand("../../../config/prod.exs", __DIR__))
+      assert get_in(prod, [:portal, PortalWeb.Endpoint, :force_ssl]) == @prod_force_ssl
+    end
+  end
+
   describe "build_sha/1" do
     setup do
       dir =

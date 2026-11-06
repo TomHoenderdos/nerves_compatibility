@@ -37,6 +37,8 @@ defmodule PortalWeb.HealthController do
 
   @doc false
   @spec build_sha(Path.t()) :: String.t() | nil
+  # root_dir is :code.root_dir/0, the release's own root, never request input.
+  # sobelow_skip ["Traversal.FileModule"]
   def build_sha(root_dir) do
     case File.read(Path.join(root_dir, "BUILD_SHA")) do
       {:ok, content} ->
