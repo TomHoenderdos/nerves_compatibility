@@ -42,6 +42,29 @@ case " ${FAKE_MISSING:-} " in *" $pkg "*) exit 1 ;; esac
 printf 'install ok installed'
 """
 
+# `dpkg -s <pkg>` (the docker-ce check) succeeds only for FAKE_DPKG_INSTALLED
+# (default: none), so the host's own packages never decide a test.
+FAKE_DPKG = """#!/usr/bin/env bash
+pkg="${*: -1}"
+case " ${FAKE_DPKG_INSTALLED:-} " in *" $pkg "*) exit 0 ;; esac
+exit 1
+"""
+
+# Host tools the script must only ever see as fakes: a real dockerd (as on a
+# GitHub runner) or dpkg would decide whether docker.io gets installed.
+HOST_ONLY = {
+    "docker",
+    "dockerd",
+    "dpkg",
+    "dpkg-query",
+    "apt-get",
+    "systemctl",
+    "curl",
+    "runsc",
+    "containerd",
+    "containerd-shim-runsc-v1",
+}
+
 FAKE_APT_GET = """#!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG/apt-get"
 """
@@ -72,6 +95,7 @@ class BuilderHostSetupTest(unittest.TestCase):
         for name, body in [
             ("docker", FAKE_DOCKER),
             ("systemctl", FAKE_SYSTEMCTL),
+            ("dpkg", FAKE_DPKG),
             ("dpkg-query", FAKE_DPKG_QUERY),
             ("apt-get", FAKE_APT_GET),
             ("curl", FAKE_CURL),
@@ -79,6 +103,28 @@ class BuilderHostSetupTest(unittest.TestCase):
             path = self.bin / name
             path.write_text(body)
             path.chmod(0o755)
+        self.sysbin = self.root / "sysbin"
+        self.sysbin.mkdir()
+        self.link_host_tools()
+
+    # The script runs with PATH = fakes + `sysbin`: links to the host's tools
+    # except those in HOST_ONLY, so nothing on the host decides a test.
+    def link_host_tools(self):
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            if not directory or not os.path.isdir(directory):
+                continue
+            for name in os.listdir(directory):
+                target = os.path.join(directory, name)
+                link = self.sysbin / name
+                if (
+                    name in HOST_ONLY
+                    or link.exists()
+                    or link.is_symlink()
+                    or not os.path.isfile(target)
+                    or not os.access(target, os.X_OK)
+                ):
+                    continue
+                link.symlink_to(target)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -93,7 +139,7 @@ class BuilderHostSetupTest(unittest.TestCase):
     def run_setup(self, *args, **env):
         environment = {
             **os.environ,
-            "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+            "PATH": f"{self.bin}{os.pathsep}{self.sysbin}",
             "FAKE_LOG": str(self.log),
             "NCC_SETUP_TEST": "1",
             "NCC_RUNSC_DIR": str(self.runsc_dir),
@@ -223,6 +269,13 @@ class BuilderHostSetupTest(unittest.TestCase):
         (self.log / "apt-get").unlink()
         self.run_setup("install", FAKE_MISSING="docker.io")
         self.assertIn("docker.io", self.logged("apt-get"))
+
+    def test_an_installed_docker_ce_is_not_replaced_by_docker_io(self):
+        self.present_runsc()
+        result = self.run_setup("install", FAKE_MISSING="docker.io", FAKE_DPKG_INSTALLED="docker-ce")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("not installing docker.io", result.stdout + result.stderr)
+        self.assertNotIn("docker.io", self.logged("apt-get"))
 
     def test_platform_follows_kvm_and_the_override(self):
         self.present_runsc()
