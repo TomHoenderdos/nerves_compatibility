@@ -12,7 +12,7 @@ defmodule Portal.ToolchainVariantsTest do
   require Ash.Query
 
   alias Portal.Catalog
-  alias Portal.Catalog.{Ingestion, Package, ToolchainBuild}
+  alias Portal.Catalog.{Ingestion, Package, ToolchainBuild, UnrecordedOptionalDeps}
   alias Portal.Workers.{Ingest, ToolchainSweep}
 
   @pure %{"nif_language" => nil, "port_languages" => [], "compatibility_basis" => "pure_elixir"}
@@ -66,6 +66,7 @@ defmodule Portal.ToolchainVariantsTest do
       builder_version: 1,
       variant: Keyword.get(opts, :variant, :with),
       optional_deps: Keyword.get(opts, :optional_deps),
+      file_manifest: Keyword.get(opts, :file_manifest),
       status: status,
       reason: Keyword.get(opts, :reason),
       finished_at: Keyword.get(opts, :finished_at, DateTime.utc_now())
@@ -508,6 +509,82 @@ defmodule Portal.ToolchainVariantsTest do
       declares("tooled", [dep("ex_doc", true), dep("credo", true)])
 
       assert backlog() == []
+    end
+
+    # Only the most downloaded unrecorded packages are asked about per call.
+    # A version the registry shows declares nothing to add is recorded as
+    # such, so it leaves the set and the packages behind it get their turn.
+    test "one that declares nothing to add makes room for the next package" do
+      for i <- 0..200 do
+        name = "legacy_#{String.pad_leading(Integer.to_string(i), 3, "0")}"
+        run!(name, "1.4.5")
+
+        Repo.query!("UPDATE catalog_packages SET hex_downloads_recent = $1 WHERE name = $2", [
+          10_000 - i,
+          name
+        ])
+
+        row!(name, "1.4.5", :pass,
+          variant: :with,
+          optional_deps: nil,
+          file_manifest: %{"lib/#{name}.beam" => "sha256:#{i}"},
+          finished_at: ago(3 * @day)
+        )
+
+        declares(name, [dep(if(i == 200, do: "decimal", else: "telemetry"), i == 200)])
+      end
+
+      before = legacy_rows()
+
+      wanted = Enum.flat_map(1..2, fn _ -> backlog() end)
+
+      assert %{package: "legacy_200", version: "1.4.5", variant: :without} in wanted
+
+      after_rows = legacy_rows()
+
+      for {name, row} <- before, name != "legacy_200" do
+        recorded = Map.fetch!(after_rows, name)
+        assert recorded.optional_deps == %{"added" => [], "reason" => "unrecorded_none"}
+        assert recorded.status == row.status
+        assert DateTime.compare(recorded.finished_at, row.finished_at) == :eq
+        assert recorded.file_manifest == row.file_manifest
+        assert recorded.revoked_at == row.revoked_at
+      end
+
+      assert Map.fetch!(after_rows, "legacy_200").optional_deps == nil
+    end
+
+    # A registry that cannot answer says nothing about the version: the row
+    # stays unrecorded and is asked about again.
+    test "stays unrecorded when the registry does not answer" do
+      run!("unlisted", "1.4.5")
+      row!("unlisted", "1.4.5", :pass, variant: :with, optional_deps: nil)
+
+      assert backlog() == []
+      assert [%{optional_deps: nil}] = Map.values(legacy_rows())
+    end
+
+    # A build that lands while the registry is asked keeps its own report.
+    test "a row recorded meanwhile is not overwritten" do
+      run!("plain", "1.4.5")
+      row!("plain", "1.4.5", :pass, variant: :with, optional_deps: nil)
+
+      hex_releases = fn "plain" ->
+        Repo.query!("UPDATE catalog_toolchain_builds SET optional_deps = $1", [@kept_decimal])
+        {:ok, [%{version: "1.4.5", retired?: false, deps: [dep("telemetry", false)]}]}
+      end
+
+      assert UnrecordedOptionalDeps.wanted("1.19/28", 1, hex_releases: hex_releases) ==
+               {[], []}
+
+      assert [%{optional_deps: @kept_decimal}] = Map.values(legacy_rows())
+    end
+
+    defp legacy_rows do
+      ToolchainBuild
+      |> Ash.Query.load(:package)
+      |> Ash.read!(domain: Catalog)
+      |> Map.new(&{&1.package.name, &1})
     end
   end
 

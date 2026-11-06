@@ -614,4 +614,32 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
       assert_nothing_published(name, outcome)
     end
   end
+
+  # The path is the container's to choose: the reason stored for it is cut
+  # short however long, or however many bytes per character, it is.
+  test "a misplaced entry's stored reason stays short" do
+    name = unique()
+    beam = "beam-#{name}"
+    other = "other-#{name}"
+    long_path = "lib/" <> String.duplicate("e\u0301", 5_000)
+    tarball = hex_tarball(%{})
+    checksum = sha(tarball)
+
+    result =
+      name
+      |> result(beam, [], checksum)
+      |> put_in(["toolchain_build", "file_manifest", "ebin"], [
+        entry("ebin/#{name}.beam", beam),
+        entry(long_path, other)
+      ])
+
+    files_dir = files_dir_with([beam, other])
+
+    assert {:ok, %{status: :fail, reason: reason}} =
+             ingest_identified(result, opts(files_dir, {:ok, tarball}, {:ok, checksum}))
+
+    assert byte_size(reason) < 400
+    assert reason =~ "under \"ebin\""
+    assert {false, []} = published?(name)
+  end
 end
