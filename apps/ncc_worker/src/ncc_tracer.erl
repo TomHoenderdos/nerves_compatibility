@@ -205,6 +205,7 @@ forms(Src, Line, Acc) ->
 
 init(Parent, Role, Dir, App, Depth, Script) ->
     put(mix_script, Script),
+    put(driver, Parent),
     put(roots, roots()),
     File = filename:join(Dir, file_name(Role, App)),
     {ok, Fd} = file:open(File, [write, raw, binary]),
@@ -428,7 +429,7 @@ call_event(Pid, M, F, Args, Stack, Ts, #st{calls = Calls} = St0) ->
             St1 = lineage(Pid, St2),
             St = depth_seen(M, F, Args, St1),
             Extent = safe_extent(Stack, St#st.depth, fun toolchain/1, user_process(Pid, St),
-                                 fun script_file/1),
+                                 is_script(Pid)),
             classified(M, F, Args, Extent, {Pid, M, F, Args, Ts}, St)
     end.
 
@@ -693,14 +694,23 @@ mix_script(main) ->
         _:_ -> none
     end.
 
-%% The last -S wins, as in Kernel.CLI; anything after "--"-style script
-%% arguments is the script's own.
+%% The first -S wins, as in Kernel.CLI: -S takes the next argument as the
+%% script and leaves every argument after it to the script.
 script_arg(["-S", Name | _]) -> Name;
 script_arg([_ | Rest]) -> script_arg(Rest);
 script_arg([]) -> none.
 
 script_bin(none) -> null;
 script_bin(Path) -> ncc_tracer_channels:chars(Path).
+
+%% The mix script's frame is the toolchain's only in the process that ran
+%% the script and called start_main/0 (the driver); a bin/mix-file frame in
+%% any other process is a forged one (Code.compile_string(Src, <bin/mix>)).
+is_script(Pid) ->
+    case get(driver) of
+        Pid -> fun script_file/1;
+        _ -> fun(_File) -> false end
+    end.
 
 %% IsScript for the stack classifier: is this frame file the mix script?
 %% Cached per file; a file that cannot be resolved is not the script.

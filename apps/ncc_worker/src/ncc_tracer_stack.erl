@@ -34,25 +34,29 @@ extent(Stack, Depth, IsToolchain, ProcessIsUser) ->
 
 %% IsScript(File) is true for the source file of the running mix script
 %% (`elixir -S mix` evaluates bin/mix as elixir_compiler_0, which has no
-%% object file). Only an elixir_compiler_N frame of exactly that file is
-%% toolchain, and it is no module body; every other frame is judged as in
-%% extent/4.
+%% object file); the tracer passes it only for the driver process. Only the
+%% bottom-most elixir_compiler_N frame of the stack can be the script (below
+%% it there is only Kernel.CLI loading it): a frame of that file anywhere
+%% else (Code.compile_string(Src, <bin/mix>) from package code puts one above
+%% the real one) is judged as in extent/4. The script frame is toolchain and
+%% no module body.
 extent([], _Depth, _IsToolchain, _ProcessIsUser, _IsScript) ->
     %% No frame at all (a spawned fun that tail-called the primitive): fail closed.
     {user, truncated, none, none};
-extent(Stack, Depth, IsToolchain, ProcessIsUser, IsScript) ->
+extent(Stack0, Depth, IsToolchain, ProcessIsUser, IsScript) ->
+    Stack = mark_script(Stack0, IsScript),
     Stripped = strip(Stack),
     First = case Stripped of
                 [Frame | _] -> Frame;
                 [] -> none
             end,
-    case lists:search(fun({M, _, _, _} = F) -> not (IsToolchain(M) orelse script(F, IsScript)) end, Stack) of
+    case lists:search(fun({M, _, _, _} = F) -> not (IsToolchain(M) orelse script(F)) end, Stack) of
         {value, User} -> {user, frame, First, User};
-        false -> no_user_frame(Stack, Stripped, Depth, First, ProcessIsUser, IsScript)
+        false -> no_user_frame(Stack, Stripped, Depth, First, ProcessIsUser)
     end.
 
-no_user_frame(Stack, Stripped, Depth, First, ProcessIsUser, IsScript) ->
-    case {dispatched(Stack, Stripped, IsScript), length(Stack) >= Depth, ProcessIsUser} of
+no_user_frame(Stack, Stripped, Depth, First, ProcessIsUser) ->
+    case {dispatched(Stack, Stripped), length(Stack) >= Depth, ProcessIsUser} of
         {true, _, _} -> {user, dispatcher, First, none};
         {false, true, _} -> {user, truncated, First, none};
         {false, false, true} -> {user, lineage, First, none};
@@ -62,8 +66,8 @@ no_user_frame(Stack, Stripped, Depth, First, ProcessIsUser, IsScript) ->
 %% A dispatcher reached from the top through glue frames only (the
 %% tail-call signature, the first frame after the wrappers being the
 %% shortest case), or eval frames with a dispatcher or a module body below.
-dispatched(Stack, Stripped, IsScript) ->
-    glue_to_dispatcher(Stripped) orelse eval_under_dispatcher(Stack, IsScript).
+dispatched(Stack, Stripped) ->
+    glue_to_dispatcher(Stripped) orelse eval_under_dispatcher(Stack).
 
 glue_to_dispatcher([Frame | Rest]) ->
     case dispatcher(Frame) of
@@ -82,13 +86,12 @@ protocol_impl(M) ->
     Name = atom_to_list(M),
     lists:any(fun(Prefix) -> lists:prefix(Prefix, Name) end, ?GLUE_PREFIXES).
 
-eval_under_dispatcher([Frame | Rest], IsScript) ->
+eval_under_dispatcher([Frame | Rest]) ->
     case eval(Frame) of
-        true -> lists:any(fun(Below) -> dispatcher(Below) orelse module_body(Below, IsScript) end,
-                          Rest);
-        false -> eval_under_dispatcher(Rest, IsScript)
+        true -> lists:any(fun(Below) -> dispatcher(Below) orelse module_body(Below) end, Rest);
+        false -> eval_under_dispatcher(Rest)
     end;
-eval_under_dispatcher([], _IsScript) -> false.
+eval_under_dispatcher([]) -> false.
 
 eval({M, F, _, _}) -> M =:= erl_eval orelse eval_handler(F).
 
@@ -96,14 +99,32 @@ eval_handler(F) -> F =:= eval_external_handler.
 
 %% elixir_compiler_N: a module body or file being evaluated, but not the
 %% running mix script.
-module_body(Frame, IsScript) -> compiler_frame(Frame) andalso not script(Frame, IsScript).
+module_body(Frame) -> compiler_frame(Frame) andalso not script(Frame).
 
-script({_, _, _, Location} = Frame, IsScript) ->
-    compiler_frame(Frame) andalso
-        case lists:keyfind(file, 1, Location) of
-            {file, File} -> IsScript(ncc_tracer_channels:chars(File)) =:= true;
-            false -> false
-        end.
+%% The script frame carries a marker mark_script/2 adds to its location; a
+%% traced stack never has that key.
+script({_, _, _, Location} = Frame) ->
+    compiler_frame(Frame) andalso is_list(Location)
+        andalso lists:keymember(ncc_tracer_mix_script, 1, Location).
+
+mark_script(Stack, IsScript) ->
+    {Below, Rest} = lists:splitwith(fun(F) -> not compiler_frame(F) end, lists:reverse(Stack)),
+    case Rest of
+        [{M, F, A, Location} = Frame | Above] when is_list(Location) ->
+            case script_file(Frame, IsScript) of
+                true ->
+                    Marked = {M, F, A, Location ++ [{ncc_tracer_mix_script, true}]},
+                    lists:reverse(Below ++ [Marked | Above]);
+                false -> Stack
+            end;
+        _ -> Stack
+    end.
+
+script_file({_, _, _, Location}, IsScript) ->
+    case lists:keyfind(file, 1, Location) of
+        {file, File} -> IsScript(ncc_tracer_channels:chars(File)) =:= true;
+        false -> false
+    end.
 
 compiler_frame({M, _, _, _}) ->
     case atom_to_list(M) of

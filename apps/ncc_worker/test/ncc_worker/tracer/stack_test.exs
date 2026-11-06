@@ -324,7 +324,39 @@ defmodule NccWorker.Tracer.StackTest do
       # Code.compile_string(src, "/opt/elixir/bin/mix") from package code.
       pkg = f(Pkg.Macros, :"MACRO-m", 1, ~c"/p/deps/pkg/lib/pkg.ex", 3)
       stack = [f(:os, :getenv, 1), mix_frame(), f(Code, :compile_string, 2), pkg, mix_frame()]
-      assert {:user, :frame, _, ^pkg} = mix_extent(stack)
+      # The forged frame is not the bottom-most compiler frame: user itself.
+      fake = mix_frame()
+      assert {:user, :frame, _, ^fake} = mix_extent(stack)
+    end
+
+    test "the real script frame, bottom-most of its kind, with the CLI below it, is toolchain" do
+      stack = [
+        f(:os, :getenv, 1),
+        f(Mix.Project, :get, 0),
+        mix_frame(),
+        f(:elixir_compiler, :dispatch, 4),
+        f(Code, :require_file, 2)
+      ]
+
+      assert :toolchain = mix_extent(stack)
+    end
+
+    test "a script-file frame above another compiler frame is user" do
+      # Code.compile_string(src, <bin/mix>) from __after_compile__, tail-called:
+      # the forged frame sits above the real script frame.
+      forged = f(:elixir_compiler_1, :__FILE__, 1, @mix, 1)
+
+      stack = [
+        f(:os, :getenv, 1),
+        forged,
+        f(:elixir_compiler, :dispatch, 4),
+        f(:elixir_module, :expand_callback, 6),
+        mix_frame(),
+        f(:elixir_compiler, :dispatch, 4),
+        f(Code, :require_file, 2)
+      ]
+
+      assert {:user, :frame, _, ^forged} = mix_extent(stack)
     end
 
     test "extent/4 knows no mix script" do

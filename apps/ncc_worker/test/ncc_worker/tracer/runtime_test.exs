@@ -685,6 +685,16 @@ defmodule NccWorker.Tracer.RuntimeTest do
       "defmodule FxOther do\n  @v System.get_env(\"NCC_FX_OTHER\")\n  def v, do: @v\nend\n"
     )
 
+    fx_after = Path.join(dir, "fx_after.ex")
+
+    File.write!(fx_after, """
+    defmodule FxAfter do
+      @after_compile __MODULE__
+      def __after_compile__(_env, _bytecode),
+        do: Code.compile_string(~s|System.get_env("NCC_FX_FORGED_AFTER")|, #{inspect(Path.join(real, "fakemix"))})
+    end
+    """)
+
     # Like bin/mix: found on PATH, through a symlink, run by elixir -S.
     File.write!(Path.join(real, "fakemix"), """
     {:ok, tok} = :ncc_tracer.start_main()
@@ -698,6 +708,14 @@ defmodule NccWorker.Tracer.RuntimeTest do
     spawn(fn -> System.get_env("NCC_FX_SCRIPT_FUN") end)
     Process.sleep(100)
     Code.compile_file(#{inspect(fx)})
+    script = #{inspect(Path.join(real, "fakemix"))}
+    # (d) the reviewer's shape: a forged script frame above the real one,
+    # reached by a tail call from __after_compile__, in the driver.
+    Code.compile_file(#{inspect(fx_after)})
+    # (c) a forged script frame at the bottom of a process that is not the
+    # driver, spawned from the script's own frame (toolchain lineage).
+    spawn(Code, :compile_string, [~s|System.get_env("NCC_FX_FORGED_SPAWN")|, script])
+    Process.sleep(200)
     :ok = :ncc_tracer.finish(tok, "ok")
     """)
 
@@ -720,6 +738,8 @@ defmodule NccWorker.Tracer.RuntimeTest do
     refute "NCC_FX_SCRIPT_CHILD" in names, inspect(names)
     assert "NCC_FX_OTHER" in names, inspect(names)
     assert "NCC_FX_SCRIPT_FUN" in names, inspect(names)
+    assert "NCC_FX_FORGED_AFTER" in names, inspect(names)
+    assert "NCC_FX_FORGED_SPAWN" in names, inspect(names)
   end
 
   test "without -S there is no mix script", %{tmp_dir: dir} do
