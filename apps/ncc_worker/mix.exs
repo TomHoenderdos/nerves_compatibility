@@ -8,6 +8,7 @@ defmodule NccWorker.MixProject do
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      elixirc_paths: elixirc_paths(Mix.env()),
       escript: escript()
     ]
   end
@@ -24,6 +25,9 @@ defmodule NccWorker.MixProject do
       {:req, "~> 0.7"}
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_env), do: ["lib"]
 
   defp escript() do
     [
