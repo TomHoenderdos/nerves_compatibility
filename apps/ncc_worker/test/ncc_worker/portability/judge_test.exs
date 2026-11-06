@@ -732,13 +732,9 @@ defmodule NccWorker.Portability.JudgeTest do
 
   describe "a real traced compile" do
     @describetag timeout: 300_000
-    # Upstream tracer defect (Tasks 3/4): `elixir -S mix` evaluates the
-    # `bin/mix` script as `elixir_compiler_0`, which has no object file, so
-    # every Mix VM stack has a user frame and every process it spawns is
-    # user lineage; a clean closure refuses with events outside every
-    # window. Unskip once the stack classifier treats that frame as
-    # toolchain (task-10-report.md).
-    @describetag skip: "tracer classifies the bin/mix script frame as user extent"
+    # `elixir -S mix` evaluates bin/mix as elixir_compiler_0 (no object
+    # file); the tracer counts that one frame, by the script's real path, as
+    # toolchain, so a clean closure has no user-extent event at all.
 
     alias NccWorker.TracerFixtures
 

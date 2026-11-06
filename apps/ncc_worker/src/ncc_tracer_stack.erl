@@ -2,7 +2,7 @@
 %% Stage-1 classification of one traced call by the stack it was made from
 %% (precompiled portability spec, R1 steps 1-3). The tracer passes in which
 %% modules are toolchain and whether the calling process is a user process.
--export([extent/4, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0]).
+-export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% The frames left on top when package code tail-calls a primitive from a
@@ -29,22 +29,30 @@
                erl_eval, elixir, elixir_eval]).
 -define(GLUE_PREFIXES, ["Elixir.Enumerable.", "Elixir.Collectable."]).
 
-extent([], _Depth, _IsToolchain, _ProcessIsUser) ->
+extent(Stack, Depth, IsToolchain, ProcessIsUser) ->
+    extent(Stack, Depth, IsToolchain, ProcessIsUser, fun(_File) -> false end).
+
+%% IsScript(File) is true for the source file of the running mix script
+%% (`elixir -S mix` evaluates bin/mix as elixir_compiler_0, which has no
+%% object file). Only an elixir_compiler_N frame of exactly that file is
+%% toolchain, and it is no module body; every other frame is judged as in
+%% extent/4.
+extent([], _Depth, _IsToolchain, _ProcessIsUser, _IsScript) ->
     %% No frame at all (a spawned fun that tail-called the primitive): fail closed.
     {user, truncated, none, none};
-extent(Stack, Depth, IsToolchain, ProcessIsUser) ->
+extent(Stack, Depth, IsToolchain, ProcessIsUser, IsScript) ->
     Stripped = strip(Stack),
     First = case Stripped of
                 [Frame | _] -> Frame;
                 [] -> none
             end,
-    case lists:search(fun({M, _, _, _}) -> not IsToolchain(M) end, Stack) of
+    case lists:search(fun({M, _, _, _} = F) -> not (IsToolchain(M) orelse script(F, IsScript)) end, Stack) of
         {value, User} -> {user, frame, First, User};
-        false -> no_user_frame(Stack, Stripped, Depth, First, ProcessIsUser)
+        false -> no_user_frame(Stack, Stripped, Depth, First, ProcessIsUser, IsScript)
     end.
 
-no_user_frame(Stack, Stripped, Depth, First, ProcessIsUser) ->
-    case {dispatched(Stack, Stripped), length(Stack) >= Depth, ProcessIsUser} of
+no_user_frame(Stack, Stripped, Depth, First, ProcessIsUser, IsScript) ->
+    case {dispatched(Stack, Stripped, IsScript), length(Stack) >= Depth, ProcessIsUser} of
         {true, _, _} -> {user, dispatcher, First, none};
         {false, true, _} -> {user, truncated, First, none};
         {false, false, true} -> {user, lineage, First, none};
@@ -54,8 +62,8 @@ no_user_frame(Stack, Stripped, Depth, First, ProcessIsUser) ->
 %% A dispatcher reached from the top through glue frames only (the
 %% tail-call signature, the first frame after the wrappers being the
 %% shortest case), or eval frames with a dispatcher or a module body below.
-dispatched(Stack, Stripped) ->
-    glue_to_dispatcher(Stripped) orelse eval_under_dispatcher(Stack).
+dispatched(Stack, Stripped, IsScript) ->
+    glue_to_dispatcher(Stripped) orelse eval_under_dispatcher(Stack, IsScript).
 
 glue_to_dispatcher([Frame | Rest]) ->
     case dispatcher(Frame) of
@@ -74,19 +82,30 @@ protocol_impl(M) ->
     Name = atom_to_list(M),
     lists:any(fun(Prefix) -> lists:prefix(Prefix, Name) end, ?GLUE_PREFIXES).
 
-eval_under_dispatcher([Frame | Rest]) ->
+eval_under_dispatcher([Frame | Rest], IsScript) ->
     case eval(Frame) of
-        true -> lists:any(fun(Below) -> dispatcher(Below) orelse module_body(Below) end, Rest);
-        false -> eval_under_dispatcher(Rest)
+        true -> lists:any(fun(Below) -> dispatcher(Below) orelse module_body(Below, IsScript) end,
+                          Rest);
+        false -> eval_under_dispatcher(Rest, IsScript)
     end;
-eval_under_dispatcher([]) -> false.
+eval_under_dispatcher([], _IsScript) -> false.
 
 eval({M, F, _, _}) -> M =:= erl_eval orelse eval_handler(F).
 
 eval_handler(F) -> F =:= eval_external_handler.
 
-%% elixir_compiler_N: a module body or file being evaluated.
-module_body({M, _, _, _}) ->
+%% elixir_compiler_N: a module body or file being evaluated, but not the
+%% running mix script.
+module_body(Frame, IsScript) -> compiler_frame(Frame) andalso not script(Frame, IsScript).
+
+script({_, _, _, Location} = Frame, IsScript) ->
+    compiler_frame(Frame) andalso
+        case lists:keyfind(file, 1, Location) of
+            {file, File} -> IsScript(ncc_tracer_channels:chars(File)) =:= true;
+            false -> false
+        end.
+
+compiler_frame({M, _, _, _}) ->
     case atom_to_list(M) of
         "elixir_compiler_" ++ [D | Ds] -> lists:all(fun(C) -> C >= $0 andalso C =< $9 end, [D | Ds]);
         _ -> false

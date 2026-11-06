@@ -31,7 +31,7 @@
 %% monitored in turn. tampered: a forged request or a dead watcher was seen;
 %% it fails every check until the end.
 -record(st, {fd, file, session, initial = #{}, procs = #{}, native = #{}, sources = #{},
-             spawning = #{}, set_depth = ?DEPTH, depth = ?DEPTH, lowered = false,
+             spawning = #{}, parents = #{}, set_depth = ?DEPTH, depth = ?DEPTH, lowered = false,
              wanted = [], unpatterned = false, final_pid, final_nonce,
              token, watcher, wref, tampered = false,
              calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0,
@@ -108,7 +108,10 @@ collector() -> persistent_term:get(?COLLECTOR, undefined).
 %% that is not a 4-tuple, a crash in IsToolchain) is user extent of its own
 %% kind, `unjudged`: the event is written, never dropped.
 safe_extent(Stack, Depth, IsToolchain, ProcessIsUser) ->
-    try ncc_tracer_stack:extent(Stack, Depth, IsToolchain, ProcessIsUser) of
+    safe_extent(Stack, Depth, IsToolchain, ProcessIsUser, fun(_File) -> false end).
+
+safe_extent(Stack, Depth, IsToolchain, ProcessIsUser, IsScript) ->
+    try ncc_tracer_stack:extent(Stack, Depth, IsToolchain, ProcessIsUser, IsScript) of
         toolchain -> toolchain;
         {user, Kind, _First, _User} = Extent when is_atom(Kind) -> Extent;
         _Other -> {user, unjudged, none, none}
@@ -125,11 +128,12 @@ start(Role, Dir, App) ->
     _ = erlang:system_flag(backtrace_depth, ?DEPTH),
     Depth = erlang:system_flag(backtrace_depth, ?DEPTH),
     ok = load_probe(),
+    Script = mix_script(Role),
     Parent = self(),
     Opts = [monitor, {priority, high}, {message_queue_data, off_heap},
             {max_heap_size, #{size => env_int("NCC_TRACE_MAX_HEAP_WORDS", 33554432),
                               kill => true, error_logger => false}}],
-    {Pid, Ref} = spawn_opt(fun() -> init(Parent, Role, Dir, App, Depth) end, Opts),
+    {Pid, Ref} = spawn_opt(fun() -> init(Parent, Role, Dir, App, Depth, Script) end, Opts),
     receive
         {Pid, ready, Token} ->
             erlang:demonitor(Ref, [flush]),
@@ -199,7 +203,8 @@ forms(Src, Line, Acc) ->
 
 %% --- collector -------------------------------------------------------------
 
-init(Parent, Role, Dir, App, Depth) ->
+init(Parent, Role, Dir, App, Depth, Script) ->
+    put(mix_script, Script),
     put(roots, roots()),
     File = filename:join(Dir, file_name(Role, App)),
     {ok, Fd} = file:open(File, [write, raw, binary]),
@@ -218,7 +223,7 @@ init(Parent, Role, Dir, App, Depth) ->
              max_calls = env_int("NCC_TRACE_MAX_CALLS", 20000000),
              max_user = env_int("NCC_TRACE_MAX_USER_EVENTS", 200000),
              max_queue = env_int("NCC_TRACE_MAX_QUEUE", 2000000)},
-    write(St0, start_line(Role, App, Depth)),
+    write(St0, (start_line(Role, App, Depth))#{mix_script => script_bin(Script)}),
     Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth))
               || MFA <- ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role)],
     St = watcher(St0#st{wanted = Wanted}),
@@ -328,20 +333,8 @@ match_spec(_MFA, _Role, Depth) -> [{'_', [], [{message, {current_stacktrace, Dep
 
 loop(St) ->
     receive
-        {trace_ts, Pid, call, {M, F, Args}, Stack, Ts} ->
-            loop(call_event(Pid, M, F, Args, Stack, Ts, St));
-        {trace_ts, Pid, call, {compile, file, [Src | _]}, _Ts} ->
-            loop(St#st{sources = maps:put(Pid, Src, St#st.sources)});
-        {trace_ts, Pid, call, {M, F, Args}, Ts} ->
-            %% A call with no stack: our match spec was replaced. Unjudged.
-            loop(call_event(Pid, M, F, Args, no_stack, Ts, St));
-        {trace_ts, Pid, return_from, {compile, file, 2}, Result, Ts} ->
-            loop(compiled(Pid, Result, Ts, St));
-        {trace_ts, Parent, spawn, Child, MFA, _Ts} ->
-            loop(spawned(Child, Parent, MFA, St));
-        {trace_ts, Pid, exit, _Reason, _Ts} ->
-            loop(St#st{procs = maps:remove(Pid, St#st.procs),
-                       spawning = maps:remove(Pid, St#st.spawning)});
+        {trace_ts, _Pid, _What, _, _} = Msg -> loop(traced(Msg, St));
+        {trace_ts, _Pid, _What, _, _, _} = Msg -> loop(traced(Msg, St));
         {ncc_call, From, Ref, Auth, Req} when Auth =:= St#st.token; Req =:= flush ->
             {Reply, St1} = request(Req, From, St),
             From ! {Ref, Reply},
@@ -354,6 +347,56 @@ loop(St) ->
             loop(watcher_down(Reason, St));
         _Other ->
             loop(St)
+    end.
+
+traced({trace_ts, Pid, call, {M, F, Args}, Stack, Ts}, St) ->
+    call_event(Pid, M, F, Args, Stack, Ts, St);
+traced({trace_ts, Pid, call, {compile, file, [Src | _]}, _Ts}, St) ->
+    St#st{sources = maps:put(Pid, Src, St#st.sources)};
+traced({trace_ts, Pid, call, {M, F, Args}, Ts}, St) ->
+    %% A call with no stack: our match spec was replaced. Unjudged.
+    call_event(Pid, M, F, Args, no_stack, Ts, St);
+traced({trace_ts, Pid, return_from, {compile, file, 2}, Result, Ts}, St) ->
+    compiled(Pid, Result, Ts, St);
+traced({trace_ts, Parent, spawn, Child, MFA, _Ts}, St) ->
+    spawned(Child, Parent, MFA, St);
+traced({trace_ts, Child, spawned, Parent, _MFA, _Ts}, St) ->
+    case is_map_key(Child, St#st.procs) of
+        true -> St;
+        false -> St#st{parents = maps:put(Child, Parent, St#st.parents)}
+    end;
+traced({trace_ts, Pid, exit, _Reason, _Ts}, St) ->
+    St#st{procs = maps:remove(Pid, St#st.procs), spawning = maps:remove(Pid, St#st.spawning),
+          parents = maps:remove(Pid, St#st.parents)};
+traced(_Msg, St) -> St.
+
+%% Messages from two traced processes reach the collector in any order. A
+%% child's own `spawned` message comes before its own events, but its
+%% parent's `spawn` message (which, with the parent's spawn call before it,
+%% decides the child's lineage) can come later. Before judging a process
+%% the collector has no lineage for, it takes the parent's messages, in
+%% order, until that one; if it never comes the process stays unknown,
+%% which is user.
+lineage(Pid, #st{procs = Procs, initial = Initial, parents = Parents} = St) ->
+    case {is_map_key(Pid, Procs) orelse is_map_key(Pid, Initial), Parents} of
+        {true, _} -> St;
+        {false, #{Pid := Parent}} ->
+            await_parent(Pid, Parent, St#st{parents = maps:remove(Pid, Parents)},
+                         erlang:monotonic_time(millisecond)
+                             + env_int("NCC_TRACE_LINEAGE_TIMEOUT_MS", 5000));
+        {false, _} -> St
+    end.
+
+await_parent(Child, Parent, St, Deadline) ->
+    case is_map_key(Child, St#st.procs) of
+        true -> St;
+        false ->
+            Left = max(Deadline - erlang:monotonic_time(millisecond), 0),
+            receive
+                {trace_ts, Parent, _, _, _} = Msg -> await_parent(Child, Parent, traced(Msg, St), Deadline);
+                {trace_ts, Parent, _, _, _, _} = Msg -> await_parent(Child, Parent, traced(Msg, St), Deadline)
+            after Left -> St
+            end
     end.
 
 continue({finish, _, _, _}, _St) -> ok;
@@ -381,9 +424,11 @@ call_event(_Pid, _M, _F, _Args, _Stack, _Ts, #st{overflow = true} = St) -> St;
 call_event(Pid, M, F, Args, Stack, Ts, #st{calls = Calls} = St0) ->
     case check_limits(St0#st{calls = Calls + 1}) of
         #st{overflow = true} = St -> St;
-        St1 ->
+        St2 ->
+            St1 = lineage(Pid, St2),
             St = depth_seen(M, F, Args, St1),
-            Extent = safe_extent(Stack, St#st.depth, fun toolchain/1, user_process(Pid, St)),
+            Extent = safe_extent(Stack, St#st.depth, fun toolchain/1, user_process(Pid, St),
+                                 fun script_file/1),
             classified(M, F, Args, Extent, {Pid, M, F, Args, Ts}, St)
     end.
 
@@ -505,7 +550,8 @@ spawn_call(Pid, {user, _, _, _}, St) -> St#st{spawning = maps:put(Pid, true, St#
 %% it from user extent, or when its start MFA or a fun in its arguments (six
 %% levels deep) belongs to a non-toolchain module. A child whose parent's
 %% `spawn` message has not been seen yet is unknown, which is user.
-spawned(Child, Parent, MFA, St) ->
+spawned(Child, Parent, MFA, St0) ->
+    St = lineage(Parent, St0),
     User = user_process(Parent, St) orelse maps:get(Parent, St#st.spawning, false)
         orelse mfa_user(MFA),
     St#st{procs = maps:put(Child, User, St#st.procs),
@@ -625,6 +671,72 @@ overflow(#st{session = Session} = St, What) ->
     write(St, #{kind => overflow, what => What, ts => now_ns()}),
     _ = quietly(fun() -> trace:session_destroy(Session) end),
     St#st{overflow = true}.
+
+%% --- the running mix script ---------------------------------------------------
+
+%% `elixir -S mix` evaluates bin/mix as elixir_compiler_0, a module with no
+%% object file, so its frame is on every stack of the Mix VM. The script is
+%% the one Kernel.CLI ran: the name after -S in the VM's plain arguments,
+%% looked up on PATH the way Kernel.CLI does (os:find_executable/1), taken to
+%% its real path. Resolved once, before anything is traced; only a frame
+%% whose file has exactly that real path is the toolchain's.
+mix_script(child) -> none;
+mix_script(main) ->
+    try script_arg(init:get_plain_arguments()) of
+        none -> none;
+        Name ->
+            case os:find_executable(Name) of
+                false -> none;
+                Path -> realpath(filename:absname(Path))
+            end
+    catch
+        _:_ -> none
+    end.
+
+%% The last -S wins, as in Kernel.CLI; anything after "--"-style script
+%% arguments is the script's own.
+script_arg(["-S", Name | _]) -> Name;
+script_arg([_ | Rest]) -> script_arg(Rest);
+script_arg([]) -> none.
+
+script_bin(none) -> null;
+script_bin(Path) -> ncc_tracer_channels:chars(Path).
+
+%% IsScript for the stack classifier: is this frame file the mix script?
+%% Cached per file; a file that cannot be resolved is not the script.
+script_file(File) ->
+    case get(mix_script) of
+        none -> false;
+        Script ->
+            case get({script_file, File}) of
+                undefined ->
+                    V = (try realpath(unicode:characters_to_list(File)) catch _:_ -> none end)
+                        =:= Script,
+                    put({script_file, File}, V),
+                    V;
+                V -> V
+            end
+    end.
+
+%% Every symlink followed, `.` and `..` removed. At most 40 links.
+realpath(Path) -> realpath(filename:split(filename:absname(Path)), [], 40).
+
+realpath([], Acc, _Links) -> filename:join(lists:reverse(Acc));
+realpath(_Parts, _Acc, 0) -> throw(too_many_links);
+realpath(["." | Rest], Acc, Links) -> realpath(Rest, Acc, Links);
+realpath([".." | Rest], [Root], Links) -> realpath(Rest, [Root], Links);
+realpath([".." | Rest], [_ | Acc], Links) -> realpath(Rest, Acc, Links);
+realpath([Part | Rest], Acc, Links) ->
+    Here = filename:join(lists:reverse([Part | Acc])),
+    case file:read_link_all(Here) of
+        {ok, Target} ->
+            Base = case filename:pathtype(Target) of
+                       absolute -> [];
+                       _ -> lists:reverse(Acc)
+                   end,
+            realpath(filename:split(filename:join(Base ++ [Target])) ++ Rest, [], Links - 1);
+        {error, _} -> realpath(Rest, [Part | Acc], Links)
+    end.
 
 %% --- roots and toolchain modules -------------------------------------------
 

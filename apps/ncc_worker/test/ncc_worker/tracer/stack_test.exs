@@ -288,4 +288,48 @@ defmodule NccWorker.Tracer.StackTest do
       assert :toolchain = extent(stack)
     end
   end
+
+  describe "the running mix script" do
+    @mix ~c"/opt/elixir/bin/mix"
+    defp script?(file), do: file == List.to_string(@mix)
+
+    defp mix_extent(stack, user? \\ false),
+      do: :ncc_tracer_stack.extent(stack, 64, &tc?/1, user?, &script?/1)
+
+    defp mix_frame(file \\ @mix), do: f(:elixir_compiler_0, :__FILE__, 1, file, 7)
+
+    test "the mix script's elixir_compiler frame is toolchain" do
+      stack = [f(:os, :getenv, 1), f(Mix.Project, :get, 0), mix_frame()]
+      assert :toolchain = mix_extent(stack)
+    end
+
+    test "an elixir_compiler frame of any other file stays user extent" do
+      body = mix_frame(~c"/opt/elixir/bin/mix2")
+      stack = [f(:os, :getenv, 1), f(Mix.Project, :get, 0), body]
+      assert {:user, :frame, _, ^body} = mix_extent(stack)
+    end
+
+    test "the mix script frame below eval is not a module body" do
+      stack = [
+        f(:os, :getenv, 1),
+        f(:erl_eval, :do_apply, 7),
+        f(Mix.Task, :run, 1),
+        mix_frame()
+      ]
+
+      assert :toolchain = mix_extent(stack)
+    end
+
+    test "a package frame deeper in a stack faking the mix script's file is still user" do
+      # Code.compile_string(src, "/opt/elixir/bin/mix") from package code.
+      pkg = f(Pkg.Macros, :"MACRO-m", 1, ~c"/p/deps/pkg/lib/pkg.ex", 3)
+      stack = [f(:os, :getenv, 1), mix_frame(), f(Code, :compile_string, 2), pkg, mix_frame()]
+      assert {:user, :frame, _, ^pkg} = mix_extent(stack)
+    end
+
+    test "extent/4 knows no mix script" do
+      stack = [f(:os, :getenv, 1), mix_frame()]
+      assert {:user, :frame, _, _} = extent(stack)
+    end
+  end
 end

@@ -671,4 +671,107 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert kind(lines, "watcher_down") != [] or kind(lines, "collector_down") != []
     assert [] = kind(lines, "end")
   end
+
+  test "the script run with -S is toolchain, by its real path; files it compiles are not",
+       %{tmp_dir: dir} do
+    bin = Path.join(dir, "bin")
+    real = Path.join(dir, "real")
+    File.mkdir_p!(bin)
+    File.mkdir_p!(real)
+    fx = Path.join(dir, "fx_other.ex")
+
+    File.write!(
+      fx,
+      "defmodule FxOther do\n  @v System.get_env(\"NCC_FX_OTHER\")\n  def v, do: @v\nend\n"
+    )
+
+    # Like bin/mix: found on PATH, through a symlink, run by elixir -S.
+    File.write!(Path.join(real, "fakemix"), """
+    {:ok, tok} = :ncc_tracer.start_main()
+    System.get_env("NCC_FX_SCRIPT")
+    # Spawned from the script's frame: toolchain lineage (bin/mix itself
+    # spawns nothing; Mix does, from its own modules).
+    spawn(System, :get_env, ["NCC_FX_SCRIPT_CHILD"])
+    # A fun's module is elixir_compiler_N, a name that is reused across
+    # evaluated files: it cannot be told apart from a package's, so a
+    # process running one stays user (fail closed).
+    spawn(fn -> System.get_env("NCC_FX_SCRIPT_FUN") end)
+    Process.sleep(100)
+    Code.compile_file(#{inspect(fx)})
+    :ok = :ncc_tracer.finish(tok, "ok")
+    """)
+
+    File.chmod!(Path.join(real, "fakemix"), 0o755)
+    File.ln_s!(Path.join(real, "fakemix"), Path.join(bin, "fakemix"))
+
+    {out, 0} =
+      System.cmd("elixir", ["-pa", ebin(), "-S", "fakemix"],
+        env: [{"NCC_TRACE_DIR", dir}, {"PATH", bin <> ":" <> System.get_env("PATH")}],
+        stderr_to_stdout: true
+      )
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    # The symlink's target, not the PATH entry.
+    assert [%{"mix_script" => script}] = kind(lines, "start"), out
+    assert Path.type(script) == :absolute and String.ends_with?(script, "/real/fakemix")
+
+    names = for e <- kind(lines, "event"), e["mfa"] == "os:getenv/1", do: e["arg"]["name"]
+    refute "NCC_FX_SCRIPT" in names, inspect(names)
+    refute "NCC_FX_SCRIPT_CHILD" in names, inspect(names)
+    assert "NCC_FX_OTHER" in names, inspect(names)
+    assert "NCC_FX_SCRIPT_FUN" in names, inspect(names)
+  end
+
+  test "without -S there is no mix script", %{tmp_dir: dir} do
+    {0, _} =
+      run_script(dir, """
+      {:ok, tok} = :ncc_tracer.start_main()
+      :ok = :ncc_tracer.finish(tok, "ok")
+      """)
+
+    assert [%{"mix_script" => nil}] =
+             dir |> Path.join("trace-main.jsonl") |> lines() |> kind("start")
+  end
+
+  # Trace messages from two processes reach the collector in any order: a
+  # child's own events can arrive before its parent's `spawn` message.
+  @race """
+  {:ok, tok} = :ncc_tracer.start_main()
+  c = :ncc_tracer.collector()
+  ts = :erlang.monotonic_time(:nanosecond)
+  child = :erlang.list_to_pid(~c"<0.9999.0>")
+  mfa = {Mix.Task, :run, [["compile"]]}
+  stack = [{Mix.Project, :get, 0, []}]
+  send(c, {:trace_ts, child, :spawned, self(), mfa, ts})
+  send(c, {:trace_ts, child, :call, {:os, :getenv, ["NCC_FX_RACE"]}, stack, ts})
+  PARENT
+  :ok = :ncc_tracer.finish(tok, "ok")
+  """
+
+  defp race(dir, parent, env \\ []) do
+    {0, out} = run_script(dir, String.replace(@race, "PARENT", parent), env)
+
+    names =
+      for e <- dir |> Path.join("trace-main.jsonl") |> lines() |> kind("event"),
+          do: {e["arg"]["name"], e["extent"]}
+
+    {names, out}
+  end
+
+  test "a child's events waiting on a late parent spawn message get the parent's lineage",
+       %{tmp_dir: dir} do
+    {names, out} =
+      race(dir, ~S"""
+      Process.sleep(200)
+      send(c, {:trace_ts, self(), :spawn, child, mfa, ts})
+      """)
+
+    refute {"NCC_FX_RACE", "lineage"} in names, inspect({names, out})
+  end
+
+  test "a parent spawn message that never comes leaves the child a user process",
+       %{tmp_dir: dir} do
+    {names, out} = race(dir, "", [{"NCC_TRACE_LINEAGE_TIMEOUT_MS", "50"}])
+    assert {"NCC_FX_RACE", "lineage"} in names, inspect({names, out})
+  end
 end
