@@ -2,6 +2,7 @@ defmodule NccWorker.JsonWriterTest do
   use ExUnit.Case, async: true
 
   alias NccWorker.JsonWriter
+  alias NccWorker.Worker
 
   describe "write_result/2" do
     test "writes result.json atomically" do
@@ -397,6 +398,32 @@ defmodule NccWorker.JsonWriterTest do
       assert :ok = JsonWriter.write_result(dir, base)
       decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
       refute Map.has_key?(decoded, "process_sweep")
+    end
+  end
+
+  describe "requested_optional_deps" do
+    @tag :tmp_dir
+    test "echoes the optional-deps request, and leaves the key out without", %{tmp_dir: dir} do
+      base = %{
+        run_id: "tc",
+        package: %{name: "jason", version: "1.4.4"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{},
+        finished_at: "2026-11-06T10:00:00Z",
+        scope: "toolchain"
+      }
+
+      for request <- ["include", "exclude"] do
+        result = Worker.put_requested_optional_deps(base, request)
+        assert :ok = JsonWriter.write_result(dir, result)
+        decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+        assert decoded["requested_optional_deps"] == request
+      end
+
+      assert :ok = JsonWriter.write_result(dir, base)
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      refute Map.has_key?(decoded, "requested_optional_deps")
     end
   end
 

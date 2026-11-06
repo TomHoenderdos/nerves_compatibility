@@ -75,8 +75,10 @@ defmodule NccWorker.JsonWriter do
     # downloaded a Hex tarball nor used a cached one
     # (`NccWorker.HexCache.report/2`), `warm` for every run but a warm
     # one (`NccWorker.WarmNerves`), `egress_probe` for every run that was
-    # not asked to probe (`NccWorker.EgressProbe`), and `process_sweep` for a
-    # result that never went through `NccWorker.ProcessSweep.enforce_and_report/2`.
+    # not asked to probe (`NccWorker.EgressProbe`), `process_sweep` for a
+    # result that never went through `NccWorker.ProcessSweep.enforce_and_report/2`,
+    # and `requested_optional_deps` for a run whose input made no optional-deps
+    # request (`NccWorker.Worker.put_requested_optional_deps/2`).
     json =
       [
         :deps_lock,
@@ -88,7 +90,8 @@ defmodule NccWorker.JsonWriter do
         :hex_cache,
         :warm,
         :egress_probe,
-        :process_sweep
+        :process_sweep,
+        :requested_optional_deps
       ]
       |> Enum.reduce(json, &put_present(&2, &1, Map.get(result, &1)))
 
