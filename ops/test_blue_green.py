@@ -23,7 +23,15 @@ systemctl() {
   local unit=${*: -1} color
   color=${unit#ncc-portal@}
   case $1 in
-    is-active) running "$color" ;;
+    is-active)
+      # Prints a state unless --quiet, like the real one; IDLE_STATE names a
+      # stopped colour's state (default inactive), ACTIVATING one that is
+      # auto-restarting (exit 3, the same as inactive).
+      local s
+      if running "$color"; then s=active; else s=${IDLE_STATE:-inactive}; fi
+      [[ ${ACTIVATING:-} != "$color" ]] || s=activating
+      [[ $2 == --quiet ]] || echo "$s"
+      [[ $s == active ]] ;;
     start) [[ ${START_FAILS:-} != "$color" ]] || return 1; echo "$color" >> "$RUN_FILE" ;;
     stop)
       [[ ${STOP_FAILS:-} != "$color" ]] || return 1
@@ -55,7 +63,9 @@ apachectl() {
         echo "$APACHE_S_LINE"
       elif [[ -n ${VHOST:-} ]]; then
         echo "         port 443 namevhost example.test ($VHOST:35)"
-      fi ;;
+      fi
+      # Other enabled vhosts, one apachectl -S line each.
+      if [[ -n ${EXTRA_S_LINES:-} ]]; then printf '%s\n' "$EXTRA_S_LINES"; fi ;;
     configtest)
       local f="$STATE/configtest-calls" n
       n=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
@@ -85,6 +95,7 @@ body_for() {
   sha=$(cat "$STATE/sha-$color")
   ep=bound
   [[ ${BUILDER_WAITING:-} != "$color" ]] || ep=waiting
+  [[ ${BUILDER_OFF:-} != "$color" ]] || ep=off
   printf '{"builder_endpoint":"%s","color":"%s","sha":"%s"}\n' "$ep" "$color" "$sha"
 }
 curl() {
@@ -112,7 +123,12 @@ curl() {
   esac
 }
 sleep() { :; }
-bg_build() { log "build $1"; mkdir -p "$NCC_INSTALL_DIR/releases/$1"; echo "${BUILT_SHA:-$TARGET}" > "$STATE/sha-$1"; [[ ${BUILD_STATUS:-0} == 0 ]]; }
+bg_build() {
+  log "build $1"; mkdir -p "$NCC_INSTALL_DIR/releases/$1"
+  # build-release.sh stamps the target; the node reports BUILT_SHA if set.
+  echo "$TARGET" > "$NCC_INSTALL_DIR/releases/$1/BUILD_SHA"
+  echo "${BUILT_SHA:-$TARGET}" > "$STATE/sha-$1"; [[ ${BUILD_STATUS:-0} == 0 ]]
+}
 bg_migrate() { log "migrate $1"; [[ ${MIGRATE_STATUS:-0} == 0 ]]; }
 bg_carry_assets() { log "carry $1 $2"; }
 bg_rpc() {
@@ -142,6 +158,10 @@ class BlueGreenTest(unittest.TestCase):
             install = root / "install"
             for c in ("blue", "green"):
                 (install / "releases" / c / "bin").mkdir(parents=True)
+                # Both colours have served OLD before (the steady state after
+                # two deploys): each is a valid rollback target.
+                (install / "releases" / c / "BUILD_SHA").write_text(OLD + "\n")
+                (install / f"served-{c}").write_text(OLD + "\n")
             state = root / "state"
             state.mkdir()
             (state / "sha-blue").write_text(OLD + "\n")
@@ -184,6 +204,9 @@ class BlueGreenTest(unittest.TestCase):
             self.include = upstream.read_text()
             self.cache = (install / "active-color").read_text().strip()
             self.running = run_file.read_text().split()
+            self.served = {c: (install / f"served-{c}").read_text().strip()
+                           if (install / f"served-{c}").exists() else None
+                           for c in ("blue", "green")}
             return result, events.read_text().splitlines() if events.exists() else []
 
     # --- preflight -------------------------------------------------------
@@ -203,7 +226,86 @@ class BlueGreenTest(unittest.TestCase):
     def test_preflight_refuses_when_the_idle_colour_is_running(self):
         result, _ = self.run_bg("bg_preflight", running=["blue", "green"])
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ncc-portal@green is running", result.stderr)
+        self.assertIn("ncc-portal@green is active", result.stderr)
+
+    # --- M3: only inactive or failed counts as stopped ----------------------
+
+    def test_preflight_refuses_an_idle_colour_that_is_activating(self):
+        result, _ = self.run_bg("bg_preflight", ACTIVATING="green")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ncc-portal@green is activating", result.stderr)
+        self.assertIn("not inactive or failed", result.stderr)
+
+    def test_preflight_passes_an_idle_colour_that_failed(self):
+        result, _ = self.run_bg("bg_preflight", IDLE_STATE="failed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    # --- I4: the include must be the template, rendered --------------------
+
+    def test_preflight_refuses_a_drifted_include(self):
+        rendered = (SRC / "ops" / "ncc-upstream.conf.template").read_text().replace("@PORT@", "4002")
+        for text in (rendered + "ProxyTimeout 300\n",
+                     rendered.replace(" retry=0", "")):
+            with self.subTest(text=text[-40:]):
+                result, events = self.run_bg("bg_preflight", include_text=text)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("edited by hand or has drifted", result.stderr)
+                self.assertIn("ncc-upstream.conf.template", result.stderr)
+
+    def test_preflight_passes_the_rendered_template(self):
+        rendered = (SRC / "ops" / "ncc-upstream.conf.template").read_text().replace("@PORT@", "4003")
+        result, _ = self.run_bg("bg_preflight", active="green", include_text=rendered)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_drifted_include_builds_nothing(self):
+        rendered = (SRC / "ops" / "ncc-upstream.conf.template").read_text().replace("@PORT@", "4002")
+        result, events = self.deploy(include_text=rendered + "# local tweak\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse([e for e in events if e.startswith("build")])
+
+    # --- I1: no other vhost may proxy straight to a colour port -------------
+
+    def other_vhost(self, root_text, shape="namevhost"):
+        """A second enabled vhost file and its apachectl -S line."""
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        other = Path(directory) / "other.test.conf"
+        other.write_text(root_text)
+        line = (f"         port 80 namevhost other.test ({other}:1)" if shape == "namevhost"
+                else f"192.0.2.1:8080  other.test ({other}:1)")
+        return other, line
+
+    def test_preflight_refuses_another_vhost_that_proxies_straight_to_a_colour(self):
+        for port in ("4002", "4003"):
+            for shape in ("namevhost", "flat"):
+                with self.subTest(port=port, shape=shape):
+                    other, line = self.other_vhost(
+                        f"<VirtualHost *:80>\n  ProxyPass / http://127.0.0.1:{port}/\n</VirtualHost>\n",
+                        shape)
+                    result, _ = self.run_bg("bg_preflight", EXTRA_S_LINES=line)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(str(other), result.stderr)
+                    self.assertIn("proxies straight to", result.stderr)
+
+    def test_preflight_passes_another_vhost_whose_direct_proxy_is_commented_out(self):
+        _, line = self.other_vhost(
+            "<VirtualHost *:80>\n  # ProxyPass / http://127.0.0.1:4002/\n"
+            "  ProxyPass / http://127.0.0.1:40021/\n</VirtualHost>\n")
+        result, _ = self.run_bg("bg_preflight", EXTRA_S_LINES=line)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_preflight_lists_every_vhost_file_in_both_line_shapes(self):
+        result, _ = self.run_bg(
+            "bg_all_vhost_files",
+            APACHE_S_LINE="*:443                  is a NameVirtualHost\n"
+                          "         default server a.test (/etc/x/a.conf:1)\n"
+                          "         port 443 namevhost a.test (/etc/x/a.conf:1)\n"
+                          "         port 443 namevhost a.test (/etc/x/a.conf:1)\n"
+                          "192.0.2.1:80  b.test (/etc/x/b.conf:3)\n"
+                          "ServerRoot: \"/etc/apache2\"",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ["/etc/x/a.conf", "/etc/x/b.conf"])
 
     def test_preflight_refuses_when_the_vhost_lost_its_include(self):
         result, _ = self.run_bg("bg_preflight", vhost_include=False)
@@ -601,6 +703,30 @@ class BlueGreenTest(unittest.TestCase):
             self.assertIn("ERROR", result.stderr)
             self.assertEqual(upstream.read_text(), "original content\n")
 
+    def test_builder_bind_wait_accepts_a_listener_that_is_off(self):
+        result, events = self.deploy(BUILDER_OFF="green")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("has not bound the builder port", result.stderr)
+        stop = events.index("systemctl stop ncc-portal@blue")
+        probes = [e for e in events[stop:] if e == "curl http://127.0.0.1:4003/health"]
+        self.assertEqual(len(probes), 1)
+
+    def test_drain_warns_once_when_the_job_count_cannot_be_read(self):
+        result, events = self.deploy(RUNNING_JOBS="{:badrpc, :nodedown}",
+                                     BG_DRAIN_CAP_SECONDS="20")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        warning = "cannot read the executing job count on blue"
+        self.assertEqual(result.stderr.count(warning), 1, result.stderr)
+        self.assertIn("portal-rpc.sh", result.stderr)
+        # Unchanged behaviour: it still waits until the cap.
+        self.assertIn("drain cap", result.stderr)
+        self.assertEqual(self.running, ["green"])
+
+    def test_drain_does_not_warn_on_a_readable_job_count(self):
+        result, _ = self.deploy(RUNNING_JOBS="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("cannot read the executing job count", result.stderr)
+
     def test_builder_bind_wait_only_accepts_a_literal_bound_status(self):
         result, events = self.deploy(BUILDER_WAITING="green")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -627,9 +753,82 @@ class BlueGreenTest(unittest.TestCase):
     def test_rollback_starts_the_other_colour_without_building(self):
         result, events = self.run_bg("bg_rollback", active="green")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse([e for e in events if e.startswith(("build", "migrate", "carry"))])
+        self.assertFalse([e for e in events if e.startswith(("build", "migrate"))])
         self.assertIn("127.0.0.1:4002/ retry=0", self.include)
         self.assertEqual((self.cache, self.running), ("blue", ["blue"]))
+
+    # --- I2: the serving release's assets are carried before the switch ----
+
+    def test_rollback_carries_the_serving_assets_before_starting(self):
+        result, events = self.run_bg("bg_rollback", active="green")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("carry green blue", events)
+        self.assertLess(events.index("carry green blue"),
+                        events.index("systemctl start ncc-portal@blue"))
+
+    # --- I3: only a release recorded as served is a rollback target --------
+
+    def test_a_successful_deploy_records_what_each_colour_served(self):
+        result, _ = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.served, {"blue": OLD, "green": TARGET})
+
+    def test_rollback_after_a_successful_deploy_brings_back_the_previous_colour(self):
+        result, events = self.run_bg(f"bg_deploy {TARGET} && bg_rollback")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("127.0.0.1:4002/ retry=0", self.include)
+        self.assertEqual((self.cache, self.running), ("blue", ["blue"]))
+        self.assertIn(f"bringing back blue (sha {OLD})", result.stdout)
+        self.assertIn("carry green blue", events)
+        self.assertEqual(self.served, {"blue": OLD, "green": TARGET})
+
+    def test_rollback_verifies_the_recorded_sha(self):
+        # blue's node answers a different sha than the one recorded: the
+        # health checks catch it, and green keeps serving.
+        result, events = self.run_bg(f'echo {TARGET} > "$STATE/sha-blue"; bg_rollback',
+                                     active="green")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("127.0.0.1:4003/ retry=0", self.include)
+        self.assertEqual((self.cache, self.running), ("green", ["green"]))
+        self.assertIn(f"did not answer /health with sha {OLD}", result.stderr)
+
+    def test_rollback_after_a_failed_deploy_refuses(self):
+        failures = ({"BUILD_STATUS": "1"}, {"MIGRATE_STATUS": "1"}, {"BUILT_SHA": OLD},
+                    {"CRASHES": "green"})
+        for overrides in failures:
+            with self.subTest(**overrides):
+                result, events = self.run_bg(f"bg_deploy {TARGET} || true; bg_rollback",
+                                             **overrides)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("not one that ever served", result.stderr)
+                self.assertIn("127.0.0.1:4002/ retry=0", self.include)
+                self.assertEqual((self.cache, self.running), ("blue", ["blue"]))
+                self.assertIsNone(self.served["green"])
+                starts = [e for e in events if e == "systemctl start ncc-portal@green"]
+                self.assertLessEqual(len(starts), 1, "rollback started the failed build")
+
+    def test_rollback_after_a_failed_redeploy_of_the_same_sha_refuses(self):
+        # The build stamps the same sha the directory served before, so only
+        # the cleared served-<colour> tells the two apart.
+        result, _ = self.run_bg(f'TARGET={OLD}; bg_deploy {OLD} || true; bg_rollback',
+                                BUILD_STATUS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not one that ever served", result.stderr)
+
+    def test_rollback_without_a_served_record_refuses(self):
+        result, events = self.run_bg('rm -f "$NCC_INSTALL_DIR/served-blue"; bg_rollback',
+                                     active="green")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not one that ever served", result.stderr)
+        self.assertNotIn("systemctl start ncc-portal@blue", events)
+        self.assertNotIn("carry green blue", events)
+
+    def test_rollback_without_a_build_sha_refuses(self):
+        result, events = self.run_bg(
+            'rm -f "$NCC_INSTALL_DIR/releases/blue/BUILD_SHA"; bg_rollback', active="green")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("sha unknown", result.stderr)
+        self.assertNotIn("systemctl start ncc-portal@blue", events)
 
     def test_rollback_refuses_without_a_release_in_the_other_colour(self):
         result, events = self.run_bg('rm -rf "$NCC_INSTALL_DIR/releases/blue"; bg_rollback',
@@ -640,15 +839,11 @@ class BlueGreenTest(unittest.TestCase):
 
     def test_rollback_prints_the_target_release_sha(self):
         result, _ = self.run_bg(
-            'echo "deadbeef" > "$NCC_INSTALL_DIR/releases/blue/BUILD_SHA"; bg_rollback',
+            'for f in "$NCC_INSTALL_DIR/releases/blue/BUILD_SHA" "$NCC_INSTALL_DIR/served-blue" '
+            '"$STATE/sha-blue"; do echo deadbeef > "$f"; done; bg_rollback',
             active="green")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("sha deadbeef", result.stdout)
-
-    def test_rollback_prints_unknown_without_a_sha_file(self):
-        result, _ = self.run_bg("bg_rollback", active="green")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("sha unknown", result.stdout)
 
 
 class CarryAssetsTest(unittest.TestCase):

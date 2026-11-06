@@ -60,6 +60,47 @@ bg_vhost_file() {
     tr -d '()' | sed -E 's/:[0-9]+$//'
 }
 
+# Every vhost file `apachectl -S` lists, on any port, in either of the two
+# line shapes bg_vhost_file reads, once each.
+bg_all_vhost_files() {
+  apachectl -S 2>/dev/null |
+    awk '
+      $1 == "port" && $3 == "namevhost" { print $5; next }
+      $1 ~ /:[0-9]+$/ && $3 ~ /^\(/ { print $3 }
+    ' |
+    tr -d '()' | sed -E 's/:[0-9]+$//' | sort -u
+}
+
+# Refuses when an enabled vhost other than the include still proxies straight
+# to a colour's port: after the next switch it would keep sending traffic to
+# a colour that is stopped, or worse, to the idle one being built over.
+bg_check_direct_proxies() {
+  local f
+  while IFS= read -r f; do
+    [[ -n $f && $f != "$NCC_APACHE_UPSTREAM" ]] || continue
+    if [[ ! -r $f ]]; then
+      echo "refusing: cannot read $f (listed by apachectl -S) to check it for a direct proxy to 127.0.0.1:4002/4003" >&2
+      return 1
+    fi
+    # One awk, not grep -v | grep -q: under pipefail the -q's early exit can
+    # SIGPIPE the first grep and turn a match into a pass.
+    if awk '!/^[ \t]*#/ && /127\.0\.0\.1:400[23]([^0-9]|$)/ { found = 1; exit } END { exit !found }' "$f"; then
+      echo "refusing: $f proxies straight to 127.0.0.1:4002 or 127.0.0.1:4003; replace those lines with Include $NCC_APACHE_UPSTREAM, so the switch moves its traffic too" >&2
+      return 1
+    fi
+  done < <(bg_all_vhost_files)
+}
+
+# Refuses unless the include is exactly the template rendered with the
+# serving port: a deploy rewrites it from the template, so anything edited
+# into it by hand would be lost at the switch, silently.
+bg_check_include_rendered() { # port
+  if ! cmp -s <(sed "s/@PORT@/$1/g" "$NCC_SRC_DIR/ops/ncc-upstream.conf.template") "$NCC_APACHE_UPSTREAM"; then
+    echo "refusing: $NCC_APACHE_UPSTREAM is not ops/ncc-upstream.conf.template rendered with port $1: it was edited by hand or has drifted. Put the change in the template (or undo it), render the include from the template, and deploy again." >&2
+    return 1
+  fi
+}
+
 bg_write_include() {
   local port=$1 status
   sed "s/@PORT@/$port/g" "$NCC_SRC_DIR/ops/ncc-upstream.conf.template" > "$NCC_APACHE_UPSTREAM.new"
@@ -74,7 +115,7 @@ bg_write_include() {
 }
 
 bg_preflight() {
-  local cached host vhost
+  local cached host vhost state
   BG_ACTIVE=$(bg_serving_color) || return 1
   BG_IDLE=$(bg_other "$BG_ACTIVE")
   cached=$(cat "$NCC_INSTALL_DIR/active-color" 2>/dev/null || true)
@@ -83,16 +124,21 @@ bg_preflight() {
     echo "A deploy stopped between the switch and the cache write. Check which colour answers /health through Apache, write it to active-color, and deploy again." >&2
     return 1
   fi
-  if systemctl is-active --quiet "$BG_UNIT@$BG_IDLE"; then
-    echo "refusing: $BG_UNIT@$BG_IDLE is running but not serving (left from an incomplete deploy); look at it, stop it, then deploy again" >&2
+  # Only inactive or failed: activating (an auto-restart in progress),
+  # reloading and the rest mean the unit may be about to run.
+  state=$(systemctl is-active "$BG_UNIT@$BG_IDLE" 2>/dev/null || true)
+  if [[ $state != inactive && $state != failed ]]; then
+    echo "refusing: $BG_UNIT@$BG_IDLE is ${state:-in an unknown state} (systemctl is-active), not inactive or failed: it is running or restarting but not serving (left from an incomplete deploy); look at it, stop it, then deploy again" >&2
     return 1
   fi
+  bg_check_include_rendered "$(bg_port "$BG_ACTIVE")" || return 1
   host=$(bg_public_host) || return 1
   vhost=$(bg_vhost_file "$host")
   if [[ -z $vhost ]] || ! bg_includes_upstream "$vhost"; then
     echo "refusing: the :443 vhost of $host (${vhost:-not found by apachectl -S}) does not Include $NCC_APACHE_UPSTREAM; was it regenerated?" >&2
     return 1
   fi
+  bg_check_direct_proxies || return 1
 }
 
 # True if $1 (a vhost file) has an uncommented "Include $NCC_APACHE_UPSTREAM"
@@ -239,11 +285,35 @@ bg_point_apache_at() { # color; 0 ok, 1 failed & restored, 2 the restore itself
 
 # Chained with && so a failure stops at the first broken step instead of
 # silently running the rest; the caller decides what "incomplete" means.
+# Once marked, the colour's BUILD_SHA is recorded as served-<colour>: the
+# one thing bg_rollback accepts as proof that the release in a directory is
+# one that served, not a build that failed over it.
 bg_mark_serving() { # new old
   printf '%s\n' "$1" > "$NCC_INSTALL_DIR/active-color.tmp" &&
     mv "$NCC_INSTALL_DIR/active-color.tmp" "$NCC_INSTALL_DIR/active-color" &&
     systemctl enable "$BG_UNIT@$1" &&
-    systemctl disable "$BG_UNIT@$2"
+    systemctl disable "$BG_UNIT@$2" || return 1
+  bg_record_served "$1"
+}
+
+bg_served_file() { printf '%s\n' "$NCC_INSTALL_DIR/served-$1"; }
+
+# Best effort: a colour that cannot be recorded is merely not a rollback
+# target later, so this never fails the deploy that marked it.
+bg_record_served() { # color
+  local sha file
+  file=$(bg_served_file "$1")
+  sha=$(cat "$(bg_release "$1")/BUILD_SHA" 2>/dev/null || true)
+  if [[ -z $sha ]]; then
+    rm -f "$file" || true
+    echo "warning: $(bg_release "$1")/BUILD_SHA is missing or empty; $1 cannot be rolled back to later" >&2
+    return 0
+  fi
+  if ! { printf '%s\n' "$sha" > "$file.tmp" && mv "$file.tmp" "$file"; }; then
+    rm -f "$file" "$file.tmp" || true
+    echo "warning: could not record $file; $1 cannot be rolled back to later" >&2
+  fi
+  return 0
 }
 
 # Only points Apache and verifies; does not mark anything or stop anything.
@@ -304,7 +374,7 @@ bg_log_running_ids() { # old
 # consecutive or three total misses return 2 well before the cap could
 # repeat indefinitely.
 bg_drain() { # old new sha
-  local waited=0 running misses=0 total_misses=0 rc
+  local waited=0 running misses=0 total_misses=0 rc unreadable_warned=0
   bg_rpc "$1" "$BG_PAUSE_EXPR" || echo "warning: could not pause $1's queues; its jobs may be cut short" >&2
   while :; do
     rc=0
@@ -321,6 +391,10 @@ bg_drain() { # old new sha
       misses=0
     fi
     running=$(bg_rpc "$1" "$BG_RUNNING_EXPR" 2>/dev/null | tail -n 1 || true)
+    if [[ ! $running =~ ^[0-9]+$ ]] && ((unreadable_warned == 0)); then
+      echo "warning: cannot read the executing job count on $1 (rpc answered '${running:0:100}'); waiting until the drain cap. Check it by hand: ops/portal-rpc.sh --color $1 'Oban.check_all_queues(Oban)'" >&2
+      unreadable_warned=1
+    fi
     if [[ $running == 0 && $misses == 0 && $waited -ge $BG_WATCH_SECONDS ]]; then
       return 0
     fi
@@ -365,6 +439,8 @@ bg_switch_back() { # old new
   rm -f "$NCC_APACHE_UPSTREAM.bak" || true
   bg_mark_serving "$1" "$2" ||
     echo "ERROR: $1 serves again but marking it active failed (active-color cache, systemctl enable $1, or systemctl disable $2); fix each by hand." >&2
+  # $2 fell over while serving: never a release to roll back to.
+  rm -f "$(bg_served_file "$2")" || true
   bg_rpc "$1" "$BG_RESUME_EXPR" || echo "warning: could not resume $1's queues" >&2
   systemctl stop "$BG_UNIT@$2" || true
 }
@@ -407,7 +483,10 @@ bg_activate() { # old new sha-or-empty
     return 1
   fi
   for ((i = 0; i < BG_BIND_SECONDS; i += 1)); do
-    [[ $(curl -s --max-time 2 "http://127.0.0.1:$(bg_port "$new")/health" || true) == *'"builder_endpoint":"bound"'* ]] && return 0
+    # "off" is done too: a host whose builder listener is off has nothing to bind.
+    case $(curl -s --max-time 2 "http://127.0.0.1:$(bg_port "$new")/health" || true) in
+      *'"builder_endpoint":"bound"'* | *'"builder_endpoint":"off"'*) return 0 ;;
+    esac
     sleep 1
   done
   echo "warning: $new has not bound the builder port ${BG_BIND_SECONDS} s after $old stopped" >&2
@@ -416,6 +495,9 @@ bg_activate() { # old new sha-or-empty
 bg_deploy() { # target-sha
   bg_preflight || return 1
   echo "blue/green: $BG_ACTIVE serves; building $BG_IDLE"
+  # From here the idle directory is no longer the release that served,
+  # whatever its BUILD_SHA says, until it serves again.
+  rm -f "$(bg_served_file "$BG_IDLE")" || return 1
   bg_build "$BG_IDLE" || return 1
   bg_carry_assets "$BG_ACTIVE" "$BG_IDLE" || return 1
   bg_migrate "$BG_IDLE" || return 1
@@ -424,16 +506,27 @@ bg_deploy() { # target-sha
 
 # Back to the release in the other colour's directory: no build, no
 # migration rollback. That release survives only until the next deploy
-# builds over it.
+# builds over it, and only a release recorded as served (served-<colour>
+# equal to its BUILD_SHA) is one: a deploy that failed after building over
+# the directory left a release that never served. Health checks then verify
+# that sha, and the serving release's digested assets are carried over first
+# so pages it rendered keep loading.
 bg_rollback() {
   bg_preflight || return 1
-  # Present and non-empty; the start and its health check prove the rest.
-  if [[ ! -d $(bg_release "$BG_IDLE") || -z $(ls -A "$(bg_release "$BG_IDLE")" 2>/dev/null) ]]; then
-    echo "refusing: no release in $(bg_release "$BG_IDLE") to roll back to" >&2
+  local release target_sha served
+  release=$(bg_release "$BG_IDLE")
+  if [[ ! -d $release || -z $(ls -A "$release" 2>/dev/null) ]]; then
+    echo "refusing: no release in $release to roll back to" >&2
     return 1
   fi
-  local target_sha
-  target_sha=$(cat "$(bg_release "$BG_IDLE")/BUILD_SHA" 2>/dev/null || true)
-  echo "blue/green rollback: $BG_ACTIVE serves; bringing back $BG_IDLE (sha ${target_sha:-unknown})"
-  bg_activate "$BG_ACTIVE" "$BG_IDLE" ""
+  target_sha=$(cat "$release/BUILD_SHA" 2>/dev/null || true)
+  served=$(cat "$(bg_served_file "$BG_IDLE")" 2>/dev/null || true)
+  if [[ -z $target_sha || $target_sha != "$served" ]]; then
+    echo "refusing: the release in $release (sha ${target_sha:-unknown}) is not one that ever served ($(bg_served_file "$BG_IDLE") says '${served}'): a deploy that failed built over it, or it was never marked serving. Deploy a known-good commit instead." >&2
+    return 1
+  fi
+  echo "blue/green rollback: $BG_ACTIVE serves; bringing back $BG_IDLE (sha $target_sha)"
+  bg_carry_assets "$BG_ACTIVE" "$BG_IDLE" ||
+    echo "warning: could not carry $BG_ACTIVE's digested assets into $BG_IDLE; pages $BG_ACTIVE rendered may miss their assets after the switch" >&2
+  bg_activate "$BG_ACTIVE" "$BG_IDLE" "$target_sha"
 }
