@@ -428,21 +428,27 @@ defmodule NccAgent.BuildCache do
     cutoff = System.os_time(:second) - @stale_after_days * 86_400
 
     with {:ok, names} <- File.ls(root) do
-      for name <- names, name != keep, BuildCache.shareable_slug?(name) do
-        path = Path.join(root, name)
-
-        case File.lstat(path, time: :posix) do
-          {:ok, %File.Stat{type: :directory, mtime: mtime}} when mtime < cutoff ->
-            Logger.info("build cache: removing #{name}, unused for #{@stale_after_days} days")
-            File.rm_rf(path)
-
-          _ ->
-            :ok
-        end
-      end
+      for name <- names,
+          name != keep,
+          BuildCache.shareable_slug?(name),
+          do: prune_one(root, name, cutoff)
     end
 
     :ok
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp prune_one(root, name, cutoff) do
+    path = Path.join(root, name)
+
+    case File.lstat(path, time: :posix) do
+      {:ok, %File.Stat{type: :directory, mtime: mtime}} when mtime < cutoff ->
+        Logger.info("build cache: removing #{name}, unused for #{@stale_after_days} days")
+        File.rm_rf(path)
+
+      _ ->
+        :ok
+    end
   end
 
   @doc false

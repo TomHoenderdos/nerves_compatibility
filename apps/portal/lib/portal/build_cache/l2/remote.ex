@@ -157,17 +157,14 @@ defmodule Portal.BuildCache.L2.Remote do
   end
 
   defp head(cfg, obj, deadline) do
-    if System.monotonic_time(:millisecond) < deadline do
-      case Client.head(cfg, obj.key) do
-        {:ok, %{size: size, sha256: sha}} when size == obj.size ->
-          sha = sha && String.downcase(sha)
-          if BuildCache.sha256?(sha), do: {:ok, Map.put(obj, :sha256, sha)}, else: :skip
-
-        _ ->
-          :skip
-      end
+    with true <- System.monotonic_time(:millisecond) < deadline,
+         {:ok, %{size: size, sha256: sha}} when size == obj.size and is_binary(sha) <-
+           Client.head(cfg, obj.key),
+         sha = String.downcase(sha),
+         true <- BuildCache.sha256?(sha) do
+      {:ok, Map.put(obj, :sha256, sha)}
     else
-      :skip
+      _ -> :skip
     end
   end
 
