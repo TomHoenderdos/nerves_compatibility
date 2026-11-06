@@ -193,11 +193,23 @@ class LayoutGuardTest(unittest.TestCase):
         self.assertIn("must be under", result.stderr)
         self.assertEqual(events, [])
 
+        # A destination that string-prefix-matches the install dir but
+        # escapes it with a ".." segment must be refused too.
+        result, events = self.run_script(
+            "build-release.sh", ["/nowhere/install/../../etc"], env_file_text=layout
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be under", result.stderr)
+        self.assertEqual(events, [])
+
         result, events = self.run_script("build-release.sh", ["/nowhere/install/releases/green"],
                                          env_file_text=layout)
         docker = [e for e in events if e.startswith("docker ")]
         self.assertEqual(len(docker), 1, events)
-        self.assertIn("-e NCC_BUILD_SHA=", docker[0])
+        # The sha is no longer passed through the container; it is written to
+        # the release root after the build (BUILD_SHA is a runtime file now,
+        # not compile-time config, to survive `_build` reuse across deploys).
+        self.assertNotIn("NCC_BUILD_SHA", docker[0])
 
     def test_the_layout_function_is_the_same_in_every_script(self):
         def body(script):
