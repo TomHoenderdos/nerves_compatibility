@@ -471,6 +471,26 @@ defmodule NccWorker.Portability.EventsTest do
              Events.decide(nif, ctx, "pkg")
   end
 
+  test "running a program from mix.exs refuses outright; a lookup goes to R4",
+       %{ctx: ctx, pkg: pkg} do
+    for {mfa, arg} <- [
+          {"os:cmd/1", %{"cmd" => "git describe"}},
+          {"os:cmd/2", %{"cmd" => "git describe"}},
+          {"erlang:open_port/2", %{"port" => "{spawn,\"git describe\"}"}},
+          {"erlang:open_port/2", %{"port" => "{spawn_executable,\"/usr/bin/git\"}"}}
+        ] do
+      event = in_mix_exs(ev("programs", mfa, arg), pkg, 4)
+      assert {:refuse, "compile-time host read: " <> rest} = Events.decide(event, ctx, "pkg")
+      assert String.starts_with?(rest, mfa)
+    end
+
+    lookup = in_mix_exs(ev("programs", "os:find_executable/1", %{"name" => "git"}), pkg, 4)
+    assert {:observe, "mix_exs_allowed", _} = Events.decide(lookup, ctx, "pkg")
+
+    assert {:refuse, "compile-time host read in mix.exs: os:find_executable/1 sets " <> _} =
+             Events.decide(put_in(lookup, ["user", "line"], 5), ctx, "pkg")
+  end
+
   test "a mix.exs the slice cannot read refuses", %{ctx: ctx, pkg: pkg} do
     File.write!(Path.join(pkg, "mix.exs"), String.duplicate("#", 300 * 1024))
     event = in_mix_exs(ev("env", "os:getenv/1", %{"name" => "XV"}), pkg, 4)

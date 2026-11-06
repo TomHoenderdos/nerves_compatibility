@@ -32,14 +32,18 @@ defmodule NccWorker.Portability.Events do
       dependency's window (R3 decides there).
     * A host read whose first user frame is in a closure dependency's
       `mix.exs` goes to R4 (`MixExsSlice`): allowed ones are observed as
-      `mix_exs_allowed`. Integrity, writes, links, `set_cwd` and native
-      loading never go to R4: they are not observations a slice can follow.
+      `mix_exs_allowed`. Integrity, writes, links, `set_cwd`, native
+      loading and running a program (`os:cmd`, `open_port`, and so
+      `System.cmd`/`Port.open`) never go to R4: they are not observations a
+      slice can follow, and refuse directly. Looking a program up
+      (`os:find_executable`) is an observation and does go to R4.
     * Our generated project's own `mix.exs` (owner `:wrapper`) is ignored.
 
   Fail closed: an event whose stack the tracer could not judge (extent
   `unjudged`), whose extent or channel this module does not know, or whose
   shape is not an event's, could not be judged (`{:unjudged, reason}`), never
-  allowed.
+  allowed. That check comes before every rule, the `:wrapper` owner's
+  included: an unjudged event is never ignored, wherever it is attributed.
   """
 
   alias Compatibility.Portability, as: Reasons
@@ -47,8 +51,12 @@ defmodule NccWorker.Portability.Events do
 
   @path_modules ~w(filename Elixir.Path file filelib code Elixir.Code)
   @host_channels ~w(env programs network crypto native)
-  # Host reads R4 may allow when made from a dependency's mix.exs.
-  @slice_channels ~w(os_identity env programs network crypto install file_read)
+  # Host reads R4 may allow when made from a dependency's mix.exs. Of the
+  # `programs` channel only the lookup: running a program (`os:cmd`,
+  # `open_port`, so `System.cmd` and `Port.open`) does things the trace
+  # cannot follow, so it refuses directly.
+  @slice_channels ~w(os_identity env network crypto install file_read)
+  @slice_programs ~w(os:find_executable/1 os:find_executable/2)
   @extents ~w(frame dispatcher truncated lineage)
   @links ~w(file:make_symlink/2 file:make_link/2 prim_file:make_symlink/2 prim_file:make_link/2)
   @max_mix_exs_bytes 1024 * 1024
@@ -105,9 +113,12 @@ defmodule NccWorker.Portability.Events do
 
   defp owned(_event, _ctx, :wrapper, _slices), do: :ignore
 
-  defp owned(%{"channel" => channel} = event, ctx, owner, slices) do
+  defp owned(%{"channel" => channel, "mfa" => mfa} = event, ctx, owner, slices) do
     case channel(channel, event, ctx, owner) do
       {:refuse, _} = refusal when channel in @slice_channels ->
+        in_mix_exs(event, ctx, owner, slices, refusal)
+
+      {:refuse, _} = refusal when channel == "programs" and mfa in @slice_programs ->
         in_mix_exs(event, ctx, owner, slices, refusal)
 
       other ->
