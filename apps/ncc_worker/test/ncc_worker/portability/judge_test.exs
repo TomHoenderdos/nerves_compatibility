@@ -729,4 +729,70 @@ defmodule NccWorker.Portability.JudgeTest do
                Portability.lock_snapshot(proj)
     end
   end
+
+  describe "a real traced compile" do
+    @describetag timeout: 300_000
+    # Upstream tracer defect (Tasks 3/4): `elixir -S mix` evaluates the
+    # `bin/mix` script as `elixir_compiler_0`, which has no object file, so
+    # every Mix VM stack has a user frame and every process it spawns is
+    # user lineage; a clean closure refuses with events outside every
+    # window. Unskip once the stack classifier treats that frame as
+    # toolchain (task-10-report.md).
+    @describetag skip: "tracer classifies the bin/mix script frame as user extent"
+
+    alias NccWorker.TracerFixtures
+
+    test "run/3 passes a clean closure and refuses a compile-time OS read", %{tmp_dir: dir} do
+      root = Path.join(dir, "real")
+
+      proj =
+        TracerFixtures.project(root, ["fx_judge_top"], %{
+          "fx_judge_top" => %{
+            deps: ["fx_judge_leaf"],
+            files: %{
+              "lib/fx_judge_top.ex" => TracerFixtures.attr_module("FxJudgeTop", "FxJudgeLeaf.f()")
+            }
+          },
+          "fx_judge_leaf" =>
+            TracerFixtures.lib(
+              "fx_judge_leaf",
+              "defmodule FxJudgeLeaf do\n  def f, do: :ok\nend\n"
+            )
+        })
+
+      opts = [
+        env: TracerFixtures.env(proj),
+        releases: %{},
+        log_file: Path.join(root, "trace.log"),
+        timeout_ms: 240_000,
+        run_started_at: System.monotonic_time(:second)
+      ]
+
+      assert %{status: :pass, observations: obs} = Portability.run(proj, "fx_judge_top", opts),
+             File.read!(Path.join(root, "trace.log"))
+
+      assert is_integer(obs["trace_stats"]["wall_ms"])
+      assert obs["trace_stats"]["windows"] == 2
+
+      leaf = Path.join([proj, "deps", "fx_judge_leaf", "lib", "fx_judge_leaf.ex"])
+      File.write!(leaf, TracerFixtures.attr_module("FxJudgeLeaf", ":os.type()") <> "\n")
+
+      File.write!(
+        leaf,
+        String.replace(File.read!(leaf), "def x, do: @x", "def x, do: @x\n  def f, do: :ok")
+      )
+
+      assert %{
+               reason:
+                 "closure dependency observed the host: fx_judge_leaf (compile-time host read: os:type/0" <>
+                   _
+             } =
+               Portability.run(proj, "fx_judge_top", opts)
+
+      traced = TracerFixtures.trace(proj, ["fx_judge_leaf"])
+
+      assert %{reason: "compile-time host read: os:type/0" <> _} =
+               TracerFixtures.judge(proj, "fx_judge_leaf", traced)
+    end
+  end
 end
