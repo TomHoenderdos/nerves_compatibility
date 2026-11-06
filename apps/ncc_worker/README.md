@@ -331,6 +331,22 @@ mix test apps/ncc_worker/test/
 make build          # builds the escript into the ncc-worker:local image
 ```
 
+The image builds only under BuildKit. Under the legacy builder (what
+`docker build` falls back to when the buildx component is missing, as with
+Ubuntu's `docker.io` package alone) the build has been seen to fail at the
+archives step with `mix: command not found`. The Dockerfile uses no
+BuildKit-only syntax (no `# syntax=` line, heredocs, `--mount` or `--link`),
+so the exact cause of that failure is not known. Install the buildx plugin
+(Ubuntu: `docker-buildx`; Docker's own packages: `docker-buildx-plugin`).
+`make build` sets `DOCKER_BUILDKIT=1`, so without buildx it stops at once
+with "BuildKit is enabled but the buildx component is missing".
+
+CI builds the image for `linux/amd64` and `linux/arm64` on native runners
+(`.github/workflows/images.yml`). The `nerves_system_br` base is pinned by
+its multi-arch index digest, so both architectures build on the same base.
+To build the other architecture locally, run `docker build --platform
+linux/arm64 ...` (or `linux/amd64`). Under emulation that is slow.
+
 ## Dependency policy
 
 All deps must come from Hex. This is enforced in `NccWorker.LockPolicy` and is load-bearing for reproducibility — don't relax it.
