@@ -149,4 +149,24 @@ defmodule NccWorker.DepsLockTest do
       assert DepsLock.versions(dir) == :error
     end
   end
+
+  describe "hex_releases/1" do
+    test "maps every app with an outer checksum to its Hex name, version and checksum",
+         %{dir: dir} do
+      File.write!(Path.join(dir, "mix.lock"), """
+      %{
+        "app_a": {:hex, :hex_a, "1.0.0", "i-a", [:mix], [], "hexpm", "o-a"},
+        "old": {:hex, :old, "0.1.0", "i-old", [:mix], [], "hexpm"},
+        "gitdep": {:git, "https://example.invalid/x.git", "abc", []},
+      }
+      """)
+
+      assert DepsLock.hex_releases(dir) ==
+               {:ok, %{"app_a" => %{name: "hex_a", version: "1.0.0", checksum: "o-a"}}}
+    end
+
+    test "a missing lock is an error", %{dir: dir} do
+      assert DepsLock.hex_releases(dir) == :error
+    end
+  end
 end

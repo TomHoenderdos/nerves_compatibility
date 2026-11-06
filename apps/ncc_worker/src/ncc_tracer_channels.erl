@@ -31,6 +31,9 @@ patterns() ->
      {prim_file, read_file, 1}, {prim_file, read_file_info, 1},
      {prim_file, read_file_info, 2}, {prim_file, list_dir, 1}, {prim_file, open, 2},
      {prim_file, read_link, 1}, {prim_file, get_cwd, 0},
+     %% Changing the working directory changes what every later relative
+     %% path names, so the judge must see it (Rev 2 review, Task 6).
+     {file, set_cwd, 1}, {prim_file, set_cwd, 1},
      {erl_prim_loader, get_file, 1}, {erl_prim_loader, list_dir, 1},
      {erl_prim_loader, read_file_info, 1},
      {file, write_file, 2}, {file, write_file, 3}, {file, make_dir, 1},
@@ -101,6 +104,7 @@ specific(os, cmd, [Cmd | _]) -> {programs, #{cmd => chars(Cmd)}};
 specific(os, find_executable, [Name | _]) -> {programs, #{name => chars(Name)}};
 specific(M, open, [Path, Modes]) when M =:= file; M =:= prim_file -> open(Path, Modes);
 specific(M, get_cwd, _) when M =:= file; M =:= prim_file -> {file_read, #{cwd => true}};
+specific(M, set_cwd, [Dir]) when M =:= file; M =:= prim_file -> {cwd, #{path => chars(Dir)}};
 specific(filelib, wildcard, [Pattern]) -> {file_read, #{path => wildcard_dir(Pattern, "")}};
 specific(filelib, wildcard, [Pattern, Cwd]) -> {file_read, #{path => wildcard_dir(Pattern, Cwd)}};
 specific(M, rename, [From, To]) when M =:= file; M =:= prim_file ->

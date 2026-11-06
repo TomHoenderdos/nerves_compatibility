@@ -81,6 +81,27 @@ defmodule NccWorker.DepsLock do
   end
 
   @doc """
+  Every locked Hex release with an outer checksum, keyed by app name (the
+  lock's key): its Hex name, version and outer checksum, which name and
+  verify its tarball in the Hex cache (`NccWorker.HexCache.package_tarball/4`).
+  `:error` when the lock is missing or unreadable.
+  """
+  @spec hex_releases(String.t()) ::
+          {:ok, %{String.t() => %{name: String.t(), version: String.t(), checksum: String.t()}}}
+          | :error
+  def hex_releases(project_dir) do
+    with {:ok, lock} <- read_lock(project_dir) do
+      {:ok, lock |> Enum.flat_map(&hex_release/1) |> Map.new()}
+    end
+  end
+
+  defp hex_release({app, {:hex, hex_name, version, _inner, _managers, _deps, _repo, outer}})
+       when is_binary(version) and is_binary(outer),
+       do: [{app, %{name: to_string(hex_name), version: version, checksum: outer}}]
+
+  defp hex_release(_entry), do: []
+
+  @doc """
   The package's optional dependencies the lock did not resolve, as
   `%{app, package, requirement}`, for `NccWorker.Project.add_optional_deps/3`
   to add to the generated project. `[]` when the lock is missing or does not

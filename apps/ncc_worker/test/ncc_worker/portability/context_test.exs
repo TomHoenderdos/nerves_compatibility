@@ -34,18 +34,51 @@ defmodule NccWorker.Portability.ContextTest do
     File.ln_s!(Path.join(pkg, "README.md"), Path.join(proj, "_build/host/lib/pkg/readme"))
     File.ln_s!(Path.join(pkg, "priv"), Path.join(proj, "_build/host/lib/pkg/priv"))
 
+    # What deps/<d> claims is ignored: an untraced build step can rewrite it.
     File.write!(
       Path.join(pkg, "hex_metadata.config"),
-      ~s({<<"files">>,[<<"lib">>,<<"README.md">>,<<"priv">>]}.\n)
-    )
-
-    File.write!(
-      Path.join(nat, "hex_metadata.config"),
-      ~s({<<"files">>,[<<"priv/x.so">>,<<"mix.exs">>]}.\n)
+      ~s({<<"files">>,[<<"lib">>,<<"README.md">>,<<"priv">>,<<"gen.hrl">>]}.\n)
     )
 
     report = report(dir, proj, ["pkg"])
-    %{dir: dir, proj: proj, report: report, ctx: Context.build(proj, "pkg", report, ["nat"])}
+    ctx = build(dir, proj, "pkg", report)
+    %{dir: dir, proj: proj, report: report, ctx: ctx}
+  end
+
+  @metas %{
+    "pkg" => ~s({<<"files">>,[<<"lib">>,<<"README.md">>,<<"priv">>]}.\n),
+    "nat" => ~s({<<"files">>,[<<"priv/x.so">>,<<"mix.exs">>]}.\n)
+  }
+
+  # Lays out a HEX_HOME with one tarball per app (Hex name `<app>_hex`) and
+  # the lock entries that verify them, then builds the context.
+  defp build(dir, proj, package, report, opts \\ []) do
+    metas = Map.merge(@metas, Keyword.get(opts, :metas, %{}))
+    home = Path.join(dir, "hex-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(home, "packages/hexpm"))
+
+    releases =
+      Map.new(metas, fn {app, meta} ->
+        bytes = tarball([{"VERSION", "3"}, {"metadata.config", meta}])
+        File.write!(Path.join(home, "packages/hexpm/#{app}_hex-1.0.0.tar"), bytes)
+        sum = :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+        {app, %{name: "#{app}_hex", version: "1.0.0", checksum: sum}}
+      end)
+
+    releases = Map.merge(releases, Keyword.get(opts, :releases, %{}))
+
+    Context.build(proj, package, report, Keyword.get(opts, :native, ["nat"]),
+      hex_home: home,
+      releases: releases
+    )
+  end
+
+  defp tarball(members) do
+    path = Path.join(System.tmp_dir!(), "ncc-ctx-#{System.unique_integer([:positive])}.tar")
+    :ok = :erl_tar.create(String.to_charlist(path), for({n, b} <- members, do: {~c"#{n}", b}))
+    bytes = File.read!(path)
+    File.rm!(path)
+    bytes
   end
 
   defp report(dir, proj, packages) do
@@ -178,7 +211,7 @@ defmodule NccWorker.Portability.ContextTest do
 
     assert Context.manager(ctx, "pkg") == "mix"
     assert Context.cwd(ctx, "pkg") == Context.realpath(Path.join(proj, "deps/pkg"))
-    assert Context.cwd(ctx, :outside) == Context.realpath(proj)
+    assert Context.cwd(ctx, :outside) == nil
     assert Context.dest(ctx, "other") == nil
     assert Context.ebin(ctx, "other") == nil
     assert Context.manager(ctx, "other") == nil
@@ -188,17 +221,17 @@ defmodule NccWorker.Portability.ContextTest do
   describe "the package as an OTP app" do
     test "a Hex name that is not the app name resolves through the closure's packages",
          %{dir: dir, proj: proj} do
-      ctx = Context.build(proj, "pkg_hex", report(dir, proj, ["pkg"]), [])
+      ctx = build(dir, proj, "pkg_hex", report(dir, proj, ["pkg"]), native: [])
       assert ctx.package == "pkg"
       assert Context.dep?(ctx, ctx.package)
     end
 
     test "a package the closure does not name is no dependency", %{dir: dir, proj: proj} do
-      ctx = Context.build(proj, "pkg_hex", report(dir, proj, ["pkg", "nat"]), [])
+      ctx = build(dir, proj, "pkg_hex", report(dir, proj, ["pkg", "nat"]), native: [])
       assert ctx.package == nil
       refute Context.dep?(ctx, ctx.package)
 
-      ctx = Context.build(proj, "pkg", %Report{}, [])
+      ctx = build(dir, proj, "pkg", %Report{}, native: [])
       assert ctx.package == nil
       assert ctx.deps == %{}
     end
@@ -277,16 +310,46 @@ defmodule NccWorker.Portability.ContextTest do
       assert Context.writable?(ctx, Path.join(ebin, "sub/../y"), "pkg")
     end
 
-    test "a relative read outside every window resolves against the project", %{
-      ctx: ctx,
-      proj: proj
-    } do
-      assert Context.resolve(ctx, "mix.exs", :outside) ==
-               Context.realpath(Path.join(proj, "mix.exs"))
+    test "a relative path outside every dependency window is unresolvable",
+         %{ctx: ctx, proj: proj} do
+      for owner <- [:outside, :quiet, :wrapper, "other"] do
+        assert Context.resolve(ctx, "mix.exs", owner) == nil
+        assert Context.cwd(ctx, owner) == nil
+        refute readable?(ctx, "deps/pkg/lib/sub/a.ex", owner)
+      end
 
-      refute readable?(ctx, "mix.exs", :outside)
-      refute readable?(ctx, "deps/pkg/gen.hrl", :outside)
-      assert readable?(ctx, "deps/pkg/lib/sub/a.ex", :quiet)
+      assert readable?(ctx, Path.join(proj, "deps/pkg/lib/sub/a.ex"), :quiet)
+      assert Context.realpath("relative/x") == nil
+      refute Context.writable?(ctx, "ebin/x", :outside)
+    end
+
+    test "a relative path in a window that changed directory is unresolvable",
+         %{dir: dir, proj: proj, report: report} do
+      cd = &%{"kind" => "event", "channel" => "cwd", "ts" => &1, "arg" => %{"path" => "/"}}
+
+      ctx = build(dir, proj, "pkg", %{report | events: [cd.(35)]})
+      assert Context.resolve(ctx, "lib/sub/a.ex", "pkg") == nil
+      refute readable?(ctx, "lib/sub/a.ex", "pkg")
+      refute Context.writable?(ctx, "../../_build/host/lib/pkg/ebin/x", "pkg")
+      assert readable?(ctx, Path.join(proj, "deps/pkg/lib/sub/a.ex"), "pkg")
+      assert readable?(ctx, "mix.exs", "nat")
+
+      # A cd from the wrapper's mix.exs counts against the window it ran in.
+      wrapper = Map.put(cd.(15), "user", %{"file" => Path.join(proj, "mix.exs")})
+      ctx = build(dir, proj, "pkg", %{report | events: [wrapper]})
+      assert Context.resolve(ctx, "mix.exs", "nat") == nil
+      assert readable?(ctx, "lib/sub/a.ex", "pkg")
+
+      # A cd in a dependency's child VM counts against that dependency.
+      child = %{start: nil, sentinel?: true, compiles: [], events: [cd.(1)], problems: []}
+      ctx = build(dir, proj, "pkg", %{report | children: %{"nat" => child}})
+      assert Context.resolve(ctx, "mix.exs", "nat") == nil
+      assert readable?(ctx, "lib/sub/a.ex", "pkg")
+
+      # Other channels change nothing.
+      read = %{cd.(35) | "channel" => "file_read"}
+      ctx = build(dir, proj, "pkg", %{report | events: [read]})
+      assert readable?(ctx, "lib/sub/a.ex", "pkg")
     end
 
     test "case variants do not match", %{ctx: ctx, proj: proj} do
@@ -299,7 +362,7 @@ defmodule NccWorker.Portability.ContextTest do
          %{dir: dir, proj: proj} do
       alias_dir = Path.join(dir, "alias")
       File.ln_s!(proj, alias_dir)
-      ctx = Context.build(alias_dir, "pkg", report(dir, alias_dir, ["pkg"]), ["nat"])
+      ctx = build(dir, alias_dir, "pkg", report(dir, alias_dir, ["pkg"]))
 
       assert ctx.project_dir == Context.realpath(proj)
       assert readable?(ctx, Path.join(proj, "deps/pkg/lib/sub/a.ex"), :outside)
@@ -308,29 +371,54 @@ defmodule NccWorker.Portability.ContextTest do
     end
 
     test "hostile Hex file list entries do not widen the list", %{dir: dir, proj: proj} do
-      File.write!(
-        Path.join(proj, "deps/pkg/hex_metadata.config"),
+      meta =
         ~s({<<"files">>,[<<"..">>,<<"/">>,<<"">>,<<"../../mix.exs">>,<<".">>,{x},<<"./lib/">>]}.\n)
-      )
 
-      ctx = Context.build(proj, "pkg", report(dir, proj, ["pkg"]), ["nat"])
+      ctx = build(dir, proj, "pkg", report(dir, proj, ["pkg"]), metas: %{"pkg" => meta})
       assert readable?(ctx, "lib/sub/a.ex", "pkg")
       refute readable?(ctx, "README.md", "pkg")
       refute readable?(ctx, "gen.hrl", "pkg")
       refute readable?(ctx, "../../mix.exs", "pkg")
     end
 
-    test "no Hex file list allows no source file", %{dir: dir, proj: proj} do
-      File.rm!(Path.join(proj, "deps/pkg/hex_metadata.config"))
-      ctx = Context.build(proj, "pkg", report(dir, proj, ["pkg"]), ["nat"])
+    test "the list comes from the verified tarball, never from deps/<d>", %{ctx: ctx} do
+      # deps/pkg/hex_metadata.config lists gen.hrl; the tarball does not.
+      refute readable?(ctx, "gen.hrl", "pkg")
+      assert readable?(ctx, "lib/sub/a.ex", "pkg")
+    end
+
+    test "a tarball that is missing or does not match the lock allows no source file",
+         %{dir: dir, proj: proj, report: report} do
+      cases = [
+        %{"pkg" => %{name: "pkg_hex", version: "1.0.0", checksum: String.duplicate("0", 64)}},
+        %{"pkg" => %{name: "pkg_hex", version: "9.9.9", checksum: String.duplicate("0", 64)}},
+        %{"pkg" => %{name: "../pkg_hex", version: "1.0.0", checksum: String.duplicate("0", 64)}}
+      ]
+
+      for releases <- cases do
+        ctx = build(dir, proj, "pkg", report, releases: releases)
+        refute readable?(ctx, "lib/sub/a.ex", "pkg")
+        refute readable?(ctx, "README.md", "pkg")
+        assert readable?(ctx, Path.join(proj, "_build/host/lib/pkg/ebin"), :outside)
+        assert readable?(ctx, "mix.exs", "nat")
+      end
+    end
+
+    test "no lock entry or no Hex home allows no source file", %{proj: proj, report: report} do
+      ctx = Context.build(proj, "pkg", report, ["nat"], hex_home: nil, releases: %{})
       refute readable?(ctx, "lib/sub/a.ex", "pkg")
-      assert readable?(ctx, Path.join(proj, "_build/host/lib/pkg/ebin"), :outside)
+      refute readable?(ctx, "mix.exs", "nat")
+
+      ctx =
+        Context.build(proj, "pkg", report, ["nat"], hex_home: "/nonexistent", releases: :error)
+
+      refute readable?(ctx, "lib/sub/a.ex", "pkg")
     end
 
     test "the install roots allow reads, but never the filesystem root", %{dir: dir, proj: proj} do
       otp = Path.join(dir, "otp/lib/kernel/ebin")
       File.mkdir_p!(otp)
-      ctx = Context.build(proj, "pkg", report(dir, proj, ["pkg"]), ["nat"])
+      ctx = build(dir, proj, "pkg", report(dir, proj, ["pkg"]))
       assert readable?(ctx, Path.join(otp, "kernel.app"), :outside)
       refute readable?(ctx, Path.join(dir, "otp-evil/x"), :outside)
 
@@ -339,7 +427,7 @@ defmodule NccWorker.Portability.ContextTest do
         | start: %{"otp_root" => "/", "elixir_root" => "relative"}
       }
 
-      ctx = Context.build(proj, "pkg", root, ["nat"])
+      ctx = build(dir, proj, "pkg", root)
       assert ctx.otp_root == nil
       assert ctx.elixir_root == nil
       refute readable?(ctx, "/etc/hosts", :outside)

@@ -30,8 +30,18 @@ defmodule NccWorker.Portability.Context do
   under `priv`. Never the project's own files: they stand for the consumer
   project. Writes are allowed only under the owning window's dependency's
   `ebin`.
+
+  The Hex file list is the `metadata.config` of the dependency's tarball in
+  the run's Hex cache, used only when its outer checksum is the lock's
+  (`NccWorker.Portability.HexFiles`); without one, no source file of that
+  dependency is readable. A relative path resolves only inside a dependency
+  window, against its source dir, and not at all in a window where user code
+  changed the directory (`set_cwd`): never against this process's own
+  directory.
   """
 
+  alias NccWorker.{DepsLock, HexCache}
+  alias NccWorker.Portability.HexFiles
   alias NccWorker.Tracer.Report
 
   defstruct [
@@ -42,7 +52,8 @@ defmodule NccWorker.Portability.Context do
     roots: [],
     deps: %{},
     windows: [],
-    quiet: []
+    quiet: [],
+    cd: MapSet.new()
   ]
 
   @type dep :: %{
@@ -62,27 +73,74 @@ defmodule NccWorker.Portability.Context do
           roots: [String.t()],
           deps: %{String.t() => dep()},
           windows: [map()],
-          quiet: [map()]
+          quiet: [map()],
+          cd: MapSet.t()
         }
 
   @max_hops 40
 
-  @spec build(String.t(), String.t(), Report.t(), [String.t()]) :: t()
-  def build(project_dir, package, %Report{} = report, native) do
+  @doc """
+  The context of one traced compile of `project_dir`. Options:
+
+    * `:hex_home`, the `HEX_HOME` whose `packages/hexpm/` holds the run's
+      tarballs (default: this process's `HEX_HOME`);
+    * `:releases`, `{:ok, %{app => %{name, version, checksum}}}` or a bare
+      map, the locked Hex releases that verify them (default: the project's
+      `mix.lock`, `NccWorker.DepsLock.hex_releases/1`).
+
+  A dependency whose tarball is missing or does not match its lock entry has
+  no file list, so none of its source files is readable.
+  """
+  @spec build(String.t(), String.t(), Report.t(), [String.t()], keyword()) :: t()
+  def build(project_dir, package, %Report{} = report, native, opts \\ []) do
     start = report.start || %{}
     closure = report.closure || %{}
     listed = for %{"app" => app} = dep when is_binary(app) <- list(closure["deps"]), do: dep
+    hex = hex_source(project_dir, opts)
 
-    %__MODULE__{
+    ctx = %__MODULE__{
       project_dir: realpath(project_dir),
       package: package_app(package, closure["packages"]),
-      deps: Map.new(listed, &{&1["app"], dep_info(&1, native)}),
+      deps: Map.new(listed, &{&1["app"], dep_info(&1, native, hex)}),
       windows: report.windows,
       quiet: report.quiet,
       otp_root: install_root(start["otp_root"]),
       elixir_root: install_root(start["elixir_root"]),
       roots: roots(project_dir, start)
     }
+
+    %{ctx | cd: changed_dir(ctx, report)}
+  end
+
+  defp hex_source(project_dir, opts) do
+    home = Keyword.get_lazy(opts, :hex_home, fn -> System.get_env("HEX_HOME") end)
+
+    releases =
+      case Keyword.get_lazy(opts, :releases, fn -> DepsLock.hex_releases(project_dir) end) do
+        {:ok, map} when is_map(map) -> map
+        map when is_map(map) -> map
+        _ -> %{}
+      end
+
+    {home, releases}
+  end
+
+  # The apps a user-extent `set_cwd` ran for: by its owner and by the window
+  # its timestamp falls in (a cd from the wrapper's `mix.exs` still moves
+  # that window), and by app for a child VM's events.
+  defp changed_dir(ctx, report) do
+    main =
+      for %{"channel" => "cwd"} = event <- report.events,
+          app <- [owner(ctx, event), by_time(ctx, event["ts"])],
+          is_binary(app),
+          do: app
+
+    children =
+      for {app, %{events: events}} <- report.children,
+          Enum.any?(events, &match?(%{"channel" => "cwd"}, &1)),
+          do: app
+
+    MapSet.new(main ++ children)
   end
 
   defp list(value) when is_list(value), do: value
@@ -138,11 +196,14 @@ defmodule NccWorker.Portability.Context do
 
   @doc """
   The working directory a relative path in `owner`'s window resolves
-  against: Mix compiles a dependency inside its source dir; anything else
-  runs in the project.
+  against: Mix compiles a dependency inside its source dir. `nil`, so no
+  relative path resolves, outside every dependency window and in a window
+  where user code changed the directory (`set_cwd`, the `cwd` channel).
   """
   @spec cwd(t(), term()) :: String.t() | nil
-  def cwd(ctx, owner), do: if(dep?(ctx, owner), do: dest(ctx, owner), else: ctx.project_dir)
+  def cwd(ctx, owner) do
+    if dep?(ctx, owner) and not MapSet.member?(ctx.cd, owner), do: dest(ctx, owner)
+  end
 
   @doc "The real path a read or write of `path` in `owner`'s window touches."
   @spec resolve(t(), term(), term()) :: String.t() | nil
@@ -297,17 +358,19 @@ defmodule NccWorker.Portability.Context do
   defp clean?(_parts), do: false
 
   @doc """
-  The real path of `path`, a relative one taken against the current
-  directory: symlinks followed component by component, `.` and `..` applied
-  to the resolved directory. `nil` for `nil`, `""` or a symlink loop.
+  The real path of an absolute `path`: symlinks followed component by
+  component, `.` and `..` applied to the resolved directory. `nil` for a
+  relative path (never this process's own directory), `nil`, `""` or a
+  symlink loop.
   """
   @spec realpath(term()) :: String.t() | nil
   def realpath(path), do: realpath(path, nil)
 
   defp realpath(path, cwd) when is_binary(path) and path != "" do
-    case Path.type(path) do
-      :absolute -> walk(Path.split(path), [], 0)
-      _relative -> relative(path, cwd || File.cwd!())
+    case {Path.type(path), cwd} do
+      {:absolute, _cwd} -> walk(Path.split(path), [], 0)
+      {_relative, cwd} when is_binary(cwd) -> relative(path, cwd)
+      {_relative, nil} -> nil
     end
   end
 
@@ -345,7 +408,7 @@ defmodule NccWorker.Portability.Context do
     end
   end
 
-  defp dep_info(dep, native) do
+  defp dep_info(dep, native, hex) do
     dest = install_root(dep["dest"])
 
     %{
@@ -354,42 +417,25 @@ defmodule NccWorker.Portability.Context do
       manager: dep["manager"],
       children: Enum.filter(list(dep["children"]), &is_binary/1),
       native?: dep["app"] in native,
-      hex_files: hex_files(dest)
+      hex_files: hex_files(dep["app"], hex)
     }
   end
 
-  # The file list the release's own metadata carries: Hex writes
-  # `hex_metadata.config` from the tarball into `deps/<d>`. Each entry is kept
-  # as path segments; an absolute or empty entry, or one with `..`, is
-  # dropped, never widened to its parent.
-  defp hex_files(nil), do: nil
+  # The file list of the dependency's Hex tarball, the one whose outer
+  # checksum is the lock's: never `deps/<d>/hex_metadata.config`, which an
+  # untraced build step can rewrite.
+  defp hex_files(app, {home, releases}) when is_binary(home) and home != "" do
+    case Map.get(releases, app) do
+      %{name: name, version: version, checksum: sum}
+      when is_binary(name) and is_binary(version) and is_binary(sum) ->
+        home |> HexCache.package_tarball(name, version, sum) |> HexFiles.from_tarball()
 
-  defp hex_files(dest) do
-    case consult(Path.join(dest, "hex_metadata.config")) do
-      {:ok, terms} when is_list(terms) -> terms |> List.keyfind("files", 0) |> file_entries()
-      _ -> nil
+      _ ->
+        nil
     end
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
-  defp consult(path), do: :file.consult(String.to_charlist(path))
-
-  defp file_entries({_key, files}) when is_list(files) do
-    for file <- files, is_binary(file), parts = entry(file), parts != nil, do: parts
-  end
-
-  defp file_entries(_entry), do: nil
-
-  defp entry(file) do
-    parts = file |> Path.split() |> Enum.reject(&(&1 == "."))
-
-    cond do
-      parts == [] -> nil
-      Path.type(file) != :relative -> nil
-      ".." in parts -> nil
-      true -> parts
-    end
-  end
+  defp hex_files(_app, _hex), do: nil
 
   defp roots(project_dir, start) do
     [project_dir | Enum.map(~w(otp_root elixir_root home mix_home hex_home), &start[&1])]
