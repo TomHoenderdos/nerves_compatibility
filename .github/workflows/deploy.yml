@@ -189,11 +189,15 @@ jobs:
           for d in "$amd" "$arm"; do
             [[ $d =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad digest: $d" >&2; exit 1; }
           done
-          docker buildx imagetools create \
-            -t "$WORKER_IMAGE:$SHA" -t "$WORKER_IMAGE:latest" \
+          # Push the list under a throwaway tag first and verify it before
+          # `$SHA`/`latest` ever point at it: `ops/builder-deploy.sh` pulls
+          # `:$SHA` directly, trusting it unconditionally, so those tags must
+          # never name a list this job has not yet checked.
+          candidate="candidate-$SHA"
+          docker buildx imagetools create -t "$WORKER_IMAGE:$candidate" \
             "$WORKER_IMAGE@$amd" "$WORKER_IMAGE@$arm"
-          docker buildx imagetools inspect --raw "$WORKER_IMAGE:$SHA" > index.json
-          index="$(docker buildx imagetools inspect "$WORKER_IMAGE:$SHA" --format '{{json .Manifest}}' |
+          docker buildx imagetools inspect --raw "$WORKER_IMAGE:$candidate" > index.json
+          index="$(docker buildx imagetools inspect "$WORKER_IMAGE:$candidate" --format '{{json .Manifest}}' |
             python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
           [[ $index =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad index digest: $index" >&2; exit 1; }
           python3 - "$amd" "$arm" <<'PY'
@@ -204,6 +208,12 @@ jobs:
           want = {("linux", "amd64"): amd, ("linux", "arm64"): arm}
           assert found == want, f"manifest list {found} is not {want}"
           PY
+          # Only now move the trusted tags, by digest, to the list just
+          # verified: no re-push of the per-arch images, just new tags on
+          # content already checked.
+          docker buildx imagetools create \
+            -t "$WORKER_IMAGE:$SHA" -t "$WORKER_IMAGE:latest" \
+            "$WORKER_IMAGE@$index"
           {
             echo "index=$index"
             echo "x86_64=$amd"
