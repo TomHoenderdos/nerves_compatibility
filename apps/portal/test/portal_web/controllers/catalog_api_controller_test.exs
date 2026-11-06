@@ -198,7 +198,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
              "system_version" => "1.24.0",
              "run_id" => "fixture-jason-1.4.1",
              "image_digest" => "sha256:precompiled",
-             "deps" => nil,
+             "deps" => %{},
              "compile_env" => nil,
              "package_checksum" => nil
            }

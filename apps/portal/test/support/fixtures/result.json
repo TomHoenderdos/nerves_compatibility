@@ -1,5 +1,6 @@
 {
   "run_id": "fixture-jason-1.4.1",
+  "deps_lock": {},
   "package": {
     "name": "jason",
     "version": "1.4.1",

@@ -716,7 +716,7 @@ defmodule Portal.Catalog.IngestionTest do
                deps_lock
 
       assert ingest_deps_lock(Map.put(load_fixture(), "deps_lock", %{})).deps_lock == %{}
-      assert ingest_deps_lock(load_fixture()).deps_lock == nil
+      assert ingest_deps_lock(Map.delete(load_fixture(), "deps_lock")).deps_lock == nil
     end
 
     # The worker writes the whole closure or no key at all, because a subset

@@ -63,11 +63,49 @@ defmodule Portal.Precompiled.WithheldTest do
   end
 
   test "withheld?/3 matches the package itself or any locked dependency" do
-    assert Withheld.withheld?("phoenix_live_view", nil, ["phoenix_live_view"])
+    assert Withheld.withheld?("phoenix_live_view", @decimal, ["phoenix_live_view"])
     assert Withheld.withheld?("x", @liveview, ["phoenix_live_view"])
     refute Withheld.withheld?("x", @decimal, ["phoenix_live_view"])
-    refute Withheld.withheld?("x", nil, ["phoenix_live_view"])
+    refute Withheld.withheld?("x", %{}, ["phoenix_live_view"])
     refute Withheld.withheld?("x", @liveview, [])
+  end
+
+  # A build with no recorded lock (format 1's `"deps": null`) has an unknown
+  # closure: fail closed while anything is withheld at all.
+  test "withheld?/3 withholds an unknown closure unless nothing is withheld" do
+    assert Withheld.withheld?("x", nil, ["phoenix_live_view"])
+    refute Withheld.withheld?("x", nil, [])
+  end
+
+  describe "a full run without a recorded lock" do
+    test "is in no manifest and its file is not served" do
+      ingest_with_artifact(run(nil))
+
+      assert Catalog.precompiled_manifest("jason") == nil
+      assert Catalog.precompiled_manifest_v2("jason") == nil
+      refute "jason" in Catalog.packages_with_precompiled_files()
+      refute Catalog.published_sha256?(@run_sha)
+    end
+
+    test "is published when nothing is withheld" do
+      put_withheld(packages: [])
+      ingest_with_artifact(run(nil))
+
+      assert %{versions: %{"1.4.1" => %{"nerves_system_rpi4" => _}}} =
+               Catalog.precompiled_manifest("jason")
+
+      assert "jason" in Catalog.packages_with_precompiled_files()
+      assert Catalog.published_sha256?(@run_sha)
+    end
+  end
+
+  test "a toolchain build without a recorded lock is withheld" do
+    name = "tc_nolock_#{System.unique_integer([:positive])}"
+    build = ingest_toolchain_build(name, "0.1.0", deps_lock: nil)
+
+    assert Catalog.precompiled_manifest_v2(name) == nil
+    refute name in Catalog.packages_with_precompiled_files()
+    refute Catalog.published_sha256?(toolchain_sha(build))
   end
 
   describe "a full run's system result" do

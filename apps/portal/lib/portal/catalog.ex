@@ -1198,17 +1198,21 @@ defmodule Portal.Catalog do
   # published files without rendering a manifest: `$W` is its package list.
   # `p` is the package, `s` a system result, `r` its run and `b` the run it
   # was carried from; a result's closure is its own lock, else the lock of the
-  # run that built it, as `build_inputs/2` publishes it. A NULL lock names
-  # nothing, as `Withheld.withheld?/3` reads `nil`.
-  @withheld_result_clause """
-  NOT (p.name = ANY($W::text[])
-       OR coalesce(s.deps_lock,
-                   CASE WHEN s.carried_from_run_id IS NULL THEN r.deps_lock ELSE b.deps_lock END,
-                   '{}'::jsonb) ?| $W::text[])
+  # run that built it, as `build_inputs/2` publishes it. No lock (anything
+  # but a JSON object) is an unknown closure and withheld while the list is
+  # not empty, as `Withheld.withheld?/3` reads `nil`.
+  @withheld_lock_clause """
+  NOT (cardinality($W::text[]) > 0
+       AND (p.name = ANY($W::text[])
+            OR CASE WHEN jsonb_typeof($L) = 'object' THEN $L ?| $W::text[] ELSE true END))
   """
-  @withheld_toolchain_clause """
-  NOT (p.name = ANY($W::text[]) OR coalesce(t.deps_lock, '{}'::jsonb) ?| $W::text[])
-  """
+  @withheld_result_clause String.replace(
+                            @withheld_lock_clause,
+                            "$L",
+                            "coalesce(s.deps_lock, CASE WHEN s.carried_from_run_id IS NULL " <>
+                              "THEN r.deps_lock ELSE b.deps_lock END)"
+                          )
+  @withheld_toolchain_clause String.replace(@withheld_lock_clause, "$L", "t.deps_lock")
 
   @packages_with_precompiled_files_sql_template """
   SELECT p.name

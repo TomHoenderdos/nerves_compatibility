@@ -9,7 +9,8 @@ defmodule Portal.Precompiled.Withheld do
 
   A build is withheld when the package itself is on the list, or when its
   recorded dependency lock (`deps_lock`; for a system result the result's own
-  lock, else the lock of the run that built it) names a package on the list.
+  lock, else the lock of the run that built it) names a package on the list,
+  or when it has no recorded lock at all and so an unknown closure.
 
   Why: some packages change what their dependents compile to through
   application config the user's project sets and our builds do not. Every
@@ -44,11 +45,24 @@ defmodule Portal.Precompiled.Withheld do
   @doc """
   Whether a build of `package_name` whose dependency lock is `deps_lock` is
   withheld. `deps_lock` is the `name => %{"version", "checksum"}` map a build
-  records; `nil` (a build from before locks were recorded) names nothing.
+  records.
+
+  A build with no lock (`nil`: format 1's `"deps": null`, from before builds
+  recorded one, or a lock ingest rejected) has an unknown closure, so it is
+  withheld whenever the list is not empty. The portal stores no other record
+  of a build's closure: the package's declared dependencies live only in the
+  Hex registry, which a render must not depend on (a registry outage would be
+  pinned into the batch memo), and they name only direct dependencies, so
+  they could never clear a build whose closure reaches a withheld package
+  transitively.
   """
   @spec withheld?(String.t(), map() | nil, [String.t()]) :: boolean()
-  def withheld?(package_name, deps_lock, packages \\ packages()) do
-    package_name in packages or
-      (is_map(deps_lock) and Enum.any?(packages, &Map.has_key?(deps_lock, &1)))
+  def withheld?(package_name, deps_lock, packages \\ packages())
+
+  def withheld?(_package_name, _deps_lock, []), do: false
+
+  def withheld?(package_name, deps_lock, packages) do
+    package_name in packages or not is_map(deps_lock) or
+      Enum.any?(packages, &Map.has_key?(deps_lock, &1))
   end
 end

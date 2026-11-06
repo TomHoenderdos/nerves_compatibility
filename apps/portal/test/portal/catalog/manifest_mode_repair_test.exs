@@ -70,6 +70,8 @@ defmodule Portal.Catalog.ManifestModeRepairTest do
     result =
       %{
         "run_id" => Keyword.get(opts, :run_id, "mmr-#{name}"),
+        # A recorded (empty) closure: a build without one is withheld.
+        "deps_lock" => %{},
         "package" => %{"name" => name, "version" => "1.0.0", "footprint" => footprint},
         "finished_at" => Keyword.get(opts, :finished_at, "2026-10-20T10:00:00Z"),
         "systems" =>
