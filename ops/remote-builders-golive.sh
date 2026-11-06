@@ -25,7 +25,9 @@
 #
 # Exit 0 when every check passes, 1 when any fails, 2 on bad usage. The
 # host layout comes from the deploy env file (ops/deploy.env.example).
-# NCC_PORTAL_USER names the release's user (default ncc).
+# NCC_PORTAL_USER names the release's user (default ncc). With
+# NCC_BLUE_GREEN=1 (ops/blue-green.sh) every bin/portal call goes to the
+# colour the Apache include serves, with that colour's env file.
 set -euo pipefail
 
 ncc_layout() {
@@ -63,6 +65,18 @@ ncc_layout NCC_INSTALL_DIR NCC_PORTAL_ENV NCC_PORTAL_WORKDIR || exit 1
 
 USER_NAME=${NCC_PORTAL_USER:-ncc}
 BIN=$NCC_INSTALL_DIR/portal/bin/portal
+UNIT=ncc-portal
+color_env=
+if [[ ${NCC_BLUE_GREEN:-} == 1 ]]; then
+  ncc_layout NCC_SRC_DIR NCC_APACHE_UPSTREAM || exit 1
+  # shellcheck source=ops/blue-green.sh
+  source "$NCC_SRC_DIR/ops/blue-green.sh"
+  color=$(bg_serving_color) || exit 1
+  BIN=$(bg_release "$color")/bin/portal
+  UNIT=$BG_UNIT@$color
+  # The colour's own node name and tmp dir, as bg_rpc reads them.
+  color_env=$(dirname "$NCC_PORTAL_ENV")/color-$color.env
+fi
 failures=0
 
 ok() { printf '  ok    %s\n' "$*"; }
@@ -80,8 +94,13 @@ env_value() {
 # as ops/deploy.sh does. rpc reaches the running node; its environment does
 # not, so everything it needs is in the expression.
 portal() {
-  sudo -u "$USER_NAME" bash -c 'cd "$1" && set -a && . "$2" && set +a && "$3" "$4" "$5"' -- \
-    "$NCC_PORTAL_WORKDIR" "$NCC_PORTAL_ENV" "$BIN" "$1" "$2"
+  if [[ -n $color_env ]]; then
+    sudo -u "$USER_NAME" bash -c 'cd "$1" && set -a && . "$2" && . "$3" && set +a && "$4" "$5" "$6"' -- \
+      "$NCC_PORTAL_WORKDIR" "$NCC_PORTAL_ENV" "$color_env" "$BIN" "$1" "$2"
+  else
+    sudo -u "$USER_NAME" bash -c 'cd "$1" && set -a && . "$2" && set +a && "$3" "$4" "$5"' -- \
+      "$NCC_PORTAL_WORKDIR" "$NCC_PORTAL_ENV" "$BIN" "$1" "$2"
+  fi
 }
 
 [[ -r $NCC_PORTAL_ENV ]] || { echo "ERROR: cannot read $NCC_PORTAL_ENV" >&2; exit 1; }
@@ -159,7 +178,7 @@ if [[ ! $port =~ ^[0-9]+$ ]]; then
 elif [[ -n $(ss -Hltn "sport = :$port" 2>/dev/null) ]]; then
   ok "something listens on TCP $port"
 else
-  bad "nothing listens on TCP $port (needs PHX_SERVER, a CA key that loads and a portal restart; journalctl -u ncc-portal | grep 'builder listener')"
+  bad "nothing listens on TCP $port (needs PHX_SERVER, a CA key that loads and a portal restart; journalctl -u $UNIT | grep 'builder listener')"
 fi
 
 # The first `key=value` line of the rpc report for key $1.
@@ -204,7 +223,7 @@ if report=$(portal rpc '
     note "no builders enrolled yet"
   fi
 else
-  bad "bin/portal rpc failed (is ncc-portal running?): $report"
+  bad "bin/portal rpc failed (is $UNIT running?): $report"
 fi
 
 cat <<EOF

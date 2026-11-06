@@ -3,6 +3,7 @@
 
 import getpass
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -186,6 +187,67 @@ class GoLiveTest(unittest.TestCase):
         rpc = GOOD_RPC + "\nbuilder=box-1 status=active egress=host_unready publishing=false last_seen=never"
         result = self.run_golive(FAKE_RPC=rpc)
         self.assertIn("builder box-1 status=active egress=host_unready", result.stdout)
+
+    # --- blue/green: the serving colour's release and env, not portal/ ------
+
+    def blue_green(self):
+        """The cutover layout: no $NCC_INSTALL_DIR/portal, two colour
+        releases, green serving per the include."""
+        install = self.root / "install"
+        shutil.rmtree(install / "portal")
+        for color in ("blue", "green"):
+            (install / "releases" / color / "bin").mkdir(parents=True)
+            portal = install / "releases" / color / "bin/portal"
+            portal.write_text(FAKE_PORTAL.replace(
+                'echo "$1 $2" >>"$FAKE_LOG"',
+                f'echo "{color} node=${{RELEASE_NODE:-}} $1 $2" >>"$FAKE_LOG"'))
+            portal.chmod(0o755)
+            (self.root / f"color-{color}.env").write_text(f"RELEASE_NODE=portal_{color}\n")
+        upstream = self.root / "ncc-upstream.conf"
+        upstream.write_text(
+            (SCRIPT.parent / "ncc-upstream.conf.template").read_text().replace("@PORT@", "4003"))
+        with self.layout.open("a") as f:
+            f.write(f"NCC_BLUE_GREEN=1\nNCC_SRC_DIR={SCRIPT.parent.parent}\n"
+                    f"NCC_APACHE_UPSTREAM={upstream}\n")
+
+    def test_blue_green_runs_rpc_in_the_serving_colour(self):
+        self.make_ca()
+        self.blue_green()
+        result = self.run_golive()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.portal_calls()
+        self.assertIn("green node=portal_green rpc", calls)
+        self.assertNotIn("blue", calls)
+
+    def test_blue_green_init_ca_runs_in_the_serving_colour(self):
+        self.blue_green()
+        result = self.run_golive("--init-ca")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("green node=portal_green eval", self.portal_calls())
+        self.assertTrue(self.ca_key.exists())
+
+    def test_blue_green_hints_name_the_colour_unit(self):
+        self.make_ca()
+        self.blue_green()
+        result = self.run_golive(FAKE_LISTENING="", FAKE_RPC_FAIL="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("journalctl -u ncc-portal@green", result.stdout)
+        self.assertIn("is ncc-portal@green running?", result.stdout)
+
+    def test_without_blue_green_the_hints_name_the_single_unit(self):
+        self.make_ca()
+        result = self.run_golive(FAKE_LISTENING="", FAKE_RPC_FAIL="1")
+        self.assertIn("journalctl -u ncc-portal |", result.stdout)
+        self.assertIn("is ncc-portal running?", result.stdout)
+
+    def test_blue_green_refuses_without_a_readable_include(self):
+        self.make_ca()
+        self.blue_green()
+        (self.root / "ncc-upstream.conf").unlink()
+        result = self.run_golive()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ncc-upstream.conf", result.stderr)
+        self.assertEqual(self.portal_calls(), "")
 
 
 if __name__ == "__main__":
