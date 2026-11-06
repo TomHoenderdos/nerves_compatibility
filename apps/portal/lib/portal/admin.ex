@@ -527,7 +527,7 @@ defmodule Portal.Admin do
           {:ok, Oban.Job.t()} | {:error, :not_found | :not_failed | term()}
   def requeue_lease_locally(lease_id, actor) do
     with {:ok, lease} <- fetch_lease(lease_id),
-         {:ok, job} <- Portal.Repo.transaction(fn -> requeue_locally(lease) end) do
+         {:ok, job} <- Portal.Builders.Leases.requeue_locally(lease, priority: 3, force: true) do
       Logger.warning(
         "Lease #{lease.id} (#{lease.package} #{lease.version}) requeued locally " <>
           "by #{actor.username}"
@@ -539,29 +539,6 @@ defmodule Portal.Admin do
       {:ok, job}
     end
   end
-
-  # The lease note and the job commit together: a failed insert leaves the
-  # lease offering its buttons again. The local job carries the lease's
-  # request, so a still-queued request follows its build instead of being
-  # closed as cancelled once the lease stops holding it.
-  defp requeue_locally(lease) do
-    args =
-      %{package: lease.package, version: lease.version, force: true}
-      |> maybe_put(:scan_request_id, lease.scan_request_id)
-
-    with {:ok, _lease} <- Portal.Builders.Leases.mark_requeued_locally(lease),
-         {:ok, job} <-
-           args
-           |> Portal.Builders.Routing.build_job(meta: %{pin_local: true}, priority: 3)
-           |> Oban.insert() do
-      job
-    else
-      {:error, reason} -> Portal.Repo.rollback(reason)
-    end
-  end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp fetch_lease(lease_id) do
     with {:ok, id} <- Ecto.UUID.cast(lease_id),

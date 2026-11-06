@@ -399,8 +399,9 @@ defmodule Portal.Builders.Leases do
   Note that a `:failed` or still-`:queued` lease was handed to a local build:
   it becomes (or stays) `:failed` with `error: "requeued locally"`, so the
   request it holds is released to the local job. A `:queued` lease is the
-  way out when no builder will come back for it (none enrolled, or all
-  silent): the reaper never touches `:queued`. Only once: a lease already
+  way out when no builder will come back for it (none enrolled, all silent
+  or none ready): the admin's button, or `Portal.Workers.LeaseReaper` once
+  it has waited long enough with no builder able to claim it. Only once: a lease already
   noted, or held by a builder, answers `{:error, :not_failed}`.
   """
   @spec mark_requeued_locally(Lease.t()) ::
@@ -427,6 +428,57 @@ defmodule Portal.Builders.Leases do
   rescue
     e in [Postgrex.Error, DBConnection.ConnectionError] ->
       db_failed("requeue locally", lease.id, e)
+  end
+
+  @doc """
+  Hand `lease` (`:failed`, or still `:queued`) to a local build: note it with
+  `mark_requeued_locally/1` and insert a `Portal.Workers.Build` pinned local
+  (`meta.pin_local`, so routing never sends it back to a remote builder),
+  together, so a failed insert leaves the lease as it was. The job carries
+  the lease's request, which follows its build instead of being closed as
+  cancelled once the lease stops holding it. `opts`: `:priority` (default
+  the lease's) and `:force` (default the lease's own `force`). The caller
+  removes the upload dir.
+  """
+  @spec requeue_locally(Lease.t(), keyword()) ::
+          {:ok, Oban.Job.t()} | {:error, :not_failed | :update_failed | term()}
+  def requeue_locally(%Lease{} = lease, opts \\ []) do
+    force = Keyword.get(opts, :force, lease.args["force"] == true)
+    priority = Keyword.get(opts, :priority, lease.priority)
+
+    args = %{package: lease.package, version: lease.version, force: force}
+
+    args =
+      if lease.scan_request_id,
+        do: Map.put(args, :scan_request_id, lease.scan_request_id),
+        else: args
+
+    Repo.transaction(fn ->
+      with {:ok, _lease} <- mark_requeued_locally(lease),
+           {:ok, job} <-
+             args
+             |> Portal.Builders.Routing.build_job(meta: %{pin_local: true}, priority: priority)
+             |> Oban.insert() do
+        job
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc """
+  `:queued` leases that have waited since before `now` minus `minutes`
+  (their `updated_at`: written when queued, and again when requeued). The
+  lease reaper hands those no builder can claim to a local build.
+  """
+  @spec stale_queued(DateTime.t(), pos_integer()) :: [Lease.t()]
+  def stale_queued(now, minutes) do
+    cutoff = DateTime.add(now, -minutes, :minute)
+
+    Lease
+    |> Ash.Query.filter(state == :queued and updated_at < ^cutoff)
+    |> Ash.Query.sort(updated_at: :asc)
+    |> Ash.read!(domain: @domain)
   end
 
   defp requeued_locally?(id) do
