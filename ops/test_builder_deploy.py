@@ -726,6 +726,9 @@ class ReleaseBuildDaemonTest(unittest.TestCase):
             for name, body in {
                 "docker": 'echo "docker $1 @${DOCKER_HOST-unset}" >> "$EVENTS"\n',
                 "chown": 'echo "chown $*" >> "$EVENTS"\n',
+                # build-release.sh stamps the release with `git -C "$SRC"
+                # rev-parse HEAD`; $src here is a plain temp dir, not a repo.
+                "git": 'echo 0123456789abcdef0123456789abcdef01234567\n',
             }.items():
                 (stubs / name).write_text("#!/bin/sh\n" + body)
                 (stubs / name).chmod(0o755)
