@@ -20,14 +20,21 @@ defmodule Portal.Catalog.UnrecordedOptionalDeps do
   revoked). A package the registry cannot answer for, or does not list, is
   left out of this call and asked again on the next.
 
-  A version the registry lists with no dependency to add is recorded as such
-  on its row (`optional_deps` `%{"added" => [], "reason" => "unrecorded_none"}`,
-  `ToolchainBuild`'s `:record_optional_deps`), which takes it out of this set
-  for good: otherwise the most downloaded packages, once all of them declare
-  nothing, would fill every call and the ones behind them would never be
-  asked about. A recorded `added` that is empty wants no `without` build, as
-  for a build that reported it, and the row's status, files and dates, and so
-  what is served, stay as they are.
+  Either answer is recorded on the row (`ToolchainBuild`'s
+  `:record_optional_deps`), which takes it out of this set for good: a
+  version that declares no dependency to add as `optional_deps`
+  `%{"added" => [], "reason" => "unrecorded_none"}`, one that declares some
+  as `%{"added" => declared, "reason" => "unrecorded_declared"}`, `declared`
+  being the addable optional dependencies the registry lists, sorted. From
+  then on the backlog treats the row as one a build reported: an empty
+  `added` wants no `without` build, a non-empty one wants it under the
+  backlog's own rules, so a `without` build that fails, as it does for a
+  package that does not compile without its optional dependencies, is
+  built again a week later rather than leaving the row here. Otherwise the
+  most downloaded packages, whether they declare nothing or never build
+  without, would fill every call and the ones behind them would never be
+  asked about. The row's status, files and dates, and so what is served,
+  stay as they are.
   """
 
   require Ash.Query
@@ -36,13 +43,11 @@ defmodule Portal.Catalog.UnrecordedOptionalDeps do
   alias Portal.Catalog.ToolchainBuild
   alias Portal.Repo
 
-  @none %{"added" => [], "reason" => "unrecorded_none"}
-
   @doc """
   The `{packages, versions}` (two lists, pairwise) of unrecorded `with` rows on
   `toolchain` at `builder_version` whose version declares an optional
-  dependency the worker would add. Rows of a version the registry lists
-  without one are recorded as declaring none (see the moduledoc).
+  dependency the worker would add. Every row the registry answers for is
+  recorded with what its version declares (see the moduledoc).
 
   Options: `:hex_releases` (`(String.t() -> {:ok, [release]} | {:error, term()})`,
   default `releases/2` of `config :portal, :hex_deps` with a short timeout).
@@ -51,7 +56,7 @@ defmodule Portal.Catalog.UnrecordedOptionalDeps do
   def wanted(toolchain, builder_version, opts \\ []) do
     hex_releases = Keyword.get_lazy(opts, :hex_releases, &default_hex_releases/0)
 
-    {wanted, none} =
+    {wanted, recorded} =
       toolchain
       |> unrecorded(builder_version)
       |> Enum.group_by(fn [package, _version, _id] -> package end, fn [_package, version, id] ->
@@ -60,14 +65,14 @@ defmodule Portal.Catalog.UnrecordedOptionalDeps do
       |> Enum.map(fn {package, versions} -> declaring(package, versions, hex_releases) end)
       |> Enum.unzip()
 
-    record_none(List.flatten(none))
+    recorded |> List.flatten() |> record()
     wanted |> List.flatten() |> Enum.unzip()
   end
 
-  # `{wanted, none}`: the `{package, version}` pairs that declare a dependency
-  # to add, and the ids of the rows whose version the registry lists without
-  # one. A version it does not list, like a package it cannot answer for, is
-  # in neither.
+  # `{wanted, recorded}`: the `{package, version}` pairs that declare a
+  # dependency to add, and `{id, optional_deps}` for every row whose version
+  # the registry lists. A version it does not list, like a package it cannot
+  # answer for, is in neither.
   defp declaring(package, versions, hex_releases) do
     case hex_releases.(package) do
       {:ok, releases} ->
@@ -78,25 +83,33 @@ defmodule Portal.Catalog.UnrecordedOptionalDeps do
     end
   end
 
-  defp sort_version(package, releases, {version, id}, {wanted, none}) do
-    case declares(releases, version) do
-      true -> {[{package, version} | wanted], none}
-      false -> {wanted, [id | none]}
-      :unknown -> {wanted, none}
+  defp sort_version(package, releases, {version, id}, {wanted, recorded}) do
+    case declared(releases, version) do
+      [] ->
+        {wanted, [{id, %{"added" => [], "reason" => "unrecorded_none"}} | recorded]}
+
+      [_ | _] = declared ->
+        {[{package, version} | wanted],
+         [{id, %{"added" => declared, "reason" => "unrecorded_declared"}} | recorded]}
+
+      :unknown ->
+        {wanted, recorded}
     end
   end
 
-  defp record_none([]), do: :ok
-
-  defp record_none(ids) do
-    ToolchainBuild
-    |> Ash.Query.filter(id in ^ids)
-    |> Ash.bulk_update!(:record_optional_deps, %{optional_deps: @none},
-      domain: Portal.Catalog,
-      strategy: :atomic
-    )
-
-    :ok
+  # One update per distinct report, so a sweep's writes stay few: most rows
+  # share the empty one.
+  defp record(rows) do
+    rows
+    |> Enum.group_by(fn {_id, optional_deps} -> optional_deps end, fn {id, _} -> id end)
+    |> Enum.each(fn {optional_deps, ids} ->
+      ToolchainBuild
+      |> Ash.Query.filter(id in ^ids)
+      |> Ash.bulk_update!(:record_optional_deps, %{optional_deps: optional_deps},
+        domain: Portal.Catalog,
+        strategy: :atomic
+      )
+    end)
   end
 
   @doc """
@@ -108,9 +121,11 @@ defmodule Portal.Catalog.UnrecordedOptionalDeps do
     dep.optional and dep.repository == "hexpm" and dep.package not in OptionalDeps.never_added()
   end
 
-  defp declares(releases, version) do
+  # The addable optional dependencies `version` declares, sorted, or
+  # `:unknown` when the registry does not list it.
+  defp declared(releases, version) do
     case Enum.find(releases, &(&1.version == version)) do
-      %{deps: deps} -> Enum.any?(deps, &addable?/1)
+      %{deps: deps} -> deps |> Enum.filter(&addable?/1) |> Enum.map(& &1.package) |> Enum.sort()
       nil -> :unknown
     end
   end

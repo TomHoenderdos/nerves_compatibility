@@ -552,7 +552,86 @@ defmodule Portal.ToolchainVariantsTest do
         assert recorded.revoked_at == row.revoked_at
       end
 
-      assert Map.fetch!(after_rows, "legacy_200").optional_deps == nil
+      assert Map.fetch!(after_rows, "legacy_200").optional_deps ==
+               %{"added" => ["decimal"], "reason" => "unrecorded_declared"}
+    end
+
+    # Many packages do not compile without their optional dependencies, so
+    # their without build fails for good. A version the registry shows
+    # declares one is recorded on its with row after one look, which hands it
+    # to the backlog's own rule for a recorded `added` (a failed without
+    # build again after a week) and takes it out of the set the registry is
+    # asked about, so the packages behind it get their turn.
+    test "one that declares a dependency to add is asked about once" do
+      for i <- 0..200 do
+        name = "legacy_#{String.pad_leading(Integer.to_string(i), 3, "0")}"
+        run!(name, "1.4.5")
+
+        Repo.query!("UPDATE catalog_packages SET hex_downloads_recent = $1 WHERE name = $2", [
+          10_000 - i,
+          name
+        ])
+
+        row!(name, "1.4.5", :pass,
+          variant: :with,
+          optional_deps: nil,
+          file_manifest: %{"lib/#{name}.beam" => "sha256:#{i}"},
+          finished_at: ago(3 * @day)
+        )
+
+        row!(name, "1.4.5", :fail, variant: :without, finished_at: ago(@day))
+      end
+
+      test_pid = self()
+
+      hex_releases = fn name ->
+        send(test_pid, {:asked, name})
+
+        {:ok,
+         [
+           %{
+             version: "1.4.5",
+             retired?: false,
+             deps: [dep("decimal", true), dep("ex_doc", true), dep("telemetry", false)]
+           }
+         ]}
+      end
+
+      before = legacy_with_rows()
+
+      UnrecordedOptionalDeps.wanted("1.19/28", 1, hex_releases: hex_releases)
+      refute_received {:asked, "legacy_200"}
+      flush_asked()
+
+      UnrecordedOptionalDeps.wanted("1.19/28", 1, hex_releases: hex_releases)
+      assert_received {:asked, "legacy_200"}
+      refute_received {:asked, "legacy_000"}
+
+      after_rows = legacy_with_rows()
+
+      for {name, row} <- before do
+        recorded = Map.fetch!(after_rows, name)
+
+        assert recorded.optional_deps == %{
+                 "added" => ["decimal"],
+                 "reason" => "unrecorded_declared"
+               }
+
+        assert recorded.status == row.status
+        assert DateTime.compare(recorded.finished_at, row.finished_at) == :eq
+        assert recorded.file_manifest == row.file_manifest
+      end
+
+      # The failed without build is a verdict for its week, then wanted again
+      # by the recorded `added`, without asking the registry.
+      refute Enum.any?(backlog(), &(&1.variant == :without))
+
+      Repo.query!(
+        "UPDATE catalog_toolchain_builds SET finished_at = $1 WHERE variant = 'without'",
+        [ago(8 * @day)]
+      )
+
+      assert %{package: "legacy_000", version: "1.4.5", variant: :without} in backlog()
     end
 
     # A registry that cannot answer says nothing about the version: the row
@@ -579,6 +658,22 @@ defmodule Portal.ToolchainVariantsTest do
                {[], []}
 
       assert [%{optional_deps: @kept_decimal}] = Map.values(legacy_rows())
+    end
+
+    defp flush_asked do
+      receive do
+        {:asked, _name} -> flush_asked()
+      after
+        0 -> :ok
+      end
+    end
+
+    defp legacy_with_rows do
+      ToolchainBuild
+      |> Ash.Query.filter(variant == :with)
+      |> Ash.Query.load(:package)
+      |> Ash.read!(domain: Catalog)
+      |> Map.new(&{&1.package.name, &1})
     end
 
     defp legacy_rows do
