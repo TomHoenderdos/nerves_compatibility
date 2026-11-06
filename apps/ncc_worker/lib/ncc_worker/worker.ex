@@ -119,6 +119,10 @@ defmodule NccWorker.Worker do
           optional(:toolchain_build) => toolchain_build(),
           # `NCC_INPUT.toolchain` echoed back, when present.
           optional(:requested_toolchain) => map(),
+          # A toolchain run's `NCC_INPUT.optional_deps` ("include" or
+          # "exclude") echoed back, when present: the portal checks it
+          # against the variant it queued the build as.
+          optional(:requested_optional_deps) => String.t(),
           # The package's optional dependencies the generated project did not
           # resolve on its own (`NccWorker.DepsLock.unresolved_optional_deps/2`),
           # and what the best-effort second pass did with them. Statuses and
@@ -1142,29 +1146,42 @@ defmodule NccWorker.Worker do
           |> put_optional_deps(optional_deps)
           |> put_deps_lock(:toolchain, nil, project_dir, package_name)
           |> put_requested_toolchain(input[:toolchain])
+          |> put_requested_optional_deps(input[:optional_deps])
 
         {:ok, result}
       end
     end
   end
 
+  @doc false
   # The same best-effort pass as a pure-Elixir full run, after the build
   # without them has passed. A failed compile is the verdict already. A build
   # asked for without them never starts the pass, and says so in the shape
-  # the pass reports.
-  defp toolchain_optional_deps("exclude", _host, _project_dir, _package_name, _paths),
+  # the pass reports, whether its compile passed or not. Public for tests.
+  @spec toolchain_optional_deps(String.t() | nil, map(), String.t(), String.t(), map()) ::
+          {:ok, map() | nil} | {:error, term()}
+  def toolchain_optional_deps("exclude", _host, _project_dir, _package_name, _paths),
     do: {:ok, Map.put(optional_deps_info([], [], "not_requested"), :skipped, [])}
 
-  defp toolchain_optional_deps(_request, %{status: :pass}, project_dir, package_name, paths),
+  def toolchain_optional_deps(_request, %{status: :pass}, project_dir, package_name, paths),
     do: resolve_optional_deps(:toolchain, :pure_elixir, project_dir, package_name, paths)
 
-  defp toolchain_optional_deps(_request, _host, _project_dir, _package_name, _paths),
+  def toolchain_optional_deps(_request, _host, _project_dir, _package_name, _paths),
     do: {:ok, nil}
 
   defp put_requested_toolchain(result, requested) when is_map(requested),
     do: Map.put(result, :requested_toolchain, requested)
 
   defp put_requested_toolchain(result, _requested), do: result
+
+  @doc false
+  # The input's `optional_deps` request echoed back, which the portal checks
+  # against the variant the job was queued for. Public for tests.
+  @spec put_requested_optional_deps(map(), term()) :: map()
+  def put_requested_optional_deps(result, requested) when requested in ["include", "exclude"],
+    do: Map.put(result, :requested_optional_deps, requested)
+
+  def put_requested_optional_deps(result, _requested), do: result
 
   @doc """
   A toolchain run's `toolchain_build` (see `t:toolchain_build/0`) from its

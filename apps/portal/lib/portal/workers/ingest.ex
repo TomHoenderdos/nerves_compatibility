@@ -33,12 +33,18 @@ defmodule Portal.Workers.Ingest do
 
   Ingest checks the result against the job it was enqueued for. A local build's
   job carries the `package` and `version` its `Portal.Workers.Build` was queued
-  with, and a toolchain build's job the `package`, `version` and `toolchain` its
-  `Portal.Workers.ToolchainBuild` was queued with. Before anything is recorded,
-  `result.json` has to name the same package and version, and for a toolchain
-  build have been built on that toolchain; the rows, and the package metadata
-  refresh after them, are then written under the job's identity, not the
-  result's (`Portal.Catalog.Ingestion`).
+  with, and a toolchain build's job the `package`, `version`, `toolchain` and
+  `variant` its `Portal.Workers.ToolchainBuild` was queued with. Before
+  anything is recorded, `result.json` has to name the same package and
+  version, and for a toolchain build have been built on that toolchain and
+  for that variant; the rows, and the package metadata refresh after them, are
+  then written under the job's identity, not the result's
+  (`Portal.Catalog.Ingestion`).
+
+  A toolchain job without a `variant` was queued before variants existed and
+  is a `with` build; the default is the job's, never read from the result. A
+  `variant` other than `"with"` or `"without"` is no identity at all and is
+  refused like a missing one.
 
   A remote build's identity is its lease's `package` and `version`. Its
   upload is checked against them when the builder completes the lease and
@@ -231,13 +237,25 @@ defmodule Portal.Workers.Ingest do
 
   defp toolchain_identity(%{"toolchain" => toolchain} = args)
        when is_binary(toolchain) and toolchain != "" do
-    case run_identity(args) do
-      nil -> nil
-      identity -> Map.put(identity, :toolchain, toolchain)
+    with %{} = identity <- run_identity(args),
+         variant when variant != nil <- job_variant(args) do
+      Map.merge(identity, %{toolchain: toolchain, variant: variant})
     end
   end
 
   defp toolchain_identity(_args), do: nil
+
+  # A job queued before variants existed carries none and was a with build:
+  # the job's side decides, never the result's. Any other value is not a
+  # variant the job could have built.
+  defp job_variant(args) do
+    case Map.fetch(args, "variant") do
+      :error -> :with
+      {:ok, "with"} -> :with
+      {:ok, "without"} -> :without
+      {:ok, _other} -> nil
+    end
+  end
 
   # A remote build outlives its request's jobs by as long as it takes, so the
   # request may be gone by the time its upload is ingested (deleted by hand,
@@ -404,9 +422,8 @@ defmodule Portal.Workers.Ingest do
       package: identity.package,
       version: identity.version,
       toolchain: identity.toolchain,
-      builder_version: args["builder_version"],
-      # An ingest queued before variants existed recorded a with build.
-      variant: if(args["variant"] == "without", do: :without, else: :with)
+      variant: identity.variant,
+      builder_version: args["builder_version"]
     }
 
     case safe_ingest(&Ingestion.ingest_toolchain/2, build.result, opts) do
@@ -465,8 +482,14 @@ defmodule Portal.Workers.Ingest do
   defp describe_identity(identity) do
     base = "#{inspect(identity[:package])} #{inspect(identity[:version])}"
 
-    case Map.fetch(identity, :toolchain) do
-      {:ok, toolchain} -> "#{base} on #{inspect(toolchain)}"
+    base =
+      case Map.fetch(identity, :toolchain) do
+        {:ok, toolchain} -> "#{base} on #{inspect(toolchain)}"
+        :error -> base
+      end
+
+    case Map.fetch(identity, :variant) do
+      {:ok, variant} -> "#{base} (variant #{inspect(variant)})"
       :error -> base
     end
   end

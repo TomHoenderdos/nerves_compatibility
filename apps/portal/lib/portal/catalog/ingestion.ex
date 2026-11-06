@@ -20,7 +20,8 @@ defmodule Portal.Catalog.Ingestion do
   ## The job's identity
 
   Every caller says what the job was enqueued for: `:package` and `:version`,
-  and for `ingest_toolchain/2` `:toolchain` as well. Ingest checks the result
+  and for `ingest_toolchain/2` `:toolchain` and `:variant` (`:with` when
+  absent) as well. Ingest checks the result
   against the job it was enqueued for: when `result.json` names another
   package, version or toolchain, nothing is staged or written and the call
   returns `{:error, {:identity_mismatch, job, result}}`, each side a map of
@@ -64,6 +65,10 @@ defmodule Portal.Catalog.Ingestion do
 
   @domain Portal.Catalog
 
+  # The keys of a stored file manifest, each the top directory its entries'
+  # paths sit under.
+  @manifest_keys ["ebin", "priv"]
+
   # The worker caps argus findings at 200, so one batch covers a whole run.
   @max_triage_batch 200
 
@@ -105,7 +110,8 @@ defmodule Portal.Catalog.Ingestion do
   @type identity :: %{
           required(:package) => String.t() | nil,
           required(:version) => String.t() | nil,
-          optional(:toolchain) => String.t() | nil
+          optional(:toolchain) => String.t() | nil,
+          optional(:variant) => :with | :without | term()
         }
 
   @doc """
@@ -215,7 +221,12 @@ defmodule Portal.Catalog.Ingestion do
   staged (see "The job's identity" above).
 
   `opts.variant` is the optional-deps variant the job built (`:with` when
-  absent, for an ingest job enqueued before variants existed), and the
+  absent, for an ingest job enqueued before variants existed) and is part of
+  its identity: a result that says it was built as the other variant (its
+  `requested_optional_deps` echo, or, without one, an `optional_deps.reason`
+  of `"not_requested"`, which only a build without them reports) is refused
+  with `{:error, {:identity_mismatch, job, result}}`, both sides carrying
+  `:variant`. A result that states no variant is held to the job's. The
   result's `optional_deps` report is stored on the row as it is.
 
   A later non-pass verdict for the same identity overwrites a pass row, and its
@@ -235,20 +246,104 @@ defmodule Portal.Catalog.Ingestion do
              | {:identity_missing, [atom()]}
              | term()}
   def ingest_toolchain(result, opts) when is_map(result) do
-    with :ok <- check_identity(result, opts, [:package, :version, :toolchain]) do
+    keys = [:package, :version, :toolchain]
+
+    with :ok <- check_identity(result, opts, keys),
+         :ok <- check_variant(result, opts, keys) do
       stage_toolchain_build(result, opts)
     end
   end
+
+  # The variant is part of a toolchain build's identity. The job's side
+  # defaults to `:with`, for an ingest job enqueued before variants existed;
+  # it is never taken from the result.
+  defp check_variant(result, opts, keys) do
+    case Map.get(opts, :variant, :with) do
+      variant when variant in [:with, :without] ->
+        case result_variant(result) do
+          nil ->
+            :ok
+
+          ^variant ->
+            :ok
+
+          reported ->
+            job = opts |> Map.take(keys) |> Map.put(:variant, variant)
+
+            {:error,
+             {:identity_mismatch, job,
+              result |> result_identity(keys) |> Map.put(:variant, reported)}}
+        end
+
+      _other ->
+        {:error, {:identity_missing, [:variant]}}
+    end
+  end
+
+  # The variant a toolchain result was built as. The worker echoes the
+  # `optional_deps` request it was given (`requested_optional_deps`); a result
+  # from a worker that does not echo it still says it never started the
+  # optional pass (`optional_deps.reason` "not_requested"), which only a
+  # build asked to exclude them reports. Anything else states no variant and
+  # is held to the job's.
+  defp result_variant(%{"requested_optional_deps" => "include"}), do: :with
+  defp result_variant(%{"requested_optional_deps" => "exclude"}), do: :without
+  defp result_variant(%{"requested_optional_deps" => other}) when other != nil, do: other
+
+  defp result_variant(%{"optional_deps" => %{"reason" => "not_requested"}}), do: :without
+  defp result_variant(_result), do: nil
 
   defp stage_toolchain_build(result, opts) do
     build = result |> toolchain_build_map() |> gate_manifest()
 
     case ToolchainPriv.verify(result, build, opts) do
-      :ok -> stage_toolchain_build(result, build, opts)
+      :ok -> stage_toolchain_build(result, keyed(build), opts)
       {:refused, reason} -> stage_toolchain_build(result, refused(build, reason), opts)
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # A client installs `ebin` entries as code and `priv` entries as data, and
+  # an entry is served only under the key its own path names
+  # (`Portal.Catalog.precompiled_manifest_v2/1`). No build writes an entry
+  # under the other key, so a pass build that does is stored as a `fail`
+  # with no files rather than as a pass the manifest would never serve.
+  defp keyed(%{"file_manifest" => %{} = manifest} = build) do
+    case misplaced_entry(manifest) do
+      nil ->
+        build
+
+      {key, path} ->
+        Logger.warning(
+          "security: toolchain build lists #{inspect(path)} under #{inspect(key)}; publishing nothing"
+        )
+
+        Map.merge(build, %{
+          "status" => "fail",
+          "reason" => "manifest lists #{path} under #{key}",
+          "file_manifest" => nil
+        })
+    end
+  end
+
+  defp keyed(build), do: build
+
+  defp misplaced_entry(manifest) do
+    Enum.find_value(@manifest_keys, fn key ->
+      manifest
+      |> manifest_entries(key)
+      |> Enum.find_value(&misplaced(&1, key))
+    end)
+  end
+
+  defp misplaced(%{"path" => path}, key) when is_binary(path) do
+    if String.starts_with?(path, key <> "/"), do: nil, else: {key, show_path(path)}
+  end
+
+  defp misplaced(entry, key), do: {key, show_path(is_map(entry) && entry["path"])}
+
+  defp show_path(path) when is_binary(path), do: String.slice(path, 0, 200)
+  defp show_path(path), do: inspect(path, limit: 3)
 
   # A build whose priv files the host refused publishes none of its files,
   # beams included: its beams read data that is not published with them. It

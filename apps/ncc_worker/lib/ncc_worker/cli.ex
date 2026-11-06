@@ -172,12 +172,31 @@ defmodule NccWorker.CLI do
 
   @doc false
   # The JSON-to-input transform `read_input/1` applies; public for tests.
-  @spec parse_input(String.t()) :: {:ok, map()} | {:error, {:invalid_json, String.t()}}
+  @spec parse_input(String.t()) ::
+          {:ok, map()}
+          | {:error, {:invalid_json, String.t()} | {:invalid_optional_deps, term()}}
   def parse_input(content) do
+    case decode_input(content) do
+      {:ok, input} -> validate_optional_deps(input)
+      error -> error
+    end
+  end
+
+  defp decode_input(content) do
     {:ok, content |> JSON.decode!() |> atomize_keys()}
   rescue
     _ -> {:error, {:invalid_json, "Failed to decode JSON"}}
   end
+
+  # The portal builds a toolchain version per optional-deps variant and
+  # records the result as the variant it asked for. A value that is neither
+  # would run as some default and be recorded as the wrong variant, so it is
+  # refused; an input without the key runs as before.
+  defp validate_optional_deps(%{optional_deps: value})
+       when value not in ["include", "exclude"],
+       do: {:error, {:invalid_optional_deps, value}}
+
+  defp validate_optional_deps(input), do: {:ok, input}
 
   @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages egress_probe optional_deps)a
   @input_key_map Map.new(@input_keys, &{Atom.to_string(&1), &1})

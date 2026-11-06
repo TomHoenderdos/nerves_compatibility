@@ -31,6 +31,7 @@ defmodule Portal.Catalog do
     Artifact,
     ArtifactMembership,
     BulkSweep,
+    CoverageReport,
     FindingTriage,
     Cache,
     Package,
@@ -39,12 +40,17 @@ defmodule Portal.Catalog do
     Run,
     SystemLog,
     SystemResult,
-    ToolchainBuild
+    ToolchainBuild,
+    UnrecordedOptionalDeps
   }
 
   alias Portal.Repo
 
   @statuses ~w(pass fail error skipped unknown)
+
+  # The keys of a published file manifest, each the top directory its
+  # entries' paths sit under.
+  @manifest_keys ["ebin", "priv"]
 
   # Every read here names the columns it needs. `catalog_system_results` is
   # the largest table in the database: 843 MB on disk as of 2026-09-10, of
@@ -122,6 +128,7 @@ defmodule Portal.Catalog do
     resource(BulkSweep)
     resource(ToolchainBuild)
     resource(ReleaseDownloads)
+    resource(CoverageReport)
   end
 
   @doc """
@@ -1220,6 +1227,10 @@ defmodule Portal.Catalog do
   # The `with` variant is wanted for every qualifying version, the `without`
   # one only once a passing, unrevoked `with` build reports an optional
   # dependency it added: for a package with none the two builds are the same.
+  # A `with` build from before builds recorded them reports nothing, so the
+  # versions in $5/$6 (packages and versions, pairwise) want theirs too:
+  # `Portal.Catalog.UnrecordedOptionalDeps` asks the registry which of those
+  # rows declare one, in Elixir, since the query cannot.
   #
   # A live row for the identity, variant included, removes it: `pass` and
   # `skipped` at any age, `error` younger than a day ($3), `fail` younger than
@@ -1229,8 +1240,10 @@ defmodule Portal.Catalog do
   # dependencies for a transient reason (a Hex hiccup or a slow fetch) once it
   # is 7 days old ($4), so a reason that repeats costs one build a week, and a
   # `skipped` for shipping priv files, which the worker now judges file by
-  # file. Either stays as it is until the new build
-  # replaces it.
+  # file, once it is 7 days old ($4) too. Either stays as it is until the new
+  # build replaces it; a rebuild that fails dates the kept row to that attempt
+  # (`Portal.Workers.ToolchainBuild`), so it is not re-opened again before
+  # another week has passed.
   @toolchain_candidates_sql """
   SELECT e.package, e.version, v.variant, e.finished_at, e.recent
   FROM (
@@ -1259,6 +1272,7 @@ defmodule Portal.Catalog do
   CROSS JOIN (VALUES ('with'), ('without')) AS v(variant)
   WHERE (
       v.variant = 'with'
+      OR (e.package, e.version) IN (SELECT * FROM unnest($5::text[], $6::text[]))
       OR EXISTS (
         SELECT 1 FROM catalog_toolchain_builds w
         WHERE w.package_id = e.package_id
@@ -1288,7 +1302,13 @@ defmodule Portal.Catalog do
               AND coalesce(t.finished_at, t.updated_at) <= $4::timestamp
             )
           )
-          OR (t.status = 'skipped' AND t.reason IS DISTINCT FROM 'ships priv files')
+          OR (
+            t.status = 'skipped'
+            AND (
+              t.reason IS DISTINCT FROM 'ships priv files'
+              OR coalesce(t.finished_at, t.updated_at) > $4::timestamp
+            )
+          )
           OR (t.status = 'error' AND coalesce(t.finished_at, t.updated_at) > $3::timestamp)
           OR (t.status = 'fail' AND coalesce(t.finished_at, t.updated_at) > $4::timestamp)
         )
@@ -1301,7 +1321,10 @@ defmodule Portal.Catalog do
   (see `Portal.Catalog.ToolchainBuild`): every version whose own `host`
   compile passed on a non-revoked run, of a package with no native
   components, is wanted `:with` its optional dependencies, and also
-  `:without` them once a `:with` build reports adding one. A variant with a
+  `:without` them once a `:with` build reports adding one, or, for a `:with`
+  build from before builds reported them, once the registry shows the
+  version declares one (`Portal.Catalog.UnrecordedOptionalDeps`, the one
+  part of the backlog that asks Hex). A variant with a
   live `Portal.Catalog.ToolchainBuild` of its own is left out (see the
   query's comment for what is live).
 
@@ -1330,9 +1353,13 @@ defmodule Portal.Catalog do
                  c.version DESC,
                  c.variant = 'without',
                  c.package
-        LIMIT $5
+        LIMIT $7
         """,
-        toolchain_params(toolchain, builder_version) ++ [limit]
+        toolchain_params(
+          toolchain,
+          builder_version,
+          UnrecordedOptionalDeps.wanted(toolchain, builder_version)
+        ) ++ [limit]
       )
 
     Enum.map(rows, fn [package, version, variant] ->
@@ -1402,7 +1429,7 @@ defmodule Portal.Catalog do
           WHERE recent IS NOT NULL
           GROUP BY package, recent
           ORDER BY recent DESC, package
-          LIMIT $5
+          LIMIT $7
         ),
         ranked AS (
           SELECT c.package, c.recent, c.finished_at, c.version,
@@ -1414,7 +1441,7 @@ defmodule Portal.Catalog do
         )
         SELECT package, recent, finished_at, version
         FROM ranked
-        WHERE rank <= $6
+        WHERE rank <= $8
         """,
         toolchain_params(toolchain, builder_version) ++ [top_packages, versions_per_package]
       )
@@ -1433,7 +1460,10 @@ defmodule Portal.Catalog do
   Per configured toolchain (`Portal.Toolchains.images/0`), at the current
   `builder_version`: how many non-revoked toolchain builds have each status,
   and how many builds `toolchain_backlog/3` would still make (a version
-  wanted with and without its optional dependencies counts twice).
+  wanted with and without its optional dependencies counts twice). The count
+  asks Hex nothing, so it leaves out the `without` builds that only the
+  registry shows a pre-recording `with` build needs
+  (`Portal.Catalog.UnrecordedOptionalDeps`).
   """
   @spec toolchain_counts() :: %{
           String.t() => %{
@@ -1480,14 +1510,21 @@ defmodule Portal.Catalog do
     count
   end
 
-  defp toolchain_params(toolchain, builder_version) do
+  # `unrecorded` is `Portal.Catalog.UnrecordedOptionalDeps.wanted/2`'s answer,
+  # which asks Hex: only the sweep's own backlog passes it. The ranking for
+  # release downloads and the admin page's counts leave those `without`
+  # builds out rather than ask Hex for a number.
+  defp toolchain_params(toolchain, builder_version, unrecorded \\ {[], []}) do
     now = NaiveDateTime.utc_now()
+    {packages, versions} = unrecorded
 
     [
       toolchain,
       builder_version,
       NaiveDateTime.add(now, -1, :day),
-      NaiveDateTime.add(now, -7, :day)
+      NaiveDateTime.add(now, -7, :day),
+      packages,
+      versions
     ]
   end
 
@@ -2458,21 +2495,25 @@ defmodule Portal.Catalog do
   end
 
   # The entries of a manifest a client may fetch: the ones owned by this build,
-  # all of them safe to write and all on this host. An owned file with an
-  # unsafe path or no publishable mode, or one this host lacks, leaves the
-  # whole manifest out: a client then compiles the package rather than
-  # installing it without that file.
+  # all of them safe to write, each under the key its own path names, and all
+  # on this host. An owned file with an unsafe path, a path under the other
+  # key or no publishable mode, or one this host lacks, leaves the whole
+  # manifest out: a client then compiles the package rather than installing
+  # it without that file.
+  #
+  # A client installs `ebin` entries as the package's code and `priv` entries
+  # as its data, and the host checks a toolchain build's priv files
+  # (`Portal.Catalog.ToolchainPriv`) by path. An entry whose path and key
+  # disagree is something no build writes; it is not served under either.
   defp published_files(manifest, stored_shas, present_shas) do
-    owned = %{
-      "ebin" => owned_entries(manifest_entries(manifest, "ebin"), stored_shas),
-      "priv" => owned_entries(manifest_entries(manifest, "priv"), stored_shas)
-    }
+    owned =
+      Map.new(@manifest_keys, &{&1, owned_entries(manifest_entries(manifest, &1), stored_shas)})
 
-    files = owned["ebin"] ++ owned["priv"]
+    files = owned |> Map.values() |> Enum.concat()
 
     cond do
       files == [] -> nil
-      not Enum.all?(files, &publishable?/1) -> nil
+      not Enum.all?(owned, &all_publishable?/1) -> nil
       Enum.all?(files, &MapSet.member?(present_shas, &1["sha256"])) -> Map.new(owned, &publish/1)
       true -> nil
     end
@@ -2481,7 +2522,14 @@ defmodule Portal.Catalog do
   defp owned_entries(entries, stored_shas),
     do: Enum.filter(entries, &(is_map(&1) and MapSet.member?(stored_shas, &1["sha256"])))
 
-  defp publishable?(entry), do: safe_path?(entry["path"]) and publish_mode(entry["mode"]) != nil
+  defp all_publishable?({key, entries}), do: Enum.all?(entries, &publishable?(&1, key))
+
+  defp publishable?(entry, key),
+    do:
+      safe_path?(entry["path"]) and under_key?(entry["path"], key) and
+        publish_mode(entry["mode"]) != nil
+
+  defp under_key?(path, key), do: String.starts_with?(path, key <> "/")
 
   # The row keeps what the build saw; a client gets 0644 or 0755.
   defp publish({key, entries}),
@@ -2511,7 +2559,7 @@ defmodule Portal.Catalog do
   defp safe_path?(path) when is_binary(path) do
     segments = String.split(path, "/")
 
-    hd(segments) in ["ebin", "priv"] and length(segments) > 1 and
+    hd(segments) in @manifest_keys and length(segments) > 1 and
       Enum.all?(segments, &(&1 not in ["", ".", ".."])) and not String.contains?(path, <<0>>)
   end
 

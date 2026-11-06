@@ -32,7 +32,9 @@ defmodule Portal.Workers.ToolchainBuild do
   attempt of a retryable failure is spent, which is what lets the sweep's
   day-old-error rule retry it later. An `error` never replaces a `pass` or
   `skipped` row of the same identity: a transient host problem is not news
-  about a build that already worked.
+  about a build that already worked. The kept row's `finished_at` is set to
+  the failed attempt instead, since the sweep re-opens such a row by its age
+  and would otherwise queue it again at once.
 
   `max_attempts` is 2, not `Build`'s 3. A compile failure is a verdict and
   never retried; what is left to retry (exit 10, or 20/21 from the host) is
@@ -232,7 +234,7 @@ defmodule Portal.Workers.ToolchainBuild do
   # own outcome stands.
   defp write_row(%Oban.Job{args: args} = job, status, reason, run_id, image_digest) do
     with %Package{id: package_id} <- package(args["package"]),
-         false <- kept?(package_id, args) do
+         nil <- kept(package_id, args) do
       Portal.Catalog.ToolchainBuild
       |> Ash.Changeset.for_create(:upsert, %{
         package_id: package_id,
@@ -253,7 +255,7 @@ defmodule Portal.Workers.ToolchainBuild do
       end
     else
       nil -> Logger.warning("No package #{args["package"]} to record #{describe(job)} against")
-      true -> :ok
+      %Portal.Catalog.ToolchainBuild{} = row -> retried(row, job)
     end
 
     :ok
@@ -266,8 +268,9 @@ defmodule Portal.Workers.ToolchainBuild do
     Package |> Ash.Query.filter(name == ^name) |> Ash.read_one!(domain: Portal.Catalog)
   end
 
-  # A pass or skipped row of the same identity stays as it is.
-  defp kept?(package_id, args) do
+  # A pass or skipped row of the same identity stays as it is, verdict and
+  # files alike.
+  defp kept(package_id, args) do
     variant = variant(args)
 
     Portal.Catalog.ToolchainBuild
@@ -276,7 +279,21 @@ defmodule Portal.Workers.ToolchainBuild do
         toolchain == ^args["toolchain"] and builder_version == ^args["builder_version"] and
         variant == ^variant and status in [:pass, :skipped]
     )
-    |> Ash.exists?(domain: Portal.Catalog)
+    |> Ash.Query.limit(1)
+    |> Ash.read_one!(domain: Portal.Catalog)
+  end
+
+  # The sweep re-queues a kept row once it has aged (a `skipped` for shipping
+  # priv files, or a `pass` that dropped its optional dependencies for a
+  # transient reason, both after 7 days; see
+  # `Portal.Catalog.toolchain_backlog/3`). Its failed rebuild dates it to
+  # now, so the identity waits out the week again instead of coming back in
+  # every sweep.
+  defp retried(row, job) do
+    case row |> Ash.Changeset.for_update(:retried, %{}) |> Ash.update(domain: Portal.Catalog) do
+      {:ok, _row} -> :ok
+      {:error, error} -> Logger.error("Toolchain row for #{describe(job)}: #{inspect(error)}")
+    end
   end
 
   defp reason(message, nil), do: message

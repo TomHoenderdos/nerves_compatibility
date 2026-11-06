@@ -83,6 +83,14 @@ defmodule Portal.Catalog.ToolchainBuild do
     update :revoke do
       change(set_attribute(:revoked_at, &DateTime.utc_now/0))
     end
+
+    # A rebuild of a re-opened identity that failed keeps the row it was
+    # re-opened from (`Portal.Workers.ToolchainBuild`), and dates the row to
+    # that attempt: the backlog re-opens a row by its age, so the identity
+    # then waits out its interval again rather than coming back next sweep.
+    update :retried do
+      change(set_attribute(:finished_at, &DateTime.utc_now/0))
+    end
   end
 
   identities do

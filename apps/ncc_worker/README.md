@@ -258,7 +258,11 @@ no Hex metadata fetch; `toolchain.nerves_bootstrap` is `"absent"`.
 `"optional_deps"` in `NCC_INPUT` picks the build: `"include"` (the default, also when absent) runs the
 optional-dependency pass, `"exclude"` skips it entirely, so the package is built and published without its optional
 dependencies, and `result.json`'s `optional_deps` is `{"added": [], "dropped": [], "skipped": [], "reason":
-"not_requested"}`. The portal queues a version `"include"` first and `"exclude"` only when that build added one.
+"not_requested"}`, whether the compile passed or not. Any other value (`"maybe"`, `""`, `"INCLUDE"`, a number, a
+boolean, a list) is refused when the input is read (`{:error, {:invalid_optional_deps, value}}`, exit `10` with no result), as
+malformed input is, rather than run as the default and recorded as the wrong variant. The request is echoed as `result.json`'s `"requested_optional_deps"`, which the
+portal checks against the variant it queued the build as. The portal queues a version `"include"` first and
+`"exclude"` only when that build added one.
 
 A package that ships `priv` files is portable only when they are static data (`NccWorker.StaticPriv`): every file
 under `_build/host/lib/<package>/priv` (or `deps/<package>/priv`, the only link target followed there) is a regular file with one link, executable neither there nor in the

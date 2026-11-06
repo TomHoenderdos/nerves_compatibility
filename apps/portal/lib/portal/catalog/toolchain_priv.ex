@@ -21,6 +21,8 @@ defmodule Portal.Catalog.ToolchainPriv do
        SHA-256 its manifest entry names; those bytes, with the manifest's
        mode, are what the rules judge.
 
+  A priv file is an entry whose path is under `priv/`, whichever key of the
+  manifest lists it; the key is the container's word as much as the path is.
   A build without priv files fetches nothing. A failed rule, a checksum that
   is not the registry's, or a release the registry does not list is a
   refusal: `{:refused, reason}`, logged as a security event with the package,
@@ -56,10 +58,21 @@ defmodule Portal.Catalog.ToolchainPriv do
     end
   end
 
-  defp priv_entries(%{"status" => "pass", "file_manifest" => %{"priv" => [_ | _] = entries}}),
-    do: entries
+  # Every entry listed under `priv`, and every entry whose path is a priv
+  # file under whichever other key lists it: a client writes a file at its
+  # path, so a `priv/` path under `ebin` lands in priv like any other.
+  defp priv_entries(%{"status" => "pass", "file_manifest" => %{} = manifest}) do
+    for {key, entries} <- manifest,
+        is_list(entries),
+        entry <- entries,
+        key == "priv" or priv_path?(entry),
+        do: entry
+  end
 
   defp priv_entries(_build), do: []
+
+  defp priv_path?(%{"path" => "priv/" <> _}), do: true
+  defp priv_path?(_entry), do: false
 
   # The job's package and version key the row (`Ingestion`, which has already
   # checked that the result names the same ones), so they are the release the

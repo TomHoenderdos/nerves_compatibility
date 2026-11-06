@@ -308,7 +308,11 @@ a different version or a different checksum means building from source.
   without an entry for its own system can use this one. `system_version` is
   `null`.
 - Each file entry contains:
-  - `path` — relative path within the package, e.g. `ebin/myapp.beam`.
+  - `path` — relative path within the package, e.g. `ebin/myapp.beam`. An
+    entry is published only under the key its path names: `ebin/...` under
+    `ebin`, `priv/...` under `priv`. A build whose stored manifest lists an
+    entry under the other key is left out whole, as one with an unsafe path
+    is, so a client never installs a `priv/` file as code or a beam as data.
   - `sha256` — lowercase hexadecimal SHA256 of the file.
   - `size` — file size in bytes when reported by the worker.
   - `mode` — the file's mode as built, published as exactly `33188` (0o100644)

@@ -40,15 +40,23 @@ defmodule Portal.Catalog.Coverage do
       `fail` or `error`, by any recipe
     * `:no_optional_deps_build` - covered, but without its optional
       dependencies; a gap only in the second column
+
+  Computing it asks the registry about every ranked package, so the admin
+  page shows a stored copy (`store/1`, `latest/0`) that
+  `Portal.Workers.CoverageRefresh` recomputes hourly.
   """
 
   require Ash.Query
 
-  alias Compatibility.OptionalDeps
-  alias Portal.Catalog.{Package, Run, ToolchainBuild}
+  alias Portal.Catalog.{CoverageReport, Package, Run, ToolchainBuild, UnrecordedOptionalDeps}
   alias Portal.HexDeps
 
   @default_top_n 100
+
+  @reasons Map.new(
+             [:no_host_build, :no_build_for_version, :failed, :no_optional_deps_build],
+             &{Atom.to_string(&1), &1}
+           )
 
   @type reason :: :no_host_build | :no_build_for_version | :failed | :no_optional_deps_build
   @type gap :: %{
@@ -110,6 +118,70 @@ defmodule Portal.Catalog.Coverage do
 
     %{top_n: top_n, toolchains: toolchains}
   end
+
+  @doc """
+  Stores `report` as the latest (`Portal.Catalog.CoverageReport`), computed
+  now. `Portal.Workers.CoverageRefresh` calls it.
+  """
+  @spec store(t()) :: {:ok, CoverageReport.t()} | {:error, term()}
+  def store(report) do
+    CoverageReport
+    |> Ash.Changeset.for_create(:upsert, %{
+      key: "latest",
+      report: report,
+      computed_at: DateTime.utc_now()
+    })
+    |> Ash.create(domain: Portal.Catalog)
+  end
+
+  @doc """
+  The latest stored report, in the shape `report/1` returns, with the time it
+  was computed; nil before the first refresh. Reads one row and asks Hex
+  nothing.
+  """
+  @spec latest() :: %{report: t(), computed_at: DateTime.t()} | nil
+  def latest do
+    CoverageReport
+    |> Ash.Query.filter(key == "latest")
+    |> Ash.read_one!(domain: Portal.Catalog)
+    |> case do
+      nil -> nil
+      stored -> %{report: from_stored(stored.report), computed_at: stored.computed_at}
+    end
+  end
+
+  # The row holds the report as JSON: string keys, and a gap's reason as its
+  # name. Only the names `report/1` writes are read back.
+  defp from_stored(stored) do
+    %{
+      top_n: stored["top_n"],
+      toolchains: Enum.map(stored["toolchains"] || [], &row_from_stored/1)
+    }
+  end
+
+  defp row_from_stored(row) do
+    %{
+      toolchain: row["toolchain"],
+      total: row["total"],
+      covered: row["covered"],
+      percent: as_float(row["percent"]),
+      covered_with_optional: row["covered_with_optional"],
+      percent_with_optional: as_float(row["percent_with_optional"]),
+      gaps: Enum.map(row["gaps"] || [], &gap_from_stored/1)
+    }
+  end
+
+  defp gap_from_stored(gap) do
+    %{
+      package: gap["package"],
+      version: gap["version"],
+      downloads: gap["downloads"],
+      reason: Map.get(@reasons, gap["reason"])
+    }
+  end
+
+  defp as_float(number) when is_number(number), do: number * 1.0
+  defp as_float(_other), do: 0.0
 
   # Tests that render the report without asking about optional dependencies
   # configure a stand-in, as for `Portal.HexPackageLookup`.
@@ -264,9 +336,7 @@ defmodule Portal.Catalog.Coverage do
     end
   end
 
-  defp expected_optional?(dep) do
-    dep.optional and dep.repository == "hexpm" and dep.package not in OptionalDeps.never_added()
-  end
+  defp expected_optional?(dep), do: UnrecordedOptionalDeps.addable?(dep)
 
   # A dependency with no stable release its requirement allows is one no
   # fresh lock can add, so it is not expected. One the registry cannot answer

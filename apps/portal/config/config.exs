@@ -117,7 +117,12 @@ config :portal, Oban,
        # and stays out of that hour of hex.pm requests, and before the 03:17
        # sweep, which then builds in the new order. At most 1,000 requests,
        # 1.5 s apart. Carries `:intake`, the web host's queue.
-       {"37 2 * * 2", Portal.Workers.ReleaseDownloadsRefresh}
+       {"37 2 * * 2", Portal.Workers.ReleaseDownloadsRefresh},
+       # Hourly, at a minute no other entry here uses: recompute the admin
+       # page's precompiled coverage report, which asks the Hex registry
+       # about every ranked package and so is stored rather than computed on
+       # a page load. Carries `:intake`, the web host's queue.
+       {"49 * * * *", Portal.Workers.CoverageRefresh}
      ]}
   ]
 

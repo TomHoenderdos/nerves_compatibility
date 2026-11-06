@@ -3,7 +3,9 @@ defmodule PortalWeb.Admin.MaintenanceLive do
   Admin Maintenance tab: the hex.pm update check, bulk rebuilds with their
   sweeps in a Cinder table, precompiled signing, the toolchain backlog and
   how much of the most downloaded packages the toolchain builds cover
-  (`Portal.Catalog.Coverage`).
+  (`Portal.Catalog.Coverage`), as the last `Portal.Workers.CoverageRefresh`
+  stored it: the page and its buttons ask Hex nothing, and the refresh button
+  only queues that job.
 
   The sweeps' counts follow along live from two `Portal.AdminEvents` topics.
   On `:sweeps`, `Portal.BulkRebuild` announces a sweep that starts or is
@@ -28,6 +30,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
 
   alias Portal.BulkRebuild
   alias Portal.Catalog.Coverage
+  alias Portal.Workers.CoverageRefresh
   alias PortalWeb.AdminMessages
 
   @tables ["sweeps"]
@@ -75,7 +78,9 @@ defmodule PortalWeb.Admin.MaintenanceLive do
         batch: Portal.Precompiled.Batches.latest()
       },
       toolchains: toolchain_rows(),
-      coverage: Coverage.report(),
+      # The stored report: computing it asks Hex about every ranked
+      # package, which a page load must not (`Portal.Workers.CoverageRefresh`).
+      coverage: Coverage.latest(),
       build_cache_l2: Portal.BuildCache.L2.status()
     )
   end
@@ -117,6 +122,18 @@ defmodule PortalWeb.Admin.MaintenanceLive do
 
         :error ->
           done(socket, :error, "That sweep id is not valid.")
+      end
+    end)
+  end
+
+  def handle_event("refresh_coverage", _params, socket) do
+    as_admin(socket, fn socket, _user ->
+      case CoverageRefresh.enqueue() do
+        {:ok, _job} ->
+          done(socket, :info, "Coverage refresh queued. Reload the page once it has run.")
+
+        {:error, reason} ->
+          done(socket, :error, AdminMessages.error(reason))
       end
     end)
   end
@@ -626,14 +643,37 @@ defmodule PortalWeb.Admin.MaintenanceLive do
 
       <section id="coverage" class="card mt-6 border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body">
-          <h2 class="card-title">Precompiled coverage</h2>
-          <p class="mt-1 text-sm leading-6 text-base-content/70">
-            Of the {@coverage.top_n} most downloaded packages on hex.pm, how many have a served
-            build of their latest stable version per toolchain, and how many of those builds
-            carry the package's optional dependencies.
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 class="card-title">Precompiled coverage</h2>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                Of the most downloaded packages on hex.pm, how many have a served build of their
+                latest stable version per toolchain, and how many of those builds carry the
+                package's optional dependencies. Recomputed hourly.
+              </p>
+            </div>
+            <button
+              type="button"
+              id="coverage-refresh"
+              phx-click="refresh_coverage"
+              class="btn btn-sm btn-primary"
+            >
+              Refresh now
+            </button>
+          </div>
+
+          <p :if={@coverage == nil} id="coverage-none" class="mt-5 text-sm text-base-content/70">
+            No coverage report yet. The hourly refresh computes one, or queue it now.
           </p>
 
-          <div class="mt-5 overflow-x-auto">
+          <p :if={@coverage} id="coverage-computed-at" class="mt-3 text-sm text-base-content/70">
+            Top {@coverage.report.top_n} packages, computed
+            <time datetime={DateTime.to_iso8601(@coverage.computed_at)}>
+              {Calendar.strftime(@coverage.computed_at, "%Y-%m-%d %H:%M UTC")}
+            </time>
+          </p>
+
+          <div :if={@coverage} class="mt-5 overflow-x-auto">
             <table class="table table-sm">
               <thead>
                 <tr>
@@ -644,7 +684,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                 </tr>
               </thead>
               <tbody>
-                <tr :for={row <- @coverage.toolchains} data-toolchain={row.toolchain}>
+                <tr :for={row <- @coverage.report.toolchains} data-toolchain={row.toolchain}>
                   <td class="font-mono">{row.toolchain}</td>
                   <td class="text-right tabular-nums">{row.total}</td>
                   <td data-column="covered" class="text-right tabular-nums">
@@ -658,7 +698,11 @@ defmodule PortalWeb.Admin.MaintenanceLive do
             </table>
           </div>
 
-          <details :for={row <- @coverage.toolchains} :if={row.gaps != []} class="mt-4">
+          <details
+            :for={row <- if(@coverage, do: @coverage.report.toolchains, else: [])}
+            :if={row.gaps != []}
+            class="mt-4"
+          >
             <summary class="cursor-pointer text-sm font-medium">
               <span class="font-mono">{row.toolchain}</span>: {pluralize(length(row.gaps), "gap")}
             </summary>
