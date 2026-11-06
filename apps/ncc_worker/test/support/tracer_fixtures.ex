@@ -48,6 +48,11 @@ defmodule NccWorker.TracerFixtures do
     %{result: result, report: Report.read(trace_dir), log: File.read!(log)}
   end
 
+  @doc "The portability verdict of a `trace/3` result for `package`."
+  @spec judge(String.t(), String.t(), map(), [String.t()]) :: NccWorker.Portability.verdict()
+  def judge(proj, package, traced, native \\ []),
+    do: NccWorker.Portability.judge(proj, package, traced.report, native)
+
   @doc "A dependency with one `lib/<name>.ex` holding `body`, plus `extra` spec keys."
   @spec lib(String.t(), String.t(), map()) :: map()
   def lib(name, body, extra \\ %{}), do: Map.merge(%{files: %{"lib/#{name}.ex" => body}}, extra)
