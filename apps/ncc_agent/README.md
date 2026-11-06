@@ -25,7 +25,7 @@ Read from the environment (in production, populated from the file
 | `NCC_MEMORY` | required | Per-container `docker run --memory`, a positive size such as `8g`; every build container gets it |
 | `NCC_CPUS` | none | Per-container `docker run --cpus` |
 | `NCC_BUILD_CONCURRENCY` | none | Passed to the worker as its build concurrency |
-| `NCC_DATA_DIR` | `/srv/ncc` | Identity, scratch, Nerves/Hex caches, releases |
+| `NCC_DATA_DIR` | `/srv/ncc` | Identity, scratch, Nerves/Hex caches, the read-only build cache copy, releases |
 | `NCC_BUILD_USER` | required non-root | `docker run --user`, the `uid:gid` of the `ncc-build` user; `0:*` is refused |
 | `NCC_DOCKER_BIN` | `docker` | Docker CLI to run |
 | `NCC_EGRESS_SCRIPT` | `priv/egress.sh` | Installs the containers' egress ruleset |
@@ -89,6 +89,40 @@ active or a container runs, since the restart would kill its builds:
 `systemctl stop ncc-agent` first, or pass `install --force`.
 Upgrading gVisor is a change to the version and both checksums at the top
 of the script.
+
+## Build cache (read-only L2)
+
+Before a lease's container starts, the agent asks the portal for the L2
+build cache entries of the lease's image (`POST
+/builder/v1/jobs/:lease_id/build-cache`, sending the keys it already has).
+The portal answers only for a lease this builder holds in state `leased`,
+only for that lease's image slug (`sha256_<64 hex>`), with each entry's key,
+size, SHA-256 and a presigned GET URL valid for 15 minutes. The agent never
+holds an S3 key and never writes the bucket, and the portal never promotes a
+remote run's cache candidates.
+
+`NccAgent.BuildCache` downloads the entries within the portal's own
+prefetch budget (2 GiB downloaded, 4 GiB extracted, 5 minutes), checks every
+body against the SHA-256 the portal listed, and extracts it with the code
+the portal's prefetch runs (`Compatibility.BuildCache.Install`, `Tarball`,
+`Tree`: gzip pre-scan, screened tar table, bounded extraction, no symlink or
+hardlink members, Mix's `priv`/`include` links only from `.ncc-links.json`).
+The tree is handed to `NCC_BUILD_USER` and renamed into
+`$NCC_DATA_DIR/build-cache/<slug>/<key>`; a slug dir holding entries is
+mounted read-only at `/build-cache` with `NCC_BUILD_CACHE` set, the same
+mount the portal host's builds get. One line in `runner.log` says what was
+fetched. Any failure (an older portal, L2 off, a bad object, a slow store,
+under 10 GiB free) builds without the missing entries; it never fails a
+lease. A slug dir no build has used for 7 days is removed.
+
+The presigned URLs point at the portal's configured L2 endpoint. A builder
+must be able to reach it: a plain-`http` endpoint on the private network
+serves builders on that network only, and a builder outside it needs an
+`https` endpoint (the portal warns at boot about plain `http` outside the
+private network). The SHA-256 a builder checks arrives over the mTLS builder
+API, not with the object, so a body changed in transit is refused either way.
+A docker daemon that enforces the builders' authorization policy must allow
+the read-only `/build-cache` bind from `$NCC_DATA_DIR/build-cache/<slug>`.
 
 ## Setting up a builder host
 

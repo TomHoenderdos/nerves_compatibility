@@ -61,6 +61,15 @@ defmodule Portal.BuildCache.L2 do
   in total time (send included), and all of one promotion's uploads by one
   deadline (`Portal.BuildCache.Promotion.l2_upload_budget_ms/0`).
 
+  ## Remote builders read, never write
+
+  A remote builder holds no key. For a lease it holds, the builder API hands
+  it presigned GETs for that lease's slug (`Portal.BuildCache.L2.Remote`), and
+  the agent fetches and extracts them with the same shared code as
+  `prefetch/3` (`Compatibility.BuildCache.Install`). Nothing a remote run
+  compiles is promoted or uploaded: only `Portal.Workers.Build` runs
+  `Portal.BuildCache.Promotion`.
+
   ## Why a downloaded entry is trusted
 
   A local entry is trusted because Promotion checked it: the key recomputed,
