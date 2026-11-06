@@ -324,4 +324,160 @@ defmodule Portal.Workers.IngestIdentityTest do
       refute membership?(beam)
     end
   end
+
+  # A toolchain build is made with and without the package's optional
+  # dependencies, and a client is served the one that matches its own lock.
+  # The variant is part of what the job asked to build: a result for the
+  # other variant would publish files built against another dependency set.
+  describe "a toolchain build's variant" do
+    defp variant_args(name, variant) do
+      base = %{
+        "run_id" => "tc-#{name}",
+        "image_digest" => "sha256:identity",
+        "kind" => "toolchain",
+        "package" => name,
+        "version" => "1.0.0",
+        "toolchain" => "1.19/28",
+        "builder_version" => 1
+      }
+
+      if variant, do: Map.put(base, "variant", variant), else: base
+    end
+
+    # What the worker reports for a build asked to `request` the optional
+    # dependencies: it echoes the request, and a build asked to exclude them
+    # never starts the optional pass.
+    defp variant_result(name, beam, request) do
+      reason = if request == "exclude", do: "not_requested", else: nil
+
+      name
+      |> toolchain_result("1.0.0", beam)
+      |> Map.put("requested_optional_deps", request)
+      |> Map.put("optional_deps", %{
+        "added" => [],
+        "dropped" => [],
+        "skipped" => [],
+        "reason" => reason
+      })
+    end
+
+    test "the toolchain build hands its variant to the ingest" do
+      Process.put(
+        :identity_build_response,
+        {:ok,
+         %{
+           exit_code: 0,
+           result: %{"toolchain_build" => %{"status" => "pass"}},
+           files_dir: "/f",
+           output_dir: "/o",
+           log: ""
+         }}
+      )
+
+      assert :ok =
+               perform_job(Portal.Workers.ToolchainBuild, %{
+                 "package" => "jason",
+                 "version" => "1.4.4",
+                 "toolchain" => "1.19/28",
+                 "image" => "ncc-worker:elixir-1.19-otp-28",
+                 "builder_version" => 1,
+                 "variant" => "without"
+               })
+
+      assert [job] = all_enqueued(worker: Ingest)
+      assert %{"package" => "jason", "variant" => "without"} = job.args
+    end
+
+    test "records a result for the job's variant under that variant" do
+      name = unique("tcvarok")
+      beam = "beam-#{name}"
+      replay(variant_result(name, beam, "exclude"), files_dir_with([beam]))
+
+      assert :ok = ingest(variant_args(name, "without"))
+      assert [%{variant: :without, status: :pass}] = toolchain_rows_of(name)
+      assert membership?(beam)
+    end
+
+    test "refuses a result built without for a with job, and publishes nothing" do
+      name = unique("tcvarwith")
+      beam = "beam-#{name}"
+      replay(variant_result(name, beam, "exclude"), files_dir_with([beam]))
+
+      log =
+        capture_log(fn ->
+          assert {:cancel, "ingest refused: " <> _} = ingest(variant_args(name, "with"))
+        end)
+
+      assert toolchain_rows_of(name) == []
+      refute membership?(beam)
+      assert log =~ "security:"
+      assert log =~ ~r/:with\b/
+      assert log =~ ":without"
+    end
+
+    test "refuses a result built with for a without job, and publishes nothing" do
+      name = unique("tcvarwithout")
+      beam = "beam-#{name}"
+      replay(variant_result(name, beam, "include"), files_dir_with([beam]))
+
+      log =
+        capture_log(fn ->
+          assert {:cancel, "ingest refused: " <> _} = ingest(variant_args(name, "without"))
+        end)
+
+      assert toolchain_rows_of(name) == []
+      refute membership?(beam)
+      assert log =~ ~r/:with\b/
+      assert log =~ ":without"
+    end
+
+    # A result from a worker that does not echo the request still says when
+    # it never started the optional pass: that is a build without them.
+    test "refuses a result that skipped the optional pass for a with job" do
+      name = unique("tcvarreason")
+      beam = "beam-#{name}"
+
+      replay(
+        name |> variant_result(beam, "exclude") |> Map.delete("requested_optional_deps"),
+        files_dir_with([beam])
+      )
+
+      capture_log(fn -> refute ingest(variant_args(name, "with")) == :ok end)
+
+      assert toolchain_rows_of(name) == []
+      refute membership?(beam)
+    end
+
+    # Jobs queued before variants existed carry none, and were with builds.
+    # The job's side decides: the result is held to a with build, never
+    # taken for whatever variant it reports.
+    test "a job without a variant is a with job" do
+      ok = unique("tcvarnone")
+      ok_beam = "beam-#{ok}"
+      replay(variant_result(ok, ok_beam, "include"), files_dir_with([ok_beam]))
+
+      assert :ok = ingest(variant_args(ok, nil))
+      assert [%{variant: :with}] = toolchain_rows_of(ok)
+
+      other = unique("tcvarnoneout")
+      other_beam = "beam-#{other}"
+      replay(variant_result(other, other_beam, "exclude"), files_dir_with([other_beam]))
+
+      capture_log(fn -> refute ingest(variant_args(other, nil)) == :ok end)
+
+      assert toolchain_rows_of(other) == []
+      refute membership?(other_beam)
+    end
+
+    test "refuses a job whose variant is neither with nor without" do
+      name = unique("tcvarbad")
+      beam = "beam-#{name}"
+      replay(variant_result(name, beam, "include"), files_dir_with([beam]))
+
+      capture_log(fn -> refute ingest(variant_args(name, "maybe")) == :ok end)
+
+      assert toolchain_rows_of(name) == []
+      refute membership?(beam)
+    end
+  end
 end
