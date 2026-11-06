@@ -29,7 +29,15 @@ defmodule Portal.Application do
     # `server: true`; `configure/0` installs its certificates first, or turns
     # the listener off, so a CA problem never stops the public site.
     _ = Portal.Builders.Listener.configure()
-    children = children ++ [PortalWeb.BuilderEndpoint]
+
+    # Through the Starter, which waits for the port while another release on
+    # this host still holds it (a blue/green deploy; `ops/blue-green.sh`).
+    children =
+      children ++
+        [
+          {PortalWeb.BuilderEndpoint.Starter,
+           child: PortalWeb.BuilderEndpoint, serving?: &Portal.Builders.Listener.serving?/0}
+        ]
 
     # After the endpoint, so the warm-up never delays serving; the Repo and the
     # Cache it fills are both up by then.

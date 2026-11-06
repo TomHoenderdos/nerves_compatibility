@@ -20,6 +20,10 @@ defmodule Portal.Builders.Listener do
   @spec port() :: :inet.port_number()
   def port, do: endpoint_config() |> Keyword.get(:https, []) |> Keyword.get(:port, @default_port)
 
+  @doc "True when `configure/0` left the builder endpoint with a listener."
+  @spec serving?() :: boolean()
+  def serving?, do: Keyword.get(endpoint_config(), :server, false) == true
+
   @doc "The Bandit `https:` options for `host`; issues the server certificate when needed."
   @spec https_options(String.t()) :: keyword()
   def https_options(host) do
