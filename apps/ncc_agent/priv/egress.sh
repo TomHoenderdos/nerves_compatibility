@@ -36,7 +36,11 @@
 #      broadcast or v4-mapped. IPv4 ones go to iptables, IPv6 ones to
 #      ip6tables. When none is found install fails before touching any
 #      chain: DNS is never opened to any destination.
-#   3. Drop RFC1918, CGNAT, link-local (IMDS) and loopback.
+#   3. Drop RFC1918, CGNAT, link-local (IMDS), loopback, 0.0.0.0/8 ("this
+#      network": OrbStack's resolver and host gateway live there),
+#      192.0.0.0/24 (IETF protocol assignments), 198.18.0.0/15
+#      (benchmarking; OrbStack's machine network), multicast and the
+#      reserved 240.0.0.0/4.
 #   4. Accept TCP 443/80 to the Internet; drop everything else.
 #
 # NCC-EGRESS filters what the containers send through FORWARD. Traffic
@@ -117,10 +121,15 @@ is_v6() { expand_v6 "$1" >/dev/null; }
 # to: loopback and unspecified are the builder itself, link-local is the
 # metadata service, multicast and broadcast are not one resolver, and
 # v4-mapped v6 would reach a v4 address the v4 chain never checked.
+# 0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15 and 240.0.0.0/4 are dropped ranges
+# that are no resolver's home (OrbStack's 0.250.250.200 is a host-side
+# forwarder); a DNS accept to one would be a hole in its drop. RFC1918 and
+# CGNAT resolvers stay usable: a VPC's resolver is one of them.
 is_unusable() {
   local ip="$1" full
   if is_v4 "$ip"; then
     [[ "$ip" =~ ^(0|127)\. || "$ip" =~ ^169\.254\. ]] && return 0
+    [[ "$ip" =~ ^192\.0\.0\. || "$ip" =~ ^198\.1[89]\. ]] && return 0
     [ "${ip%%.*}" -ge 224 ] && return 0
     return 1
   fi
@@ -224,6 +233,11 @@ V4_TAIL=(
   "-d 100.64.0.0/10 -j DROP"
   "-d 169.254.0.0/16 -j DROP"
   "-d 127.0.0.0/8 -j DROP"
+  "-d 0.0.0.0/8 -j DROP"
+  "-d 192.0.0.0/24 -j DROP"
+  "-d 198.18.0.0/15 -j DROP"
+  "-d 224.0.0.0/4 -j DROP"
+  "-d 240.0.0.0/4 -j DROP"
   "-p tcp --dport 443 -j ACCEPT"
   "-p tcp --dport 80 -j ACCEPT"
 )

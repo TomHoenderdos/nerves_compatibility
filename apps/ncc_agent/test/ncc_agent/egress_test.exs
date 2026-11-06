@@ -57,6 +57,10 @@ defmodule NccAgent.EgressTest do
     rules = File.read!(Path.join([dir, "state", "NCC-EGRESS"]))
     assert rules =~ "-d 169.254.0.0/16 -j DROP"
     assert rules =~ "-d 100.64.0.0/10 -j DROP"
+    # OrbStack's resolver and host gateway sit in 0.0.0.0/8, its machines
+    # in 198.18.0.0/15.
+    assert rules =~ "-d 0.0.0.0/8 -j DROP"
+    assert rules =~ "-d 198.18.0.0/15 -j DROP"
     assert rules =~ "-p tcp --dport 443 -j ACCEPT"
     assert String.ends_with?(String.trim(rules), "-j DROP")
     lines = String.split(rules, "\n")
@@ -86,6 +90,11 @@ defmodule NccAgent.EgressTest do
            -A NCC-EGRESS -d 100.64.0.0/10 -j DROP
            -A NCC-EGRESS -d 169.254.0.0/16 -j DROP
            -A NCC-EGRESS -d 127.0.0.0/8 -j DROP
+           -A NCC-EGRESS -d 0.0.0.0/8 -j DROP
+           -A NCC-EGRESS -d 192.0.0.0/24 -j DROP
+           -A NCC-EGRESS -d 198.18.0.0/15 -j DROP
+           -A NCC-EGRESS -d 224.0.0.0/4 -j DROP
+           -A NCC-EGRESS -d 240.0.0.0/4 -j DROP
            -A NCC-EGRESS -p tcp --dport 443 -j ACCEPT
            -A NCC-EGRESS -p tcp --dport 80 -j ACCEPT
            -A NCC-EGRESS -j DROP
@@ -281,13 +290,14 @@ defmodule NccAgent.EgressTest do
       assert calls |> hd() |> String.ends_with?("-S DOCKER-USER")
       assert Enum.count(calls, &(&1 =~ "-S DOCKER-USER")) == 1
       assert Enum.count(calls, &(&1 =~ "-A NCC-EGRESS-NEW -j DROP")) == 1
-      assert Enum.count(calls, &(&1 =~ "-I NCC-EGRESS-NEW")) == 11
+      # conntrack, two DNS, eleven drops, two accepts
+      assert Enum.count(calls, &(&1 =~ "-I NCC-EGRESS-NEW")) == 16
       assert Enum.count(calls, &(&1 =~ "-E NCC-EGRESS-NEW NCC-EGRESS")) == 1
     end
 
     assert File.read!(Path.join([dir, "state", "NCC-EGRESS"]))
            |> String.split("\n", trim: true)
-           |> length() == 13
+           |> length() == 18
 
     assert :ok = Egress.verify()
   end
@@ -601,6 +611,11 @@ defmodule NccAgent.EgressTest do
     File.write!(Path.join(dir, "resolv.conf"), """
     nameserver 169.254.169.254
     nameserver 0.0.0.0
+    nameserver 0.250.250.200
+    nameserver 192.0.0.8
+    nameserver 198.18.0.1
+    nameserver 198.19.255.1
+    nameserver 240.0.0.1
     nameserver 999.1.1.1
     nameserver 198.51.100.7
     nameserver fe80::1
