@@ -83,6 +83,9 @@ defmodule NccAgent.Config do
   def path(config, :csr), do: Path.join(config.data_dir, "client.csr")
   def path(config, :scratch), do: Path.join(config.data_dir, "scratch")
   def path(config, :nerves_cache), do: Path.join(config.data_dir, "nerves-cache")
+  # Read-only copies of the portal's L2 build cache, one dir per image slug
+  # (`NccAgent.BuildCache`); never written by a build.
+  def path(config, :build_cache), do: Path.join(config.data_dir, "build-cache")
   # One Hex cache per slot: the scrub before a run (`NccAgent.HexCache`)
   # only holds when no other slot's container is writing the same dir
   # meanwhile, as builds did before the mount was read-only. Each slot's

@@ -3,9 +3,10 @@ defmodule NccAgent.ArgvParityTest do
   The agent runs `Compatibility.Builder.Argv.build/1` on a spec of its own
   making. This pins that its config and scratch layout resolve to the shared
   post-isolation fixture `Compatibility.Builder.ArgvTest` and
-  `Portal.BuilderTest` are pinned to, minus the one thing a remote builder
-  never has: a build cache. A remote build therefore runs exactly what the
-  local host runs.
+  `Portal.BuilderTest` are pinned to: without the build cache mount when the
+  agent has no L2 copy for the image, and exactly the fixture when it has
+  one (`NccAgent.BuildCache`). A remote build therefore runs exactly what
+  the local host runs.
   """
   use ExUnit.Case, async: true
 
@@ -68,6 +69,23 @@ defmodule NccAgent.ArgvParityTest do
     assert Argv.build(spec) == expected
     refute Enum.any?(expected, &String.contains?(&1, "build-cache"))
     refute Enum.any?(expected, &String.contains?(&1, "/home/nerves/.nerves"))
+  end
+
+  # With a fetched L2 copy the agent's argv is the fixture's exactly: the
+  # slug dir under `<data>/build-cache`, mounted read-only, NCC_BUILD_CACHE set.
+  test "with a build cache the agent's argv is the shared fixture's", %{
+    input: input,
+    argv: argv
+  } do
+    config = config(input)
+    assert Path.dirname(input.paths.build_cache) == Config.path(config, :build_cache)
+
+    dirs = Map.take(input.paths, [:work, :out, :files, :tmp, :cache])
+
+    spec =
+      Job.argv_spec(config, claim(input, input.image), dirs, :readonly, input.paths.build_cache)
+
+    assert Argv.build(spec) == argv
   end
 
   test "a registry image is run by digest", %{input: input} do

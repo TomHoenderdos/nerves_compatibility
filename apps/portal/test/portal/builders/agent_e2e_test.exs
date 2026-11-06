@@ -121,4 +121,110 @@ defmodule Portal.Builders.AgentE2ETest do
     {:ok, _builder} = Builders.set_publishing(builder, true)
     assert %{versions: %{"1.4.4" => _}} = Catalog.precompiled_manifest("jason")
   end
+
+  # The read-only L2 path end to end: the portal offers the lease's image
+  # slug from a (fake) bucket with presigned GETs, the real agent downloads,
+  # verifies and extracts the entry, and the container gets it read-only at
+  # /build-cache. Nothing is written to the bucket.
+  test "a lease's L2 build cache is fetched by the agent and mounted read-only" do
+    {:ok, s3} = Portal.Test.FakeS3.start()
+    previous_l2 = Application.get_env(:portal, Portal.BuildCache.L2)
+
+    Application.put_env(:portal, Portal.BuildCache.L2,
+      endpoint: s3.endpoint,
+      bucket: s3.bucket,
+      region: s3.region,
+      access_key: s3.access_key,
+      secret_key: s3.secret_key,
+      read_only: true
+    )
+
+    on_exit(fn ->
+      if previous_l2,
+        do: Application.put_env(:portal, Portal.BuildCache.L2, previous_l2),
+        else: Application.delete_env(:portal, Portal.BuildCache.L2)
+    end)
+
+    portal = AgentHarness.start_portal!(%{image: "ncc-worker:local", digest: @digest})
+    slug = Portal.Builder.cache_slug(@digest)
+    assert Portal.BuildCache.L2.shareable_slug?(slug)
+    key = String.duplicate("b", 64)
+
+    entry = Path.join(portal.dir, "entry")
+    File.mkdir_p!(Path.join(entry, "ebin"))
+    File.write!(Path.join(entry, "ebin/Elixir.Dep.beam"), "cached-beam")
+    File.ln_s!("../../../../deps/dep/priv", Path.join(entry, "priv"))
+    tar = Path.join(portal.dir, "entry.tar.gz")
+    {:ok, %{sha256: sha}} = Compatibility.BuildCache.Tarball.pack(entry, tar, :any)
+
+    Portal.Test.FakeS3.put_object(s3, "#{slug}/#{key}.tar.gz", File.read!(tar), %{
+      "x-amz-meta-sha256" => sha
+    })
+
+    {:ok, request} =
+      Portal.ScanRequests.create_once(%{
+        package_name: "jason",
+        version: "1.4.3",
+        source: :hex_owner,
+        status: :accepted
+      })
+
+    assert :ok =
+             perform_job(RemoteBuild, %{
+               "package" => "jason",
+               "version" => "1.4.3",
+               "scan_request_id" => request.id
+             })
+
+    {:ok, %{token: token}} = Builders.create_token("e2e-cache", "e2e")
+
+    result =
+      @fixture
+      |> File.read!()
+      |> Jason.decode!()
+      |> put_in(["package", "version"], "1.4.3")
+      |> Jason.encode!()
+
+    argv_log = Path.join(portal.dir, "argv.log")
+    cache_log = Path.join(portal.dir, "build-cache.log")
+
+    agent =
+      AgentHarness.start_agent!(portal, [
+        {"NCC_ENROLMENT_TOKEN", token},
+        {"NCC_DOCKER_BIN", AgentHarness.fake_docker()},
+        {"NCC_EGRESS_SCRIPT", AgentHarness.egress_stub!(portal.dir)},
+        {"FAKE_DOCKER_RESULT", result},
+        {"FAKE_DOCKER_FILE_CONTENT", "precompiled-beam"},
+        {"FAKE_DOCKER_IMAGE_PRESENT", "1"},
+        {"FAKE_DOCKER_HEX_LABEL", "seeded"},
+        {"FAKE_DOCKER_ARGV_LOG", argv_log},
+        {"FAKE_DOCKER_BUILD_CACHE_LOG", cache_log}
+      ])
+
+    lease =
+      AgentHarness.await_lease(
+        agent,
+        request.id,
+        &(&1.state == :done and AgentHarness.ingest_job(&1) != nil),
+        120_000
+      )
+
+    AgentHarness.stop_agent(agent)
+    assert lease.image_digest == @digest
+
+    slug_dir = Path.join([portal.dir, "agent-data", "build-cache", slug])
+    argv = argv_log |> File.read!() |> String.split("\n", trim: true)
+    assert "type=bind,source=#{slug_dir},target=/build-cache,readonly" in argv
+    assert "NCC_BUILD_CACHE=/build-cache" in argv
+
+    # What the container saw at /build-cache when it ran: the fetched entry.
+    assert File.read!(cache_log) =~ key
+    assert File.read!(Path.join([slug_dir, key, "ebin/Elixir.Dep.beam"])) == "cached-beam"
+    assert {:ok, "../../../../deps/dep/priv"} = File.read_link(Path.join([slug_dir, key, "priv"]))
+
+    # The bucket was only read: one listing, one HEAD, one presigned GET.
+    methods = s3 |> Portal.Test.FakeS3.requests() |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    assert Enum.sort(methods) == ["GET", "HEAD"]
+    assert Portal.Test.FakeS3.objects(s3) == ["#{slug}/#{key}.tar.gz"]
+  end
 end

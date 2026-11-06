@@ -33,7 +33,19 @@ defmodule NccAgent.Job do
   require Logger
 
   alias Compatibility.Builder.Argv
-  alias NccAgent.{Caps, Client, Config, Docker, Fs, Heartbeat, HexCache, NervesCache, Tar}
+
+  alias NccAgent.{
+    BuildCache,
+    Caps,
+    Client,
+    Config,
+    Docker,
+    Fs,
+    Heartbeat,
+    HexCache,
+    NervesCache,
+    Tar
+  }
 
   @runner_failure 20
   @default_timeout_sec 7200
@@ -89,7 +101,7 @@ defmodule NccAgent.Job do
     {:ok, hb} = Heartbeat.start_link(%{req: req, lease_id: lease_id, log_path: runner_log})
 
     try do
-      exit_code = build(claim, config, dirs, runner_log, hb)
+      exit_code = build(req, claim, config, dirs, runner_log, hb)
 
       # Nothing the container wrote is read while it may still be running:
       # it could swap a file for a symlink between an lstat and the read.
@@ -134,12 +146,16 @@ defmodule NccAgent.Job do
   @doc """
   The `Compatibility.Builder.Argv` spec for `claim`: the agent's config and
   scratch dirs resolved the way `Portal.Builder.build_docker_args/4` resolves
-  the local host's, with the Nerves cache read-only and never a build cache
-  (a remote builder has none; `Portal.BuildCache.Promotion` is host-side).
-  `NccAgent.ArgvParityTest` pins the result to the shared fixture. Pure.
+  the local host's, with the Nerves cache read-only and, when
+  `NccAgent.BuildCache.prepare/4` filled one, the image slug's read-only
+  copy of the L2 build cache at `/build-cache` (nil: none). Nothing a remote
+  build compiles is ever promoted; `Portal.BuildCache.Promotion` is
+  host-side. `NccAgent.ArgvParityTest` pins the result to the shared
+  fixture. Pure.
   """
-  @spec argv_spec(Config.t(), map(), dirs(), Argv.hex_cache_mode()) :: Argv.spec()
-  def argv_spec(config, claim, dirs, hex_cache_mode \\ :readonly) do
+  @spec argv_spec(Config.t(), map(), dirs(), Argv.hex_cache_mode(), Path.t() | nil) ::
+          Argv.spec()
+  def argv_spec(config, claim, dirs, hex_cache_mode \\ :readonly, build_cache \\ nil) do
     %{
       container_name: Argv.container_name(claim["run_id"]),
       user: config.build_user,
@@ -157,7 +173,7 @@ defmodule NccAgent.Job do
         cache: dirs.cache,
         nerves_cache: Config.path(config, :nerves_cache),
         hex_cache: Config.path(config, :hex_cache),
-        build_cache: nil
+        build_cache: build_cache
       }
     }
   end
@@ -187,7 +203,7 @@ defmodule NccAgent.Job do
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp build(claim, config, dirs, runner_log, hb) do
+  defp build(req, claim, config, dirs, runner_log, hb) do
     Enum.each(Map.values(dirs), &File.mkdir_p!/1)
     NervesCache.prepare_cache(config)
     HexCache.prepare(config)
@@ -200,7 +216,8 @@ defmodule NccAgent.Job do
 
     with :ok <- ensure_image(config, image, runner_log),
          {:ok, hex_cache_mode} <- hex_cache_mode(config, image) do
-      argv = Argv.build(argv_spec(config, claim, dirs, hex_cache_mode))
+      build_cache = build_cache(req, claim, config, runner_log)
+      argv = Argv.build(argv_spec(config, claim, dirs, hex_cache_mode, build_cache))
       Heartbeat.set_phase(hb, "building")
       run_container(claim, config, argv, runner_log)
     else
@@ -214,6 +231,17 @@ defmodule NccAgent.Job do
         File.write!(runner_log, "[agent] pull failed: #{reason}\n", [:append])
         @runner_failure
     end
+  end
+
+  # The L2 build cache the portal offers this image, fetched before the
+  # container starts and mounted read-only; best effort, its one line goes to
+  # runner.log. Any failure builds without it.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp build_cache(req, claim, config, runner_log) do
+    {dir, line} = BuildCache.prepare(req, claim, config)
+    Logger.info("job #{claim["run_id"]}: #{line}")
+    File.write!(runner_log, "[agent] #{line}\n", [:append])
+    dir
   end
 
   # Read off the image after it is present, since a lease keeps the image it

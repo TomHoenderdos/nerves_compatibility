@@ -120,7 +120,8 @@ defmodule NccAgent.JobTest do
     assert "4242:4242" ==
              argv |> Enum.drop_while(&(&1 != "--user")) |> Enum.at(1)
 
-    # Never a build cache: a remote builder has no promotion.
+    # The portal offered no build cache (this fake answers 404), and nothing
+    # is cached locally: no mount.
     refute Enum.any?(argv, &String.contains?(&1, "build-cache"))
     assert List.last(argv) == "ghcr.io/x/ncc-worker@" <> @digest
     # Exactly one container ran: the portal named nothing to warm.
@@ -129,6 +130,52 @@ defmodule NccAgent.JobTest do
     # The image was absent, so it was pulled first.
     assert_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, %{"phase" => "building"},
                      _}
+  end
+
+  test "an offered L2 entry is fetched before the run and mounted read-only", %{
+    req: req,
+    config: config,
+    argv_log: argv_log,
+    script: script,
+    dir: dir
+  } do
+    # The agent's own user, so handing the entry over needs no root here.
+    config = %{config | build_user: Config.defaults().build_user}
+    blobs = NccAgent.Test.FakeBlobs.start(self())
+    slug = "sha256_" <> String.duplicate("a", 64)
+    key = String.duplicate("e", 64)
+
+    src = Path.join(dir, "entry")
+    File.mkdir_p!(Path.join(src, "ebin"))
+    File.write!(Path.join(src, "ebin/Elixir.Dep.beam"), "beam")
+    tar = Path.join(dir, "entry.tar.gz")
+    {:ok, %{sha256: sha}} = Compatibility.BuildCache.Tarball.pack(src, tar, :any)
+    body = File.read!(tar)
+    NccAgent.Test.FakeBlobs.put(blobs, "/b/#{slug}/#{key}.tar.gz", body)
+
+    entry = %{
+      key: key,
+      sha256: sha,
+      size: byte_size(body),
+      url: blobs.url <> "/b/#{slug}/#{key}.tar.gz?X-Amz-Signature=x"
+    }
+
+    Agent.update(script, &Map.put(&1, :build_cache, {200, %{slug: slug, entries: [entry]}}))
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    slug_dir = Path.join([config.data_dir, "build-cache", slug])
+    argv = argv_log |> File.read!() |> String.split("\n", trim: true)
+    assert "type=bind,source=#{slug_dir},target=/build-cache,readonly" in argv
+    assert "NCC_BUILD_CACHE=/build-cache" in argv
+    assert File.read!(Path.join([slug_dir, key, "ebin/Elixir.Dep.beam"])) == "beam"
+
+    assert_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, params, _}
+                    when is_map_key(params, "exit_code")
+
+    {"runner.log", runner_log} = params["runner_log"]
+    assert runner_log =~ "[agent] build cache #{slug}: 1 downloaded"
+    refute runner_log =~ "X-Amz"
   end
 
   test "a failing run completes with its exit code and uploads nothing", %{

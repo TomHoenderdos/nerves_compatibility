@@ -212,6 +212,29 @@ defmodule NccAgent.Client do
     end
   end
 
+  @doc """
+  The L2 build cache objects the portal offers this lease's image, leaving
+  out `have` (the keys already in the local cache): `{:ok, %{"slug" => ...,
+  "entries" => [...]}}`, each entry a key, a size, a SHA-256 and a presigned
+  GET URL. The entries are checked by `NccAgent.BuildCache`, not here.
+  """
+  @spec build_cache(Req.Request.t(), String.t(), [String.t()], pos_integer()) ::
+          {:ok, map()} | error()
+  def build_cache(req, lease_id, have, timeout_ms) do
+    case Req.post(req,
+           url: job(lease_id, "/build-cache"),
+           json: %{have: have},
+           receive_timeout: timeout_ms
+         ) do
+      {:ok, %Req.Response{status: 200, body: %{"entries" => entries} = body}}
+      when is_list(entries) ->
+        {:ok, body}
+
+      other ->
+        error(other)
+    end
+  end
+
   @doc "Which of `shas` the portal has not got for this lease."
   @spec missing(Req.Request.t(), String.t(), [String.t()]) :: {:ok, [String.t()]} | error()
   def missing(req, lease_id, shas) do

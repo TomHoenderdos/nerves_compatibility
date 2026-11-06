@@ -24,6 +24,9 @@ defmodule NccAgent.Test.FakePortal do
       (agent release tarballs for `NccAgent.Updater`)
     * `:warm` - the `warm` pairs every `POST /jobs/:id/complete` answers
       with (default `[]`)
+    * `:build_cache` - `POST /jobs/:id/build-cache`: `{status, body}`, or a
+      `fn params -> body` answered with 200 (default: 404, a portal from
+      before the endpoint)
   """
 
   @behaviour Plug
@@ -132,6 +135,16 @@ defmodule NccAgent.Test.FakePortal do
   defp route(conn, "POST", ["builder", "v1", "jobs", _id, "heartbeat"], opts) do
     record(conn, opts, conn.body_params)
     json(conn, 200, %{ok: true})
+  end
+
+  defp route(conn, "POST", ["builder", "v1", "jobs", _id, "build-cache"], opts) do
+    record(conn, opts, conn.body_params)
+
+    case script(opts, :build_cache) do
+      nil -> json(conn, 404, %{error: "not_found"})
+      {status, body} -> json(conn, status, body)
+      fun when is_function(fun, 1) -> json(conn, 200, fun.(conn.body_params))
+    end
   end
 
   defp route(conn, "POST", ["builder", "v1", "jobs", _id, "files", "missing"], opts) do

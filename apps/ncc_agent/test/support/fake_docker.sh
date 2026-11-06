@@ -23,6 +23,8 @@
 #                  with FAKE_DOCKER_PLANT=1 also a symlink named like a sha
 #                  and a non-sha file in <files>, and result.json as a
 #                  symlink to FAKE_DOCKER_RESULT_LINK when that is set,
+#                  with FAKE_DOCKER_BUILD_CACHE_LOG the /build-cache mount
+#                  option and the names in its source appended there,
 #                  FAKE_DOCKER_HEX_TARBALL into
 #                  <work>/hex-home/packages/hexpm/jason-1.4.4.tar when set,
 #                  exit FAKE_DOCKER_EXIT (default 0)
@@ -95,6 +97,7 @@ case "${1:-}" in
     out=""
     files=""
     work=""
+    build_cache=""
     prev=""
     for arg in "$@"; do
       if [ "$prev" = "--mount" ]; then
@@ -111,6 +114,7 @@ case "${1:-}" in
           /out) out="$source" ;;
           /work) work="$source" ;;
           /files) files="$source" ;;
+          /build-cache) build_cache="$arg" ;;
         esac
       fi
       prev="$arg"
@@ -132,6 +136,18 @@ case "${1:-}" in
         ln -s /etc/hostname "$files/$(printf '%064d' 0)"
         echo "not a sha" >"$files/README"
       fi
+    fi
+
+    if [ -n "$build_cache" ] && [ -n "${FAKE_DOCKER_BUILD_CACHE_LOG:-}" ]; then
+      bc_source=""
+      IFS=',' read -r -a bc_parts <<<"$build_cache"
+      for part in "${bc_parts[@]}"; do
+        case "$part" in
+          source=*) bc_source="${part#source=}" ;;
+        esac
+      done
+      printf 'mount %s\n' "$build_cache" >>"$FAKE_DOCKER_BUILD_CACHE_LOG"
+      ls "$bc_source" >>"$FAKE_DOCKER_BUILD_CACHE_LOG"
     fi
 
     if [ -n "$work" ] && [ -n "${FAKE_DOCKER_HEX_TARBALL:-}" ]; then
