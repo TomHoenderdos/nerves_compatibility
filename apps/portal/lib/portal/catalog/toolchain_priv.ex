@@ -46,13 +46,13 @@ defmodule Portal.Catalog.ToolchainPriv do
   `:ok` when `build`'s priv files may be published, `{:refused, reason}` when
   they may not, `{:error, reason}` when Hex could not be asked. `result` is
   the run's `result.json`, `build` its `toolchain_build`; `opts` the ingest's,
-  with `files_dir` and the queued `version`.
+  with `files_dir` and the job's `package` and `version`.
   """
   @spec verify(map(), map(), map()) :: :ok | {:refused, String.t()} | {:error, term()}
-  def verify(result, build, opts) do
+  def verify(_result, build, opts) do
     case priv_entries(build) do
       [] -> :ok
-      entries -> verify_release(release(result, opts), entries, build, opts)
+      entries -> verify_release(release(opts), entries, build, opts)
     end
   end
 
@@ -61,13 +61,11 @@ defmodule Portal.Catalog.ToolchainPriv do
 
   defp priv_entries(_build), do: []
 
-  # The version the job was queued for keys the row (`Ingestion`), so it is
-  # the release the files must come from.
-  defp release(result, opts) do
-    Compatibility.HexCache.pair(%{
-      "name" => get_in(result, ["package", "name"]),
-      "version" => Map.get(opts, :version) || get_in(result, ["package", "version"])
-    })
+  # The job's package and version key the row (`Ingestion`, which has already
+  # checked that the result names the same ones), so they are the release the
+  # files must come from. Nothing here reads the result's own identity.
+  defp release(opts) do
+    Compatibility.HexCache.pair(%{"name" => opts.package, "version" => opts.version})
   end
 
   defp verify_release({:ok, {name, version}}, entries, build, opts) do
