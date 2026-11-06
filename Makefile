@@ -2,6 +2,12 @@
 
 WORKER_IMAGE := ncc-worker:local
 
+# The worker images build only under BuildKit (apps/ncc_worker/README.md,
+# "Develop"). Forced on, a docker without the buildx component stops at once
+# with "BuildKit is enabled but the buildx component is missing" instead of
+# falling back to the legacy builder and failing deep inside the image build.
+export DOCKER_BUILDKIT := 1
+
 # Toolchain images, as space-separated `tag=base` pairs: the worker on a plain
 # Elixir/OTP pair (apps/ncc_worker/Dockerfile.toolchain). Each tag must also be
 # in Portal.Toolchains' images. Bases are pinned: Elixir 1.19.3 on the newest
