@@ -112,6 +112,7 @@ defmodule Portal.Workers.ToolchainIntegrationTest do
 
     assert {:ok, %ToolchainBuild{status: :pass} = row} =
              Ingestion.ingest_toolchain(build.result, %{
+               package: package,
                files_dir: build.files_dir,
                output_dir: build.output_dir,
                toolchain: toolchain,
