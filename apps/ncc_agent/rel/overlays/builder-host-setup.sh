@@ -2,9 +2,16 @@
 # Prepares an Ubuntu 24.04 VM (x86_64 or aarch64) to be a remote builder's
 # docker host, or checks one, as root:
 #
-#   builder-host-setup.sh install   install docker and gVisor, configure the
+#   builder-host-setup.sh install [--force]
+#                                   install docker and gVisor, configure the
 #                                   daemon, restart it if anything changed,
-#                                   then run `check`
+#                                   then run `check`. A change that needs a
+#                                   docker restart is refused (and nothing
+#                                   written) while ncc-agent is active or a
+#                                   container runs: a restart kills running
+#                                   builds and spends a lease attempt. Stop
+#                                   ncc-agent first, or pass --force
+#                                   (NCC_FORCE_RESTART=1).
 #   builder-host-setup.sh check     change nothing; exit 0 only when the host
 #                                   is ready, else print why and exit 1
 #
@@ -40,6 +47,9 @@
 # restart docker. Keys of daemon.json this script does not own (dns,
 # log-driver, ...) are kept.
 #
+# Docker itself: docker.io from Ubuntu, unless a docker is already there
+# (docker-ce installed, or dockerd on PATH), which is kept and configured.
+#
 # Environment: NCC_RUNSC_PLATFORM (kvm or systrap), NCC_DOCKER_DAEMON_JSON
 # (default /etc/docker/daemon.json, as the agent and egress.sh read it),
 # NCC_DOCKER_DNS (space-separated resolver addresses written as daemon.json's
@@ -71,7 +81,7 @@ say() { printf 'builder-host-setup: %s\n' "$*"; }
 fail() { printf 'builder-host-setup: FAIL: %s\n' "$*" >&2; exit 1; }
 
 usage() {
-  echo "usage: $0 install|check" >&2
+  echo "usage: $0 install [--force] | check" >&2
   exit 2
 }
 
@@ -108,8 +118,15 @@ platform() {
 }
 
 install_packages() {
-  local missing=() pkg
-  for pkg in docker.io iptables curl python3 zstd ca-certificates; do
+  local missing=() pkg packages=(iptables curl python3 zstd ca-certificates)
+  # docker.io conflicts with docker-ce and containerd.io: installing it
+  # would replace a docker the operator put there.
+  if dpkg -s docker-ce >/dev/null 2>&1 || command -v dockerd >/dev/null 2>&1; then
+    say "docker already installed; not installing docker.io"
+  else
+    packages=(docker.io "${packages[@]}")
+  fi
+  for pkg in "${packages[@]}"; do
     dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' ||
       missing+=("$pkg")
   done
@@ -175,13 +192,15 @@ install_runsc() {
 }
 
 # Merges the builder's settings into daemon.json and prints `changed` or
-# `unchanged`. Refuses a daemon configured away from the iptables backend.
+# `unchanged`; with mode `plan` it only prints, writing nothing. Refuses a
+# daemon configured away from the iptables backend.
 configure_daemon() {
-  python3 - "$DAEMON_JSON" "$RUNSC_DIR/runsc" "$1" "$NOFILE" "${NCC_DOCKER_DNS:-}" <<'PY'
+  python3 - "$DAEMON_JSON" "$RUNSC_DIR/runsc" "$1" "$NOFILE" "${NCC_DOCKER_DNS:-}" "$2" <<'PY'
 import ipaddress, json, os, sys, tempfile
 
 path, runsc, platform, nofile = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 dns = sys.argv[5].split()
+mode = sys.argv[6]
 # What egress.sh refuses as a resolver (is_unusable), the ranges its ruleset
 # drops that hold no resolver included: a DNS accept to one would be a hole
 # in that drop. RFC1918 and CGNAT stay allowed, as there: a VPC's resolver.
@@ -226,6 +245,9 @@ if dns:
 if want == doc:
     print("unchanged")
     sys.exit(0)
+if mode == "plan":
+    print("changed")
+    sys.exit(0)
 
 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".daemon.json.")
@@ -236,6 +258,18 @@ os.chmod(tmp, 0o644)
 os.replace(tmp, path)
 print("changed")
 PY
+}
+
+# A docker restart kills every running container: refused while the agent
+# is active or a container runs, unless forced.
+guard_restart() {
+  local force=$1 running
+  [[ $force == true ]] && return 0
+  "$SYSTEMCTL" is-active --quiet docker || return 0
+  running=$("$DOCKER" ps -q 2>/dev/null || true)
+  if "$SYSTEMCTL" is-active --quiet ncc-agent || [[ -n $running ]]; then
+    fail "applying this needs a docker restart, which would kill running builds; stop ncc-agent first (systemctl stop ncc-agent, wait for its containers to end), or rerun with --force"
+  fi
 }
 
 restart_docker() {
@@ -316,6 +350,12 @@ PY
 }
 
 main() {
+  local force=false
+  [[ ${NCC_FORCE_RESTART:-} == 1 ]] && force=true
+  if [[ $# -eq 2 && $1 == install && $2 == --force ]]; then
+    force=true
+    set -- install
+  fi
   [[ $# -eq 1 ]] || usage
   case "$1" in
     install)
@@ -324,7 +364,9 @@ main() {
       platform=$(platform)
       install_packages
       install_runsc
-      changed=$(configure_daemon "$platform") || fail "$DAEMON_JSON not updated"
+      changed=$(configure_daemon "$platform" plan) || fail "$DAEMON_JSON not updated"
+      [[ $changed == changed ]] && guard_restart "$force"
+      changed=$(configure_daemon "$platform" write) || fail "$DAEMON_JSON not updated"
       say "daemon.json $changed (runsc platform $platform)"
       restart_docker "$changed"
       check

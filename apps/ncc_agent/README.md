@@ -80,7 +80,13 @@ the keys it does not own), restarts docker only when that changed, and runs
 must see `ulimit -n` 65536 and gVisor's kernel log. `NCC_RUNSC_PLATFORM`
 (`kvm` or `systrap`) overrides the platform it picks; `NCC_DOCKER_DNS`
 (space-separated addresses) writes `daemon.json`'s `dns`, for a VM whose
-own resolver the egress ruleset cannot allow (see OrbStack below).
+own resolver the egress ruleset cannot allow (see OrbStack below); it
+refuses addresses the ruleset drops or will not use as a resolver.
+An existing docker (`docker-ce`, or any `dockerd` on `PATH`) is kept and
+configured rather than replaced with `docker.io`. A change that needs a
+docker restart is refused, with nothing written, while `ncc-agent` is
+active or a container runs, since the restart would kill its builds:
+`systemctl stop ncc-agent` first, or pass `install --force`.
 Upgrading gVisor is a change to the version and both checksums at the top
 of the script.
 

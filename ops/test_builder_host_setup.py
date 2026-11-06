@@ -18,16 +18,27 @@ case "$1 $2 $3" in
   "info --format {{json .Runtimes}}") printf '%s\\n' "${FAKE_RUNTIMES:-$runtimes}" ;;
   "info --format {{.DefaultRuntime}}") echo runsc ;;
   info*) echo "${FAKE_BACKEND:-iptables}" ;;
+  "ps -q ")
+    [ -n "${FAKE_PS:-}" ] && printf '%s\n' "$FAKE_PS"
+    exit 0 ;;
   run*) printf 'nofile=%s\\n[    0.000000] Starting gVisor...\\n' "${FAKE_NOFILE:-65536/65536}" ;;
 esac
 """
 
+# `is-active [--quiet] <unit>` succeeds for the units in FAKE_ACTIVE
+# (default: docker only).
 FAKE_SYSTEMCTL = """#!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG/systemctl"
+if [ "$1" = is-active ]; then
+  unit="${*: -1}"
+  case " ${FAKE_ACTIVE-docker} " in *" $unit "*) exit 0 ;; *) exit 3 ;; esac
+fi
 """
 
-# Every package already installed: apt-get must not run.
+# Every package installed except those in FAKE_MISSING.
 FAKE_DPKG_QUERY = """#!/usr/bin/env bash
+pkg="${*: -1}"
+case " ${FAKE_MISSING:-} " in *" $pkg "*) exit 1 ;; esac
 printf 'install ok installed'
 """
 
@@ -101,6 +112,7 @@ class BuilderHostSetupTest(unittest.TestCase):
     def test_usage(self):
         self.assertEqual(self.run_setup().returncode, 2)
         self.assertEqual(self.run_setup("frobnicate").returncode, 2)
+        self.assertEqual(self.run_setup("check", "--force").returncode, 2)
 
     def test_install_writes_daemon_json_keeps_other_keys_and_restarts_once(self):
         self.present_runsc()
@@ -170,6 +182,47 @@ class BuilderHostSetupTest(unittest.TestCase):
         # A VPC's private resolver stays usable, as in egress.sh.
         ok = self.run_setup("install", NCC_DOCKER_DNS="10.0.0.2 fd00::53")
         self.assertEqual(ok.returncode, 0, ok.stderr)
+
+    def test_a_config_change_is_not_applied_while_builds_may_run(self):
+        self.present_runsc()
+        for env in [{"FAKE_ACTIVE": "docker ncc-agent"}, {"FAKE_PS": "abc123"}]:
+            result = self.run_setup("install", **env)
+            self.assertNotEqual(result.returncode, 0, env)
+            self.assertIn("stop ncc-agent first", result.stderr)
+            self.assertNotIn("restart", self.logged("systemctl"))
+            # Nothing written either: the next run must still see the change.
+            self.assertFalse(self.daemon_json.exists())
+
+        forced = self.run_setup("install", "--force", FAKE_ACTIVE="docker ncc-agent")
+        self.assertEqual(forced.returncode, 0, forced.stdout + forced.stderr)
+        self.assertIn("restart docker", self.logged("systemctl"))
+
+        (self.log / "systemctl").unlink()
+        self.daemon_json.unlink()
+        by_env = self.run_setup("install", FAKE_PS="abc123", NCC_FORCE_RESTART="1")
+        self.assertEqual(by_env.returncode, 0, by_env.stdout + by_env.stderr)
+        self.assertIn("restart docker", self.logged("systemctl"))
+
+    def test_an_unchanged_host_is_fine_while_builds_run(self):
+        self.present_runsc()
+        self.assertEqual(self.run_setup("install").returncode, 0)
+        again = self.run_setup("install", FAKE_ACTIVE="docker ncc-agent", FAKE_PS="abc123")
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+
+    def test_an_existing_docker_is_not_replaced_by_docker_io(self):
+        self.present_runsc()
+        dockerd = self.bin / "dockerd"
+        dockerd.write_text("#!/bin/sh\n")
+        dockerd.chmod(0o755)
+        result = self.run_setup("install", FAKE_MISSING="docker.io zstd")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("install -y -q zstd", self.logged("apt-get"))
+        self.assertNotIn("docker.io", self.logged("apt-get"))
+
+        dockerd.unlink()
+        (self.log / "apt-get").unlink()
+        self.run_setup("install", FAKE_MISSING="docker.io")
+        self.assertIn("docker.io", self.logged("apt-get"))
 
     def test_platform_follows_kvm_and_the_override(self):
         self.present_runsc()
