@@ -371,4 +371,122 @@ defmodule NccWorker.Portability.MixExsSliceTest do
                """)
     end
   end
+
+  describe "fix round 1" do
+    test "a definition the slice cannot name refuses instead of raising" do
+      assert {:refuse, "mix.exs defines a function the slice cannot name"} =
+               judge("""
+               defmodule T.MixProject do
+                 use Mix.Project
+                 def Foo.bar, do: 1
+                 def project, do: [app: :t, version: "1.0.0", deps: deps()]
+                 defp deps, do: [{:x, System.get_env("V")}] # <-
+               end
+               """)
+    end
+
+    test "an unexpected failure inside the analysis refuses, never raises" do
+      assert {:refuse, "mix.exs could not be analysed"} =
+               MixExsSlice.judge(%MixExsSlice{index: :garbage}, 1)
+    end
+
+    test "the module that uses Mix.Project is the one judged" do
+      assert :ok =
+               judge("""
+               defmodule Helper do
+                 def project, do: :not_this_one
+               end
+               defmodule T.MixProject do
+                 use Mix.Project
+                 def project, do: [app: :t, version: "1.0.0", deps: deps()]
+                 defp deps, do: [{:x, System.get_env("V")}] # <-
+               end
+               """)
+
+      assert {:refuse, "observation outside every definition"} =
+               judge("""
+               defmodule T.MixProject do
+                 use Mix.Project
+                 def project, do: [app: :t, version: Helper.v()]
+               end
+               defmodule Helper do
+                 def v, do: System.get_env("V") # <-
+               end
+               """)
+    end
+
+    test "no or several Mix.Project modules refuse" do
+      assert {:refuse, "mix.exs defines no Mix.Project module"} =
+               judge("""
+               defmodule T.MixProject do
+                 def project, do: [app: :t, version: "1.0.0", deps: deps()]
+                 defp deps, do: [{:x, System.get_env("V")}] # <-
+               end
+               """)
+
+      assert {:refuse, "mix.exs defines several Mix.Project modules"} =
+               judge("""
+               defmodule A.MixProject do
+                 use Mix.Project
+                 def project, do: [app: :a, version: "1.0.0"]
+               end
+               defmodule T.MixProject do
+                 use Mix.Project
+                 def project, do: [app: :t, version: "1.0.0", deps: deps()]
+                 defp deps, do: [{:x, System.get_env("V")}] # <-
+               end
+               """)
+    end
+
+    test "Application reads in a compile-relevant key do not refuse an unrelated observation" do
+      assert :ok =
+               judge("""
+               defmodule E.MixProject do
+                 use Mix.Project
+                 def project do
+                   [app: :e, version: "1.0.0", make_force_build: Application.get_env(:e, :force, false), deps: deps()]
+                 end
+                 defp deps, do: [{:x, System.get_env("V")}] # <-
+               end
+               """)
+    end
+
+    test "an oversized source refuses" do
+      source =
+        "defmodule T.MixProject do\n  use Mix.Project\n  def project, do: [app: :t]\nend\n" <>
+          String.duplicate("# padding\n", 30_000)
+
+      assert {:refuse, "mix.exs is too large"} = MixExsSlice.judge(source, 3)
+    end
+
+    test "a too deeply nested source refuses" do
+      nested = String.duplicate("[", 400) <> String.duplicate("]", 400)
+
+      source = """
+      defmodule T.MixProject do
+        use Mix.Project
+        def project, do: [app: :t, version: "1.0.0", deps: deps()]
+        defp deps, do: #{nested}
+      end
+      """
+
+      assert {:refuse, "mix.exs is too deeply nested"} = MixExsSlice.judge(source, 4)
+    end
+
+    test "one analysis judges many observations" do
+      source = """
+      defmodule T.MixProject do
+        use Mix.Project
+        def project, do: [app: :t, version: version(), deps: deps()]
+        defp version, do: System.get_env("V")
+        defp deps, do: [{:x, System.get_env("X")}]
+      end
+      """
+
+      assert {:ok, %MixExsSlice{} = analysis} = MixExsSlice.analyse(source)
+      assert {:refuse, "sets version"} = MixExsSlice.judge(analysis, 4)
+      assert :ok = MixExsSlice.judge(analysis, 5)
+      assert {:refuse, "mix.exs does not parse"} = MixExsSlice.analyse("defmodule (")
+    end
+  end
 end

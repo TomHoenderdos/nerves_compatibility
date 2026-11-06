@@ -22,9 +22,13 @@ defmodule NccWorker.Portability.MixExsSlice do
     * A compile-relevant key (or `application/0`) refuses when it contains
       the line, refers to taint, or reaches code calling anything outside a
       fixed set of pure or traced modules and defined local functions:
-      reads of untraced stores (`Process.get/1`, `:persistent_term`,
-      `Application.get_env/2`, ...) carry host values the tracer saw
-      written elsewhere.
+      reads of untraced stores (`Process.get/1`, `:persistent_term`, ETS,
+      ...) carry host values the tracer saw written elsewhere.
+      `Application` is allowed: its reads are traced observations.
+    * The judged module is the one top-level module that does
+      `use Mix.Project`. The source is bounded (size and AST depth) and
+      parsed once per file (`analyse/1`); nothing raises, anything
+      unexpected refuses.
     * A `mix.exs` that evaluates code dynamically anywhere (`Code`,
       `Module`, `quote`/`unquote`, macros, `apply`, `Mix.Project.config/0`)
       refuses outright.
@@ -52,6 +56,7 @@ defmodule NccWorker.Portability.MixExsSlice do
   # tracer sees as observations of their own.
   @allowed_modules [
     Access,
+    Application,
     Atom,
     Bitwise,
     Enum,
@@ -112,17 +117,60 @@ defmodule NccWorker.Portability.MixExsSlice do
                  |> Kernel.--(@denied_kernel)
                  |> MapSet.new()
 
+  @max_source_bytes 256 * 1024
+  @max_depth 200
+
+  @enforce_keys [:index]
+  defstruct [:index]
+
+  @typedoc "A parsed and indexed `mix.exs`, judged once per observation."
+  @type t :: %__MODULE__{index: map()}
   @type why :: String.t()
 
-  @spec judge(String.t(), pos_integer()) :: :ok | {:refuse, why}
+  @doc """
+  Parses and indexes `source` once (bounded: #{div(@max_source_bytes, 1024)} KiB, AST depth
+  #{@max_depth}) so every observation in that file can be judged against it.
+  """
+  @spec analyse(String.t()) :: {:ok, t()} | {:refuse, why}
+  def analyse(source) when is_binary(source), do: guarded(fn -> do_analyse(source) end)
+
+  @doc """
+  Judges the observation on `line`, from a source string or an `analyse/1` result.
+  Never raises: anything unexpected refuses.
+  """
+  @spec judge(String.t() | t(), pos_integer()) :: :ok | {:refuse, why}
   def judge(source, line) when is_binary(source) and is_integer(line) do
+    with {:ok, analysis} <- analyse(source), do: judge(analysis, line)
+  end
+
+  def judge(%__MODULE__{index: index}, line) when is_integer(line) do
+    guarded(fn ->
+      with {:ok, tainted} <- taint(index, line),
+           :ok <- body_statements(index, tainted) do
+        check(index, tainted, line)
+      end
+    end)
+  end
+
+  defp guarded(fun) do
+    fun.()
+  rescue
+    _ -> {:refuse, "mix.exs could not be analysed"}
+  catch
+    _, _ -> {:refuse, "mix.exs could not be analysed"}
+  end
+
+  defp do_analyse(source) when byte_size(source) > @max_source_bytes,
+    do: {:refuse, "mix.exs is too large"}
+
+  defp do_analyse(source) do
     with {:ok, ast} <- parse(source),
+         :ok <- shallow(ast),
          {:ok, body} <- module_body(ast),
          :ok <- static(ast),
          index = index(body),
-         {:ok, tainted} <- taint(index, line),
-         :ok <- body_statements(index, tainted) do
-      check(index, tainted, line)
+         :ok <- named(index) do
+      {:ok, %__MODULE__{index: index}}
     end
   end
 
@@ -133,19 +181,49 @@ defmodule NccWorker.Portability.MixExsSlice do
     end
   end
 
-  defp module_body({:defmodule, _, [_name, [do: body]]}), do: {:ok, statements(body)}
+  defp shallow(ast) do
+    if within_depth?(ast, 0), do: :ok, else: {:refuse, "mix.exs is too deeply nested"}
+  end
 
-  defp module_body({:__block__, _, forms}) do
-    case Enum.find(forms, &match?({:defmodule, _, _}, &1)) do
-      nil -> {:refuse, "mix.exs defines no module"}
-      form -> module_body(form)
+  defp within_depth?(_ast, depth) when depth > @max_depth, do: false
+
+  defp within_depth?({a, _meta, b}, depth),
+    do: within_depth?(a, depth + 1) and within_depth?(b, depth + 1)
+
+  defp within_depth?({a, b}, depth),
+    do: within_depth?(a, depth + 1) and within_depth?(b, depth + 1)
+
+  defp within_depth?(list, depth) when is_list(list),
+    do: Enum.all?(list, &within_depth?(&1, depth + 1))
+
+  defp within_depth?(_leaf, _depth), do: true
+
+  # The one top-level module that does `use Mix.Project`.
+  defp module_body(ast) do
+    modules = for {:defmodule, _, [_name, [do: body]]} <- top_level(ast), do: statements(body)
+
+    case {modules, Enum.filter(modules, &Enum.any?(&1, fn stmt -> mix_project_use?(stmt) end))} do
+      {[], _} -> {:refuse, "mix.exs defines no module"}
+      {_, []} -> {:refuse, "mix.exs defines no Mix.Project module"}
+      {_, [body]} -> {:ok, body}
+      {_, _several} -> {:refuse, "mix.exs defines several Mix.Project modules"}
     end
   end
 
-  defp module_body(_ast), do: {:refuse, "mix.exs defines no module"}
+  defp top_level({:__block__, _, forms}), do: forms
+  defp top_level(form), do: [form]
+
+  defp mix_project_use?({:use, _, [{:__aliases__, _, [:Mix, :Project]} | _]}), do: true
+  defp mix_project_use?(_stmt), do: false
 
   defp statements({:__block__, _, stmts}), do: stmts
   defp statements(stmt), do: [stmt]
+
+  defp named(index) do
+    if Map.has_key?(index.defs, :unknown),
+      do: {:refuse, "mix.exs defines a function the slice cannot name"},
+      else: :ok
+  end
 
   ## Dynamic evaluation anywhere in the file
 
