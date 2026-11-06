@@ -42,6 +42,11 @@ or its precompiled artifacts.
   [Test and deploy](.github/workflows/deploy.yml) deploys a push to `main` only
   after all four have passed on that exact commit (`ops/wait-for-checks.sh`), so
   a failing check blocks the deploy.
+- Precompiled builds are judged by a compile-time trace that runs in the same
+  VM as the package's own compile-time code. It is not a security boundary: a
+  package can detect the builder and change only what it compiles there, as
+  it already could before the trace existed. It catches accidental host
+  dependence, not a hostile package.
 
 ## Reporting a Vulnerability
 

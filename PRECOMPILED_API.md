@@ -408,6 +408,12 @@ What it lists:
   `package_checksum`, and each file must hash to its manifest `sha256`. A
   build that fails publishes none of its files, beams included. A package
   whose `priv` is anything else has no toolchain build.
+  The builder also recompiles the package's dependency closure under a
+  compile-time trace and skips any build whose compile read the build host
+  (its OS, environment, programs or files outside the dependency closure),
+  wrote anything outside its own `ebin`, baked the build path into code, or
+  depends on a package whose own compile did, and any build whose trace did
+  not finish; its beams are the traced compile's.
 - A build whose `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
   is `null` is left out, since no client can match it (it stays in format 1).
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),

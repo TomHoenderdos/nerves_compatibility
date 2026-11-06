@@ -252,7 +252,20 @@ this Elixir and OTP, the same on every OS and architecture? Such an image has no
 OTP Nerves 2 does not accept, so the run uses a plain `mix new` project (`NccWorker.Project.create_plain/2`), adds
 the package, applies the lock policy (exit 11), compiles once on the host in `prod`, runs the same
 optional-dependency pass as a pure-Elixir full run and judges `_build/host/lib/<package>` with
-`NccWorker.BuildSelection.portable?/4`. No firmware, no argus (`argus.status` is `"skipped"`), no Nerves systems,
+`NccWorker.BuildSelection.portable?/4` **and** the compile-time trace (`NccWorker.Portability`): after the
+optional-dependency pass the worker recompiles the package's dependency closure once more as
+`timeout --kill-after=10 <sec> elixir -pa <work>/trace/ebin -S mix ncc.trace_compile`, one dependency at a time,
+under an Erlang trace session that records every read of the host (OS type and version, environment, programs, files
+outside the closure, host names, install locations, the crypto build, native loading, tracing itself) and every write
+outside the dependency's own `ebin`, with the stack it came from. rebar3 dependencies are traced in their own VM
+through `ERL_AFLAGS`. A read or write in the package's compile window, outside every window, in a closure
+dependency's window (that dependency is then host-tainted), a build path baked into the beams outside diagnostic
+metadata, a call into a natively built dependency while the package compiles, a rebar3 build with hooks, plugins,
+`platform_define` or `rebar.config.script`, or a trace that did not finish, skips the build. The files judged and
+archived are the traced compile's own. The traced compile runs with the host compile's env and `HEX_HOME`, is bounded
+by what is left of the run, writes only under `<work>/trace` and its log `logs/host-trace.log`, and judges
+dependency sources against the Hex releases `mix.lock` named right after `deps.get`, before any compile ran.
+`MIX_OS_DEPS_COMPILE_PARTITION_COUNT` is removed from the worker's environment at start. No firmware, no argus (`argus.status` is `"skipped"`), no Nerves systems,
 no Hex metadata fetch; `toolchain.nerves_bootstrap` is `"absent"`.
 
 `"optional_deps"` in `NCC_INPUT` picks the build: `"include"` (the default, also when absent) runs the
@@ -285,11 +298,14 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
 ```json
 "toolchain_build": {
   "status": "pass | skipped | error",
-  "reason": "portable?'s reason when skipped, what failed when error, null when pass",
+  "reason": "the skip reason (see below), what failed when error, null when pass",
   "elixir": "1.19.1", "otp": "28",
   "deps_lock": {"jason": {"version": "1.4.4", "checksum": "<outer>"}},
   "package_checksum": "<outer>",
   "compile_env": [{"app": "...", "path": ["..."], "value": "<base64url term>"}],
+  "portability_rule": 1,
+  "rule1_reason": "portable?'s reason when it skipped, else null",
+  "compile_observations": {"trace_stats": {"windows": 14, "wall_ms": 9100, "host_compile_sec": 31.2}, "config_reads": [], "refusals": [], "taint": {}, "problems": []},
   "file_manifest": {"ebin": [{"path": "ebin/x.beam", "sha256": "...", "size": 1234, "mode": 33188}], "priv": []}
 }
 ```
@@ -301,6 +317,15 @@ verdict (as a `fail` row). A compile failure is deterministic for that package, 
 recorded, not retried. A `deps.get` failure here always exits `10` without a result and is retried — toolchain
 mode does not run it through `NccWorker.DepsGetClassifier`; only a full, targets or argus-only run does (see
 "What it does" above).
+
+`portability_rule`, `rule1_reason` and `compile_observations` are present for `pass` and `skipped` and `null` for
+`error`. `portability_rule` is `1`: `portable?/4` AND the trace (P1 only adds refusals). A build passes only when
+both pass. A skip reason from the trace starts with one of the prefixes in
+`Compatibility.Portability.refusal_prefixes/0` and wins over `portable?/4`'s; "portability could not be judged"
+means the trace itself failed (a crash, a timeout, a cap, a missing sentinel) and is never held against the package
+or turned into an `error`. When the trace could not judge and `portable?/4` also skipped, the reason is
+`portable?/4`'s. `compile_observations.trace_stats` carries the traced compile's `wall_ms` and the first host
+compile's `host_compile_sec`.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 
