@@ -55,8 +55,10 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    `"portability could not be judged"`. The trace runs after the optional-dependency pass, only when the OS check
    passed, and before the beam scan, so the files scanned and archived are the traced compile's; it is judged against
    the lock snapshot matching the build it judges, taken as in a toolchain run. A traced compile that did not finish
-   (killed, timed out) may leave `_build/host/lib` half-written, so the worker rebuilds it untraced before the scan:
-   the host status, the `pure_elixir` verdict, its beam scan and `compile_env`, argus and the log tail's first sentence
+   (killed, timed out) may leave `_build/host/lib` half-written, so the worker rebuilds it untraced before the scan
+   (`mix compile` alone, under `timeout(1)` at the per-system timeout cut to what is left of the run; no `deps.get`,
+   no build cache store; skipped when no time is left). A raise anywhere on this path is "portability could not be
+   judged" and never fails the run. The host status, the `pure_elixir` verdict, its beam scan and `compile_env`, argus and the log tail's first sentence
    are what they would have been without a tracer. `host_portability` is
    `{"status": "pass" | "skipped", "reason": null | "...", "portability_rule": 1, "compile_observations": {...} | null}`,
    present only for a run whose selection was `pure_elixir` (`compile_observations` is null when the OS check failed

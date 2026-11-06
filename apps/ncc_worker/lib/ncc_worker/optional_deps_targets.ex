@@ -647,6 +647,15 @@ defmodule NccWorker.OptionalDepsTargets do
   defp compile(project_dir, env, log_file, timeout_sec),
     do: bounded_mix("compile", project_dir, env, log_file, timeout_sec)
 
+  @doc false
+  # `mix compile` under `timeout(1)`, as this pass runs it: `:ok`,
+  # `{:error, :timeout}` or `{:error, message}`. Shared with the full run's
+  # untraced rebuild (`NccWorker.Worker.full_run_portability/3`).
+  @spec bounded_compile(String.t(), list(), String.t(), pos_integer()) ::
+          :ok | {:error, term()}
+  def bounded_compile(project_dir, env, log_file, timeout_sec),
+    do: compile(project_dir, env, log_file, timeout_sec)
+
   defp bounded_mix(task, project_dir, env, log_file, timeout_sec) do
     {command, args} =
       case System.find_executable("timeout") do

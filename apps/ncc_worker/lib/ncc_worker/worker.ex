@@ -286,10 +286,6 @@ defmodule NccWorker.Worker do
         }
 
   @default_timeout_sec 600
-
-  # The traced judge compile's own ceiling (`NccWorker.Portability.run/3`'s
-  # default); the run's remaining time bounds it further.
-  @trace_timeout_ms 30 * 60 * 1000
   @default_log_tail_bytes 4096
   @max_build_concurrency 4
 
@@ -738,7 +734,8 @@ defmodule NccWorker.Worker do
     portability =
       full_run_portability(project_dir, paths,
         releases: releases,
-        run_started_at: input[:started_at]
+        run_started_at: input[:started_at],
+        rebuild_timeout_sec: timeout
       )
 
     build = %{
@@ -1227,32 +1224,100 @@ defmodule NccWorker.Worker do
   @doc false
   # The full run's compile-time trace for `pure_elixir_result/3`: the same
   # traced judge compile a toolchain build gets (`run_portability/4`), with
-  # the same `opts` (`releases:`, `run_started_at:`; `timeout_ms:` only in
-  # tests). A traced compile that did not finish may have left
-  # `_build/host/lib` half-written, and the full run still reads it: the
-  # beam scan, `compile_env` and argus. So it is rebuilt untraced, as the
-  # host compile built it, and the result equals an untraced run's except
-  # for `host_portability` and the files it does not publish. Public for
-  # tests.
+  # the same `opts` (`releases:`, `run_started_at:`), and `rebuild_timeout_sec:`
+  # (the per-system timeout). A traced compile that did not finish may have
+  # left `_build/host/lib` half-written, and the full run still reads it: the
+  # beam scan, `compile_env` and argus. So it is rebuilt untraced with
+  # `mix compile` alone, bounded like the optional pass's compiles: no
+  # `deps.get`, and no build cache store that could rewrite the candidates the
+  # host compile reported. Nothing on this path can fail the run: a raise, a
+  # throw or an exit in the trace is "portability could not be judged", one
+  # in the rebuild is logged, and either way the status stands and nothing is
+  # published. Public for tests, which inject `trace:` (`run_portability/4`'s
+  # shape), `compile:` (`OptionalDepsTargets.bounded_compile/4`'s) and
+  # `timeout_ms:`.
   @spec full_run_portability(String.t(), map(), keyword()) ::
           (String.t() -> Portability.verdict())
   def full_run_portability(project_dir, paths, opts) do
+    trace = Keyword.get(opts, :trace, &run_portability/4)
+
     fn package_name ->
-      verdict = run_portability(project_dir, package_name, paths, opts)
-      if unfinished?(verdict), do: rebuild_untraced(project_dir, package_name, paths)
+      verdict = guarded_trace(trace, project_dir, package_name, paths, opts)
+      if unfinished?(verdict), do: guarded_rebuild(project_dir, paths, opts)
       verdict
     end
   end
 
-  # Whatever this rebuild says, the host status is the first compile's; a
-  # failure only leaves the scan of a partial build, and nothing publishes.
-  defp rebuild_untraced(project_dir, package_name, paths) do
-    log_host(paths, "The traced compile did not finish; rebuilding without the trace")
+  defp guarded_trace(trace, project_dir, package_name, paths, opts) do
+    trace.(project_dir, package_name, paths, opts)
+  rescue
+    e -> trace_failed(Exception.message(e))
+  catch
+    kind, reason -> trace_failed("#{kind} #{inspect(reason, limit: 20)}")
+  end
 
-    case compile_host(project_dir, paths.output_dir, 0, package_name) do
-      %{status: :pass} -> :ok
-      host -> log_host(paths, "Warning: the rebuild failed: #{describe_error(host[:error])}")
+  # Nothing says whether the traced compile started, so it is treated as
+  # one that did not finish.
+  defp trace_failed(why) do
+    %{
+      status: :skip,
+      reason: PortabilityReasons.could_not_judge(),
+      observations: %{
+        "problems" => ["portability failed: " <> why],
+        "trace_stats" => %{"judge_compile" => "not_finished"}
+      }
+    }
+  end
+
+  defp guarded_rebuild(project_dir, paths, opts) do
+    rebuild_untraced(project_dir, paths, opts)
+  rescue
+    e -> rebuild_failed(paths, Exception.message(e))
+  catch
+    kind, reason -> rebuild_failed(paths, "#{kind} #{inspect(reason, limit: 20)}")
+  end
+
+  defp rebuild_failed(paths, why) do
+    log_host(paths, "Warning: the rebuild failed: " <> why)
+  rescue
+    _ -> :ok
+  end
+
+  defp rebuild_untraced(project_dir, paths, opts) do
+    case rebuild_timeout(opts) do
+      :exhausted ->
+        log_host(paths, "The traced compile did not finish; no time left to rebuild it")
+
+      timeout_sec ->
+        log_host(paths, "The traced compile did not finish; rebuilding without the trace")
+        rebuild_compile(project_dir, paths, timeout_sec, opts)
     end
+  end
+
+  defp rebuild_compile(project_dir, paths, timeout_sec, opts) do
+    compile = Keyword.get(opts, :compile, &OptionalDepsTargets.bounded_compile/4)
+    log_file = Path.join([paths.output_dir, "logs", "host.log"])
+
+    with :ok <- compile.(project_dir, host_env(project_dir), log_file, timeout_sec),
+         :ok <- OptionalDepsTargets.reap_writers(Path.join([project_dir, "_build", "host"])) do
+      :ok
+    else
+      error -> rebuild_failed(paths, inspect(error, limit: 20))
+    end
+  end
+
+  # The per-system timeout, cut to what is left of the run as the judge
+  # compile's is (`NccWorker.Tracer.timeout_sec/2`).
+  defp rebuild_timeout(opts) do
+    seconds = Keyword.get(opts, :rebuild_timeout_sec, @default_timeout_sec)
+
+    elapsed =
+      case Keyword.get(opts, :run_started_at) do
+        nil -> nil
+        started -> max(System.monotonic_time(:second) - started, 0)
+      end
+
+    NccWorker.Tracer.timeout_sec(seconds * 1000, elapsed)
   end
 
   # A toolchain run (`mode: "toolchain"`, `NccWorker.RunScope`) answers one
@@ -1358,20 +1423,25 @@ defmodule NccWorker.Worker do
   # (`judge_releases/2`), and `run_started_at:`, the run's start (`input.started_at`),
   # which bounds the compile by what is left of the run. It writes only under
   # `<work>/trace` and `<out>/logs/host-trace.log` (`setup_paths/1` made
-  # `<out>/logs` at the run's start). Never raises; a trace that
-  # fails is "portability could not be judged" and changes no host status.
+  # `<out>/logs` at the run's start). A trace that fails is "portability
+  # could not be judged" and changes no host status; `Portability.run/3`
+  # never raises, but `HexHome` may, which the full run guards against
+  # (`full_run_portability/3`).
   defp run_portability(project_dir, package_name, paths, opts) do
     hex_home = HexHome.prepare(project_dir, "host")
 
     verdict =
-      Portability.run(project_dir, package_name,
-        env: host_env(project_dir) ++ hex_env(hex_home),
-        releases: Keyword.get(opts, :releases),
-        hex_home: System.get_env("HEX_HOME"),
-        run_started_at: Keyword.get(opts, :run_started_at),
-        trace_dir: Path.join(paths.work_dir, "trace"),
-        log_file: Path.join([paths.output_dir, "logs", "host-trace.log"]),
-        timeout_ms: Keyword.get(opts, :timeout_ms, @trace_timeout_ms)
+      Portability.run(
+        project_dir,
+        package_name,
+        [
+          env: host_env(project_dir) ++ hex_env(hex_home),
+          releases: Keyword.get(opts, :releases),
+          hex_home: System.get_env("HEX_HOME"),
+          run_started_at: Keyword.get(opts, :run_started_at),
+          trace_dir: Path.join(paths.work_dir, "trace"),
+          log_file: Path.join([paths.output_dir, "logs", "host-trace.log"])
+        ] ++ Keyword.take(opts, [:timeout_ms])
       )
 
     HexHome.publish(hex_home)

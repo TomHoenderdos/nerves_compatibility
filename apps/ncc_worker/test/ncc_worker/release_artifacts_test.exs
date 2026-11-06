@@ -353,6 +353,155 @@ defmodule NccWorker.ReleaseArtifactsTest do
     end
   end
 
+  # `Worker.full_run_portability/3` with its trace and its rebuild compile
+  # injected: whatever they raise or however long they would take, the
+  # result equals an untraced run's except for `host_portability` and
+  # publication. Short names: the tmp_dir path the beam scan reads becomes an
+  # atom, which is at most 255 characters.
+  describe "guarded portability" do
+    setup %{project: project, tmp_dir: dir} do
+      pure_build(project)
+      out = Path.join(dir, "out")
+      File.mkdir_p!(Path.join(out, "logs"))
+      %{paths: %{work_dir: dir, output_dir: out, logs_dir: Path.join(out, "logs")}}
+    end
+
+    defp unfinished do
+      fn _project, _package, _paths, _opts ->
+        %{
+          status: :skip,
+          reason: "portability could not be judged",
+          observations: %{"trace_stats" => %{"judge_compile" => "not_finished"}}
+        }
+      end
+    end
+
+    defp recording_compile(test_pid) do
+      fn project_dir, env, log_file, timeout_sec ->
+        send(test_pid, {:compiled, project_dir, env, log_file, timeout_sec})
+        :ok
+      end
+    end
+
+    defp run_guarded(project, paths, opts) do
+      portability = NccWorker.Worker.full_run_portability(project, paths, opts)
+
+      ExUnit.CaptureIO.with_io(:stderr, fn ->
+        NccWorker.Worker.pure_elixir_result(project, "plain", portability)
+      end)
+    end
+
+    defp assert_unpublished(result, untraced) do
+      assert %{status: "skipped", reason: "portability could not be judged"} =
+               result.host_portability
+
+      refute Map.has_key?(result.beam_scan["footprint"], "file_manifest")
+      assert strip_publication(result) == strip_publication(untraced)
+    end
+
+    test "a raising trace is could-not-judge",
+         %{project: project, paths: paths} do
+      untraced = NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
+
+      for failure <- [
+            fn -> raise File.Error, reason: :eacces, action: "make directory", path: "/x" end,
+            fn -> throw(:boom) end,
+            fn -> exit(:boom) end
+          ] do
+        {result, stderr} =
+          run_guarded(project, paths,
+            releases: {:ok, %{}},
+            trace: fn _, _, _, _ -> failure.() end,
+            compile: recording_compile(self())
+          )
+
+        assert_unpublished(result, untraced)
+
+        assert ["portability failed: " <> _] =
+                 result.host_portability.compile_observations["problems"]
+
+        assert_received {:compiled, ^project, _env, _log, _timeout}
+        assert stderr =~ "rebuilding without the trace"
+      end
+    end
+
+    test "a raising rebuild", %{
+      project: project,
+      paths: paths
+    } do
+      untraced = NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
+
+      {result, stderr} =
+        run_guarded(project, paths,
+          releases: {:ok, %{}},
+          trace: unfinished(),
+          compile: fn _, _, _, _ ->
+            raise File.Error, reason: :enospc, action: "write", path: "/x"
+          end
+        )
+
+      assert_unpublished(result, untraced)
+      assert stderr =~ "the rebuild failed"
+    end
+
+    test "the rebuild is bounded by the run", %{
+      project: project,
+      paths: paths
+    } do
+      untraced = NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
+
+      {result, _stderr} =
+        run_guarded(project, paths,
+          releases: {:ok, %{}},
+          run_started_at: System.monotonic_time(:second),
+          rebuild_timeout_sec: 7,
+          trace: unfinished(),
+          compile: recording_compile(self())
+        )
+
+      assert_unpublished(result, untraced)
+      assert_received {:compiled, ^project, _env, _log, 7}
+
+      {result, stderr} =
+        run_guarded(project, paths,
+          releases: {:ok, %{}},
+          run_started_at: System.monotonic_time(:second) - 105 * 60,
+          rebuild_timeout_sec: 7,
+          trace: unfinished(),
+          compile: recording_compile(self())
+        )
+
+      assert_unpublished(result, untraced)
+      refute_received {:compiled, _, _, _, _}
+      assert stderr =~ "no time left"
+    end
+
+    # The first compile's build-cache candidates (`host_result.cache_candidates`)
+    # describe dirs under `<out>/build-cache`; the rebuild only runs
+    # `mix compile` into `_build/host`, never `deps.get` or a cache store.
+    test "the rebuild only compiles", %{
+      project: project,
+      paths: paths
+    } do
+      candidate = Path.join([paths.output_dir, "build-cache", "k1", "ebin", "dep.beam"])
+      File.mkdir_p!(Path.dirname(candidate))
+      File.write!(candidate, "first compile")
+      before = File.ls!(Path.join(paths.output_dir, "build-cache"))
+
+      run_guarded(project, paths,
+        releases: {:ok, %{}},
+        trace: unfinished(),
+        compile: recording_compile(self())
+      )
+
+      assert_received {:compiled, ^project, env, log, _timeout}
+      assert {"MIX_BUILD_PATH", Path.join([project, "_build", "host"])} in env
+      assert log == Path.join([paths.output_dir, "logs", "host.log"])
+      assert File.read!(candidate) == "first compile"
+      assert File.ls!(Path.join(paths.output_dir, "build-cache")) == before
+    end
+  end
+
   # The full run's own traced compile (`Worker.full_run_portability/3`, the
   # real tracer) killed by its timeout in the middle of the package's
   # compile: the half-written build is rebuilt untraced, so the result equals
