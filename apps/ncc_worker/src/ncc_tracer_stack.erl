@@ -20,7 +20,14 @@
 %% the dispatcher that ran it. Of `Code` only the eval functions are glue:
 %% `Code.compile_file/2` reading a mix.exs runs under
 %% `Module.ParallelChecker.verify/1` on every project load.
--define(GLUE, ['Elixir.Enum', 'Elixir.Stream', lists, maps, erl_eval, elixir, elixir_eval]).
+%% Non-tail higher-order functions count too (`Map.update(m, k, d,
+%% &System.get_env/1)` leaves `Map.update/4` on the stack), and so do the
+%% protocol implementations Enum and Stream go through (matched by prefix).
+-define(GLUE, ['Elixir.Enum', 'Elixir.Stream', 'Elixir.Map', 'Elixir.Keyword', 'Elixir.List',
+               'Elixir.MapSet', 'Elixir.Access', 'Elixir.Enumerable', 'Elixir.Collectable',
+               lists, maps, proplists, sets, gb_trees, gb_sets, orddict, dict,
+               erl_eval, elixir, elixir_eval]).
+-define(GLUE_PREFIXES, ["Elixir.Enumerable.", "Elixir.Collectable."]).
 
 extent([], _Depth, _IsToolchain, _ProcessIsUser) ->
     %% No frame at all (a spawned fun that tail-called the primitive): fail closed.
@@ -60,7 +67,12 @@ glue_to_dispatcher([]) -> false.
 glue({'Elixir.Code', F, _, _}) ->
     lists:prefix("eval", base_name(F)) orelse lists:prefix("validated_eval", base_name(F));
 glue({M, F, _, _}) ->
-    lists:member(M, ?GLUE) orelse lists:member(M, ?WRAPPERS) orelse eval_handler(F).
+    lists:member(M, ?GLUE) orelse lists:member(M, ?WRAPPERS) orelse eval_handler(F)
+        orelse protocol_impl(M).
+
+protocol_impl(M) ->
+    Name = atom_to_list(M),
+    lists:any(fun(Prefix) -> lists:prefix(Prefix, Name) end, ?GLUE_PREFIXES).
 
 eval_under_dispatcher([Frame | Rest]) ->
     case eval(Frame) of

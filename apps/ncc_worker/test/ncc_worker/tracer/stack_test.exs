@@ -23,7 +23,16 @@ defmodule NccWorker.Tracer.StackTest do
     Mix.Project,
     Module.ParallelChecker,
     Kernel.ParallelCompiler,
-    File
+    File,
+    Stream,
+    Enumerable.List,
+    Enumerable.Stream,
+    Enumerable.MapSet,
+    Collectable.Map,
+    Map,
+    Keyword,
+    MapSet,
+    :maps
   ]
 
   defp tc?(module), do: module in @toolchain
@@ -201,6 +210,82 @@ defmodule NccWorker.Tracer.StackTest do
 
     test "an empty stack counts as user extent (fail closed)" do
       assert {:user, :truncated, :none, :none} = extent([])
+    end
+  end
+
+  describe "protocol and non-tail higher-order glue (review fix 2)" do
+    test "a Stream chain through Enumerable impls is user extent" do
+      stack = [
+        f(System, :get_env, 1),
+        f(Stream, :"-map/2-fun-0-", 4),
+        f(Enumerable.List, :reduce, 3),
+        f(Enumerable.Stream, :do_each, 4),
+        f(Enum, :reverse, 1),
+        f(:elixir_dispatch, :expand_macro_fun, 7)
+      ]
+
+      assert {:user, :dispatcher, _, :none} = extent(stack)
+    end
+
+    test "Enum over a MapSet through Enumerable.MapSet is user extent" do
+      stack = [
+        f(System, :get_env, 1),
+        f(Enum, :"-map/2-fun-0-", 3),
+        f(Enumerable.MapSet, :reduce, 3),
+        f(Enum, :map, 2),
+        f(:elixir_module, :expand_callback, 6)
+      ]
+
+      assert {:user, :dispatcher, _, :none} = extent(stack)
+    end
+
+    test "Enum.into through Collectable.Map is user extent" do
+      stack = [
+        f(System, :get_env, 1),
+        f(Enum, :"-into/3-fun-0-", 3),
+        f(Collectable.Map, :"-into/1-fun-0-", 2),
+        f(Enum, :into_protocol, 3),
+        f(:elixir_dispatch, :expand_macro_fun, 7)
+      ]
+
+      assert {:user, :dispatcher, _, :none} = extent(stack)
+    end
+
+    test "Map.update and Map.new with a captured primitive are user extent" do
+      assert {:user, :dispatcher, _, :none} =
+               extent([
+                 f(System, :get_env, 1),
+                 f(Map, :update, 4),
+                 f(:elixir_dispatch, :expand_macro_fun, 7)
+               ])
+
+      assert {:user, :dispatcher, _, :none} =
+               extent([
+                 f(System, :get_env, 1),
+                 f(Map, :new_from_enum, 3),
+                 f(:maps, :from_list, 1),
+                 f(:elixir_module, :expand_callback, 6)
+               ])
+    end
+
+    test "Keyword.update with a captured primitive is user extent" do
+      assert {:user, :dispatcher, _, :none} =
+               extent([
+                 f(System, :get_env, 1),
+                 f(Keyword, :update, 4),
+                 f(:elixir_dispatch, :expand_macro_fun, 7)
+               ])
+    end
+
+    test "an unknown protocol-like prefix is not glue" do
+      stack = [
+        f(System, :get_env, 1),
+        f(MapSet, :new, 1),
+        f(Mix.Project, :push, 3),
+        f(:elixir_module, :eval_callbacks, 5)
+      ]
+
+      assert :toolchain = extent(stack)
     end
   end
 end
