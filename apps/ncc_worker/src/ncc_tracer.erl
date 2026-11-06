@@ -4,12 +4,12 @@
 %% start_child/0 from ERL_AFLAGS in every other BEAM the compile starts
 %% (rebar3). Writes one JSON object per line; NccWorker.Tracer.Report reads them.
 -export([start_main/0, start_child/0, window_open/1, window_close/1, closure/2,
-         native_patterns/2, finish/1, fire/1, ebin_dir/0, flush/0]).
+         native_patterns/2, finish/1, fire/1, ebin_dir/0, flush/0, collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
 -export([safe_extent/4]).
 
 -define(DEPTH, 64).
--define(NAME, ncc_tracer_collector).
+-define(COLLECTOR, {?MODULE, collector}).
 -define(PROBE, ncc_tracer_probe).
 -define(SENTINEL, "NCC_TRACE_SENTINEL:").
 -define(TIMEOUT, 120000).
@@ -23,8 +23,12 @@
 %% sources: compile:file/2 calls awaiting their return (child mode).
 %% spawning: processes whose spawn call was made in user extent, awaiting
 %% the `spawn` trace message that names the child.
+%% wanted: every pattern as {MFA, MatchSpec}, checked at each sentinel,
+%% window close and finish; unpatterned: a sentinel found one missing.
+%% final_pid, final_nonce: who may fire the final sentinel, and with what.
 -record(st, {fd, session, initial = #{}, procs = #{}, native = #{}, sources = #{},
              spawning = #{}, set_depth = ?DEPTH, depth = ?DEPTH, lowered = false,
+             wanted = [], unpatterned = false, final_pid, final_nonce,
              calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0,
              max_calls, max_user, max_queue, overflow = false, final = false}).
 
@@ -54,17 +58,24 @@ start_child() ->
 window_open(App) -> call({window_open, bin(App), now_ns()}).
 
 window_close(App) ->
-    delivered(),
-    call({window_close, bin(App), now_ns()}).
+    Delivered = delivered(),
+    call({window_close, bin(App), now_ns(), Delivered =:= ok}).
 
 closure(Packages, Deps) -> call({closure, [bin(P) || P <- Packages], Deps}).
 
 native_patterns(App, Ebin) -> call({native, bin(App), to_list(Ebin)}).
 
+%% The final sentinel counts only when fired by the process that asked the
+%% collector for its nonce, carrying that nonce: a package calling the probe
+%% with "__final__" before it tampers with the session proves nothing.
 finish(Status) ->
-    _ = quietly(fun() -> fire("__final__") end),
-    delivered(),
-    call({finish, bin(Status), now_ns()}).
+    _ = case call(final_nonce) of
+            Nonce when is_binary(Nonce) ->
+                quietly(fun() -> fire("__final__:" ++ binary_to_list(Nonce)) end);
+            _ -> skip
+        end,
+    Delivered = delivered(),
+    call({finish, bin(Status), now_ns(), Delivered =:= ok}).
 
 fire(App) -> ?PROBE:fire(to_list(App)).
 
@@ -73,10 +84,16 @@ fire(App) -> ?PROBE:fire(to_list(App)).
 %% VM that halts right after its last compile loses the lines still queued
 %% in the collector; a caller that can wait calls this before halting.
 flush() ->
-    delivered(),
-    call(flush).
+    case {delivered(), call(flush)} of
+        {ok, Reply} -> Reply;
+        {_, _} -> {error, undelivered}
+    end.
 
-ebin_dir() -> filename:dirname(code:which(?MODULE)).
+ebin_dir() -> filename:absname(filename:dirname(code:which(?MODULE))).
+
+%% The collector's pid, kept from start: it is not registered, so a package
+%% cannot take its name and answer the driver's calls.
+collector() -> persistent_term:get(?COLLECTOR, undefined).
 
 %% Stage 1 for one call. A stack the classifier cannot take apart (a frame
 %% that is not a 4-tuple, a crash in IsToolchain) is user extent of its own
@@ -107,6 +124,7 @@ start(Role, Dir, App) ->
     receive
         {Pid, ready} ->
             erlang:demonitor(Ref, [flush]),
+            persistent_term:put(?COLLECTOR, Pid),
             set_child_env(Role);
         {'DOWN', Ref, process, Pid, Reason} -> {error, Reason}
     after ?TIMEOUT -> {error, timeout}
@@ -126,9 +144,17 @@ set_child_env(main) ->
               false -> "";
               Value -> Value ++ " "
           end,
-    true = os:putenv("ERL_AFLAGS", Old ++ "-pa " ++ ebin_dir() ++ " -s ncc_tracer start_child"),
+    Flags = Old ++ "-pa " ++ quote(ebin_dir()) ++ " -s ncc_tracer start_child",
+    true = os:putenv("ERL_AFLAGS", Flags),
     ok;
 set_child_env(child) -> ok.
+
+%% erlexec splits ERL_AFLAGS on blanks unless they are inside double quotes.
+quote(Path) ->
+    [$" | lists:flatmap(fun($") -> "\\\"";
+                           ($\\) -> "\\\\";
+                           (C) -> [C]
+                        end, Path)] ++ [$"].
 
 child_app() ->
     case os:getenv("REBAR_BARE_COMPILER_OUTPUT_DIR") of
@@ -164,25 +190,50 @@ forms(Src, Line, Acc) ->
 %% --- collector -------------------------------------------------------------
 
 init(Parent, Role, Dir, App, Depth) ->
-    true = register(?NAME, self()),
     put(roots, roots()),
-    {ok, Fd} = file:open(filename:join(Dir, file_name(Role, App)), [write, raw, binary]),
+    File = filename:join(Dir, file_name(Role, App)),
+    {ok, Fd} = file:open(File, [write, raw, binary]),
     %% Our own session (OTP 27+): a package's erlang:trace/3 or trace_pattern
-    %% acts on the legacy session and cannot switch this one off.
-    Session = trace:session_create(?NAME, self(), []),
+    %% acts on the legacy session and cannot switch this one off. Its weak
+    %% handle is {Name, Id}: a random name keeps it from being guessed; the
+    %% calls that list or act on sessions are integrity patterns.
+    Session = trace:session_create(binary_to_atom(<<"ncc_tracer_", (random_hex())/binary>>),
+                                   self(), []),
     Flags = [call, procs, set_on_spawn, monotonic_timestamp],
     _ = trace:process(Session, existing, true, Flags),
     _ = trace:process(Session, self(), false, Flags),
-    St = #st{fd = Fd, session = Session, set_depth = Depth, depth = Depth,
+    %% Spawned by the untraced collector after the existing processes were
+    %% traced, so it is not traced itself.
+    Self = self(),
+    _ = spawn(fun() -> watch(Self, File) end),
+    Wanted = [{MFA, match_spec(MFA, Role, Depth)}
+              || MFA <- ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role)],
+    St = #st{fd = Fd, session = Session, set_depth = Depth, depth = Depth, wanted = Wanted,
              initial = maps:from_keys(erlang:processes(), true),
              max_calls = env_int("NCC_TRACE_MAX_CALLS", 20000000),
              max_user = env_int("NCC_TRACE_MAX_USER_EVENTS", 200000),
              max_queue = env_int("NCC_TRACE_MAX_QUEUE", 2000000)},
     write(St, start_line(Role, App, Depth)),
-    lists:foreach(fun(MFA) -> pattern(Session, MFA, Role, Depth) end,
-                  ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role)),
+    lists:foreach(fun({MFA, MS}) -> pattern(Session, MFA, MS) end, Wanted),
     Parent ! {self(), ready},
     loop(St).
+
+%% A collector that dies other than by finishing (killed by a package, by
+%% its max_heap_size, by a crash) leaves a line saying so; in a child VM
+%% that is the only trace of it.
+watch(Collector, File) ->
+    Ref = erlang:monitor(process, Collector),
+    receive
+        {'DOWN', Ref, process, Collector, normal} -> ok;
+        {'DOWN', Ref, process, Collector, Reason} ->
+            Line = json:encode(#{kind => collector_down, reason => reason_bin(Reason),
+                                 ts => now_ns()}),
+            _ = file:write_file(File, [Line, $\n], [append, raw]),
+            ok
+    end.
+
+reason_bin(Reason) when is_atom(Reason) -> atom_to_binary(Reason);
+reason_bin(Reason) -> ncc_tracer_channels:term_bin(Reason).
 
 role_patterns(child) -> [{compile, file, 2}];
 role_patterns(main) -> [].
@@ -193,10 +244,41 @@ role_patterns(main) -> [].
 spawn_patterns() ->
     [{erlang, F, A} || {F, A} <- erlang:module_info(exports), lists:member(F, ?SPAWNS)].
 
-pattern(Session, {M, _, _} = MFA, Role, Depth) ->
+pattern(Session, {M, _, _} = MFA, MS) ->
     case code:ensure_loaded(M) of
-        {module, M} -> _ = trace:function(Session, MFA, match_spec(MFA, Role, Depth), [global]), ok;
+        {module, M} -> _ = trace:function(Session, MFA, MS, [global]), ok;
         _ -> ok
+    end.
+
+%% A reloaded module (code:load_file/1 after code:unstick_mod/1 for a kernel
+%% module, any purge and load for the rest) comes back without its patterns,
+%% and so does a module that could not be loaded at start and is loaded now.
+%% Every check sets the missing ones again and reports the window.
+%% A session that is gone (destroyed by a package, or by our own overflow)
+%% makes trace:info/3 fail: that is a failed check too.
+patterns_check(#st{unpatterned = Lost, overflow = Overflow} = St, When) ->
+    Ok = not Overflow andalso repatterned(St) andalso not Lost,
+    {Ok, St#st{unpatterned = When =:= sentinel andalso not Ok}}.
+
+repatterned(#st{session = Session, wanted = Wanted}) ->
+    try
+        Missing = [W || {MFA, _} = W <- Wanted, not traced(Session, MFA)],
+        lists:foreach(fun({MFA, MS}) -> pattern(Session, MFA, MS) end, Missing),
+        Missing =:= []
+    catch
+        _:_ -> false
+    end.
+
+traced(Session, {M, F, A}) ->
+    not erlang:module_loaded(M) orelse
+        lists:all(fun(MFA) -> trace:info(Session, MFA, traced) =:= {traced, global} end,
+                  concrete(M, F, A)).
+
+concrete(M, '_', '_') -> [{M, F, A} || {F, A} <- M:module_info(exports)];
+concrete(M, F, A) ->
+    case erlang:function_exported(M, F, A) of
+        true -> [{M, F, A}];
+        false -> []
     end.
 
 match_spec({compile, file, 2}, child, _Depth) -> [{'_', [], [{return_trace}]}];
@@ -208,6 +290,9 @@ loop(St) ->
             loop(call_event(Pid, M, F, Args, Stack, Ts, St));
         {trace_ts, Pid, call, {compile, file, [Src | _]}, _Ts} ->
             loop(St#st{sources = maps:put(Pid, Src, St#st.sources)});
+        {trace_ts, Pid, call, {M, F, Args}, Ts} ->
+            %% A call with no stack: our match spec was replaced. Unjudged.
+            loop(call_event(Pid, M, F, Args, no_stack, Ts, St));
         {trace_ts, Pid, return_from, {compile, file, 2}, Result, Ts} ->
             loop(compiled(Pid, Result, Ts, St));
         {trace_ts, Parent, spawn, Child, MFA, _Ts} ->
@@ -216,14 +301,14 @@ loop(St) ->
             loop(St#st{procs = maps:remove(Pid, St#st.procs),
                        spawning = maps:remove(Pid, St#st.spawning)});
         {ncc_call, From, Ref, Req} ->
-            {Reply, St1} = request(Req, St),
+            {Reply, St1} = request(Req, From, St),
             From ! {Ref, Reply},
             continue(Req, St1);
         _Other ->
             loop(St)
     end.
 
-continue({finish, _, _}, _St) -> ok;
+continue({finish, _, _, _}, _St) -> ok;
 continue(_Req, St) -> loop(St).
 
 call_event(_Pid, _M, _F, _Args, _Stack, _Ts, #st{overflow = true} = St) -> St;
@@ -256,8 +341,6 @@ depth_seen(_M, _F, _Args, St) -> St.
 %% setting it) and report whether it held since the last window close. A
 %% sentinel checks too but keeps what it found for the close, which is the
 %% check the judge reads for the window.
-depth_check(St) -> depth_check(St, close).
-
 depth_check(#st{set_depth = Set, lowered = Lowered} = St, When) ->
     Ok = erlang:system_flag(backtrace_depth, Set) =:= Set andalso not Lowered,
     {Ok, St#st{depth = Set, lowered = When =:= sentinel andalso not Ok}}.
@@ -282,18 +365,37 @@ native_channel(M, F, St) ->
     end.
 
 record(_Class, toolchain, _Info, St) -> St;
+record(unknown, {user, unjudged, _, _}, _Info, St) -> St#st{unjudged = St#st.unjudged + 1};
 record(unknown, _Extent, _Info, St) -> St;
-record({env, #{name := <<?SENTINEL, App/binary>>}}, {user, _, _, {?PROBE, _, _, _}},
+record({env, #{name := <<?SENTINEL, App0/binary>>}}, {user, _, _, {?PROBE, _, _, _}},
        {Pid, _, _, _, Ts}, St0) ->
-    {DepthOk, St} = depth_check(St0, sentinel),
-    write(St, #{kind => sentinel, app => App, ts => Ts, pid => pid_bin(Pid), depth_ok => DepthOk}),
-    St#st{final = St#st.final orelse App =:= <<"__final__">>};
+    {Checks, St} = checks(St0, sentinel),
+    {App, Final} = sentinel_app(App0, Pid, St),
+    write(St, Checks#{kind => sentinel, app => App, ts => Ts, pid => pid_bin(Pid)}),
+    St#st{final = St#st.final orelse Final};
 record({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts}, St) ->
     {Kind, First, User} = frames(Kind0, First0, User0),
     Line = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
              mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
              arg => enrich(Channel, Arg), extent => Kind, first => First, user => User},
     user_event(Line, Kind =:= unjudged orelse Channel =:= unclassified, St).
+
+sentinel_app(<<"__final__:", Nonce/binary>>, Pid, #st{final_pid = Pid, final_nonce = Nonce}) ->
+    {<<"__final__">>, true};
+sentinel_app(<<"__final__", _/binary>>, _Pid, _St) -> {<<"__final__">>, false};
+sentinel_app(App, _Pid, _St) -> {App, false}.
+
+%% The checks every sentinel, window close and finish makes: backtrace_depth
+%% held and every pattern is still set.
+checks(St0, When) ->
+    {DepthOk, St1} = depth_check(St0, When),
+    {PatternsOk, St} = patterns_check(St1, When),
+    {#{depth_ok => DepthOk, integrity_ok => PatternsOk}, St}.
+
+%% A close or finish also needs every trace message delivered first.
+closing_checks(St0, Delivered) ->
+    {#{integrity_ok := Ok} = Checks, St} = checks(St0, close),
+    {Checks#{integrity_ok := Ok andalso Delivered, delivered => Delivered}, St}.
 
 %% A frame the renderer cannot take apart turns the event unjudged, with no
 %% frames, rather than crashing the collector or dropping the event.
@@ -389,20 +491,24 @@ compile_module(_Result) -> null.
 
 %% --- requests ----------------------------------------------------------------
 
-request({window_open, App, Ts}, St) ->
+request({window_open, App, Ts}, _From, St) ->
     write(St, #{kind => window_open, app => App, ts => Ts}),
     {ok, St};
-request({window_close, App, Ts}, St0) ->
-    {DepthOk, St} = depth_check(St0),
-    write(St, #{kind => window_close, app => App, ts => Ts, depth_ok => DepthOk}),
+request({window_close, App, Ts, Delivered}, _From, St0) ->
+    {Checks, St} = closing_checks(St0, Delivered),
+    write(St, Checks#{kind => window_close, app => App, ts => Ts}),
     {ok, St};
-request({closure, Packages, Deps}, St) ->
+request({closure, Packages, Deps}, _From, St) ->
     write(St, #{kind => closure, packages => Packages, deps => Deps, ts => now_ns()}),
     {ok, St};
-request({native, App, Ebin}, St) -> {ok, native(App, Ebin, St)};
-request({finish, Status, Ts}, St) -> {finish_trace(Status, Ts, St), St};
-request(flush, St) -> {ok, St};
-request(_Req, St) -> {{error, unknown_request}, St}.
+request({native, App, Ebin}, _From, St) -> {ok, native(App, Ebin, St)};
+request(final_nonce, From, St) ->
+    Nonce = random_hex(),
+    {Nonce, St#st{final_pid = From, final_nonce = Nonce}};
+request({finish, Status, Ts, Delivered}, _From, St) ->
+    {finish_trace(Status, Ts, Delivered, St), St};
+request(flush, _From, St) -> {ok, St};
+request(_Req, _From, St) -> {{error, unknown_request}, St}.
 
 %% Spec R3 native taint: call patterns on every module of a natively built
 %% closure dependency, set before any later dependency compiles. Loading them
@@ -415,24 +521,23 @@ native(App, Ebin, #st{session = Session, set_depth = Depth} = St) ->
             false -> code:add_pathz(Ebin)
         end,
     Mods = [M || M <- beam_modules(Ebin), code:ensure_loaded(M) =:= {module, M}],
-    lists:foreach(fun(M) ->
-                          trace:function(Session, {M, '_', '_'}, match_spec(M, main, Depth),
-                                         [global])
-                  end, Mods),
-    delivered(),
-    write(St, #{kind => quiet_close, app => App, ts => now_ns()}),
-    St#st{native = maps:merge(St#st.native, maps:from_keys(Mods, App))}.
+    Wanted = [{{M, '_', '_'}, match_spec(M, main, Depth)} || M <- Mods],
+    lists:foreach(fun({MFA, MS}) -> pattern(Session, MFA, MS) end, Wanted),
+    Delivered = delivered(),
+    write(St, #{kind => quiet_close, app => App, ts => now_ns(), delivered => Delivered =:= ok}),
+    St#st{native = maps:merge(St#st.native, maps:from_keys(Mods, App)),
+          wanted = St#st.wanted ++ Wanted}.
 
 beam_modules(Ebin) ->
     [list_to_atom(filename:basename(F, ".beam")) || F <- filelib:wildcard("*.beam", Ebin)].
 
-finish_trace(Status, Ts, #st{fd = Fd, session = Session} = St0) ->
-    {DepthOk, St} = depth_check(St0),
+finish_trace(Status, Ts, Delivered, #st{fd = Fd, session = Session} = St0) ->
+    {Checks, St} = closing_checks(St0, Delivered),
     write(St, #{kind => stats, calls => St#st.calls, user_events => St#st.user,
                 truncated => St#st.truncated, unjudged => St#st.unjudged,
                 spawned => St#st.spawned}),
-    write(St, #{kind => 'end', ts => Ts, status => Status, depth_ok => DepthOk,
-                final_sentinel => St#st.final, overflow => St#st.overflow}),
+    write(St, Checks#{kind => 'end', ts => Ts, status => Status,
+                      final_sentinel => St#st.final, overflow => St#st.overflow}),
     _ = file:close(Fd),
     _ = quietly(fun() -> trace:session_destroy(Session) end),
     ok.
@@ -524,7 +629,7 @@ elixir_root() ->
     end.
 
 call(Req) ->
-    case whereis(?NAME) of
+    case collector() of
         undefined -> {error, no_tracer};
         Pid ->
             Ref = erlang:monitor(process, Pid),
@@ -540,9 +645,19 @@ call(Req) ->
             end
     end.
 
+%% ok once every trace message generated so far is in the collector's queue;
+%% a timeout is reported, and the window or end it guards fails.
 delivered() ->
     Ref = erlang:trace_delivered(all),
-    receive {trace_delivered, all, Ref} -> ok after ?TIMEOUT -> ok end.
+    receive
+        {trace_delivered, all, Ref} -> ok
+    after env_int("NCC_TRACE_DELIVER_TIMEOUT_MS", ?TIMEOUT) -> {error, timeout}
+    end.
+
+random_hex() ->
+    try binary:encode_hex(crypto:strong_rand_bytes(16))
+    catch _:_ -> integer_to_binary(rand:uniform(1 bsl 128), 16)
+    end.
 
 write(#st{fd = Fd}, Map) ->
     Line = try json:encode(Map) catch _:_ -> json:encode(#{kind => unencodable}) end,

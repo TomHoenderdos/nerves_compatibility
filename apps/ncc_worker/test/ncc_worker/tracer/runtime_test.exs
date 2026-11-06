@@ -216,9 +216,15 @@ defmodule NccWorker.Tracer.RuntimeTest do
       :ok = :ncc_tracer.window_open("fx")
       Agent.get(agent, System, :get_env, [])
       :erlang.system_flag(:backtrace_depth, 2)
+      # Trace messages from two processes are not ordered: the flush makes
+      # sure the collector has seen the lowering before the agent's read.
+      # Without it a read can be judged at the old depth, and the window
+      # check below (which does not depend on ordering) is the guarantee.
+      :ok = :ncc_tracer.flush()
       Agent.update(agent, fn _ -> "NCC_FX_CUT" end)
       Agent.get(agent, System, :get_env, [])
       :erlang.system_flag(:backtrace_depth, 64)
+      :ok = :ncc_tracer.flush()
       Agent.update(agent, fn _ -> "NCC_FX_BACK" end)
       Agent.get(agent, System, :get_env, [])
       :ok = :ncc_tracer.window_close("fx")
@@ -340,5 +346,213 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert [%{"app" => "r3"}] = kind(lines, "sentinel")
     assert [%{"result" => "ok", "module" => "r3", "source" => source}] = kind(lines, "compile")
     assert source =~ "r3.erl"
+  end
+
+  # The non-legacy session, as a package would find it.
+  @find_session ~S"""
+  [weak] = for {name, _} = w <- :trace.session_info(:all), name != :legacy, do: w
+  """
+
+  test "a package untracing a function through the session's BIF is recorded and fails the window",
+       %{tmp_dir: dir} do
+    fx = Path.join(dir, "fx_untrace.ex")
+
+    File.write!(fx, """
+    defmodule FxUntrace do
+      @x (
+           #{@find_session}
+           :erts_internal.trace_pattern(weak, {:os, :getenv, 1}, false, [:global])
+         )
+      def x, do: @x
+    end
+    """)
+
+    {0, _} =
+      run_script(dir, """
+      :ok = :ncc_tracer.start_main()
+      :ok = :ncc_tracer.window_open("fx")
+      Code.compile_file(#{inspect(fx)})
+      :ok = :ncc_tracer.window_close("fx")
+      :ok = :ncc_tracer.finish("ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    integrity = for e <- kind(lines, "event"), e["channel"] == "integrity", do: e["mfa"]
+    assert "erts_internal:trace_pattern/4" in integrity
+    assert [%{"integrity_ok" => false}] = kind(lines, "window_close")
+    # The close set the pattern again, so the run's end checks clean.
+    assert [%{"integrity_ok" => true}] = kind(lines, "end")
+  end
+
+  test "a forged final sentinel before the package destroys the session does not count",
+       %{tmp_dir: dir} do
+    fx = Path.join(dir, "fx_destroy.ex")
+
+    File.write!(fx, """
+    defmodule FxDestroy do
+      @x (
+           #{@find_session}
+           :ncc_tracer_probe.fire(~c"__final__")
+           :erts_internal.trace_session_destroy(weak)
+         )
+      def x, do: @x
+    end
+    """)
+
+    {0, _} =
+      run_script(dir, """
+      :ok = :ncc_tracer.start_main()
+      Code.compile_file(#{inspect(fx)})
+      :ncc_tracer.finish("ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    integrity = for e <- kind(lines, "event"), e["channel"] == "integrity", do: e["mfa"]
+    assert "erts_internal:trace_session_destroy/1" in integrity
+    assert "ncc_tracer_probe:fire/1" in integrity
+    assert [%{"final_sentinel" => false}] = kind(lines, "end")
+  end
+
+  test "a package calling the tracer's API is recorded", %{tmp_dir: dir} do
+    fx = Path.join(dir, "fx_finish.ex")
+
+    File.write!(fx, """
+    defmodule FxFinish do
+      @x :ncc_tracer.finish("ok")
+      def x, do: @x
+    end
+    """)
+
+    {0, _} =
+      run_script(dir, """
+      :ok = :ncc_tracer.start_main()
+      Code.compile_file(#{inspect(fx)})
+      IO.inspect(:ncc_tracer.finish("ok"), label: "finish")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    integrity = for e <- kind(lines, "event"), e["channel"] == "integrity", do: e["mfa"]
+    assert "ncc_tracer:finish/1" in integrity
+  end
+
+  test "a reloaded module loses its patterns: the check fails the window and sets them again",
+       %{tmp_dir: dir} do
+    {0, out} =
+      run_script(dir, """
+      :ok = :ncc_tracer.start_main()
+      :ok = :ncc_tracer.window_open("fx")
+      true = :code.unstick_mod(:os)
+      {:module, :os} = :code.load_file(:os)
+      :code.stick_mod(:os)
+      :ok = :ncc_tracer.window_close("fx")
+      :os.type()
+      :ok = :ncc_tracer.finish("ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
+    assert [%{"integrity_ok" => true}] = kind(lines, "end")
+    integrity = for e <- kind(lines, "event"), e["channel"] == "integrity", do: e["mfa"]
+    assert "code:unstick_mod/1" in integrity
+    # Traced again after the close.
+    assert Enum.any?(kind(lines, "event"), &(&1["mfa"] == "os:type/0"))
+  end
+
+  test "a killed collector leaves a collector_down line and the API reports it",
+       %{tmp_dir: dir} do
+    {0, out} =
+      run_script(dir, """
+      :ok = :ncc_tracer.start_main()
+      pid = :ncc_tracer.collector()
+      true = is_pid(pid)
+      # A process taking the old registered name does not receive the calls.
+      true = Process.register(self(), :ncc_tracer_collector)
+      :ok = :ncc_tracer.window_open("fx")
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      receive do
+        {:DOWN, ^ref, _, _, _} -> :ok
+      end
+      Process.sleep(100)
+      IO.inspect(:ncc_tracer.finish("ok"), label: "finish")
+      """)
+
+    assert out =~ "finish: {:error, :no_tracer}"
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    assert [_] = kind(lines, "window_open")
+    assert [%{"reason" => "killed"}] = kind(lines, "collector_down")
+    assert [] = kind(lines, "end")
+  end
+
+  test "an undelivered trace fails the window and the end", %{tmp_dir: dir} do
+    {0, _} =
+      run_script(
+        dir,
+        """
+        :ok = :ncc_tracer.start_main()
+        :ok = :ncc_tracer.window_open("fx")
+        :ok = :ncc_tracer.window_close("fx")
+        :ncc_tracer.finish("ok")
+        """,
+        [{"NCC_TRACE_DELIVER_TIMEOUT_MS", "0"}]
+      )
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    assert [%{"delivered" => false, "integrity_ok" => false}] = kind(lines, "window_close")
+    assert [%{"delivered" => false, "integrity_ok" => false}] = kind(lines, "end")
+  end
+
+  test "stacks the tracer cannot judge are written as unjudged events and counted",
+       %{tmp_dir: dir} do
+    {0, _} =
+      run_script(dir, """
+      :ok = :ncc_tracer.start_main()
+      c = :ncc_tracer.collector()
+      ts = :erlang.monotonic_time(:nanosecond)
+      # A frame whose location is not a list: the frame renderer crashes.
+      send(c, {:trace_ts, self(), :call, {:os, :getenv, ["NCC_FX_BAD"]}, [{:m, :f, 0, :nope}], ts})
+      # A call message with no stack (a replaced match spec).
+      send(c, {:trace_ts, self(), :call, {:os, :getenv, ["NCC_FX_NOSTACK"]}, ts})
+      :ok = :ncc_tracer.finish("ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    events = kind(lines, "event")
+
+    for name <- ["NCC_FX_BAD", "NCC_FX_NOSTACK"] do
+      assert Enum.any?(events, &(&1["arg"]["name"] == name and &1["extent"] == "unjudged")),
+             name
+    end
+
+    assert [%{"unjudged" => 2}] = kind(lines, "stats")
+  end
+
+  test "start_main hands child VMs the tracer through ERL_AFLAGS, quoting the path",
+       %{tmp_dir: dir} do
+    spaced = Path.join(dir, "with space/ebin")
+    File.mkdir_p!(spaced)
+
+    for beam <- Path.wildcard(Path.join(ebin(), "ncc_tracer*.beam")),
+        do: File.cp!(beam, Path.join(spaced, Path.basename(beam)))
+
+    script = Path.join(dir, "script.exs")
+
+    File.write!(script, """
+    :ok = :ncc_tracer.start_main()
+    IO.puts("AFLAGS=" <> System.get_env("ERL_AFLAGS"))
+    {_, 0} = System.cmd("erl", ["-noshell", "-eval", "halt()."],
+      env: [{"REBAR_BARE_COMPILER_OUTPUT_DIR", "/x/lib/kid"}])
+    :ok = :ncc_tracer.finish("ok")
+    """)
+
+    {out, 0} =
+      System.cmd("elixir", ["-pa", spaced, script],
+        env: [{"NCC_TRACE_DIR", dir}, {"ERL_AFLAGS", "+pc unicode"}],
+        stderr_to_stdout: true
+      )
+
+    assert out =~ ~s(AFLAGS=+pc unicode -pa "#{spaced}" -s ncc_tracer start_child)
+    assert [file] = Path.wildcard(Path.join(dir, "trace-child-kid-*.jsonl"))
+    assert [%{"role" => "child", "app" => "kid"}] = file |> lines() |> kind("start")
   end
 end

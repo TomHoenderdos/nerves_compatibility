@@ -102,4 +102,30 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert :unknown = classify(:lists, :reverse, [[1]])
     assert {:file_read, %{path: _}} = classify(:file, :read_file, [{:not, :a, :path}])
   end
+
+  test "the session's own BIFs, the tracer, the probe and unsticking are integrity" do
+    patterns = :ncc_tracer_channels.patterns()
+
+    for mfa <- [
+          {:erts_internal, :trace, 4},
+          {:erts_internal, :trace_pattern, 4},
+          {:erts_internal, :trace_session_destroy, 1},
+          {:erts_internal, :trace_info, 3},
+          {:ncc_tracer, :_, :_},
+          {:ncc_tracer_probe, :fire, 1},
+          {:code, :unstick_mod, 1},
+          {:code, :unstick_dir, 1}
+        ] do
+      assert mfa in patterns, inspect(mfa)
+    end
+
+    assert {:integrity, %{}} = classify(:erts_internal, :trace_session_destroy, [{:x, 0}])
+
+    assert {:integrity, %{}} =
+             classify(:erts_internal, :trace_pattern, [{:x, 0}, {:os, :type, 0}, false, []])
+
+    assert {:integrity, %{}} = classify(:ncc_tracer, :finish, ["ok"])
+    assert {:integrity, %{}} = classify(:ncc_tracer_probe, :fire, [~c"__final__"])
+    assert {:integrity, %{}} = classify(:code, :unstick_mod, [:os])
+  end
 end

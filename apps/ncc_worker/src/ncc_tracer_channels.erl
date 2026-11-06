@@ -60,6 +60,18 @@ patterns() ->
      {erlang, system_flag, 2}, {erlang, suspend_process, 1},
      {erlang, suspend_process, 2},
      {trace, '_', '_'}, {dbg, '_', '_'}, {seq_trace, '_', '_'},
+     %% The BIFs behind trace sessions: a package holding the session's weak
+     %% handle (trace:session_info/1 lists it) can untrace or destroy it here.
+     {erts_internal, trace, 3}, {erts_internal, trace, 4},
+     {erts_internal, trace_pattern, 3}, {erts_internal, trace_pattern, 4},
+     {erts_internal, trace_info, 3}, {erts_internal, trace_session_create, 3},
+     {erts_internal, trace_session_destroy, 1},
+     %% The tracer's own API and sentinel probe: the driver calls them from
+     %% toolchain frames, a package calling them is recorded.
+     {ncc_tracer, '_', '_'}, {ncc_tracer_probe, fire, 1},
+     %% Unsticking is the first step of reloading a kernel module, which
+     %% drops its trace patterns.
+     {code, unstick_mod, 1}, {code, unstick_dir, 1},
      {application, get_env, 1}, {application, get_env, 2}, {application, get_env, 3},
      {application, get_all_env, 0}, {application, get_all_env, 1}].
 
@@ -69,6 +81,7 @@ classify(M, F, Args) ->
         Class -> Class
     end.
 
+specific(code, F, [_]) when F =:= unstick_mod; F =:= unstick_dir -> {integrity, #{}};
 specific(os, type, []) -> {os_identity, #{}};
 specific(os, version, []) -> {os_identity, #{}};
 specific(erlang, system_info, [Key]) -> {os_identity, #{key => term_bin(Key)}};
@@ -115,7 +128,13 @@ by_module('Elixir.Version', _F, [A, B | _]) ->
 by_module(erlang, system_flag, [Flag | _]) -> {integrity, #{flag => term_bin(Flag)}};
 by_module(erlang, F, _Args) when F =:= trace; F =:= trace_pattern; F =:= suspend_process ->
     {integrity, #{}};
-by_module(M, _F, _Args) when M =:= trace; M =:= dbg; M =:= seq_trace -> {integrity, #{}};
+by_module(M, _F, _Args) when M =:= trace; M =:= dbg; M =:= seq_trace; M =:= ncc_tracer;
+                             M =:= ncc_tracer_probe ->
+    {integrity, #{}};
+by_module(erts_internal, F, _Args) when F =:= trace; F =:= trace_pattern; F =:= trace_info;
+                                       F =:= trace_session_create;
+                                       F =:= trace_session_destroy ->
+    {integrity, #{}};
 by_module(application, get_env, [Key]) -> {config, #{app => null, key => term_bin(Key)}};
 by_module(application, get_env, [App, Key | _]) ->
     {config, #{app => term_bin(App), key => term_bin(Key)}};
