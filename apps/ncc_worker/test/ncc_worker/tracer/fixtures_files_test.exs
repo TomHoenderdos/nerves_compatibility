@@ -84,13 +84,23 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
                 attr_module("FxLoader", ~S|:erl_prim_loader.get_file(~c"/etc/hosts")|)
               ),
             "fx_crypto" => lib("fx_crypto", attr_module("FxCrypto", ~S|:crypto.info_lib()|)),
+            # A real NIF load at compile time: FxNifLib (a plain Elixir
+            # dependency) loads a library setup_all builds outside the
+            # project (on Linux, with a C compiler) for itself.
+            "fx_nif_lib" =>
+              lib(
+                "fx_nif_lib",
+                "defmodule FxNifLib do\n  def load(path), do: :erlang.load_nif(path, 0)\n" <>
+                  "  def nop, do: :erlang.nif_error(:not_loaded)\nend\n"
+              ),
             "fx_nif" =>
               lib(
                 "fx_nif",
                 attr_module(
                   "FxNif",
-                  ~S|(try do :erlang.load_nif(~c"/nonexistent/nif", 0) rescue _ -> :error end)|
-                )
+                  ~S|FxNifLib.load(String.to_charlist(Path.expand("../../../../nif/fx_nif_lib", __DIR__)))|
+                ),
+                %{deps: ["fx_nif_lib"]}
               ),
             "fx_w_ebin" =>
               lib(
@@ -231,6 +241,7 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
       ])
 
     apps = Map.keys(@deps)
+    nif = build_nif(Path.join(root, "nif"))
     proj = TracerFixtures.project(root, apps, @deps)
     File.write!(Path.join(proj, "mix.lock"), "%{}\n")
     File.mkdir_p!(Path.join(proj, "config"))
@@ -240,11 +251,41 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
     File.rm_rf!(Path.join(proj, "_build/host/lib/fx_no_ebin/ebin"))
 
     %{
+      nif: nif,
       proj: proj,
       native: native,
       traced: traced,
       judge_opts: [releases: releases, hex_home: hex_home]
     }
+  end
+
+  # The fixture NIF for FxNifLib, built with the host's C compiler against
+  # this OTP's erl_nif.h: its path, or nil without /proc/self/maps or a
+  # compiler.
+  defp build_nif(dir) do
+    cc = System.find_executable("cc") || System.find_executable("gcc")
+
+    if File.exists?("/proc/self/maps") and cc do
+      File.mkdir_p!(dir)
+      src = Path.join(dir, "fx_nif_lib.c")
+      so = Path.join(dir, "fx_nif_lib.so")
+
+      File.write!(src, """
+      #include <erl_nif.h>
+      static ERL_NIF_TERM nop(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
+        return enif_make_atom(env, "ok");
+      }
+      static ErlNifFunc funcs[] = {{"nop", 0, nop}};
+      ERL_NIF_INIT(Elixir.FxNifLib, funcs, NULL, NULL, NULL, NULL)
+      """)
+
+      include = Path.join([to_string(:code.root_dir()), "usr", "include"])
+
+      {_, 0} =
+        System.cmd(cc, ["-shared", "-fPIC", "-I", include, "-o", so, src], stderr_to_stdout: true)
+
+      so
+    end
   end
 
   defp verdict(ctx, app),
@@ -313,15 +354,20 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
     assert "compile-time host read: crypto:info_lib/0" <> _ = refused(ctx, "fx_crypto")
   end
 
-  # FINDING (Task 12): erlang:load_nif/2 is never traced. No call trace
-  # pattern on it fires, global or local, called directly or through a
-  # dynamic M:F call, on OTP 28 and 29 (the emulator handles it specially).
-  # The dlopen of a host library (C code running on the host at compile
-  # time) leaves no event and fx_nif passes. The controller decides the fix;
-  # until then this pins the spec's verdict.
-  @tag skip: "finding: erlang:load_nif/2 is untraceable (Task 12 report)"
+  # erlang:load_nif/2 is never call-traced on OTP 28 and 29 (Task 12
+  # finding): the tracer's /proc/self/maps snapshots catch the library
+  # instead (NccWorker.Portability.MappedLibs). Linux only; elsewhere the
+  # test helper waives the check, and this can only pin that.
   test "loading a NIF at compile time refuses", ctx do
-    assert "compile-time host read: erlang:load_nif/2" <> _ = refused(ctx, "fx_nif")
+    if File.exists?("/proc/self/maps") do
+      assert is_binary(ctx.nif), "no C compiler to build the fixture NIF"
+
+      assert "compile-time native library load: " <> lib = refused(ctx, "fx_nif")
+      assert lib == ctx.nif
+      passes(ctx, "fx_nif_lib")
+    else
+      assert %{status: :pass, observations: %{"nif_check" => "waived"}} = verdict(ctx, "fx_nif")
+    end
   end
 
   test "Application.app_dir of a closure app is allowed; another app's lib dir refuses", ctx do

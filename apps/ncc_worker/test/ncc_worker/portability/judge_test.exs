@@ -9,6 +9,9 @@ defmodule NccWorker.Portability.JudgeTest do
 
   @cnj "portability could not be judged"
 
+  # The mapped libraries the VM started with (the tracer's snapshot).
+  @libs %{"nif_check" => "ok", "mapped_libs" => ["/usr/lib/libc.so.6"]}
+
   # deps/<app> and _build/host/lib/<app>/ebin for `dep` and `pkg` (pkg
   # depends on dep), plus `other`, a closure dependency `pkg` does not reach.
   setup %{tmp_dir: dir} do
@@ -36,12 +39,20 @@ defmodule NccWorker.Portability.JudgeTest do
   end
 
   defp window(app, open, close),
-    do: %{app: app, open: open, close: close, depth_ok: true, integrity_ok: true, delivered: true}
+    do: %{
+      app: app,
+      open: open,
+      close: close,
+      depth_ok: true,
+      integrity_ok: true,
+      delivered: true,
+      libs: @libs
+    }
 
   defp report(proj, overrides \\ %{}) do
     struct!(
       %Report{
-        start: %{"otp_root" => "/nonexistent-otp"},
+        start: Map.merge(%{"otp_root" => "/nonexistent-otp"}, @libs),
         closure: %{
           "packages" => ["pkg"],
           "deps" => [dep(proj, "dep", []), dep(proj, "other", []), dep(proj, "pkg", ["dep"])]
@@ -53,14 +64,16 @@ defmodule NccWorker.Portability.JudgeTest do
           %{app: "pkg", ts: 31, integrity_ok: true}
         ],
         stats: %{"kind" => "stats", "calls" => 10, "unjudged" => 0},
-        ending: %{
-          "status" => "ok",
-          "depth_ok" => true,
-          "final_sentinel" => true,
-          "overflow" => false,
-          "integrity_ok" => true,
-          "delivered" => true
-        }
+        ending:
+          %{
+            "status" => "ok",
+            "depth_ok" => true,
+            "final_sentinel" => true,
+            "overflow" => false,
+            "integrity_ok" => true,
+            "delivered" => true
+          }
+          |> Map.merge(@libs)
       },
       overrides
     )
@@ -86,12 +99,131 @@ defmodule NccWorker.Portability.JudgeTest do
 
   defp child(events, extra \\ %{}) do
     Map.merge(
-      %{start: %{"app" => "x"}, sentinel?: true, compiles: [], problems: [], events: events},
+      %{
+        start: Map.put(@libs, "app", "x"),
+        sentinel?: true,
+        compiles: [],
+        problems: [],
+        events: events,
+        libs: []
+      },
       extra
     )
   end
 
   defp judge(proj, report, opts \\ []), do: Portability.judge(proj, "pkg", report, [], opts)
+
+  describe "the mapped-library check" do
+    defp with_libs(r, libs), do: %{r | ending: %{r.ending | "mapped_libs" => libs}}
+
+    defp with_window_libs(r, app, libs) do
+      windows =
+        for w <- r.windows,
+            do: if(w.app == app, do: %{w | libs: %{w.libs | "mapped_libs" => libs}}, else: w)
+
+      %{r | windows: windows}
+    end
+
+    test "a library first seen at a window's close belongs to that window", %{proj: proj} do
+      evil = ["/usr/lib/libc.so.6", "/tmp/evil.so"]
+      # Mapped in pkg's window, still mapped at the end.
+      r = proj |> report() |> with_window_libs("pkg", evil) |> with_libs(evil)
+
+      assert %{
+               status: :skip,
+               reason: "compile-time native library load: /tmp/evil.so",
+               observations: obs
+             } =
+               judge(proj, r, nif_waiver: false)
+
+      assert %{"owner" => "pkg", "reason" => "compile-time native library load: /tmp/evil.so"} in obs[
+               "refusals"
+             ]
+
+      # In the window of `other`, outside pkg's closure, it does not count
+      # (it stays mapped through every later snapshot).
+      r =
+        proj
+        |> report()
+        |> with_window_libs("other", evil)
+        |> with_window_libs("pkg", evil)
+        |> with_libs(evil)
+
+      assert %{status: :pass} = judge(proj, r, nif_waiver: false)
+
+      # In dep's window: pkg's closure dependency is tainted.
+      r =
+        proj
+        |> report()
+        |> with_window_libs("dep", evil)
+        |> with_window_libs("other", evil)
+        |> with_window_libs("pkg", evil)
+        |> with_libs(evil)
+
+      assert %{
+               reason:
+                 "closure dependency observed the host: dep (compile-time native library load: /tmp/evil.so)"
+             } =
+               judge(proj, r, nif_waiver: false)
+    end
+
+    test "a library mapped during the compile outside the install refuses", %{proj: proj} do
+      r = proj |> report() |> with_libs(["/usr/lib/libc.so.6", "/tmp/evil.so"])
+
+      assert %{status: :skip, reason: "compile-time native library load: /tmp/evil.so"} =
+               judge(proj, r, nif_waiver: false)
+    end
+
+    test "libraries mapped at start, wherever they live, are ignored", %{proj: proj} do
+      r = report(proj)
+      assert %{status: :pass} = judge(proj, r, nif_waiver: false)
+    end
+
+    test "a native closure dependency's own library is observed, not refused", %{proj: proj} do
+      nif = Path.join([proj, "_build/host/lib/dep/priv/dep_nif.so"])
+      File.mkdir_p!(Path.dirname(nif))
+      File.write!(nif, "")
+      r = proj |> report() |> with_libs(["/usr/lib/libc.so.6", nif])
+
+      assert %{status: :pass, observations: %{"native_libs" => [_]}} =
+               Portability.judge(proj, "pkg", r, ["dep"], nif_waiver: false)
+
+      # Not native: the same library refuses.
+      assert %{status: :skip, reason: "compile-time native library load: " <> _} =
+               judge(proj, r, nif_waiver: false)
+    end
+
+    test "a child VM's new library taints its dependency", %{proj: proj} do
+      libs = %{
+        "kind" => "libs",
+        "nif_check" => "ok",
+        "mapped_libs" => ["/usr/lib/libc.so.6", "/tmp/r.so"]
+      }
+
+      r = report(proj, %{children: %{"dep" => child([], %{libs: [libs]})}})
+
+      assert %{
+               reason:
+                 "closure dependency observed the host: dep (compile-time native library load: /tmp/r.so)"
+             } = judge(proj, r, nif_waiver: false)
+    end
+
+    test "no maps is could-not-judge; the test helper's waiver passes it", %{proj: proj} do
+      off = %{"nif_check" => "unavailable", "mapped_libs" => nil}
+
+      r =
+        report(proj, %{start: Map.merge(report(proj).start, off)})
+        |> then(&%{&1 | ending: Map.merge(&1.ending, off)})
+
+      assert %{status: :skip, reason: @cnj, observations: %{"problems" => problems}} =
+               judge(proj, r, nif_waiver: false)
+
+      assert "native library check unavailable" in problems
+
+      assert %{status: :pass, observations: %{"nif_check" => "waived"}} =
+               judge(proj, r, nif_waiver: true)
+    end
+  end
 
   describe "the verdict" do
     test "a clean trace passes with its stats", %{proj: proj} do

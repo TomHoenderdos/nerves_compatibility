@@ -263,7 +263,10 @@ defmodule NccWorker.Tracer.RuntimeTest do
 
     refute Enum.any?(names, &match?({"NCC_FX_FULL", _}, &1)), out
     assert {"NCC_FX_CUT", "truncated"} in names, inspect(names)
-    refute Enum.any?(names, &match?({"NCC_FX_BACK", _}, &1)), inspect(names)
+    # Until the next check the lowest depth set holds, so a stack the raise
+    # overtook in the collector's queue is still judged cut (fail closed):
+    # the read after the raise is truncated too, in a window that fails.
+    assert {"NCC_FX_BACK", "truncated"} in names, inspect(names)
     assert [%{"depth_ok" => false}] = kind(lines, "window_close")
     assert [%{"depth_ok" => true}] = kind(lines, "end")
   end
@@ -372,6 +375,14 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert [%{"app" => "r3"}] = kind(lines, "sentinel")
     assert [%{"result" => "ok", "module" => "r3", "source" => source}] = kind(lines, "compile")
     assert source =~ "r3.erl"
+
+    if File.exists?("/proc/self/maps") do
+      assert [%{"nif_check" => "ok", "mapped_libs" => [_ | _]}] = kind(lines, "start")
+      assert [%{"nif_check" => "ok", "mapped_libs" => [_ | _]} | _] = kind(lines, "libs")
+    else
+      assert [%{"nif_check" => "unavailable"}] = kind(lines, "start")
+      assert [%{"nif_check" => "unavailable"} | _] = kind(lines, "libs")
+    end
   end
 
   # The non-legacy session, as a package would find it.
@@ -797,5 +808,53 @@ defmodule NccWorker.Tracer.RuntimeTest do
        %{tmp_dir: dir} do
     {names, out} = race(dir, "", [{"NCC_TRACE_LINEAGE_TIMEOUT_MS", "50"}])
     assert {"NCC_FX_RACE", "lineage"} in names, inspect({names, out})
+  end
+
+  test "the shared objects of a maps file, each once" do
+    maps = """
+    aaaa-bbbb r--p 00000000 fe:01 1 /usr/lib/aarch64-linux-gnu/libc.so.6
+    bbbb-cccc r-xp 00001000 fe:01 1 /usr/lib/aarch64-linux-gnu/libc.so.6
+    cccc-dddd r-xp 00000000 fe:01 2 /tmp/a dir/evil.so (deleted)
+    dddd-eeee rw-p 00000000 00:00 0
+    eeee-ffff r--p 00000000 fe:01 3 /usr/local/lib/erlang/erts-16/bin/beam.smp
+    ffff-1111 r-xp 00000000 00:00 0 [vdso]
+    1111-2222 r-xp 00000000 fe:01 4 /opt/lib/libfoo.so.1.2.3
+    """
+
+    assert :ncc_tracer.maps_libs(maps) == [
+             "/opt/lib/libfoo.so.1.2.3",
+             "/tmp/a dir/evil.so (deleted)",
+             "/usr/lib/aarch64-linux-gnu/libc.so.6"
+           ]
+  end
+
+  @maps? File.exists?("/proc/self/maps")
+
+  test "start and end record the mapped libraries, or that they cannot", %{tmp_dir: dir} do
+    {0, _} =
+      run_script(dir, """
+      {:ok, tok} = :ncc_tracer.start_main()
+      :ok = :ncc_tracer.window_open(tok, "fx")
+      :ok = :ncc_tracer.window_close(tok, "fx")
+      :ok = :ncc_tracer.finish(tok, "ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    [start] = kind(lines, "start")
+    [close] = kind(lines, "window_close")
+    [ending] = kind(lines, "end")
+
+    if @maps? do
+      for l <- [start, close, ending] do
+        assert %{"nif_check" => "ok", "mapped_libs" => [_ | _] = libs} = l
+        assert Enum.all?(libs, &String.starts_with?(&1, "/"))
+      end
+
+      # crypto is loaded before the start snapshot, with the libraries it maps.
+      assert Enum.any?(start["mapped_libs"], &(&1 =~ "crypto"))
+    else
+      for l <- [start, close, ending],
+          do: assert(%{"nif_check" => "unavailable", "mapped_libs" => nil} = l)
+    end
   end
 end

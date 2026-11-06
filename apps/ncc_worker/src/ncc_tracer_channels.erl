@@ -61,6 +61,9 @@ patterns() ->
      {code, priv_dir, 1}, {code, get_path, 0}, {application, loaded_applications, 0},
      {crypto, supports, 0}, {crypto, supports, 1}, {crypto, info_lib, 0},
      {crypto, info, 0}, {crypto, info_fips, 0},
+     %% erlang:load_nif/2 is kept, but it is not reliably call-traceable (no
+     %% pattern fires for it on OTP 28 or 29): the tracer's /proc/self/maps
+     %% snapshots (NccWorker.Portability.MappedLibs) are what catch a NIF load.
      {erlang, load_nif, 2}, {erl_ddll, load, 2}, {erl_ddll, load_driver, 2},
      {erl_ddll, try_load, 3},
      {'Elixir.System', version, 0}, {'Elixir.System', build_info, 0},

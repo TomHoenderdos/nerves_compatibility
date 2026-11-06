@@ -27,6 +27,15 @@ defmodule NccWorker.Portability do
   else is a refusal with its own reason. Native taint is the
   `native_closure` channel in the package's window (`Events`).
 
+  `erlang:load_nif/2` is not call-traceable, so native libraries a compile
+  maps are checked from the tracer's `/proc/self/maps` snapshots instead
+  (`MappedLibs`): a new library outside the OTP root, the Elixir install and
+  the closure's native dependencies refuses for the window it first shows
+  up in (outside every window when it first shows at the end), and no maps
+  is could-not-judge (waived only by `NCC_TRACE_ALLOW_NO_NIF_CHECK=1`, which
+  the ncc_worker test helper sets on macOS and the worker never sets;
+  `judge/5` also takes `nif_waiver:`).
+
   Only the package's closure counts (controller ruling M7): events, child
   traces and refusals of an app outside `Context.closure_of/2` of the
   package are dropped, and so is a stray child trace (`unknown`, an
@@ -42,7 +51,7 @@ defmodule NccWorker.Portability do
 
   alias Compatibility.Portability, as: Reasons
   alias NccWorker.{BuildCache, DepsLock}
-  alias NccWorker.Portability.{BuildRoot, Context, Events, Rebar}
+  alias NccWorker.Portability.{BuildRoot, Context, Events, MappedLibs, Rebar}
   alias NccWorker.Tracer
   alias NccWorker.Tracer.Report
 
@@ -220,6 +229,11 @@ defmodule NccWorker.Portability do
     decided = decide_all(report, ctx, scope)
     unjudged = for {_owner, {:unjudged, why}} <- decided, do: why
     decided = for {owner, decision} <- decided, in_scope?(owner, scope), do: {owner, decision}
+
+    libs =
+      mapped_libs(report, ctx, scope, Keyword.get_lazy(opts, :nif_waiver, &MappedLibs.waived?/0))
+
+    decided = decided ++ libs.decided
     package_r2 = build_root(ctx, ctx.package)
     deps = dep_results(ctx, report, decided)
 
@@ -227,7 +241,8 @@ defmodule NccWorker.Portability do
       ctx: ctx,
       report: report,
       decided: decided,
-      trace_problems: trace_problems(report, ctx) ++ unjudged,
+      trace_problems: trace_problems(report, ctx) ++ unjudged ++ libs.problems,
+      libs: libs,
       package_window: window_problem(report, ctx.package),
       package_r2: package_r2,
       package_rebar: rebar(ctx, report, ctx.package),
@@ -272,6 +287,71 @@ defmodule NccWorker.Portability do
 
   defp in_scope?(:outside, _scope), do: true
   defp in_scope?(owner, scope), do: MapSet.member?(scope, owner)
+
+  # The loaded-library check (`MappedLibs`, which says why). The Mix VM's
+  # snapshots in order (start, every window close, end): a library first
+  # seen at a window's close belongs to that window's app (Mix compiles one
+  # dependency at a time), one first seen at the end to no window
+  # (`:outside`, against everything). A closure child VM's start against its
+  # `libs` lines (a child that compiled nothing wrote none: its start alone)
+  # counts against its app. Only owners in the package's closure count, as
+  # for events. Allowed: the OTP root, the Elixir install, and a native
+  # closure dependency's own dirs (its NIF, loaded when the tracer sets its
+  # patterns; calls into it are the native_closure channel).
+  defp mapped_libs(report, ctx, scope, waiver) do
+    allowed? = &lib_allowed?(ctx, scope, &1)
+
+    children =
+      for {app, child} <- Enum.sort(report.children), Context.dep?(ctx, app) do
+        later = if child[:libs] in [nil, []], do: [child.start], else: child.libs
+        {app, MappedLibs.check(child.start, later, allowed?)}
+      end
+
+    results = Enum.filter(main_libs(report, allowed?) ++ children, &in_scope?(elem(&1, 0), scope))
+
+    Enum.reduce(results, %{decided: [], problems: [], native: [], waived: false}, fn
+      {owner, {:refuse, reason}}, acc ->
+        %{acc | decided: acc.decided ++ [{owner, {:refuse, reason}}]}
+
+      {_owner, {:ok, libs}}, acc ->
+        %{acc | native: Enum.uniq(acc.native ++ libs)}
+
+      {_owner, :unavailable}, acc when waiver ->
+        %{acc | waived: true}
+
+      {_owner, :unavailable}, acc ->
+        %{acc | problems: Enum.uniq(acc.problems ++ ["native library check unavailable"])}
+    end)
+  end
+
+  defp main_libs(report, allowed?) do
+    closes =
+      report.windows
+      |> Enum.filter(&is_integer(&1.close))
+      |> Enum.sort_by(& &1.close)
+      |> Enum.map(&{&1.app, Map.get(&1, :libs)})
+
+    {_last, results} =
+      Enum.reduce(closes ++ [{:outside, report.ending}], {report.start, []}, fn {owner, snap},
+                                                                                {prev, acc} ->
+        {snap, [{owner, MappedLibs.check(prev, [snap], allowed?)} | acc]}
+      end)
+
+    Enum.reverse(results)
+  end
+
+  defp lib_allowed?(ctx, scope, path) do
+    real = Context.realpath(path) || path
+
+    dirs =
+      [ctx.otp_root, ctx.elixir_root] ++
+        for app <- scope,
+            Context.dep?(ctx, app),
+            ctx.deps[app].native?,
+            do: [ctx.deps[app].build, ctx.deps[app].dest]
+
+    dirs |> List.flatten() |> Enum.any?(&(is_binary(&1) and String.starts_with?(real, &1 <> "/")))
+  end
 
   # What the trace itself says about whether it can be used at all. The
   # Report collects most of these; a report built some other way (tests,
@@ -508,6 +588,8 @@ defmodule NccWorker.Portability do
       "trace_stats" => stats(facts),
       "refusals" => refusals |> Enum.uniq() |> Enum.take(@max_refusals),
       "taint" => for({app, %{taint: t}} when is_binary(t) <- facts.deps, into: %{}, do: {app, t}),
+      "native_libs" => Enum.take(facts.libs.native, 50),
+      "nif_check" => if(facts.libs.waived, do: "waived", else: "ok"),
       "problems" => problems |> Enum.uniq() |> Enum.take(@max_problems)
     })
   end

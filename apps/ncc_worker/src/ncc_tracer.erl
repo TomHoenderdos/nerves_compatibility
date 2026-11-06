@@ -6,7 +6,7 @@
 -export([start_main/0, start_child/0, window_open/2, window_close/2, closure/3,
          native_patterns/3, finish/2, fire/1, ebin_dir/0, flush/0, collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
--export([safe_extent/4]).
+-export([safe_extent/4, maps_libs/1]).
 
 -define(DEPTH, 64).
 -define(COLLECTOR, {?MODULE, collector}).
@@ -33,7 +33,7 @@
 -record(st, {fd, file, session, initial = #{}, procs = #{}, native = #{}, sources = #{},
              spawning = #{}, parents = #{}, set_depth = ?DEPTH, depth = ?DEPTH, lowered = false,
              wanted = [], unpatterned = false, final_pid, final_nonce,
-             token, watcher, wref, tampered = false,
+             token, watcher, wref, tampered = false, libs = unavailable, libs_written = false,
              calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0,
              max_calls, max_user, max_queue, overflow = false, final = false}).
 
@@ -129,11 +129,12 @@ start(Role, Dir, App) ->
     Depth = erlang:system_flag(backtrace_depth, ?DEPTH),
     ok = load_probe(),
     Script = mix_script(Role),
+    Libs = start_libs(),
     Parent = self(),
     Opts = [monitor, {priority, high}, {message_queue_data, off_heap},
             {max_heap_size, #{size => env_int("NCC_TRACE_MAX_HEAP_WORDS", 33554432),
                               kill => true, error_logger => false}}],
-    {Pid, Ref} = spawn_opt(fun() -> init(Parent, Role, Dir, App, Depth, Script) end, Opts),
+    {Pid, Ref} = spawn_opt(fun() -> init(Parent, Role, Dir, App, Depth, Script, Libs) end, Opts),
     receive
         {Pid, ready, Token} ->
             erlang:demonitor(Ref, [flush]),
@@ -203,7 +204,7 @@ forms(Src, Line, Acc) ->
 
 %% --- collector -------------------------------------------------------------
 
-init(Parent, Role, Dir, App, Depth, Script) ->
+init(Parent, Role, Dir, App, Depth, Script, Libs) ->
     put(mix_script, Script),
     put(driver, Parent),
     put(roots, roots()),
@@ -224,10 +225,11 @@ init(Parent, Role, Dir, App, Depth, Script) ->
              max_calls = env_int("NCC_TRACE_MAX_CALLS", 20000000),
              max_user = env_int("NCC_TRACE_MAX_USER_EVENTS", 200000),
              max_queue = env_int("NCC_TRACE_MAX_QUEUE", 2000000)},
-    write(St0, (start_line(Role, App, Depth))#{mix_script => script_bin(Script)}),
+    write(St0, maps:merge((start_line(Role, App, Depth))#{mix_script => script_bin(Script)},
+                          libs_fields(Libs))),
     Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth))
               || MFA <- ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role)],
-    St = watcher(St0#st{wanted = Wanted}),
+    St = watcher(St0#st{wanted = Wanted, libs = Libs}),
     Parent ! {self(), ready, Token},
     loop(St).
 
@@ -442,12 +444,15 @@ classified(M, F, Args, Extent, Info, St) ->
     record(channel(M, F, Args, St), Extent, Info, St).
 
 %% A package can lower backtrace_depth (phoenix's start/2 sets it). Stacks
-%% are cut at the live value, so they are judged against it, and the next
-%% check reports the window even when the flag was put back meanwhile.
+%% are cut at the live value, so they are judged against the lowest value
+%% set since the last check: messages from different processes arrive in
+%% any order, so a raise seen first must not make an earlier cut stack look
+%% complete. Only a check (after every message is delivered) restores it,
+%% and it reports the window even when the flag was put back meanwhile.
 depth_seen(erlang, system_flag, [backtrace_depth, N], #st{set_depth = Set} = St)
   when is_integer(N), N >= 0 ->
     Live = min(N, Set),
-    St#st{depth = Live, lowered = St#st.lowered orelse Live < Set};
+    St#st{depth = min(St#st.depth, Live), lowered = St#st.lowered orelse Live < Set};
 depth_seen(_M, _F, _Args, St) -> St.
 
 %% Set it back (system_info has no backtrace_depth key, so reading it means
@@ -602,7 +607,55 @@ compiled(Pid, Result, Ts, St) ->
     Source = ncc_tracer_channels:chars(maps:get(Pid, St#st.sources, null)),
     write(St, #{kind => compile, ts => Ts, source => Source,
                 result => compile_result(Result), module => compile_module(Result)}),
-    St#st{sources = maps:remove(Pid, St#st.sources)}.
+    libs_line(St#st{sources = maps:remove(Pid, St#st.sources)}).
+
+%% A child VM has no end line (rebar3 halts): it writes its mapped
+%% libraries after every compile and flush, whenever they changed, and once
+%% after the first compile whatever they are.
+libs_line(#st{libs = Last, libs_written = Written} = St) ->
+    case mapped_libs() of
+        Last when Written -> St;
+        Libs ->
+            write(St, (libs_fields(Libs))#{kind => libs, ts => now_ns()}),
+            St#st{libs = Libs, libs_written = true}
+    end.
+
+%% --- mapped libraries -----------------------------------------------------------
+
+%% erlang:load_nif/2 is not call-traceable (OTP 28, 29), so what a compile
+%% loads natively is read from the VM's memory map instead. The OTP NIFs a
+%% compile normally pulls in are loaded before the start snapshot, so they
+%% and the system libraries they map are part of it.
+start_libs() ->
+    lists:foreach(fun(M) -> quietly(fun() -> code:ensure_loaded(M) end) end,
+                  [crypto, asn1rt_nif]),
+    mapped_libs().
+
+mapped_libs() ->
+    case file:read_file("/proc/self/maps") of
+        {ok, Maps} -> {ok, maps_libs(Maps)};
+        {error, _} -> unavailable
+    end.
+
+%% The path of every mapped shared object (a file name with `.so` in it),
+%% each once, sorted.
+maps_libs(Maps) ->
+    Lines = binary:split(Maps, <<"\n">>, [global, trim_all]),
+    lists:usort([Path || Line <- Lines, Path <- [maps_path(Line)], shared_object(Path)]).
+
+%% The sixth field of a maps line, which may itself contain blanks.
+maps_path(Line) ->
+    case re:run(Line, <<"^\\S+\\s+\\S+\\s+\\S+\\s+\\S+\\s+\\S+\\s+(/.*)$">>,
+                [{capture, all_but_first, binary}]) of
+        {match, [Path]} -> Path;
+        nomatch -> none
+    end.
+
+shared_object(none) -> false;
+shared_object(Path) -> binary:match(filename:basename(Path), <<".so">>) =/= nomatch.
+
+libs_fields({ok, Libs}) -> #{nif_check => ok, mapped_libs => Libs};
+libs_fields(unavailable) -> #{nif_check => unavailable, mapped_libs => null}.
 
 compile_result(Result) when is_tuple(Result), element(1, Result) =:= ok -> ok;
 compile_result(_Result) -> error.
@@ -619,7 +672,8 @@ request({window_open, App, Ts}, _From, St) ->
     {ok, St};
 request({window_close, App, Ts, Delivered}, _From, St0) ->
     {Checks, St} = closing_checks(St0, Delivered),
-    write(St, Checks#{kind => window_close, app => App, ts => Ts}),
+    write(St, (maps:merge(Checks, libs_fields(mapped_libs())))#{kind => window_close, app => App,
+                                                                ts => Ts}),
     {ok, St};
 request({closure, Packages, Deps}, _From, St) ->
     write(St, #{kind => closure, packages => Packages, deps => Deps, ts => now_ns()}),
@@ -630,7 +684,7 @@ request(final_nonce, From, St) ->
     {Nonce, St#st{final_pid = From, final_nonce = Nonce}};
 request({finish, Status, Ts, Delivered}, _From, St) ->
     {finish_trace(Status, Ts, Delivered, St), St};
-request(flush, _From, St) -> {ok, St};
+request(flush, _From, St) -> {ok, libs_line(St)};
 request(_Req, _From, St) -> {{error, unknown_request}, St}.
 
 %% Spec R3 native taint: call patterns on every module of a natively built
@@ -662,7 +716,8 @@ finish_trace(Status, Ts, Delivered, #st{fd = Fd, session = Session} = St1) ->
     write(St, #{kind => stats, calls => St#st.calls, user_events => St#st.user,
                 truncated => St#st.truncated, unjudged => St#st.unjudged,
                 spawned => St#st.spawned}),
-    write(St, Checks#{kind => 'end', ts => Ts, status => Status,
+    write(St, (maps:merge(Checks, libs_fields(mapped_libs())))#{kind => 'end', ts => Ts,
+                                                                status => Status,
                       final_sentinel => St#st.final, overflow => St#st.overflow}),
     _ = file:close(Fd),
     _ = quietly(fun() -> trace:session_destroy(Session) end),

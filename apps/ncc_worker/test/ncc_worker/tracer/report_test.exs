@@ -243,6 +243,7 @@ defmodule NccWorker.Tracer.ReportTest do
       child_start("r3"),
       child_sentinel("r3"),
       %{"kind" => "compile", "source" => "src/r3.erl", "result" => "ok", "module" => "r3"},
+      %{"kind" => "libs", "nif_check" => "ok", "mapped_libs" => ["/l/a.so"]},
       %{"kind" => "event", "ts" => 2, "mfa" => "os:type/0"}
     ])
 
@@ -259,6 +260,7 @@ defmodule NccWorker.Tracer.ReportTest do
                sentinel?: true,
                compiles: [%{"module" => "r3"}],
                events: [_],
+               libs: [%{"mapped_libs" => ["/l/a.so"]}],
                problems: []
              },
              "unknown" => %{problems: ["trace collector died: killed" | _]}

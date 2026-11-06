@@ -30,6 +30,10 @@ defmodule NccWorker.Tracer.Report do
   A child file of an app outside the closure (a stray `erl -eval` sub-VM of
   elixir_make, whose app is `unknown`) is kept in `children` under its app
   and adds no problem: the judge reads children only for closure apps.
+
+  Window closes keep the mapped-library snapshot they carry (`libs`), and a
+  child keeps its `libs` lines; `NccWorker.Portability.MappedLibs` judges
+  them.
   """
 
   @max_bytes 512 * 1024 * 1024
@@ -53,7 +57,8 @@ defmodule NccWorker.Tracer.Report do
           close: integer() | nil,
           depth_ok: boolean() | nil,
           integrity_ok: boolean() | nil,
-          delivered: boolean() | nil
+          delivered: boolean() | nil,
+          libs: map() | nil
         }
 
   @type child :: %{
@@ -61,6 +66,7 @@ defmodule NccWorker.Tracer.Report do
           sentinel?: boolean(),
           compiles: [map()],
           events: [map()],
+          libs: [map()],
           problems: [String.t()]
         }
 
@@ -131,7 +137,8 @@ defmodule NccWorker.Tracer.Report do
       close: nil,
       depth_ok: nil,
       integrity_ok: nil,
-      delivered: nil
+      delivered: nil,
+      libs: nil
     }
 
     %{r | windows: [window | r.windows]}
@@ -214,7 +221,8 @@ defmodule NccWorker.Tracer.Report do
       | close: l["ts"],
         depth_ok: l["depth_ok"],
         integrity_ok: l["integrity_ok"],
-        delivered: l["delivered"]
+        delivered: l["delivered"],
+        libs: libs(l)
     }
 
     [closed | rest]
@@ -227,11 +235,15 @@ defmodule NccWorker.Tracer.Report do
       close: l["ts"],
       depth_ok: l["depth_ok"],
       integrity_ok: l["integrity_ok"],
-      delivered: l["delivered"]
+      delivered: l["delivered"],
+      libs: libs(l)
     }
 
     [stray | windows]
   end
+
+  # The mapped-library snapshot a window close carries (`MappedLibs`).
+  defp libs(l), do: Map.take(l, ["nif_check", "mapped_libs"])
 
   defp close_quiet(%{quiet: [%{close: nil} = q | rest]} = r, l),
     do: %{r | quiet: [%{q | close: l["ts"], delivered: l["delivered"]} | rest]}
@@ -246,7 +258,7 @@ defmodule NccWorker.Tracer.Report do
       path
       |> read_lines()
       |> Enum.reduce(
-        %{start: nil, sentinel?: false, compiles: [], events: [], problems: []},
+        %{start: nil, sentinel?: false, compiles: [], events: [], libs: [], problems: []},
         &child_line/2
       )
 
@@ -273,6 +285,7 @@ defmodule NccWorker.Tracer.Report do
 
   defp child_line({:line, %{"kind" => "compile"} = l}, c), do: %{c | compiles: [l | c.compiles]}
   defp child_line({:line, %{"kind" => "event"} = l}, c), do: %{c | events: [l | c.events]}
+  defp child_line({:line, %{"kind" => "libs"} = l}, c), do: %{c | libs: [l | c.libs]}
 
   defp child_line({:line, %{"kind" => "overflow"} = l}, c),
     do: child_problem(c, "trace overflowed: #{l["what"]}")
@@ -288,6 +301,7 @@ defmodule NccWorker.Tracer.Report do
       sentinel?: a.sentinel? and b.sentinel?,
       compiles: a.compiles ++ b.compiles,
       events: a.events ++ b.events,
+      libs: a.libs ++ b.libs,
       problems: a.problems ++ b.problems
     }
   end
@@ -315,7 +329,13 @@ defmodule NccWorker.Tracer.Report do
   end
 
   defp finish_child(c, tracer) do
-    c = %{c | compiles: Enum.reverse(c.compiles), events: Enum.reverse(c.events)}
+    c = %{
+      c
+      | compiles: Enum.reverse(c.compiles),
+        events: Enum.reverse(c.events),
+        libs: Enum.reverse(Map.get(c, :libs, []))
+    }
+
     child_tracer = c.start && c.start["tracer"]
 
     if tracer != nil and child_tracer == tracer,
