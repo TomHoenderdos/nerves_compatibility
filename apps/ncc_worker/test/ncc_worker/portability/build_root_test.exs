@@ -162,16 +162,57 @@ defmodule NccWorker.Portability.BuildRootTest do
         ebin = Path.join(root, dir)
         write_beam(ebin, "m", [{chunk_id, "xx" <> root <> "/lib"}])
 
-        assert {:refuse, "bakes the build path: m " <> _} =
+        assert {:refuse, "bakes the build path: m " <> reason} =
                  BuildRoot.check(ebin, [root], fn _ -> true end)
+
+        assert reason =~ "<root>"
+        refute reason =~ root
       end
 
       app = Path.join(root, "app")
       File.mkdir_p!(app)
       File.write!(Path.join(app, "fx.app"), ~s|{application,fx,[{env,[{p,"#{root}"}]}]}.|)
 
-      assert {:refuse, "bakes the build path: fx.app " <> _} =
+      assert {:refuse, "bakes the build path: fx.app " <> reason} =
                BuildRoot.check(app, [root], fn _ -> true end)
+
+      refute reason =~ root
+    end
+
+    test "a root in a run of code points inside mixed or improper lists refuses",
+         %{tmp_dir: root} do
+      for {name, term} <- [
+            {"iodata", String.to_charlist(root <> "/x") ++ ["y"]},
+            {"improper", String.to_charlist(root <> "/x") ++ "tail"},
+            {"between", ["a", :b] ++ String.to_charlist(root) ++ [:c]},
+            {"bytes", [:a | :binary.bin_to_list(Path.join(root, "ü"))]},
+            {"wide", [:a | String.to_charlist(Path.join(root, "ŵ"))]}
+          ] do
+        dir = Path.join(root, "mixed_" <> name)
+        write_beam(dir, "m", [{"LitT", lit_t([:erlang.term_to_binary(term)])}])
+        assert {:refuse, _} = BuildRoot.check(dir, [root], fn _ -> true end), name
+      end
+
+      dir = Path.join(root, "mixed_clean")
+
+      write_beam(dir, "m", [
+        {"LitT", lit_t([:erlang.term_to_binary([?a, "b", -1, 0x110000 | "c"])])}
+      ])
+
+      assert :ok = BuildRoot.check(dir, [root], fn _ -> true end)
+    end
+
+    test "a compressed literal or attribute chunk is an error", %{tmp_dir: root} do
+      lit = :erlang.term_to_binary(String.duplicate("a", 100), compressed: 9)
+      write_beam(Path.join(root, "zl"), "m", [{"LitT", lit_t([lit])}])
+
+      assert {:error, "literal table: " <> _} =
+               BuildRoot.check(Path.join(root, "zl"), [root], fn _ -> true end)
+
+      write_beam(Path.join(root, "za"), "m", [{"Attr", lit}])
+
+      assert {:error, "attributes of m: " <> _} =
+               BuildRoot.check(Path.join(root, "za"), [root], fn _ -> true end)
     end
 
     test "a root inside a fun's free variables or an improper tail refuses", %{tmp_dir: root} do
@@ -215,7 +256,16 @@ defmodule NccWorker.Portability.BuildRootTest do
       File.mkdir_p!(Path.dirname(linked))
       File.ln_s!(Path.join(root, "deps/fx/lib"), linked)
 
+      for rel <- ["deps/fx/priv/gen.ex", "deps/fx/test/fx_test.exs", "deps/fx/test/support/s.ex"] do
+        path = Path.join(root, rel)
+        File.mkdir_p!(Path.dirname(path))
+        File.write!(path, "")
+      end
+
       for {name, literal} <- [
+            {"priv", Path.join(root, "deps/fx/priv/gen.ex")},
+            {"test", Path.join(root, "deps/fx/test/fx_test.exs")},
+            {"test_support", Path.join(root, "deps/fx/test/support/s.ex")},
             {"symlinked", Path.join(linked, "fx.ex")},
             {"build", Path.join(root, "_build/host/lib/fx/ebin")},
             {"embedded", "at " <> source <> ":3"},
@@ -232,6 +282,8 @@ defmodule NccWorker.Portability.BuildRootTest do
 
       dir = Path.join(root, "bare_ok")
       bins = Enum.map([source, source], &:erlang.term_to_binary/1)
+      # The same path in two beams is observed once.
+      write_beam(dir, "n", [{"LitT", lit_t(bins)}])
       write_beam(dir, "m", [{"LitT", lit_t(bins)}])
       assert {:observe, [_]} = BuildRoot.check(dir, [root], ok?)
     end
@@ -261,9 +313,17 @@ defmodule NccWorker.Portability.BuildRootTest do
       assert {:error, _} = BuildRoot.check(dup, [root], fn _ -> true end)
     end
 
-    test "a missing ebin is ok, a root with non-ASCII bytes is still found in charlists",
+    test "a missing ebin is an error, a root with non-ASCII bytes is still found in charlists",
          %{tmp_dir: root} do
-      assert :ok = BuildRoot.check(Path.join(root, "nope"), [root], fn _ -> true end)
+      assert {:error, "no ebin " <> _} =
+               BuildRoot.check(Path.join(root, "nope"), [root], fn _ -> true end)
+
+      File.write!(Path.join(root, "file"), "")
+
+      assert {:error, "no ebin " <> _} =
+               BuildRoot.check(Path.join(root, "file"), [root], fn _ -> true end)
+
+      assert {:error, "no ebin " <> _} = BuildRoot.check(nil, [root], fn _ -> true end)
 
       uroot = Path.join(root, "ü")
       # A charlist of the root's UTF-8 bytes (binary_to_list) encodes as STRING_EXT.

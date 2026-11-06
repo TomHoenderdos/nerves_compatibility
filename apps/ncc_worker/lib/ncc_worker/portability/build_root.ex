@@ -21,7 +21,20 @@ defmodule NccWorker.Portability.BuildRoot do
   `:beam_lib`, which would gunzip a compressed beam without a bound) and
   their terms with `NccWorker.Portability.Etf`, which creates no atoms. A
   beam or `.app` this module cannot read is `{:error, reason}`, which the
-  judge turns into "portability could not be judged": never a pass.
+  judge turns into "portability could not be judged": never a pass, and so
+  is an `ebin` that is not a directory. A compressed literal or attribute
+  term (`COMPRESSED_EXT`, which no compiler writes) is an error too.
+
+  One exception to the shapes (controller ruling): a literal that is exactly
+  the real path of a closure source file (`.ex`, `.exs`, `.erl`, `.hrl`, not
+  under the dependency's `priv/` or `test/`) is returned as an observation,
+  not refused. Ecto's query macros build `%{file: __ENV__.file}` at runtime,
+  which leaves the path as a bare literal.
+
+  Limits of the substring scan: a root is found in a binary, an atom, a
+  charlist and any run of code points inside a list (iodata, improper
+  lists), but not when it is split across separate terms, such as
+  `Path.split/1` components or iodata whose binaries each hold part of it.
   """
 
   alias NccWorker.Portability.{Context, Etf}
@@ -45,14 +58,23 @@ defmodule NccWorker.Portability.BuildRoot do
   def check(ebin, roots, closure_file?) do
     roots = needles(roots)
 
-    with {:ok, observed} <- each(files(ebin, "*.beam"), &check_beam(&1, roots, closure_file?)),
+    with :ok <- ebin_dir(ebin),
+         {:ok, observed} <- each(files(ebin, "*.beam"), &check_beam(&1, roots, closure_file?)),
          {:ok, []} <- each(files(ebin, "*.app"), &check_app(&1, roots)) do
       observed
-      |> Enum.uniq()
       |> Enum.map(&{:observe, "build_root_source_path", snippet_text(&1, roots)})
+      |> Enum.uniq()
       |> then(&if(&1 == [], do: :ok, else: {:observe, &1}))
     end
   end
+
+  # A missing ebin means the caller looked in the wrong place: never a pass.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp ebin_dir(ebin) when is_binary(ebin) do
+    if File.dir?(ebin), do: :ok, else: {:error, "no ebin #{Path.basename(ebin)}"}
+  end
+
+  defp ebin_dir(ebin), do: {:error, "no ebin #{inspect(ebin)}"}
 
   defp each(paths, fun) do
     Enum.reduce_while(paths, {:ok, []}, fn path, {:ok, acc} ->
@@ -141,7 +163,7 @@ defmodule NccWorker.Portability.BuildRoot do
   defp search_bytes(data, roots, module, where) when is_binary(data) do
     case Enum.find(roots, &(:binary.match(data, &1) != :nomatch)) do
       nil -> :ok
-      root -> {:refuse, "bakes the build path: #{module} #{where} #{inspect(root)}"}
+      _root -> {:refuse, "bakes the build path: #{module} #{where} \"<root>\""}
     end
   end
 
@@ -166,7 +188,7 @@ defmodule NccWorker.Portability.BuildRoot do
   end
 
   defp literal_outcome({:string, s} = tree, observed, roots, closure_file?, module) do
-    if contains_root?(s, roots) and source_path?(s, closure_file?),
+    if contains_root?(s, roots) and source_path?(s, roots, closure_file?),
       do: {:cont, {:ok, [s | observed]}},
       else: scan_outcome(tree, observed, roots, closure_file?, module)
   end
@@ -184,10 +206,26 @@ defmodule NccWorker.Portability.BuildRoot do
   # The real path of a closure source file: the string itself, not a
   # directory, a prefix, a path inside a longer text, or a `_build` or other
   # symlinked path that only resolves into the closure.
-  defp source_path?(s, closure_file?) do
+  defp source_path?(s, roots, closure_file?) do
     Path.type(s) == :absolute and Path.extname(s) in @source_extensions and
-      Context.realpath(s) == s and closure_file?.(s)
+      not priv_or_test?(s, roots) and Context.realpath(s) == s and closure_file?.(s)
   end
+
+  # `priv/**` and `test/**` of a dependency (`<root>/deps/<d>/...`) or of a
+  # tree at a root. A path under no root is not a closure path anyway.
+  defp priv_or_test?(s, roots) do
+    parts = Path.split(s)
+    Enum.any?(roots, &priv_or_test_under?(parts, Path.split(&1)))
+  end
+
+  defp priv_or_test_under?(parts, root_parts) do
+    List.starts_with?(parts, root_parts) and
+      priv_or_test_rel?(Enum.drop(parts, length(root_parts)))
+  end
+
+  defp priv_or_test_rel?(["deps", _dep, top | _]), do: top in ["priv", "test"]
+  defp priv_or_test_rel?([top | _]), do: top in ["priv", "test"]
+  defp priv_or_test_rel?([]), do: true
 
   @doc """
   Decodes a `LitT` chunk into its literals, in order. The header is the
@@ -240,6 +278,8 @@ defmodule NccWorker.Portability.BuildRoot do
 
   defp entries(_rest, _n, _acc, _fun), do: {:error, "literal table truncated"}
 
+  defp literal(<<131, 80, _::binary>>), do: {:error, "literal table: compressed literal"}
+
   defp literal(term) do
     case Etf.decode(term) do
       {:ok, tree} -> {:ok, tree}
@@ -248,6 +288,9 @@ defmodule NccWorker.Portability.BuildRoot do
   end
 
   defp attributes(nil, _roots, _closure_file?, _module), do: :ok
+
+  defp attributes(<<131, 80, _::binary>>, _roots, _closure_file?, module),
+    do: {:error, "attributes of #{module}: compressed term"}
 
   defp attributes(chunk, roots, closure_file?, module) do
     case Etf.decode(chunk) do
@@ -276,9 +319,12 @@ defmodule NccWorker.Portability.BuildRoot do
   defp scan({:bits, bytes}, _allowed?, roots, _ok?),
     do: if(contains_root?(bytes, roots), do: bytes)
 
+  # A charlist is a string (and may be an allowed file); in any other list,
+  # each run of code points is scanned as a string of its own, so a root in
+  # iodata (`~c"/root/x" ++ ["y"]`) or before an improper tail is found.
   defp scan({:list, items, tail} = node, allowed?, roots, ok?) do
     case charlist(node) do
-      nil -> any([tail | items], roots, ok?)
+      nil -> runs(items, roots) || any([tail | items], roots, ok?)
       string -> scan({:string, string}, allowed?, roots, ok?)
     end
   end
@@ -326,6 +372,21 @@ defmodule NccWorker.Portability.BuildRoot do
   end
 
   defp charlist(_node), do: nil
+
+  defp runs(items, roots) do
+    items
+    |> Enum.chunk_by(&codepoint?/1)
+    |> Enum.find_value(&run_root(&1, roots))
+  end
+
+  defp run_root([first | _] = run, roots) do
+    if codepoint?(first), do: charlist_root(run, roots)
+  end
+
+  defp charlist_root(run, roots) do
+    string = run |> Enum.map(fn {:int, c} -> c end) |> List.to_string()
+    if contains_root?(string, roots), do: string
+  end
 
   defp codepoint?({:int, c}), do: c in 0..0xD7FF or c in 0xE000..0x10FFFF
   defp codepoint?(_node), do: false
