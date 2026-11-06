@@ -57,7 +57,7 @@ defmodule Portal.ToolchainVariantsTest do
   defp package!(name),
     do: Package |> Ash.Query.filter(name == ^name) |> Ash.read_one!(domain: Catalog)
 
-  defp row!(name, version, status, opts \\ []) do
+  defp row!(name, version, status, opts) do
     ToolchainBuild
     |> Ash.Changeset.for_create(:create, %{
       package_id: package!(name).id,
