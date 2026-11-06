@@ -93,6 +93,16 @@ defmodule Portal.Catalog.ToolchainBuild do
     update :retried do
       change(set_attribute(:attempted_at, &DateTime.utc_now/0))
     end
+
+    # Records what a row from before builds reported their optional
+    # dependencies says about them (`Portal.Catalog.UnrecordedOptionalDeps`):
+    # metadata only, so nothing a client is served changes. Only a row that
+    # still reports nothing is written; a report that landed meanwhile is the
+    # build's own and is kept.
+    update :record_optional_deps do
+      accept([:optional_deps])
+      change(filter(expr(is_nil(optional_deps))))
+    end
   end
 
   identities do

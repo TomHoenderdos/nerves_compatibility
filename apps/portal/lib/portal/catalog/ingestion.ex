@@ -314,13 +314,14 @@ defmodule Portal.Catalog.Ingestion do
         build
 
       {key, path} ->
-        Logger.warning(
-          "security: toolchain build lists #{inspect(path)} under #{inspect(key)}; publishing nothing"
-        )
+        shown =
+          "#{inspect(path, printable_limit: 200, limit: 3)} under #{inspect(key, printable_limit: 50)}"
+
+        Logger.warning("security: toolchain build lists #{shown}; publishing nothing")
 
         Map.merge(build, %{
           "status" => "fail",
-          "reason" => "manifest lists #{path} under #{key}",
+          "reason" => "manifest lists #{shown}",
           "file_manifest" => nil
         })
     end
@@ -336,14 +337,13 @@ defmodule Portal.Catalog.Ingestion do
     end)
   end
 
+  # The path as listed, a container-supplied value that may not even be a
+  # string: `keyed/1` bounds it when it shows it.
   defp misplaced(%{"path" => path}, key) when is_binary(path) do
-    if String.starts_with?(path, key <> "/"), do: nil, else: {key, show_path(path)}
+    if String.starts_with?(path, key <> "/"), do: nil, else: {key, path}
   end
 
-  defp misplaced(entry, key), do: {key, show_path(is_map(entry) && entry["path"])}
-
-  defp show_path(path) when is_binary(path), do: String.slice(path, 0, 200)
-  defp show_path(path), do: inspect(path, limit: 3)
+  defp misplaced(entry, key), do: {key, is_map(entry) && entry["path"]}
 
   # A build whose priv files the host refused publishes none of its files,
   # beams included: its beams read data that is not published with them. It
