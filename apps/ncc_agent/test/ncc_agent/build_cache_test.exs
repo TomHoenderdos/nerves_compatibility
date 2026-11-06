@@ -250,6 +250,63 @@ defmodule NccAgent.BuildCacheTest do
     assert File.exists?(ctx.slug_dir)
   end
 
+  # Another slot's lock on a slug, held by a process of its own until told.
+  defp hold_lock(slug) do
+    me = self()
+
+    pid =
+      spawn(fn ->
+        true = :global.set_lock({{BuildCache, slug}, self()}, [node()], 0)
+        send(me, :locked)
+
+        receive do
+          :release -> :ok
+        end
+      end)
+
+    assert_receive :locked
+    pid
+  end
+
+  defp release(pid) do
+    ref = Process.monitor(pid)
+    send(pid, :release)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _}
+  end
+
+  test "a stale slug another slot holds the lock on is never pruned", ctx do
+    root = Path.join(ctx.config.data_dir, "build-cache")
+    other_slug = "sha256_" <> String.duplicate("c", 64)
+    other = Path.join(root, other_slug)
+    File.mkdir_p!(Path.join(other, key(1)))
+    File.touch!(other, System.os_time(:second) - 8 * 86_400)
+
+    # Slot B is filling (and about to mount) `other` while slot A prepares.
+    holder = hold_lock(other_slug)
+    capture_log(fn -> BuildCache.prepare(ctx.req, claim(), ctx.config) end)
+    assert File.exists?(Path.join(other, key(1)))
+
+    # Once B is done, and the slug still unused for a week, it goes.
+    release(holder)
+    capture_log(fn -> BuildCache.prepare(ctx.req, claim(), ctx.config) end)
+    refute File.exists?(other)
+    assert File.ls!(root) == [@slug]
+  end
+
+  test "a slot that finds its slug locked still marks it in use before anything else", ctx do
+    File.mkdir_p!(Path.join(ctx.slug_dir, key(1)))
+    File.touch!(ctx.slug_dir, System.os_time(:second) - 8 * 86_400)
+    holder = hold_lock(@slug)
+
+    {dir, line} = BuildCache.prepare(ctx.req, claim(), ctx.config)
+    release(holder)
+
+    assert line =~ "another slot"
+    assert dir == ctx.slug_dir
+    {:ok, %File.Stat{mtime: mtime}} = File.stat(ctx.slug_dir, time: :posix)
+    assert mtime > System.os_time(:second) - 60
+  end
+
   test "show cuts a query string out of anything it logs" do
     assert BuildCache.show({:error, "http://h/b/k.tar.gz?X-Amz-Signature=abc"}) =~
              "?<query removed>"

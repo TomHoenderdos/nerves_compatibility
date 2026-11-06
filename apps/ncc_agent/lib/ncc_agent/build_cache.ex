@@ -54,6 +54,9 @@ defmodule NccAgent.BuildCache do
   @min_free_bytes 10 * 1024 * 1024 * 1024
   @stale_after_days 7
   @max_have 20_000
+  # A prune renames a slug dir to this prefix before removing it; a crash
+  # between the two leaves one behind for the next prune.
+  @pruning ".pruning-"
 
   @type counts :: %{
           offered: non_neg_integer(),
@@ -79,6 +82,9 @@ defmodule NccAgent.BuildCache do
       {:ok, slug} ->
         root = Config.path(config, :build_cache)
         dir = Path.join(root, slug)
+        # In use from here on, whether or not this slot gets the lock: a
+        # slot that mounts what another one filled must not see it pruned.
+        mark_in_use(dir)
         prune(root, slug)
         line = with_lock(slug, fn -> fill(req, claim["lease_id"], dir, slug, config, opts) end)
         {if(entries(dir) != [], do: dir), line}
@@ -106,17 +112,35 @@ defmodule NccAgent.BuildCache do
   defp slug(_claim), do: :error
 
   defp with_lock(slug, fun) do
+    case try_lock(slug, fun) do
+      {:ok, result} -> result
+      :busy -> "build cache: another slot is filling #{slug}; building with what it holds"
+    end
+  end
+
+  # The per-slug lock, never waited for: `{:ok, fun.()}` or `:busy`. Both
+  # the fill and the prune of a slug run under it.
+  defp try_lock(slug, fun) do
     lock = {{__MODULE__, slug}, self()}
 
     if :global.set_lock(lock, [node()], 0) do
       try do
-        fun.()
+        {:ok, fun.()}
       after
         :global.del_lock(lock, [node()])
       end
     else
-      "build cache: another slot is filling #{slug}; building with what it holds"
+      :busy
     end
+  end
+
+  # Updates the slug dir's mtime if it exists. `:file.change_time/2` rather
+  # than `File.touch/1`, which would create a file where a prune just
+  # renamed the dir away.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp mark_in_use(dir) do
+    _ = :file.change_time(String.to_charlist(dir), :calendar.local_time())
+    :ok
   end
 
   # `dir` is `<data>/build-cache/<validated slug>`.
@@ -124,8 +148,7 @@ defmodule NccAgent.BuildCache do
   defp fill(req, lease_id, dir, slug, config, opts) do
     budget = budget(opts)
     File.mkdir_p!(dir)
-    # Marks the slug as in use for `prune/2`.
-    _ = File.touch(dir)
+    mark_in_use(dir)
     remove_leftovers(dir)
 
     have = dir |> entries() |> Enum.take(@max_have)
@@ -429,26 +452,43 @@ defmodule NccAgent.BuildCache do
 
     with {:ok, names} <- File.ls(root) do
       for name <- names,
+          String.starts_with?(name, @pruning),
+          do: File.rm_rf(Path.join(root, name))
+
+      for name <- names,
           name != keep,
           BuildCache.shareable_slug?(name),
-          do: prune_one(root, name, cutoff)
+          stale?(Path.join(root, name), cutoff),
+          do: try_lock(name, fn -> prune_one(root, name, cutoff) end)
     end
 
     :ok
   end
 
   # sobelow_skip ["Traversal.FileModule"]
+  defp stale?(path, cutoff) do
+    match?(
+      {:ok, %File.Stat{type: :directory, mtime: mtime}} when mtime < cutoff,
+      File.lstat(path, time: :posix)
+    )
+  end
+
+  # Under the slug's lock, so no slot is filling it, and checked again
+  # there: a slot marks its slug in use before it asks for the lock, so a
+  # slug whose mtime is still old has no build starting on it. The rename
+  # takes it out of every later prepare's sight at once; only then is it
+  # removed.
+  # sobelow_skip ["Traversal.FileModule"]
   defp prune_one(root, name, cutoff) do
     path = Path.join(root, name)
+    doomed = Path.join(root, @pruning <> name)
 
-    case File.lstat(path, time: :posix) do
-      {:ok, %File.Stat{type: :directory, mtime: mtime}} when mtime < cutoff ->
-        Logger.info("build cache: removing #{name}, unused for #{@stale_after_days} days")
-        File.rm_rf(path)
-
-      _ ->
-        :ok
+    if stale?(path, cutoff) and File.rename(path, doomed) == :ok do
+      Logger.info("build cache: removing #{name}, unused for #{@stale_after_days} days")
+      File.rm_rf(doomed)
     end
+
+    :ok
   end
 
   @doc false
