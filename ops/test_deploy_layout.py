@@ -10,8 +10,8 @@ import tempfile
 import unittest
 
 OPS = Path(__file__).parent
-STANDALONE = ["deploy.sh", "build-release.sh", "images-sync.sh"]
-SCRIPTS = STANDALONE + ["builder-deploy.sh", "deploy-builders.sh", "ssh-deploy.sh"]
+STANDALONE = ["deploy.sh", "build-release.sh", "images-sync.sh", "portal-rpc.sh"]
+SCRIPTS = STANDALONE + ["builder-deploy.sh", "deploy-builders.sh", "ssh-deploy.sh", "blue-green.sh"]
 LAYOUT_VARS = [
     "NCC_SRC_DIR", "NCC_INSTALL_DIR", "NCC_PORTAL_ENV", "NCC_PORTAL_WORKDIR",
     "NCC_IMAGES_JSON", "DOCKER_HOST",
@@ -222,6 +222,37 @@ class LayoutGuardTest(unittest.TestCase):
         for script in STANDALONE + ["builder-deploy.sh"]:
             with self.subTest(script=script):
                 self.assertEqual(body(script), reference)
+
+    BG_LAYOUT = ("NCC_SRC_DIR=/nowhere/src\nNCC_INSTALL_DIR={install}\nNCC_PORTAL_ENV=/nowhere/p.env\n"
+                 "NCC_PORTAL_WORKDIR=/nowhere\nNCC_IMAGES_JSON=/nowhere/i.json\n"
+                 "DOCKER_HOST=unix:///var/run/docker.sock\n")
+
+    def test_rollback_needs_blue_green(self):
+        with tempfile.TemporaryDirectory() as install:
+            result, events = self.run_script("deploy.sh", ["rollback"],
+                                             env_file_text=self.BG_LAYOUT.format(install=install))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("NCC_BLUE_GREEN", result.stderr)
+        self.assertFalse([e for e in events if e.startswith(("git", "systemctl", "docker"))])
+
+    def test_blue_green_without_the_include_path_names_it(self):
+        with tempfile.TemporaryDirectory() as install:
+            text = self.BG_LAYOUT.format(install=install) + "NCC_BLUE_GREEN=1\n"
+            result, events = self.run_script("deploy.sh", ["a" * 40], env_file_text=text)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("NCC_APACHE_UPSTREAM", result.stderr)
+        self.assertEqual(events, [])
+
+    def test_usage_rejects_rollback_with_extra_arguments(self):
+        result, _ = self.run_script("deploy.sh", ["rollback", "builder"], env_file_text="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("usage", result.stderr)
+
+    def test_portal_rpc_refuses_without_the_env_file(self):
+        result, events = self.run_script("portal-rpc.sh", ["1 + 1"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("deploy.env", result.stderr)
+        self.assertEqual(events, [])
 
 
 class NoHostLayoutInScriptsTest(unittest.TestCase):

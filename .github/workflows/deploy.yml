@@ -65,10 +65,10 @@ jobs:
       - name: Validate deployment scripts
         run: |
           # `bash -n a b` parses only `a` (the rest are its arguments): one file per call.
-          for script in ops/deploy.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh ops/build-reaper.sh apps/ncc_agent/priv/egress.sh apps/ncc_agent/rel/overlays/builder-host-setup.sh ops/remote-builders-golive.sh; do
+          for script in ops/deploy.sh ops/blue-green.sh ops/portal-rpc.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh ops/build-reaper.sh apps/ncc_agent/priv/egress.sh apps/ncc_agent/rel/overlays/builder-host-setup.sh ops/remote-builders-golive.sh; do
             bash -n "$script"
           done
-          shellcheck -x ops/deploy.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh ops/build-reaper.sh apps/ncc_agent/priv/egress.sh apps/ncc_agent/rel/overlays/builder-host-setup.sh ops/remote-builders-golive.sh
+          shellcheck -x ops/deploy.sh ops/blue-green.sh ops/portal-rpc.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh ops/build-reaper.sh apps/ncc_agent/priv/egress.sh apps/ncc_agent/rel/overlays/builder-host-setup.sh ops/remote-builders-golive.sh
           python3 -m unittest discover -s ops -p 'test_*.py'
 
   # Publishes what a remote builder needs to mean the same thing as a local

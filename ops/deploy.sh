@@ -13,10 +13,14 @@
 # image with the existing Makefile and Docker cache before restarting.
 set -euo pipefail
 
-if [[ $# -gt 2 || ( $# -ge 1 && ! "$1" =~ ^[0-9a-f]{40}$ ) ||
-      ( $# -eq 2 && "$2" != builder ) ]]; then
-  echo "usage: $0 [40-character main commit SHA [builder]]" >&2
+if [[ $# -eq 1 && $1 == rollback ]]; then
+  mode=rollback
+elif [[ $# -gt 2 || ( $# -ge 1 && ! "$1" =~ ^[0-9a-f]{40}$ ) ||
+        ( $# -eq 2 && "$2" != builder ) ]]; then
+  echo "usage: $0 [40-character main commit SHA [builder]] | rollback" >&2
   exit 1
+else
+  mode=${2:-portal}
 fi
 
 # The host layout (where the checkout, the release and the config files live)
@@ -47,10 +51,22 @@ ncc_layout() {
 # daemon (docker-ncc on a builder, the system dockerd on the web host), so an
 # env file without it stops here, before the checkout moves.
 layout=(NCC_SRC_DIR NCC_INSTALL_DIR NCC_PORTAL_ENV NCC_PORTAL_WORKDIR DOCKER_HOST)
-if [[ ${2:-portal} != builder ]]; then
+if [[ $mode != builder ]]; then
   layout+=(NCC_IMAGES_JSON)
 fi
 ncc_layout "${layout[@]}" || exit 1
+
+# Blue/green (ops/blue-green.sh) is the web host's opt-in: unset keeps the
+# single release and the restart below, and is the way back from it.
+blue_green=0
+if [[ $mode != builder && ${NCC_BLUE_GREEN:-} == 1 ]]; then
+  blue_green=1
+  ncc_layout NCC_APACHE_UPSTREAM || exit 1
+fi
+if [[ $mode == rollback && $blue_green != 1 ]]; then
+  echo "rollback needs NCC_BLUE_GREEN=1: a single-release host rolls back from portal-previous.tar.gz by hand" >&2
+  exit 1
+fi
 
 SRC=$NCC_SRC_DIR
 BIN=$NCC_INSTALL_DIR/portal/bin/portal
@@ -58,6 +74,13 @@ BIN=$NCC_INSTALL_DIR/portal/bin/portal
 # Serialize manual and automated deploys as well as separate Actions runs.
 exec 9>"$NCC_INSTALL_DIR/deploy.lock"
 flock -n 9 || { echo 'another deployment is running' >&2; exit 1; }
+
+if [[ $mode == rollback ]]; then
+  # shellcheck source=ops/blue-green.sh
+  source "$SRC/ops/blue-green.sh"
+  bg_rollback
+  exit $?
+fi
 
 cd "$SRC"
 
@@ -104,6 +127,14 @@ git merge --ff-only "$target"
 test "$(git rev-parse HEAD)" = "$target"
 echo "deploying $(git log --oneline -1)"
 
+if [[ $blue_green == 1 ]]; then
+  # shellcheck source=ops/blue-green.sh
+  source "$SRC/ops/blue-green.sh"
+  bg_deploy "$target"
+  bash "$SRC/ops/images-sync.sh" "$target" "$NCC_IMAGES_JSON" || echo 'images.json not yet available; the sync timer will retry' >&2
+  exit 0
+fi
+
 # Preserve the previous release before build-release.sh replaces it. This is
 # an operator rollback artifact; database migrations are not reversed here.
 tar -czf "$NCC_INSTALL_DIR/portal-previous.tar.gz.tmp" \
@@ -111,7 +142,7 @@ tar -czf "$NCC_INSTALL_DIR/portal-previous.tar.gz.tmp" \
 mv "$NCC_INSTALL_DIR/portal-previous.tar.gz.tmp" \
   "$NCC_INSTALL_DIR/portal-previous.tar.gz"
 
-if [[ ${2:-portal} == builder ]]; then
+if [[ $mode == builder ]]; then
   # shellcheck source=ops/builder-deploy.sh
   source "$SRC/ops/builder-deploy.sh"
   builder_prepare
@@ -127,7 +158,7 @@ sudo -u ncc bash -c 'cd "$1" && set -a && . "$2" && set +a && "$3" eval "$4"' --
   "$NCC_PORTAL_WORKDIR" "$NCC_PORTAL_ENV" "$BIN" \
   'Ecto.Migrator.with_repo(Portal.Repo, &Ecto.Migrator.run(&1, :up, all: true))'
 
-if [[ ${2:-portal} == builder ]]; then
+if [[ $mode == builder ]]; then
   builder_activate_image
 fi
 
@@ -146,7 +177,7 @@ sleep_until_up() {
 }
 sleep_until_up
 
-if [[ ${2:-portal} == builder ]]; then
+if [[ $mode == builder ]]; then
   builder_check_running_egress
 else
   # Remote builders read the registry digest for this commit from images.json;

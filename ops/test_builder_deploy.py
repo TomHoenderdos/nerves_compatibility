@@ -681,7 +681,7 @@ echo after
         check = deploy.index("builder_check_running_egress")
         self.assertLess(restart, up)
         self.assertLess(up, check)
-        self.assertIn("if [[ ${2:-portal} == builder ]]; then\n  builder_check_running_egress",
+        self.assertIn("if [[ $mode == builder ]]; then\n  builder_check_running_egress",
                       deploy)
 
 

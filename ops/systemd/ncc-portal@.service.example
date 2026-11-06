@@ -1,0 +1,34 @@
+# Blue/green portal instance: ncc-portal@blue (port 4002), ncc-portal@green
+# (port 4003). Install as /etc/systemd/system/ncc-portal@.service; replaces
+# ncc-portal.service on a host with NCC_BLUE_GREEN=1 (ops/blue-green.sh).
+# Paths are examples: use the host's NCC_INSTALL_DIR, env and work dirs.
+[Unit]
+Description=Nerves compatibility portal (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=ncc
+Group=ncc
+WorkingDirectory=/srv/example/home
+# The colour's file comes second, so its PORT, RELEASE_NODE and RELEASE_TMP win.
+EnvironmentFile=/etc/example/portal.env
+EnvironmentFile=/etc/example/color-%i.env
+ExecStart=/srv/example/releases/%i/bin/portal start
+ExecStop=/srv/example/releases/%i/bin/portal stop
+Restart=on-failure
+RestartSec=5
+# Above Oban's shutdown_grace_period plus the application's own stop.
+TimeoutStopSec=90
+LimitNOFILE=65535
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ReadWritePaths=/srv/example/home
+MemoryHigh=1500M
+MemoryMax=2500M
+
+[Install]
+WantedBy=multi-user.target
