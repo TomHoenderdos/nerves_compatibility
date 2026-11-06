@@ -36,7 +36,12 @@ systemctl() {
 apachectl() {
   log "apachectl $*"
   case $1 in
-    -S) [[ -n ${VHOST:-} ]] && echo "         port 443 namevhost example.test ($VHOST:35)" ;;
+    -S)
+      if [[ -n ${APACHE_S_LINE:-} ]]; then
+        echo "$APACHE_S_LINE"
+      elif [[ -n ${VHOST:-} ]]; then
+        echo "         port 443 namevhost example.test ($VHOST:35)"
+      fi ;;
     configtest)
       if [[ ${CONFIGTEST_STATUS:-0} != 0 ]]; then echo "AH00526: Syntax error on line 3 of /etc/x/other-site.conf" >&2; return 1; fi
       echo "Syntax OK" ;;
@@ -74,7 +79,7 @@ eval "$ACTION"
 
 class BlueGreenTest(unittest.TestCase):
     def run_bg(self, action, active="blue", cache=None, running=None, vhost_include=True,
-               include_text=None, **overrides):
+               include_text=None, vhost_text=None, **overrides):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             install = root / "install"
@@ -91,8 +96,11 @@ class BlueGreenTest(unittest.TestCase):
                                 (SRC / "ops" / "ncc-upstream.conf.template").read_text()
                                 .replace("@PORT@", str(port)))
             vhost = root / "site.conf"
-            vhost.write_text(f"<VirtualHost *:443>\n    Include {upstream}\n</VirtualHost>\n"
-                             if vhost_include else "<VirtualHost *:443>\n</VirtualHost>\n")
+            if vhost_text is not None:
+                vhost.write_text(vhost_text.replace("@UPSTREAM@", str(upstream)))
+            else:
+                vhost.write_text(f"<VirtualHost *:443>\n    Include {upstream}\n</VirtualHost>\n"
+                                 if vhost_include else "<VirtualHost *:443>\n</VirtualHost>\n")
             portal_env = root / "portal.env"
             portal_env.write_text("PHX_HOST=example.test\n")
             run_file = root / "running"
@@ -145,6 +153,36 @@ class BlueGreenTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("does not Include", result.stderr)
 
+    def test_preflight_refuses_a_commented_out_include(self):
+        result, _ = self.run_bg(
+            "bg_preflight",
+            vhost_text="<VirtualHost *:443>\n    #Include @UPSTREAM@\n</VirtualHost>\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not Include", result.stderr)
+
+    def test_preflight_refuses_include_optional(self):
+        result, _ = self.run_bg(
+            "bg_preflight",
+            vhost_text="<VirtualHost *:443>\n    IncludeOptional @UPSTREAM@\n</VirtualHost>\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not Include", result.stderr)
+
+    def test_preflight_passes_an_indented_include(self):
+        result, _ = self.run_bg(
+            "bg_preflight",
+            vhost_text="<VirtualHost *:443>\n\t\tInclude @UPSTREAM@\n</VirtualHost>\n",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_preflight_passes_a_quoted_include_path(self):
+        result, _ = self.run_bg(
+            "bg_preflight",
+            vhost_text='<VirtualHost *:443>\n    Include "@UPSTREAM@"\n</VirtualHost>\n',
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_preflight_refuses_an_include_that_names_no_single_known_port(self):
         for text in ("# empty\n",
                      "ProxyPass / http://127.0.0.1:4002/\nProxyPass /x http://127.0.0.1:4003/\n",
@@ -153,6 +191,35 @@ class BlueGreenTest(unittest.TestCase):
                 result, _ = self.run_bg("bg_preflight", include_text=text)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("ERROR", result.stderr)
+
+    # --- bg_vhost_file ----------------------------------------------------
+
+    def test_vhost_file_matches_the_namevhost_line(self):
+        result, _ = self.run_bg(
+            "bg_vhost_file example.test",
+            APACHE_S_LINE="         port 443 namevhost example.test "
+                           "(/etc/apache2/sites-enabled/example.test.conf:12)",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "/etc/apache2/sites-enabled/example.test.conf")
+
+    def test_vhost_file_matches_the_flat_single_vhost_line(self):
+        result, _ = self.run_bg(
+            "bg_vhost_file example.test",
+            APACHE_S_LINE="192.0.2.1:443  example.test "
+                           "(/etc/apache2/sites-enabled/example.test.conf:12)",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "/etc/apache2/sites-enabled/example.test.conf")
+
+    def test_vhost_file_is_empty_when_only_another_host_is_listed(self):
+        result, _ = self.run_bg(
+            "bg_vhost_file example.test",
+            APACHE_S_LINE="         port 443 namevhost other.test "
+                           "(/etc/apache2/sites-enabled/other.test.conf:9)",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
 
     def test_the_include_template_carries_retry_0_and_the_websocket_rule(self):
         text = (SRC / "ops" / "ncc-upstream.conf.template").read_text()
