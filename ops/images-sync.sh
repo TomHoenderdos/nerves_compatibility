@@ -56,7 +56,21 @@ if ! curl -fsSL --max-time 30 -o "$tmp" "$url"; then
   exit 1
 fi
 
-if ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["commit"]==sys.argv[2]; assert d["images"]["ncc-worker"]["digest"].startswith("sha256:")' "$tmp" "$sha"; then
+# `digest` is the x86_64 image (what a portal that does not read `platforms`
+# runs), so with per-architecture digests it must be the x86_64 one.
+check='
+import json, re, sys
+d = json.load(open(sys.argv[1]))
+assert d["commit"] == sys.argv[2]
+worker = d["images"]["ncc-worker"]
+digest = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
+assert digest.match(worker["digest"])
+platforms = worker.get("platforms")
+if platforms is not None:
+    assert all(digest.match(v) for v in platforms.values())
+    assert platforms.get("x86_64", worker["digest"]) == worker["digest"]
+'
+if ! python3 -c "$check" "$tmp" "$sha"; then
   echo "downloaded images.json is not for $sha or is malformed" >&2
   exit 1
 fi

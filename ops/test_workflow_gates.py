@@ -79,8 +79,31 @@ class ImagesWorkflowGateTest(unittest.TestCase):
 
     def test_has_the_publishing_jobs(self):
         self.assertEqual(
-            sorted(self.jobs), ["agent-release", "publish", "worker-image"]
+            sorted(self.jobs),
+            ["agent-release", "publish", "worker-image", "worker-manifest"],
         )
+
+    def test_worker_image_is_built_natively_per_architecture(self):
+        block = "\n".join(self.jobs["worker-image"])
+        self.assertIn("runs-on: ${{ matrix.runner }}", block)
+        for arch, platform, runner in (
+            ("x86_64", "linux/amd64", "ubuntu-24.04"),
+            ("aarch64", "linux/arm64", "ubuntu-24.04-arm"),
+        ):
+            self.assertRegex(
+                block,
+                rf"- arch: {arch}\n\s+platform: {platform}\n\s+runner: {runner}\n",
+            )
+        # Plain platform manifests: an attestation would wrap each push in
+        # an index, and images.json must name the image a builder runs.
+        self.assertIn("provenance: false", block)
+        self.assertIn("sbom: false", block)
+        self.assertIn("push-by-digest=true", block)
+
+    def test_images_json_names_a_digest_per_architecture(self):
+        block = "\n".join(self.jobs["publish"])
+        self.assertIn('"digest": amd64', block)
+        self.assertIn('"platforms": {"x86_64": amd64, "aarch64": arm64}', block)
 
     def test_every_job_requires_a_push_to_main_of_this_repository(self):
         for name, block in self.jobs.items():
@@ -119,6 +142,7 @@ class ImagesWorkflowGateTest(unittest.TestCase):
     def test_every_job_declares_its_permissions(self):
         expected = {
             "worker-image": {"contents: read", "packages: write"},
+            "worker-manifest": {"contents: read", "packages: write"},
             "agent-release": {"contents: read"},
             "publish": {"contents: write"},
         }

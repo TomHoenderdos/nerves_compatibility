@@ -49,6 +49,34 @@ class ImagesSyncTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertFalse(written)
 
+    def test_installs_a_document_with_a_digest_per_architecture(self):
+        amd, arm = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+        worker = {
+            "digest": amd,
+            "index": "sha256:" + "3" * 64,
+            "platforms": {"x86_64": amd, "aarch64": arm},
+        }
+        doc = {"commit": SHA, "images": {"ncc-worker": worker}}
+        result, written = self.run_sync([SHA], fake_curl_body=doc)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(written)
+
+    def test_refuses_a_digest_that_is_not_the_x86_64_platforms(self):
+        amd, arm = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+        worker = {"digest": arm, "platforms": {"x86_64": amd, "aarch64": arm}}
+        doc = {"commit": SHA, "images": {"ncc-worker": worker}}
+        result, written = self.run_sync([SHA], fake_curl_body=doc)
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(written)
+
+    def test_refuses_a_malformed_platform_digest(self):
+        amd = "sha256:" + "1" * 64
+        worker = {"digest": amd, "platforms": {"x86_64": amd, "aarch64": "latest"}}
+        doc = {"commit": SHA, "images": {"ncc-worker": worker}}
+        result, written = self.run_sync([SHA], fake_curl_body=doc)
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(written)
+
     def test_a_missing_release_is_a_retry_not_a_crash(self):
         result, written = self.run_sync([SHA], curl_status=22)
         self.assertEqual(result.returncode, 1)
