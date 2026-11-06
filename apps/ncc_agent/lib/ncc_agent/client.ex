@@ -168,10 +168,19 @@ defmodule NccAgent.Client do
   @doc """
   Long-polls for a job. `:none` when the portal has nothing (204); an agent
   reporting its egress ruleset missing gets `{:error, :egress_missing}`.
+
+  The claim names this VM's architecture (`NccAgent.Updater.arch/0`): the
+  portal hands out the worker image's platform digest for it, and answers
+  `{:error, {:no_image_for_arch, arch}}` when the deployed image has none.
   """
   @spec claim(Req.Request.t(), non_neg_integer(), String.t()) :: {:ok, map()} | :none | error()
   def claim(req, free_slots, egress) do
-    body = %{agent_version: Version.current(), free_slots: free_slots, egress: egress}
+    body = %{
+      agent_version: Version.current(),
+      free_slots: free_slots,
+      egress: egress,
+      arch: NccAgent.Updater.arch()
+    }
 
     case Req.post(req, url: @api <> "/jobs/claim", json: body, receive_timeout: 40_000) do
       {:ok, %Req.Response{status: 200, body: %{} = claim}} ->
@@ -182,6 +191,9 @@ defmodule NccAgent.Client do
 
       {:ok, %Req.Response{status: 409, body: %{"error" => "egress_missing"}}} ->
         {:error, :egress_missing}
+
+      {:ok, %Req.Response{status: 409, body: %{"error" => "no_image_for_arch"} = body}} ->
+        {:error, {:no_image_for_arch, body["arch"] || NccAgent.Updater.arch()}}
 
       other ->
         error(other)

@@ -165,6 +165,26 @@ defmodule NccAgent.SlotTest do
     refute_receive {:portal_request, "POST", "/builder/v1/jobs/claim", _, _}, 300
   end
 
+  # An arm64 builder against a portal whose worker image is x86_64 only: it
+  # says why once and waits, rather than backing off as from an error.
+  test "a slot whose architecture has no image logs why and waits a minute", %{
+    script: script
+  } do
+    Agent.update(
+      script,
+      &Map.put(&1, :claim_error, {409, %{error: "no_image_for_arch", arch: "aarch64"}})
+    )
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        start_supervised!({Slot, 1})
+        assert_receive {:portal_request, "POST", "/builder/v1/jobs/claim", _, _}, 5_000
+        refute_receive {:portal_request, "POST", "/builder/v1/jobs/claim", _, _}, 1_500
+      end)
+
+    assert log =~ "no worker image for aarch64"
+  end
+
   test "while an update is pending a slot does not claim" do
     :persistent_term.put({Updater, :updating}, "1800000000.def")
     start_supervised!({Slot, 1})

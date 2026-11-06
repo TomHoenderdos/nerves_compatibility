@@ -11,7 +11,9 @@ defmodule NccAgent.Slot do
   again in 60 s. Before that, `NccAgent.HostCheck.check/1`: a docker
   daemon without the `runsc` runtime or the nofile default the builds need
   gets no claim either, and the slot reports `egress: "host_unready"` and
-  checks again in 60 s. Once
+  checks again in 60 s. A portal whose worker image has no platform digest
+  for this VM's architecture answers the claim `no_image_for_arch`: the slot
+  logs it and claims again in 60 s, without the error backoff. Once
   `NccAgent.Updater.updating?/0` is set no slot claims again.
 
   The job runs in a task so the slot stays responsive: it traps exits,
@@ -59,7 +61,7 @@ defmodule NccAgent.Slot do
         Process.send_after(self(), :tick, @updating_poll_ms)
         {:noreply, state}
 
-      unready when unready in [:egress_missing, :host_unready] ->
+      unready when unready in [:egress_missing, :host_unready, :no_image] ->
         Process.send_after(self(), :tick, @egress_retry_ms)
         {:noreply, state}
 
@@ -174,9 +176,23 @@ defmodule NccAgent.Slot do
 
   defp claim(req, n) do
     case Client.claim(req, 1, "ok") do
-      :none -> :none
-      {:ok, claim} -> start(req, claim, n)
-      {:error, reason} -> {:error, reason}
+      :none ->
+        :none
+
+      {:ok, claim} ->
+        start(req, claim, n)
+
+      # Not an error to back off from: nothing changes until the portal
+      # deploys an image with this architecture, so check once a minute.
+      {:error, {:no_image_for_arch, arch}} ->
+        Logger.warning(
+          "slot #{n}: the portal has no worker image for #{arch}; not claiming, checking again in #{div(@egress_retry_ms, 1000)} s"
+        )
+
+        :no_image
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
