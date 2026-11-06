@@ -72,6 +72,10 @@ patterns() ->
      %% Unsticking is the first step of reloading a kernel module, which
      %% drops its trace patterns.
      {code, unstick_mod, 1}, {code, unstick_dir, 1},
+     %% Reading another process's dictionary, stack or mailbox (where the
+     %% driver keeps its token): the tracer's match spec for process_info/2
+     %% fires only for those items.
+     {erlang, process_info, 1}, {erlang, process_info, 2},
      {application, get_env, 1}, {application, get_env, 2}, {application, get_env, 3},
      {application, get_all_env, 0}, {application, get_all_env, 1}].
 
@@ -82,6 +86,8 @@ classify(M, F, Args) ->
     end.
 
 specific(code, F, [_]) when F =:= unstick_mod; F =:= unstick_dir -> {integrity, #{}};
+specific(erlang, process_info, [_Pid]) -> {integrity, #{item => <<"all">>}};
+specific(erlang, process_info, [_Pid, Item]) -> process_item(Item);
 specific(os, type, []) -> {os_identity, #{}};
 specific(os, version, []) -> {os_identity, #{}};
 specific(erlang, system_info, [Key]) -> {os_identity, #{key => term_bin(Key)}};
@@ -147,6 +153,18 @@ open(Path, Modes) ->
         true -> {file_write, #{path => chars(Path)}};
         false -> {file_read, #{path => chars(Path)}}
     end.
+
+%% The process_info/2 items that expose another process's state.
+-define(PEEKS, [dictionary, backtrace, messages]).
+
+process_item(Item) ->
+    case lists:any(fun peek/1, case is_list(Item) of true -> Item; false -> [Item] end) of
+        true -> {integrity, #{item => term_bin(Item)}};
+        false -> unknown
+    end.
+
+peek({dictionary, _Key}) -> true;
+peek(Item) -> lists:member(Item, ?PEEKS).
 
 copy_name({Name, _Modes}) -> Name;
 copy_name(Name) -> Name.

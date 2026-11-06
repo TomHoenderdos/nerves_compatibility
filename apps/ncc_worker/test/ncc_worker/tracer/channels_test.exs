@@ -127,5 +127,13 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert {:integrity, %{}} = classify(:ncc_tracer, :finish, ["ok"])
     assert {:integrity, %{}} = classify(:ncc_tracer_probe, :fire, [~c"__final__"])
     assert {:integrity, %{}} = classify(:code, :unstick_mod, [:os])
+
+    assert {:erlang, :process_info, 2} in patterns
+    assert {:integrity, %{}} = classify(:erlang, :process_info, [self()])
+    assert {:integrity, %{}} = classify(:erlang, :process_info, [self(), :dictionary])
+    assert {:integrity, %{}} = classify(:erlang, :process_info, [self(), {:dictionary, :k}])
+    assert {:integrity, %{}} = classify(:erlang, :process_info, [self(), [:status, :backtrace]])
+    assert {:integrity, %{}} = classify(:erlang, :process_info, [self(), :messages])
+    assert :unknown = classify(:erlang, :process_info, [self(), [:status, :memory]])
   end
 end

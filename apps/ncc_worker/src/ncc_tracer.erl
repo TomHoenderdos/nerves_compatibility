@@ -3,8 +3,8 @@
 %% the VM that compiles the package: start_main/0 from `mix ncc.trace_compile`,
 %% start_child/0 from ERL_AFLAGS in every other BEAM the compile starts
 %% (rebar3). Writes one JSON object per line; NccWorker.Tracer.Report reads them.
--export([start_main/0, start_child/0, window_open/1, window_close/1, closure/2,
-         native_patterns/2, finish/1, fire/1, ebin_dir/0, flush/0, collector/0]).
+-export([start_main/0, start_child/0, window_open/2, window_close/2, closure/3,
+         native_patterns/3, finish/2, fire/1, ebin_dir/0, flush/0, collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
 -export([safe_extent/4]).
 
@@ -26,9 +26,14 @@
 %% wanted: every pattern as {MFA, MatchSpec}, checked at each sentinel,
 %% window close and finish; unpatterned: a sentinel found one missing.
 %% final_pid, final_nonce: who may fire the final sentinel, and with what.
--record(st, {fd, session, initial = #{}, procs = #{}, native = #{}, sources = #{},
+%% token: the secret start/3 hands the driver; every request but flush must
+%% carry it. watcher, wref: the process that records the collector's death,
+%% monitored in turn. tampered: a forged request or a dead watcher was seen;
+%% it fails every check until the end.
+-record(st, {fd, file, session, initial = #{}, procs = #{}, native = #{}, sources = #{},
              spawning = #{}, set_depth = ?DEPTH, depth = ?DEPTH, lowered = false,
              wanted = [], unpatterned = false, final_pid, final_nonce,
+             token, watcher, wref, tampered = false,
              calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0,
              max_calls, max_user, max_queue, overflow = false, final = false}).
 
@@ -47,7 +52,7 @@ start_child() ->
             false -> ok;
             Dir ->
                 App = child_app(),
-                ok = start(child, Dir, App),
+                {ok, _Token} = start(child, Dir, App),
                 _ = fire(App),
                 ok
         end
@@ -55,27 +60,31 @@ start_child() ->
         _:_ -> ok
     end.
 
-window_open(App) -> call({window_open, bin(App), now_ns()}).
+%% Token is what start_main/0 returned. The driver keeps it in its own
+%% variables: not in the process dictionary, which compiled code can read
+%% untraced, and not anywhere global. Reading another process's dictionary,
+%% stack or mailbox goes through process_info, which is an integrity pattern.
+window_open(Token, App) -> call(Token, {window_open, bin(App), now_ns()}).
 
-window_close(App) ->
+window_close(Token, App) ->
     Delivered = delivered(),
-    call({window_close, bin(App), now_ns(), Delivered =:= ok}).
+    call(Token, {window_close, bin(App), now_ns(), Delivered =:= ok}).
 
-closure(Packages, Deps) -> call({closure, [bin(P) || P <- Packages], Deps}).
+closure(Token, Packages, Deps) -> call(Token, {closure, [bin(P) || P <- Packages], Deps}).
 
-native_patterns(App, Ebin) -> call({native, bin(App), to_list(Ebin)}).
+native_patterns(Token, App, Ebin) -> call(Token, {native, bin(App), to_list(Ebin)}).
 
 %% The final sentinel counts only when fired by the process that asked the
 %% collector for its nonce, carrying that nonce: a package calling the probe
 %% with "__final__" before it tampers with the session proves nothing.
-finish(Status) ->
-    _ = case call(final_nonce) of
+finish(Token, Status) ->
+    _ = case call(Token, final_nonce) of
             Nonce when is_binary(Nonce) ->
                 quietly(fun() -> fire("__final__:" ++ binary_to_list(Nonce)) end);
             _ -> skip
         end,
     Delivered = delivered(),
-    call({finish, bin(Status), now_ns(), Delivered =:= ok}).
+    call(Token, {finish, bin(Status), now_ns(), Delivered =:= ok}).
 
 fire(App) -> ?PROBE:fire(to_list(App)).
 
@@ -84,7 +93,7 @@ fire(App) -> ?PROBE:fire(to_list(App)).
 %% VM that halts right after its last compile loses the lines still queued
 %% in the collector; a caller that can wait calls this before halting.
 flush() ->
-    case {delivered(), call(flush)} of
+    case {delivered(), call(none, flush)} of
         {ok, Reply} -> Reply;
         {_, _} -> {error, undelivered}
     end.
@@ -122,10 +131,11 @@ start(Role, Dir, App) ->
                               kill => true, error_logger => false}}],
     {Pid, Ref} = spawn_opt(fun() -> init(Parent, Role, Dir, App, Depth) end, Opts),
     receive
-        {Pid, ready} ->
+        {Pid, ready, Token} ->
             erlang:demonitor(Ref, [flush]),
             persistent_term:put(?COLLECTOR, Pid),
-            set_child_env(Role);
+            ok = set_child_env(Role),
+            {ok, Token};
         {'DOWN', Ref, process, Pid, Reason} -> {error, Reason}
     after ?TIMEOUT -> {error, timeout}
     end.
@@ -202,21 +212,29 @@ init(Parent, Role, Dir, App, Depth) ->
     Flags = [call, procs, set_on_spawn, monotonic_timestamp],
     _ = trace:process(Session, existing, true, Flags),
     _ = trace:process(Session, self(), false, Flags),
-    %% Spawned by the untraced collector after the existing processes were
-    %% traced, so it is not traced itself.
-    Self = self(),
-    _ = spawn(fun() -> watch(Self, File) end),
-    Wanted = [{MFA, match_spec(MFA, Role, Depth)}
-              || MFA <- ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role)],
-    St = #st{fd = Fd, session = Session, set_depth = Depth, depth = Depth, wanted = Wanted,
-             initial = maps:from_keys(erlang:processes(), true),
+    Token = random_hex(),
+    St0 = #st{fd = Fd, file = File, session = Session, set_depth = Depth, depth = Depth,
+              token = Token,             initial = maps:from_keys(erlang:processes(), true),
              max_calls = env_int("NCC_TRACE_MAX_CALLS", 20000000),
              max_user = env_int("NCC_TRACE_MAX_USER_EVENTS", 200000),
              max_queue = env_int("NCC_TRACE_MAX_QUEUE", 2000000)},
-    write(St, start_line(Role, App, Depth)),
-    lists:foreach(fun({MFA, MS}) -> pattern(Session, MFA, MS) end, Wanted),
-    Parent ! {self(), ready},
+    write(St0, start_line(Role, App, Depth)),
+    Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth))
+              || MFA <- ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role)],
+    St = watcher(St0#st{wanted = Wanted}),
+    Parent ! {self(), ready, Token},
     loop(St).
+
+%% Spawned by the untraced collector after the existing processes were
+%% traced, so it is not traced itself; each monitors the other.
+watcher(#st{file = File} = St) ->
+    Self = self(),
+    {Pid, Ref} = spawn_monitor(fun() -> watch(Self, File) end),
+    St#st{watcher = Pid, wref = Ref}.
+
+watcher_down(Reason, St) ->
+    write(St, #{kind => watcher_down, reason => reason_bin(Reason), ts => now_ns()}),
+    watcher(St#st{tampered = true}).
 
 %% A collector that dies other than by finishing (killed by a package, by
 %% its max_heap_size, by a crash) leaves a line saying so; in a child VM
@@ -250,29 +268,49 @@ pattern(Session, {M, _, _} = MFA, MS) ->
         _ -> ok
     end.
 
+%% Sets a pattern and remembers whether its module was loaded: a module that
+%% was loaded and traced must stay so (Elixir modules and crypto are not
+%% sticky, so a package can delete and purge one, use it untraced after a
+%% reload, and delete it again).
+wanted(Session, {M, _, _} = MFA, MS) ->
+    ok = pattern(Session, MFA, MS),
+    {MFA, MS, erlang:module_loaded(M)}.
+
 %% A reloaded module (code:load_file/1 after code:unstick_mod/1 for a kernel
 %% module, any purge and load for the rest) comes back without its patterns,
 %% and so does a module that could not be loaded at start and is loaded now.
 %% Every check sets the missing ones again and reports the window.
 %% A session that is gone (destroyed by a package, or by our own overflow)
 %% makes trace:info/3 fail: that is a failed check too.
-patterns_check(#st{unpatterned = Lost, overflow = Overflow} = St, When) ->
-    Ok = not Overflow andalso repatterned(St) andalso not Lost,
+patterns_check(#st{unpatterned = Lost, overflow = Overflow} = St0, When) ->
+    {Patterned, St} = case Overflow of
+                          true -> {false, St0};
+                          false -> repatterned(St0)
+                      end,
+    Ok = Patterned andalso not Lost,
     {Ok, St#st{unpatterned = When =:= sentinel andalso not Ok}}.
 
-repatterned(#st{session = Session, wanted = Wanted}) ->
+repatterned(#st{session = Session, wanted = Wanted} = St) ->
     try
-        Missing = [W || {MFA, _} = W <- Wanted, not traced(Session, MFA)],
-        lists:foreach(fun({MFA, MS}) -> pattern(Session, MFA, MS) end, Missing),
-        Missing =:= []
+        Checked = [rewanted(Session, W) || W <- Wanted],
+        {lists:all(fun({Ok, _}) -> Ok end, Checked), St#st{wanted = [W || {_, W} <- Checked]}}
     catch
-        _:_ -> false
+        _:_ -> {false, St}
     end.
 
-traced(Session, {M, F, A}) ->
-    not erlang:module_loaded(M) orelse
-        lists:all(fun(MFA) -> trace:info(Session, MFA, traced) =:= {traced, global} end,
-                  concrete(M, F, A)).
+rewanted(Session, {MFA, MS, Loaded} = W) ->
+    case traced(Session, MFA, Loaded) of
+        true -> {true, W};
+        false -> {false, wanted(Session, MFA, MS)}
+    end.
+
+traced(Session, {M, F, A}, WasLoaded) ->
+    case erlang:module_loaded(M) of
+        false -> not WasLoaded;
+        true ->
+            lists:all(fun(MFA) -> trace:info(Session, MFA, traced) =:= {traced, global} end,
+                      concrete(M, F, A))
+    end.
 
 concrete(M, '_', '_') -> [{M, F, A} || {F, A} <- M:module_info(exports)];
 concrete(M, F, A) ->
@@ -282,6 +320,10 @@ concrete(M, F, A) ->
     end.
 
 match_spec({compile, file, 2}, child, _Depth) -> [{'_', [], [{return_trace}]}];
+match_spec({erlang, process_info, 2}, _Role, Depth) ->
+    Msg = {message, {current_stacktrace, Depth}},
+    [{['_', Item], [], [Msg]} || Item <- [dictionary, backtrace, messages, {dictionary, '_'}]]
+        ++ [{['_', '$1'], [{is_list, '$1'}], [Msg]}];
 match_spec(_MFA, _Role, Depth) -> [{'_', [], [{message, {current_stacktrace, Depth}}]}].
 
 loop(St) ->
@@ -300,16 +342,40 @@ loop(St) ->
         {trace_ts, Pid, exit, _Reason, _Ts} ->
             loop(St#st{procs = maps:remove(Pid, St#st.procs),
                        spawning = maps:remove(Pid, St#st.spawning)});
-        {ncc_call, From, Ref, Req} ->
+        {ncc_call, From, Ref, Auth, Req} when Auth =:= St#st.token; Req =:= flush ->
             {Reply, St1} = request(Req, From, St),
             From ! {Ref, Reply},
             continue(Req, St1);
+        {ncc_call, From, Ref, _BadAuth, Req} ->
+            loop(forged(From, Ref, Req, St));
+        {ncc_call, From, Ref, Req} ->
+            loop(forged(From, Ref, Req, St));
+        {'DOWN', Ref, process, _Pid, Reason} when Ref =:= St#st.wref ->
+            loop(watcher_down(Reason, St));
         _Other ->
             loop(St)
     end.
 
 continue({finish, _, _, _}, _St) -> ok;
 continue(_Req, St) -> loop(St).
+
+%% A request without the driver's token: rejected, written as an integrity
+%% event, and every later check fails.
+forged(From, Ref, Req, St) ->
+    ok = reject(From, Ref),
+    Arg = #{request => ncc_tracer_channels:term_bin(request_name(Req))},
+    write(St, #{kind => event, ts => now_ns(), pid => ncc_tracer_channels:term_bin(From),
+                channel => integrity, mfa => <<"ncc_tracer:forged_request">>, arg => Arg,
+                extent => unjudged, first => null, user => null}),
+    St#st{tampered = true, user = St#st.user + 1, unjudged = St#st.unjudged + 1}.
+
+reject(From, Ref) when is_pid(From) ->
+    From ! {Ref, {error, unauthorized}},
+    ok;
+reject(_From, _Ref) -> ok.
+
+request_name(Req) when is_tuple(Req), tuple_size(Req) > 0 -> element(1, Req);
+request_name(Req) -> Req.
 
 call_event(_Pid, _M, _F, _Args, _Stack, _Ts, #st{overflow = true} = St) -> St;
 call_event(Pid, M, F, Args, Stack, Ts, #st{calls = Calls} = St0) ->
@@ -390,7 +456,7 @@ sentinel_app(App, _Pid, _St) -> {App, false}.
 checks(St0, When) ->
     {DepthOk, St1} = depth_check(St0, When),
     {PatternsOk, St} = patterns_check(St1, When),
-    {#{depth_ok => DepthOk, integrity_ok => PatternsOk}, St}.
+    {#{depth_ok => DepthOk, integrity_ok => PatternsOk andalso not St#st.tampered}, St}.
 
 %% A close or finish also needs every trace message delivered first.
 closing_checks(St0, Delivered) ->
@@ -521,8 +587,7 @@ native(App, Ebin, #st{session = Session, set_depth = Depth} = St) ->
             false -> code:add_pathz(Ebin)
         end,
     Mods = [M || M <- beam_modules(Ebin), code:ensure_loaded(M) =:= {module, M}],
-    Wanted = [{{M, '_', '_'}, match_spec(M, main, Depth)} || M <- Mods],
-    lists:foreach(fun({MFA, MS}) -> pattern(Session, MFA, MS) end, Wanted),
+    Wanted = [wanted(Session, {M, '_', '_'}, match_spec(M, main, Depth)) || M <- Mods],
     Delivered = delivered(),
     write(St, #{kind => quiet_close, app => App, ts => now_ns(), delivered => Delivered =:= ok}),
     St#st{native = maps:merge(St#st.native, maps:from_keys(Mods, App)),
@@ -531,7 +596,11 @@ native(App, Ebin, #st{session = Session, set_depth = Depth} = St) ->
 beam_modules(Ebin) ->
     [list_to_atom(filename:basename(F, ".beam")) || F <- filelib:wildcard("*.beam", Ebin)].
 
-finish_trace(Status, Ts, Delivered, #st{fd = Fd, session = Session} = St0) ->
+finish_trace(Status, Ts, Delivered, #st{fd = Fd, session = Session} = St1) ->
+    St0 = case is_process_alive(St1#st.watcher) of
+              true -> St1;
+              false -> St1#st{tampered = true}
+          end,
     {Checks, St} = closing_checks(St0, Delivered),
     write(St, #{kind => stats, calls => St#st.calls, user_events => St#st.user,
                 truncated => St#st.truncated, unjudged => St#st.unjudged,
@@ -628,12 +697,12 @@ elixir_root() ->
         _ -> null
     end.
 
-call(Req) ->
+call(Auth, Req) ->
     case collector() of
         undefined -> {error, no_tracer};
         Pid ->
             Ref = erlang:monitor(process, Pid),
-            Pid ! {ncc_call, self(), Ref, Req},
+            Pid ! {ncc_call, self(), Ref, Auth, Req},
             receive
                 {Ref, Reply} ->
                     erlang:demonitor(Ref, [flush]),

@@ -32,9 +32,9 @@ defmodule NccWorker.Tracer.RuntimeTest do
 
     {0, out} =
       run_script(dir, """
-      :ok = :ncc_tracer.start_main()
+      {:ok, tok} = :ncc_tracer.start_main()
       Code.compile_file(#{inspect(fx)})
-      :ok = :ncc_tracer.finish("ok")
+      :ok = :ncc_tracer.finish(tok, "ok")
       """)
 
     {dir |> Path.join("trace-main.jsonl") |> lines(), out}
@@ -54,12 +54,12 @@ defmodule NccWorker.Tracer.RuntimeTest do
 
     {0, _} =
       run_script(dir, """
-      :ok = :ncc_tracer.start_main()
-      :ok = :ncc_tracer.window_open("fx_attr")
+      {:ok, tok} = :ncc_tracer.start_main()
+      :ok = :ncc_tracer.window_open(tok, "fx_attr")
       _ = :ncc_tracer.fire("fx_attr")
       Code.compile_file(#{inspect(fx)})
-      :ok = :ncc_tracer.window_close("fx_attr")
-      :ok = :ncc_tracer.finish("ok")
+      :ok = :ncc_tracer.window_close(tok, "fx_attr")
+      :ok = :ncc_tracer.finish(tok, "ok")
       """)
 
     lines = lines(Path.join(dir, "trace-main.jsonl"))
@@ -186,11 +186,11 @@ defmodule NccWorker.Tracer.RuntimeTest do
   test "a lowered backtrace_depth is caught at the next window close", %{tmp_dir: dir} do
     {0, _} =
       run_script(dir, """
-      :ok = :ncc_tracer.start_main()
-      :ok = :ncc_tracer.window_open("fx")
+      {:ok, tok} = :ncc_tracer.start_main()
+      :ok = :ncc_tracer.window_open(tok, "fx")
       :erlang.system_flag(:backtrace_depth, 1)
-      :ok = :ncc_tracer.window_close("fx")
-      :ok = :ncc_tracer.finish("ok")
+      :ok = :ncc_tracer.window_close(tok, "fx")
+      :ok = :ncc_tracer.finish(tok, "ok")
       """)
 
     lines = lines(Path.join(dir, "trace-main.jsonl"))
@@ -212,8 +212,8 @@ defmodule NccWorker.Tracer.RuntimeTest do
       run_script(dir, """
       # Agent.get/4 calls System.get_env(state): the state is the name.
       {:ok, agent} = Agent.start(fn -> "NCC_FX_FULL" end)
-      :ok = :ncc_tracer.start_main()
-      :ok = :ncc_tracer.window_open("fx")
+      {:ok, tok} = :ncc_tracer.start_main()
+      :ok = :ncc_tracer.window_open(tok, "fx")
       Agent.get(agent, System, :get_env, [])
       :erlang.system_flag(:backtrace_depth, 2)
       # Trace messages from two processes are not ordered: the flush makes
@@ -227,8 +227,8 @@ defmodule NccWorker.Tracer.RuntimeTest do
       :ok = :ncc_tracer.flush()
       Agent.update(agent, fn _ -> "NCC_FX_BACK" end)
       Agent.get(agent, System, :get_env, [])
-      :ok = :ncc_tracer.window_close("fx")
-      :ok = :ncc_tracer.finish("ok")
+      :ok = :ncc_tracer.window_close(tok, "fx")
+      :ok = :ncc_tracer.finish(tok, "ok")
       """)
 
     lines = lines(Path.join(dir, "trace-main.jsonl"))
@@ -296,9 +296,9 @@ defmodule NccWorker.Tracer.RuntimeTest do
       run_script(
         dir,
         """
-        :ok = :ncc_tracer.start_main()
+        {:ok, tok} = :ncc_tracer.start_main()
         for _ <- 1..50, do: Path.expand("x")
-        :ok = :ncc_tracer.finish("ok")
+        :ok = :ncc_tracer.finish(tok, "ok")
         """,
         [{"NCC_TRACE_MAX_CALLS", "5"}]
       )
@@ -369,11 +369,11 @@ defmodule NccWorker.Tracer.RuntimeTest do
 
     {0, _} =
       run_script(dir, """
-      :ok = :ncc_tracer.start_main()
-      :ok = :ncc_tracer.window_open("fx")
+      {:ok, tok} = :ncc_tracer.start_main()
+      :ok = :ncc_tracer.window_open(tok, "fx")
       Code.compile_file(#{inspect(fx)})
-      :ok = :ncc_tracer.window_close("fx")
-      :ok = :ncc_tracer.finish("ok")
+      :ok = :ncc_tracer.window_close(tok, "fx")
+      :ok = :ncc_tracer.finish(tok, "ok")
       """)
 
     lines = lines(Path.join(dir, "trace-main.jsonl"))
@@ -401,9 +401,9 @@ defmodule NccWorker.Tracer.RuntimeTest do
 
     {0, _} =
       run_script(dir, """
-      :ok = :ncc_tracer.start_main()
+      {:ok, tok} = :ncc_tracer.start_main()
       Code.compile_file(#{inspect(fx)})
-      :ncc_tracer.finish("ok")
+      :ncc_tracer.finish(tok, "ok")
       """)
 
     lines = lines(Path.join(dir, "trace-main.jsonl"))
@@ -413,40 +413,18 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert [%{"final_sentinel" => false}] = kind(lines, "end")
   end
 
-  test "a package calling the tracer's API is recorded", %{tmp_dir: dir} do
-    fx = Path.join(dir, "fx_finish.ex")
-
-    File.write!(fx, """
-    defmodule FxFinish do
-      @x :ncc_tracer.finish("ok")
-      def x, do: @x
-    end
-    """)
-
-    {0, _} =
-      run_script(dir, """
-      :ok = :ncc_tracer.start_main()
-      Code.compile_file(#{inspect(fx)})
-      IO.inspect(:ncc_tracer.finish("ok"), label: "finish")
-      """)
-
-    lines = lines(Path.join(dir, "trace-main.jsonl"))
-    integrity = for e <- kind(lines, "event"), e["channel"] == "integrity", do: e["mfa"]
-    assert "ncc_tracer:finish/1" in integrity
-  end
-
   test "a reloaded module loses its patterns: the check fails the window and sets them again",
        %{tmp_dir: dir} do
     {0, out} =
       run_script(dir, """
-      :ok = :ncc_tracer.start_main()
-      :ok = :ncc_tracer.window_open("fx")
+      {:ok, tok} = :ncc_tracer.start_main()
+      :ok = :ncc_tracer.window_open(tok, "fx")
       true = :code.unstick_mod(:os)
       {:module, :os} = :code.load_file(:os)
       :code.stick_mod(:os)
-      :ok = :ncc_tracer.window_close("fx")
+      :ok = :ncc_tracer.window_close(tok, "fx")
       :os.type()
-      :ok = :ncc_tracer.finish("ok")
+      :ok = :ncc_tracer.finish(tok, "ok")
       """)
 
     lines = lines(Path.join(dir, "trace-main.jsonl"))
@@ -462,19 +440,19 @@ defmodule NccWorker.Tracer.RuntimeTest do
        %{tmp_dir: dir} do
     {0, out} =
       run_script(dir, """
-      :ok = :ncc_tracer.start_main()
+      {:ok, tok} = :ncc_tracer.start_main()
       pid = :ncc_tracer.collector()
       true = is_pid(pid)
       # A process taking the old registered name does not receive the calls.
       true = Process.register(self(), :ncc_tracer_collector)
-      :ok = :ncc_tracer.window_open("fx")
+      :ok = :ncc_tracer.window_open(tok, "fx")
       ref = Process.monitor(pid)
       Process.exit(pid, :kill)
       receive do
         {:DOWN, ^ref, _, _, _} -> :ok
       end
       Process.sleep(100)
-      IO.inspect(:ncc_tracer.finish("ok"), label: "finish")
+      IO.inspect(:ncc_tracer.finish(tok, "ok"), label: "finish")
       """)
 
     assert out =~ "finish: {:error, :no_tracer}"
@@ -489,10 +467,10 @@ defmodule NccWorker.Tracer.RuntimeTest do
       run_script(
         dir,
         """
-        :ok = :ncc_tracer.start_main()
-        :ok = :ncc_tracer.window_open("fx")
-        :ok = :ncc_tracer.window_close("fx")
-        :ncc_tracer.finish("ok")
+        {:ok, tok} = :ncc_tracer.start_main()
+        :ok = :ncc_tracer.window_open(tok, "fx")
+        :ok = :ncc_tracer.window_close(tok, "fx")
+        :ncc_tracer.finish(tok, "ok")
         """,
         [{"NCC_TRACE_DELIVER_TIMEOUT_MS", "0"}]
       )
@@ -506,14 +484,14 @@ defmodule NccWorker.Tracer.RuntimeTest do
        %{tmp_dir: dir} do
     {0, _} =
       run_script(dir, """
-      :ok = :ncc_tracer.start_main()
+      {:ok, tok} = :ncc_tracer.start_main()
       c = :ncc_tracer.collector()
       ts = :erlang.monotonic_time(:nanosecond)
       # A frame whose location is not a list: the frame renderer crashes.
       send(c, {:trace_ts, self(), :call, {:os, :getenv, ["NCC_FX_BAD"]}, [{:m, :f, 0, :nope}], ts})
       # A call message with no stack (a replaced match spec).
       send(c, {:trace_ts, self(), :call, {:os, :getenv, ["NCC_FX_NOSTACK"]}, ts})
-      :ok = :ncc_tracer.finish("ok")
+      :ok = :ncc_tracer.finish(tok, "ok")
       """)
 
     lines = lines(Path.join(dir, "trace-main.jsonl"))
@@ -538,11 +516,11 @@ defmodule NccWorker.Tracer.RuntimeTest do
     script = Path.join(dir, "script.exs")
 
     File.write!(script, """
-    :ok = :ncc_tracer.start_main()
+    {:ok, tok} = :ncc_tracer.start_main()
     IO.puts("AFLAGS=" <> System.get_env("ERL_AFLAGS"))
     {_, 0} = System.cmd("erl", ["-noshell", "-eval", "halt()."],
       env: [{"REBAR_BARE_COMPILER_OUTPUT_DIR", "/x/lib/kid"}])
-    :ok = :ncc_tracer.finish("ok")
+    :ok = :ncc_tracer.finish(tok, "ok")
     """)
 
     {out, 0} =
@@ -554,5 +532,112 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert out =~ ~s(AFLAGS=+pc unicode -pa "#{spaced}" -s ncc_tracer start_child)
     assert [file] = Path.wildcard(Path.join(dir, "trace-child-kid-*.jsonl"))
     assert [%{"role" => "child", "app" => "kid"}] = file |> lines() |> kind("start")
+  end
+
+  test "requests without the driver's token are rejected and recorded, never a clean end",
+       %{tmp_dir: dir} do
+    fx = Path.join(dir, "fx_forge.ex")
+
+    File.write!(fx, """
+    defmodule FxForge do
+      @x (
+           c = :ncc_tracer.collector()
+           ts = :erlang.monotonic_time(:nanosecond)
+           send(c, {:ncc_call, self(), make_ref(), :final_nonce})
+           send(c, {:ncc_call, self(), make_ref(), "guess", {:finish, "ok", ts, true}})
+           send(c, {:ncc_call, self(), make_ref(), {:finish, "ok", ts, true}})
+           :ncc_tracer.finish(:forged, "ok")
+         )
+      def x, do: @x
+    end
+    """)
+
+    {0, out} =
+      run_script(dir, """
+      {:ok, tok} = :ncc_tracer.start_main()
+      Code.compile_file(#{inspect(fx)})
+      IO.inspect(:ncc_tracer.finish(tok, "ok"), label: "finish")
+      """)
+
+    assert out =~ "finish: :ok"
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    integrity = for e <- kind(lines, "event"), e["channel"] == "integrity", do: e["mfa"]
+    # Three raw sends, and the package's finish/2 call makes two requests
+    # (its nonce, its finish) with a token it does not have.
+    assert Enum.count(integrity, &(&1 == "ncc_tracer:forged_request")) == 5, inspect(integrity)
+    assert "ncc_tracer:finish/2" in integrity
+    # Only the driver's finish ended the file, and it is not clean.
+    assert [%{"integrity_ok" => false, "final_sentinel" => true}] = kind(lines, "end")
+  end
+
+  test "reading another process's dictionary is recorded", %{tmp_dir: dir} do
+    {lines, _} =
+      compile_fixture(dir, "fx_peek.ex", """
+      defmodule FxPeek do
+        @x Process.info(self(), :dictionary) |> elem(0)
+        def x, do: @x
+      end
+      """)
+
+    assert Enum.any?(
+             kind(lines, "event"),
+             &(&1["mfa"] == "erlang:process_info/2" and &1["channel"] == "integrity")
+           )
+  end
+
+  test "a traced module deleted and purged without a reload fails the check",
+       %{tmp_dir: dir} do
+    {0, out} =
+      run_script(dir, """
+      {:ok, tok} = :ncc_tracer.start_main()
+      :ok = :ncc_tracer.window_open(tok, "fx")
+      # Version is not sticky: deleted and purged, nothing loads it again
+      # before the close.
+      true = :code.delete(Version)
+      _ = :code.purge(Version)
+      false = :erlang.module_loaded(Version)
+      :ok = :ncc_tracer.window_close(tok, "fx")
+      :ok = :ncc_tracer.finish(tok, "ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
+    # The close loaded it and set its patterns again.
+    assert [%{"integrity_ok" => true}] = kind(lines, "end")
+  end
+
+  test "a killed watcher is recorded and fails the end", %{tmp_dir: dir} do
+    {0, out} =
+      run_script(dir, """
+      {:ok, tok} = :ncc_tracer.start_main()
+      {:monitors, monitors} = Process.info(:ncc_tracer.collector(), :monitors)
+      [watcher] = for {:process, p} when is_pid(p) <- monitors, do: p
+      Process.exit(watcher, :kill)
+      Process.sleep(100)
+      :ok = :ncc_tracer.finish(tok, "ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    assert [%{"reason" => "killed"}] = kind(lines, "watcher_down"), out
+    assert [%{"integrity_ok" => false}] = kind(lines, "end")
+  end
+
+  test "killing the watcher and then the collector still leaves a line", %{tmp_dir: dir} do
+    {0, _} =
+      run_script(dir, """
+      {:ok, tok} = :ncc_tracer.start_main()
+      c = :ncc_tracer.collector()
+      {:monitors, monitors} = Process.info(c, :monitors)
+      [watcher] = for {:process, p} when is_pid(p) <- monitors, do: p
+      Process.exit(watcher, :kill)
+      Process.sleep(100)
+      Process.exit(c, :kill)
+      Process.sleep(100)
+      {:error, :no_tracer} = :ncc_tracer.finish(tok, "ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    assert kind(lines, "watcher_down") != [] or kind(lines, "collector_down") != []
+    assert [] = kind(lines, "end")
   end
 end
