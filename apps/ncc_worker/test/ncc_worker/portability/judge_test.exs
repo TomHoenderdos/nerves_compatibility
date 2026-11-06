@@ -105,7 +105,8 @@ defmodule NccWorker.Portability.JudgeTest do
         compiles: [],
         problems: [],
         events: events,
-        libs: []
+        # The snapshot a child writes after its compiles (`libs` lines).
+        libs: [Map.put(@libs, "kind", "libs")]
       },
       extra
     )
@@ -191,6 +192,32 @@ defmodule NccWorker.Portability.JudgeTest do
       # Not native: the same library refuses.
       assert %{status: :skip, reason: "compile-time native library load: " <> _} =
                judge(proj, r, nif_waiver: false)
+    end
+
+    test "the package's own dirs are never allowed, native or not", %{proj: proj} do
+      nif = Path.join([proj, "_build/host/lib/pkg/priv/pkg_nif.so"])
+      File.mkdir_p!(Path.dirname(nif))
+      File.write!(nif, "")
+      r = proj |> report() |> with_libs(["/usr/lib/libc.so.6", nif])
+
+      assert %{status: :skip, reason: "compile-time native library load: " <> _} =
+               Portability.judge(proj, "pkg", r, ["pkg", "dep"], nif_waiver: false)
+    end
+
+    test "a child VM that compiled but wrote no libs snapshot cannot be judged", %{proj: proj} do
+      compiled = %{
+        "kind" => "compile",
+        "result" => "ok",
+        "module" => "dep",
+        "source" => "src/dep.erl"
+      }
+
+      r = report(proj, %{children: %{"dep" => child([], %{compiles: [compiled], libs: []})}})
+
+      assert %{status: :skip, reason: @cnj, observations: %{"problems" => problems}} =
+               judge(proj, r, nif_waiver: false)
+
+      assert "native library check unavailable" in problems
     end
 
     test "a child VM's new library taints its dependency", %{proj: proj} do

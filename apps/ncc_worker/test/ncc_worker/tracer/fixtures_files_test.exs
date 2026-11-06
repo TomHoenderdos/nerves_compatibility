@@ -226,7 +226,9 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
     # with one `..` too many, and the priv fixtures read through it. The
     # worker's work dir is a real path.
     tmp = Portability.Context.realpath(System.tmp_dir!())
-    root = Path.join(tmp, "ncc-fixtures-files-#{System.unique_integer([:positive])}")
+
+    root =
+      Path.join(tmp, "ncc-fixtures-files-#{System.pid()}-#{System.unique_integer([:positive])}")
 
     on_exit(fn -> File.rm_rf(root) end)
 
@@ -268,7 +270,9 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
     if File.exists?("/proc/self/maps") and cc do
       File.mkdir_p!(dir)
       src = Path.join(dir, "fx_nif_lib.c")
-      so = Path.join(dir, "fx_nif_lib.so")
+      # Loaded through a `.so` link to a file with no `.so` in its name: the
+      # memory map shows the target, which the check must still see.
+      so = Path.join(dir, "fx_nif_payload")
 
       File.write!(src, """
       #include <erl_nif.h>
@@ -284,6 +288,7 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
       {_, 0} =
         System.cmd(cc, ["-shared", "-fPIC", "-I", include, "-o", so, src], stderr_to_stdout: true)
 
+      File.ln_s!(so, Path.join(dir, "fx_nif_lib.so"))
       so
     end
   end

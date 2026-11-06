@@ -810,7 +810,7 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert {"NCC_FX_RACE", "lineage"} in names, inspect({names, out})
   end
 
-  test "the shared objects of a maps file, each once" do
+  test "every file-backed mapping of a maps file, each once, whatever its name" do
     maps = """
     aaaa-bbbb r--p 00000000 fe:01 1 /usr/lib/aarch64-linux-gnu/libc.so.6
     bbbb-cccc r-xp 00001000 fe:01 1 /usr/lib/aarch64-linux-gnu/libc.so.6
@@ -819,13 +819,27 @@ defmodule NccWorker.Tracer.RuntimeTest do
     eeee-ffff r--p 00000000 fe:01 3 /usr/local/lib/erlang/erts-16/bin/beam.smp
     ffff-1111 r-xp 00000000 00:00 0 [vdso]
     1111-2222 r-xp 00000000 fe:01 4 /opt/lib/libfoo.so.1.2.3
+    2222-3333 r-xp 00000000 fe:01 5 /tmp/payload
+    3333-4444 rw-p 00000000 00:00 0 [heap]
     """
 
-    assert :ncc_tracer.maps_libs(maps) == [
-             "/opt/lib/libfoo.so.1.2.3",
-             "/tmp/a dir/evil.so (deleted)",
-             "/usr/lib/aarch64-linux-gnu/libc.so.6"
-           ]
+    # x.so -> payload: the map shows the link's target, with no .so in it.
+    assert :ncc_tracer.maps_libs(maps) ==
+             {:ok,
+              [
+                "/opt/lib/libfoo.so.1.2.3",
+                "/tmp/a dir/evil.so (deleted)",
+                "/tmp/payload",
+                "/usr/lib/aarch64-linux-gnu/libc.so.6",
+                "/usr/local/lib/erlang/erts-16/bin/beam.smp"
+              ]}
+  end
+
+  test "a file-backed mapping whose path cannot be read makes the check unavailable" do
+    assert :unavailable = :ncc_tracer.maps_libs("aaaa-bbbb r-xp 00000000 fe:01 7\n")
+    assert :unavailable = :ncc_tracer.maps_libs("aaaa-bbbb r-xp 00000000 fe:01 7 relative/x\n")
+    assert :unavailable = :ncc_tracer.maps_libs("garbage\n")
+    assert {:ok, []} = :ncc_tracer.maps_libs("aaaa-bbbb rw-p 00000000 00:00 0\n")
   end
 
   @maps? File.exists?("/proc/self/maps")

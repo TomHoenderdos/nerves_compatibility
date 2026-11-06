@@ -177,7 +177,10 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
 
   setup_all do
     root =
-      Path.join(System.tmp_dir!(), "ncc-fixtures-reads-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "ncc-fixtures-reads-#{System.pid()}-#{System.unique_integer([:positive])}"
+      )
 
     on_exit(fn -> File.rm_rf(root) end)
 

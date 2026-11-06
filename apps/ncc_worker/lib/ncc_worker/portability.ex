@@ -293,18 +293,18 @@ defmodule NccWorker.Portability do
   # seen at a window's close belongs to that window's app (Mix compiles one
   # dependency at a time), one first seen at the end to no window
   # (`:outside`, against everything). A closure child VM's start against its
-  # `libs` lines (a child that compiled nothing wrote none: its start alone)
+  # `libs` lines (a child that compiled nothing wrote none: its start alone;
+  # one that compiled and wrote none is unavailable)
   # counts against its app. Only owners in the package's closure count, as
   # for events. Allowed: the OTP root, the Elixir install, and a native
-  # closure dependency's own dirs (its NIF, loaded when the tracer sets its
+  # closure dependency's own dirs (never the package's) (its NIF, loaded when the tracer sets its
   # patterns; calls into it are the native_closure channel).
   defp mapped_libs(report, ctx, scope, waiver) do
     allowed? = &lib_allowed?(ctx, scope, &1)
 
     children =
       for {app, child} <- Enum.sort(report.children), Context.dep?(ctx, app) do
-        later = if child[:libs] in [nil, []], do: [child.start], else: child.libs
-        {app, MappedLibs.check(child.start, later, allowed?)}
+        {app, MappedLibs.check(child.start, child_snapshots(child), allowed?)}
       end
 
     results = Enum.filter(main_libs(report, allowed?) ++ children, &in_scope?(elem(&1, 0), scope))
@@ -323,6 +323,12 @@ defmodule NccWorker.Portability do
         %{acc | problems: Enum.uniq(acc.problems ++ ["native library check unavailable"])}
     end)
   end
+
+  # A child's `libs` lines. A child that compiled nothing wrote none and its
+  # start is all there is; one that compiled and wrote none is unavailable.
+  defp child_snapshots(%{libs: [_ | _] = libs}), do: libs
+  defp child_snapshots(%{compiles: [_ | _]}), do: []
+  defp child_snapshots(child), do: [child.start]
 
   defp main_libs(report, allowed?) do
     closes =
@@ -346,6 +352,7 @@ defmodule NccWorker.Portability do
     dirs =
       [ctx.otp_root, ctx.elixir_root] ++
         for app <- scope,
+            app != ctx.package,
             Context.dep?(ctx, app),
             ctx.deps[app].native?,
             do: [ctx.deps[app].build, ctx.deps[app].dest]

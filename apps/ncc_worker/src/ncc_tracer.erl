@@ -633,26 +633,30 @@ start_libs() ->
 
 mapped_libs() ->
     case file:read_file("/proc/self/maps") of
-        {ok, Maps} -> {ok, maps_libs(Maps)};
+        {ok, Maps} -> maps_libs(Maps);
         {error, _} -> unavailable
     end.
 
-%% The path of every mapped shared object (a file name with `.so` in it),
-%% each once, sorted.
+%% The path of every file-backed mapping (inode not 0), each once, sorted.
+%% Not only `.so` names: the map shows the file a link resolved to, so a
+%% NIF loaded through `x.so -> payload` maps as `payload`. A file-backed
+%% line whose path cannot be read (or a line that does not parse) makes the
+%% whole snapshot unavailable.
 maps_libs(Maps) ->
     Lines = binary:split(Maps, <<"\n">>, [global, trim_all]),
-    lists:usort([Path || Line <- Lines, Path <- [maps_path(Line)], shared_object(Path)]).
-
-%% The sixth field of a maps line, which may itself contain blanks.
-maps_path(Line) ->
-    case re:run(Line, <<"^\\S+\\s+\\S+\\s+\\S+\\s+\\S+\\s+\\S+\\s+(/.*)$">>,
-                [{capture, all_but_first, binary}]) of
-        {match, [Path]} -> Path;
-        nomatch -> none
+    try {ok, lists:usort(lists:append([maps_file(Line) || Line <- Lines]))}
+    catch throw:unparsable -> unavailable
     end.
 
-shared_object(none) -> false;
-shared_object(Path) -> binary:match(filename:basename(Path), <<".so">>) =/= nomatch.
+%% Fields: address, perms, offset, device, inode, then the path, which may
+%% itself contain blanks.
+maps_file(Line) ->
+    case re:run(Line, <<"^\\S+\\s+\\S+\\s+\\S+\\s+\\S+\\s+(\\d+)(?:\\s+(.*))?$">>,
+                [{capture, all_but_first, binary}]) of
+        {match, [<<"0">> | _]} -> [];
+        {match, [_Inode, <<"/", _/binary>> = Path]} -> [Path];
+        _ -> throw(unparsable)
+    end.
 
 libs_fields({ok, Libs}) -> #{nif_check => ok, mapped_libs => Libs};
 libs_fields(unavailable) -> #{nif_check => unavailable, mapped_libs => null}.
