@@ -53,6 +53,20 @@ defmodule NccAgent.ConfigTest do
     assert {:ok, %{hex_cache_rw: true}} = Config.load()
   end
 
+  test "NCC_BUILD_CACHE_MAX_GB caps each slug's build cache copy, 20 GiB by default" do
+    System.put_env("NCC_PORTAL_URL", "https://portal.test:8443")
+    assert {:ok, %{build_cache_max_bytes: 21_474_836_480}} = Config.load()
+
+    System.put_env("NCC_BUILD_CACHE_MAX_GB", "5")
+    assert {:ok, %{build_cache_max_bytes: 5_368_709_120}} = Config.load()
+
+    for bad <- ["0", "-1", "lots", "1.5"] do
+      System.put_env("NCC_BUILD_CACHE_MAX_GB", bad)
+      assert {:error, [msg]} = Config.load()
+      assert msg =~ "NCC_BUILD_CACHE_MAX_GB"
+    end
+  end
+
   test "slots must be 1..16 and the url https" do
     System.put_env("NCC_PORTAL_URL", "http://portal.test")
     System.put_env("NCC_SLOTS", "40")

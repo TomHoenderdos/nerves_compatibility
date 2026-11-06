@@ -60,7 +60,12 @@ defmodule NccAgent.BuildCacheTest do
   defp entry(ctx, key, opts \\ []) do
     src = Path.join(ctx.dir, "src-" <> key)
     File.mkdir_p!(Path.join(src, "ebin"))
-    File.write!(Path.join(src, "ebin/Elixir.Dep.beam"), "beam " <> key)
+
+    File.write!(
+      Path.join(src, "ebin/Elixir.Dep.beam"),
+      Keyword.get(opts, :content, "beam " <> key)
+    )
+
     File.ln_s!("../../../../deps/dep/priv", Path.join(src, "priv"))
     tar = Path.join(ctx.dir, key <> ".tar.gz")
     {:ok, %{sha256: sha}} = Tarball.pack(src, tar, :any)
@@ -218,6 +223,29 @@ defmodule NccAgent.BuildCacheTest do
 
       assert line =~ "0 downloaded" and line =~ "1 skipped"
     end)
+  end
+
+  test "a slug at its byte cap fetches nothing more; under it, it fills up to the cap", ctx do
+    File.mkdir_p!(Path.join(ctx.slug_dir, key(9)))
+    File.write!(Path.join([ctx.slug_dir, key(9), "big"]), :crypto.strong_rand_bytes(200_000))
+    big = fn -> :crypto.strong_rand_bytes(100_000) end
+    offer(ctx, [entry(ctx, key(1), content: big.()), entry(ctx, key(2), content: big.())])
+
+    {dir, line} =
+      BuildCache.prepare(ctx.req, claim(), %{ctx.config | build_cache_max_bytes: 100_000})
+
+    # What is there is still mounted; nothing is added and nothing evicted.
+    assert dir == ctx.slug_dir
+    assert line =~ "0 downloaded" and line =~ "2 skipped"
+    assert BuildCache.entries(dir) == [key(9)]
+    refute_received {:blob_get, _, _}
+
+    # Room for one more: the first fills the slug past its cap, the second waits.
+    {_, line} =
+      BuildCache.prepare(ctx.req, claim(), %{ctx.config | build_cache_max_bytes: 250_000})
+
+    assert line =~ "1 downloaded" and line =~ "1 skipped"
+    assert length(BuildCache.entries(ctx.slug_dir)) == 2
   end
 
   test "a store answering 5xx ends the loop for this build", ctx do

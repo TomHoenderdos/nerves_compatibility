@@ -30,6 +30,7 @@ Read from the environment (in production, populated from the file
 | `NCC_DOCKER_BIN` | `docker` | Docker CLI to run |
 | `NCC_EGRESS_SCRIPT` | `priv/egress.sh` | Installs the containers' egress ruleset |
 | `NCC_HEX_CACHE_RW` | unset | `1` mounts the slot's Hex cache read-write and tells the worker so: the one-release rollback, as on the portal host (`apps/ncc_worker/README.md`, "Hex cache"). A docker daemon that enforces the builders' authorization policy refuses that read-write mount |
+| `NCC_BUILD_CACHE_MAX_GB` | `20` | The most one image's read-only build cache copy may take, in GiB; at the cap the agent fetches nothing more for that image (see "Build cache") |
 | `NCC_DNS_SERVERS` | none | Space-separated resolvers builds may use; unset, they come from `daemon.json`, `resolv.conf` or `resolvectl`, and the egress install fails (no slot claims) when none is usable |
 | `NCC_DOCKER_DAEMON_JSON` | `/etc/docker/daemon.json` | The daemon configuration the host check reads `default-ulimits` from and `egress.sh` reads `dns` from |
 
@@ -113,7 +114,10 @@ mounted read-only at `/build-cache` with `NCC_BUILD_CACHE` set, the same
 mount the portal host's builds get. One line in `runner.log` says what was
 fetched. Any failure (an older portal, L2 off, a bad object, a slow store,
 under 10 GiB free) builds without the missing entries; it never fails a
-lease. A slug dir no build has used for 7 days is removed.
+lease. Each image's copy stops growing at `NCC_BUILD_CACHE_MAX_GB`: nothing is
+evicted from it, since another slot's build may be reading any entry, and a
+slug dir no build has used for 7 days is removed whole, under the same
+per-slug lock a fill takes.
 
 The presigned URLs point at the portal's configured L2 endpoint. A builder
 must be able to reach it: a plain-`http` endpoint on the private network

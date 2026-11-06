@@ -35,6 +35,9 @@ defmodule NccAgent.BuildCache do
   it holds at least one entry, nil otherwise, and one summary line for
   `runner.log`.
 
+  Each slug stops growing at `NCC_BUILD_CACHE_MAX_GB` (`slug_full?/3`:
+  nothing is evicted from a slug another slot may be building from).
+
   A slug dir no build has used for `@stale_after_days` days (the image it
   names is gone) is removed the next time any build prepares its cache.
   """
@@ -146,10 +149,10 @@ defmodule NccAgent.BuildCache do
   # `dir` is `<data>/build-cache/<validated slug>`.
   # sobelow_skip ["Traversal.FileModule"]
   defp fill(req, lease_id, dir, slug, config, opts) do
-    budget = budget(opts)
     File.mkdir_p!(dir)
     mark_in_use(dir)
     remove_leftovers(dir)
+    budget = budget(opts, config, dir)
 
     have = dir |> entries() |> Enum.take(@max_have)
     timeout = min(@offer_timeout_ms, remaining(budget))
@@ -169,10 +172,14 @@ defmodule NccAgent.BuildCache do
     end
   end
 
-  defp budget(opts) do
+  # `slug_used` is what the slug holds already, measured once under the lock;
+  # what this fill extracts is added to it as it goes.
+  defp budget(opts, config, dir) do
     defaults = BuildCache.prefetch_budget()
 
     %{
+      max_slug: config.build_cache_max_bytes,
+      slug_used: disk_usage(dir),
       bytes: Keyword.get(opts, :budget_bytes, defaults.bytes),
       extracted: Keyword.get(opts, :extracted_budget_bytes, defaults.extracted_bytes),
       deadline: System.monotonic_time(:millisecond) + Keyword.get(opts, :budget_ms, defaults.ms),
@@ -265,12 +272,51 @@ defmodule NccAgent.BuildCache do
         counts.bytes + entry.size > budget.bytes or counts.extracted_bytes >= budget.extracted ->
         {bump(counts, :skipped), state}
 
+      slug_full?(dir, counts, budget) ->
+        {bump(counts, :skipped), :stop}
+
       low_disk?(dir, budget) ->
         {bump(counts, :skipped), :stop}
 
       true ->
         entry |> download_one(dir, config, budget) |> tally(entry, counts, state)
     end
+  end
+
+  # The per-slug cap (`NCC_BUILD_CACHE_MAX_GB`). Reaching it stops the
+  # fetching rather than evicting: another slot's container may be reading
+  # any entry of this slug through its read-only mount at this moment, and
+  # deleting files under a running build would turn a cache hit into a
+  # wrong result. The slug is retired whole once its image is unused for a
+  # week (`prune/2`). One object may take the slug past the cap by at most
+  # its own extracted size. A slug whose size cannot be measured is full.
+  defp slug_full?(dir, counts, budget) do
+    full? =
+      is_nil(budget.slug_used) or budget.slug_used + counts.extracted_bytes >= budget.max_slug
+
+    if full? and counts.downloaded + counts.discarded + counts.failed + counts.skipped == 0 do
+      Logger.info(
+        "build cache #{Path.basename(dir)} is at its #{budget.max_slug}-byte cap: fetching nothing more"
+      )
+    end
+
+    full?
+  end
+
+  @doc false
+  # Bytes `dir` takes on disk by `du -sk`, nil when it cannot tell.
+  @spec disk_usage(Path.t()) :: non_neg_integer() | nil
+  # sobelow_skip ["CI.System"]
+  def disk_usage(dir) do
+    with {out, 0} <- System.cmd("du", ["-sk", dir], stderr_to_stdout: true),
+         [kb | _] <- String.split(out, ~r/\s+/, trim: true),
+         {kb, ""} <- Integer.parse(kb) do
+      kb * 1024
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
   end
 
   defp low_disk?(dir, budget) do

@@ -18,9 +18,16 @@ defmodule NccAgent.Config do
           # `NCC_HEX_CACHE_RW=1`: the one-release rollback to a read-write
           # Hex cache mount (`Compatibility.Builder.Argv`).
           hex_cache_rw: boolean(),
+          # `NCC_BUILD_CACHE_MAX_GB` (GiB, default 20): the most one image
+          # slug's read-only copy of the L2 build cache may grow to
+          # (`NccAgent.BuildCache`).
+          build_cache_max_bytes: pos_integer(),
           # The slot a job runs in, set by `NccAgent.Slot` on the job's copy.
           slot: pos_integer() | nil
         }
+
+  @gib 1024 * 1024 * 1024
+  @default_build_cache_max_gb 20
 
   @doc "Every default, with no portal URL."
   @spec defaults() :: t()
@@ -38,6 +45,7 @@ defmodule NccAgent.Config do
       egress_script: Path.join(to_string(:code.priv_dir(:ncc_agent)), "egress.sh"),
       daemon_json: "/etc/docker/daemon.json",
       hex_cache_rw: false,
+      build_cache_max_bytes: @default_build_cache_max_gb * @gib,
       slot: nil
     }
   end
@@ -63,11 +71,17 @@ defmodule NccAgent.Config do
 
     {slots, slot_errors} = parse_slots(System.get_env("NCC_SLOTS", "1"))
 
+    {cache_max, cache_errors} =
+      parse_cache_max(System.get_env("NCC_BUILD_CACHE_MAX_GB"), defaults.build_cache_max_bytes)
+
     errors =
       url_errors(config.portal_url) ++
-        memory_errors(config.memory) ++ slot_errors ++ user_errors(config.build_user)
+        memory_errors(config.memory) ++
+        slot_errors ++ user_errors(config.build_user) ++ cache_errors
 
-    if errors == [], do: {:ok, %{config | slots: slots}}, else: {:error, errors}
+    if errors == [],
+      do: {:ok, %{config | slots: slots, build_cache_max_bytes: cache_max}},
+      else: {:error, errors}
   end
 
   @spec put(t()) :: :ok
@@ -131,6 +145,21 @@ defmodule NccAgent.Config do
         else: []
     else
       _ -> ["NCC_BUILD_USER must be uid:gid, got #{inspect(user)}"]
+    end
+  end
+
+  defp parse_cache_max(nil, default), do: {default, []}
+
+  defp parse_cache_max(value, default) do
+    case Integer.parse(value) do
+      {n, ""} when n > 0 ->
+        {n * @gib, []}
+
+      _ ->
+        {default,
+         [
+           "NCC_BUILD_CACHE_MAX_GB must be a whole number of GiB, at least 1, got #{inspect(value)}"
+         ]}
     end
   end
 
