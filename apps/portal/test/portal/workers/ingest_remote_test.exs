@@ -73,7 +73,8 @@ defmodule Portal.Workers.IngestRemoteTest do
       "run_id" => lease.run_id,
       "image_digest" => lease.image_digest,
       "scan_request_id" => lease.scan_request_id,
-      "builder_id" => builder.id
+      "builder_id" => builder.id,
+      "arch" => "aarch64"
     }
 
   test "ingests the uploaded run with its builder and cleans the upload dir", %{
@@ -96,6 +97,7 @@ defmodule Portal.Workers.IngestRemoteTest do
 
     assert run.builder_id == builder.id
     assert run.image_digest == lease.image_digest
+    assert run.arch == "aarch64"
     # A passing run drops its runner log (`Ingestion.run_log/2`); the failing
     # run below shows the upload's runner log reaches the run.
     assert run.log == nil

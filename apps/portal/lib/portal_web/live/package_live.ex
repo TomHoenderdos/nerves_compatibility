@@ -344,7 +344,12 @@ defmodule PortalWeb.PackageLive do
                 <td class="px-5 py-4 font-mono text-base-content/70">
                   {system.firmware_size_bytes || "—"}
                 </td>
-                <td class="px-5 py-4 font-mono text-xs text-base-content/40">{system.run_id}</td>
+                <td class="px-5 py-4 font-mono text-xs text-base-content/40">
+                  <div>{system.run_id}</div>
+                  <div :if={system.arch} title="The architecture this run built on">
+                    {system.arch}
+                  </div>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -715,6 +720,16 @@ defmodule PortalWeb.PackageLive do
       |> Enum.uniq()
       |> Catalog.runs_finished_at()
 
+    # Read beside the JSON for the same reason: the run's architecture is
+    # not part of the public API's shape.
+    arch =
+      package.systems
+      |> Map.values()
+      |> Enum.map(& &1.run_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Catalog.runs_arch()
+
     package.systems
     |> Map.values()
     |> Enum.map(fn system ->
@@ -723,6 +738,7 @@ defmodule PortalWeb.PackageLive do
       system
       |> Map.put(:carried_from_run_id, source)
       |> Map.put(:carried_at, Map.get(finished_at, source))
+      |> Map.put(:arch, Map.get(arch, system.run_id))
     end)
     |> Enum.sort_by(& &1.system_pkg)
   end

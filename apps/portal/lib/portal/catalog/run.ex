@@ -51,7 +51,8 @@ defmodule Portal.Catalog.Run do
         :started_at,
         :finished_at,
         :scan_request_id,
-        :builder_id
+        :builder_id,
+        :arch
       ])
     end
 
@@ -90,6 +91,15 @@ defmodule Portal.Catalog.Run do
     end
 
     attribute :image_digest, :string do
+      public?(true)
+    end
+
+    # The architecture the build ran on (`Compatibility.Arch`: `x86_64`,
+    # `aarch64`): the build host's for a local run, the builder's for a
+    # remote one. A version is built once, on whichever architecture got it
+    # (`Portal.Workers.RemoteBuild` dedups across them), so this says which.
+    # Nil for runs from before it was recorded.
+    attribute :arch, :string do
       public?(true)
     end
 

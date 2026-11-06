@@ -235,7 +235,11 @@ defmodule PortalWeb.Builder.JobController do
       "run_id" => lease.run_id,
       "image_digest" => lease.image_digest,
       "scan_request_id" => lease.scan_request_id,
-      "builder_id" => builder.id
+      "builder_id" => builder.id,
+      # What its claims name (`claim_for_arch/3`); a builder that has made
+      # none since architectures were recorded is an x86_64 one, as every
+      # agent before them was.
+      "arch" => builder.arch || "x86_64"
     }
 
     Portal.Repo.transaction(fn ->

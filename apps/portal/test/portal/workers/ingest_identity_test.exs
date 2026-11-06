@@ -150,6 +150,8 @@ defmodule Portal.Workers.IngestIdentityTest do
 
       assert [job] = all_enqueued(worker: Ingest)
       assert %{"package" => "jason", "version" => "1.4.4"} = job.args
+      # The image ran on this host, so the run is this host's architecture.
+      assert job.args["arch"] == Compatibility.Arch.current()
     end
 
     test "a toolchain build hands its package, version and toolchain to the ingest" do
@@ -198,6 +200,26 @@ defmodule Portal.Workers.IngestIdentityTest do
 
       assert :ok = ingest(run_args(name, "1.0.0"))
       assert [%{version_tested: "1.0.0"}] = runs_of(name)
+    end
+
+    test "records the architecture the build ran on" do
+      name = unique("idarch")
+      beam = "beam-#{name}"
+      replay(run_result(name, "1.0.0", beam), files_dir_with([beam]))
+
+      assert :ok = ingest(Map.put(run_args(name, "1.0.0"), "arch", "aarch64"))
+      assert [%{arch: "aarch64"}] = runs_of(name)
+    end
+
+    # An ingest queued before runs recorded it ran on this node, as its build did.
+    test "a local ingest that names no architecture records this host's" do
+      name = unique("idhost")
+      beam = "beam-#{name}"
+      replay(run_result(name, "1.0.0", beam), files_dir_with([beam]))
+
+      assert :ok = ingest(run_args(name, "1.0.0"))
+      assert [%{arch: arch}] = runs_of(name)
+      assert arch == Compatibility.Arch.current()
     end
 
     test "refuses a result for another package, and records nothing" do

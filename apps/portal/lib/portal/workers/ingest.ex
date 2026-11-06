@@ -223,10 +223,18 @@ defmodule Portal.Workers.Ingest do
       kind: :remote,
       lease_id: lease_id,
       builder_id: args["builder_id"],
+      arch: args["arch"],
       identity: Upload.lease_identity(lease_id)
     }
 
-  defp source(args), do: %{kind: :local, identity: run_identity(args)}
+  # A local ingest runs on the node its build ran on (`local_queue/0`), so
+  # one queued before jobs named the architecture still knows it.
+  defp source(args),
+    do: %{
+      kind: :local,
+      arch: args["arch"] || Compatibility.Arch.current(),
+      identity: run_identity(args)
+    }
 
   # What a local job was queued to build: nil when it does not say.
   defp run_identity(%{"package" => package, "version" => version})
@@ -359,7 +367,8 @@ defmodule Portal.Workers.Ingest do
         output_dir: build.output_dir,
         scan_request_id: scan_request_id,
         log: build.log,
-        builder_id: Map.get(source, :builder_id)
+        builder_id: Map.get(source, :builder_id),
+        arch: source.arch
       })
 
     case safe_ingest(&Ingestion.ingest/2, build.result, ingest_opts) do
