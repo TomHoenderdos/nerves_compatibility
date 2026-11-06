@@ -48,10 +48,40 @@ defmodule NccWorker.TracerFixtures do
     %{result: result, report: Report.read(trace_dir), log: File.read!(log)}
   end
 
-  @doc "The portability verdict of a `trace/3` result for `package`."
-  @spec judge(String.t(), String.t(), map(), [String.t()]) :: NccWorker.Portability.verdict()
-  def judge(proj, package, traced, native \\ []),
-    do: NccWorker.Portability.judge(proj, package, traced.report, native)
+  @doc """
+  The portability verdict of a `trace/3` result for `package`. `opts` go to
+  `NccWorker.Portability.judge/5` (`releases:`, `hex_home:`, see
+  `hex_release/3`).
+  """
+  @spec judge(String.t(), String.t(), map(), [String.t()], keyword()) ::
+          NccWorker.Portability.verdict()
+  def judge(proj, package, traced, native \\ [], opts \\ []),
+    do: NccWorker.Portability.judge(proj, package, traced.report, native, opts)
+
+  @doc """
+  A Hex release of path dependency `app` (version 0.1.0) whose tarball, in
+  the Hex cache `home`, lists `files`: the verified file list a real Hex
+  dependency's source reads are judged against. Returns the lock entry for
+  `releases:`. The tarball holds only `VERSION` and `metadata.config`, which
+  is all the judge reads.
+  """
+  @spec hex_release(String.t(), String.t(), [String.t()]) :: {String.t(), map()}
+  def hex_release(home, app, files) do
+    dir = Path.join(home, "packages/hexpm")
+    File.mkdir_p!(dir)
+    tar = Path.join(dir, "#{app}-0.1.0.tar")
+
+    meta =
+      Enum.map_join([{"name", app}, {"version", "0.1.0"}, {"files", files}], "", fn term ->
+        :io_lib.format(~c"~p.~n", [term]) |> IO.chardata_to_string()
+      end)
+
+    :ok =
+      :erl_tar.create(String.to_charlist(tar), [{~c"VERSION", "3"}, {~c"metadata.config", meta}])
+
+    sum = :sha256 |> :crypto.hash(File.read!(tar)) |> Base.encode16(case: :lower)
+    {app, %{name: app, version: "0.1.0", checksum: sum}}
+  end
 
   @doc "A dependency with one `lib/<name>.ex` holding `body`, plus `extra` spec keys."
   @spec lib(String.t(), String.t(), map()) :: map()
