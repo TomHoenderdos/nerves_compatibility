@@ -1,0 +1,466 @@
+defmodule NccWorker.Portability.BuildRootTest do
+  use ExUnit.Case, async: true
+
+  import Bitwise
+
+  alias NccWorker.Portability.{BuildRoot, Etf}
+
+  @moduletag :tmp_dir
+
+  # Compiles `source` as if from `<root>/deps/fx/lib/fx.ex` and writes its
+  # beams into `<root>/ebin`; `closure_file?` accepts real files under deps/fx.
+  defp compile(root, source) do
+    file = Path.join(root, "deps/fx/lib/fx.ex")
+    File.mkdir_p!(Path.dirname(file))
+    File.write!(file, source)
+    File.write!(Path.join(root, "deps/fx/README.md"), "fx")
+    ebin = Path.join(root, "ebin")
+    File.mkdir_p!(ebin)
+
+    modules = Code.compile_string(source, file)
+
+    for {module, binary} <- modules do
+      File.write!(Path.join(ebin, "#{module}.beam"), binary)
+      :code.purge(module)
+      :code.delete(module)
+    end
+
+    {ebin, &(String.starts_with?(&1, Path.join(root, "deps/fx/")) and File.regular?(&1))}
+  end
+
+  defp write_beam(ebin, name, chunks) do
+    File.mkdir_p!(ebin)
+    File.write!(Path.join(ebin, name <> ".beam"), iff(chunks))
+  end
+
+  defp iff(chunks) do
+    body =
+      for {id, data} <- chunks, into: <<>> do
+        pad = rem(4 - rem(byte_size(data), 4), 4)
+        <<id::binary-size(4), byte_size(data)::32, data::binary, 0::size(pad)-unit(8)>>
+      end
+
+    <<"FOR1", byte_size(body) + 4::32, "BEAM", body::binary>>
+  end
+
+  defp lit_t(terms) do
+    entries = for t <- terms, into: <<>>, do: <<byte_size(t)::32, t::binary>>
+    <<0::32, length(terms)::32, entries::binary>>
+  end
+
+  defp chunk(binary, id) do
+    {:ok, {_, [{_, data}]}} = :beam_lib.chunks(binary, [String.to_charlist(id)])
+    data
+  end
+
+  describe "check/3" do
+    test "quote location: :keep and Logger-style file metadata are allowed", %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxKeep do
+          defmacro m, do: quote(location: :keep, do: 1 + 1)
+          def meta, do: %{file: __ENV__.file, line: __ENV__.line}
+          def mfa, do: {__MODULE__, {:meta, 0}, __ENV__.file, 1}
+          def kw, do: [file: __ENV__.file, line: 2]
+          @erl_file String.to_charlist(__ENV__.file)
+          def erl, do: %{file: @erl_file, mfa: {__MODULE__, :erl, 0}}
+        end
+        """)
+
+      assert :ok = BuildRoot.check(ebin, [root], ok?)
+    end
+
+    test "an external resource that is a closure file is allowed", %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxResource do
+          @external_resource Path.expand("../README.md", __DIR__)
+          def x, do: 1
+        end
+        """)
+
+      assert :ok = BuildRoot.check(ebin, [root], ok?)
+    end
+
+    test "an external resource that is not a closure file refuses", %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxResourceDir do
+          @external_resource Path.expand("..", __DIR__)
+          def x, do: 1
+        end
+        """)
+
+      assert {:refuse, "bakes the build path: Elixir.FxResourceDir " <> _} =
+               BuildRoot.check(ebin, [root], ok?)
+    end
+
+    test "a directory baked into a literal refuses", %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxRoot do
+          @root Path.expand("..", __DIR__)
+          def root, do: @root
+        end
+        """)
+
+      assert {:refuse, "bakes the build path: Elixir.FxRoot " <> snippet} =
+               BuildRoot.check(ebin, [root], ok?)
+
+      assert snippet =~ "<root>/deps/fx"
+      refute snippet =~ root
+    end
+
+    test "a closure file in an allowed shape still refuses when it is not a closure file",
+         %{tmp_dir: root} do
+      {ebin, _ok?} =
+        compile(root, """
+        defmodule FxNotClosure do
+          def meta, do: %{file: __ENV__.file}
+        end
+        """)
+
+      assert {:refuse, _} = BuildRoot.check(ebin, [root], fn _ -> false end)
+    end
+
+    test "a source path outside the allowed shapes refuses", %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxList do
+          def files, do: [__ENV__.file]
+        end
+        """)
+
+      assert {:refuse, _} = BuildRoot.check(ebin, [root], ok?)
+    end
+
+    test "a __mix_recompile__? file list refuses", %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxRecompile do
+          @paths [Path.expand("../README.md", __DIR__)]
+          def __mix_recompile__?, do: Enum.any?(@paths, &File.exists?/1)
+        end
+        """)
+
+      assert {:refuse, _} = BuildRoot.check(ebin, [root], ok?)
+    end
+
+    test "a root in a literal atom refuses, even inside an allowed shape", %{tmp_dir: root} do
+      ok? = fn _ -> true end
+      atom_lit = <<131, 119, byte_size(root), root::binary>>
+      write_beam(Path.join(root, "hand"), "atom", [{"LitT", lit_t([atom_lit])}])
+      assert {:refuse, _} = BuildRoot.check(Path.join(root, "hand"), [root], ok?)
+
+      keep = :erlang.term_to_binary({:keep, {String.to_atom(root), 1}})
+      write_beam(Path.join(root, "hand2"), "atom", [{"LitT", lit_t([keep])}])
+      assert {:refuse, _} = BuildRoot.check(Path.join(root, "hand2"), [root], ok?)
+    end
+
+    test "a root in the string table, atom table or .app refuses", %{tmp_dir: root} do
+      for {chunk_id, dir} <- [{"StrT", "s"}, {"AtU8", "a"}, {"Atom", "o"}] do
+        ebin = Path.join(root, dir)
+        write_beam(ebin, "m", [{chunk_id, "xx" <> root <> "/lib"}])
+
+        assert {:refuse, "bakes the build path: m " <> _} =
+                 BuildRoot.check(ebin, [root], fn _ -> true end)
+      end
+
+      app = Path.join(root, "app")
+      File.mkdir_p!(app)
+      File.write!(Path.join(app, "fx.app"), ~s|{application,fx,[{env,[{p,"#{root}"}]}]}.|)
+
+      assert {:refuse, "bakes the build path: fx.app " <> _} =
+               BuildRoot.check(app, [root], fn _ -> true end)
+    end
+
+    test "a root inside a fun's free variables or an improper tail refuses", %{tmp_dir: root} do
+      improper = :erlang.term_to_binary([1 | root])
+      write_beam(Path.join(root, "i"), "i", [{"LitT", lit_t([improper])}])
+      assert {:refuse, _} = BuildRoot.check(Path.join(root, "i"), [root], fn _ -> true end)
+    end
+
+    test "a beam without any root passes", %{tmp_dir: root} do
+      {ebin, ok?} = compile(root, "defmodule FxPlain do\n  def x, do: :ok\nend\n")
+      assert :ok = BuildRoot.check(ebin, ["/definitely/not/here"], ok?)
+    end
+
+    test "an unparsable beam is an error, not a pass", %{tmp_dir: root} do
+      ebin = Path.join(root, "bad")
+      File.mkdir_p!(ebin)
+      File.write!(Path.join(ebin, "x.beam"), "not a beam")
+      assert {:error, "unreadable beam x" <> _} = BuildRoot.check(ebin, [root], fn _ -> true end)
+
+      gz = Path.join(root, "gz")
+      File.mkdir_p!(gz)
+      File.write!(Path.join(gz, "x.beam"), :zlib.gzip(iff([{"LitT", lit_t([])}])))
+      assert {:error, _} = BuildRoot.check(gz, [root], fn _ -> true end)
+
+      bad_lit = Path.join(root, "badlit")
+      write_beam(bad_lit, "x", [{"LitT", lit_t([<<131, 255>>])}])
+      assert {:error, "literal table: " <> _} = BuildRoot.check(bad_lit, [root], fn _ -> true end)
+
+      dup = Path.join(root, "dup")
+      write_beam(dup, "x", [{"LitT", lit_t([])}, {"LitT", lit_t([])}])
+      assert {:error, _} = BuildRoot.check(dup, [root], fn _ -> true end)
+    end
+
+    test "a missing ebin is ok, a root with non-ASCII bytes is still found in charlists",
+         %{tmp_dir: root} do
+      assert :ok = BuildRoot.check(Path.join(root, "nope"), [root], fn _ -> true end)
+
+      uroot = Path.join(root, "ü")
+      # A charlist of the root's UTF-8 bytes (binary_to_list) encodes as STRING_EXT.
+      lit = :erlang.term_to_binary([:binary.bin_to_list(uroot)])
+      write_beam(Path.join(root, "u"), "u", [{"LitT", lit_t([lit])}])
+      assert {:refuse, _} = BuildRoot.check(Path.join(root, "u"), [uroot], fn _ -> true end)
+
+      lit = :erlang.term_to_binary([String.to_charlist(uroot)])
+      write_beam(Path.join(root, "u2"), "u", [{"LitT", lit_t([lit])}])
+      assert {:refuse, _} = BuildRoot.check(Path.join(root, "u2"), [uroot], fn _ -> true end)
+    end
+  end
+
+  describe "literal_table/1" do
+    test "an oversized literal-table header is an error, not a decode" do
+      assert {:error, "literal table larger than 64 MiB"} =
+               BuildRoot.literal_table(<<0x7FFFFFFF::32, 0>>)
+    end
+
+    test "a compressed table decodes like the uncompressed one, and a bomb does not" do
+      {:ok, _, beam} = :compile.forms(forms(), [:binary])
+      <<0::32, table::binary>> = chunk(beam, "LitT")
+      compressed = <<byte_size(table)::32, :zlib.compress(table)::binary>>
+
+      assert {:ok, trees} = BuildRoot.literal_table(<<0::32, table::binary>>)
+      assert {:ok, ^trees} = BuildRoot.literal_table(compressed)
+      assert trees != []
+
+      # Inflates past what its header claims.
+      bomb = :zlib.compress(:binary.copy(<<0>>, 10_000_000))
+      assert {:error, _} = BuildRoot.literal_table(<<1_000::32, bomb::binary>>)
+      # Inflates to less than its header claims.
+      assert {:error, _} =
+               BuildRoot.literal_table(
+                 <<byte_size(table) + 1::32, :zlib.compress(table)::binary>>
+               )
+
+      assert {:error, _} = BuildRoot.literal_table(<<100::32, "garbage">>)
+      assert {:error, _} = BuildRoot.literal_table(<<0::32, 5::32>>)
+      assert {:error, _} = BuildRoot.literal_table(<<0::32, 1::32, 2::32, 131>>)
+      assert {:error, _} = BuildRoot.literal_table(<<1, 2>>)
+    end
+
+    test "real literal tables and attribute chunks from compiled dependencies parse" do
+      beams =
+        Path.wildcard(
+          Path.join(
+            Mix.Project.build_path(),
+            "lib/{jason,plug,phoenix,phoenix_live_view,ecto,decimal}/ebin/*.beam"
+          )
+        ) ++ Path.wildcard(Path.join(:code.lib_dir(:stdlib), "ebin/*.beam"))
+
+      assert length(beams) > 100
+
+      for beam <- beams do
+        bin = File.read!(beam)
+        {:ok, {_, chunks}} = :beam_lib.chunks(bin, [~c"LitT", ~c"Attr"], [:allow_missing_chunks])
+        chunks = Map.new(chunks)
+
+        case chunks[~c"LitT"] do
+          data when is_binary(data) ->
+            assert {:ok, _trees} = BuildRoot.literal_table(data), beam
+
+          :missing_chunk ->
+            :ok
+        end
+
+        assert {:ok, _} = Etf.decode(chunks[~c"Attr"]), beam
+      end
+
+      for app <- ~w(jason plug phoenix decimal) do
+        ebin = Path.join(Mix.Project.build_path(), "lib/#{app}/ebin")
+
+        refute match?(
+                 {:error, _},
+                 BuildRoot.check(ebin, ["/definitely/not/here"], fn _ -> true end)
+               )
+      end
+    end
+  end
+
+  # An Erlang module with assorted literals.
+  defp forms do
+    {:ok, tokens, _} =
+      :erl_scan.string(~C"""
+      -module(ncc_build_root_fixture).
+      -export([f/0]).
+      f() -> [{a, 1.5, <<1:3>>, 123456789012345678901234567890, #{k => "str"}, fun lists:map/2,
+               [1 | 2], {}, [], <<"bin">>, -5, 300, -(1 bsl 70)}].
+      """)
+
+    split(tokens, [], [])
+    |> Enum.map(fn form ->
+      {:ok, parsed} = :erl_parse.parse_form(form)
+      parsed
+    end)
+  end
+
+  defp split([], [], acc), do: Enum.reverse(acc)
+
+  defp split([{:dot, _} = dot | rest], cur, acc),
+    do: split(rest, [], [Enum.reverse([dot | cur]) | acc])
+
+  defp split([tok | rest], cur, acc), do: split(rest, [tok | cur], acc)
+
+  describe "Etf.decode/1" do
+    test "refuses a tuple larger than its input and deep nesting" do
+      assert {:error, _} = Etf.decode(<<131, 105, 0xFFFFFFFF::32, 97, 1>>)
+      deep = :binary.copy(<<108, 1::32>>, 5_000) <> <<106>> <> :binary.copy(<<106>>, 5_000)
+      assert {:error, "nested too deep"} = Etf.decode(<<131>> <> deep)
+    end
+
+    test "returns unknown atoms as names" do
+      bin = :erlang.term_to_binary({:keep, {"/x/y.ex", 3}})
+
+      assert {:ok, {:tuple, [{:atom, "keep"}, {:tuple, [{:string, "/x/y.ex"}, {:int, 3}]}]}} =
+               Etf.decode(bin)
+
+      unknown = <<131, 119, 12, "ncc_new_atom">>
+      assert {:ok, {:atom, "ncc_new_atom"}} = Etf.decode(unknown)
+      assert_raise ArgumentError, fn -> String.to_existing_atom("ncc_new_atom") end
+      assert {:ok, {:atom, "nc_é"}} = Etf.decode(<<131, 100, 4::16, "nc_", 0xE9>>)
+      assert {:ok, {:atom, "x"}} = Etf.decode(<<131, 115, 1, "x">>)
+      assert {:ok, {:atom, "x"}} = Etf.decode(<<131, 118, 1::16, "x">>)
+      assert {:error, _} = Etf.decode(<<131, 119, 2, 0xFF, 0xFE>>)
+    end
+
+    test "decodes every literal shape" do
+      cases = [
+        {1, {:int, 1}},
+        {-1, {:int, -1}},
+        {1_000_000, {:int, 1_000_000}},
+        {1.5, :float},
+        {Integer.pow(2, 80), :bignum},
+        {-Integer.pow(2, 4000), :bignum},
+        {"bin", {:string, "bin"}},
+        {~c"abc", {:string, "abc"}},
+        {[1000, 2000], {:list, [{:int, 1000}, {:int, 2000}], {:list, [], nil}}},
+        {[], {:list, [], nil}},
+        {[:a | :b], {:list, [{:atom, "a"}], {:atom, "b"}}},
+        {{}, {:tuple, []}},
+        {%{a: 1}, {:map, [{{:atom, "a"}, {:int, 1}}]}},
+        {<<1::3>>, {:bits, <<32>>}},
+        {&Enum.map/2, {:export, {:atom, "Elixir.Enum"}, {:atom, "map"}, 2}},
+        {List.to_tuple(Enum.to_list(1..300)), {:tuple, Enum.map(1..300, &{:int, &1})}}
+      ]
+
+      for {term, tree} <- cases do
+        assert {:ok, ^tree} = Etf.decode(:erlang.term_to_binary(term)), inspect(term)
+      end
+
+      assert {:ok, :float} = Etf.decode(:erlang.term_to_binary(1.5, minor_version: 0))
+      assert {:ok, {:string, "é"}} = Etf.decode(:erlang.term_to_binary([0xE9]))
+
+      for term <- [self(), make_ref(), hd(Port.list())] do
+        assert {:ok, {kind, {:atom, _}}} = Etf.decode(:erlang.term_to_binary(term))
+        assert kind in [:pid, :ref, :port]
+      end
+
+      x = String.duplicate("free", 1)
+      fun = fn -> x end
+
+      assert {:ok, {:fun, {:atom, _}, [{:string, "free"}]}} =
+               Etf.decode(:erlang.term_to_binary(fun))
+
+      big = :erlang.term_to_binary(String.duplicate("a", 1000), compressed: 9)
+      assert {:ok, {:string, s}} = Etf.decode(big)
+      assert s == String.duplicate("a", 1000)
+    end
+
+    test "fails closed on malformed and unknown input" do
+      for bad <- [
+            <<>>,
+            <<131>>,
+            <<130, 97, 1>>,
+            <<131, 97>>,
+            <<131, 97, 1, 0>>,
+            <<131, 255>>,
+            <<131, 121, 0, 0, 0, 0, 97, 1>>,
+            <<131, 82, 0>>,
+            <<131, 77, 1::32, 0, 255>>,
+            <<131, 77, 1::32, 9, 255>>,
+            <<131, 110, 1, 2, 5>>,
+            <<131, 108, 2::32, 106>>,
+            <<131, 116, 1::32, 97, 1>>,
+            <<131, 80, 1_000_000::32, 1, 2, 3>>,
+            <<131, 113, 97, 1, 97, 1, 97, 1>>,
+            :binary.part(:erlang.term_to_binary({"abc", [1, 2], %{a: 1}}), 0, 10),
+            42
+          ] do
+        assert {:error, why} = Etf.decode(bad), inspect(bad)
+        assert is_binary(why)
+      end
+    end
+
+    test "a zlib bomb in a compressed term is an error" do
+      bomb = :zlib.compress(:binary.copy(<<0>>, 100_000_000))
+      assert {:error, _} = Etf.decode(<<131, 80, 100_000_000::32, bomb::binary>>)
+    end
+
+    test "too many nodes is an error" do
+      wide = <<131, 108, 5_000_000::32>> <> :binary.copy(<<97, 0>>, 5_000_000) <> <<106>>
+      assert {:error, "too many terms"} = Etf.decode(wide)
+    end
+
+    test "random and mutated bytes never raise and never create atoms" do
+      :rand.seed(:exsss, {1, 2, 3})
+      fuzz_atoms = for n <- 1..40, into: <<>>, do: <<119, 9, "ncc_fz_", n + 64, n + 64>>
+
+      seeds = [
+        :erlang.term_to_binary({:keep, {"/x/y.ex", 3}}),
+        :erlang.term_to_binary(%{file: ~c"/a/b", line: 1, mfa: {:m, :f, 1}}),
+        :erlang.term_to_binary([1.5, -(1 <<< 70), <<1::3>>, &Enum.map/2, {}, [1 | 2], self()]),
+        <<131, 104, 40, fuzz_atoms::binary>>
+      ]
+
+      names =
+        for _ <- 1..20_000, reduce: [] do
+          acc ->
+            input = fuzz_input(seeds)
+            result = Etf.decode(input)
+            assert match?({:ok, _}, result) or match?({:error, why} when is_binary(why), result)
+
+            table = <<0::32, 1::32, byte_size(input)::32, input::binary>>
+            assert {tag, _} = BuildRoot.literal_table(table)
+            assert tag in [:ok, :error]
+            atom_names(result) ++ acc
+        end
+
+      assert names != []
+
+      for name <- Enum.uniq(names), String.starts_with?(name, "ncc_fz_") do
+        assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+      end
+    end
+  end
+
+  defp fuzz_input(seeds) do
+    seed = Enum.random(seeds)
+
+    case :rand.uniform(3) do
+      1 -> <<131>> <> :crypto.strong_rand_bytes(:rand.uniform(64))
+      2 -> mutate(seed)
+      3 -> :binary.part(seed, 0, :rand.uniform(byte_size(seed)))
+    end
+  end
+
+  defp atom_names({:ok, {:tuple, items}}), do: for({:atom, n} <- items, do: n)
+  defp atom_names(_), do: []
+
+  defp mutate(bin) do
+    pos = :rand.uniform(byte_size(bin)) - 1
+    <<pre::binary-size(pos), _, post::binary>> = bin
+    <<pre::binary, :rand.uniform(256) - 1, post::binary>>
+  end
+end
