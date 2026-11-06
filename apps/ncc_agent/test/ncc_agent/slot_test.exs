@@ -185,6 +185,25 @@ defmodule NccAgent.SlotTest do
     assert log =~ "no worker image for aarch64"
   end
 
+  # A VM CI publishes no worker image or release for: it never claims (the
+  # portal would only refuse the architecture), says so, and checks again in
+  # a minute.
+  test "a slot on an unsupported architecture never claims and says why", %{script: script} do
+    Application.put_env(:ncc_agent, :system_architecture, ~c"armv7l-unknown-linux-gnueabihf")
+    on_exit(fn -> Application.delete_env(:ncc_agent, :system_architecture) end)
+    script_claim(script, claim())
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        start_supervised!({Slot, 1})
+        assert_receive {:portal_request, "POST", "/builder/v1/status", body, _}, 5_000
+        assert body["free_slots"] == 0
+        refute_receive {:portal_request, "POST", "/builder/v1/jobs/claim", _, _}, 500
+      end)
+
+    assert log =~ "unsupported architecture armv7l"
+  end
+
   test "while an update is pending a slot does not claim" do
     :persistent_term.put({Updater, :updating}, "1800000000.def")
     start_supervised!({Slot, 1})
