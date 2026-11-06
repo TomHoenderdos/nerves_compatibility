@@ -182,11 +182,22 @@ import ipaddress, json, os, sys, tempfile
 
 path, runsc, platform, nofile = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 dns = sys.argv[5].split()
+# What egress.sh refuses as a resolver (is_unusable), the ranges its ruleset
+# drops that hold no resolver included: a DNS accept to one would be a hole
+# in that drop. RFC1918 and CGNAT stay allowed, as there: a VPC's resolver.
+UNUSABLE = [ipaddress.ip_network(n) for n in [
+    "0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "192.0.0.0/24",
+    "198.18.0.0/15", "224.0.0.0/3",
+    "::/127", "::ffff:0:0/96", "fe80::/10", "ff00::/8",
+]]
 for address in dns:
     try:
-        ipaddress.ip_address(address)
+        ip = ipaddress.ip_address(address)
     except ValueError:
         sys.exit(f"NCC_DOCKER_DNS: {address!r} is not an IP address")
+    if any(ip.version == n.version and ip in n for n in UNUSABLE):
+        sys.exit(f"NCC_DOCKER_DNS: {address} is in a range the egress ruleset drops or "
+                 "will not use as a resolver; use a public resolver such as 1.1.1.1")
 try:
     with open(path) as f:
         text = f.read()

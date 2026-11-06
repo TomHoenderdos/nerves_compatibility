@@ -148,6 +148,29 @@ class BuilderHostSetupTest(unittest.TestCase):
         self.assertNotEqual(bad.returncode, 0)
         self.assertEqual(json.loads(self.daemon_json.read_text())["dns"], ["1.1.1.1", "9.9.9.9"])
 
+        # Addresses in ranges the egress ruleset drops, or that egress.sh
+        # will not take as a resolver, are refused: a DNS accept to one would
+        # be a hole in that drop. OrbStack's own resolver is the first.
+        for address in [
+            "0.250.250.200",
+            "127.0.0.53",
+            "169.254.169.254",
+            "192.0.0.8",
+            "198.18.0.1",
+            "224.0.0.251",
+            "240.0.0.1",
+            "::1",
+            "fe80::1",
+            "::ffff:10.0.0.1",
+        ]:
+            refused = self.run_setup("install", NCC_DOCKER_DNS=f"1.1.1.1 {address}")
+            self.assertNotEqual(refused.returncode, 0, address)
+            self.assertIn(address, refused.stderr)
+
+        # A VPC's private resolver stays usable, as in egress.sh.
+        ok = self.run_setup("install", NCC_DOCKER_DNS="10.0.0.2 fd00::53")
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+
     def test_platform_follows_kvm_and_the_override(self):
         self.present_runsc()
         kvm = self.root / "kvm"
