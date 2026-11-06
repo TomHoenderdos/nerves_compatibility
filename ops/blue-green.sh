@@ -106,3 +106,225 @@ bg_includes_upstream() {
     END { exit !found }
   ' "$1"
 }
+
+BG_IDLE_HEALTH_SECONDS=${BG_IDLE_HEALTH_SECONDS:-60}
+BG_APACHE_HEALTH_SECONDS=${BG_APACHE_HEALTH_SECONDS:-30}
+BG_WATCH_SECONDS=${BG_WATCH_SECONDS:-30}
+BG_DRAIN_CAP_SECONDS=${BG_DRAIN_CAP_SECONDS:-600}
+BG_BIND_SECONDS=${BG_BIND_SECONDS:-15}
+# Paused and resumed on one node only: without local_only Oban broadcasts the
+# pause to every node, the colour that just took over included.
+BG_PAUSE_EXPR='Oban.pause_all_queues(Oban, local_only: true)'
+BG_RESUME_EXPR='Oban.resume_all_queues(Oban, local_only: true)'
+BG_RUNNING_EXPR='IO.puts(Oban.check_all_queues(Oban) |> Enum.map(&length(&1.running)) |> Enum.sum())'
+
+bg_release() { printf '%s\n' "$NCC_INSTALL_DIR/releases/$1"; }
+
+bg_build() { "$NCC_INSTALL_DIR/build-release.sh" "$(bg_release "$1")"; }
+
+# rpc/eval as the service user, in the colour's own node name and tmp dir.
+bg_as_ncc() { # color command expr
+  local color=$1
+  sudo -u ncc bash -c 'cd "$1" && set -a && . "$2" && . "$3" && set +a && "$4" "$5" "$6"' -- \
+    "$NCC_PORTAL_WORKDIR" "$NCC_PORTAL_ENV" "$(dirname "$NCC_PORTAL_ENV")/color-$color.env" \
+    "$(bg_release "$color")/bin/portal" "$2" "$3"
+}
+bg_rpc() { bg_as_ncc "$1" rpc "$2"; }
+bg_migrate() {
+  bg_as_ncc "$1" eval 'Ecto.Migrator.with_repo(Portal.Repo, &Ecto.Migrator.run(&1, :up, all: true))'
+}
+
+# The serving release's own digested files (its cache_manifest.json "latest"),
+# copied into the new release without overwriting: a page the old colour
+# rendered keeps loading its app-<digest>.js from the new one. Only the
+# manifest's files, never the whole directory, so what a release carried from
+# its own predecessor is not carried again.
+bg_carry_assets() {
+  python3 - "$(bg_release "$1")" "$(bg_release "$2")" <<'PY'
+import glob, json, os, shutil, sys
+
+def static(release):
+    found = glob.glob(os.path.join(release, "lib", "portal-*", "priv", "static"))
+    if len(found) != 1:
+        sys.exit(f"expected one portal priv/static under {release}, found {len(found)}")
+    return found[0]
+
+src, dst = static(sys.argv[1]), static(sys.argv[2])
+with open(os.path.join(src, "cache_manifest.json")) as f:
+    latest = json.load(f).get("latest", {})
+copied = 0
+for digested in latest.values():
+    for name in (digested, digested + ".gz"):
+        a, b = os.path.join(src, name), os.path.join(dst, name)
+        if os.path.isfile(a) and not os.path.exists(b):
+            os.makedirs(os.path.dirname(b), exist_ok=True)
+            shutil.copy2(a, b)
+            copied += 1
+print(f"carried {copied} digested asset file(s) from the serving release")
+PY
+}
+
+bg_health_ok() { # body sha-or-empty color
+  [[ $1 == *"\"color\":\"$3\""* ]] || return 1
+  [[ -z $2 || $1 == *"\"sha\":\"$2\""* ]]
+}
+
+bg_wait_idle_health() { # color sha seconds
+  local port host body i
+  port=$(bg_port "$1")
+  host=$(bg_public_host) || return 1
+  for ((i = 0; i < $3; i += 2)); do
+    body=$(curl -s --max-time 5 -H "Host: $host" -H 'X-Forwarded-Proto: https' \
+      "http://127.0.0.1:$port/health" || true)
+    bg_health_ok "$body" "$2" "$1" && return 0
+    sleep 2
+  done
+  echo "$BG_UNIT@$1 did not answer /health with sha ${2:-any} within $3 s (last: ${body:0:200})" >&2
+  return 1
+}
+
+# Through Apache and its TLS vhost, by the public name: the vhost listens on
+# the public address, not loopback.
+bg_wait_apache_health() { # color sha-or-empty seconds
+  local host body i
+  host=$(bg_public_host) || return 1
+  for ((i = 0; i < $3; i += 2)); do
+    body=$(curl -s --max-time 5 "https://$host/health" || true)
+    bg_health_ok "$body" "$2" "$1" && return 0
+    sleep 2
+  done
+  echo "Apache did not route /health to $1 (sha ${2:-any}) within $3 s (last: ${body:0:200})" >&2
+  return 1
+}
+
+bg_fail_idle() { # color what
+  echo "deploy failed at: $2; stopping $BG_UNIT@$1 (the serving colour is untouched)" >&2
+  journalctl -u "$BG_UNIT@$1" -n 50 --no-pager >&2 || true
+  systemctl stop "$BG_UNIT@$1" || true
+}
+
+bg_point_apache_at() { # color; fails with the include restored
+  local out
+  cp "$NCC_APACHE_UPSTREAM" "$NCC_APACHE_UPSTREAM.bak"
+  bg_write_include "$(bg_port "$1")"
+  if ! out=$(apachectl configtest 2>&1); then
+    echo "apachectl configtest failed (it checks every vhost on this host, not only ours):" >&2
+    echo "$out" >&2
+    mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM"
+    return 1
+  fi
+  if ! systemctl reload apache2; then
+    echo "systemctl reload apache2 failed; restoring the include" >&2
+    mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM"
+    systemctl reload apache2 || true
+    return 1
+  fi
+}
+
+bg_mark_serving() { # new old
+  printf '%s\n' "$1" > "$NCC_INSTALL_DIR/active-color.tmp"
+  mv "$NCC_INSTALL_DIR/active-color.tmp" "$NCC_INSTALL_DIR/active-color"
+  systemctl enable "$BG_UNIT@$1"
+  systemctl disable "$BG_UNIT@$2"
+}
+
+bg_switch() { # old new sha
+  bg_point_apache_at "$2" || return 1
+  if ! bg_wait_apache_health "$2" "$3" "$BG_APACHE_HEALTH_SECONDS"; then
+    mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM"
+    systemctl reload apache2 || true
+    return 1
+  fi
+  bg_mark_serving "$2" "$1"
+}
+
+bg_new_healthy() { # new sha
+  [[ $(systemctl show -p NRestarts --value "$BG_UNIT@$1") == 0 ]] &&
+    systemctl is-active --quiet "$BG_UNIT@$1" &&
+    bg_wait_apache_health "$1" "$2" 2
+}
+
+# The old colour is out of traffic but up: pause its queues, wait for its
+# executing jobs, and keep watching the new colour. Returns 2 when the new
+# colour falls over, so the caller can switch back while the old one is warm.
+bg_drain() { # old new sha
+  local waited=0 running
+  bg_rpc "$1" "$BG_PAUSE_EXPR" || echo "warning: could not pause $1's queues; its jobs may be cut short" >&2
+  while :; do
+    bg_new_healthy "$2" "$3" || return 2
+    running=$(bg_rpc "$1" "$BG_RUNNING_EXPR" 2>/dev/null | tail -n 1 || true)
+    if [[ $running == 0 && $waited -ge $BG_WATCH_SECONDS ]]; then
+      return 0
+    fi
+    if ((waited >= BG_DRAIN_CAP_SECONDS)); then
+      echo "drain cap of ${BG_DRAIN_CAP_SECONDS} s reached with '${running:-?}' job(s) still executing on $1; stopping it anyway (Lifeline rescues them)" >&2
+      return 0
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+}
+
+bg_switch_back() { # old new
+  echo "$BG_UNIT@$2 failed after taking traffic; switching back to $1" >&2
+  journalctl -u "$BG_UNIT@$2" -n 50 --no-pager >&2 || true
+  bg_point_apache_at "$1" || echo "ERROR: could not point Apache back at $1; fix the include by hand" >&2
+  bg_wait_apache_health "$1" "" "$BG_APACHE_HEALTH_SECONDS" ||
+    echo "ERROR: $1 does not answer through Apache after switching back" >&2
+  bg_mark_serving "$1" "$2"
+  bg_rpc "$1" "$BG_RESUME_EXPR" || echo "warning: could not resume $1's queues" >&2
+  systemctl stop "$BG_UNIT@$2" || true
+}
+
+bg_activate() { # old new sha-or-empty
+  local old=$1 new=$2 sha=$3 rc=0 i
+  if ! systemctl start "$BG_UNIT@$new"; then
+    bg_fail_idle "$new" "systemctl start"
+    return 1
+  fi
+  if ! bg_wait_idle_health "$new" "$sha" "$BG_IDLE_HEALTH_SECONDS"; then
+    bg_fail_idle "$new" "health check on its own port"
+    return 1
+  fi
+  if ! bg_switch "$old" "$new" "$sha"; then
+    bg_fail_idle "$new" "the switch"
+    return 1
+  fi
+  bg_drain "$old" "$new" "$sha" || rc=$?
+  if ((rc == 2)); then
+    bg_switch_back "$old" "$new"
+    return 1
+  fi
+  if ! systemctl stop "$BG_UNIT@$old"; then
+    echo "ERROR: incomplete deploy: $BG_UNIT@$old did not stop. $new serves the public site, but $old still holds the builder port and runs queues on old code. Stop it by hand; the next deploy refuses until then." >&2
+    return 1
+  fi
+  for ((i = 0; i < BG_BIND_SECONDS; i += 1)); do
+    [[ $(curl -s --max-time 2 "http://127.0.0.1:$(bg_port "$new")/health" || true) == *'"builder_endpoint":"waiting"'* ]] || return 0
+    sleep 1
+  done
+  echo "warning: $new has not bound the builder port ${BG_BIND_SECONDS} s after $old stopped" >&2
+}
+
+bg_deploy() { # target-sha
+  bg_preflight || return 1
+  echo "blue/green: $BG_ACTIVE serves; building $BG_IDLE"
+  bg_build "$BG_IDLE" || return 1
+  bg_carry_assets "$BG_ACTIVE" "$BG_IDLE" || return 1
+  bg_migrate "$BG_IDLE" || return 1
+  bg_activate "$BG_ACTIVE" "$BG_IDLE" "$1"
+}
+
+# Back to the release in the other colour's directory: no build, no
+# migration rollback. That release survives only until the next deploy
+# builds over it.
+bg_rollback() {
+  bg_preflight || return 1
+  # Present and non-empty; the start and its health check prove the rest.
+  if [[ ! -d $(bg_release "$BG_IDLE") || -z $(ls -A "$(bg_release "$BG_IDLE")" 2>/dev/null) ]]; then
+    echo "refusing: no release in $(bg_release "$BG_IDLE") to roll back to" >&2
+    return 1
+  fi
+  echo "blue/green rollback: $BG_ACTIVE serves; bringing back $BG_IDLE"
+  bg_activate "$BG_ACTIVE" "$BG_IDLE" ""
+}

@@ -227,6 +227,154 @@ class BlueGreenTest(unittest.TestCase):
         self.assertIn('RewriteRule ^/?(.*) "ws://127.0.0.1:@PORT@/$1" [P]', text)
         self.assertIn('RequestHeader set X-Forwarded-Proto "https"', text)
 
+    # --- deploy ----------------------------------------------------------
+
+    def deploy(self, **kw):
+        return self.run_bg(f"bg_deploy {TARGET}", **kw)
+
+    def test_happy_path_blue_to_green(self):
+        result, events = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("127.0.0.1:4003/ retry=0", self.include)
+        self.assertEqual(self.cache, "green")
+        self.assertEqual(self.running, ["green"])
+        order = [e for e in events if not e.startswith(
+            ("curl", "systemctl show", "systemctl is-active", "rpc", "apachectl", "journalctl"))]
+        self.assertEqual(order[:4], ["build green", "carry blue green", "migrate green",
+                                     "systemctl start ncc-portal@green"])
+        self.assertLess(events.index("apachectl configtest"), events.index("systemctl reload apache2"))
+        self.assertIn("systemctl enable ncc-portal@green", events)
+        self.assertIn("systemctl disable ncc-portal@blue", events)
+        pause = "rpc blue Oban.pause_all_queues(Oban, local_only: true)"
+        self.assertIn(pause, events)
+        self.assertLess(events.index(pause), events.index("systemctl stop ncc-portal@blue"))
+
+    def test_happy_path_green_to_blue(self):
+        result, _ = self.deploy(active="green")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("127.0.0.1:4002/ retry=0", self.include)
+        self.assertEqual((self.cache, self.running), ("blue", ["blue"]))
+
+    def test_pause_is_local_only(self):
+        _, events = self.deploy()
+        pauses = [e for e in events if "pause_all_queues" in e]
+        self.assertTrue(pauses)
+        for e in pauses:
+            self.assertIn("local_only: true", e)
+
+    def assert_untouched(self, result, events, active="blue"):
+        self.assertNotEqual(result.returncode, 0)
+        port = {"blue": 4002, "green": 4003}[active]
+        self.assertIn(f"127.0.0.1:{port}/ retry=0", self.include)
+        self.assertEqual(self.cache, active)
+        self.assertEqual(self.running, [active])
+        self.assertNotIn(f"systemctl stop ncc-portal@{active}", events)
+
+    def test_preflight_refusal_builds_nothing(self):
+        result, events = self.deploy(running=["blue", "green"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse([e for e in events if e.startswith("build")])
+
+    def test_build_or_migrate_failure_leaves_blue_serving(self):
+        for overrides in ({"BUILD_STATUS": "1"}, {"MIGRATE_STATUS": "1"}):
+            with self.subTest(**overrides):
+                result, events = self.deploy(**overrides)
+                self.assert_untouched(result, events)
+                self.assertNotIn("systemctl start ncc-portal@green", events)
+
+    def test_idle_that_never_reports_the_target_sha_is_stopped(self):
+        result, events = self.deploy(BUILT_SHA=OLD)
+        self.assert_untouched(result, events)
+        self.assertIn("systemctl stop ncc-portal@green", events)
+        self.assertNotIn("systemctl reload apache2", events)
+        self.assertIn("journal lines", result.stderr)
+
+    def test_a_301_from_the_idle_colour_is_a_failure(self):
+        result, events = self.deploy(HEALTH_301="green")
+        self.assert_untouched(result, events)
+        self.assertNotIn("systemctl reload apache2", events)
+
+    def test_idle_that_fails_to_start_is_a_failure(self):
+        result, events = self.deploy(START_FAILS="green")
+        self.assert_untouched(result, events)
+
+    def test_configtest_failure_restores_the_include_and_names_the_other_vhost(self):
+        result, events = self.deploy(CONFIGTEST_STATUS="1")
+        self.assert_untouched(result, events)
+        self.assertIn("other-site.conf", result.stderr)
+        self.assertNotIn("systemctl reload apache2", events)
+
+    def test_reload_failure_restores_and_reloads_again(self):
+        result, events = self.deploy(RELOAD_STATUS="1")
+        self.assert_untouched(result, events)
+        self.assertGreaterEqual(events.count("systemctl reload apache2"), 2)
+
+    def test_new_colour_crashing_during_the_drain_switches_back(self):
+        result, events = self.deploy(CRASHES="green")
+        self.assert_untouched(result, events)
+        self.assertIn("rpc blue Oban.resume_all_queues(Oban, local_only: true)", events)
+        self.assertIn("systemctl stop ncc-portal@green", events)
+        self.assertIn("systemctl enable ncc-portal@blue", events)
+
+    def test_drain_cap_stops_the_old_colour_anyway(self):
+        result, events = self.deploy(RUNNING_JOBS="3", BG_DRAIN_CAP_SECONDS="20")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("drain cap", result.stderr)
+        self.assertEqual(self.running, ["green"])
+
+    def test_waits_for_running_jobs_until_drained(self):
+        result, events = self.deploy(RUNNING_JOBS="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        checks = [e for e in events if "check_all_queues" in e]
+        self.assertTrue(checks)
+
+    def test_old_colour_that_will_not_stop_is_a_red_deploy(self):
+        result, events = self.deploy(STOP_FAILS="blue")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("127.0.0.1:4003/ retry=0", self.include)
+        self.assertEqual(self.cache, "green")
+        self.assertIn("incomplete", result.stderr)
+
+    # --- rollback --------------------------------------------------------
+
+    def test_rollback_starts_the_other_colour_without_building(self):
+        result, events = self.run_bg("bg_rollback", active="green")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse([e for e in events if e.startswith(("build", "migrate", "carry"))])
+        self.assertIn("127.0.0.1:4002/ retry=0", self.include)
+        self.assertEqual((self.cache, self.running), ("blue", ["blue"]))
+
+    def test_rollback_refuses_without_a_release_in_the_other_colour(self):
+        result, events = self.run_bg('rm -rf "$NCC_INSTALL_DIR/releases/blue"; bg_rollback',
+                                     active="green")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no release", result.stderr)
+        self.assertNotIn("systemctl start ncc-portal@blue", events)
+
+
+class CarryAssetsTest(unittest.TestCase):
+    """The real bg_carry_assets: only the serving release's own manifest files."""
+
+    def test_carries_the_manifest_files_and_nothing_older(self):
+        with tempfile.TemporaryDirectory() as directory:
+            install = Path(directory)
+            old = install / "releases/blue/lib/portal-0.1.0/priv/static"
+            new = install / "releases/green/lib/portal-0.1.0/priv/static"
+            (old / "assets/js").mkdir(parents=True)
+            (new / "assets/js").mkdir(parents=True)
+            (old / "cache_manifest.json").write_text(
+                '{"latest": {"assets/js/app.js": "assets/js/app-old1.js"}, "digests": {}}')
+            (old / "assets/js/app-old1.js").write_text("old")
+            (old / "assets/js/app-old1.js.gz").write_text("oldgz")
+            (old / "assets/js/app-older0.js").write_text("carried before")
+            (new / "assets/js/app-new2.js").write_text("new")
+            env = {**os.environ, "NCC_INSTALL_DIR": str(install), "HELPER": str(OPS / "blue-green.sh")}
+            result = subprocess.run(["bash", "-c", 'source "$HELPER"; bg_carry_assets blue green'],
+                                    env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            names = sorted(p.name for p in (new / "assets/js").iterdir())
+            self.assertEqual(names, ["app-new2.js", "app-old1.js", "app-old1.js.gz"])
+
 
 if __name__ == "__main__":
     unittest.main()
