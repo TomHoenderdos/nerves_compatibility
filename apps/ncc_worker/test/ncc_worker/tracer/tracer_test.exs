@@ -205,11 +205,14 @@ defmodule NccWorker.TracerTest do
   end
 
   test "a missing or garbled trace file is a problem, not a crash", %{tmp_dir: dir} do
-    assert %{problems: ["trace-main.jsonl missing"]} = NccWorker.Tracer.Report.read(dir)
+    # The reader also lists what the broken file lacks (no closure, no end).
+    assert %{problems: ["trace-main.jsonl missing" | _]} = NccWorker.Tracer.Report.read(dir)
 
     File.write!(Path.join(dir, "trace-main.jsonl"), ~s({"kind":"start"}\nnot json\n))
 
-    assert %{problems: ["unparsable line 2"], start: %{"kind" => "start"}} =
+    assert %{problems: ["unparsable line 2" | rest], start: %{"kind" => "start"}} =
              NccWorker.Tracer.Report.read(dir)
+
+    assert "no end line" in rest
   end
 end

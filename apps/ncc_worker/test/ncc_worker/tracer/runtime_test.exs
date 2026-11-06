@@ -531,7 +531,16 @@ defmodule NccWorker.Tracer.RuntimeTest do
 
     assert out =~ ~s(AFLAGS=+pc unicode -pa "#{spaced}" -s ncc_tracer start_child)
     assert [file] = Path.wildcard(Path.join(dir, "trace-child-kid-*.jsonl"))
-    assert [%{"role" => "child", "app" => "kid"}] = file |> lines() |> kind("start")
+
+    assert [%{"role" => "child", "app" => "kid", "tracer" => tracer}] =
+             file |> lines() |> kind("start")
+
+    # Both VMs loaded the same tracer modules, and say which by md5.
+    assert [%{"tracer" => ^tracer}] =
+             dir |> Path.join("trace-main.jsonl") |> lines() |> kind("start")
+
+    assert Map.keys(tracer) == ~w(ncc_tracer ncc_tracer_channels ncc_tracer_stack)
+    assert tracer["ncc_tracer"] == Base.encode16(:ncc_tracer.module_info(:md5))
   end
 
   test "requests without the driver's token are rejected and recorded, never a clean end",

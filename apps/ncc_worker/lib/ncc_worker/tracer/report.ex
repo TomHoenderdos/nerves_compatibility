@@ -5,23 +5,31 @@ defmodule NccWorker.Tracer.Report do
   per other BEAM the compile started (rebar3). Reading never raises.
 
   Anything that says the trace cannot be trusted is collected in `problems`,
-  which makes the judge refuse to judge (`NccWorker.Portability`):
+  and any problem makes the judge refuse to judge (`NccWorker.Portability`).
+  A check the tracer wrote passes only with an explicit `true`. Problems:
 
-    * a missing, oversized or unparsable file or line, or a line kind the
-      reader does not know;
-    * a window close, sentinel or end whose `integrity_ok` is false, a
-      window close, end or native-pattern quiet close whose `delivered` is
-      false;
-    * `stats.unjudged > 0`, any `unencodable` line, a `collector_down` or
-      `watcher_down` line;
-    * any of the above in the child trace of an app in the closure line.
+    * a missing, oversized, empty or unparsable file or line, a line kind
+      the reader does not know;
+    * not exactly one `start`, one `closure` and one `end` line, any line
+      after the `end`, no `stats` line or one without an integer
+      `unjudged`, `unjudged > 0`;
+    * an `end` whose status is not `"ok"`, or whose `final_sentinel`,
+      `depth_ok`, `integrity_ok` or `delivered` is not true, or whose
+      `overflow` is not false; any `overflow` line;
+    * a window or native-pattern quiet interval left open or closed without
+      being opened, a window close whose `depth_ok`, `integrity_ok` or
+      `delivered` is not true, a sentinel whose `depth_ok` or `integrity_ok`
+      is not true, a quiet close whose `delivered` is not true;
+    * windows that are not exactly the closure's dependencies, in its order;
+    * any `unencodable`, `collector_down` or `watcher_down` line;
+    * in the child trace of a closure app (of any app but `unknown` when
+      the closure line is missing): any of the line-level problems above,
+      and a child VM whose tracer modules (`start.tracer`, their md5s) are
+      not the ones the Mix VM loaded.
 
-  A missing `end` line leaves `ending` nil, a refused start fills
-  `refused_start`, and `overflow` lines and the `end` line's `depth_ok`,
-  `status` and `final_sentinel` are left to the judge, which checks them.
-  A child file whose app is not in the closure (a stray `erl -eval` sub-VM
-  of elixir_make, whose app is `unknown`) is kept in `children` under its
-  app and adds no problem: the judge reads children only for closure apps.
+  A child file of an app outside the closure (a stray `erl -eval` sub-VM of
+  elixir_make, whose app is `unknown`) is kept in `children` under its app
+  and adds no problem: the judge reads children only for closure apps.
   """
 
   @max_bytes 512 * 1024 * 1024
@@ -73,11 +81,8 @@ defmodule NccWorker.Tracer.Report do
 
   @spec read(String.t()) :: t()
   def read(dir) do
-    main =
-      dir
-      |> Path.join("trace-main.jsonl")
-      |> read_lines()
-      |> Enum.reduce(%__MODULE__{}, &main_line/2)
+    items = dir |> Path.join("trace-main.jsonl") |> read_lines()
+    main = Enum.reduce(items, %__MODULE__{}, &main_line/2)
 
     children =
       dir
@@ -86,7 +91,7 @@ defmodule NccWorker.Tracer.Report do
       |> Enum.sort()
       |> Enum.reduce(%{}, &child_file/2)
 
-    finalize(%{main | children: children})
+    finalize(%{main | children: children}, items)
   end
 
   # Files the traced compile wrote into the worker's own run dir.
@@ -116,8 +121,8 @@ defmodule NccWorker.Tracer.Report do
   # --- trace-main.jsonl ------------------------------------------------------
 
   defp main_line({:problem, why}, r), do: problem(r, why)
-  defp main_line({:line, %{"kind" => "start"} = l}, r), do: %{r | start: l}
-  defp main_line({:line, %{"kind" => "closure"} = l}, r), do: %{r | closure: l}
+  defp main_line({:line, %{"kind" => "start"} = l}, r), do: %{r | start: r.start || l}
+  defp main_line({:line, %{"kind" => "closure"} = l}, r), do: %{r | closure: r.closure || l}
 
   defp main_line({:line, %{"kind" => "window_open"} = l}, r) do
     window = %{
@@ -142,51 +147,63 @@ defmodule NccWorker.Tracer.Report do
     do: %{r | quiet: [%{app: l["app"], open: l["ts"], close: nil, delivered: nil} | r.quiet]}
 
   defp main_line({:line, %{"kind" => "quiet_close"} = l}, r) do
-    %{r | quiet: close_quiet(r.quiet, l)}
+    r
+    |> close_quiet(l)
     |> check(l, "delivered", "#{l["app"]}'s native patterns were not fully delivered")
   end
 
   defp main_line({:line, %{"kind" => "sentinel"} = l}, r) do
     sentinel = %{app: l["app"], ts: l["ts"], integrity_ok: l["integrity_ok"]}
-
-    %{r | sentinels: [sentinel | r.sentinels]}
-    |> check(l, "integrity_ok", "#{l["app"]}'s sentinel failed its integrity check")
+    %{r | sentinels: [sentinel | r.sentinels]} |> sentinel_checks(l, &problem/2)
   end
 
   defp main_line({:line, %{"kind" => "event"} = l}, r), do: %{r | events: [l | r.events]}
-  defp main_line({:line, %{"kind" => "stats"} = l}, r), do: %{r | stats: l}
+  defp main_line({:line, %{"kind" => "stats"} = l}, r), do: %{r | stats: r.stats || l}
 
   defp main_line({:line, %{"kind" => "end"} = l}, r) do
-    %{r | ending: l}
+    %{r | ending: r.ending || l}
     |> check(l, "integrity_ok", "the end failed its integrity check")
     |> check(l, "delivered", "the end was not fully delivered")
+    |> check(l, "depth_ok", "the end lost its backtrace depth")
+    |> check(l, "final_sentinel", "final sentinel missing")
+    |> ending_status(l)
   end
 
-  defp main_line({:line, %{"kind" => "overflow"} = l}, r), do: %{r | overflow: [l | r.overflow]}
+  defp main_line({:line, %{"kind" => "overflow"} = l}, r),
+    do: problem(%{r | overflow: [l | r.overflow]}, "trace overflowed: #{l["what"]}")
+
   defp main_line({:line, %{"kind" => "refused_start"} = l}, r), do: %{r | refused_start: l}
 
-  defp main_line({:line, l}, r) do
-    case common_problem(l) do
-      nil -> problem(r, "unexpected line kind #{l["kind"]}")
-      why -> problem(r, why)
-    end
+  defp main_line({:line, l}, r), do: problem(r, other_problem(l))
+
+  defp ending_status(r, %{"status" => "ok", "overflow" => false}), do: r
+
+  defp ending_status(r, %{"status" => "ok"}), do: problem(r, "the end reports an overflow")
+
+  defp ending_status(r, l),
+    do: problem(r, "traced compile ended #{inspect(l["status"])}")
+
+  defp sentinel_checks(acc, l, add) do
+    acc
+    |> pass_or(l, "integrity_ok", "#{l["app"]}'s sentinel failed its integrity check", add)
+    |> pass_or(l, "depth_ok", "#{l["app"]}'s sentinel lost its backtrace depth", add)
   end
 
-  # The kinds either file can carry that only ever mean a broken trace.
-  defp common_problem(%{"kind" => "unencodable"}), do: "unencodable trace line"
-
-  defp common_problem(%{"kind" => "collector_down"} = l),
-    do: "trace collector died: #{reason(l)}"
-
-  defp common_problem(%{"kind" => "watcher_down"} = l), do: "trace watcher died: #{reason(l)}"
-  defp common_problem(_line), do: nil
+  # The kinds either file can carry that only ever mean a broken trace, and
+  # any kind the reader does not know.
+  defp other_problem(%{"kind" => "unencodable"}), do: "unencodable trace line"
+  defp other_problem(%{"kind" => "collector_down"} = l), do: "trace collector died: #{reason(l)}"
+  defp other_problem(%{"kind" => "watcher_down"} = l), do: "trace watcher died: #{reason(l)}"
+  defp other_problem(l), do: "unexpected line kind #{l["kind"]}"
 
   defp reason(%{"reason" => reason}) when is_binary(reason), do: reason
   defp reason(l), do: inspect(l["reason"])
 
   # A check the tracer wrote is passed only by an explicit `true`.
-  defp check(r, line, key, why) do
-    if line[key] == true, do: r, else: problem(r, why)
+  defp check(r, line, key, why), do: pass_or(r, line, key, why, &problem/2)
+
+  defp pass_or(acc, line, key, why, add) do
+    if line[key] == true, do: acc, else: add.(acc, why)
   end
 
   defp problem(r, why), do: %{r | problems: [why | r.problems]}
@@ -208,7 +225,7 @@ defmodule NccWorker.Tracer.Report do
       app: l["app"],
       open: nil,
       close: l["ts"],
-      depth_ok: false,
+      depth_ok: l["depth_ok"],
       integrity_ok: l["integrity_ok"],
       delivered: l["delivered"]
     }
@@ -216,10 +233,11 @@ defmodule NccWorker.Tracer.Report do
     [stray | windows]
   end
 
-  defp close_quiet([%{close: nil} = q | rest], l),
-    do: [%{q | close: l["ts"], delivered: l["delivered"]} | rest]
+  defp close_quiet(%{quiet: [%{close: nil} = q | rest]} = r, l),
+    do: %{r | quiet: [%{q | close: l["ts"], delivered: l["delivered"]} | rest]}
 
-  defp close_quiet(quiet, _l), do: quiet
+  defp close_quiet(r, l),
+    do: problem(r, "#{l["app"]}'s native patterns closed without opening")
 
   # --- trace-child-<app>-<pid>.jsonl ------------------------------------------
 
@@ -246,12 +264,11 @@ defmodule NccWorker.Tracer.Report do
   end
 
   defp child_line({:problem, why}, c), do: child_problem(c, why)
-  defp child_line({:line, %{"kind" => "start"} = l}, c), do: %{c | start: l}
+  defp child_line({:line, %{"kind" => "start"} = l}, c), do: %{c | start: c.start || l}
 
   defp child_line({:line, %{"kind" => "sentinel"} = l}, c) do
-    if l["integrity_ok"] == true,
-      do: %{c | sentinel?: true},
-      else: child_problem(c, "#{l["app"]}'s sentinel failed its integrity check")
+    checked = sentinel_checks(c, l, &child_problem/2)
+    if checked == c, do: %{c | sentinel?: true}, else: checked
   end
 
   defp child_line({:line, %{"kind" => "compile"} = l}, c), do: %{c | compiles: [l | c.compiles]}
@@ -260,12 +277,7 @@ defmodule NccWorker.Tracer.Report do
   defp child_line({:line, %{"kind" => "overflow"} = l}, c),
     do: child_problem(c, "trace overflowed: #{l["what"]}")
 
-  defp child_line({:line, l}, c) do
-    case common_problem(l) do
-      nil -> c
-      why -> child_problem(c, why)
-    end
-  end
+  defp child_line({:line, l}, c), do: child_problem(c, other_problem(l))
 
   defp child_problem(c, why), do: %{c | problems: [why | c.problems]}
 
@@ -282,7 +294,7 @@ defmodule NccWorker.Tracer.Report do
 
   # --- both --------------------------------------------------------------------
 
-  defp finalize(r) do
+  defp finalize(r, items) do
     r = %{
       r
       | windows: Enum.reverse(r.windows),
@@ -290,32 +302,92 @@ defmodule NccWorker.Tracer.Report do
         sentinels: Enum.reverse(r.sentinels),
         events: r.events |> Enum.reverse() |> Enum.sort_by(&(&1["ts"] || 0)),
         overflow: Enum.reverse(r.overflow),
-        children: Map.new(r.children, fn {app, c} -> {app, finish_child(c)} end),
         problems: Enum.reverse(r.problems)
     }
 
-    %{r | problems: r.problems ++ unjudged(r.stats) ++ child_problems(r)}
+    tracer = r.start && r.start["tracer"]
+    r = %{r | children: Map.new(r.children, fn {app, c} -> {app, finish_child(c, tracer)} end)}
+
+    structural =
+      shape(items) ++ stats(r.stats) ++ windows(r) ++ order(r) ++ open_quiet(r.quiet)
+
+    %{r | problems: r.problems ++ structural ++ child_problems(r)}
   end
 
-  defp finish_child(c),
-    do: %{c | compiles: Enum.reverse(c.compiles), events: Enum.reverse(c.events)}
+  defp finish_child(c, tracer) do
+    c = %{c | compiles: Enum.reverse(c.compiles), events: Enum.reverse(c.events)}
+    child_tracer = c.start && c.start["tracer"]
 
-  defp unjudged(%{"unjudged" => n}) when is_integer(n) and n > 0,
-    do: ["#{n} unjudged trace events"]
+    if tracer != nil and child_tracer == tracer,
+      do: c,
+      else: %{c | problems: c.problems ++ ["loaded a different tracer"]}
+  end
 
-  defp unjudged(_stats), do: []
+  defp shape([]), do: ["trace-main.jsonl is empty"]
+
+  defp shape(items) do
+    kinds = for {:line, %{"kind" => kind}} <- items, do: kind
+
+    after_end =
+      items
+      |> Enum.drop_while(&(not match?({:line, %{"kind" => "end"}}, &1)))
+      |> Enum.drop(1)
+      |> length()
+
+    Enum.flat_map(["start", "closure", "end"], &once(kinds, &1)) ++
+      if(after_end > 0, do: ["#{after_end} lines after the end line"], else: [])
+  end
+
+  defp once(kinds, kind) do
+    case Enum.count(kinds, &(&1 == kind)) do
+      1 -> []
+      0 -> ["no #{kind} line"]
+      n -> ["#{n} #{kind} lines"]
+    end
+  end
+
+  defp stats(nil), do: ["no stats line"]
+  defp stats(%{"unjudged" => 0}), do: []
+  defp stats(%{"unjudged" => n}) when is_integer(n), do: ["#{n} unjudged trace events"]
+  defp stats(_stats), do: ["stats has no unjudged count"]
+
+  defp windows(r), do: Enum.flat_map(r.windows, &window_problems/1)
+
+  defp window_problems(%{open: nil} = w),
+    do: ["#{w.app}'s window was closed without being opened"]
+
+  defp window_problems(%{close: nil} = w), do: ["#{w.app}'s window was never closed"]
+  defp window_problems(%{depth_ok: true}), do: []
+  defp window_problems(w), do: ["#{w.app}'s window lost its backtrace depth"]
+
+  # One window per closure dependency, in the closure's (Mix's) order.
+  defp order(%{closure: %{"deps" => deps}, windows: windows}) when is_list(deps) do
+    expected = for dep <- deps, do: dep["app"]
+    actual = Enum.map(windows, & &1.app)
+
+    if actual == expected,
+      do: [],
+      else: ["windows #{list(actual)} do not match the closure #{list(expected)}"]
+  end
+
+  defp order(_r), do: []
+
+  defp list(apps), do: "[" <> Enum.map_join(apps, ", ", &to_string/1) <> "]"
+
+  defp open_quiet(quiet) do
+    for %{close: nil} = q <- quiet, do: "#{q.app}'s native patterns were never closed"
+  end
 
   defp child_problems(%__MODULE__{closure: closure, children: children}) do
-    apps = closure_apps(closure)
-
     for {app, child} <- Enum.sort(children),
-        MapSet.member?(apps, app),
+        judged_child?(closure, app),
         why <- child.problems,
         do: "child trace of #{app}: #{why}"
   end
 
-  defp closure_apps(%{"deps" => deps}) when is_list(deps),
-    do: MapSet.new(for %{"app" => app} <- deps, do: app)
+  # Without a closure line every child but the stray `unknown` ones counts.
+  defp judged_child?(%{"deps" => deps}, app) when is_list(deps),
+    do: Enum.any?(deps, &(&1["app"] == app))
 
-  defp closure_apps(_closure), do: MapSet.new()
+  defp judged_child?(_closure, app), do: app != "unknown"
 end
