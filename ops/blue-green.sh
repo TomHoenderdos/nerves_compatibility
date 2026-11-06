@@ -61,7 +61,15 @@ bg_vhost_file() {
 }
 
 bg_write_include() {
-  sed "s/@PORT@/$1/g" "$NCC_SRC_DIR/ops/ncc-upstream.conf.template" > "$NCC_APACHE_UPSTREAM.new"
+  local port=$1 status
+  sed "s/@PORT@/$port/g" "$NCC_SRC_DIR/ops/ncc-upstream.conf.template" > "$NCC_APACHE_UPSTREAM.new"
+  status=$?
+  if ((status != 0)) || [[ ! -s "$NCC_APACHE_UPSTREAM.new" ]] ||
+     ! grep -q "127\.0\.0\.1:$port" "$NCC_APACHE_UPSTREAM.new"; then
+    echo "ERROR: rendering the include for port $port failed (sed exit $status, or the result is empty or missing the backend address); leaving the old include in place" >&2
+    rm -f "$NCC_APACHE_UPSTREAM.new"
+    return 1
+  fi
   mv "$NCC_APACHE_UPSTREAM.new" "$NCC_APACHE_UPSTREAM"
 }
 
@@ -117,6 +125,7 @@ BG_BIND_SECONDS=${BG_BIND_SECONDS:-15}
 BG_PAUSE_EXPR='Oban.pause_all_queues(Oban, local_only: true)'
 BG_RESUME_EXPR='Oban.resume_all_queues(Oban, local_only: true)'
 BG_RUNNING_EXPR='IO.puts(Oban.check_all_queues(Oban) |> Enum.map(&length(&1.running)) |> Enum.sum())'
+BG_RUNNING_IDS_EXPR='IO.puts(inspect(Oban.check_all_queues(Oban) |> Enum.flat_map(& &1.running)))'
 
 bg_release() { printf '%s\n' "$NCC_INSTALL_DIR/releases/$1"; }
 
@@ -205,8 +214,11 @@ bg_fail_idle() { # color what
 
 bg_point_apache_at() { # color; fails with the include restored
   local out
-  cp "$NCC_APACHE_UPSTREAM" "$NCC_APACHE_UPSTREAM.bak"
-  bg_write_include "$(bg_port "$1")"
+  cp "$NCC_APACHE_UPSTREAM" "$NCC_APACHE_UPSTREAM.bak" || return 1
+  if ! bg_write_include "$(bg_port "$1")"; then
+    mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM"
+    return 1
+  fi
   if ! out=$(apachectl configtest 2>&1); then
     echo "apachectl configtest failed (it checks every vhost on this host, not only ours):" >&2
     echo "$out" >&2
@@ -221,43 +233,77 @@ bg_point_apache_at() { # color; fails with the include restored
   fi
 }
 
+# Chained with && so a failure stops at the first broken step instead of
+# silently running the rest; the caller decides what "incomplete" means.
 bg_mark_serving() { # new old
-  printf '%s\n' "$1" > "$NCC_INSTALL_DIR/active-color.tmp"
-  mv "$NCC_INSTALL_DIR/active-color.tmp" "$NCC_INSTALL_DIR/active-color"
-  systemctl enable "$BG_UNIT@$1"
-  systemctl disable "$BG_UNIT@$2"
+  printf '%s\n' "$1" > "$NCC_INSTALL_DIR/active-color.tmp" &&
+    mv "$NCC_INSTALL_DIR/active-color.tmp" "$NCC_INSTALL_DIR/active-color" &&
+    systemctl enable "$BG_UNIT@$1" &&
+    systemctl disable "$BG_UNIT@$2"
 }
 
+# Only points Apache and verifies; does not mark anything or stop anything.
+# 0: the new colour is now verified and serving. 1: verification failed and
+# the include was restored to the old colour (nothing changed). 2: the
+# restore itself failed, so Apache's running config is unknown -- the caller
+# must not assume either colour is the one actually being served.
 bg_switch() { # old new sha
   bg_point_apache_at "$2" || return 1
-  if ! bg_wait_apache_health "$2" "$3" "$BG_APACHE_HEALTH_SECONDS"; then
-    mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM"
-    systemctl reload apache2 || true
+  if bg_wait_apache_health "$2" "$3" "$BG_APACHE_HEALTH_SECONDS"; then
+    return 0
+  fi
+  if mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM" && systemctl reload apache2; then
     return 1
   fi
-  bg_mark_serving "$2" "$1"
+  return 2
 }
 
-bg_new_healthy() { # new sha
-  [[ $(systemctl show -p NRestarts --value "$BG_UNIT@$1") == 0 ]] &&
-    systemctl is-active --quiet "$BG_UNIT@$1" &&
-    bg_wait_apache_health "$1" "$2" 2
+bg_new_healthy() { # new sha baseline-restarts; 0 healthy, 1 apache miss, 2 crashed
+  local color=$1 sha=$2 baseline=$3
+  if [[ $(systemctl show -p NRestarts --value "$BG_UNIT@$color") != "$baseline" ]] ||
+     ! systemctl is-active --quiet "$BG_UNIT@$color"; then
+    return 2
+  fi
+  bg_wait_apache_health "$color" "$sha" 2 && return 0
+  return 1
+}
+
+# Best effort, never fails the drain: which jobs the drain cap is cutting
+# short, for the operator to check afterwards.
+bg_log_running_ids() { # old
+  local ids
+  ids=$(bg_rpc "$1" "$BG_RUNNING_IDS_EXPR" 2>/dev/null | tail -n 1) || true
+  [[ -n ${ids:-} ]] && echo "executing job id(s) on $1: $ids" >&2
+  return 0
 }
 
 # The old colour is out of traffic but up: pause its queues, wait for its
 # executing jobs, and keep watching the new colour. Returns 2 when the new
 # colour falls over, so the caller can switch back while the old one is warm.
+# A crash (NRestarts moved off its post-start baseline, or the unit is no
+# longer active) fails at once; a miss of the Apache probe alone needs two in
+# a row, since one bad poll can just be a slow reload settling.
 bg_drain() { # old new sha
-  local waited=0 running
+  local waited=0 running misses=0 rc
   bg_rpc "$1" "$BG_PAUSE_EXPR" || echo "warning: could not pause $1's queues; its jobs may be cut short" >&2
   while :; do
-    bg_new_healthy "$2" "$3" || return 2
+    rc=0
+    bg_new_healthy "$2" "$3" "$BG_BASELINE_RESTARTS" || rc=$?
+    if ((rc == 2)); then
+      return 2
+    elif ((rc != 0)); then
+      misses=$((misses + 1))
+      ((misses < 2)) || return 2
+    else
+      misses=0
+    fi
     running=$(bg_rpc "$1" "$BG_RUNNING_EXPR" 2>/dev/null | tail -n 1 || true)
     if [[ $running == 0 && $waited -ge $BG_WATCH_SECONDS ]]; then
       return 0
     fi
     if ((waited >= BG_DRAIN_CAP_SECONDS)); then
       echo "drain cap of ${BG_DRAIN_CAP_SECONDS} s reached with '${running:-?}' job(s) still executing on $1; stopping it anyway (Lifeline rescues them)" >&2
+      bg_log_running_ids "$1"
       return 0
     fi
     sleep 5
@@ -265,13 +311,31 @@ bg_drain() { # old new sha
   done
 }
 
+# Only reached once the new colour has already failed in the drain, so the
+# new colour keeps serving until the old one is proven to work again: a
+# failure here must never leave both the switch-back and the original switch
+# half-done.
 bg_switch_back() { # old new
   echo "$BG_UNIT@$2 failed after taking traffic; switching back to $1" >&2
   journalctl -u "$BG_UNIT@$2" -n 50 --no-pager >&2 || true
-  bg_point_apache_at "$1" || echo "ERROR: could not point Apache back at $1; fix the include by hand" >&2
-  bg_wait_apache_health "$1" "" "$BG_APACHE_HEALTH_SECONDS" ||
-    echo "ERROR: $1 does not answer through Apache after switching back" >&2
-  bg_mark_serving "$1" "$2"
+  if ! bg_point_apache_at "$1"; then
+    echo "ERROR: could not switch back to $1; $2 still serves. Fix the Apache include by hand, then confirm $1 is healthy before touching either unit." >&2
+    bg_rpc "$1" "$BG_RESUME_EXPR" || echo "warning: could not resume $1's queues" >&2
+    return 1
+  fi
+  if ! bg_wait_apache_health "$1" "" "$BG_APACHE_HEALTH_SECONDS"; then
+    echo "ERROR: $1 does not answer through Apache after switching back; pointing Apache at $2 again" >&2
+    if mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM" && systemctl reload apache2; then
+      echo "$2 still serves" >&2
+    else
+      echo "ERROR: could not restore the include to $2 either; Apache's running config is unknown" >&2
+    fi
+    bg_rpc "$1" "$BG_RESUME_EXPR" || echo "warning: could not resume $1's queues" >&2
+    return 1
+  fi
+  rm -f "$NCC_APACHE_UPSTREAM.bak"
+  bg_mark_serving "$1" "$2" ||
+    echo "ERROR: $1 serves again but marking it active failed (active-color cache, systemctl enable $1, or systemctl disable $2); fix each by hand." >&2
   bg_rpc "$1" "$BG_RESUME_EXPR" || echo "warning: could not resume $1's queues" >&2
   systemctl stop "$BG_UNIT@$2" || true
 }
@@ -282,14 +346,27 @@ bg_activate() { # old new sha-or-empty
     bg_fail_idle "$new" "systemctl start"
     return 1
   fi
+  BG_BASELINE_RESTARTS=$(systemctl show -p NRestarts --value "$BG_UNIT@$new")
   if ! bg_wait_idle_health "$new" "$sha" "$BG_IDLE_HEALTH_SECONDS"; then
     bg_fail_idle "$new" "health check on its own port"
     return 1
   fi
-  if ! bg_switch "$old" "$new" "$sha"; then
+  bg_switch "$old" "$new" "$sha" || rc=$?
+  if ((rc == 2)); then
+    echo "ERROR: Apache state unknown after a failed restore; both colours left running. Check $NCC_APACHE_UPSTREAM and apachectl -S by hand before touching either unit." >&2
+    return 1
+  elif ((rc != 0)); then
     bg_fail_idle "$new" "the switch"
     return 1
   fi
+  # Verification passed: the switch has happened, so the backup can never be
+  # restored again, and a failure from here on must not stop either colour.
+  rm -f "$NCC_APACHE_UPSTREAM.bak"
+  if ! bg_mark_serving "$new" "$old"; then
+    echo "ERROR: incomplete deploy: Apache now serves $new, but marking it active failed (active-color cache, systemctl enable $new, or systemctl disable $old). Fix each by hand, then verify systemctl is-enabled before the next deploy." >&2
+    return 1
+  fi
+  rc=0
   bg_drain "$old" "$new" "$sha" || rc=$?
   if ((rc == 2)); then
     bg_switch_back "$old" "$new"
@@ -300,7 +377,7 @@ bg_activate() { # old new sha-or-empty
     return 1
   fi
   for ((i = 0; i < BG_BIND_SECONDS; i += 1)); do
-    [[ $(curl -s --max-time 2 "http://127.0.0.1:$(bg_port "$new")/health" || true) == *'"builder_endpoint":"waiting"'* ]] || return 0
+    [[ $(curl -s --max-time 2 "http://127.0.0.1:$(bg_port "$new")/health" || true) == *'"builder_endpoint":"bound"'* ]] && return 0
     sleep 1
   done
   echo "warning: $new has not bound the builder port ${BG_BIND_SECONDS} s after $old stopped" >&2
@@ -325,6 +402,8 @@ bg_rollback() {
     echo "refusing: no release in $(bg_release "$BG_IDLE") to roll back to" >&2
     return 1
   fi
-  echo "blue/green rollback: $BG_ACTIVE serves; bringing back $BG_IDLE"
+  local target_sha
+  target_sha=$(cat "$(bg_release "$BG_IDLE")/BUILD_SHA" 2>/dev/null || true)
+  echo "blue/green rollback: $BG_ACTIVE serves; bringing back $BG_IDLE (sha ${target_sha:-unknown})"
   bg_activate "$BG_ACTIVE" "$BG_IDLE" ""
 }

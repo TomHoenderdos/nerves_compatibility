@@ -28,8 +28,21 @@ systemctl() {
     stop)
       [[ ${STOP_FAILS:-} != "$color" ]] || return 1
       grep -vx "$color" "$RUN_FILE" > "$RUN_FILE.new" || true; mv "$RUN_FILE.new" "$RUN_FILE" ;;
-    show) if [[ ${CRASHES:-} == "$color" ]]; then echo 1; else echo 0; fi ;;
-    reload) [[ ${RELOAD_STATUS:-0} == 0 ]] ;;
+    enable) [[ ${ENABLE_FAILS:-} != "$color" ]] ;;
+    disable) [[ ${DISABLE_FAILS:-} != "$color" ]] ;;
+    show)
+      local f="$STATE/show-$color" n
+      n=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
+      echo "$n" > "$f"
+      # The first call per colour is the post-start baseline and always 0; a
+      # crash is a later call's NRestarts moving away from that baseline.
+      if [[ ${CRASHES:-} == "$color" && $n -gt 1 ]]; then echo 1; else echo 0; fi ;;
+    reload)
+      local f="$STATE/reload-calls" n
+      n=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
+      echo "$n" > "$f"
+      [[ ${RELOAD_STATUS:-0} == 0 ]] || return 1
+      [[ -z ${RELOAD_FAIL_ON:-} || $n != "${RELOAD_FAIL_ON}" ]] ;;
     *) return 0 ;;
   esac
 }
@@ -43,25 +56,35 @@ apachectl() {
         echo "         port 443 namevhost example.test ($VHOST:35)"
       fi ;;
     configtest)
-      if [[ ${CONFIGTEST_STATUS:-0} != 0 ]]; then echo "AH00526: Syntax error on line 3 of /etc/x/other-site.conf" >&2; return 1; fi
+      local f="$STATE/configtest-calls" n
+      n=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
+      echo "$n" > "$f"
+      if [[ ${CONFIGTEST_STATUS:-0} != 0 ]] || [[ -n ${CONFIGTEST_FAIL_ON:-} && $n == "${CONFIGTEST_FAIL_ON}" ]]; then
+        echo "AH00526: Syntax error on line 3 of /etc/x/other-site.conf" >&2; return 1
+      fi
       echo "Syntax OK" ;;
   esac
 }
 journalctl() { log "journalctl $*"; echo "journal lines"; }
 body_for() {
-  local color=$1 sha
+  local color=$1 sha ep
   running "$color" || return 7
   if [[ ${HEALTH_301:-} == "$color" ]]; then echo '<html><body>301 Moved Permanently</body></html>'; return 0; fi
   if [[ ${CRASHES:-} == "$color" && ${CRASHED_ANSWERS:-yes} == no ]]; then return 7; fi
   sha=$(cat "$STATE/sha-$color")
-  printf '{"builder_endpoint":"bound","color":"%s","sha":"%s"}\n' "$color" "$sha"
+  ep=bound
+  [[ ${BUILDER_WAITING:-} != "$color" ]] || ep=waiting
+  printf '{"builder_endpoint":"%s","color":"%s","sha":"%s"}\n' "$ep" "$color" "$sha"
 }
 curl() {
-  local url=${*: -1} port
+  local url=${*: -1} port color
   log "curl $url"
   case $url in
     http://127.0.0.1:*/health) port=${url#http://127.0.0.1:}; port=${port%%/*}; body_for "$(bg_color_of_port "$port")" ;;
-    https://example.test/health) body_for "$(bg_serving_color)" ;;
+    https://example.test/health)
+      color=$(bg_serving_color) || return 7
+      [[ ${APACHE_HEALTH_FAILS:-} != "$color" ]] || return 7
+      body_for "$color" ;;
     *) return 7 ;;
   esac
 }
@@ -71,7 +94,18 @@ bg_migrate() { log "migrate $1"; [[ ${MIGRATE_STATUS:-0} == 0 ]]; }
 bg_carry_assets() { log "carry $1 $2"; }
 bg_rpc() {
   log "rpc $1 $2"
-  case $2 in *check_all_queues*) echo "${RUNNING_JOBS:-0}" ;; esac
+  case $2 in
+    *flat_map*) echo '[101]' ;;
+    *check_all_queues*)
+      if [[ -n ${RUNNING_JOBS_COUNTDOWN:-} ]]; then
+        local f="$STATE/rpc-calls" n
+        n=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
+        echo "$n" > "$f"
+        if ((n <= RUNNING_JOBS_COUNTDOWN)); then echo 2; else echo 0; fi
+      else
+        echo "${RUNNING_JOBS:-0}"
+      fi ;;
+  esac
 }
 eval "$ACTION"
 '''
@@ -335,6 +369,121 @@ class BlueGreenTest(unittest.TestCase):
         self.assertEqual(self.cache, "green")
         self.assertIn("incomplete", result.stderr)
 
+    # --- CRITICAL 1: a failed enable/disable must not stop the new colour -
+
+    def test_disable_failure_leaves_both_colours_running(self):
+        result, events = self.deploy(DISABLE_FAILS="blue")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("127.0.0.1:4003/ retry=0", self.include)
+        self.assertIn("incomplete", result.stderr)
+        self.assertIn("green", self.running)
+        self.assertIn("blue", self.running)
+        self.assertNotIn("systemctl stop ncc-portal@green", events)
+        self.assertNotIn("systemctl stop ncc-portal@blue", events)
+        self.assertIn("systemctl enable ncc-portal@green", events)
+        self.assertIn("systemctl disable ncc-portal@blue", events)
+
+    def test_enable_failure_leaves_both_colours_running(self):
+        result, events = self.deploy(ENABLE_FAILS="green")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("127.0.0.1:4003/ retry=0", self.include)
+        self.assertIn("incomplete", result.stderr)
+        self.assertIn("green", self.running)
+        self.assertIn("blue", self.running)
+        self.assertNotIn("systemctl stop ncc-portal@green", events)
+        self.assertNotIn("systemctl stop ncc-portal@blue", events)
+        # Chained with &&: a failed enable must short-circuit before disable.
+        self.assertNotIn("systemctl disable ncc-portal@blue", events)
+
+    # --- IMPORTANT 1: a failed switch-back must not re-mark the cache or --
+    # --- stop the colour that is still actually serving --------------------
+
+    def test_switch_back_configtest_failure_keeps_the_new_colour_serving(self):
+        result, events = self.deploy(CRASHES="green", CONFIGTEST_FAIL_ON="2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("127.0.0.1:4003/ retry=0", self.include)
+        self.assertEqual(self.cache, "green")
+        self.assertIn("green", self.running)
+        self.assertIn("could not switch back", result.stderr)
+        self.assertIn("rpc blue Oban.resume_all_queues(Oban, local_only: true)", events)
+        self.assertNotIn("systemctl stop ncc-portal@green", events)
+
+    # --- IMPORTANT 2: the drain must actually watch the 30 s window --------
+
+    def test_drain_watches_blue_for_at_least_7_probes_before_stopping_it(self):
+        result, events = self.deploy(RUNNING_JOBS="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pause_i = events.index("rpc blue Oban.pause_all_queues(Oban, local_only: true)")
+        stop_i = events.index("systemctl stop ncc-portal@blue")
+        shows = [i for i, e in enumerate(events)
+                 if "systemctl show -p NRestarts" in e and "ncc-portal@green" in e and pause_i < i < stop_i]
+        self.assertGreaterEqual(len(shows), 7)
+
+    def test_drain_keeps_watching_until_the_running_count_actually_reaches_zero(self):
+        result, events = self.deploy(RUNNING_JOBS_COUNTDOWN="3")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        checks = [i for i, e in enumerate(events) if "check_all_queues" in e]
+        # The harness's countdown says 2 on the first 3 calls and 0 from the
+        # 4th on; that 4th call is the first one to report the drain done.
+        self.assertGreaterEqual(len(checks), 4)
+        first_zero = checks[3]
+        stop_i = events.index("systemctl stop ncc-portal@blue")
+        self.assertLess(first_zero, stop_i)
+        shows = [i for i, e in enumerate(events)
+                 if "systemctl show -p NRestarts" in e and i < stop_i]
+        self.assertGreaterEqual(len(shows), 7)
+
+    # --- Minors -------------------------------------------------------------
+
+    def test_write_include_refuses_a_broken_render(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            upstream = root / "ncc-upstream.conf"
+            upstream.write_text("original content\n")
+            # M1a: sed itself fails (no template to read).
+            src_missing = root / "src-missing"
+            (src_missing / "ops").mkdir(parents=True)
+            env = {**os.environ, "HELPER": str(OPS / "blue-green.sh"),
+                   "NCC_SRC_DIR": str(src_missing), "NCC_APACHE_UPSTREAM": str(upstream)}
+            result = subprocess.run(["bash", "-c", 'source "$HELPER"; bg_write_include 4002'],
+                                    env=env, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ERROR", result.stderr)
+            self.assertEqual(upstream.read_text(), "original content\n")
+            self.assertFalse((root / "ncc-upstream.conf.new").exists())
+
+            # M1b: sed succeeds but the result never names the backend port.
+            src_broken = root / "src-broken"
+            (src_broken / "ops").mkdir(parents=True)
+            (src_broken / "ops" / "ncc-upstream.conf.template").write_text("no port marker here\n")
+            env["NCC_SRC_DIR"] = str(src_broken)
+            result = subprocess.run(["bash", "-c", 'source "$HELPER"; bg_write_include 4002'],
+                                    env=env, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ERROR", result.stderr)
+            self.assertEqual(upstream.read_text(), "original content\n")
+
+    def test_builder_bind_wait_only_accepts_a_literal_bound_status(self):
+        result, events = self.deploy(BUILDER_WAITING="green")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("has not bound the builder port", result.stderr)
+        self.assertEqual(self.running, ["green"])
+
+    def test_drain_cap_logs_the_executing_job_ids_best_effort(self):
+        result, events = self.deploy(RUNNING_JOBS="3", BG_DRAIN_CAP_SECONDS="20")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("drain cap", result.stderr)
+        self.assertIn("executing job id(s) on blue", result.stderr)
+
+    def test_switch_restore_reload_failure_leaves_both_colours_running(self):
+        result, events = self.deploy(APACHE_HEALTH_FAILS="green", RELOAD_FAIL_ON="2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Apache state unknown", result.stderr)
+        self.assertIn("blue", self.running)
+        self.assertIn("green", self.running)
+        self.assertNotIn("systemctl stop ncc-portal@blue", events)
+        self.assertNotIn("systemctl stop ncc-portal@green", events)
+
     # --- rollback --------------------------------------------------------
 
     def test_rollback_starts_the_other_colour_without_building(self):
@@ -350,6 +499,18 @@ class BlueGreenTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no release", result.stderr)
         self.assertNotIn("systemctl start ncc-portal@blue", events)
+
+    def test_rollback_prints_the_target_release_sha(self):
+        result, _ = self.run_bg(
+            'echo "deadbeef" > "$NCC_INSTALL_DIR/releases/blue/BUILD_SHA"; bg_rollback',
+            active="green")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("sha deadbeef", result.stdout)
+
+    def test_rollback_prints_unknown_without_a_sha_file(self):
+        result, _ = self.run_bg("bg_rollback", active="green")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("sha unknown", result.stdout)
 
 
 class CarryAssetsTest(unittest.TestCase):
