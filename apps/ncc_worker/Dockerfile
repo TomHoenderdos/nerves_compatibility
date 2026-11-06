@@ -1,8 +1,16 @@
 # The base determines the OTP version the *target* runs. Official Nerves systems
 # moved to OTP 29, and nerves refuses to build when host and target majors differ,
 # so this tag and the Elixir build below must stay on the same major.
-# nerves_system_br 1.34.1 ships Erlang 29.0.4.
-FROM ghcr.io/nerves-project/nerves_system_br:latest
+# nerves_system_br 1.35.3 ships Erlang 29.1.2.
+#
+# Pinned by the multi-arch index digest, with the tag kept for reading: CI
+# builds the linux/amd64 and linux/arm64 images in separate jobs, and a
+# floating tag could hand each a different base. Under this index sit
+# linux/amd64 sha256:e35997c3899e90d22dc183f9d767559fd64379b80d54d1837b904f94820ec7e2
+# and linux/arm64 sha256:964e8f59abe64a837f66881aa7b1375cb2d0e05a42036c1939b81beee134565e.
+# To bump: `docker buildx imagetools inspect ghcr.io/nerves-project/nerves_system_br:<tag>`
+# and copy its top-level Digest.
+FROM ghcr.io/nerves-project/nerves_system_br:1.35.3@sha256:acc9bf8904678ff83b64a295064425f72ab6cd649cba363329cf066f05b4ddfb
 
 # Install Elixir from GitHub releases
 RUN wget https://repo.hex.pm/builds/elixir/v1.20.3-otp-29.zip && \
