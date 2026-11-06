@@ -30,7 +30,16 @@ defmodule Portal.Builders.RoutingTest do
     :ok
   end
 
-  defp seen!(name, minutes_ago) do
+  # A builder that can take a lease: its last claim found egress in place and
+  # named an architecture the image has a digest for.
+  defp seen!(name, minutes_ago, egress \\ "ok", arch \\ "x86_64") do
+    builder = enrolled!(name)
+    {:ok, builder} = Portal.Builders.set_egress(builder, egress)
+    {:ok, builder} = Portal.Builders.set_arch(builder, arch)
+    touch!(builder, minutes_ago)
+  end
+
+  defp enrolled!(name) do
     Builder
     |> Ash.Changeset.for_create(:enrol, %{
       name: name,
@@ -40,7 +49,6 @@ defmodule Portal.Builders.RoutingTest do
       enrolled_at: DateTime.utc_now()
     })
     |> Ash.create!(domain: Portal.Builders)
-    |> touch!(minutes_ago)
   end
 
   defp touch!(builder, minutes_ago) do
@@ -96,6 +104,57 @@ defmodule Portal.Builders.RoutingTest do
     Enum.each(Portal.Builders.list_builders(), &touch!(&1, 16))
     refute Routing.remote_enabled?()
     refute Portal.Settings.get().remote_auto_on
+  end
+
+  # A builder that heartbeats but cannot claim must not turn remote on: its
+  # leases would sit queued with nobody to take them.
+  test "auto ignores builders that are seen but cannot claim" do
+    seen!("unready", 1, "host_unready")
+    seen!("no-egress", 1, "missing")
+    seen!("unknown-egress", 1, "unknown")
+    seen!("no-image", 1, "ok", "aarch64")
+    seen!("no-arch", 1, "ok", nil)
+    refute Routing.remote_enabled?()
+    refute Portal.Settings.get().remote_auto_on
+
+    {:ok, _} = Portal.Settings.save(%{remote_backlog_threshold: 0})
+    backlog!(1)
+    assert Routing.queue_for(%{"package" => "jason"}, []) == :builds
+  end
+
+  test "auto counts a ready builder" do
+    seen!("unready", 1, "host_unready")
+    refute Routing.remote_enabled?()
+
+    seen!("ready", 1)
+    assert Routing.remote_enabled?()
+  end
+
+  test "an aarch64 builder counts once the image has an aarch64 digest" do
+    seen!("arm", 1, "ok", "aarch64")
+    refute Routing.remote_enabled?()
+
+    digest = "sha256:" <> String.duplicate("a", 64)
+    arm = "sha256:" <> String.duplicate("b", 64)
+
+    File.write!(
+      Images.path(),
+      Jason.encode!(%{
+        "commit" => "c",
+        "images" => %{
+          "ncc-worker" => %{
+            "name" => "ghcr.io/x/ncc-worker",
+            "tag" => "c",
+            "digest" => digest,
+            "platforms" => %{"x86_64" => digest, "aarch64" => arm}
+          }
+        }
+      })
+    )
+
+    assert Routing.remote_enabled?()
+    assert Routing.capable_builder?(["aarch64"])
+    refute Routing.capable_builder?(["x86_64"])
   end
 
   test "build_job picks the worker, and every enqueuer goes through it" do

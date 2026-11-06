@@ -6,8 +6,8 @@ defmodule Portal.Builders.Routing do
 
   Local wins whenever remote could not do the job or should not: toolchain
   and warm jobs (they write host caches), jobs pinned local (a revoked
-  builder's rebuilds), no builder seen lately, no registry image to name,
-  or a local backlog still under the threshold.
+  builder's rebuilds), no builder able to claim seen lately, no registry
+  image to name, or a local backlog still under the threshold.
 
   Every enqueuer of `Portal.Workers.Build` goes through `build_job/2`.
   """
@@ -18,8 +18,9 @@ defmodule Portal.Builders.Routing do
   alias Portal.Repo
   alias Portal.Workers.{Build, RemoteBuild}
 
-  # `:auto` turns remote on once an enrolled builder was seen within the first
-  # window and off once none was seen within the second; in between it holds
+  # `:auto` turns remote on once a builder able to claim (`capable_builder?/1`'s
+  # rule) was seen within the first window and off once none was seen within
+  # the second; in between it holds
   # the stored `remote_auto_on`, so a builder's brief silence does not flap it.
   @seen_on_seconds 5 * 60
   @seen_off_seconds 15 * 60
@@ -68,7 +69,7 @@ defmodule Portal.Builders.Routing do
 
   defp auto_enabled?(settings) do
     now = DateTime.utc_now()
-    latest = latest_seen()
+    latest = latest_ready_seen(image_arches())
 
     decision =
       cond do
@@ -85,15 +86,46 @@ defmodule Portal.Builders.Routing do
     decision
   end
 
-  defp latest_seen do
+  @doc """
+  Whether a builder able to take a lease for one of `arches` was seen within
+  the last 5 minutes: enrolled, its last claim found the egress ruleset in
+  place (`egress_status` `"ok"`: a host-unready, egress-missing or
+  unsupported-architecture agent reports something else every minute while
+  claiming nothing), and its recorded architecture in `arches`.
+  """
+  @spec capable_builder?([String.t()]) :: boolean()
+  def capable_builder?(arches) do
+    case latest_ready_seen(arches) do
+      nil -> false
+      seen -> DateTime.diff(DateTime.utc_now(), seen, :second) <= @seen_on_seconds
+    end
+  end
+
+  # Last-seen alone is not enough: an agent that cannot claim still reports
+  # its status every minute, and counting it would route builds into leases
+  # nobody takes. The architecture must be one the image has a digest for,
+  # which a claim records on every attempt, `no_image_for_arch` included.
+  defp latest_ready_seen([]), do: nil
+
+  defp latest_ready_seen(arches) do
     Builder
-    |> Ash.Query.filter(status == :enrolled and not is_nil(last_seen_at))
+    |> Ash.Query.filter(
+      status == :enrolled and not is_nil(last_seen_at) and egress_status == "ok" and
+        arch in ^arches
+    )
     |> Ash.Query.sort(last_seen_at: :desc)
     |> Ash.Query.limit(1)
     |> Ash.read!(domain: Portal.Builders)
     |> case do
       [%Builder{last_seen_at: seen}] -> seen
       [] -> nil
+    end
+  end
+
+  defp image_arches do
+    case Images.worker_image() do
+      %{platforms: platforms} -> Map.keys(platforms)
+      nil -> []
     end
   end
 
