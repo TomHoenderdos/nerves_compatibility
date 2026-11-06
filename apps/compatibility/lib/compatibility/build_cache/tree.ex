@@ -194,15 +194,17 @@ defmodule Compatibility.BuildCache.Tree do
   defp readable_children(dir) do
     case :file.list_dir_all(dir) do
       {:ok, names} ->
-        Enum.reduce_while(names, :ok, fn raw, :ok ->
-          case name_string(raw) do
-            {:ok, name} -> dir |> Path.join(name) |> readable_modes() |> continue_if_ok()
-            :error -> {:halt, {:error, {:name, raw}}}
-          end
-        end)
+        Enum.reduce_while(names, :ok, fn raw, :ok -> readable_child(dir, raw) end)
 
       error ->
         error
+    end
+  end
+
+  defp readable_child(dir, raw) do
+    case name_string(raw) do
+      {:ok, name} -> dir |> Path.join(name) |> readable_modes() |> continue_if_ok()
+      :error -> {:halt, {:error, {:name, raw}}}
     end
   end
 

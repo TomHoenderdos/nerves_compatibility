@@ -521,11 +521,16 @@ defmodule NccAgent.BuildCache do
           name != keep,
           BuildCache.shareable_slug?(name),
           stale?(Path.join(root, name), cutoff),
-          do: try_lock(name, fn -> prune_one(root, name, cutoff) end)
+          do: prune_locked(root, name, cutoff)
     end
 
     :ok
   end
+
+  # A slug another slot holds the lock on (filling it, about to mount it)
+  # is skipped this time.
+  defp prune_locked(root, name, cutoff),
+    do: try_lock(name, fn -> prune_one(root, name, cutoff) end)
 
   # sobelow_skip ["Traversal.FileModule"]
   defp stale?(path, cutoff) do
