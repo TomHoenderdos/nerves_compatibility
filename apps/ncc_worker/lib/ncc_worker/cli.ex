@@ -30,6 +30,7 @@ defmodule NccWorker.CLI do
 
   @spec main(list(String.t())) :: no_return()
   def main(args) do
+    :ok = scrub_env()
     # Before any lookup, so the native resolver never runs
     # (`NccWorker.ProcessSweep`).
     :ok = ProcessSweep.use_erlang_resolver()
@@ -52,6 +53,18 @@ defmodule NccWorker.CLI do
   def exit_code(:ok), do: 0
   def exit_code({:error, :policy_violation}), do: 11
   def exit_code({:error, _reason}), do: 10
+
+  @doc """
+  Removes `MIX_OS_DEPS_COMPILE_PARTITION_COUNT` before any `mix` starts, so
+  every compile the worker runs builds dependencies one at a time in one VM:
+  the compile-time trace (`NccWorker.Portability`) sees one VM and relies on
+  that order. `mix ncc.trace_compile` refuses to start if it is set anyway.
+  """
+  @spec scrub_env() :: :ok
+  def scrub_env do
+    System.delete_env("MIX_OS_DEPS_COMPILE_PARTITION_COUNT")
+    :ok
+  end
 
   @spec run() :: :ok | {:error, term()}
   defp run() do

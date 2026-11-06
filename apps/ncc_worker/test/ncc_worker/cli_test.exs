@@ -1,5 +1,5 @@
 defmodule NccWorker.CLITest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias NccWorker.CLI
 
@@ -52,5 +52,15 @@ defmodule NccWorker.CLITest do
       assert CLI.exit_code({:error, {:deps_get_failed, "boom"}}) == 10
       assert CLI.exit_code({:error, :missing_work_dir}) == 10
     end
+  end
+
+  # Spec R1 "Other OS processes": Mix must compile dependencies one at a time
+  # in one VM, or the trace sees neither the other partitions nor the order.
+  test "scrub_env/0 removes the deps partition count" do
+    System.put_env("MIX_OS_DEPS_COMPILE_PARTITION_COUNT", "2")
+    on_exit(fn -> System.delete_env("MIX_OS_DEPS_COMPILE_PARTITION_COUNT") end)
+
+    assert :ok = CLI.scrub_env()
+    assert System.get_env("MIX_OS_DEPS_COMPILE_PARTITION_COUNT") == nil
   end
 end
