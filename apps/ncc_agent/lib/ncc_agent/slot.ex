@@ -10,7 +10,10 @@ defmodule NccAgent.Slot do
   claims nothing, reports `egress: "missing"` through `/status` and checks
   again in 60 s. A portal whose worker image has no platform digest for this
   VM's architecture answers the claim `no_image_for_arch`: the slot logs it
-  and claims again in 60 s, without the error backoff. Once
+  and claims again in 60 s, without the error backoff. A VM whose
+  architecture CI publishes no image for at all (`Compatibility.Arch`) never
+  claims: it logs "unsupported architecture", reports no free slots through
+  `/status` and checks again in 60 s. Once
   `NccAgent.Updater.updating?/0` is set no slot claims again.
 
   The job runs in a task so the slot stays responsive: it traps exits,
@@ -135,7 +138,29 @@ defmodule NccAgent.Slot do
   def terminate(_reason, _state), do: :ok
 
   defp step(n) do
-    if Updater.updating?(), do: :updating, else: claim_step(n)
+    arch = Updater.arch()
+
+    cond do
+      Updater.updating?() -> :updating
+      not Compatibility.Arch.supported?(arch) -> unsupported_arch(n, arch)
+      true -> claim_step(n)
+    end
+  end
+
+  # No worker image or agent release exists for this architecture, so a
+  # claim could only be refused: the slot reports itself alive with no free
+  # slots and checks again in a minute.
+  defp unsupported_arch(n, arch) do
+    Logger.error(
+      "slot #{n}: unsupported architecture #{arch} (supported: #{Enum.join(Compatibility.Arch.supported(), ", ")}); not claiming"
+    )
+
+    with {:ok, req} <- Identity.ensure(),
+         {:error, reason} <- Client.status(req, "unknown", 0) do
+      Logger.warning("reporting an unsupported architecture: #{inspect(reason)}")
+    end
+
+    :no_image
   end
 
   defp claim_step(n) do

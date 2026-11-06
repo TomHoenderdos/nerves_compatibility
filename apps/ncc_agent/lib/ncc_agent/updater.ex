@@ -54,16 +54,17 @@ defmodule NccAgent.Updater do
   # For tests that ran a successful update.
   def clear_updating, do: :persistent_term.erase(@flag)
 
-  @doc "This VM's architecture as the portal names it: `x86_64` or `aarch64`."
+  @doc """
+  This VM's architecture as the portal names it (`Compatibility.Arch`):
+  `x86_64` or `aarch64`, or the bare name of one CI publishes nothing for
+  (`armv7l`), which `NccAgent.Slot` never claims with.
+  """
   @spec arch() :: String.t()
   def arch do
-    arch = to_string(:erlang.system_info(:system_architecture))
-
-    cond do
-      String.starts_with?(arch, "x86_64") -> "x86_64"
-      String.starts_with?(arch, "aarch64") -> "aarch64"
-      true -> arch
-    end
+    # `:system_architecture` is a test hook; unset in a release.
+    :ncc_agent
+    |> Application.get_env(:system_architecture, :erlang.system_info(:system_architecture))
+    |> Compatibility.Arch.normalize()
   end
 
   @impl true
