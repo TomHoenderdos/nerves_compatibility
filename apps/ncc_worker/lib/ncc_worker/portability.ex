@@ -98,7 +98,13 @@ defmodule NccWorker.Portability do
     * `trace_dir:` (default `<project_dir>/../trace`), `log_file:`,
       `timeout_ms:`, `extra_env:`, `reap:`.
 
-  Never raises. Adds `observations["trace_stats"]["wall_ms"]`.
+  Never raises. Adds `observations["trace_stats"]["wall_ms"]` and
+  `observations["trace_stats"]["judge_compile"]`: `"finished"` when the
+  traced compile exited 0, `"not_run"` when it never started for want of
+  `releases:` (the build is the host compile's, untouched), and
+  `"not_finished"` otherwise (a crash, a timeout, a non-zero exit, an
+  exhausted budget, the judge itself raising): the build under `_build` may
+  then be half-written, and callers must not judge it.
   """
   @spec run(String.t(), String.t(), keyword()) :: verdict()
   def run(project_dir, package, opts) do
@@ -111,14 +117,23 @@ defmodule NccWorker.Portability do
 
   defp guarded_run(project_dir, package, opts) do
     case releases(opts) do
-      {:ok, releases} -> traced_run(project_dir, package, opts, releases)
-      :error -> not_judged("no mix.lock snapshot taken before the compile")
+      {:ok, releases} ->
+        traced_run(project_dir, package, opts, releases)
+
+      :error ->
+        "no mix.lock snapshot taken before the compile"
+        |> not_judged()
+        |> put_stat("judge_compile", "not_run")
     end
   rescue
-    e -> not_judged("judge failed: " <> Exception.message(e))
+    e -> unfinished("judge failed: " <> Exception.message(e))
   catch
-    kind, reason -> not_judged("judge failed: #{kind} #{inspect(reason, limit: 20)}")
+    kind, reason -> unfinished("judge failed: #{kind} #{inspect(reason, limit: 20)}")
   end
+
+  # Nothing says the judge compile ran to its end, so `_build` may hold a
+  # half-written build no caller may judge.
+  defp unfinished(why), do: why |> not_judged() |> put_stat("judge_compile", "not_finished")
 
   defp releases(opts) do
     case Keyword.get(opts, :releases) do
@@ -134,8 +149,14 @@ defmodule NccWorker.Portability do
     native = native_deps(project_dir)
     traced = Tracer.run(project_dir, [package], tracer_opts(opts, env, trace_dir, native))
     ctx_opts = [releases: releases, hex_home: hex_home(opts, env)]
-    verdict(project_dir, package, traced, trace_dir, native, ctx_opts)
+
+    project_dir
+    |> verdict(package, traced, trace_dir, native, ctx_opts)
+    |> put_stat("judge_compile", judge_compile(traced))
   end
+
+  defp judge_compile({:ok, 0}), do: "finished"
+  defp judge_compile(_traced), do: "not_finished"
 
   defp default_trace_dir(project_dir), do: Path.join(Path.dirname(project_dir), "trace")
 

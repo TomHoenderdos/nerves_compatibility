@@ -252,20 +252,31 @@ this Elixir and OTP, the same on every OS and architecture? Such an image has no
 OTP Nerves 2 does not accept, so the run uses a plain `mix new` project (`NccWorker.Project.create_plain/2`), adds
 the package, applies the lock policy (exit 11), compiles once on the host in `prod`, runs the same
 optional-dependency pass as a pure-Elixir full run and judges `_build/host/lib/<package>` with
-`NccWorker.BuildSelection.portable?/4` **and** the compile-time trace (`NccWorker.Portability`): after the
-optional-dependency pass the worker recompiles the package's dependency closure once more as
-`timeout --kill-after=10 <sec> elixir -pa <work>/trace/ebin -S mix ncc.trace_compile`, one dependency at a time,
-under an Erlang trace session that records every read of the host (OS type and version, environment, programs, files
-outside the closure, host names, install locations, the crypto build, native loading, tracing itself) and every write
-outside the dependency's own `ebin`, with the stack it came from. rebar3 dependencies are traced in their own VM
-through `ERL_AFLAGS`. A read or write in the package's compile window, outside every window, in a closure
-dependency's window (that dependency is then host-tainted), a build path baked into the beams outside diagnostic
-metadata, a call into a natively built dependency while the package compiles, a rebar3 build with hooks, plugins,
-`platform_define` or `rebar.config.script`, or a trace that did not finish, skips the build. The files judged and
-archived are the traced compile's own. The traced compile runs with the host compile's env and `HEX_HOME`, is bounded
-by what is left of the run, writes only under `<work>/trace` and its log `logs/host-trace.log`, and judges
-dependency sources against the Hex releases `mix.lock` named right after `deps.get`, before any compile ran.
-`MIX_OS_DEPS_COMPILE_PARTITION_COUNT` is removed from the worker's environment at start. No firmware, no argus (`argus.status` is `"skipped"`), no Nerves systems,
+`NccWorker.BuildSelection.portable?/4` **and** the compile-time trace (`NccWorker.Portability`).
+
+After the optional-dependency pass the worker recompiles the package's dependency closure once more, one dependency
+at a time, as `timeout --kill-after=10 <sec> elixir -pa <work>/trace/ebin -S mix ncc.trace_compile`. An Erlang trace
+session records every read of the host (OS type and version, environment, programs, files outside the closure, host
+names, install locations, the crypto build, native loading, tracing itself) and every write outside the dependency's
+own `ebin`, with the stack it came from. rebar3 dependencies are traced in their own VM through `ERL_AFLAGS`. Any
+of these skips the build:
+
+- a host read or write in the package's compile window or outside every window;
+- one in a closure dependency's window (that dependency is then host-tainted);
+- a build path baked into the beams outside diagnostic metadata;
+- a call into a natively built dependency while the package compiles;
+- a rebar3 build with hooks, plugins, `platform_define` or `rebar.config.script`;
+- a trace that did not finish.
+
+The files judged and archived are the traced compile's own. The traced compile runs with the host compile's env and
+`HEX_HOME`, is bounded by what is left of the run, and writes only under `<work>/trace` and its log
+`logs/host-trace.log`. It judges dependency sources against a snapshot of the Hex releases in `mix.lock`. Two
+snapshots are taken. The first is taken right after the project's `deps.get`, before any compile ran. The second is
+taken right after the optional-dependency pass's own `deps.get` fetched the dependencies it adds, before they are
+compiled. A build published with optional dependencies added is judged against the second; every other build
+against the first. `MIX_OS_DEPS_COMPILE_PARTITION_COUNT` is removed from the worker's environment at start.
+
+No firmware, no argus (`argus.status` is `"skipped"`), no Nerves systems,
 no Hex metadata fetch; `toolchain.nerves_bootstrap` is `"absent"`.
 
 `"optional_deps"` in `NCC_INPUT` picks the build: `"include"` (the default, also when absent) runs the
@@ -324,8 +335,11 @@ both pass. A skip reason from the trace starts with one of the prefixes in
 `Compatibility.Portability.refusal_prefixes/0` and wins over `portable?/4`'s; "portability could not be judged"
 means the trace itself failed (a crash, a timeout, a cap, a missing sentinel) and is never held against the package
 or turned into an `error`. When the trace could not judge and `portable?/4` also skipped, the reason is
-`portable?/4`'s. `compile_observations.trace_stats` carries the traced compile's `wall_ms` and the first host
-compile's `host_compile_sec`.
+`portable?/4`'s. When the traced compile itself did not finish (a crash, a timeout, a non-zero exit;
+`compile_observations.trace_stats.judge_compile` is `"not_finished"`), `_build` may be half-written, so `portable?/4`
+does not judge it either: the reason is "portability could not be judged", `rule1_reason` and `compile_env` are
+`null`. `compile_observations.trace_stats` carries the traced compile's `wall_ms`, `judge_compile` (`"finished"`,
+`"not_finished"` or `"not_run"`) and the first host compile's `host_compile_sec`.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 

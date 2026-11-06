@@ -110,10 +110,12 @@ defmodule NccWorker.Worker do
           # The verdict's rule: 1 is `BuildSelection.portable?/4` AND the
           # compile-time trace's refusals (P1); nil for an "error" build.
           portability_rule: 1 | nil,
-          # What `portable?/4` alone said: its skip reason, nil when it passed.
+          # What `portable?/4` alone said: its skip reason, nil when it passed
+          # or when the traced compile did not finish (it then judges nothing).
           rule1_reason: String.t() | nil,
           # What the trace observed (`NccWorker.Portability`): "trace_stats"
-          # (with the host compile's "host_compile_sec"), "config_reads",
+          # (with "judge_compile", "finished" | "not_finished" | "not_run",
+          # and the host compile's "host_compile_sec"), "config_reads",
           # "elixir_version", "native_calls", "mix_exs_allowed",
           # "build_root_source_path", "refusals", "taint", "native_libs",
           # "nif_check", "problems"; nil for an "error" build.
@@ -664,6 +666,10 @@ defmodule NccWorker.Worker do
 
     with {:ok, optional_deps} <-
            resolve_optional_deps(scope, selection, project_dir, input.package.name, paths) do
+      # The second lock snapshot is the traced judge compile's; it is not
+      # part of `result.json`.
+      {_releases, optional_deps} = judge_releases(nil, optional_deps)
+
       context = %{
         input: input,
         paths: paths,
@@ -914,9 +920,13 @@ defmodule NccWorker.Worker do
 
   defp build_with_optional_deps(project_dir, package_name, paths, snapshot, added) do
     with {:policy, :ok} <- {:policy, LockPolicy.validate(project_dir)},
+         # Right after the `deps.get` that fetched them and before the
+         # compile that builds them: the releases the build with them is
+         # judged against (`judge_releases/2`), its own optional deps included.
+         releases = Portability.lock_snapshot(project_dir),
          {:compile, %{status: :pass}} <-
            {:compile, compile_host(project_dir, paths.output_dir, 0, package_name)} do
-      {:ok, optional_deps_info(added, [], nil)}
+      {:ok, Map.put(optional_deps_info(added, [], nil), :lock_snapshot, releases)}
     else
       {:policy, {:error, reason}} ->
         drop_optional_deps(project_dir, package_name, paths, snapshot, added, %{
@@ -1156,7 +1166,8 @@ defmodule NccWorker.Worker do
          :ok <- LockPolicy.validate(project_dir) do
       # Right after `deps.get` and before any compile, host or judge: an
       # untraced build step could rewrite the lock and a tarball together
-      # later (`NccWorker.Portability.lock_snapshot/1`).
+      # later (`NccWorker.Portability.lock_snapshot/1`). A build with
+      # optional deps added uses the pass's own snapshot (`judge_releases/2`).
       releases = Portability.lock_snapshot(project_dir)
       host = compile_host(project_dir, paths.output_dir, log_tail_bytes, package_name)
 
@@ -1168,6 +1179,8 @@ defmodule NccWorker.Worker do
                package_name,
                paths
              ) do
+        {releases, optional_deps} = judge_releases(releases, optional_deps)
+
         # After the optional pass: the traced judge compile recompiles the
         # closure, so the files judged and archived are the traced ones.
         portability =
@@ -1227,15 +1240,17 @@ defmodule NccWorker.Worker do
 
   defp toolchain_portability(_host, _project_dir, _package_name, _paths, _opts), do: nil
 
-  # The traced judge compile (`NccWorker.Portability.run/3`), shared by the
-  # toolchain run and the full run's `pure_elixir` path. It runs with the host
+  # The traced judge compile (`NccWorker.Portability.run/3`). Written to be
+  # shared: the toolchain run uses it, and the full run's `pure_elixir` path
+  # is meant to use it too (Task 15), so both trace alike. It runs with the host
   # compile's env and its own `HEX_HOME`, exactly as `compile_host/4` does,
   # and judges dependency sources against the run's Hex cache (the one
   # `package_tarball/2` reads). `opts`: `releases:`, the
-  # `Portability.lock_snapshot/1` taken after `deps.get` and before the first
-  # compile, and `run_started_at:`, the run's start (`input.started_at`),
+  # `Portability.lock_snapshot/1` matching the build being judged
+  # (`judge_releases/2`), and `run_started_at:`, the run's start (`input.started_at`),
   # which bounds the compile by what is left of the run. It writes only under
-  # `<work>/trace` and `<out>/logs/host-trace.log`. Never raises; a trace that
+  # `<work>/trace` and `<out>/logs/host-trace.log` (`setup_paths/1` made
+  # `<out>/logs` at the run's start). Never raises; a trace that
   # fails is "portability could not be judged" and changes no host status.
   defp run_portability(project_dir, package_name, paths, opts) do
     hex_home = HexHome.prepare(project_dir, "host")
@@ -1253,6 +1268,21 @@ defmodule NccWorker.Worker do
     HexHome.publish(hex_home)
     verdict
   end
+
+  @doc false
+  # The lock snapshot the traced judge compile uses, and the optional-deps
+  # info without it (it is not part of `result.json`). A build published with
+  # its optional deps added is judged against the snapshot taken right after
+  # the `deps.get` that fetched them, before their compile
+  # (`build_with_optional_deps/5`); every other build, against `first`, taken
+  # after the project's first `deps.get` and before any compile. Public for
+  # tests.
+  @spec judge_releases(term(), term()) :: {term(), term()}
+  def judge_releases(_first, %{added: [_ | _], lock_snapshot: releases} = info),
+    do: {releases, Map.delete(info, :lock_snapshot)}
+
+  def judge_releases(first, %{} = info), do: {first, Map.delete(info, :lock_snapshot)}
+  def judge_releases(first, info), do: {first, info}
 
   defp put_requested_toolchain(result, requested) when is_map(requested),
     do: Map.put(result, :requested_toolchain, requested)
@@ -1302,9 +1332,44 @@ defmodule NccWorker.Worker do
   end
 
   defp judge_toolchain_build(build, project_dir, package_name, portability, host_result) do
+    portability = portability || not_traced()
+
+    if unfinished?(portability),
+      do: unjudged_toolchain_build(build, project_dir, package_name, portability, host_result),
+      else: judge_finished_build(build, project_dir, package_name, portability, host_result)
+  end
+
+  # The traced compile did not run to its end (a crash, a timeout, a
+  # non-zero exit), so `_build/host/lib/<package>` may be half-written: rule 1
+  # does not judge it, nothing is read from it (`compile_env` stays nil) and
+  # the build is skipped as "portability could not be judged", never an
+  # error. The lock-derived fields still describe what was built.
+  defp unjudged_toolchain_build(build, project_dir, package_name, portability, host_result) do
+    %{
+      build
+      | status: "skipped",
+        reason: PortabilityReasons.could_not_judge(),
+        deps_lock: DepsLock.read(project_dir, package_name),
+        package_checksum: DepsLock.package_checksum(project_dir, package_name),
+        portability_rule: 1,
+        compile_observations: with_host_time(portability.observations, host_result)
+    }
+  end
+
+  # A pass always comes from a finished compile; a skip only when the
+  # verdict says the compile finished or never started.
+  defp unfinished?(%{status: :pass}), do: false
+
+  defp unfinished?(verdict),
+    do:
+      get_in(verdict, [:observations, "trace_stats", "judge_compile"]) not in [
+        "finished",
+        "not_run"
+      ]
+
+  defp judge_finished_build(build, project_dir, package_name, portability, host_result) do
     app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
     scan = scan_host_app(app_dir)
-    portability = portability || not_traced()
     tarball = package_tarball(project_dir, package_name)
     rule1 = BuildSelection.portable?(project_dir, package_name, scan, tarball: tarball)
 
@@ -1333,7 +1398,10 @@ defmodule NccWorker.Worker do
     %{
       status: :skip,
       reason: PortabilityReasons.could_not_judge(),
-      observations: %{"problems" => ["not traced"]}
+      observations: %{
+        "problems" => ["not traced"],
+        "trace_stats" => %{"judge_compile" => "not_run"}
+      }
     }
   end
 

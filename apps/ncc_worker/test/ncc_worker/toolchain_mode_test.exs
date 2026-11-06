@@ -38,16 +38,31 @@ defmodule NccWorker.ToolchainModeTest do
 
   defp passing_host, do: %{status: :pass, error: nil}
 
-  @traced_pass %{status: :pass, reason: nil, observations: %{"trace_stats" => %{"windows" => 2}}}
+  @finished %{"judge_compile" => "finished"}
+  @traced_pass %{
+    status: :pass,
+    reason: nil,
+    observations: %{"trace_stats" => Map.put(@finished, "windows", 2)}
+  }
+  # The traced compile finished, but its trace could not be used.
   @not_judged %{
     status: :skip,
     reason: "portability could not be judged",
-    observations: %{"problems" => ["x"]}
+    observations: %{"problems" => ["x"], "trace_stats" => @finished}
+  }
+  # The traced compile did not finish: `_build` may be half-written.
+  @unfinished %{
+    status: :skip,
+    reason: "portability could not be judged",
+    observations: %{
+      "problems" => ["tracer: :timeout"],
+      "trace_stats" => %{"judge_compile" => "not_finished"}
+    }
   }
   @refused %{
     status: :skip,
     reason: "compile-time host read: os:type/0 in X.f/0 (lib/x.ex:2)",
-    observations: %{}
+    observations: %{"trace_stats" => @finished}
   }
 
   describe "the compile-time trace (P1)" do
@@ -59,7 +74,11 @@ defmodule NccWorker.ToolchainModeTest do
       assert %{status: "pass", portability_rule: 1, rule1_reason: nil} = build
 
       assert build.compile_observations == %{
-               "trace_stats" => %{"windows" => 2, "host_compile_sec" => 12.0}
+               "trace_stats" => %{
+                 "windows" => 2,
+                 "judge_compile" => "finished",
+                 "host_compile_sec" => 12.0
+               }
              }
     end
 
@@ -76,7 +95,10 @@ defmodule NccWorker.ToolchainModeTest do
              } = build
 
       assert %{portability_rule: 1, rule1_reason: nil} = build
-      assert build.compile_observations == %{"trace_stats" => %{"host_compile_sec" => nil}}
+
+      assert build.compile_observations == %{
+               "trace_stats" => %{"judge_compile" => "finished", "host_compile_sec" => nil}
+             }
     end
 
     test "a trace that could not judge skips the build; it is never an error", %{
@@ -115,6 +137,28 @@ defmodule NccWorker.ToolchainModeTest do
       assert reason != "portability could not be judged"
     end
 
+    test "a traced compile that did not finish is not judged by rule 1 either", %{
+      tmp_dir: work_dir
+    } do
+      # circuits_gpio skips under rule 1; a half-written build must not be
+      # judged at all, so neither its reason nor a pass can come from it.
+      for fixture <- ["circuits_gpio-2.1.3", "circular_buffer-1.0.0"] do
+        File.rm_rf!(Path.join(work_dir, "proj"))
+        {project, _built} = project(work_dir, fixture)
+        build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @unfinished)
+
+        assert %{
+                 status: "skipped",
+                 reason: "portability could not be judged",
+                 rule1_reason: nil,
+                 portability_rule: 1,
+                 file_manifest: nil
+               } = build
+
+        assert build.compile_observations["problems"] == ["tracer: :timeout"]
+      end
+    end
+
     test "a failed host compile records no trace fields", %{tmp_dir: work_dir} do
       {project, _built} = project(work_dir, "circular_buffer-1.0.0")
       host = %{status: :fail, error: "boom"}
@@ -126,6 +170,36 @@ defmodule NccWorker.ToolchainModeTest do
                rule1_reason: nil,
                compile_observations: nil
              } = build
+    end
+  end
+
+  describe "judge_releases/2" do
+    @first {:ok, %{"sample" => %{name: "sample", version: "1.0.0", checksum: "o"}}}
+    @second {:ok,
+             %{
+               "sample" => %{name: "sample", version: "1.0.0", checksum: "o"},
+               "opt" => %{name: "opt", version: "2.0.0", checksum: "p"}
+             }}
+
+    test "the build with optional deps is judged against the snapshot taken after their deps.get" do
+      info = %{added: ["opt"], dropped: [], reason: nil, skipped: [], lock_snapshot: @second}
+
+      assert {@second, %{added: ["opt"], dropped: [], reason: nil, skipped: []} = clean} =
+               Worker.judge_releases(@first, info)
+
+      refute Map.has_key?(clean, :lock_snapshot)
+    end
+
+    test "every other build keeps the snapshot taken before the first compile" do
+      for info <- [
+            nil,
+            %{added: [], dropped: [], reason: nil, skipped: []},
+            %{added: [], dropped: ["opt"], reason: "host_compile_failed", skipped: []},
+            %{added: [], dropped: [], reason: "not_requested", skipped: []},
+            {:per_target, [], []}
+          ] do
+        assert {@first, ^info} = Worker.judge_releases(@first, info)
+      end
     end
   end
 
@@ -142,6 +216,13 @@ defmodule NccWorker.ToolchainModeTest do
 
     assert {:skip, "calls System.cmd/2"} =
              Worker.combine({:skip, "calls System.cmd/2"}, @not_judged)
+
+    # A non-pass verdict without a reason never passes and never yields a nil reason.
+    assert {:skip, "portability could not be judged"} =
+             Worker.combine(:ok, %{status: :skip, reason: nil, observations: %{}})
+
+    assert {:skip, "calls System.cmd/2"} =
+             Worker.combine({:skip, "calls System.cmd/2"}, %{status: :skip, observations: %{}})
   end
 
   describe "toolchain_build/5" do
@@ -266,7 +347,11 @@ defmodule NccWorker.ToolchainModeTest do
              "portability_rule" => 1,
              "rule1_reason" => nil,
              "compile_observations" => %{
-               "trace_stats" => %{"windows" => 2, "host_compile_sec" => nil}
+               "trace_stats" => %{
+                 "windows" => 2,
+                 "judge_compile" => "finished",
+                 "host_compile_sec" => nil
+               }
              }
            } = decoded["toolchain_build"]
   end

@@ -935,6 +935,7 @@ defmodule NccWorker.Portability.JudgeTest do
 
       assert ["no mix.lock snapshot taken before the compile"] = obs["problems"]
       assert is_integer(obs["trace_stats"]["wall_ms"])
+      assert obs["trace_stats"]["judge_compile"] == "not_run"
       refute File.exists?(trace_dir)
     end
 
@@ -942,7 +943,7 @@ defmodule NccWorker.Portability.JudgeTest do
          %{proj: proj, dir: dir} do
       started = System.monotonic_time(:second) - 3 * 60 * 60
 
-      assert %{status: :skip, reason: @cnj, observations: %{"problems" => [problem]}} =
+      assert %{status: :skip, reason: @cnj, observations: %{"problems" => [problem]} = obs} =
                Portability.run(proj, "pkg",
                  env: [],
                  releases: %{},
@@ -951,11 +952,16 @@ defmodule NccWorker.Portability.JudgeTest do
                )
 
       assert problem =~ "run_budget_exhausted"
+      # Not finished: the worker must not judge whatever `_build` holds.
+      assert obs["trace_stats"]["judge_compile"] == "not_finished"
     end
 
     test "never raises", %{proj: proj} do
       # No env: (required).
-      assert %{status: :skip, reason: @cnj} = Portability.run(proj, "pkg", releases: %{})
+      assert %{status: :skip, reason: @cnj, observations: obs} =
+               Portability.run(proj, "pkg", releases: %{})
+
+      assert obs["trace_stats"]["judge_compile"] == "not_finished"
     end
 
     test "lock_snapshot reads the project's Hex releases", %{proj: proj} do
@@ -1010,6 +1016,7 @@ defmodule NccWorker.Portability.JudgeTest do
 
       assert is_integer(obs["trace_stats"]["wall_ms"])
       assert obs["trace_stats"]["windows"] == 2
+      assert obs["trace_stats"]["judge_compile"] == "finished"
 
       leaf = Path.join([proj, "deps", "fx_judge_leaf", "lib", "fx_judge_leaf.ex"])
       File.write!(leaf, TracerFixtures.attr_module("FxJudgeLeaf", ":os.type()") <> "\n")

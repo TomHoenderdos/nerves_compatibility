@@ -71,6 +71,23 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
                 ),
                 %{deps: ["fx_assets"]}
               ),
+            # An optional dependency the toolchain run's optional pass adds,
+            # which reads its own README at compile time (a file its Hex
+            # tarball lists), and the package that depends on it.
+            "fx_opt_readme" => %{
+              files: %{
+                "README.md" => "# fx_opt_readme\n",
+                "lib/fx_opt_readme.ex" =>
+                  attr_module(
+                    "FxOptReadme",
+                    ~S|File.read!(Path.expand("../README.md", __DIR__))|
+                  )
+              }
+            },
+            "fx_opt_user" =>
+              lib("fx_opt_user", attr_module("FxOptUser", "FxOptReadme.x()"), %{
+                deps: ["fx_opt_readme"]
+              }),
             "fx_app_dir_other" =>
               lib(
                 "fx_app_dir_other",
@@ -239,7 +256,8 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
 
     releases =
       Map.new([
-        TracerFixtures.hex_release(hex_home, "fx_assets", ["lib", "mix.exs", "priv"])
+        TracerFixtures.hex_release(hex_home, "fx_assets", ["lib", "mix.exs", "priv"]),
+        TracerFixtures.hex_release(hex_home, "fx_opt_readme", ["README.md", "lib", "mix.exs"])
       ])
 
     apps = Map.keys(@deps)
@@ -386,6 +404,41 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
     assert %{status: :skip, reason: "compile-time host read: file:read_file/" <> _ = reason} = v
     assert %{"owner" => "fx_app_dir", "reason" => reason} in v.observations["refusals"]
     assert reason =~ "fx_assets/priv/static/a.js"
+  end
+
+  # A toolchain build published with its optional deps added is judged
+  # against the lock snapshot taken right after the `deps.get` that fetched
+  # them (`Worker.judge_releases/2`), not the one taken before the first
+  # compile, which does not name them yet.
+  test "an optional dep reading its own README does not refuse the build with it", ctx do
+    second = {:ok, ctx.judge_opts[:releases]}
+    first = {:ok, Map.delete(ctx.judge_opts[:releases], "fx_opt_readme")}
+
+    info = %{
+      added: ["fx_opt_readme"],
+      dropped: [],
+      reason: nil,
+      skipped: [],
+      lock_snapshot: second
+    }
+
+    {releases, _info} = NccWorker.Worker.judge_releases(first, info)
+    hex_home = ctx.judge_opts[:hex_home]
+
+    assert [_ | _] = seen(ctx, "fx_opt_readme", "file:read_file/", "fx_opt_readme/README.md")
+
+    assert %{status: :pass} =
+             TracerFixtures.judge(ctx.proj, "fx_opt_user", ctx.traced, ctx.native,
+               releases: releases,
+               hex_home: hex_home
+             )
+
+    # Against the first snapshot the README is not a verified file.
+    assert %{status: :skip, reason: "closure dependency observed the host: fx_opt_readme" <> _} =
+             TracerFixtures.judge(ctx.proj, "fx_opt_user", ctx.traced, ctx.native,
+               releases: first,
+               hex_home: hex_home
+             )
   end
 
   test "every kind of write outside the package's own ebin refuses", ctx do
