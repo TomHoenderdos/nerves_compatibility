@@ -152,4 +152,11 @@ defmodule PortalWeb.Admin.BuildersLiveTest do
     refute has_element?(view, "#requeue-local-#{lease.id}")
     refute has_element?(view, "#requeue-#{lease.id}")
   end
+
+  test "shows whether this node holds the builder port", %{conn: conn} do
+    {:ok, _view, html} = live(conn, ~p"/admin/builders")
+    assert html =~ ~s(id="builder-listener")
+    # Tests start the endpoint without a listener.
+    assert html =~ "Off on this node"
+  end
 end

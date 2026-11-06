@@ -82,6 +82,7 @@ defmodule PortalWeb.Admin.BuildersLive do
         backlog: Routing.local_backlog(),
         image: Images.worker_image()
       },
+      listener: PortalWeb.BuilderEndpoint.Starter.status(),
       now: DateTime.utc_now()
     )
   end
@@ -247,7 +248,7 @@ defmodule PortalWeb.Admin.BuildersLive do
       <section id="remote-settings" class="card border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body">
           <h2 class="card-title text-lg">Remote routing</h2>
-          <dl class="mt-2 grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
+          <dl class="mt-2 grid grid-cols-1 gap-3 text-sm sm:grid-cols-4">
             <div>
               <dt class="text-base-content/60">Remote builds now</dt>
               <dd id="remote-enabled" class="font-medium">
@@ -273,6 +274,21 @@ defmodule PortalWeb.Admin.BuildersLive do
                   </span>
                 <% else %>
                   <span class="text-warning">Unknown; remote builds stay off.</span>
+                <% end %>
+              </dd>
+            </div>
+            <div>
+              <dt class="text-base-content/60">Builder port (this node)</dt>
+              <dd id="builder-listener" class="font-medium">
+                <%= case @listener do %>
+                  <% :bound -> %>
+                    Listening
+                  <% :off -> %>
+                    Off on this node
+                  <% {:waiting, since} -> %>
+                    <span class="text-warning">
+                      Waiting for the port since {Calendar.strftime(since, "%H:%M:%S")} UTC
+                    </span>
                 <% end %>
               </dd>
             </div>
