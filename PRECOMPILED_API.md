@@ -540,3 +540,17 @@ them.
 - An entry appears only once every file it lists can be served, so a fresh
   build may be delayed; until then the manifest keeps offering that version's
   previous complete build, if it has one.
+- No build whose dependency closure includes a withheld package is served,
+  in either manifest format or by `files/{sha256}`; the list is
+  `phoenix_live_view` (`Portal.Precompiled.Withheld`), and the package itself
+  counts. Such packages change their dependents' BEAMs through compile-time
+  application config the project sets and the portal's builds do not: every
+  new Phoenix 1.8 app sets LiveView's `root_tag_attribute`, which changes the
+  markup of every `~H` root tag, and LiveView's colocated hooks, JS and CSS
+  write asset files at compile time that installing BEAMs never provides.
+  Those builds come back once a build can carry that config.
+- A `pure_elixir` entry is published only when the package's own source is
+  OS-agnostic (no `:os.type()` or system architecture read, no
+  `platform_define`, no `rebar.config.script`), the check toolchain builds
+  already made: such a source bakes the Linux build host into its BEAMs. The
+  run's status is unaffected.
