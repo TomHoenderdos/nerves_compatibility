@@ -419,7 +419,9 @@ defmodule Portal.Workers.Build do
         "run_id" => run_id,
         "image_digest" => image_digest,
         "package" => package,
-        "version" => version
+        "version" => version,
+        # The worker image ran on this host's docker, so on its architecture.
+        "arch" => Compatibility.Arch.current()
       }
       |> maybe_put("scan_request_id", scan_request_id)
 

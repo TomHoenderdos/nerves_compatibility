@@ -274,6 +274,22 @@ defmodule Portal.Catalog do
   end
 
   @doc """
+  The architecture each of the given runs built on, as `%{run_id => arch}`
+  keyed by the runs' `run_id` strings; a run from before architectures were
+  recorded is left out. The package page shows it beside each result.
+  """
+  @spec runs_arch([String.t()]) :: %{String.t() => String.t()}
+  def runs_arch([]), do: %{}
+
+  def runs_arch(run_ids) when is_list(run_ids) do
+    Run
+    |> Ash.Query.filter(run_id in ^run_ids and not is_nil(arch))
+    |> Ash.Query.select([:run_id, :arch])
+    |> Ash.read!(domain: __MODULE__)
+    |> Map.new(&{&1.run_id, &1.arch})
+  end
+
+  @doc """
   When each of the given runs finished, as `%{run_id => finished_at}`. The
   package page uses it to date results carried from an earlier run.
   """

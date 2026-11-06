@@ -104,6 +104,9 @@ defmodule PortalWeb.Builder.JobControllerUploadTest do
 
     File.write!(result_path, result)
 
+    # The architecture the builder's claims name is the one its runs record.
+    {:ok, _} = Portal.Builders.set_arch(builder, "aarch64")
+
     conn =
       conn
       |> with_cert(der)
@@ -123,6 +126,7 @@ defmodule PortalWeb.Builder.JobControllerUploadTest do
     assert job.args["source"] == "remote"
     assert job.args["lease_id"] == lease.id
     assert job.args["builder_id"] == builder.id
+    assert job.args["arch"] == "aarch64"
     assert job.args["run_id"] == lease.run_id
     assert File.exists?(Path.join(Upload.out_dir(lease.id), "result.json"))
   end
