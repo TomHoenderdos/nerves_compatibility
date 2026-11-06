@@ -48,9 +48,17 @@ defmodule Portal.Builders.AgentHarness do
     key_path = Path.join([dir, "ca", "ca-key.pem"])
     images_json = Path.join(dir, "images.json")
 
+    # The agent claims for this machine's architecture (`NccAgent.Updater.arch/0`),
+    # which on an arm64 dev machine is not x86_64: name the image for both.
+    platforms = %{"x86_64" => digest, host_arch() => digest}
+
     File.write!(
       images_json,
-      Jason.encode!(%{"images" => %{"ncc-worker" => %{"name" => image, "digest" => digest}}})
+      Jason.encode!(%{
+        "images" => %{
+          "ncc-worker" => %{"name" => image, "digest" => digest, "platforms" => platforms}
+        }
+      })
     )
 
     put_env(CA, key_path: key_path)
@@ -76,6 +84,17 @@ defmodule Portal.Builders.AgentHarness do
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
     %{dir: dir, port: port}
+  end
+
+  # As `NccAgent.Updater.arch/0`, which this app cannot call.
+  defp host_arch do
+    arch = to_string(:erlang.system_info(:system_architecture))
+
+    cond do
+      String.starts_with?(arch, "x86_64") -> "x86_64"
+      String.starts_with?(arch, "aarch64") -> "aarch64"
+      true -> arch
+    end
   end
 
   defp put_env(module, overrides) do

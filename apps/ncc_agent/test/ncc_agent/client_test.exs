@@ -33,8 +33,11 @@ defmodule NccAgent.ClientTest do
     assert {:ok, %{"lease_id" => @lease}} = Client.claim(req, 1, "ok")
 
     assert_received {:portal_request, "POST", "/builder/v1/jobs/claim",
-                     %{"free_slots" => 1, "egress" => "ok", "agent_version" => _}, fp}
+                     %{"free_slots" => 1, "egress" => "ok", "agent_version" => _} = body, fp}
                     when is_binary(fp)
+
+    # The portal hands out the worker image's platform digest for this arch.
+    assert body["arch"] == NccAgent.Updater.arch()
 
     assert :none = Client.claim(req, 1, "ok")
   end
@@ -42,6 +45,15 @@ defmodule NccAgent.ClientTest do
   test "claim maps 409 egress_missing", %{req: req, script: script} do
     Agent.update(script, &Map.put(&1, :claim_error, {409, %{error: "egress_missing"}}))
     assert {:error, :egress_missing} = Client.claim(req, 1, "missing")
+  end
+
+  test "claim maps 409 no_image_for_arch", %{req: req, script: script} do
+    Agent.update(
+      script,
+      &Map.put(&1, :claim_error, {409, %{error: "no_image_for_arch", arch: "aarch64"}})
+    )
+
+    assert {:error, {:no_image_for_arch, "aarch64"}} = Client.claim(req, 1, "ok")
   end
 
   test "missing returns the scripted list", %{req: req} do
