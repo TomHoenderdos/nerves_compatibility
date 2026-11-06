@@ -40,6 +40,18 @@ defmodule NccWorker.DockerfileTest do
     assert File.read!(@toolchain_dockerfile) =~ ~r/^LABEL ncc\.hex-cache=seeded$/m
   end
 
+  # CI builds the amd64 and arm64 images in separate jobs: a floating tag
+  # could resolve to a different base for each. The multi-arch index digest
+  # names one base for both, with its version tag kept for reading.
+  test "the base is pinned by its multi-arch index digest", %{text: text} do
+    assert Regex.match?(
+             ~r/^FROM ghcr\.io\/nerves-project\/nerves_system_br:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$/m,
+             text
+           )
+
+    refute text =~ "nerves_system_br:latest"
+  end
+
   # Hex is pinned, never the floating latest: Hex 2.6 renamed its registry
   # cache, and `NccWorker.HexHome` shares that file between targets only under
   # the name the pinned Hex uses. A bump to a Hex `HexHome.registry_file/1`
