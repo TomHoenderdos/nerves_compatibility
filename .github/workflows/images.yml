@@ -1,8 +1,8 @@
 name: Images and agent releases
 
 # Publishes what a remote builder needs to mean the same thing as a local
-# build host: the worker image by registry digest, and the agent release per
-# architecture, all described in one images.json the web host reads
+# build host: the worker image by registry digest and the agent release, both
+# per architecture, all described in one images.json the web host reads
 # (Portal.Builders.Images). Runs only after the test workflow passed on a
 # push to main of this repository.
 #
@@ -31,8 +31,14 @@ env:
   WORKER_IMAGE: ghcr.io/tomhoenderdos/ncc-worker
 
 jobs:
+  # One image per architecture, each built natively (the Nerves toolchain and
+  # argus' FlowLog engines are too heavy for QEMU) and pushed by digest alone.
+  # worker-manifest then ties them into one manifest list under the tags.
+  # Provenance and SBOM attestations are off so that each push is a plain
+  # platform manifest: its digest is the image a builder of that
+  # architecture runs, and the one its runs are recorded under.
   worker-image:
-    name: Push ncc-worker
+    name: Push ncc-worker (${{ matrix.arch }})
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_run' &&
@@ -40,14 +46,20 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository)
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     permissions:
       contents: read
       packages: write
-    outputs:
-      digest: ${{ steps.push.outputs.digest }}
-      sha: ${{ steps.sha.outputs.sha }}
     steps:
       - id: sha
         run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
@@ -60,16 +72,100 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build and push by digest
         id: push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: apps/ncc_worker/Dockerfile
-          push: true
-          tags: |
-            ${{ env.WORKER_IMAGE }}:${{ steps.sha.outputs.sha }}
-            ${{ env.WORKER_IMAGE }}:latest
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          sbom: false
+          outputs: type=image,name=${{ env.WORKER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad digest: $DIGEST" >&2; exit 1; }
+          mkdir -p digests
+          printf '%s\n' "$DIGEST" > "digests/${{ matrix.arch }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: worker-digest-${{ matrix.arch }}
+          path: digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  worker-manifest:
+    name: ncc-worker manifest list
+    needs: worker-image
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      index: ${{ steps.manifest.outputs.index }}
+      x86_64: ${{ steps.manifest.outputs.x86_64 }}
+      aarch64: ${{ steps.manifest.outputs.aarch64 }}
+    steps:
+      - id: sha
+        run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: worker-digest-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      # The platform digests in images.json are read back off the pushed
+      # manifest list and checked against what each build pushed, so every
+      # one is the image the registry serves that architecture.
+      - name: Create the manifest list
+        id: manifest
+        env:
+          SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          amd="$(cat digests/x86_64)"
+          arm="$(cat digests/aarch64)"
+          for d in "$amd" "$arm"; do
+            [[ $d =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad digest: $d" >&2; exit 1; }
+          done
+          docker buildx imagetools create \
+            -t "$WORKER_IMAGE:$SHA" -t "$WORKER_IMAGE:latest" \
+            "$WORKER_IMAGE@$amd" "$WORKER_IMAGE@$arm"
+          docker buildx imagetools inspect --raw "$WORKER_IMAGE:$SHA" > index.json
+          index="$(docker buildx imagetools inspect "$WORKER_IMAGE:$SHA" --format '{{json .Manifest}}' |
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
+          [[ $index =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad index digest: $index" >&2; exit 1; }
+          python3 - "$amd" "$arm" <<'PY'
+          import json, sys
+          amd, arm = sys.argv[1:]
+          manifests = json.load(open("index.json"))["manifests"]
+          found = {(m["platform"]["os"], m["platform"]["architecture"]): m["digest"] for m in manifests}
+          want = {("linux", "amd64"): amd, ("linux", "arm64"): arm}
+          assert found == want, f"manifest list {found} is not {want}"
+          PY
+          {
+            echo "index=$index"
+            echo "x86_64=$amd"
+            echo "aarch64=$arm"
+          } >> "$GITHUB_OUTPUT"
 
   agent-release:
     name: Agent release (${{ matrix.arch }})
@@ -119,7 +215,7 @@ jobs:
 
   publish:
     name: Release and images.json
-    needs: [worker-image, agent-release]
+    needs: [worker-manifest, agent-release]
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_run' &&
@@ -141,8 +237,10 @@ jobs:
           merge-multiple: true
       - name: Write images.json
         env:
-          SHA: ${{ needs.worker-image.outputs.sha }}
-          DIGEST: ${{ needs.worker-image.outputs.digest }}
+          SHA: ${{ needs.worker-manifest.outputs.sha }}
+          INDEX: ${{ needs.worker-manifest.outputs.index }}
+          AMD64: ${{ needs.worker-manifest.outputs.x86_64 }}
+          ARM64: ${{ needs.worker-manifest.outputs.aarch64 }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -156,13 +254,17 @@ jobs:
           x86="$(cut -d" " -f1 artifacts/ncc-agent-x86_64.tar.gz.sha256)"
           arm="$(cut -d" " -f1 artifacts/ncc-agent-aarch64.tar.gz.sha256)"
           base="https://github.com/$REPO/releases/download/agent-$SHA"
-          python3 - "$SHA" "$DIGEST" "$version" "$x86" "$arm" "$base" <<'PY' > artifacts/images.json
+          # `digest` stays the x86_64 platform's: a portal that does not read
+          # `platforms` runs it as the one image (Portal.Builders.Images).
+          python3 - "$SHA" "$INDEX" "$AMD64" "$ARM64" "$version" "$x86" "$arm" "$base" <<'PY' > artifacts/images.json
           import json, sys, datetime
-          sha, digest, version, x86, arm, base = sys.argv[1:]
+          sha, index, amd64, arm64, version, x86, arm, base = sys.argv[1:]
           print(json.dumps({
             "commit": sha,
             "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "images": {"ncc-worker": {"name": "ghcr.io/tomhoenderdos/ncc-worker", "tag": sha, "digest": digest}},
+            "images": {"ncc-worker": {
+              "name": "ghcr.io/tomhoenderdos/ncc-worker", "tag": sha, "digest": amd64, "index": index,
+              "platforms": {"x86_64": amd64, "aarch64": arm64}}},
             "agent": {"version": version, "releases": {
               "x86_64": {"url": f"{base}/ncc-agent-x86_64.tar.gz", "sha256": x86},
               "aarch64": {"url": f"{base}/ncc-agent-aarch64.tar.gz", "sha256": arm}}}
@@ -172,7 +274,7 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ needs.worker-image.outputs.sha }}
+          SHA: ${{ needs.worker-manifest.outputs.sha }}
         run: |
           gh release create "agent-$SHA" --repo "${{ github.repository }}" \
             --title "Agent $SHA" --notes "ncc-agent release and images.json for $SHA" \
