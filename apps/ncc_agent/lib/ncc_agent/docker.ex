@@ -28,6 +28,24 @@ defmodule NccAgent.Docker do
     end
   end
 
+  @doc "The names of the runtimes the daemon has registered (`docker info`)."
+  @spec runtimes(Config.t()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def runtimes(config) do
+    case cmd(config, ["info", "--format", "{{json .Runtimes}}"], @inspect_timeout_ms) do
+      {:ok, out, 0} ->
+        case Jason.decode(out) do
+          {:ok, %{} = runtimes} -> {:ok, Map.keys(runtimes)}
+          _ -> {:error, "docker info answered no runtimes: #{String.trim(out)}"}
+        end
+
+      {:ok, out, status} ->
+        {:error, "docker info exited #{status}: #{String.trim(out)}"}
+
+      {:error, reason} ->
+        {:error, "docker info failed: #{inspect(reason)}"}
+    end
+  end
+
   @doc "Whether `image_ref` is in the local image store."
   @spec present?(Config.t(), String.t()) :: boolean()
   def present?(config, image_ref),

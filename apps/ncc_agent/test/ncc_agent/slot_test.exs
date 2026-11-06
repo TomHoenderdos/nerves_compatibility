@@ -9,7 +9,8 @@ defmodule NccAgent.SlotTest do
 
   @fake Path.expand("../support/fake_docker.sh", __DIR__)
   @lease "5b0c8a8e-2222-4c2d-9e3f-0a1b2c3d4e5f"
-  @env ~w(FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_SLEEP FAKE_DOCKER_KILL_LOG FAKE_DOCKER_ARGV_LOG)
+  @env ~w(FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_SLEEP FAKE_DOCKER_KILL_LOG FAKE_DOCKER_ARGV_LOG
+          FAKE_DOCKER_RUNTIMES)
 
   setup do
     dir = Path.join(System.tmp_dir!(), "agent-slot-#{System.unique_integer([:positive])}")
@@ -26,6 +27,7 @@ defmodule NccAgent.SlotTest do
         enrolment_token: "id.c2VjcmV0c2VjcmV0.#{ca.prefix}",
         docker_bin: @fake,
         egress_script: egress_stub(dir, "exit 0"),
+        daemon_json: daemon_json(dir, 65_536),
         memory: "4g"
     }
 
@@ -72,6 +74,15 @@ defmodule NccAgent.SlotTest do
     """)
 
     File.chmod!(path, 0o755)
+    path
+  end
+
+  # A daemon.json with docker's default nofile limit at `nofile`.
+  defp daemon_json(dir, nofile) do
+    File.mkdir_p!(dir)
+    path = Path.join(dir, "daemon-#{System.unique_integer([:positive])}.json")
+    limit = %{"Name" => "nofile", "Soft" => nofile, "Hard" => nofile}
+    File.write!(path, Jason.encode!(%{"default-ulimits" => %{"nofile" => limit}}))
     path
   end
 
@@ -206,6 +217,34 @@ defmodule NccAgent.SlotTest do
     assert_receive {:portal_request, "POST", "/builder/v1/jobs/claim", _, _}, 5_000
     assert egress_log(dir) |> String.split("\n", trim: true) |> Enum.uniq() == ["verify"]
     assert egress_log(dir) |> String.split("\n", trim: true) |> length() >= 2
+  end
+
+  test "a slot on a host without runsc reports host_unready and never claims", %{
+    script: script,
+    dir: dir
+  } do
+    System.put_env("FAKE_DOCKER_RUNTIMES", ~s({"runc":{"path":"runc"}}))
+    script_claim(script, claim())
+    start_supervised!({Slot, 1})
+
+    assert_receive {:portal_request, "POST", "/builder/v1/status", body, _}, 5_000
+    assert body["egress"] == "host_unready"
+    assert body["free_slots"] == 0
+    refute_receive {:portal_request, "POST", "/builder/v1/jobs/claim", _, _}, 500
+    refute File.exists?(Path.join(dir, "argv.log"))
+  end
+
+  test "a slot on a host whose docker nofile default is too low never claims", %{
+    script: script,
+    dir: dir
+  } do
+    Config.put(%{Config.get() | daemon_json: daemon_json(dir, 1024)})
+    script_claim(script, claim())
+    start_supervised!({Slot, 1})
+
+    assert_receive {:portal_request, "POST", "/builder/v1/status", body, _}, 5_000
+    assert body["egress"] == "host_unready"
+    refute_receive {:portal_request, "POST", "/builder/v1/jobs/claim", _, _}, 500
   end
 
   defp flush do

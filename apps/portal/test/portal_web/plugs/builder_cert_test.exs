@@ -35,6 +35,26 @@ defmodule PortalWeb.Plugs.BuilderCertTest do
     assert seen.egress_status == "ok"
   end
 
+  test "a host_unready status is recorded as such, an unknown one as unknown", %{conn: conn} do
+    %{builder: builder, cert_der: der} = enrolled_builder!("box-h")
+
+    conn
+    |> with_cert(der)
+    |> post("/builder/v1/status", %{"agent_version" => "1", "egress" => "host_unready"})
+    |> json_response(200)
+
+    {:ok, seen} = Builders.get_builder(builder.id)
+    assert seen.egress_status == "host_unready"
+
+    build_conn()
+    |> with_cert(der)
+    |> post("/builder/v1/status", %{"agent_version" => "1", "egress" => "<script>"})
+    |> json_response(200)
+
+    {:ok, seen} = Builders.get_builder(builder.id)
+    assert seen.egress_status == "unknown"
+  end
+
   test "an unknown certificate is 403", %{conn: conn} do
     stray =
       X509.PrivateKey.new_ec(:secp256r1)

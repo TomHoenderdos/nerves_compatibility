@@ -12,6 +12,9 @@ defmodule NccAgent.Config do
           build_user: String.t(),
           docker_bin: String.t(),
           egress_script: Path.t(),
+          # `NCC_DOCKER_DAEMON_JSON`: the daemon configuration `NccAgent.HostCheck`
+          # reads (and `priv/egress.sh` takes its resolvers from).
+          daemon_json: Path.t(),
           # `NCC_HEX_CACHE_RW=1`: the one-release rollback to a read-write
           # Hex cache mount (`Compatibility.Builder.Argv`).
           hex_cache_rw: boolean(),
@@ -33,6 +36,7 @@ defmodule NccAgent.Config do
       build_user: own_user(),
       docker_bin: "docker",
       egress_script: Path.join(to_string(:code.priv_dir(:ncc_agent)), "egress.sh"),
+      daemon_json: "/etc/docker/daemon.json",
       hex_cache_rw: false,
       slot: nil
     }
@@ -53,6 +57,7 @@ defmodule NccAgent.Config do
         build_user: System.get_env("NCC_BUILD_USER") || defaults.build_user,
         docker_bin: System.get_env("NCC_DOCKER_BIN", defaults.docker_bin),
         egress_script: System.get_env("NCC_EGRESS_SCRIPT") || defaults.egress_script,
+        daemon_json: System.get_env("NCC_DOCKER_DAEMON_JSON") || defaults.daemon_json,
         hex_cache_rw: System.get_env("NCC_HEX_CACHE_RW") == "1"
     }
 

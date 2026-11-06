@@ -92,7 +92,12 @@ defmodule PortalWeb.Builder.EnrolmentController do
   def renew(conn, _params), do: error(conn, 400, "bad_request")
 
   def status(conn, params) do
-    egress = if params["egress"] in ["ok", "missing"], do: params["egress"], else: "unknown"
+    # `host_unready`: the agent's docker lacks runsc or the nofile default
+    # (`NccAgent.HostCheck`); it claims nothing until that is fixed.
+    egress =
+      if params["egress"] in ["ok", "missing", "host_unready"],
+        do: params["egress"],
+        else: "unknown"
 
     # The plug records the header's version; a body-only agent version counts too.
     builder =

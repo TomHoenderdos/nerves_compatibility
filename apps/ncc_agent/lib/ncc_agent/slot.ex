@@ -8,7 +8,10 @@ defmodule NccAgent.Slot do
   Every claim is preceded by `NccAgent.Egress.verify/0`. When it fails the
   slot reinstalls the ruleset once and verifies again; still failing, it
   claims nothing, reports `egress: "missing"` through `/status` and checks
-  again in 60 s. Once
+  again in 60 s. Before that, `NccAgent.HostCheck.check/1`: a docker
+  daemon without the `runsc` runtime or the nofile default the builds need
+  gets no claim either, and the slot reports `egress: "host_unready"` and
+  checks again in 60 s. Once
   `NccAgent.Updater.updating?/0` is set no slot claims again.
 
   The job runs in a task so the slot stays responsive: it traps exits,
@@ -20,7 +23,7 @@ defmodule NccAgent.Slot do
   require Logger
 
   alias Compatibility.Builder.Argv
-  alias NccAgent.{Client, Config, Docker, Egress, Identity, Job, Updater}
+  alias NccAgent.{Client, Config, Docker, Egress, HostCheck, Identity, Job, Updater}
 
   @runner_failure 20
   @backoff_ms 30_000
@@ -56,7 +59,7 @@ defmodule NccAgent.Slot do
         Process.send_after(self(), :tick, @updating_poll_ms)
         {:noreply, state}
 
-      :egress_missing ->
+      unready when unready in [:egress_missing, :host_unready] ->
         Process.send_after(self(), :tick, @egress_retry_ms)
         {:noreply, state}
 
@@ -137,6 +140,13 @@ defmodule NccAgent.Slot do
   end
 
   defp claim_step(n) do
+    case HostCheck.check(Config.get()) do
+      :ok -> egress_step(n)
+      {:error, why} -> host_unready(why)
+    end
+  end
+
+  defp egress_step(n) do
     egress = ensure_egress()
 
     with {:ok, req} <- Identity.ensure() do
@@ -167,6 +177,21 @@ defmodule NccAgent.Slot do
       :none -> :none
       {:ok, claim} -> start(req, claim, n)
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Not a build failure: the host is not set up for builds, so the slot
+  # takes none and says so on the Builders tab.
+  defp host_unready(why) do
+    Logger.error("builder host not ready; not claiming: #{why}")
+
+    with {:ok, req} <- Identity.ensure() do
+      case Client.status(req, "host_unready", 0) do
+        :ok -> :ok
+        {:error, reason} -> Logger.warning("reporting host_unready: #{inspect(reason)}")
+      end
+
+      :host_unready
     end
   end
 

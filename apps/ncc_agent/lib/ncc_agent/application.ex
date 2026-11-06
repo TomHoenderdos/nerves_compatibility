@@ -1,7 +1,8 @@
 defmodule NccAgent.Application do
   @moduledoc """
   Loads the configuration, installs the egress ruleset (`NccAgent.Egress`;
-  a failure is logged, and the slots refuse to claim until it verifies) and
+  a failure is logged, and the slots refuse to claim until it verifies),
+  checks the docker daemon (`NccAgent.HostCheck`, likewise) and
   starts the agent: the identity, the updater
   and one `NccAgent.Slot` per configured slot (each stopped with time to
   kill its container and hand its lease back). A release without its environment
@@ -23,6 +24,7 @@ defmodule NccAgent.Application do
             NccAgent.Config.put(config)
             clear_scratch(config)
             install_egress()
+            check_host(config)
             [NccAgent.Identity, NccAgent.Updater, slots(config)]
 
           {:error, errors} ->
@@ -55,6 +57,15 @@ defmodule NccAgent.Application do
     case NccAgent.Egress.install() do
       :ok -> Logger.info("egress ruleset installed")
       {:error, why} -> Logger.error("egress ruleset not installed; slots will not claim: #{why}")
+    end
+  end
+
+  # Logged once at boot for the operator; every slot checks again before
+  # each claim (`NccAgent.Slot`) and claims nothing while it fails.
+  defp check_host(config) do
+    case NccAgent.HostCheck.check(config) do
+      :ok -> Logger.info("docker has runsc and the nofile default builds need")
+      {:error, why} -> Logger.error("builder host not ready; slots will not claim: #{why}")
     end
   end
 

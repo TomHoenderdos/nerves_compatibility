@@ -108,6 +108,12 @@ defmodule Portal.Builders.AgentHarness do
     data_dir = Path.join(dir, "agent-data")
     File.mkdir_p!(data_dir)
 
+    # The docker default nofile limit `NccAgent.HostCheck` wants before any
+    # claim; a workstation's daemon.json, if it has one, is not the builder's.
+    daemon_json = Path.join(dir, "daemon.json")
+    nofile = %{"Name" => "nofile", "Soft" => 65_536, "Hard" => 65_536}
+    File.write!(daemon_json, Jason.encode!(%{"default-ulimits" => %{"nofile" => nofile}}))
+
     env =
       [
         {"MIX_ENV", "test"},
@@ -116,6 +122,7 @@ defmodule Portal.Builders.AgentHarness do
         {"ELIXIR_ERL_OPTIONS", "-ncc_agent load_config true"},
         {"NCC_PORTAL_URL", "https://localhost:#{port}"},
         {"NCC_DATA_DIR", data_dir},
+        {"NCC_DOCKER_DAEMON_JSON", daemon_json},
         {"NCC_SLOTS", "1"},
         # Required: the agent refuses to start without a memory limit.
         {"NCC_MEMORY", "4g"}

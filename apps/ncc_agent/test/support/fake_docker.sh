@@ -26,10 +26,22 @@
 #                  FAKE_DOCKER_HEX_TARBALL into
 #                  <work>/hex-home/packages/hexpm/jason-1.4.4.tar when set,
 #                  exit FAKE_DOCKER_EXIT (default 0)
+#   info --format  print FAKE_DOCKER_RUNTIMES (default: runc and runsc, the
+#                  JSON of `{{json .Runtimes}}`), exit 0; print the daemon's
+#                  connection error and exit 1 when FAKE_DOCKER_INFO_FAIL=1
 #   anything else  echo, exit 0
 set -euo pipefail
 
 case "${1:-}" in
+  info)
+    if [ "${FAKE_DOCKER_INFO_FAIL:-0}" = "1" ]; then
+      echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock" >&2
+      exit 1
+    fi
+    runtimes='{"runc":{"path":"runc"},"runsc":{"path":"/usr/local/bin/runsc"}}'
+    printf '%s\n' "${FAKE_DOCKER_RUNTIMES:-$runtimes}"
+    exit 0
+    ;;
   image)
     if [ "${2:-}" = "inspect" ] && [ "${3:-}" = "--format" ]; then
       if [ "${FAKE_DOCKER_INSPECT_FAIL:-0}" = "1" ]; then

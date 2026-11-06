@@ -37,6 +37,9 @@ defmodule NccAgent.ConfigTest do
     assert Config.path(config, :cert) == "/tmp/ncc-x/client.pem"
     assert Config.path(config, :nerves_cache) == "/tmp/ncc-x/nerves-cache"
     assert String.ends_with?(config.egress_script, "egress.sh")
+    assert config.daemon_json == "/etc/docker/daemon.json"
+    System.put_env("NCC_DOCKER_DAEMON_JSON", "/etc/docker-ncc/daemon.json")
+    assert {:ok, %{daemon_json: "/etc/docker-ncc/daemon.json"}} = Config.load()
   end
 
   test "NCC_HEX_CACHE_RW=1, and only 1, turns the Hex cache rollback on" do
