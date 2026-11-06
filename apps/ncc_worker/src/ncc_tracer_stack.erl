@@ -2,7 +2,7 @@
 %% Stage-1 classification of one traced call by the stack it was made from
 %% (precompiled portability spec, R1 steps 1-3). The tracer passes in which
 %% modules are toolchain and whether the calling process is a user process.
--export([extent/4, frame/1, mfa_bin/3, dispatcher/1]).
+-export([extent/4, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% The frames left on top when package code tail-calls a primitive from a
@@ -14,23 +14,70 @@
                       {'Elixir.Mix.Task', "run_task"},
                       {'Elixir.Module.ParallelChecker', "verify"},
                       {'Elixir.Kernel.ParallelCompiler', "verify_modules"}]).
+%% Toolchain higher-order and eval frames: package code that tail-calls
+%% through them (`Enum.map(vars, &System.get_env/1)` in a macro,
+%% `Code.eval_string` in a callback) leaves only these between the call and
+%% the dispatcher that ran it. Of `Code` only the eval functions are glue:
+%% `Code.compile_file/2` reading a mix.exs runs under
+%% `Module.ParallelChecker.verify/1` on every project load.
+-define(GLUE, ['Elixir.Enum', 'Elixir.Stream', lists, maps, erl_eval, elixir, elixir_eval]).
 
+extent([], _Depth, _IsToolchain, _ProcessIsUser) ->
+    %% No frame at all (a spawned fun that tail-called the primitive): fail closed.
+    {user, truncated, none, none};
 extent(Stack, Depth, IsToolchain, ProcessIsUser) ->
-    First = case strip(Stack) of
+    Stripped = strip(Stack),
+    First = case Stripped of
                 [Frame | _] -> Frame;
                 [] -> none
             end,
     case lists:search(fun({M, _, _, _}) -> not IsToolchain(M) end, Stack) of
         {value, User} -> {user, frame, First, User};
-        false -> no_user_frame(Stack, Depth, First, ProcessIsUser)
+        false -> no_user_frame(Stack, Stripped, Depth, First, ProcessIsUser)
     end.
 
-no_user_frame(Stack, Depth, First, ProcessIsUser) ->
-    case {First =/= none andalso dispatcher(First), length(Stack) >= Depth, ProcessIsUser} of
+no_user_frame(Stack, Stripped, Depth, First, ProcessIsUser) ->
+    case {dispatched(Stack, Stripped), length(Stack) >= Depth, ProcessIsUser} of
         {true, _, _} -> {user, dispatcher, First, none};
         {false, true, _} -> {user, truncated, First, none};
         {false, false, true} -> {user, lineage, First, none};
         {false, false, false} -> toolchain
+    end.
+
+%% A dispatcher reached from the top through glue frames only (the
+%% tail-call signature, the first frame after the wrappers being the
+%% shortest case), or eval frames with a dispatcher or a module body below.
+dispatched(Stack, Stripped) ->
+    glue_to_dispatcher(Stripped) orelse eval_under_dispatcher(Stack).
+
+glue_to_dispatcher([Frame | Rest]) ->
+    case dispatcher(Frame) of
+        true -> true;
+        false -> glue(Frame) andalso glue_to_dispatcher(Rest)
+    end;
+glue_to_dispatcher([]) -> false.
+
+glue({'Elixir.Code', F, _, _}) ->
+    lists:prefix("eval", base_name(F)) orelse lists:prefix("validated_eval", base_name(F));
+glue({M, F, _, _}) ->
+    lists:member(M, ?GLUE) orelse lists:member(M, ?WRAPPERS) orelse eval_handler(F).
+
+eval_under_dispatcher([Frame | Rest]) ->
+    case eval(Frame) of
+        true -> lists:any(fun(Below) -> dispatcher(Below) orelse module_body(Below) end, Rest);
+        false -> eval_under_dispatcher(Rest)
+    end;
+eval_under_dispatcher([]) -> false.
+
+eval({M, F, _, _}) -> M =:= erl_eval orelse eval_handler(F).
+
+eval_handler(F) -> F =:= eval_external_handler.
+
+%% elixir_compiler_N: a module body or file being evaluated.
+module_body({M, _, _, _}) ->
+    case atom_to_list(M) of
+        "elixir_compiler_" ++ [D | Ds] -> lists:all(fun(C) -> C >= $0 andalso C =< $9 end, [D | Ds]);
+        _ -> false
     end.
 
 strip([{M, _, _, _} | Rest] = Stack) ->
@@ -41,6 +88,8 @@ strip([{M, _, _, _} | Rest] = Stack) ->
 strip([]) -> [].
 
 dispatcher({M, F, _, _}) -> lists:member({M, base_name(F)}, ?DISPATCHERS).
+
+dispatchers() -> [{M, list_to_atom(F)} || {M, F} <- ?DISPATCHERS].
 
 %% "-expand_callback/6-fun-0-" -> "expand_callback"
 base_name(F) ->

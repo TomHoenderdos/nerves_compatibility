@@ -12,7 +12,18 @@ defmodule NccWorker.Tracer.StackTest do
     Mix.Dep,
     :compile,
     Enum,
-    Macro
+    Macro,
+    :elixir_expand,
+    :elixir,
+    :erl_eval,
+    Code,
+    :lists,
+    :elixir_def,
+    Mix.Task,
+    Mix.Project,
+    Module.ParallelChecker,
+    Kernel.ParallelCompiler,
+    File
   ]
 
   defp tc?(module), do: module in @toolchain
@@ -69,5 +80,127 @@ defmodule NccWorker.Tracer.StackTest do
     assert :null = :ncc_tracer_stack.frame(:none)
     assert "os:type/0" = :ncc_tracer_stack.mfa_bin(:os, :type, 0)
     assert "System.version/0" = :ncc_tracer_stack.mfa_bin(System, :version, 0)
+  end
+
+  describe "tail calls through toolchain glue (review fix)" do
+    test "a macro that maps a capture over System.get_env/1 is user extent" do
+      stack = [
+        f(System, :get_env, 1),
+        f(Enum, :"-map/2-lists^map/1-1-", 2),
+        f(:elixir_dispatch, :expand_macro_fun, 7),
+        f(:elixir_expand, :expand, 3)
+      ]
+
+      assert {:user, :dispatcher, _, :none} = extent(stack)
+    end
+
+    test "a __before_compile__ callback that maps over System.get_env/1 is user extent" do
+      stack = [
+        f(System, :get_env, 1),
+        f(Enum, :"-map/2-lists^map/1-1-", 2),
+        f(:lists, :map, 2),
+        f(:elixir_module, :expand_callback, 6),
+        f(:elixir_module, :compile, 7)
+      ]
+
+      assert {:user, :dispatcher, _, :none} = extent(stack)
+    end
+
+    test "a macro that tail-calls Code.eval_string is user extent" do
+      stack = [
+        f(:elixir, :eval_external_handler, 3),
+        f(:erl_eval, :do_apply, 7),
+        f(:erl_eval, :exprs, 6),
+        f(:elixir, :eval_forms, 4),
+        f(Code, :validated_eval_string, 3),
+        f(:elixir_dispatch, :expand_macro_fun, 7)
+      ]
+
+      assert {:user, :dispatcher, _, :none} = extent(stack)
+    end
+
+    test "evaluated code under a dispatcher is user extent even below a toolchain frame" do
+      stack = [
+        f(Path, :expand, 1),
+        f(:erl_eval, :do_apply, 7),
+        f(Mix.Dep, :load, 1),
+        f(:elixir_module, :expand_callback, 6)
+      ]
+
+      assert {:user, :dispatcher, _, :none} = extent(stack)
+    end
+
+    test "evaluated code with no dispatcher below it stays toolchain" do
+      assert :toolchain =
+               extent([f(Path, :expand, 1), f(:erl_eval, :do_apply, 7), f(Mix.Dep, :load, 1)])
+    end
+
+    test "glue frames with no dispatcher anywhere stay toolchain" do
+      stack = [
+        f(Enum, :map, 2),
+        f(:lists, :map, 2),
+        f(Macro, :do_traverse, 3),
+        f(:compile, :file, 2)
+      ]
+
+      assert :toolchain = extent(stack)
+    end
+
+    test "a non-glue toolchain frame between the call and the dispatcher stays toolchain" do
+      # The `@after_compile Mix.Project` / `use Mix.Project` shape: Mix doing its own work.
+      stack = [
+        f(System, :get_env, 1),
+        f(Enum, :map, 2),
+        f(Mix.Project, :push, 3),
+        f(:elixir_module, :eval_callbacks, 5)
+      ]
+
+      assert :toolchain = extent(stack)
+    end
+
+    test "Code loading a mix.exs under the parallel checker stays toolchain" do
+      # Seen on every `Mix.Project.in_project/4` and `Mix.CLI.load_mix_exs/1`:
+      # only Code's eval functions are glue, not compile_file/find_file!.
+      stack = [
+        f(File, :read, 1),
+        f(Code, :find_file!, 2),
+        f(Code, :"-compile_file/2-fun-1-", 2),
+        f(Module.ParallelChecker, :verify, 1),
+        f(Mix.Project, :load_project, 2)
+      ]
+
+      assert :toolchain = extent(stack)
+    end
+
+    test "every dispatcher entry is recognised, plain and as an anonymous fun" do
+      expected = [
+        {:elixir_module, :expand_callback},
+        {:elixir_module, :eval_callbacks},
+        {:elixir_dispatch, :expand_macro_fun},
+        {:elixir_def, :run_on_definition_callbacks},
+        {:compile, :foldl_transform},
+        {:compile, :foldl_core_transforms},
+        {Mix.Task, :run_task},
+        {Module.ParallelChecker, :verify},
+        {Kernel.ParallelCompiler, :verify_modules}
+      ]
+
+      assert Enum.sort(:ncc_tracer_stack.dispatchers()) == Enum.sort(expected)
+
+      for {m, fun} <- expected do
+        assert :ncc_tracer_stack.dispatcher(f(m, fun, 3)), "#{inspect(m)}.#{fun}"
+
+        assert :ncc_tracer_stack.dispatcher(f(m, :"-#{fun}/3-fun-0-", 2)),
+               "#{inspect(m)}.#{fun} fun"
+
+        assert {:user, :dispatcher, _, :none} = extent([f(m, fun, 3)])
+      end
+
+      refute :ncc_tracer_stack.dispatcher(f(:elixir_module, :compile, 7))
+    end
+
+    test "an empty stack counts as user extent (fail closed)" do
+      assert {:user, :truncated, :none, :none} = extent([])
+    end
   end
 end
