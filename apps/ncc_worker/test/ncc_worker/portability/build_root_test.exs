@@ -615,7 +615,7 @@ defmodule NccWorker.Portability.BuildRootTest do
 
   defp mutate(bin) do
     pos = :rand.uniform(byte_size(bin)) - 1
-    <<pre::binary-size(pos), _, post::binary>> = bin
+    {pre, <<_, post::binary>>} = :erlang.split_binary(bin, pos)
     <<pre::binary, :rand.uniform(256) - 1, post::binary>>
   end
 end

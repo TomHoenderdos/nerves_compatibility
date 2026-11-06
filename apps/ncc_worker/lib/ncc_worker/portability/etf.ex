@@ -173,7 +173,7 @@ defmodule NccWorker.Portability.Etf do
 
   defp tag(<<112, size::32, rest::binary>>, d, n)
        when size >= 4 and size - 4 <= byte_size(rest) do
-    <<body::binary-size(size - 4), rest::binary>> = rest
+    {body, rest} = :erlang.split_binary(rest, size - 4)
     {fun, n} = new_fun(body, d, n)
     {fun, rest, n}
   end
@@ -256,8 +256,12 @@ defmodule NccWorker.Portability.Etf do
 
   defp node_then(kind, rest, fixed, d, n) do
     case term(rest, d + 1, n) do
-      {{:atom, _} = node, <<_::binary-size(fixed), rest::binary>>, n} -> {{kind, node}, rest, n}
-      _ -> fail("malformed #{kind}")
+      {{:atom, _} = node, rest, n} when byte_size(rest) >= fixed ->
+        {_fields, rest} = :erlang.split_binary(rest, fixed)
+        {{kind, node}, rest, n}
+
+      _ ->
+        fail("malformed #{kind}")
     end
   end
 
