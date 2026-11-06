@@ -31,21 +31,19 @@ defmodule NccAgent.Fs do
   end
 
   @doc """
-  As `chown/3` with `-R` on one tree the agent just extracted, but a failure
-  is an error for the caller: a build cache entry the build user cannot read
-  must not be published (`NccAgent.BuildCache`). `-R` without `-H`/`-L` is
-  physical: a link in the tree is re-owned itself, never followed.
+  Makes the agent's own user (root, under systemd) the owner of one tree it
+  just extracted (`NccAgent.BuildCache`), whatever the archive or the
+  extraction left: the build user may read a build cache entry, never own
+  or write it. A failure is an error for the caller, which then does not
+  publish the entry. `-R` without `-H`/`-L` is physical: a link in the
+  tree is re-owned itself, never followed.
   """
-  @spec chown_tree(Config.t(), Path.t()) :: :ok | {:error, {:chown, non_neg_integer()}}
+  @spec own_tree(Path.t()) :: :ok | {:error, {:chown, non_neg_integer()}}
   # sobelow_skip ["CI.System"]
-  def chown_tree(config, path) do
-    if config.build_user == Config.defaults().build_user do
-      :ok
-    else
-      case System.cmd("chown", ["-R", config.build_user, path], stderr_to_stdout: true) do
-        {_, 0} -> :ok
-        {_, status} -> {:error, {:chown, status}}
-      end
+  def own_tree(path) do
+    case System.cmd("chown", ["-R", Config.defaults().build_user, path], stderr_to_stdout: true) do
+      {_, 0} -> :ok
+      {_, status} -> {:error, {:chown, status}}
     end
   end
 end

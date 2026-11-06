@@ -18,8 +18,8 @@ defmodule NccAgent.BuildCacheTest do
     %{url: url, script: script} = FakePortal.start(ca, self(), %{})
     blobs = FakeBlobs.start(self())
 
-    # The agent's own user: chown is a no-op, as for a builder running builds
-    # as itself. Builders hand entries to NCC_BUILD_USER (`Fs.chown_tree/2`).
+    # Entries end up owned by the agent's own user (`Fs.own_tree/1`) and
+    # only readable by NCC_BUILD_USER.
     config = %{
       Config.defaults()
       | portal_url: url,
@@ -106,6 +106,51 @@ defmodule NccAgent.BuildCacheTest do
     assert is_binary(fp)
     refute log =~ "X-Amz"
     refute log =~ "secret"
+  end
+
+  test "a published entry is the agent's own, dirs 0755 and files 0644, whatever the archive said",
+       ctx do
+    src = Path.join(ctx.dir, "modes")
+    File.mkdir_p!(Path.join(src, "ebin"))
+    File.mkdir_p!(Path.join(src, "priv_bin"))
+    File.write!(Path.join(src, "ebin/Elixir.Dep.beam"), "beam")
+    File.write!(Path.join(src, "priv_bin/tool"), "#!/bin/sh\n")
+    File.chmod!(Path.join(src, "ebin/Elixir.Dep.beam"), 0o600)
+    File.chmod!(Path.join(src, "priv_bin/tool"), 0o700)
+    File.chmod!(Path.join(src, "ebin"), 0o700)
+    tar = Path.join(ctx.dir, "modes.tar.gz")
+    {:ok, %{sha256: sha}} = Tarball.pack(src, tar, :any)
+    body = File.read!(tar)
+    FakeBlobs.put(ctx.blobs, "/ncc/#{@slug}/#{key(1)}.tar.gz", body)
+
+    offer(ctx, [
+      %{
+        "key" => key(1),
+        "sha256" => sha,
+        "size" => byte_size(body),
+        "url" => ctx.blobs.url <> "/ncc/#{@slug}/#{key(1)}.tar.gz"
+      }
+    ])
+
+    {dir, _} = BuildCache.prepare(ctx.req, claim(), ctx.config)
+    entry = Path.join(dir, key(1))
+    mode = fn path -> Bitwise.band(File.lstat!(path).mode, 0o7777) end
+    {uid, 0} = System.cmd("id", ["-u"])
+    uid = uid |> String.trim() |> String.to_integer()
+
+    for path <- [
+          Path.join(ctx.config.data_dir, "build-cache"),
+          dir,
+          entry,
+          Path.join(entry, "ebin")
+        ],
+        do: assert(mode.(path) == 0o755, path)
+
+    assert mode.(Path.join(entry, "ebin/Elixir.Dep.beam")) == 0o644
+    assert mode.(Path.join(entry, "priv_bin/tool")) == 0o755
+
+    for path <- [entry, Path.join(entry, "ebin/Elixir.Dep.beam")],
+        do: assert(File.lstat!(path).uid == uid)
   end
 
   test "sends what it has and fetches only the rest", ctx do

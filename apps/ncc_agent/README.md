@@ -108,7 +108,9 @@ body against the SHA-256 the portal listed, and extracts it with the code
 the portal's prefetch runs (`Compatibility.BuildCache.Install`, `Tarball`,
 `Tree`: gzip pre-scan, screened tar table, bounded extraction, no symlink or
 hardlink members, Mix's `priv`/`include` links only from `.ncc-links.json`).
-The tree is handed to `NCC_BUILD_USER` and renamed into
+The tree is owned by the agent (root), its dirs 0755 and its files 0644
+(0755 where the portal's install keeps an execute bit), so `NCC_BUILD_USER`
+can read it and never write it, and is renamed into
 `$NCC_DATA_DIR/build-cache/<slug>/<key>`; a slug dir holding entries is
 mounted read-only at `/build-cache` with `NCC_BUILD_CACHE` set, the same
 mount the portal host's builds get. One line in `runner.log` says what was

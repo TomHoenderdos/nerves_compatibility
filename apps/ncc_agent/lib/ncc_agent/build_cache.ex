@@ -20,7 +20,8 @@ defmodule NccAgent.BuildCache do
   (regular files and directories, safe names, bounded size), extraction runs
   in a heap- and time-bounded process, Mix's `priv`/`include` links come
   only from a validated `.ncc-links.json`, and the result is walked with
-  Promotion's rules before it is handed to the build user and renamed into
+  Promotion's rules, made the agent's own and readable, never writable, by
+  the build user (dirs 0755, files 0644 or 0755), and renamed into
   place. Keys and the slug are validated before they name a path; a URL is
   never logged (its query string is a credential for 15 minutes).
 
@@ -45,7 +46,7 @@ defmodule NccAgent.BuildCache do
   require Logger
 
   alias Compatibility.BuildCache
-  alias Compatibility.BuildCache.{Install, Tarball}
+  alias Compatibility.BuildCache.{Install, Tarball, Tree}
   alias Compatibility.Builder.Argv
   alias NccAgent.{Client, Config, Fs}
 
@@ -150,6 +151,9 @@ defmodule NccAgent.BuildCache do
   # sobelow_skip ["Traversal.FileModule"]
   defp fill(req, lease_id, dir, slug, config, opts) do
     File.mkdir_p!(dir)
+    # Whatever the umask: the build user must reach the mount's root.
+    File.chmod!(Path.dirname(dir), 0o755)
+    File.chmod!(dir, 0o755)
     mark_in_use(dir)
     remove_leftovers(dir)
     budget = budget(opts, config, dir)
@@ -160,7 +164,7 @@ defmodule NccAgent.BuildCache do
     case Client.build_cache(req, lease_id, have, max(timeout, 1)) do
       {:ok, %{"slug" => ^slug, "entries" => entries}} ->
         candidates = candidates(entries, MapSet.new(have))
-        counts = run(candidates, dir, config, budget)
+        counts = run(candidates, dir, budget)
         summary(slug, counts)
 
       {:ok, _other} ->
@@ -249,7 +253,7 @@ defmodule NccAgent.BuildCache do
 
   defp http_url?(_url), do: false
 
-  defp run(candidates, dir, config, budget) do
+  defp run(candidates, dir, budget) do
     counts = %{
       offered: length(candidates),
       downloaded: 0,
@@ -261,12 +265,12 @@ defmodule NccAgent.BuildCache do
     }
 
     candidates
-    |> Enum.reduce({counts, {:go, 0}}, &fetch(&1, &2, dir, config, budget))
+    |> Enum.reduce({counts, {:go, 0}}, &fetch(&1, &2, dir, budget))
     |> elem(0)
   end
 
   # `state` is `{:go, failures_in_a_row}` or `:stop`.
-  defp fetch(entry, {counts, state}, dir, config, budget) do
+  defp fetch(entry, {counts, state}, dir, budget) do
     cond do
       state == :stop or remaining(budget) < @min_get_ms or
         counts.bytes + entry.size > budget.bytes or counts.extracted_bytes >= budget.extracted ->
@@ -279,7 +283,7 @@ defmodule NccAgent.BuildCache do
         {bump(counts, :skipped), :stop}
 
       true ->
-        entry |> download_one(dir, config, budget) |> tally(entry, counts, state)
+        entry |> download_one(dir, budget) |> tally(entry, counts, state)
     end
   end
 
@@ -373,7 +377,7 @@ defmodule NccAgent.BuildCache do
   # `dir` is the validated slug dir and `entry.key` a validated 64-hex key,
   # so every path here is the agent's own.
   # sobelow_skip ["Traversal.FileModule"]
-  defp download_one(entry, dir, config, budget) do
+  defp download_one(entry, dir, budget) do
     dest = Path.join(dir, entry.key)
     staging = dest <> ".tmp." <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
     tar = staging <> ".tar.gz"
@@ -385,7 +389,7 @@ defmodule NccAgent.BuildCache do
 
         case Install.install(tar, staging, dest,
                timeout_ms: timeout,
-               before_publish: &Fs.chown_tree(config, &1)
+               before_publish: &readable_by_build_user/1
              ) do
           {:ok, extracted} ->
             {:ok, got.bytes, extracted}
@@ -404,6 +408,18 @@ defmodule NccAgent.BuildCache do
       _ = File.rm(tar)
       _ = File.rm_rf(staging)
     end
+  end
+
+  # The agent owns the tree and the build user only reads it: dirs 0755,
+  # files 0644 plus the execute bits the portal's own L2 install keeps
+  # (`Tree.strip_modes/1`, then `Tree.readable_modes/1`). On a home host the
+  # cache belongs to the uid the container runs as, but the worker never
+  # writes it: it restores an entry with `cp -a` into its own build dir,
+  # where the copy is the build user's, with these modes, and writable by
+  # it. So nothing needs the build user to own the shared copy, and owned
+  # by root it stays unwritable to builds even without the read-only mount.
+  defp readable_by_build_user(staging) do
+    with :ok <- Tree.readable_modes(staging), do: Fs.own_tree(staging)
   end
 
   defp object_timeout(budget), do: budget |> remaining() |> min(@object_timeout_ms)

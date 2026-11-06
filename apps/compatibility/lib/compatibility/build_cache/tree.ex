@@ -161,6 +161,59 @@ defmodule Compatibility.BuildCache.Tree do
     end
   end
 
+  @doc """
+  After `strip_modes/1`, for a tree read by another uid than its owner (a
+  remote builder's copy, owned by the agent and read by the build user):
+  every directory 0755, and every regular file 0755 when `strip_modes/1`
+  kept an execute bit on it, 0644 otherwise: the reader is "other", so an
+  executable the owner could run on a home host stays runnable for it. The
+  owner keeps write, as on a home host, so
+  the cache stays the owner's to remove; nothing in it is writable by
+  anyone else. Links are left alone. Walked with `lstat`, on a host-private
+  staging tree as `strip_modes/1` is.
+  """
+  @spec readable_modes(Path.t()) :: :ok | {:error, term()}
+  # sobelow_skip ["Traversal.FileModule"]
+  def readable_modes(path) do
+    case lstat(path) do
+      {:ok, %File.Stat{type: :directory}} ->
+        with :ok <- set_mode(path, 0o755), do: readable_children(path)
+
+      {:ok, %File.Stat{type: :regular, mode: mode}} ->
+        set_mode(path, if(Bitwise.band(mode, 0o111) == 0, do: 0o644, else: 0o755))
+
+      {:ok, %File.Stat{}} ->
+        :ok
+
+      error ->
+        error
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp readable_children(dir) do
+    case :file.list_dir_all(dir) do
+      {:ok, names} ->
+        Enum.reduce_while(names, :ok, fn raw, :ok ->
+          case name_string(raw) do
+            {:ok, name} -> dir |> Path.join(name) |> readable_modes() |> continue_if_ok()
+            :error -> {:halt, {:error, {:name, raw}}}
+          end
+        end)
+
+      error ->
+        error
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp set_mode(path, wanted) do
+    case lstat(path) do
+      {:ok, %File.Stat{mode: mode}} when Bitwise.band(mode, 0o7777) == wanted -> :ok
+      _ -> File.chmod(path, wanted)
+    end
+  end
+
   # sobelow_skip ["Traversal.FileModule"]
   defp chmod(path, mode, floor) do
     wanted = mode |> Bitwise.band(@keep_mode) |> Bitwise.bor(floor)
