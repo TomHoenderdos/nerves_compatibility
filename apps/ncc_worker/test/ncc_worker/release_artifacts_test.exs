@@ -509,6 +509,50 @@ defmodule NccWorker.ReleaseArtifactsTest do
   describe "the full run's traced compile killed mid-compile" do
     @describetag timeout: 300_000
 
+    # The judge compile's own process killed outright: unlinked, so the
+    # worker survives it, and the run equals an untraced one's.
+    test "a killed judge compile process", %{tmp_dir: dir} do
+      proj =
+        NccWorker.TracerFixtures.project(dir, ["fx_pure"], %{
+          "fx_pure" => NccWorker.TracerFixtures.lib("fx_pure", "defmodule FxPure do\nend\n")
+        })
+
+      env = NccWorker.TracerFixtures.env(proj)
+
+      for args <- [["deps.get"], ["compile"]] do
+        assert {_out, 0} = System.cmd("mix", args, cd: proj, env: env, stderr_to_stdout: true)
+      end
+
+      beam = Path.join([proj, "_build", "host", "lib", "fx_pure", "ebin", "Elixir.FxPure.beam"])
+      untraced_beam = File.read!(beam)
+      untraced = NccWorker.Worker.pure_elixir_result(proj, "fx_pure", traced_pass())
+
+      out = Path.join(dir, "out")
+      File.mkdir_p!(Path.join(out, "logs"))
+      paths = %{work_dir: dir, output_dir: out, logs_dir: Path.join(out, "logs")}
+
+      portability =
+        NccWorker.Worker.full_run_portability(proj, paths,
+          releases: {:ok, %{}},
+          cmd: fn _caller, _ref, _command, _argv, _log -> Process.exit(self(), :kill) end
+        )
+
+      {killed, _stderr} =
+        ExUnit.CaptureIO.with_io(:stderr, fn ->
+          NccWorker.Worker.pure_elixir_result(proj, "fx_pure", portability)
+        end)
+
+      assert %{status: "skipped", reason: "portability could not be judged"} =
+               killed.host_portability
+
+      assert killed.host_portability.compile_observations["problems"] |> Enum.join() =~
+               "killed"
+
+      refute Map.has_key?(killed.beam_scan["footprint"], "file_manifest")
+      assert strip_publication(killed) == strip_publication(untraced)
+      assert File.read!(beam) == untraced_beam
+    end
+
     test "changes nothing but host_portability and publication", %{tmp_dir: dir} do
       # Sleeps only under the trace, until the judge compile's timeout kills it.
       body = """

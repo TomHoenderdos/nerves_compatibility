@@ -96,7 +96,7 @@ defmodule NccWorker.Portability do
     * `run_started_at:`, the run's start in monotonic seconds, which bounds
       the compile by what is left of the run (`NccWorker.Tracer`);
     * `trace_dir:` (default `<project_dir>/../trace`), `log_file:`,
-      `timeout_ms:`, `extra_env:`, `reap:`.
+      `timeout_ms:`, `extra_env:`, `reap:`, `cmd:` (tests).
 
   Never raises. Adds `observations["trace_stats"]["wall_ms"]` and
   `observations["trace_stats"]["judge_compile"]`: `"finished"` when the
@@ -183,7 +183,7 @@ defmodule NccWorker.Portability do
       timeout_ms: Keyword.get(opts, :timeout_ms, @default_timeout_ms),
       extra_env: Keyword.get(opts, :extra_env, []),
       run_started_at: Keyword.get(opts, :run_started_at)
-    ] ++ Keyword.take(opts, [:reap])
+    ] ++ Keyword.take(opts, [:reap, :cmd])
   end
 
   defp verdict(project_dir, package, {:ok, 0}, trace_dir, native, ctx_opts),

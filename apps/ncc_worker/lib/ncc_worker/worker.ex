@@ -1234,8 +1234,8 @@ defmodule NccWorker.Worker do
   # throw or an exit in the trace is "portability could not be judged", one
   # in the rebuild is logged, and either way the status stands and nothing is
   # published. Public for tests, which inject `trace:` (`run_portability/4`'s
-  # shape), `compile:` (`OptionalDepsTargets.bounded_compile/4`'s) and
-  # `timeout_ms:`.
+  # shape), `compile:` (`OptionalDepsTargets.bounded_compile/4`'s),
+  # `timeout_ms:` and `cmd:` (`NccWorker.Tracer`'s judge compile command).
   @spec full_run_portability(String.t(), map(), keyword()) ::
           (String.t() -> Portability.verdict())
   def full_run_portability(project_dir, paths, opts) do
@@ -1441,7 +1441,7 @@ defmodule NccWorker.Worker do
           run_started_at: Keyword.get(opts, :run_started_at),
           trace_dir: Path.join(paths.work_dir, "trace"),
           log_file: Path.join([paths.output_dir, "logs", "host-trace.log"])
-        ] ++ Keyword.take(opts, [:timeout_ms])
+        ] ++ Keyword.take(opts, [:timeout_ms, :cmd])
       )
 
     HexHome.publish(hex_home)

@@ -221,6 +221,41 @@ defmodule NccWorker.TracerTest do
     assert Tracer.timeout_sec(30 * 60 * 1000, 200 * 60) == :exhausted
   end
 
+  # The judge compile's process is not linked to the caller: whatever
+  # happens to it is an error, never an exit signal that kills the worker.
+  describe "a judge compile process that crashes" do
+    test "raising, throwing or exiting is an error, and the caller lives on", %{tmp_dir: dir} do
+      for crash <- [fn -> raise "boom" end, fn -> throw(:boom) end, fn -> exit(:boom) end] do
+        cmd = fn _caller, _ref, _command, _argv, _log -> crash.() end
+        assert {:error, _} = Tracer.run(dir, ["x"], trace_dir: Path.join(dir, "trace"), cmd: cmd)
+      end
+    end
+
+    test "killed, it is an error, and the caller lives on", %{tmp_dir: dir} do
+      cmd = fn _caller, _ref, _command, _argv, _log -> Process.exit(self(), :kill) end
+
+      assert {:error, {:exited, :killed}} =
+               Tracer.run(dir, ["x"], trace_dir: Path.join(dir, "trace"), cmd: cmd)
+
+      refute_received {:EXIT, _, _}
+    end
+
+    test "Portability.run/3 makes it could-not-judge", %{tmp_dir: dir} do
+      cmd = fn _caller, _ref, _command, _argv, _log -> Process.exit(self(), :kill) end
+
+      verdict =
+        NccWorker.Portability.run(dir, "x",
+          env: [],
+          releases: {:ok, %{}},
+          trace_dir: Path.join(dir, "trace"),
+          cmd: cmd
+        )
+
+      assert %{status: :skip, reason: "portability could not be judged"} = verdict
+      assert verdict.observations["trace_stats"]["judge_compile"] == "not_finished"
+    end
+  end
+
   test "a run with no time left does not start the judge compile", %{tmp_dir: dir} do
     started = System.monotonic_time(:second) - 110 * 60
 

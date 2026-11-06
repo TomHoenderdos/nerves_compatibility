@@ -198,13 +198,25 @@ defmodule NccWorker.Tracer do
     ]
   end
 
+  # The compile runs in a monitored, unlinked process: a crash there is an
+  # error here, never an exit signal that takes the worker down with it.
+  # `cmd:` replaces `cmd/5` (tests only).
   defp exec(timeout, args, project_dir, env, timeout_sec, opts) do
     caller = self()
     ref = make_ref()
     log = Keyword.get(opts, :log_file)
-    task = Task.async(fn -> cmd(caller, ref, timeout, [args, project_dir, env], log) end)
+    cmd = Keyword.get(opts, :cmd, &cmd/5)
+
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        send(
+          caller,
+          {ref, :result, guarded_cmd(cmd, [caller, ref, timeout, [args, project_dir, env], log])}
+        )
+      end)
+
     backstop = (timeout_sec + 10) * 1000 + @backstop_ms
-    outcome = Task.yield(task, backstop) || Task.shutdown(task, :brutal_kill)
+    outcome = await(pid, monitor, ref, backstop)
     kill_group(ref)
 
     case outcome do
@@ -213,6 +225,42 @@ defmodule NccWorker.Tracer do
       {:ok, result} -> result
       {:exit, reason} -> {:error, {:exited, reason}}
       nil -> {:error, :timeout}
+    end
+  end
+
+  defp guarded_cmd(cmd, argv) do
+    apply(cmd, argv)
+  rescue
+    e -> {:error, {:cmd_failed, Exception.message(e)}}
+  catch
+    kind, reason -> {:error, {:cmd_failed, {kind, reason}}}
+  end
+
+  # Past the backstop the process is killed, as `Task.shutdown/2` did.
+  defp await(pid, monitor, ref, backstop) do
+    receive do
+      {^ref, :result, result} ->
+        Process.demonitor(monitor, [:flush])
+        {:ok, result}
+
+      {:DOWN, ^monitor, :process, ^pid, reason} ->
+        {:exit, reason}
+    after
+      backstop ->
+        Process.exit(pid, :kill)
+
+        receive do
+          {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+        end
+
+        # A result sent just before the kill landed is dropped.
+        receive do
+          {^ref, :result, _result} -> :ok
+        after
+          0 -> :ok
+        end
+
+        nil
     end
   end
 
