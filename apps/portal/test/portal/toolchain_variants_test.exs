@@ -46,7 +46,9 @@ defmodule Portal.ToolchainVariantsTest do
       Ingestion.ingest(result, %{
         run_id: "run-#{name}-#{version}-#{System.unique_integer([:positive])}",
         image_digest: "sha256:x",
-        files_dir: System.tmp_dir!()
+        files_dir: System.tmp_dir!(),
+        package: name,
+        version: version
       })
 
     run
@@ -169,7 +171,8 @@ defmodule Portal.ToolchainVariantsTest do
         toolchain: "1.19/28",
         builder_version: 1,
         version: "1.0.0",
-        variant: :without
+        variant: :without,
+        package: "variantpkg"
       }
 
       assert {:ok, row} = Ingestion.ingest_toolchain(result, opts)

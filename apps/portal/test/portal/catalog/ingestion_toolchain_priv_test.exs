@@ -147,13 +147,28 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
     checksum = sha(tarball)
     files_dir = files_dir_with([beam | Enum.map(priv_built, &elem(&1, 1))])
     result = result(name, beam, priv_built, checksum)
-    Ingestion.ingest_toolchain(result, opts_fun.(files_dir, {:ok, tarball}, {:ok, checksum}))
+    ingest_identified(result, opts_fun.(files_dir, {:ok, tarball}, {:ok, checksum}))
   end
 
-  # Whatever ingest answers for a refused build, nothing of it is served.
+  # Ingest as the job would: with the identity it was enqueued for, which is
+  # the result's own here. These tests are about the priv check, not about a
+  # result for another package.
+  defp ingest_identified(result, opts) do
+    identity = %{
+      package: get_in(result, ["package", "name"]),
+      version: get_in(result, ["package", "version"])
+    }
+
+    Ingestion.ingest_toolchain(result, Map.merge(identity, opts))
+  end
+
+  # Whatever ingest answers for a refused build, nothing of it is served,
+  # and it is refused for its priv files: a build turned away for lacking
+  # the job's identity has not been checked at all.
   defp assert_nothing_published(name, outcome) do
     case outcome do
       {:ok, row} -> refute row.status == :pass
+      {:error, {:identity_missing, _}} -> flunk("refused for its identity, not its priv files")
       {:error, _reason} -> :ok
     end
 
@@ -221,7 +236,7 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
     result = result(name, beam, [{"priv/app.js", js}], String.duplicate("f", 64))
 
     outcome =
-      Ingestion.ingest_toolchain(result, opts(files_dir, {:ok, tarball}, {:ok, sha(tarball)}))
+      ingest_identified(result, opts(files_dir, {:ok, tarball}, {:ok, sha(tarball)}))
 
     assert_nothing_published(name, outcome)
   end
@@ -257,7 +272,7 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
       )
 
     outcome =
-      Ingestion.ingest_toolchain(result, opts(files_dir, {:ok, tarball}, {:ok, sha(tarball)}))
+      ingest_identified(result, opts(files_dir, {:ok, tarball}, {:ok, sha(tarball)}))
 
     assert_nothing_published(name, outcome)
   end
@@ -270,7 +285,7 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
     result = result(name, "beam-#{name}", [{"priv/app.js", js}], sha(tarball))
 
     outcome =
-      Ingestion.ingest_toolchain(
+      ingest_identified(
         result,
         opts(files_dir, {:error, :hex_registry_unavailable}, {:ok, sha(tarball)})
       )
@@ -287,7 +302,7 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
     files_dir = files_dir_with(["beam-#{name}", js])
     result = result(name, "beam-#{name}", [{"priv/app.js", js}], signed)
 
-    outcome = Ingestion.ingest_toolchain(result, opts(files_dir, {:ok, served}, {:ok, signed}))
+    outcome = ingest_identified(result, opts(files_dir, {:ok, served}, {:ok, signed}))
 
     assert_nothing_published(name, outcome)
   end
@@ -322,7 +337,7 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
     result = result(name, beam, [], "outer")
 
     assert {:ok, %{status: :pass}} =
-             Ingestion.ingest_toolchain(
+             ingest_identified(
                result,
                opts(files_dir, {:error, :unused}, {:error, :unused})
              )
@@ -402,11 +417,12 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
       {run_id, scratch}
     end
 
-    defp job_args(run_id, extra) do
+    defp job_args(run_id, name, extra) do
       Map.merge(
         %{
           "kind" => "toolchain",
           "run_id" => run_id,
+          "package" => name,
           "image_digest" => "sha256:toolchain",
           "version" => "1.0.0",
           "toolchain" => "1.19/28",
@@ -440,7 +456,7 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
         "builder_id" => Ecto.UUID.generate()
       }
 
-      perform_job(Ingest, job_args(run_id, remote))
+      perform_job(Ingest, job_args(run_id, name, remote))
 
       assert {false, []} = published?(name)
       assert Enum.all?(rows(name), &(&1.status != :pass))
@@ -457,7 +473,7 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
       {run_id, scratch} = scratch_run(name, beam, [{"priv/app.js", js}], sha(tarball))
       answer_hex({:error, :timeout}, {:ok, sha(tarball)})
 
-      assert {:error, _reason} = perform_job(Ingest, job_args(run_id, %{}), attempt: 1)
+      assert {:error, _reason} = perform_job(Ingest, job_args(run_id, name, %{}), attempt: 1)
 
       assert {false, []} = published?(name)
       assert rows(name) == []
@@ -506,7 +522,7 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
       beam = "beam-#{name}"
       files_dir = files_dir_with([beam, js])
       result = result(name, beam, [{"priv/app.js", js}], sha(outer))
-      Ingestion.ingest_toolchain(result, opts(files_dir, {:ok, outer}, {:ok, sha(outer)}))
+      ingest_identified(result, opts(files_dir, {:ok, outer}, {:ok, sha(outer)}))
     end
 
     test "a served tarball over 8 MiB is refused" do
@@ -577,7 +593,7 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
       files_dir = files_dir_with([beam, tampered])
 
       outcome =
-        Ingestion.ingest_toolchain(result, opts(files_dir, {:ok, tarball}, {:ok, checksum}))
+        ingest_identified(result, opts(files_dir, {:ok, tarball}, {:ok, checksum}))
 
       assert_nothing_published(name, outcome)
     end
@@ -593,7 +609,7 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
       files_dir = files_dir_with([beam, lib])
 
       outcome =
-        Ingestion.ingest_toolchain(result, opts(files_dir, {:ok, tarball}, {:ok, checksum}))
+        ingest_identified(result, opts(files_dir, {:ok, tarball}, {:ok, checksum}))
 
       assert_nothing_published(name, outcome)
     end

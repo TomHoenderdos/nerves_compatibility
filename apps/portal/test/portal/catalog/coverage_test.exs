@@ -39,7 +39,9 @@ defmodule Portal.Catalog.CoverageTest do
         %{
           run_id: "run-#{name}-#{version}-#{System.unique_integer([:positive])}",
           image_digest: "sha256:x",
-          files_dir: System.tmp_dir!()
+          files_dir: System.tmp_dir!(),
+          package: name,
+          version: version
         }
       )
   end
