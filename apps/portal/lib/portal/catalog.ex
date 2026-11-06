@@ -44,6 +44,7 @@ defmodule Portal.Catalog do
     UnrecordedOptionalDeps
   }
 
+  alias Portal.Precompiled.Withheld
   alias Portal.Repo
 
   @statuses ~w(pass fail error skipped unknown)
@@ -1183,45 +1184,74 @@ defmodule Portal.Catalog do
   one of its `absent` blobs arrived. One query over the catalog, which reads no
   `beam_scan` value, for `Portal.Precompiled.Batches`. Read it before the
   manifests it vouches for: a write in between then only makes the next
-  fingerprint differ.
+  fingerprint differ. The withheld package list (`Portal.Precompiled.Withheld`)
+  is part of every fingerprint, so a change to it renders every package again.
   """
   @spec precompiled_fingerprints() :: %{String.t() => String.t()}
   def precompiled_fingerprints do
     %{rows: rows} = Repo.query!(@precompiled_fingerprints_sql, [], timeout: :timer.minutes(2))
-    Map.new(rows, fn [name, fingerprint] -> {name, fingerprint} end)
+    withheld = Enum.join(Withheld.packages(), ",")
+    Map.new(rows, fn [name, fingerprint] -> {name, fingerprint <> "|withheld:" <> withheld} end)
   end
+
+  # `Portal.Precompiled.Withheld` in SQL, for the queries that select
+  # published files without rendering a manifest: `$W` is its package list.
+  # `p` is the package, `s` a system result, `r` its run and `b` the run it
+  # was carried from; a result's closure is its own lock, else the lock of the
+  # run that built it, as `build_inputs/2` publishes it. A NULL lock names
+  # nothing, as `Withheld.withheld?/3` reads `nil`.
+  @withheld_result_clause """
+  NOT (p.name = ANY($W::text[])
+       OR coalesce(s.deps_lock,
+                   CASE WHEN s.carried_from_run_id IS NULL THEN r.deps_lock ELSE b.deps_lock END,
+                   '{}'::jsonb) ?| $W::text[])
+  """
+  @withheld_toolchain_clause """
+  NOT (p.name = ANY($W::text[]) OR coalesce(t.deps_lock, '{}'::jsonb) ?| $W::text[])
+  """
+
+  @packages_with_precompiled_files_sql_template """
+  SELECT p.name
+  FROM catalog_packages p
+  JOIN catalog_runs r ON r.package_id = p.id
+  JOIN catalog_system_results s ON s.run_id = r.id
+  JOIN catalog_artifact_memberships m ON m.system_result_id = s.id
+  LEFT JOIN catalog_runs b ON b.id = s.carried_from_run_id
+  LEFT JOIN builders rb ON rb.id = r.builder_id
+  LEFT JOIN builders bb ON bb.id = b.builder_id
+  WHERE r.revoked_at IS NULL
+    AND (s.carried_from_run_id IS NULL OR b.revoked_at IS NULL)
+    AND (r.builder_id IS NULL OR (rb.publishing AND rb.status = 'enrolled'))
+    AND (s.carried_from_run_id IS NULL OR b.builder_id IS NULL OR (bb.publishing AND bb.status = 'enrolled'))
+    AND #{@withheld_result_clause}
+  UNION
+  SELECT p.name
+  FROM catalog_packages p
+  JOIN catalog_toolchain_builds t ON t.package_id = p.id
+  JOIN catalog_artifact_memberships m ON m.toolchain_build_id = t.id
+  WHERE t.revoked_at IS NULL
+    AND t.status = 'pass'
+    AND #{@withheld_toolchain_clause}
+  ORDER BY 1
+  """
+  @packages_with_precompiled_files_sql String.replace(
+                                         @packages_with_precompiled_files_sql_template,
+                                         "$W",
+                                         "$1"
+                                       )
 
   @doc """
   Names of packages with at least one stored precompiled file on a run that is
   not revoked, or on a passing toolchain build that is not revoked. A remote
   builder's run (and a result carried from one) counts only while the
-  builder is enrolled and publishing, as in `precompiled_manifest/1`.
+  builder is enrolled and publishing, as in `precompiled_manifest/1`. A
+  result or build whose closure has a withheld package
+  (`Portal.Precompiled.Withheld`) does not count.
   """
   @spec packages_with_precompiled_files() :: [String.t()]
   def packages_with_precompiled_files do
     %{rows: rows} =
-      Portal.Repo.query!("""
-      SELECT p.name
-      FROM catalog_packages p
-      JOIN catalog_runs r ON r.package_id = p.id
-      JOIN catalog_system_results s ON s.run_id = r.id
-      JOIN catalog_artifact_memberships m ON m.system_result_id = s.id
-      LEFT JOIN catalog_runs b ON b.id = s.carried_from_run_id
-      LEFT JOIN builders rb ON rb.id = r.builder_id
-      LEFT JOIN builders bb ON bb.id = b.builder_id
-      WHERE r.revoked_at IS NULL
-        AND (s.carried_from_run_id IS NULL OR b.revoked_at IS NULL)
-        AND (r.builder_id IS NULL OR (rb.publishing AND rb.status = 'enrolled'))
-        AND (s.carried_from_run_id IS NULL OR b.builder_id IS NULL OR (bb.publishing AND bb.status = 'enrolled'))
-      UNION
-      SELECT p.name
-      FROM catalog_packages p
-      JOIN catalog_toolchain_builds t ON t.package_id = p.id
-      JOIN catalog_artifact_memberships m ON m.toolchain_build_id = t.id
-      WHERE t.revoked_at IS NULL
-        AND t.status = 'pass'
-      ORDER BY 1
-      """)
+      Portal.Repo.query!(@packages_with_precompiled_files_sql, [Withheld.packages()])
 
     List.flatten(rows)
   end
@@ -1567,45 +1597,50 @@ defmodule Portal.Catalog do
     |> List.first()
   end
 
+  @published_sha256_sql_template """
+  SELECT 1
+  FROM catalog_artifact_memberships m
+  JOIN catalog_system_results s ON s.id = m.system_result_id
+  JOIN catalog_runs r ON r.id = s.run_id
+  JOIN catalog_packages p ON p.id = r.package_id
+  LEFT JOIN catalog_runs b ON b.id = s.carried_from_run_id
+  LEFT JOIN builders rb ON rb.id = r.builder_id
+  LEFT JOIN builders bb ON bb.id = b.builder_id
+  WHERE m.sha256 = $1
+    AND r.revoked_at IS NULL
+    AND (s.carried_from_run_id IS NULL OR b.revoked_at IS NULL)
+    AND (r.builder_id IS NULL OR (rb.publishing AND rb.status = 'enrolled'))
+    AND (s.carried_from_run_id IS NULL OR b.builder_id IS NULL OR (bb.publishing AND bb.status = 'enrolled'))
+    AND #{@withheld_result_clause}
+  UNION ALL
+  SELECT 1
+  FROM catalog_artifact_memberships m
+  JOIN catalog_toolchain_builds t ON t.id = m.toolchain_build_id
+  JOIN catalog_packages p ON p.id = t.package_id
+  WHERE m.sha256 = $1
+    AND t.revoked_at IS NULL
+    AND t.status = 'pass'
+    AND #{@withheld_toolchain_clause}
+  LIMIT 1
+  """
+  @published_sha256_sql String.replace(@published_sha256_sql_template, "$W", "$2")
+
   @doc """
   Whether some published build's file manifest names `sha256`: the blob
   endpoint serves only those. The same gate as `packages_with_precompiled_files/0`
   and the manifests: an unrevoked run whose builder, if any, is enrolled and
   publishing (for a carried result, the carrying run's builder too), or a
-  passing unrevoked toolchain build. A blob a non-publishing or revoked
-  builder uploaded has an `Artifact` row and a file but is not served.
+  passing unrevoked toolchain build, either one not withheld
+  (`Portal.Precompiled.Withheld`). A blob a non-publishing or revoked
+  builder uploaded, or one only withheld builds own, has an `Artifact` row
+  and a file but is not served.
   """
   @spec published_sha256?(String.t()) :: boolean()
-  # The SQL is a literal; the digest is a bound parameter the caller validated.
+  # The SQL is a module constant; the digest is a bound parameter the caller
+  # validated, and the withheld list a bound parameter too.
   # sobelow_skip ["SQL.Query"]
   def published_sha256?(sha256) when is_binary(sha256) do
-    %{rows: rows} =
-      Portal.Repo.query!(
-        """
-        SELECT 1
-        FROM catalog_artifact_memberships m
-        JOIN catalog_system_results s ON s.id = m.system_result_id
-        JOIN catalog_runs r ON r.id = s.run_id
-        LEFT JOIN catalog_runs b ON b.id = s.carried_from_run_id
-        LEFT JOIN builders rb ON rb.id = r.builder_id
-        LEFT JOIN builders bb ON bb.id = b.builder_id
-        WHERE m.sha256 = $1
-          AND r.revoked_at IS NULL
-          AND (s.carried_from_run_id IS NULL OR b.revoked_at IS NULL)
-          AND (r.builder_id IS NULL OR (rb.publishing AND rb.status = 'enrolled'))
-          AND (s.carried_from_run_id IS NULL OR b.builder_id IS NULL OR (bb.publishing AND bb.status = 'enrolled'))
-        UNION ALL
-        SELECT 1
-        FROM catalog_artifact_memberships m
-        JOIN catalog_toolchain_builds t ON t.id = m.toolchain_build_id
-        WHERE m.sha256 = $1
-          AND t.revoked_at IS NULL
-          AND t.status = 'pass'
-        LIMIT 1
-        """,
-        [sha256]
-      )
-
+    %{rows: rows} = Portal.Repo.query!(@published_sha256_sql, [sha256, Withheld.packages()])
     rows != []
   end
 
@@ -2164,17 +2199,28 @@ defmodule Portal.Catalog do
   # Everything either manifest format is rendered from, read once: the
   # package's unrevoked runs and their results (minus those carried from a
   # revoked run), its published toolchain builds, which stored blobs each of
-  # them owns, and which of those blobs this host holds.
+  # them owns, and which of those blobs this host holds. A result or build
+  # whose dependency closure has a withheld package
+  # (`Portal.Precompiled.Withheld`) is left out here, before anything is
+  # rendered from it.
   defp precompiled_sources(package_name) do
     case packages(package_name) do
       [package] ->
+        withheld = Withheld.packages()
         runs = precompiled_runs(package.id)
-        results = unrevoked_manifest_results(package.id, runs)
+
+        results =
+          package.id
+          |> unrevoked_manifest_results(runs)
+          |> reject_withheld_results(package.name, runs, withheld)
 
         shas_by_system_result_id =
           results |> Enum.map(& &1.id) |> manifest_shas_for_system_results()
 
-        toolchain_builds = published_toolchain_builds(package.id)
+        toolchain_builds =
+          package.id
+          |> published_toolchain_builds()
+          |> Enum.reject(&Withheld.withheld?(package.name, &1.deps_lock, withheld))
 
         shas_by_toolchain_build_id =
           toolchain_builds |> Enum.map(& &1.id) |> manifest_shas_for_toolchain_builds()
@@ -2195,6 +2241,18 @@ defmodule Portal.Catalog do
       _ ->
         nil
     end
+  end
+
+  # A result's closure is its own lock, else that of the run that built it,
+  # as `build_inputs/2` publishes it.
+  defp reject_withheld_results(results, package_name, runs, withheld) do
+    runs_by_id = Map.new(runs, &{&1.id, &1})
+
+    Enum.reject(results, fn result ->
+      built_by = Map.get(runs_by_id, result.carried_from_run_id || result.run_id)
+      deps = result.deps_lock || (built_by && built_by.deps_lock)
+      Withheld.withheld?(package_name, deps, withheld)
+    end)
   end
 
   defp unrevoked_manifest_results(_package_id, []), do: []
