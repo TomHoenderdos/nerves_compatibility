@@ -342,7 +342,8 @@ so the exact cause of that failure is not known. Install the buildx plugin
 with "BuildKit is enabled but the buildx component is missing".
 
 CI builds the image for `linux/amd64` and `linux/arm64` on native runners
-(`.github/workflows/images.yml`). The `nerves_system_br` base is pinned by
+(the `worker-image`/`worker-manifest` jobs in `.github/workflows/deploy.yml`,
+which start as soon as `test` passes). The `nerves_system_br` base is pinned by
 its multi-arch index digest, so both architectures build on the same base.
 To build the other architecture locally, run `docker build --platform
 linux/arm64 ...` (or `linux/amd64`). Under emulation that is slow.

@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+env:
+  REGISTRY: ghcr.io
+  WORKER_IMAGE: ghcr.io/tomhoenderdos/ncc-worker
+
 jobs:
   test:
     name: Test (umbrella)
@@ -66,6 +70,257 @@ jobs:
           done
           shellcheck -x ops/deploy.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh ops/build-reaper.sh apps/ncc_agent/priv/egress.sh apps/ncc_agent/rel/overlays/builder-host-setup.sh ops/remote-builders-golive.sh
           python3 -m unittest discover -s ops -p 'test_*.py'
+
+  # Publishes what a remote builder needs to mean the same thing as a local
+  # build host: the worker image by registry digest and the agent release,
+  # both per architecture, all described in one images.json the web host
+  # reads (Portal.Builders.Images). These jobs need only `test` to pass on
+  # this exact commit, so they start as soon as tests go green on a push to
+  # main; they do not wait on the `deploy` job below, whose builder drain can
+  # take up to two hours.
+  #
+  # `needs: test` alone does not keep this out of a pull_request run,
+  # including one from a fork: every job therefore repeats the full
+  # push-to-main-of-this-repository check in its own `if:`
+  # (ops/test_workflow_gates.py pins it). That check is also what keeps
+  # untrusted code out of this default-branch context, whose write tokens
+  # (`packages: write`, `contents: write`) must never reach it.
+  worker-image:
+    name: Push ncc-worker (${{ matrix.arch }})
+    needs: test
+    if: >-
+      github.repository == 'TomHoenderdos/nerves_compatibility' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    concurrency:
+      group: images-worker-image-${{ matrix.arch }}-${{ github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build and push by digest
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: apps/ncc_worker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          sbom: false
+          outputs: type=image,name=${{ env.WORKER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad digest: $DIGEST" >&2; exit 1; }
+          mkdir -p digests
+          printf '%s\n' "$DIGEST" > "digests/${{ matrix.arch }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: worker-digest-${{ matrix.arch }}
+          path: digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  worker-manifest:
+    name: ncc-worker manifest list
+    needs: worker-image
+    if: >-
+      github.repository == 'TomHoenderdos/nerves_compatibility' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: images-worker-manifest-${{ github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      index: ${{ steps.manifest.outputs.index }}
+      x86_64: ${{ steps.manifest.outputs.x86_64 }}
+      aarch64: ${{ steps.manifest.outputs.aarch64 }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: worker-digest-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      # The platform digests in images.json are read back off the pushed
+      # manifest list and checked against what each build pushed, so every
+      # one is the image the registry serves that architecture.
+      - name: Create the manifest list
+        id: manifest
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          amd="$(cat digests/x86_64)"
+          arm="$(cat digests/aarch64)"
+          for d in "$amd" "$arm"; do
+            [[ $d =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad digest: $d" >&2; exit 1; }
+          done
+          docker buildx imagetools create \
+            -t "$WORKER_IMAGE:$SHA" -t "$WORKER_IMAGE:latest" \
+            "$WORKER_IMAGE@$amd" "$WORKER_IMAGE@$arm"
+          docker buildx imagetools inspect --raw "$WORKER_IMAGE:$SHA" > index.json
+          index="$(docker buildx imagetools inspect "$WORKER_IMAGE:$SHA" --format '{{json .Manifest}}' |
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
+          [[ $index =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad index digest: $index" >&2; exit 1; }
+          python3 - "$amd" "$arm" <<'PY'
+          import json, sys
+          amd, arm = sys.argv[1:]
+          manifests = json.load(open("index.json"))["manifests"]
+          found = {(m["platform"]["os"], m["platform"]["architecture"]): m["digest"] for m in manifests}
+          want = {("linux", "amd64"): amd, ("linux", "arm64"): arm}
+          assert found == want, f"manifest list {found} is not {want}"
+          PY
+          {
+            echo "index=$index"
+            echo "x86_64=$amd"
+            echo "aarch64=$arm"
+          } >> "$GITHUB_OUTPUT"
+
+  agent-release:
+    name: Agent release (${{ matrix.arch }})
+    needs: test
+    if: >-
+      github.repository == 'TomHoenderdos/nerves_compatibility' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    concurrency:
+      group: images-agent-release-${{ matrix.arch }}-${{ github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "28"
+      - name: Build release
+        env:
+          MIX_ENV: prod
+        run: |
+          sha="$GITHUB_SHA"
+          export NCC_AGENT_VERSION="$(git show -s --format=%ct "$sha").${sha:0:12}"
+          mix deps.get --only prod
+          mix release ncc_agent --overwrite
+          tar -C _build/prod/rel -czf "ncc-agent-${{ matrix.arch }}.tar.gz" ncc_agent
+          sha256sum "ncc-agent-${{ matrix.arch }}.tar.gz" > "ncc-agent-${{ matrix.arch }}.tar.gz.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ncc-agent-${{ matrix.arch }}
+          path: ncc-agent-${{ matrix.arch }}.tar.gz*
+
+  publish:
+    name: Release and images.json
+    needs: [worker-manifest, agent-release]
+    if: >-
+      github.repository == 'TomHoenderdos/nerves_compatibility' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: images-publish-${{ github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          # Only the agent tarballs: docker/build-push-action also uploads its
+          # build record (`*.dockerbuild`), which this step neither needs nor
+          # reliably downloads (the 2026-10-26 run failed after five retries).
+          pattern: ncc-agent-*
+          path: artifacts
+          merge-multiple: true
+      - name: Write images.json
+        env:
+          SHA: ${{ github.sha }}
+          INDEX: ${{ needs.worker-manifest.outputs.index }}
+          AMD64: ${{ needs.worker-manifest.outputs.x86_64 }}
+          ARM64: ${{ needs.worker-manifest.outputs.aarch64 }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="$(curl -fsSL -H "Authorization: Bearer ${{ github.token }}" \
+            "https://api.github.com/repos/$REPO/commits/$SHA" | python3 -c '
+          import json,sys,datetime
+          c=json.load(sys.stdin)["commit"]["committer"]["date"]
+          t=datetime.datetime.fromisoformat(c.replace("Z","+00:00"))
+          print(int(t.timestamp()))')"
+          version="${version}.${SHA:0:12}"
+          x86="$(cut -d" " -f1 artifacts/ncc-agent-x86_64.tar.gz.sha256)"
+          arm="$(cut -d" " -f1 artifacts/ncc-agent-aarch64.tar.gz.sha256)"
+          base="https://github.com/$REPO/releases/download/agent-$SHA"
+          # `digest` stays the x86_64 platform's: a portal that does not read
+          # `platforms` runs it as the one image (Portal.Builders.Images).
+          python3 - "$SHA" "$INDEX" "$AMD64" "$ARM64" "$version" "$x86" "$arm" "$base" <<'PY' > artifacts/images.json
+          import json, sys, datetime
+          sha, index, amd64, arm64, version, x86, arm, base = sys.argv[1:]
+          print(json.dumps({
+            "commit": sha,
+            "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "images": {"ncc-worker": {
+              "name": "ghcr.io/tomhoenderdos/ncc-worker", "tag": sha, "digest": amd64, "index": index,
+              "platforms": {"x86_64": amd64, "aarch64": arm64}}},
+            "agent": {"version": version, "releases": {
+              "x86_64": {"url": f"{base}/ncc-agent-x86_64.tar.gz", "sha256": x86},
+              "aarch64": {"url": f"{base}/ncc-agent-aarch64.tar.gz", "sha256": arm}}}
+          }, indent=2))
+          PY
+          cat artifacts/images.json
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          gh release create "agent-$SHA" --repo "${{ github.repository }}" \
+            --title "Agent $SHA" --notes "ncc-agent release and images.json for $SHA" \
+            --target "$SHA" artifacts/ncc-agent-x86_64.tar.gz artifacts/ncc-agent-aarch64.tar.gz \
+            artifacts/images.json
 
   deploy:
     name: Deploy services

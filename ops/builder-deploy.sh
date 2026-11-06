@@ -268,8 +268,8 @@ builder_prepare() {
   done
 }
 
-# The worker image images.yml pushes for every main commit, tagged with the
-# commit's sha. Every host that pulls it gets the same image ID, and the build
+# The worker image deploy.yml's image jobs push for every main commit, tagged
+# with the commit's sha. Every host that pulls it gets the same image ID, and the build
 # cache is keyed by that ID (`Portal.Builder.cache_slug/1`): only hosts on the
 # same ID share entries through the L2 bucket. A locally built image gets an ID
 # of its own on every host. `NCC_WORKER_FROM_REGISTRY=0` builds locally always.
@@ -286,9 +286,10 @@ builder_pull_worker_image() {
 
 builder_build_image() {
   # A candidate tag either way. Existing jobs and failed builds retain the live
-  # tag. The registry image for this commit exists only once images.yml has run
-  # for it, which starts after CI's own deploy; until then this host builds its
-  # own and shares no build cache entries with the others.
+  # tag. The registry image for this commit exists only once deploy.yml's image
+  # jobs have pushed it, which starts as soon as `test` passes (not after CI's
+  # own deploy); until then this host builds its own and shares no build cache
+  # entries with the others.
   if [[ ${NCC_WORKER_FROM_REGISTRY:-1} == 1 ]] && builder_pull_worker_image; then
     :
   else
