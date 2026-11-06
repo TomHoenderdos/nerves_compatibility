@@ -59,6 +59,12 @@ defmodule NccWorker.PackageReleaseTest do
   end
 
   describe "DepsLock.package_release/2" do
+    # The fixture lock lives under the project's tmp/ and some are invalid on
+    # purpose; one left behind would trip a later `mix deps.audit`.
+    setup %{tmp_dir: dir} do
+      on_exit(fn -> File.rm(Path.join(dir, "mix.lock")) end)
+    end
+
     defp lock(dir, contents), do: File.write!(Path.join(dir, "mix.lock"), contents)
 
     test "the package's Hex name, locked version and outer checksum", %{tmp_dir: dir} do
