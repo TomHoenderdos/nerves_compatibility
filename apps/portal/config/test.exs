@@ -16,12 +16,21 @@ config :portal, Oban, testing: :manual
 # aggregates between them. 0 bypasses the cache entirely.
 config :portal, Portal.Catalog.Cache, ttl_ms: 0
 
+# Every checkout and test partition gets its own tmp root, so suites running
+# side by side from several worktrees never share (and remove) each other's
+# scratch dirs and stored artifacts.
+test_tmp =
+  Path.join(
+    System.tmp_dir!(),
+    "ncc-test-#{:erlang.phash2(Path.expand("../../..", __DIR__))}#{System.get_env("MIX_TEST_PARTITION")}"
+  )
+
 # Isolate Builder scratch + artifact store under tmp during tests.
 config :portal, Portal.Builder,
   docker_image: "ncc-worker:local",
-  scratch_root: Path.join(System.tmp_dir!(), "ncc-test-scratch"),
-  nerves_cache: Path.join(System.tmp_dir!(), "ncc-test-nerves-cache"),
-  hex_cache: Path.join(System.tmp_dir!(), "ncc-test-hex-cache"),
+  scratch_root: Path.join(test_tmp, "scratch"),
+  nerves_cache: Path.join(test_tmp, "nerves-cache"),
+  hex_cache: Path.join(test_tmp, "hex-cache"),
   # No egress status helper here, nor in the integration test.
   egress_check: false,
   # Every build container needs one (`Portal.Builder.check_memory_limit/0`).
@@ -30,7 +39,7 @@ config :portal, Portal.Builder,
   # image, without asking docker; the integration test asks for real.
   hex_cache_image_label: "seeded"
 
-config :portal, :artifact_store, path: Path.join(System.tmp_dir!(), "ncc-test-artifacts")
+config :portal, :artifact_store, path: Path.join(test_tmp, "artifacts")
 
 config :portal, :precompiled_signing, key_path: nil
 
@@ -72,9 +81,9 @@ config :phoenix_live_view,
 config :phoenix,
   sort_verified_routes_query_params: true
 
-config :portal, Portal.Builders.Images, path: Path.join(System.tmp_dir!(), "ncc-test-images.json")
+config :portal, Portal.Builders.Images, path: Path.join(test_tmp, "images.json")
 
 # Tests that need a CA point this at their own tmp dir.
 config :portal, Portal.Builders.CA, key_path: nil
 
-config :portal, Portal.Builders.Upload, root: Path.join(System.tmp_dir!(), "ncc-test-uploads")
+config :portal, Portal.Builders.Upload, root: Path.join(test_tmp, "uploads")
