@@ -69,7 +69,7 @@ defmodule NccWorker.JsonWriter do
     # from an image before lock recording looks too), `optional_deps` for
     # argus-only runs, which publish nothing, `toolchain_build` and
     # `requested_toolchain` for every run but a toolchain one
-    # (`NccWorker.Worker.toolchain_build/4`), `nerves_cache` for a run with
+    # (`NccWorker.Worker.toolchain_build/5`), `nerves_cache` for a run with
     # no Nerves cache misses or locked Nerves packages
     # (`NccWorker.NervesCache.report/2`), `hex_cache` for a run that neither
     # downloaded a Hex tarball nor used a cached one

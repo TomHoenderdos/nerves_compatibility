@@ -20,6 +20,7 @@ defmodule NccWorker.Worker do
     LogTail,
     NervesCache,
     OptionalDepsTargets,
+    Portability,
     Project,
     RunScope,
     Scanner,
@@ -27,6 +28,8 @@ defmodule NccWorker.Worker do
     Systems,
     WarmNerves
   }
+
+  alias Compatibility.Portability, as: PortabilityReasons
 
   @forced_skip_system "forced@admin@unknown"
 
@@ -86,10 +89,12 @@ defmodule NccWorker.Worker do
           String.t() => String.t() | [%{String.t() => String.t()}]
         }
 
-  # A "toolchain" run's verdict (`toolchain_build/4`): one prod host compile
+  # A "toolchain" run's verdict (`toolchain_build/5`): one prod host compile
   # in a plain `mix new` project on a toolchain image, judged by
-  # `NccWorker.BuildSelection.portable?/4`. `reason` is portable?'s reason for
-  # "skipped" and what failed for "error", nil for "pass". `deps_lock`,
+  # `NccWorker.BuildSelection.portable?/4` AND the compile-time trace
+  # (`NccWorker.Portability`, P1: it only adds refusals). `reason` is the
+  # combined skip reason for "skipped" (`combine/2`) and what failed for
+  # "error", nil for "pass". `deps_lock`,
   # `package_checksum` and `compile_env` describe the build ("pass" and
   # "skipped"); `file_manifest` lists the package's own files under
   # `_build/host/lib/<pkg>` for "pass" only, entries shaped like a beam scan's
@@ -102,6 +107,17 @@ defmodule NccWorker.Worker do
           deps_lock: %{String.t() => %{String.t() => String.t()}} | nil,
           package_checksum: String.t() | nil,
           compile_env: [map()] | nil,
+          # The verdict's rule: 1 is `BuildSelection.portable?/4` AND the
+          # compile-time trace's refusals (P1); nil for an "error" build.
+          portability_rule: 1 | nil,
+          # What `portable?/4` alone said: its skip reason, nil when it passed.
+          rule1_reason: String.t() | nil,
+          # What the trace observed (`NccWorker.Portability`): "trace_stats"
+          # (with the host compile's "host_compile_sec"), "config_reads",
+          # "elixir_version", "native_calls", "mix_exs_allowed",
+          # "build_root_source_path", "refusals", "taint", "native_libs",
+          # "nif_check", "problems"; nil for an "error" build.
+          compile_observations: map() | nil,
           file_manifest:
             %{
               String.t() => [
@@ -1138,6 +1154,10 @@ defmodule NccWorker.Worker do
     with {:ok, project_dir} <- Project.create_plain(paths.work_dir, @wrapper_app),
          {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
          :ok <- LockPolicy.validate(project_dir) do
+      # Right after `deps.get` and before any compile, host or judge: an
+      # untraced build step could rewrite the lock and a tarball together
+      # later (`NccWorker.Portability.lock_snapshot/1`).
+      releases = Portability.lock_snapshot(project_dir)
       host = compile_host(project_dir, paths.output_dir, log_tail_bytes, package_name)
 
       with {:ok, optional_deps} <-
@@ -1148,6 +1168,14 @@ defmodule NccWorker.Worker do
                package_name,
                paths
              ) do
+        # After the optional pass: the traced judge compile recompiles the
+        # closure, so the files judged and archived are the traced ones.
+        portability =
+          toolchain_portability(host, project_dir, package_name, paths,
+            releases: releases,
+            run_started_at: input[:started_at]
+          )
+
         result =
           %{
             run_id: input.run_id,
@@ -1163,7 +1191,8 @@ defmodule NccWorker.Worker do
             argus: Argus.skipped(),
             finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
             scope: RunScope.to_string(:toolchain),
-            toolchain_build: toolchain_build(project_dir, package_name, host, toolchain)
+            toolchain_build:
+              toolchain_build(project_dir, package_name, host, toolchain, portability)
           }
           |> put_optional_deps(optional_deps)
           |> put_deps_lock(:toolchain, nil, project_dir, package_name)
@@ -1191,6 +1220,40 @@ defmodule NccWorker.Worker do
   def toolchain_optional_deps(_request, _host, _project_dir, _package_name, _paths),
     do: {:ok, nil}
 
+  # Only a passing host compile is traced: a failed one is the verdict
+  # already ("error"), and `toolchain_build/5` never reads the trace for it.
+  defp toolchain_portability(%{status: :pass}, project_dir, package_name, paths, opts),
+    do: run_portability(project_dir, package_name, paths, opts)
+
+  defp toolchain_portability(_host, _project_dir, _package_name, _paths, _opts), do: nil
+
+  # The traced judge compile (`NccWorker.Portability.run/3`), shared by the
+  # toolchain run and the full run's `pure_elixir` path. It runs with the host
+  # compile's env and its own `HEX_HOME`, exactly as `compile_host/4` does,
+  # and judges dependency sources against the run's Hex cache (the one
+  # `package_tarball/2` reads). `opts`: `releases:`, the
+  # `Portability.lock_snapshot/1` taken after `deps.get` and before the first
+  # compile, and `run_started_at:`, the run's start (`input.started_at`),
+  # which bounds the compile by what is left of the run. It writes only under
+  # `<work>/trace` and `<out>/logs/host-trace.log`. Never raises; a trace that
+  # fails is "portability could not be judged" and changes no host status.
+  defp run_portability(project_dir, package_name, paths, opts) do
+    hex_home = HexHome.prepare(project_dir, "host")
+
+    verdict =
+      Portability.run(project_dir, package_name,
+        env: host_env(project_dir) ++ hex_env(hex_home),
+        releases: Keyword.get(opts, :releases),
+        hex_home: System.get_env("HEX_HOME"),
+        run_started_at: Keyword.get(opts, :run_started_at),
+        trace_dir: Path.join(paths.work_dir, "trace"),
+        log_file: Path.join([paths.output_dir, "logs", "host-trace.log"])
+      )
+
+    HexHome.publish(hex_home)
+    verdict
+  end
+
   defp put_requested_toolchain(result, requested) when is_map(requested),
     do: Map.put(result, :requested_toolchain, requested)
 
@@ -1207,11 +1270,14 @@ defmodule NccWorker.Worker do
 
   @doc """
   A toolchain run's `toolchain_build` (see `t:toolchain_build/0`) from its
-  host compile and the package's host build under
-  `<project_dir>/_build/host/lib/<package_name>`.
+  host compile, the package's host build under
+  `<project_dir>/_build/host/lib/<package_name>`, and the compile-time
+  trace's verdict (`NccWorker.Portability.run/3`; `nil` when there was none,
+  which cannot pass).
   """
-  @spec toolchain_build(String.t(), String.t(), map(), map()) :: toolchain_build()
-  def toolchain_build(project_dir, package_name, host_result, toolchain) do
+  @spec toolchain_build(String.t(), String.t(), map(), map(), Portability.verdict() | nil) ::
+          toolchain_build()
+  def toolchain_build(project_dir, package_name, host_result, toolchain, portability) do
     build = %{
       status: "error",
       reason: nil,
@@ -1220,29 +1286,40 @@ defmodule NccWorker.Worker do
       deps_lock: nil,
       package_checksum: nil,
       compile_env: nil,
-      file_manifest: nil
+      file_manifest: nil,
+      portability_rule: nil,
+      rule1_reason: nil,
+      compile_observations: nil
     }
 
     case host_result do
-      %{status: :pass} -> judge_toolchain_build(build, project_dir, package_name)
-      host -> %{build | reason: "host compile failed: " <> describe_error(host[:error])}
+      %{status: :pass} ->
+        judge_toolchain_build(build, project_dir, package_name, portability, host_result)
+
+      host ->
+        %{build | reason: "host compile failed: " <> describe_error(host[:error])}
     end
   end
 
-  defp judge_toolchain_build(build, project_dir, package_name) do
+  defp judge_toolchain_build(build, project_dir, package_name, portability, host_result) do
     app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
     scan = scan_host_app(app_dir)
+    portability = portability || not_traced()
+    tarball = package_tarball(project_dir, package_name)
+    rule1 = BuildSelection.portable?(project_dir, package_name, scan, tarball: tarball)
 
     build = %{
       build
       | deps_lock: DepsLock.read(project_dir, package_name),
         package_checksum: DepsLock.package_checksum(project_dir, package_name),
-        compile_env: AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
+        compile_env:
+          AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"])),
+        portability_rule: 1,
+        rule1_reason: rule1_reason(rule1),
+        compile_observations: with_host_time(portability.observations, host_result)
     }
 
-    tarball = package_tarball(project_dir, package_name)
-
-    case BuildSelection.portable?(project_dir, package_name, scan, tarball: tarball) do
+    case combine(rule1, portability) do
       :ok ->
         manifest = BeamScan.normalize(scan)["footprint"]["file_manifest"]
         %{build | status: "pass", file_manifest: manifest}
@@ -1250,6 +1327,42 @@ defmodule NccWorker.Worker do
       {:skip, reason} ->
         %{build | status: "skipped", reason: reason}
     end
+  end
+
+  defp not_traced do
+    %{
+      status: :skip,
+      reason: PortabilityReasons.could_not_judge(),
+      observations: %{"problems" => ["not traced"]}
+    }
+  end
+
+  defp rule1_reason(:ok), do: nil
+  defp rule1_reason({:skip, reason}), do: reason
+
+  # The host compile's own wall time (its `deps.get` included) next to the
+  # traced judge compile's `wall_ms`, for the P1 benchmark (spec section 11).
+  defp with_host_time(observations, host_result) do
+    seconds = host_result[:duration_sec]
+    stats = Map.get(observations, "trace_stats") || %{}
+    Map.put(observations, "trace_stats", Map.put(stats, "host_compile_sec", seconds))
+  end
+
+  @doc false
+  # P1 is rule 1 AND the trace. Reason precedence: both pass -> pass; a trace
+  # refusal wins over rule 1's reason (it is the more precise one); when the
+  # trace could not judge, rule 1's own skip reason is kept, so the row stays
+  # reopenable when P4 relaxes rule 1, and a rule 1 pass becomes "portability
+  # could not be judged". Public for tests.
+  @spec combine(:ok | {:skip, String.t()}, Portability.verdict()) :: :ok | {:skip, String.t()}
+  def combine(:ok, %{status: :pass}), do: :ok
+  def combine(:ok, %{reason: reason}) when is_binary(reason), do: {:skip, reason}
+  def combine(:ok, _verdict), do: {:skip, PortabilityReasons.could_not_judge()}
+  def combine({:skip, _reason} = rule1, %{status: :pass}), do: rule1
+
+  def combine({:skip, rule1_reason}, verdict) do
+    reason = verdict[:reason]
+    if PortabilityReasons.refusal?(reason), do: {:skip, reason}, else: {:skip, rule1_reason}
   end
 
   # The package's own Hex tarball, the reference `BuildSelection.portable?/4`

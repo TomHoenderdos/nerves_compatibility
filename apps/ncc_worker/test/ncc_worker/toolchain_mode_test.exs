@@ -38,11 +38,117 @@ defmodule NccWorker.ToolchainModeTest do
 
   defp passing_host, do: %{status: :pass, error: nil}
 
-  describe "toolchain_build/4" do
+  @traced_pass %{status: :pass, reason: nil, observations: %{"trace_stats" => %{"windows" => 2}}}
+  @not_judged %{
+    status: :skip,
+    reason: "portability could not be judged",
+    observations: %{"problems" => ["x"]}
+  }
+  @refused %{
+    status: :skip,
+    reason: "compile-time host read: os:type/0 in X.f/0 (lib/x.ex:2)",
+    observations: %{}
+  }
+
+  describe "the compile-time trace (P1)" do
+    test "a passing build records rule 1 and the trace's observations", %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      host = Map.put(passing_host(), :duration_sec, 12.0)
+      build = Worker.toolchain_build(project, "sample", host, @toolchain, @traced_pass)
+
+      assert %{status: "pass", portability_rule: 1, rule1_reason: nil} = build
+
+      assert build.compile_observations == %{
+               "trace_stats" => %{"windows" => 2, "host_compile_sec" => 12.0}
+             }
+    end
+
+    test "a trace refusal skips a build rule 1 passes, with the trace's reason", %{
+      tmp_dir: work_dir
+    } do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @refused)
+
+      assert %{
+               status: "skipped",
+               reason: "compile-time host read: os:type/0" <> _,
+               file_manifest: nil
+             } = build
+
+      assert %{portability_rule: 1, rule1_reason: nil} = build
+      assert build.compile_observations == %{"trace_stats" => %{"host_compile_sec" => nil}}
+    end
+
+    test "a trace that could not judge skips the build; it is never an error", %{
+      tmp_dir: work_dir
+    } do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+
+      for verdict <- [@not_judged, nil] do
+        build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict)
+
+        assert %{
+                 status: "skipped",
+                 reason: "portability could not be judged",
+                 file_manifest: nil,
+                 portability_rule: 1,
+                 rule1_reason: nil
+               } = build
+
+        assert [_ | _] = build.compile_observations["problems"]
+      end
+    end
+
+    test "rule 1's skip keeps its reason in rule1_reason", %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circuits_gpio-2.1.3")
+      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
+
+      assert %{status: "skipped", reason: reason, rule1_reason: reason} = build
+      assert is_binary(reason)
+    end
+
+    test "rule 1's skip reason is kept when the trace could not judge", %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circuits_gpio-2.1.3")
+      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @not_judged)
+
+      assert %{status: "skipped", reason: reason, rule1_reason: reason} = build
+      assert reason != "portability could not be judged"
+    end
+
+    test "a failed host compile records no trace fields", %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      host = %{status: :fail, error: "boom"}
+      build = Worker.toolchain_build(project, "sample", host, @toolchain, nil)
+
+      assert %{
+               status: "error",
+               portability_rule: nil,
+               rule1_reason: nil,
+               compile_observations: nil
+             } = build
+    end
+  end
+
+  test "combine/2: refusals win, rule 1 keeps its reason when the trace could not judge" do
+    assert :ok = Worker.combine(:ok, @traced_pass)
+    assert {:skip, "compile-time host read: " <> _} = Worker.combine(:ok, @refused)
+    assert {:skip, "portability could not be judged"} = Worker.combine(:ok, @not_judged)
+
+    assert {:skip, "calls System.cmd/2"} =
+             Worker.combine({:skip, "calls System.cmd/2"}, @traced_pass)
+
+    assert {:skip, "compile-time host read: " <> _} =
+             Worker.combine({:skip, "calls System.cmd/2"}, @refused)
+
+    assert {:skip, "calls System.cmd/2"} =
+             Worker.combine({:skip, "calls System.cmd/2"}, @not_judged)
+  end
+
+  describe "toolchain_build/5" do
     test "a portable package passes with its own beams' manifest", %{tmp_dir: work_dir} do
       {project, built} = project(work_dir, "circular_buffer-1.0.0")
 
-      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain)
+      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
 
       assert %{status: "pass", reason: nil, elixir: "1.19.1", otp: "28"} = build
       assert build.deps_lock == %{"dep" => %{"version" => "1.2.0", "checksum" => "o-dep"}}
@@ -59,7 +165,7 @@ defmodule NccWorker.ToolchainModeTest do
     test "a package that is not portable is skipped with the reason", %{tmp_dir: work_dir} do
       {project, _built} = project(work_dir, "circuits_gpio-2.1.3")
 
-      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain)
+      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
 
       assert %{status: "skipped", file_manifest: nil} = build
       assert is_binary(build.reason) and build.reason != ""
@@ -69,7 +175,7 @@ defmodule NccWorker.ToolchainModeTest do
       {project, _built} = project(work_dir, "circular_buffer-1.0.0")
       host = %{status: :fail, error: "mix command exited with code 1"}
 
-      build = Worker.toolchain_build(project, "sample", host, @toolchain)
+      build = Worker.toolchain_build(project, "sample", host, @toolchain, @traced_pass)
 
       assert %{status: "error", file_manifest: nil, deps_lock: nil} = build
       assert build.reason =~ "host compile failed"
@@ -81,7 +187,7 @@ defmodule NccWorker.ToolchainModeTest do
       File.rm_rf!(built)
 
       assert %{status: "skipped"} =
-               Worker.toolchain_build(project, "sample", passing_host(), @toolchain)
+               Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
     end
   end
 
@@ -108,7 +214,7 @@ defmodule NccWorker.ToolchainModeTest do
 
   test "the archiver copies a toolchain build's files from the host build", %{tmp_dir: work_dir} do
     {project, built} = project(work_dir, "circular_buffer-1.0.0")
-    build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain)
+    build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
     archive = Path.join(work_dir, "files")
 
     assert {:ok, %{files_archived: 5, files_skipped: 0}} =
@@ -122,7 +228,7 @@ defmodule NccWorker.ToolchainModeTest do
 
   test "the archiver ignores a toolchain_build outside a toolchain run", %{tmp_dir: work_dir} do
     {project, _built} = project(work_dir, "circular_buffer-1.0.0")
-    build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain)
+    build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
     archive = Path.join(work_dir, "files")
 
     assert {:ok, %{files_archived: 0}} =
@@ -137,7 +243,7 @@ defmodule NccWorker.ToolchainModeTest do
     tmp_dir: work_dir
   } do
     {project, _built} = project(work_dir, "circular_buffer-1.0.0")
-    build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain)
+    build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
     out = Path.join(work_dir, "out")
     File.mkdir_p!(out)
 
@@ -156,7 +262,12 @@ defmodule NccWorker.ToolchainModeTest do
              "package_checksum" => "o-sample",
              "deps_lock" => %{"dep" => _},
              "compile_env" => _,
-             "file_manifest" => %{"ebin" => [_ | _], "priv" => []}
+             "file_manifest" => %{"ebin" => [_ | _], "priv" => []},
+             "portability_rule" => 1,
+             "rule1_reason" => nil,
+             "compile_observations" => %{
+               "trace_stats" => %{"windows" => 2, "host_compile_sec" => nil}
+             }
            } = decoded["toolchain_build"]
   end
 
