@@ -14,11 +14,12 @@ defmodule NccWorker.Tracer do
 
   `timeout(1)` bounds the compile and kills its whole process group, so no
   orphaned compile goes on rewriting `_build` after this returns. Without
-  `timeout` on the PATH nothing is run. A timed-out compile (exit 124)
-  is `{:error, :timeout}` (`{:error, :killed}` for a 137, which an
-  out-of-memory kill gives too); the caller treats
-  every error as "portability could not be judged". The timeout is the
-  smaller of `timeout_ms` and what is left of the run (`timeout_sec/2`).
+  `timeout` on the PATH nothing is run. Exit 124 (timed out) is
+  `{:error, :timeout}` and exit 137 (killed: `timeout(1)`'s kill-after, or
+  an out-of-memory kill) is `{:error, :killed}`; the caller treats every
+  error as "portability could not be judged". The timeout is the smaller of
+  `timeout_ms` and what is left of the run (`timeout_sec/2`, from
+  `run_started_at:`, the run's start in monotonic seconds).
   """
 
   @modules [
