@@ -1,0 +1,16 @@
+# Managed by ops/deploy.sh (blue/green): the deploy rewrites this file with the
+# serving colour's port and reloads Apache. Do not edit it by hand; the vhost
+# Includes it in place of its own proxy lines.
+#
+# LiveView needs the WebSocket upgrade proxied explicitly; ProxyPass alone
+# answers it with plain HTTP. retry=0: Apache's default parks a backend for
+# 60 s after one failed connect, which would stretch any hiccup into a
+# minute of 503s.
+ProxyPreserveHost On
+RequestHeader set X-Forwarded-Proto "https"
+RewriteEngine on
+RewriteCond %{HTTP:UPGRADE} ^WebSocket$ [NC]
+RewriteCond %{HTTP:CONNECTION} Upgrade [NC]
+RewriteRule ^/?(.*) "ws://127.0.0.1:@PORT@/$1" [P]
+ProxyPass / http://127.0.0.1:@PORT@/ retry=0
+ProxyPassReverse / http://127.0.0.1:@PORT@/
