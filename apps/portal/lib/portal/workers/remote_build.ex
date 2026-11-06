@@ -24,6 +24,7 @@ defmodule Portal.Workers.RemoteBuild do
       keys: [:package, :version, :image_digest, :force, :scan_request_id, :scope, :systems]
     ]
 
+  import Ecto.Query, only: [from: 2]
   require Ash.Query
   require Logger
 
@@ -120,6 +121,16 @@ defmodule Portal.Workers.RemoteBuild do
         Progress.broadcast(scan_request_id, :queued, %{remote: true, waiting_on_lease: true})
         {:snooze, 120}
 
+      # The same wait for a pinned-local build of this version not yet run:
+      # a lease handed to one (`Leases.requeue_locally/2`, which pins it) is
+      # failed, and a job snoozed on it would otherwise wake and lease the
+      # build again. Only pinned jobs: an ordinary local job for the same
+      # version is routing's business, as before.
+      not force and local_build_pending?(package, version) ->
+        Logger.info("RemoteBuild waiting on a local build for #{package} #{version}")
+        Progress.broadcast(scan_request_id, :queued, %{remote: true, waiting_on_local: true})
+        {:snooze, 120}
+
       true ->
         image = %{name: name, digest: digest, platforms: platforms}
         lease(package, version, image, job.args, scan_request_id, job.priority, force)
@@ -203,6 +214,19 @@ defmodule Portal.Workers.RemoteBuild do
         state in [:queued, :leased, :uploading, :done]
     )
     |> Ash.exists?(domain: Portal.Builders)
+  end
+
+  defp local_build_pending?(package, version) do
+    Portal.Repo.exists?(
+      from(j in "oban_jobs",
+        where:
+          j.worker == "Portal.Workers.Build" and
+            j.state in ["available", "scheduled", "executing", "retryable"] and
+            fragment("?->>'pin_local' = 'true'", j.meta) and
+            fragment("?->>'package' = ?", j.args, ^package) and
+            fragment("?->>'version' = ?", j.args, ^version)
+      )
+    )
   end
 
   defp run_exists?(package, version, digests) do

@@ -99,6 +99,28 @@ defmodule Portal.Workers.RemoteBuildTest do
     assert [_, _] = Ash.read!(Lease, domain: Portal.Builders)
   end
 
+  # A lease handed to a local build (`Leases.requeue_locally/2`) is failed,
+  # so a job snoozed on it would otherwise wake and lease the build again.
+  test "waits on a pinned-local build of the same version unless forced" do
+    args = %{"package" => "jason", "version" => "1.4.4"}
+    # An ordinary local job for the version does not hold a remote one.
+    Oban.insert!(Portal.Workers.Build.new(%{package: "jason", version: "1.4.4"}))
+    assert :ok = perform_job(RemoteBuild, args)
+    Portal.Repo.delete_all(Lease)
+
+    Oban.insert!(
+      Portal.Workers.Build.new(%{package: "jason", version: "1.4.4", force: true},
+        meta: %{pin_local: true},
+        priority: 1
+      )
+    )
+
+    assert {:snooze, 120} = perform_job(RemoteBuild, args)
+    assert [] = Ash.read!(Lease, domain: Portal.Builders)
+    assert :ok = perform_job(RemoteBuild, Map.put(args, "force", true))
+    assert [_] = Ash.read!(Lease, domain: Portal.Builders)
+  end
+
   # A `done` lease is in flight until its ingest commits the run: a second
   # job for the same build in that window must not lease it again.
   test "waits on a done lease whose run is not ingested yet" do
