@@ -41,8 +41,6 @@ defmodule NccAgent.HostCheck do
     end
   end
 
-  # The path is the operator's NCC_DOCKER_DAEMON_JSON, never job input.
-  # sobelow_skip ["Traversal.FileModule"]
   defp nofile(path) do
     with {:ok, bytes} <- read(path),
          {:ok, doc} <- decode(path, bytes) do
@@ -62,6 +60,8 @@ defmodule NccAgent.HostCheck do
     end
   end
 
+  # The path is the operator's NCC_DOCKER_DAEMON_JSON, never job input.
+  # sobelow_skip ["Traversal.FileModule"]
   defp read(path) do
     case File.read(path) do
       {:ok, bytes} ->
