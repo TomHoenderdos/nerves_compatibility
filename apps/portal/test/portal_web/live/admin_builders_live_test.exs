@@ -47,6 +47,40 @@ defmodule PortalWeb.Admin.BuildersLiveTest do
       })
   end
 
+  test "shows each builder's architecture and whether the image has it", %{conn: conn} do
+    path = Path.join(System.tmp_dir!(), "images-#{System.unique_integer([:positive])}.json")
+    previous = Application.get_env(:portal, Portal.Builders.Images, [])
+    Application.put_env(:portal, Portal.Builders.Images, Keyword.put(previous, :path, path))
+
+    on_exit(fn ->
+      Application.put_env(:portal, Portal.Builders.Images, previous)
+      File.rm(path)
+    end)
+
+    digest = "sha256:" <> String.duplicate("a", 64)
+
+    File.write!(
+      path,
+      Jason.encode!(%{
+        "images" => %{"ncc-worker" => %{"name" => "ghcr.io/x/ncc-worker", "digest" => digest}}
+      })
+    )
+
+    {:ok, amd} = Builders.set_arch(enrol!("box-amd"), "x86_64")
+    {:ok, arm} = Builders.set_arch(enrol!("box-arm"), "aarch64")
+    unknown = enrol!("box-new")
+
+    {:ok, view, _html} = live(conn, ~p"/admin/builders")
+    assert view |> element("#builder-arch-#{amd.id}") |> render() =~ "x86_64"
+    refute view |> element("#builder-arch-#{amd.id}") |> render() =~ "no image"
+
+    assert view |> element("#builder-arch-#{arm.id}") |> render() =~
+             ~r/aarch64\s*<span[^>]*>\s*\(no image\)/
+
+    assert view |> element("#builder-arch-#{unknown.id}") |> render() =~ "-"
+    assert has_element?(view, "#worker-image", "x86_64")
+  end
+
   test "lists builders and leases and mints a token shown once", %{conn: conn} do
     builder = enrol!("box-ui")
     enqueue!()

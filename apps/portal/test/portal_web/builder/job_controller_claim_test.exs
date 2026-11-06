@@ -67,6 +67,114 @@ defmodule PortalWeb.Builder.JobControllerClaimTest do
     assert [%Lease{state: :queued}] = Ash.read!(Lease, domain: Portal.Builders)
   end
 
+  @amd "sha256:" <> String.duplicate("1", 64)
+  @arm "sha256:" <> String.duplicate("2", 64)
+
+  defp images!(platforms) do
+    path = Path.join(System.tmp_dir!(), "images-#{System.unique_integer([:positive])}.json")
+    previous = Application.get_env(:portal, Portal.Builders.Images, [])
+
+    File.write!(
+      path,
+      Jason.encode!(%{
+        "commit" => "c",
+        "images" => %{
+          "ncc-worker" => %{
+            "name" => "ghcr.io/x/ncc-worker",
+            "digest" => @amd,
+            "platforms" => platforms
+          }
+        }
+      })
+    )
+
+    Application.put_env(:portal, Portal.Builders.Images, Keyword.put(previous, :path, path))
+
+    on_exit(fn ->
+      Application.put_env(:portal, Portal.Builders.Images, previous)
+      File.rm(path)
+    end)
+  end
+
+  defp queued_multiarch!(platforms) do
+    {:ok, lease} =
+      Leases.enqueue(%{
+        package: "jason",
+        version: "1.4.4",
+        image_name: "ghcr.io/x/ncc-worker",
+        image_digest: @amd,
+        args: %{"image_platforms" => platforms},
+        scan_request_id: nil,
+        priority: 5
+      })
+
+    lease
+  end
+
+  test "an arm64 agent gets the arm64 platform digest, in the image and the input",
+       %{conn: conn} do
+    images!(%{"x86_64" => @amd, "aarch64" => @arm})
+    %{builder: builder, cert_der: der} = enrolled_builder!("arm1")
+    lease = queued_multiarch!(%{"x86_64" => @amd, "aarch64" => @arm})
+
+    body =
+      conn
+      |> with_cert(der)
+      |> post("/builder/v1/jobs/claim", Map.put(@claim, "arch", "aarch64"))
+      |> json_response(200)
+
+    assert body["lease_id"] == lease.id
+    assert body["image"] == %{"name" => "ghcr.io/x/ncc-worker", "digest" => @arm}
+    assert body["input"]["image"]["digest"] == @arm
+    assert Ash.get!(Lease, lease.id, domain: Portal.Builders).image_digest == @arm
+
+    {:ok, b} = Portal.Builders.get_builder(builder.id)
+    assert b.arch == "aarch64"
+  end
+
+  test "an agent whose architecture has no image claims nothing and is told why",
+       %{conn: conn} do
+    images!(%{"x86_64" => @amd})
+    %{builder: builder, cert_der: der} = enrolled_builder!("arm2")
+    queued_multiarch!(%{"x86_64" => @amd})
+
+    assert conn
+           |> with_cert(der)
+           |> post("/builder/v1/jobs/claim", Map.put(@claim, "arch", "aarch64"))
+           |> json_response(409) == %{"error" => "no_image_for_arch", "arch" => "aarch64"}
+
+    assert [%Lease{state: :queued}] = Ash.read!(Lease, domain: Portal.Builders)
+    {:ok, b} = Portal.Builders.get_builder(builder.id)
+    assert b.arch == "aarch64"
+  end
+
+  # Every agent from before multi-arch images runs on x86_64 and says nothing.
+  test "an agent that names no architecture is x86_64", %{conn: conn} do
+    images!(%{"x86_64" => @amd, "aarch64" => @arm})
+    %{builder: builder, cert_der: der} = enrolled_builder!("old1")
+    queued_multiarch!(%{"x86_64" => @amd, "aarch64" => @arm})
+
+    body = conn |> with_cert(der) |> post("/builder/v1/jobs/claim", @claim) |> json_response(200)
+    assert body["image"]["digest"] == @amd
+
+    {:ok, b} = Portal.Builders.get_builder(builder.id)
+    assert b.arch == "x86_64"
+  end
+
+  test "a malformed architecture is refused", %{conn: conn} do
+    %{cert_der: der} = enrolled_builder!("bad1")
+    queued!()
+
+    for arch <- ["../x", String.duplicate("a", 40), 7, ""] do
+      assert conn
+             |> with_cert(der)
+             |> post("/builder/v1/jobs/claim", Map.put(@claim, "arch", arch))
+             |> json_response(400) == %{"error" => "bad_arch"}
+    end
+
+    assert [%Lease{state: :queued}] = Ash.read!(Lease, domain: Portal.Builders)
+  end
+
   test "heartbeat updates the lease and refuses another builder", %{conn: conn} do
     %{cert_der: der} = enrolled_builder!("c4")
     %{cert_der: other} = enrolled_builder!("c5")

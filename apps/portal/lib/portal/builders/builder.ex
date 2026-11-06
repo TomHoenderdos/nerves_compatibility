@@ -38,6 +38,10 @@ defmodule Portal.Builders.Builder do
       accept([:egress_status])
     end
 
+    update :set_arch do
+      accept([:arch])
+    end
+
     update :set_note do
       accept([:note])
     end
@@ -86,6 +90,9 @@ defmodule Portal.Builders.Builder do
     attribute(:last_seen_at, :utc_datetime_usec, public?: true)
     attribute(:last_version, :string, public?: true)
     attribute(:egress_status, :string, public?: true)
+    # The architecture its last claim named (`x86_64`, `aarch64`), which picks
+    # the worker image's platform digest it runs (`Portal.Builders.Leases`).
+    attribute(:arch, :string, public?: true)
     attribute(:revoked_at, :utc_datetime_usec, public?: true)
     attribute(:note, :string, public?: true)
     create_timestamp(:inserted_at)

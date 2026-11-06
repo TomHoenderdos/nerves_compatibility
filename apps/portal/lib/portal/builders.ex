@@ -318,6 +318,8 @@ defmodule Portal.Builders do
 
   def set_egress(builder, status), do: update(builder, :set_egress, %{egress_status: status})
 
+  def set_arch(builder, arch), do: update(builder, :set_arch, %{arch: arch})
+
   def set_slots(builder, slots), do: update(builder, :set_slots, %{slots: slots})
 
   defp update(builder, action, params),

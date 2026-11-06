@@ -213,6 +213,12 @@ defmodule PortalWeb.Admin.BuildersLive do
 
   defp mib(bytes), do: Float.round(bytes / 1_048_576, 1)
 
+  # A builder whose architecture the deployed worker image has no platform
+  # digest for claims nothing (`PortalWeb.Builder.JobController.claim/2`).
+  defp no_image_for?(nil, _arch), do: false
+  defp no_image_for?(_image, nil), do: false
+  defp no_image_for?(image, arch), do: is_nil(Images.platform_digest(image, arch))
+
   defp age(nil, _now), do: "-"
 
   defp age(%DateTime{} = at, now) do
@@ -258,8 +264,12 @@ defmodule PortalWeb.Admin.BuildersLive do
               <dt class="text-base-content/60">Worker image</dt>
               <dd id="worker-image" class="font-medium">
                 <%= if @remote.image do %>
-                  <span class="break-all font-mono text-xs">
-                    {@remote.image.name}@{@remote.image.digest}
+                  <span class="block break-all font-mono text-xs">{@remote.image.name}</span>
+                  <span
+                    :for={{arch, digest} <- Enum.sort(@remote.image.platforms)}
+                    class="block break-all font-mono text-xs"
+                  >
+                    {arch}: {digest}
                   </span>
                 <% else %>
                   <span class="text-warning">Unknown; remote builds stay off.</span>
@@ -356,6 +366,7 @@ defmodule PortalWeb.Admin.BuildersLive do
                   <th>Slots</th>
                   <th>Last seen</th>
                   <th>Agent</th>
+                  <th>Arch</th>
                   <th>Egress</th>
                   <th>Publishing</th>
                   <th>Cert expires</th>
@@ -366,7 +377,7 @@ defmodule PortalWeb.Admin.BuildersLive do
               </thead>
               <tbody>
                 <tr :if={@builders == []}>
-                  <td colspan="11" class="text-sm text-base-content/60">
+                  <td colspan="12" class="text-sm text-base-content/60">
                     No builders are enrolled.
                   </td>
                 </tr>
@@ -383,6 +394,12 @@ defmodule PortalWeb.Admin.BuildersLive do
                   <td>{b.slots}</td>
                   <td class="whitespace-nowrap">{age(b.last_seen_at, @now)}</td>
                   <td class="font-mono text-xs">{b.last_version || "-"}</td>
+                  <td id={"builder-arch-#{b.id}"} class="whitespace-nowrap">
+                    {b.arch || "-"}
+                    <span :if={no_image_for?(@remote.image, b.arch)} class="text-warning">
+                      (no image)
+                    </span>
+                  </td>
                   <td>{b.egress_status || "unknown"}</td>
                   <td>
                     <button

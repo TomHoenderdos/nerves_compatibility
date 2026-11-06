@@ -36,16 +36,67 @@ defmodule Portal.Builders.Images do
     end
   end
 
-  @spec worker_image() :: %{name: String.t(), digest: String.t(), tag: String.t()} | nil
+  @type worker_image :: %{
+          name: String.t(),
+          digest: String.t(),
+          tag: String.t() | nil,
+          index: String.t() | nil,
+          platforms: %{String.t() => String.t()}
+        }
+
+  @doc """
+  The worker image CI published: its `name`, `tag`, the manifest list
+  (`index`, for reference only) and `platforms`, one platform manifest
+  digest per architecture as `NccAgent.Updater.arch/0` names it (`x86_64`,
+  `aarch64`). A build runs and is recorded by its platform digest, never
+  the index: the index names a different image on every architecture, and
+  `image_digest` keys runs, dedup and the build cache.
+
+  `digest` is the `x86_64` platform's: a portal from before multi-arch
+  images reads it as the one image there is. An images.json without
+  `platforms` is such a single-image file, and `digest` is its `x86_64`
+  image. One whose `digest` is not its `x86_64` platform's is malformed.
+  """
+  @spec worker_image() :: worker_image() | nil
   def worker_image do
     with {:ok, doc} <- load(),
          %{"name" => name, "digest" => digest} = image <- get_in(doc, ["images", "ncc-worker"]),
-         true <- is_binary(name) and is_binary(digest) and Regex.match?(@digest, digest) do
-      %{name: name, digest: digest, tag: Map.get(image, "tag")}
+         true <- is_binary(name) and digest?(digest),
+         {:ok, platforms} <- platforms(image, digest) do
+      index = Map.get(image, "index")
+
+      %{
+        name: name,
+        digest: digest,
+        tag: Map.get(image, "tag"),
+        index: if(digest?(index), do: index),
+        platforms: platforms
+      }
     else
       _ -> nil
     end
   end
+
+  defp platforms(%{"platforms" => %{} = platforms}, digest) do
+    valid =
+      for {arch, platform_digest} <- platforms,
+          is_binary(arch) and digest?(platform_digest),
+          into: %{},
+          do: {arch, platform_digest}
+
+    if Map.get(valid, "x86_64", digest) == digest,
+      do: {:ok, Map.put(valid, "x86_64", digest)},
+      else: :error
+  end
+
+  defp platforms(_image, digest), do: {:ok, %{"x86_64" => digest}}
+
+  @doc "The platform digest `image` names for `arch`, or nil when it has none."
+  @spec platform_digest(worker_image() | nil, String.t()) :: String.t() | nil
+  def platform_digest(%{platforms: platforms}, arch), do: Map.get(platforms, arch)
+  def platform_digest(nil, _arch), do: nil
+
+  defp digest?(value), do: is_binary(value) and Regex.match?(@digest, value)
 
   @spec agent() ::
           %{

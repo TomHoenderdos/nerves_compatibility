@@ -123,6 +123,96 @@ defmodule Portal.Workers.RemoteBuildTest do
     assert [_] = Ash.read!(Lease, domain: Portal.Builders)
   end
 
+  defp write_multiarch_images! do
+    File.write!(
+      Images.path(),
+      Jason.encode!(%{
+        "commit" => "c",
+        "images" => %{
+          "ncc-worker" => %{
+            "name" => "ghcr.io/x/ncc-worker",
+            "tag" => "c",
+            "digest" => "sha256:" <> String.duplicate("a", 64),
+            "index" => "sha256:" <> String.duplicate("f", 64),
+            "platforms" => %{
+              "x86_64" => "sha256:" <> String.duplicate("a", 64),
+              "aarch64" => "sha256:" <> String.duplicate("e", 64)
+            }
+          }
+        }
+      })
+    )
+  end
+
+  test "a lease carries every platform digest for the claim to pick from" do
+    write_multiarch_images!()
+    assert :ok = perform_job(RemoteBuild, %{"package" => "jason", "version" => "1.4.4"})
+
+    assert [%Lease{} = lease] = Ash.read!(Lease, domain: Portal.Builders)
+    assert lease.image_digest == "sha256:" <> String.duplicate("a", 64)
+
+    assert lease.args["image_platforms"] == %{
+             "x86_64" => "sha256:" <> String.duplicate("a", 64),
+             "aarch64" => "sha256:" <> String.duplicate("e", 64)
+           }
+  end
+
+  test "a lease from a single-image images.json names its x86_64 image" do
+    assert :ok = perform_job(RemoteBuild, %{"package" => "jason", "version" => "1.4.4"})
+    assert [%Lease{args: args}] = Ash.read!(Lease, domain: Portal.Builders)
+    assert args["image_platforms"] == %{"x86_64" => "sha256:" <> String.duplicate("a", 64)}
+  end
+
+  # A run on any platform of this image checks the version for it: an arm64
+  # run is not built again on x86_64.
+  test "dedups on a run at any platform digest of the image" do
+    write_multiarch_images!()
+
+    {:ok, _} =
+      Portal.Catalog.Ingestion.ingest(
+        %{
+          "package" => %{"name" => "jason", "version" => "1.4.4"},
+          "finished_at" => "2026-10-10T10:00:00Z",
+          "systems" => %{"host" => %{"status" => "pass"}}
+        },
+        %{
+          package: "jason",
+          version: "1.4.4",
+          run_id: "r-arm",
+          image_digest: "sha256:" <> String.duplicate("e", 64),
+          files_dir: System.tmp_dir!()
+        }
+      )
+
+    assert :ok = perform_job(RemoteBuild, %{"package" => "jason", "version" => "1.4.4"})
+    assert [] = Ash.read!(Lease, domain: Portal.Builders)
+  end
+
+  # Claimed by an arm64 builder, the lease names the arm64 digest; a second
+  # job for the same build still waits on it.
+  test "waits on a lease an arm64 builder holds" do
+    write_multiarch_images!()
+    args = %{"package" => "jason", "version" => "1.4.4"}
+    assert :ok = perform_job(RemoteBuild, args)
+
+    builder =
+      Portal.Builders.Builder
+      |> Ash.Changeset.for_create(:enrol, %{
+        name: "rb-arm",
+        fingerprint: "fp-rb-arm",
+        cert_pem: "p",
+        cert_expires_at: DateTime.utc_now(),
+        enrolled_at: DateTime.utc_now()
+      })
+      |> Ash.create!(domain: Portal.Builders)
+
+    {:ok, lease} = Portal.Builders.Leases.claim(builder, "aarch64")
+    assert lease.image_digest == "sha256:" <> String.duplicate("e", 64)
+
+    assert {:snooze, 120} = perform_job(RemoteBuild, args)
+    assert [_] = Ash.read!(Lease, domain: Portal.Builders)
+  end
+
   test "the snooze backoff is capped at an hour" do
     assert RemoteBuild.backoff(%Oban.Job{attempt: 40, max_attempts: 60}) <= 3600
   end
