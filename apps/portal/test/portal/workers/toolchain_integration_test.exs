@@ -119,7 +119,6 @@ defmodule Portal.Workers.ToolchainIntegrationTest do
                builder_version: 1,
                image_digest: image_digest,
                run_id: run_id,
-               package: package,
                version: version,
                variant: :with,
                hex_outer_checksum: &Portal.HexDeps.outer_checksum/2,
