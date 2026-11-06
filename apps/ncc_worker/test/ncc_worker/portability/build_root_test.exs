@@ -288,6 +288,45 @@ defmodule NccWorker.Portability.BuildRootTest do
       assert {:observe, [_]} = BuildRoot.check(dir, [root], ok?)
     end
 
+    test "a _build priv spelling is allowed only as an external resource", %{tmp_dir: root} do
+      {_ebin, _} = compile(root, "defmodule FxPriv do\n  def x, do: :ok\nend\n")
+      asset = Path.join(root, "deps/fx/priv/static/app.js")
+      File.mkdir_p!(Path.dirname(asset))
+      File.write!(asset, "")
+      lib = Path.join(root, "_build/host/lib/fx")
+      File.mkdir_p!(lib)
+      File.ln_s!(Path.join(root, "deps/fx/priv"), Path.join(lib, "priv"))
+      built = Path.join(lib, "priv/static/app.js")
+      source = Path.join(root, "deps/fx/lib/fx.ex")
+      fx = Context.realpath(Path.join(root, "deps/fx"))
+
+      ok? = fn p ->
+        real = Context.realpath(p)
+        is_binary(real) and String.starts_with?(real, fx <> "/") and File.regular?(real)
+      end
+
+      check = fn name, term ->
+        dir = Path.join(root, "shape_" <> name)
+        write_beam(dir, "m", [{"LitT", lit_t([:erlang.term_to_binary(term)])}])
+        BuildRoot.check(dir, [root], ok?)
+      end
+
+      for {name, term} <- [
+            {"map", %{file: built, line: 1}},
+            {"pair", [file: built]},
+            {"keep", {:keep, {built, 1}}},
+            {"mfa", {M, {:f, 0}, built, 1}},
+            {"priv_real", %{file: asset}},
+            {"charlist", %{file: String.to_charlist(built)}}
+          ] do
+        assert {:refuse, _} = check.(name, term), name
+      end
+
+      assert :ok = check.("resource", {:external_resource, [built]})
+      assert :ok = check.("lib_map", %{file: source, line: 1})
+      assert :ok = check.("lib_mfa", {M, {:f, 0}, source, 1})
+    end
+
     test "a beam without any root passes", %{tmp_dir: root} do
       {ebin, ok?} = compile(root, "defmodule FxPlain do\n  def x, do: :ok\nend\n")
       assert :ok = BuildRoot.check(ebin, ["/definitely/not/here"], ok?)

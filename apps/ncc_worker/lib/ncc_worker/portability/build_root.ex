@@ -7,12 +7,15 @@ defmodule NccWorker.Portability.BuildRoot do
   the roots (project dir, OTP root, Elixir install, `HOME`, `MIX_HOME`,
   `HEX_HOME`).
 
-  Each occurrence must be a string that is a closure file, inside
+  Each occurrence must be a string that is a closure file, its own real path
+  and outside every `priv/` (so not a `_build` spelling), inside
   `{:keep, {file, line}}`, a `file` key of a map or a `{:file, value}` pair
   (so keyword lists, `Macro.Env` and Erlang `?FILE` log metadata),
   `{module, {fun, arity}, file, line}`, or (in `Attr`) an
-  `external_resource` entry: Elixir persists `@external_resource` paths
-  there, and they act only on Mix's own recompilation of the dependency.
+  `external_resource` entry, where a closure file reached through Mix's
+  `_build/<env>/lib/<d>/priv` link is also fine: Elixir persists
+  `@external_resource` paths there, and they act only on Mix's own
+  recompilation of the dependency.
   Anything else refuses, including a root in an atom, a bitstring, a list of
   files (`__mix_recompile__?/0`), the string table, the atom table or the
   `.app`. `CInf`, `Dbgi`, `Docs` and `Line` are metadata and are not read.
@@ -309,9 +312,13 @@ defmodule NccWorker.Portability.BuildRoot do
     do: {:refuse, "bakes the build path: #{module} #{snippet(offending, roots)}"}
 
   # Returns the first offending string, or nil. `allowed?` says the node sits
-  # in an allowed shape, where a closure file is fine.
+  # in an allowed shape: `:file` for the four metadata shapes, where the
+  # string must be its own real path, outside every `priv/`, and a closure
+  # file; `:resource` for an `external_resource` entry, where a closure file
+  # reached through a symlink (`_build/<env>/lib/<d>/priv/...`) is fine
+  # (plan fact 8).
   defp scan({:string, s}, allowed?, roots, ok?) do
-    if contains_root?(s, roots) and not (allowed? and ok?.(s)), do: s
+    if contains_root?(s, roots) and not allowed_file?(s, allowed?, ok?), do: s
   end
 
   defp scan({:atom, name}, _allowed?, roots, _ok?), do: if(contains_root?(name, roots), do: name)
@@ -330,9 +337,9 @@ defmodule NccWorker.Portability.BuildRoot do
   end
 
   defp scan({:tuple, [{:atom, "keep"}, {:tuple, [file, {:int, _}]}]}, _a, roots, ok?),
-    do: scan(file, true, roots, ok?)
+    do: scan(file, :file, roots, ok?)
 
-  defp scan({:tuple, [{:atom, "file"}, file]}, _a, roots, ok?), do: scan(file, true, roots, ok?)
+  defp scan({:tuple, [{:atom, "file"}, file]}, _a, roots, ok?), do: scan(file, :file, roots, ok?)
 
   defp scan(
          {:tuple, [{:atom, _} = m, {:tuple, [{:atom, _} = f, {:int, _}]}, file, {:int, _}]},
@@ -340,16 +347,16 @@ defmodule NccWorker.Portability.BuildRoot do
          roots,
          ok?
        ),
-       do: any([m, f], roots, ok?) || scan(file, true, roots, ok?)
+       do: any([m, f], roots, ok?) || scan(file, :file, roots, ok?)
 
   defp scan({:tuple, [{:atom, "external_resource"}, {:list, files, tail}]}, _a, roots, ok?),
-    do: scan(tail, false, roots, ok?) || Enum.find_value(files, &scan(&1, true, roots, ok?))
+    do: scan(tail, false, roots, ok?) || Enum.find_value(files, &scan(&1, :resource, roots, ok?))
 
   defp scan({:tuple, items}, _a, roots, ok?), do: any(items, roots, ok?)
 
   defp scan({:map, pairs}, _a, roots, ok?) do
     Enum.find_value(pairs, fn {key, value} ->
-      scan(key, false, roots, ok?) || scan(value, key == {:atom, "file"}, roots, ok?)
+      scan(key, false, roots, ok?) || scan(value, key == {:atom, "file"} && :file, roots, ok?)
     end)
   end
 
@@ -360,6 +367,13 @@ defmodule NccWorker.Portability.BuildRoot do
     do: scan(node, false, roots, ok?)
 
   defp scan(_other, _allowed?, _roots, _ok?), do: nil
+
+  defp allowed_file?(s, :resource, ok?), do: ok?.(s)
+
+  defp allowed_file?(s, :file, ok?),
+    do: "priv" not in Path.split(s) and Context.realpath(s) == s and ok?.(s)
+
+  defp allowed_file?(_s, _not_allowed, _ok?), do: false
 
   defp any(nodes, roots, ok?), do: Enum.find_value(nodes, &scan(&1, false, roots, ok?))
 
