@@ -57,9 +57,16 @@ defmodule NccWorker.LockPolicyTest do
 
       File.write!(Path.join(tmp_dir, "mix.lock"), lock_content)
 
-      assert ExUnit.CaptureIO.capture_io(:stderr, fn ->
-               assert :ok = LockPolicy.validate(tmp_dir)
-             end) == ""
+      # capture_io(:stderr) swaps the global stderr device, so in an async
+      # suite it also catches what other tests print meanwhile (the process
+      # sweep's "skipped" line, for one). Assert on what evaluating this lock
+      # would print, not on an empty stream.
+      stderr =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert :ok = LockPolicy.validate(tmp_dir)
+        end)
+
+      refute stderr =~ ~r/warning|quoted|deprecated/i
 
       File.rm_rf!(tmp_dir)
     end
