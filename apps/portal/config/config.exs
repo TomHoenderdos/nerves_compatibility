@@ -45,8 +45,9 @@ config :portal, Oban,
     # a build took. `catalog_runs` records only when a run landed, and
     # `started_at` is never written, so `attempted_at`/`completed_at` on the job
     # row is the sole source of per-build duration. At roughly ten builds an
-    # hour, six hours of history is a few hundred rows.
-    {Oban.Plugins.Pruner, max_age: :timer.hours(6)},
+    # hour, twelve hours of history is a few hundred rows. `max_age` is in
+    # seconds, not milliseconds like Lifeline's `rescue_after` below.
+    {Oban.Plugins.Pruner, max_age: 12 * 60 * 60},
     # Without this, a build node that dies mid-job leaves the job `executing`
     # and its scan request `queued` forever, with no error anywhere. That was a
     # remote possibility while everything ran on one host; with `builds` on a

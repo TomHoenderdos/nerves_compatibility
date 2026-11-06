@@ -41,7 +41,7 @@ defmodule Portal.NervesCache do
   # Node-local memo of pairs a successful `request_warm/3` has queued, keyed
   # by `{image_digest, name, version}`, so `recently_warmed/2` still bounds
   # repeats once `Oban.Plugins.Pruner` deletes the completed job row it also
-  # reads (6 h, `apps/portal/config/config.exs`) -- well inside the day this
+  # reads (12 h, `apps/portal/config/config.exs`) -- well inside the day this
   # moduledoc promises.
   @warmed_memo :portal_nerves_cache_warmed
   @warmed_memo_ttl_ms :timer.hours(24)
@@ -215,7 +215,7 @@ defmodule Portal.NervesCache do
 
     * a node-local ETS memo written the moment a warm is queued, which keeps
       the day-long bound even after `Oban.Plugins.Pruner` deletes the
-      completed job row (6 h, `apps/portal/config/config.exs`);
+      completed job row (12 h, `apps/portal/config/config.exs`);
     * a live `Portal.Workers.WarmNerves` job on this node's queue, not
       discarded or cancelled -- which the memo above does not cover when the
       table was not yet created (for example, a release eval that starts no

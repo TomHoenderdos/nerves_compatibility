@@ -12,6 +12,14 @@ defmodule Portal.ObanConfigTest do
 
   defp plugin(name), do: Enum.find(plugins(), &match?({^name, _opts}, &1))
 
+  test "the Pruner keeps finished jobs for 12 hours" do
+    {_mod, opts} = plugin(Oban.Plugins.Pruner)
+
+    # `max_age` is in seconds, unlike Lifeline's `rescue_after` (milliseconds):
+    # `:timer.hours(6)` here kept every finished job for about 250 days.
+    assert opts[:max_age] == 12 * 60 * 60
+  end
+
   test "Lifeline rescues only well after a build's own wall clock" do
     {_mod, opts} = plugin(Oban.Plugins.Lifeline)
 

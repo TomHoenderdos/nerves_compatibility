@@ -125,7 +125,7 @@ defmodule Portal.NervesCacheTest do
     defp image, do: "sha256:memo-#{System.unique_integer([:positive])}"
 
     # Plan-mandated (task-6-review.md Important 1): the day-long repeat bound
-    # must survive `Oban.Plugins.Pruner` deleting the completed job row at 6 h
+    # must survive `Oban.Plugins.Pruner` deleting the completed job row at 12 h
     # (apps/portal/config/config.exs), which both the uniqueness check and the
     # old `recently_warmed/1` relied on and which the old doc wrongly claimed
     # it survived.
