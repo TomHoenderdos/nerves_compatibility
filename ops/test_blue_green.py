@@ -503,6 +503,29 @@ class BlueGreenTest(unittest.TestCase):
         # after several misses accumulate.
         self.assertEqual(len(shows), 2)
 
+    # --- N1 (round 3): the drain cap must not stop the old colour right ----
+    # --- after a missed probe -----------------------------------------------
+
+    def test_drain_cap_waits_past_a_miss_on_the_cap_probe(self):
+        # Exact reproduction: at the cap, a miss must buy one more iteration
+        # instead of stopping blue on the strength of a probe that just
+        # failed.
+        result, events = self.deploy(RUNNING_JOBS="3", BG_DRAIN_CAP_SECONDS="20",
+                                     APACHE_MISS_ON="5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("drain cap", result.stderr)
+        self.assertEqual(self.running, ["green"])
+        # The cap message must be logged exactly once, at the iteration that
+        # actually exits (the 6th probe here), not on every over-cap pass.
+        self.assertEqual(result.stderr.count("drain cap"), 1)
+
+    def test_drain_cap_with_a_second_miss_right_after_the_cap_probe_switches_back(self):
+        result, events = self.deploy(RUNNING_JOBS="3", BG_DRAIN_CAP_SECONDS="20",
+                                     APACHE_MISS_ON="5 6")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.running, ["blue"])
+        self.assertNotIn("drain cap", result.stderr)
+
     # --- S3: the old colour can also fail its own post-point-back verify ---
 
     def test_switch_back_old_colour_apache_verification_failure_restores_new_colour(self):

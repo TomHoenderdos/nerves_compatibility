@@ -296,7 +296,13 @@ bg_log_running_ids() { # old
 # settling; but the drain may finish only on a probe that was itself healthy
 # (misses == 0), so a miss right at the end of the watch window does not let
 # a sick colour through, and three misses anywhere across the whole drain
-# (not only consecutive ones) are treated the same as two in a row.
+# (not only consecutive ones) are treated the same as two in a row. The
+# drain cap is bound by the same rule: it only stops the old colour on a
+# probe that came back healthy, so a miss sitting right on the cap probe
+# buys one more iteration rather than stopping the old colour on the
+# strength of a probe that just failed. This cannot loop forever, since two
+# consecutive or three total misses return 2 well before the cap could
+# repeat indefinitely.
 bg_drain() { # old new sha
   local waited=0 running misses=0 total_misses=0 rc
   bg_rpc "$1" "$BG_PAUSE_EXPR" || echo "warning: could not pause $1's queues; its jobs may be cut short" >&2
@@ -318,7 +324,7 @@ bg_drain() { # old new sha
     if [[ $running == 0 && $misses == 0 && $waited -ge $BG_WATCH_SECONDS ]]; then
       return 0
     fi
-    if ((waited >= BG_DRAIN_CAP_SECONDS)); then
+    if ((waited >= BG_DRAIN_CAP_SECONDS)) && ((misses == 0)); then
       echo "drain cap of ${BG_DRAIN_CAP_SECONDS} s reached with '${running:-?}' job(s) still executing on $1; stopping it anyway (Lifeline rescues them)" >&2
       bg_log_running_ids "$1"
       return 0
