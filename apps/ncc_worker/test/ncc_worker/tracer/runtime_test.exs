@@ -82,6 +82,10 @@ defmodule NccWorker.Tracer.RuntimeTest do
 
     assert %{"channel" => "os_identity", "extent" => "frame"} = event
     assert event["user"]["line"] == 2
+    # The stack was seen whole, so its bottom frame (where the process
+    # started) is recorded too.
+    assert %{"module" => bottom} = event["bottom"]
+    assert is_binary(bottom)
     # The module body runs as elixir_compiler_N, which has no object file:
     # not toolchain, so it is the user frame (not the script further down).
     assert event["user"]["module"] =~ ~r/^elixir_compiler_\d+$/

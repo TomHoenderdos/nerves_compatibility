@@ -331,27 +331,26 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
     passes(ctx, "fx_keep")
   end
 
-  # FINDING (Task 11): Record.extract(from_lib: ...) runs the Erlang
-  # preprocessor in a process the module body spawned, so its own work is
-  # user extent by lineage: epp:predef_macros/2 reads
-  # erlang:system_info(machine) and (otp_release), and filename:separators/0
-  # reads os:type/0 and erlang:system_info(os_type), with no user frame on
-  # the stack (extent "lineage", first frame epp). The spec's fixture row
-  # expects a pass; widening a rule is the user's decision (plan Task 11
-  # step 2), so this stays skipped until it is made. Remove the tag to
-  # reproduce.
-  @tag skip: "FINDING: Record.extract's epp process refuses by lineage (Task 11 report)"
+  # Record.extract(from_lib: ...) runs the Erlang preprocessor in a process
+  # the module body spawned, so its own work is user extent by lineage:
+  # epp:predef_macros/2 reads erlang:system_info(machine) and (otp_release),
+  # and filename:separators/0 reads os:type/0, with no user frame on the
+  # stack. Ruling (Task 11): exactly those reads, in a process whose bottom
+  # frame is epp's server, are toolchain.
   test "Record.extract from OTP is publishable", ctx do
     passes(ctx, "fx_record")
-  end
-
-  test "Record.extract's refusal today is the preprocessor's own read (finding pinned)", ctx do
-    assert "compile-time host read: erlang:system_info/1 (lineage stack, first frame epp)" =
-             refused(ctx, "fx_record")
 
     assert Enum.any?(
              events(ctx, "fx_record", "erlang:system_info/1"),
-             &match?(%{"extent" => "lineage", "user" => nil, "first" => %{"module" => "epp"}}, &1)
+             &match?(
+               %{
+                 "arg" => %{"key" => "machine"},
+                 "extent" => "lineage",
+                 "user" => nil,
+                 "bottom" => %{"module" => "epp"}
+               },
+               &1
+             )
            )
   end
 

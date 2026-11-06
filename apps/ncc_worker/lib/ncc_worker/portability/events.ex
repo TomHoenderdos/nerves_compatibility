@@ -11,6 +11,10 @@ defmodule NccWorker.Portability.Events do
     * OS identity: `system_info(otp_release)` is allowed, and `os:type/0`,
       `os:version/0` or `system_info(os_type)` when the first frame after
       the wrappers is a path module. Every other key refuses.
+      In an epp server process (no user frame, the stack's bottom frame
+      `epp:server`/`epp:init_server`), `system_info(machine)`,
+      `system_info(otp_release)` and `os:type/0` are its predefined macros
+      and ignored; every other read there stays user.
     * Environment, programs, network, crypto and native loading refuse.
     * Integrity (the trace API, `erts_internal` trace BIFs, `system_flag`,
       reading another process's stack, mailbox or dictionary, unsticking a
@@ -61,6 +65,7 @@ defmodule NccWorker.Portability.Events do
   @slice_programs ~w(os:find_executable/1 os:find_executable/2)
   @extents ~w(frame dispatcher truncated lineage)
   @links ~w(file:make_symlink/2 file:make_link/2 prim_file:make_symlink/2 prim_file:make_link/2)
+  @epp_server ~w(server init_server)
   @max_mix_exs_bytes 1024 * 1024
 
   @type decision ::
@@ -128,7 +133,9 @@ defmodule NccWorker.Portability.Events do
     end
   end
 
-  defp channel("os_identity", event, _ctx, _owner), do: os_identity(event)
+  defp channel("os_identity", event, _ctx, _owner) do
+    if epp_predef?(event), do: :ignore, else: os_identity(event)
+  end
 
   defp channel(channel, event, _ctx, _owner) when channel in @host_channels,
     do: {:refuse, host_read(event, event["arg"]["path"])}
@@ -149,6 +156,25 @@ defmodule NccWorker.Portability.Events do
 
   defp channel(other, event, _ctx, _owner),
     do: unjudged("unknown channel #{other}: #{event["mfa"]}")
+
+  # The Erlang preprocessor's predefined macros (`?MACHINE`, `?OTP_RELEASE`,
+  # the OS family): read by an epp server, a process `Record.extract/2`
+  # (`from_lib:`) and `-include` start from a module body, so user by
+  # lineage. Only these reads, and only with no user frame on a stack seen
+  # whole down to epp's own server loop (the tracer's `bottom` frame).
+  defp epp_predef?(%{"extent" => "lineage", "user" => nil, "bottom" => bottom} = event) do
+    match?(%{"module" => "epp", "function" => f} when f in @epp_server, bottom) and
+      epp_read?(event)
+  end
+
+  defp epp_predef?(_event), do: false
+
+  defp epp_read?(%{"mfa" => "os:type/0"}), do: true
+
+  defp epp_read?(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => key}}),
+    do: key in ["machine", "otp_release"]
+
+  defp epp_read?(_event), do: false
 
   defp os_identity(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => "otp_release"}}),
     do: :ignore

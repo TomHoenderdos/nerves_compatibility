@@ -430,10 +430,11 @@ call_event(Pid, M, F, Args, Stack, Ts, #st{calls = Calls} = St0) ->
             St = depth_seen(M, F, Args, St1),
             Extent = safe_extent(Stack, St#st.depth, fun toolchain/1, user_process(Pid, St),
                                  is_script(Pid)),
-            classified(M, F, Args, Extent, {Pid, M, F, Args, Ts}, St)
+            Info = {Pid, M, F, Args, Ts, bottom(Stack, St#st.depth)},
+            classified(M, F, Args, Extent, Info, St)
     end.
 
-classified(erlang, F, _Args, Extent, {Pid, _, _, _, _}, St) when F =:= spawn; F =:= spawn_link;
+classified(erlang, F, _Args, Extent, {Pid, _, _, _, _, _}, St) when F =:= spawn; F =:= spawn_link;
                                                                  F =:= spawn_monitor; F =:= spawn_opt;
                                                                  F =:= spawn_request ->
     spawn_call(Pid, Extent, St);
@@ -480,16 +481,17 @@ record(_Class, toolchain, _Info, St) -> St;
 record(unknown, {user, unjudged, _, _}, _Info, St) -> St#st{unjudged = St#st.unjudged + 1};
 record(unknown, _Extent, _Info, St) -> St;
 record({env, #{name := <<?SENTINEL, App0/binary>>}}, {user, _, _, {?PROBE, _, _, _}},
-       {Pid, _, _, _, Ts}, St0) ->
+       {Pid, _, _, _, Ts, _}, St0) ->
     {Checks, St} = checks(St0, sentinel),
     {App, Final} = sentinel_app(App0, Pid, St),
     write(St, Checks#{kind => sentinel, app => App, ts => Ts, pid => pid_bin(Pid)}),
     St#st{final = St#st.final orelse Final};
-record({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts}, St) ->
-    {Kind, First, User} = frames(Kind0, First0, User0),
+record({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Bottom0}, St) ->
+    {Kind, First, User, Bottom} = frames(Kind0, First0, User0, Bottom0),
     Line = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
              mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
-             arg => enrich(Channel, Arg), extent => Kind, first => First, user => User},
+             arg => enrich(Channel, Arg), extent => Kind, first => First, user => User,
+             bottom => Bottom},
     user_event(Line, Kind =:= unjudged orelse Channel =:= unclassified, St).
 
 sentinel_app(<<"__final__:", Nonce/binary>>, Pid, #st{final_pid = Pid, final_nonce = Nonce}) ->
@@ -511,10 +513,18 @@ closing_checks(St0, Delivered) ->
 
 %% A frame the renderer cannot take apart turns the event unjudged, with no
 %% frames, rather than crashing the collector or dropping the event.
-frames(Kind, First, User) ->
-    try {Kind, ncc_tracer_stack:frame(First), ncc_tracer_stack:frame(User)}
-    catch _:_ -> {unjudged, null, null}
+frames(Kind, First, User, Bottom) ->
+    try {Kind, ncc_tracer_stack:frame(First), ncc_tracer_stack:frame(User),
+         ncc_tracer_stack:frame(Bottom)}
+    catch _:_ -> {unjudged, null, null, null}
     end.
+
+%% The process's bottom-most frame, where it started (the judge recognises
+%% an epp server by it), only when the stack was seen whole: a stack as
+%% deep as the live backtrace_depth may have lost its bottom.
+bottom(Stack, Depth) when is_list(Stack), Stack =/= [], length(Stack) < Depth ->
+    lists:last(Stack);
+bottom(_Stack, _Depth) -> none.
 
 user_event(_Line, _Unjudged, #st{user = U, max_user = Max} = St) when U >= Max ->
     overflow(St, <<"user_events">>);

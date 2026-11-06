@@ -136,6 +136,67 @@ defmodule NccWorker.Portability.EventsTest do
              )
   end
 
+  defp epp(mfa, arg, bottom \\ %{"module" => "epp", "function" => "init_server", "arity" => 3}) do
+    mfa
+    |> then(&ev("os_identity", &1, arg, extent: "lineage", user: nil, first: "epp"))
+    |> Map.put("bottom", bottom)
+  end
+
+  test "an epp server's predefined-macro reads are toolchain; its other reads are not",
+       %{ctx: ctx} do
+    assert :ignore = Events.decide(epp("erlang:system_info/1", %{"key" => "machine"}), ctx, "pkg")
+
+    assert :ignore =
+             Events.decide(epp("erlang:system_info/1", %{"key" => "otp_release"}), ctx, "pkg")
+
+    assert :ignore = Events.decide(epp("os:type/0", %{}), ctx, "pkg")
+
+    server = %{"module" => "epp", "function" => "server", "arity" => 3}
+    assert :ignore = Events.decide(epp("os:type/0", %{}, server), ctx, "pkg")
+
+    # Not an epp server: a user process, a cut stack, another bottom frame.
+    for bottom <- [
+          nil,
+          %{"module" => "Elixir.Pkg", "function" => "f", "arity" => 0},
+          %{"module" => "epp"}
+        ] do
+      assert {:refuse, _} =
+               Events.decide(
+                 epp("erlang:system_info/1", %{"key" => "machine"}, bottom),
+                 ctx,
+                 "pkg"
+               )
+    end
+
+    assert {:refuse, _} =
+             Events.decide(
+               Map.delete(epp("erlang:system_info/1", %{"key" => "machine"}), "bottom"),
+               ctx,
+               "pkg"
+             )
+
+    # A user frame on the stack is not the epp server's own work.
+    framed = %{
+      epp("erlang:system_info/1", %{"key" => "machine"})
+      | "extent" => "frame",
+        "user" => @user
+    }
+
+    assert {:refuse, _} = Events.decide(framed, ctx, "pkg")
+
+    # Every other read in that process stays user.
+    assert {:refuse, _} =
+             Events.decide(epp("erlang:system_info/1", %{"key" => "wordsize"}), ctx, "pkg")
+
+    getenv = %{epp("os:getenv/1", %{"name" => "X"}) | "channel" => "env"}
+
+    assert {:refuse, "compile-time host read: os:getenv/1" <> _} =
+             Events.decide(getenv, ctx, "pkg")
+
+    version = epp("os:version/0", %{})
+    assert {:refuse, _} = Events.decide(version, ctx, "pkg")
+  end
+
   test "a stack without a user frame names its extent", %{ctx: ctx} do
     assert {:refuse,
             "compile-time host read: os:getenv/1 (truncated stack, first frame Elixir.Macro)"} =
