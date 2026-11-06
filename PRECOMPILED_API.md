@@ -516,7 +516,9 @@ them.
 - Entries from runs before 2026-09-16 have no toolchain stored, so their
   `build.elixir` and `build.otp` are `null` and a client should skip them.
 - Entries from runs before 2026-10-20 have no dependency lock stored, so their
-  `build.deps` is `null` and a client should skip them.
+  `build.deps` is `null` and a client should skip them. Since 2026-11-06 such
+  entries are not served at all while any package is withheld (below): their
+  closure is unknown, so it may include one.
 - `pure_elixir` entries from runs before 2026-10-24 were built without the
   package's optional dependencies, so their `build.deps` lacks them and a
   client whose lock has them (decimal next to jason, for example) does not
@@ -543,7 +545,10 @@ them.
 - No build whose dependency closure includes a withheld package is served,
   in either manifest format or by `files/{sha256}`; the list is
   `phoenix_live_view` (`Portal.Precompiled.Withheld`), and the package itself
-  counts. Such packages change their dependents' BEAMs through compile-time
+  counts. A build with no recorded lock (`build.deps` `null`) has an unknown
+  closure and is withheld too: the portal keeps no other record of it, and a
+  package's declared dependencies name only its direct ones. This applies to
+  the per-name manifest routes as much as to the batch. Such packages change their dependents' BEAMs through compile-time
   application config the project sets and the portal's builds do not: every
   new Phoenix 1.8 app sets LiveView's `root_tag_attribute`, which changes the
   markup of every `~H` root tag, and LiveView's colocated hooks, JS and CSS
