@@ -338,6 +338,49 @@ defmodule NccWorker.Portability.JudgeTest do
       assert obs["taint"] == %{}
     end
 
+    test "an integrity refusal outside the package's closure still refuses (fix round 1)",
+         %{proj: proj} do
+      integrity = event(25, "erlang:process_info/2", "lib/other.ex", "integrity")
+
+      # In a closure dependency's window that the package does not reach.
+      assert %{
+               status: :skip,
+               reason: "compile-time tracing or system flag: " <> _,
+               observations: obs
+             } =
+               judge(proj, report(proj, %{events: [integrity]}))
+
+      assert [%{"owner" => "outside"}] = obs["refusals"]
+
+      # In that dependency's child VM.
+      r = report(proj, %{children: %{"other" => child([%{integrity | "ts" => 1}])}})
+
+      assert %{status: :skip, reason: "compile-time tracing or system flag: " <> _} =
+               judge(proj, r)
+    end
+
+    test "taint is transitive: package -> b -> a, a tainted refuses the package", %{proj: proj} do
+      r = report(proj)
+
+      deps = [
+        dep(proj, "dep", []),
+        dep(proj, "other", ["dep"]),
+        dep(proj, "pkg", ["other"])
+      ]
+
+      r = %{
+        r
+        | closure: %{r.closure | "deps" => deps},
+          events: [event(15, "os:type/0", "lib/dep.ex")]
+      }
+
+      assert %{
+               status: :skip,
+               reason: "closure dependency observed the host: dep (compile-time host read" <> _,
+               observations: %{"taint" => %{"dep" => _}}
+             } = judge(proj, r)
+    end
+
     test "a judge that raises is could-not-judge, never a crash", %{proj: proj} do
       assert %{status: :skip, reason: @cnj} = judge(proj, report(proj, %{events: :garbage}))
       assert %{status: :skip, reason: @cnj} = judge(proj, report(proj, %{windows: [:garbage]}))
@@ -553,7 +596,8 @@ defmodule NccWorker.Portability.JudgeTest do
                judge(proj, rebar_report(proj, "pkg", %{}))
 
       File.write!(Path.join([proj, "deps/pkg/rebar.config"]), "{erl_opts, []}.\n")
-      assert %{status: :pass} = judge(proj, rebar_report(proj, "pkg", %{}))
+      assert %{status: :pass} = judge(proj, rebar_report(proj, "pkg", %{"pkg" => child([])}))
+      assert %{status: :skip, reason: @cnj} = judge(proj, rebar_report(proj, "pkg", %{}))
 
       # Beams the trace never saw compiled (two: past the one-gap allowance).
       for m <- ["JudgeRebarA", "JudgeRebarB"], do: beam!(proj, "pkg", m)
@@ -584,6 +628,31 @@ defmodule NccWorker.Portability.JudgeTest do
                reason: "closure dependency observed the host: dep (rebar3 trace sentinel missing)"
              } =
                judge(proj, rebar_report(proj, "dep", %{"dep" => sentinel_lost}))
+    end
+
+    test "a dependency compile that returned an error could not be judged", %{proj: proj} do
+      File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
+      beam!(proj, "dep", "JudgeRebarE1")
+
+      traced =
+        child([], %{
+          compiles: [
+            %{"result" => "ok", "module" => "Elixir.JudgeRebarE1"},
+            %{"result" => "error", "module" => nil}
+          ]
+        })
+
+      assert %{status: :skip, reason: @cnj, observations: obs} =
+               judge(proj, rebar_report(proj, "dep", %{"dep" => traced}))
+
+      assert obs["taint"] == %{}
+      assert Enum.any?(obs["problems"], &(&1 =~ "rebar3 compile returned an error"))
+    end
+
+    test "a rebar3 dependency with an empty ebin and no child trace could not be judged",
+         %{proj: proj} do
+      File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
+      assert %{status: :skip, reason: @cnj} = judge(proj, rebar_report(proj, "dep", %{}))
     end
 
     test "one lost last compile return is recorded in trace_stats, not taint (ruling M2)",
@@ -657,14 +726,15 @@ defmodule NccWorker.Portability.JudgeTest do
     test "coverage needs a sentinel and a traced compile:file per beam", %{tmp_dir: dir} do
       ebin = Path.join(dir, "ebin")
       File.mkdir_p!(ebin)
-      assert :ok = Rebar.coverage(ebin, nil)
 
-      for m <- ["r3", "r4"], do: File.write!(Path.join(ebin, m <> ".beam"), "")
+      # An empty ebin with no child trace proves nothing (fix round 1, item 5).
+      assert {:unjudged, "rebar3 built nothing and was not traced"} = Rebar.coverage(ebin, nil)
+      assert :ok = Rebar.coverage(ebin, child([]))
 
-      c =
-        child([], %{
-          compiles: [%{"result" => "ok", "module" => "r3"}, %{"result" => "ok", "module" => "r4"}]
-        })
+      for m <- ["r3", "r4", "r5"], do: File.write!(Path.join(ebin, m <> ".beam"), "")
+
+      ok = fn m -> %{"result" => "ok", "module" => m} end
+      c = child([], %{compiles: Enum.map(["r3", "r4", "r5"], ok)})
 
       assert :ok = Rebar.coverage(ebin, c)
 
@@ -672,16 +742,28 @@ defmodule NccWorker.Portability.JudgeTest do
                Rebar.coverage(ebin, %{c | sentinel?: false})
 
       assert {:error, "rebar3 trace incomplete"} = Rebar.coverage(ebin, %{c | problems: ["x"]})
-      assert {:gap, "r4"} = Rebar.coverage(ebin, %{c | compiles: [hd(c.compiles)]})
 
-      assert {:error, "rebar3 compile of r3, r4 was not traced"} =
+      # At most one missing return per child is a gap; two or more taint.
+      assert {:gap, "r5"} = Rebar.coverage(ebin, %{c | compiles: Enum.map(["r3", "r4"], ok)})
+
+      assert {:error, "rebar3 compile of r4, r5 was not traced"} =
+               Rebar.coverage(ebin, %{c | compiles: [ok.("r3")]})
+
+      assert {:error, "rebar3 compile of r3, r4, r5 was not traced"} =
                Rebar.coverage(ebin, %{c | compiles: []})
 
+      # A compile that returned an error is never a gap: could not be judged.
       failed = %{c | compiles: [%{"result" => "error", "module" => nil} | tl(c.compiles)]}
-      assert {:gap, "r3"} = Rebar.coverage(ebin, failed)
+      assert {:unjudged, "rebar3 compile returned an error"} = Rebar.coverage(ebin, failed)
+
+      all_ok_one_error = %{c | compiles: c.compiles ++ [%{"result" => "error", "module" => nil}]}
+
+      assert {:unjudged, "rebar3 compile returned an error"} =
+               Rebar.coverage(ebin, all_ok_one_error)
+
       assert {:error, "rebar3 compile was not traced"} = Rebar.coverage(ebin, nil)
-      assert {:error, "rebar3 ebin missing"} = Rebar.coverage(Path.join(dir, "none"), c)
-      assert {:error, "rebar3 ebin missing"} = Rebar.coverage(nil, c)
+      assert {:unjudged, "rebar3 ebin missing"} = Rebar.coverage(Path.join(dir, "none"), c)
+      assert {:unjudged, "rebar3 ebin missing"} = Rebar.coverage(nil, c)
     end
   end
 

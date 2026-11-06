@@ -29,7 +29,9 @@ defmodule NccWorker.Portability.Events do
       names.
     * A call into a natively built dependency refuses in the package's
       window and outside every window, and is observed in another
-      dependency's window (R3 decides there).
+      dependency's window, where it is recorded only (`native_calls`): the
+      judge does not refuse on it, since R3 native taint refuses only calls
+      made in the package's own window.
     * A host read whose first user frame is in a closure dependency's
       `mix.exs` goes to R4 (`MixExsSlice`): allowed ones are observed as
       `mix_exs_allowed`. Integrity, writes, links, `set_cwd`, native
@@ -211,7 +213,8 @@ defmodule NccWorker.Portability.Events do
 
   defp copy_source(_event, _ctx, _owner), do: :ignore
 
-  # Observed only in another dependency's window, where R3 judges it.
+  # Recorded only (`native_calls`) in another dependency's window: the
+  # judge never refuses on these observations.
   defp native_closure(event, ctx, owner) do
     if is_binary(owner) and owner != ctx.package,
       do: {:observe, "native_calls", summary(event)},

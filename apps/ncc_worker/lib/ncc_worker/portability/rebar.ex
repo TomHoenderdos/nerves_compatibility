@@ -17,10 +17,16 @@ defmodule NccWorker.Portability.Rebar do
   Coverage: a child VM's trace counts only when it fired its sentinel, has no
   problems, and recorded a successful `compile:file/2` return for every beam
   in the dependency's `ebin`. rebar3 ends with `erlang:halt/1`, which can
-  drop the collector's last queued line, the return of the last compile
-  (controller ruling M2). So one beam without a return, with the sentinel
-  present and the trace otherwise clean, is a `{:gap, module}` the judge
-  records in `trace_stats` instead of an error; two or more are an error.
+  drop the collector's last queued line, the return of a compile. The tracer
+  records returns only, so which one was last cannot be checked (controller
+  ruling, re-ruling M2): at most one beam without a return per child, with
+  the sentinel present and the trace otherwise clean, is a `{:gap, module}`
+  the judge records in `trace_stats`; the reads of that compile were still
+  traced. Two or more are an `{:error, _}`, which taints.
+
+  `{:unjudged, _}` (could not be judged, never a gap or taint): a compile
+  that returned an error, a missing `ebin`, or an empty `ebin` with no child
+  trace at all, which proves nothing about what rebar3 ran.
   """
 
   alias NccWorker.Portability.HexFiles
@@ -102,17 +108,19 @@ defmodule NccWorker.Portability.Rebar do
   @doc """
   Whether the child VM trace `child` (`NccWorker.Tracer.Report`, `nil` when
   there is none) covers every beam in `ebin`: `:ok`, `{:gap, module}` for the
-  one beam whose return a final `halt` may have dropped, else an error.
+  one beam whose return a final `halt` may have dropped, `{:error, why}`
+  (taint) or `{:unjudged, why}` (could not be judged).
   """
-  @spec coverage(String.t() | nil, map() | nil) :: :ok | {:gap, String.t()} | {:error, String.t()}
+  @spec coverage(String.t() | nil, map() | nil) ::
+          :ok | {:gap, String.t()} | {:error, String.t()} | {:unjudged, String.t()}
   def coverage(ebin, child) do
     case beams(ebin) do
-      {:error, _} = error -> error
+      {:unjudged, _} = unjudged -> unjudged
       {:ok, beams} -> covered(beams, child)
     end
   end
 
-  defp covered([], nil), do: :ok
+  defp covered([], nil), do: {:unjudged, "rebar3 built nothing and was not traced"}
   defp covered(_beams, nil), do: {:error, "rebar3 compile was not traced"}
 
   defp covered(beams, child) do
@@ -120,11 +128,23 @@ defmodule NccWorker.Portability.Rebar do
     missing = Enum.reject(beams, &MapSet.member?(compiled, &1))
 
     cond do
-      child.problems != [] -> {:error, "rebar3 trace incomplete"}
-      child.sentinel? != true -> {:error, "rebar3 trace sentinel missing"}
-      missing == [] -> :ok
-      match?([_], missing) -> {:gap, hd(missing)}
-      true -> {:error, "rebar3 compile of #{Enum.join(missing, ", ")} was not traced"}
+      child.problems != [] ->
+        {:error, "rebar3 trace incomplete"}
+
+      child.sentinel? != true ->
+        {:error, "rebar3 trace sentinel missing"}
+
+      Enum.any?(child.compiles, &(&1["result"] != "ok")) ->
+        {:unjudged, "rebar3 compile returned an error"}
+
+      missing == [] ->
+        :ok
+
+      match?([_], missing) ->
+        {:gap, hd(missing)}
+
+      true ->
+        {:error, "rebar3 compile of #{Enum.join(missing, ", ")} was not traced"}
     end
   end
 
@@ -138,9 +158,9 @@ defmodule NccWorker.Portability.Rebar do
        |> Enum.map(&Path.basename(&1, ".beam"))
        |> Enum.sort()}
     else
-      {:error, "rebar3 ebin missing"}
+      {:unjudged, "rebar3 ebin missing"}
     end
   end
 
-  defp beams(_ebin), do: {:error, "rebar3 ebin missing"}
+  defp beams(_ebin), do: {:unjudged, "rebar3 ebin missing"}
 end

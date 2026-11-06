@@ -217,7 +217,7 @@ defmodule NccWorker.Portability do
   defp facts(project_dir, package, report, native, opts) do
     ctx = Context.build(project_dir, package, report, native, opts)
     scope = MapSet.new(Context.closure_of(ctx, ctx.package))
-    decided = decide_all(report, ctx)
+    decided = decide_all(report, ctx, scope)
     unjudged = for {_owner, {:unjudged, why}} <- decided, do: why
     decided = for {owner, decision} <- decided, in_scope?(owner, scope), do: {owner, decision}
     package_r2 = build_root(ctx, ctx.package)
@@ -238,7 +238,7 @@ defmodule NccWorker.Portability do
   # Every event as `{owner, decision}`: the Mix VM's by `Context.owner/2`,
   # a closure dependency's child VM's by its app (child clocks do not align
   # with the Mix VM's windows). One `MixExsSlice.analyse/1` per `mix.exs`.
-  defp decide_all(report, ctx) do
+  defp decide_all(report, ctx, scope) do
     main = for event <- report.events, do: {Context.owner(ctx, event), event}
 
     children =
@@ -252,17 +252,23 @@ defmodule NccWorker.Portability do
 
     for {owner, event} <- owned,
         decision = Events.decide(event, ctx, owner, slices),
-        kept = keep(owner, decision),
+        kept = keep(owner, decision, scope),
         kept != nil,
         do: kept
   end
 
-  # An unjudged event counts wherever it fell (`:any`, never in scope).
-  defp keep(_owner, {:unjudged, _} = decision), do: {:any, decision}
-  defp keep(:quiet, {:refuse, @integrity <> _} = decision), do: {:outside, decision}
-  defp keep(:quiet, _decision), do: nil
-  defp keep(_owner, :ignore), do: nil
-  defp keep(owner, decision), do: {owner, decision}
+  # An unjudged event counts wherever it fell (`:any`, never in scope). An
+  # integrity refusal (the trace itself tampered with) refuses wherever it
+  # fell too: from a quiet interval or an owner outside the package's
+  # closure (its window or its child VM) it counts as `:outside`.
+  defp keep(_owner, {:unjudged, _} = decision, _scope), do: {:any, decision}
+
+  defp keep(owner, {:refuse, @integrity <> _} = decision, scope),
+    do: if(in_scope?(owner, scope), do: {owner, decision}, else: {:outside, decision})
+
+  defp keep(:quiet, _decision, _scope), do: nil
+  defp keep(_owner, :ignore, _scope), do: nil
+  defp keep(owner, decision, _scope), do: {owner, decision}
 
   defp in_scope?(:outside, _scope), do: true
   defp in_scope?(owner, scope), do: MapSet.member?(scope, owner)
@@ -347,14 +353,15 @@ defmodule NccWorker.Portability do
   defp r2(other), do: {:error, "R2: unexpected #{inspect(other, limit: 5)}"}
 
   # The rebar3 rules: `nil` for a Mix-built app, else `{:refuse, reason}`,
-  # `{:error, why}` (coverage), `{:gap, module}` or `:ok`.
+  # `{:error, why}` (coverage, taint for a dependency), `{:unjudged, why}`
+  # (could not be judged), `{:gap, module}` or `:ok`.
   defp rebar(ctx, report, app) do
     if Context.manager(ctx, app) == "rebar3", do: rebar3(ctx, report, app)
   end
 
   defp rebar3(ctx, report, app) do
     case Context.dest(ctx, app) do
-      nil -> {:error, "rebar3 source dir missing"}
+      nil -> {:unjudged, "rebar3 source dir missing"}
       dest -> rebar3(Rebar.check(dest), ctx, report, app)
     end
   end
@@ -444,16 +451,20 @@ defmodule NccWorker.Portability do
 
   defp package_rebar({:refuse, reason}), do: reason
   defp package_rebar({:error, _why}), do: Reasons.could_not_judge()
+  defp package_rebar({:unjudged, _why}), do: Reasons.could_not_judge()
   defp package_rebar(_result), do: nil
 
   # The first dependency in compile order that is host-tainted, or whose
-  # beams R2 cannot read.
+  # beams R2 cannot read or whose rebar3 build could not be judged.
   defp closure(deps) do
     Enum.find_value(deps, fn
       {app, %{taint: taint}} when is_binary(taint) ->
         "closure dependency observed the host: #{app} (#{taint})"
 
       {_app, %{r2: {:error, _}}} ->
+        Reasons.could_not_judge()
+
+      {_app, %{rebar: {:unjudged, _}}} ->
         Reasons.could_not_judge()
 
       _ ->
@@ -468,11 +479,17 @@ defmodule NccWorker.Portability do
       List.wrap(facts.package_window) ++
       error_text(package, facts.package_r2) ++
       error_text(package, facts.package_rebar) ++
-      Enum.flat_map(facts.deps, fn {app, result} -> error_text(app, result.r2) end)
+      Enum.flat_map(facts.deps, fn {app, result} ->
+        error_text(app, result.r2) ++ unjudged_text(app, result.rebar)
+      end)
   end
 
   defp error_text(app, {:error, why}), do: ["#{app}: #{why}"]
+  defp error_text(app, {:unjudged, why}), do: ["#{app}: #{why}"]
   defp error_text(_app, _result), do: []
+
+  defp unjudged_text(app, {:unjudged, why}), do: ["#{app}: #{why}"]
+  defp unjudged_text(_app, _result), do: []
 
   # --- observations ------------------------------------------------------------
 
