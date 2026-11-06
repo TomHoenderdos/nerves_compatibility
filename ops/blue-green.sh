@@ -212,23 +212,27 @@ bg_fail_idle() { # color what
   systemctl stop "$BG_UNIT@$1" || true
 }
 
-bg_point_apache_at() { # color; fails with the include restored
+bg_point_apache_at() { # color; 0 ok, 1 failed & restored, 2 the restore itself
+                        # failed too -- Apache's running config is unknown
   local out
   cp "$NCC_APACHE_UPSTREAM" "$NCC_APACHE_UPSTREAM.bak" || return 1
   if ! bg_write_include "$(bg_port "$1")"; then
-    mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM"
+    mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM" || return 2
     return 1
   fi
   if ! out=$(apachectl configtest 2>&1); then
     echo "apachectl configtest failed (it checks every vhost on this host, not only ours):" >&2
     echo "$out" >&2
-    mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM"
+    mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM" || return 2
     return 1
   fi
   if ! systemctl reload apache2; then
     echo "systemctl reload apache2 failed; restoring the include" >&2
-    mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM"
-    systemctl reload apache2 || true
+    mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM" || return 2
+    if ! systemctl reload apache2; then
+      echo "ERROR: restoring reload also failed; Apache's running config is unknown" >&2
+      return 2
+    fi
     return 1
   fi
 }
@@ -248,7 +252,13 @@ bg_mark_serving() { # new old
 # restore itself failed, so Apache's running config is unknown -- the caller
 # must not assume either colour is the one actually being served.
 bg_switch() { # old new sha
-  bg_point_apache_at "$2" || return 1
+  local rc=0
+  bg_point_apache_at "$2" || rc=$?
+  if ((rc == 2)); then
+    return 2
+  elif ((rc != 0)); then
+    return 1
+  fi
   if bg_wait_apache_health "$2" "$3" "$BG_APACHE_HEALTH_SECONDS"; then
     return 0
   fi
@@ -281,10 +291,14 @@ bg_log_running_ids() { # old
 # executing jobs, and keep watching the new colour. Returns 2 when the new
 # colour falls over, so the caller can switch back while the old one is warm.
 # A crash (NRestarts moved off its post-start baseline, or the unit is no
-# longer active) fails at once; a miss of the Apache probe alone needs two in
-# a row, since one bad poll can just be a slow reload settling.
+# longer active) fails at once. A miss of the Apache probe alone needs two
+# in a row to fail at once too, since one bad poll can just be a slow reload
+# settling; but the drain may finish only on a probe that was itself healthy
+# (misses == 0), so a miss right at the end of the watch window does not let
+# a sick colour through, and three misses anywhere across the whole drain
+# (not only consecutive ones) are treated the same as two in a row.
 bg_drain() { # old new sha
-  local waited=0 running misses=0 rc
+  local waited=0 running misses=0 total_misses=0 rc
   bg_rpc "$1" "$BG_PAUSE_EXPR" || echo "warning: could not pause $1's queues; its jobs may be cut short" >&2
   while :; do
     rc=0
@@ -293,12 +307,15 @@ bg_drain() { # old new sha
       return 2
     elif ((rc != 0)); then
       misses=$((misses + 1))
-      ((misses < 2)) || return 2
+      total_misses=$((total_misses + 1))
+      if ((misses >= 2)) || ((total_misses >= 3)); then
+        return 2
+      fi
     else
       misses=0
     fi
     running=$(bg_rpc "$1" "$BG_RUNNING_EXPR" 2>/dev/null | tail -n 1 || true)
-    if [[ $running == 0 && $waited -ge $BG_WATCH_SECONDS ]]; then
+    if [[ $running == 0 && $misses == 0 && $waited -ge $BG_WATCH_SECONDS ]]; then
       return 0
     fi
     if ((waited >= BG_DRAIN_CAP_SECONDS)); then
@@ -316,9 +333,15 @@ bg_drain() { # old new sha
 # failure here must never leave both the switch-back and the original switch
 # half-done.
 bg_switch_back() { # old new
+  local rc=0
   echo "$BG_UNIT@$2 failed after taking traffic; switching back to $1" >&2
   journalctl -u "$BG_UNIT@$2" -n 50 --no-pager >&2 || true
-  if ! bg_point_apache_at "$1"; then
+  bg_point_apache_at "$1" || rc=$?
+  if ((rc == 2)); then
+    echo "ERROR: Apache state unknown while switching back to $1; both colours left running. Check $NCC_APACHE_UPSTREAM and apachectl -S by hand before touching either unit." >&2
+    bg_rpc "$1" "$BG_RESUME_EXPR" || echo "warning: could not resume $1's queues" >&2
+    return 1
+  elif ((rc != 0)); then
     echo "ERROR: could not switch back to $1; $2 still serves. Fix the Apache include by hand, then confirm $1 is healthy before touching either unit." >&2
     bg_rpc "$1" "$BG_RESUME_EXPR" || echo "warning: could not resume $1's queues" >&2
     return 1
@@ -333,7 +356,7 @@ bg_switch_back() { # old new
     bg_rpc "$1" "$BG_RESUME_EXPR" || echo "warning: could not resume $1's queues" >&2
     return 1
   fi
-  rm -f "$NCC_APACHE_UPSTREAM.bak"
+  rm -f "$NCC_APACHE_UPSTREAM.bak" || true
   bg_mark_serving "$1" "$2" ||
     echo "ERROR: $1 serves again but marking it active failed (active-color cache, systemctl enable $1, or systemctl disable $2); fix each by hand." >&2
   bg_rpc "$1" "$BG_RESUME_EXPR" || echo "warning: could not resume $1's queues" >&2
@@ -346,7 +369,8 @@ bg_activate() { # old new sha-or-empty
     bg_fail_idle "$new" "systemctl start"
     return 1
   fi
-  BG_BASELINE_RESTARTS=$(systemctl show -p NRestarts --value "$BG_UNIT@$new")
+  BG_BASELINE_RESTARTS=$(systemctl show -p NRestarts --value "$BG_UNIT@$new") ||
+    { bg_fail_idle "$new" "reading NRestarts"; return 1; }
   if ! bg_wait_idle_health "$new" "$sha" "$BG_IDLE_HEALTH_SECONDS"; then
     bg_fail_idle "$new" "health check on its own port"
     return 1
@@ -361,7 +385,7 @@ bg_activate() { # old new sha-or-empty
   fi
   # Verification passed: the switch has happened, so the backup can never be
   # restored again, and a failure from here on must not stop either colour.
-  rm -f "$NCC_APACHE_UPSTREAM.bak"
+  rm -f "$NCC_APACHE_UPSTREAM.bak" || true
   if ! bg_mark_serving "$new" "$old"; then
     echo "ERROR: incomplete deploy: Apache now serves $new, but marking it active failed (active-color cache, systemctl enable $new, or systemctl disable $old). Fix each by hand, then verify systemctl is-enabled before the next deploy." >&2
     return 1

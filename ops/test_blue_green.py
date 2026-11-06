@@ -31,12 +31,13 @@ systemctl() {
     enable) [[ ${ENABLE_FAILS:-} != "$color" ]] ;;
     disable) [[ ${DISABLE_FAILS:-} != "$color" ]] ;;
     show)
-      local f="$STATE/show-$color" n
+      local f="$STATE/show-$color" n base
       n=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
       echo "$n" > "$f"
-      # The first call per colour is the post-start baseline and always 0; a
-      # crash is a later call's NRestarts moving away from that baseline.
-      if [[ ${CRASHES:-} == "$color" && $n -gt 1 ]]; then echo 1; else echo 0; fi ;;
+      base=${NRESTARTS_BASE:-0}
+      # The first call per colour is the post-start baseline and always
+      # $base; a crash is a later call's NRestarts moving away from it.
+      if [[ ${CRASHES:-} == "$color" && $n -gt 1 ]]; then echo $((base + 1)); else echo "$base"; fi ;;
     reload)
       local f="$STATE/reload-calls" n
       n=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
@@ -66,6 +67,16 @@ apachectl() {
   esac
 }
 journalctl() { log "journalctl $*"; echo "journal lines"; }
+mv() {
+  # MV_BAK_FAILS simulates the restore mv itself failing (disk full, perms,
+  # ...): only the .bak -> live-include restore, never bg_point_apache_at's
+  # own cp/backup step or anything unrelated.
+  if [[ -n ${MV_BAK_FAILS:-} && "$1" == "$NCC_APACHE_UPSTREAM.bak" && "$2" == "$NCC_APACHE_UPSTREAM" ]]; then
+    log "mv $* (forced failure)"
+    return 1
+  fi
+  command mv "$@"
+}
 body_for() {
   local color=$1 sha ep
   running "$color" || return 7
@@ -84,6 +95,18 @@ curl() {
     https://example.test/health)
       color=$(bg_serving_color) || return 7
       [[ ${APACHE_HEALTH_FAILS:-} != "$color" ]] || return 7
+      # APACHE_MISS_ON names probe numbers (1-based, space-separated) to
+      # fail, but only once this colour is the one active-color already
+      # names: that is, only once the drain's own probing has started, not
+      # during the initial switch's own one-shot verification before it.
+      if [[ -n ${APACHE_MISS_ON:-} && $(cat "$NCC_INSTALL_DIR/active-color" 2>/dev/null) == "$color" ]]; then
+        local f="$STATE/apache-probe-calls" n miss
+        n=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
+        echo "$n" > "$f"
+        for miss in $APACHE_MISS_ON; do
+          [[ $n == "$miss" ]] && return 7
+        done
+      fi
       body_for "$color" ;;
     *) return 7 ;;
   esac
@@ -339,7 +362,7 @@ class BlueGreenTest(unittest.TestCase):
         self.assertNotIn("systemctl reload apache2", events)
 
     def test_reload_failure_restores_and_reloads_again(self):
-        result, events = self.deploy(RELOAD_STATUS="1")
+        result, events = self.deploy(RELOAD_FAIL_ON="1")
         self.assert_untouched(result, events)
         self.assertGreaterEqual(events.count("systemctl reload apache2"), 2)
 
@@ -432,6 +455,98 @@ class BlueGreenTest(unittest.TestCase):
         shows = [i for i, e in enumerate(events)
                  if "systemctl show -p NRestarts" in e and i < stop_i]
         self.assertGreaterEqual(len(shows), 7)
+
+    # --- IMPORTANT (round 2): the drain must finish only on a healthy probe,
+    # --- and cap total misses too, not only consecutive ones ---------------
+
+    def test_drain_tolerates_a_single_mid_drain_apache_miss(self):
+        result, events = self.deploy(RUNNING_JOBS="0", APACHE_MISS_ON="2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.running, ["green"])
+
+    def test_drain_two_consecutive_apache_misses_switch_back(self):
+        result, events = self.deploy(APACHE_MISS_ON="2 3")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.running, ["blue"])
+        self.assertIn("127.0.0.1:4002/ retry=0", self.include)
+
+    def test_drain_waits_past_a_miss_on_what_would_have_been_the_last_probe(self):
+        result, events = self.deploy(RUNNING_JOBS="0", APACHE_MISS_ON="7")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.running, ["green"])
+        shows = [e for e in events
+                 if "systemctl show -p NRestarts" in e and "ncc-portal@green" in e]
+        # One baseline read in bg_activate plus the usual 7-probe watch
+        # window is 8 matching calls when nothing misses; a miss on the 7th
+        # probe must not let the drain finish there, so it has to run at
+        # least one more iteration (9 calls total).
+        self.assertGreaterEqual(len(shows), 9)
+
+    def test_drain_three_non_consecutive_apache_misses_switch_back(self):
+        result, events = self.deploy(APACHE_MISS_ON="2 4 6")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.running, ["blue"])
+
+    def test_drain_tolerates_a_nonzero_but_stable_nrestarts_baseline(self):
+        result, events = self.deploy(RUNNING_JOBS="0", NRESTARTS_BASE="2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.running, ["green"])
+
+    def test_drain_switches_back_immediately_when_nrestarts_moves_off_a_nonzero_baseline(self):
+        result, events = self.deploy(NRESTARTS_BASE="2", CRASHES="green")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.running, ["blue"])
+        shows = [e for e in events
+                 if "systemctl show -p NRestarts" in e and "ncc-portal@green" in e]
+        # One baseline read in bg_activate, one crash-detecting read in
+        # bg_drain's first iteration: the crash must be caught at once, not
+        # after several misses accumulate.
+        self.assertEqual(len(shows), 2)
+
+    # --- S3: the old colour can also fail its own post-point-back verify ---
+
+    def test_switch_back_old_colour_apache_verification_failure_restores_new_colour(self):
+        result, events = self.deploy(CRASHES="green", APACHE_HEALTH_FAILS="blue")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("127.0.0.1:4003/ retry=0", self.include)
+        self.assertIn("blue", self.running)
+        self.assertIn("green", self.running)
+        self.assertIn("does not answer through Apache after switching back", result.stderr)
+        self.assertIn("green still serves", result.stderr)
+
+    # --- S2: bg_point_apache_at's own restore must not be assumed to work --
+
+    def test_switch_restore_reload_also_failing_is_apache_state_unknown(self):
+        # Every reload call fails: the switch's first reload, then
+        # bg_point_apache_at's own restore reload too. Unlike the plain
+        # "restores and reloads again" case (RELOAD_FAIL_ON="1", the restore
+        # reload succeeds), this must come back as state-unknown and leave
+        # both colours running, not a clean, restored failure.
+        result, events = self.deploy(RELOAD_STATUS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Apache state unknown after a failed restore", result.stderr)
+        self.assertIn("blue", self.running)
+        self.assertIn("green", self.running)
+        self.assertNotIn("systemctl stop ncc-portal@blue", events)
+        self.assertNotIn("systemctl stop ncc-portal@green", events)
+
+    def test_switch_configtest_failure_with_a_failing_restore_mv_is_apache_state_unknown(self):
+        result, events = self.deploy(CONFIGTEST_STATUS="1", MV_BAK_FAILS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Apache state unknown after a failed restore", result.stderr)
+        self.assertIn("blue", self.running)
+        self.assertIn("green", self.running)
+        self.assertNotIn("systemctl stop ncc-portal@blue", events)
+        self.assertNotIn("systemctl stop ncc-portal@green", events)
+
+    def test_switch_reload_failure_with_a_failing_restore_mv_is_apache_state_unknown(self):
+        result, events = self.deploy(RELOAD_STATUS="1", MV_BAK_FAILS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Apache state unknown after a failed restore", result.stderr)
+        self.assertIn("blue", self.running)
+        self.assertIn("green", self.running)
+        self.assertNotIn("systemctl stop ncc-portal@blue", events)
+        self.assertNotIn("systemctl stop ncc-portal@green", events)
 
     # --- Minors -------------------------------------------------------------
 
