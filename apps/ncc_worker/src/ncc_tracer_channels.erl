@@ -41,7 +41,7 @@ patterns() ->
      {prim_file, write_file, 2}, {prim_file, make_dir, 1}, {prim_file, rename, 2},
      {prim_file, make_symlink, 2}, {prim_file, make_link, 2},
      {prim_file, write_file_info, 2}, {prim_file, write_file_info, 3},
-     {prim_file, delete, 1}, {prim_file, del_dir, 1},
+     {prim_file, delete, 1}, {prim_file, del_dir, 1}, {prim_file, copy, 3},
      {inet, gethostname, 0}, {inet, getifaddrs, 0}, {net_adm, localhost, 0},
      {gen_tcp, connect, 3}, {gen_tcp, connect, 4},
      {ssl, connect, 2}, {ssl, connect, 3}, {ssl, connect, 4},
@@ -86,7 +86,7 @@ specific(filelib, wildcard, [Pattern]) -> {file_read, #{path => wildcard_dir(Pat
 specific(filelib, wildcard, [Pattern, Cwd]) -> {file_read, #{path => wildcard_dir(Pattern, Cwd)}};
 specific(M, rename, [From, To]) when M =:= file; M =:= prim_file ->
     {file_write, #{path => chars(To), from => chars(From), from_kind => write}};
-specific(file, copy, [From, To | _]) ->
+specific(M, copy, [From, To | _]) when M =:= file; M =:= prim_file ->
     {file_write, #{path => chars(copy_name(To)), from => chars(copy_name(From)), from_kind => read}};
 specific(M, F, [_Existing, New])
   when (M =:= file orelse M =:= prim_file), (F =:= make_symlink orelse F =:= make_link) ->

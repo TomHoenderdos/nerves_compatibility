@@ -32,7 +32,8 @@ defmodule NccWorker.Tracer.ChannelsTest do
           {:trace, :_, :_},
           {:dbg, :_, :_},
           {:application, :get_env, 2},
-          {:application, :get_all_env, 1}
+          {:application, :get_all_env, 1},
+          {:prim_file, :copy, 3}
         ] do
       assert mfa in patterns, inspect(mfa)
     end
@@ -66,6 +67,9 @@ defmodule NccWorker.Tracer.ChannelsTest do
 
     assert {:file_write, %{path: "to", from: "from", from_kind: :read}} =
              classify(:file, :copy, [{"from", [:read]}, "to"])
+
+    assert {:file_write, %{path: "to", from: "from", from_kind: :read}} =
+             classify(:prim_file, :copy, ["from", "to", :infinity])
 
     assert {:file_write, %{path: "link"}} = classify(:file, :make_symlink, ["target", "link"])
 
