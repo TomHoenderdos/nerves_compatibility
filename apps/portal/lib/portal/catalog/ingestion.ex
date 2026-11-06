@@ -226,8 +226,12 @@ defmodule Portal.Catalog.Ingestion do
   `requested_optional_deps` echo, or, without one, an `optional_deps.reason`
   of `"not_requested"`, which only a build without them reports) is refused
   with `{:error, {:identity_mismatch, job, result}}`, both sides carrying
-  `:variant`. A result that states no variant is held to the job's. The
-  result's `optional_deps` report is stored on the row as it is.
+  `:variant`. A result that states no variant is held to a `:with` job; a
+  `:without` job refuses it (its `:variant` nil), since a worker from before
+  variants ignores the request and adds the optional dependencies anyway, and
+  refuses one that reports an added optional dependency whatever it echoes
+  (its `:variant` `:with`). The result's `optional_deps` report is stored on
+  the row as it is.
 
   A later non-pass verdict for the same identity overwrites a pass row, and its
   memberships with it. The sweep never re-queues an identity that has a pass
@@ -260,10 +264,7 @@ defmodule Portal.Catalog.Ingestion do
   defp check_variant(result, opts, keys) do
     case Map.get(opts, :variant, :with) do
       variant when variant in [:with, :without] ->
-        case result_variant(result) do
-          nil ->
-            :ok
-
+        case reported_variant(result, variant) do
           ^variant ->
             :ok
 
@@ -280,12 +281,29 @@ defmodule Portal.Catalog.Ingestion do
     end
   end
 
+  # What a result says it was built as, for a job of `variant`. A result that
+  # states nothing is held to a `:with` job, as results from before variants
+  # were; a `:without` job takes only one that says it was built without
+  # them, since an older worker drops the request and runs the optional pass
+  # anyway. A result that reports an added optional dependency was built with
+  # it, whatever it echoes.
+  defp reported_variant(result, :with), do: result_variant(result) || :with
+
+  defp reported_variant(result, :without) do
+    if added_optional_deps?(result), do: :with, else: result_variant(result)
+  end
+
+  defp added_optional_deps?(%{"optional_deps" => %{"added" => added}})
+       when added not in [nil, []],
+       do: true
+
+  defp added_optional_deps?(_result), do: false
+
   # The variant a toolchain result was built as. The worker echoes the
   # `optional_deps` request it was given (`requested_optional_deps`); a result
   # from a worker that does not echo it still says it never started the
   # optional pass (`optional_deps.reason` "not_requested"), which only a
-  # build asked to exclude them reports. Anything else states no variant and
-  # is held to the job's.
+  # build asked to exclude them reports. Anything else states no variant.
   defp result_variant(%{"requested_optional_deps" => "include"}), do: :with
   defp result_variant(%{"requested_optional_deps" => "exclude"}), do: :without
   defp result_variant(%{"requested_optional_deps" => other}) when other != nil, do: other

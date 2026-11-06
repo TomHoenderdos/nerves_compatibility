@@ -151,6 +151,7 @@ defmodule Portal.ToolchainVariantsTest do
         "finished_at" => "2026-11-01T10:00:00Z",
         "package" => %{"name" => "variantpkg", "version" => "1.0.0"},
         "systems" => %{},
+        "requested_optional_deps" => "exclude",
         "optional_deps" => @no_optional,
         "toolchain_build" => %{
           "status" => "skipped",

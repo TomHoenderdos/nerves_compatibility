@@ -448,6 +448,87 @@ defmodule Portal.Workers.IngestIdentityTest do
       refute membership?(beam)
     end
 
+    # A worker image from before variants drops the `optional_deps` input key
+    # and runs the optional pass anyway: its result echoes nothing and may
+    # carry what it added. A without job takes only a result that says it was
+    # built without them, so neither shape is stored under that identity.
+    test "refuses a result that states no variant for a without job" do
+      name = unique("tcvarsilent")
+      beam = "beam-#{name}"
+
+      replay(
+        name
+        |> variant_result(beam, "include")
+        |> Map.delete("requested_optional_deps")
+        |> Map.delete("optional_deps"),
+        files_dir_with([beam])
+      )
+
+      log =
+        capture_log(fn ->
+          assert {:cancel, "ingest refused: " <> _} = ingest(variant_args(name, "without"))
+        end)
+
+      assert toolchain_rows_of(name) == []
+      refute membership?(beam)
+      assert log =~ "security:"
+    end
+
+    test "refuses a result that added optional dependencies for a without job" do
+      name = unique("tcvaradded")
+      beam = "beam-#{name}"
+
+      silent =
+        name
+        |> variant_result(beam, "include")
+        |> Map.delete("requested_optional_deps")
+        |> put_in(["optional_deps", "added"], ["decimal"])
+
+      replay(silent, files_dir_with([beam]))
+
+      capture_log(fn ->
+        assert {:cancel, "ingest refused: " <> _} = ingest(variant_args(name, "without"))
+      end)
+
+      assert toolchain_rows_of(name) == []
+      refute membership?(beam)
+
+      # Even under an explicit exclude echo, an added dependency means the
+      # files were built against it.
+      echoed = unique("tcvaraddedecho")
+      echoed_beam = "beam-#{echoed}"
+
+      replay(
+        echoed
+        |> variant_result(echoed_beam, "exclude")
+        |> put_in(["optional_deps", "added"], ["decimal"]),
+        files_dir_with([echoed_beam])
+      )
+
+      capture_log(fn ->
+        assert {:cancel, "ingest refused: " <> _} = ingest(variant_args(echoed, "without"))
+      end)
+
+      assert toolchain_rows_of(echoed) == []
+      refute membership?(echoed_beam)
+    end
+
+    # A worker that does not echo the request but reports it never started
+    # the optional pass built without them.
+    test "records a without result that only reports not_requested" do
+      name = unique("tcvarnotreq")
+      beam = "beam-#{name}"
+
+      replay(
+        name |> variant_result(beam, "exclude") |> Map.delete("requested_optional_deps"),
+        files_dir_with([beam])
+      )
+
+      assert :ok = ingest(variant_args(name, "without"))
+      assert [%{variant: :without, status: :pass}] = toolchain_rows_of(name)
+      assert membership?(beam)
+    end
+
     # Jobs queued before variants existed carry none, and were with builds.
     # The job's side decides: the result is held to a with build, never
     # taken for whatever variant it reports.
