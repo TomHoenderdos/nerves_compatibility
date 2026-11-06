@@ -243,6 +243,33 @@ class LayoutGuardTest(unittest.TestCase):
         self.assertIn("NCC_APACHE_UPSTREAM", result.stderr)
         self.assertEqual(events, [])
 
+    def run_rollback(self, bg_rollback_body):
+        """deploy.sh rollback against a stub $NCC_SRC_DIR/ops/blue-green.sh,
+        so only the dispatch and its exit status are under test."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install = root / "install"
+            install.mkdir()
+            (root / "src" / "ops").mkdir(parents=True)
+            (root / "src" / "ops" / "blue-green.sh").write_text(
+                f'bg_rollback() {{ echo "bg_rollback" >> "$EVENTS"; {bg_rollback_body}; }}\n')
+            text = (self.BG_LAYOUT.format(install=install).replace("/nowhere/src", str(root / "src"))
+                    + f"NCC_BLUE_GREEN=1\nNCC_APACHE_UPSTREAM={root}/ncc-upstream.conf\n")
+            result, events = self.run_script("deploy.sh", ["rollback"], env_file_text=text)
+        return result, events
+
+    def test_rollback_exits_non_zero_when_bg_rollback_fails(self):
+        result, events = self.run_rollback("return 3")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bg_rollback", events)
+        self.assertFalse([e for e in events if e.startswith(("git", "systemctl", "docker", "tar"))])
+
+    def test_rollback_exits_zero_when_bg_rollback_succeeds(self):
+        result, events = self.run_rollback("return 0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("bg_rollback", events)
+        self.assertFalse([e for e in events if e.startswith(("git", "systemctl", "docker", "tar"))])
+
     def test_usage_rejects_rollback_with_extra_arguments(self):
         result, _ = self.run_script("deploy.sh", ["rollback", "builder"], env_file_text="")
         self.assertNotEqual(result.returncode, 0)
