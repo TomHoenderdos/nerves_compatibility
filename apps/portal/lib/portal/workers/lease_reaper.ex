@@ -14,7 +14,9 @@ defmodule Portal.Workers.LeaseReaper do
   leases builds while such a builder is around, but that builder may go
   unready or silent afterwards, and `remote_mode: :on` leases regardless;
   nothing else would ever take those leases. One a ready builder could
-  claim stays: it is a backlog, not an orphan.
+  claim stays: it is a backlog, not an orphan. One tick looks at the
+  oldest `stale_queued_limit` (default 100) such leases; the next takes the
+  rest. The local build keeps the lease's scope (`Leases.requeue_locally/2`).
 
   A failed lease's upload dir is removed here, since nothing will ingest it.
   A requeued lease keeps its dir: the next attempt reuses the
@@ -30,6 +32,7 @@ defmodule Portal.Workers.LeaseReaper do
   alias Portal.Builders.{Lease, Leases, Routing, Upload}
 
   @default_stale_queued_minutes 30
+  @default_stale_queued_limit 100
 
   @impl Oban.Worker
   def perform(%Oban.Job{}) do
@@ -44,7 +47,7 @@ defmodule Portal.Workers.LeaseReaper do
   end
 
   defp hand_back_orphans(now) do
-    for lease <- Leases.stale_queued(now, stale_queued_minutes()),
+    for lease <- Leases.stale_queued(now, stale_queued_minutes(), stale_queued_limit()),
         not Routing.capable_builder?(arches(lease)) do
       case Leases.requeue_locally(lease) do
         {:ok, _job} ->
@@ -66,9 +69,12 @@ defmodule Portal.Workers.LeaseReaper do
   defp arches(%Lease{args: %{"image_platforms" => %{} = platforms}}), do: Map.keys(platforms)
   defp arches(%Lease{}), do: ["x86_64"]
 
-  defp stale_queued_minutes do
+  defp stale_queued_minutes, do: config(:stale_queued_minutes, @default_stale_queued_minutes)
+  defp stale_queued_limit, do: config(:stale_queued_limit, @default_stale_queued_limit)
+
+  defp config(key, default) do
     :portal
     |> Application.get_env(__MODULE__, [])
-    |> Keyword.get(:stale_queued_minutes, @default_stale_queued_minutes)
+    |> Keyword.get(key, default)
   end
 end

@@ -436,8 +436,11 @@ defmodule Portal.Builders.Leases do
   (`meta.pin_local`, so routing never sends it back to a remote builder),
   together, so a failed insert leaves the lease as it was. The job carries
   the lease's request, which follows its build instead of being closed as
-  cancelled once the lease stops holding it. `opts`: `:priority` (default
-  the lease's) and `:force` (default the lease's own `force`). The caller
+  cancelled once the lease stops holding it, and the lease's scope
+  (`scope_args/1`), so an argus-only or targets lease is not rebuilt in
+  full. It names no `image_digest`: a local build runs this host's image,
+  never the remote platform digest. `opts`: `:priority` (default the
+  lease's) and `:force` (default the lease's own `force`). The caller
   removes the upload dir.
   """
   @spec requeue_locally(Lease.t(), keyword()) ::
@@ -446,7 +449,9 @@ defmodule Portal.Builders.Leases do
     force = Keyword.get(opts, :force, lease.args["force"] == true)
     priority = Keyword.get(opts, :priority, lease.priority)
 
-    args = %{package: lease.package, version: lease.version, force: force}
+    args =
+      %{package: lease.package, version: lease.version, force: force}
+      |> Map.merge(scope_args(lease.args))
 
     args =
       if lease.scan_request_id,
@@ -466,18 +471,31 @@ defmodule Portal.Builders.Leases do
     end)
   end
 
+  # The `Portal.Workers.Build` args that ask for the scope
+  # `Build.scope_args/3` turned into the lease's `mode` and `systems_filter`
+  # (`Portal.Workers.RemoteBuild`); `Build` checks it again against the
+  # latest run, as it does for every scoped job.
+  defp scope_args(%{"mode" => "argus_only"}), do: %{scope: "argus_only"}
+
+  defp scope_args(%{"systems_filter" => [_ | _] = systems}),
+    do: %{scope: "targets", systems: systems}
+
+  defp scope_args(_lease_args), do: %{}
+
   @doc """
-  `:queued` leases that have waited since before `now` minus `minutes`
-  (their `updated_at`: written when queued, and again when requeued). The
-  lease reaper hands those no builder can claim to a local build.
+  The oldest `limit` `:queued` leases that have waited since before `now`
+  minus `minutes` (their `updated_at`: written when queued, and again when
+  requeued). The lease reaper hands those no builder can claim to a local
+  build; `limit` keeps one tick bounded, and the next tick takes the rest.
   """
-  @spec stale_queued(DateTime.t(), pos_integer()) :: [Lease.t()]
-  def stale_queued(now, minutes) do
+  @spec stale_queued(DateTime.t(), pos_integer(), pos_integer()) :: [Lease.t()]
+  def stale_queued(now, minutes, limit) do
     cutoff = DateTime.add(now, -minutes, :minute)
 
     Lease
     |> Ash.Query.filter(state == :queued and updated_at < ^cutoff)
     |> Ash.Query.sort(updated_at: :asc)
+    |> Ash.Query.limit(limit)
     |> Ash.read!(domain: @domain)
   end
 

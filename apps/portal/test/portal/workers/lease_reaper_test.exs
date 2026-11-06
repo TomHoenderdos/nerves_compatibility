@@ -3,6 +3,8 @@ defmodule Portal.Workers.LeaseReaperTest do
   use Oban.Testing, repo: Portal.Repo
   import Ecto.Query, only: [from: 2]
 
+  require Ash.Query
+
   alias Portal.Builders.{Builder, Lease, Leases, Upload}
   alias Portal.Workers.LeaseReaper
 
@@ -163,6 +165,55 @@ defmodule Portal.Workers.LeaseReaperTest do
 
       assert :ok = perform_job(LeaseReaper, %{})
       assert %Lease{state: :failed} = Ash.get!(Lease, lease.id, domain: Portal.Builders)
+    end
+
+    # The local build does what the lease would have: an argus-only sweep
+    # must not come back as a forced full firmware build of every system.
+    test "an argus-only lease comes back as an argus-only build" do
+      queued_for!("argus", 31, %{"mode" => "argus_only", "systems_filter" => nil, "force" => true})
+
+      assert :ok = perform_job(LeaseReaper, %{})
+
+      assert [job] = all_enqueued(worker: Portal.Workers.Build)
+      assert job.args["scope"] == "argus_only"
+      assert job.args["force"] == true
+      refute Map.has_key?(job.args, "systems")
+      # The local build runs this host's image, not the remote platform digest.
+      refute Map.has_key?(job.args, "image_digest")
+    end
+
+    test "a targets lease comes back with its systems" do
+      queued_for!("targets", 31, %{"mode" => nil, "systems_filter" => ["rpi4", "bbb"]})
+      assert :ok = perform_job(LeaseReaper, %{})
+
+      assert [job] = all_enqueued(worker: Portal.Workers.Build)
+      assert job.args["scope"] == "targets"
+      assert job.args["systems"] == ["rpi4", "bbb"]
+      assert job.args["force"] == false
+    end
+
+    test "a full lease comes back as a full build" do
+      queued_for!("full", 31, %{"mode" => nil, "systems_filter" => nil})
+      assert :ok = perform_job(LeaseReaper, %{})
+
+      assert [job] = all_enqueued(worker: Portal.Workers.Build)
+      refute Map.has_key?(job.args, "scope")
+      refute Map.has_key?(job.args, "systems")
+    end
+
+    test "one tick hands back a bounded number" do
+      previous = Application.get_env(:portal, LeaseReaper, [])
+      Application.put_env(:portal, LeaseReaper, stale_queued_limit: 2)
+      on_exit(fn -> Application.put_env(:portal, LeaseReaper, previous) end)
+
+      for p <- ["b1", "b2", "b3"], do: queued_for!(p, 40)
+      assert :ok = perform_job(LeaseReaper, %{})
+      assert length(all_enqueued(worker: Portal.Workers.Build)) == 2
+
+      assert [%Lease{state: :queued}] =
+               Lease
+               |> Ash.Query.filter(state == :queued)
+               |> Ash.read!(domain: Portal.Builders)
     end
 
     test "the wait is configurable" do
