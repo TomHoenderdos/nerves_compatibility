@@ -102,7 +102,7 @@ Then, per builder, an enrolment token from `/admin/builders` and a VM.
 **Ubuntu 24.04 x86_64 or aarch64 only.** The release carries its own ERTS,
 linked against the glibc of the runner that built it (2.39); on an older
 glibc it does not start. Which worker image a builder pulls is named by the
-portal's `images.json`.
+portal's `images.json`, per architecture (see "Architectures" below).
 
 The steps, as root, with `PORTAL_HOST` (the portal's `PHX_HOST`: its server
 certificate names it), `TOKEN` and `COMMIT` (a 40-hex sha with a published
@@ -191,7 +191,10 @@ ran. A portal whose image has no digest for this architecture answers the
 claim `no_image_for_arch`; the slot logs it and asks again a minute later,
 and the admin Builders page shows the builder's architecture with "(no
 image)". An agent from before this names no architecture and counts as
-x86_64.
+x86_64. On any other architecture (`Compatibility.Arch`) the agent claims
+nothing: each slot logs "unsupported architecture", reports no free slots
+and checks again a minute later. The host check and the egress ruleset
+above apply on both architectures alike.
 
 ## Running in dev against a local portal
 
