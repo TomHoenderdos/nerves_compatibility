@@ -32,9 +32,10 @@ defmodule Portal.Workers.ToolchainBuild do
   attempt of a retryable failure is spent, which is what lets the sweep's
   day-old-error rule retry it later. An `error` never replaces a `pass` or
   `skipped` row of the same identity: a transient host problem is not news
-  about a build that already worked. The kept row's `finished_at` is set to
-  the failed attempt instead, since the sweep re-opens such a row by its age
-  and would otherwise queue it again at once.
+  about a build that already worked. The kept row records the failed attempt
+  as `attempted_at`, since the sweep re-opens such a row by its last attempt
+  and would otherwise queue it again at once; its `finished_at` stays the
+  build's own.
 
   `max_attempts` is 2, not `Build`'s 3. A compile failure is a verdict and
   never retried; what is left to retry (exit 10, or 20/21 from the host) is
@@ -286,9 +287,9 @@ defmodule Portal.Workers.ToolchainBuild do
   # The sweep re-queues a kept row once it has aged (a `skipped` for shipping
   # priv files, or a `pass` that dropped its optional dependencies for a
   # transient reason, both after 7 days; see
-  # `Portal.Catalog.toolchain_backlog/3`). Its failed rebuild dates it to
-  # now, so the identity waits out the week again instead of coming back in
-  # every sweep.
+  # `Portal.Catalog.toolchain_backlog/3`). Its failed rebuild records the
+  # attempt, so the identity waits out the week again instead of coming back
+  # in every sweep; `finished_at` is left alone.
   defp retried(row, job) do
     case row |> Ash.Changeset.for_update(:retried, %{}) |> Ash.update(domain: Portal.Catalog) do
       {:ok, _row} -> :ok

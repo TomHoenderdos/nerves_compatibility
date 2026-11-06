@@ -50,7 +50,8 @@ defmodule Portal.Catalog.ToolchainBuild do
     :compile_env,
     :file_manifest,
     :optional_deps,
-    :finished_at
+    :finished_at,
+    :attempted_at
   ]
 
   postgres do
@@ -85,11 +86,12 @@ defmodule Portal.Catalog.ToolchainBuild do
     end
 
     # A rebuild of a re-opened identity that failed keeps the row it was
-    # re-opened from (`Portal.Workers.ToolchainBuild`), and dates the row to
-    # that attempt: the backlog re-opens a row by its age, so the identity
-    # then waits out its interval again rather than coming back next sweep.
+    # re-opened from (`Portal.Workers.ToolchainBuild`), and records that
+    # attempt: the backlog re-opens a row by its last attempt, so the
+    # identity then waits out its interval again rather than coming back next
+    # sweep. `finished_at` stays the build's own, which the manifest serves.
     update :retried do
-      change(set_attribute(:finished_at, &DateTime.utc_now/0))
+      change(set_attribute(:attempted_at, &DateTime.utc_now/0))
     end
   end
 
@@ -179,6 +181,12 @@ defmodule Portal.Catalog.ToolchainBuild do
     end
 
     attribute :finished_at, :utc_datetime_usec do
+      public?(true)
+    end
+
+    # When a failed rebuild last kept this row (the `:retried` action); nil
+    # until then, and again once a rebuild replaces the row.
+    attribute :attempted_at, :utc_datetime_usec do
       public?(true)
     end
 

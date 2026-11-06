@@ -1241,9 +1241,10 @@ defmodule Portal.Catalog do
   # is 7 days old ($4), so a reason that repeats costs one build a week, and a
   # `skipped` for shipping priv files, which the worker now judges file by
   # file, once it is 7 days old ($4) too. Either stays as it is until the new
-  # build replaces it; a rebuild that fails dates the kept row to that attempt
-  # (`Portal.Workers.ToolchainBuild`), so it is not re-opened again before
-  # another week has passed.
+  # build replaces it; a rebuild that fails records its attempt on the kept
+  # row (`attempted_at`, `Portal.Workers.ToolchainBuild`), and the age counts
+  # from that attempt, so it is not re-opened again before another week has
+  # passed. `finished_at` stays the build's own.
   @toolchain_candidates_sql """
   SELECT e.package, e.version, v.variant, e.finished_at, e.recent
   FROM (
@@ -1299,14 +1300,14 @@ defmodule Portal.Catalog do
             t.status = 'pass'
             AND NOT (
               coalesce(t.optional_deps ->> 'reason', '') IN ('deps_get_failed', 'timeout')
-              AND coalesce(t.finished_at, t.updated_at) <= $4::timestamp
+              AND coalesce(t.attempted_at, t.finished_at, t.updated_at) <= $4::timestamp
             )
           )
           OR (
             t.status = 'skipped'
             AND (
               t.reason IS DISTINCT FROM 'ships priv files'
-              OR coalesce(t.finished_at, t.updated_at) > $4::timestamp
+              OR coalesce(t.attempted_at, t.finished_at, t.updated_at) > $4::timestamp
             )
           )
           OR (t.status = 'error' AND coalesce(t.finished_at, t.updated_at) > $3::timestamp)
