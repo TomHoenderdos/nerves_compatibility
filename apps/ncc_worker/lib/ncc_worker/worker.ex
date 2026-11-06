@@ -135,6 +135,21 @@ defmodule NccWorker.Worker do
           # Only for a "toolchain" run, whose `systems` is `%{}`: no firmware,
           # no argus (`argus.status` "skipped"), no Nerves systems.
           optional(:toolchain_build) => toolchain_build(),
+          # Only for a run whose selection was `pure_elixir`: whether its host
+          # files were published (P0's OS check AND the compile-time trace,
+          # `NccWorker.Portability`). "skipped" publishes no `pure_elixir`
+          # files and changes no status; `reason` is the OS check's
+          # ("OS-specific (<file>: <needle>)"), the trace's refusal, or
+          # "portability could not be judged" (the tracer failed, was killed,
+          # overflowed or could not start). `compile_observations` as for a
+          # toolchain build, nil when the OS check failed and the trace never
+          # ran.
+          optional(:host_portability) => %{
+            status: String.t(),
+            reason: String.t() | nil,
+            portability_rule: 1,
+            compile_observations: map() | nil
+          },
           # `NCC_INPUT.toolchain` echoed back, when present.
           optional(:requested_toolchain) => map(),
           # A toolchain run's `NCC_INPUT.optional_deps` ("include" or
@@ -271,6 +286,10 @@ defmodule NccWorker.Worker do
         }
 
   @default_timeout_sec 600
+
+  # The traced judge compile's own ceiling (`NccWorker.Portability.run/3`'s
+  # default); the run's remaining time bounds it further.
+  @trace_timeout_ms 30 * 60 * 1000
   @default_log_tail_bytes 4096
   @max_build_concurrency 4
 
@@ -641,6 +660,12 @@ defmodule NccWorker.Worker do
 
     {:ok, source_before} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
 
+    # Before the host compile, as in a toolchain run: the releases a
+    # `pure_elixir` build is judged against (`judge_releases/2`). This is the
+    # earliest point there is: the `deps.get` that wrote the lock is the one
+    # `Project.add_package/3` ran.
+    first_releases = Portability.lock_snapshot(project_dir)
+
     host_result =
       compile_host(project_dir, paths.output_dir, log_tail_bytes, input.package.name)
 
@@ -666,9 +691,9 @@ defmodule NccWorker.Worker do
 
     with {:ok, optional_deps} <-
            resolve_optional_deps(scope, selection, project_dir, input.package.name, paths) do
-      # The second lock snapshot is the traced judge compile's; it is not
-      # part of `result.json`.
-      {_releases, optional_deps} = judge_releases(nil, optional_deps)
+      # The lock snapshot matching the build the traced judge compile
+      # judges; it is not part of `result.json`.
+      {releases, optional_deps} = judge_releases(first_releases, optional_deps)
 
       context = %{
         input: input,
@@ -685,7 +710,8 @@ defmodule NccWorker.Worker do
         selection: selection,
         runtime_apps: runtime_apps,
         source_before: source_before,
-        pkg_source_dir: pkg_source_dir
+        pkg_source_dir: pkg_source_dir,
+        releases: releases
       }
 
       finish_project(context, toolchain, github_url, optional_deps)
@@ -702,12 +728,19 @@ defmodule NccWorker.Worker do
            log_tail_bytes: log_tail_bytes,
            host_result: host_result,
            scope: scope,
-           selection: selection
+           selection: selection,
+           releases: releases
          } = context,
          toolchain,
          github_url,
          optional_deps
        ) do
+    portability =
+      full_run_portability(project_dir, paths,
+        releases: releases,
+        run_started_at: input[:started_at]
+      )
+
     build = %{
       firmware: fn ->
         build_all_systems(
@@ -720,7 +753,7 @@ defmodule NccWorker.Worker do
           host_result
         )
       end,
-      pure_elixir: fn -> pure_elixir_result(project_dir, input.package.name) end
+      pure_elixir: fn -> pure_elixir_result(project_dir, input.package.name, portability) end
     }
 
     target_pass = %{
@@ -826,8 +859,18 @@ defmodule NccWorker.Worker do
     {:ok,
      result
      |> put_optional_deps(optional_deps)
-     |> put_deps_lock(scope, run_lock, project_dir, input.package.name)}
+     |> put_deps_lock(scope, run_lock, project_dir, input.package.name)
+     |> put_host_portability(system_results)}
   end
+
+  @doc false
+  # `host_portability` only for a run whose selection was `pure_elixir`: it
+  # says whether that system's files were published. Public for tests.
+  @spec put_host_portability(map(), map()) :: map()
+  def put_host_portability(result, %{"pure_elixir" => %{host_portability: hp}}),
+    do: Map.put(result, :host_portability, hp)
+
+  def put_host_portability(result, _systems), do: result
 
   defp put_optional_deps(result, nil), do: result
 
@@ -1100,14 +1143,20 @@ defmodule NccWorker.Worker do
   # are scanned and archived like a firmware build's, and published as
   # precompiled files that fit any system. A client on any OS takes them, so
   # they are published only when the package's own source is OS-agnostic
-  # (`BuildCache.os_agnostic?/1`, the check a toolchain build's
-  # `BuildSelection.portable?/4` makes): a module body that reads `:os.type()`
-  # bakes this Linux build host into the beams. Otherwise the scan keeps no
-  # `file_manifest`, so nothing is archived or published; the status stands.
+  # (`BuildCache.os_agnostic?/1`, P0: a module body that reads `:os.type()`
+  # bakes this Linux build host into the beams) AND the compile-time trace
+  # passes (`portability`, `full_run_portability/3`, P1). The trace runs only
+  # when the static check passed, and before the scan: it recompiles the
+  # closure, so the files scanned and archived are the traced compile's own.
+  # Otherwise the scan keeps no `file_manifest`, so nothing is archived or
+  # published. The status, the assumed-compatible verdict and the log tail's
+  # first sentence never change; `host_portability` says what was decided.
   @doc false
-  @spec pure_elixir_result(String.t(), String.t()) :: map()
-  def pure_elixir_result(project_dir, package_name) do
+  @spec pure_elixir_result(String.t(), String.t(), (String.t() -> Portability.verdict())) ::
+          map()
+  def pure_elixir_result(project_dir, package_name, portability) do
     app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
+    {gate, host_portability} = publication_gate(project_dir, package_name, portability)
 
     beam_scan =
       case BeamScan.analyze_app_dir(app_dir) do
@@ -1116,9 +1165,7 @@ defmodule NccWorker.Worker do
       end
 
     compile_env = AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
-
-    {beam_scan, unpublished} =
-      gate_os_specific(beam_scan, Path.join([project_dir, "deps", package_name]))
+    {beam_scan, unpublished} = apply_gate(beam_scan, gate)
 
     %{
       status: :pass,
@@ -1130,22 +1177,83 @@ defmodule NccWorker.Worker do
           unpublished,
       compile_env: compile_env,
       beam_scan: beam_scan,
-      error: nil
+      error: nil,
+      host_portability: host_portability
     }
   end
 
-  defp gate_os_specific(%{"footprint" => %{} = footprint} = scan, source_dir) do
-    case BuildCache.os_agnostic?(source_dir) do
+  defp publication_gate(project_dir, package_name, portability) do
+    case BuildCache.os_agnostic?(Path.join([project_dir, "deps", package_name])) do
       :ok ->
-        {scan, ""}
+        verdict = portability.(package_name)
+        {trace_gate(verdict), host_portability(verdict)}
 
       {:error, {file, needle}} ->
-        {Map.put(scan, "footprint", Map.delete(footprint, "file_manifest")),
-         " Files not published: OS-specific (#{file}: #{needle})."}
+        reason = "OS-specific (#{file}: #{needle})"
+        {{:withhold, reason}, host_portability(%{status: :skip, reason: reason})}
     end
   end
 
-  defp gate_os_specific(scan, _source_dir), do: {scan, ""}
+  defp trace_gate(%{status: :pass}), do: :publish
+  defp trace_gate(%{reason: reason}) when is_binary(reason), do: {:withhold, reason}
+  defp trace_gate(_verdict), do: {:withhold, PortabilityReasons.could_not_judge()}
+
+  defp host_portability(%{status: :pass} = verdict),
+    do: %{
+      status: "pass",
+      reason: nil,
+      portability_rule: 1,
+      compile_observations: verdict[:observations]
+    }
+
+  defp host_portability(verdict) do
+    {:withhold, reason} = trace_gate(verdict)
+
+    %{
+      status: "skipped",
+      reason: reason,
+      portability_rule: 1,
+      compile_observations: verdict[:observations]
+    }
+  end
+
+  defp apply_gate(%{"footprint" => %{} = footprint} = scan, {:withhold, reason}),
+    do:
+      {Map.put(scan, "footprint", Map.delete(footprint, "file_manifest")),
+       " Files not published: #{reason}."}
+
+  defp apply_gate(scan, _gate), do: {scan, ""}
+
+  @doc false
+  # The full run's compile-time trace for `pure_elixir_result/3`: the same
+  # traced judge compile a toolchain build gets (`run_portability/4`), with
+  # the same `opts` (`releases:`, `run_started_at:`; `timeout_ms:` only in
+  # tests). A traced compile that did not finish may have left
+  # `_build/host/lib` half-written, and the full run still reads it: the
+  # beam scan, `compile_env` and argus. So it is rebuilt untraced, as the
+  # host compile built it, and the result equals an untraced run's except
+  # for `host_portability` and the files it does not publish. Public for
+  # tests.
+  @spec full_run_portability(String.t(), map(), keyword()) ::
+          (String.t() -> Portability.verdict())
+  def full_run_portability(project_dir, paths, opts) do
+    fn package_name ->
+      verdict = run_portability(project_dir, package_name, paths, opts)
+      if unfinished?(verdict), do: rebuild_untraced(project_dir, package_name, paths)
+      verdict
+    end
+  end
+
+  # Whatever this rebuild says, the host status is the first compile's; a
+  # failure only leaves the scan of a partial build, and nothing publishes.
+  defp rebuild_untraced(project_dir, package_name, paths) do
+    log_host(paths, "The traced compile did not finish; rebuilding without the trace")
+
+    case compile_host(project_dir, paths.output_dir, 0, package_name) do
+      %{status: :pass} -> :ok
+      host -> log_host(paths, "Warning: the rebuild failed: #{describe_error(host[:error])}")
+    end
+  end
 
   # A toolchain run (`mode: "toolchain"`, `NccWorker.RunScope`) answers one
   # question: are the package's own beams, built by this image's Elixir and
@@ -1240,9 +1348,9 @@ defmodule NccWorker.Worker do
 
   defp toolchain_portability(_host, _project_dir, _package_name, _paths, _opts), do: nil
 
-  # The traced judge compile (`NccWorker.Portability.run/3`). Written to be
-  # shared: the toolchain run uses it, and the full run's `pure_elixir` path
-  # is meant to use it too (Task 15), so both trace alike. It runs with the host
+  # The traced judge compile (`NccWorker.Portability.run/3`), shared by the
+  # toolchain run and the full run's `pure_elixir` path
+  # (`full_run_portability/3`), so both trace alike. It runs with the host
   # compile's env and its own `HEX_HOME`, exactly as `compile_host/4` does,
   # and judges dependency sources against the run's Hex cache (the one
   # `package_tarball/2` reads). `opts`: `releases:`, the
@@ -1262,7 +1370,8 @@ defmodule NccWorker.Worker do
         hex_home: System.get_env("HEX_HOME"),
         run_started_at: Keyword.get(opts, :run_started_at),
         trace_dir: Path.join(paths.work_dir, "trace"),
-        log_file: Path.join([paths.output_dir, "logs", "host-trace.log"])
+        log_file: Path.join([paths.output_dir, "logs", "host-trace.log"]),
+        timeout_ms: Keyword.get(opts, :timeout_ms, @trace_timeout_ms)
       )
 
     HexHome.publish(hex_home)
@@ -1979,7 +2088,7 @@ defmodule NccWorker.Worker do
 
   # The host compile's `.app` sits directly under `build_path/lib`, unlike a
   # firmware target's release copy under `rel/*/lib/<package>-<vsn>`, because
-  # the host build never runs `mix release`. Same path shape `pure_elixir_result/2`
+  # the host build never runs `mix release`. Same path shape `pure_elixir_result/3`
   # reads for a pure-Elixir package's assumed-compatible result.
   @doc false
   @spec host_compile_env(String.t(), String.t()) :: [map()] | nil

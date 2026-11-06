@@ -427,6 +427,47 @@ defmodule NccWorker.JsonWriterTest do
     end
   end
 
+  describe "host_portability" do
+    @tag :tmp_dir
+    test "host_portability is written when present and absent otherwise", %{tmp_dir: dir} do
+      base = %{
+        run_id: "r",
+        package: %{name: "p"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{elixir: "1.20.4", erlang: "29", mix: "1.20.4", nerves_bootstrap: nil},
+        systems: %{},
+        finished_at: "2026-11-06T00:00:00Z",
+        argus: nil
+      }
+
+      hp = %{
+        status: "skipped",
+        reason: "portability could not be judged",
+        portability_rule: 1,
+        compile_observations: nil
+      }
+
+      :ok = JsonWriter.write_result(dir, Map.put(base, :host_portability, hp))
+
+      assert %{
+               "host_portability" => %{
+                 "status" => "skipped",
+                 "reason" => "portability could not be judged",
+                 "portability_rule" => 1,
+                 "compile_observations" => nil
+               }
+             } = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+
+      :ok = JsonWriter.write_result(dir, base)
+
+      refute dir
+             |> Path.join("result.json")
+             |> File.read!()
+             |> JSON.decode!()
+             |> Map.has_key?("host_portability")
+    end
+  end
+
   describe "nerves_cache" do
     defp nerves_result(extra) do
       Map.merge(

@@ -245,6 +245,188 @@ defmodule NccWorker.ReleaseArtifactsTest do
     File.write!(Path.join(lib, "#{package}.ex"), body)
   end
 
+  # The compile-time trace's verdicts (`NccWorker.Portability.run/3`), as the
+  # full run's `pure_elixir_result/3` takes them.
+  defp traced_pass do
+    fn _package ->
+      %{status: :pass, reason: nil, observations: %{"trace_stats" => %{}}}
+    end
+  end
+
+  defp killed_tracer do
+    fn _package ->
+      %{
+        status: :skip,
+        reason: "portability could not be judged",
+        observations: %{"problems" => ["tracer: :killed"]}
+      }
+    end
+  end
+
+  # A host build of `plain` and its OS-agnostic source.
+  defp pure_build(project) do
+    beam = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.beam"])
+    File.mkdir_p!(Path.dirname(beam))
+    File.write!(beam, "pure beam")
+    write_source(project, "plain", "defmodule Plain do\n  def hi, do: :hi\nend\n")
+  end
+
+  describe "the compile-time trace (P1)" do
+    setup %{project: project} do
+      pure_build(project)
+      :ok
+    end
+
+    test "a pure Elixir result whose trace passes publishes and says so", %{project: project} do
+      result = NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
+
+      assert %{
+               status: :pass,
+               host_portability: %{status: "pass", reason: nil, portability_rule: 1}
+             } =
+               result
+
+      assert %{"footprint" => %{"file_manifest" => %{"ebin" => [_ | _]}}} = result.beam_scan
+    end
+
+    test "a killed tracer changes nothing but publication and host_portability", %{
+      project: project
+    } do
+      published = NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
+      killed = NccWorker.Worker.pure_elixir_result(project, "plain", killed_tracer())
+
+      assert %{
+               status: :pass,
+               host_portability: %{
+                 status: "skipped",
+                 reason: "portability could not be judged",
+                 compile_observations: %{"problems" => ["tracer: :killed"]}
+               }
+             } = killed
+
+      refute Map.has_key?(killed.beam_scan["footprint"], "file_manifest")
+      assert killed.log_tail =~ "Files not published: portability could not be judged."
+      assert String.starts_with?(killed.log_tail, "Assumed compatible: host compilation passed")
+
+      assert strip_publication(killed) == strip_publication(published)
+    end
+
+    test "a trace refusal publishes nothing and names the refusal", %{project: project} do
+      reason = "compile-time host read: os:type/0 in Plain.f/0 (lib/plain.ex:2)"
+
+      result =
+        NccWorker.Worker.pure_elixir_result(project, "plain", fn _ ->
+          %{status: :skip, reason: reason, observations: %{"refusals" => [reason]}}
+        end)
+
+      assert %{status: :pass, host_portability: %{status: "skipped", reason: ^reason}} = result
+      refute Map.has_key?(result.beam_scan["footprint"], "file_manifest")
+      assert result.log_tail =~ "Files not published: #{reason}."
+    end
+
+    test "an OS-specific source never starts the traced compile", %{project: project} do
+      write_source(project, "plain", "defmodule Plain do\n  def os, do: :os.type()\nend\n")
+      test_pid = self()
+
+      result =
+        NccWorker.Worker.pure_elixir_result(project, "plain", fn _ ->
+          send(test_pid, :traced)
+          %{status: :pass, reason: nil, observations: %{}}
+        end)
+
+      refute_received :traced
+
+      assert %{status: "skipped", reason: "OS-specific" <> _, compile_observations: nil} =
+               result.host_portability
+
+      refute Map.has_key?(result.beam_scan["footprint"], "file_manifest")
+    end
+
+    test "only a pure_elixir run carries host_portability" do
+      hp = %{status: "pass", reason: nil, portability_rule: 1, compile_observations: %{}}
+      pure = %{"pure_elixir" => %{status: :pass, host_portability: hp}, "host" => %{}}
+      firmware = %{"nerves_system_rpi4" => %{status: :pass}, "host" => %{}}
+
+      assert %{host_portability: ^hp} = NccWorker.Worker.put_host_portability(%{}, pure)
+      assert NccWorker.Worker.put_host_portability(%{}, firmware) == %{}
+      assert NccWorker.Worker.put_host_portability(%{}, %{}) == %{}
+    end
+  end
+
+  # The full run's own traced compile (`Worker.full_run_portability/3`, the
+  # real tracer) killed by its timeout in the middle of the package's
+  # compile: the half-written build is rebuilt untraced, so the result equals
+  # an untraced run's except for `host_portability` and publication.
+  describe "the full run's traced compile killed mid-compile" do
+    @describetag timeout: 300_000
+
+    test "changes nothing but host_portability and publication", %{tmp_dir: dir} do
+      # Sleeps only under the trace, until the judge compile's timeout kills it.
+      body = """
+      defmodule FxPure do
+        if System.get_env("NCC_TRACE_DIR"), do: Process.sleep(120_000)
+        def hi, do: :hi
+      end
+      """
+
+      proj =
+        NccWorker.TracerFixtures.project(dir, ["fx_pure"], %{
+          "fx_pure" => NccWorker.TracerFixtures.lib("fx_pure", body)
+        })
+
+      env = NccWorker.TracerFixtures.env(proj)
+
+      for args <- [["deps.get"], ["compile"]] do
+        assert {out, 0} = System.cmd("mix", args, cd: proj, env: env, stderr_to_stdout: true)
+        assert is_binary(out)
+      end
+
+      beam = Path.join([proj, "_build", "host", "lib", "fx_pure", "ebin", "Elixir.FxPure.beam"])
+      untraced_beam = File.read!(beam)
+      untraced = NccWorker.Worker.pure_elixir_result(proj, "fx_pure", traced_pass())
+
+      out = Path.join(dir, "out")
+      File.mkdir_p!(Path.join(out, "logs"))
+      paths = %{work_dir: dir, output_dir: out, logs_dir: Path.join(out, "logs")}
+
+      portability =
+        NccWorker.Worker.full_run_portability(proj, paths,
+          releases: {:ok, %{}},
+          run_started_at: nil,
+          timeout_ms: 4_000
+        )
+
+      {killed, stderr} =
+        ExUnit.CaptureIO.with_io(:stderr, fn ->
+          NccWorker.Worker.pure_elixir_result(proj, "fx_pure", portability)
+        end)
+
+      assert stderr =~ "rebuilding without the trace"
+
+      assert %{status: "skipped", reason: "portability could not be judged"} =
+               killed.host_portability
+
+      assert %{"trace_stats" => %{"judge_compile" => "not_finished"}} =
+               killed.host_portability.compile_observations
+
+      assert killed.host_portability.compile_observations["problems"] |> Enum.join() =~
+               "timeout"
+
+      refute Map.has_key?(killed.beam_scan["footprint"], "file_manifest")
+      assert String.starts_with?(killed.log_tail, untraced.log_tail)
+      assert strip_publication(killed) == strip_publication(untraced)
+      assert File.read!(beam) == untraced_beam
+      assert File.read!(Path.join([out, "logs", "host-trace.log"])) != ""
+    end
+  end
+
+  # Everything a withheld result may differ in from a published one.
+  defp strip_publication(result) do
+    result
+    |> Map.drop([:host_portability, :log_tail])
+    |> update_in([:beam_scan, "footprint"], &Map.delete(&1, "file_manifest"))
+  end
+
   test "a pure Elixir result carries the host build's file manifest", %{project: project} do
     beam = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.beam"])
     File.mkdir_p!(Path.dirname(beam))
@@ -252,13 +434,13 @@ defmodule NccWorker.ReleaseArtifactsTest do
     write_source(project, "plain", "defmodule Plain do\n  def hi, do: :hi\nend\n")
 
     assert %{status: :pass, beam_scan: scan} =
-             NccWorker.Worker.pure_elixir_result(project, "plain")
+             NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
 
     assert [%{"path" => "ebin/plain.beam", "size" => 9}] =
              scan["footprint"]["file_manifest"]["ebin"]
 
     assert %{beam_scan: %{"errors" => [_]}} =
-             NccWorker.Worker.pure_elixir_result(project, "missing")
+             NccWorker.Worker.pure_elixir_result(project, "missing", traced_pass())
   end
 
   # A module body that reads the OS bakes the build host into the beams, so a
@@ -281,7 +463,7 @@ defmodule NccWorker.ReleaseArtifactsTest do
     """)
 
     assert %{status: :pass, beam_scan: scan, log_tail: log_tail} =
-             NccWorker.Worker.pure_elixir_result(project, "plain")
+             NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
 
     refute Map.has_key?(scan["footprint"], "file_manifest")
     assert log_tail =~ "OS-specific"
@@ -306,7 +488,7 @@ defmodule NccWorker.ReleaseArtifactsTest do
     File.write!(beam, "pure beam")
 
     assert %{status: :pass, beam_scan: scan} =
-             NccWorker.Worker.pure_elixir_result(project, "plain")
+             NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
 
     refute Map.has_key?(scan["footprint"], "file_manifest")
   end
@@ -322,7 +504,7 @@ defmodule NccWorker.ReleaseArtifactsTest do
     )
 
     assert %{compile_env: [%{app: "plain", path: ["mode"], value: _}]} =
-             NccWorker.Worker.pure_elixir_result(project, "plain")
+             NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
   end
 
   test "the host compile records compile_env the same way a pure Elixir result does", %{

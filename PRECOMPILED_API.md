@@ -565,3 +565,8 @@ them.
   `platform_define`, no `rebar.config.script`), the check toolchain builds
   already made: such a source bakes the Linux build host into its BEAMs. The
   run's status is unaffected.
+  It is also published only when the run's compile-time trace passes, the
+  same trace a toolchain build gets: a compile that read the build host,
+  wrote outside its own `ebin`, baked the build path into code, depends on a
+  package whose own compile did, or whose trace did not finish publishes no
+  `pure_elixir` entry. Its files are the traced compile's.
