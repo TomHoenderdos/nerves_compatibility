@@ -236,10 +236,7 @@ defmodule PortalWeb.Builder.JobController do
       "image_digest" => lease.image_digest,
       "scan_request_id" => lease.scan_request_id,
       "builder_id" => builder.id,
-      # What its claims name (`claim_for_arch/3`); a builder that has made
-      # none since architectures were recorded is an x86_64 one, as every
-      # agent before them was.
-      "arch" => builder.arch || "x86_64"
+      "arch" => run_arch(lease, builder)
     }
 
     Portal.Repo.transaction(fn ->
@@ -386,6 +383,18 @@ defmodule PortalWeb.Builder.JobController do
         )
     end
   end
+
+  # The architecture whose platform digest the claim pinned the lease to
+  # (`Leases.claim/2` sets `image_digest` to it): the image that ran. A lease
+  # from before multi-arch images names none, so the builder's own recorded
+  # arch stands in, and a builder that has made no claim since architectures
+  # were recorded is an x86_64 one, as every agent before them was.
+  defp run_arch(%{args: %{"image_platforms" => %{} = platforms}, image_digest: digest}, builder) do
+    Enum.find_value(platforms, fn {arch, d} -> if d == digest, do: arch end) ||
+      builder.arch || "x86_64"
+  end
+
+  defp run_arch(_lease, builder), do: builder.arch || "x86_64"
 
   # As `record_egress/2`: only on change, and a failed write only logged.
   defp record_arch(%{arch: arch}, arch), do: :ok

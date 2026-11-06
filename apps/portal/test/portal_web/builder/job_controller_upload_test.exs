@@ -195,6 +195,50 @@ defmodule PortalWeb.Builder.JobControllerUploadTest do
     %Plug.Upload{path: path, filename: "result.json", content_type: "application/json"}
   end
 
+  # The run records the architecture of the image the lease was claimed
+  # for, not whatever its builder's latest claim named since.
+  test "a multi-arch lease records the architecture its claim pinned", %{conn: conn} do
+    amd = "sha256:" <> String.duplicate("1", 64)
+    arm = "sha256:" <> String.duplicate("2", 64)
+    %{builder: builder, cert_der: der} = enrolled_builder!("u-arch")
+
+    {:ok, _} =
+      Leases.enqueue(%{
+        package: "decimal",
+        version: "2.0.0",
+        image_name: "i",
+        image_digest: amd,
+        args: %{"image_platforms" => %{"x86_64" => amd, "aarch64" => arm}},
+        scan_request_id: nil,
+        priority: 9
+      })
+
+    {:ok, lease} = Leases.claim(builder, "aarch64")
+    assert lease.package == "decimal"
+    assert lease.image_digest == arm
+
+    # A later claim from the same builder names another architecture.
+    {:ok, _} = Portal.Builders.set_arch(builder, "x86_64")
+
+    body =
+      conn
+      |> with_cert(der)
+      |> post("/builder/v1/jobs/#{lease.id}/complete", %{
+        "exit_code" => "0",
+        "result" =>
+          result_upload(%{
+            "run_id" => lease.run_id,
+            "package" => %{"name" => "decimal", "version" => "2.0.0"},
+            "systems" => %{"host" => %{"status" => "pass"}}
+          })
+      })
+      |> json_response(202)
+
+    assert body["outcome"] == "done"
+    assert [job] = all_enqueued(worker: Portal.Workers.Ingest)
+    assert job.args["arch"] == "aarch64"
+  end
+
   # A builder may produce bad results for the package it was leased, never
   # for another one: `Ingestion` takes the package from result.json.
   test "a result.json for another package or version is refused and the lease stays held",
