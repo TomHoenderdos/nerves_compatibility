@@ -316,14 +316,16 @@ class BlueGreenTest(unittest.TestCase):
                 self.assertIn("edited by hand or has drifted", result.stderr)
                 copy = f"{self.install}/releases/blue/ncc-upstream.conf.template"
                 inc = self.upstream
-                # Rendered aside, swapped in with a backup, checked, and only
-                # then reloaded; configtest reads the live path, so the new
-                # file has to be in place for it to test anything.
+                # Rendered aside, refused if empty, swapped in with a backup,
+                # checked (configtest reads the live path, so the new file has
+                # to be in place), restored by itself if the check fails, and
+                # only then reloaded.
                 self.assertIn(f"sed \"s/@PORT@/4002/g\" '{copy}' > '{inc}.new' "
+                              f"&& test -s '{inc}.new' "
                               f"&& cp '{inc}' '{inc}.bak' && mv '{inc}.new' '{inc}' "
-                              "&& apachectl configtest && systemctl reload apache2",
+                              f"&& {{ apachectl configtest || {{ mv '{inc}.bak' '{inc}'; false; }}; }} "
+                              "&& systemctl reload apache2",
                               result.stderr)
-                self.assertIn(f"mv '{inc}.bak' '{inc}'", result.stderr)
                 self.assertFalse([e for e in events if e.startswith("build")])
 
     def test_without_a_template_copy_it_falls_back_to_the_working_tree_and_says_so(self):
@@ -342,8 +344,29 @@ class BlueGreenTest(unittest.TestCase):
         # the release the template it was built with.
         self.assertNotIn("sed ", result.stderr)
         copy = f"{self.install}/releases/blue/ncc-upstream.conf.template"
-        self.assertIn(f"git -C '{src}' show {OLD}:ops/ncc-upstream.conf.template > '{copy}'",
+        # Written aside and moved in only when git show wrote something: a
+        # failed show must not leave an empty copy behind.
+        self.assertIn(f"git -C '{src}' show {OLD}:ops/ncc-upstream.conf.template > '{copy}.tmp' "
+                      f"&& test -s '{copy}.tmp' && mv '{copy}.tmp' '{copy}'",
                       result.stderr)
+
+    def test_an_empty_template_copy_counts_as_missing(self):
+        # What a failed `git show ... > copy` leaves behind: rendering it
+        # would make an empty include, which passes configtest and proxies
+        # nothing.
+        src, v1, v2 = self.template_src()
+        result, _ = self.run_bg("bg_preflight", templates={"blue": ""},
+                                include_text=self.render(v2, 4002), NCC_SRC_DIR=str(src))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("empty", result.stderr)
+        self.assertIn("working tree", result.stderr)
+        # The transition case with an empty copy refuses with the git show
+        # suggestion, never a render of the empty file.
+        result, _ = self.run_bg("bg_preflight", templates={"blue": ""},
+                                include_text=self.render(v1, 4002), NCC_SRC_DIR=str(src))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("sed ", result.stderr)
+        self.assertIn(f"show {OLD}:ops/ncc-upstream.conf.template", result.stderr)
 
     def test_a_switch_back_restores_the_old_releases_template(self):
         src, v1, _ = self.template_src()

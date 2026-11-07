@@ -116,22 +116,28 @@ bg_keep_template() { # color
 bg_template_of() { # color
   local copy
   copy=$(bg_release "$1")/$BG_TEMPLATE
-  if [[ -r $copy ]]; then
+  # Empty counts as missing: rendering it would make an empty include, which
+  # passes configtest and proxies nothing.
+  if [[ -r $copy && -s $copy ]]; then
     printf '%s\n' "$copy"
     return 0
   fi
-  echo "note: $copy is missing (a release built before releases carried their template); using the working tree's ops/$BG_TEMPLATE for $1" >&2
+  if [[ -e $copy ]]; then
+    echo "note: $copy is empty or unreadable, so it counts as missing; using the working tree's ops/$BG_TEMPLATE for $1" >&2
+  else
+    echo "note: $copy is missing (a release built before releases carried their template); using the working tree's ops/$BG_TEMPLATE for $1" >&2
+  fi
   printf '%s\n' "$NCC_SRC_DIR/ops/$BG_TEMPLATE"
 }
 
-# The commands that re-render the include for port $2 from template $1:
-# rendered aside, swapped in with a backup, then checked, and reloaded only
-# if the check passes. configtest reads the live path, so the new file has
-# to be in place for it to test anything.
+# The command that re-renders the include for port $2 from template $1:
+# rendered aside and refused if empty, swapped in with a backup, checked
+# (configtest reads the live path, so the new file has to be in place for it
+# to test anything), restored by itself if the check fails, and reloaded only
+# if it passes.
 bg_rerender_hint() { # template port
   local inc=$NCC_APACHE_UPSTREAM
-  echo "  sed \"s/@PORT@/$2/g\" '$1' > '$inc.new' && cp '$inc' '$inc.bak' && mv '$inc.new' '$inc' && apachectl configtest && systemctl reload apache2"
-  echo "  (if configtest fails: mv '$inc.bak' '$inc')"
+  echo "  sed \"s/@PORT@/$2/g\" '$1' > '$inc.new' && test -s '$inc.new' && cp '$inc' '$inc.bak' && mv '$inc.new' '$inc' && { apachectl configtest || { mv '$inc.bak' '$inc'; false; }; } && systemctl reload apache2"
 }
 
 # Refuses unless the include is exactly the serving release's template
@@ -148,7 +154,7 @@ bg_check_include_rendered() { # template port color
     # it needs the template it was built with.
     sha=$(cat "$(bg_release "$3")/BUILD_SHA" 2>/dev/null || true)
     echo "refusing: $NCC_APACHE_UPSTREAM is not the working tree's ops/$BG_TEMPLATE rendered with port $2, and the serving release ($3) carries no template copy to check it against: the template has probably changed since $3 was built (or the include was edited by hand or has drifted). Give the release the template it was built with, then deploy again:" >&2
-    echo "  git -C '$NCC_SRC_DIR' show ${sha:-<the commit $3 was built from>}:ops/$BG_TEMPLATE > '$copy'" >&2
+    echo "  git -C '$NCC_SRC_DIR' show ${sha:-<the commit $3 was built from>}:ops/$BG_TEMPLATE > '$copy.tmp' && test -s '$copy.tmp' && mv '$copy.tmp' '$copy'" >&2
     return 1
   fi
   echo "refusing: $NCC_APACHE_UPSTREAM is not $1 (the serving release's template) rendered with port $2: it was edited by hand or has drifted. Put the change in ops/$BG_TEMPLATE and deploy it, or undo it by rendering the include again:" >&2
