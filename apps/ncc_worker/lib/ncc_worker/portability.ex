@@ -105,6 +105,16 @@ defmodule NccWorker.Portability do
   `"not_finished"` otherwise (a crash, a timeout, a non-zero exit, an
   exhausted budget, the judge itself raising): the build under `_build` may
   then be half-written, and callers must not judge it.
+
+  Also adds `observations["trace_stats"]["transient"]`: `true` when the
+  verdict says nothing about the package, because the judge compile did not
+  finish (`judge_compile` other than `"finished"`: a timeout, a kill, an
+  exhausted run budget, processes that survived the cleanup, a crash) or its
+  report was over the read budget (`"report_over_budget"`,
+  `NccWorker.Tracer.Report`). A later run may judge it, so the portal retries
+  such a build. `false` otherwise: a pass, a refusal, or a could-not-judge the
+  same package and lock would get again (a missing or unverified tarball, a
+  rebar3 parent's script, a beam R2 cannot read, a missing `ebin`).
   """
   @spec run(String.t(), String.t(), keyword()) :: verdict()
   def run(project_dir, package, opts) do
@@ -113,6 +123,18 @@ defmodule NccWorker.Portability do
     project_dir
     |> guarded_run(package, opts)
     |> put_stat("wall_ms", System.monotonic_time(:millisecond) - started)
+    |> put_transient()
+  end
+
+  defp put_transient(%{status: :pass} = verdict), do: put_stat(verdict, "transient", false)
+
+  defp put_transient(%{observations: obs} = verdict) do
+    stats = Map.get(obs, "trace_stats") || %{}
+
+    transient =
+      stats["judge_compile"] != "finished" or stats["report_over_budget"] == true
+
+    put_stat(verdict, "transient", transient)
   end
 
   defp guarded_run(project_dir, package, opts) do
@@ -186,8 +208,13 @@ defmodule NccWorker.Portability do
     ] ++ Keyword.take(opts, [:reap, :cmd])
   end
 
-  defp verdict(project_dir, package, {:ok, 0}, trace_dir, native, ctx_opts),
-    do: judge(project_dir, package, Report.read(trace_dir), native, ctx_opts)
+  defp verdict(project_dir, package, {:ok, 0}, trace_dir, native, ctx_opts) do
+    report = Report.read(trace_dir)
+
+    project_dir
+    |> judge(package, report, native, ctx_opts)
+    |> put_stat("report_over_budget", report.over_budget)
+  end
 
   defp verdict(_project_dir, _package, {:ok, status}, _trace_dir, _native, _ctx_opts),
     do: not_judged("traced compile exited #{inspect(status)}")

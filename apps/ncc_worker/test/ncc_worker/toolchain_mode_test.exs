@@ -121,6 +121,50 @@ defmodule NccWorker.ToolchainModeTest do
       end
     end
 
+    test "no trace at all is a transient could-not-judge", %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, nil)
+
+      assert %{status: "skipped", reason: "portability could not be judged"} = build
+      assert build.compile_observations["trace_stats"]["transient"] == true
+    end
+
+    test "a trace that raises, throws or exits is a transient could-not-judge, never a crash",
+         %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      paths = %{work_dir: work_dir, output_dir: Path.join(work_dir, "out")}
+
+      for failure <- [
+            fn -> raise File.Error, reason: :eacces, action: "make directory", path: "/x" end,
+            fn -> throw(:boom) end,
+            fn -> exit(:boom) end
+          ] do
+        verdict =
+          Worker.toolchain_portability(passing_host(), project, "sample", paths,
+            releases: {:ok, %{}},
+            trace: fn _, _, _, _ -> failure.() end
+          )
+
+        assert %{status: :skip, reason: "portability could not be judged"} = verdict
+        assert ["portability failed: " <> _] = verdict.observations["problems"]
+
+        assert %{"judge_compile" => "not_finished", "transient" => true} =
+                 verdict.observations["trace_stats"]
+
+        build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict)
+        assert %{status: "skipped", reason: "portability could not be judged"} = build
+      end
+    end
+
+    test "a failed host compile is not traced", %{tmp_dir: work_dir} do
+      trace = fn _, _, _, _ -> flunk("traced a failed host compile") end
+
+      assert Worker.toolchain_portability(%{status: :error}, work_dir, "sample", %{},
+               trace: trace
+             ) ==
+               nil
+    end
+
     test "rule 1's skip keeps its reason in rule1_reason", %{tmp_dir: work_dir} do
       {project, _built} = project(work_dir, "circuits_gpio-2.1.3")
       build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)

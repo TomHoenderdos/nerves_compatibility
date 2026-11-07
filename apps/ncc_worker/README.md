@@ -348,13 +348,19 @@ mode does not run it through `NccWorker.DepsGetClassifier`; only a full, targets
 `error`. `portability_rule` is `1`: `portable?/4` AND the trace (P1 only adds refusals). A build passes only when
 both pass. A skip reason from the trace starts with one of the prefixes in
 `Compatibility.Portability.refusal_prefixes/0` and wins over `portable?/4`'s; "portability could not be judged"
-means the trace itself failed (a crash, a timeout, a cap, a missing sentinel) and is never held against the package
-or turned into an `error`. When the trace could not judge and `portable?/4` also skipped, the reason is
+means the trace itself failed (a crash, a timeout, a cap, a missing sentinel) and is never held against the package;
+the worker reports it as `skipped`, and the portal retries the transient ones (below). When the trace could not judge and `portable?/4` also skipped, the reason is
 `portable?/4`'s. When the traced compile itself did not finish (a crash, a timeout, a non-zero exit;
 `compile_observations.trace_stats.judge_compile` is `"not_finished"`), `_build` may be half-written, so `portable?/4`
 does not judge it either: the reason is "portability could not be judged", `rule1_reason` and `compile_env` are
 `null`. `compile_observations.trace_stats` carries the traced compile's `wall_ms`, `judge_compile` (`"finished"`,
-`"not_finished"` or `"not_run"`) and the first host compile's `host_compile_sec`.
+`"not_finished"` or `"not_run"`), `report_over_budget` (the trace files exceeded the report reader's shared 64 MiB /
+500 000-line budget), `transient` and the first host compile's `host_compile_sec`. `transient` is `true` when a
+could-not-judge says nothing about the package: the traced compile did not finish (a timeout, a kill, an exhausted run
+budget, processes that survived the cleanup, a crash) or its report was over budget. The portal stores such a
+`skipped` build as an `error`, which its backlog retries after a day; a could-not-judge the package causes on every
+run (a missing or unverified tarball, a rebar3 parent's `rebar.config.script`, a beam it cannot read, a missing
+`ebin`) has `transient: false` and stays `skipped`.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 

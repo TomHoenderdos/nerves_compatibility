@@ -256,6 +256,49 @@ defmodule NccWorker.TracerTest do
     end
   end
 
+  # A judge compile that exits 0 after writing `files` into the trace dir.
+  defp writing_cmd(files) do
+    fn _caller, _ref, _command, [_args, _dir, env], _log ->
+      {_, trace_dir} = List.keyfind(env, "NCC_TRACE_DIR", 0)
+      for {name, body} <- files, do: File.write!(Path.join(trace_dir, name), body)
+      {:ok, 0}
+    end
+  end
+
+  defp portability_run(dir, cmd) do
+    NccWorker.Portability.run(dir, "x",
+      env: [],
+      releases: {:ok, %{}},
+      trace_dir: Path.join(dir, "trace"),
+      cmd: cmd
+    )
+  end
+
+  describe "transient could-not-judge" do
+    test "a crashed judge compile is transient", %{tmp_dir: dir} do
+      cmd = fn _caller, _ref, _command, _argv, _log -> raise "boom" end
+      verdict = portability_run(dir, cmd)
+      assert %{status: :skip, reason: "portability could not be judged"} = verdict
+      assert verdict.observations["trace_stats"]["transient"] == true
+    end
+
+    test "a report over its read budget is transient", %{tmp_dir: dir} do
+      big = :binary.copy("x", 64 * 1024 * 1024 + 1)
+      verdict = portability_run(dir, writing_cmd(%{"trace-main.jsonl" => big}))
+      assert %{status: :skip, reason: "portability could not be judged"} = verdict
+      assert verdict.observations["trace_stats"]["judge_compile"] == "finished"
+      assert verdict.observations["trace_stats"]["report_over_budget"] == true
+      assert verdict.observations["trace_stats"]["transient"] == true
+    end
+
+    test "a finished compile with a broken trace is not", %{tmp_dir: dir} do
+      verdict = portability_run(dir, writing_cmd(%{"trace-main.jsonl" => "not json\n"}))
+      assert %{status: :skip, reason: "portability could not be judged"} = verdict
+      assert verdict.observations["trace_stats"]["judge_compile"] == "finished"
+      assert verdict.observations["trace_stats"]["transient"] == false
+    end
+  end
+
   test "a run with no time left does not start the judge compile", %{tmp_dir: dir} do
     started = System.monotonic_time(:second) - 110 * 60
 

@@ -420,6 +420,9 @@ defmodule NccWorker.ReleaseArtifactsTest do
         assert ["portability failed: " <> _] =
                  result.host_portability.compile_observations["problems"]
 
+        assert %{"judge_compile" => "not_finished", "transient" => true} =
+                 result.host_portability.compile_observations["trace_stats"]
+
         assert_received {:compiled, ^project, _env, _log, _timeout}
         assert stderr =~ "rebuilding without the trace"
       end

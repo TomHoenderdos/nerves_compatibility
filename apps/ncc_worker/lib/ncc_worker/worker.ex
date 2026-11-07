@@ -115,7 +115,10 @@ defmodule NccWorker.Worker do
           rule1_reason: String.t() | nil,
           # What the trace observed (`NccWorker.Portability`): "trace_stats"
           # (with "judge_compile", "finished" | "not_finished" | "not_run",
-          # and the host compile's "host_compile_sec"), "config_reads",
+          # "transient", true when a could-not-judge says nothing about the
+          # package and the portal stores it as an error to retry,
+          # "report_over_budget", and the host compile's "host_compile_sec"),
+          # "config_reads",
           # "elixir_version", "native_calls", "mix_exs_allowed",
           # "build_root_source_path", "refusals", "taint", "native_libs",
           # "nif_check", "problems"; nil for an "error" build.
@@ -1257,14 +1260,15 @@ defmodule NccWorker.Worker do
   end
 
   # Nothing says whether the traced compile started, so it is treated as
-  # one that did not finish.
+  # one that did not finish, which says nothing about the package
+  # (transient, `NccWorker.Portability.run/3`).
   defp trace_failed(why) do
     %{
       status: :skip,
       reason: PortabilityReasons.could_not_judge(),
       observations: %{
         "problems" => ["portability failed: " <> why],
-        "trace_stats" => %{"judge_compile" => "not_finished"}
+        "trace_stats" => %{"judge_compile" => "not_finished", "transient" => true}
       }
     }
   end
@@ -1406,12 +1410,21 @@ defmodule NccWorker.Worker do
   def toolchain_optional_deps(_request, _host, _project_dir, _package_name, _paths),
     do: {:ok, nil}
 
+  @doc false
   # Only a passing host compile is traced: a failed one is the verdict
   # already ("error"), and `toolchain_build/5` never reads the trace for it.
-  defp toolchain_portability(%{status: :pass}, project_dir, package_name, paths, opts),
-    do: run_portability(project_dir, package_name, paths, opts)
+  # Guarded like the full run's (`full_run_portability/3`): a raise, a throw
+  # or an exit in the trace (`HexHome` may raise) is "portability could not
+  # be judged", never a failed run. Public for tests, which inject `trace:`
+  # (`run_portability/4`'s shape).
+  @spec toolchain_portability(map(), String.t(), String.t(), map(), keyword()) ::
+          Portability.verdict() | nil
+  def toolchain_portability(%{status: :pass}, project_dir, package_name, paths, opts) do
+    trace = Keyword.get(opts, :trace, &run_portability/4)
+    guarded_trace(trace, project_dir, package_name, paths, opts)
+  end
 
-  defp toolchain_portability(_host, _project_dir, _package_name, _paths, _opts), do: nil
+  def toolchain_portability(_host, _project_dir, _package_name, _paths, _opts), do: nil
 
   # The traced judge compile (`NccWorker.Portability.run/3`), shared by the
   # toolchain run and the full run's `pure_elixir` path
@@ -1425,8 +1438,8 @@ defmodule NccWorker.Worker do
   # `<work>/trace` and `<out>/logs/host-trace.log` (`setup_paths/1` made
   # `<out>/logs` at the run's start). A trace that fails is "portability
   # could not be judged" and changes no host status; `Portability.run/3`
-  # never raises, but `HexHome` may, which the full run guards against
-  # (`full_run_portability/3`).
+  # never raises, but `HexHome` may, which both callers guard against
+  # (`full_run_portability/3`, `toolchain_portability/5`).
   defp run_portability(project_dir, package_name, paths, opts) do
     hex_home = HexHome.prepare(project_dir, "host")
 
@@ -1579,7 +1592,7 @@ defmodule NccWorker.Worker do
       reason: PortabilityReasons.could_not_judge(),
       observations: %{
         "problems" => ["not traced"],
-        "trace_stats" => %{"judge_compile" => "not_run"}
+        "trace_stats" => %{"judge_compile" => "not_run", "transient" => true}
       }
     }
   end

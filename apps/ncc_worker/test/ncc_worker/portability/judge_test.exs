@@ -1148,6 +1148,7 @@ defmodule NccWorker.Portability.JudgeTest do
       assert ["no mix.lock snapshot taken before the compile"] = obs["problems"]
       assert is_integer(obs["trace_stats"]["wall_ms"])
       assert obs["trace_stats"]["judge_compile"] == "not_run"
+      assert obs["trace_stats"]["transient"] == true
       refute File.exists?(trace_dir)
     end
 
@@ -1166,6 +1167,8 @@ defmodule NccWorker.Portability.JudgeTest do
       assert problem =~ "run_budget_exhausted"
       # Not finished: the worker must not judge whatever `_build` holds.
       assert obs["trace_stats"]["judge_compile"] == "not_finished"
+      # Nothing about the package: a later run may well judge it.
+      assert obs["trace_stats"]["transient"] == true
     end
 
     test "never raises", %{proj: proj} do
@@ -1174,6 +1177,7 @@ defmodule NccWorker.Portability.JudgeTest do
                Portability.run(proj, "pkg", releases: %{})
 
       assert obs["trace_stats"]["judge_compile"] == "not_finished"
+      assert obs["trace_stats"]["transient"] == true
     end
 
     test "lock_snapshot reads the project's Hex releases", %{proj: proj} do
@@ -1229,6 +1233,7 @@ defmodule NccWorker.Portability.JudgeTest do
       assert is_integer(obs["trace_stats"]["wall_ms"])
       assert obs["trace_stats"]["windows"] == 2
       assert obs["trace_stats"]["judge_compile"] == "finished"
+      assert obs["trace_stats"]["transient"] == false
 
       leaf = Path.join([proj, "deps", "fx_judge_leaf", "lib", "fx_judge_leaf.ex"])
       File.write!(leaf, TracerFixtures.attr_module("FxJudgeLeaf", ":os.type()") <> "\n")
