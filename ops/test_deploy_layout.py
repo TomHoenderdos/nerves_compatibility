@@ -259,6 +259,48 @@ class LayoutGuardTest(unittest.TestCase):
                     self.assertIn("NCC_APACHE_UPSTREAM", result.stderr)
                     self.assertEqual(events, [])
 
+    def test_the_restart_path_refuses_on_a_blue_green_host(self):
+        # active-color exists: this host runs blue/green, whatever the flag
+        # says. A restart-path run would start the single unit and forget
+        # the served records, so it stops before touching anything.
+        for flag in ("", "NCC_BLUE_GREEN=\n", "NCC_BLUE_GREEN=0\n"):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as install:
+                (Path(install) / "active-color").write_text("blue\n")
+                (Path(install) / "served-blue").write_text("b" * 40 + "\n")
+                result, events = self.run_script(
+                    "deploy.sh", ["a" * 40],
+                    env_file_text=self.BG_LAYOUT.format(install=install) + flag)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("active-color", result.stderr)
+                self.assertIn("NCC_BLUE_GREEN=1", result.stderr)
+                self.assertIn(f"rm {install}/active-color", result.stderr)
+                self.assertEqual(events, [])
+                self.assertTrue((Path(install) / "served-blue").exists())
+                self.assertFalse((Path(install) / "deploy.lock").exists())
+
+    def test_a_blue_green_value_other_than_empty_0_or_1_refuses(self):
+        for value in ("true", "yes", "2", " 1"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as install:
+                result, events = self.run_script(
+                    "deploy.sh", ["a" * 40],
+                    env_file_text=self.BG_LAYOUT.format(install=install)
+                    + f"NCC_BLUE_GREEN='{value}'\n")
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("NCC_BLUE_GREEN", result.stderr)
+                self.assertIn("must be empty, 0 or 1", result.stderr)
+                self.assertEqual(events, [])
+
+    def test_the_blue_green_flag_survives_an_env_file_whose_last_command_fails(self):
+        with tempfile.TemporaryDirectory() as install:
+            layout = dict(line.split("=", 1) for line in
+                          self.BG_LAYOUT.format(install=install).splitlines())
+            result, events = self.run_script(
+                "deploy.sh", ["a" * 40],
+                env_file_text='NCC_BLUE_GREEN=1\n[[ -n "" ]] && X=1\n', **layout)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("NCC_APACHE_UPSTREAM", result.stderr)
+            self.assertEqual(events, [])
+
     def test_the_restart_path_forgets_every_served_record(self):
         # A single-release deploy moves the database past whatever the colour
         # directories hold, so none of them may be rolled back to afterwards.

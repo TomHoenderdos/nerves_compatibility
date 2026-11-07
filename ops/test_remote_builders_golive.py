@@ -256,7 +256,31 @@ class GoLiveTest(unittest.TestCase):
         result = self.run_golive("--init-ca", FAKE_LISTENING="")
         self.assertNotIn("restart", result.stdout.lower())
         self.assertIn("ops/deploy.sh", result.stdout)
+        self.assertIn("redeploys main into the idle colour", result.stdout)
         self.assertIn("ops/deploy.sh rollback", result.stdout)
+        self.assertIn("previous, older release", result.stdout)
+        self.assertIn("migrations are not reversed", result.stdout)
+
+    def test_a_blue_green_value_other_than_empty_0_or_1_refuses(self):
+        self.make_ca()
+        for value in ("true", "yes"):
+            with self.subTest(value=value):
+                self.layout.write_text(self.layout.read_text() + f"NCC_BLUE_GREEN={value}\n")
+                result = self.run_golive()
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("must be empty, 0 or 1", result.stderr)
+                self.assertEqual(self.portal_calls(), "")
+
+    def test_the_blue_green_flag_survives_an_env_file_whose_last_command_fails(self):
+        self.make_ca()
+        self.blue_green()
+        with self.layout.open("a") as f:
+            f.write('[[ -n "" ]] && X=1\n')
+        result = self.run_golive(NCC_INSTALL_DIR=str(self.root / "install"),
+                                 NCC_PORTAL_ENV=str(self.portal_env),
+                                 NCC_PORTAL_WORKDIR=str(self.workdir))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("green node=portal_green rpc", self.portal_calls())
 
     def test_without_blue_green_the_hints_say_restart(self):
         result = self.run_golive("--init-ca", FAKE_LISTENING="")

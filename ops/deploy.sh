@@ -55,8 +55,20 @@ ncc_layout_flag() {
   local file=${NCC_DEPLOY_ENV:-/etc/ncc-deploy.env}
   if [[ -n ${!1+x} ]]; then printf '%s\n' "${!1}"; return 0; fi
   [[ -r $file ]] || return 0
+  # The file's last command may return non-zero; under set -e that would end
+  # the script with no message, so its status is ignored.
   # shellcheck source=/dev/null
-  (. "$file" && printf '%s\n' "${!1:-}")
+  (. "$file" || true; printf '%s\n' "${!1:-}")
+}
+
+# NCC_BLUE_GREEN is empty, 0 (both: the single release) or 1. Anything else
+# ("true", "yes", a typo) is refused rather than read as off.
+ncc_check_blue_green() {
+  case $NCC_BLUE_GREEN in
+    "" | 0 | 1) return 0 ;;
+  esac
+  echo "ERROR: NCC_BLUE_GREEN is '$NCC_BLUE_GREEN'; it must be empty, 0 or 1 (see ops/deploy.env.example)" >&2
+  return 1
 }
 
 # DOCKER_HOST on every host: build-release.sh builds the release on that
@@ -72,12 +84,22 @@ ncc_layout "${layout[@]}" || exit 1
 # single release and the restart below, and is the way back from it.
 blue_green=0
 NCC_BLUE_GREEN=$(ncc_layout_flag NCC_BLUE_GREEN)
+ncc_check_blue_green || exit 1
 if [[ $mode != builder && $NCC_BLUE_GREEN == 1 ]]; then
   blue_green=1
   ncc_layout NCC_APACHE_UPSTREAM || exit 1
 fi
 if [[ $mode == rollback && $blue_green != 1 ]]; then
   echo "rollback needs NCC_BLUE_GREEN=1: a single-release host rolls back from portal-previous.tar.gz by hand" >&2
+  exit 1
+fi
+# active-color exists only on a blue/green host. The restart path there would
+# start the single unit beside the colours and forget their served records,
+# leaving nothing to roll back to, so a flag lost from the env file stops
+# here, before anything moves. Leaving blue/green on purpose ends with
+# removing active-color (the undo steps in the operator runbook).
+if [[ $blue_green != 1 && -e $NCC_INSTALL_DIR/active-color ]]; then
+  echo "refusing: $NCC_INSTALL_DIR/active-color exists, so this host deploys blue/green, but NCC_BLUE_GREEN is not 1. Set NCC_BLUE_GREEN=1 in the deploy env file; or, to leave blue/green on purpose, finish its undo steps first (copy the serving release to $NCC_INSTALL_DIR/portal, swap the units back, then rm $NCC_INSTALL_DIR/active-color)." >&2
   exit 1
 fi
 

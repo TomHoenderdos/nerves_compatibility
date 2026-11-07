@@ -59,8 +59,20 @@ ncc_layout_flag() {
   local file=${NCC_DEPLOY_ENV:-/etc/ncc-deploy.env}
   if [[ -n ${!1+x} ]]; then printf '%s\n' "${!1}"; return 0; fi
   [[ -r $file ]] || return 0
+  # The file's last command may return non-zero; under set -e that would end
+  # the script with no message, so its status is ignored.
   # shellcheck source=/dev/null
-  (. "$file" && printf '%s\n' "${!1:-}")
+  (. "$file" || true; printf '%s\n' "${!1:-}")
+}
+
+# NCC_BLUE_GREEN is empty, 0 (both: the single release) or 1. Anything else
+# ("true", "yes", a typo) is refused rather than read as off.
+ncc_check_blue_green() {
+  case $NCC_BLUE_GREEN in
+    "" | 0 | 1) return 0 ;;
+  esac
+  echo "ERROR: NCC_BLUE_GREEN is '$NCC_BLUE_GREEN'; it must be empty, 0 or 1 (see ops/deploy.env.example)" >&2
+  return 1
 }
 
 init_ca=false
@@ -84,6 +96,7 @@ color_env=
 # colour with the new settings and switches to it, and a rollback swaps back.
 restart_hint="restart the portal"
 NCC_BLUE_GREEN=$(ncc_layout_flag NCC_BLUE_GREEN)
+ncc_check_blue_green || exit 1
 if [[ $NCC_BLUE_GREEN == 1 ]]; then
   ncc_layout NCC_SRC_DIR NCC_APACHE_UPSTREAM || exit 1
   # shellcheck source=ops/blue-green.sh
@@ -93,7 +106,7 @@ if [[ $NCC_BLUE_GREEN == 1 ]]; then
   UNIT=$BG_UNIT@$color
   # The colour's own node name and tmp dir, as bg_rpc reads them.
   color_env=$(dirname "$NCC_PORTAL_ENV")/color-$color.env
-  restart_hint="run ops/deploy.sh (or ops/deploy.sh rollback), which starts the idle colour with the new settings and switches to it; bouncing $UNIT by hand takes the site down"
+  restart_hint="run ops/deploy.sh, which redeploys main into the idle colour with the new settings and switches to it (ops/deploy.sh rollback instead brings back the previous, older release; migrations are not reversed); bouncing $UNIT by hand takes the site down"
 fi
 failures=0
 
