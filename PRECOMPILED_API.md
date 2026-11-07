@@ -281,8 +281,8 @@ Status codes:
       `path` are strings, and `value` is `base64url(:erlang.term_to_binary({:ok, v} |
       :error, [:deterministic]))`. It lists the package's `.app` file
       `compile_env` reads and, for builds since 2026-11 whose compile was
-      traced, every compile-time `Application.get_env` read the builder
-      observed while the package and its dependency closure compiled, with
+      traced, the package's and its dependencies' compile-time config reads
+      the builder records while they compile, with
       the value the build project's config gave for that key before any
       dependency was loaded (`:error`: unset). `null` for runs from before it
       was recorded or when the worker could not read the `.app` file; `[]`

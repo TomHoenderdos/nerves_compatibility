@@ -61,10 +61,13 @@ defmodule NccWorker.ToolchainModeTest do
       "trace_stats" => %{"judge_compile" => "not_finished"}
     }
   }
+  @r5 [%{app: "phoenix_live_view", path: ["root_tag_attribute"], value: "g3cFZXJyb3I"}]
+  # Carries config reads so that a test can show a refusal never publishes them.
   @refused %{
     status: :skip,
     reason: "compile-time host read: os:type/0 in X.f/0 (lib/x.ex:2)",
-    observations: %{"trace_stats" => @finished}
+    observations: %{"trace_stats" => @finished},
+    compile_env: @r5
   }
 
   describe "the compile-time trace (P1)" do
@@ -442,8 +445,6 @@ defmodule NccWorker.ToolchainModeTest do
   end
 
   describe "compile-time config reads (R5)" do
-    @r5 [%{app: "phoenix_live_view", path: ["root_tag_attribute"], value: "g3cFZXJyb3I"}]
-
     test "a passing trace's items join the .app's compile_env and mark the build",
          %{tmp_dir: work_dir} do
       {project, built} = project(work_dir, "circular_buffer-1.0.0")
@@ -470,6 +471,7 @@ defmodule NccWorker.ToolchainModeTest do
       refused = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @refused)
       assert %{status: "skipped", compile_env_rule: nil} = refused
       assert refused.compile_env == no_reads.compile_env
+      refute hd(@r5) in refused.compile_env
     end
 
     test "a pass that carries no config reads is not published", %{tmp_dir: work_dir} do
@@ -488,10 +490,48 @@ defmodule NccWorker.ToolchainModeTest do
       end
     end
 
+    test "an OS-specific source publishes no config reads", %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      source = Path.join([project, "deps", "sample", "lib", "sample.ex"])
+      File.write!(source, "defmodule Sample do\n  def os, do: :os.type()\nend\n")
+      verdict = Map.put(@traced_pass, :compile_env, @r5)
+
+      result = Worker.pure_elixir_result(project, "sample", fn _ -> verdict end)
+
+      assert %{compile_env_rule: nil} = result
+      assert %{status: "skipped", reason: "OS-specific" <> _} = result.host_portability
+      assert is_list(result.compile_env)
+      refute hd(@r5) in result.compile_env
+      refute Map.has_key?(result.beam_scan["footprint"], "file_manifest")
+    end
+
+    test "a pure_elixir result whose .app cannot be read publishes nothing",
+         %{tmp_dir: work_dir} do
+      {project, built} = project(work_dir, "circular_buffer-1.0.0")
+      File.rm!(Path.join(built, "ebin/sample.app"))
+      verdict = Map.put(@traced_pass, :compile_env, @r5)
+
+      result = Worker.pure_elixir_result(project, "sample", fn _ -> verdict end)
+
+      assert %{compile_env: nil, compile_env_rule: nil} = result
+
+      assert %{status: "skipped", reason: "portability could not be judged"} =
+               result.host_portability
+
+      assert "compile_env unreadable: .app missing or unparsable" in result.host_portability.compile_observations[
+               "problems"
+             ]
+
+      refute Map.has_key?(result.beam_scan["footprint"] || %{}, "file_manifest")
+      assert result.log_tail =~ "Files not published: portability could not be judged."
+    end
+
     test "r5_compile_env/2 never invents a list the .app could not give" do
       assert Worker.r5_compile_env(nil, %{status: :pass, compile_env: @r5}) == {nil, nil}
       assert Worker.r5_compile_env([], %{status: :skip, compile_env: nil}) == {[], nil}
       assert Worker.r5_compile_env([], %{status: :skip, reason: "x"}) == {[], nil}
+      assert Worker.r5_compile_env([], %{status: :skip, compile_env: @r5}) == {[], nil}
+      assert Worker.r5_compile_env([], @refused) == {[], nil}
       assert Worker.r5_compile_env([], %{status: :pass, compile_env: nil}) == {[], nil}
       assert Worker.r5_compile_env([], %{status: :pass}) == {[], nil}
       assert Worker.r5_compile_env([], nil) == {[], nil}

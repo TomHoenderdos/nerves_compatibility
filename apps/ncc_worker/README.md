@@ -363,8 +363,8 @@ budget, processes that survived the cleanup, a crash) or its report was over bud
 run (a missing or unverified tarball, a rebar3 parent's `rebar.config.script`, a beam it cannot read, a missing
 `ebin`) has `transient: false` and stays `skipped`.
 
-`compile_env` is the package's `.app` `compile_env` list, and for a build whose trace passed also every
-compile-time `Application.get_env` read the trace observed while the package's dependency closure compiled
+`compile_env` is the package's `.app` `compile_env` list, and for a build whose trace passed also the
+compile-time config reads the trace records while the package's dependency closure compiles
 (`NccWorker.Portability.ConfigReads`): one `{app, [key], value}` item per read key, valued with what the project's
 config gives in a Mix VM before any dependency loads (`:error` when unset), the same lookup a client makes; such a
 build has `"compile_env_rule": 1`, every other build `null`. The items never enter the published `.app`. Reads the
@@ -373,7 +373,8 @@ yet reviewed (`compile_observations.config_unreviewed`); `get_all_env` from pack
 and a compile-time Elixir version read that differs between patches of the minor
 (`compile-time Elixir patch dependence: ...`) are refusals. A trace pass that does not name its config reads at all
 is judged "portability could not be judged" and publishes nothing. A `pure_elixir` system result whose files are
-published carries the same list and `"compile_env_rule": 1`.
+published carries the same list and `"compile_env_rule": 1`; one whose `.app` cannot be read (`compile_env` `null`,
+which no client matches) publishes nothing either, as "portability could not be judged".
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 

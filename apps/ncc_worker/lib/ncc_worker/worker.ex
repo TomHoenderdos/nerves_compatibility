@@ -1169,7 +1169,7 @@ defmodule NccWorker.Worker do
           map()
   def pure_elixir_result(project_dir, package_name, portability) do
     app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
-    {gate, host_portability, verdict} = publication_gate(project_dir, package_name, portability)
+    published = publication_gate(project_dir, package_name, portability)
 
     beam_scan =
       case BeamScan.analyze_app_dir(app_dir) do
@@ -1178,6 +1178,7 @@ defmodule NccWorker.Worker do
       end
 
     app_env = AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
+    {gate, host_portability, verdict} = require_app_env(published, app_env)
 
     {compile_env, compile_env_rule} =
       if gate == :publish, do: r5_compile_env(app_env, verdict), else: {app_env, nil}
@@ -1212,6 +1213,16 @@ defmodule NccWorker.Worker do
         {{:withhold, reason}, host_portability(verdict), verdict}
     end
   end
+
+  # A `.app` that could not be read leaves `compile_env` nil, which no
+  # client matches, so its files are withheld here rather than published
+  # unmatched: a could-not-judge the package causes on every run.
+  defp require_app_env({:publish, _host_portability, verdict}, nil) do
+    verdict = cannot_judge(verdict, "compile_env unreadable: .app missing or unparsable")
+    {trace_gate(verdict), host_portability(verdict), verdict}
+  end
+
+  defp require_app_env(published, _app_env), do: published
 
   defp trace_gate(%{status: :pass}), do: :publish
   defp trace_gate(%{reason: reason}) when is_binary(reason), do: {:withhold, reason}
@@ -1643,17 +1654,22 @@ defmodule NccWorker.Worker do
   defp require_compile_env(%{status: :pass, compile_env: items} = verdict) when is_list(items),
     do: verdict
 
-  defp require_compile_env(%{status: :pass} = verdict) do
+  defp require_compile_env(%{status: :pass} = verdict),
+    do: cannot_judge(verdict, "pass without config reads")
+
+  defp require_compile_env(verdict), do: verdict
+
+  # A verdict turned into a could-not-judge for `problem`; it keeps what the
+  # trace observed and names the problem first.
+  defp cannot_judge(verdict, problem) do
     observations = Map.get(verdict, :observations) || %{}
-    problems = ["pass without config reads" | Map.get(observations, "problems", [])]
+    problems = [problem | Map.get(observations, "problems", [])]
 
     verdict
     |> Map.merge(%{status: :skip, reason: PortabilityReasons.could_not_judge()})
     |> Map.put(:observations, Map.put(observations, "problems", problems))
     |> Map.delete(:compile_env)
   end
-
-  defp require_compile_env(verdict), do: verdict
 
   # The host compile's own wall time (its `deps.get` included) next to the
   # traced judge compile's `wall_ms`, for the P1 benchmark (spec section 11).

@@ -271,8 +271,14 @@ defmodule NccWorker.ReleaseArtifactsTest do
     beam = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.beam"])
     File.mkdir_p!(Path.dirname(beam))
     File.write!(beam, "pure beam")
+    write_plain_app(Path.dirname(beam))
     write_source(project, "plain", "defmodule Plain do\n  def hi, do: :hi\nend\n")
   end
+
+  # A published result needs a readable `.app`: its `compile_env` is what a
+  # client matches on.
+  defp write_plain_app(ebin),
+    do: File.write!(Path.join(ebin, "plain.app"), "{application, plain, []}.\n")
 
   describe "the compile-time trace (P1)" do
     setup %{project: project} do
@@ -654,13 +660,16 @@ defmodule NccWorker.ReleaseArtifactsTest do
     beam = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.beam"])
     File.mkdir_p!(Path.dirname(beam))
     File.write!(beam, "pure beam")
+    write_plain_app(Path.dirname(beam))
     write_source(project, "plain", "defmodule Plain do\n  def hi, do: :hi\nend\n")
 
     assert %{status: :pass, beam_scan: scan} =
              NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
 
-    assert [%{"path" => "ebin/plain.beam", "size" => 9}] =
-             scan["footprint"]["file_manifest"]["ebin"]
+    assert %{"path" => "ebin/plain.beam", "size" => 9} in Enum.map(
+             scan["footprint"]["file_manifest"]["ebin"],
+             &Map.take(&1, ["path", "size"])
+           )
 
     assert %{beam_scan: %{"errors" => [_]}} =
              NccWorker.Worker.pure_elixir_result(project, "missing", traced_pass())
