@@ -384,6 +384,51 @@ defmodule NccWorker.TracerTest do
     end
   end
 
+  describe "mode" do
+    test "anything but :judge or :host raises before anything runs", %{tmp_dir: dir} do
+      cmd = fn _caller, _ref, _command, _argv, _log -> flunk("the compile ran") end
+      trace_dir = Path.join(dir, "trace")
+
+      assert_raise ArgumentError, ~r/mode/, fn ->
+        Tracer.run(dir, ["x"], trace_dir: trace_dir, cmd: cmd, mode: :bogus)
+      end
+
+      refute File.exists?(trace_dir)
+    end
+
+    test "the mode reaches the traced compile's env", %{tmp_dir: dir} do
+      test = self()
+
+      for {mode, value} <- [{nil, "judge"}, {:judge, "judge"}, {:host, "host"}] do
+        cmd = fn _caller, _ref, _command, [_args, _dir, env], _log ->
+          send(test, {:mode, List.keyfind(env, "NCC_TRACE_MODE", 0)})
+          {:ok, 0}
+        end
+
+        opts = [trace_dir: Path.join(dir, "trace"), cmd: cmd]
+        opts = if mode, do: [mode: mode] ++ opts, else: opts
+        assert {:ok, 0} = Tracer.run(dir, ["x"], opts)
+        assert_received {:mode, {"NCC_TRACE_MODE", ^value}}
+      end
+    end
+
+    test "Portability.run/3 does not raise on an unknown mode: nothing runs", %{tmp_dir: dir} do
+      cmd = fn _caller, _ref, _command, _argv, _log -> flunk("the compile ran") end
+
+      verdict =
+        NccWorker.Portability.run(dir, "x",
+          env: [],
+          releases: {:ok, %{}},
+          trace_dir: Path.join(dir, "trace"),
+          cmd: cmd,
+          mode: :bogus
+        )
+
+      assert %{status: :skip, reason: "portability could not be judged"} = verdict
+      assert verdict.observations["trace_stats"]["judge_compile"] == "not_run"
+    end
+  end
+
   test "a run with no time left does not start the judge compile", %{tmp_dir: dir} do
     started = System.monotonic_time(:second) - 110 * 60
 

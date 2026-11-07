@@ -110,8 +110,10 @@ defmodule NccWorker.Portability do
   end
 
   @doc """
-  Runs the traced judge compile of `package` in `project_dir` and judges it.
-  Options:
+  Runs the traced compile of `package` in `project_dir` and judges it. In
+  `:judge` mode that compile recompiles the package's closure only; in
+  `:host` mode it is the run's host compile, which also compiles the project
+  (`NccWorker.Tracer`). Options:
 
     * `env:` (required), the host compile's env;
     * `releases:` (required), `lock_snapshot/1` taken before any compile;
@@ -121,13 +123,16 @@ defmodule NccWorker.Portability do
     * `run_started_at:`, the run's start in monotonic seconds, which bounds
       the compile by what is left of the run (`NccWorker.Tracer`);
     * `mode:`, `:judge` (default) or `:host`, passed to `NccWorker.Tracer.run/3`;
+      any other value runs nothing and the verdict is could-not-judge;
     * `trace_dir:` (default `<project_dir>/../trace`), `log_file:`,
       `timeout_ms:`, `extra_env:`, `reap:`, `cmd:` (tests).
 
   Never raises. Adds `observations["trace_stats"]["wall_ms"]` and
-  `observations["trace_stats"]["judge_compile"]`: `"finished"` when the
-  traced compile exited 0, `"not_run"` when it never started for want of
-  `releases:` (the build is the host compile's, untouched), and
+  `observations["trace_stats"]["judge_compile"]`, which names the traced
+  compile in either mode: `"finished"` when it exited 0, `"not_run"` when it
+  never started for want of `releases:` or for an unknown `mode:` (in
+  `:judge` mode the build is the host compile's, untouched; in `:host` mode
+  nothing was built), and
   `"not_finished"` otherwise (a crash, a timeout, a non-zero exit, an
   exhausted budget, the judge itself raising): the build under `_build` may
   then be half-written, and callers must not judge it.
@@ -172,20 +177,24 @@ defmodule NccWorker.Portability do
   end
 
   defp guarded_run(project_dir, package, opts) do
-    case releases(opts) do
-      {:ok, releases} ->
+    case {releases(opts), Keyword.get(opts, :mode, :judge)} do
+      {_releases, mode} when mode not in [:judge, :host] ->
+        not_run("unknown tracer mode: #{inspect(mode)}")
+
+      {{:ok, releases}, _mode} ->
         traced_run(project_dir, package, opts, releases)
 
-      :error ->
-        "no mix.lock snapshot taken before the compile"
-        |> not_judged()
-        |> put_stat("judge_compile", "not_run")
+      {:error, _mode} ->
+        not_run("no mix.lock snapshot taken before the compile")
     end
   rescue
     e -> unfinished("judge failed: " <> Exception.message(e))
   catch
     kind, reason -> unfinished("judge failed: #{kind} #{inspect(reason, limit: 20)}")
   end
+
+  # The traced compile never started: `_build` is as it was.
+  defp not_run(why), do: why |> not_judged() |> put_stat("judge_compile", "not_run")
 
   # Nothing says the judge compile ran to its end, so `_build` may hold a
   # half-written build no caller may judge.

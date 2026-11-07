@@ -103,6 +103,25 @@ defmodule NccWorker.BuildIdentityTest do
     assert {:chunk_ids_differ, _, _} = BuildIdentity.beam_difference(b, other)
   end
 
+  test "an extra chunk differs" do
+    b = beam()
+    other = build(chunks(b) ++ [{~c"Xtra", <<1, 2, 3>>}])
+    assert {:chunk_ids_differ, ids, other_ids} = BuildIdentity.beam_difference(b, other)
+    assert other_ids == ids ++ [~c"Xtra"]
+  end
+
+  test "a missing chunk differs" do
+    b = beam()
+    other = b |> chunks() |> List.keydelete(~c"Line", 0) |> build()
+    assert {:chunk_ids_differ, ids, other_ids} = BuildIdentity.beam_difference(b, other)
+    assert other_ids == List.delete(ids, ~c"Line")
+  end
+
+  test "a file only the second build has differs" do
+    assert BuildIdentity.differences(%{}, %{"a/ebin/a.app" => "{}"}) ==
+             [{"a/ebin/a.app", :only_in_second}]
+  end
+
   test "a non-beam file is compared byte for byte, and a missing file differs" do
     a = %{"a/priv/x.txt" => "x", "a/ebin/a.app" => "{}"}
     b = %{"a/priv/x.txt" => "y"}

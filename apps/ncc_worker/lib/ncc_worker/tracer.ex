@@ -14,7 +14,8 @@ defmodule NccWorker.Tracer do
 
   `mode: :host` makes the traced compile the run's host compile: it also
   compiles the project, after the closure (`NccWorker.HostTrace`). The
-  default, `:judge`, recompiles the closure only.
+  default, `:judge`, recompiles the closure only. Any other mode raises
+  `ArgumentError` before anything runs.
 
   `timeout(1)` bounds the compile and kills its whole process group, so no
   orphaned compile goes on rewriting `_build` after this returns. Without
@@ -58,6 +59,7 @@ defmodule NccWorker.Tracer do
           {:ok, non_neg_integer()} | {:error, term()}
   def run(project_dir, packages, opts) do
     trace_dir = Keyword.fetch!(opts, :trace_dir)
+    mode = mode!(opts)
 
     with {:ok, timeout_sec} <- budget(opts),
          {:ok, timeout} <- executable("timeout"),
@@ -67,7 +69,7 @@ defmodule NccWorker.Tracer do
          {:ok, installed} <- digests(ebin) do
       env =
         Keyword.get(opts, :env, []) ++
-          trace_env(trace_dir, packages, opts) ++ Keyword.get(opts, :extra_env, [])
+          trace_env(trace_dir, packages, mode, opts) ++ Keyword.get(opts, :extra_env, [])
 
       args =
         ["--kill-after=10", "#{timeout_sec}", elixir] ++
@@ -198,12 +200,24 @@ defmodule NccWorker.Tracer do
     end
   end
 
-  defp trace_env(trace_dir, packages, opts) do
+  @doc """
+  The `mode:` option: `:judge` (the default) or `:host`. Anything else raises
+  `ArgumentError`.
+  """
+  @spec mode!(keyword()) :: :judge | :host
+  def mode!(opts) do
+    case Keyword.get(opts, :mode, :judge) do
+      mode when mode in [:judge, :host] -> mode
+      other -> raise ArgumentError, "unknown tracer mode: #{inspect(other)}"
+    end
+  end
+
+  defp trace_env(trace_dir, packages, mode, opts) do
     [
       {"NCC_TRACE_DIR", trace_dir},
       {"NCC_TRACE_PACKAGE", Enum.join(packages, ",")},
       {"NCC_TRACE_NATIVE", opts |> Keyword.get(:native, []) |> Enum.join(",")},
-      {"NCC_TRACE_MODE", opts |> Keyword.get(:mode, :judge) |> Atom.to_string()},
+      {"NCC_TRACE_MODE", Atom.to_string(mode)},
       {"MIX_OS_DEPS_COMPILE_PARTITION_COUNT", nil}
     ]
   end

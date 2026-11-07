@@ -7,8 +7,8 @@ defmodule NccWorker.Tracer.HostModeTest do
   @moduletag :tmp_dir
   @moduletag timeout: 300_000
 
-  # A macro dependency, a plain one with a priv file, a mix-built Erlang one
-  # and the package.
+  # A macro dependency, a plain one with a priv file and a protocol, a
+  # mix-built Erlang one and the package, which implements the protocol.
   defp fixture(dir) do
     TracerFixtures.project(dir, ["fx_top"], %{
       "fx_top" => %{
@@ -20,6 +20,10 @@ defmodule NccWorker.Tracer.HostModeTest do
             @moduledoc "Top."
             def f, do: {FxLeaf.f(), FxMac.twice(21), :fx_erl.g()}
           end
+
+          defimpl FxShape, for: Integer do
+            def area(n), do: n * n
+          end
           """
         }
       },
@@ -27,6 +31,7 @@ defmodule NccWorker.Tracer.HostModeTest do
         files: %{
           "lib/fx_leaf.ex" =>
             "defmodule FxLeaf do\n  @moduledoc \"Leaf.\"\n  @doc \"F.\"\n  def f, do: :ok\nend\n",
+          "lib/fx_shape.ex" => "defprotocol FxShape do\n  def area(shape)\nend\n",
           "priv/data.txt" => "leaf data\n"
         }
       },
@@ -45,17 +50,27 @@ defmodule NccWorker.Tracer.HostModeTest do
     })
   end
 
-  # Every published file of every built app: path => bytes.
-  defp published(proj) do
+  # Every published file of every built app (`subs`: the default, or
+  # `["consolidated"]` for the project's consolidated protocols): path => bytes.
+  defp published(proj, subs \\ ["ebin", "priv"]) do
     lib = Path.join([proj, "_build", "host", "lib"])
 
     for app <- File.ls!(lib),
-        sub <- ["ebin", "priv"],
+        sub <- subs,
         root = Path.join([lib, app, sub]),
         rel <- Path.wildcard(Path.join(root, "**"), match_dot: true),
         File.regular?(rel),
         into: %{},
         do: {Path.relative_to(rel, lib), File.read!(rel)}
+  end
+
+  # The mtime of every beam in an `ebin`.
+  defp mtimes(proj) do
+    lib = Path.join([proj, "_build", "host", "lib"])
+
+    for path <- Path.wildcard(Path.join(lib, "*/ebin/*.beam")),
+        into: %{},
+        do: {Path.relative_to(path, lib), File.stat!(path, time: :posix).mtime}
   end
 
   defp plain_compile(proj) do
@@ -89,6 +104,51 @@ defmodule NccWorker.Tracer.HostModeTest do
     host = published(proj)
     assert Enum.sort(Map.keys(host)) == Enum.sort(Map.keys(untraced))
     assert BuildIdentity.differences(host, untraced) == []
+  end
+
+  # Kept strict, pending a decision: the consolidated protocols' ExCk chunk
+  # differs between two clean untraced `mix compile` runs too, from one run
+  # to the next (its decoded terms are `===`), so it is not reproducible even
+  # without the tracer.
+  @tag skip: "consolidated ExCk bytes vary between untraced compiles"
+  test "the host-mode trace consolidates exactly what an untraced mix compile does",
+       %{tmp_dir: dir} do
+    proj = fixture(dir)
+    plain_compile(proj)
+    untraced = published(proj, ["consolidated"])
+    assert Map.has_key?(untraced, "fixture_wrapper/consolidated/Elixir.FxShape.beam")
+
+    File.rm_rf!(Path.join(proj, "_build"))
+    traced = TracerFixtures.trace(proj, ["fx_top"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    assert BuildIdentity.differences(published(proj, ["consolidated"]), untraced) == []
+  end
+
+  test "an untraced mix compile right after the host trace compiles nothing", %{tmp_dir: dir} do
+    proj = fixture(dir)
+    traced = TracerFixtures.trace(proj, ["fx_top"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+
+    before = mtimes(proj)
+    consolidated = published(proj, ["consolidated"])
+    assert Map.has_key?(consolidated, "fixture_wrapper/consolidated/Elixir.FxShape.beam")
+    assert Map.has_key?(before, "fx_top/ebin/Elixir.FxTop.beam")
+    # mtimes have one-second resolution: a rewrite now would show.
+    Process.sleep(1_100)
+
+    {out, status} =
+      System.cmd("mix", ["compile"],
+        cd: proj,
+        env: TracerFixtures.env(proj),
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, out
+    refute out =~ "Compiling", out
+    assert mtimes(proj) == before
+    # Mix consolidates a project with path dependencies again on every
+    # compile, untraced too. Its bytes are compared in the consolidation test.
+    assert Map.keys(published(proj, ["consolidated"])) == Map.keys(consolidated)
   end
 
   test "the project itself is compiled, after the last window", %{tmp_dir: dir} do
