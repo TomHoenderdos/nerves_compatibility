@@ -414,7 +414,7 @@ forged(From, Ref, Req, St) ->
     Arg = #{request => ncc_tracer_channels:term_bin(request_name(Req))},
     Line = #{kind => event, ts => now_ns(), pid => ncc_tracer_channels:term_bin(From),
              channel => integrity, mfa => <<"ncc_tracer:forged_request">>, arg => Arg,
-             extent => unjudged, first => null, user => null},
+             extent => unjudged, first => null, user => null, first_kind => <<"none">>},
     capped_line(Line, St#st{tampered = true, unjudged = St#st.unjudged + 1}).
 
 %% A line a package can make the collector write at will, counted as a call
@@ -511,7 +511,7 @@ record({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends}
     Line = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
              mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
              arg => enrich(Channel, Arg), extent => Kind, first => First, user => User,
-             caller => Caller, bottom => Bottom},
+             caller => Caller, bottom => Bottom, first_kind => first_kind(First0)},
     user_event(Line, Kind =:= unjudged orelse Channel =:= unclassified, St).
 
 sentinel_app(<<"__final__:", Nonce/binary>>, Pid, #st{final_pid = Pid, final_nonce = Nonce}) ->
@@ -537,6 +537,13 @@ frames(Kind, First, User, {Caller, Bottom}) ->
     try {Kind, ncc_tracer_stack:frame(First), ncc_tracer_stack:frame(User),
          {ncc_tracer_stack:frame(Caller), ncc_tracer_stack:frame(Bottom)}}
     catch _:_ -> {unjudged, null, null, {null, null}}
+    end.
+
+%% A frame the classifier cannot take apart is `none`: the judge then treats
+%% the read as the package's own (fail closed).
+first_kind(First) ->
+    try ncc_tracer_stack:first_kind(First, fun toolchain/1)
+    catch _:_ -> <<"none">>
     end.
 
 %% The frame right below the traced call, before any wrapper is stripped:

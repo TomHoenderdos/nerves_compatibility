@@ -384,4 +384,18 @@ defmodule NccWorker.Tracer.StackTest do
       assert {:user, :frame, _, _} = extent(stack)
     end
   end
+
+  test "first_kind/2 says whose code made a config read" do
+    kind = &:ncc_tracer_stack.first_kind(&1, fn m -> m in [Logger, IO | @toolchain] end)
+
+    assert kind.(:none) == "none"
+    assert kind.(f(Logger, :__should_log__, 2)) == "toolchain"
+    assert kind.(f(IO, :warn, 2)) == "toolchain"
+    assert kind.(f(Enum, :map, 2)) == "glue"
+    assert kind.(f(:erl_eval, :do_apply, 7)) == "glue"
+    assert kind.(f(:elixir_dispatch, :"-expand_macro_fun/7-fun-0-", 3)) == "glue"
+    assert kind.(f(:elixir_compiler_3, :__MODULE__, 1)) == "user"
+    assert kind.(f(Phoenix.LiveView.TagEngine.Compiler, :compile, 2)) == "user"
+    assert kind.(:not_a_frame) == "none"
+  end
 end

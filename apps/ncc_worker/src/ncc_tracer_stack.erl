@@ -2,7 +2,7 @@
 %% Stage-1 classification of one traced call by the stack it was made from
 %% (precompiled portability spec, R1 steps 1-3). The tracer passes in which
 %% modules are toolchain and whether the calling process is a user process.
--export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0]).
+-export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% The frames left on top when package code tail-calls a primitive from a
@@ -142,6 +142,21 @@ strip([]) -> [].
 dispatcher({M, F, _, _}) -> lists:member({M, base_name(F)}, ?DISPATCHERS).
 
 dispatchers() -> [{M, list_to_atom(F)} || {M, F} <- ?DISPATCHERS].
+
+%% Whose code made a call, judged by the first frame after the wrappers
+%% (precompiled portability spec, R5): the toolchain's own code (`toolchain`:
+%% Logger's macros, IO.warn), a frame package code reaches the call through
+%% (`glue`: the higher-order and eval functions and the dispatchers that a
+%% tail call leaves on top), anything else (`user`), or no frame (`none`).
+first_kind({M, _F, _A, _Location} = Frame, IsToolchain) ->
+    case dispatcher(Frame) orelse glue(Frame) of
+        true -> <<"glue">>;
+        false -> toolchain_kind(IsToolchain(M))
+    end;
+first_kind(_NoFrame, _IsToolchain) -> <<"none">>.
+
+toolchain_kind(true) -> <<"toolchain">>;
+toolchain_kind(false) -> <<"user">>.
 
 %% "-expand_callback/6-fun-0-" -> "expand_callback"
 base_name(F) ->

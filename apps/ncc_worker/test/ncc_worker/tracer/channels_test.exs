@@ -173,4 +173,35 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert {:integrity, %{}} = classify(:erlang, :process_info, [self(), :messages])
     assert :unknown = classify(:erlang, :process_info, [self(), [:status, :memory]])
   end
+
+  test "config reads carry the exact atom names a compile_env item needs" do
+    assert {:config,
+            %{
+              app: "phoenix_live_view",
+              key: "root_tag_attribute",
+              app_name: "phoenix_live_view",
+              key_name: "root_tag_attribute",
+              atoms: true
+            }} = classify(:application, :get_env, [:phoenix_live_view, :root_tag_attribute, nil])
+
+    # term_bin/1 quotes such atoms; the name is the atom's own text.
+    assert {:config, %{key: "'Elixir.Foo'", key_name: "Elixir.Foo", atoms: true}} =
+             classify(:application, :get_env, [:fx, Foo])
+
+    # Erlang's `null` is the atom :null here; the report's JSON decode makes it nil.
+    assert {:config, %{app_name: :null, atoms: false}} =
+             classify(:application, :get_env, ["fx", :k])
+
+    assert {:config, %{app: :null, key_name: "k", atoms: false}} =
+             classify(:application, :get_env, [:k])
+
+    assert {:config, %{all: true, app_name: "phoenix"}} =
+             classify(:application, :get_all_env, [:phoenix])
+
+    # No arguments to name, and a non-atom app: null, not a crash.
+    assert {:config, %{all: true, app: :null, app_name: :null}} =
+             classify(:application, :get_all_env, [])
+
+    assert {:config, %{app_name: :null}} = classify(:application, :get_all_env, ["fx"])
+  end
 end

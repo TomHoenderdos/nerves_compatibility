@@ -82,7 +82,7 @@ defmodule NccWorker.Tracer.RuntimeTest do
         &(&1["mfa"] == "os:type/0" and String.ends_with?(&1["user"]["file"] || "", "fx_attr.ex"))
       )
 
-    assert %{"channel" => "os_identity", "extent" => "frame"} = event
+    assert %{"channel" => "os_identity", "extent" => "frame", "first_kind" => "user"} = event
     assert event["user"]["line"] == 2
     # The stack was seen whole, so its bottom frame (where the process
     # started) is recorded too.
@@ -635,6 +635,12 @@ defmodule NccWorker.Tracer.RuntimeTest do
     # Three raw sends, and the package's finish/2 call makes two requests
     # (its nonce, its finish) with a token it does not have.
     assert Enum.count(integrity, &(&1 == "ncc_tracer:forged_request")) == 5, inspect(integrity)
+    # A forged request has no frame to judge: every event line still says so.
+    assert Enum.all?(
+             kind(lines, "event"),
+             &(&1["mfa"] != "ncc_tracer:forged_request" or &1["first_kind"] == "none")
+           )
+
     assert "ncc_tracer:finish/2" in integrity
     # Only the driver's finish ended the file, and it is not clean.
     assert [%{"integrity_ok" => false, "final_sentinel" => true}] = kind(lines, "end")

@@ -155,10 +155,13 @@ by_module(erts_internal, F, _Args) when F =:= trace; F =:= trace_pattern; F =:= 
                                        F =:= trace_session_create;
                                        F =:= trace_session_destroy ->
     {integrity, #{}};
-by_module(application, get_env, [Key]) -> {config, #{app => null, key => term_bin(Key)}};
+by_module(application, get_env, [Key]) ->
+    {config, #{app => null, key => term_bin(Key), key_name => atom_name(Key), atoms => false}};
 by_module(application, get_env, [App, Key | _]) ->
-    {config, #{app => term_bin(App), key => term_bin(Key)}};
-by_module(application, get_all_env, Args) -> {config, #{app => first_term(Args), all => true}};
+    {config, #{app => term_bin(App), key => term_bin(Key), app_name => atom_name(App),
+               key_name => atom_name(Key), atoms => is_atom(App) andalso is_atom(Key)}};
+by_module(application, get_all_env, Args) ->
+    {config, #{app => first_term(Args), app_name => first_atom_name(Args), all => true}};
 by_module(_M, _F, _Args) -> unknown.
 
 open(Path, Modes) ->
@@ -197,6 +200,15 @@ first_path([]) -> null.
 
 first_term([Term | _]) -> term_bin(Term);
 first_term([]) -> null.
+
+%% The exact text of an atom (a compile_env item names apps and keys by it),
+%% null for anything else. Only an existing atom is rendered: nothing here
+%% creates one.
+atom_name(A) when is_atom(A) -> atom_to_binary(A);
+atom_name(_X) -> null.
+
+first_atom_name([A | _]) -> atom_name(A);
+first_atom_name([]) -> null.
 
 %% The literal directory a wildcard starts from: everything before the first
 %% glob character, cut back to a directory, joined to the wildcard's Cwd.
