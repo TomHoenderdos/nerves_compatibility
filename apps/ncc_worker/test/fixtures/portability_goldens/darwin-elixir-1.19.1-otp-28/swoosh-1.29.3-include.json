@@ -1,0 +1,2626 @@
+{
+  "deps_lock": {
+    "bandit": "1.14.1",
+    "certifi": "2.18.0",
+    "cowboy": "2.20.0",
+    "cowboy_telemetry": "0.4.0",
+    "cowlib": "2.21.0",
+    "ex_aws": "2.7.0",
+    "finch": "0.24.0",
+    "gen_smtp": "1.3.0",
+    "h2": "0.12.5",
+    "hackney": "4.9.1",
+    "hpax": "1.1.0",
+    "idna": "7.1.0",
+    "jason": "1.4.5",
+    "mail": "0.5.2",
+    "mime": "2.0.7",
+    "mimerl": "1.5.0",
+    "mint": "1.11.0",
+    "mua": "0.2.6",
+    "multipart": "0.6.1",
+    "nimble_options": "1.2.0",
+    "nimble_pool": "1.1.0",
+    "parse_trans": "3.4.2",
+    "plug": "1.20.3",
+    "plug_cowboy": "2.9.0",
+    "plug_crypto": "2.2.1",
+    "quic": "2.1.4",
+    "ranch": "2.3.0",
+    "req": "0.7.5",
+    "ssl_verify_fun": "1.1.9",
+    "telemetry": "1.4.2",
+    "thousand_island": "1.6.0",
+    "websock": "0.5.3",
+    "webtransport": "0.4.8"
+  },
+  "judge_compile": "finished",
+  "observations": {
+    "build_root_source_path": [],
+    "config_reads": [
+      {
+        "arg": {
+          "app": "ex_aws",
+          "key": "auth_refresh_lead_time"
+        },
+        "file": "lib/ex_aws/config/auth_cache.ex",
+        "line": 8,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "ex_aws"
+      },
+      {
+        "arg": {
+          "app": "jason",
+          "key": "decoding_integer_digit_limit"
+        },
+        "file": "lib/decoder.ex",
+        "line": 167,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "jason"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/bandit.ex",
+        "line": 286,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/bandit/clock.ex",
+        "line": 19,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/bandit/http1/socket.ex",
+        "line": 501,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/bandit/http2/connection.ex",
+        "line": 313,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/bandit/http2/stream.ex",
+        "line": 355,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/bandit/initial_handler.ex",
+        "line": 22,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/bandit/logger.ex",
+        "line": 12,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/bandit/logger.ex",
+        "line": 37,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/bandit/pipeline.ex",
+        "line": 271,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ex_aws/config/auth_cache.ex",
+        "line": 86,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ex_aws"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ex_aws/request.ex",
+        "line": 26,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ex_aws"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 301,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 415,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 478,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 639,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http1.ex",
+        "line": 1233,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 1752,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 1922,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2083,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2407,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2490,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2617,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2816,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2834,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2885,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/nimble_pool.ex",
+        "line": 1081,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "nimble_pool"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug.ex",
+        "line": 108,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug.ex",
+        "line": 122,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/cowboy.ex",
+        "line": 358,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug_cowboy"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/cowboy.ex",
+        "line": 431,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug_cowboy"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/cowboy.ex",
+        "line": 461,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug_cowboy"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/csrf_protection.ex",
+        "line": 348,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/debugger.ex",
+        "line": 188,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/logger.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 147,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/ssl.ex",
+        "line": 446,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1535,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1548,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1650,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1886,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/req/utils.ex",
+        "line": 841,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/req/utils.ex",
+        "line": 856,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/req/utils.ex",
+        "line": 878,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/api_client/finch.ex",
+        "line": 32,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/api_client/hackney.ex",
+        "line": 12,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/api_client/req.ex",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/application.ex",
+        "line": 23,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 107,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 133,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 146,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/bandit.ex",
+        "line": 286,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/bandit/clock.ex",
+        "line": 19,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/bandit/http1/socket.ex",
+        "line": 501,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/bandit/http2/connection.ex",
+        "line": 313,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/bandit/http2/stream.ex",
+        "line": 355,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/bandit/initial_handler.ex",
+        "line": 22,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/bandit/logger.ex",
+        "line": 12,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/bandit/logger.ex",
+        "line": 37,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/bandit/pipeline.ex",
+        "line": 271,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ex_aws/config/auth_cache.ex",
+        "line": 86,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ex_aws"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ex_aws/request.ex",
+        "line": 26,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ex_aws"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 301,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 415,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 478,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 639,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http1.ex",
+        "line": 1233,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 1752,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 1922,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2083,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2407,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2490,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2617,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2816,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2834,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2885,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/nimble_pool.ex",
+        "line": 1081,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "nimble_pool"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug.ex",
+        "line": 108,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug.ex",
+        "line": 122,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/cowboy.ex",
+        "line": 358,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug_cowboy"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/cowboy.ex",
+        "line": 431,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug_cowboy"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/cowboy.ex",
+        "line": 461,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug_cowboy"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/csrf_protection.ex",
+        "line": 348,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/debugger.ex",
+        "line": 188,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/logger.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 147,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/ssl.ex",
+        "line": 446,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1535,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1548,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1650,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1886,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/req/utils.ex",
+        "line": 841,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/req/utils.ex",
+        "line": 856,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/req/utils.ex",
+        "line": 878,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/api_client/finch.ex",
+        "line": 32,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/api_client/hackney.ex",
+        "line": 12,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/api_client/req.ex",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/application.ex",
+        "line": 23,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 107,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 133,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 146,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/bandit.ex",
+        "line": 286,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/bandit/clock.ex",
+        "line": 19,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/bandit/http1/socket.ex",
+        "line": 501,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/bandit/http2/connection.ex",
+        "line": 313,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/bandit/http2/stream.ex",
+        "line": 355,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/bandit/initial_handler.ex",
+        "line": 22,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/bandit/logger.ex",
+        "line": 12,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/bandit/logger.ex",
+        "line": 37,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/bandit/pipeline.ex",
+        "line": 271,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/ex_aws/config/auth_cache.ex",
+        "line": 86,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ex_aws"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/ex_aws/request.ex",
+        "line": 26,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ex_aws"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 301,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 415,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 478,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 639,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/nimble_pool.ex",
+        "line": 1081,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "nimble_pool"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/plug/cowboy.ex",
+        "line": 358,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug_cowboy"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/plug/cowboy.ex",
+        "line": 431,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug_cowboy"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/plug/cowboy.ex",
+        "line": 461,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug_cowboy"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/plug/csrf_protection.ex",
+        "line": 348,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/plug/debugger.ex",
+        "line": 188,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1535,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1650,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/req/utils.ex",
+        "line": 841,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/req/utils.ex",
+        "line": 856,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/req/utils.ex",
+        "line": 878,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/api_client/finch.ex",
+        "line": 32,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/api_client/hackney.ex",
+        "line": 12,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/api_client/req.ex",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/application.ex",
+        "line": 23,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/mailer.ex",
+        "line": 260,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 107,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 133,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 146,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/bandit.ex",
+        "line": 286,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/bandit/clock.ex",
+        "line": 19,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/bandit/http1/socket.ex",
+        "line": 501,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/bandit/http2/connection.ex",
+        "line": 313,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/bandit/http2/stream.ex",
+        "line": 355,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/bandit/initial_handler.ex",
+        "line": 22,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/bandit/logger.ex",
+        "line": 12,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/bandit/logger.ex",
+        "line": 37,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/bandit/pipeline.ex",
+        "line": 271,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ex_aws/config/auth_cache.ex",
+        "line": 86,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ex_aws"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ex_aws/request.ex",
+        "line": 26,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ex_aws"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 301,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 415,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 478,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/finch/http2/pool.ex",
+        "line": 639,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "finch"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http1.ex",
+        "line": 1233,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 1752,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 1922,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2083,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2407,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2490,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2617,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2816,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2834,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2885,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/nimble_pool.ex",
+        "line": 1081,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "nimble_pool"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug.ex",
+        "line": 108,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug.ex",
+        "line": 122,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/cowboy.ex",
+        "line": 358,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug_cowboy"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/cowboy.ex",
+        "line": 431,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug_cowboy"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/cowboy.ex",
+        "line": 461,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug_cowboy"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/csrf_protection.ex",
+        "line": 348,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/debugger.ex",
+        "line": 188,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/logger.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 147,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/ssl.ex",
+        "line": 446,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1535,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1548,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1650,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/req/steps.ex",
+        "line": 1886,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/req/utils.ex",
+        "line": 841,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/req/utils.ex",
+        "line": 856,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/req/utils.ex",
+        "line": 878,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/api_client/finch.ex",
+        "line": 32,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/api_client/hackney.ex",
+        "line": 12,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/api_client/req.ex",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/application.ex",
+        "line": 23,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 107,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 133,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 146,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "mail",
+          "key": "email_regex"
+        },
+        "file": "lib/mail/renderers/rfc_2822.ex",
+        "line": 25,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mail"
+      },
+      {
+        "arg": {
+          "app": "mime",
+          "key": "extensions"
+        },
+        "file": "lib/mime.ex",
+        "line": 149,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mime"
+      },
+      {
+        "arg": {
+          "app": "mime",
+          "key": "suffixes"
+        },
+        "file": "lib/mime.ex",
+        "line": 161,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mime"
+      },
+      {
+        "arg": {
+          "app": "mime",
+          "key": "types"
+        },
+        "file": "lib/mime.ex",
+        "line": 132,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mime"
+      },
+      {
+        "arg": {
+          "app": "plug",
+          "key": "mimes"
+        },
+        "file": "lib/plug/mime.ex",
+        "line": 4,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "plug",
+          "key": "statuses"
+        },
+        "file": "lib/plug/conn/status.ex",
+        "line": 6,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "req",
+          "key": "legacy_headers_as_lists"
+        },
+        "file": "lib/req/fields.ex",
+        "line": 5,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "req"
+      }
+    ],
+    "elixir_version": [
+      {
+        "arg": {
+          "left": "\"1.19.1\"",
+          "right": "\"1.14.0\""
+        },
+        "file": "lib/mua.ex",
+        "line": 273,
+        "mfa": "Version.compare/2",
+        "module": "elixir_compiler_N",
+        "owner": "mua"
+      },
+      {
+        "arg": {
+          "left": "\"1.19.1\"",
+          "right": "\">= 1.17.0\""
+        },
+        "file": "lib/thousand_island/process_label.ex",
+        "line": 5,
+        "mfa": "Version.match?/2",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "left": "\"1.19.1\"",
+          "right": "\"~> 1.12\""
+        },
+        "file": "<work>/work/proj/deps/jason/mix.exs",
+        "line": 38,
+        "mfa": "Version.match?/2",
+        "module": "Elixir.Jason.Mixfile",
+        "owner": "jason"
+      },
+      {
+        "arg": {},
+        "file": "<work>/work/proj/deps/jason/mix.exs",
+        "line": 38,
+        "mfa": "System.version/0",
+        "module": "Elixir.Jason.Mixfile",
+        "owner": "jason"
+      },
+      {
+        "arg": {},
+        "file": "lib/mua.ex",
+        "line": 273,
+        "mfa": "System.version/0",
+        "module": "elixir_compiler_N",
+        "owner": "mua"
+      },
+      {
+        "arg": {},
+        "file": "lib/thousand_island/process_label.ex",
+        "line": 5,
+        "mfa": "System.version/0",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      }
+    ],
+    "mix_exs_allowed": [
+      {
+        "arg": {
+          "name": "FINCH_PATH"
+        },
+        "file": "<work>/work/proj/deps/req/mix.exs",
+        "line": 117,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Req.MixProject",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "name": "FINCH_REF"
+        },
+        "file": "<work>/work/proj/deps/req/mix.exs",
+        "line": 120,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Req.MixProject",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "name": "PLUG_CRYPTO_2_0"
+        },
+        "file": "<work>/work/proj/deps/plug/mix.exs",
+        "line": 57,
+        "mfa": "os:getenv/1",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "name": "PLUG_PATH"
+        },
+        "file": "<work>/work/proj/deps/req/mix.exs",
+        "line": 130,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Req.MixProject",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "name": "PLUG_REF"
+        },
+        "file": "<work>/work/proj/deps/req/mix.exs",
+        "line": 133,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Req.MixProject",
+        "owner": "req"
+      },
+      {
+        "arg": {
+          "path": "./hex_metadata.config"
+        },
+        "file": "<work>/work/proj/deps/bandit/mix.exs",
+        "line": 92,
+        "mfa": "file:list_dir/1",
+        "module": "Elixir.Bandit.MixProject",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "path": "Elixir.Path.Wildcard"
+        },
+        "file": "<work>/work/proj/deps/bandit/mix.exs",
+        "line": 92,
+        "mfa": "filelib:wildcard/2",
+        "module": "Elixir.Bandit.MixProject",
+        "owner": "bandit"
+      },
+      {
+        "arg": {
+          "path": "Elixir.Path.Wildcard/lib/bandit"
+        },
+        "file": "<work>/work/proj/deps/bandit/mix.exs",
+        "line": 90,
+        "mfa": "filelib:wildcard/2",
+        "module": "Elixir.Bandit.MixProject",
+        "owner": "bandit"
+      }
+    ],
+    "native_calls": [],
+    "native_libs": [],
+    "nif_check": "waived",
+    "problems": [
+      "idna: R2: unreadable beam idna_data (not a beam container)"
+    ],
+    "refusals": [
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: erlang:system_info/1 (truncated stack, first frame erl_prim_loader)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: erlang:system_info/1 in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: prim_file:read_link/1  (truncated stack, first frame erl_prim_loader)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: prim_file:read_link/1  in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: prim_file:read_link/1 /Users (truncated stack, first frame erl_prim_loader)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: prim_file:read_link/1 /Users in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: prim_file:read_link/1 <home> (truncated stack, first frame erl_prim_loader)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: prim_file:read_link/1 <home> in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf (truncated stack, first frame erl_prim_loader)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs (truncated stack, first frame erl_prim_loader)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang (truncated stack, first frame erl_prim_loader)"
+      },
+      {
+        "owner": "certifi",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: erlang:system_info/1 in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: erlang:system_info/1 in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: erlang:system_info/1 in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1  in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1  in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1  in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 /Users in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 /Users in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 /Users in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 <home> in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 <home> in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 <home> in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
+      },
+      {
+        "owner": "hackney",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: erlang:system_info/1 in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: erlang:system_info/1 in parse_trans_codegen.xform_fun/4 (<work>/work/proj/deps/parse_trans/src/parse_trans_codegen.erl:154)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: prim_file:read_link/1  in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: prim_file:read_link/1  in parse_trans_codegen.xform_fun/4 (<work>/work/proj/deps/parse_trans/src/parse_trans_codegen.erl:154)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: prim_file:read_link/1 /Users in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: prim_file:read_link/1 /Users in parse_trans_codegen.xform_fun/4 (<work>/work/proj/deps/parse_trans/src/parse_trans_codegen.erl:154)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: prim_file:read_link/1 <home> in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: prim_file:read_link/1 <home> in parse_trans_codegen.xform_fun/4 (<work>/work/proj/deps/parse_trans/src/parse_trans_codegen.erl:154)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf in parse_trans_codegen.xform_fun/4 (<work>/work/proj/deps/parse_trans/src/parse_trans_codegen.erl:154)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs in parse_trans_codegen.xform_fun/4 (<work>/work/proj/deps/parse_trans/src/parse_trans_codegen.erl:154)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+      },
+      {
+        "owner": "parse_trans",
+        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang in parse_trans_codegen.xform_fun/4 (<work>/work/proj/deps/parse_trans/src/parse_trans_codegen.erl:154)"
+      }
+    ],
+    "taint": {
+      "certifi": "compile-time host read: erlang:system_info/1 in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)",
+      "cowboy_telemetry": "rebar3 build runs project_plugins",
+      "gen_smtp": "rebar3 build runs project_plugins",
+      "h2": "rebar3 build runs project_plugins",
+      "hackney": "compile-time host read: erlang:system_info/1 in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)",
+      "mimerl": "rebar3 build runs project_plugins",
+      "parse_trans": "compile-time host read: erlang:system_info/1 in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)",
+      "quic": "rebar3 build runs pre_hooks",
+      "telemetry": "rebar3 build runs plugins",
+      "webtransport": "rebar3 build runs project_plugins"
+    }
+  },
+  "optional_deps": {
+    "added": [
+      "bandit",
+      "cowboy",
+      "ex_aws",
+      "finch",
+      "gen_smtp",
+      "hackney",
+      "mail",
+      "mua",
+      "multipart",
+      "plug",
+      "plug_cowboy",
+      "req"
+    ],
+    "dropped": [],
+    "reason": null
+  },
+  "optional_deps_variant": "include",
+  "package": "swoosh",
+  "platform": "darwin-elixir-1.19.1-otp-28",
+  "reason": "closure dependency observed the host: mimerl (rebar3 build runs project_plugins)",
+  "rule1_reason": "calls erlang:open_port/2",
+  "status": "skipped",
+  "trace_verdict": "refused",
+  "version": "1.29.3"
+}

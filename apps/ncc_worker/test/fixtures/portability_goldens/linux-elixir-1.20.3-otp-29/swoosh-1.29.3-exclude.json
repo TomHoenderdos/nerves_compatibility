@@ -1,0 +1,532 @@
+{
+  "deps_lock": {
+    "idna": "7.1.0",
+    "jason": "1.4.5",
+    "mime": "2.0.7",
+    "telemetry": "1.4.2"
+  },
+  "judge_compile": "finished",
+  "observations": {
+    "build_root_source_path": [],
+    "config_reads": [
+      {
+        "arg": {
+          "app": "jason",
+          "key": "decoding_integer_digit_limit"
+        },
+        "file": "lib/decoder.ex",
+        "line": 167,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "jason"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/adapters/logger.ex",
+        "line": 29,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/adapters/ms_graph.ex",
+        "line": 45,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/adapters/sendmail.ex",
+        "line": 56,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/adapters/sendmail.ex",
+        "line": 78,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/adapters/smtp2go.ex",
+        "line": 61,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/api_client/finch.ex",
+        "line": 32,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/api_client/hackney.ex",
+        "line": 12,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/api_client/req.ex",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/application.ex",
+        "line": 61,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/swoosh/mailer.ex",
+        "line": 260,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/adapters/logger.ex",
+        "line": 29,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/adapters/ms_graph.ex",
+        "line": 45,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/adapters/sendmail.ex",
+        "line": 56,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/adapters/sendmail.ex",
+        "line": 78,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/adapters/smtp2go.ex",
+        "line": 61,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/api_client/finch.ex",
+        "line": 32,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/api_client/hackney.ex",
+        "line": 12,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/api_client/req.ex",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/application.ex",
+        "line": 61,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/swoosh/mailer.ex",
+        "line": 260,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/adapters/ms_graph.ex",
+        "line": 45,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/adapters/sendmail.ex",
+        "line": 56,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/adapters/sendmail.ex",
+        "line": 78,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/adapters/smtp2go.ex",
+        "line": 61,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/api_client/finch.ex",
+        "line": 32,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/api_client/hackney.ex",
+        "line": 12,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/api_client/req.ex",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/application.ex",
+        "line": 61,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/swoosh/mailer.ex",
+        "line": 260,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/adapters/logger.ex",
+        "line": 29,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/adapters/ms_graph.ex",
+        "line": 45,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/adapters/sendmail.ex",
+        "line": 56,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/adapters/sendmail.ex",
+        "line": 78,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/adapters/smtp2go.ex",
+        "line": 61,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/api_client/finch.ex",
+        "line": 32,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/api_client/hackney.ex",
+        "line": 12,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/api_client/req.ex",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/application.ex",
+        "line": 61,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/swoosh/mailer.ex",
+        "line": 260,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "swoosh"
+      },
+      {
+        "arg": {
+          "app": "mime",
+          "key": "extensions"
+        },
+        "file": "lib/mime.ex",
+        "line": 149,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mime"
+      },
+      {
+        "arg": {
+          "app": "mime",
+          "key": "suffixes"
+        },
+        "file": "lib/mime.ex",
+        "line": 161,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mime"
+      },
+      {
+        "arg": {
+          "app": "mime",
+          "key": "types"
+        },
+        "file": "lib/mime.ex",
+        "line": 132,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mime"
+      }
+    ],
+    "elixir_version": [
+      {
+        "arg": {
+          "left": "\"1.20.3\"",
+          "right": "\"~> 1.12\""
+        },
+        "file": "<work>/work/proj/deps/jason/mix.exs",
+        "line": 38,
+        "mfa": "Version.match?/2",
+        "module": "Elixir.Jason.Mixfile",
+        "owner": "jason"
+      },
+      {
+        "arg": {},
+        "file": "<work>/work/proj/deps/jason/mix.exs",
+        "line": 38,
+        "mfa": "System.version/0",
+        "module": "Elixir.Jason.Mixfile",
+        "owner": "jason"
+      }
+    ],
+    "mix_exs_allowed": [],
+    "native_calls": [],
+    "native_libs": [],
+    "nif_check": "ok",
+    "problems": [
+      "idna: R2: unreadable beam idna_data (not a beam container)"
+    ],
+    "refusals": [],
+    "taint": {
+      "telemetry": "rebar3 build runs plugins"
+    }
+  },
+  "optional_deps": {
+    "added": [],
+    "dropped": [],
+    "reason": "not_requested"
+  },
+  "optional_deps_variant": "exclude",
+  "package": "swoosh",
+  "platform": "linux-elixir-1.20.3-otp-29",
+  "reason": "calls erlang:open_port/2",
+  "rule1_reason": "calls erlang:open_port/2",
+  "status": "skipped",
+  "trace_verdict": "could_not_judge",
+  "version": "1.29.3"
+}

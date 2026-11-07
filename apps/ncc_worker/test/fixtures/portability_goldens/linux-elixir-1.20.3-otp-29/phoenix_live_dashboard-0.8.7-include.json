@@ -1,0 +1,2710 @@
+{
+  "deps_lock": {
+    "cc_precompiler": "0.1.11",
+    "db_connection": "2.10.2",
+    "decimal": "3.2.0",
+    "ecto": "3.14.3",
+    "ecto_mysql_extras": "0.6.3",
+    "ecto_psql_extras": "0.8.8",
+    "ecto_sql": "3.14.0",
+    "ecto_sqlite3_extras": "1.2.2",
+    "elixir_make": "0.10.1",
+    "exqlite": "0.43.0",
+    "mime": "2.0.7",
+    "myxql": "0.9.0",
+    "phoenix": "1.8.16",
+    "phoenix_html": "4.4.0",
+    "phoenix_live_view": "1.2.13",
+    "phoenix_pubsub": "2.4.1",
+    "phoenix_template": "1.1.0",
+    "plug": "1.20.3",
+    "plug_crypto": "2.2.1",
+    "postgrex": "0.22.4",
+    "table_rex": "4.1.0",
+    "telemetry": "1.4.2",
+    "telemetry_metrics": "1.2.0",
+    "websock": "0.5.3",
+    "websock_adapter": "0.7.1"
+  },
+  "judge_compile": "finished",
+  "observations": {
+    "build_root_source_path": [
+      {
+        "owner": "ecto",
+        "path": "<root>/deps/ecto/lib/ecto/association.ex"
+      },
+      {
+        "owner": "ecto",
+        "path": "<root>/deps/ecto/lib/ecto/changeset.ex"
+      },
+      {
+        "owner": "ecto",
+        "path": "<root>/deps/ecto/lib/ecto/query.ex"
+      },
+      {
+        "owner": "ecto",
+        "path": "<root>/deps/ecto/lib/ecto/query/planner.ex"
+      },
+      {
+        "owner": "ecto",
+        "path": "<root>/deps/ecto/lib/ecto/repo/preloader.ex"
+      },
+      {
+        "owner": "ecto",
+        "path": "<root>/deps/ecto/lib/ecto/repo/queryable.ex"
+      },
+      {
+        "owner": "ecto",
+        "path": "<root>/deps/ecto/lib/ecto/repo/schema.ex"
+      },
+      {
+        "owner": "ecto_sql",
+        "path": "<root>/deps/ecto_sql/lib/ecto/migration/schema_migration.ex"
+      }
+    ],
+    "config_reads": [
+      {
+        "arg": {
+          "app": "elixir_make",
+          "key": "force_build"
+        },
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 148,
+        "mfa": "application:get_env/3",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "app": "exqlite",
+          "key": "force_build"
+        },
+        "file": "<work>/work/proj/deps/exqlite/mix.exs",
+        "line": 14,
+        "mfa": "application:get_env/3",
+        "module": "Elixir.Exqlite.MixProject",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "app": "exqlite",
+          "key": "make_env"
+        },
+        "file": "<work>/work/proj/deps/exqlite/mix.exs",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "Elixir.Exqlite.MixProject",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 253,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 263,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 277,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 324,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/db_connection.ex",
+        "line": 1738,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/db_connection/connection.ex",
+        "line": 143,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/db_connection/connection.ex",
+        "line": 354,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/db_connection/connection.ex",
+        "line": 77,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 119,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 257,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 310,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 334,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 364,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/adapters/postgres.ex",
+        "line": 384,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/adapters/sql.ex",
+        "line": 1277,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/changeset.ex",
+        "line": 3643,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/changeset/relation.ex",
+        "line": 541,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/migration/runner.ex",
+        "line": 364,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/migration/runner.ex",
+        "line": 365,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 245,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 776,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 809,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 810,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/repo/preloader.ex",
+        "line": 332,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/repo/schema.ex",
+        "line": 665,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto/repo/supervisor.ex",
+        "line": 27,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/ecto_psql_extras/diagnose_logic.ex",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_psql_extras"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/exqlite/connection.ex",
+        "line": 582,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/myxql/client.ex",
+        "line": 35,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "myxql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/myxql/client.ex",
+        "line": 544,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "myxql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/tracker/delta_generation.ex",
+        "line": 13,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/tracker/shard.ex",
+        "line": 623,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug.ex",
+        "line": 108,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug.ex",
+        "line": 122,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/csrf_protection.ex",
+        "line": 348,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/debugger.ex",
+        "line": 188,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/logger.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 147,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/ssl.ex",
+        "line": 446,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/postgrex/notifications.ex",
+        "line": 302,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 176,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 1899,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 77,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 796,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/postgrex/replication_connection.ex",
+        "line": 518,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/postgrex/replication_connection.ex",
+        "line": 637,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/postgrex/replication_connection.ex",
+        "line": 653,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/postgrex/simple_connection.ex",
+        "line": 301,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/postgrex/simple_connection.ex",
+        "line": 350,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/telemetry_metrics/console_reporter.ex",
+        "line": 76,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "telemetry_metrics"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 253,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 263,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 277,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 324,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/db_connection.ex",
+        "line": 1738,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/db_connection/connection.ex",
+        "line": 143,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/db_connection/connection.ex",
+        "line": 354,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/db_connection/connection.ex",
+        "line": 77,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 119,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 257,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 310,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 334,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 364,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/adapters/postgres.ex",
+        "line": 384,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/adapters/sql.ex",
+        "line": 1277,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/changeset.ex",
+        "line": 3643,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/changeset/relation.ex",
+        "line": 541,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/migration/runner.ex",
+        "line": 364,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/migration/runner.ex",
+        "line": 365,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 245,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 776,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 809,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 810,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/repo/preloader.ex",
+        "line": 332,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/repo/schema.ex",
+        "line": 665,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto/repo/supervisor.ex",
+        "line": 27,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/ecto_psql_extras/diagnose_logic.ex",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_psql_extras"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/exqlite/connection.ex",
+        "line": 582,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mix/tasks/phx.gen.release.ex",
+        "line": 410,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/myxql/client.ex",
+        "line": 35,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "myxql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/myxql/client.ex",
+        "line": 544,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "myxql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/tracker/delta_generation.ex",
+        "line": 13,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/tracker/shard.ex",
+        "line": 623,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug.ex",
+        "line": 108,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug.ex",
+        "line": 122,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/csrf_protection.ex",
+        "line": 348,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/debugger.ex",
+        "line": 188,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/logger.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 147,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/ssl.ex",
+        "line": 446,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/postgrex/notifications.ex",
+        "line": 302,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 176,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 1899,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 77,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 796,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/postgrex/replication_connection.ex",
+        "line": 518,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/postgrex/replication_connection.ex",
+        "line": 637,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/postgrex/replication_connection.ex",
+        "line": 653,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/postgrex/simple_connection.ex",
+        "line": 301,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/postgrex/simple_connection.ex",
+        "line": 350,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/telemetry_metrics/console_reporter.ex",
+        "line": 76,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "telemetry_metrics"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 253,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 263,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 277,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 324,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/db_connection.ex",
+        "line": 1738,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/db_connection/connection.ex",
+        "line": 354,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/db_connection/connection.ex",
+        "line": 77,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/ecto/adapters/postgres.ex",
+        "line": 384,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/ecto/changeset.ex",
+        "line": 3643,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/ecto/changeset/relation.ex",
+        "line": 541,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 245,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 776,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 809,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/ecto/repo/preloader.ex",
+        "line": 332,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/ecto/repo/schema.ex",
+        "line": 665,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/ecto/repo/supervisor.ex",
+        "line": 27,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/ecto_psql_extras/diagnose_logic.ex",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_psql_extras"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/exqlite/connection.ex",
+        "line": 582,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/mix/tasks/phx.gen.release.ex",
+        "line": 410,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/myxql/client.ex",
+        "line": 35,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "myxql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/myxql/client.ex",
+        "line": 544,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "myxql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/tracker/delta_generation.ex",
+        "line": 13,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/plug/csrf_protection.ex",
+        "line": 348,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/plug/debugger.ex",
+        "line": 188,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/postgrex/notifications.ex",
+        "line": 302,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 176,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 1899,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 77,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 796,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/postgrex/replication_connection.ex",
+        "line": 518,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/postgrex/replication_connection.ex",
+        "line": 637,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/postgrex/replication_connection.ex",
+        "line": 653,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/postgrex/simple_connection.ex",
+        "line": 301,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/postgrex/simple_connection.ex",
+        "line": 350,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/telemetry_metrics/console_reporter.ex",
+        "line": 76,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "telemetry_metrics"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 253,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 263,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 277,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 324,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "cc_precompiler"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/db_connection.ex",
+        "line": 1738,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/db_connection/connection.ex",
+        "line": 143,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/db_connection/connection.ex",
+        "line": 354,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/db_connection/connection.ex",
+        "line": 77,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 119,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 257,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 310,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 334,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/db_connection/ownership/manager.ex",
+        "line": 364,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "db_connection"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/adapters/postgres.ex",
+        "line": 384,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/adapters/sql.ex",
+        "line": 1277,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/changeset.ex",
+        "line": 3643,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/changeset/relation.ex",
+        "line": 541,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/migration/runner.ex",
+        "line": 364,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/migration/runner.ex",
+        "line": 365,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 245,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 776,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 809,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 810,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/repo/preloader.ex",
+        "line": 332,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/repo/schema.ex",
+        "line": 665,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto/repo/supervisor.ex",
+        "line": 27,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/ecto_psql_extras/diagnose_logic.ex",
+        "line": 20,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_psql_extras"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/exqlite/connection.ex",
+        "line": 582,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/myxql/client.ex",
+        "line": 35,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "myxql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/myxql/client.ex",
+        "line": 544,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "myxql"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/tracker/delta_generation.ex",
+        "line": 13,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/tracker/shard.ex",
+        "line": 623,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug.ex",
+        "line": 108,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug.ex",
+        "line": 122,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/csrf_protection.ex",
+        "line": 348,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/debugger.ex",
+        "line": 188,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/logger.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 147,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/ssl.ex",
+        "line": 446,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/postgrex/notifications.ex",
+        "line": 302,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 176,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 1899,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 77,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/postgrex/protocol.ex",
+        "line": 796,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/postgrex/replication_connection.ex",
+        "line": 518,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/postgrex/replication_connection.ex",
+        "line": 637,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/postgrex/replication_connection.ex",
+        "line": 653,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/postgrex/simple_connection.ex",
+        "line": 301,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/postgrex/simple_connection.ex",
+        "line": 350,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/telemetry_metrics/console_reporter.ex",
+        "line": 76,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "telemetry_metrics"
+      },
+      {
+        "arg": {
+          "app": "mime",
+          "key": "extensions"
+        },
+        "file": "lib/mime.ex",
+        "line": 149,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mime"
+      },
+      {
+        "arg": {
+          "app": "mime",
+          "key": "suffixes"
+        },
+        "file": "lib/mime.ex",
+        "line": 161,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mime"
+      },
+      {
+        "arg": {
+          "app": "mime",
+          "key": "types"
+        },
+        "file": "lib/mime.ex",
+        "line": 132,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mime"
+      },
+      {
+        "arg": {
+          "app": "myxql",
+          "key": "extra_error_codes"
+        },
+        "file": "lib/myxql/protocol/server_error_codes.ex",
+        "line": 7,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "myxql"
+      },
+      {
+        "arg": {
+          "app": "plug",
+          "key": "mimes"
+        },
+        "file": "lib/plug/mime.ex",
+        "line": 4,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "plug",
+          "key": "statuses"
+        },
+        "file": "lib/plug/conn/status.ex",
+        "line": 6,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "postgrex",
+          "key": "json_library"
+        },
+        "file": "lib/postgrex/extensions/json.ex",
+        "line": 8,
+        "mfa": "application:get_env/3",
+        "module": "Elixir.Postgrex.Extensions.JSON",
+        "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "postgrex",
+          "key": "json_library"
+        },
+        "file": "lib/postgrex/extensions/jsonb.ex",
+        "line": 7,
+        "mfa": "application:get_env/3",
+        "module": "Elixir.Postgrex.Extensions.JSONB",
+        "owner": "postgrex"
+      }
+    ],
+    "elixir_version": [
+      {
+        "arg": {
+          "left": "\"1.20.3\"",
+          "right": "\">= 1.10.0\""
+        },
+        "file": "lib/myxql/protocol/server_error_codes.ex",
+        "line": 6,
+        "mfa": "Version.match?/2",
+        "module": "elixir_compiler_N",
+        "owner": "myxql"
+      },
+      {
+        "arg": {
+          "left": "\"1.20.3\"",
+          "right": "\">= 1.14.0\""
+        },
+        "file": "lib/ecto/migrator.ex",
+        "line": 702,
+        "mfa": "Version.match?/2",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "left": "\"1.20.3\"",
+          "right": "\">= 1.15.0\""
+        },
+        "file": "lib/ecto/repo/preloader.ex",
+        "line": 183,
+        "mfa": "Version.match?/2",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {
+          "left": "\"1.20.3\"",
+          "right": "\">= 1.18.0-dev\""
+        },
+        "file": "lib/phoenix/code_reloader/server.ex",
+        "line": 238,
+        "mfa": "Version.match?/2",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "left": "\"1.20.3\"",
+          "right": "\">= 1.19.0\""
+        },
+        "file": "lib/phoenix/code_reloader/server.ex",
+        "line": 7,
+        "mfa": "Version.match?/2",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "left": "\"1.20.3\"",
+          "right": "\">= 1.7.0\""
+        },
+        "file": "lib/decimal/macros.ex",
+        "line": 5,
+        "mfa": "Version.match?/2",
+        "module": "Elixir.Decimal.Macros",
+        "owner": "decimal"
+      },
+      {
+        "arg": {},
+        "file": "lib/decimal/macros.ex",
+        "line": 5,
+        "mfa": "System.version/0",
+        "module": "Elixir.Decimal.Macros",
+        "owner": "decimal"
+      },
+      {
+        "arg": {},
+        "file": "lib/ecto/migrator.ex",
+        "line": 702,
+        "mfa": "System.version/0",
+        "module": "elixir_compiler_N",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {},
+        "file": "lib/ecto/repo/preloader.ex",
+        "line": 183,
+        "mfa": "System.version/0",
+        "module": "elixir_compiler_N",
+        "owner": "ecto"
+      },
+      {
+        "arg": {},
+        "file": "lib/myxql/protocol/server_error_codes.ex",
+        "line": 6,
+        "mfa": "System.version/0",
+        "module": "elixir_compiler_N",
+        "owner": "myxql"
+      },
+      {
+        "arg": {},
+        "file": "lib/phoenix/code_reloader/server.ex",
+        "line": 238,
+        "mfa": "System.version/0",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {},
+        "file": "lib/phoenix/code_reloader/server.ex",
+        "line": 7,
+        "mfa": "System.version/0",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      }
+    ],
+    "mix_exs_allowed": [
+      {
+        "arg": {
+          "name": "DB_CONNECTION_PATH"
+        },
+        "file": "<work>/work/proj/deps/myxql/mix.exs",
+        "line": 61,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.MyXQL.MixProject",
+        "owner": "myxql"
+      },
+      {
+        "arg": {
+          "name": "ECTO_ADAPTER"
+        },
+        "file": "<work>/work/proj/deps/ecto_sql/mix.exs",
+        "line": 14,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.EctoSQL.MixProject",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "name": "ECTO_PATH"
+        },
+        "file": "<work>/work/proj/deps/ecto_sql/mix.exs",
+        "line": 84,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.EctoSQL.MixProject",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "name": "LIVE_VIEW_PATH"
+        },
+        "file": "<work>/work/proj/deps/phoenix_live_dashboard/mix.exs",
+        "line": 75,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Phoenix.LiveDashboard.MixProject",
+        "owner": "phoenix_live_dashboard"
+      },
+      {
+        "arg": {
+          "name": "MYXQL_PATH"
+        },
+        "file": "<work>/work/proj/deps/ecto_sql/mix.exs",
+        "line": 100,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.EctoSQL.MixProject",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "name": "PLUG_CRYPTO_2_0"
+        },
+        "file": "<work>/work/proj/deps/plug/mix.exs",
+        "line": 57,
+        "mfa": "os:getenv/1",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "name": "POSTGREX_PATH"
+        },
+        "file": "<work>/work/proj/deps/ecto_sql/mix.exs",
+        "line": 92,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.EctoSQL.MixProject",
+        "owner": "ecto_sql"
+      },
+      {
+        "arg": {
+          "name": "TDS_PATH"
+        },
+        "file": "<work>/work/proj/deps/ecto_sql/mix.exs",
+        "line": 108,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.EctoSQL.MixProject",
+        "owner": "ecto_sql"
+      }
+    ],
+    "native_calls": [
+      {
+        "arg": {
+          "module": "Elixir.CCPrecompiler"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 200,
+        "mfa": "CCPrecompiler.all_supported_targets/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "module": "Elixir.CCPrecompiler"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 251,
+        "mfa": "CCPrecompiler.current_target/0",
+        "module": "Elixir.ElixirMake.Artefact",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "module": "Elixir.ElixirMake.Artefact"
+        },
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 175,
+        "mfa": "ElixirMake.Artefact.verify_and_decompress/2",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "module": "Elixir.ElixirMake.Artefact"
+        },
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 230,
+        "mfa": "ElixirMake.Artefact.current_target_url/3",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "module": "Elixir.ElixirMake.Artefact"
+        },
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 232,
+        "mfa": "ElixirMake.Artefact.archive_path/3",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "module": "Elixir.Mix.Tasks.Compile.ElixirMake"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "Mix.Tasks.Compile.ElixirMake.run/1",
+        "module": null,
+        "owner": "exqlite"
+      }
+    ],
+    "native_libs": [
+      "<work>/work/proj/_build/host/lib/exqlite/priv/sqlite3_nif.so"
+    ],
+    "nif_check": "ok",
+    "problems": [],
+    "refusals": [
+      {
+        "owner": "decimal",
+        "reason": "compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:198)"
+      },
+      {
+        "owner": "decimal",
+        "reason": "compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:206)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler (<work>/work/proj/deps/exqlite/mix.exs:72)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler_url (<work>/work/proj/deps/exqlite/mix.exs:141)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler_url (<work>/work/proj/deps/exqlite/mix.exs:162)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler_url (<work>/work/proj/deps/exqlite/mix.exs:27)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: erlang:open_port/2 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: erlang:system_info/1 in CCPrecompiler.current_target/0 (lib/cc_precompiler.ex:93)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: erlang:system_info/1 in CCPrecompiler.current_target/1 (lib/cc_precompiler.ex:143)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: erlang:system_info/1 in ElixirMake.Artefact.available_target_urls/2 (lib/elixir_make/artefact.ex:206)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: erlang:system_info/1 in ElixirMake.Artefact.fallback_version/1 (lib/elixir_make/artefact.ex:169)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: erlang:system_info/1 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:228)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: erlang:system_info/1 in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:open/2 <<\"./sqlite3_nif.so\"...>> in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file/2 <tmp>/xdg-cache/elixir_make/exqlite-nif-2.17-aarch64-linux-gnu-0.43.0.tar.gz in ElixirMake.Artefact.verify_and_decompress/2 (lib/elixir_make/artefact.ex:111)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/1 <work>/work/proj/_build/host/lib/exqlite in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/1 <work>/work/proj/_build/host/lib/exqlite/priv in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/2 <tmp> in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/2 <tmp>/xdg-cache in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/2 <tmp>/xdg-cache/elixir_make in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/2 <tmp>/xdg-cache/elixir_make/exqlite-nif-2.17-aarch64-linux-gnu-0.43.0.tar.gz in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:235)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/2 <work>/work/proj/_build/host/lib/exqlite/priv/sqlite3_nif.so in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:174)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_link/1 <work>/work/proj/_build/host/lib/exqlite/priv/sqlite3_nif.so in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: os:getenv/1 in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:100)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: os:getenv/1 in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:98)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: os:getenv/1 in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:99)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: os:getenv/1 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:13)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: os:getenv/1 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:17)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: os:getenv/1 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: os:type/0 in CCPrecompiler.current_target/0 (lib/cc_precompiler.ex:93)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: os:type/0 in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time write outside ebin: file:make_dir/1 <tmp>"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time write outside ebin: file:make_dir/1 <tmp>/xdg-cache"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time write outside ebin: file:make_dir/1 <tmp>/xdg-cache/elixir_make"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time write outside ebin: file:make_dir/1 <work>/work/proj/_build/host/lib/exqlite/priv"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time write outside ebin: file:open/2 <work>/work/proj/_build/host/lib/exqlite/priv/sqlite3_nif.so"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time write outside ebin: file:write_file_info/3 <work>/work/proj/_build/host/lib/exqlite/priv/sqlite3_nif.so"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time write outside ebin: prim_file:open/2 <work>/work/proj/_build/host/lib/exqlite/priv/sqlite3_nif.so"
+      }
+    ],
+    "taint": {
+      "decimal": "compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:198)",
+      "exqlite": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler (<work>/work/proj/deps/exqlite/mix.exs:72)",
+      "telemetry": "rebar3 build runs plugins"
+    }
+  },
+  "optional_deps": {
+    "added": [
+      "ecto",
+      "ecto_mysql_extras",
+      "ecto_psql_extras",
+      "ecto_sqlite3_extras"
+    ],
+    "dropped": [],
+    "reason": null
+  },
+  "optional_deps_variant": "include",
+  "package": "phoenix_live_dashboard",
+  "platform": "linux-elixir-1.20.3-otp-29",
+  "reason": "bakes the build path: Elixir.Phoenix.LiveDashboard.LayoutView \"<root>/deps/phoenix_live_dashboard/lib/phoenix/live_dashboard\"",
+  "rule1_reason": "OS-specific (lib/phoenix/live_dashboard/pages/home_page.ex: system_architecture)",
+  "status": "skipped",
+  "trace_verdict": "refused",
+  "version": "0.8.7"
+}

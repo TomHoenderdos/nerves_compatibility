@@ -4,4 +4,6 @@
 unless File.exists?("/proc/self/maps"),
   do: System.put_env("NCC_TRACE_ALLOW_NO_NIF_CHECK", "1")
 
-ExUnit.start()
+# Tests tagged :integration need Hex.pm (and real package builds); they run
+# only through `make test-integration` or `make test-portability-goldens`.
+ExUnit.start(exclude: [:integration])

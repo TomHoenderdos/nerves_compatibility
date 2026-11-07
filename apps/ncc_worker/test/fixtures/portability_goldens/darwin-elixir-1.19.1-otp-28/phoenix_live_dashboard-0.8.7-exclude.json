@@ -1,0 +1,2305 @@
+{
+  "deps_lock": {
+    "mime": "2.0.7",
+    "phoenix": "1.8.16",
+    "phoenix_html": "4.4.0",
+    "phoenix_live_view": "1.2.13",
+    "phoenix_pubsub": "2.4.1",
+    "phoenix_template": "1.1.0",
+    "plug": "1.20.3",
+    "plug_crypto": "2.2.1",
+    "telemetry": "1.4.2",
+    "telemetry_metrics": "1.2.0",
+    "websock": "0.5.3",
+    "websock_adapter": "0.7.1"
+  },
+  "judge_compile": "finished",
+  "observations": {
+    "build_root_source_path": [],
+    "config_reads": [
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mix/tasks/phx.gen.release.ex",
+        "line": 410,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mix/tasks/phx.gen.release.ex",
+        "line": 464,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/channel/server.ex",
+        "line": 19,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/code_reloader/server.ex",
+        "line": 90,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/controller.ex",
+        "line": 1299,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/endpoint/cowboy2_adapter.ex",
+        "line": 52,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/endpoint/cowboy2_adapter.ex",
+        "line": 98,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/endpoint/render_errors.ex",
+        "line": 156,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 113,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 187,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 28,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 300,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 334,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 377,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 451,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/endpoint/watcher.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 240,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 254,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 276,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 302,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 343,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 374,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 437,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 611,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 635,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 640,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 714,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 769,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/socket/transport.ex",
+        "line": 346,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/socket/transport.ex",
+        "line": 426,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/tracker/delta_generation.ex",
+        "line": 13,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix/tracker/shard.ex",
+        "line": 623,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/channel.ex",
+        "line": 389,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/channel.ex",
+        "line": 396,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/channel.ex",
+        "line": 595,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/html_formatter.ex",
+        "line": 297,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 111,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 132,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 150,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 173,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 191,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 215,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 69,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 93,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/phoenix_live_view/test/upload_client.ex",
+        "line": 184,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug.ex",
+        "line": 108,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug.ex",
+        "line": 122,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/csrf_protection.ex",
+        "line": 348,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/debugger.ex",
+        "line": 188,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/logger.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 147,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/plug/ssl.ex",
+        "line": 446,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/telemetry_metrics/console_reporter.ex",
+        "line": 76,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "telemetry_metrics"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mix/tasks/phx.gen.release.ex",
+        "line": 410,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mix/tasks/phx.gen.release.ex",
+        "line": 464,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/channel/server.ex",
+        "line": 19,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/code_reloader/server.ex",
+        "line": 90,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/controller.ex",
+        "line": 1299,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/endpoint/cowboy2_adapter.ex",
+        "line": 52,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/endpoint/cowboy2_adapter.ex",
+        "line": 98,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/endpoint/render_errors.ex",
+        "line": 156,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 113,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 187,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 28,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 300,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 334,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 377,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 451,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/endpoint/watcher.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 240,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 254,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 276,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 302,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 343,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 374,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 437,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 611,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 635,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 640,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 714,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 769,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/socket/transport.ex",
+        "line": 346,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/socket/transport.ex",
+        "line": 426,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/tracker/delta_generation.ex",
+        "line": 13,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix/tracker/shard.ex",
+        "line": 623,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/channel.ex",
+        "line": 389,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/channel.ex",
+        "line": 396,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/channel.ex",
+        "line": 595,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/html_formatter.ex",
+        "line": 297,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 111,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 132,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 150,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 173,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 191,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 215,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 69,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 93,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/phoenix_live_view/test/upload_client.ex",
+        "line": 184,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug.ex",
+        "line": 108,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug.ex",
+        "line": 122,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/csrf_protection.ex",
+        "line": 348,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/debugger.ex",
+        "line": 188,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/logger.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 147,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/plug/ssl.ex",
+        "line": 446,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/telemetry_metrics/console_reporter.ex",
+        "line": 76,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "telemetry_metrics"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/mix/tasks/phx.gen.release.ex",
+        "line": 410,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/mix/tasks/phx.gen.release.ex",
+        "line": 464,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/channel/server.ex",
+        "line": 19,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/code_reloader/server.ex",
+        "line": 90,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/controller.ex",
+        "line": 1299,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/endpoint/cowboy2_adapter.ex",
+        "line": 52,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/endpoint/cowboy2_adapter.ex",
+        "line": 98,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/endpoint/render_errors.ex",
+        "line": 156,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 113,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 187,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 28,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 300,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 334,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 377,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 451,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/endpoint/watcher.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 611,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 635,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 640,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 714,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 769,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/socket/transport.ex",
+        "line": 346,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/socket/transport.ex",
+        "line": 426,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix/tracker/delta_generation.ex",
+        "line": 13,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix_live_view/channel.ex",
+        "line": 389,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix_live_view/channel.ex",
+        "line": 396,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix_live_view/channel.ex",
+        "line": 595,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix_live_view/html_formatter.ex",
+        "line": 297,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/phoenix_live_view/test/upload_client.ex",
+        "line": 184,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/plug/csrf_protection.ex",
+        "line": 348,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/plug/debugger.ex",
+        "line": 188,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/telemetry_metrics/console_reporter.ex",
+        "line": 76,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "telemetry_metrics"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mix/tasks/phx.gen.release.ex",
+        "line": 410,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mix/tasks/phx.gen.release.ex",
+        "line": 464,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/channel/server.ex",
+        "line": 19,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/code_reloader/server.ex",
+        "line": 90,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/controller.ex",
+        "line": 1299,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/endpoint/cowboy2_adapter.ex",
+        "line": 52,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/endpoint/cowboy2_adapter.ex",
+        "line": 98,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/endpoint/render_errors.ex",
+        "line": 156,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 113,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 187,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 28,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 300,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 334,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 377,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/endpoint/supervisor.ex",
+        "line": 451,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/endpoint/watcher.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 240,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 254,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 276,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 302,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 343,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 374,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/logger.ex",
+        "line": 437,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 611,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 635,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 640,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 714,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/socket.ex",
+        "line": 769,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/socket/transport.ex",
+        "line": 346,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/socket/transport.ex",
+        "line": 426,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/tracker/delta_generation.ex",
+        "line": 13,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix/tracker/shard.ex",
+        "line": 623,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_pubsub"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/channel.ex",
+        "line": 389,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/channel.ex",
+        "line": 396,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/channel.ex",
+        "line": 595,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/html_formatter.ex",
+        "line": 297,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 111,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 132,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 150,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 173,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 191,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 215,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 69,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/logger.ex",
+        "line": 93,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/phoenix_live_view/test/upload_client.ex",
+        "line": 184,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug.ex",
+        "line": 108,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug.ex",
+        "line": 122,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/csrf_protection.ex",
+        "line": 348,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/debugger.ex",
+        "line": 188,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/logger.ex",
+        "line": 31,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/session/cookie.ex",
+        "line": 147,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/plug/ssl.ex",
+        "line": 446,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/telemetry_metrics/console_reporter.ex",
+        "line": 76,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "telemetry_metrics"
+      },
+      {
+        "arg": {
+          "app": "mime",
+          "key": "extensions"
+        },
+        "file": "lib/mime.ex",
+        "line": 149,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mime"
+      },
+      {
+        "arg": {
+          "app": "mime",
+          "key": "suffixes"
+        },
+        "file": "lib/mime.ex",
+        "line": 161,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mime"
+      },
+      {
+        "arg": {
+          "app": "mime",
+          "key": "types"
+        },
+        "file": "lib/mime.ex",
+        "line": 132,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "mime"
+      },
+      {
+        "arg": {
+          "app": "phoenix_live_view",
+          "key": "enable_expensive_runtime_checks"
+        },
+        "file": "lib/phoenix_live_view/async.ex",
+        "line": 75,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "plug",
+          "key": "mimes"
+        },
+        "file": "lib/plug/mime.ex",
+        "line": 4,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "plug",
+          "key": "statuses"
+        },
+        "file": "lib/plug/conn/status.ex",
+        "line": 6,
+        "mfa": "application:get_env/2",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      }
+    ],
+    "elixir_version": [
+      {
+        "arg": {
+          "left": "\"1.19.1\"",
+          "right": "\">= 1.18.0-dev\""
+        },
+        "file": "lib/phoenix/code_reloader/server.ex",
+        "line": 238,
+        "mfa": "Version.match?/2",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "left": "\"1.19.1\"",
+          "right": "\">= 1.19.0\""
+        },
+        "file": "lib/phoenix/code_reloader/server.ex",
+        "line": 7,
+        "mfa": "Version.match?/2",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {},
+        "file": "lib/phoenix/code_reloader/server.ex",
+        "line": 238,
+        "mfa": "System.version/0",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {},
+        "file": "lib/phoenix/code_reloader/server.ex",
+        "line": 7,
+        "mfa": "System.version/0",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      }
+    ],
+    "mix_exs_allowed": [
+      {
+        "arg": {
+          "name": "LIVE_VIEW_PATH"
+        },
+        "file": "<work>/work/proj/deps/phoenix_live_dashboard/mix.exs",
+        "line": 75,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Phoenix.LiveDashboard.MixProject",
+        "owner": "phoenix_live_dashboard"
+      },
+      {
+        "arg": {
+          "name": "PLUG_CRYPTO_2_0"
+        },
+        "file": "<work>/work/proj/deps/plug/mix.exs",
+        "line": 57,
+        "mfa": "os:getenv/1",
+        "module": "elixir_compiler_N",
+        "owner": "plug"
+      }
+    ],
+    "native_calls": [],
+    "native_libs": [],
+    "nif_check": "waived",
+    "problems": [],
+    "refusals": [],
+    "taint": {
+      "telemetry": "rebar3 build runs plugins"
+    }
+  },
+  "optional_deps": {
+    "added": [],
+    "dropped": [],
+    "reason": "not_requested"
+  },
+  "optional_deps_variant": "exclude",
+  "package": "phoenix_live_dashboard",
+  "platform": "darwin-elixir-1.19.1-otp-28",
+  "reason": "bakes the build path: Elixir.Phoenix.LiveDashboard.LayoutView \"<root>/deps/phoenix_live_dashboard/lib/phoenix/live_dashboard\"",
+  "rule1_reason": "OS-specific (lib/phoenix/live_dashboard/pages/home_page.ex: system_architecture)",
+  "status": "skipped",
+  "trace_verdict": "refused",
+  "version": "0.8.7"
+}
