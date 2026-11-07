@@ -1,1 +1,55 @@
-{"run_id":"test_run_001","package":{"name":"jason","version":"1.4.1"},"image":{"name":"ghcr.io/nerves-project/ncc-worker","digest":"sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},"toolchain":{"elixir":"1.15.7","erlang":"26","mix":"1.15.7","nerves_bootstrap":"1.12.0"},"systems":{"pure_elixir":{"status":"pass","duration_sec":0.0,"phase_timings":null,"firmware_size_bytes":null,"log_tail":"Assumed compatible: host compilation passed and the resolved package and its dependencies contain only pure Elixir. No firmware targets were built.","system_version":null,"compile_env":[{"app":"...","path":["..."],"value":"<base64url term>"}],"compile_env_rule":1,"beam_scan":null,"dependency_scans":null,"error":null}},"finished_at":"2025-12-24T10:30:00Z","process_sweep":"ok","host_portability":{"status":"pass","reason":null,"portability_rule":1,"compile_observations":{"trace_stats":{"judge_compile":"finished"},"config_reads":[],"refusals":[],"problems":[]}}}
+{
+  "run_id": "test_run_001",
+  "package": {
+    "name": "jason",
+    "version": "1.4.1"
+  },
+  "image": {
+    "name": "ghcr.io/nerves-project/ncc-worker",
+    "digest": "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+  },
+  "toolchain": {
+    "elixir": "1.15.7",
+    "erlang": "26",
+    "mix": "1.15.7",
+    "nerves_bootstrap": "1.12.0"
+  },
+  "systems": {
+    "pure_elixir": {
+      "status": "pass",
+      "duration_sec": 0.0,
+      "phase_timings": null,
+      "firmware_size_bytes": null,
+      "log_tail": "Assumed compatible: host compilation passed and the resolved package and its dependencies contain only pure Elixir. No firmware targets were built.",
+      "system_version": null,
+      "compile_env": [
+        {
+          "app": "...",
+          "path": [
+            "..."
+          ],
+          "value": "<base64url term>"
+        }
+      ],
+      "compile_env_rule": 1,
+      "beam_scan": null,
+      "dependency_scans": null,
+      "error": null
+    }
+  },
+  "finished_at": "2025-12-24T10:30:00Z",
+  "process_sweep": "ok",
+  "host_portability": {
+    "status": "pass",
+    "reason": null,
+    "portability_rule": 1,
+    "compile_observations": {
+      "trace_stats": {
+        "judge_compile": "finished"
+      },
+      "config_reads": [],
+      "refusals": [],
+      "problems": []
+    }
+  }
+}
