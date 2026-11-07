@@ -235,8 +235,18 @@ defmodule Portal.Catalog.Ingestion do
   the row as it is.
 
   A later non-pass verdict for the same identity overwrites a pass row, and its
-  memberships with it. The sweep never re-queues an identity that has a pass
-  row, so that only happens through a manual re-enqueue.
+  memberships with it. An `:error`, a build that gave no verdict, never does:
+  a pass or skipped row of the same identity is kept with its files, and
+  records the attempt (`attempted_at`), as `Portal.Workers.ToolchainBuild`
+  keeps it for a failed job.
+
+  A `skipped` build whose reason is "portability could not be judged" and
+  whose trace says that was transient
+  (`compile_observations.trace_stats.transient`: the traced compile did not
+  finish, or its report was over the read budget) is stored as an `:error`,
+  which the backlog retries after a day. A could-not-judge the package
+  causes again on every run, or one from a worker that does not report
+  `transient`, stays `skipped`.
 
   A pass build with priv files is checked on the host first
   (`Portal.Catalog.ToolchainPriv`, which `opts.hex_outer_checksum` and
@@ -417,13 +427,44 @@ defmodule Portal.Catalog.Ingestion do
   defp do_ingest_toolchain(result, build, opts, staged) do
     package_info = result |> Map.get("package", %{}) |> with_job_version(opts)
     package_name = package_name(package_info, opts)
+    verdict = toolchain_verdict(build)
 
-    with {:ok, package} <- ensure_package(package_name, package_info),
-         {:ok, toolchain_build} <- upsert_toolchain_build(result, build, opts, package.id) do
+    with {:ok, package} <- ensure_package(package_name, package_info) do
+      case kept_toolchain_build(verdict, package.id, opts) do
+        %ToolchainBuild{} = kept -> mark_retried(kept)
+        nil -> write_toolchain_row(result, build, verdict, opts, package.id, staged)
+      end
+    end
+  end
+
+  defp write_toolchain_row(result, build, verdict, opts, package_id, staged) do
+    with {:ok, toolchain_build} <-
+           upsert_toolchain_build(result, build, verdict, opts, package_id) do
       :ok = upsert_artifacts(staged)
       :ok = replace_toolchain_memberships(toolchain_build.id, staged)
       {:ok, toolchain_build}
     end
+  end
+
+  # An `:error` gives no verdict, so a pass or skipped row of the same
+  # identity stays, files and memberships alike.
+  defp kept_toolchain_build({:error, _reason}, package_id, opts) do
+    variant = Map.get(opts, :variant, :with)
+
+    ToolchainBuild
+    |> Ash.Query.filter(
+      package_id == ^package_id and version == ^opts.version and
+        toolchain == ^opts.toolchain and builder_version == ^opts.builder_version and
+        variant == ^variant and status in [:pass, :skipped]
+    )
+    |> Ash.Query.limit(1)
+    |> Ash.read_one!(domain: @domain)
+  end
+
+  defp kept_toolchain_build(_verdict, _package_id, _opts), do: nil
+
+  defp mark_retried(row) do
+    row |> Ash.Changeset.for_update(:retried, %{}) |> Ash.update(domain: @domain)
   end
 
   # Creates the package when it is new and otherwise leaves every field alone.
@@ -441,9 +482,7 @@ defmodule Portal.Catalog.Ingestion do
     |> Ash.create(domain: @domain, upsert_fields: [:name])
   end
 
-  defp upsert_toolchain_build(result, build, opts, package_id) do
-    {status, reason} = toolchain_verdict(build["status"], build["reason"])
-
+  defp upsert_toolchain_build(result, build, {status, reason}, opts, package_id) do
     ToolchainBuild
     |> Ash.Changeset.for_create(:upsert, %{
       package_id: package_id,
@@ -511,6 +550,21 @@ defmodule Portal.Catalog.Ingestion do
     do: {:fail, "compile failed: " <> (reason || "unknown")}
 
   defp toolchain_verdict(status, reason), do: {Compatibility.Types.parse_status(status), reason}
+
+  # A could-not-judge the worker marks transient is no verdict on the
+  # package: an `:error`, retried after a day (see `ingest_toolchain/2`).
+  defp toolchain_verdict(%{"status" => "skipped", "reason" => reason} = build) do
+    if reason == Compatibility.Portability.could_not_judge() and transient_trace?(build),
+      do: {:error, reason},
+      else: toolchain_verdict("skipped", reason)
+  end
+
+  defp toolchain_verdict(build), do: toolchain_verdict(build["status"], build["reason"])
+
+  defp transient_trace?(%{"compile_observations" => %{"trace_stats" => %{"transient" => true}}}),
+    do: true
+
+  defp transient_trace?(_build), do: false
 
   defp file_manifest(%{} = manifest), do: manifest
   defp file_manifest(_), do: nil

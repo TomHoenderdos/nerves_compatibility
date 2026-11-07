@@ -304,6 +304,76 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert memberships(tb) == []
   end
 
+  defp could_not_judge(name, trace_stats) do
+    skipped_result(name)
+    |> put_in(["toolchain_build", "reason"], "portability could not be judged")
+    |> put_in(["toolchain_build", "compile_observations"], %{"trace_stats" => trace_stats})
+  end
+
+  describe "a trace that could not judge" do
+    # A traced compile that did not finish, or whose report was over its
+    # read budget, says nothing about the package: an error, which the
+    # backlog retries after a day.
+    test "transiently is stored as an error" do
+      name = unique_name()
+      result = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+      assert tb.status == :error
+      assert tb.reason == "portability could not be judged"
+      assert tb.compile_observations["trace_stats"]["transient"] == true
+    end
+
+    test "for a reason the package carries stays skipped" do
+      name = unique_name()
+      result = could_not_judge(name, %{"judge_compile" => "finished", "transient" => false})
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+      assert {tb.status, tb.reason} == {:skipped, "portability could not be judged"}
+    end
+
+    test "from a worker that does not mark it stays skipped" do
+      name = unique_name()
+      result = could_not_judge(name, %{"judge_compile" => "not_finished"})
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+      assert tb.status == :skipped
+    end
+
+    test "transiently, behind another skip reason, keeps that reason's skip" do
+      name = unique_name()
+
+      result =
+        name
+        |> could_not_judge(%{"judge_compile" => "not_finished", "transient" => true})
+        |> put_in(["toolchain_build", "reason"], "os-specific source")
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+      assert {tb.status, tb.reason} == {:skipped, "os-specific source"}
+    end
+
+    test "transiently never replaces a pass row; the row records the attempt" do
+      name = unique_name()
+      beam = blob("beam-#{name}")
+      priv = blob("priv-#{name}")
+
+      {:ok, passed} =
+        Ingestion.ingest_toolchain(
+          pass_result(name, beam, priv),
+          opts(name, files_dir_with([beam, priv]))
+        )
+
+      result = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+      assert {:ok, kept} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+
+      assert kept.id == passed.id
+      assert kept.status == :pass
+      assert kept.file_manifest == passed.file_manifest
+      assert %DateTime{} = kept.attempted_at
+      assert length(memberships(kept)) == 2
+    end
+  end
+
   test "a rebuild that no longer passes drops the previous build's memberships" do
     name = unique_name()
     beam = blob("beam-#{name}")
