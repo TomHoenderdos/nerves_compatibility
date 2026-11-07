@@ -268,7 +268,8 @@ defmodule NccWorker.Portability.JudgeTest do
 
   describe "the verdict" do
     test "a clean trace passes with its stats", %{proj: proj} do
-      assert %{status: :pass, reason: nil, observations: obs} = judge(proj, report(proj))
+      {proj, report} = clean_judged_project(proj)
+      assert %{status: :pass, reason: nil, observations: obs} = judge(proj, report)
 
       assert %{"calls" => 10, "windows" => 3, "sentinels" => 3, "rebar3_untraced_last" => %{}} =
                obs["trace_stats"]
@@ -393,6 +394,110 @@ defmodule NccWorker.Portability.JudgeTest do
                judge(proj, r)
 
       assert Map.keys(obs["taint"]) == ["dep", "other"]
+    end
+  end
+
+  # The setup's project with a report that passes as it is.
+  defp clean_judged_project(proj), do: {proj, report(proj)}
+
+  describe "built outside the trace" do
+    # The digest each app's build dir has now, as the tracer records it.
+    defp built_now(proj, apps) do
+      for app <- apps, into: %{} do
+        {:ok, digest, files} = :ncc_tracer_digest.dir(Path.join([proj, "_build/host/lib", app]))
+        {app, %{digest: digest, files: files, error: nil}}
+      end
+    end
+
+    defp problems(%{status: :skip, reason: @cnj, observations: %{"problems" => problems}}),
+      do: problems
+
+    test "without built_check a report needs no built lines; with it, each is required",
+         %{proj: proj} do
+      {proj, report} = clean_judged_project(proj)
+      assert %{status: :pass} = Portability.judge(proj, "pkg", report, [])
+
+      assert %{status: :skip, observations: %{"problems" => problems}} =
+               Portability.judge(proj, "pkg", report, [], built_check: true)
+
+      assert Enum.any?(problems, &String.starts_with?(&1, "built outside the trace: "))
+    end
+
+    test "a closure whose builds match their recorded digests passes", %{proj: proj} do
+      {proj, report} = clean_judged_project(proj)
+
+      File.write!(
+        Path.join([proj, "_build/host/lib/dep/ebin/dep.app"]),
+        "{application, dep, []}."
+      )
+
+      # `other` is outside pkg's closure: it needs no digest.
+      report = %{report | built: built_now(proj, ["dep", "pkg"])}
+
+      assert %{status: :pass} = judge(proj, report, built_check: true)
+    end
+
+    test "each way a closure dependency fails the check has its own reason", %{proj: proj} do
+      {proj, report} = clean_judged_project(proj)
+      built = built_now(proj, ["dep", "pkg"])
+
+      cases = [
+        {Map.delete(built, "dep"), "built outside the trace: dep (no digest recorded)"},
+        {%{built | "dep" => %{digest: nil, files: nil, error: nil}},
+         "built outside the trace: dep (no digest recorded)"},
+        {%{built | "dep" => %{digest: nil, files: nil, error: "changed"}},
+         "built outside the trace: dep (digest failed at window close: changed)"},
+        {%{built | "dep" => %{digest: nil, files: nil, error: "digest_unavailable"}},
+         "built outside the trace: dep (digest failed at window close: digest_unavailable)"},
+        {%{built | "dep" => %{built["dep"] | digest: String.duplicate("0", 64)}},
+         "built outside the trace: dep"}
+      ]
+
+      for {built, problem} <- cases do
+        problems = problems(judge(proj, %{report | built: built}, built_check: true))
+        assert problems == [problem], inspect(built)
+      end
+    end
+
+    test "a build rewritten after its digest was taken is not judged", %{proj: proj} do
+      {proj, report} = clean_judged_project(proj)
+      report = %{report | built: built_now(proj, ["dep", "pkg"])}
+      priv = Path.join(proj, "_build/host/lib/dep/priv")
+      File.mkdir_p!(priv)
+      File.write!(Path.join(priv, "data.txt"), "restored")
+
+      assert problems(judge(proj, report, built_check: true)) == [
+               "built outside the trace: dep"
+             ]
+    end
+
+    test "a build that cannot be digested now is not judged", %{proj: proj, dir: dir} do
+      {proj, report} = clean_judged_project(proj)
+      report = %{report | built: built_now(proj, ["dep", "pkg"])}
+      outside = Path.join(dir, "outside.beam")
+      File.write!(outside, "elsewhere")
+      File.ln_s!(outside, Path.join([proj, "_build/host/lib/dep/ebin/Elixir.Out.beam"]))
+
+      problems = problems(judge(proj, report, built_check: true))
+      assert Enum.any?(problems, &(&1 =~ ~r/^built outside the trace: dep \(digest failed now: /))
+    end
+
+    test "a closure dependency without a build dir is not judged", %{proj: proj} do
+      {proj, report} = clean_judged_project(proj)
+      # A build path that is not absolute is no build dir at all (`Context`).
+      deps =
+        for d <- report.closure["deps"],
+            do: if(d["app"] == "dep", do: %{d | "build" => "_build/host/lib/dep"}, else: d)
+
+      report = %{
+        report
+        | built: built_now(proj, ["dep", "pkg"]),
+          closure: %{report.closure | "deps" => deps}
+      }
+
+      assert "built outside the trace: dep (no build dir)" in problems(
+               judge(proj, report, built_check: true)
+             )
     end
   end
 

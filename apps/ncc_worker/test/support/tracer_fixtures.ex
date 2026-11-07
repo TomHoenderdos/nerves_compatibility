@@ -62,12 +62,20 @@ defmodule NccWorker.TracerFixtures do
   @doc """
   The portability verdict of a `trace/3` result for `package`. `opts` go to
   `NccWorker.Portability.judge/5` (`releases:`, `hex_home:`, see
-  `hex_release/3`).
+  `hex_release/3`); `built_check:` is `true` unless given, as in
+  `NccWorker.Portability.run/3`.
   """
   @spec judge(String.t(), String.t(), map(), [String.t()], keyword()) ::
           NccWorker.Portability.verdict()
   def judge(proj, package, traced, native \\ [], opts \\ []),
-    do: NccWorker.Portability.judge(proj, package, traced.report, native, opts)
+    do:
+      NccWorker.Portability.judge(
+        proj,
+        package,
+        traced.report,
+        native,
+        Keyword.put_new(opts, :built_check, true)
+      )
 
   @doc """
   A Hex release of path dependency `app` (version 0.1.0) whose tarball, in

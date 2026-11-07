@@ -9,8 +9,11 @@ defmodule NccWorker.Portability do
   Order, first failure wins:
 
     1. an incomplete trace: any `Report` problem, a missing or failed start,
-       closure, stats or end, `unjudged > 0`, or any event `Events.decide/4`
-       could not judge, wherever it is attributed;
+       closure, stats or end, `unjudged > 0`, any event `Events.decide/4`
+       could not judge, wherever it is attributed, or a closure dependency
+       whose `ebin`/`priv` no longer match the digest taken when its window
+       closed (`built_check:`, always on in `run/3`; no digest then, none
+       now or no build dir is a mismatch too);
     2. a refusal outside every window (it counts against everything);
     3. a refusal in the package's window (R1, R4 through `Events`);
     4. the package's window broken (missing, lowered depth, failed
@@ -279,7 +282,11 @@ defmodule NccWorker.Portability do
 
   defp verdict(project_dir, package, {:ok, 0}, trace_dir, native, ctx_opts) do
     {report_ms, report} = timed(fn -> Report.read(trace_dir) end)
-    {judge_ms, verdict} = timed(fn -> judge(project_dir, package, report, native, ctx_opts) end)
+
+    {judge_ms, verdict} =
+      timed(fn ->
+        judge(project_dir, package, report, native, ctx_opts ++ [built_check: true])
+      end)
 
     verdict
     |> put_stat("report_over_budget", report.over_budget)
@@ -323,8 +330,11 @@ defmodule NccWorker.Portability do
   @doc """
   Judges one read trace. `opts` go to `Context.build/5` (`releases:`,
   `hex_home:`); without them the context reads the project's `mix.lock` and
-  this process's `HEX_HOME` now, which only tests should rely on. Never
-  raises.
+  this process's `HEX_HOME` now, which only tests should rely on.
+  `built_check: true` (default `false`, so a hand-built report needs no
+  `built` lines; `run/3` always sets it) also requires every closure
+  dependency's build dir to match the digest the tracer took when its window
+  closed. Never raises.
   """
   @spec judge(String.t(), String.t(), Report.t(), [String.t()], keyword()) :: verdict()
   def judge(project_dir, package, report, native, opts \\ [])
@@ -367,6 +377,7 @@ defmodule NccWorker.Portability do
       config: config,
       trace_problems:
         trace_problems(report, ctx) ++
+          built_problems(ctx, report, opts) ++
           unjudged ++ libs.problems ++ config.problems ++ version.problems,
       libs: libs,
       package_window: window_problem(report, ctx.package),
@@ -512,6 +523,58 @@ defmodule NccWorker.Portability do
     |> Enum.filter(&elem(&1, 0))
     |> Enum.map(&elem(&1, 1))
     |> Kernel.++(report.problems)
+  end
+
+  # R3: no closure dependency is judged without a trace of its own compile.
+  # The tracer took a digest of each dependency's ebin and priv when its
+  # window closed; one that is missing, or that differs from the build dir
+  # now, means the files judged are not the files the trace saw compiled
+  # (restored, reused or rewritten since). Fails closed: no digest then, no
+  # digest now, or no build dir is never a match.
+  defp built_problems(ctx, report, opts) do
+    if Keyword.get(opts, :built_check, false) do
+      ctx
+      |> Context.closure_of(ctx.package)
+      |> Enum.map(&built_mismatch(ctx, report, &1))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&("built outside the trace: " <> &1))
+    else
+      []
+    end
+  end
+
+  defp built_mismatch(ctx, report, app) do
+    recorded = Map.get(report.built || %{}, app)
+
+    case {recorded, Map.get(ctx.deps, app)} do
+      {%{digest: want}, %{build: dir}} when is_binary(want) and is_binary(dir) ->
+        compare_built(app, want, digest_now(dir))
+
+      {%{error: why}, _dep} when is_binary(why) ->
+        "#{app} (digest failed at window close: #{why})"
+
+      {%{digest: want}, _dep} when is_binary(want) ->
+        "#{app} (no build dir)"
+
+      _ ->
+        "#{app} (no digest recorded)"
+    end
+  end
+
+  defp compare_built(_app, want, {:ok, want, _files}), do: nil
+  defp compare_built(app, _want, {:ok, _other, _files}), do: app
+
+  defp compare_built(app, _want, {:error, why}),
+    do: "#{app} (digest failed now: #{inspect(why, limit: 5, printable_limit: 200)})"
+
+  defp digest_now(dir) do
+    case :ncc_tracer_digest.dir(dir) do
+      {:ok, digest, files} when is_binary(digest) -> {:ok, digest, files}
+      {:error, why} -> {:error, why}
+      other -> {:error, {:unexpected, other}}
+    end
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   defp clean_end?(ending) do

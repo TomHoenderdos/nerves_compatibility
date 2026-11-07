@@ -195,4 +195,51 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert status != 0
     assert traced.report.ending["status"] == "compile_failed"
   end
+
+  test "a dependency rewritten after its window is not judged", %{tmp_dir: dir} do
+    proj = fixture(dir)
+    traced = TracerFixtures.trace(proj, ["fx_top"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_top", traced)
+
+    beam = Path.join([proj, "_build", "host", "lib", "fx_leaf", "ebin", "Elixir.FxLeaf.beam"])
+    File.write!(beam, File.read!(beam) <> "x")
+
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             TracerFixtures.judge(proj, "fx_top", traced)
+
+    assert "built outside the trace: fx_leaf" in obs["problems"]
+  end
+
+  test "run/3 judges no dependency rewritten after its window", %{tmp_dir: dir} do
+    proj = fixture(dir)
+    beam = Path.join([proj, "_build", "host", "lib", "fx_leaf", "ebin", "Elixir.FxLeaf.beam"])
+
+    run = fn reap ->
+      NccWorker.Portability.run(proj, "fx_top",
+        env: TracerFixtures.env(proj),
+        releases: %{},
+        mode: :host,
+        log_file: Path.join(dir, "run.log"),
+        timeout_ms: 240_000,
+        run_started_at: System.monotonic_time(:second),
+        reap: reap
+      )
+    end
+
+    assert %{status: :pass} = run.(fn _build -> :ok end), File.read!(Path.join(dir, "run.log"))
+
+    # Stands in for a writer the compile left running: the reaper runs after
+    # the compile, before the report is read.
+    rewrite = fn _build ->
+      File.write!(beam, File.read!(beam) <> "x")
+      :ok
+    end
+
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             run.(rewrite)
+
+    assert "built outside the trace: fx_leaf" in obs["problems"]
+    assert obs["trace_stats"]["transient"] == false
+  end
 end
