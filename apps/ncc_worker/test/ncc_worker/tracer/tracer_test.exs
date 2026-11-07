@@ -338,6 +338,27 @@ defmodule NccWorker.TracerTest do
       assert verdict.observations["trace_stats"]["judge_compile"] == "finished"
       assert verdict.observations["trace_stats"]["transient"] == false
     end
+
+    test "a finished compile records its compile, report and judge times", %{tmp_dir: dir} do
+      verdict = portability_run(dir, writing_cmd(%{"trace-main.jsonl" => "not json\n"}))
+      stats = verdict.observations["trace_stats"]
+
+      for key <- ["compile_ms", "report_ms", "judge_ms", "wall_ms"],
+          do: assert(is_integer(stats[key]) and stats[key] >= 0, key)
+
+      assert stats["tracer_error"] == nil
+    end
+
+    test "a compile that did not finish names the tracer's error", %{tmp_dir: dir} do
+      killed = fn _caller, _ref, _command, _argv, _log -> {:ok, 137} end
+      assert portability_run(dir, killed).observations["trace_stats"]["tracer_error"] == "killed"
+
+      failed = fn _caller, _ref, _command, _argv, _log -> {:ok, 1} end
+      stats = portability_run(dir, failed).observations["trace_stats"]
+      assert stats["tracer_error"] == "exit_1"
+      assert is_integer(stats["compile_ms"])
+      refute Map.has_key?(stats, "judge_ms")
+    end
   end
 
   test "a run with no time left does not start the judge compile", %{tmp_dir: dir} do

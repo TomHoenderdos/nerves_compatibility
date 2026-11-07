@@ -140,6 +140,14 @@ defmodule NccWorker.Portability do
   such a build. `false` otherwise: a pass, a refusal, or a could-not-judge the
   same package and lock would get again (a missing or unverified tarball, a
   rebar3 parent's script, a beam R2 cannot read, a missing `ebin`).
+
+  `compile_ms`, `report_ms` and `judge_ms` split `wall_ms` into the traced
+  compile, reading its report and judging it (the last two only when the
+  compile finished); `tracer_error` names why a compile did not finish (`nil`
+  when it exited 0): the error `NccWorker.Tracer.run/3` returned (`"timeout"`,
+  `"killed"`, `"run_budget_exhausted"`, `"group_survived"`,
+  `"cleanup_unverified"`, `"writers_survived"`, `"tracer_modified"`,
+  `"exited"`, `"cmd_failed"`, ...) or `"exit_<n>"` for a non-zero exit.
   """
   @spec run(String.t(), String.t(), keyword()) :: verdict()
   def run(project_dir, package, opts) do
@@ -194,16 +202,41 @@ defmodule NccWorker.Portability do
     env = Keyword.fetch!(opts, :env)
     trace_dir = Keyword.get_lazy(opts, :trace_dir, fn -> default_trace_dir(project_dir) end)
     native = native_deps(project_dir)
-    traced = Tracer.run(project_dir, [package], tracer_opts(opts, env, trace_dir, native))
+
+    {compile_ms, traced} =
+      timed(fn ->
+        Tracer.run(project_dir, [package], tracer_opts(opts, env, trace_dir, native))
+      end)
+
     ctx_opts = [releases: releases, hex_home: hex_home(opts, env)]
 
     project_dir
     |> verdict(package, traced, trace_dir, native, ctx_opts)
     |> put_stat("judge_compile", judge_compile(traced))
+    |> put_stat("compile_ms", compile_ms)
+    |> put_stat("tracer_error", tracer_error(traced))
   end
 
   defp judge_compile({:ok, 0}), do: "finished"
   defp judge_compile(_traced), do: "not_finished"
+
+  defp timed(fun) do
+    started = System.monotonic_time(:millisecond)
+    result = fun.()
+    {System.monotonic_time(:millisecond) - started, result}
+  end
+
+  # Short and stable, for `trace_stats` and for callers that tell a compile
+  # that left processes behind from one that merely failed. `Tracer.run/3`
+  # already turns exits 124 and 137 into `:timeout` and `:killed`.
+  defp tracer_error({:ok, 0}), do: nil
+  defp tracer_error({:ok, status}) when is_integer(status), do: "exit_#{status}"
+  defp tracer_error({:error, reason}) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp tracer_error({:error, reason}) when is_tuple(reason) and is_atom(elem(reason, 0)),
+    do: Atom.to_string(elem(reason, 0))
+
+  defp tracer_error(_other), do: "other"
 
   defp default_trace_dir(project_dir), do: Path.join(Path.dirname(project_dir), "trace")
 
@@ -234,11 +267,13 @@ defmodule NccWorker.Portability do
   end
 
   defp verdict(project_dir, package, {:ok, 0}, trace_dir, native, ctx_opts) do
-    report = Report.read(trace_dir)
+    {report_ms, report} = timed(fn -> Report.read(trace_dir) end)
+    {judge_ms, verdict} = timed(fn -> judge(project_dir, package, report, native, ctx_opts) end)
 
-    project_dir
-    |> judge(package, report, native, ctx_opts)
+    verdict
     |> put_stat("report_over_budget", report.over_budget)
+    |> put_stat("report_ms", report_ms)
+    |> put_stat("judge_ms", judge_ms)
   end
 
   defp verdict(_project_dir, _package, {:ok, status}, _trace_dir, _native, _ctx_opts),
