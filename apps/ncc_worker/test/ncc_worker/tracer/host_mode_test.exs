@@ -2,7 +2,7 @@ defmodule NccWorker.Tracer.HostModeTest do
   # Starts real `elixir` and `mix` VMs (the :real_vm group).
   use ExUnit.Case, async: true, group: :real_vm
 
-  alias NccWorker.{TracerFixtures, Tracer.Report}
+  alias NccWorker.{BuildIdentity, TracerFixtures, Tracer.Report}
 
   @moduletag :tmp_dir
   @moduletag timeout: 300_000
@@ -25,7 +25,8 @@ defmodule NccWorker.Tracer.HostModeTest do
       },
       "fx_leaf" => %{
         files: %{
-          "lib/fx_leaf.ex" => "defmodule FxLeaf do\n  def f, do: :ok\nend\n",
+          "lib/fx_leaf.ex" =>
+            "defmodule FxLeaf do\n  @moduledoc \"Leaf.\"\n  @doc \"F.\"\n  def f, do: :ok\nend\n",
           "priv/data.txt" => "leaf data\n"
         }
       },
@@ -68,28 +69,8 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert status == 0, out
   end
 
-  # The files whose bytes differ between two `published/1` maps, with the
-  # chunks `:beam_lib.cmp/2` names for a beam.
-  defp differing(a, b) do
-    for {path, bytes} <- a, Map.get(b, path) != bytes do
-      {path, beam_cmp(path, bytes, Map.get(b, path))}
-    end
-  end
-
-  defp beam_cmp(path, a, b) when is_binary(b) do
-    if String.ends_with?(path, ".beam"), do: :beam_lib.cmp(a, b), else: :bytes_differ
-  end
-
-  defp beam_cmp(_path, _a, nil), do: :missing
-
-  # Known divergence, kept strict rather than weakened: the Elixir beams'
-  # `Dbgi` chunk is `term_to_binary/2` of atom-keyed maps without
-  # `:deterministic`, and since OTP 26 a small map's encoded key order is its
-  # atoms' creation order in the compiling VM. The modules the tracer loads
-  # before the closure compiles change that order, so FxLeaf, FxMac and FxTop
-  # differ in `Dbgi` bytes only (their decoded terms are `===`); every other
-  # file, the Erlang beam included, is identical.
-  @tag skip: "Dbgi map key order follows the compiling VM's atom table, which the tracer changes"
+  # Identity in `NccWorker.BuildIdentity`'s sense: every file byte-equal,
+  # except that a beam's Dbgi chunk only has to decode to `===` terms.
   test "the host-mode trace builds exactly what an untraced mix compile builds", %{tmp_dir: dir} do
     proj = fixture(dir)
     plain_compile(proj)
@@ -107,8 +88,7 @@ defmodule NccWorker.Tracer.HostModeTest do
 
     host = published(proj)
     assert Enum.sort(Map.keys(host)) == Enum.sort(Map.keys(untraced))
-    assert differing(host, untraced) == []
-    assert host == untraced
+    assert BuildIdentity.differences(host, untraced) == []
   end
 
   test "the project itself is compiled, after the last window", %{tmp_dir: dir} do
