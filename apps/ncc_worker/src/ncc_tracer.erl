@@ -3,7 +3,8 @@
 %% the VM that compiles the package: start_main/0 from `mix ncc.trace_compile`,
 %% start_child/0 from ERL_AFLAGS in every other BEAM the compile starts
 %% (rebar3). Writes one JSON object per line; NccWorker.Tracer.Report reads them.
--export([start_main/0, start_child/0, window_open/2, window_close/2, closure/3, config_env/2,
+-export([start_main/0, start_child/0, window_open/2, window_close/2, closure/3, built/3,
+         config_env/2,
          native_patterns/3, finish/2, fire/1, ebin_dir/0, flush/0, collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
 -export([safe_extent/4, maps_libs/1]).
@@ -72,6 +73,10 @@ window_close(Token, App) ->
 
 closure(Token, Packages, Deps) -> call(Token, {closure, [bin(P) || P <- Packages], Deps}).
 
+%% The digest of what App's compile left in its build dir (ncc_tracer_digest),
+%% taken by the collector, which is not traced, right after its window.
+built(Token, App, Dir) -> call(Token, {built, bin(App), Dir}).
+
 %% The driver's application-env snapshot (ncc_tracer_config:snapshot/0),
 %% written once, before the closure is loaded and anything compiles.
 config_env(Token, {Entries, Truncated}) when is_list(Entries), is_boolean(Truncated) ->
@@ -134,6 +139,7 @@ start(Role, Dir, App) ->
     _ = erlang:system_flag(backtrace_depth, ?DEPTH),
     Depth = erlang:system_flag(backtrace_depth, ?DEPTH),
     ok = load_probe(),
+    ok = load_digest(Role),
     Script = mix_script(Role),
     Libs = start_libs(),
     Parent = self(),
@@ -150,6 +156,14 @@ start(Role, Dir, App) ->
         {'DOWN', Ref, process, Pid, Reason} -> {error, Reason}
     after ?TIMEOUT -> {error, timeout}
     end.
+
+%% The Mix VM's collector digests every build after its window, by which
+%% time Mix has pruned the code path to the project's; so the module is
+%% loaded now. Child VMs never digest.
+load_digest(main) ->
+    _ = quietly(fun() -> code:ensure_loaded(ncc_tracer_digest) end),
+    ok;
+load_digest(child) -> ok.
 
 refuse_start(false, Why) -> {error, binary_to_atom(Why)};
 refuse_start(Dir, Why) ->
@@ -715,6 +729,13 @@ request({window_close, App, Ts, Delivered}, _From, St0) ->
 request({closure, Packages, Deps}, _From, St) ->
     write(St, #{kind => closure, packages => Packages, deps => Deps, ts => now_ns()}),
     {ok, St};
+request({built, App, Dir}, _From, St) ->
+    Fields = case digest(Dir) of
+                 {ok, Hex, Files} -> #{digest => Hex, files => Files};
+                 {error, Why} -> #{digest => null, error => reason_bin(Why)}
+             end,
+    write(St, Fields#{kind => built, app => App, ts => now_ns()}),
+    {ok, St};
 request({native, App, Ebin}, _From, St) -> {ok, native(App, Ebin, St)};
 request({config_env, Entries, Truncated}, _From, St) ->
     write(St, #{kind => config_env, entries => Entries, truncated => Truncated, ts => now_ns()}),
@@ -729,6 +750,13 @@ request({finish, Status, Ts, Delivered}, _From, St) ->
     {finish_trace(Status, Ts, Delivered, St), St};
 request(flush, _From, St) -> {ok, libs_line(St)};
 request(_Req, _From, St) -> {{error, unknown_request}, St}.
+
+%% ncc_tracer_digest:dir/1 never raises, but a digest module that is not
+%% loaded must cost one dependency its digest, not the collector.
+digest(Dir) ->
+    try ncc_tracer_digest:dir(Dir)
+    catch _:_ -> {error, digest_unavailable}
+    end.
 
 %% Spec R3 native taint: call patterns on every module of a natively built
 %% closure dependency, set before any later dependency compiles. Loading them

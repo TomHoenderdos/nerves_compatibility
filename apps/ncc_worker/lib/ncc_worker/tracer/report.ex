@@ -43,6 +43,11 @@ defmodule NccWorker.Tracer.Report do
   child keeps its `libs` lines; `NccWorker.Portability.MappedLibs` judges
   them.
 
+  A `built` line follows each window: the digest of the dependency's `ebin`
+  and `priv` as its compile left them (`:ncc_tracer_digest`), kept per app in
+  `built`; a digest the tracer could not take is kept as `nil`, which the
+  judge treats as missing.
+
   ## Read budget
 
   The main file and every child file share one budget, so a compile that
@@ -72,6 +77,7 @@ defmodule NccWorker.Tracer.Report do
             overflow: [],
             refused_start: nil,
             children: %{},
+            built: %{},
             over_budget: false,
             problems: []
 
@@ -113,6 +119,7 @@ defmodule NccWorker.Tracer.Report do
           overflow: [map()],
           refused_start: map() | nil,
           children: %{String.t() => child()},
+          built: %{String.t() => %{digest: String.t() | nil, files: integer() | nil}},
           over_budget: boolean(),
           problems: [String.t()]
         }
@@ -251,6 +258,12 @@ defmodule NccWorker.Tracer.Report do
       true ->
         r
     end
+  end
+
+  defp main_line({:line, %{"kind" => "built", "app" => app} = l}, r) when is_binary(app) do
+    digest = if is_binary(l["digest"]), do: l["digest"]
+    files = if is_integer(l["files"]), do: l["files"]
+    %{r | built: Map.put_new(r.built, app, %{digest: digest, files: files})}
   end
 
   defp main_line({:line, %{"kind" => "event"} = l}, r), do: %{r | events: [l | r.events]}

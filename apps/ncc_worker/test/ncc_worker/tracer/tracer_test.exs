@@ -49,6 +49,29 @@ defmodule NccWorker.TracerTest do
     assert File.regular?(Path.join(proj, "_build/host/lib/fx_top/ebin/Elixir.FxTop.beam"))
   end
 
+  test "every window is followed by the digest of what it built", %{tmp_dir: dir} do
+    proj =
+      TracerFixtures.project(dir, ["fx_top"], %{
+        "fx_top" => %{
+          deps: ["fx_leaf"],
+          files: %{"lib/fx_top.ex" => "defmodule FxTop do\n  def f, do: FxLeaf.f()\nend\n"}
+        },
+        "fx_leaf" => %{
+          files: %{"lib/fx_leaf.ex" => "defmodule FxLeaf do\n  def f, do: :ok\nend\n"}
+        }
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_top"])
+    assert {:ok, 0} = traced.result, traced.log
+
+    for app <- ["fx_leaf", "fx_top"] do
+      build = Path.join([proj, "_build", "host", "lib", app])
+      assert {:ok, digest, files} = :ncc_tracer_digest.dir(build)
+      assert files >= 2
+      assert traced.report.built[app] == %{digest: digest, files: files}
+    end
+  end
+
   test "the config snapshot is the project's env, taken before a dependency's mix.exs runs",
        %{tmp_dir: dir} do
     # The dependency's mix.exs, which Mix evaluates while loading the

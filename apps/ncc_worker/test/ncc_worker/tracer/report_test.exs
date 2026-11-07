@@ -442,4 +442,16 @@ defmodule NccWorker.Tracer.ReportTest do
       assert r.problems == ["no config snapshot"]
     end
   end
+
+  test "built lines are kept per app", %{tmp_dir: dir} do
+    built = [
+      %{"kind" => "built", "app" => "r3", "digest" => "aa", "files" => 3, "ts" => 21},
+      %{"kind" => "built", "app" => "pkg", "digest" => nil, "error" => "too_large", "ts" => 41}
+    ]
+
+    lines = clean() |> List.insert_at(-3, Enum.at(built, 1)) |> List.insert_at(5, hd(built))
+    r = read(dir, lines)
+    assert r.problems == []
+    assert r.built == %{"r3" => %{digest: "aa", files: 3}, "pkg" => %{digest: nil, files: nil}}
+  end
 end

@@ -108,6 +108,7 @@ compile_dep(Token, Dep, Native, DepConfig) ->
     _ = ncc_tracer:fire(App),
     _ = 'Elixir.Mix.Tasks.Deps.Compile':compile_single(Dep, true, DepConfig),
     _ = ncc_tracer:window_close(Token, App),
+    _ = ncc_tracer:built(Token, App, opt(build, Dep)),
     case lists:member(App, Native) of
         true ->
             Ebin = filename:join(opt(build, Dep), "ebin"),
