@@ -17,13 +17,17 @@ defmodule NccWorker.Portability.ConfigReads do
       recorded;
     * one the toolchain's own code makes (`first_kind` "toolchain": Logger's
       macros, `IO.warn`) is recorded when `{app, key}` is on the toolchain's
-      reviewed `record` list, dropped when it is on its reviewed `drop` list
-      (values that never change generated code, such as `:elixir,
-      :ansi_enabled`, which follows the terminal), and recorded and flagged
-      (`unreviewed`) otherwise: an unknown toolchain read may change code.
-      A toolchain with no reviewed lists judges no build with such a read;
+      reviewed `record` list (Logger's compile-time keys, and `:level`),
+      dropped when `{first frame, app, key}` is on its reviewed `drop` list
+      (only `IO.warn`'s `:elixir, :ansi_enabled`, which colours a warning
+      and generates no code; `IO.ANSI.format/1,2` reads the same key and
+      bakes escape codes, or none, into what it returns), and otherwise
+      cannot be judged: an unknown toolchain read may change code, so the
+      build does not publish. It is also listed in `unreviewed` for the
+      review. A toolchain with no reviewed lists judges no build with such
+      a read;
     * `application:get_all_env/0,1` from package code refuses (there is no
-      key to match on); from the toolchain's own code it is flagged;
+      key to match on); from the toolchain's own code it cannot be judged;
     * `application:get_env/1` (the caller's own application, which no
       compile process has) is ignored;
     * a read naming a non-atom application or key refuses.
@@ -76,14 +80,16 @@ defmodule NccWorker.Portability.ConfigReads do
     {"logger", "always_evaluate_messages"},
     {"logger", "compile_time_application"},
     {"logger", "compile_time_purge_level"},
-    {"logger", "compile_time_purge_matching"}
+    {"logger", "compile_time_purge_matching"},
+    {"logger", "level"}
   ]
 
   # Per Elixir minor, the toolchain's own compile-time config reads, reviewed:
-  # `record` changes generated code, `drop` does not.
+  # `record` ({app, key}) changes generated code; `drop` ({first frame
+  # module, app, key}) does not.
   @reviewed %{
-    "1.19" => %{record: @logger_compile_keys, drop: [{"elixir", "ansi_enabled"}]},
-    "1.20" => %{record: @logger_compile_keys, drop: [{"elixir", "ansi_enabled"}]}
+    "1.19" => %{record: @logger_compile_keys, drop: [{"Elixir.IO", "elixir", "ansi_enabled"}]},
+    "1.20" => %{record: @logger_compile_keys, drop: [{"Elixir.IO", "elixir", "ansi_enabled"}]}
   }
 
   # Loaded before every compile: Mix's own extra applications
@@ -104,7 +110,8 @@ defmodule NccWorker.Portability.ConfigReads do
 
   @doc "The reviewed toolchain reads for Elixir version `elixir`, or nil."
   @spec reviewed(term()) ::
-          %{record: [{String.t(), String.t()}], drop: [{String.t(), String.t()}]} | nil
+          %{record: [{String.t(), String.t()}], drop: [{String.t(), String.t(), String.t()}]}
+          | nil
   def reviewed(elixir) when is_binary(elixir) do
     case Version.parse(elixir) do
       {:ok, %Version{major: major, minor: minor}} -> Map.get(@reviewed, "#{major}.#{minor}")
@@ -163,10 +170,11 @@ defmodule NccWorker.Portability.ConfigReads do
 
   defp add(acc, owner, _item, {:record, key}), do: put_key(acc, owner, key)
 
-  defp add(acc, owner, item, {:unreviewed, key}),
-    do: acc |> flag(owner, item) |> put_key(owner, key)
+  defp add(acc, owner, item, {:unreviewed, what}) do
+    why = "unreviewed toolchain config read: #{what} from #{first(item)}"
+    %{flag(acc, owner, item) | problems: [why | acc.problems]}
+  end
 
-  defp add(acc, owner, item, :unreviewed_all), do: flag(acc, owner, item)
   defp add(acc, _owner, _item, :drop), do: %{acc | dropped: acc.dropped + 1}
   defp add(acc, _owner, _item, :ignore), do: acc
 
@@ -185,7 +193,7 @@ defmodule NccWorker.Portability.ConfigReads do
 
   defp classify(%{"mfa" => "application:get_all_env/" <> _} = item, _toolchain) do
     if toolchain?(item),
-      do: :unreviewed_all,
+      do: {:unreviewed, "#{item["mfa"]} (#{get_in(item, ["arg", "app"])})"},
       else: {:refuse, reason(item, "has no key to match on")}
   end
 
@@ -194,22 +202,27 @@ defmodule NccWorker.Portability.ConfigReads do
          toolchain
        )
        when is_binary(app) and is_binary(key) do
-    if toolchain?(item), do: toolchain_read({app, key}, toolchain), else: {:record, {app, key}}
+    if toolchain?(item),
+      do: toolchain_read({app, key}, item["first"], toolchain),
+      else: {:record, {app, key}}
   end
 
   defp classify(item, _toolchain),
     do: {:refuse, reason(item, "names a non-atom application or key")}
 
-  defp toolchain_read(_key, {elixir, nil}),
+  defp toolchain_read(_key, _first, {elixir, nil}),
     do: {:unjudged, "no reviewed config reads for Elixir #{minor(elixir)}"}
 
-  defp toolchain_read(key, {_elixir, %{record: record, drop: drop}}) do
+  defp toolchain_read({app, key}, first, {_elixir, %{record: record, drop: drop}}) do
     cond do
-      key in record -> {:record, key}
-      key in drop -> :drop
-      true -> {:unreviewed, key}
+      {app, key} in record -> {:record, {app, key}}
+      {first, app, key} in drop -> :drop
+      true -> {:unreviewed, "#{app} #{key}"}
     end
   end
+
+  defp first(%{"first" => first}) when is_binary(first), do: first
+  defp first(_item), do: "(no frame)"
 
   defp toolchain?(%{"first_kind" => "toolchain"}), do: true
   defp toolchain?(_item), do: false

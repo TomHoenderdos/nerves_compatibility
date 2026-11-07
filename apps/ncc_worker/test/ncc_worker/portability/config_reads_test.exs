@@ -138,22 +138,32 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     end
   end
 
-  test "toolchain reads: reviewed ones recorded or dropped, unknown ones recorded and flagged" do
+  test "toolchain reads: reviewed ones recorded or dropped, any other one cannot be judged" do
     decided = [
       obs(
         "pkg",
         read("logger", "compile_time_purge_matching", kind: "toolchain", first: "Elixir.Logger")
       ),
-      obs("pkg", read("elixir", "ansi_enabled", kind: "toolchain", first: "Elixir.IO")),
-      obs("dep", read("mix", "unknown_key", kind: "toolchain", first: "Elixir.Mix.Project"))
+      obs("pkg", read("logger", "level", kind: "toolchain", first: "Elixir.Logger")),
+      obs("pkg", read("elixir", "ansi_enabled", kind: "toolchain", first: "Elixir.IO"))
     ]
 
     result = judge(decided, snap(%{}))
 
-    assert keys(result) == [{"logger", ["compile_time_purge_matching"]}, {"mix", ["unknown_key"]}]
-    assert result.problems == []
-    assert result.dropped == 1
-    assert [%{"owner" => "dep", "arg" => %{"key_name" => "unknown_key"}}] = result.unreviewed
+    assert keys(result) == [
+             {"logger", ["compile_time_purge_matching"]},
+             {"logger", ["level"]}
+           ]
+
+    assert %{problems: [], unreviewed: [], dropped: 1} = result
+
+    unknown = [
+      obs("dep", read("mix", "unknown_key", kind: "toolchain", first: "Elixir.Mix.Project"))
+    ]
+
+    assert %{items: [], problems: [problem], unreviewed: [flagged]} = judge(unknown, snap(%{}))
+    assert problem == "unreviewed toolchain config read: mix unknown_key from Elixir.Mix.Project"
+    assert %{"owner" => "dep", "arg" => %{"key_name" => "unknown_key"}} = flagged
   end
 
   test "IO.warn's :elixir ansi_enabled is never recorded, set or not" do
@@ -161,6 +171,17 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     entries = %{{"elixir", "ansi_enabled"} => enc({:ok, true})}
 
     assert %{items: [], problems: [], dropped: 1} = judge(decided, snap(entries))
+  end
+
+  # IO.ANSI.format/1,2 and format_fragment/1,2 bake escape codes, or none,
+  # by the same key: only IO.warn's read of it is reviewed as dropped.
+  test "IO.ANSI's :elixir ansi_enabled read cannot be judged" do
+    decided = [
+      obs("pkg", read("elixir", "ansi_enabled", kind: "toolchain", first: "Elixir.IO.ANSI"))
+    ]
+
+    assert %{items: [], dropped: 0, problems: [problem]} = judge(decided, snap(%{}))
+    assert problem == "unreviewed toolchain config read: elixir ansi_enabled from Elixir.IO.ANSI"
   end
 
   test "a read reached through glue, or with no first frame, is the package's own" do
@@ -180,11 +201,14 @@ defmodule NccWorker.Portability.ConfigReadsTest do
 
     assert ConfigReads.reviewed("1.99.0") == nil
     assert ConfigReads.reviewed(nil) == nil
-    assert %{record: [_ | _], drop: [{"elixir", "ansi_enabled"}]} = ConfigReads.reviewed("1.20.4")
-    assert %{record: [_ | _], drop: [{"elixir", "ansi_enabled"}]} = ConfigReads.reviewed("1.19.5")
+
+    for elixir <- ["1.19.5", "1.20.4"] do
+      assert %{record: [_ | _], drop: [{"Elixir.IO", "elixir", "ansi_enabled"}]} =
+               ConfigReads.reviewed(elixir)
+    end
   end
 
-  test "get_all_env refuses from package code, is flagged from the toolchain's; get_env/1 is ignored" do
+  test "get_all_env refuses from package code, cannot be judged from the toolchain's; get_env/1 is ignored" do
     all = fn kind ->
       %{
         read("phoenix", nil, kind: kind, mfa: "application:get_all_env/1")
@@ -199,8 +223,11 @@ defmodule NccWorker.Portability.ConfigReadsTest do
              "compile-time config read: application:get_all_env/1 (phoenix) has no key to match on" <>
                " in Pkg (lib/pkg.ex:3)"
 
-    assert %{refusals: [], items: [], unreviewed: [_]} =
+    assert %{refusals: [], items: [], unreviewed: [_], problems: [problem]} =
              judge([obs("pkg", all.("toolchain"))], snap(%{}))
+
+    assert problem ==
+             "unreviewed toolchain config read: application:get_all_env/1 (phoenix) from Elixir.Pkg"
 
     one = %{
       read(nil, "k", mfa: "application:get_env/1")
@@ -242,5 +269,91 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     assert ConfigReads.merge(app, r5) == app ++ [%{app: "lv", path: ["x"], value: "D"}]
     assert ConfigReads.merge([], r5) == r5
     assert ConfigReads.merge(nil, r5) == nil
+  end
+
+  # The reviewed `record` list pins Logger's compile-time reads: every
+  # Application.get_env/fetch_env/compile_env of a literal :logger key that
+  # Logger's macros run while they expand (their bodies and the module's
+  # functions they call, outside `quote` but inside `unquote`), read from the
+  # running Elixir's own Logger source. `:level` is recorded on top: the
+  # spec lists it, and an extra item can only cost a hit, never give a false
+  # one.
+  describe "the reviewed list for the running Elixir" do
+    test "records exactly what Logger's macros read while they expand, plus :level" do
+      source = Path.join(:code.lib_dir(:logger), "lib/logger.ex")
+      assert File.regular?(source), "no Logger source at #{source}"
+
+      read = source |> File.read!() |> Code.string_to_quoted!() |> macro_reads()
+      assert read != []
+
+      %{record: record} = ConfigReads.reviewed(System.version())
+
+      assert Enum.sort(record) == Enum.sort([{"logger", "level"} | read])
+    end
+  end
+
+  defp macro_reads(ast) do
+    {_ast, defs} =
+      Macro.prewalk(ast, %{}, fn
+        {kind, _, [head, [do: body]]} = node, acc when kind in [:def, :defp, :defmacro] ->
+          {node, Map.update(acc, def_name(kind, head), [body], &[body | &1])}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    roots = for {{:defmacro, _} = key, _} <- defs, do: key
+    funs = Map.new(defs, fn {{_kind, name}, bodies} -> {name, bodies} end)
+
+    roots
+    |> Enum.flat_map(&Map.fetch!(defs, &1))
+    |> expand(funs, MapSet.new(), MapSet.new())
+    |> Enum.sort()
+  end
+
+  defp def_name(kind, {:when, _, [head | _]}), do: def_name(kind, head)
+  defp def_name(kind, {{:unquote, _, _}, _, _}), do: {kind, :unquote}
+  defp def_name(kind, {name, _, _}), do: {kind, name}
+
+  defp expand([], _funs, _seen, reads), do: reads
+
+  defp expand([body | rest], funs, seen, reads) do
+    {calls, found} = scan(body, {[], []})
+    reads = Enum.into(found, reads)
+    new = Enum.reject(Enum.uniq(calls), &(MapSet.member?(seen, &1) or not Map.has_key?(funs, &1)))
+    seen = Enum.into(new, seen)
+    expand(Enum.flat_map(new, &Map.fetch!(funs, &1)) ++ rest, funs, seen, reads)
+  end
+
+  # Expansion-time code only: inside `quote`, just what `unquote` runs.
+  defp scan({:quote, _, args}, acc), do: unquotes(args, acc)
+
+  defp scan({{:., _, [{:__aliases__, _, [:Application]}, fun]}, _, [app, key | _]}, acc)
+       when fun in [:get_env, :fetch_env, :fetch_env!, :compile_env, :compile_env!] and
+              is_atom(app) and is_atom(key) do
+    {calls, found} = acc
+    {calls, [{Atom.to_string(app), Atom.to_string(key)} | found]}
+  end
+
+  defp scan({name, _, args}, acc) when is_atom(name) and is_list(args) do
+    {calls, found} = Enum.reduce(args, acc, &scan/2)
+    {[name | calls], found}
+  end
+
+  defp scan({left, _, args}, acc) when is_list(args),
+    do: Enum.reduce(args, scan(left, acc), &scan/2)
+
+  defp scan({left, right}, acc), do: scan(right, scan(left, acc))
+  defp scan(list, acc) when is_list(list), do: Enum.reduce(list, acc, &scan/2)
+  defp scan(_leaf, acc), do: acc
+
+  defp unquotes(ast, acc) do
+    {_ast, acc} =
+      Macro.prewalk(ast, acc, fn
+        {:unquote, _, args} = node, acc -> {node, scan(args, acc)}
+        node, acc -> {node, acc}
+      end)
+
+    acc
   end
 end
