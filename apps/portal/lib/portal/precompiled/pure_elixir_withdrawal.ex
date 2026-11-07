@@ -19,9 +19,9 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
 
   R3 closure taint (`closure dependency observed the host: `), a call into a
   natively built dependency, the rebar3 rules, "portability could not be
-  judged" and rule 1's reasons never withdraw (controller ruling m4): they
-  speak of a dependency, of the trace's own coverage or of what P0 already
-  judged. `held/1` lists the trace refusals left alone, for a hand check.
+  judged" and rule 1's reasons never withdraw: they speak of a dependency, of
+  the trace's own coverage or of what P0 already judged, not of the
+  package's own compile. `held/1` lists the trace refusals left alone, for a hand check.
 
   Withdrawing a version sets `unpublished_at` on **every** `pure_elixir`
   system result of it that still has files: the newest run's, every older
@@ -31,13 +31,22 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
   are never touched. One `UPDATE` per version, which re-checks the refusal
   as it runs, so a version is withdrawn whole or not at all.
 
-  Only results built before the P1 deploy are withdrawn (controller
-  ruling): acting takes a `before:` cutoff, the time P1 was deployed, and
-  touches a result only when the run that built it (for a carried copy, the
-  run it was carried from) was inserted before it. A full run after P1
-  published its `pure_elixir` files only because its own traced compile
-  passed, a verdict the portal does not store, so the toolchain build's
-  refusal is not evidence against it.
+  Only results built without the trace are withdrawn: acting takes a
+  `before:` cutoff and touches a result only when the run that built it (for
+  a carried copy, the run it was carried from) was inserted before it. A
+  full run built on a traced worker image published its `pure_elixir` files
+  only because its own traced compile passed, a verdict the portal does not
+  store, so the toolchain build's refusal is not evidence against it.
+
+  Choose `before:` only once every build made on the untraced image has been
+  ingested, and take a time after the last of them: a build host's job that
+  started before the deploy, and above all a remote builder's lease queued
+  before it (it names the old image digest, and a builder may run it well
+  after the deploy) still publish untraced results that are inserted after
+  the deploy time. Wait until no `Portal.Builders.Lease` with the old
+  `image_digest` is queued or running and no `Portal.Workers.Build` job from
+  before the deploy is left; a cutoff earlier than the last such run leaves
+  those untraced publications in place.
 
   ## Safety
 
@@ -68,7 +77,8 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
 
   The first lists every candidate with each result's `built_at`, so the
   split at the cutoff shows; the third lists what that cutoff would
-  withdraw. `~U[2026-11-08 09:00:00Z]` stands for the P1 deploy time.
+  withdraw. `~U[2026-11-08 09:00:00Z]` stands for the cutoff chosen as
+  above.
   Repeat the fourth until it returns `{:withdrawn, 0, []}`.
   """
 
