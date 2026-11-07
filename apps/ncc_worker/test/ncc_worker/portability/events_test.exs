@@ -197,6 +197,37 @@ defmodule NccWorker.Portability.EventsTest do
     assert {:refuse, _} = Events.decide(version, ctx, "pkg")
   end
 
+  @big_int %{"module" => "erlang", "function" => "big_binary_to_int", "arity" => 2}
+
+  defp wordsize(key, caller) do
+    event = ev("os_identity", "erlang:system_info/1", %{"key" => key}, first: "erlang")
+    if caller == :none, do: event, else: Map.put(event, "caller", caller)
+  end
+
+  test "OTP's big integer conversion may read the word size; nothing else may", %{ctx: ctx} do
+    assert :ignore = Events.decide(wordsize("wordsize", @big_int), ctx, "pkg")
+
+    for caller <- [
+          nil,
+          :none,
+          %{"module" => "Elixir.Pkg", "function" => "f", "arity" => 0},
+          %{"module" => "erlang", "function" => "binary_to_integer", "arity" => 1},
+          %{"module" => "erlang", "function" => "big_binary_to_int", "arity" => 3},
+          %{"module" => "Elixir.Pkg", "function" => "big_binary_to_int", "arity" => 2}
+        ] do
+      assert {:refuse, "compile-time host read: erlang:system_info/1" <> _} =
+               Events.decide(wordsize("wordsize", caller), ctx, "pkg"),
+             inspect(caller)
+    end
+
+    for key <- ["version", "system_architecture", "os_type", "machine"] do
+      assert {:refuse, _} = Events.decide(wordsize(key, @big_int), ctx, "pkg"), key
+    end
+
+    other = %{wordsize("wordsize", @big_int) | "mfa" => "os:type/0", "arg" => %{}}
+    assert {:refuse, _} = Events.decide(other, ctx, "pkg")
+  end
+
   test "a stack without a user frame names its extent", %{ctx: ctx} do
     assert {:refuse,
             "compile-time host read: os:getenv/1 (truncated stack, first frame Elixir.Macro)"} =

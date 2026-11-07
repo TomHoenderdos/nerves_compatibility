@@ -63,19 +63,8 @@
     "native_libs": [],
     "nif_check": "waived",
     "problems": [],
-    "refusals": [
-      {
-        "owner": "decimal",
-        "reason": "compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:198)"
-      },
-      {
-        "owner": "decimal",
-        "reason": "compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:206)"
-      }
-    ],
-    "taint": {
-      "decimal": "compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:198)"
-    }
+    "refusals": [],
+    "taint": {}
   },
   "optional_deps": {
     "added": [
@@ -87,9 +76,9 @@
   "optional_deps_variant": "include",
   "package": "jason",
   "platform": "darwin-elixir-1.20.4-otp-29",
-  "reason": "closure dependency observed the host: decimal (compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:198))",
+  "reason": null,
   "rule1_reason": null,
-  "status": "skipped",
-  "trace_verdict": "refused",
+  "status": "pass",
+  "trace_verdict": "pass",
   "version": "1.4.5"
 }

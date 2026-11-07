@@ -14,7 +14,9 @@ defmodule NccWorker.Portability.Events do
       In an epp server process (no user frame, the stack's bottom frame
       `epp:server`/`epp:init_server`), `system_info(machine)`,
       `system_info(otp_release)` and `os:type/0` are its predefined macros
-      and ignored; every other read there stays user.
+      and ignored; every other read there stays user. `system_info(wordsize)`
+      is ignored only when its immediate caller (the event's `caller`) is
+      `erlang:big_binary_to_int/2`, OTP converting a big integer literal.
     * Environment, programs, network, crypto and native loading refuse.
     * Integrity (the trace API, `erts_internal` trace BIFs, `system_flag`,
       reading another process's stack, mailbox or dictionary, unsticking a
@@ -175,6 +177,16 @@ defmodule NccWorker.Portability.Events do
     do: key in ["machine", "otp_release"]
 
   defp epp_read?(_event), do: false
+
+  # OTP's own conversion of a big integer (`binary_to_integer/1` on a long
+  # literal traps to erlang:big_binary_to_int/2) sizes its chunks by the
+  # word size: 8 on every supported host, and not part of the result.
+  defp os_identity(%{
+         "mfa" => "erlang:system_info/1",
+         "arg" => %{"key" => "wordsize"},
+         "caller" => %{"module" => "erlang", "function" => "big_binary_to_int", "arity" => 2}
+       }),
+       do: :ignore
 
   defp os_identity(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => "otp_release"}}),
     do: :ignore

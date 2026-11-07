@@ -2529,14 +2529,6 @@
     "problems": [],
     "refusals": [
       {
-        "owner": "decimal",
-        "reason": "compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:198)"
-      },
-      {
-        "owner": "decimal",
-        "reason": "compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:206)"
-      },
-      {
         "owner": "exqlite",
         "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler (<work>/work/proj/deps/exqlite/mix.exs:72)"
       },
@@ -2706,7 +2698,6 @@
       }
     ],
     "taint": {
-      "decimal": "compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:198)",
       "exqlite": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler (<work>/work/proj/deps/exqlite/mix.exs:72)"
     }
   },

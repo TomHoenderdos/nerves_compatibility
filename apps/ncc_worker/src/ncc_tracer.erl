@@ -432,7 +432,7 @@ call_event(Pid, M, F, Args, Stack, Ts, #st{calls = Calls} = St0) ->
             St = depth_seen(M, F, Args, St1),
             Extent = safe_extent(Stack, St#st.depth, fun toolchain/1, user_process(Pid, St),
                                  is_script(Pid)),
-            Info = {Pid, M, F, Args, Ts, bottom(Stack, St#st.depth)},
+            Info = {Pid, M, F, Args, Ts, {caller(Stack), bottom(Stack, St#st.depth)}},
             classified(M, F, Args, Extent, Info, St)
     end.
 
@@ -491,12 +491,12 @@ record({env, #{name := <<?SENTINEL, App0/binary>>}}, {user, _, _, {?PROBE, _, _,
     {App, Final} = sentinel_app(App0, Pid, St),
     write(St, Checks#{kind => sentinel, app => App, ts => Ts, pid => pid_bin(Pid)}),
     St#st{final = St#st.final orelse Final};
-record({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Bottom0}, St) ->
-    {Kind, First, User, Bottom} = frames(Kind0, First0, User0, Bottom0),
+record({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends}, St) ->
+    {Kind, First, User, {Caller, Bottom}} = frames(Kind0, First0, User0, Ends),
     Line = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
              mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
              arg => enrich(Channel, Arg), extent => Kind, first => First, user => User,
-             bottom => Bottom},
+             caller => Caller, bottom => Bottom},
     user_event(Line, Kind =:= unjudged orelse Channel =:= unclassified, St).
 
 sentinel_app(<<"__final__:", Nonce/binary>>, Pid, #st{final_pid = Pid, final_nonce = Nonce}) ->
@@ -518,11 +518,16 @@ closing_checks(St0, Delivered) ->
 
 %% A frame the renderer cannot take apart turns the event unjudged, with no
 %% frames, rather than crashing the collector or dropping the event.
-frames(Kind, First, User, Bottom) ->
+frames(Kind, First, User, {Caller, Bottom}) ->
     try {Kind, ncc_tracer_stack:frame(First), ncc_tracer_stack:frame(User),
-         ncc_tracer_stack:frame(Bottom)}
-    catch _:_ -> {unjudged, null, null, null}
+         {ncc_tracer_stack:frame(Caller), ncc_tracer_stack:frame(Bottom)}}
+    catch _:_ -> {unjudged, null, null, {null, null}}
     end.
+
+%% The frame right below the traced call, before any wrapper is stripped:
+%% the judge exempts one OTP-internal caller (erlang:big_binary_to_int/2).
+caller([Frame | _]) -> Frame;
+caller(_Stack) -> none.
 
 %% The process's bottom-most frame, where it started (the judge recognises
 %% an epp server by it), only when the stack was seen whole: a stack as

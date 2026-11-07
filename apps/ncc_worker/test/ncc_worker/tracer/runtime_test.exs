@@ -130,6 +130,28 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert {"file_read", "file:read_link/1", 4} in events
   end
 
+  test "an event records its immediate caller: big integer literals read the word size",
+       %{tmp_dir: dir} do
+    {lines, _out} =
+      compile_fixture(dir, "fx_bigint.ex", """
+      defmodule FxBigint do
+        @big :erlang.binary_to_integer(String.duplicate("7", 20_000))
+        def big, do: @big
+      end
+      """)
+
+    event =
+      Enum.find(
+        kind(lines, "event"),
+        &(&1["mfa"] == "erlang:system_info/1" and &1["arg"]["key"] == "wordsize")
+      )
+
+    assert %{"caller" => %{"module" => "erlang", "function" => "big_binary_to_int", "arity" => 2}} =
+             event
+
+    assert String.ends_with?(event["user"]["file"], "fx_bigint.ex")
+  end
+
   test "a task spawned by a module body is a user process", %{tmp_dir: dir} do
     {lines, _} =
       compile_fixture(dir, "fx_task.ex", """
