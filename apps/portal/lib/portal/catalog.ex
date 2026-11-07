@@ -1595,6 +1595,8 @@ defmodule Portal.Catalog do
     end
   end
 
+  @withheld_revocation ToolchainBuild.withheld_revocation()
+
   @doc """
   Marks revoked toolchain builds as revoked for their withheld closure
   (`ToolchainBuild.withheld_revocation/0`), so the backlog rebuilds each once
@@ -1659,21 +1661,34 @@ defmodule Portal.Catalog do
         variant: row.variant
       })
 
-    current = Ash.get!(ToolchainBuild, row.id, load: [:package], domain: __MODULE__)
+    current = toolchain_builds_by_id([row.id])[row.id]
 
     with :ok <- markable(current, packages) do
       current
       |> Ash.Changeset.for_update(:mark_withheld_revoked, %{})
       |> Ash.update(domain: __MODULE__)
-      |> case do
-        {:ok, _row} -> :ok
-        {:error, _stale} -> {:skip, "not revoked"}
-      end
+      |> marked()
     end
   end
 
+  # The action's filter matches only a revoked row: a stale record is one
+  # that was un-revoked meanwhile. Any other error is reported as itself.
+  defp marked({:ok, _row}), do: :ok
+
+  defp marked({:error, %Ash.Error.Invalid{errors: errors} = error}) do
+    if Enum.all?(errors, &match?(%Ash.Error.Changes.StaleRecord{}, &1)),
+      do: {:skip, "not revoked"},
+      else: {:skip, "not marked: " <> Exception.message(error)}
+  end
+
+  defp marked({:error, error}), do: {:skip, "not marked: " <> Exception.message(error)}
+
   defp markable(nil, _packages), do: {:skip, "no such toolchain build"}
   defp markable(%ToolchainBuild{revoked_at: nil}, _packages), do: {:skip, "not revoked"}
+
+  defp markable(%ToolchainBuild{revoked_reason: reason}, _packages)
+       when is_binary(reason) and reason != @withheld_revocation,
+       do: {:skip, "revoked for another reason: " <> reason}
 
   defp markable(%ToolchainBuild{compile_env_rule: rule}, _packages) when not is_nil(rule),
     do: {:skip, "already records its config reads"}

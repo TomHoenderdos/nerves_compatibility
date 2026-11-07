@@ -371,6 +371,53 @@ defmodule Portal.Precompiled.WithheldTest do
       assert rebuilt.transient_attempts == 0
     end
 
+    test "a marked row's failed rebuild with the rule stays revoked and marked" do
+      name = "tc_rebuild_fail_#{System.unique_integer([:positive])}"
+      build = marked_build!(name)
+
+      ingest_toolchain_build(name, "0.1.0",
+        deps_lock: @liveview,
+        compile_env_rule: 1,
+        status: "error"
+      )
+
+      rebuilt = reload(build)
+      assert rebuilt.status == :fail
+      assert %DateTime{} = rebuilt.revoked_at
+      assert rebuilt.revoked_reason == "withheld closure"
+    end
+
+    test "an un-revoked LiveView-closure row is still withheld from publication" do
+      name = "tc_unrevoked_lv_#{System.unique_integer([:positive])}"
+      marked_build!(name)
+
+      rebuilt =
+        ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+
+      assert reload(rebuilt).revoked_at == nil
+      assert Catalog.precompiled_manifest(name) == nil
+      assert Catalog.precompiled_manifest_v2(name) == nil
+      refute name in Catalog.packages_with_precompiled_files()
+      refute Catalog.published_sha256?(toolchain_sha(rebuilt))
+    end
+
+    test "never overwrites another revocation reason" do
+      build =
+        "tc_other_mark_#{System.unique_integer([:positive])}"
+        |> ingest_toolchain_build("0.1.0", deps_lock: @liveview)
+        |> revoke!()
+
+      Portal.Repo.query!(
+        "UPDATE catalog_toolchain_builds SET revoked_reason = 'leaked secret' WHERE id = $1",
+        [Ecto.UUID.dump!(build.id)]
+      )
+
+      assert %{marked: [], skipped: [{_, "revoked for another reason: leaked secret"}]} =
+               Catalog.mark_withheld_revoked([build.id], dry_run: false)
+
+      assert reload(build).revoked_reason == "leaked secret"
+    end
+
     test "a marked row's rebuild with the rule but no compile_env stays revoked" do
       name = "tc_rebuild_nil_#{System.unique_integer([:positive])}"
       build = marked_build!(name)

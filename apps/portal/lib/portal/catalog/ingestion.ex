@@ -491,10 +491,11 @@ defmodule Portal.Catalog.Ingestion do
 
   # A row revoked for its withheld closure (`Portal.Catalog.mark_withheld_revoked/2`)
   # whose rebuild records its compile-time config reads (R5: rule 1 next to a
-  # kept `compile_env`) is no longer withheld, so the rebuild un-revokes it,
-  # in the transaction that wrote the row. A rebuild without them (an older
-  # worker image), or a row revoked for any other reason, stays revoked.
-  defp maybe_unrevoke(%ToolchainBuild{compile_env_rule: 1, compile_env: env} = tb)
+  # kept `compile_env`) and passed is no longer withheld, so the rebuild
+  # un-revokes it, in the transaction that wrote the row. A rebuild without
+  # them (an older worker image), a failed or skipped rebuild, or a row
+  # revoked for any other reason stays revoked and keeps its mark.
+  defp maybe_unrevoke(%ToolchainBuild{status: :pass, compile_env_rule: 1, compile_env: env} = tb)
        when is_list(env) do
     if tb.revoked_at != nil and tb.revoked_reason == ToolchainBuild.withheld_revocation(),
       do: unrevoke(tb),
