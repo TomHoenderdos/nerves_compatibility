@@ -316,8 +316,9 @@ defmodule Portal.Workers.ToolchainBuild do
   end
 
   # The sweep re-queues a kept row once it has aged (a `skipped` for shipping
-  # priv files, or a `pass` that dropped its optional dependencies for a
-  # transient reason, both after 7 days; see
+  # priv files, a `pass` that dropped its optional dependencies for a
+  # transient reason or does not record its compile-time config reads, or a
+  # row revoked for its withheld closure, all after 7 days; see
   # `Portal.Catalog.toolchain_backlog/3`). Its failed rebuild records the
   # attempt, so the identity waits out the week again instead of coming back
   # in every sweep; `finished_at` is left alone.

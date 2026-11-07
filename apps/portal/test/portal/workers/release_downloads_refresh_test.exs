@@ -64,6 +64,8 @@ defmodule Portal.Workers.ReleaseDownloadsRefreshTest do
       toolchain: "1.19/28",
       builder_version: 1,
       status: :pass,
+      compile_env_rule: 1,
+      compile_env: [],
       finished_at: DateTime.utc_now()
     })
     |> Ash.create!(domain: Catalog)

@@ -73,6 +73,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
         toolchain: Keyword.get(opts, :toolchain, "1.19/28"),
         builder_version: Keyword.get(opts, :builder_version, 1),
         status: status,
+        compile_env_rule: Keyword.get(opts, :compile_env_rule, 1),
+        compile_env: Keyword.get(opts, :compile_env, []),
         finished_at: Keyword.get(opts, :finished_at, DateTime.utc_now())
       })
       |> Ash.create!(domain: Catalog)

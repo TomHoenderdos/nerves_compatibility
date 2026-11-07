@@ -1280,6 +1280,19 @@ defmodule Portal.Catalog do
     List.flatten(rows)
   end
 
+  # `Withheld.records_config_reads?/1` for the toolchain build `t`, NULL-safe:
+  # rule 1 next to a `compile_env` list.
+  @records_config_reads "coalesce(t.compile_env_rule = 1 AND t.compile_env IS NOT NULL, false)"
+
+  # When a reopenable row is due: 7 days after its build or its last attempt
+  # ($4), a day after a transient attempt ($3), never once it has had
+  # `ToolchainBuild.transient_cap/0` ($8) transient results in a row.
+  @reopen_due """
+  (t.transient_attempts < $8::integer
+   AND coalesce(t.attempted_at, t.finished_at, t.updated_at)
+       <= CASE WHEN t.transient_attempts > 0 THEN $3::timestamp ELSE $4::timestamp END)
+  """
+
   # Toolchain builds wanted (`toolchain_backlog/3`): one row per package
   # version and variant, with the newest `finished_at` of the version's
   # qualifying runs and the package's hex.pm recent downloads.
@@ -1306,17 +1319,47 @@ defmodule Portal.Catalog do
   # `skipped` at any age, `error` younger than a day ($3), `fail` younger than
   # 7 days ($4), and any revoked row, whatever its status. A revoke is a human
   # decision, and only a `builder_version` bump makes a new identity to build
-  # again. Two rows are verdicts no longer: a `pass` that dropped its optional
-  # dependencies for a transient reason (a Hex hiccup or a slow fetch) once it
-  # is 7 days old ($4), so a reason that repeats costs one build a week, and a
-  # `skipped` for shipping priv files, which the worker now judges file by
-  # file, once it is 7 days old ($4) too. Either stays as it is until the new
-  # build replaces it; a rebuild that fails records its attempt on the kept
-  # row (`attempted_at`, `Portal.Workers.ToolchainBuild`), and the age counts
-  # from that attempt, so it is not re-opened again before another week has
-  # passed. `finished_at` stays the build's own.
+  # again. Some rows are verdicts no longer once they are due (`@reopen_due`:
+  # 7 days after their build or last attempt, a day after a transient
+  # "could not be judged", never once they have had
+  # `ToolchainBuild.transient_cap/0` ($8) of those in a row): a `pass` that
+  # dropped its optional dependencies for a transient reason (a Hex hiccup or
+  # a slow fetch); a `pass` that does not record its compile-time config
+  # reads (`@records_config_reads`, `Withheld.records_config_reads?/1`: from
+  # before builds recorded them, or from a rolled-back worker image, which
+  # then costs one rebuild a week); a `skipped` for shipping priv files,
+  # which the worker now judges file by file; any other `pass` or `skipped`
+  # whose rebuild came back as a transient "could not be judged"; and a
+  # revoked row an operator marked as revoked for its withheld closure
+  # (`revoked_reason`, `mark_withheld_revoked/2`) that does not record its
+  # config reads either. Each stays as it is until the new build replaces
+  # it; a rebuild that fails records its attempt on the kept row
+  # (`attempted_at`, `Portal.Workers.ToolchainBuild`, and
+  # `transient_attempts` for a transient one), and the age counts from that
+  # attempt. `finished_at` stays the build's own.
+  #
+  # `refresh` marks a version whose only reason to build is a `pass` row that
+  # does not record its config reads and is not withheld ($7,
+  # `Portal.Precompiled.Withheld`): it is already served, so it ranks after
+  # every other candidate. A withheld one is not served at all and ranks as a
+  # new version does.
   @toolchain_candidates_sql """
-  SELECT e.package, e.version, v.variant, e.finished_at, e.recent
+  SELECT e.package, e.version, v.variant, e.finished_at, e.recent,
+         EXISTS (
+           SELECT 1 FROM catalog_toolchain_builds o
+           WHERE o.package_id = e.package_id
+             AND o.version = e.version
+             AND o.toolchain = $1
+             AND o.builder_version = $2
+             AND o.variant = v.variant
+             AND o.status = 'pass'
+             AND o.revoked_at IS NULL
+             AND NOT #{String.replace(@records_config_reads, "t.", "o.")}
+             AND NOT (cardinality($7::text[]) > 0
+                      AND (e.package = ANY($7::text[])
+                           OR CASE WHEN jsonb_typeof(o.deps_lock) = 'object'
+                                   THEN o.deps_lock ?| $7::text[] ELSE true END))
+         ) AS refresh
   FROM (
     SELECT p.id AS package_id, p.name AS package, r.version_tested AS version,
            max(r.finished_at) AS finished_at, p.hex_downloads_recent AS recent
@@ -1365,23 +1408,45 @@ defmodule Portal.Catalog do
         AND t.builder_version = $2
         AND t.variant = v.variant
         AND (
-          t.revoked_at IS NOT NULL
-          OR (
-            t.status = 'pass'
+          (
+            t.revoked_at IS NOT NULL
             AND NOT (
-              coalesce(t.optional_deps ->> 'reason', '') IN ('deps_get_failed', 'timeout')
-              AND coalesce(t.attempted_at, t.finished_at, t.updated_at) <= $4::timestamp
+              -- `ToolchainBuild.withheld_revocation/0`
+              t.revoked_reason IS NOT DISTINCT FROM 'withheld closure'
+              AND NOT #{@records_config_reads}
+              AND #{@reopen_due}
             )
           )
           OR (
-            t.status = 'skipped'
-            AND (
-              t.reason IS DISTINCT FROM 'ships priv files'
-              OR coalesce(t.attempted_at, t.finished_at, t.updated_at) > $4::timestamp
+            t.revoked_at IS NULL
+            AND t.status = 'pass'
+            AND NOT (
+              (
+                coalesce(t.optional_deps ->> 'reason', '') IN ('deps_get_failed', 'timeout')
+                OR NOT #{@records_config_reads}
+                OR t.transient_attempts > 0
+              )
+              AND #{@reopen_due}
             )
           )
-          OR (t.status = 'error' AND coalesce(t.finished_at, t.updated_at) > $3::timestamp)
-          OR (t.status = 'fail' AND coalesce(t.finished_at, t.updated_at) > $4::timestamp)
+          OR (
+            t.revoked_at IS NULL
+            AND t.status = 'skipped'
+            AND NOT (
+              (t.reason IS NOT DISTINCT FROM 'ships priv files' OR t.transient_attempts > 0)
+              AND #{@reopen_due}
+            )
+          )
+          OR (
+            t.revoked_at IS NULL
+            AND t.status = 'error'
+            AND coalesce(t.finished_at, t.updated_at) > $3::timestamp
+          )
+          OR (
+            t.revoked_at IS NULL
+            AND t.status = 'fail'
+            AND coalesce(t.finished_at, t.updated_at) > $4::timestamp
+          )
         )
     )
   """
@@ -1397,7 +1462,9 @@ defmodule Portal.Catalog do
   version declares one (`Portal.Catalog.UnrecordedOptionalDeps`, the one
   part of the backlog that asks Hex). A variant with a
   live `Portal.Catalog.ToolchainBuild` of its own is left out (see the
-  query's comment for what is live).
+  query's comment for what is live). An already served build that only
+  needs its compile-time config reads recorded comes after every other
+  candidate.
 
   Most wanted first, so a capped sweep builds what projects resolve before
   what nobody asks for: by the package's hex.pm recent downloads, then, within
@@ -1418,13 +1485,14 @@ defmodule Portal.Catalog do
         FROM candidates c
         LEFT JOIN catalog_release_downloads d
           ON d.package = c.package AND d.version = c.version
-        ORDER BY c.recent DESC NULLS LAST,
+        ORDER BY c.refresh,
+                 c.recent DESC NULLS LAST,
                  d.downloads DESC NULLS LAST,
                  c.finished_at DESC NULLS LAST,
                  c.version DESC,
                  c.variant = 'without',
                  c.package
-        LIMIT $7
+        LIMIT $9
         """,
         toolchain_params(
           toolchain,
@@ -1500,7 +1568,7 @@ defmodule Portal.Catalog do
           WHERE recent IS NOT NULL
           GROUP BY package, recent
           ORDER BY recent DESC, package
-          LIMIT $7
+          LIMIT $9
         ),
         ranked AS (
           SELECT c.package, c.recent, c.finished_at, c.version,
@@ -1512,7 +1580,7 @@ defmodule Portal.Catalog do
         )
         SELECT package, recent, finished_at, version
         FROM ranked
-        WHERE rank <= $8
+        WHERE rank <= $10
         """,
         toolchain_params(toolchain, builder_version) ++ [top_packages, versions_per_package]
       )
@@ -1595,7 +1663,9 @@ defmodule Portal.Catalog do
       NaiveDateTime.add(now, -1, :day),
       NaiveDateTime.add(now, -7, :day),
       packages,
-      versions
+      versions,
+      Withheld.packages(),
+      ToolchainBuild.transient_cap()
     ]
   end
 

@@ -69,6 +69,8 @@ defmodule Portal.ToolchainVariantsTest do
       file_manifest: Keyword.get(opts, :file_manifest),
       status: status,
       reason: Keyword.get(opts, :reason),
+      compile_env_rule: Keyword.get(opts, :compile_env_rule, 1),
+      compile_env: Keyword.get(opts, :compile_env, []),
       finished_at: Keyword.get(opts, :finished_at, DateTime.utc_now())
     })
     |> Ash.create!(domain: Catalog)
