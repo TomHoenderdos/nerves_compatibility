@@ -94,6 +94,39 @@ defmodule Portal.Workers.BuildIntegrationTest do
     assert updated.run_id == run.id
   end
 
+  # A full run whose closure is pure Elixir judges its host files with the
+  # compile-time trace (`NccWorker.Portability`) before publishing them, in
+  # the real container under gVisor: the verdict reaches `result.json` as
+  # `host_portability`, and the statuses are the build's own.
+  test "a full pure-Elixir run records its compile-time trace verdict" do
+    run_id = "it-jason-trace-#{unique_suffix()}"
+    on_exit(fn -> Builder.cleanup(run_id) end)
+
+    assert {:ok, %{exit_code: 0, result: result, log: log}} =
+             Builder.build(%{
+               run_id: run_id,
+               package: "jason",
+               version: "1.4.4",
+               image_digest: Builder.image_digest(Builder.docker_image())
+             })
+
+    assert %{"host" => host, "pure_elixir" => pure} = result["systems"], log
+    assert host["status"] == "pass"
+    assert pure["status"] == "pass"
+
+    assert %{"status" => "pass", "reason" => nil, "portability_rule" => 1} =
+             hp = result["host_portability"]
+
+    stats = hp["compile_observations"]["trace_stats"]
+    assert stats["judge_compile"] == "finished", inspect(hp)
+    assert is_integer(stats["wall_ms"])
+    assert hp["compile_observations"]["nif_check"] == "ok"
+    assert hp["compile_observations"]["refusals"] == []
+
+    # Passed, so the files are published.
+    assert [_ | _] = get_in(pure, ["beam_scan", "footprint", "file_manifest", "ebin"])
+  end
+
   test "runs argus over the host beams when the scope covers the package" do
     {:ok, _} = Portal.Settings.save(%{argus_scope: "all"})
 
