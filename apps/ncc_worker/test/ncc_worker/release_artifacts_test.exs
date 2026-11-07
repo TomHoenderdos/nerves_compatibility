@@ -666,10 +666,13 @@ defmodule NccWorker.ReleaseArtifactsTest do
     assert %{status: :pass, beam_scan: scan} =
              NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
 
-    assert %{"path" => "ebin/plain.beam", "size" => 9} in Enum.map(
-             scan["footprint"]["file_manifest"]["ebin"],
-             &Map.take(&1, ["path", "size"])
-           )
+    assert [
+             %{"path" => "ebin/plain.app", "size" => 26},
+             %{"path" => "ebin/plain.beam", "size" => 9}
+           ] ==
+             scan["footprint"]["file_manifest"]["ebin"]
+             |> Enum.map(&Map.take(&1, ["path", "size"]))
+             |> Enum.sort_by(& &1["path"])
 
     assert %{beam_scan: %{"errors" => [_]}} =
              NccWorker.Worker.pure_elixir_result(project, "missing", traced_pass())
