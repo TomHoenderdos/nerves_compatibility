@@ -106,7 +106,8 @@ defmodule Portal.Catalog do
     :carried_from_run_id,
     :compile_env,
     :deps_lock,
-    :unpublished_at
+    :unpublished_at,
+    :compile_env_rule
   ]
   @json_fields [
     :run_id,
@@ -1201,22 +1202,37 @@ defmodule Portal.Catalog do
   # was carried from; a result's closure is its own lock, else the lock of the
   # run that built it, as `build_inputs/2` publishes it. No lock (anything
   # but a JSON object) is an unknown closure and withheld while the list is
-  # not empty, as `Withheld.withheld?/3` reads `nil`. A withdrawn result
-  # (`unpublished_at`) is withheld too: one predicate, used by every query
-  # that selects published files.
+  # not empty, as `Withheld.withheld?/4` reads `nil`, whatever the row
+  # records. `$E` is `Withheld.records_config_reads?/1`: rule 1 next to a
+  # `compile_env`, for a system result only on `pure_elixir`; it lifts the
+  # closure check alone, and `coalesce` keeps a NULL from deciding either
+  # way. A withdrawn result (`unpublished_at`) is withheld too: one
+  # predicate, used by every query that selects published files.
   @withheld_lock_clause """
   NOT (cardinality($W::text[]) > 0
-       AND (p.name = ANY($W::text[])
-            OR CASE WHEN jsonb_typeof($L) = 'object' THEN $L ?| $W::text[] ELSE true END))
+       AND CASE WHEN jsonb_typeof($L) = 'object'
+                THEN NOT coalesce($E, false)
+                     AND (p.name = ANY($W::text[]) OR $L ?| $W::text[])
+                ELSE true END)
   """
   @withheld_result_clause "s.unpublished_at IS NULL AND " <>
-                            String.replace(
-                              @withheld_lock_clause,
-                              "$L",
-                              "coalesce(s.deps_lock, CASE WHEN s.carried_from_run_id IS NULL " <>
-                                "THEN r.deps_lock ELSE b.deps_lock END)"
-                            )
-  @withheld_toolchain_clause String.replace(@withheld_lock_clause, "$L", "t.deps_lock")
+                            (@withheld_lock_clause
+                             |> String.replace(
+                               "$L",
+                               "coalesce(s.deps_lock, CASE WHEN s.carried_from_run_id IS NULL " <>
+                                 "THEN r.deps_lock ELSE b.deps_lock END)"
+                             )
+                             |> String.replace(
+                               "$E",
+                               "(s.compile_env_rule = 1 AND s.compile_env IS NOT NULL " <>
+                                 "AND s.system_pkg = 'pure_elixir')"
+                             ))
+  @withheld_toolchain_clause @withheld_lock_clause
+                             |> String.replace("$L", "t.deps_lock")
+                             |> String.replace(
+                               "$E",
+                               "(t.compile_env_rule = 1 AND t.compile_env IS NOT NULL)"
+                             )
 
   @packages_with_precompiled_files_sql_template """
   SELECT p.name
@@ -1602,7 +1618,8 @@ defmodule Portal.Catalog do
   (`ToolchainBuild.withheld_revocation/0`), so the backlog rebuilds each once
   with its compile-time config reads recorded and the rebuild un-revokes it
   (`Portal.Catalog.Ingestion`). Only a row that is revoked, records no config
-  reads (`compile_env_rule` nil) and whose closure has a withheld package
+  reads (`Portal.Precompiled.Withheld.records_config_reads?/1`) and whose
+  closure has a withheld package
   (`Portal.Precompiled.Withheld`) is marked; every other id comes back under
   `skipped` with the reason. `dry_run: true`, the default, changes nothing.
 
@@ -1690,13 +1707,12 @@ defmodule Portal.Catalog do
        when is_binary(reason) and reason != @withheld_revocation,
        do: {:skip, "revoked for another reason: " <> reason}
 
-  defp markable(%ToolchainBuild{compile_env_rule: rule}, _packages) when not is_nil(rule),
-    do: {:skip, "already records its config reads"}
-
   defp markable(row, packages) do
-    if Withheld.withheld?(row.package.name, row.deps_lock, packages),
-      do: :ok,
-      else: {:skip, "closure has no withheld package"}
+    cond do
+      Withheld.records_config_reads?(row) -> {:skip, "already records its config reads"}
+      Withheld.withheld?(row.package.name, row.deps_lock, packages) -> :ok
+      true -> {:skip, "closure has no withheld package"}
+    end
   end
 
   @doc """
@@ -2332,7 +2348,7 @@ defmodule Portal.Catalog do
         toolchain_builds =
           package.id
           |> published_toolchain_builds()
-          |> Enum.reject(&Withheld.withheld?(package.name, &1.deps_lock, withheld))
+          |> Enum.reject(&Withheld.withheld?(package.name, &1.deps_lock, withheld, &1))
 
         shas_by_toolchain_build_id =
           toolchain_builds |> Enum.map(& &1.id) |> manifest_shas_for_toolchain_builds()
@@ -2364,7 +2380,9 @@ defmodule Portal.Catalog do
     Enum.reject(results, fn result ->
       built_by = Map.get(runs_by_id, result.carried_from_run_id || result.run_id)
       deps = result.deps_lock || (built_by && built_by.deps_lock)
-      not is_nil(result.unpublished_at) or Withheld.withheld?(package_name, deps, withheld)
+
+      not is_nil(result.unpublished_at) or
+        Withheld.withheld?(package_name, deps, withheld, result)
     end)
   end
 
@@ -2529,6 +2547,7 @@ defmodule Portal.Catalog do
       :deps_lock,
       :package_checksum,
       :compile_env,
+      :compile_env_rule,
       :file_manifest,
       :finished_at
     ])

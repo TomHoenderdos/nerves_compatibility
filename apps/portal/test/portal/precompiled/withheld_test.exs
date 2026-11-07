@@ -64,7 +64,7 @@ defmodule Portal.Precompiled.WithheldTest do
     end
   end
 
-  test "withheld?/3 matches the package itself or any locked dependency" do
+  test "withheld? matches the package itself or any locked dependency" do
     assert Withheld.withheld?("phoenix_live_view", @decimal, ["phoenix_live_view"])
     assert Withheld.withheld?("x", @liveview, ["phoenix_live_view"])
     refute Withheld.withheld?("x", @decimal, ["phoenix_live_view"])
@@ -74,7 +74,7 @@ defmodule Portal.Precompiled.WithheldTest do
 
   # A build with no recorded lock (format 1's `"deps": null`) has an unknown
   # closure: fail closed while anything is withheld at all.
-  test "withheld?/3 withholds an unknown closure unless nothing is withheld" do
+  test "withheld? withholds an unknown closure unless nothing is withheld" do
     assert Withheld.withheld?("x", nil, ["phoenix_live_view"])
     refute Withheld.withheld?("x", nil, [])
   end
@@ -387,7 +387,7 @@ defmodule Portal.Precompiled.WithheldTest do
       assert rebuilt.revoked_reason == "withheld closure"
     end
 
-    test "an un-revoked LiveView-closure row is still withheld from publication" do
+    test "an un-revoked LiveView-closure row is published again" do
       name = "tc_unrevoked_lv_#{System.unique_integer([:positive])}"
       marked_build!(name)
 
@@ -395,10 +395,7 @@ defmodule Portal.Precompiled.WithheldTest do
         ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 1)
 
       assert reload(rebuilt).revoked_at == nil
-      assert Catalog.precompiled_manifest(name) == nil
-      assert Catalog.precompiled_manifest_v2(name) == nil
-      refute name in Catalog.packages_with_precompiled_files()
-      refute Catalog.published_sha256?(toolchain_sha(rebuilt))
+      assert_toolchain_served(name, toolchain_sha(rebuilt))
     end
 
     test "never overwrites another revocation reason" do
@@ -482,6 +479,277 @@ defmodule Portal.Precompiled.WithheldTest do
       kept = reload(build)
       assert %DateTime{} = kept.revoked_at
       assert {kept.revoked_reason, kept.compile_env_rule} == {"withheld closure", nil}
+    end
+  end
+
+  # The fixture's jason run with its one published file (`@run_sha`) on a
+  # `pure_elixir` result, the only run result a build marks with its config
+  # reads, instead of on the rpi4 firmware result.
+  defp pure_run(deps_lock, rule) do
+    result = run(deps_lock)
+    pure = Map.put(result["systems"]["nerves_system_rpi4"], "compile_env_rule", rule)
+
+    Map.update!(result, "systems", fn systems ->
+      systems |> Map.delete("nerves_system_rpi4") |> Map.put("pure_elixir", pure)
+    end)
+  end
+
+  defp r5(env \\ []), do: %{compile_env_rule: 1, compile_env: env}
+
+  defp results(system_pkg) do
+    Portal.Catalog.SystemResult
+    |> Ash.Query.filter(system_pkg == ^system_pkg)
+    |> Ash.read!(domain: Portal.Catalog)
+  end
+
+  defp restore_run_blob! do
+    source = Path.join(System.tmp_dir!(), "withheld-blob-#{System.unique_integer([:positive])}")
+    File.write!(source, "precompiled-beam")
+    on_exit(fn -> File.rm(source) end)
+    assert {:ok, _} = Portal.ArtifactStore.put(@run_sha, source)
+  end
+
+  defp sql!(sql, ids), do: Portal.Repo.query!(sql, [Enum.map(ids, &Ecto.UUID.dump!/1)])
+
+  defp assert_run_served(name, sha) do
+    assert %{versions: %{"1.4.1" => %{"pure_elixir" => _}}} = Catalog.precompiled_manifest(name)
+
+    assert %{"versions" => %{"1.4.1" => %{"builds" => [%{"target" => "pure_elixir"}]}}} =
+             Catalog.precompiled_manifest_v2(name)
+
+    assert %{v1: %{}, v2: %{}} = Catalog.precompiled_manifests(name)
+    assert name in Catalog.packages_with_precompiled_files()
+    assert Catalog.published_sha256?(sha)
+  end
+
+  defp assert_toolchain_served(name, sha) do
+    assert %{"versions" => %{"0.1.0" => %{"builds" => [_]}}} =
+             Catalog.precompiled_manifest_v2(name)
+
+    assert %{v2: %{}} = Catalog.precompiled_manifests(name)
+    assert name in Catalog.packages_with_precompiled_files()
+    assert Catalog.published_sha256?(sha)
+  end
+
+  defp assert_withheld(name, sha) do
+    assert Catalog.precompiled_manifest(name) == nil
+    assert Catalog.precompiled_manifest_v2(name) == nil
+    assert %{v1: nil, v2: nil} = Catalog.precompiled_manifests(name)
+    refute name in Catalog.packages_with_precompiled_files()
+    refute Catalog.published_sha256?(sha)
+  end
+
+  describe "a build that records its config reads (R5)" do
+    test "withheld?/4 lifts only the closure check, and only for rule 1 with a compile_env" do
+      pkgs = ["phoenix_live_view"]
+
+      refute Withheld.withheld?("x", @liveview, pkgs, r5())
+      refute Withheld.withheld?("x", @liveview, pkgs, r5([%{"app" => "a"}]))
+      refute Withheld.withheld?("phoenix_live_view", @decimal, pkgs, r5())
+
+      # No lock: an unknown closure, which the mark does not vouch for.
+      assert Withheld.withheld?("x", nil, pkgs, r5())
+      assert Withheld.withheld?("phoenix_live_view", nil, pkgs, r5())
+
+      # Anything but rule 1 next to a compile_env list.
+      assert Withheld.withheld?("x", @liveview, pkgs, nil)
+      assert Withheld.withheld?("x", @liveview, pkgs, %{compile_env_rule: 1, compile_env: nil})
+      assert Withheld.withheld?("x", @liveview, pkgs, %{compile_env_rule: 2, compile_env: []})
+      assert Withheld.withheld?("x", @liveview, pkgs, %{compile_env_rule: nil, compile_env: []})
+      assert Withheld.withheld?("x", @liveview, pkgs, %{compile_env: []})
+
+      # A run result counts only as `pure_elixir`: firmware results never
+      # record their config reads.
+      assert Withheld.withheld?("x", @liveview, pkgs, Map.put(r5(), :system_pkg, "rpi4"))
+      refute Withheld.withheld?("x", @liveview, pkgs, Map.put(r5(), :system_pkg, "pure_elixir"))
+
+      # Unmarked builds are judged as before.
+      refute Withheld.withheld?("x", @decimal, pkgs, nil)
+      refute Withheld.withheld?("x", nil, [], nil)
+    end
+
+    test "a toolchain build with phoenix_live_view in its lock is served" do
+      name = "tc_r5_#{System.unique_integer([:positive])}"
+      build = ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+
+      assert build.compile_env_rule == 1
+      assert_toolchain_served(name, toolchain_sha(build))
+    end
+
+    test "a toolchain build of phoenix_live_view itself is served" do
+      build =
+        ingest_toolchain_build("phoenix_live_view", "0.1.0",
+          deps_lock: @decimal,
+          compile_env_rule: 1
+        )
+
+      assert_toolchain_served("phoenix_live_view", toolchain_sha(build))
+    end
+
+    test "a pure_elixir result with phoenix_live_view in its lock is served in both formats" do
+      ingest_with_artifact(pure_run(@liveview, 1))
+
+      assert [%{compile_env_rule: 1}] = results("pure_elixir")
+      assert_run_served("jason", @run_sha)
+    end
+
+    test "a pure_elixir result whose own system lock has phoenix_live_view is served" do
+      @decimal
+      |> pure_run(1)
+      |> put_in(["systems", "pure_elixir", "deps_lock"], @liveview)
+      |> ingest_with_artifact()
+
+      assert_run_served("jason", @run_sha)
+    end
+
+    test "a carried pure_elixir result keeps its rule and is served on its own" do
+      ingest_with_artifact(pure_run(@liveview, 1))
+
+      partial =
+        @liveview
+        |> pure_run(1)
+        |> Map.merge(%{
+          "run_id" => "fixture-jason-targets-r5",
+          "scope" => "targets",
+          "finished_at" => "2030-01-01T00:00:00Z"
+        })
+        |> Map.update!("systems", &Map.take(&1, ["nerves_system_x86_64"]))
+
+      ingest_with_artifact(partial)
+      # The fixture clears the blob before each ingest; the partial run
+      # stages no file of its own, so put the carried result's back.
+      restore_run_blob!()
+
+      assert [%{compile_env_rule: 1} = carried] =
+               Enum.filter(results("pure_elixir"), & &1.carried_from_run_id)
+
+      # Withdraw the original row only, so the carried copy alone publishes.
+      [original] = Enum.reject(results("pure_elixir"), & &1.carried_from_run_id)
+
+      sql!(
+        "UPDATE catalog_system_results SET unpublished_at = now() WHERE id = ANY($1)",
+        [original.id]
+      )
+
+      assert carried.unpublished_at == nil
+      assert_run_served("jason", @run_sha)
+    end
+
+    test "a carried firmware result with rule 1 stays withheld" do
+      ingest_with_artifact(
+        put_in(run(@liveview), ["systems", "nerves_system_rpi4", "compile_env_rule"], 1)
+      )
+
+      partial =
+        @liveview
+        |> run()
+        |> Map.merge(%{
+          "run_id" => "fixture-jason-targets-fw",
+          "scope" => "targets",
+          "finished_at" => "2030-01-01T00:00:00Z"
+        })
+        |> Map.update!("systems", &Map.take(&1, ["nerves_system_x86_64"]))
+
+      ingest_with_artifact(partial)
+      restore_run_blob!()
+
+      assert [%{compile_env_rule: 1}, %{compile_env_rule: 1}] = results("nerves_system_rpi4")
+      assert_withheld("jason", @run_sha)
+    end
+
+    test "a firmware result with rule 1 stays withheld" do
+      ingest_with_artifact(
+        put_in(run(@liveview), ["systems", "nerves_system_rpi4", "compile_env_rule"], 1)
+      )
+
+      assert_withheld("jason", @run_sha)
+    end
+
+    test "rule 1 with a null compile_env stays withheld" do
+      ingest_with_artifact(pure_run(@liveview, 1))
+      name = "tc_r5_nil_#{System.unique_integer([:positive])}"
+      build = ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+
+      # Ingest never stores this pair; the selectors must not trust it anyway.
+      sql!("UPDATE catalog_toolchain_builds SET compile_env = NULL WHERE id = ANY($1)", [
+        build.id
+      ])
+
+      sql!(
+        "UPDATE catalog_system_results SET compile_env = NULL WHERE id = ANY($1)",
+        Enum.map(results("pure_elixir"), & &1.id)
+      )
+
+      assert %{compile_env_rule: 1, compile_env: nil} = reload(build)
+      assert [%{compile_env_rule: 1, compile_env: nil}] = results("pure_elixir")
+      assert_withheld(name, toolchain_sha(build))
+      assert_withheld("jason", @run_sha)
+    end
+
+    test "a mark on a build without a valid compile_env is not kept, so it stays withheld" do
+      name = "tc_r5_bad_#{System.unique_integer([:positive])}"
+
+      build =
+        ingest_toolchain_build(name, "0.1.0",
+          deps_lock: @liveview,
+          compile_env_rule: 1,
+          compile_env: [%{"app" => 1}]
+        )
+
+      assert build.compile_env_rule == nil
+      assert_withheld(name, toolchain_sha(build))
+    end
+
+    test "rule 2 stays withheld" do
+      ingest_with_artifact(pure_run(@liveview, 2))
+      name = "tc_r5_two_#{System.unique_integer([:positive])}"
+      build = ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 2)
+
+      assert build.compile_env_rule == 2
+      assert [%{compile_env_rule: 2}] = results("pure_elixir")
+      assert_withheld(name, toolchain_sha(build))
+      assert_withheld("jason", @run_sha)
+    end
+
+    test "no recorded lock with rule 1 stays withheld" do
+      ingest_with_artifact(pure_run(nil, 1))
+      name = "tc_r5_nolock_#{System.unique_integer([:positive])}"
+      build = ingest_toolchain_build(name, "0.1.0", deps_lock: nil, compile_env_rule: 1)
+
+      assert build.compile_env_rule == 1
+      assert [%{compile_env_rule: 1}] = results("pure_elixir")
+      assert_withheld(name, toolchain_sha(build))
+      assert_withheld("jason", @run_sha)
+    end
+
+    test "a revoked build or withdrawn result with rule 1 is not served" do
+      name = "tc_r5_rev_#{System.unique_integer([:positive])}"
+
+      build =
+        name
+        |> ingest_toolchain_build("0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+        |> revoke!()
+
+      ingest_with_artifact(pure_run(@liveview, 1))
+      withdraw!("pure_elixir")
+
+      assert_withheld(name, toolchain_sha(build))
+      assert_withheld("jason", @run_sha)
+    end
+
+    test "a revoked run's rule-1 result is not served" do
+      ingest_with_artifact(pure_run(@decimal, 1))
+      [result] = results("pure_elixir")
+
+      sql!("UPDATE catalog_runs SET revoked_at = now() WHERE id = ANY($1)", [result.run_id])
+
+      assert_withheld("jason", @run_sha)
+    end
+
+    test "the exemption still follows the configured list" do
+      put_withheld(packages: ["decimal"])
+      ingest_with_artifact(pure_run(@liveview, 1))
+      assert_run_served("jason", @run_sha)
     end
   end
 end

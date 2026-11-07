@@ -573,7 +573,18 @@ them.
   new Phoenix 1.8 app sets LiveView's `root_tag_attribute`, which changes the
   markup of every `~H` root tag, and LiveView's colocated hooks, JS and CSS
   write asset files at compile time that installing BEAMs never provides.
-  Those builds come back once a build can carry that config.
+  A build that records its compile-time config reads (builds since
+  2026-11: its `compile_env` lists LiveView's `root_tag_attribute` and the
+  other keys the closure read while compiling) is served again: a project
+  whose config sets those keys differently does not match it and compiles
+  the package itself, and the builder's compile-time trace refuses builds
+  that write files at compile time. Only toolchain builds and `pure_elixir`
+  entries record their config reads; firmware entries never do, so a
+  firmware entry whose closure has a withheld package stays withheld. The
+  exception covers the closure only: a build with no recorded lock stays
+  withheld whatever it records, and a revoked or withdrawn build stays
+  unserved. LiveView-closure builds published before that come back as the
+  builder rebuilds them.
 - A `pure_elixir` entry is published only when the package's own source is
   OS-agnostic (no `:os.type()` or system architecture read, no
   `platform_define`, no `rebar.config.script`), the check toolchain builds
