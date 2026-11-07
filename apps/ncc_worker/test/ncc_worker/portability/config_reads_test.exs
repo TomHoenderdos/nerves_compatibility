@@ -350,9 +350,7 @@ defmodule NccWorker.Portability.ConfigReadsTest do
 
       assert ansi_enabled_refs(formatter) == [:colors]
 
-      handler = Path.join(:code.lib_dir(:kernel), "src/logger_h_common.erl")
-      assert File.regular?(handler), "no source at #{handler}"
-      {:ok, forms} = :epp.parse_file(String.to_charlist(handler), [])
+      forms = handler_forms()
 
       assert formatter_callers(forms) == [:try_format]
       assert callers(forms, :try_format) == [:do_log_to_binary, :try_format]
@@ -368,6 +366,50 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       assert {"logger_h_common", "elixir", "ansi_enabled"} in ConfigReads.reviewed(
                System.version()
              ).drop
+    end
+
+    # The fallback reads the same functions as the source, so the pin above
+    # holds on an OTP install without `src`.
+    test "the handler's beam abstract code gives the same callers as its source" do
+      source = Path.join(:code.lib_dir(:kernel), "src/logger_h_common.erl")
+      from_beam = beam_forms(:logger_h_common, source)
+      from_source = handler_forms()
+
+      for forms <- [from_beam, from_source] do
+        assert formatter_callers(forms) == [:try_format]
+      end
+
+      for target <- [:try_format, :do_log_to_binary, :log_to_binary] do
+        assert callers(from_beam, target) == callers(from_source, target)
+      end
+    end
+  end
+
+  # OTP's `logger_h_common` forms: from its source when the OTP install
+  # carries `src`, otherwise from the beam's own abstract code (OTP compiles
+  # its beams with debug_info). An install with neither fails the pin.
+  defp handler_forms do
+    source = Path.join(:code.lib_dir(:kernel), "src/logger_h_common.erl")
+
+    if File.regular?(source) do
+      {:ok, forms} = :epp.parse_file(String.to_charlist(source), [])
+      forms
+    else
+      beam_forms(:logger_h_common, source)
+    end
+  end
+
+  defp beam_forms(module, source) do
+    beam = :code.which(module)
+
+    case :beam_lib.chunks(beam, [:abstract_code]) do
+      {:ok, {^module, [abstract_code: {:raw_abstract_v1, forms}]}} ->
+        forms
+
+      other ->
+        flunk(
+          "no source at #{source} and no abstract code in #{beam}: #{inspect(other, limit: 5)}"
+        )
     end
   end
 
