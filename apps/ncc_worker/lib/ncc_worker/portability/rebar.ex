@@ -7,12 +7,28 @@ defmodule NccWorker.Portability.Rebar do
   definition when rebar compiles. Any `provider_hooks` entry refuses too:
   providers come from plugins or run arbitrary build steps.
 
-  `rebar.config` is the dependency's own text, so it is read with
+  Only what rebar3 runs when Mix compiles the dependency counts. Mix
+  (`Mix.Tasks.Deps.Compile.do_rebar3/2`, Elixir 1.19 and 1.20) runs
+  `rebar3 bare compile --paths <deps>/ebin` with `REBAR_PROFILE=prod`,
+  `REBAR_SKIP_PROJECT_PLUGINS=true` and `REBAR_CONFIG` set to
+  `_build/<env>/lib/<d>/mix.rebar.config`, which it writes from the
+  dependency's config (`rebar.config.script` evaluated, a parent's
+  `overrides` applied, `project_plugins` dropped:
+  `Mix.Rebar.dependency_config/1`). So the active sections are the top
+  level and the `default` and `prod` profiles; `project_plugins` and every
+  other profile (`test`, `docs`, ...) are ignored. A hook or plugin key
+  counts only as a key of an active section; inside `overrides` it counts
+  at any depth (fail closed). `platform_define` counts at any depth of an
+  active section.
+
+  Both files are checked, each with the same rules: the dependency's own
+  `rebar.config` and, when the judge passes it, the `mix.rebar.config` that
+  rebar3 actually read; a missing one of those is could-not-judge.
+  `rebar.config.script` refuses on its own: it is code.
+
+  Config files are anyone's text, so they are read with
   `NccWorker.Portability.HexFiles.parse/1` (bounded, creates no atoms)
-  rather than `:file.consult/1`, and searched at every depth: a hook or
-  `platform_define` inside `profiles` or `overrides` counts as well. A config
-  that parser cannot read refuses. A key name that happens to match inside
-  an unrelated term (a dependency named `plugins`) refuses too: fail closed.
+  rather than `:file.consult/1`. A config that parser cannot read refuses.
 
   Coverage: a child VM's trace counts only when it fired its sentinel, has no
   problems, and recorded a successful `compile:file/2` return for every beam
@@ -31,26 +47,41 @@ defmodule NccWorker.Portability.Rebar do
 
   alias NccWorker.Portability.HexFiles
 
-  @hook_keys ~w(pre_hooks post_hooks provider_hooks plugins project_plugins)
+  @hook_keys ~w(pre_hooks post_hooks provider_hooks plugins)
+  # `REBAR_PROFILE=prod` on top of rebar3's default profile.
+  @active_profiles ~w(default prod)
   @max_config_bytes 1024 * 1024
 
-  @doc "The static rebar3 rules for the source dir `dest`."
-  @spec check(String.t()) :: :ok | {:refuse, String.t()}
+  @doc """
+  The static rebar3 rules for the source dir `dest` and, when given, the
+  `mix.rebar.config` Mix wrote for rebar3.
+  """
+  @spec check(String.t(), String.t() | nil) ::
+          :ok | {:refuse, String.t()} | {:unjudged, String.t()}
   # A dependency's own build files, read as data; nothing is evaluated.
   # sobelow_skip ["Traversal.FileModule"]
-  def check(dest) when is_binary(dest) do
+  def check(dest, mix_config \\ nil) when is_binary(dest) do
     config = Path.join(dest, "rebar.config")
 
     cond do
       File.exists?(Path.join(dest, "rebar.config.script")) ->
         {:refuse, "rebar3 build evaluates rebar.config.script"}
 
-      not File.exists?(config) ->
-        :ok
+      File.exists?(config) ->
+        with :ok <- config |> read_config() |> config(), do: mix_config(mix_config)
 
       true ->
-        config |> read_config() |> config()
+        mix_config(mix_config)
     end
+  end
+
+  defp mix_config(nil), do: :ok
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp mix_config(path) when is_binary(path) do
+    if File.exists?(path),
+      do: path |> read_config() |> config(),
+      else: {:unjudged, "rebar3 mix.rebar.config missing"}
   end
 
   # sobelow_skip ["Traversal.FileModule"]
@@ -65,30 +96,60 @@ defmodule NccWorker.Portability.Rebar do
   end
 
   defp config({:ok, terms}) do
-    case Enum.find(@hook_keys, &non_empty_key?(terms, &1)) do
-      nil -> platform_define(terms)
+    sections = active_sections(terms)
+    overrides = for {{:atom, "overrides"}, value} <- terms, do: value
+
+    case Enum.find(@hook_keys, &(runs?(sections, &1) or nested?(overrides, &1))) do
+      nil -> platform_define(sections ++ overrides)
       key -> {:refuse, "rebar3 build runs #{key}"}
     end
   end
 
   defp config(:error), do: {:refuse, "rebar3 build config unreadable"}
 
-  defp non_empty_key?(terms, key) do
+  # The top level and the bodies of the profiles active under Mix's rebar3
+  # call, each a list of `{key, value}` terms.
+  defp active_sections(terms) do
+    profiles =
+      for {{:atom, "profiles"}, list} when is_list(list) <- terms,
+          {{:atom, name}, body} when name in @active_profiles and is_list(body) <- list,
+          do: body
+
+    [terms | profiles]
+  end
+
+  defp runs?(sections, key) do
+    Enum.any?(sections, fn section ->
+      Enum.any?(List.wrap(section), &match?({{:atom, ^key}, value} when value != [], &1))
+    end)
+  end
+
+  defp nested?(terms, key) do
     any_term?(terms, fn
       {{:atom, ^key}, value} -> value != []
       _ -> false
     end)
   end
 
-  defp platform_define(terms) do
+  # Ignoring `project_plugins` and inactive profiles at the top level.
+  defp platform_define(sections) do
+    searched =
+      Enum.map(sections, fn
+        section when is_list(section) -> Enum.reject(section, &inactive?/1)
+        other -> other
+      end)
+
     pd? =
       any_term?(
-        terms,
+        searched,
         &(is_tuple(&1) and tuple_size(&1) > 0 and elem(&1, 0) == {:atom, "platform_define"})
       )
 
     if pd?, do: {:refuse, "rebar3 build uses platform_define"}, else: :ok
   end
+
+  defp inactive?({{:atom, key}, _value}), do: key in ["profiles", "project_plugins"]
+  defp inactive?(_term), do: false
 
   # Whether `fun` holds for `term` or anything inside it (lists, tuples,
   # maps). The parser bounds the nesting depth.

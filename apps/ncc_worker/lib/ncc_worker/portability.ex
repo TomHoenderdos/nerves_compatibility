@@ -470,14 +470,23 @@ defmodule NccWorker.Portability do
   defp rebar3(ctx, report, app) do
     case Context.dest(ctx, app) do
       nil -> {:unjudged, "rebar3 source dir missing"}
-      dest -> rebar3(Rebar.check(dest), ctx, report, app)
+      dest -> rebar3(Rebar.check(dest, mix_rebar_config(ctx, app)), ctx, report, app)
     end
   end
 
   defp rebar3({:refuse, _} = refusal, _ctx, _report, _app), do: refusal
+  defp rebar3({:unjudged, _} = unjudged, _ctx, _report, _app), do: unjudged
 
   defp rebar3(:ok, ctx, report, app),
     do: Rebar.coverage(Context.ebin(ctx, app), Map.get(report.children, app))
+
+  # The config Mix wrote for rebar3 (`REBAR_CONFIG`), next to the ebin.
+  defp mix_rebar_config(ctx, app) do
+    case Context.ebin(ctx, app) do
+      nil -> Path.join(Context.dest(ctx, app), ".ncc-no-build-dir/mix.rebar.config")
+      ebin -> Path.join(Path.dirname(ebin), "mix.rebar.config")
+    end
+  end
 
   # Every closure dependency but the package, in compile order (the
   # closure line's), with what R3 makes of it.

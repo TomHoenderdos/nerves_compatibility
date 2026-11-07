@@ -732,8 +732,18 @@ defmodule NccWorker.Portability.JudgeTest do
   end
 
   describe "rebar3 in the judge" do
+    # Mix writes `_build/<env>/lib/<app>/mix.rebar.config` (its view of the
+    # dependency's rebar.config) before it runs rebar3.
     defp rebar_report(proj, rebar_app, children) do
       r = report(proj, %{children: children})
+
+      source =
+        case File.read(Path.join([proj, "deps", rebar_app, "rebar.config"])) do
+          {:ok, text} -> text
+          {:error, _} -> ""
+        end
+
+      File.write!(Path.join([proj, "_build/host/lib", rebar_app, "mix.rebar.config"]), source)
 
       deps =
         for d <- r.closure["deps"],
@@ -787,6 +797,26 @@ defmodule NccWorker.Portability.JudgeTest do
                reason: "closure dependency observed the host: dep (rebar3 trace sentinel missing)"
              } =
                judge(proj, rebar_report(proj, "dep", %{"dep" => sentinel_lost}))
+    end
+
+    test "a dependency whose mix.rebar.config is missing could not be judged", %{proj: proj} do
+      File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
+      r = rebar_report(proj, "dep", %{"dep" => child([])})
+      File.rm!(Path.join([proj, "_build/host/lib/dep/mix.rebar.config"]))
+      assert %{status: :skip, reason: @cnj, observations: obs} = judge(proj, r)
+      assert obs["taint"] == %{}
+    end
+
+    test "a dependency with telemetry's real rebar.config is not tainted", %{proj: proj} do
+      config =
+        File.read!(Path.join([__DIR__, "../../fixtures/rebar/telemetry-1.4.2.rebar.config"]))
+
+      File.write!(Path.join([proj, "deps/dep/rebar.config"]), config)
+
+      assert %{status: :pass, observations: obs} =
+               judge(proj, rebar_report(proj, "dep", %{"dep" => child([])}))
+
+      assert obs["taint"] == %{}
     end
 
     test "a dependency compile that returned an error could not be judged", %{proj: proj} do
@@ -852,8 +882,6 @@ defmodule NccWorker.Portability.JudgeTest do
             {"prov", "{provider_hooks, [{pre, [{compile, {pc, compile}}]}]}.\n",
              "rebar3 build runs provider_hooks"},
             {"plugins", "{plugins, [pc]}.\n", "rebar3 build runs plugins"},
-            {"pplugins", "{project_plugins, [rebar3_hex]}.\n",
-             "rebar3 build runs project_plugins"},
             {"pd", ~s({erl_opts, [{platform_define, "win32", 'WIN'}]}.\n),
              "rebar3 build uses platform_define"},
             {"profile", ~s({profiles, [{prod, [{pre_hooks, [{compile, "make"}]}]}]}.\n),
@@ -861,6 +889,12 @@ defmodule NccWorker.Portability.JudgeTest do
             {"profile_pd",
              ~s({profiles, [{prod, [{erl_opts, [{platform_define, "x", 'X'}]}]}]}.\n),
              "rebar3 build uses platform_define"},
+            {"profile_plugins", "{profiles, [{prod, [{plugins, [pc]}]}]}.\n",
+             "rebar3 build runs plugins"},
+            {"default_profile", ~s({profiles, [{default, [{post_hooks, [{compile, "x"}]}]}]}.\n),
+             "rebar3 build runs post_hooks"},
+            {"override", ~s({overrides, [{add, [{pre_hooks, [{compile, "make"}]}]}]}.\n),
+             "rebar3 build runs pre_hooks"},
             {"garbled", "{erl_opts, [\n", "rebar3 build config unreadable"},
             {"macro", "{erl_opts, [?X]}.\n", "rebar3 build config unreadable"}
           ] do
@@ -876,10 +910,47 @@ defmodule NccWorker.Portability.JudgeTest do
                  })
                )
 
+      # Not run when Mix compiles the dependency (`REBAR_PROFILE=prod`,
+      # `REBAR_SKIP_PROJECT_PLUGINS=true`, `project_plugins` dropped from
+      # mix.rebar.config): project plugins, and anything in another profile.
+      for {name, config} <- [
+            {"pplugins", "{project_plugins, [rebar3_hex]}.\n"},
+            {"test_hooks", ~s({profiles, [{test, [{pre_hooks, [{compile, "make"}]}]}]}.\n)},
+            {"test_plugins",
+             "{profiles, [{test, [{plugins, [covertool]}]}, {docs, [{plugins, [x]}]}]}.\n"},
+            {"test_pd", ~s({profiles, [{test, [{erl_opts, [{platform_define, "x", 'X'}]}]}]}.\n)},
+            {"dep_named_plugins", ~s({deps, [{plugins, "1.0.0"}, pre_hooks]}.\n)}
+          ] do
+        assert :ok = Rebar.check(write(dir, name, %{"rebar.config" => config})), name
+      end
+
       # No atom is created from the config.
       atom = "ncc_rebar_never_an_atom_#{System.unique_integer([:positive])}"
       assert :ok = Rebar.check(write(dir, "atom", %{"rebar.config" => "{#{atom}, []}.\n"}))
       assert_raise ArgumentError, fn -> String.to_existing_atom(atom) end
+    end
+
+    # The real files of the 2026-11-06 benchmark lock's releases, vendored
+    # unchanged from their Hex tarballs.
+    test "telemetry 1.4.2's and mimerl 1.5.0's real rebar.config do not taint", %{tmp_dir: dir} do
+      for name <- ["telemetry-1.4.2", "mimerl-1.5.0"] do
+        config = File.read!(Path.join([__DIR__, "../../fixtures/rebar", name <> ".rebar.config"]))
+        assert :ok = Rebar.check(write(dir, name, %{"rebar.config" => config})), name
+      end
+    end
+
+    test "the mix.rebar.config Mix hands rebar3 is checked too", %{tmp_dir: dir} do
+      dest = write(dir, "dest", %{"rebar.config" => "{erl_opts, []}.\n"})
+      build = write(dir, "build", %{"mix.rebar.config" => "{erl_opts,[]}.\n"})
+      mix_config = Path.join(build, "mix.rebar.config")
+      assert :ok = Rebar.check(dest, mix_config)
+
+      # A parent's override that Mix applied adds a hook only there.
+      File.write!(mix_config, ~s({erl_opts,[]}.\n{pre_hooks,[{compile,"make"}]}.\n))
+      assert {:refuse, "rebar3 build runs pre_hooks"} = Rebar.check(dest, mix_config)
+
+      File.rm!(mix_config)
+      assert {:unjudged, "rebar3 mix.rebar.config missing"} = Rebar.check(dest, mix_config)
     end
 
     test "coverage needs a sentinel and a traced compile:file per beam", %{tmp_dir: dir} do
