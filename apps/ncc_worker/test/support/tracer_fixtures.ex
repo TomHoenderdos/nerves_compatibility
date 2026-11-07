@@ -49,6 +49,7 @@ defmodule NccWorker.TracerFixtures do
           trace_dir: trace_dir,
           env: env(proj),
           native: Keyword.get(opts, :native, []),
+          mode: Keyword.get(opts, :mode, :judge),
           log_file: log,
           timeout_ms: Keyword.get(opts, :timeout_ms, 240_000),
           extra_env: Keyword.get(opts, :extra_env, [])

@@ -12,6 +12,10 @@ defmodule NccWorker.Tracer do
   dependency, so whatever a caller scans and archives afterwards is the
   traced compile's own output.
 
+  `mode: :host` makes the traced compile the run's host compile: it also
+  compiles the project, after the closure (`NccWorker.HostTrace`). The
+  default, `:judge`, recompiles the closure only.
+
   `timeout(1)` bounds the compile and kills its whole process group, so no
   orphaned compile goes on rewriting `_build` after this returns. Without
   `timeout` on the PATH nothing is run. Exit 124 (timed out) is
@@ -199,6 +203,7 @@ defmodule NccWorker.Tracer do
       {"NCC_TRACE_DIR", trace_dir},
       {"NCC_TRACE_PACKAGE", Enum.join(packages, ",")},
       {"NCC_TRACE_NATIVE", opts |> Keyword.get(:native, []) |> Enum.join(",")},
+      {"NCC_TRACE_MODE", opts |> Keyword.get(:mode, :judge) |> Atom.to_string()},
       {"MIX_OS_DEPS_COMPILE_PARTITION_COUNT", nil}
     ]
   end

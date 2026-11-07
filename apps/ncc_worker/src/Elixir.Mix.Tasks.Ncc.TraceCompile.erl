@@ -3,8 +3,11 @@
 %% portability spec, R1). Starts ncc_tracer, then recompiles the closure of
 %% NCC_TRACE_PACKAGE one dependency at a time with
 %% Mix.Tasks.Deps.Compile.compile_single/3, each inside a window the task
-%% opens and closes itself, with the sentinel fired inside it. Written in
-%% Erlang so the worker app needs no :mix dependency; Mix finds it by name.
+%% opens and closes itself, with the sentinel fired inside it. In host mode
+%% (`NCC_TRACE_MODE=host`) this is the run's host compile: after the closure
+%% it runs Mix's `compile` for the project, so its exit status is the build's.
+%% Written in Erlang so the worker app needs no :mix dependency; Mix finds it
+%% by name.
 %%
 %% The tracer's token lives only in this module's variables and arguments:
 %% never in the process dictionary, persistent_term, an application env or
@@ -26,11 +29,20 @@ run(_Args) ->
     Packages = names("NCC_TRACE_PACKAGE"),
     Native = names("NCC_TRACE_NATIVE"),
     case ncc_tracer:start_main() of
-        {ok, Token} -> traced(Token, Packages, Native);
+        {ok, Token} -> traced(Token, Packages, Native, mode());
         {error, _Why} -> erlang:exit({shutdown, 1})
     end.
 
-traced(Token, Packages, Native) ->
+%% judge: recompile the closure only (a full run's dedicated judge compile).
+%% host: the run's own host compile: the closure as in judge mode, then
+%% Mix's compile of the project, so the exit status is the build's.
+mode() ->
+    case os:getenv("NCC_TRACE_MODE") of
+        "host" -> host;
+        _ -> judge
+    end.
+
+traced(Token, Packages, Native, Mode) ->
     %% First, before Mix.Dep.load_and_cache/0 evaluates any dependency's
     %% mix.exs and before anything compiles: no package code has run in this
     %% VM yet, so the env is the one the project's config left (spec R5,
@@ -38,7 +50,8 @@ traced(Token, Packages, Native) ->
     %% or with one written after the closure line.
     _ = ncc_tracer:config_env(Token, ncc_tracer_config:snapshot()),
     Config = 'Elixir.Mix.Project':config(),
-    case with_build_lock(Config, fun() -> compile(Token, Packages, Native) end) of
+    Closure = with_build_lock(Config, fun() -> compile(Token, Packages, Native) end),
+    case project(Mode, Closure) of
         ok ->
             _ = ncc_tracer:finish(Token, ok),
             ok;
@@ -50,6 +63,22 @@ traced(Token, Packages, Native) ->
         {failed, Class, Reason, Stack} ->
             _ = ncc_tracer:finish(Token, compile_failed),
             erlang:raise(Class, Reason, Stack)
+    end.
+
+%% After the build lock is released: Mix's compile takes it again. Every
+%% closure dependency is compiled by now, so this compiles the project's own
+%% app (and anything outside the package's closure, whose events fall outside
+%% every window and count against everything). `--return-errors` makes a
+%% failed compile return `{error, _}` rather than exit.
+project(host, ok) -> project_compile();
+project(_Mode, Result) -> Result.
+
+project_compile() ->
+    try 'Elixir.Mix.Task':run(<<"compile">>, [<<"--return-errors">>]) of
+        {error, _Diagnostics} -> {failed, exit, {shutdown, 1}, []};
+        _ -> ok
+    catch
+        Class:Reason:Stack -> {failed, Class, Reason, Stack}
     end.
 
 %% Unlike `mix deps.compile`, no `deps.precompile`: it is a hook, a no-op in a

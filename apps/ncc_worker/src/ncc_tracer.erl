@@ -950,7 +950,8 @@ start_line(Role, App, Depth) ->
       roots => [ncc_tracer_channels:chars(R) || R <- get(roots)],
       otp_root => ncc_tracer_channels:chars(code:root_dir()), elixir_root => elixir_root(),
       home => env_bin("HOME"), mix_home => ncc_tracer_channels:chars(mix_home()),
-      hex_home => env_bin("HEX_HOME"), tracer => tracer_md5()}.
+      hex_home => env_bin("HEX_HOME"), mode => env_bin("NCC_TRACE_MODE"),
+      tracer => tracer_md5()}.
 
 %% The md5 of every tracer module this VM runs. The report reader compares a
 %% child VM's with the Mix VM's: a child that loaded other tracer beams (one

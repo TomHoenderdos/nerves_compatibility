@@ -159,6 +159,11 @@ defmodule NccWorker.Tracer.Report do
     |> over_budget(budget)
   end
 
+  @doc "The traced compile's mode, from its start line: `:host` or `:judge`."
+  @spec mode(t()) :: :host | :judge
+  def mode(%__MODULE__{start: %{"mode" => "host"}}), do: :host
+  def mode(%__MODULE__{}), do: :judge
+
   defp over_budget(r, %{exceeded: false}), do: r
 
   defp over_budget(r, _budget) do

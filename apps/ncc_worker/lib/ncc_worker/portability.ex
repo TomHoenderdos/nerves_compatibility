@@ -120,6 +120,7 @@ defmodule NccWorker.Portability do
       `env`; without either no dependency source file is readable);
     * `run_started_at:`, the run's start in monotonic seconds, which bounds
       the compile by what is left of the run (`NccWorker.Tracer`);
+    * `mode:`, `:judge` (default) or `:host`, passed to `NccWorker.Tracer.run/3`;
     * `trace_dir:` (default `<project_dir>/../trace`), `log_file:`,
       `timeout_ms:`, `extra_env:`, `reap:`, `cmd:` (tests).
 
@@ -262,7 +263,8 @@ defmodule NccWorker.Portability do
       log_file: Keyword.get(opts, :log_file),
       timeout_ms: Keyword.get(opts, :timeout_ms, @default_timeout_ms),
       extra_env: Keyword.get(opts, :extra_env, []),
-      run_started_at: Keyword.get(opts, :run_started_at)
+      run_started_at: Keyword.get(opts, :run_started_at),
+      mode: Keyword.get(opts, :mode, :judge)
     ] ++ Keyword.take(opts, [:reap, :cmd])
   end
 
