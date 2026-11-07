@@ -874,7 +874,16 @@ mix_home() ->
         V -> V
     end.
 
+%% A module whose kind decides a config-read attribution or drop is looked
+%% up afresh (ncc_tracer_stack:uncached/0): a cached answer would outlive a
+%% package redefining it.
 toolchain(M) ->
+    case lists:member(M, ncc_tracer_stack:uncached()) of
+        true -> toolchain_module(M);
+        false -> cached_toolchain(M)
+    end.
+
+cached_toolchain(M) ->
     case get({tc, M}) of
         undefined ->
             V = toolchain_module(M),

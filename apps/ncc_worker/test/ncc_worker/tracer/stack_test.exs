@@ -399,7 +399,7 @@ defmodule NccWorker.Tracer.StackTest do
     assert kind.(:not_a_frame) == "none"
   end
 
-  describe "a read made through IO.ANSI" do
+  describe "a read made through IO.ANSI or Logger.Formatter" do
     @ansi_toolchain [
       Application,
       :application,
@@ -442,7 +442,7 @@ defmodule NccWorker.Tracer.StackTest do
                ansi_extent(ansi_read() ++ [dispatcher])
     end
 
-    test "never changes a frame's kind, and only IO.ANSI itself is skipped" do
+    test "never changes a frame's kind; only the exact module names are skipped" do
       kind = &:ncc_tracer_stack.first_kind(&1, fn m -> m in @ansi_toolchain end)
       shell = f(Mix.Shell.IO, :info, 1)
       lookalike = f(:"Elixir.IO.ANSI.Fake", :enabled?, 0)
@@ -452,6 +452,42 @@ defmodule NccWorker.Tracer.StackTest do
       assert kind.(shell) == "toolchain"
       assert {:user, :frame, ^lookalike, ^lookalike} = ansi_extent(ansi_read() ++ [lookalike])
       assert kind.(lookalike) == "user"
+    end
+
+    # A package's module of the same name is not the toolchain's: it is not
+    # skipped and stays the first frame.
+    test "only the toolchain's own IO.ANSI and Logger.Formatter are skipped" do
+      forged? = &(&1 in [IO.ANSI, Logger.Formatter])
+      tc? = &(&1 in @ansi_toolchain and not forged?.(&1))
+      extent = &:ncc_tracer_stack.extent(&1, 64, tc?, false)
+      handler = f(:logger_h_common, :try_format, 3)
+      formatter = f(Logger.Formatter, :format, 2)
+      ansi = f(IO.ANSI, :enabled?, 0)
+      read = [f(:application, :get_env, 3), f(Application, :get_env, 3)]
+
+      assert {:user, :frame, ^ansi, ^ansi} = extent.(read ++ [ansi, formatter, handler])
+
+      assert {:user, :frame, ^formatter, ^formatter} =
+               extent.(read ++ [formatter, handler])
+    end
+
+    # Logger's handler is the first frame only when reached through the
+    # toolchain's formatter: a package formatter tail-calling IO.ANSI leaves
+    # the IO.ANSI frame right above the handler, and that frame stays first.
+    test "Logger's handler is first only through Logger.Formatter" do
+      handler = f(:logger_h_common, :try_format, 3)
+      ansi = f(IO.ANSI, :enabled?, 0)
+      read = [f(:application, :get_env, 3), f(Application, :get_env, 3), ansi]
+      body = f(:elixir_compiler_3, :__MODULE__, 1)
+
+      assert {:user, :frame, ^ansi, ^body} = ansi_extent(read ++ [handler, body])
+
+      assert {:user, :frame, ^handler, ^body} =
+               ansi_extent(read ++ [f(Logger.Formatter, :format, 2), handler, body])
+
+      # Not reached through a skipped frame at all: the handler stays first.
+      assert {:user, :frame, ^handler, ^body} =
+               ansi_extent([f(:application, :get_env, 3), handler, body])
     end
 
     test "with nothing below it has no first frame" do

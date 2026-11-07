@@ -2,7 +2,8 @@
 %% Stage-1 classification of one traced call by the stack it was made from
 %% (precompiled portability spec, R1 steps 1-3). The tracer passes in which
 %% modules are toolchain and whether the calling process is a user process.
--export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2]).
+-export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2,
+         uncached/0]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% Frames a call is attributed through, to the frame that called them, when
@@ -10,11 +11,24 @@
 %% `:elixir, :ansi_enabled` for their caller, and only the caller decides
 %% whether the answer reaches code (a module attribute holding
 %% IO.ANSI.format/1's or Logger.Formatter.format/2's result) or only output
-%% (Mix's shell, Logger's handler). Skipping them changes which frame is first, never how a frame is
-%% classified: every frame keeps its own module's kind, the user-frame
-%% search sees the whole stack, and a stack of nothing else has no first
-%% frame (the package's own read).
+%% (Mix's shell, Logger's handler). Such a frame is skipped only when it is
+%% the toolchain's own module: a package's module of the same name stays
+%% the first frame. Skipping changes which frame is first, never how a
+%% frame is classified: every frame keeps its own module's kind, the
+%% user-frame search sees the whole stack, and a stack of nothing else has
+%% no first frame (the package's own read).
 -define(ATTRIBUTED_THROUGH, ['Elixir.IO.ANSI', 'Elixir.Logger.Formatter']).
+%% Modules whose kind decides a skip above or a reviewed drop of a config
+%% read (`NccWorker.Portability.ConfigReads`, keyed on the first frame): the
+%% tracer classifies them afresh on every event, never from its per-module
+%% cache, so a package that redefines one mid-compile is not taken for the
+%% toolchain's.
+-define(UNCACHED, ?ATTRIBUTED_THROUGH ++ ['Elixir.Mix.Shell.IO', logger_h_common]).
+%% A frame a read is attributed to only when the skipped frame right above
+%% it is the toolchain's module it is paired with: Logger's handler calls
+%% the formatter, and a package's formatter that tail-calls IO.ANSI leaves
+%% no frame of its own, so the IO.ANSI frame stays first instead.
+-define(REACHED_THROUGH, [{logger_h_common, 'Elixir.Logger.Formatter'}]).
 %% The frames left on top when package code tail-calls a primitive from a
 %% compile-time hook. Pinned per toolchain by the fixture suite.
 -define(DISPATCHERS, [{elixir_module, "expand_callback"}, {elixir_module, "eval_callbacks"},
@@ -55,7 +69,7 @@ extent([], _Depth, _IsToolchain, _ProcessIsUser, _IsScript) ->
     {user, truncated, none, none};
 extent(Stack0, Depth, IsToolchain, ProcessIsUser, IsScript) ->
     Stack = mark_script(Stack0, IsScript),
-    Stripped = strip(Stack),
+    Stripped = strip(Stack, IsToolchain),
     First = case Stripped of
                 [Frame | _] -> Frame;
                 [] -> none
@@ -142,12 +156,26 @@ compiler_frame({M, _, _, _}) ->
         _ -> false
     end.
 
-strip([{M, _, _, _} | Rest] = Stack) ->
-    case lists:member(M, ?WRAPPERS) orelse lists:member(M, ?ATTRIBUTED_THROUGH) of
-        true -> strip(Rest);
-        false -> Stack
+strip(Stack, IsToolchain) -> strip(Stack, none, IsToolchain).
+
+strip([{M, _, _, _} = Frame | Rest] = Stack, Above, IsToolchain) ->
+    Skip = lists:member(M, ?WRAPPERS)
+        orelse (lists:member(M, ?ATTRIBUTED_THROUGH) andalso IsToolchain(M)),
+    case Skip of
+        true -> strip(Rest, Frame, IsToolchain);
+        false -> reached(Stack, Above)
     end;
-strip([]) -> [].
+strip([], _Above, _IsToolchain) -> [].
+
+reached([{M, _, _, _} | _] = Stack, {AboveM, _, _, _} = Above) ->
+    Through = lists:member(AboveM, ?ATTRIBUTED_THROUGH),
+    case lists:keyfind(M, 1, ?REACHED_THROUGH) of
+        {M, Via} when Through, AboveM =/= Via -> [Above | Stack];
+        _ -> Stack
+    end;
+reached(Stack, none) -> Stack.
+
+uncached() -> ?UNCACHED.
 
 dispatcher({M, F, _, _}) -> lists:member({M, base_name(F)}, ?DISPATCHERS).
 

@@ -296,6 +296,57 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
         def v, do: @v
       end
       """),
+    # Compiled in a project of its own: a package loading its own Mix.Shell.IO
+    # and Logger.Formatter after Mix has used the real ones, then baking
+    # their results.
+    "fx_forge" =>
+      lib("fx_forge", """
+      {:module, _, shell, _} =
+      defmodule Mix.Shell.IO do
+        def print_app, do: :ok
+        def info(message), do: IO.puts(IO.ANSI.format(message))
+        def error(message), do: IO.puts(:stderr, IO.ANSI.format(message))
+        def prompt(_message), do: ""
+        def yes?(_message, _options \\\\ []), do: true
+        def cmd(command, options \\\\ []), do: Mix.Shell.cmd(command, options, &IO.write/1)
+        def styled(message), do: [IO.ANSI.format(message)]
+      end
+
+      {:module, _, formatter, _} =
+      defmodule Logger.Formatter do
+        def new(_options \\\\ []), do: {__MODULE__, %{}}
+        def format(_event, _config), do: [IO.ANSI.format([:red, "forged"]), "\\n"]
+      end
+
+      here = String.to_charlist(__ENV__.file)
+      {:module, _} = :code.load_binary(Mix.Shell.IO, here, shell)
+      {:module, _} = :code.load_binary(Logger.Formatter, here, formatter)
+
+      defmodule FxForge do
+        require Logger
+        @styled IO.iodata_to_binary(Mix.Shell.IO.styled([:red, "x"]))
+        Logger.warning("fixture log through the forged formatter, expected")
+        def styled, do: @styled
+      end
+      """),
+    # Compiled in a project of its own: a package's formatter that
+    # tail-calls IO.ANSI, so Logger's handler is the frame below the read.
+    "fx_forge_tail" =>
+      lib("fx_forge_tail", """
+      {:module, _, formatter, _} =
+        defmodule Logger.Formatter do
+          def new(_options \\\\ []), do: {__MODULE__, %{}}
+          def format(_event, _config), do: IO.ANSI.format([:red, "forged tail\\n"])
+        end
+
+      {:module, _} = :code.load_binary(Logger.Formatter, String.to_charlist(__ENV__.file), formatter)
+
+      defmodule FxForgeTail do
+        require Logger
+        Logger.warning("fixture log through the forged formatter, expected")
+        def x, do: :ok
+      end
+      """),
     # Compiled in a project of its own whose config sets the key.
     "fx_cfg_set" =>
       lib("fx_cfg_set", """
@@ -306,7 +357,7 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
       """)
   }
 
-  @alone ["fx_cfg_set"]
+  @alone ["fx_cfg_set", "fx_forge", "fx_forge_tail"]
 
   # The fixtures whose toolchain reads the reviewed lists are pinned by.
   @reviewed_fixtures [
@@ -337,6 +388,20 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
           ["fx_cfg_set"],
           Map.take(@deps, ["fx_cfg_set"]),
           "config :fx_cfg_set, k: 42\n"
+        ),
+      "fx_forge" =>
+        compile(
+          Path.join(root, "forge"),
+          ["fx_forge"],
+          Map.take(@deps, ["fx_forge"]),
+          nil
+        ),
+      "fx_forge_tail" =>
+        compile(
+          Path.join(root, "forge_tail"),
+          ["fx_forge_tail"],
+          Map.take(@deps, ["fx_forge_tail"]),
+          nil
         )
     }
 
@@ -415,14 +480,12 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
 
   test "Logger's compile-time reads are recorded with the value a client looks up", ctx do
     v = passes(ctx, "fx_cfg_logger")
+    entries = run_of(ctx, "fx_cfg_logger").traced.report.config_env.entries
+    reads = toolchain_reads(v, "fx_cfg_logger")
+    assert MapSet.size(reads) > 0
 
-    for {"logger", key} <- toolchain_reads(v, "fx_cfg_logger") do
-      expected =
-        case Application.fetch_env(:logger, String.to_existing_atom(key)) do
-          {:ok, value} -> enc({:ok, value})
-          :error -> ConfigReads.unset()
-        end
-
+    for {"logger", key} <- reads do
+      expected = Map.get(entries, {"logger", key}, ConfigReads.unset())
       assert item(v, "logger", key).value == expected, key
     end
 
@@ -499,7 +562,7 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
     assert v.observations["config_reads"] == []
   end
 
-  test "no Mix or Hex config read of the compile around a package is its own", ctx do
+  test "no Mix config read of the compile around a package is its own", ctx do
     for app <- ["fx_cfg_plain", "fx_tc_warn", "fx_cfg_get", "fx_cfg_logger"] do
       v = passes(ctx, app)
 
@@ -535,6 +598,35 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
       assert [%{"first" => "Elixir.Mix.Shell.IO", "first_kind" => "toolchain"}] =
                v.observations["config_reads"]
     end
+  end
+
+  # A package's own Mix.Shell.IO or Logger.Formatter is not the toolchain's,
+  # even once the real one has been seen: its reads are the package's.
+  test "a package redefining Mix.Shell.IO or Logger.Formatter keeps its reads", ctx do
+    v = passes(ctx, "fx_forge")
+    reads = v.observations["config_reads"]
+
+    forged =
+      Enum.filter(reads, &(&1["first"] in ["Elixir.Mix.Shell.IO", "Elixir.Logger.Formatter"]))
+
+    assert Enum.any?(forged, &(&1["first"] == "Elixir.Mix.Shell.IO")), inspect(reads)
+    assert Enum.any?(forged, &(&1["first"] == "Elixir.Logger.Formatter")), inspect(reads)
+    assert Enum.all?(forged, &(&1["first_kind"] == "user")), inspect(forged)
+    refute Enum.any?(reads, &(&1["first"] == "logger_h_common"))
+    assert %{value: _} = item(v, "elixir", "ansi_enabled")
+  end
+
+  # A formatter of the package's own that tail-calls IO.ANSI leaves no
+  # frame between IO.ANSI and Logger's handler: the read is not the
+  # handler's, and stays unreviewed.
+  test "a package formatter tail-calling IO.ANSI is not taken for Logger's", ctx do
+    assert %{status: :skip, reason: @cnj, observations: obs} = verdict(ctx, "fx_forge_tail")
+
+    assert obs["problems"] == [
+             "unreviewed toolchain config read: elixir ansi_enabled from Elixir.IO.ANSI"
+           ]
+
+    refute Enum.any?(obs["config_reads"], &(&1["first"] == "logger_h_common"))
   end
 
   test "a dependency's Mix compiler runs in the window of the package that names it", ctx do

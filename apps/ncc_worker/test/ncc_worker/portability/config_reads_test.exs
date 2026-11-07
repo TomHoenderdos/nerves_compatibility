@@ -182,9 +182,10 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     assert %{items: [], problems: [], dropped: 2} = judge(decided, snap(entries))
   end
 
-  # IO.ANSI.format/1,2 and format_fragment/1,2 bake escape codes, or none,
-  # by the same key: only Mix's shell's read of it is reviewed as dropped,
-  # and the drop matches that first frame only.
+  # IO.ANSI.format/1,2, format_fragment/1,2 and Logger.Formatter.format/2
+  # bake escape codes, or none, by the same key: only the reads made for
+  # Mix's shell and Logger's handler are reviewed as dropped, each matched
+  # on that first frame only.
   test "another toolchain frame's :elixir ansi_enabled read cannot be judged" do
     for first <- ["Elixir.IO.ANSI", "Elixir.IO", "Elixir.Logger.Formatter", "logger_std_h"] do
       decided = [obs("pkg", read("elixir", "ansi_enabled", kind: "toolchain", first: first))]
@@ -323,6 +324,7 @@ defmodule NccWorker.Portability.ConfigReadsTest do
              ]
 
       assert app_reads(shell) == []
+      assert ansi_enabled_refs(shell) == []
 
       {direct, all} = ansi_calls(shell)
       assert all != []
@@ -336,7 +338,7 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     # Logger.Formatter reads :ansi_enabled only through the `&IO.ANSI.enabled?/0`
     # colouring default, and OTP's handler code calls a formatter only from
     # `try_format/3`, whose text `log_to_binary/2` returns for the handler
-    # to write.
+    # to write. Every drop key's module is classified afresh on each event.
     test "drops Logger's handler's ansi_enabled read, whose value only reaches output" do
       formatter = source(:logger, "lib/logger/formatter.ex")
 
@@ -355,6 +357,13 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       assert formatter_callers(forms) == [:try_format]
       assert callers(forms, :try_format) == [:do_log_to_binary, :try_format]
       assert callers(forms, :do_log_to_binary) == [:log_to_binary]
+      # Within the handler code, the text goes to the handler's process or
+      # device: `log/2` loads it into the handler, `log_handler_info/4`
+      # writes it. Callers in other modules are not pinned.
+      assert callers(forms, :log_to_binary) == [:log, :log_handler_info]
+
+      for {first, _app, _key} <- ConfigReads.reviewed(System.version()).drop,
+          do: assert(String.to_atom(first) in :ncc_tracer_stack.uncached(), first)
 
       assert {"logger_h_common", "elixir", "ansi_enabled"} in ConfigReads.reviewed(
                System.version()
