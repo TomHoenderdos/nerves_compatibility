@@ -237,7 +237,7 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
     assert [%{unpublished_at: nil}] = results("pure_elixir")
   end
 
-  # Task 17's carry: every pure_elixir row of the version goes, or an older
+  # Every pure_elixir row of the version goes, or an older
   # run's result moves up into the manifest and carried copies stay served.
   test "older runs of the version and carried copies are withdrawn with it" do
     pure_elixir_run!(%{"run_id" => "fixture-jason-old", "finished_at" => "2026-01-01T00:00:00Z"})
@@ -279,7 +279,7 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
     end
   end
 
-  # Controller ruling: a full run after P1 published pure_elixir only because
+  # A full run after P1 published pure_elixir only because
   # its own traced compile passed, which the portal does not store, so the
   # toolchain build's refusal never withdraws it. The cutoff applies to the
   # run that built a result: a copy carried after the cutoff from an older

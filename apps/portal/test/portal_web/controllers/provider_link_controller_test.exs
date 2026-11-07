@@ -233,7 +233,7 @@ defmodule PortalWeb.ProviderLinkControllerTest do
     refute body =~ "Current password"
   end
 
-  # --- Task 5 brief: extra required coverage ---------------------------------
+  # --- GitHub link: what the identity stores -----------------------------------
 
   test "linking GitHub from settings stores the integer uid and login", %{conn: conn} do
     user = user_fixture()

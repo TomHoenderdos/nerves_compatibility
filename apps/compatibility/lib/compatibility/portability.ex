@@ -23,8 +23,9 @@ defmodule Compatibility.Portability do
 
   # R1 (the package's own compile observed the host; R4's `mix.exs` slice
   # judges R1 events) and R2 (a baked build path): the refusals that
-  # withdraw an earlier publication (controller ruling m4). R3 taint, a
-  # call into a natively built dependency and the rebar3 rules do not.
+  # withdraw an earlier publication. R3 taint, a call into a natively built
+  # dependency and the rebar3 rules do not: they speak of a dependency or of
+  # the trace's own coverage, not of the package's own compile.
   @withdrawing_prefixes [
     "compile-time host read: ",
     "compile-time host read in mix.exs: ",

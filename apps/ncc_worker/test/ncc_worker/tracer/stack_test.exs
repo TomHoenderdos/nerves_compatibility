@@ -94,7 +94,7 @@ defmodule NccWorker.Tracer.StackTest do
     assert "System.version/0" = :ncc_tracer_stack.mfa_bin(System, :version, 0)
   end
 
-  describe "tail calls through toolchain glue (review fix)" do
+  describe "tail calls through toolchain glue" do
     test "a macro that maps a capture over System.get_env/1 is user extent" do
       stack = [
         f(System, :get_env, 1),
@@ -216,7 +216,7 @@ defmodule NccWorker.Tracer.StackTest do
     end
   end
 
-  describe "protocol and non-tail higher-order glue (review fix 2)" do
+  describe "protocol and non-tail higher-order glue" do
     test "a Stream chain through Enumerable impls is user extent" do
       stack = [
         f(System, :get_env, 1),

@@ -263,7 +263,7 @@ defmodule Portal.Precompiled.WithheldTest do
       refute Catalog.published_sha256?(@run_sha)
     end
 
-    # Ruling B1: the withdrawal only narrows the withheld rule. A result
+    # The withdrawal only narrows the withheld rule. A result
     # without a recorded lock that nobody withdrew is still an unknown
     # closure and withheld, exactly as before.
     test "leaves a lockless result withheld" do

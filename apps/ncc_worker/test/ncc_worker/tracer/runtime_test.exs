@@ -796,7 +796,7 @@ defmodule NccWorker.Tracer.RuntimeTest do
     Process.sleep(100)
     Code.compile_file(#{inspect(fx)})
     script = #{inspect(Path.join(real, "fakemix"))}
-    # (d) the reviewer's shape: a forged script frame above the real one,
+    # (d) a forged script frame above the real one,
     # reached by a tail call from __after_compile__, in the driver.
     Code.compile_file(#{inspect(fx_after)})
     # (c) a forged script frame at the bottom of a process that is not the

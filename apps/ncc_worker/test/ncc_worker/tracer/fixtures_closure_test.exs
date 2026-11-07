@@ -1,18 +1,18 @@
 defmodule NccWorker.Tracer.FixturesClosureTest do
   # Fixture suite C (spec section 9): host taint through the closure (R3),
   # dependency mix.exs reads (R4), rebar3's static rules and child-trace
-  # coverage, and a tracer that dies or trips a cap (Review Focus 1). Path
+  # coverage, and a tracer that dies or trips a cap. Path
   # dependencies compiled under the real tracer; a project whose trace a
   # fixture poisons (a killed collector, a cap) is its own project, compiled
   # alongside the shared one.
   #
-  # Spec section 9 still carries Rev 1's row "same D, the package calls
-  # D.os() only at runtime: publishable", while Rev 2's R3 refuses a package
-  # when ANY closure dependency is host-tainted. P1 follows Rev 2 (refuse):
-  # fx_uses_d_runtime below pins that; P1's measurement of host-taint
-  # refusals decides any narrowing.
+  # A package that calls a host-tainted dependency D only at runtime might
+  # look publishable, but R3 refuses a package when ANY closure dependency is
+  # host-tainted, and P1 follows R3 (refuse): fx_uses_d_runtime below pins
+  # that; P1's measurement of host-taint refusals decides any narrowing.
   #
-  # Refusals are matched to their owner (ruling M7).
+  # Refusals are matched to their owner, so a verdict cannot pass on another
+  # fixture's refusal.
   # Starts real `elixir` VMs: one such module at a time (the :real_vm
   # group), alongside the unit suites, so their compiles do not contend.
   use ExUnit.Case, async: true, group: :real_vm
@@ -71,7 +71,7 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
           )
       }),
     # A slice reason that is not "sets <key>" passes through unchanged
-    # (Task 7): a read in a bare module-body statement.
+    # (a read in a bare module-body statement).
     "fx_mix_body" =>
       lib("fx_mix_body", "defmodule FxMixBody do\nend\n", %{
         mix_exs: """
@@ -83,7 +83,7 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
         """
       }),
     # Running a program from a dependency's mix.exs refuses even when its
-    # result only reaches `deps` (Task 8 ruling).
+    # result only reaches `deps`: its output is the host's, whatever key.
     "fx_mix_exec_deps" =>
       lib("fx_mix_exec_deps", "defmodule FxMixExecDeps do\nend\n", %{
         mix_exs: """
@@ -306,7 +306,7 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
     end
   end
 
-  test "a dependency that observed the host refuses every package that has it (R3, Rev 2)",
+  test "a dependency that observed the host refuses every package that has it (R3)",
        ctx do
     assert "compile-time host read: os:type/0" <> _ = taint = refused(ctx, "fx_d_os")
 
@@ -424,7 +424,7 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
 
   defp compile_line(template, module), do: compile_line(template, {module, "ok"})
 
-  test "rebar3 coverage: one beam without a compile return is a gap, two taint (ruling M2)",
+  test "rebar3 coverage: one beam without a compile return is a gap, two taint",
        ctx do
     one = edited(ctx, "one-gap", compiles("fx_r3_two", ["fx_r3_two_a", "fx_r3_two_b"]))
     v = passes(ctx, "fx_r3_two", "shared", one)
@@ -481,7 +481,7 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
     assert %{status: :skip, reason: @taint <> "fx_r3_clean (rebar3 compile was not traced)"} =
              verdict(ctx, "fx_uses_r3_clean", "shared", none)
 
-    # Ruling: an empty ebin with no child trace proves nothing either.
+    # An empty ebin with no child trace proves nothing either.
     for app <- ["fx_r3_empty", "fx_uses_r3_empty"] do
       assert %{status: :skip, reason: @cnj} = v = verdict(ctx, app, "shared", none)
 

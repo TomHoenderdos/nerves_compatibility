@@ -2,10 +2,10 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
   # Fixture suite B (spec section 9): files, writes, install locations,
   # native code and R2. Independent path dependencies of one project,
   # compiled once under the real tracer and judged one by one. Expected
-  # verdicts come from the spec and the controller's rulings; a publishable
+  # verdicts come from the spec; a publishable
   # fixture that refuses is a finding about the tracer, not a test to loosen.
   #
-  # Every refusal is matched to its owner (ruling M7), so a verdict cannot
+  # Every refusal is matched to its owner, so a verdict cannot
   # pass on an observation from another fixture's window.
   # Starts real `elixir` VMs: one such module at a time (the :real_vm
   # group), alongside the unit suites, so their compiles do not contend.
@@ -21,8 +21,8 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
   @write "compile-time write outside ebin: "
 
   # Every kind of write a compile can make outside its own ebin. The first
-  # is the shape Phoenix.LiveView.ColocatedAssets writes (Task 19 runs the
-  # real one).
+  # is the shape Phoenix.LiveView.ColocatedAssets writes (the colocated
+  # integration test runs the real one).
   @writes %{
     "fx_w_colocated" =>
       ~S|(dir = Path.join([Mix.Project.build_path(), "phoenix-colocated", "fx_w_colocated"]); File.mkdir_p!(dir); File.write!(Path.join(dir, "hooks.js"), "x"))|,
@@ -129,7 +129,7 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
                   ~S|File.write!(Path.join([Mix.Project.app_path(), "ebin", "extra.txt"]), "x")|
                 )
               ),
-            # Task 6 ruling: a link made inside the package's own ebin, read
+            # A link made inside the package's own ebin, read
             # through and removed again, leaves only a read of an ebin path
             # for the judge to resolve after the build. The link refuses.
             "fx_ebin_link" =>
@@ -140,7 +140,7 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
                   ~S|(l = Path.join([Mix.Project.app_path(), "ebin", "h"]); File.ln_s!("/etc/hosts", l); v = File.read!(l); File.rm!(l); v)|
                 )
               ),
-            # Task 6 ruling: a user set_cwd refuses, even one Mix-style
+            # A user set_cwd refuses, even one Mix-style
             # File.cd!/2 puts back.
             "fx_cd" =>
               lib(
@@ -148,7 +148,7 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
                 attr_module("FxCd", ~S|File.cd!(Path.join(__DIR__, ".."), fn -> 1 end)|)
               ),
             "fx_r2" => lib("fx_r2", attr_module("FxR2", ~S|Path.expand("..", __DIR__)|)),
-            # Task 9 ruling: a bare literal that is a closure source file's
+            # A bare literal that is a closure source file's
             # real path is an observation; under priv/ or test/ it refuses,
             # and a _build/<env>/lib/<d>/priv spelling is allowed only as an
             # @external_resource.
@@ -188,10 +188,10 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
                   )
               }
             },
-            # Task 9 ruling: an ebin that is gone by the time R2 reads it
+            # An ebin that is gone by the time R2 reads it
             # could not be judged (setup removes it after the compile).
             "fx_no_ebin" => lib("fx_no_ebin", "defmodule FxNoEbin do\nend\n"),
-            # Task 8 ruling: running a program from a dependency's mix.exs
+            # Running a program from a dependency's mix.exs
             # refuses, whatever key the result reaches.
             "fx_mix_exec" =>
               lib("fx_mix_exec", "defmodule FxMixExec do\nend\n", %{
@@ -252,7 +252,7 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
     on_exit(fn -> File.rm_rf(root) end)
 
     # Without a verified Hex file list no source file of a dependency is
-    # readable (spec R1 "Files", Task 6 ruling), so the dependencies whose
+    # readable (spec R1 "Files"), so the dependencies whose
     # files are read get the release a Hex dependency would have.
     hex_home = Path.join(root, "hex")
 
@@ -320,7 +320,7 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
     do:
       for(%{"owner" => ^app, "reason" => r} <- verdict(ctx, app).observations["refusals"], do: r)
 
-  # A refusal of `app` whose reason is one of `app`'s own refusals (ruling M7).
+  # A refusal of `app` whose reason is one of `app`'s own refusals.
   defp refused(ctx, app) do
     assert %{status: :skip, reason: reason, observations: %{"refusals" => refusals}} =
              v = verdict(ctx, app)
@@ -379,8 +379,7 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
     assert "compile-time host read: crypto:info_lib/0" <> _ = refused(ctx, "fx_crypto")
   end
 
-  # erlang:load_nif/2 is never call-traced on OTP 28 and 29 (Task 12
-  # finding): the tracer's /proc/self/maps snapshots catch the library
+  # erlang:load_nif/2 is never call-traced on OTP 28 and 29: the tracer's /proc/self/maps snapshots catch the library
   # instead (NccWorker.Portability.MappedLibs). Linux only; elsewhere the
   # test helper waives the check, and this can only pin that.
   test "loading a NIF at compile time refuses", ctx do

@@ -17,7 +17,7 @@ defmodule Portal.AdminEventsTest do
   test "a burst refreshes once now and once at the end of the window" do
     # A window wide enough that 500 trivial map/reduce calls land inside it
     # even when the test suite's other async cases are contending for the
-    # scheduler -- a 50ms window (as sketched in the brief) occasionally lost
+    # scheduler -- a 50ms window occasionally lost
     # that race under full-suite load and made this test flaky.
     interval_ms = 300
     socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}}}

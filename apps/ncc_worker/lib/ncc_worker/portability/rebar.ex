@@ -41,11 +41,11 @@ defmodule NccWorker.Portability.Rebar do
   problems, and recorded a successful `compile:file/2` return for every beam
   in the dependency's `ebin`. rebar3 ends with `erlang:halt/1`, which can
   drop the collector's last queued line, the return of a compile. The tracer
-  records returns only, so which one was last cannot be checked (controller
-  ruling, re-ruling M2): at most one beam without a return per child, with
-  the sentinel present and the trace otherwise clean, is a `{:gap, module}`
-  the judge records in `trace_stats`; the reads of that compile were still
-  traced. Two or more are an `{:error, _}`, which taints.
+  records returns only, so which one was last cannot be checked: at most
+  one beam without a return per child, with the sentinel present and the
+  trace otherwise clean, is a `{:gap, module}` the judge records in
+  `trace_stats` rather than taint (a halt race must not taint a clean
+  dependency); the reads of that compile were still traced. Two or more are an `{:error, _}`, which taints.
 
   `{:unjudged, _}` (could not be judged, never a gap or taint): a compile
   that returned an error, a missing `ebin`, or an empty `ebin` with no child

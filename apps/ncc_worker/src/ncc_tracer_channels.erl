@@ -39,7 +39,7 @@ patterns() ->
      {prim_file, read_link_info, 1}, {prim_file, read_link_info, 2},
      {prim_file, read_link_all, 1}, {prim_file, list_dir_all, 1}, {prim_file, get_cwd, 1},
      %% Changing the working directory changes what every later relative
-     %% path names, so the judge must see it (Rev 2 review, Task 6).
+     %% path names, so the judge must see it.
      {file, set_cwd, 1}, {prim_file, set_cwd, 1},
      {erl_prim_loader, get_file, 1}, {erl_prim_loader, list_dir, 1},
      {erl_prim_loader, read_file_info, 1},

@@ -89,7 +89,7 @@ defmodule Portal.Precompiled.Batches do
     issued = DateTime.utc_now()
     expires = DateTime.add(issued, @ttl_hours, :hour)
     # No locking: this runs from one Oban cron job with a uniqueness
-    # constraint (Task 7), so concurrent calls do not occur in production,
+    # constraint, so concurrent calls do not occur in production,
     # and `unique_sequence` turns any race into an error, not duplicate data.
     sequence =
       case latest() do

@@ -36,9 +36,9 @@ defmodule NccWorker.Portability do
   the ncc_worker test helper sets on macOS and the worker never sets;
   `judge/5` also takes `nif_waiver:`).
 
-  Only the package's closure counts (controller ruling M7): events, child
-  traces and refusals of an app outside `Context.closure_of/2` of the
-  package are dropped, and so is a stray child trace (`unknown`, an
+  Only the package's closure counts, so a verdict cannot pass on another
+  package's refusal: events, child traces and refusals of an app outside
+  `Context.closure_of/2` of the package are dropped, and so is a stray child trace (`unknown`, an
   elixir_make `erl -eval` sub-VM: the spawn is itself traced in the Mix VM).
   An unjudged event is never dropped. Events in a native-pattern quiet
   interval are the tracer's own loading of a native dependency: dropped too,

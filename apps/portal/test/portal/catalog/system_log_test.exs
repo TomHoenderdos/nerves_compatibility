@@ -5,7 +5,7 @@ defmodule Portal.Catalog.SystemLogTest do
 
   alias Portal.Catalog.{Ingestion, SystemLog, SystemResult}
 
-  # A *passing* system result on purpose: from Task 3 onwards ingestion creates
+  # A *passing* system result on purpose: ingestion creates
   # a SystemLog for failures by itself, which would collide with the uniqueness
   # test below.
   defp passing_system_result do

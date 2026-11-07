@@ -23,7 +23,7 @@ defmodule NccWorker.Portability.Context do
   them byte for byte: a case variant of an allowed path is refused even on
   a case-insensitive file system (the worker's is case-sensitive).
 
-  Reads (spec R1 "Files", Rev 2) are allowed under the OTP root, the Elixir
+  Reads (spec R1 "Files") are allowed under the OTP root, the Elixir
   install, a non-native closure dependency's build dir, or a closure
   dependency's source dir when the file is in its Hex file list (a listed
   directory covers the files under it) and, for a native dependency, not

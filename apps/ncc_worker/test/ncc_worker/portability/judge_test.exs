@@ -384,7 +384,7 @@ defmodule NccWorker.Portability.JudgeTest do
     end
   end
 
-  describe "fail closed (carry items)" do
+  describe "fail closed" do
     test "an event Events could not judge makes the verdict could-not-judge", %{proj: proj} do
       unjudged = %{event(35, "os:type/0", "lib/pkg.ex") | "extent" => "unjudged"}
       unknown = event(35, "x:y/0", "lib/pkg.ex", "no_such_channel")
@@ -460,7 +460,7 @@ defmodule NccWorker.Portability.JudgeTest do
       assert %{status: :pass} = judge(proj, r)
     end
 
-    test "a stray child trace with no closure owner is ignored (Review Focus 2)", %{proj: proj} do
+    test "a stray child trace with no closure owner is ignored", %{proj: proj} do
       stray =
         child([
           event(1, "os:type/0", "x.erl"),
@@ -481,7 +481,7 @@ defmodule NccWorker.Portability.JudgeTest do
                judge(proj, r)
     end
 
-    test "only the package's closure counts (ruling M7)", %{proj: proj} do
+    test "only the package's closure counts", %{proj: proj} do
       config = %{
         event(25, "application:get_env/2", "lib/other.ex", "config")
         | "arg" => %{"app" => "fx", "key" => "k"}
@@ -499,7 +499,7 @@ defmodule NccWorker.Portability.JudgeTest do
       assert obs["taint"] == %{}
     end
 
-    test "an integrity refusal outside the package's closure still refuses (fix round 1)",
+    test "an integrity refusal outside the package's closure still refuses",
          %{proj: proj} do
       integrity = event(25, "erlang:process_info/2", "lib/other.ex", "integrity")
 
@@ -638,7 +638,7 @@ defmodule NccWorker.Portability.JudgeTest do
     end
   end
 
-  describe "Context inputs (carry: lock snapshot, Hex cache)" do
+  describe "Context inputs: lock snapshot, Hex cache" do
     # pkg's verified tarball lists lib/; the lock entry for it is `releases`.
     defp hex_home(dir) do
       home = Path.join(dir, "hex")
@@ -838,7 +838,7 @@ defmodule NccWorker.Portability.JudgeTest do
       assert obs["taint"] == %{}
     end
 
-    test "rebar.config is read from the verified tarball, not deps/ after the build (ruling)",
+    test "rebar.config is read from the verified tarball, not deps/ after the build",
          %{proj: proj} do
       hook = ~s({erl_opts, []}.\n{pre_hooks, [{compile, "sh evil.sh"}]}.\n)
       # On disk the hook removed itself; the tarball still has it.
@@ -951,7 +951,7 @@ defmodule NccWorker.Portability.JudgeTest do
       assert %{status: :skip, reason: @cnj} = rjudge(proj, "dep", %{})
     end
 
-    test "one lost last compile return is recorded in trace_stats, not taint (ruling M2)",
+    test "one lost last compile return is recorded in trace_stats, not taint",
          %{proj: proj} do
       File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
       for m <- ["JudgeRebarG1", "JudgeRebarG2"], do: beam!(proj, "dep", m)
@@ -1100,7 +1100,7 @@ defmodule NccWorker.Portability.JudgeTest do
       ebin = Path.join(dir, "ebin")
       File.mkdir_p!(ebin)
 
-      # An empty ebin with no child trace proves nothing (fix round 1, item 5).
+      # An empty ebin with no child trace proves nothing.
       assert {:unjudged, "rebar3 built nothing and was not traced"} = Rebar.coverage(ebin, nil)
       assert :ok = Rebar.coverage(ebin, child([]))
 

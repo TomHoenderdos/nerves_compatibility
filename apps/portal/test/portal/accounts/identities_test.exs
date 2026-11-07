@@ -69,7 +69,7 @@ defmodule Portal.Accounts.IdentitiesTest do
       assert user.github_username == "OctoCat"
     end
 
-    # The controller ruling this task also closes: legacy accounts created by
+    # Legacy accounts created by
     # the old provider flows stored the login verbatim ("JaneDoe"), so
     # username lookup has to be case-insensitive or a new "janedoe"
     # identity would think the name is free and create a twin account.

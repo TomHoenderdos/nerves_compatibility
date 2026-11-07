@@ -18,8 +18,8 @@ defmodule Compatibility.PortabilityTest do
     end
   end
 
-  # Ruling m4: only R1 (the package's own compile observed the host) and R2
-  # (a baked build path) withdraw an earlier publication.
+  # Only R1 (the package's own compile observed the host) and R2 (a baked
+  # build path) withdraw an earlier publication.
   test "the withdrawing prefixes are the R1 and R2 subset of the refusal prefixes" do
     assert Portability.withdrawing_prefixes() -- Portability.refusal_prefixes() == []
 

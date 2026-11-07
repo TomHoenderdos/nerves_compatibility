@@ -372,7 +372,7 @@ defmodule NccWorker.Portability.MixExsSliceTest do
     end
   end
 
-  describe "fix round 1" do
+  describe "what the slice cannot read" do
     test "a definition the slice cannot name refuses instead of raising" do
       assert {:refuse, "mix.exs defines a function the slice cannot name"} =
                judge("""

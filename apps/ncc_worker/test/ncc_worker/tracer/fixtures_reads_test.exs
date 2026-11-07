@@ -4,7 +4,7 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
   # judged one by one. Expected verdicts come from the spec; a publishable
   # fixture that refuses is a finding about the tracer, not a test to loosen.
   #
-  # Every refusal is also matched to its owner (ruling M7), so a verdict
+  # Every refusal is also matched to its owner, so a verdict
   # cannot pass on an observation from another fixture's window.
   # Starts real `elixir` VMs: one such module at a time (the :real_vm
   # group), alongside the unit suites, so their compiles do not contend.
@@ -173,7 +173,8 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
   # fx_depth and fx_integrity each get a project and a trace of their own:
   # a window that lost its backtrace depth is a problem of the whole trace,
   # and an integrity refusal outside a package's closure counts against
-  # every package (Task 10 ruling), so in the shared project they would
+  # every package (the trace itself was tampered with), so in the shared
+  # project they would
   # make every other verdict "could not be judged" or refused.
   @alone ["fx_depth", "fx_integrity"]
 
@@ -224,7 +225,7 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
     TracerFixtures.judge(run.proj, app, run.traced, [], opts || ctx.judge_opts)
   end
 
-  # A refusal of `app` with `reason`, attributed to `app` itself (ruling M7).
+  # A refusal of `app` with `reason`, attributed to `app` itself.
   defp refused(ctx, app) do
     assert %{status: :skip, reason: reason, observations: %{"refusals" => refusals}} =
              v = verdict(ctx, app)
@@ -294,7 +295,7 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
     assert "compile-time host read: os:getenv/1" <> _ = refused(ctx, "fx_env")
   end
 
-  # The plan expected the system_flag refusal as the reason. The judge puts
+  # The system_flag refusal is not the reason: the judge puts
   # an incomplete trace first (a window that lost its backtrace depth is a
   # Report problem), so the reason is "could not be judged"; the refusal is
   # still recorded against fx_depth, first. Either way nothing publishes.
@@ -340,8 +341,9 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
   # the module body spawned, so its own work is user extent by lineage:
   # epp:predef_macros/2 reads erlang:system_info(machine) and (otp_release),
   # and filename:separators/0 reads os:type/0, with no user frame on the
-  # stack. Ruling (Task 11): exactly those reads, in a process whose bottom
-  # frame is epp's server, are toolchain.
+  # stack. Exactly those reads, in a process whose bottom frame is epp's
+  # server, are toolchain: they read the running OTP, which a client
+  # matches by major version anyway.
   test "Record.extract from OTP is publishable", ctx do
     passes(ctx, "fx_record")
 

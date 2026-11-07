@@ -28,10 +28,10 @@ defmodule NccWorker.Portability.BuildRoot do
   is an `ebin` that is not a directory. A compressed literal or attribute
   term (`COMPRESSED_EXT`, which no compiler writes) is an error too.
 
-  One exception to the shapes (controller ruling): a literal that is exactly
-  the real path of a closure source file (`.ex`, `.exs`, `.erl`, `.hrl`, not
-  under the dependency's `priv/` or `test/`) is returned as an observation,
-  not refused. Ecto's query macros build `%{file: __ENV__.file}` at runtime,
+  One exception to the shapes: a literal that is exactly the real path of a
+  closure source file (`.ex`, `.exs`, `.erl`, `.hrl`, not under the
+  dependency's `priv/` or `test/`) is returned as an observation, not
+  refused. Ecto's query macros build `%{file: __ENV__.file}` at runtime,
   which leaves the path as a bare literal.
 
   Limits of the substring scan: a root is found in a binary, an atom, a
@@ -187,7 +187,7 @@ defmodule NccWorker.Portability.BuildRoot do
 
   # One entry at a time, so only one decoded literal is in memory. A whole
   # literal that is exactly a closure source file's path is observed, not
-  # refused (controller ruling on Ecto's runtime-built `file:` fields); the
+  # refused (Ecto's query macros build `file:` fields at runtime); the
   # same path anywhere else still goes through `scan/4`.
   defp literals(chunk, roots, closure_file?, module) do
     result =
