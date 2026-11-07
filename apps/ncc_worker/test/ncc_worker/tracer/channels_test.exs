@@ -160,6 +160,50 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert {:install, %{what: :get_path}} = classify(:code, :get_path, [])
   end
 
+  test "listing the loaded modules is its own channel, always patterned" do
+    patterns = :ncc_tracer_channels.patterns()
+
+    for {m, f} <- [
+          code: :all_loaded,
+          erlang: :loaded,
+          code: :module_status,
+          code: :modified_modules
+        ] do
+      assert {m, f, 0} in patterns
+      assert {:loaded_modules, %{}} == classify(m, f, [])
+    end
+  end
+
+  test "nested compiles and diagnostics captures are their own channel" do
+    patterns = :ncc_tracer_channels.patterns()
+
+    for {m, f, args} <- [
+          {Code, :compile_string, ["x", "nofile"]},
+          {Code, :compile_quoted, [:ok]},
+          {Code, :compile_file, ["x.ex"]},
+          {Code, :require_file, ["x.ex", "."]},
+          {Code, :eval_string, ["1", [], []]},
+          {Code, :eval_quoted, [:ok]},
+          {Code, :eval_file, ["x.exs"]},
+          {Code, :with_diagnostics, [[], :f]},
+          {Kernel.ParallelCompiler, :compile, [[]]},
+          {Module, :create, [X, :ok, []]}
+        ] do
+      assert {:nested_compile, %{}} == classify(m, f, args)
+      assert {m, f, length(args)} in patterns or {m, :_, :_} in patterns
+    end
+
+    assert :unknown == classify(Code, :ensure_loaded?, [:x])
+    assert :unknown == classify(Module, :concat, [A, B])
+  end
+
+  test "patterned/3 says whether a call has a channel's pattern" do
+    assert :ncc_tracer_channels.patterned(:ssl, :connect, 3)
+    assert :ncc_tracer_channels.patterned(:dbg, :tracer, 0)
+    refute :ncc_tracer_channels.patterned(:ssl, :versions, 0)
+    refute :ncc_tracer_channels.patterned(:httpc, :set_options, 1)
+  end
+
   test "anything else is unknown, and odd arguments do not crash" do
     assert :unknown = classify(:lists, :reverse, [[1]])
     assert {:file_read, %{path: _}} = classify(:file, :read_file, [{:not, :a, :path}])

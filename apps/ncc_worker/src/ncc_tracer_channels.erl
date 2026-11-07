@@ -2,7 +2,7 @@
 %% The primitives the compile-time trace watches (precompiled portability
 %% spec, R1 channel table) and the short summary of one call that the tracer
 %% writes when the call happens in user extent. Pure: no process, no I/O.
--export([patterns/0, probe_mfas/0, classify/3, chars/1, term_bin/1]).
+-export([patterns/0, probe_mfas/0, patterned/3, classify/3, chars/1, term_bin/1]).
 
 -define(READS, [{file, read_file}, {file, read_file_info}, {file, read_link_info},
                 {file, read_link}, {file, read_link_all}, {file, list_dir},
@@ -90,7 +90,30 @@ patterns() ->
      %% fires only for those items.
      {erlang, process_info, 1}, {erlang, process_info, 2},
      {application, get_env, 1}, {application, get_env, 2}, {application, get_env, 3},
-     {application, get_all_env, 0}, {application, get_all_env, 1}].
+     {application, get_all_env, 0}, {application, get_all_env, 1},
+     %% Listing the loaded modules: under the trace the list holds every
+     %% module the tracer loaded.
+     {code, all_loaded, 0}, {erlang, loaded, 0}, {code, module_status, 0},
+     {code, modified_modules, 0}]
+    ++ nested_compile_patterns().
+
+%% A nested compile or a capture of diagnostics: a type checker's lookups in
+%% the window such a call is made in can reach the package (the window is
+%% marked, NccWorker.Portability.Probes).
+-define(NESTED_CODE, [{compile_string, [1, 2]}, {compile_quoted, [1, 2]}, {compile_file, [1, 2]},
+                      {require_file, [1, 2]}, {eval_string, [1, 2, 3]}, {eval_quoted, [1, 2, 3]},
+                      {eval_file, [1, 2]}, {with_diagnostics, [1, 2]}]).
+
+nested_compile_patterns() ->
+    [{'Elixir.Code', F, A} || {F, As} <- ?NESTED_CODE, A <- As]
+        ++ [{'Elixir.Kernel.ParallelCompiler', '_', '_'}, {'Elixir.Module', create, 3}].
+
+%% Whether a call has a pattern from patterns/0, so a channel of its own:
+%% the tracer's calls into a module it loaded (ncc_tracer app_call) are only
+%% the calls nothing else watches.
+patterned(M, F, A) ->
+    lists:any(fun({PM, PF, PA}) -> PM =:= M andalso (PF =:= '_' orelse (PF =:= F andalso PA =:= A)) end,
+              patterns()).
 
 %% Calls that tell whether a module is loaded or can be loaded. The tracer
 %% loads every module it patterns before anything compiles, so under the
@@ -102,6 +125,9 @@ probe_mfas() ->
     [{code, ensure_loaded, 1}, {code, is_loaded, 1}, {code, which, 1},
      {code, module_status, 1}, {code, get_object_code, 1},
      {erlang, module_loaded, 1}, {erlang, function_exported, 3}].
+
+nested_compile(true) -> {nested_compile, #{}};
+nested_compile(false) -> unknown.
 
 classify(M, F, Args) ->
     case specific(M, F, Args) of
@@ -116,6 +142,16 @@ specific(code, F, [M]) when F =:= ensure_loaded; F =:= is_loaded; F =:= which;
                             F =:= module_status; F =:= get_object_code ->
     {probe, #{module => term_name(M)}};
 specific(erlang, module_loaded, [M]) -> {probe, #{module => term_name(M)}};
+specific(code, F, []) when F =:= all_loaded; F =:= module_status; F =:= modified_modules ->
+    {loaded_modules, #{}};
+specific(erlang, loaded, []) -> {loaded_modules, #{}};
+specific('Elixir.Code', F, Args) ->
+    case lists:keyfind(F, 1, ?NESTED_CODE) of
+        {F, Arities} -> nested_compile(lists:member(length(Args), Arities));
+        false -> unknown
+    end;
+specific('Elixir.Kernel.ParallelCompiler', _F, _Args) -> {nested_compile, #{}};
+specific('Elixir.Module', create, [_, _, _]) -> {nested_compile, #{}};
 specific(erlang, function_exported, [M, _F, _A]) -> {probe, #{module => term_name(M)}};
 specific(erlang, process_info, [_Pid]) -> {integrity, #{item => <<"all">>}};
 specific(erlang, process_info, [_Pid, Item]) -> process_item(Item);

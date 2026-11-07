@@ -34,22 +34,14 @@ defmodule NccWorker.Portability.ProbesTest do
     }
   end
 
-  defp frame(module, function \\ "f", arity \\ 0),
+  defp frame(module, function, arity),
     do: %{"module" => module, "function" => function, "arity" => arity}
 
   defp probe(module, opts \\ []) do
     %{
       "channel" => "probe",
       "mfa" => Keyword.get(opts, :mfa, "code:ensure_loaded/1"),
-      "arg" =>
-        Map.merge(
-          %{
-            "module" => module,
-            "by" => Keyword.get(opts, :by, frame("Elixir.Pkg")),
-            "by_kind" => Keyword.get(opts, :by_kind, "user")
-          },
-          Keyword.get(opts, :arg, %{})
-        ),
+      "arg" => Map.merge(%{"module" => module}, Keyword.get(opts, :arg, %{})),
       "caller" => Keyword.get(opts, :caller, frame("Elixir.Code", "ensure_loaded?", 1))
     }
   end
@@ -110,32 +102,98 @@ defmodule NccWorker.Portability.ProbesTest do
     assert {:unjudged, _} = Probes.decide(other, c, "pkg")
   end
 
-  test "the type checker's own lookups are dropped", %{tmp_dir: dir} do
-    c = ctx(dir, %{"pkg" => ["kernel"]})
+  # Elixir's type checker looks a module up for the code it checks: what
+  # it finds reaches only its warnings, unless a nested compile in the same
+  # window captures them (`Code.with_diagnostics/1`).
+  describe "a probe or call the type checker makes" do
+    test "is dropped in a window with no nested compile", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"], "dep" => ["kernel"]})
+      c = %{c | nested: %{"dep" => "Elixir.Code:eval_string/3"}}
 
-    for module <- ~w(Elixir.Module.ParallelChecker Elixir.Module.Types.Apply) do
-      checker =
-        probe("httpc", mfa: "erlang:module_loaded/1", by: frame(module), by_kind: "toolchain")
-
-      assert Probes.decide(checker, c, "pkg") == :ignore
+      for event <- [
+            probe("httpc", mfa: "erlang:module_loaded/1", arg: %{"checker" => true}),
+            put_in(call("ssl", "ssl", "ssl:module_info/1"), ["arg", "checker"], true)
+          ] do
+        assert Probes.decide(event, c, "pkg") == :ignore
+      end
     end
 
-    # A package's module of the same name is the package's.
-    fake =
-      probe("httpc", by: frame("Elixir.Module.Types.Apply"), by_kind: "user")
+    test "counts in a window with a nested compile, which it names", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"]})
+      c = %{c | nested: %{"pkg" => "Elixir.Code:with_diagnostics/2"}}
+      event = probe("httpc", mfa: "erlang:module_loaded/1", arg: %{"checker" => true})
 
-    assert {:unjudged, _} = Probes.decide(fake, c, "pkg")
-  end
+      assert Probes.decide(event, c, "pkg") ==
+               {:unjudged,
+                "compile-time probe of a module the trace loaded: httpc (inets) by " <>
+                  "erlang:module_loaded/1, in a window with a nested compile " <>
+                  "(Elixir.Code:with_diagnostics/2)"}
 
-  test "any other first frame is judged, the toolchain's too", %{tmp_dir: dir} do
-    c = ctx(dir, %{"pkg" => ["kernel"]})
+      call = put_in(call("ssl", "ssl", "ssl:module_info/1"), ["arg", "checker"], true)
+      assert {:unjudged, why} = Probes.decide(call, c, "pkg")
+      assert why =~ "nested compile (Elixir.Code:with_diagnostics/2)"
+    end
 
-    for {by, kind} <- [
-          {frame("Elixir.Kernel.ParallelCompiler"), "toolchain"},
-          {frame("elixir_module", "expand_callback", 6), "dispatcher"},
-          {nil, "none"}
-        ] do
-      assert {:unjudged, _} = Probes.decide(probe("httpc", by: by, by_kind: kind), c, "pkg")
+    # The checker calls function_exported/3 only on a module it loaded
+    # (CheckerLookupsTest), which an untraced compile loads too when its
+    # application is on the path; module_loaded/1 it asks before loading.
+    test "in a marked window, function_exported/3 of a module on the path is dropped",
+         %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel", "inets"]})
+      c = %{c | nested: %{"pkg" => "Elixir.Module:create/3"}}
+      on_path = &probe("httpc", mfa: &1, arg: %{"checker" => true})
+
+      assert Probes.decide(on_path.("erlang:function_exported/3"), c, "pkg") == :ignore
+      assert {:unjudged, _} = Probes.decide(on_path.("erlang:module_loaded/1"), c, "pkg")
+
+      off_path = probe("dbg", mfa: "erlang:function_exported/3", arg: %{"checker" => true})
+      assert {:unjudged, why} = Probes.decide(off_path, c, "pkg")
+      assert why =~ "nested compile (Elixir.Module:create/3)"
+    end
+
+    # cache_module/2 asks module_loaded/1 before loading, but for an Erlang
+    # module on the path both of its branches cache the same entries
+    # (CheckerLookupsTest).
+    test "in a marked window, cache_module's module_loaded/1 of an Erlang module on the path is dropped",
+         %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel", "inets"]})
+      c = %{c | nested: %{"pkg" => "Elixir.Module:create/3"}}
+      c = put_in(c.preloaded["Elixir.Version"], "inets")
+
+      loaded = fn module, first, kind ->
+        module
+        |> probe(mfa: "erlang:module_loaded/1", arg: %{"checker" => true})
+        |> Map.merge(%{"first" => first, "first_kind" => kind})
+      end
+
+      cache = frame("Elixir.Module.ParallelChecker", "-cache_module/2-fun-1-", 1)
+      assert Probes.decide(loaded.("httpc", cache, "toolchain"), c, "pkg") == :ignore
+
+      named = frame("Elixir.Module.ParallelChecker", "cache_module", 2)
+      assert Probes.decide(loaded.("httpc", named, "toolchain"), c, "pkg") == :ignore
+
+      other = frame("Elixir.Module.ParallelChecker", "fetch_export", 5)
+      assert {:unjudged, _} = Probes.decide(loaded.("httpc", other, "toolchain"), c, "pkg")
+      assert {:unjudged, _} = Probes.decide(loaded.("httpc", cache, "user"), c, "pkg")
+      # Off the path, an Elixir module, a module with a checker chunk.
+      assert {:unjudged, _} = Probes.decide(loaded.("dbg", cache, "toolchain"), c, "pkg")
+
+      assert {:unjudged, _} =
+               Probes.decide(loaded.("Elixir.Version", cache, "toolchain"), c, "pkg")
+    end
+
+    test "outside every window counts only when that is marked", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"]})
+      event = probe("httpc", mfa: "erlang:module_loaded/1", arg: %{"checker" => true})
+      assert Probes.decide(event, c, :outside) == :ignore
+      c = %{c | nested: %{outside: "Elixir.Module:create/3"}}
+      assert {:unjudged, _} = Probes.decide(event, c, :outside)
+    end
+
+    test "a probe that is not the checker's is judged as before", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"]})
+      event = probe("httpc", mfa: "erlang:module_loaded/1", arg: %{"checker" => false})
+      assert {:unjudged, _} = Probes.decide(event, c, "pkg")
     end
   end
 
@@ -154,6 +212,54 @@ defmodule NccWorker.Portability.ProbesTest do
 
     assert {:unjudged, _} =
              Probes.decide(probe("public_key", arg: %{"app" => "public_key"}), c, "pkg")
+  end
+
+  defp call(module, app, mfa),
+    do: %{"channel" => "app_call", "mfa" => mfa, "arg" => %{"module" => module, "app" => app}}
+
+  describe "a call into a module the trace loaded" do
+    test "is judged unless its application is on the caller's path", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"], "child" => ["ssl"]})
+      versions = call("ssl", "ssl", "ssl:versions/0")
+
+      assert {:unjudged, "compile-time call into a module the trace loaded: ssl:versions/0 (ssl)"} =
+               Probes.decide(versions, c, "pkg")
+
+      assert Probes.decide(versions, c, "child") == :ignore
+      c = put_in(c.deps["pkg"].children, ["child"])
+      assert Probes.decide(versions, c, "pkg") == :ignore
+    end
+
+    test "outside a window, or into the tracer, is not judged", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["ssl"]})
+      assert {:unjudged, _} = Probes.decide(call("ssl", "ssl", "ssl:versions/0"), c, :outside)
+
+      assert {:unjudged, _} =
+               Probes.decide(
+                 call("ncc_tracer_digest", "ncc_tracer", "ncc_tracer_digest:dir/1"),
+                 c,
+                 "pkg"
+               )
+    end
+
+    test "into an application always on the path is no concern", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => []})
+
+      for app <- ~w(kernel stdlib elixir compiler logger),
+          do: assert(Probes.decide(call("m", app, "m:f/0"), c, :outside) == :ignore)
+    end
+  end
+
+  test "listing the loaded modules is never judged", %{tmp_dir: dir} do
+    c = ctx(dir, %{"pkg" => ["kernel"]})
+
+    for mfa <- ~w(code:all_loaded/0 erlang:loaded/0 code:module_status/0
+                  code:modified_modules/0) do
+      event = %{"channel" => "loaded_modules", "mfa" => mfa, "arg" => %{}}
+
+      assert Probes.decide(event, c, "pkg") ==
+               {:unjudged, "compile-time list of the loaded modules: #{mfa}"}
+    end
   end
 
   test "a malformed probe is not judged", %{tmp_dir: dir} do

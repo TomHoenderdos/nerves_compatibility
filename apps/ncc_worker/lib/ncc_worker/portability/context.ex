@@ -3,8 +3,9 @@ defmodule NccWorker.Portability.Context do
   What the judge (`NccWorker.Portability`) knows about one traced compile:
   the closure the driver compiled (each dependency's source dir, build dir,
   manager, Hex file list and whether it builds native code), the windows and
-  quiet intervals, the roots R2 searches literals for, and the modules the
-  tracer loaded before anything compiled (`preloaded`).
+  quiet intervals, the roots R2 searches literals for, the modules the
+  tracer loaded before anything compiled (`preloaded`), and the windows
+  package code started a nested compile in (`nested`).
 
   Every app here is an OTP app name, as the trace's closure line carries
   them. The `package` given to `build/4` may be a Hex name that is not its
@@ -56,7 +57,8 @@ defmodule NccWorker.Portability.Context do
     quiet: [],
     cd: MapSet.new(),
     hex: {nil, %{}},
-    preloaded: %{}
+    preloaded: %{},
+    nested: %{}
   ]
 
   @type dep :: %{
@@ -79,7 +81,8 @@ defmodule NccWorker.Portability.Context do
           quiet: [map()],
           cd: MapSet.t(),
           hex: {String.t() | nil, map()},
-          preloaded: %{String.t() => String.t()}
+          preloaded: %{String.t() => String.t()},
+          nested: %{(String.t() | atom()) => String.t()}
         }
 
   @max_hops 40
@@ -116,7 +119,24 @@ defmodule NccWorker.Portability.Context do
       preloaded: preloaded(start["preloaded"])
     }
 
-    %{ctx | cd: changed_dir(ctx, report)}
+    %{ctx | cd: changed_dir(ctx, report), nested: nested(ctx, report)}
+  end
+
+  # The windows a nested compile or diagnostics capture was started in
+  # (channel `nested_compile`), each with the first such call: by owner for
+  # the Mix VM's events (`:outside` too), by app for a child VM's.
+  defp nested(ctx, report) do
+    main =
+      for %{"channel" => "nested_compile"} = e <- report.events, do: {owner(ctx, e), e["mfa"]}
+
+    children =
+      for {app, %{events: events}} <- report.children,
+          %{"channel" => "nested_compile"} = e <- events,
+          do: {app, e["mfa"]}
+
+    Enum.reduce(Enum.reverse(main ++ children), %{}, fn {owner, mfa}, acc ->
+      Map.put(acc, owner, mfa)
+    end)
   end
 
   defp hex_source(project_dir, opts) do

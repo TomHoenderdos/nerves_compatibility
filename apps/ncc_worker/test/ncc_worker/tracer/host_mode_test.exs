@@ -427,20 +427,19 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert %{status: :pass} = TracerFixtures.judge(proj, "fx_probe", traced)
   end
 
-  # Elixir's type checker looks :httpc up while it checks a call to it
-  # (Module.ParallelChecker): what it finds reaches only its warnings, never
-  # a beam. In a process the package started, its lookups are user extent
-  # (lineage) and reach the judge, which drops them. Pinned per toolchain:
-  # the checker's lookups are in the trace, and no probe problem comes of
-  # them. (The checker's own system_info read refuses this fixture.)
-  test "the type checker's lookups of a tracer-loaded module are dropped", %{tmp_dir: dir} do
+  # The type checker looks :httpc up while it checks a nested compile the
+  # package starts, and what it found reaches the package: untraced,
+  # inets is not on the path and the checker warns; under the trace :httpc
+  # is loaded and it does not. Its probes are judged.
+  test "a nested compile's diagnostics about a tracer-loaded module are not judged",
+       %{tmp_dir: dir} do
     inner = "defmodule FxProbe.Inner do\n  def get(u), do: :httpc.request(u)\nend\n"
 
     body = """
     defmodule FxProbe do
-      @n Task.async(fn -> Code.compile_string(#{inspect(inner)}) |> length() end)
-         |> Task.await(60_000)
-      def n, do: @n
+      {_, diagnostics} = Code.with_diagnostics(fn -> Code.compile_string(#{inspect(inner)}) end)
+      @warned Enum.any?(diagnostics, &(&1.message =~ "httpc"))
+      def warned?, do: @warned
     end
     """
 
@@ -449,17 +448,131 @@ defmodule NccWorker.Tracer.HostModeTest do
         "fx_probe" => %{files: %{"lib/fx_probe.ex" => body}}
       })
 
+    {untraced, host, traced} = both(proj)
+    refute host == untraced
+
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert Enum.any?(
+             obs["problems"],
+             &(&1 =~ "compile-time probe of a module the trace loaded: httpc (inets)")
+           ),
+           inspect(obs["problems"])
+  end
+
+  test "listing the loaded modules at compile time is not judged", %{tmp_dir: dir} do
+    proj = probe_fixture(dir, [], "length(:code.all_loaded()) > 0")
     traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
     assert {:ok, 0} = traced.result, traced.log
 
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert "compile-time list of the loaded modules: code:all_loaded/0" in obs["problems"]
+  end
+
+  # Untraced, :ssl is not on the path of a package that does not list it,
+  # and the compile fails (undef); under the trace it is loaded.
+  test "a compile-time call into a module the trace loaded is not judged", %{tmp_dir: dir} do
+    proj = probe_fixture(dir, [], ":ssl.format_error(:closed)")
+
+    {out, status} =
+      System.cmd("mix", ["compile"],
+        cd: proj,
+        env: TracerFixtures.env(proj),
+        stderr_to_stdout: true
+      )
+
+    assert status != 0 and out =~ "undefined", out
+    File.rm_rf!(Path.join(proj, "_build"))
+    traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert "compile-time call into a module the trace loaded: ssl:format_error/1 (ssl)" in obs[
+             "problems"
+           ]
+  end
+
+  test "a compile-time call into an application the package lists passes", %{tmp_dir: dir} do
+    proj = probe_fixture(dir, [:ssl], ":ssl.format_error(:closed)")
+    {untraced, host, traced} = both(proj)
+    assert BuildIdentity.differences(host, untraced) == []
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_probe", traced)
+    assert Enum.any?(traced.report.events, &(&1["channel"] == "app_call"))
+  end
+
+  test "a call into ssl only at runtime passes", %{tmp_dir: dir} do
+    proj =
+      TracerFixtures.project(dir, ["fx_probe"], %{
+        "fx_probe" => %{
+          files: %{
+            "lib/fx_probe.ex" =>
+              "defmodule FxProbe do\n  def v, do: :ssl.format_error(:closed)\nend\n"
+          }
+        }
+      })
+
+    {untraced, host, traced} = both(proj)
+    assert BuildIdentity.differences(host, untraced) == []
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_probe", traced)
+  end
+
+  # Marking a window refuses nothing by itself.
+  test "a compile-time eval with no checker probe passes", %{tmp_dir: dir} do
+    proj = probe_fixture(dir, [], ~S{elem(Code.eval_string("1 + 1"), 0)})
+    {untraced, host, traced} = both(proj)
+    assert BuildIdentity.differences(host, untraced) == []
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_probe", traced)
+    assert Enum.any?(traced.report.events, &(&1["channel"] == "nested_compile"))
+  end
+
+  # A nested defmodule is type-checked inside its parent's module body, so
+  # the checker's lookup of :httpc is a user-extent event in fx_top's
+  # window. fx_dep marked its own window with an eval; fx_top's is not
+  # marked, and its checker probes are dropped.
+  test "a nested compile in one window leaves another window's checker probes dropped",
+       %{tmp_dir: dir} do
+    top = """
+    defmodule FxTop do
+      defmodule Inner do
+        def get(u), do: :httpc.request(u)
+      end
+
+      def dep, do: FxDep.x()
+    end
+    """
+
+    proj =
+      TracerFixtures.project(dir, ["fx_top"], %{
+        "fx_top" => %{deps: ["fx_dep"], files: %{"lib/fx_top.ex" => top}},
+        "fx_dep" =>
+          TracerFixtures.lib(
+            "fx_dep",
+            TracerFixtures.attr_module("FxDep", ~S{elem(Code.eval_string("1 + 1"), 0)})
+          )
+      })
+
+    plain_compile(proj)
+    untraced = published(proj)
+    File.rm_rf!(Path.join(proj, "_build"))
+    traced = TracerFixtures.trace(proj, ["fx_top"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    assert BuildIdentity.differences(published(proj), untraced) == []
+
+    ctx = NccWorker.Portability.Context.build(proj, "fx_top", traced.report, [], releases: %{})
+    assert Map.has_key?(ctx.nested, "fx_dep")
+    refute Map.has_key?(ctx.nested, "fx_top")
+
     checker =
-      for %{"arg" => %{"module" => "httpc", "by" => %{"module" => m}, "by_kind" => "toolchain"}} <-
-            probes(traced),
-          do: m
+      for %{"arg" => %{"module" => "httpc", "checker" => true}} = e <- traced.report.events,
+          NccWorker.Portability.Context.owner(ctx, e) == "fx_top",
+          do: e
 
-    assert "Elixir.Module.ParallelChecker" in checker, inspect(probes(traced), pretty: true)
-
-    %{observations: obs} = TracerFixtures.judge(proj, "fx_probe", traced)
-    refute Enum.any?(obs["problems"] || [], &(&1 =~ "compile-time probe")), inspect(obs)
+    assert checker != [], inspect(probes(traced), pretty: true)
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_top", traced)
   end
 end

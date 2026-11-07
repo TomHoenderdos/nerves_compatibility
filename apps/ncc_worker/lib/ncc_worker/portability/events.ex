@@ -51,7 +51,9 @@ defmodule NccWorker.Portability.Events do
       slice can follow, and refuse directly. Looking a program up
       (`os:find_executable`) is an observation and does go to R4.
     * A probe of a module the tracer loaded (whether it is loaded, or can
-      be) is judged by `NccWorker.Portability.Probes`.
+      be), a call into one, and listing the loaded modules are judged by
+      `NccWorker.Portability.Probes`; a nested compile only marks its
+      window for it.
     * Our generated project's own `mix.exs` (owner `:wrapper`) is ignored.
 
   Fail closed: an event whose stack the tracer could not judge (extent
@@ -66,6 +68,7 @@ defmodule NccWorker.Portability.Events do
 
   @path_modules ~w(filename Elixir.Path file filelib code Elixir.Code)
   @host_channels ~w(env programs network crypto native)
+  @probe_channels ~w(probe app_call loaded_modules)
   # Host reads R4 may allow when made from a dependency's mix.exs. Of the
   # `programs` channel only the lookup: running a program (`os:cmd`,
   # `open_port`, so `System.cmd` and `Port.open`) does things the trace
@@ -168,7 +171,12 @@ defmodule NccWorker.Portability.Events do
   defp channel("file_read", event, ctx, owner), do: file_read(event, ctx, owner)
   defp channel("file_write", event, ctx, owner), do: file_write(event, ctx, owner)
   defp channel("native_closure", event, ctx, owner), do: native_closure(event, ctx, owner)
-  defp channel("probe", event, ctx, owner), do: Probes.decide(event, ctx, owner)
+
+  # Marks its window (`Context.nested`); refuses nothing by itself.
+  defp channel("nested_compile", _event, _ctx, _owner), do: :ignore
+
+  defp channel(channel, event, ctx, owner) when channel in @probe_channels,
+    do: Probes.decide(event, ctx, owner)
 
   defp channel(other, event, _ctx, _owner),
     do: unjudged("unknown channel #{other}: #{event["mfa"]}")

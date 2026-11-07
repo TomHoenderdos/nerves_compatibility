@@ -268,8 +268,14 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
     Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth)) || MFA <- Patterns],
     Preloaded = preloaded(Before, Role),
     put(preloaded, Preloaded),
+    Calls = app_calls(Preloaded),
+    put(app_calls, Calls),
+    %% Never a probe or call pattern without a module to filter it to: an
+    %% empty set would trace every call.
     ProbeWanted = [wanted(Session, MFA, probe_spec(MFA, Preloaded, Depth))
-                   || MFA <- ncc_tracer_channels:probe_mfas()],
+                   || Preloaded =/= #{}, MFA <- ncc_tracer_channels:probe_mfas()]
+        ++ [wanted(Session, {M, '_', '_'}, match_spec(M, Role, Depth))
+            || M <- maps:keys(Calls)],
     write(St0, maps:merge((start_line(Role, App, Depth))#{mix_script => script_bin(Script),
                                                           preloaded => Preloaded},
                           libs_fields(Libs))),
@@ -436,6 +442,21 @@ app_from_path(Path) when is_list(Path), Path =/= [] ->
     list_to_binary(hd(string:split(Dir, "-")));
 app_from_path(_Other) -> <<"unknown">>.
 
+%% Applications every compile has on its code path: a call into one of
+%% their modules works untraced too.
+-define(ALWAYS_ON_PATH, [<<"kernel">>, <<"stdlib">>, <<"elixir">>, <<"compiler">>, <<"logger">>]).
+
+%% The modules we loaded whose application an untraced compile may not have
+%% on its path (httpc, ssl, dbg, ...), as #{Module => App}: every call into
+%% one is traced, and one from package code is judged against the
+%% applications it lists (NccWorker.Portability.Probes). Not the tracer's
+%% own (the ncc_tracer patterns cover them), and not crypto, which a child
+%% VM loads for rebar3's own hashing.
+app_calls(Preloaded) ->
+    maps:from_list([{binary_to_atom(M), App} || {M, App} <- maps:to_list(Preloaded),
+                    not lists:member(App, [<<"ncc_tracer">> | ?ALWAYS_ON_PATH]),
+                    M =/= <<"crypto">>]).
+
 %% Only calls naming a module we loaded fire.
 probe_spec({erlang, function_exported, 3}, Preloaded, Depth) ->
     [{[binary_to_atom(M), '_', '_'], [], [{message, {current_stacktrace, Depth}}]}
@@ -444,17 +465,29 @@ probe_spec(_MFA, Preloaded, Depth) ->
     [{[binary_to_atom(M)], [], [{message, {current_stacktrace, Depth}}]}
      || M <- maps:keys(Preloaded)].
 
-%% A probe's application, as `preloaded` names it (a child VM's own), and
-%% who made it (ncc_tracer_stack:probe_by/2).
+%% A probe's application, as this VM's `preloaded` names it, and for it or
+%% a call into such a module whether the type checker made it
+%% (ncc_tracer_stack:checker/2; each frame's kind looked up afresh).
 probed({probe, #{module := Module} = Arg}, Stack) ->
-    App = maps:get(Module, get(preloaded), null),
-    try ncc_tracer_stack:probe_by(Stack, fun toolchain/1) of
-        {Frame, Kind} ->
-            {probe, Arg#{app => App, by => ncc_tracer_stack:frame(Frame), by_kind => Kind}}
-    catch
-        _:_ -> {probe, Arg#{app => App, by => null, by_kind => <<"none">>}}
-    end;
+    {probe, Arg#{app => maps:get(Module, get(preloaded), null), checker => checker(Stack)}};
+probed({app_call, Arg}, Stack) -> {app_call, Arg#{checker => checker(Stack)}};
 probed(Class, _Stack) -> Class.
+
+checker(Stack) ->
+    try ncc_tracer_stack:checker(Stack, fun toolchain_module/1)
+    catch _:_ -> false
+    end.
+
+%% A call into a module we loaded that no channel pattern covers.
+app_call(M, F, Args) ->
+    case get(app_calls) of
+        #{M := App} ->
+            case ncc_tracer_channels:patterned(M, F, length(Args)) of
+                true -> false;
+                false -> {app_call, #{module => atom_to_binary(M), app => App}}
+            end;
+        _ -> false
+    end.
 
 match_spec({compile, file, 2}, child, _Depth) -> [{'_', [], [{return_trace}]}];
 match_spec({erlang, process_info, 2}, _Role, Depth) ->
@@ -607,6 +640,12 @@ depth_check(#st{set_depth = Set, lowered = Lowered} = St, When) ->
     {Ok, St#st{depth = Set, lowered = When =:= sentinel andalso not Ok}}.
 
 channel(M, F, Args, St) ->
+    case app_call(M, F, Args) of
+        false -> classified_channel(M, F, Args, St);
+        Call -> Call
+    end.
+
+classified_channel(M, F, Args, St) ->
     try ncc_tracer_channels:classify(M, F, Args) of
         unknown -> native_channel(M, F, St);
         {Channel, Summary} when is_atom(Channel), is_map(Summary) -> {Channel, Summary};

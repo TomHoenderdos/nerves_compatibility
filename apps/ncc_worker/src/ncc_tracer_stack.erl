@@ -3,7 +3,7 @@
 %% (precompiled portability spec, R1 steps 1-3). The tracer passes in which
 %% modules are toolchain and whether the calling process is a user process.
 -export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2,
-         uncached/0, printers/0, probe_by/2]).
+         uncached/0, printers/0, checker/2]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% Frames a call is attributed through, to the frame that called them, when
@@ -203,32 +203,27 @@ printed_run([{A, _, _, _} | Rest], M, Printers, IsToolchain) ->
         andalso printed_run(Rest, M, Printers, IsToolchain);
 printed_run([], _M, _Printers, _IsToolchain) -> false.
 
-%% Frames a probe (ncc_tracer_channels:probe_mfas/0) is made through for
-%% its caller: Code's loading functions, and the error handlers that load a
-%% module when a call reaches it unloaded. Only the toolchain's own.
--define(PROBE_THROUGH, ['Elixir.Code', error_handler, 'Elixir.Kernel.ErrorHandler']).
+%% The toolchain frames a lookup is made through on its way from the type
+%% checker: the code server's loading functions and the error handlers.
+-define(LOOKUP_THROUGH, [code, error_handler, 'Elixir.Kernel.ErrorHandler', 'Elixir.Code']).
 
-%% Who made a probe: the first frame after the wrappers, the toolchain's
-%% PROBE_THROUGH and glue frames, and its kind: `user` (a module with no
-%% object file, a module body or eval'd code, is the package's), `toolchain`,
-%% `dispatcher` (a tail call from a compile-time hook), or `none` when no
-%% frame is left. Kept apart from strip/3: it decides nothing else.
-probe_by(Stack, IsToolchain) ->
-    case lists:dropwhile(fun(F) -> probe_through(F, IsToolchain) end, Stack) of
-        [Frame | _] -> {Frame, probe_kind(Frame, IsToolchain)};
-        [] -> {none, <<"none">>}
-    end.
+%% Whether the first frame past the wrappers and LOOKUP_THROUGH is Elixir's
+%% type checker (Module.ParallelChecker, a Module.Types module), each frame
+%% checked against the toolchain. Frames below it may be cut off: the
+%% checker's stacks are deep.
+checker(Stack, IsToolchain) when is_list(Stack) ->
+    Through = fun({M, _, _, _}) ->
+                      lists:member(M, ?WRAPPERS)
+                          orelse (lists:member(M, ?LOOKUP_THROUGH) andalso IsToolchain(M))
+              end,
+    case lists:dropwhile(Through, Stack) of
+        [{M, _, _, _} | _] -> checker_module(M) andalso IsToolchain(M);
+        [] -> false
+    end;
+checker(_Stack, _IsToolchain) -> false.
 
-probe_through({M, _, _, _} = Frame, IsToolchain) ->
-    lists:member(M, ?WRAPPERS)
-        orelse (IsToolchain(M) andalso (lists:member(M, ?PROBE_THROUGH)
-                                        orelse (glue(Frame) andalso not dispatcher(Frame)))).
-
-probe_kind({M, _, _, _} = Frame, IsToolchain) ->
-    case dispatcher(Frame) of
-        true -> <<"dispatcher">>;
-        false -> toolchain_kind(IsToolchain(M))
-    end.
+checker_module('Elixir.Module.ParallelChecker') -> true;
+checker_module(M) -> lists:prefix("Elixir.Module.Types.", atom_to_list(M)).
 
 uncached() -> ?UNCACHED.
 
