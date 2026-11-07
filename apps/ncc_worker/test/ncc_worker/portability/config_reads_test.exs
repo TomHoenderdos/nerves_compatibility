@@ -390,27 +390,53 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       assert [{:elixir_errors, printers}] = :ncc_tracer_stack.printers()
       assert Enum.sort(callers(forms, :format_snippet)) == Enum.sort(printers)
 
-      for printer <- printers,
-          do: assert(writes_stderr?(forms, printer), inspect(printer))
+      for printer <- printers do
+        assert writes_stderr?(forms, printer), inspect(printer)
+        # What a printer returns is the write's result or the diagnostic it
+        # was given, never the formatted text.
+        assert returns_no_text?(forms, printer), inspect(printer)
+      end
 
       assert :elixir_errors in :ncc_tracer_stack.uncached()
 
       assert {"elixir_errors", "elixir", "ansi_enabled"} in ConfigReads.reviewed(System.version()).drop
     end
 
-    # The fallback reads the same functions as the source, so the pin above
-    # holds on an OTP install without `src`.
-    test "the handler's beam abstract code gives the same callers as its source" do
-      source = Path.join(:code.lib_dir(:kernel), "src/logger_h_common.erl")
-      from_beam = beam_forms(:logger_h_common, source)
-      from_source = handler_forms()
+    # The pins above read a module's source when the install ships `src` and
+    # its beam's abstract code otherwise. Where `src` exists, the two must
+    # give the same call graph. Where it does not, both sides would come from
+    # the beam and a comparison would be trivial, so the test says so and
+    # instead requires the functions each pin is scoped to to exist, with
+    # clauses, in the beam's abstract code.
+    test "a module's beam abstract code gives the same call graph as its source" do
+      for {module, app, rel, scoped, targets} <- [
+            {:logger_h_common, :kernel, "src/logger_h_common.erl",
+             [:try_format, :do_log_to_binary, :log_to_binary],
+             [:try_format, :do_log_to_binary, :log_to_binary]},
+            {:elixir_errors, :elixir, "src/elixir_errors.erl",
+             [:highlight, :format_snippet | printer_names()],
+             [:highlight, :highlight_at_position, :highlight_below_line, :prefix, :format_snippet]}
+          ] do
+        source = Path.join(:code.lib_dir(app), rel)
+        from_beam = beam_forms(module, source)
 
-      for forms <- [from_beam, from_source] do
-        assert formatter_callers(forms) == [:try_format]
-      end
+        for name <- scoped,
+            do: assert(defined?(from_beam, name), "#{module}.#{name} not in the abstract code")
 
-      for target <- [:try_format, :do_log_to_binary, :log_to_binary] do
-        assert callers(from_beam, target) == callers(from_source, target)
+        if File.regular?(source) do
+          {:ok, from_source} = :epp.parse_file(String.to_charlist(source), [])
+
+          for target <- targets,
+              do:
+                assert(
+                  callers(from_beam, target) == callers(from_source, target),
+                  inspect(target)
+                )
+        else
+          # No `src` in this install: the pins ran on the beam's abstract
+          # code, which the scoped functions above are checked to be in.
+          refute File.exists?(source)
+        end
       end
     end
   end
@@ -443,6 +469,36 @@ defmodule NccWorker.Portability.ConfigReadsTest do
         uniq: true,
         do: name
   end
+
+  defp printer_names do
+    [{:elixir_errors, printers}] = :ncc_tracer_stack.printers()
+    printers
+  end
+
+  defp defined?(forms, name),
+    do: Enum.any?(forms, &match?({:function, _, ^name, _, [_ | _]}, &1))
+
+  # Every clause of `name` ends in an `io:put_chars/2` call or in a variable
+  # bound in the clause head (an argument handed back unchanged).
+  defp returns_no_text?(forms, name) do
+    clauses = for {:function, _, ^name, _, clauses} <- forms, clause <- clauses, do: clause
+
+    clauses != [] and
+      Enum.all?(clauses, fn {:clause, _, head, _guards, body} ->
+        case List.last(body) do
+          {:call, _, {:remote, _, {:atom, _, :io}, {:atom, _, :put_chars}}, [_, _]} -> true
+          {:var, _, var} -> head_var?(head, var)
+          _ -> false
+        end
+      end)
+  end
+
+  defp head_var?(head, var),
+    do:
+      has_call?(head, fn
+        {:var, _, ^var} -> true
+        _ -> false
+      end)
 
   defp writes_stderr?(forms, name) do
     Enum.any?(
