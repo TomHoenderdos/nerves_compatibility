@@ -49,4 +49,15 @@ defmodule Portal.Catalog.FailureClassifierTest do
     assert FC.classify(%{"status" => "fail", "error" => "Exec format error"}) ==
              "NIF built for wrong architecture"
   end
+
+  # The cut-off target's log is mid-compile and can match any rule below.
+  test "a build timeout wins over whatever the log tail says" do
+    message = Portal.Catalog.BuildTimeout.message(7200)
+
+    assert FC.classify(%{
+             "status" => "error",
+             "log_tail" => message <> "\n== Compilation error in file lib/x.ex ==",
+             "error" => message
+           }) == Portal.Catalog.BuildTimeout.category()
+  end
 end

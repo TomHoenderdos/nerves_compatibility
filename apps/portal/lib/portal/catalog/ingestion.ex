@@ -90,6 +90,8 @@ defmodule Portal.Catalog.Ingestion do
           optional(:builder_id) => String.t() | nil,
           optional(:arch) => String.t() | nil,
           optional(:log) => String.t() | nil,
+          # Stage the logs of these systems only; every failed one when absent.
+          optional(:log_systems) => [String.t()] | nil,
           required(:package) => String.t(),
           required(:version) => String.t()
         }
@@ -149,7 +151,7 @@ defmodule Portal.Catalog.Ingestion do
   defp stage_and_write_run(result, opts) do
     systems = Map.get(result, "systems", %{})
     staged = stage_artifacts(systems, opts.files_dir)
-    logs = stage_logs(systems, Map.get(opts, :output_dir))
+    logs = systems |> log_systems(opts) |> stage_logs(Map.get(opts, :output_dir))
 
     Repo.transaction(
       fn ->
@@ -937,6 +939,7 @@ defmodule Portal.Catalog.Ingestion do
       deps_lock: deps_lock(result["deps_lock"]),
       package_checksum: package_checksum(result["package_checksum"]),
       log: run_log(overall, opts),
+      started_at: parse_datetime(result["started_at"]),
       finished_at: finished_at,
       scan_request_id: Map.get(opts, :scan_request_id),
       builder_id: Map.get(opts, :builder_id),
@@ -1166,6 +1169,14 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp drop_file_manifests(other), do: other
+
+  # `Portal.Catalog.BuildTimeout` keeps the log of the one target the wall
+  # clock cut off: the others it reached finished their builds, and their
+  # logs say nothing about the timeout.
+  defp log_systems(systems, %{log_systems: names}) when is_list(names),
+    do: Map.take(systems, names)
+
+  defp log_systems(systems, _opts), do: systems
 
   # Read and sanitize every failed system's log BEFORE the transaction opens,
   # for the same reason the artifact blobs are moved first: filesystem work does

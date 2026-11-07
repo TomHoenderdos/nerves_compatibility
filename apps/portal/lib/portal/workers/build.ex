@@ -30,6 +30,7 @@ defmodule Portal.Workers.Build do
       worker  10  -> internal → retry (Oban backoff)
       host    20  -> host/Docker invocation error → retry
       host    21  -> container non-zero → retry; on exhaustion request error
+      (runner) wall-clock timeout → error run recorded, request built, no retry
       (pre-check) unknown package → cancel, request rejected
   """
 
@@ -62,6 +63,8 @@ defmodule Portal.Workers.Build do
 
   alias Portal.BuildCache.Promotion
   alias Portal.Builder
+  alias Portal.BulkRebuild
+  alias Portal.Catalog.BuildTimeout
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Run
   alias Portal.Catalog.ToolingSkip
@@ -183,8 +186,7 @@ defmodule Portal.Workers.Build do
   # than the eight separate fields (seven before `sweep_id` joined them) it
   # would otherwise need to close over.
   defp do_build(ctx, args) do
-    {package, version, image_digest, scan_request_id, run_id, attempt, max_attempts, _sweep_id} =
-      ctx
+    {package, version, image_digest, _scan_request_id, run_id, _attempt, _max, _sweep_id} = ctx
 
     build_args =
       %{
@@ -197,6 +199,7 @@ defmodule Portal.Workers.Build do
       }
       |> Map.merge(scope_args(package, version, args))
 
+    started_at = DateTime.utc_now()
     result = builder().build(build_args)
 
     case if(stale_attempt?(), do: :stale_attempt, else: result) do
@@ -267,31 +270,101 @@ defmodule Portal.Workers.Build do
         {:snooze, 900}
 
       {:error, reason} ->
-        # Runner-side failure (docker unavailable, scratch setup, wall-clock
-        # timeout). Treat as retryable.
-        Logger.error("Builder failed for #{package} #{version}: #{inspect(reason)}")
-
-        # Read before cleanup: the scratch dir is about to go, and this excerpt
-        # is the only thing the requester will ever see about why.
-        error_log = excerpt_from_file(Builder.runner_log_path(run_id))
-
-        # No ingest job will ever read this scratch dir, so this branch owns it.
-        # Forgetting that leaked a full build tree per failure: a package that
-        # times out three times left three multi-gigabyte trees behind, which is
-        # how the disk filled in the first place.
-        Builder.cleanup(run_id)
-
-        on_retry_or_exhaust(
-          scan_request_id,
-          attempt,
-          max_attempts,
-          "builder error: #{inspect(reason)}",
-          error_log
-        )
-
-        {:error, reason}
+        handle_error(reason, ctx, build_args, started_at)
     end
   end
+
+  defp handle_error({:build_timeout, seconds, _container}, ctx, build_args, started_at),
+    do: record_timeout(ctx, build_args, started_at, seconds)
+
+  # Runner-side failure (docker unavailable, scratch setup). Treat as
+  # retryable. A wall-clock timeout is not one: see `record_timeout/4`.
+  defp handle_error(reason, ctx, _build_args, _started_at) do
+    {package, version, _digest, scan_request_id, run_id, attempt, max_attempts, _sweep_id} = ctx
+    Logger.error("Builder failed for #{package} #{version}: #{inspect(reason)}")
+
+    # Read before cleanup: the scratch dir is about to go, and this excerpt
+    # is the only thing the requester will ever see about why.
+    error_log = excerpt_from_file(Builder.runner_log_path(run_id))
+
+    # No ingest job will ever read this scratch dir, so this branch owns it.
+    # Forgetting that leaked a full build tree per failure: a package that
+    # timed out three times left three multi-gigabyte trees behind, which is
+    # how the disk filled in the first place.
+    Builder.cleanup(run_id)
+
+    on_retry_or_exhaust(
+      scan_request_id,
+      attempt,
+      max_attempts,
+      "builder error: #{inspect(reason)}",
+      error_log
+    )
+
+    {:error, reason}
+  end
+
+  # A build that ran past the wall clock is a result, recorded once and never
+  # retried: a package that cannot finish inside the limit never will, and
+  # each retry spent the whole limit again. `Portal.Builder` left the scratch
+  # dir in place, so the worker's `out/logs` say which targets it reached
+  # (`Portal.Catalog.BuildTimeout`); nothing reads it after this, so it goes
+  # whatever happens. A failed record does not retry either -- that would
+  # rebuild -- so it errors the request and cancels.
+  defp record_timeout(ctx, build_args, started_at, seconds) do
+    {package, version, image_digest, scan_request_id, run_id, _attempt, _max, _sweep_id} = ctx
+    Logger.warning("Build of #{package} #{version} exceeded the #{seconds}s wall clock")
+
+    {scope, systems} = timeout_systems(build_args)
+
+    attrs = %{
+      package: package,
+      version: version,
+      run_id: run_id,
+      image_digest: image_digest,
+      seconds: seconds,
+      started_at: started_at,
+      finished_at: DateTime.utc_now(),
+      output_dir: Builder.output_dir(run_id),
+      systems: systems,
+      scope: scope,
+      scan_request_id: scan_request_id,
+      arch: Compatibility.Arch.current(),
+      runner_excerpt: excerpt_from_file(Builder.runner_log_path(run_id))
+    }
+
+    recorded =
+      try do
+        BuildTimeout.record(attrs)
+      rescue
+        e -> {:error, Exception.message(e)}
+      end
+
+    Builder.cleanup(run_id)
+
+    case recorded do
+      {:ok, run} ->
+        Progress.mark(scan_request_id, :built, run_id: run.id)
+        Progress.broadcast(scan_request_id, :done, %{run_id: run.id, status: run.overall_status})
+        :ok
+
+      {:error, reason} ->
+        message = "build timed out after #{seconds}s; recording it failed: #{inspect(reason)}"
+        Logger.error("#{package} #{version}: #{message}")
+        Progress.mark(scan_request_id, :error, error_reason: message)
+        Progress.broadcast(scan_request_id, :error, %{reason: message})
+        {:cancel, message}
+    end
+  end
+
+  # What the run would have built: the targets of a targets run, none for
+  # argus only (its systems carry from the previous run), the worker's
+  # default list otherwise.
+  defp timeout_systems(%{mode: "argus_only"}), do: {"argus_only", []}
+
+  defp timeout_systems(%{systems_filter: [_ | _] = systems}), do: {"targets", systems}
+
+  defp timeout_systems(_build_args), do: {nil, BulkRebuild.targets()}
 
   defp handle_outcome(:ingest, build, ctx) do
     {package, version, image_digest, scan_request_id, run_id, attempt, max, sweep_id} = ctx

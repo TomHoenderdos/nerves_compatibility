@@ -640,7 +640,7 @@ defmodule Portal.Workers.BuildTest do
 
     test "a timed-out attempt leaves the request as the later attempt left it" do
       request = request!()
-      set_response({:error, {:docker_execution_failed, "wall-clock timeout"}})
+      set_response({:error, {:build_timeout, 7200, "ncc-late"}})
       job = rescued_attempt(request, "discarded", ["portal@builder-b", "b"])
 
       assert {:cancel, :stale_attempt} = Build.perform(job)
@@ -1011,6 +1011,205 @@ defmodule Portal.Workers.BuildTest do
 
       {:ok, updated} = ScanRequests.get_request(request.id)
       refute updated.status == :error
+    end
+  end
+
+  # A package that cannot finish inside the wall clock never will: rebuilding
+  # it spent three times the ceiling per release and recorded nothing, so the
+  # site kept showing the previous version. A timeout is a result.
+  describe "perform/1 wall-clock timeout" do
+    @describetag :capture_log
+
+    setup do
+      root = Path.join(System.tmp_dir!(), "build-scratch-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf(root) end)
+
+      previous_builder = Application.get_env(:portal, Portal.Builder)
+      Application.put_env(:portal, Portal.Builder, scratch_root: root)
+      on_exit(fn -> restore_builder_env(previous_builder) end)
+      Process.put(:stub_scratch_root, root)
+
+      %{root: root}
+    end
+
+    # The worker writes `out/logs/<system>.log` as it reaches each target;
+    # the newest one is the target that was compiling when the limit hit.
+    defp timed_out_logs(logs) do
+      Process.put(:stub_fill_out, fn out ->
+        dir = Path.join(out, "logs")
+        File.mkdir_p!(dir)
+
+        Enum.each(logs, fn {name, body, mtime} ->
+          path = Path.join(dir, "#{name}.log")
+          File.write!(path, body)
+          File.touch!(path, mtime)
+        end)
+      end)
+    end
+
+    defp timeout_job(package, request, attempt, extra \\ %{}) do
+      %Oban.Job{
+        args:
+          Map.merge(
+            %{
+              "package" => package,
+              "version" => "1.0.0",
+              "image_digest" => "sha256:slow",
+              "scan_request_id" => request.id
+            },
+            extra
+          ),
+        attempt: attempt,
+        max_attempts: 3
+      }
+    end
+
+    defp results_by_system(run) do
+      Portal.Catalog.SystemResult
+      |> Ash.Query.filter(run_id == ^run.id)
+      |> Ash.read!(domain: Portal.Catalog)
+      |> Map.new(&{&1.system_pkg, &1})
+    end
+
+    defp system_log(system_result) do
+      Portal.Catalog.SystemLog
+      |> Ash.Query.filter(system_result_id == ^system_result.id)
+      |> Ash.read_one!(domain: Portal.Catalog)
+    end
+
+    test "records an error run on the first attempt instead of retrying", %{root: root} do
+      {:ok, request} =
+        ScanRequests.create_once(%{
+          package_name: "slowpoke",
+          source: :hex_owner,
+          status: :accepted
+        })
+
+      now = System.os_time(:second)
+
+      timed_out_logs([
+        {"host", "host compile done\n", now - 7000},
+        {"nerves_system_bbb", "bbb firmware built\n", now - 5000},
+        {"nerves_system_mangopi_mq_pro", "compiling rocksdb\nstill compiling arrow\n", now - 10}
+      ])
+
+      set_response({:error, {:build_timeout, 7200, "ncc-slowpoke"}})
+
+      assert :ok = Build.perform(timeout_job("slowpoke", request, 1))
+
+      assert [run] = Ash.read!(Run, domain: Portal.Catalog)
+      assert run.overall_status == :error
+      assert run.image_digest == "sha256:slow"
+      assert run.version_tested == "1.0.0"
+      assert run.log =~ "7200s wall-clock limit"
+      assert %DateTime{} = run.started_at
+      assert %DateTime{} = run.finished_at
+      assert DateTime.compare(run.started_at, run.finished_at) in [:lt, :eq]
+
+      results = results_by_system(run)
+      assert Map.keys(results) |> Enum.sort() == Enum.sort(Portal.BulkRebuild.targets())
+
+      for reached <- ["nerves_system_bbb", "nerves_system_mangopi_mq_pro"] do
+        assert results[reached].status == :error
+        assert results[reached].failure_category == "Build timeout"
+      end
+
+      for {system, result} <- results,
+          system not in ["nerves_system_bbb", "nerves_system_mangopi_mq_pro"] do
+        assert result.status == :skipped, "#{system} was never reached"
+        assert result.failure_category == nil
+      end
+
+      # Only the target the limit cut off keeps its log.
+      assert system_log(results["nerves_system_mangopi_mq_pro"]).body =~ "still compiling arrow"
+      assert system_log(results["nerves_system_bbb"]) == nil
+
+      {:ok, updated} = ScanRequests.get_request(request.id)
+      assert updated.status == :built
+      assert updated.run_id == run.id
+
+      assert File.ls!(root) == []
+    end
+
+    test "a timeout before any target leaves every target skipped", %{root: root} do
+      {:ok, request} =
+        ScanRequests.create_once(%{
+          package_name: "hostbound",
+          source: :hex_owner,
+          status: :accepted
+        })
+
+      timed_out_logs([{"host", "compiling forever\n", System.os_time(:second)}])
+      set_response({:error, {:build_timeout, 7200, "ncc-hostbound"}})
+
+      assert :ok = Build.perform(timeout_job("hostbound", request, 3))
+
+      assert [run] = Ash.read!(Run, domain: Portal.Catalog)
+      assert run.overall_status == :error
+      assert run |> results_by_system() |> Map.values() |> Enum.all?(&(&1.status == :skipped))
+
+      {:ok, updated} = ScanRequests.get_request(request.id)
+      assert updated.status == :built
+      assert File.ls!(root) == []
+    end
+
+    test "a targets run records only the targets it was asked for" do
+      previous_run!("partial", "1.0.0")
+
+      {:ok, request} =
+        ScanRequests.create_once(%{
+          package_name: "partial",
+          source: :hex_owner,
+          status: :accepted
+        })
+
+      timed_out_logs([{"nerves_system_rpi4", "compiling\n", System.os_time(:second)}])
+      set_response({:error, {:build_timeout, 7200, "ncc-partial"}})
+
+      job =
+        timeout_job("partial", request, 1, %{
+          "scope" => "targets",
+          "systems" => ["nerves_system_rpi4", "nerves_system_rpi5"]
+        })
+
+      assert :ok = Build.perform(job)
+
+      run =
+        Run
+        |> Ash.Query.filter(image_digest == "sha256:slow")
+        |> Ash.read_one!(domain: Portal.Catalog)
+
+      results = results_by_system(run)
+      assert results["nerves_system_rpi4"].status == :error
+      assert results["nerves_system_rpi4"].failure_category == "Build timeout"
+      assert results["nerves_system_rpi5"].status == :skipped
+      refute Map.has_key?(results, "nerves_system_x86_64")
+    end
+
+    test "any other docker failure still retries, and errors on the last attempt", %{root: root} do
+      {:ok, request} =
+        ScanRequests.create_once(%{
+          package_name: "dockerish",
+          source: :hex_owner,
+          status: :accepted
+        })
+
+      set_response({:error, {:docker_execution_failed, "docker exited unexpectedly"}})
+
+      assert {:error, {:docker_execution_failed, _}} =
+               Build.perform(timeout_job("dockerish", request, 1))
+
+      {:ok, queued} = ScanRequests.get_request(request.id)
+      assert queued.status == :queued
+
+      assert {:error, {:docker_execution_failed, _}} =
+               Build.perform(timeout_job("dockerish", request, 3))
+
+      {:ok, errored} = ScanRequests.get_request(request.id)
+      assert errored.status == :error
+      assert Ash.read!(Run, domain: Portal.Catalog) == []
+      assert File.ls!(root) == []
     end
   end
 

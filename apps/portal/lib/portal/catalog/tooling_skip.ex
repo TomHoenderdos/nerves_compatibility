@@ -140,7 +140,10 @@ defmodule Portal.Catalog.ToolingSkip do
   # `Portal.Workers.Ingest`, which is what normally queues the hex.pm metadata
   # fetch. Without it a tooling package seen here first would never get its
   # owners or GitHub link. Decoration, so a failed enqueue is only logged.
-  defp enqueue_package_meta(name) do
+  # Shared with `Portal.Catalog.BuildTimeout`, which bypasses it too.
+  @doc false
+  @spec enqueue_package_meta(String.t()) :: :ok
+  def enqueue_package_meta(name) do
     case Oban.insert(PackageMeta.new(%{package: name})) do
       {:ok, _job} ->
         :ok
@@ -150,7 +153,11 @@ defmodule Portal.Catalog.ToolingSkip do
     end
   end
 
-  defp stored_description(name) do
+  # The package upsert overwrites the description; a synthesized result has
+  # none of its own. Shared with `Portal.Catalog.BuildTimeout`.
+  @doc false
+  @spec stored_description(String.t()) :: String.t() | nil
+  def stored_description(name) do
     Package
     |> Ash.Query.filter(name == ^name)
     |> Ash.Query.select([:description])

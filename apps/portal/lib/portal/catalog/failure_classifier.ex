@@ -6,8 +6,11 @@ defmodule Portal.Catalog.FailureClassifier do
 
   @fallback "Other / unclassified"
 
-  # Ordered — first match wins.
+  # Ordered — first match wins. A timeout comes first: the target the wall
+  # clock cut off was mid-compile, and its log can match anything below.
+  # The text is `Portal.Catalog.BuildTimeout.message/1`'s.
   @rules [
+    {"Build timeout", ~r/exceeded the \d+s wall-clock limit/},
     {"NIF built for wrong architecture",
      ~r/wrong ELF class|cannot execute binary|invalid ELF header|Exec format error|incompatible architecture/i},
     {"Precompiled NIF missing for target",

@@ -2005,6 +2005,9 @@ defmodule Portal.Catalog do
     "Compilation error" =>
       {"Compilation error",
        "The package's own source failed to compile — often a syntax issue triggered by a newer Elixir, or a missing macro dependency."},
+    "Build timeout" =>
+      {"Build timeout",
+       "The build was still running when it hit the wall-clock limit and was stopped. Usually a package that compiles a large native library from source for every target."},
     "Other / unclassified" =>
       {"Other / unclassified",
        "Build failures that don't match a known pattern. See the representative log for the specific cause."}
