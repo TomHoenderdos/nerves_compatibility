@@ -54,8 +54,28 @@ defmodule Portal.Catalog.ToolchainBuild do
     :attempted_at,
     :portability_rule,
     :rule1_reason,
-    :compile_observations
+    :compile_observations,
+    :compile_env_rule,
+    :transient_attempts
   ]
+
+  @transient_cap 5
+  @withheld_revocation "withheld closure"
+
+  @doc """
+  How many transient "could not be judged" builds in a row an identity gets
+  at one builder version before it is left skipped (`Portal.Catalog.Ingestion`,
+  `Portal.Catalog.toolchain_backlog/3`).
+  """
+  @spec transient_cap() :: pos_integer()
+  def transient_cap, do: @transient_cap
+
+  @doc """
+  The `revoked_reason` of a build revoked because its closure has a withheld
+  package (`Portal.Catalog.mark_withheld_revoked/2`).
+  """
+  @spec withheld_revocation() :: String.t()
+  def withheld_revocation, do: @withheld_revocation
 
   postgres do
     table("catalog_toolchain_builds")
@@ -95,6 +115,28 @@ defmodule Portal.Catalog.ToolchainBuild do
     # sweep. `finished_at` stays the build's own, which the manifest serves.
     update :retried do
       change(set_attribute(:attempted_at, &DateTime.utc_now/0))
+    end
+
+    # A kept row whose rebuild came back as a transient "could not be judged":
+    # the attempt counts towards `transient_cap/0`, and the backlog retries
+    # it after a day rather than a week (`Portal.Catalog.toolchain_backlog/3`).
+    update :retried_transient do
+      accept([:transient_attempts])
+      change(set_attribute(:attempted_at, &DateTime.utc_now/0))
+    end
+
+    # An operator's record that a revoked row was revoked for its withheld
+    # closure (`Portal.Catalog.mark_withheld_revoked/2`), which the backlog
+    # rebuilds once with its config reads recorded.
+    update :mark_withheld_revoked do
+      change(set_attribute(:revoked_reason, @withheld_revocation))
+    end
+
+    # The rebuild of a row revoked for its withheld closure recorded its
+    # config reads, so the withheld list no longer applies to it.
+    update :unrevoke_rebuilt do
+      change(set_attribute(:revoked_at, nil))
+      change(set_attribute(:revoked_reason, nil))
     end
 
     # Records what a row from before builds reported their optional
@@ -208,6 +250,28 @@ defmodule Portal.Catalog.ToolchainBuild do
     # What the compile-time trace observed (`NccWorker.Portability`),
     # bounded at ingest. The container's word; nothing re-judges it.
     attribute :compile_observations, :map do
+      public?(true)
+    end
+
+    # 1 when `compile_env` also lists the compile-time config reads the
+    # worker's trace observed across the package's closure (precompiled
+    # portability spec, R5); nil when it is the `.app`'s list alone. Such a
+    # build is exempt from the withheld list (`Portal.Precompiled.Withheld`).
+    attribute :compile_env_rule, :integer do
+      public?(true)
+    end
+
+    # Transient "could not be judged" results in a row for this identity
+    # (`Portal.Catalog.Ingestion`); a build with a verdict resets it.
+    attribute :transient_attempts, :integer do
+      allow_nil?(false)
+      default(0)
+      public?(true)
+    end
+
+    # Why the row was revoked, when the backlog acts on it:
+    # `withheld_revocation/0`.
+    attribute :revoked_reason, :string do
       public?(true)
     end
 

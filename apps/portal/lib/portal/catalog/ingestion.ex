@@ -504,6 +504,8 @@ defmodule Portal.Catalog.Ingestion do
       portability_rule: portability_rule(build["portability_rule"]),
       rule1_reason: bounded_reason(build["rule1_reason"]),
       compile_observations: compile_observations(build["compile_observations"]),
+      compile_env_rule:
+        compile_env_rule(Map.get(build, "compile_env_rule"), Map.get(build, "compile_env")),
       finished_at: parse_datetime(result["finished_at"])
     })
     |> Ash.create(domain: @domain)
@@ -744,6 +746,15 @@ defmodule Portal.Catalog.Ingestion do
 
   defp compile_env(_), do: nil
 
+  # The R5 mark only next to a `compile_env` this ingest keeps: a mark on a
+  # list it rejected would exempt a build from the withheld list with no
+  # match conditions to show for it. A missing or null mark stays nil.
+  defp compile_env_rule(rule, list) when is_integer(rule) and rule in 1..9 do
+    if compile_env(list) == nil, do: nil, else: rule
+  end
+
+  defp compile_env_rule(_rule, _list), do: nil
+
   defp create_run(result, opts, package_id, version, overall, finished_at, carried) do
     Run
     |> Ash.Changeset.for_create(:create, %{
@@ -838,7 +849,7 @@ defmodule Portal.Catalog.Ingestion do
   # precompiled API and the log page behave as if the row had been built in
   # this run. `carried_from_run_id` keeps pointing at the run that built it,
   # across any chain of partial runs. A withdrawn result stays withdrawn in
-  # its copies.
+  # its copies, and a marked one marked.
   #
   # Three statements however many systems carry, each joined against the
   # old-to-new id pairs: every statement crosses the build box's ~80ms link
@@ -857,11 +868,11 @@ defmodule Portal.Catalog.Ingestion do
         (id, run_id, system_pkg, system_version, status, firmware_size_bytes, duration_sec,
          phase_timings, hex_version_tested, beam_scan, compile_env, dependency_scans, log_path,
          log_tail, failure_category, carried_from_run_id, deps_lock, unpublished_at,
-         inserted_at, updated_at)
+         compile_env_rule, inserted_at, updated_at)
       SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
              s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan, s.compile_env,
              s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
-             s.deps_lock, s.unpublished_at, now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
+             s.deps_lock, s.unpublished_at, s.compile_env_rule, now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
       FROM catalog_system_results s
       JOIN unnest($2::uuid[], $3::uuid[], $4::uuid[]) AS m(old_id, new_id, built_in)
         ON m.old_id = s.id
@@ -936,7 +947,9 @@ defmodule Portal.Catalog.Ingestion do
         log_path: nil,
         log_tail: sys["log_tail"],
         failure_category: Portal.Catalog.FailureClassifier.classify(sys),
-        deps_lock: deps_lock(sys["deps_lock"])
+        deps_lock: deps_lock(sys["deps_lock"]),
+        compile_env_rule:
+          compile_env_rule(Map.get(sys, "compile_env_rule"), Map.get(sys, "compile_env"))
       })
       |> Ash.create(domain: @domain)
 

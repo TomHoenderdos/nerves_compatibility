@@ -50,7 +50,8 @@ defmodule Portal.Catalog.SystemResult do
         :log_tail,
         :failure_category,
         :carried_from_run_id,
-        :deps_lock
+        :deps_lock,
+        :compile_env_rule
       ])
     end
 
@@ -128,6 +129,13 @@ defmodule Portal.Catalog.SystemResult do
     # `{:ok, v}` or `:error`. Nil for results from images before it was
     # recorded or when the worker could not read the .app file.
     attribute :compile_env, {:array, :map} do
+      public?(true)
+    end
+
+    # 1 when `compile_env` also lists the trace's compile-time config reads
+    # (a published `pure_elixir` result, R5); nil otherwise. Exempts the
+    # result from the withheld list. Carried copies keep it.
+    attribute :compile_env_rule, :integer do
       public?(true)
     end
 

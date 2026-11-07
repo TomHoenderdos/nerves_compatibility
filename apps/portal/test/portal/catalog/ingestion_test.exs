@@ -1016,6 +1016,53 @@ defmodule Portal.Catalog.IngestionTest do
       assert systems["nerves_system_rpi4"].compile_env == compile_env
     end
 
+    test "a system result stores its R5 mark only next to a kept compile_env" do
+      compile_env = [%{"app" => "sample", "path" => ["mode"], "value" => "g2gCZAACb2tkAARmYXN0"}]
+
+      run =
+        ingest!(
+          full_result("markpkg", "1.0.0", %{
+            "host" => %{"status" => "pass", "compile_env" => compile_env, "compile_env_rule" => 1},
+            "nerves_system_rpi4" => %{"status" => "pass", "compile_env_rule" => 1},
+            "nerves_system_bbb" => %{"status" => "pass", "compile_env" => compile_env}
+          })
+        )
+
+      systems = systems_of(run)
+      assert systems["host"].compile_env_rule == 1
+      assert systems["nerves_system_rpi4"].compile_env_rule == nil
+      assert systems["nerves_system_bbb"].compile_env_rule == nil
+    end
+
+    test "a carried-forward system result keeps its R5 mark" do
+      compile_env = [%{"app" => "sample", "path" => ["mode"], "value" => "g2gCZAACb2tkAARmYXN0"}]
+
+      first =
+        ingest!(
+          full_result("carrymarkpkg", "1.0.0", %{
+            "nerves_system_rpi4" => %{
+              "status" => "pass",
+              "compile_env" => compile_env,
+              "compile_env_rule" => 1
+            },
+            "nerves_system_bbb" => %{"status" => "pass"}
+          })
+        )
+
+      second =
+        ingest!(%{
+          "package" => %{"name" => "carrymarkpkg", "version" => "1.0.0"},
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "targets",
+          "systems" => %{"nerves_system_bbb" => %{"status" => "pass"}}
+        })
+
+      systems = systems_of(second)
+      assert systems["nerves_system_rpi4"].carried_from_run_id == first.id
+      assert systems["nerves_system_rpi4"].compile_env_rule == 1
+      assert systems["nerves_system_bbb"].compile_env_rule == nil
+    end
+
     test "a carried-forward system result keeps its own deps_lock" do
       deps_lock = %{"jason" => %{"version" => "1.4.4", "checksum" => "abc"}}
 

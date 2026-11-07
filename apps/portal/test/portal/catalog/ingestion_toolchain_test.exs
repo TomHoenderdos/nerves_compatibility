@@ -591,4 +591,132 @@ defmodule Portal.Catalog.IngestionToolchainTest do
       assert tb.compile_observations == %{"truncated" => true}
     end
   end
+
+  describe "the R5 mark" do
+    defp with_rule(result, rule, compile_env \\ nil) do
+      update_in(result, ["toolchain_build"], fn build ->
+        build
+        |> Map.put("compile_env_rule", rule)
+        |> then(&if(compile_env, do: Map.put(&1, "compile_env", compile_env), else: &1))
+      end)
+    end
+
+    test "is stored with a valid compile_env" do
+      name = unique_name()
+      beam = blob("beam-#{name}")
+      priv = blob("priv-#{name}")
+
+      result = name |> pass_result(beam, priv) |> with_rule(1)
+
+      assert {:ok, tb} =
+               Ingestion.ingest_toolchain(result, opts(name, files_dir_with([beam, priv])))
+
+      assert tb.compile_env_rule == 1
+      assert tb.transient_attempts == 0
+    end
+
+    test "is dropped when the compile_env is malformed or the rule is not a small integer" do
+      name = unique_name()
+      result = name |> skipped_result() |> with_rule(1, [%{"app" => 1}])
+      assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+      assert {tb.compile_env, tb.compile_env_rule} == {nil, nil}
+
+      other = unique_name()
+      result = other |> skipped_result() |> with_rule("1")
+      assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(other, files_dir_with([])))
+      assert tb.compile_env_rule == nil
+    end
+
+    test "is absent for builds that do not report it" do
+      name = unique_name()
+
+      assert {:ok, tb} =
+               Ingestion.ingest_toolchain(skipped_result(name), opts(name, files_dir_with([])))
+
+      assert tb.compile_env_rule == nil
+    end
+
+    test "a null mark is stored as nil, never inferred" do
+      name = unique_name()
+      result = name |> skipped_result() |> with_rule(nil)
+      assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+      assert tb.compile_env_rule == nil
+      assert tb.revoked_reason == nil
+    end
+
+    test "the fixture passes it through" do
+      tb =
+        Portal.PrecompiledFixtures.ingest_toolchain_build(unique_name(), "1.0.0",
+          compile_env_rule: 1
+        )
+
+      assert tb.compile_env_rule == 1
+
+      assert Portal.PrecompiledFixtures.ingest_toolchain_build(unique_name(), "1.0.0").compile_env_rule ==
+               nil
+    end
+  end
+
+  describe "transient attempts and the revocation reason" do
+    test "the cap and the reason are fixed values" do
+      assert ToolchainBuild.transient_cap() == 5
+      assert ToolchainBuild.withheld_revocation() == "withheld closure"
+    end
+
+    test ":retried_transient counts the attempt and stamps it" do
+      tb = Portal.PrecompiledFixtures.ingest_toolchain_build(unique_name(), "1.0.0")
+      assert tb.attempted_at == nil
+
+      tb =
+        tb
+        |> Ash.Changeset.for_update(:retried_transient, %{transient_attempts: 2})
+        |> Ash.update!(domain: @domain)
+
+      assert tb.transient_attempts == 2
+      assert %DateTime{} = tb.attempted_at
+    end
+
+    test "a rebuild resets the transient attempts" do
+      name = unique_name()
+      tb = Portal.PrecompiledFixtures.ingest_toolchain_build(name, "1.0.0")
+
+      tb
+      |> Ash.Changeset.for_update(:retried_transient, %{transient_attempts: 3})
+      |> Ash.update!(domain: @domain)
+
+      assert Portal.PrecompiledFixtures.ingest_toolchain_build(name, "1.0.0").transient_attempts ==
+               0
+    end
+
+    test ":mark_withheld_revoked records the reason, :unrevoke_rebuilt clears it and the revocation" do
+      tb =
+        unique_name()
+        |> Portal.PrecompiledFixtures.ingest_toolchain_build("1.0.0")
+        |> Ash.Changeset.for_update(:revoke, %{})
+        |> Ash.update!(domain: @domain)
+        |> Ash.Changeset.for_update(:mark_withheld_revoked, %{})
+        |> Ash.update!(domain: @domain)
+
+      assert %DateTime{} = tb.revoked_at
+      assert tb.revoked_reason == ToolchainBuild.withheld_revocation()
+
+      tb = tb |> Ash.Changeset.for_update(:unrevoke_rebuilt, %{}) |> Ash.update!(domain: @domain)
+      assert {tb.revoked_at, tb.revoked_reason} == {nil, nil}
+    end
+
+    test "a rebuild keeps the revocation reason" do
+      name = unique_name()
+
+      name
+      |> Portal.PrecompiledFixtures.ingest_toolchain_build("1.0.0")
+      |> Ash.Changeset.for_update(:revoke, %{})
+      |> Ash.update!(domain: @domain)
+      |> Ash.Changeset.for_update(:mark_withheld_revoked, %{})
+      |> Ash.update!(domain: @domain)
+
+      tb = Portal.PrecompiledFixtures.ingest_toolchain_build(name, "1.0.0")
+      assert %DateTime{} = tb.revoked_at
+      assert tb.revoked_reason == "withheld closure"
+    end
+  end
 end
