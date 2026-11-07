@@ -443,15 +443,48 @@ defmodule NccWorker.Tracer.ReportTest do
     end
   end
 
-  test "built lines are kept per app", %{tmp_dir: dir} do
-    built = [
-      %{"kind" => "built", "app" => "r3", "digest" => "aa", "files" => 3, "ts" => 21},
-      %{"kind" => "built", "app" => "pkg", "digest" => nil, "error" => "too_large", "ts" => 41}
-    ]
+  describe "built lines" do
+    @r3_built %{"kind" => "built", "app" => "r3", "digest" => "aa", "files" => 3, "ts" => 21}
+    @pkg_built %{
+      "kind" => "built",
+      "app" => "pkg",
+      "digest" => nil,
+      "error" => "too_large",
+      "ts" => 41
+    }
 
-    lines = clean() |> List.insert_at(-3, Enum.at(built, 1)) |> List.insert_at(5, hd(built))
-    r = read(dir, lines)
-    assert r.problems == []
-    assert r.built == %{"r3" => %{digest: "aa", files: 3}, "pkg" => %{digest: nil, files: nil}}
+    # After r3's window close (index 5) and after pkg's (before stats, end).
+    defp with_built(extra \\ []) do
+      clean()
+      |> List.insert_at(-3, @pkg_built)
+      |> List.insert_at(6, @r3_built)
+      |> Kernel.++(extra)
+    end
+
+    test "are kept per app", %{tmp_dir: dir} do
+      r = read(dir, with_built())
+      assert r.problems == []
+
+      assert r.built == %{
+               "r3" => %{digest: "aa", files: 3, error: nil},
+               "pkg" => %{digest: nil, files: nil, error: "too_large"}
+             }
+    end
+
+    test "a second line for the same app makes its digest an error", %{tmp_dir: dir} do
+      lines = with_built() |> List.insert_at(7, @r3_built)
+      r = read(dir, lines)
+      assert r.built["r3"] == %{digest: nil, files: nil, error: "duplicate"}
+    end
+
+    test "a line that is not right after its own window close is an error", %{tmp_dir: dir} do
+      # Inside r3's window, before its close.
+      inside = clean() |> List.insert_at(5, @r3_built)
+      assert read(dir, inside).built["r3"] == %{digest: nil, files: nil, error: "out_of_order"}
+
+      # After pkg's window opened.
+      late = clean() |> List.insert_at(7, @r3_built)
+      assert read(dir, late).built["r3"] == %{digest: nil, files: nil, error: "out_of_order"}
+    end
   end
 end

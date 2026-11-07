@@ -46,7 +46,9 @@ defmodule NccWorker.Tracer.Report do
   A `built` line follows each window: the digest of the dependency's `ebin`
   and `priv` as its compile left them (`:ncc_tracer_digest`), kept per app in
   `built`; a digest the tracer could not take is kept as `nil`, which the
-  judge treats as missing.
+  judge treats as missing. So is one whose line is not right after its own
+  window's close (`error: "out_of_order"`) or is the app's second
+  (`"duplicate"`); `error` otherwise carries the tracer's reason.
 
   ## Read budget
 
@@ -119,7 +121,13 @@ defmodule NccWorker.Tracer.Report do
           overflow: [map()],
           refused_start: map() | nil,
           children: %{String.t() => child()},
-          built: %{String.t() => %{digest: String.t() | nil, files: integer() | nil}},
+          built: %{
+            String.t() => %{
+              digest: String.t() | nil,
+              files: integer() | nil,
+              error: String.t() | nil
+            }
+          },
           over_budget: boolean(),
           problems: [String.t()]
         }
@@ -260,11 +268,8 @@ defmodule NccWorker.Tracer.Report do
     end
   end
 
-  defp main_line({:line, %{"kind" => "built", "app" => app} = l}, r) when is_binary(app) do
-    digest = if is_binary(l["digest"]), do: l["digest"]
-    files = if is_integer(l["files"]), do: l["files"]
-    %{r | built: Map.put_new(r.built, app, %{digest: digest, files: files})}
-  end
+  defp main_line({:line, %{"kind" => "built", "app" => app} = l}, r) when is_binary(app),
+    do: %{r | built: Map.put(r.built, app, built(r, app, l))}
 
   defp main_line({:line, %{"kind" => "event"} = l}, r), do: %{r | events: [l | r.events]}
   defp main_line({:line, %{"kind" => "stats"} = l}, r), do: %{r | stats: r.stats || l}
@@ -284,6 +289,31 @@ defmodule NccWorker.Tracer.Report do
   defp main_line({:line, %{"kind" => "refused_start"} = l}, r), do: %{r | refused_start: l}
 
   defp main_line({:line, l}, r), do: problem(r, other_problem(l))
+
+  # A built line belongs right after its own window's close: the driver
+  # writes it before the next window opens. A second one, or one anywhere
+  # else, makes the app's digest an error.
+  defp built(r, app, l) do
+    case {Map.has_key?(r.built, app), r.windows} do
+      {true, _} ->
+        built_error("duplicate")
+
+      {false, [%{app: ^app, close: close} | _]} when is_integer(close) ->
+        built_digest(l)
+
+      _ ->
+        built_error("out_of_order")
+    end
+  end
+
+  defp built_digest(%{"digest" => digest, "files" => files})
+       when is_binary(digest) and is_integer(files),
+       do: %{digest: digest, files: files, error: nil}
+
+  defp built_digest(%{"error" => why}) when is_binary(why), do: built_error(why)
+  defp built_digest(_l), do: built_error("no digest")
+
+  defp built_error(why), do: %{digest: nil, files: nil, error: why}
 
   defp ending_status(r, %{"status" => "ok", "overflow" => false}), do: r
 

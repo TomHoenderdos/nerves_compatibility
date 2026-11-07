@@ -7,7 +7,7 @@
          config_env/2,
          native_patterns/3, finish/2, fire/1, ebin_dir/0, flush/0, collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
--export([safe_extent/4, maps_libs/1]).
+-export([safe_extent/4, maps_libs/1, built_fields/2]).
 
 -define(DEPTH, 64).
 -define(COLLECTOR, {?MODULE, collector}).
@@ -730,10 +730,7 @@ request({closure, Packages, Deps}, _From, St) ->
     write(St, #{kind => closure, packages => Packages, deps => Deps, ts => now_ns()}),
     {ok, St};
 request({built, App, Dir}, _From, St) ->
-    Fields = case digest(Dir) of
-                 {ok, Hex, Files} -> #{digest => Hex, files => Files};
-                 {error, Why} -> #{digest => null, error => reason_bin(Why)}
-             end,
+    Fields = built_fields(ncc_tracer_digest, Dir),
     write(St, Fields#{kind => built, app => App, ts => now_ns()}),
     {ok, St};
 request({native, App, Ebin}, _From, St) -> {ok, native(App, Ebin, St)};
@@ -751,11 +748,14 @@ request({finish, Status, Ts, Delivered}, _From, St) ->
 request(flush, _From, St) -> {ok, libs_line(St)};
 request(_Req, _From, St) -> {{error, unknown_request}, St}.
 
-%% ncc_tracer_digest:dir/1 never raises, but a digest module that is not
-%% loaded must cost one dependency its digest, not the collector.
-digest(Dir) ->
-    try ncc_tracer_digest:dir(Dir)
-    catch _:_ -> {error, digest_unavailable}
+%% The built line's digest fields, by Mod:dir/1 (ncc_tracer_digest). It
+%% never raises, but a digest module that is not loaded must cost one
+%% dependency its digest, not the collector.
+built_fields(Mod, Dir) ->
+    try Mod:dir(Dir) of
+        {ok, Hex, Files} -> #{digest => Hex, files => Files};
+        {error, Why} -> #{digest => null, error => reason_bin(Why)}
+    catch _:_ -> #{digest => null, error => <<"digest_unavailable">>}
     end.
 
 %% Spec R3 native taint: call patterns on every module of a natively built

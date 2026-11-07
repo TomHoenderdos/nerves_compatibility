@@ -68,7 +68,7 @@ defmodule NccWorker.TracerTest do
       build = Path.join([proj, "_build", "host", "lib", app])
       assert {:ok, digest, files} = :ncc_tracer_digest.dir(build)
       assert files >= 2
-      assert traced.report.built[app] == %{digest: digest, files: files}
+      assert traced.report.built[app] == %{digest: digest, files: files, error: nil}
     end
   end
 
