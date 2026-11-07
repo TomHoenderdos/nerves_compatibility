@@ -638,6 +638,54 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert [%{"integrity_ok" => false, "final_sentinel" => true}] = kind(lines, "end")
   end
 
+  test "forged requests count against the user event cap", %{tmp_dir: dir} do
+    {0, out} =
+      run_script(
+        dir,
+        """
+        {:ok, tok} = :ncc_tracer.start_main()
+        c = :ncc_tracer.collector()
+        for _ <- 1..50, do: send(c, {:ncc_call, self(), make_ref(), :final_nonce})
+        Process.sleep(200)
+        IO.inspect(:ncc_tracer.finish(tok, "ok"), label: "finish")
+        """,
+        [{"NCC_TRACE_MAX_USER_EVENTS", "3"}]
+      )
+
+    assert out =~ "finish: :ok"
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    forged = for e <- kind(lines, "event"), e["mfa"] == "ncc_tracer:forged_request", do: e
+    assert length(forged) <= 3, inspect(forged)
+    assert [%{"what" => "user_events"}] = kind(lines, "overflow")
+    assert [%{"overflow" => true, "integrity_ok" => false}] = kind(lines, "end")
+  end
+
+  test "a watcher killed over and over writes a bounded number of lines", %{tmp_dir: dir} do
+    {0, out} =
+      run_script(
+        dir,
+        """
+        {:ok, tok} = :ncc_tracer.start_main()
+        c = :ncc_tracer.collector()
+
+        for _ <- 1..20 do
+          {:monitors, monitors} = Process.info(c, :monitors)
+          for {:process, p} when is_pid(p) <- monitors, do: Process.exit(p, :kill)
+          Process.sleep(20)
+        end
+
+        IO.inspect(:ncc_tracer.finish(tok, "ok"), label: "finish")
+        """,
+        [{"NCC_TRACE_MAX_USER_EVENTS", "3"}]
+      )
+
+    assert out =~ "finish: :ok"
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    assert length(kind(lines, "watcher_down")) <= 3, out
+    assert [%{"what" => "user_events"}] = kind(lines, "overflow")
+    assert [%{"overflow" => true, "integrity_ok" => false}] = kind(lines, "end")
+  end
+
   test "reading another process's dictionary is recorded", %{tmp_dir: dir} do
     {lines, _} =
       compile_fixture(dir, "fx_peek.ex", """

@@ -240,9 +240,11 @@ watcher(#st{file = File} = St) ->
     {Pid, Ref} = spawn_monitor(fun() -> watch(Self, File) end),
     St#st{watcher = Pid, wref = Ref}.
 
+%% Bounded like a user event (capped_line/2): a package killing the watcher
+%% in a loop overflows the trace rather than filling the disk.
 watcher_down(Reason, St) ->
-    write(St, #{kind => watcher_down, reason => reason_bin(Reason), ts => now_ns()}),
-    watcher(St#st{tampered = true}).
+    Line = #{kind => watcher_down, reason => reason_bin(Reason), ts => now_ns()},
+    watcher(capped_line(Line, St#st{tampered = true})).
 
 %% A collector that dies other than by finishing (killed by a package, by
 %% its max_heap_size, by a crash) leaves a line saying so; in a child VM
@@ -406,14 +408,27 @@ continue({finish, _, _, _}, _St) -> ok;
 continue(_Req, St) -> loop(St).
 
 %% A request without the driver's token: rejected, written as an integrity
-%% event, and every later check fails.
+%% event (bounded, capped_line/2), and every later check fails.
 forged(From, Ref, Req, St) ->
     ok = reject(From, Ref),
     Arg = #{request => ncc_tracer_channels:term_bin(request_name(Req))},
-    write(St, #{kind => event, ts => now_ns(), pid => ncc_tracer_channels:term_bin(From),
-                channel => integrity, mfa => <<"ncc_tracer:forged_request">>, arg => Arg,
-                extent => unjudged, first => null, user => null}),
-    St#st{tampered = true, user = St#st.user + 1, unjudged = St#st.unjudged + 1}.
+    Line = #{kind => event, ts => now_ns(), pid => ncc_tracer_channels:term_bin(From),
+             channel => integrity, mfa => <<"ncc_tracer:forged_request">>, arg => Arg,
+             extent => unjudged, first => null, user => null},
+    capped_line(Line, St#st{tampered = true, unjudged = St#st.unjudged + 1}).
+
+%% A line a package can make the collector write at will, counted as a call
+%% (check_limits/1) and as a user event: past either cap the trace overflows
+%% once and nothing more is written.
+capped_line(_Line, #st{overflow = true} = St) -> St;
+capped_line(Line, #st{calls = Calls} = St0) ->
+    case check_limits(St0#st{calls = Calls + 1}) of
+        #st{overflow = true} = St -> St;
+        #st{user = U, max_user = Max} = St when U >= Max -> overflow(St, <<"user_events">>);
+        St ->
+            write(St, Line),
+            St#st{user = St#st.user + 1}
+    end.
 
 reject(From, Ref) when is_pid(From) ->
     From ! {Ref, {error, unauthorized}},

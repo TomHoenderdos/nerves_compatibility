@@ -314,4 +314,56 @@ defmodule NccWorker.Tracer.ReportTest do
     assert ["unparsable line 2"] = r.children["r3"].problems
     assert "child trace of r3: unparsable line 2" in r.problems
   end
+
+  describe "the read budget, shared by the main file and every child file" do
+    test "a trace within it is read whole and is not over budget", %{tmp_dir: dir} do
+      r = read(dir, clean())
+      refute r.over_budget
+      assert r.problems == []
+    end
+
+    test "too many bytes across the files is a problem, never a crash", %{tmp_dir: dir} do
+      write(dir, "trace-main.jsonl", clean())
+      main = File.stat!(Path.join(dir, "trace-main.jsonl")).size
+      write(dir, "trace-child-r3-1.jsonl", [child_start("r3"), child_sentinel("r3")])
+
+      r = Report.read(dir, max_bytes: main + 10)
+      assert r.over_budget
+      assert Enum.any?(r.problems, &(&1 =~ "read budget")), inspect(r.problems)
+      # The child file was not decoded.
+      assert r.children == %{}
+    end
+
+    test "a main file larger than the budget is not read at all", %{tmp_dir: dir} do
+      write(dir, "trace-main.jsonl", clean())
+      r = Report.read(dir, max_bytes: 100)
+      assert r.over_budget
+      assert r.events == [] and r.start == nil
+      assert Enum.any?(r.problems, &(&1 =~ "read budget"))
+    end
+
+    test "too many lines across the files is a problem", %{tmp_dir: dir} do
+      event = %{"kind" => "event", "ts" => 50, "channel" => "env", "mfa" => "os:getenv/1"}
+
+      for i <- 1..5,
+          do:
+            write(dir, "trace-child-r3-#{i}.jsonl", [
+              child_start("r3"),
+              child_sentinel("r3"),
+              event
+            ])
+
+      write(dir, "trace-main.jsonl", clean())
+      r = Report.read(dir, max_lines: length(clean()) + 8)
+      assert r.over_budget
+      assert Enum.any?(r.problems, &(&1 =~ "read budget")), inspect(r.problems)
+    end
+
+    test "every child file counts, even an empty one", %{tmp_dir: dir} do
+      for i <- 1..20, do: File.write!(Path.join(dir, "trace-child-unknown-#{i}.jsonl"), "")
+      write(dir, "trace-main.jsonl", clean())
+      assert Report.read(dir, max_lines: length(clean()) + 10).over_budget
+      refute Report.read(dir, max_lines: length(clean()) + 21).over_budget
+    end
+  end
 end

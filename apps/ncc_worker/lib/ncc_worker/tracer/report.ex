@@ -34,9 +34,23 @@ defmodule NccWorker.Tracer.Report do
   Window closes keep the mapped-library snapshot they carry (`libs`), and a
   child keeps its `libs` lines; `NccWorker.Portability.MappedLibs` judges
   them.
+
+  ## Read budget
+
+  The main file and every child file share one budget, so a compile that
+  writes huge traces, or thousands of child files, cannot make the worker
+  hold them all in memory: at most `max_bytes:` bytes (default 64 MiB) and
+  `max_lines:` lines (default 500 000; every file counts one line on top of
+  its own) are read, line by line. A file that does not fit what is left is
+  not opened, and once the budget is spent nothing more is read. Exceeding it
+  sets `over_budget` and adds a problem, so the trace is "portability could
+  not be judged"; the judge also reports it as transient
+  (`NccWorker.Portability`), since the same package can fit on a later run
+  with less contention.
   """
 
-  @max_bytes 512 * 1024 * 1024
+  @max_bytes 64 * 1024 * 1024
+  @max_lines 500_000
 
   defstruct start: nil,
             closure: nil,
@@ -49,6 +63,7 @@ defmodule NccWorker.Tracer.Report do
             overflow: [],
             refused_start: nil,
             children: %{},
+            over_budget: false,
             problems: []
 
   @type window :: %{
@@ -82,40 +97,84 @@ defmodule NccWorker.Tracer.Report do
           overflow: [map()],
           refused_start: map() | nil,
           children: %{String.t() => child()},
+          over_budget: boolean(),
           problems: [String.t()]
         }
 
-  @spec read(String.t()) :: t()
-  def read(dir) do
-    items = dir |> Path.join("trace-main.jsonl") |> read_lines()
+  @doc """
+  Reads the trace files in `dir`. Options (tests): `max_bytes:` and
+  `max_lines:`, the read budget (see the moduledoc).
+  """
+  @spec read(String.t(), keyword()) :: t()
+  def read(dir, opts \\ []) do
+    budget = %{
+      bytes: Keyword.get(opts, :max_bytes, @max_bytes),
+      lines: Keyword.get(opts, :max_lines, @max_lines),
+      exceeded: false
+    }
+
+    {items, budget} = dir |> Path.join("trace-main.jsonl") |> read_lines(budget)
     main = Enum.reduce(items, %__MODULE__{}, &main_line/2)
 
-    children =
+    {children, budget} =
       dir
       |> Path.join("trace-child-*.jsonl")
       |> Path.wildcard()
       |> Enum.sort()
-      |> Enum.reduce(%{}, &child_file/2)
+      |> Enum.reduce({%{}, budget}, &child_file/2)
 
-    finalize(%{main | children: children}, items)
+    %{main | children: children}
+    |> finalize(items)
+    |> over_budget(budget)
   end
+
+  defp over_budget(r, %{exceeded: false}), do: r
+
+  defp over_budget(r, _budget) do
+    %{
+      r
+      | over_budget: true,
+        problems: r.problems ++ ["the trace files exceed the report's read budget"]
+    }
+  end
+
+  # Every file costs one line of the budget, so empty files are bounded too.
+  defp read_lines(_path, %{exceeded: true} = budget), do: {[], budget}
+  defp read_lines(_path, %{lines: lines} = budget) when lines < 1, do: {[], spent(budget)}
+  defp read_lines(path, budget), do: read_file(path, %{budget | lines: budget.lines - 1})
 
   # Files the traced compile wrote into the worker's own run dir.
   # sobelow_skip ["Traversal.FileModule"]
-  defp read_lines(path) do
+  defp read_file(path, budget) do
     case File.stat(path) do
-      {:ok, %{size: size}} when size > @max_bytes ->
-        [{:problem, "#{Path.basename(path)} is larger than #{@max_bytes} bytes"}]
-
-      {:ok, _stat} ->
-        path |> File.stream!() |> Stream.with_index(1) |> Enum.map(&decode/1)
-
-      {:error, _reason} ->
-        [{:problem, "#{Path.basename(path)} missing"}]
+      {:ok, %{size: size}} when size > budget.bytes -> {[], spent(budget)}
+      {:ok, _stat} -> stream_lines(path, budget)
+      {:error, _reason} -> {[{:problem, "#{Path.basename(path)} missing"}], budget}
     end
   rescue
-    e -> [{:problem, "#{Path.basename(path)} unreadable: #{Exception.message(e)}"}]
+    e -> {[{:problem, "#{Path.basename(path)} unreadable: #{Exception.message(e)}"}], budget}
   end
+
+  # Line by line, each line paid for before it is decoded. The file fit the
+  # bytes left when it was opened, so no single line is larger than that.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp stream_lines(path, budget) do
+    {items, budget} =
+      path
+      |> File.stream!()
+      |> Stream.with_index(1)
+      |> Enum.reduce_while({[], budget}, fn {line, _n} = numbered, {acc, b} ->
+        b = %{b | bytes: b.bytes - byte_size(line), lines: b.lines - 1}
+
+        if b.bytes < 0 or b.lines < 0,
+          do: {:halt, {acc, spent(b)}},
+          else: {:cont, {[decode(numbered) | acc], b}}
+      end)
+
+    {Enum.reverse(items), budget}
+  end
+
+  defp spent(budget), do: %{budget | exceeded: true}
 
   defp decode({line, n}) do
     case JSON.decode(line) do
@@ -253,11 +312,21 @@ defmodule NccWorker.Tracer.Report do
 
   # --- trace-child-<app>-<pid>.jsonl ------------------------------------------
 
-  defp child_file(path, acc) do
+  defp child_file(_path, {acc, %{exceeded: true} = budget}), do: {acc, budget}
+
+  defp child_file(path, {acc, budget}) do
+    case read_lines(path, budget) do
+      # A file the budget cut short is left out: the report is
+      # could-not-judge anyway.
+      {_lines, %{exceeded: true} = budget} -> {acc, budget}
+      {lines, budget} -> {add_child(acc, path, lines), budget}
+    end
+  end
+
+  defp add_child(acc, path, lines) do
     child =
-      path
-      |> read_lines()
-      |> Enum.reduce(
+      Enum.reduce(
+        lines,
         %{start: nil, sentinel?: false, compiles: [], events: [], libs: [], problems: []},
         &child_line/2
       )
