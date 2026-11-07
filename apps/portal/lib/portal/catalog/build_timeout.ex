@@ -97,6 +97,9 @@ defmodule Portal.Catalog.BuildTimeout do
              files_dir: System.tmp_dir!(),
              output_dir: attrs.output_dir,
              log_systems: List.wrap(cut_off(mtimes, ["host" | systems], reached)),
+             # A targets run measured and analysed nothing: the carried
+             # run's footprint and argus result stand.
+             carry_run_data: attrs.scope == "targets",
              log: run_log(message, Map.get(attrs, :runner_excerpt)),
              scan_request_id: Map.get(attrs, :scan_request_id),
              arch: Map.get(attrs, :arch),
@@ -124,9 +127,6 @@ defmodule Portal.Catalog.BuildTimeout do
   defp put_systems(result, "targets", _systems, reached, message) do
     result
     |> Map.put("scope", "targets")
-    # The carried run's footprint and argus result stand: this run measured
-    # and analysed nothing.
-    |> Map.put("carry_run_data", true)
     |> Map.put("systems", Map.new(reached, &{&1, system(true, message)}))
   end
 

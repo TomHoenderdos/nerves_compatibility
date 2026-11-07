@@ -996,6 +996,35 @@ defmodule Portal.Catalog.IngestionTest do
       assert second.footprint == nil
     end
 
+    # `result.json` is written by a container running package code: a flag in
+    # it must not let a build inherit a clean argus result or footprint, or
+    # re-sight findings it never ran.
+    test "a carry_run_data key in a real result is ignored" do
+      Portal.Test.ArgusFixtures.ingest(
+        "1.0.0",
+        Portal.Test.ArgusFixtures.ok([Portal.Test.ArgusFixtures.finding()]),
+        1,
+        "forged"
+      )
+
+      [row] = Ash.read!(Portal.Catalog.FindingTriage, domain: Portal.Catalog)
+
+      second =
+        ingest!(%{
+          "package" => %{"name" => "forged", "version" => "1.0.0"},
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "targets",
+          "carry_run_data" => true,
+          "systems" => %{"nerves_system_rpi4" => %{"status" => "pass"}}
+        })
+
+      assert second.argus == nil
+      assert second.footprint == nil
+
+      [after_forged] = Ash.read!(Portal.Catalog.FindingTriage, domain: Portal.Catalog)
+      assert after_forged.last_seen_run_id == row.last_seen_run_id
+    end
+
     test "a targets run replaces only the targets it built" do
       first =
         ingest!(

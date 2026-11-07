@@ -92,6 +92,9 @@ defmodule Portal.Catalog.Ingestion do
           optional(:log) => String.t() | nil,
           # Stage the logs of these systems only; every failed one when absent.
           optional(:log_systems) => [String.t()] | nil,
+          # Set only by `Portal.Catalog.BuildTimeout`, never from a result:
+          # a partial run keeps the previous run's footprint and argus result.
+          optional(:carry_run_data) => boolean(),
           required(:package) => String.t(),
           required(:version) => String.t()
         }
@@ -777,11 +780,12 @@ defmodule Portal.Catalog.Ingestion do
     # Once, for both the run row and its triage sightings: a carried ok argus
     # result makes the new run the package's latest argus run, and findings
     # not sighted on it would all turn stale.
-    result = Map.put(result, "argus", argus_for(result, carried))
+    carry? = Map.get(opts, :carry_run_data, false) == true
+    result = Map.put(result, "argus", argus_for(result, carried, carry?))
 
     with {:ok, package} <- upsert_package(package_name, package_info, finished_at),
          {:ok, run} <-
-           create_run(result, opts, package.id, version, overall, finished_at, carried),
+           create_run(result, opts, package.id, version, overall, finished_at, {carried, carry?}),
          :ok <-
            create_system_results(systems, run.id, version, staged, logs),
          :ok <- copy_carried(carried, run.id),
@@ -929,7 +933,7 @@ defmodule Portal.Catalog.Ingestion do
 
   defp system_compile_env_rule(_system_pkg, _sys), do: nil
 
-  defp create_run(result, opts, package_id, version, overall, finished_at, carried) do
+  defp create_run(result, opts, package_id, version, overall, finished_at, {carried, carry?}) do
     Run
     |> Ash.Changeset.for_create(:create, %{
       run_id: opts.run_id,
@@ -937,7 +941,7 @@ defmodule Portal.Catalog.Ingestion do
       version_tested: version,
       image_digest: opts.image_digest,
       overall_status: overall,
-      footprint: footprint_for(result, carried),
+      footprint: footprint_for(result, carried, carry?),
       toolchain: result["toolchain"],
       argus: result["argus"],
       deps_lock: deps_lock(result["deps_lock"]),
@@ -956,17 +960,18 @@ defmodule Portal.Catalog.Ingestion do
   # empty footprint with zero totals rather than none at all, so it is the
   # scope that says the measurement is missing. A targets run built firmware
   # and measured it, so it keeps its own.
-  defp footprint_for(%{"scope" => "argus_only"}, %{footprint: previous}), do: previous
+  defp footprint_for(%{"scope" => "argus_only"}, %{footprint: previous}, _carry?), do: previous
 
   # A targets run stopped by the wall clock (`Portal.Catalog.BuildTimeout`,
-  # which sets `carry_run_data`) measured nothing and ran no argus, so it
-  # keeps the previous run's footprint and argus result. A worker result
-  # never sets the key, so a real run keeps its own, nil included.
-  defp footprint_for(%{"carry_run_data" => true}, %{footprint: previous}), do: previous
-  defp footprint_for(result, _carried), do: get_in(result, ["package", "footprint"])
+  # which passes the `:carry_run_data` opt) measured nothing and ran no argus,
+  # so it keeps the previous run's footprint and argus result. The flag is an
+  # opt, never read from the result: `result.json` is written by a container
+  # running package code. A real run keeps its own values, nil included.
+  defp footprint_for(_result, %{footprint: previous}, true), do: previous
+  defp footprint_for(result, _carried, _carry?), do: get_in(result, ["package", "footprint"])
 
-  defp argus_for(%{"carry_run_data" => true}, %{argus: previous}), do: argus_map(previous)
-  defp argus_for(result, _carried), do: argus_map(result["argus"])
+  defp argus_for(_result, %{argus: previous}, true), do: argus_map(previous)
+  defp argus_for(result, _carried, _carry?), do: argus_map(result["argus"])
 
   @partial_scopes ["targets", "argus_only"]
 
