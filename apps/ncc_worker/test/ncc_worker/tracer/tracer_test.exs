@@ -322,8 +322,13 @@ defmodule NccWorker.TracerTest do
     assert {:ok, 0} = traced.result, traced.log
 
     os_pid = File.read!(pid_file)
-    # Gone, or a zombie (its environ reads empty) until it is reaped.
-    assert File.read("/proc/#{os_pid}/environ") in [{:error, :enoent}, {:ok, ""}]
+    # Gone, or a zombie until it is reaped: its environ then reads empty, or
+    # the read fails with ESRCH, depending on the kernel.
+    assert File.read("/proc/#{os_pid}/environ") in [
+             {:error, :enoent},
+             {:error, :esrch},
+             {:ok, ""}
+           ]
   end
 
   test "the judge compile's leftover processes are reaped by build path, and survivors fail it",
