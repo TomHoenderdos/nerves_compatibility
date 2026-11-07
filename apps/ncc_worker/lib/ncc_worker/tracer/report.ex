@@ -139,7 +139,8 @@ defmodule NccWorker.Tracer.Report do
   end
 
   # Every file costs one line of the budget, so empty files are bounded too.
-  defp read_lines(_path, %{exceeded: true} = budget), do: {[], budget}
+  # Only called with a budget not yet spent: the main file is read first,
+  # and `child_file/2` reads nothing once the budget is spent.
   defp read_lines(_path, %{lines: lines} = budget) when lines < 1, do: {[], spent(budget)}
   defp read_lines(path, budget), do: read_file(path, %{budget | lines: budget.lines - 1})
 
