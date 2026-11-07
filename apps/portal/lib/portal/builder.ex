@@ -206,6 +206,10 @@ defmodule Portal.Builder do
   `result` is the parsed `result.json` (or `nil` if the container produced none).
   The caller maps `exit_code` → outcome. `{:error, reason}` is reserved for
   runner-side failures (docker unavailable, scratch setup, etc).
+  `{:error, {:build_timeout, seconds, container}}` means the container ran
+  past the wall clock (`total_timeout_ms/0`, or `opts[:timeout_ms]`) and is
+  being stopped; the scratch dir, with whatever `out/logs` the worker had
+  written, is left for the caller to read and remove.
   """
   @spec build(build_args(), keyword()) :: {:ok, build_result()} | {:error, term()}
   def build(args, opts \\ []) do
@@ -807,9 +811,12 @@ defmodule Portal.Builder do
     container_name = container_name(job.run_id)
     log_command(args, log_file, note)
 
+    # A timeout has its own tag: `Portal.Workers.Build` records it as the
+    # build's result rather than retrying it, and must not tell it apart from
+    # other failures by matching on a message.
     case run_docker(args, log_file, container_name, timeout_ms) do
       {:ok, exit_code} -> {:ok, exit_code}
-      {:error, reason} -> {:error, {:docker_execution_failed, reason}}
+      {:timeout, seconds} -> {:error, {:build_timeout, seconds, container_name}}
     end
   end
 
@@ -1137,10 +1144,7 @@ defmodule Portal.Builder do
     after
       remaining ->
         stop_timed_out(port, container_name, log_device)
-
-        {:error,
-         "Docker command exceeded #{div(timeout_ms, 1000)}s wall-clock timeout; " <>
-           "container #{container_name} is being stopped"}
+        {:timeout, div(timeout_ms, 1000)}
     end
   end
 

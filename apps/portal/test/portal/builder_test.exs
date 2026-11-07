@@ -1235,11 +1235,14 @@ defmodule Portal.BuilderTest do
       ref = :telemetry_test.attach_event_handlers(self(), [[:portal, :builder, :container_stop]])
       started = System.monotonic_time(:millisecond)
 
-      assert {:error, {:docker_execution_failed, message}} =
+      # Its own tag, not a `:docker_execution_failed` message:
+      # `Portal.Workers.Build` records a timeout as a result instead of
+      # retrying it, and must not have to match on prose to tell.
+      assert {:error, {:build_timeout, seconds, "ncc-run-1"}} =
                Builder.build(@build_args, timeout_ms: 300)
 
       assert System.monotonic_time(:millisecond) - started < 3_000
-      assert message =~ "wall-clock timeout"
+      assert seconds == 0
       refute pid_alive?(Path.join(tmp, "run.pid")), "the docker run client is still running"
 
       # The stop goes on elsewhere: the hung kill is cut off at its own
@@ -1260,7 +1263,7 @@ defmodule Portal.BuilderTest do
       put_builder([stop_await_ms: 5_000], Application.get_env(:portal, Portal.Builder, previous))
       ref = :telemetry_test.attach_event_handlers(self(), [[:portal, :builder, :container_stop]])
 
-      assert {:error, {:docker_execution_failed, _}} = Builder.build(@build_args, timeout_ms: 300)
+      assert {:error, {:build_timeout, _, _}} = Builder.build(@build_args, timeout_ms: 300)
 
       assert_received {[:portal, :builder, :container_stop], ^ref, _,
                        %{container: "ncc-run-1", outcome: :killed}}
