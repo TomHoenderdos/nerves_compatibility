@@ -398,6 +398,26 @@ defmodule Portal.Precompiled.WithheldTest do
       assert_toolchain_served(name, toolchain_sha(rebuilt))
     end
 
+    test "marks a rule-1 row whose compile_env is null: it does not record its config reads" do
+      build =
+        "tc_null_env_#{System.unique_integer([:positive])}"
+        |> ingest_toolchain_build("0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+        |> revoke!()
+
+      Portal.Repo.query!(
+        "UPDATE catalog_toolchain_builds SET compile_env = NULL WHERE id = $1",
+        [Ecto.UUID.dump!(build.id)]
+      )
+
+      assert %{compile_env_rule: 1, compile_env: nil} = reload(build)
+
+      assert %{marked: [id], skipped: []} =
+               Catalog.mark_withheld_revoked([build.id], dry_run: false)
+
+      assert id == build.id
+      assert reload(build).revoked_reason == "withheld closure"
+    end
+
     test "never overwrites another revocation reason" do
       build =
         "tc_other_mark_#{System.unique_integer([:positive])}"
@@ -635,10 +655,21 @@ defmodule Portal.Precompiled.WithheldTest do
       assert_run_served("jason", @run_sha)
     end
 
-    test "a carried firmware result with rule 1 stays withheld" do
+    test "a firmware result's rule is not stored, and one forced on it does not exempt" do
       ingest_with_artifact(
         put_in(run(@liveview), ["systems", "nerves_system_rpi4", "compile_env_rule"], 1)
       )
+
+      assert [%{compile_env_rule: nil}] = results("nerves_system_rpi4")
+      assert_withheld("jason", @run_sha)
+
+      # A row written before ingest dropped it, carried forward as well.
+      sql!(
+        "UPDATE catalog_system_results SET compile_env_rule = 1 WHERE id = ANY($1)",
+        Enum.map(results("nerves_system_rpi4"), & &1.id)
+      )
+
+      assert_withheld("jason", @run_sha)
 
       partial =
         @liveview
@@ -657,11 +688,41 @@ defmodule Portal.Precompiled.WithheldTest do
       assert_withheld("jason", @run_sha)
     end
 
-    test "a firmware result with rule 1 stays withheld" do
-      ingest_with_artifact(
-        put_in(run(@liveview), ["systems", "nerves_system_rpi4", "compile_env_rule"], 1)
-      )
+    # The carried copy has no lock of its own, and the carrying run's lock has
+    # no LiveView: only the source run's lock puts LiveView in its closure.
+    defp carry_lockless_pure!(rule) do
+      ingest_with_artifact(pure_run(@liveview, rule))
 
+      partial =
+        @decimal
+        |> pure_run(rule)
+        |> Map.merge(%{
+          "run_id" => "fixture-jason-targets-lockless-#{rule}",
+          "scope" => "targets",
+          "finished_at" => "2030-01-01T00:00:00Z"
+        })
+        |> Map.update!("systems", &Map.take(&1, ["nerves_system_x86_64"]))
+
+      ingest_with_artifact(partial)
+      restore_run_blob!()
+
+      [original] = Enum.reject(results("pure_elixir"), & &1.carried_from_run_id)
+      [carried] = Enum.filter(results("pure_elixir"), & &1.carried_from_run_id)
+      assert {carried.deps_lock, carried.compile_env_rule} == {nil, rule}
+
+      sql!(
+        "UPDATE catalog_system_results SET unpublished_at = now() WHERE id = ANY($1)",
+        [original.id]
+      )
+    end
+
+    test "a carried lockless pure_elixir result takes the source run's lock: rule 1 exempts it" do
+      carry_lockless_pure!(1)
+      assert_run_served("jason", @run_sha)
+    end
+
+    test "a carried lockless pure_elixir result takes the source run's lock: no rule, withheld" do
+      carry_lockless_pure!(nil)
       assert_withheld("jason", @run_sha)
     end
 

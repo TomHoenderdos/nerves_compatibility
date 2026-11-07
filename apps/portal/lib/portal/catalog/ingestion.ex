@@ -889,6 +889,14 @@ defmodule Portal.Catalog.Ingestion do
 
   defp compile_env_rule(_rule, _list), do: nil
 
+  # Only a `pure_elixir` result traces its compile and so records its config
+  # reads; a firmware result never does, so a mark on one is dropped rather
+  # than stored on a row no selector would exempt.
+  defp system_compile_env_rule("pure_elixir", sys),
+    do: compile_env_rule(Map.get(sys, "compile_env_rule"), Map.get(sys, "compile_env"))
+
+  defp system_compile_env_rule(_system_pkg, _sys), do: nil
+
   defp create_run(result, opts, package_id, version, overall, finished_at, carried) do
     Run
     |> Ash.Changeset.for_create(:create, %{
@@ -1082,8 +1090,7 @@ defmodule Portal.Catalog.Ingestion do
         log_tail: sys["log_tail"],
         failure_category: Portal.Catalog.FailureClassifier.classify(sys),
         deps_lock: deps_lock(sys["deps_lock"]),
-        compile_env_rule:
-          compile_env_rule(Map.get(sys, "compile_env_rule"), Map.get(sys, "compile_env"))
+        compile_env_rule: system_compile_env_rule(system_pkg, sys)
       })
       |> Ash.create(domain: @domain)
 

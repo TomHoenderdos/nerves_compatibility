@@ -1022,16 +1022,29 @@ defmodule Portal.Catalog.IngestionTest do
       run =
         ingest!(
           full_result("markpkg", "1.0.0", %{
-            "host" => %{"status" => "pass", "compile_env" => compile_env, "compile_env_rule" => 1},
+            "pure_elixir" => %{
+              "status" => "pass",
+              "compile_env" => compile_env,
+              "compile_env_rule" => 1
+            },
             "nerves_system_rpi4" => %{"status" => "pass", "compile_env_rule" => 1},
-            "nerves_system_bbb" => %{"status" => "pass", "compile_env" => compile_env}
+            "nerves_system_bbb" => %{"status" => "pass", "compile_env" => compile_env},
+            "nerves_system_x86_64" => %{
+              "status" => "pass",
+              "compile_env" => compile_env,
+              "compile_env_rule" => 1
+            }
           })
         )
 
       systems = systems_of(run)
-      assert systems["host"].compile_env_rule == 1
+      assert systems["pure_elixir"].compile_env_rule == 1
       assert systems["nerves_system_rpi4"].compile_env_rule == nil
       assert systems["nerves_system_bbb"].compile_env_rule == nil
+      # Only `pure_elixir` records its config reads; a firmware result's mark
+      # is dropped even next to a valid compile_env.
+      assert systems["nerves_system_x86_64"].compile_env_rule == nil
+      assert systems["nerves_system_x86_64"].compile_env == compile_env
     end
 
     test "a carried-forward system result keeps its R5 mark" do
@@ -1040,7 +1053,7 @@ defmodule Portal.Catalog.IngestionTest do
       first =
         ingest!(
           full_result("carrymarkpkg", "1.0.0", %{
-            "nerves_system_rpi4" => %{
+            "pure_elixir" => %{
               "status" => "pass",
               "compile_env" => compile_env,
               "compile_env_rule" => 1
@@ -1058,8 +1071,8 @@ defmodule Portal.Catalog.IngestionTest do
         })
 
       systems = systems_of(second)
-      assert systems["nerves_system_rpi4"].carried_from_run_id == first.id
-      assert systems["nerves_system_rpi4"].compile_env_rule == 1
+      assert systems["pure_elixir"].carried_from_run_id == first.id
+      assert systems["pure_elixir"].compile_env_rule == 1
       assert systems["nerves_system_bbb"].compile_env_rule == nil
     end
 
