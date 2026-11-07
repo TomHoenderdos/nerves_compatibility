@@ -81,7 +81,8 @@ defmodule NccWorker.Tracer.ReportTest do
     "integrity_ok" => true,
     "delivered" => true,
     "final_sentinel" => true,
-    "overflow" => false
+    "overflow" => false,
+    "late_loaded" => []
   }
 
   defp clean,
@@ -171,7 +172,9 @@ defmodule NccWorker.Tracer.ReportTest do
           {%{"status" => "compile_failed"}, ~s(traced compile ended "compile_failed")},
           {%{"final_sentinel" => false}, "final sentinel missing"},
           {%{"depth_ok" => false}, "the end lost its backtrace depth"},
-          {%{"overflow" => true}, "the end reports an overflow"}
+          {%{"overflow" => true}, "the end reports an overflow"},
+          {%{"late_loaded" => ["json"]}, "the tracer loaded modules after it started: json"},
+          {%{"late_loaded" => nil}, "the end does not say what the tracer loaded late"}
         ] do
       r = read(dir, replace(clean(), "end", nil, changes))
       assert problem in r.problems, inspect({problem, r.problems})

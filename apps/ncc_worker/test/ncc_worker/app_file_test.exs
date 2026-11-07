@@ -56,4 +56,26 @@ defmodule NccWorker.AppFileTest do
     assert AppFile.find_app_in_build(dir, "sample") == app
     assert AppFile.find_app_in_build(dir, "other") == nil
   end
+
+  test "read_listed_applications gives applications and included ones as strings",
+       %{tmp_dir: dir} do
+    path =
+      write_app(dir, "sample", [
+        {:applications, [:kernel, :inets]},
+        {:included_applications, [:runtime_tools]}
+      ])
+
+    assert AppFile.read_listed_applications(path) == {:ok, ["kernel", "inets", "runtime_tools"]}
+    assert AppFile.read_listed_applications(write_app(dir, "bare", [])) == {:ok, []}
+  end
+
+  test "read_listed_applications fails closed", %{tmp_dir: dir} do
+    assert AppFile.read_listed_applications(Path.join(dir, "nope.app")) == :error
+    bad = Path.join(dir, "bad.app")
+    File.write!(bad, "{application")
+    assert AppFile.read_listed_applications(bad) == :error
+    two = Path.join(dir, "two.app")
+    File.write!(two, "{application, a, []}.\n{application, b, []}.\n")
+    assert AppFile.read_listed_applications(two) == :error
+  end
 end

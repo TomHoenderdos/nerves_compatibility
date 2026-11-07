@@ -674,11 +674,14 @@ defmodule NccWorker.Tracer.RuntimeTest do
         dir,
         """
         {:ok, tok} = :ncc_tracer.start_main()
+        # The collector monitors its watcher; for a moment also a server it
+        # calls (the file server) while it classifies a call.
+        watcher? = fn p -> Process.info(p, :registered_name) == {:registered_name, []} end
         c = :ncc_tracer.collector()
 
         for _ <- 1..20 do
           {:monitors, monitors} = Process.info(c, :monitors)
-          for {:process, p} when is_pid(p) <- monitors, do: Process.exit(p, :kill)
+          for {:process, p} when is_pid(p) <- monitors, watcher?.(p), do: Process.exit(p, :kill)
           Process.sleep(20)
         end
 
@@ -734,8 +737,11 @@ defmodule NccWorker.Tracer.RuntimeTest do
     {0, out} =
       run_script(dir, """
       {:ok, tok} = :ncc_tracer.start_main()
+      # The collector monitors its watcher; for a moment also a server it
+      # calls (the file server) while it classifies a call.
+      watcher? = fn p -> Process.info(p, :registered_name) == {:registered_name, []} end
       {:monitors, monitors} = Process.info(:ncc_tracer.collector(), :monitors)
-      [watcher] = for {:process, p} when is_pid(p) <- monitors, do: p
+      [watcher] = for {:process, p} when is_pid(p) <- monitors, watcher?.(p), do: p
       Process.exit(watcher, :kill)
       Process.sleep(100)
       :ok = :ncc_tracer.finish(tok, "ok")
@@ -750,9 +756,12 @@ defmodule NccWorker.Tracer.RuntimeTest do
     {0, _} =
       run_script(dir, """
       {:ok, tok} = :ncc_tracer.start_main()
+      # The collector monitors its watcher; for a moment also a server it
+      # calls (the file server) while it classifies a call.
+      watcher? = fn p -> Process.info(p, :registered_name) == {:registered_name, []} end
       c = :ncc_tracer.collector()
       {:monitors, monitors} = Process.info(c, :monitors)
-      [watcher] = for {:process, p} when is_pid(p) <- monitors, do: p
+      [watcher] = for {:process, p} when is_pid(p) <- monitors, watcher?.(p), do: p
       Process.exit(watcher, :kill)
       Process.sleep(100)
       Process.exit(c, :kill)

@@ -257,4 +257,209 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert "built outside the trace: fx_leaf" in obs["problems"]
     assert obs["trace_stats"]["transient"] == false
   end
+
+  # A package whose module body evaluates `expr` at compile time, listing
+  # `extra_applications` besides :logger.
+  defp probe_fixture(dir, extra_applications, expr \\ "Code.ensure_loaded?(:dbg)") do
+    TracerFixtures.project(dir, ["fx_probe"], %{
+      "fx_probe" => %{
+        extra_applications: extra_applications,
+        files: %{
+          "lib/fx_probe.ex" => """
+          defmodule FxProbe do
+            @probe #{expr}
+            def probe, do: @probe
+          end
+          """
+        }
+      }
+    })
+  end
+
+  # Compiles `proj` untraced, then traced from a clean _build: the
+  # published files of each, and the trace.
+  defp both(proj) do
+    plain_compile(proj)
+    untraced = published(proj)
+    File.rm_rf!(Path.join(proj, "_build"))
+    traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    {untraced, published(proj), traced}
+  end
+
+  defp probes(traced), do: Enum.filter(traced.report.events, &(&1["channel"] == "probe"))
+
+  test "a probe of a module only the tracer loaded is not judged", %{tmp_dir: dir} do
+    proj = probe_fixture(dir, [])
+    {untraced, host, traced} = both(proj)
+    preloaded = traced.report.start["preloaded"]
+    assert preloaded["dbg"] == "runtime_tools"
+    # Loaded by the tracer's own work, not by patterning: its session and
+    # its line writer.
+    assert preloaded["trace"] == "kernel"
+    assert preloaded["json"] == "stdlib"
+    # No tracer module exists in an untraced compile.
+    for m <- ~w(ncc_tracer ncc_tracer_digest ncc_tracer_probe Elixir.Mix.Tasks.Ncc.TraceCompile),
+        do: assert(preloaded[m] == "ncc_tracer", m)
+
+    assert traced.report.ending["late_loaded"] == []
+
+    # The trace loaded :dbg, which fx_probe could not load untraced: the
+    # beams differ, and the build must not publish.
+    refute host == untraced
+
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
+
+    problem = "compile-time probe of a module the trace loaded: dbg (runtime_tools)"
+    assert problem in obs["problems"]
+  end
+
+  # The answers that cannot differ: whether a module can be loaded, where it
+  # is and its object code, when its application is on the package's path.
+  test "a probe of a module its own applications provide is judged as usual", %{tmp_dir: dir} do
+    expr =
+      "{Code.ensure_loaded?(:dbg), is_list(:code.which(:dbg)), " <>
+        "is_tuple(:code.get_object_code(:dbg))}"
+
+    proj = probe_fixture(dir, [:runtime_tools], expr)
+    {untraced, host, traced} = both(proj)
+    assert BuildIdentity.differences(host, untraced) == []
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_probe", traced)
+
+    mfas = traced |> probes() |> Enum.map(& &1["mfa"]) |> Enum.uniq() |> Enum.sort()
+    assert ["code:ensure_loaded/1", "code:get_object_code/1", "code:which/1"] -- mfas == []
+  end
+
+  # Whether a module is loaded now is no question of the code path: under
+  # the trace the answer is `true`, untraced `false`, listed or not.
+  test "a loaded-module probe is not judged even with its application listed",
+       %{tmp_dir: dir} do
+    proj = probe_fixture(dir, [:runtime_tools], "function_exported?(:dbg, :p, 2)")
+    {untraced, host, traced} = both(proj)
+    refute host == untraced
+
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert Enum.any?(
+             obs["problems"],
+             &(&1 =~ "compile-time probe of a module the trace loaded: dbg (runtime_tools)")
+           ),
+           inspect(obs["problems"])
+  end
+
+  test "an is_loaded probe of httpc at compile time is not judged", %{tmp_dir: dir} do
+    proj = probe_fixture(dir, [], ":code.is_loaded(:httpc) != false")
+    {untraced, host, traced} = both(proj)
+    refute host == untraced
+
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert Enum.any?(
+             obs["problems"],
+             &(&1 =~ "compile-time probe of a module the trace loaded: httpc (inets)")
+           ),
+           inspect(obs["problems"])
+  end
+
+  # The common case among published packages: `:json` is in stdlib, on
+  # every path, so the answer is the same traced or not.
+  test "a json probe in mix.exs and in a module body passes", %{tmp_dir: dir} do
+    expr = "{Code.ensure_loaded?(:json), is_list(:code.which(:json))}"
+
+    proj =
+      TracerFixtures.project(dir, ["fx_probe"], %{
+        "fx_probe" => %{
+          mix_exs: TracerFixtures.mix_exs("fx_probe", ", json: Code.ensure_loaded?(:json)"),
+          files: %{"lib/fx_probe.ex" => TracerFixtures.attr_module("FxProbe", expr)}
+        }
+      })
+
+    {untraced, host, traced} = both(proj)
+    assert BuildIdentity.differences(host, untraced) == []
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_probe", traced)
+    assert Enum.any?(probes(traced), &(&1["arg"]["module"] == "json"))
+  end
+
+  # Mix loads these itself before it evaluates a dependency's mix.exs or
+  # compiles anything, so the tracer does not count them as its own
+  # (`:ncc_tracer.loaded_by_mix/0`): every kind of probe of them, from a
+  # mix.exs (its description lands in the .app) and from a module body,
+  # answers the same traced and untraced. (code:module_status/1 also reads
+  # the code path, a host read of its own.)
+  test "a probe of a module Mix loads anyway answers the same traced", %{tmp_dir: dir} do
+    mods = :ncc_tracer.loaded_by_mix()
+    assert mods != []
+
+    expr =
+      "for m <- #{inspect(mods)}, do: {:erlang.module_loaded(m), :code.is_loaded(m) != false, " <>
+        "function_exported?(m, :module_info, 0), Code.ensure_loaded?(m)}"
+
+    proj =
+      TracerFixtures.project(dir, ["fx_probe"], %{
+        "fx_probe" => %{
+          mix_exs: TracerFixtures.mix_exs("fx_probe", ", description: inspect(#{expr})"),
+          files: %{"lib/fx_probe.ex" => TracerFixtures.attr_module("FxProbe", expr)}
+        }
+      })
+
+    {untraced, host, traced} = both(proj)
+    assert BuildIdentity.differences(host, untraced) == []
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_probe", traced)
+    for m <- mods, do: refute(Map.has_key?(traced.report.start["preloaded"], to_string(m)))
+  end
+
+  test "a package that calls httpc only at runtime passes", %{tmp_dir: dir} do
+    proj =
+      TracerFixtures.project(dir, ["fx_probe"], %{
+        "fx_probe" => %{
+          files: %{
+            "lib/fx_probe.ex" =>
+              "defmodule FxProbe do\n  def get(url), do: :httpc.request(url)\nend\n"
+          }
+        }
+      })
+
+    {untraced, host, traced} = both(proj)
+    assert BuildIdentity.differences(host, untraced) == []
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_probe", traced)
+  end
+
+  # Elixir's type checker looks :httpc up while it checks a call to it
+  # (Module.ParallelChecker): what it finds reaches only its warnings, never
+  # a beam. In a process the package started, its lookups are user extent
+  # (lineage) and reach the judge, which drops them. Pinned per toolchain:
+  # the checker's lookups are in the trace, and no probe problem comes of
+  # them. (The checker's own system_info read refuses this fixture.)
+  test "the type checker's lookups of a tracer-loaded module are dropped", %{tmp_dir: dir} do
+    inner = "defmodule FxProbe.Inner do\n  def get(u), do: :httpc.request(u)\nend\n"
+
+    body = """
+    defmodule FxProbe do
+      @n Task.async(fn -> Code.compile_string(#{inspect(inner)}) |> length() end)
+         |> Task.await(60_000)
+      def n, do: @n
+    end
+    """
+
+    proj =
+      TracerFixtures.project(dir, ["fx_probe"], %{
+        "fx_probe" => %{files: %{"lib/fx_probe.ex" => body}}
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+
+    checker =
+      for %{"arg" => %{"module" => "httpc", "by" => %{"module" => m}, "by_kind" => "toolchain"}} <-
+            probes(traced),
+          do: m
+
+    assert "Elixir.Module.ParallelChecker" in checker, inspect(probes(traced), pretty: true)
+
+    %{observations: obs} = TracerFixtures.judge(proj, "fx_probe", traced)
+    refute Enum.any?(obs["problems"] || [], &(&1 =~ "compile-time probe")), inspect(obs)
+  end
 end

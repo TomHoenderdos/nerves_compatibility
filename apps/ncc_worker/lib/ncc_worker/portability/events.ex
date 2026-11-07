@@ -50,6 +50,8 @@ defmodule NccWorker.Portability.Events do
       `System.cmd`/`Port.open`) never go to R4: they are not observations a
       slice can follow, and refuse directly. Looking a program up
       (`os:find_executable`) is an observation and does go to R4.
+    * A probe of a module the tracer loaded (whether it is loaded, or can
+      be) is judged by `NccWorker.Portability.Probes`.
     * Our generated project's own `mix.exs` (owner `:wrapper`) is ignored.
 
   Fail closed: an event whose stack the tracer could not judge (extent
@@ -60,7 +62,7 @@ defmodule NccWorker.Portability.Events do
   """
 
   alias Compatibility.Portability, as: Reasons
-  alias NccWorker.Portability.{Context, MixExsSlice}
+  alias NccWorker.Portability.{Context, MixExsSlice, Probes}
 
   @path_modules ~w(filename Elixir.Path file filelib code Elixir.Code)
   @host_channels ~w(env programs network crypto native)
@@ -166,6 +168,7 @@ defmodule NccWorker.Portability.Events do
   defp channel("file_read", event, ctx, owner), do: file_read(event, ctx, owner)
   defp channel("file_write", event, ctx, owner), do: file_write(event, ctx, owner)
   defp channel("native_closure", event, ctx, owner), do: native_closure(event, ctx, owner)
+  defp channel("probe", event, ctx, owner), do: Probes.decide(event, ctx, owner)
 
   defp channel(other, event, _ctx, _owner),
     do: unjudged("unknown channel #{other}: #{event["mfa"]}")

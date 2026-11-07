@@ -27,6 +27,30 @@ defmodule NccWorker.AppFile do
   end
 
   @doc """
+  The `applications` and `included_applications` a `.app` file lists, as
+  strings, or `:error` when it cannot be read or does not hold exactly one
+  application.
+  """
+  @spec read_listed_applications(String.t()) :: {:ok, [String.t()]} | :error
+  def read_listed_applications(app_path) do
+    case :file.consult(String.to_charlist(app_path)) do
+      {:ok, [{:application, _app, props}]} when is_list(props) ->
+        listed = listed(props, :applications) ++ listed(props, :included_applications)
+        {:ok, for(a <- listed, is_atom(a), do: Atom.to_string(a))}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp listed(props, key) do
+    case List.keyfind(props, key, 0) do
+      {^key, apps} when is_list(apps) -> apps
+      _ -> []
+    end
+  end
+
+  @doc """
   Finds the .app file in a release, falling back to a host-only compile.
 
   ## Parameters

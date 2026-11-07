@@ -135,6 +135,31 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert {:config, %{all: true}} = classify(:application, :get_all_env, [:logger])
   end
 
+  test "probes of whether a module is or can be loaded, never in the patterns" do
+    probes = :ncc_tracer_channels.probe_mfas()
+    patterns = :ncc_tracer_channels.patterns()
+    assert length(probes) == 7
+    for mfa <- probes, do: refute(mfa in patterns, inspect(mfa))
+
+    for {m, f, args} <- [
+          {:code, :ensure_loaded, [:dbg]},
+          {:code, :is_loaded, [:dbg]},
+          {:code, :which, [:dbg]},
+          {:code, :module_status, [:dbg]},
+          {:code, :get_object_code, [:dbg]},
+          {:erlang, :module_loaded, [:dbg]},
+          {:erlang, :function_exported, [:dbg, :p, 2]}
+        ] do
+      assert {:probe, %{module: "dbg"}} == classify(m, f, args)
+    end
+
+    assert {:probe, %{module: ~s(<<"x">>)}} == classify(:code, :which, ["x"])
+    # The install channel's code reads keep their own channel.
+    assert {:install, %{what: :lib_dir}} = classify(:code, :lib_dir, [:kernel])
+    assert {:install, %{what: :priv_dir}} = classify(:code, :priv_dir, [:kernel])
+    assert {:install, %{what: :get_path}} = classify(:code, :get_path, [])
+  end
+
   test "anything else is unknown, and odd arguments do not crash" do
     assert :unknown = classify(:lists, :reverse, [[1]])
     assert {:file_read, %{path: _}} = classify(:file, :read_file, [{:not, :a, :path}])

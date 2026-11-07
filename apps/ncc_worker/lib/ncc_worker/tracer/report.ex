@@ -15,7 +15,9 @@ defmodule NccWorker.Tracer.Report do
       `unjudged`, `unjudged > 0`;
     * an `end` whose status is not `"ok"`, or whose `final_sentinel`,
       `depth_ok`, `integrity_ok` or `delivered` is not true, or whose
-      `overflow` is not false; any `overflow` line;
+      `overflow` is not false, or whose `late_loaded` (modules the tracer
+      loaded only after it started) is not an empty list; any `overflow`
+      line;
     * a window or native-pattern quiet interval left open or closed without
       being opened, a window close whose `depth_ok`, `integrity_ok` or
       `delivered` is not true, a sentinel whose `depth_ok` or `integrity_ok`
@@ -285,6 +287,7 @@ defmodule NccWorker.Tracer.Report do
     |> check(l, "delivered", "the end was not fully delivered")
     |> check(l, "depth_ok", "the end lost its backtrace depth")
     |> check(l, "final_sentinel", "final sentinel missing")
+    |> late_loaded(l)
     |> ending_status(l)
   end
 
@@ -319,6 +322,19 @@ defmodule NccWorker.Tracer.Report do
   defp built_digest(_l), do: built_error("no digest")
 
   defp built_error(why), do: %{digest: nil, files: nil, error: why}
+
+  # Modules the tracer's own code calls that it could not load at start
+  # but found loaded at the end: if the tracer loaded one itself, mid-trace,
+  # a probe of it was never traced (`preloaded` on the start line).
+  defp late_loaded(r, %{"late_loaded" => []}), do: r
+
+  defp late_loaded(r, %{"late_loaded" => [_ | _] = late}) do
+    if Enum.all?(late, &is_binary/1),
+      do: problem(r, "the tracer loaded modules after it started: " <> Enum.join(late, ", ")),
+      else: problem(r, "the end does not say what the tracer loaded late")
+  end
+
+  defp late_loaded(r, _l), do: problem(r, "the end does not say what the tracer loaded late")
 
   defp ending_status(r, %{"status" => "ok", "overflow" => false}), do: r
 

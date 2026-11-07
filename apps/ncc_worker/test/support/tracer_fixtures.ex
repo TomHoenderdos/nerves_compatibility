@@ -175,17 +175,19 @@ defmodule NccWorker.TracerFixtures do
   end
 
   defp manifest_files(name, spec, deps) do
-    %{"mix.exs" => Map.get(spec, :mix_exs) || dep_mix_exs(name, Map.get(spec, :deps, []), deps)}
+    %{"mix.exs" => Map.get(spec, :mix_exs) || dep_mix_exs(name, spec, deps)}
   end
 
-  defp dep_mix_exs(name, children, deps) do
-    entries = Enum.map_join(children, ", ", &dep_entry(&1, "../" <> &1, deps))
+  # `extra_applications:` adds to the `[:logger]` every fixture lists.
+  defp dep_mix_exs(name, spec, deps) do
+    entries = Enum.map_join(Map.get(spec, :deps, []), ", ", &dep_entry(&1, "../" <> &1, deps))
+    extra = Enum.uniq([:logger | Map.get(spec, :extra_applications, [])])
 
     """
     defmodule #{Macro.camelize(name)}.MixProject do
       use Mix.Project
       def project, do: [app: :#{name}, version: "0.1.0", deps: [#{entries}]]
-      def application, do: [extra_applications: [:logger]]
+      def application, do: [extra_applications: #{inspect(extra)}]
     end
     """
   end

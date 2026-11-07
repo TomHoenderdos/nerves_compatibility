@@ -2,7 +2,7 @@
 %% The primitives the compile-time trace watches (precompiled portability
 %% spec, R1 channel table) and the short summary of one call that the tracer
 %% writes when the call happens in user extent. Pure: no process, no I/O.
--export([patterns/0, classify/3, chars/1, term_bin/1]).
+-export([patterns/0, probe_mfas/0, classify/3, chars/1, term_bin/1]).
 
 -define(READS, [{file, read_file}, {file, read_file_info}, {file, read_link_info},
                 {file, read_link}, {file, read_link_all}, {file, list_dir},
@@ -92,6 +92,17 @@ patterns() ->
      {application, get_env, 1}, {application, get_env, 2}, {application, get_env, 3},
      {application, get_all_env, 0}, {application, get_all_env, 1}].
 
+%% Calls that tell whether a module is loaded or can be loaded. The tracer
+%% loads every module it patterns before anything compiles, so under the
+%% trace such a probe can answer `true` where an untraced compile, on Mix's
+%% pruned code path, answers `false`. They are never in patterns/0: the
+%% tracer patterns them only with match specs naming the modules it loaded
+%% itself (ncc_tracer probe_spec/3), so no other call of them is traced.
+probe_mfas() ->
+    [{code, ensure_loaded, 1}, {code, is_loaded, 1}, {code, which, 1},
+     {code, module_status, 1}, {code, get_object_code, 1},
+     {erlang, module_loaded, 1}, {erlang, function_exported, 3}].
+
 classify(M, F, Args) ->
     case specific(M, F, Args) of
         unknown -> generic(M, F, Args);
@@ -99,6 +110,13 @@ classify(M, F, Args) ->
     end.
 
 specific(code, F, [_]) when F =:= unstick_mod; F =:= unstick_dir -> {integrity, #{}};
+%% Before the install channel's by_module(code, ...) clauses, which would
+%% take code:which/1 for a lib_dir-like read.
+specific(code, F, [M]) when F =:= ensure_loaded; F =:= is_loaded; F =:= which;
+                            F =:= module_status; F =:= get_object_code ->
+    {probe, #{module => term_name(M)}};
+specific(erlang, module_loaded, [M]) -> {probe, #{module => term_name(M)}};
+specific(erlang, function_exported, [M, _F, _A]) -> {probe, #{module => term_name(M)}};
 specific(erlang, process_info, [_Pid]) -> {integrity, #{item => <<"all">>}};
 specific(erlang, process_info, [_Pid, Item]) -> process_item(Item);
 specific(os, type, []) -> {os_identity, #{}};
@@ -206,6 +224,10 @@ first_term([]) -> null.
 %% creates one.
 atom_name(A) when is_atom(A) -> atom_to_binary(A);
 atom_name(_X) -> null.
+
+%% A probe's module: its name, or the term it was called with.
+term_name(A) when is_atom(A) -> atom_to_binary(A);
+term_name(X) -> term_bin(X).
 
 first_atom_name([A | _]) -> atom_name(A);
 first_atom_name([]) -> null.

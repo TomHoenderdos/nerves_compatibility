@@ -7,11 +7,18 @@
          config_env/2,
          native_patterns/3, finish/2, fire/1, ebin_dir/0, flush/0, collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
--export([safe_extent/4, maps_libs/1, built_fields/2]).
+-export([safe_extent/4, maps_libs/1, built_fields/2, loaded_by_mix/0]).
 
 -define(DEPTH, 64).
 -define(COLLECTOR, {?MODULE, collector}).
 -define(PROBE, ncc_tracer_probe).
+-define(DRIVER, 'Elixir.Mix.Tasks.Ncc.TraceCompile').
+%% Modules Mix itself has loaded, with or without Hex, before it evaluates a
+%% dependency's mix.exs or compiles anything, in every untraced compile: a
+%% probe of one answers the same traced or not, so in the Mix VM they are
+%% not `preloaded`. Pinned per toolchain by the host-mode fixture suite
+%% (`loaded_by_mix/0`). Not in a child VM, which is rebar3, not Mix.
+-define(LOADED_BY_MIX, [crypto, gen_tcp]).
 -define(SENTINEL, "NCC_TRACE_SENTINEL:").
 -define(TIMEOUT, 120000).
 -define(INTROSPECTION, ['__info__', module_info, behaviour_info]).
@@ -27,33 +34,39 @@
 %% wanted: every pattern as {MFA, MatchSpec}, checked at each sentinel,
 %% window close and finish; unpatterned: a sentinel found one missing.
 %% final_pid, final_nonce: who may fire the final sentinel, and with what.
+%% unloaded: modules the tracer's own code calls that could not be loaded at
+%% start (load_uses/0); one loaded by the end is reported (`late_loaded`).
 %% token: the secret start/3 hands the driver; every request but flush must
 %% carry it. watcher, wref: the process that records the collector's death,
 %% monitored in turn. tampered: a forged request or a dead watcher was seen;
 %% it fails every check until the end.
 -record(st, {fd, file, session, initial = #{}, procs = #{}, native = #{}, sources = #{},
              spawning = #{}, parents = #{}, set_depth = ?DEPTH, depth = ?DEPTH, lowered = false,
-             wanted = [], unpatterned = false, final_pid, final_nonce,
+             wanted = [], unpatterned = false, final_pid, final_nonce, unloaded = [],
              token, watcher, wref, tampered = false, libs = unavailable, libs_written = false,
              calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0,
              max_calls, max_user, max_queue, overflow = false, final = false}).
 
 %% --- API used by the driver ---------------------------------------------
 
+%% Both take the loaded modules first, before the tracer loads anything:
+%% what it loads from here on is `preloaded` (preloaded/1).
 start_main() ->
+    Before = loaded(),
     Dir = os:getenv("NCC_TRACE_DIR"),
     case os:getenv("MIX_OS_DEPS_COMPILE_PARTITION_COUNT") of
-        V when V =:= false; V =:= "" -> start(main, Dir, "main");
+        V when V =:= false; V =:= "" -> start(main, Dir, "main", Before);
         _ -> refuse_start(Dir, <<"partitions">>)
     end.
 
 start_child() ->
     try
+        Before = loaded(),
         case os:getenv("NCC_TRACE_DIR") of
             false -> ok;
             Dir ->
                 App = child_app(),
-                {ok, _Token} = start(child, Dir, App),
+                {ok, _Token} = start(child, Dir, App, Before),
                 _ = fire(App),
                 ok
         end
@@ -132,8 +145,8 @@ safe_extent(Stack, Depth, IsToolchain, ProcessIsUser, IsScript) ->
 
 %% --- start ---------------------------------------------------------------
 
-start(_Role, false, _App) -> {error, no_trace_dir};
-start(Role, Dir, App) ->
+start(_Role, false, _App, _Before) -> {error, no_trace_dir};
+start(Role, Dir, App, Before) ->
     %% The set returns the old value; the second set reads back what the
     %% first one left, which is the depth every stack is judged against.
     _ = erlang:system_flag(backtrace_depth, ?DEPTH),
@@ -146,7 +159,8 @@ start(Role, Dir, App) ->
     Opts = [monitor, {priority, high}, {message_queue_data, off_heap},
             {max_heap_size, #{size => env_int("NCC_TRACE_MAX_HEAP_WORDS", 33554432),
                               kill => true, error_logger => false}}],
-    {Pid, Ref} = spawn_opt(fun() -> init(Parent, Role, Dir, App, Depth, Script, Libs) end, Opts),
+    {Pid, Ref} = spawn_opt(fun() -> init(Parent, Role, Dir, App, Depth, Script, Libs, Before) end,
+                           Opts),
     receive
         {Pid, ready, Token} ->
             erlang:demonitor(Ref, [flush]),
@@ -224,7 +238,7 @@ forms(Src, Line, Acc) ->
 
 %% --- collector -------------------------------------------------------------
 
-init(Parent, Role, Dir, App, Depth, Script, Libs) ->
+init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
     put(mix_script, Script),
     put(driver, Parent),
     put(roots, roots()),
@@ -245,11 +259,21 @@ init(Parent, Role, Dir, App, Depth, Script, Libs) ->
              max_calls = env_int("NCC_TRACE_MAX_CALLS", 20000000),
              max_user = env_int("NCC_TRACE_MAX_USER_EVENTS", 200000),
              max_queue = env_int("NCC_TRACE_MAX_QUEUE", 2000000)},
-    write(St0, maps:merge((start_line(Role, App, Depth))#{mix_script => script_bin(Script)},
+    %% Before any pattern is set: loading a module makes the code server
+    %% search the path, and those reads would be traced (pattern/3 loads
+    %% each patterned module too; these are loaded first for the same reason).
+    Unloaded = load_uses(),
+    Patterns = ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role),
+    _ = [quietly(fun() -> code:ensure_loaded(M) end) || {M, _, _} <- Patterns],
+    Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth)) || MFA <- Patterns],
+    Preloaded = preloaded(Before, Role),
+    put(preloaded, Preloaded),
+    ProbeWanted = [wanted(Session, MFA, probe_spec(MFA, Preloaded, Depth))
+                   || MFA <- ncc_tracer_channels:probe_mfas()],
+    write(St0, maps:merge((start_line(Role, App, Depth))#{mix_script => script_bin(Script),
+                                                          preloaded => Preloaded},
                           libs_fields(Libs))),
-    Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth))
-              || MFA <- ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role)],
-    St = watcher(St0#st{wanted = Wanted, libs = Libs}),
+    St = watcher(St0#st{wanted = Wanted ++ ProbeWanted, libs = Libs, unloaded = Unloaded}),
     Parent ! {self(), ready, Token},
     loop(St).
 
@@ -348,6 +372,89 @@ concrete(M, F, A) ->
         true -> [{M, F, A}];
         false -> []
     end.
+
+%% --- modules the tracer loaded ----------------------------------------------
+
+loaded() -> maps:from_keys([M || {M, _} <- code:all_loaded()], true).
+
+%% The tracer's Erlang modules and every module they call, loaded now: one
+%% the collector loaded only later, mid-compile (json, the first time it
+%% writes a line), would be loaded under the trace without being in
+%% `preloaded`. Returns the ones that could not be loaded. Not the driver,
+%% a Mix task that runs in the Mix VM only, before this.
+load_uses() ->
+    Uses = (tracer_owned() -- [?DRIVER]) ++ uses(),
+    _ = [quietly(fun() -> code:ensure_loaded(M) end) || M <- Uses],
+    [M || M <- Uses, not erlang:module_loaded(M)].
+
+uses() ->
+    lists:usort([M || Own <- tracer_owned(), Own =/= ?PROBE, Own =/= ?DRIVER,
+                      {M, _, _} <- imports(Own),
+                      not lists:member(M, tracer_owned())]).
+
+imports(Own) ->
+    try beam_lib:chunks(code:which(Own), [imports]) of
+        {ok, {_, [{imports, Imports}]}} -> Imports;
+        _ -> []
+    catch _:_ -> []
+    end.
+
+%% The tracer's own modules, every one in its ebin whether loaded or not
+%% (the ebin is on the code path, so a probe would find any of them), the
+%% driver and the sentinel probe. None exists in an untraced compile.
+tracer_owned() ->
+    Beams = [list_to_atom(filename:basename(F, ".beam"))
+             || F <- filelib:wildcard("ncc_tracer*.beam", ebin_dir())],
+    lists:usort([?PROBE, ?MODULE, ?DRIVER | Beams]).
+
+loaded_by_mix() -> ?LOADED_BY_MIX.
+
+%% Every module loaded now that was not loaded before the tracer started
+%% (nor, in the Mix VM, by Mix anyway), and every tracer-owned one, with the
+%% application it belongs to: what a package's compile-time probe could find
+%% loaded only because of the trace.
+preloaded(Before, Role) ->
+    Owned = tracer_owned(),
+    Anyway = case Role of
+                 main -> ?LOADED_BY_MIX;
+                 child -> []
+             end,
+    New = [M || {M, _} <- code:all_loaded(), not is_map_key(M, Before),
+                not lists:member(M, Owned), not lists:member(M, Anyway)],
+    maps:from_list([{atom_to_binary(M), app_of(M)} || M <- New]
+                   ++ [{atom_to_binary(M), <<"ncc_tracer">>} || M <- Owned]).
+
+app_of(M) ->
+    case application:get_application(M) of
+        {ok, App} -> atom_to_binary(App);
+        undefined -> app_from_path(code:which(M))
+    end.
+
+%% <lib>/<app>-<vsn>/ebin/<m>.beam (or <lib>/<app>/ebin, Elixir's) -> <app>.
+app_from_path(Path) when is_list(Path), Path =/= [] ->
+    Dir = filename:basename(filename:dirname(filename:dirname(Path))),
+    list_to_binary(hd(string:split(Dir, "-")));
+app_from_path(_Other) -> <<"unknown">>.
+
+%% Only calls naming a module we loaded fire.
+probe_spec({erlang, function_exported, 3}, Preloaded, Depth) ->
+    [{[binary_to_atom(M), '_', '_'], [], [{message, {current_stacktrace, Depth}}]}
+     || M <- maps:keys(Preloaded)];
+probe_spec(_MFA, Preloaded, Depth) ->
+    [{[binary_to_atom(M)], [], [{message, {current_stacktrace, Depth}}]}
+     || M <- maps:keys(Preloaded)].
+
+%% A probe's application, as `preloaded` names it (a child VM's own), and
+%% who made it (ncc_tracer_stack:probe_by/2).
+probed({probe, #{module := Module} = Arg}, Stack) ->
+    App = maps:get(Module, get(preloaded), null),
+    try ncc_tracer_stack:probe_by(Stack, fun toolchain/1) of
+        {Frame, Kind} ->
+            {probe, Arg#{app => App, by => ncc_tracer_stack:frame(Frame), by_kind => Kind}}
+    catch
+        _:_ -> {probe, Arg#{app => App, by => null, by_kind => <<"none">>}}
+    end;
+probed(Class, _Stack) -> Class.
 
 match_spec({compile, file, 2}, child, _Depth) -> [{'_', [], [{return_trace}]}];
 match_spec({erlang, process_info, 2}, _Role, Depth) ->
@@ -468,15 +575,16 @@ call_event(Pid, M, F, Args, Stack, Ts, #st{calls = Calls} = St0) ->
             Extent = safe_extent(Stack, St#st.depth, fun toolchain/1, user_process(Pid, St),
                                  is_script(Pid)),
             Info = {Pid, M, F, Args, Ts, {caller(Stack), bottom(Stack, St#st.depth)}},
-            classified(M, F, Args, Extent, Info, St)
+            classified(M, F, Args, Extent, Info, Stack, St)
     end.
 
-classified(erlang, F, _Args, Extent, {Pid, _, _, _, _, _}, St) when F =:= spawn; F =:= spawn_link;
-                                                                 F =:= spawn_monitor; F =:= spawn_opt;
-                                                                 F =:= spawn_request ->
+classified(erlang, F, _Args, Extent, {Pid, _, _, _, _, _}, _Stack, St)
+  when F =:= spawn; F =:= spawn_link; F =:= spawn_monitor; F =:= spawn_opt;
+       F =:= spawn_request ->
     spawn_call(Pid, Extent, St);
-classified(M, F, Args, Extent, Info, St) ->
-    record(channel(M, F, Args, St), Extent, Info, St).
+classified(_M, _F, _Args, toolchain, _Info, _Stack, St) -> St;
+classified(M, F, Args, Extent, Info, Stack, St) ->
+    record(probed(channel(M, F, Args, St), Stack), Extent, Info, St).
 
 %% A package can lower backtrace_depth (phoenix's start/2 sets it). Stacks
 %% are cut at the live value, so they are judged against the lowest value
@@ -787,9 +895,11 @@ finish_trace(Status, Ts, Delivered, #st{fd = Fd, session = Session} = St1) ->
     write(St, #{kind => stats, calls => St#st.calls, user_events => St#st.user,
                 truncated => St#st.truncated, unjudged => St#st.unjudged,
                 spawned => St#st.spawned}),
+    Late = [atom_to_binary(M) || M <- St#st.unloaded, erlang:module_loaded(M)],
     write(St, (maps:merge(Checks, libs_fields(mapped_libs())))#{kind => 'end', ts => Ts,
                                                                 status => Status,
-                      final_sentinel => St#st.final, overflow => St#st.overflow}),
+                      final_sentinel => St#st.final, overflow => St#st.overflow,
+                      late_loaded => Late}),
     _ = file:close(Fd),
     _ = quietly(fun() -> trace:session_destroy(Session) end),
     ok.

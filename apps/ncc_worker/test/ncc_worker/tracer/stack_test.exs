@@ -399,6 +399,31 @@ defmodule NccWorker.Tracer.StackTest do
     assert kind.(:not_a_frame) == "none"
   end
 
+  test "probe_by/2 names who made a probe, past Code, the error handlers and glue" do
+    tc = [:error_handler, Kernel.ErrorHandler, Module.Types.Apply | @toolchain]
+    by = &:ncc_tracer_stack.probe_by(&1, fn m -> m in tc end)
+    pkg = f(:elixir_compiler_3, :__MODULE__, 1)
+
+    assert {^pkg, "user"} = by.([f(Code, :ensure_loaded?, 1), pkg])
+    assert {^pkg, "user"} = by.([f(Enum, :filter, 2), f(Code, :ensure_loaded?, 1), pkg])
+
+    assert {^pkg, "user"} =
+             by.([f(:error_handler, :undefined_function, 3), f(Kernel.ErrorHandler, :x, 3), pkg])
+
+    checker = f(Module.ParallelChecker, :cache_module, 2)
+    assert {^checker, "toolchain"} = by.([f(Code, :ensure_loaded, 1), checker, pkg])
+    assert {_, "toolchain"} = by.([f(Module.Types.Apply, :export, 6)])
+
+    hook = f(:elixir_module, :"-expand_callback/6-fun-0-", 3)
+    assert {^hook, "dispatcher"} = by.([f(Code, :ensure_loaded?, 1), hook])
+    assert {:none, "none"} = by.([f(Code, :ensure_loaded?, 1), f(Enum, :map, 2)])
+    assert {:none, "none"} = by.([])
+
+    # A package's module named like one of them is no wrapper.
+    fake = f(Module.Types.Apply, :export, 6)
+    assert {^fake, "user"} = :ncc_tracer_stack.probe_by([fake], fn m -> m in @toolchain end)
+  end
+
   describe "a read made through IO.ANSI or Logger.Formatter" do
     @ansi_toolchain [
       Application,

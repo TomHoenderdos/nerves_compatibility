@@ -3,7 +3,8 @@ defmodule NccWorker.Portability.Context do
   What the judge (`NccWorker.Portability`) knows about one traced compile:
   the closure the driver compiled (each dependency's source dir, build dir,
   manager, Hex file list and whether it builds native code), the windows and
-  quiet intervals, and the roots R2 searches literals for.
+  quiet intervals, the roots R2 searches literals for, and the modules the
+  tracer loaded before anything compiled (`preloaded`).
 
   Every app here is an OTP app name, as the trace's closure line carries
   them. The `package` given to `build/4` may be a Hex name that is not its
@@ -54,7 +55,8 @@ defmodule NccWorker.Portability.Context do
     windows: [],
     quiet: [],
     cd: MapSet.new(),
-    hex: {nil, %{}}
+    hex: {nil, %{}},
+    preloaded: %{}
   ]
 
   @type dep :: %{
@@ -76,7 +78,8 @@ defmodule NccWorker.Portability.Context do
           windows: [map()],
           quiet: [map()],
           cd: MapSet.t(),
-          hex: {String.t() | nil, map()}
+          hex: {String.t() | nil, map()},
+          preloaded: %{String.t() => String.t()}
         }
 
   @max_hops 40
@@ -109,7 +112,8 @@ defmodule NccWorker.Portability.Context do
       otp_root: install_root(start["otp_root"]),
       elixir_root: install_root(start["elixir_root"]),
       roots: roots(project_dir, start),
-      hex: hex
+      hex: hex,
+      preloaded: preloaded(start["preloaded"])
     }
 
     %{ctx | cd: changed_dir(ctx, report)}
@@ -145,6 +149,13 @@ defmodule NccWorker.Portability.Context do
 
     MapSet.new(main ++ children)
   end
+
+  # The modules the Mix VM's tracer loaded before anything compiled, with
+  # their applications (`NccWorker.Portability.Probes`).
+  defp preloaded(map) when is_map(map),
+    do: for({m, a} <- map, is_binary(m) and is_binary(a), into: %{}, do: {m, a})
+
+  defp preloaded(_other), do: %{}
 
   defp list(value) when is_list(value), do: value
   defp list(_value), do: []
