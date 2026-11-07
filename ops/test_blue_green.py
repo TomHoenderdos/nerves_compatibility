@@ -128,7 +128,8 @@ bg_build() {
   log "build $1"; mkdir -p "$NCC_INSTALL_DIR/releases/$1"
   # build-release.sh stamps the target; the node reports BUILT_SHA if set.
   echo "$TARGET" > "$NCC_INSTALL_DIR/releases/$1/BUILD_SHA"
-  echo "${BUILT_SHA:-$TARGET}" > "$STATE/sha-$1"; [[ ${BUILD_STATUS:-0} == 0 ]]
+  echo "${BUILT_SHA:-$TARGET}" > "$STATE/sha-$1"; [[ ${BUILD_STATUS:-0} == 0 ]] &&
+    bg_keep_template "$1"
 }
 bg_migrate() { log "migrate $1"; [[ ${MIGRATE_STATUS:-0} == 0 ]]; }
 bg_carry_assets() { log "carry $1 $2"; }
@@ -153,7 +154,7 @@ eval "$ACTION"
 
 class BlueGreenTest(unittest.TestCase):
     def run_bg(self, action, active="blue", cache=None, running=None, vhost_include=True,
-               include_text=None, vhost_text=None, **overrides):
+               include_text=None, vhost_text=None, templates=None, **overrides):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             install = root / "install"
@@ -163,6 +164,9 @@ class BlueGreenTest(unittest.TestCase):
                 # two deploys): each is a valid rollback target.
                 (install / "releases" / c / "BUILD_SHA").write_text(OLD + "\n")
                 (install / f"served-{c}").write_text(OLD + "\n")
+            for c, text in (templates or {}).items():
+                (install / "releases" / c / "ncc-upstream.conf.template").write_text(text)
+            self.install, self.upstream = install, root / "ncc-upstream.conf"
             state = root / "state"
             state.mkdir()
             (state / "sha-blue").write_text(OLD + "\n")
@@ -203,6 +207,9 @@ class BlueGreenTest(unittest.TestCase):
             result = subprocess.run(["bash", "-c", HARNESS], env=env, capture_output=True,
                                     text=True, timeout=20)
             self.include = upstream.read_text()
+            self.templates = {c: (install / "releases" / c / "ncc-upstream.conf.template").read_text()
+                              if (install / "releases" / c / "ncc-upstream.conf.template").exists()
+                              else None for c in ("blue", "green")}
             self.cache = (install / "active-color").read_text().strip()
             self.running = run_file.read_text().split()
             self.served = {c: (install / f"served-{c}").read_text().strip()
@@ -264,105 +271,94 @@ class BlueGreenTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse([e for e in events if e.startswith("build")])
 
-    # --- F1: the include is the template as of the commit that serves ------
+    # --- F1: the include is the template the serving release carries ------
 
-    def template_repo(self):
-        """A checkout whose template changed in its last commit: the serving
-        colour's commit (old) has v1, HEAD and the working tree have v2."""
+    def template_src(self):
+        """A checkout whose working-tree template (v2) differs from the one
+        an older release carries (v1)."""
         directory = tempfile.mkdtemp()
         self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
         src = Path(directory)
         (src / "ops").mkdir()
         v1 = (SRC / "ops" / "ncc-upstream.conf.template").read_text()
         v2 = v1 + "ProxyTimeout 300\n"
-
-        def git(*args):
-            return subprocess.run(
-                ["git", "-c", "user.name=t", "-c", "user.email=t@example.test",
-                 "-c", "commit.gpgsign=false", "-C", str(src), *args],
-                check=True, capture_output=True, text=True).stdout.strip()
-
-        git("init", "-q")
-        shas = []
-        for text in (v1, v2):
-            (src / "ops" / "ncc-upstream.conf.template").write_text(text)
-            git("add", "ops/ncc-upstream.conf.template")
-            git("commit", "-q", "-m", "template")
-            shas.append(git("rev-parse", "HEAD"))
-        return src, shas[0], shas[1], v1, v2
+        (src / "ops" / "ncc-upstream.conf.template").write_text(v2)
+        return src, v1, v2
 
     @staticmethod
     def render(text, port):
         return text.replace("@PORT@", str(port))
 
-    def served_as(self, color, sha):
-        """Shell that records $color as having served $sha."""
-        return (f'echo {sha} > "$NCC_INSTALL_DIR/served-{color}"; '
-                f'echo {sha} > "$NCC_INSTALL_DIR/releases/{color}/BUILD_SHA"; '
-                f'echo {sha} > "$STATE/sha-{color}"; ')
+    def test_a_built_colour_carries_the_checked_out_template(self):
+        src, v1, v2 = self.template_src()
+        result, _ = self.run_bg(f"bg_deploy {TARGET}", templates={"blue": v1},
+                                include_text=self.render(v1, 4002), NCC_SRC_DIR=str(src))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.templates["green"], v2)
+        self.assertEqual(self.templates["blue"], v1)
 
-    def test_a_template_change_since_the_served_commit_passes_and_ships(self):
-        src, old, _, v1, v2 = self.template_repo()
-        result, events = self.run_bg(self.served_as("blue", old) + f"bg_deploy {TARGET}",
-                                     include_text=self.render(v1, 4002), NCC_SRC_DIR=str(src))
+    def test_a_template_change_between_releases_passes_and_ships(self):
+        src, v1, v2 = self.template_src()
+        result, _ = self.run_bg(f"bg_deploy {TARGET}", templates={"blue": v1},
+                                include_text=self.render(v1, 4002), NCC_SRC_DIR=str(src))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("drifted", result.stderr)
-        # The new colour's include is the checked-out (new) template.
         self.assertEqual(self.include, self.render(v2, 4003))
         self.assertEqual(self.cache, "green")
 
-    def test_the_served_commit_is_read_from_build_sha_without_a_served_record(self):
-        src, old, _, v1, _ = self.template_repo()
-        result, _ = self.run_bg(
-            self.served_as("blue", old) + 'rm -f "$NCC_INSTALL_DIR/served-blue"; bg_preflight',
-            include_text=self.render(v1, 4002), NCC_SRC_DIR=str(src))
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_a_hand_edited_include_still_refuses_against_the_served_template(self):
-        src, old, _, v1, v2 = self.template_repo()
+    def test_a_hand_edited_include_refuses_and_prints_the_re_render_command(self):
+        src, v1, v2 = self.template_src()
         for text in (self.render(v1, 4002) + "# local tweak\n", self.render(v2, 4002)):
             with self.subTest(text=text[-30:]):
-                result, events = self.run_bg(self.served_as("blue", old) + f"bg_deploy {TARGET}",
+                result, events = self.run_bg(f"bg_deploy {TARGET}", templates={"blue": v1},
                                              include_text=text, NCC_SRC_DIR=str(src))
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("edited by hand or has drifted", result.stderr)
-                self.assertIn(old, result.stderr)
+                copy = f"{self.install}/releases/blue/ncc-upstream.conf.template"
+                self.assertIn(f'sed "s/@PORT@/4002/g" {copy} > {self.upstream} '
+                              "&& apachectl configtest && systemctl reload apache2",
+                              result.stderr)
                 self.assertFalse([e for e in events if e.startswith("build")])
 
-    def test_without_a_served_commit_it_falls_back_to_the_working_tree_and_says_so(self):
-        src, _, _, v1, v2 = self.template_repo()
-        no_record = ('rm -f "$NCC_INSTALL_DIR/served-blue" '
-                     '"$NCC_INSTALL_DIR/releases/blue/BUILD_SHA"; ')
-        unknown = self.served_as("blue", "c" * 40)  # git show cannot find it
-        for setup in (no_record, unknown):
-            with self.subTest(setup=setup[:30]):
-                result, _ = self.run_bg(setup + "bg_preflight",
-                                        include_text=self.render(v2, 4002), NCC_SRC_DIR=str(src))
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("working tree", result.stderr)
-                result, _ = self.run_bg(setup + "bg_preflight",
-                                        include_text=self.render(v1, 4002), NCC_SRC_DIR=str(src))
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("edited by hand or has drifted", result.stderr)
-                self.assertIn("working tree", result.stderr)
+    def test_without_a_template_copy_it_falls_back_to_the_working_tree_and_says_so(self):
+        src, v1, v2 = self.template_src()
+        result, _ = self.run_bg("bg_preflight", include_text=self.render(v2, 4002),
+                                NCC_SRC_DIR=str(src))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("working tree", result.stderr)
+        result, _ = self.run_bg("bg_preflight", include_text=self.render(v1, 4002),
+                                NCC_SRC_DIR=str(src))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("edited by hand or has drifted", result.stderr)
+        self.assertIn(f'sed "s/@PORT@/4002/g" {src}/ops/ncc-upstream.conf.template', result.stderr)
 
-    def test_a_switch_back_restores_the_old_colours_template(self):
-        src, old, _, v1, _ = self.template_repo()
-        result, events = self.run_bg(self.served_as("blue", old) + f"bg_deploy {TARGET}",
-                                     include_text=self.render(v1, 4002), NCC_SRC_DIR=str(src),
-                                     CRASHES="green")
+    def test_a_switch_back_restores_the_old_releases_template(self):
+        src, v1, _ = self.template_src()
+        result, _ = self.run_bg(f"bg_deploy {TARGET}", templates={"blue": v1},
+                                include_text=self.render(v1, 4002), NCC_SRC_DIR=str(src),
+                                CRASHES="green")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("switching back to blue", result.stderr)
         self.assertEqual(self.include, self.render(v1, 4002))
         self.assertEqual(self.running, ["blue"])
 
-    def test_a_rollback_across_a_template_change_restores_the_old_template(self):
-        src, old, new, v1, v2 = self.template_repo()
-        result, _ = self.run_bg(
-            self.served_as("blue", old) + self.served_as("green", new) + "bg_rollback && bg_preflight",
-            active="green", include_text=self.render(v2, 4003), NCC_SRC_DIR=str(src))
+    def test_a_rollback_across_a_template_change_writes_the_target_releases_template(self):
+        src, v1, v2 = self.template_src()
+        result, _ = self.run_bg("bg_rollback && bg_preflight", active="green",
+                                templates={"blue": v1, "green": v2},
+                                include_text=self.render(v2, 4003), NCC_SRC_DIR=str(src))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.include, self.render(v1, 4002))
+        self.assertEqual(self.cache, "blue")
+
+    def test_a_rollback_to_a_release_without_a_template_copy_uses_the_working_tree(self):
+        src, v1, v2 = self.template_src()
+        result, _ = self.run_bg("bg_rollback && bg_preflight", active="green",
+                                templates={"green": v1},
+                                include_text=self.render(v1, 4003), NCC_SRC_DIR=str(src))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("working tree", result.stderr)
+        self.assertEqual(self.include, self.render(v2, 4002))
         self.assertEqual(self.cache, "blue")
 
     # --- I1: no other vhost may proxy straight to a colour port -------------

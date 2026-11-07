@@ -97,61 +97,47 @@ bg_check_direct_proxies() {
   done <<<"$files"
 }
 
-# The include belongs to a release: it is the template as of the commit the
-# serving colour runs, not the checkout's, which deploy.sh has already moved
-# to the commit being deployed. A template change ships when the colour that
-# carries it is switched to, and leaves again with a switch-back or rollback.
+# The include belongs to a release. Every build copies the checked-out
+# template into the release (bg_keep_template), and the include is always
+# rendered from the copy of the release it points at: the preflight checks
+# the active release's, a deploy writes the new release's (the checked-out
+# one, which is how a template change ships), and a rollback or switch-back
+# writes the template the release it returns to was built with. A release
+# without a copy (the one the cutover installed) falls back to the working
+# tree's template, with a note.
+BG_TEMPLATE=ncc-upstream.conf.template
 
-# The commit $1 serves: its served-<colour> record, else its BUILD_SHA.
-bg_served_sha() { # color
-  local sha
-  sha=$(cat "$(bg_served_file "$1")" 2>/dev/null || true)
-  [[ -n $sha ]] || sha=$(cat "$(bg_release "$1")/BUILD_SHA" 2>/dev/null || true)
-  printf '%s\n' "$sha"
+bg_keep_template() { # color
+  cp "$NCC_SRC_DIR/ops/$BG_TEMPLATE" "$(bg_release "$1")/$BG_TEMPLATE.tmp" &&
+    mv "$(bg_release "$1")/$BG_TEMPLATE.tmp" "$(bg_release "$1")/$BG_TEMPLATE"
 }
 
-# Prints $1 when the checkout holds the template as of commit $1, nothing
-# otherwise (the working tree's template is then the one to use, and a note
-# says why). Empty $1 means the working tree's, without a note.
-bg_template_ref() { # sha-or-empty what
-  [[ -n $1 ]] || return 0
-  if [[ $1 =~ ^[0-9a-f]{7,40}$ ]] &&
-     git -C "$NCC_SRC_DIR" cat-file -e "$1:ops/ncc-upstream.conf.template" 2>/dev/null; then
-    printf '%s\n' "$1"
+# The template file to render $1's include from.
+bg_template_of() { # color
+  local copy
+  copy=$(bg_release "$1")/$BG_TEMPLATE
+  if [[ -r $copy ]]; then
+    printf '%s\n' "$copy"
     return 0
   fi
-  echo "note: cannot read ops/ncc-upstream.conf.template as of $2 ($1) from $NCC_SRC_DIR; using the working tree's template instead" >&2
+  echo "note: $copy is missing (a release built before releases carried their template); using the working tree's ops/$BG_TEMPLATE for $1" >&2
+  printf '%s\n' "$NCC_SRC_DIR/ops/$BG_TEMPLATE"
 }
 
-bg_template_name() { # ref
-  if [[ -n $1 ]]; then
-    printf '%s\n' "ops/ncc-upstream.conf.template as of $1"
-  else
-    printf '%s\n' "the working tree's ops/ncc-upstream.conf.template"
-  fi
-}
-
-bg_render_include() { # ref port
-  if [[ -n $1 ]]; then
-    git -C "$NCC_SRC_DIR" show "$1:ops/ncc-upstream.conf.template" | sed "s/@PORT@/$2/g"
-  else
-    sed "s/@PORT@/$2/g" "$NCC_SRC_DIR/ops/ncc-upstream.conf.template"
-  fi
-}
-
-# Refuses unless the include is exactly the serving commit's template
+# Refuses unless the include is exactly the serving release's template
 # rendered with the serving port: a deploy rewrites it from a template, so
 # anything edited into it by hand would be lost at the switch, silently.
-bg_check_include_rendered() { # ref port
-  if ! cmp -s <(bg_render_include "$1" "$2") "$NCC_APACHE_UPSTREAM"; then
-    echo "refusing: $NCC_APACHE_UPSTREAM is not $(bg_template_name "$1") (the serving release's) rendered with port $2: it was edited by hand or has drifted. Put the change in the template (or undo it), render the include from the template, and deploy again." >&2
+bg_check_include_rendered() { # template port
+  if ! cmp -s <(sed "s/@PORT@/$2/g" "$1") "$NCC_APACHE_UPSTREAM"; then
+    echo "refusing: $NCC_APACHE_UPSTREAM is not $1 (the serving release's template) rendered with port $2: it was edited by hand or has drifted. Put the change in ops/$BG_TEMPLATE and deploy it, or undo it by rendering the include again:" >&2
+    echo "  sed \"s/@PORT@/$2/g\" $1 > $NCC_APACHE_UPSTREAM && apachectl configtest && systemctl reload apache2" >&2
     return 1
   fi
 }
 
-bg_write_include() { # port [template-ref]
+bg_write_include() { # port [template]
   local port=$1 status
-  bg_render_include "${2:-}" "$port" > "$NCC_APACHE_UPSTREAM.new"
+  sed "s/@PORT@/$port/g" "${2:-$NCC_SRC_DIR/ops/$BG_TEMPLATE}" > "$NCC_APACHE_UPSTREAM.new"
   status=$?
   if ((status != 0)) || [[ ! -s "$NCC_APACHE_UPSTREAM.new" ]] ||
      ! grep -q "127\.0\.0\.1:$port" "$NCC_APACHE_UPSTREAM.new"; then
@@ -162,10 +148,10 @@ bg_write_include() { # port [template-ref]
   mv "$NCC_APACHE_UPSTREAM.new" "$NCC_APACHE_UPSTREAM"
 }
 
-# Sets BG_ACTIVE, BG_IDLE and BG_ACTIVE_REF (the template ref the include was
-# rendered from, for a switch back to the active colour).
+# Sets BG_ACTIVE, BG_IDLE and BG_ACTIVE_TEMPLATE (the template the include
+# was rendered from, for a switch back to the active colour).
 bg_preflight() {
-  local cached host vhost state sha
+  local cached host vhost state
   BG_ACTIVE=$(bg_serving_color) || return 1
   BG_IDLE=$(bg_other "$BG_ACTIVE")
   cached=$(cat "$NCC_INSTALL_DIR/active-color" 2>/dev/null || true)
@@ -181,12 +167,8 @@ bg_preflight() {
     echo "refusing: $BG_UNIT@$BG_IDLE is ${state:-in an unknown state} (systemctl is-active), not inactive or failed: it is running or restarting but not serving (left from an incomplete deploy); look at it, stop it, then deploy again" >&2
     return 1
   fi
-  sha=$(bg_served_sha "$BG_ACTIVE")
-  if [[ -z $sha ]]; then
-    echo "note: neither $(bg_served_file "$BG_ACTIVE") nor $(bg_release "$BG_ACTIVE")/BUILD_SHA names the commit $BG_ACTIVE serves; using the working tree's ops/ncc-upstream.conf.template instead" >&2
-  fi
-  BG_ACTIVE_REF=$(bg_template_ref "$sha" "the commit $BG_ACTIVE serves")
-  bg_check_include_rendered "$BG_ACTIVE_REF" "$(bg_port "$BG_ACTIVE")" || return 1
+  BG_ACTIVE_TEMPLATE=$(bg_template_of "$BG_ACTIVE")
+  bg_check_include_rendered "$BG_ACTIVE_TEMPLATE" "$(bg_port "$BG_ACTIVE")" || return 1
   host=$(bg_public_host) || return 1
   vhost=$(bg_vhost_file "$host")
   if [[ -z $vhost ]] || ! bg_includes_upstream "$vhost"; then
@@ -230,7 +212,11 @@ BG_RUNNING_IDS_EXPR='IO.puts(inspect(Oban.check_all_queues(Oban) |> Enum.flat_ma
 
 bg_release() { printf '%s\n' "$NCC_INSTALL_DIR/releases/$1"; }
 
-bg_build() { "$NCC_INSTALL_DIR/build-release.sh" "$(bg_release "$1")"; }
+# build-release.sh starts with rm -rf of the release, so the template is
+# copied in after it.
+bg_build() {
+  "$NCC_INSTALL_DIR/build-release.sh" "$(bg_release "$1")" && bg_keep_template "$1"
+}
 
 # rpc/eval as the service user, in the colour's own node name and tmp dir.
 bg_as_ncc() { # color command expr
@@ -313,7 +299,7 @@ bg_fail_idle() { # color what
   systemctl stop "$BG_UNIT@$1" || true
 }
 
-bg_point_apache_at() { # color template-ref; 0 ok, 1 failed & restored, 2 the
+bg_point_apache_at() { # color template; 0 ok, 1 failed & restored, 2 the
                         # restore itself failed too -- Apache's running config
                         # is unknown
   local out
@@ -379,7 +365,7 @@ bg_record_served() { # color
 # the include was restored to the old colour (nothing changed). 2: the
 # restore itself failed, so Apache's running config is unknown -- the caller
 # must not assume either colour is the one actually being served.
-bg_switch() { # old new sha template-ref
+bg_switch() { # old new sha template
   local rc=0
   bg_point_apache_at "$2" "$4" || rc=$?
   if ((rc == 2)); then
@@ -469,9 +455,9 @@ bg_drain() { # old new sha
 # Only reached once the new colour has already failed in the drain, so the
 # new colour keeps serving until the old one is proven to work again: a
 # failure here must never leave both the switch-back and the original switch
-# half-done. The include goes back to the template the old colour's was
-# rendered from (preflight checked it).
-bg_switch_back() { # old new old-template-ref
+# half-done. The include goes back to the old release's template (the one
+# preflight checked it against).
+bg_switch_back() { # old new old-template
   local rc=0
   echo "$BG_UNIT@$2 failed after taking traffic; switching back to $1" >&2
   journalctl -u "$BG_UNIT@$2" -n 50 --no-pager >&2 || true
@@ -504,8 +490,8 @@ bg_switch_back() { # old new old-template-ref
   systemctl stop "$BG_UNIT@$2" || true
 }
 
-# old is BG_ACTIVE: a switch back renders its include from BG_ACTIVE_REF.
-bg_activate() { # old new sha-or-empty new-template-ref
+# old is BG_ACTIVE: a switch back renders its include from BG_ACTIVE_TEMPLATE.
+bg_activate() { # old new sha-or-empty new-template
   local old=$1 new=$2 sha=$3 ref=$4 rc=0 i
   if ! systemctl start "$BG_UNIT@$new"; then
     bg_fail_idle "$new" "systemctl start"
@@ -535,7 +521,7 @@ bg_activate() { # old new sha-or-empty new-template-ref
   rc=0
   bg_drain "$old" "$new" "$sha" || rc=$?
   if ((rc == 2)); then
-    bg_switch_back "$old" "$new" "$BG_ACTIVE_REF"
+    bg_switch_back "$old" "$new" "$BG_ACTIVE_TEMPLATE"
     return 1
   fi
   if ! systemctl stop "$BG_UNIT@$old"; then
@@ -561,9 +547,9 @@ bg_deploy() { # target-sha
   bg_build "$BG_IDLE" || return 1
   bg_carry_assets "$BG_ACTIVE" "$BG_IDLE" || return 1
   bg_migrate "$BG_IDLE" || return 1
-  # The checked-out template: deploy.sh has moved the checkout to the
-  # commit being deployed, so this is how a template change ships.
-  bg_activate "$BG_ACTIVE" "$BG_IDLE" "$1" ""
+  # The new release's copy is the checked-out template: deploy.sh has moved
+  # the checkout to the commit being deployed.
+  bg_activate "$BG_ACTIVE" "$BG_IDLE" "$1" "$(bg_template_of "$BG_IDLE")"
 }
 
 # Back to the release in the other colour's directory: no build, no
@@ -590,7 +576,6 @@ bg_rollback() {
   echo "blue/green rollback: $BG_ACTIVE serves; bringing back $BG_IDLE (sha $target_sha)"
   bg_carry_assets "$BG_ACTIVE" "$BG_IDLE" ||
     echo "warning: could not carry $BG_ACTIVE's digested assets into $BG_IDLE; pages $BG_ACTIVE rendered may miss their assets after the switch" >&2
-  # The release brings back its own include: the template as of its commit.
-  bg_activate "$BG_ACTIVE" "$BG_IDLE" "$target_sha" \
-    "$(bg_template_ref "$target_sha" "the commit $BG_IDLE served")"
+  # The release brings back its own include: the template it was built with.
+  bg_activate "$BG_ACTIVE" "$BG_IDLE" "$target_sha" "$(bg_template_of "$BG_IDLE")"
 }
