@@ -733,7 +733,8 @@ defmodule NccWorker.Portability.JudgeTest do
 
   describe "rebar3 in the judge" do
     # Mix writes `_build/<env>/lib/<app>/mix.rebar.config` (its view of the
-    # dependency's rebar.config) before it runs rebar3.
+    # dependency's rebar.config) before it runs rebar3; the judge reads the
+    # rebar.config itself from the verified Hex tarball (`rebar_opts/2`).
     defp rebar_report(proj, rebar_app, children) do
       r = report(proj, %{children: children})
 
@@ -752,6 +753,31 @@ defmodule NccWorker.Portability.JudgeTest do
       %{r | closure: %{r.closure | "deps" => deps}}
     end
 
+    # The Hex cache and lock entries whose tarballs hold each app's
+    # `deps/<app>/rebar.config` as it is now (`tarball:` overrides one).
+    defp rebar_opts(proj, apps, tarball \\ %{}) do
+      home = Path.join(Path.dirname(proj), "hex-#{System.unique_integer([:positive])}")
+
+      releases =
+        Map.new(apps, fn app ->
+          contents = Map.get_lazy(tarball, app, fn -> disk_contents(proj, app) end)
+          {^app, release} = NccWorker.TracerFixtures.hex_release(home, app, ["src"], contents)
+          {app, release}
+        end)
+
+      [releases: releases, hex_home: home]
+    end
+
+    defp disk_contents(proj, app) do
+      case File.read(Path.join([proj, "deps", app, "rebar.config"])) do
+        {:ok, text} -> %{"rebar.config" => text}
+        {:error, _} -> %{"README" => ""}
+      end
+    end
+
+    defp rjudge(proj, app, children, apps \\ nil),
+      do: judge(proj, rebar_report(proj, app, children), rebar_opts(proj, apps || [app]))
+
     # A real (R2-clean) beam of an empty module `Elixir.<name>`.
     defp beam!(proj, app, name), do: write_beam(proj, app, "defmodule #{name} do\nend\n")
 
@@ -762,22 +788,22 @@ defmodule NccWorker.Portability.JudgeTest do
       )
 
       assert %{reason: "rebar3 build runs pre_hooks"} =
-               judge(proj, rebar_report(proj, "pkg", %{}))
+               rjudge(proj, "pkg", %{})
 
       File.write!(Path.join([proj, "deps/pkg/rebar.config"]), "{erl_opts, []}.\n")
-      assert %{status: :pass} = judge(proj, rebar_report(proj, "pkg", %{"pkg" => child([])}))
-      assert %{status: :skip, reason: @cnj} = judge(proj, rebar_report(proj, "pkg", %{}))
+      assert %{status: :pass} = rjudge(proj, "pkg", %{"pkg" => child([])})
+      assert %{status: :skip, reason: @cnj} = rjudge(proj, "pkg", %{})
 
       # Beams the trace never saw compiled (two: past the one-gap allowance).
       for m <- ["JudgeRebarA", "JudgeRebarB"], do: beam!(proj, "pkg", m)
-      assert %{status: :skip, reason: @cnj} = judge(proj, rebar_report(proj, "pkg", %{}))
+      assert %{status: :skip, reason: @cnj} = rjudge(proj, "pkg", %{})
     end
 
     test "a dependency: plugins and missing coverage taint", %{proj: proj} do
       File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{plugins, [pc]}.\n")
 
       assert %{reason: "closure dependency observed the host: dep (rebar3 build runs plugins)"} =
-               judge(proj, rebar_report(proj, "dep", %{}))
+               rjudge(proj, "dep", %{})
 
       File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
       beam!(proj, "dep", "JudgeRebarD1")
@@ -785,7 +811,7 @@ defmodule NccWorker.Portability.JudgeTest do
       assert %{
                reason: "closure dependency observed the host: dep (rebar3 compile was not traced)"
              } =
-               judge(proj, rebar_report(proj, "dep", %{}))
+               rjudge(proj, "dep", %{})
 
       sentinel_lost =
         child([], %{
@@ -796,15 +822,94 @@ defmodule NccWorker.Portability.JudgeTest do
       assert %{
                reason: "closure dependency observed the host: dep (rebar3 trace sentinel missing)"
              } =
-               judge(proj, rebar_report(proj, "dep", %{"dep" => sentinel_lost}))
+               rjudge(proj, "dep", %{"dep" => sentinel_lost})
     end
 
     test "a dependency whose mix.rebar.config is missing could not be judged", %{proj: proj} do
       File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
       r = rebar_report(proj, "dep", %{"dep" => child([])})
       File.rm!(Path.join([proj, "_build/host/lib/dep/mix.rebar.config"]))
-      assert %{status: :skip, reason: @cnj, observations: obs} = judge(proj, r)
+
+      assert %{status: :skip, reason: @cnj, observations: obs} =
+               judge(proj, r, rebar_opts(proj, ["dep"]))
+
       assert obs["taint"] == %{}
+    end
+
+    test "rebar.config is read from the verified tarball, not deps/ after the build (ruling)",
+         %{proj: proj} do
+      hook = ~s({erl_opts, []}.\n{pre_hooks, [{compile, "sh evil.sh"}]}.\n)
+      # On disk the hook removed itself; the tarball still has it.
+      File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
+      r = rebar_report(proj, "dep", %{"dep" => child([])})
+      opts = rebar_opts(proj, ["dep"], %{"dep" => %{"rebar.config" => hook}})
+
+      assert %{reason: "closure dependency observed the host: dep (rebar3 build runs pre_hooks)"} =
+               judge(proj, r, opts)
+
+      # A script in the tarball refuses although none is on disk.
+      opts =
+        rebar_opts(proj, ["dep"], %{
+          "dep" => %{"rebar.config" => "{erl_opts, []}.\n", "rebar.config.script" => "CONFIG.\n"}
+        })
+
+      assert %{
+               reason:
+                 "closure dependency observed the host: dep (rebar3 build evaluates rebar.config.script)"
+             } =
+               judge(proj, r, opts)
+
+      # No verified tarball: could not be judged, never a pass.
+      assert %{status: :skip, reason: @cnj, observations: obs} =
+               judge(proj, r, releases: %{}, hex_home: nil)
+
+      assert obs["taint"] == %{}
+      assert Enum.any?(obs["problems"], &(&1 =~ "verified Hex tarball"))
+
+      unverified =
+        put_in(
+          rebar_opts(proj, ["dep"]),
+          [:releases, "dep", :checksum],
+          String.duplicate("0", 64)
+        )
+
+      assert %{status: :skip, reason: @cnj} = judge(proj, r, unverified)
+    end
+
+    test "a rebar3 parent's overrides that Mix applies are read from its tarball", %{proj: proj} do
+      File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
+      r = rebar_report(proj, "dep", %{"dep" => child([])})
+
+      # `other` (rebar3) lists dep as its child and overrides its hooks.
+      deps =
+        for d <- r.closure["deps"] do
+          case d["app"] do
+            "other" -> %{d | "manager" => "rebar3", "children" => ["dep"]}
+            _ -> d
+          end
+        end
+
+      r = %{
+        r
+        | closure: %{r.closure | "deps" => deps},
+          children: Map.put(r.children, "other", child([]))
+      }
+
+      File.write!(Path.join([proj, "_build/host/lib/other/mix.rebar.config"]), "")
+      parent = ~s({overrides, [{override, dep, [{pre_hooks, [{compile, "make"}]}]}]}.\n)
+
+      opts = rebar_opts(proj, ["dep", "other"], %{"other" => %{"rebar.config" => parent}})
+
+      assert %{reason: "closure dependency observed the host: dep (rebar3 build runs pre_hooks)"} =
+               judge(proj, r, opts)
+
+      clean =
+        rebar_opts(proj, ["dep", "other"], %{"other" => %{"rebar.config" => "{erl_opts, []}.\n"}})
+
+      assert %{status: :pass} = judge(proj, r, clean)
+
+      # A parent without a verified tarball: could not be judged.
+      assert %{status: :skip, reason: @cnj} = judge(proj, r, rebar_opts(proj, ["dep"]))
     end
 
     test "a dependency with telemetry's real rebar.config is not tainted", %{proj: proj} do
@@ -814,7 +919,7 @@ defmodule NccWorker.Portability.JudgeTest do
       File.write!(Path.join([proj, "deps/dep/rebar.config"]), config)
 
       assert %{status: :pass, observations: obs} =
-               judge(proj, rebar_report(proj, "dep", %{"dep" => child([])}))
+               rjudge(proj, "dep", %{"dep" => child([])})
 
       assert obs["taint"] == %{}
     end
@@ -832,7 +937,7 @@ defmodule NccWorker.Portability.JudgeTest do
         })
 
       assert %{status: :skip, reason: @cnj, observations: obs} =
-               judge(proj, rebar_report(proj, "dep", %{"dep" => traced}))
+               rjudge(proj, "dep", %{"dep" => traced})
 
       assert obs["taint"] == %{}
       assert Enum.any?(obs["problems"], &(&1 =~ "rebar3 compile returned an error"))
@@ -841,7 +946,7 @@ defmodule NccWorker.Portability.JudgeTest do
     test "a rebar3 dependency with an empty ebin and no child trace could not be judged",
          %{proj: proj} do
       File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
-      assert %{status: :skip, reason: @cnj} = judge(proj, rebar_report(proj, "dep", %{}))
+      assert %{status: :skip, reason: @cnj} = rjudge(proj, "dep", %{})
     end
 
     test "one lost last compile return is recorded in trace_stats, not taint (ruling M2)",
@@ -851,7 +956,7 @@ defmodule NccWorker.Portability.JudgeTest do
       traced = child([], %{compiles: [%{"result" => "ok", "module" => "Elixir.JudgeRebarG1"}]})
 
       assert %{status: :pass, observations: obs} =
-               judge(proj, rebar_report(proj, "dep", %{"dep" => traced}))
+               rjudge(proj, "dep", %{"dep" => traced})
 
       assert obs["trace_stats"]["rebar3_untraced_last"] == %{"dep" => "Elixir.JudgeRebarG2"}
       assert obs["taint"] == %{}
@@ -895,6 +1000,12 @@ defmodule NccWorker.Portability.JudgeTest do
              "rebar3 build runs post_hooks"},
             {"override", ~s({overrides, [{add, [{pre_hooks, [{compile, "make"}]}]}]}.\n),
              "rebar3 build runs pre_hooks"},
+            {"prod_override",
+             ~s({profiles, [{prod, [{overrides, [{override, [{pre_hooks, [{compile, "x"}]}]}]}]}]}.\n),
+             "rebar3 build runs pre_hooks"},
+            {"default_override_plugins",
+             "{profiles, [{default, [{overrides, [{add, x, [{plugins, [pc]}]}]}]}]}.\n",
+             "rebar3 build runs plugins"},
             {"garbled", "{erl_opts, [\n", "rebar3 build config unreadable"},
             {"macro", "{erl_opts, [?X]}.\n", "rebar3 build config unreadable"}
           ] do
@@ -919,7 +1030,9 @@ defmodule NccWorker.Portability.JudgeTest do
             {"test_plugins",
              "{profiles, [{test, [{plugins, [covertool]}]}, {docs, [{plugins, [x]}]}]}.\n"},
             {"test_pd", ~s({profiles, [{test, [{erl_opts, [{platform_define, "x", 'X'}]}]}]}.\n)},
-            {"dep_named_plugins", ~s({deps, [{plugins, "1.0.0"}, pre_hooks]}.\n)}
+            {"dep_named_plugins", ~s({deps, [{plugins, "1.0.0"}, pre_hooks]}.\n)},
+            {"test_override",
+             ~s({profiles, [{test, [{overrides, [{override, [{pre_hooks, [{compile, "x"}]}]}]}]}]}.\n)}
           ] do
         assert :ok = Rebar.check(write(dir, name, %{"rebar.config" => config})), name
       end

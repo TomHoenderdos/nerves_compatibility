@@ -120,8 +120,9 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
       rebar_config: ~s({erl_opts, []}.\n{pre_hooks, [{compile, "true"}]}.\n),
       files: %{"src/fx_r3_hooks.erl" => erl_module("fx_r3_hooks")}
     },
-    # Its rebar.config gains a plugin only after the compile (see the
-    # plugin test): a real plugin would be fetched from Hex.
+    # Its Hex tarball's rebar.config names a plugin (`setup_all`); the
+    # project on disk compiles without it, since a real plugin would be
+    # fetched from Hex. The judge reads the tarball's.
     "fx_r3_plugin" => %{
       manager: :rebar3,
       files: %{"src/fx_r3_plugin.erl" => erl_module("fx_r3_plugin")}
@@ -222,6 +223,7 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
       Path.join(tmp, "ncc-fixtures-closure-#{System.pid()}-#{System.unique_integer([:positive])}")
 
     on_exit(fn -> File.rm_rf(root) end)
+    hex_home = Path.join(root, "hex")
 
     groups =
       [
@@ -243,12 +245,25 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
       )
       |> Map.new(fn {:ok, {name, run}} -> {name, run} end)
 
-    plugin_config =
-      Path.join(runs["shared"].proj, "deps/fx_r3_plugin/rebar.config")
+    %{
+      root: root,
+      runs: runs,
+      judge_opts: [releases: rebar3_releases(hex_home), hex_home: hex_home]
+    }
+  end
 
-    File.write!(plugin_config, "{erl_opts, []}.\n{plugins, [rebar3_hex]}.\n")
+  # Every rebar3 fixture app as the Hex release it would be: the judge reads
+  # a rebar3 app's rebar.config from its verified tarball only.
+  defp rebar3_releases(home) do
+    apps = Map.merge(@deps, @kill_child)
 
-    %{root: root, runs: runs, judge_opts: [releases: %{}, hex_home: Path.join(root, "hex")]}
+    plugin = %{rebar_config: "{erl_opts, []}.\n{plugins, [rebar3_hex]}.\n"}
+    apps = Map.update!(apps, "fx_r3_plugin", &Map.merge(&1, plugin))
+
+    for {app, %{manager: :rebar3} = spec} <- apps, into: %{} do
+      config = Map.get(spec, :rebar_config, "{erl_opts, []}.\n")
+      TracerFixtures.hex_release(home, app, ["src", "rebar.config"], %{"rebar.config" => config})
+    end
   end
 
   defp compile(root, deps, packages, env) do

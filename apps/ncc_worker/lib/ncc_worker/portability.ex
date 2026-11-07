@@ -470,7 +470,7 @@ defmodule NccWorker.Portability do
   defp rebar3(ctx, report, app) do
     case Context.dest(ctx, app) do
       nil -> {:unjudged, "rebar3 source dir missing"}
-      dest -> rebar3(Rebar.check(dest, mix_rebar_config(ctx, app)), ctx, report, app)
+      dest -> rebar3(static_rebar(ctx, app, dest), ctx, report, app)
     end
   end
 
@@ -480,10 +480,35 @@ defmodule NccWorker.Portability do
   defp rebar3(:ok, ctx, report, app),
     do: Rebar.coverage(Context.ebin(ctx, app), Map.get(report.children, app))
 
+  # The static rules on the app's rebar.config from its verified Hex
+  # tarball and its rebar3 parents' (their overrides), then the
+  # mix.rebar.config rebar3 read. A script on disk refuses too.
+  defp static_rebar(ctx, app, dest) do
+    parents = Context.rebar3_parents(ctx, app)
+
+    with {:ok, own} <- Rebar.tarball_sources(Context.tarball(ctx, app)),
+         {:ok, inherited} <- parent_sources(ctx, parents) do
+      own = %{own | script?: own.script? or disk_script?(dest)}
+      Rebar.check_sources(own, inherited, mix_rebar_config(ctx, app))
+    end
+  end
+
+  defp parent_sources(ctx, parents) do
+    Enum.reduce_while(parents, {:ok, []}, fn parent, {:ok, acc} ->
+      case Rebar.tarball_sources(Context.tarball(ctx, parent)) do
+        {:ok, sources} -> {:cont, {:ok, acc ++ [sources]}}
+        {:unjudged, why} -> {:halt, {:unjudged, "rebar3 parent #{parent}: #{why}"}}
+      end
+    end)
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp disk_script?(dest), do: File.exists?(Path.join(dest, "rebar.config.script"))
+
   # The config Mix wrote for rebar3 (`REBAR_CONFIG`), next to the ebin.
   defp mix_rebar_config(ctx, app) do
     case Context.ebin(ctx, app) do
-      nil -> Path.join(Context.dest(ctx, app), ".ncc-no-build-dir/mix.rebar.config")
+      nil -> {:unjudged, "rebar3 build dir missing"}
       ebin -> Path.join(Path.dirname(ebin), "mix.rebar.config")
     end
   end

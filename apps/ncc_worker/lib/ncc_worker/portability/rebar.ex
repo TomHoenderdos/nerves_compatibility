@@ -21,10 +21,17 @@ defmodule NccWorker.Portability.Rebar do
   at any depth (fail closed). `platform_define` counts at any depth of an
   active section.
 
-  Both files are checked, each with the same rules: the dependency's own
-  `rebar.config` and, when the judge passes it, the `mix.rebar.config` that
-  rebar3 actually read; a missing one of those is could-not-judge.
-  `rebar.config.script` refuses on its own: it is code.
+  The judge (`check_sources/3`) reads the dependency's `rebar.config` and
+  `rebar.config.script` from its checksum-verified Hex tarball
+  (`tarball_sources/1`), never from `deps/<d>/` after the build, which an
+  untraced hook can rewrite. A rebar3 parent's top-level `overrides`, which
+  Mix applies to its children (`Mix.Dep.Loader.rebar_dep/4`,
+  `Mix.Rebar.apply_overrides/3`), are read from the parent's tarball the
+  same way and checked as if they were the dependency's own `overrides`. As
+  a second check the `mix.rebar.config` rebar3 actually read is held to the
+  same rules; a missing one is could-not-judge. `rebar.config.script`
+  refuses on its own: it is code. `check/2` applies the same rules to the
+  files on disk (tests, and nothing the judge trusts).
 
   Config files are anyone's text, so they are read with
   `NccWorker.Portability.HexFiles.parse/1` (bounded, creates no atoms)
@@ -51,56 +58,166 @@ defmodule NccWorker.Portability.Rebar do
   # `REBAR_PROFILE=prod` on top of rebar3's default profile.
   @active_profiles ~w(default prod)
   @max_config_bytes 1024 * 1024
+  @max_contents_bytes 64 * 1024 * 1024
+  @config_files [~c"rebar.config", ~c"rebar.config.script"]
+
+  @typedoc "A rebar3 app's own config files: `rebar.config`'s text (or `nil`) and whether it has a script."
+  @type sources :: %{config: binary() | nil, script?: boolean()}
 
   @doc """
-  The static rebar3 rules for the source dir `dest` and, when given, the
-  `mix.rebar.config` Mix wrote for rebar3.
+  The static rebar3 rules for the source dir `dest` as it is on disk and,
+  when given, the `mix.rebar.config` Mix wrote for rebar3.
   """
   @spec check(String.t(), String.t() | nil) ::
           :ok | {:refuse, String.t()} | {:unjudged, String.t()}
   # A dependency's own build files, read as data; nothing is evaluated.
   # sobelow_skip ["Traversal.FileModule"]
   def check(dest, mix_config \\ nil) when is_binary(dest) do
-    config = Path.join(dest, "rebar.config")
+    config =
+      case read_file(Path.join(dest, "rebar.config")) do
+        {:ok, text} -> text
+        :absent -> nil
+        :error -> :unreadable
+      end
 
-    cond do
-      File.exists?(Path.join(dest, "rebar.config.script")) ->
-        {:refuse, "rebar3 build evaluates rebar.config.script"}
+    sources = %{config: config, script?: File.exists?(Path.join(dest, "rebar.config.script"))}
+    check_sources(sources, [], mix_config)
+  end
 
-      File.exists?(config) ->
-        with :ok <- config |> read_config() |> config(), do: mix_config(mix_config)
+  @doc """
+  The static rebar3 rules for one app's `sources` (from its verified
+  tarball), with the `sources` of its rebar3 parents, whose top-level
+  `overrides` Mix applies to it, and the `mix.rebar.config` rebar3 read.
+  """
+  @spec check_sources(sources(), [sources()], String.t() | nil) ::
+          :ok | {:refuse, String.t()} | {:unjudged, String.t()}
+  def check_sources(%{script?: true}, _parents, _mix_config),
+    do: {:refuse, "rebar3 build evaluates rebar.config.script"}
 
-      true ->
-        mix_config(mix_config)
+  def check_sources(%{config: own}, parents, mix_config) do
+    with {:ok, own_terms} <- parse_own(own),
+         {:ok, inherited} <- parent_overrides(parents),
+         :ok <- config({:ok, own_terms ++ inherited}) do
+      mix_config(mix_config)
     end
+  end
+
+  defp parse_own(nil), do: {:ok, []}
+  defp parse_own(text) when is_binary(text), do: parse_or_refuse(text)
+  defp parse_own(_unreadable), do: {:refuse, "rebar3 build config unreadable"}
+
+  defp parse_or_refuse(text) do
+    case HexFiles.parse(text) do
+      {:ok, terms} -> {:ok, terms}
+      :error -> {:refuse, "rebar3 build config unreadable"}
+    end
+  end
+
+  # Each parent's top-level `overrides`, as `overrides` entries of the
+  # child's own config. A parent's script could compute them: unknowable.
+  defp parent_overrides(parents) do
+    Enum.reduce_while(parents, {:ok, []}, fn
+      %{script?: true}, _acc ->
+        {:halt, {:unjudged, "a rebar3 parent evaluates rebar.config.script"}}
+
+      %{config: text}, {:ok, acc} ->
+        case parse_own(text) do
+          {:ok, terms} ->
+            {:cont, {:ok, acc ++ for({{:atom, "overrides"}, _} = o <- terms, do: o)}}
+
+          refusal ->
+            {:halt, refusal}
+        end
+    end)
+  end
+
+  @doc """
+  `rebar.config` and `rebar.config.script` from a Hex tarball's
+  `contents.tar.gz`, inflated under a bound; `{:unjudged, _}` without a
+  verified tarball or when it cannot be read.
+  """
+  @spec tarball_sources(binary() | nil) :: {:ok, sources()} | {:unjudged, String.t()}
+  def tarball_sources(nil), do: {:unjudged, "rebar3 app has no verified Hex tarball"}
+
+  def tarball_sources(bytes) when is_binary(bytes) do
+    with {:ok, gz} <- outer_contents(bytes),
+         {:ok, tar} <- inflate(gz),
+         {:ok, files} <- :erl_tar.extract({:binary, tar}, [:memory, {:files, @config_files}]) do
+      sources(Map.new(files, fn {name, body} -> {List.to_string(name), body} end))
+    else
+      _ -> {:unjudged, "rebar3 app's verified Hex tarball is unreadable"}
+    end
+  rescue
+    _ -> {:unjudged, "rebar3 app's verified Hex tarball is unreadable"}
+  end
+
+  defp outer_contents(bytes) do
+    case :erl_tar.extract({:binary, bytes}, [:memory, {:files, [~c"contents.tar.gz"]}]) do
+      {:ok, [{_name, gz}]} -> {:ok, gz}
+      _ -> :error
+    end
+  end
+
+  defp inflate(gz) do
+    case Compatibility.StaticPriv.inflate(gz, @max_contents_bytes) do
+      {:ok, tar} -> {:ok, tar}
+      _ -> :error
+    end
+  end
+
+  defp sources(%{"rebar.config" => config} = files) when byte_size(config) > @max_config_bytes,
+    do: sources(%{files | "rebar.config" => :unreadable})
+
+  defp sources(files) do
+    {:ok,
+     %{
+       config: Map.get(files, "rebar.config"),
+       script?: Map.has_key?(files, "rebar.config.script")
+     }}
   end
 
   defp mix_config(nil), do: :ok
 
+  defp mix_config({:unjudged, _} = unjudged), do: unjudged
+
   # sobelow_skip ["Traversal.FileModule"]
   defp mix_config(path) when is_binary(path) do
-    if File.exists?(path),
-      do: path |> read_config() |> config(),
-      else: {:unjudged, "rebar3 mix.rebar.config missing"}
+    case read_file(path) do
+      {:ok, text} -> config(HexFiles.parse(text))
+      :absent -> {:unjudged, "rebar3 mix.rebar.config missing"}
+      :error -> {:refuse, "rebar3 build config unreadable"}
+    end
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp read_config(path) do
-    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_config_bytes <-
-           File.stat(path),
-         {:ok, text} <- File.read(path) do
-      HexFiles.parse(text)
-    else
-      _ -> :error
+  defp read_file(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_config_bytes ->
+        case File.read(path) do
+          {:ok, text} -> {:ok, text}
+          _ -> :error
+        end
+
+      {:error, :enoent} ->
+        :absent
+
+      _ ->
+        :error
     end
   end
 
   defp config({:ok, terms}) do
     sections = active_sections(terms)
-    overrides = for {{:atom, "overrides"}, value} <- terms, do: value
+
+    # `overrides` of every active section, top level and profiles alike.
+    overrides =
+      for section <- sections,
+          {{:atom, "overrides"}, value} <- List.wrap(section),
+          do: value
 
     case Enum.find(@hook_keys, &(runs?(sections, &1) or nested?(overrides, &1))) do
-      nil -> platform_define(sections ++ overrides)
+      # The sections hold their `overrides` already.
+      nil -> platform_define(sections)
       key -> {:refuse, "rebar3 build runs #{key}"}
     end
   end

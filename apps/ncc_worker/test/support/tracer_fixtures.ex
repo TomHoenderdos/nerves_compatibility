@@ -62,11 +62,13 @@ defmodule NccWorker.TracerFixtures do
   A Hex release of path dependency `app` (version 0.1.0) whose tarball, in
   the Hex cache `home`, lists `files`: the verified file list a real Hex
   dependency's source reads are judged against. Returns the lock entry for
-  `releases:`. The tarball holds only `VERSION` and `metadata.config`, which
-  is all the judge reads.
+  `releases:`. The tarball holds `VERSION`, `metadata.config` and, when
+  `contents` (`%{path => body}`) is given, a `contents.tar.gz` of them: the
+  judge reads a rebar3 dependency's `rebar.config` from there.
   """
-  @spec hex_release(String.t(), String.t(), [String.t()]) :: {String.t(), map()}
-  def hex_release(home, app, files) do
+  @spec hex_release(String.t(), String.t(), [String.t()], %{String.t() => binary()}) ::
+          {String.t(), map()}
+  def hex_release(home, app, files, contents \\ %{}) do
     dir = Path.join(home, "packages/hexpm")
     File.mkdir_p!(dir)
     tar = Path.join(dir, "#{app}-0.1.0.tar")
@@ -76,11 +78,21 @@ defmodule NccWorker.TracerFixtures do
         :io_lib.format(~c"~p.~n", [term]) |> IO.chardata_to_string()
       end)
 
-    :ok =
-      :erl_tar.create(String.to_charlist(tar), [{~c"VERSION", "3"}, {~c"metadata.config", meta}])
-
+    entries = [{~c"VERSION", "3"}, {~c"metadata.config", meta}] ++ contents_entry(contents)
+    :ok = :erl_tar.create(String.to_charlist(tar), entries)
     sum = :sha256 |> :crypto.hash(File.read!(tar)) |> Base.encode16(case: :lower)
     {app, %{name: app, version: "0.1.0", checksum: sum}}
+  end
+
+  defp contents_entry(contents) when map_size(contents) == 0, do: []
+
+  defp contents_entry(contents) do
+    gz = Path.join(System.tmp_dir!(), "ncc-contents-#{System.unique_integer([:positive])}.tar.gz")
+    files = for {path, body} <- contents, do: {String.to_charlist(path), body}
+    :ok = :erl_tar.create(String.to_charlist(gz), files, [:compressed])
+    bytes = File.read!(gz)
+    File.rm!(gz)
+    [{~c"contents.tar.gz", bytes}]
   end
 
   @doc "A dependency with one `lib/<name>.ex` holding `body`, plus `extra` spec keys."

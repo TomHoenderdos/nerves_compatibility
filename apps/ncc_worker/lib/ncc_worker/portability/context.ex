@@ -53,7 +53,8 @@ defmodule NccWorker.Portability.Context do
     deps: %{},
     windows: [],
     quiet: [],
-    cd: MapSet.new()
+    cd: MapSet.new(),
+    hex: {nil, %{}}
   ]
 
   @type dep :: %{
@@ -74,7 +75,8 @@ defmodule NccWorker.Portability.Context do
           deps: %{String.t() => dep()},
           windows: [map()],
           quiet: [map()],
-          cd: MapSet.t()
+          cd: MapSet.t(),
+          hex: {String.t() | nil, map()}
         }
 
   @max_hops 40
@@ -106,7 +108,8 @@ defmodule NccWorker.Portability.Context do
       quiet: report.quiet,
       otp_root: install_root(start["otp_root"]),
       elixir_root: install_root(start["elixir_root"]),
-      roots: roots(project_dir, start)
+      roots: roots(project_dir, start),
+      hex: hex
     }
 
     %{ctx | cd: changed_dir(ctx, report)}
@@ -424,18 +427,35 @@ defmodule NccWorker.Portability.Context do
   # The file list of the dependency's Hex tarball, the one whose outer
   # checksum is the lock's: never `deps/<d>/hex_metadata.config`, which an
   # untraced build step can rewrite.
-  defp hex_files(app, {home, releases}) when is_binary(home) and home != "" do
+  defp hex_files(app, hex), do: app |> verified_tarball(hex) |> HexFiles.from_tarball()
+
+  @doc """
+  The bytes of `app`'s Hex tarball in the run's Hex cache, only when its
+  outer checksum is the lock snapshot's; else `nil`.
+  """
+  @spec tarball(t(), term()) :: binary() | nil
+  def tarball(%__MODULE__{hex: hex}, app), do: verified_tarball(app, hex)
+
+  defp verified_tarball(app, {home, releases}) when is_binary(home) and home != "" do
     case Map.get(releases, app) do
       %{name: name, version: version, checksum: sum}
       when is_binary(name) and is_binary(version) and is_binary(sum) ->
-        home |> HexCache.package_tarball(name, version, sum) |> HexFiles.from_tarball()
+        HexCache.package_tarball(home, name, version, sum)
 
       _ ->
         nil
     end
   end
 
-  defp hex_files(_app, _hex), do: nil
+  defp verified_tarball(_app, _hex), do: nil
+
+  @doc "The closure's rebar3-built dependencies that list `app` as a child, sorted."
+  @spec rebar3_parents(t(), term()) :: [String.t()]
+  def rebar3_parents(%__MODULE__{deps: deps}, app) do
+    for {parent, %{manager: "rebar3", children: children}} <- deps,
+        app in children,
+        do: parent
+  end
 
   defp roots(project_dir, start) do
     [project_dir | Enum.map(~w(otp_root elixir_root home mix_home hex_home), &start[&1])]
