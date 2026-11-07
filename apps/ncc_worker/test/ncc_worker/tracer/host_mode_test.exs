@@ -106,11 +106,8 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert BuildIdentity.differences(host, untraced) == []
   end
 
-  # Kept strict, pending a decision: the consolidated protocols' ExCk chunk
-  # differs between two clean untraced `mix compile` runs too, from one run
-  # to the next (its decoded terms are `===`), so it is not reproducible even
-  # without the tracer.
-  @tag skip: "consolidated ExCk bytes vary between untraced compiles"
+  # Consolidated protocols are not published; their ExCk chunk may differ in
+  # map key order (Mix consolidates in parallel), so it is compared decoded.
   test "the host-mode trace consolidates exactly what an untraced mix compile does",
        %{tmp_dir: dir} do
     proj = fixture(dir)
@@ -121,7 +118,10 @@ defmodule NccWorker.Tracer.HostModeTest do
     File.rm_rf!(Path.join(proj, "_build"))
     traced = TracerFixtures.trace(proj, ["fx_top"], mode: :host)
     assert {:ok, 0} = traced.result, traced.log
-    assert BuildIdentity.differences(published(proj, ["consolidated"]), untraced) == []
+
+    assert BuildIdentity.differences(published(proj, ["consolidated"]), untraced,
+             consolidated: true
+           ) == []
   end
 
   test "an untraced mix compile right after the host trace compiles nothing", %{tmp_dir: dir} do

@@ -11,39 +11,61 @@ defmodule NccWorker.BuildIdentity do
   VMs with different histories share. Beams are compared chunk by chunk:
   the same chunk IDs in the same order, every chunk other than `Dbgi`
   byte-equal. Nothing is stripped and no other chunk is decoded.
+
+  With `consolidated: true`, a beam under `<app>/consolidated/` (a
+  consolidated protocol, never a published file) may also differ in its
+  `ExCk` chunk's bytes when it decodes to `===` terms: Mix consolidates
+  protocols in parallel, so even two untraced compiles disagree on its map
+  key order. A beam anywhere else never gets that exception.
   """
 
   @doc """
   The differences between two `path => bytes` maps, `[]` when they are
-  identical in the sense above. Each entry is `{path, reason}`.
+  identical in the sense above. Each entry is `{path, reason}`. Option:
+  `consolidated:` (default `false`), see the moduledoc.
   """
-  @spec differences(%{String.t() => binary()}, %{String.t() => binary()}) ::
+  @spec differences(%{String.t() => binary()}, %{String.t() => binary()}, keyword()) ::
           [{String.t(), term()}]
-  def differences(a, b) do
+  def differences(a, b, opts \\ []) do
     paths = Enum.sort(Enum.uniq(Map.keys(a) ++ Map.keys(b)))
 
     for path <- paths,
-        reason = file_difference(path, Map.get(a, path), Map.get(b, path)),
+        reason = file_difference(path, Map.get(a, path), Map.get(b, path), opts),
         reason != nil,
         do: {path, reason}
   end
 
   @doc "Why `a` and `b`, two versions of the file `path`, differ, or `nil`."
-  @spec file_difference(String.t(), binary() | nil, binary() | nil) :: term()
-  def file_difference(_path, a, a), do: nil
-  def file_difference(_path, nil, _b), do: :only_in_second
-  def file_difference(_path, _a, nil), do: :only_in_first
+  @spec file_difference(String.t(), binary() | nil, binary() | nil, keyword()) :: term()
+  def file_difference(path, a, b, opts \\ [])
+  def file_difference(_path, a, a, _opts), do: nil
+  def file_difference(_path, nil, _b, _opts), do: :only_in_second
+  def file_difference(_path, _a, nil, _opts), do: :only_in_first
 
-  def file_difference(path, a, b) do
-    if String.ends_with?(path, ".beam"), do: beam_difference(a, b), else: :bytes_differ
+  def file_difference(path, a, b, opts) do
+    if String.ends_with?(path, ".beam"),
+      do: beam_difference(a, b, decoded(path, opts)),
+      else: :bytes_differ
   end
 
-  @doc "Why two beams differ chunk by chunk, or `nil` (see the moduledoc)."
-  @spec beam_difference(binary(), binary()) :: term()
-  def beam_difference(a, b) do
+  # The chunks compared as decoded terms for the beam at `path`.
+  defp decoded(path, opts) do
+    if Keyword.get(opts, :consolidated, false) and consolidated?(path),
+      do: [~c"Dbgi", ~c"ExCk"],
+      else: [~c"Dbgi"]
+  end
+
+  defp consolidated?(path), do: match?([_app, "consolidated", _file], Path.split(path))
+
+  @doc """
+  Why two beams differ chunk by chunk, or `nil` (see the moduledoc).
+  `decoded` names the chunks compared as decoded terms (default `Dbgi` only).
+  """
+  @spec beam_difference(binary(), binary(), [charlist()]) :: term()
+  def beam_difference(a, b, decoded \\ [~c"Dbgi"]) do
     with {:ok, ca} <- chunks(a),
          {:ok, cb} <- chunks(b) do
-      chunk_difference(ca, cb)
+      chunk_difference(ca, cb, decoded)
     end
   end
 
@@ -54,22 +76,23 @@ defmodule NccWorker.BuildIdentity do
     end
   end
 
-  defp chunk_difference(ca, cb) do
+  defp chunk_difference(ca, cb, decoded) do
     ids = Enum.map(ca, &elem(&1, 0))
 
     if ids == Enum.map(cb, &elem(&1, 0)) do
-      Enum.find_value(Enum.zip(ca, cb), fn {{id, x}, {_id, y}} -> chunk(id, x, y) end)
+      Enum.find_value(Enum.zip(ca, cb), fn {{id, x}, {_id, y}} -> chunk(id, x, y, decoded) end)
     else
       {:chunk_ids_differ, ids, Enum.map(cb, &elem(&1, 0))}
     end
   end
 
-  defp chunk(_id, x, x), do: nil
+  defp chunk(_id, x, x, _decoded), do: nil
 
-  defp chunk(~c"Dbgi", x, y),
-    do: if(decode(x) === decode(y), do: nil, else: {:chunk_differs, "Dbgi"})
-
-  defp chunk(id, _x, _y), do: {:chunk_differs, List.to_string(id)}
+  defp chunk(id, x, y, decoded) do
+    if id in decoded and decode(x) === decode(y),
+      do: nil,
+      else: {:chunk_differs, List.to_string(id)}
+  end
 
   defp decode(payload) do
     :erlang.binary_to_term(payload)

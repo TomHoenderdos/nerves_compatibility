@@ -122,6 +122,50 @@ defmodule NccWorker.BuildIdentityTest do
              [{"a/ebin/a.app", :only_in_second}]
   end
 
+  describe "consolidated: true" do
+    setup do
+      b = beam()
+      assert List.keymember?(chunks(b), ~c"ExCk", 0)
+      other = with_chunk(b, ~c"ExCk", &reencode/1)
+      assert other != b
+      %{b: b, other: other}
+    end
+
+    test "a consolidated beam's ExCk that encodes the same term differently is identical",
+         %{b: b, other: other} do
+      path = "fixture_wrapper/consolidated/Elixir.Enumerable.beam"
+      assert BuildIdentity.differences(%{path => b}, %{path => other}, consolidated: true) == []
+    end
+
+    test "without the option, the same ExCk difference counts", %{b: b, other: other} do
+      path = "fixture_wrapper/consolidated/Elixir.Enumerable.beam"
+
+      assert BuildIdentity.differences(%{path => b}, %{path => other}) ==
+               [{path, {:chunk_differs, "ExCk"}}]
+    end
+
+    test "a published beam never gets the ExCk exception", %{b: b, other: other} do
+      for path <- ["fx_top/ebin/Elixir.FxTop.beam", "fx_top/priv/consolidated/Elixir.X.beam"] do
+        assert BuildIdentity.differences(%{path => b}, %{path => other}, consolidated: true) ==
+                 [{path, {:chunk_differs, "ExCk"}}]
+      end
+    end
+
+    test "a consolidated beam's other chunks stay byte-equal", %{b: b} do
+      path = "fixture_wrapper/consolidated/Elixir.Enumerable.beam"
+      code = with_chunk(b, ~c"Code", &flip_last/1)
+
+      assert BuildIdentity.differences(%{path => b}, %{path => code}, consolidated: true) ==
+               [{path, {:chunk_differs, "Code"}}]
+
+      docs = with_docs(b)
+      redocs = with_chunk(docs, ~c"Docs", &reencode/1)
+
+      assert BuildIdentity.differences(%{path => docs}, %{path => redocs}, consolidated: true) ==
+               [{path, {:chunk_differs, "Docs"}}]
+    end
+  end
+
   test "a non-beam file is compared byte for byte, and a missing file differs" do
     a = %{"a/priv/x.txt" => "x", "a/ebin/a.app" => "{}"}
     b = %{"a/priv/x.txt" => "y"}
