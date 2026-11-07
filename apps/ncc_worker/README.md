@@ -368,10 +368,12 @@ compile-time config reads the trace records while the package's dependency closu
 (`NccWorker.Portability.ConfigReads`): one `{app, [key], value}` item per read key, valued with what the project's
 config gives in a Mix VM before any dependency loads (`:error` when unset), the same lookup a client makes; such a
 build has `"compile_env_rule": 1`, every other build `null`. The items never enter the published `.app`. Reads the
-toolchain's own code makes are recorded only when they change generated code (Logger's compile-time keys) or are not
-yet reviewed (`compile_observations.config_unreviewed`); `get_all_env` from package code, a read naming a non-atom key,
-and a compile-time Elixir version read that differs between patches of the minor
-(`compile-time Elixir patch dependence: ...`) are refusals. A trace pass that does not name its config reads at all
+toolchain's own code makes are recorded only when they are reviewed as changing generated code (Logger's compile-time
+keys) and dropped when reviewed as not changing it; a toolchain read not yet reviewed makes the build "portability
+could not be judged" and is listed in `compile_observations.config_unreviewed`. A read of Hex's config (`:hex`, any key:
+the builder's API and mirror URLs, repos, proxies and keys) is never recorded and makes the build "portability could not
+be judged" too. `get_all_env` from package code, a read naming a non-atom key, and a compile-time Elixir version read
+that differs between patches of the minor (`compile-time Elixir patch dependence: ...`) are refusals. A trace pass that does not name its config reads at all
 is judged "portability could not be judged" and publishes nothing. A `pure_elixir` system result whose files are
 published carries the same list and `"compile_env_rule": 1`; one whose `.app` cannot be read (`compile_env` `null`,
 which no client matches) publishes nothing either, as "portability could not be judged".

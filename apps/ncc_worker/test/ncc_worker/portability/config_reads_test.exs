@@ -138,6 +138,33 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     end
   end
 
+  # Hex's config is the builder's: its API and mirror URLs, repos, proxies
+  # and keys. A beam that depends on it is not portable, and its value must
+  # never reach a public manifest, set or not.
+  test "a read of Hex's config cannot be judged, from any frame" do
+    entries = %{
+      {"hex", "api_url"} => enc({:ok, "https://hex.example.invalid/api"}),
+      {"hex", "mirror_url"} => enc({:ok, "https://mirror.example.invalid"})
+    }
+
+    for key <- ~w(api_url mirror_url repos http_proxy),
+        {kind, first} <- [{"user", "Elixir.Pkg"}, {"toolchain", "Elixir.Mix.Project"}],
+        owner <- [:outside, "pkg", "dep"] do
+      result = judge([obs(owner, read("hex", key, kind: kind, first: first))], snap(entries))
+
+      assert %{items: [], refusals: [], problems: [problem]} = result
+      assert problem == "builder config read: hex #{key}"
+      refute inspect(result) =~ "example.invalid"
+    end
+
+    # The rest of the closure's reads are judged as before, and only Hex's
+    # hold the build back.
+    decided = [obs("pkg", read("fx", "k")), obs("pkg", read("hex", "api_url"))]
+    result = judge(decided, snap(Map.put(entries, {"fx", "k"}, enc({:ok, 1}))))
+    assert keys(result) == [{"fx", ["k"]}]
+    assert result.problems == ["builder config read: hex api_url"]
+  end
+
   test "toolchain reads: reviewed ones recorded or dropped, any other one cannot be judged" do
     decided = [
       obs(

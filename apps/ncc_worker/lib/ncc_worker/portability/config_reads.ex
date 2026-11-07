@@ -34,7 +34,14 @@ defmodule NccWorker.Portability.ConfigReads do
       key to match on); from the toolchain's own code it cannot be judged;
     * `application:get_env/1` (the caller's own application, which no
       compile process has) is ignored;
-    * a read naming a non-atom application or key refuses.
+    * a read naming a non-atom application or key refuses;
+    * a read of Hex's own config (`:hex`, any key) cannot be judged, from
+      any frame: Hex's config is the builder's (its API and mirror URLs,
+      repos, proxies and keys), a beam that depends on it is not portable,
+      and its value must never reach a public manifest. Mix keeps no such
+      value in its application env (`:colors` and `:listeners`; Mix reads
+      its proxies from the environment), so its reads are judged like any
+      other.
 
   ## Values
 
@@ -231,6 +238,13 @@ defmodule NccWorker.Portability.ConfigReads do
       do: {:unreviewed, "#{item["mfa"]} (#{get_in(item, ["arg", "app"])})"},
       else: {:refuse, reason(item, "has no key to match on")}
   end
+
+  defp classify(
+         %{"arg" => %{"atoms" => true, "app_name" => "hex", "key_name" => key}},
+         _toolchain
+       )
+       when is_binary(key),
+       do: {:unjudged, "builder config read: hex #{key}"}
 
   defp classify(
          %{"arg" => %{"atoms" => true, "app_name" => app, "key_name" => key}} = item,
