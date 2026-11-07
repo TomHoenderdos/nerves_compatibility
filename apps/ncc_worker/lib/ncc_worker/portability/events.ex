@@ -4,9 +4,12 @@ defmodule NccWorker.Portability.Events do
   4): what one user-extent event means for the window it fell in. Each event
   is ignored, observed, refused, or could not be judged.
 
-  In P1 the config and Elixir-version channels are observed only (R5 and the
-  Elixir-patch rule come in P2); everything else is allowed by a narrow rule
-  or refused:
+  The config and Elixir-version channels are observed here and judged by the
+  verdict over the whole closure (`NccWorker.Portability.ConfigReads`, R5,
+  and `NccWorker.Portability.ElixirVersion`); their observations keep the
+  first frame, its kind and the extent. An Elixir-version read in a closure
+  dependency's `mix.exs` is no observation (R4). Everything else is allowed
+  by a narrow rule or refused:
 
     * OS identity: `system_info(otp_release)` is allowed, and `os:type/0`,
       `os:version/0` or `system_info(os_type)` when the first frame after
@@ -147,10 +150,15 @@ defmodule NccWorker.Portability.Events do
 
   defp channel("cwd", event, _ctx, _owner), do: {:refuse, host_read(event, event["arg"]["path"])}
 
-  defp channel("elixir_version", event, _ctx, _owner),
-    do: {:observe, "elixir_version", summary(event)}
+  defp channel("elixir_version", event, ctx, owner) do
+    if is_binary(Context.mix_exs(ctx, event, owner)),
+      do: :ignore,
+      else: {:observe, "elixir_version", traced_summary(event)}
+  end
 
-  defp channel("config", event, _ctx, _owner), do: {:observe, "config_reads", summary(event)}
+  defp channel("config", event, _ctx, _owner),
+    do: {:observe, "config_reads", traced_summary(event)}
+
   defp channel("install", event, ctx, _owner), do: install(event, ctx)
   defp channel("file_read", event, ctx, owner), do: file_read(event, ctx, owner)
   defp channel("file_write", event, ctx, owner), do: file_write(event, ctx, owner)
@@ -331,5 +339,18 @@ defmodule NccWorker.Portability.Events do
       "file" => user["file"],
       "line" => user["line"]
     }
+  end
+
+  # What R5 and the Elixir-version rule judge a read by: who made it.
+  defp traced_summary(event) do
+    first = if is_map(event["first"]), do: event["first"]["module"]
+
+    event
+    |> summary()
+    |> Map.merge(%{
+      "first" => first,
+      "first_kind" => event["first_kind"],
+      "extent" => event["extent"]
+    })
   end
 end

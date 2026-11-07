@@ -321,13 +321,18 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
     assert Enum.any?(events(ctx, "fx_truncated", "os:type/0"), &(&1["extent"] == "truncated"))
   end
 
-  test "IO.warn, config and Elixir-version reads are observed in P1, never refused", ctx do
+  test "IO.warn, config and Elixir-version reads pass; config reads are recorded", ctx do
     passes(ctx, "fx_iowarn")
 
-    assert %{observations: %{"config_reads" => reads}} = passes(ctx, "fx_config")
+    assert %{observations: %{"config_reads" => reads}, compile_env: items} =
+             passes(ctx, "fx_config")
 
     assert Enum.any?(reads, &(&1["owner"] == "fx_config" and &1["arg"]["key"] == "k")),
            inspect(reads)
+
+    # Its own application's key, which the project's config leaves unset.
+    assert %{app: "fx_config", path: ["k"], value: NccWorker.Portability.ConfigReads.unset()} in items,
+           inspect(items)
 
     assert %{observations: %{"elixir_version" => versions}} = passes(ctx, "fx_version")
     assert Enum.any?(versions, &(&1["owner"] == "fx_version")), inspect(versions)

@@ -116,6 +116,18 @@ defmodule NccWorker.Portability.JudgeTest do
 
   defp judge(proj, report, opts \\ []), do: Portability.judge(proj, "pkg", report, [], opts)
 
+  # A config value as the tracer's snapshot and the manifest carry it.
+  defp enc(term),
+    do: term |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
+
+  # A report made on Elixir 1.19.5 whose config snapshot is `snapshot`.
+  defp traced(proj, events, snapshot) do
+    r = report(proj, %{events: events, config_env: snapshot})
+    %{r | start: Map.put(r.start, "elixir", "1.19.5")}
+  end
+
+  @snap %{entries: %{}, truncated: false}
+
   describe "the mapped-library check" do
     defp with_libs(r, libs), do: %{r | ending: %{r.ending | "mapped_libs" => libs}}
 
@@ -550,23 +562,37 @@ defmodule NccWorker.Portability.JudgeTest do
   end
 
   describe "observations" do
-    test "config reads are observed with their owner, without refusing", %{proj: proj} do
+    test "config reads are observed with their owner and recorded", %{proj: proj} do
       config = %{
         "ts" => 35,
         "channel" => "config",
         "mfa" => "application:get_env/2",
-        "arg" => %{"app" => "fx", "key" => "k"},
+        "arg" => %{
+          "app" => "fx",
+          "key" => "k",
+          "app_name" => "fx",
+          "key_name" => "k",
+          "atoms" => true
+        },
         "extent" => "frame",
         "first" => %{"module" => "Elixir.X"},
+        "first_kind" => "user",
         "user" => %{"module" => "Elixir.X"}
       }
 
+      snap = %{@snap | entries: %{{"fx", "k"} => enc({:ok, 1})}}
+
       assert %{
                status: :pass,
+               compile_env: [%{app: "fx", path: ["k"], value: value}],
                observations: %{
-                 "config_reads" => [%{"owner" => "pkg", "arg" => %{"key" => "k"}}]
+                 "config_reads" => [
+                   %{"owner" => "pkg", "arg" => %{"key" => "k"}, "first" => "Elixir.X"}
+                 ]
                }
-             } = judge(proj, report(proj, %{events: [config]}))
+             } = judge(proj, traced(proj, [config], snap))
+
+      assert value == enc({:ok, 1})
     end
 
     test "config reads are capped at 200", %{proj: proj} do
@@ -1256,6 +1282,162 @@ defmodule NccWorker.Portability.JudgeTest do
 
       assert %{reason: "compile-time host read: os:type/0" <> _} =
                TracerFixtures.judge(proj, "fx_judge_leaf", traced)
+    end
+  end
+
+  describe "compile-time config reads (R5) and the Elixir-patch rule" do
+    defp config_event(ts, app, key, kind \\ "user") do
+      ts
+      |> event("application:get_env/2", "lib/x.ex", "config")
+      |> Map.merge(%{
+        "arg" => %{
+          "app" => app,
+          "key" => key,
+          "app_name" => app,
+          "key_name" => key,
+          "atoms" => true
+        },
+        "first_kind" => kind
+      })
+    end
+
+    defp version_event(ts, mfa, arg \\ %{}) do
+      ts
+      |> event(mfa, "lib/x.ex", "elixir_version")
+      |> Map.merge(%{"arg" => arg, "first_kind" => "user"})
+    end
+
+    test "a pass carries the closure's reads, valued from the snapshot", %{proj: proj} do
+      events = [
+        config_event(35, "fx", "k"),
+        # dep reads its own application, which the config leaves unset.
+        config_event(15, "dep", "mode"),
+        # In `other`'s window: not pkg's closure.
+        config_event(25, "other_app", "z")
+      ]
+
+      snap = %{@snap | entries: %{{"fx", "k"} => enc({:ok, 1})}}
+
+      assert %{status: :pass, compile_env: items, observations: obs} =
+               judge(proj, traced(proj, events, snap))
+
+      assert items == [
+               %{app: "dep", path: ["mode"], value: enc(:error)},
+               %{app: "fx", path: ["k"], value: enc({:ok, 1})}
+             ]
+
+      assert obs["trace_stats"]["config_items"] == 2
+      assert obs["trace_stats"]["config_dropped"] == 0
+      assert obs["config_unreviewed"] == []
+    end
+
+    test "a pass with no reads carries an empty list", %{proj: proj} do
+      assert %{status: :pass, compile_env: []} = judge(proj, traced(proj, [], nil))
+    end
+
+    test "an unset key of an application outside the reader's tree cannot be judged",
+         %{proj: proj} do
+      assert %{status: :skip, reason: @cnj, compile_env: nil, observations: obs} =
+               judge(proj, traced(proj, [config_event(35, "fx", "k")], @snap))
+
+      assert "config value cannot be told: fx k" in obs["problems"]
+    end
+
+    test "get_all_env in the package's window refuses it; in a dependency's it taints",
+         %{proj: proj} do
+      all = fn ts ->
+        ts
+        |> event("application:get_all_env/1", "lib/x.ex", "config")
+        |> Map.merge(%{
+          "arg" => %{"app" => "fx", "app_name" => "fx", "all" => true},
+          "first_kind" => "user"
+        })
+      end
+
+      assert %{status: :skip, reason: "compile-time config read: " <> _, compile_env: nil} =
+               judge(proj, traced(proj, [all.(35)], @snap))
+
+      assert %{
+               reason:
+                 "closure dependency observed the host: dep (compile-time config read: " <> _
+             } = judge(proj, traced(proj, [all.(15)], @snap))
+    end
+
+    test "reads with no snapshot cannot be judged", %{proj: proj} do
+      assert %{status: :skip, reason: @cnj, compile_env: nil, observations: obs} =
+               judge(proj, traced(proj, [config_event(35, "fx", "k")], nil))
+
+      assert "no config snapshot" in obs["problems"]
+    end
+
+    test "an unreviewed toolchain read is flagged and cannot be judged", %{proj: proj} do
+      r = traced(proj, [config_event(35, "mix", "new_key", "toolchain")], @snap)
+
+      assert %{status: :skip, reason: @cnj, compile_env: nil, observations: obs} =
+               judge(proj, r)
+
+      assert [%{"owner" => "pkg", "first" => "Elixir.X"}] = obs["config_unreviewed"]
+      assert "unreviewed toolchain config read: mix new_key from Elixir.X" in obs["problems"]
+    end
+
+    test "a reviewed toolchain read is recorded", %{proj: proj} do
+      r = traced(proj, [config_event(35, "logger", "level", "toolchain")], @snap)
+
+      assert %{status: :pass, compile_env: [%{app: "logger", path: ["level"]}]} =
+               judge(proj, r)
+    end
+
+    test "an Elixir patch dependence refuses the package", %{proj: proj} do
+      events = [
+        version_event(35, "System.version/0"),
+        version_event(36, "Version.match?/2", %{
+          "left" => ~s("1.19.5"),
+          "right" => ~s(">= 1.19.6")
+        })
+      ]
+
+      assert %{
+               status: :skip,
+               reason: "compile-time Elixir patch dependence: Version.match?/2" <> _,
+               compile_env: nil
+             } = judge(proj, traced(proj, events, @snap))
+    end
+
+    test "an Elixir patch dependence in a dependency's window taints it", %{proj: proj} do
+      events = [version_event(15, "System.build_info/0")]
+
+      assert %{
+               reason:
+                 "closure dependency observed the host: dep (compile-time Elixir patch dependence: " <>
+                   _
+             } = judge(proj, traced(proj, events, @snap))
+    end
+
+    test "a minor-boundary Elixir version check passes", %{proj: proj} do
+      events = [
+        version_event(35, "System.version/0"),
+        version_event(36, "Version.match?/2", %{
+          "left" => ~s("1.19.5"),
+          "right" => ~s(">= 1.19.0")
+        })
+      ]
+
+      assert %{status: :pass, compile_env: []} = judge(proj, traced(proj, events, @snap))
+    end
+
+    test "Elixir version reads with no Elixir version cannot be judged", %{proj: proj} do
+      r = report(proj, %{events: [version_event(35, "System.version/0")], config_env: @snap})
+
+      assert %{status: :skip, reason: @cnj, observations: obs} = judge(proj, r)
+      assert "no Elixir version in the trace" in obs["problems"]
+
+      r = report(proj, %{events: [version_event(35, "System.build_info/0")], config_env: @snap})
+
+      assert %{
+               status: :skip,
+               reason: "compile-time Elixir patch dependence: System.build_info/0" <> _
+             } =
+               judge(proj, r)
     end
   end
 end

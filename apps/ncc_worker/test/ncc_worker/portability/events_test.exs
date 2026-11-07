@@ -599,4 +599,30 @@ defmodule NccWorker.Portability.EventsTest do
   test "the wrapper project's own mix.exs is never held against anyone", %{ctx: ctx} do
     assert :ignore = Events.decide(ev("env", "os:getenv/1", %{}), ctx, :wrapper)
   end
+
+  test "config and Elixir-version observations keep who made the read", %{ctx: ctx} do
+    arg = %{"app" => "fx", "app_name" => "fx", "key_name" => "k", "atoms" => true}
+
+    event =
+      "config"
+      |> ev("application:get_env/2", arg, first: "Elixir.Logger")
+      |> Map.put("first_kind", "toolchain")
+
+    assert {:observe, "config_reads",
+            %{"first" => "Elixir.Logger", "first_kind" => "toolchain", "extent" => "frame"}} =
+             Events.decide(event, ctx, "pkg")
+
+    version = Map.put(ev("elixir_version", "System.version/0", %{}), "first_kind", "user")
+
+    assert {:observe, "elixir_version",
+            %{"first" => "Elixir.Pkg", "first_kind" => "user", "extent" => "frame"}} =
+             Events.decide(version, ctx, "pkg")
+  end
+
+  test "an Elixir version read in a dependency's mix.exs is no observation (R4)",
+       %{ctx: ctx, pkg: pkg} do
+    user = %{@user | "file" => Path.join(pkg, "mix.exs"), "module" => "Elixir.Pkg.MixProject"}
+    event = ev("elixir_version", "System.version/0", %{}, user: user)
+    assert :ignore = Events.decide(event, ctx, "pkg")
+  end
 end

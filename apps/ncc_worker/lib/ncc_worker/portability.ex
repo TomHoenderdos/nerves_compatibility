@@ -21,6 +21,16 @@ defmodule NccWorker.Portability do
        its window broken or without a sentinel, a refusal in its window, R2,
        the rebar3 static rules or rebar3 trace coverage.
 
+  Compile-time config reads (R5) and Elixir-version reads are judged over the
+  package's whole closure (`ConfigReads`, `ElixirVersion`): their refusals
+  belong to the window they fell in, so in a dependency's window they taint
+  it (step 7), and their problems (a toolchain read no reviewed list covers,
+  no config snapshot or a truncated one, an unset key whose value cannot be
+  told, no Elixir version) make the trace incomplete (step 1). A passing
+  verdict carries `compile_env`, the closure's config reads as manifest
+  items valued from the trace's config snapshot; every other verdict has it
+  nil.
+
   Steps 1, 4, an `ebin` R2 cannot read (for the package or any closure
   dependency) and the package's own rebar3 coverage are "portability could
   not be judged"; the details go to `observations["problems"]`. Everything
@@ -51,11 +61,26 @@ defmodule NccWorker.Portability do
 
   alias Compatibility.Portability, as: Reasons
   alias NccWorker.{BuildCache, DepsLock}
-  alias NccWorker.Portability.{BuildRoot, Context, Events, MappedLibs, Rebar}
+
+  alias NccWorker.Portability.{
+    BuildRoot,
+    ConfigReads,
+    Context,
+    ElixirVersion,
+    Events,
+    MappedLibs,
+    Rebar
+  }
+
   alias NccWorker.Tracer
   alias NccWorker.Tracer.Report
 
-  @type verdict :: %{status: :pass | :skip, reason: String.t() | nil, observations: map()}
+  @type verdict :: %{
+          required(:status) => :pass | :skip,
+          required(:reason) => String.t() | nil,
+          required(:observations) => map(),
+          optional(:compile_env) => [ConfigReads.item()] | nil
+        }
 
   @default_timeout_ms 30 * 60 * 1000
   @caps %{
@@ -282,6 +307,10 @@ defmodule NccWorker.Portability do
       mapped_libs(report, ctx, scope, Keyword.get_lazy(opts, :nif_waiver, &MappedLibs.waived?/0))
 
     decided = decided ++ libs.decided
+    elixir = elixir_of(report)
+    config = ConfigReads.judge(decided, elixir, report.config_env, ConfigReads.trees(ctx))
+    version = ElixirVersion.judge(decided, elixir)
+    decided = decided ++ config.refusals ++ version.refusals
     package_r2 = build_root(ctx, ctx.package)
     deps = dep_results(ctx, report, decided)
 
@@ -289,7 +318,10 @@ defmodule NccWorker.Portability do
       ctx: ctx,
       report: report,
       decided: decided,
-      trace_problems: trace_problems(report, ctx) ++ unjudged ++ libs.problems,
+      config: config,
+      trace_problems:
+        trace_problems(report, ctx) ++
+          unjudged ++ libs.problems ++ config.problems ++ version.problems,
       libs: libs,
       package_window: window_problem(report, ctx.package),
       package_r2: package_r2,
@@ -297,6 +329,9 @@ defmodule NccWorker.Portability do
       deps: deps
     }
   end
+
+  defp elixir_of(%Report{start: %{"elixir" => elixir}}) when is_binary(elixir), do: elixir
+  defp elixir_of(_report), do: nil
 
   # Every event as `{owner, decision}`: the Mix VM's by `Context.owner/2`,
   # a closure dependency's child VM's by its app (child clocks do not align
@@ -611,7 +646,13 @@ defmodule NccWorker.Portability do
       )
 
     status = if reason, do: :skip, else: :pass
-    %{status: status, reason: reason, observations: observations(facts, problems)}
+
+    %{
+      status: status,
+      reason: reason,
+      observations: observations(facts, problems),
+      compile_env: if(status == :pass, do: facts.config.items)
+    }
   end
 
   defp package_r2({:refuse, reason}), do: reason
@@ -678,6 +719,7 @@ defmodule NccWorker.Portability do
       "refusals" => refusals |> Enum.uniq() |> Enum.take(@max_refusals),
       "taint" => for({app, %{taint: t}} when is_binary(t) <- facts.deps, into: %{}, do: {app, t}),
       "native_libs" => Enum.take(facts.libs.native, 50),
+      "config_unreviewed" => Enum.take(facts.config.unreviewed, 50),
       "nif_check" => if(facts.libs.waived, do: "waived", else: "ok"),
       "problems" => problems |> Enum.uniq() |> Enum.take(@max_problems)
     })
@@ -716,7 +758,9 @@ defmodule NccWorker.Portability do
       "sentinels" => length(report.sentinels),
       "events_read" => length(report.events),
       "children" => map_size(report.children),
-      "rebar3_untraced_last" => gaps
+      "rebar3_untraced_last" => gaps,
+      "config_items" => length(facts.config.items),
+      "config_dropped" => facts.config.dropped
     })
   end
 
