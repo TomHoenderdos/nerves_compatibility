@@ -310,7 +310,11 @@ a different version or a different checksum means building from source.
   closure is pure Elixir. No firmware is built for such a package; its files
   come from the host compile and are the same for every target, so a client
   without an entry for its own system can use this one. `system_version` is
-  `null`.
+  `null`. Such files are published only when the package's source passes the
+  builder's OS check and its compile-time trace; a publication the trace
+  later refuses on the same toolchain, because the package's own compile
+  read the host or baked the build path into its beams, is withdrawn, and
+  its files stop being served.
 - Each file entry contains:
   - `path` — relative path within the package, e.g. `ebin/myapp.beam`. An
     entry is published only under the key its path names: `ebin/...` under
