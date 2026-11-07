@@ -72,8 +72,21 @@ defmodule Portal.Workers.BuildIntegrationTest do
       |> Ash.Query.filter(run_id == ^run.id)
       |> Ash.read!(domain: Portal.Catalog)
 
-    # jason has no compile_env reads of its own.
-    for result <- system_results, do: assert(result.compile_env == [])
+    # jason's .app declares no compile_env. The published pure_elixir result
+    # adds the traced compile-time config reads (R5) and its mark: jason
+    # reads its own :decoding_integer_digit_limit, unset here.
+    host = Enum.find(system_results, &(&1.system_pkg == "host"))
+    assert host.compile_env == []
+    assert host.compile_env_rule == nil
+
+    pure_result = Enum.find(system_results, &(&1.system_pkg == "pure_elixir"))
+    assert pure_result.compile_env_rule == 1
+
+    assert Enum.any?(
+             pure_result.compile_env,
+             &(&1["app"] == "jason" and &1["path"] == ["decoding_integer_digit_limit"])
+           ),
+           inspect(pure_result.compile_env)
 
     assert Enum.sort(Enum.map(system_results, & &1.system_pkg)) == ["host", "pure_elixir"]
 
@@ -123,8 +136,11 @@ defmodule Portal.Workers.BuildIntegrationTest do
     assert hp["compile_observations"]["nif_check"] == "ok"
     assert hp["compile_observations"]["refusals"] == []
 
-    # Passed, so the files are published.
+    # Passed, so the files are published, with the traced config reads.
     assert [_ | _] = get_in(pure, ["beam_scan", "footprint", "file_manifest", "ebin"])
+    assert pure["compile_env_rule"] == 1, inspect(Map.delete(pure, "beam_scan"))
+    assert is_list(pure["compile_env"])
+    assert hp["compile_observations"]["config_unreviewed"] == []
   end
 
   test "runs argus over the host beams when the scope covers the package" do

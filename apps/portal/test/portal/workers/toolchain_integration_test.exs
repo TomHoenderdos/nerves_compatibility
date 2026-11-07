@@ -104,13 +104,14 @@ defmodule Portal.Workers.ToolchainIntegrationTest do
 
     assert build.exit_code == 0, "#{image} exited #{build.exit_code}:\n#{build.log}"
 
-    assert %{"toolchain_build" => %{"status" => "pass"} = tb} = build.result,
+    assert %{"toolchain_build" => %{"status" => "pass", "compile_env_rule" => 1} = tb} =
+             build.result,
            inspect(build.result)
 
     assert Enum.any?(tb["file_manifest"]["priv"], &(&1["path"] == "priv/static/phoenix_html.js")),
            inspect(tb["file_manifest"]["priv"])
 
-    assert {:ok, %ToolchainBuild{status: :pass} = row} =
+    assert {:ok, %ToolchainBuild{status: :pass, compile_env_rule: 1} = row} =
              Ingestion.ingest_toolchain(build.result, %{
                package: package,
                files_dir: build.files_dir,
@@ -162,6 +163,9 @@ defmodule Portal.Workers.ToolchainIntegrationTest do
     assert build.exit_code == 0, "#{image} exited #{build.exit_code}:\n#{build.log}"
     assert %{"scope" => "toolchain", "toolchain_build" => tb} = build.result
     assert tb["status"] == "pass", inspect(tb)
+    # A traced pass records its compile-time config reads (R5) and the mark.
+    assert tb["compile_env_rule"] == 1, inspect(tb)
+    assert is_list(tb["compile_env"])
     # A real container run sweeps its processes (`NccWorker.ProcessSweep`).
     assert build.result["process_sweep"] == "ok", build.log
 
@@ -178,6 +182,7 @@ defmodule Portal.Workers.ToolchainIntegrationTest do
              })
 
     assert row.status == :pass
+    assert row.compile_env_rule == 1
     assert String.starts_with?(row.elixir, elixir <> ".")
     assert row.otp == otp
     assert %{"decimal" => %{"version" => _, "checksum" => _}} = row.deps_lock
