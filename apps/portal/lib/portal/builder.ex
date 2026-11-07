@@ -22,6 +22,7 @@ defmodule Portal.Builder do
   alias Compatibility.Builder.Argv
   alias Portal.BuildCache.L2
   alias Portal.Builder.{Cmd, Stop}
+  alias Portal.Builders.ResultJson
 
   # See `read_log/1`.
   @log_tail_bytes 1024 * 1024
@@ -1176,17 +1177,17 @@ defmodule Portal.Builder do
   end
 
   # output_dir is constructed from the configured scratch root and a sanitized run ID.
-  # Refuse a symlink result left by package code before reading it on the host.
-  # sobelow_skip ["Traversal.FileModule"]
+  # Capped the same way the remote upload path is (`Portal.Builders.ResultJson`):
+  # the container runs untrusted package code and writes this file directly
+  # into a host-mounted directory, with no upload step to bound it first. Over
+  # cap, too deep, or a symlink left by package code are all the same
+  # "unreadable" outcome as a missing result.json.
   defp read_result_json(output_dir) do
     path = Path.join(output_dir, "result.json")
 
-    with {:ok, %File.Stat{type: :regular}} <- File.lstat(path),
-         {:ok, content} <- File.read(path),
-         {:ok, parsed} <- Jason.decode(content) do
-      parsed
-    else
-      _ -> nil
+    case ResultJson.read(path) do
+      {:ok, _bytes, parsed} -> parsed
+      {:error, _reason} -> nil
     end
   end
 

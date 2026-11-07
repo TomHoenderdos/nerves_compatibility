@@ -9,7 +9,7 @@ defmodule Portal.Builders.Upload do
   require Logger
 
   alias Portal.{ArtifactStore, Repo}
-  alias Portal.Builders.{Lease, Leases, TarStream}
+  alias Portal.Builders.{Lease, Leases, ResultJson, TarStream}
 
   @sha ~r/\A[0-9a-f]{64}\z/
   @log_name ~r/\A[A-Za-z0-9_.\-]+\.log\z/
@@ -477,9 +477,7 @@ defmodule Portal.Builders.Upload do
 
     with :ok <- free_space(),
          :ok <- mkdir(logs_dir),
-         :ok <- size_ok(result.path, caps.max_result_bytes, :result_too_large),
-         {:ok, bytes} <- read_result(result.path),
-         {:ok, decoded} <- decode(bytes),
+         {:ok, bytes, decoded} <- read_result(result.path, caps.max_result_bytes),
          :ok <- write_logs(Map.get(parts, :logs), logs_dir, caps),
          :ok <- write_runner_log(Map.get(parts, :runner_log), Path.join(out, "runner.log"), caps) do
       # result.json last: `load_run/1` only sees a run whose parts all landed.
@@ -498,12 +496,18 @@ defmodule Portal.Builders.Upload do
     end
   end
 
-  # `path` is the Plug.Upload temp file Plug.Parsers wrote.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp read_result(path) do
-    case File.read(path) do
-      {:ok, bytes} -> {:ok, bytes}
-      {:error, _} -> {:error, :result_unparsable}
+  # `path` is the Plug.Upload temp file Plug.Parsers wrote. `Portal.Builders.ResultJson`
+  # enforces `max_bytes` (statted and then bounded on the read itself, so the
+  # temp file growing between the two can't bypass it) and refuses JSON
+  # nested past its depth bound; either refusal, like an unreadable or
+  # non-object body, lands on the existing `:result_unparsable`/`:result_too_large`
+  # outcomes the caller already handles.
+  defp read_result(path, max_bytes) do
+    case ResultJson.read(path, max_bytes) do
+      {:ok, bytes, %{} = decoded} -> {:ok, bytes, decoded}
+      {:ok, _bytes, _not_an_object} -> {:error, :result_unparsable}
+      {:error, :too_large} -> {:error, :result_too_large}
+      {:error, _reason} -> {:error, :result_unparsable}
     end
   end
 

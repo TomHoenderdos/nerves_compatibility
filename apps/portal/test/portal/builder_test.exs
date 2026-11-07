@@ -99,6 +99,29 @@ defmodule Portal.BuilderTest do
       assert {:error, :missing_result_json} = Builder.load_run(run_id)
     end
 
+    test "a result.json over the cap reads as missing", %{previous: previous} do
+      # The worker container writes this straight into a host-mounted
+      # directory, with no upload step to bound it first, so the cap applies
+      # on read: `Portal.Builders.ResultJson`'s default is 8 MiB.
+      {root, run_id, out} = seed_run()
+      put_builder([scratch_root: root], previous)
+
+      oversized = ~s({"pad":") <> String.duplicate("a", 8_388_608) <> ~s("})
+      File.write!(Path.join(out, "result.json"), oversized)
+
+      assert {:error, :missing_result_json} = Builder.load_run(run_id)
+    end
+
+    test "a result.json nested past the depth bound reads as missing", %{previous: previous} do
+      {root, run_id, out} = seed_run()
+      put_builder([scratch_root: root], previous)
+
+      too_deep = Enum.reduce(1..65, "0", fn _, acc -> "[" <> acc <> "]" end)
+      File.write!(Path.join(out, "result.json"), too_deep)
+
+      assert {:error, :missing_result_json} = Builder.load_run(run_id)
+    end
+
     test "reads a small runner.log whole", %{previous: previous} do
       {root, run_id, out} = seed_run()
       put_builder([scratch_root: root], previous)

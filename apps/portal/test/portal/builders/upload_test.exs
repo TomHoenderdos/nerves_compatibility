@@ -274,6 +274,47 @@ defmodule Portal.Builders.UploadTest do
     File.rm_rf(dir)
   end
 
+  test "a result.json over the cap is refused before it is written", %{lease: lease} do
+    previous = Application.get_env(:portal, Upload)
+    Application.put_env(:portal, Upload, Keyword.put(previous, :max_result_bytes, 100))
+
+    dir = Path.join(System.tmp_dir!(), "parts-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(
+      Path.join(dir, "result.json"),
+      ~s({"pad":") <> String.duplicate("a", 200) <> ~s("})
+    )
+
+    assert {:error, :result_too_large} =
+             Upload.write_outputs(lease.id, %{
+               result: %Plug.Upload{path: Path.join(dir, "result.json"), filename: "result.json"},
+               logs: nil,
+               runner_log: nil
+             })
+
+    refute File.exists?(Path.join(Upload.out_dir(lease.id), "result.json"))
+    File.rm_rf(dir)
+  end
+
+  test "a result.json nested past the depth bound is refused", %{lease: lease} do
+    dir = Path.join(System.tmp_dir!(), "parts-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    too_deep = Enum.reduce(1..65, "0", fn _, acc -> "[" <> acc <> "]" end)
+    File.write!(Path.join(dir, "result.json"), too_deep)
+
+    assert {:error, :result_unparsable} =
+             Upload.write_outputs(lease.id, %{
+               result: %Plug.Upload{path: Path.join(dir, "result.json"), filename: "result.json"},
+               logs: nil,
+               runner_log: nil
+             })
+
+    refute File.exists?(Path.join(Upload.out_dir(lease.id), "result.json"))
+    File.rm_rf(dir)
+  end
+
   # A `logs.tar.gz` built by `:erl_tar` from `{name_in_archive, path}` pairs.
   defp logs_upload(dir, entries) do
     archive = Path.join(dir, "logs-#{System.unique_integer([:positive])}.tar.gz")
