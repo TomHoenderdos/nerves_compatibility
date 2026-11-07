@@ -25,8 +25,8 @@
 %% protocol implementations Enum and Stream go through (matched by prefix).
 -define(GLUE, ['Elixir.Enum', 'Elixir.Stream', 'Elixir.Map', 'Elixir.Keyword', 'Elixir.List',
                'Elixir.MapSet', 'Elixir.Access', 'Elixir.Enumerable', 'Elixir.Collectable',
-               lists, maps, proplists, sets, gb_trees, gb_sets, orddict, dict,
-               erl_eval, elixir, elixir_eval]).
+               lists, maps, proplists, sets, ordsets, gb_trees, gb_sets, orddict, dict,
+               array, digraph, erl_eval, elixir, elixir_eval]).
 -define(GLUE_PREFIXES, ["Elixir.Enumerable.", "Elixir.Collectable."]).
 
 extent(Stack, Depth, IsToolchain, ProcessIsUser) ->

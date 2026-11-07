@@ -32,7 +32,10 @@ defmodule NccWorker.Tracer.StackTest do
     Map,
     Keyword,
     MapSet,
-    :maps
+    :maps,
+    :ordsets,
+    :array,
+    :digraph
   ]
 
   defp tc?(module), do: module in @toolchain
@@ -275,6 +278,23 @@ defmodule NccWorker.Tracer.StackTest do
                  f(Keyword, :update, 4),
                  f(:elixir_dispatch, :expand_macro_fun, 7)
                ])
+    end
+
+    test "OTP's ordsets, array and digraph folds with a captured primitive are user extent" do
+      for frame <- [
+            f(:ordsets, :fold, 3),
+            f(:array, :foldl, 3),
+            f(:array, :"-map/2-fun-0-", 3),
+            f(:digraph, :"-collect_elems/3-fun-0-", 3)
+          ] do
+        assert {:user, :dispatcher, _, :none} =
+                 extent([
+                   f(System, :get_env, 1),
+                   frame,
+                   f(:elixir_dispatch, :expand_macro_fun, 7)
+                 ]),
+               inspect(frame)
+      end
     end
 
     test "an unknown protocol-like prefix is not glue" do
