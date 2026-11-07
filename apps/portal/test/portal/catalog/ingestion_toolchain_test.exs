@@ -401,6 +401,23 @@ defmodule Portal.Catalog.IngestionToolchainTest do
       assert {tb.status, tb.transient_attempts} == {:skipped, 0}
     end
 
+    test "a fail verdict resets the count" do
+      name = unique_name()
+      transient = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+
+      for _ <- 1..2 do
+        assert {:ok, _} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+      end
+
+      failed =
+        skipped_result(name)
+        |> put_in(["toolchain_build", "status"], "error")
+        |> put_in(["toolchain_build", "reason"], "undefined function foo/0")
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(failed, opts(name, files_dir_with([])))
+      assert {tb.status, tb.transient_attempts} == {:fail, 0}
+    end
+
     test "a kept row counts its transient retries" do
       name = unique_name()
       beam = blob("beam-#{name}")
@@ -538,15 +555,19 @@ defmodule Portal.Catalog.IngestionToolchainTest do
           Ecto.Adapters.SQL.Sandbox.checkin(Portal.Repo)
         end)
 
-      assert_receive :locked, 5_000
-
       ingest_opts = opts(name, files_dir_with([]))
-      ingest = Task.async(fn -> Ingestion.ingest_toolchain(transient, ingest_opts) end)
 
-      assert Task.yield(ingest, 300) == nil
-
-      send(holder.pid, :release)
-      Task.await(holder)
+      # Released whatever happens, so the holder never keeps its connection.
+      ingest =
+        try do
+          assert_receive :locked, 5_000
+          ingest = Task.async(fn -> Ingestion.ingest_toolchain(transient, ingest_opts) end)
+          assert Task.yield(ingest, 300) == nil
+          ingest
+        after
+          send(holder.pid, :release)
+          Task.await(holder)
+        end
 
       assert {:ok, %{status: :error, transient_attempts: 1}} = Task.await(ingest)
     end

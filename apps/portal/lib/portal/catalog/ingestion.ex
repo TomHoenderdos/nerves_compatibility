@@ -523,9 +523,15 @@ defmodule Portal.Catalog.Ingestion do
 
   defp counted(verdict, false, _package_id, _opts), do: {verdict, 0}
 
-  # Only an `:error` row can carry a count to add to: a pass or skipped row
-  # is kept (above), and a `fail` is a verdict.
-  defp previous_transient_attempts(package_id, opts) do
+  @doc """
+  The `transient_attempts` of the `:error` row for the toolchain build
+  identity in `opts` (`:version`, `:toolchain`, `:builder_version` and
+  `:variant`, `:with` when absent) of the package `package_id`; 0 when there
+  is none. Only an `:error` row carries a count on: a pass or skipped row is
+  kept, and a `fail` is a verdict. Read it under `lock_toolchain_identity/1`.
+  """
+  @spec previous_transient_attempts(String.t(), map()) :: non_neg_integer()
+  def previous_transient_attempts(package_id, opts) do
     variant = Map.get(opts, :variant, :with)
 
     ToolchainBuild

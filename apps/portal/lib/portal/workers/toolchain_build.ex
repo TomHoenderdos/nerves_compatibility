@@ -60,6 +60,7 @@ defmodule Portal.Workers.ToolchainBuild do
   require Logger
 
   alias Portal.Builder
+  alias Portal.Catalog.Ingestion
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Package
   alias Portal.Workers.Ingest
@@ -232,21 +233,51 @@ defmodule Portal.Workers.ToolchainBuild do
 
   # Best-effort: the row is what keeps the sweep from re-enqueueing the build
   # tomorrow, not the job's result. Failing to write it is logged and the job's
-  # own outcome stands.
+  # own outcome stands. It runs under the identity's lock, as an ingest does
+  # (`Ingestion.lock_toolchain_identity/1`). An `:error` is no verdict, so it
+  # keeps the transient count of the `:error` row it replaces; a `:fail`
+  # (exit 11) is one and resets it.
   defp write_row(%Oban.Job{args: args} = job, status, reason, run_id, image_digest) do
-    with %Package{id: package_id} <- package(args["package"]),
-         nil <- kept(package_id, args) do
+    identity = %{
+      package: args["package"],
+      version: args["version"],
+      toolchain: args["toolchain"],
+      builder_version: args["builder_version"],
+      variant: variant(args)
+    }
+
+    # A failed create inside it can roll the transaction back before
+    # `write_locked_row/6` logs it, so log the rollback here.
+    Portal.Repo.transaction(fn ->
+      :ok = Ingestion.lock_toolchain_identity(identity)
+      write_locked_row(job, identity, status, reason, run_id, image_digest)
+    end)
+    |> case do
+      {:error, error} -> Logger.error("Toolchain row for #{describe(job)}: #{inspect(error)}")
+      {:ok, _} -> :ok
+    end
+
+    :ok
+  rescue
+    exception ->
+      Logger.error("Toolchain row for #{describe(job)}: #{Exception.message(exception)}")
+  end
+
+  defp write_locked_row(job, identity, status, reason, run_id, image_digest) do
+    with %Package{id: package_id} <- package(identity.package),
+         nil <- kept(package_id, job.args) do
       Portal.Catalog.ToolchainBuild
       |> Ash.Changeset.for_create(:upsert, %{
         package_id: package_id,
-        version: args["version"],
-        toolchain: args["toolchain"],
-        builder_version: args["builder_version"],
-        variant: variant(args),
+        version: identity.version,
+        toolchain: identity.toolchain,
+        builder_version: identity.builder_version,
+        variant: identity.variant,
         status: status,
         reason: reason,
         image_digest: image_digest,
         run_id: run_id,
+        transient_attempts: transient_attempts(status, package_id, identity),
         finished_at: DateTime.utc_now()
       })
       |> Ash.create(domain: Portal.Catalog)
@@ -255,15 +286,15 @@ defmodule Portal.Workers.ToolchainBuild do
         {:error, error} -> Logger.error("Toolchain row for #{describe(job)}: #{inspect(error)}")
       end
     else
-      nil -> Logger.warning("No package #{args["package"]} to record #{describe(job)} against")
+      nil -> Logger.warning("No package #{identity.package} to record #{describe(job)} against")
       %Portal.Catalog.ToolchainBuild{} = row -> retried(row, job)
     end
-
-    :ok
-  rescue
-    exception ->
-      Logger.error("Toolchain row for #{describe(job)}: #{Exception.message(exception)}")
   end
+
+  defp transient_attempts(:error, package_id, identity),
+    do: Ingestion.previous_transient_attempts(package_id, identity)
+
+  defp transient_attempts(_verdict, _package_id, _identity), do: 0
 
   defp package(name) do
     Package |> Ash.Query.filter(name == ^name) |> Ash.read_one!(domain: Portal.Catalog)

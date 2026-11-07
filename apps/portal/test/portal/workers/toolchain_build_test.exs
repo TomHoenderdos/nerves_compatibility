@@ -264,6 +264,65 @@ defmodule Portal.Workers.ToolchainBuildTest do
     assert [%{status: :pass}] = rows("jason")
   end
 
+  describe "transient attempts" do
+    # Two transient could-not-judge ingests of the job's identity: an `:error`
+    # row counting 2.
+    defp two_transients! do
+      result = %{
+        "scope" => "toolchain",
+        "finished_at" => "2026-10-24T11:00:00Z",
+        "package" => %{"name" => "jason", "version" => "1.4.4"},
+        "systems" => %{},
+        "toolchain_build" => %{
+          "status" => "skipped",
+          "reason" => "portability could not be judged",
+          "elixir" => "1.19.1",
+          "otp" => "28",
+          "compile_observations" => %{
+            "trace_stats" => %{"judge_compile" => "not_finished", "transient" => true}
+          }
+        }
+      }
+
+      for n <- 1..2 do
+        opts = %{
+          package: "jason",
+          version: "1.4.4",
+          toolchain: "1.19/28",
+          builder_version: 1,
+          run_id: "tc-transient-#{n}",
+          image_digest: "sha256:toolchain-image",
+          files_dir: System.tmp_dir!(),
+          output_dir: System.tmp_dir!()
+        }
+
+        assert {:ok, _} = Portal.Catalog.Ingestion.ingest_toolchain(result, opts)
+      end
+
+      assert [%{status: :error, transient_attempts: 2}] = rows("jason")
+    end
+
+    test "an error on the last attempt keeps the count" do
+      two_transients!()
+      respond(10)
+
+      capture_log(fn ->
+        assert {:error, _} = perform_job(ToolchainBuild, @args, attempt: 2)
+      end)
+
+      assert [%{status: :error, reason: reason, transient_attempts: 2}] = rows("jason")
+      assert reason =~ "worker/runner exit 10"
+    end
+
+    test "a policy violation is a verdict and resets the count" do
+      two_transients!()
+      respond(11)
+
+      assert {:cancel, _reason} = perform_job(ToolchainBuild, @args)
+      assert [%{status: :fail, transient_attempts: 0}] = rows("jason")
+    end
+  end
+
   # Puts back the Portal.Builder config the test found, the test.exs defaults
   # included (the image label stub among them). Deleting it instead left every
   # later test without those defaults, so a Portal.BuilderTest that ran
