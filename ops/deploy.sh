@@ -108,34 +108,46 @@ include_color() {
 # Why the restart path refuses on this host, and how to leave blue/green on
 # purpose without routing Apache at a port nothing listens on: the single
 # ncc-portal unit listens on 4002, so the include must point there before
-# the serving colour stops.
-restart_path_refusal() { # color source-of-color upstream
-  local c=$1 i=$NCC_INSTALL_DIR inc=${3:-\$NCC_APACHE_UPSTREAM} rel copy
+# the serving colour stops. $4 says whether the colour came from reading the
+# include; when it did not, nothing is claimed about the port it names, and
+# when its path ($3) is unknown, no command that touches it is printed.
+restart_path_refusal() { # color source-of-color include-path include-read
+  local c=$1 i=$NCC_INSTALL_DIR inc=$3 read=$4 rel copy
   rel=$i/releases/$c
   copy=$rel/ncc-upstream.conf.template
-  [[ -r $copy ]] || copy=$NCC_SRC_DIR/ops/ncc-upstream.conf.template
+  [[ -r $copy && -s $copy ]] || copy=$NCC_SRC_DIR/ops/ncc-upstream.conf.template
   echo "refusing: this host deploys blue/green (${c:-an unknown colour} serves now, per $2), but NCC_BLUE_GREEN is not 1. Set NCC_BLUE_GREEN=1 in the deploy env file and deploy again."
+  if [[ -z $inc ]]; then
+    echo "The Apache include's path is unknown here (NCC_APACHE_UPSTREAM is not set): find it first, from the Include line in the site's :443 vhost (apachectl -S lists the vhost files), and check which port it names before following any step below."
+  fi
   case $c in
     blue)
       echo "To leave blue/green on purpose instead, in this order:"
       echo "  1. remove NCC_BLUE_GREEN from the deploy env file"
-      echo "  2. cp -a '$rel' '$i/portal'"
-      echo "  3. the include already points at 4002, where the single ncc-portal unit listens"
-      echo "  4. systemctl disable --now ncc-portal@blue && systemctl enable --now ncc-portal   (the one restart)"
+      echo "  2. rm -rf '$i/portal' && cp -aT '$rel' '$i/portal'"
+      if [[ $read == yes ]]; then
+        echo "  3. the include already points at 4002, where the single ncc-portal unit listens"
+      else
+        echo "  3. make sure the include points at 4002, where the single ncc-portal unit listens; if it names 4003, follow the green steps instead"
+      fi
+      echo "  4. systemctl disable --now ncc-portal@blue && systemctl enable --now ncc-portal   (the one restart: the site is down until ncc-portal is up)"
       echo "  5. rm -f '$i/active-color'"
       ;;
     green)
-      echo "The single ncc-portal unit listens on 4002, but the include routes to green on 4003. To leave blue/green on purpose, either bring blue back first (with NCC_BLUE_GREEN=1: ops/deploy.sh rollback, or a deploy) and follow the steps this prints then, or accept one restart, in this order:"
+      echo "The single ncc-portal unit listens on 4002, but green listens on 4003. To leave blue/green on purpose, either bring blue back first (with NCC_BLUE_GREEN=1: ops/deploy.sh rollback, or a deploy) and follow the steps this prints then, or accept one restart, in this order:"
       echo "  1. remove NCC_BLUE_GREEN from the deploy env file"
-      echo "  2. cp -a '$rel' '$i/portal'"
-      echo "  3. point the include at 4002 (the site is down from this reload until step 4 has started the single unit):"
-      echo "     sed \"s/@PORT@/4002/g\" '$copy' > '$inc.new' && cp '$inc' '$inc.bak' && mv '$inc.new' '$inc' && apachectl configtest && systemctl reload apache2"
-      echo "     (if configtest fails: mv '$inc.bak' '$inc')"
+      echo "  2. rm -rf '$i/portal' && cp -aT '$rel' '$i/portal'"
+      if [[ -n $inc ]]; then
+        echo "  3. point the include at 4002 (the site is down from this reload until step 4 has started the single unit):"
+        echo "     sed \"s/@PORT@/4002/g\" '$copy' > '$inc.new' && test -s '$inc.new' && cp '$inc' '$inc.bak' && mv '$inc.new' '$inc' && { apachectl configtest || { mv '$inc.bak' '$inc'; false; }; } && systemctl reload apache2"
+      else
+        echo "  3. point the include you found at 4002, rendered from '$copy', check it with apachectl configtest, and reload apache2 (the site is down from this reload until step 4 has started the single unit)"
+      fi
       echo "  4. systemctl disable --now ncc-portal@green && systemctl enable --now ncc-portal"
       echo "  5. rm -f '$i/active-color'"
       ;;
     *)
-      echo "Which colour serves could not be read from the include or active-color; check $inc and $i/active-color by hand before anything else."
+      echo "Which colour serves could not be read from the include or active-color; check the include and $i/active-color by hand before anything else."
       ;;
   esac
 }
@@ -150,12 +162,17 @@ if [[ $blue_green != 1 ]]; then
   upstream=$(ncc_layout_flag NCC_APACHE_UPSTREAM)
   serving=$(include_color "$upstream")
   if [[ -e $NCC_INSTALL_DIR/active-color || $serving == green ]]; then
-    source_of="the include $upstream"
+    case $serving in
+      blue) source_of="the include $upstream, which names port 4002" ;;
+      *) source_of="the include $upstream, which names port 4003" ;;
+    esac
+    include_read=yes
     if [[ -z $serving ]]; then
       serving=$(cat "$NCC_INSTALL_DIR/active-color" 2>/dev/null || true)
       source_of="$NCC_INSTALL_DIR/active-color (the include could not be read)"
+      include_read=no
     fi
-    restart_path_refusal "$serving" "$source_of" "$upstream" >&2
+    restart_path_refusal "$serving" "$source_of" "$upstream" "$include_read" >&2
     exit 1
   fi
 fi

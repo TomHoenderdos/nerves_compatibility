@@ -261,7 +261,8 @@ class LayoutGuardTest(unittest.TestCase):
 
     TEMPLATE = (OPS / "ncc-upstream.conf.template").read_text()
 
-    def restart_on_blue_green(self, serving, flag="", active_color=True, include=True):
+    def restart_on_blue_green(self, serving, flag="", active_color=True, include=True,
+                              upstream_known=True):
         """A restart-path deploy on a host whose include serves $serving."""
         directory = tempfile.mkdtemp()
         self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
@@ -280,7 +281,7 @@ class LayoutGuardTest(unittest.TestCase):
         result, events = self.run_script(
             "deploy.sh", ["a" * 40],
             env_file_text=self.BG_LAYOUT.format(install=install)
-            + f"NCC_APACHE_UPSTREAM={upstream}\n" + flag)
+            + (f"NCC_APACHE_UPSTREAM={upstream}\n" if upstream_known else "") + flag)
         return result, events, install, upstream
 
     def assert_refused_untouched(self, result, events, install):
@@ -305,11 +306,12 @@ class LayoutGuardTest(unittest.TestCase):
         self.assert_refused_untouched(result, events, install)
         err = result.stderr
         self.assertIn("blue serves", err)
-        self.assertIn(f"cp -a '{install}/releases/blue' '{install}/portal'", err)
+        self.assertIn(f"cp -aT '{install}/releases/blue' '{install}/portal'", err)
         self.assertIn("systemctl disable --now ncc-portal@blue && systemctl enable --now ncc-portal",
                       err)
         self.assertIn(f"rm -f '{install}/active-color'", err)
-        self.assertLess(err.index("cp -a"), err.index("systemctl disable --now"))
+        self.assertLess(err.index("cp -aT"), err.index("systemctl disable --now"))
+        self.assertIn("the site is down until ncc-portal is up", err)
         self.assertLess(err.index("systemctl disable --now"), err.index("rm -f '"))
 
     def test_the_refusal_while_green_serves_points_the_include_at_4002_first(self):
@@ -318,7 +320,7 @@ class LayoutGuardTest(unittest.TestCase):
         err = result.stderr
         self.assertIn("green serves", err)
         self.assertIn("ops/deploy.sh rollback", err)
-        self.assertIn(f"cp -a '{install}/releases/green' '{install}/portal'", err)
+        self.assertIn(f"cp -aT '{install}/releases/green' '{install}/portal'", err)
         render = f"sed \"s/@PORT@/4002/g\" '{install}/releases/green/ncc-upstream.conf.template'"
         self.assertIn(render, err)
         stop = err.index("systemctl disable --now ncc-portal@green")
@@ -334,13 +336,35 @@ class LayoutGuardTest(unittest.TestCase):
         result, events, install, _ = self.restart_on_blue_green("green", active_color=False)
         self.assert_refused_untouched(result, events, install)
         self.assertIn("green serves", result.stderr)
-        self.assertIn("4003", result.stderr)
+        self.assertIn("which names port 4003", result.stderr)
 
     def test_without_a_readable_include_the_refusal_trusts_active_color(self):
         result, events, install, _ = self.restart_on_blue_green("green", include=False)
         self.assert_refused_untouched(result, events, install)
         self.assertIn("green serves", result.stderr)
         self.assertIn("active-color", result.stderr)
+
+    def test_with_the_include_path_unknown_the_refusal_claims_no_port(self):
+        # NCC_APACHE_UPSTREAM gone from the env file too: the colour comes
+        # from active-color, and nothing is said or run about the include
+        # beyond finding it.
+        for serving in ("blue", "green"):
+            with self.subTest(serving=serving):
+                result, events, install, _ = self.restart_on_blue_green(
+                    serving, upstream_known=False)
+                self.assert_refused_untouched(result, events, install)
+                err = result.stderr
+                self.assertIn(f"{serving} serves", err)
+                self.assertIn("apachectl -S", err)
+                self.assertIn("Include", err)
+                self.assertNotIn("$NCC_APACHE_UPSTREAM", err)
+                self.assertNotIn("sed ", err)
+                # No claim about the port the include names (green's own
+                # port, 4003, may still be mentioned as a fact about green).
+                self.assertNotIn("already points", err)
+                self.assertNotIn("routes to", err)
+                self.assertNotIn("include routes", err)
+                self.assertNotIn("names port", err)
 
     def test_a_blue_green_value_other_than_empty_0_or_1_refuses(self):
         for value in ("true", "yes", "2", " 1"):
