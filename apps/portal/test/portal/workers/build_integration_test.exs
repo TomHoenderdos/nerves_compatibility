@@ -82,11 +82,14 @@ defmodule Portal.Workers.BuildIntegrationTest do
     pure_result = Enum.find(system_results, &(&1.system_pkg == "pure_elixir"))
     assert pure_result.compile_env_rule == 1
 
-    assert Enum.any?(
-             pure_result.compile_env,
-             &(&1["app"] == "jason" and &1["path"] == ["decoding_integer_digit_limit"])
-           ),
-           inspect(pure_result.compile_env)
+    # Exactly jason's one read, unset (`:error`); decimal reads no config.
+    assert pure_result.compile_env == [
+             %{
+               "app" => "jason",
+               "path" => ["decoding_integer_digit_limit"],
+               "value" => :error |> :erlang.term_to_binary() |> Base.url_encode64(padding: false)
+             }
+           ]
 
     assert Enum.sort(Enum.map(system_results, & &1.system_pkg)) == ["host", "pure_elixir"]
 
