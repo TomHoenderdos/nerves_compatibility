@@ -13,7 +13,9 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
   # refusals decides any narrowing.
   #
   # Refusals are matched to their owner (ruling M7).
-  use ExUnit.Case, async: true
+  # Starts real `elixir` VMs: one such module at a time (the :real_vm
+  # group), alongside the unit suites, so their compiles do not contend.
+  use ExUnit.Case, async: true, group: :real_vm
 
   alias NccWorker.{Portability, TracerFixtures}
   alias NccWorker.Tracer.Report

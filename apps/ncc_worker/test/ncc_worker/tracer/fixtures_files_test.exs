@@ -7,7 +7,9 @@ defmodule NccWorker.Tracer.FixturesFilesTest do
   #
   # Every refusal is matched to its owner (ruling M7), so a verdict cannot
   # pass on an observation from another fixture's window.
-  use ExUnit.Case, async: true
+  # Starts real `elixir` VMs: one such module at a time (the :real_vm
+  # group), alongside the unit suites, so their compiles do not contend.
+  use ExUnit.Case, async: true, group: :real_vm
 
   alias NccWorker.{Portability, TracerFixtures}
 

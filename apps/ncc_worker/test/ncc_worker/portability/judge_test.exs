@@ -1,5 +1,7 @@
 defmodule NccWorker.Portability.JudgeTest do
-  use ExUnit.Case, async: true
+  # Starts real `elixir` VMs: one such module at a time (the :real_vm
+  # group), alongside the unit suites, so their compiles do not contend.
+  use ExUnit.Case, async: true, group: :real_vm
 
   alias NccWorker.Portability
   alias NccWorker.Portability.{Context, Rebar}

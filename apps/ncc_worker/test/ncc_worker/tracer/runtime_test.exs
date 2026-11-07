@@ -1,6 +1,8 @@
 defmodule NccWorker.Tracer.RuntimeTest do
-  # Starts separate VMs with the tracer on their code path; each test owns its dir.
-  use ExUnit.Case, async: true
+  # Starts separate VMs with the tracer on their code path; each test owns its
+  # dir. One such module at a time (the :real_vm group), alongside the unit
+  # suites, so their compiles do not contend.
+  use ExUnit.Case, async: true, group: :real_vm
 
   @moduletag :tmp_dir
   @moduletag timeout: 180_000

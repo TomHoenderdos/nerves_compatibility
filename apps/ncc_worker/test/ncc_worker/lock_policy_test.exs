@@ -41,36 +41,6 @@ defmodule NccWorker.LockPolicyTest do
       File.rm_rf!(tmp_dir)
     end
 
-    # Mix generates locks with quoted keys, and evaluating one used to print
-    # "found quoted keyword" once per dependency. Those lines ended up in the
-    # build log shown to whoever requested the scan, blaming the package for
-    # syntax Mix itself wrote.
-    test "evaluating a lock with quoted keys writes nothing to stderr" do
-      tmp_dir = System.tmp_dir!() |> Path.join("ncc_test_#{:rand.uniform(1_000_000)}")
-      File.mkdir_p!(tmp_dir)
-
-      lock_content = """
-      %{
-        "jason": {:hex, :jason, "1.4.1", "af1504e35f629ddcdd6addb3513c3853991f694921b1b9368b0bd32beb9f1b63", [:mix], [], "hexpm", "fbb01ecdfd565b56261302f7e1fcc27c4fb8f546d6c03f1e1e26fbd8a0e3000f"}
-      }
-      """
-
-      File.write!(Path.join(tmp_dir, "mix.lock"), lock_content)
-
-      # capture_io(:stderr) swaps the global stderr device, so in an async
-      # suite it also catches what other tests print meanwhile (the process
-      # sweep's "skipped" line, for one). Assert on what evaluating this lock
-      # would print, not on an empty stream.
-      stderr =
-        ExUnit.CaptureIO.capture_io(:stderr, fn ->
-          assert :ok = LockPolicy.validate(tmp_dir)
-        end)
-
-      refute stderr =~ ~r/warning|quoted|deprecated/i
-
-      File.rm_rf!(tmp_dir)
-    end
-
     test "returns ok when mix.lock does not exist" do
       tmp_dir = System.tmp_dir!() |> Path.join("ncc_test_#{:rand.uniform(1_000_000)}")
       File.mkdir_p!(tmp_dir)
@@ -79,5 +49,39 @@ defmodule NccWorker.LockPolicyTest do
 
       File.rm_rf!(tmp_dir)
     end
+  end
+end
+
+defmodule NccWorker.LockPolicyStderrTest do
+  # capture_io(:stderr) swaps the VM-wide stderr device, so while async
+  # tests run it also catches what they print. Synchronous, this module
+  # runs after every async test of the suite, alone.
+  use ExUnit.Case, async: false
+
+  alias NccWorker.LockPolicy
+
+  # Mix generates locks with quoted keys, and evaluating one used to print
+  # "found quoted keyword" once per dependency. Those lines ended up in the
+  # build log shown to whoever requested the scan, blaming the package for
+  # syntax Mix itself wrote.
+  test "evaluating a lock with quoted keys writes nothing to stderr" do
+    tmp_dir = System.tmp_dir!() |> Path.join("ncc_test_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp_dir)
+    on_exit(fn -> File.rm_rf!(tmp_dir) end)
+
+    lock_content = """
+    %{
+      "jason": {:hex, :jason, "1.4.1", "af1504e35f629ddcdd6addb3513c3853991f694921b1b9368b0bd32beb9f1b63", [:mix], [], "hexpm", "fbb01ecdfd565b56261302f7e1fcc27c4fb8f546d6c03f1e1e26fbd8a0e3000f"}
+    }
+    """
+
+    File.write!(Path.join(tmp_dir, "mix.lock"), lock_content)
+
+    stderr =
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert :ok = LockPolicy.validate(tmp_dir)
+      end)
+
+    assert stderr == ""
   end
 end
