@@ -114,7 +114,10 @@ defmodule NccWorker.Portability.JudgeTest do
     )
   end
 
-  defp judge(proj, report, opts \\ []), do: Portability.judge(proj, "pkg", report, [], opts)
+  # Hand-built reports carry no `built` lines: the built check is opted out
+  # of here and tested on its own.
+  defp judge(proj, report, opts \\ []),
+    do: Portability.judge(proj, "pkg", report, [], Keyword.put_new(opts, :built_check, false))
 
   # A config value as the tracer's snapshot and the manifest carry it.
   defp enc(term),
@@ -201,7 +204,7 @@ defmodule NccWorker.Portability.JudgeTest do
       r = proj |> report() |> with_libs(["/usr/lib/libc.so.6", nif])
 
       assert %{status: :pass, observations: %{"native_libs" => [_]}} =
-               Portability.judge(proj, "pkg", r, ["dep"], nif_waiver: false)
+               Portability.judge(proj, "pkg", r, ["dep"], nif_waiver: false, built_check: false)
 
       # Not native: the same library refuses.
       assert %{status: :skip, reason: "compile-time native library load: " <> _} =
@@ -215,7 +218,10 @@ defmodule NccWorker.Portability.JudgeTest do
       r = proj |> report() |> with_libs(["/usr/lib/libc.so.6", nif])
 
       assert %{status: :skip, reason: "compile-time native library load: " <> _} =
-               Portability.judge(proj, "pkg", r, ["pkg", "dep"], nif_waiver: false)
+               Portability.judge(proj, "pkg", r, ["pkg", "dep"],
+                 nif_waiver: false,
+                 built_check: false
+               )
     end
 
     test "a child VM that compiled but wrote no libs snapshot cannot be judged", %{proj: proj} do
@@ -412,15 +418,62 @@ defmodule NccWorker.Portability.JudgeTest do
     defp problems(%{status: :skip, reason: @cnj, observations: %{"problems" => problems}}),
       do: problems
 
-    test "without built_check a report needs no built lines; with it, each is required",
+    test "the check runs unless turned off; turned off, a report needs no built lines",
          %{proj: proj} do
       {proj, report} = clean_judged_project(proj)
-      assert %{status: :pass} = Portability.judge(proj, "pkg", report, [])
+      assert %{status: :pass} = Portability.judge(proj, "pkg", report, [], built_check: false)
 
-      assert %{status: :skip, observations: %{"problems" => problems}} =
-               Portability.judge(proj, "pkg", report, [], built_check: true)
+      for opts <- [[], [built_check: true]] do
+        assert %{status: :skip, reason: @cnj, observations: %{"problems" => problems}} =
+                 Portability.judge(proj, "pkg", report, [], opts)
 
-      assert Enum.any?(problems, &String.starts_with?(&1, "built outside the trace: "))
+        assert Enum.sort(problems) == [
+                 "built outside the trace: dep (no digest recorded)",
+                 "built outside the trace: pkg (no digest recorded)"
+               ]
+      end
+    end
+
+    test "the package's own build rewritten after its digest is not judged", %{proj: proj} do
+      {proj, report} = clean_judged_project(proj)
+      report = %{report | built: built_now(proj, ["dep", "pkg"])}
+
+      File.write!(
+        Path.join([proj, "_build/host/lib/pkg/ebin/pkg.app"]),
+        "{application, pkg, []}."
+      )
+
+      assert problems(judge(proj, report, built_check: true)) == [
+               "built outside the trace: pkg"
+             ]
+    end
+
+    test "no time left in the budget: every dependency not yet checked is not judged",
+         %{proj: proj} do
+      {proj, report} = clean_judged_project(proj)
+      report = %{report | built: built_now(proj, ["dep", "pkg"])}
+
+      assert problems(judge(proj, report, built_check: true, built_budget_ms: 0)) == [
+               "built outside the trace: dep (no time left)",
+               "built outside the trace: pkg (no time left)"
+             ]
+    end
+
+    test "the budget is shared by the closure: what is checked after it ran out is not judged",
+         %{proj: proj} do
+      {proj, report} = clean_judged_project(proj)
+      report = %{report | built: built_now(proj, ["dep", "pkg"])}
+      # The start, then dep's check, both at 0; pkg's check after the budget.
+      ticks = :counters.new(1, [])
+
+      clock = fn ->
+        :counters.add(ticks, 1, 1)
+        if :counters.get(ticks, 1) <= 2, do: 0, else: 1_000
+      end
+
+      assert problems(
+               judge(proj, report, built_check: true, built_budget_ms: 500, built_clock: clock)
+             ) == ["built outside the trace: pkg (no time left)"]
     end
 
     test "a closure whose builds match their recorded digests passes", %{proj: proj} do
@@ -661,7 +714,7 @@ defmodule NccWorker.Portability.JudgeTest do
 
     test "a judge that raises is could-not-judge, never a crash", %{proj: proj} do
       assert %{status: :skip, reason: @cnj} = judge(proj, report(proj, %{events: :garbage}))
-      assert %{status: :skip, reason: @cnj} = judge(proj, report(proj, %{windows: [:garbage]}))
+      assert %{status: :skip, reason: @cnj} = judge(proj, report(proj, %{windows: ["garbage"]}))
       assert %{status: :skip, reason: @cnj} = Portability.judge(proj, "pkg", %{}, [])
     end
   end

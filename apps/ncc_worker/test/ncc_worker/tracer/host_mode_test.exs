@@ -211,6 +211,21 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert "built outside the trace: fx_leaf" in obs["problems"]
   end
 
+  test "the package's own build rewritten after the compile is not judged", %{tmp_dir: dir} do
+    proj = fixture(dir)
+    traced = TracerFixtures.trace(proj, ["fx_top"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_top", traced)
+
+    beam = Path.join([proj, "_build", "host", "lib", "fx_top", "ebin", "Elixir.FxTop.beam"])
+    File.write!(beam, File.read!(beam) <> "x")
+
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             TracerFixtures.judge(proj, "fx_top", traced)
+
+    assert "built outside the trace: fx_top" in obs["problems"]
+  end
+
   test "run/3 judges no dependency rewritten after its window", %{tmp_dir: dir} do
     proj = fixture(dir)
     beam = Path.join([proj, "_build", "host", "lib", "fx_leaf", "ebin", "Elixir.FxLeaf.beam"])

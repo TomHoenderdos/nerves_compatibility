@@ -12,8 +12,9 @@ defmodule NccWorker.Portability do
        closure, stats or end, `unjudged > 0`, any event `Events.decide/4`
        could not judge, wherever it is attributed, or a closure dependency
        whose `ebin`/`priv` no longer match the digest taken when its window
-       closed (`built_check:`, always on in `run/3`; no digest then, none
-       now or no build dir is a mismatch too);
+       closed (`built_check:`, on unless turned off and always in `run/3`;
+       no digest then, none now, no build dir or no time left in the
+       recompute budget is a mismatch too);
     2. a refusal outside every window (it counts against everything);
     3. a refusal in the package's window (R1, R4 through `Events`);
     4. the package's window broken (missing, lowered depth, failed
@@ -96,6 +97,10 @@ defmodule NccWorker.Portability do
   @max_refusals 100
   @max_problems 20
   @integrity "compile-time tracing or system flag: "
+  # The built check's recompute: all digests together, and one digest
+  # (`ncc_tracer_digest`'s own default).
+  @built_budget_ms 5 * 60 * 1000
+  @digest_timeout_ms 60_000
 
   @doc """
   The project's Hex releases from its `mix.lock`, for `run/3`'s `releases:`.
@@ -331,10 +336,11 @@ defmodule NccWorker.Portability do
   Judges one read trace. `opts` go to `Context.build/5` (`releases:`,
   `hex_home:`); without them the context reads the project's `mix.lock` and
   this process's `HEX_HOME` now, which only tests should rely on.
-  `built_check: true` (default `false`, so a hand-built report needs no
-  `built` lines; `run/3` always sets it) also requires every closure
-  dependency's build dir to match the digest the tracer took when its window
-  closed. Never raises.
+  Every closure dependency's build dir must also match the digest the tracer
+  took when its window closed, all of them recomputed within
+  `built_budget_ms:` (default 5 minutes; `built_clock:` for tests);
+  `built_check: false` turns that off for a hand-built report with no
+  `built` lines (`run/3` always checks). Never raises.
   """
   @spec judge(String.t(), String.t(), Report.t(), [String.t()], keyword()) :: verdict()
   def judge(project_dir, package, report, native, opts \\ [])
@@ -531,11 +537,18 @@ defmodule NccWorker.Portability do
   # now, means the files judged are not the files the trace saw compiled
   # (restored, reused or rewritten since). Fails closed: no digest then, no
   # digest now, or no build dir is never a match.
+  #
+  # The recompute is bounded as a whole (`built_budget_ms:`, default 5 min)
+  # on top of each digest's own limits: a dependency checked once the
+  # budget is spent is not judged ("no time left").
   defp built_problems(ctx, report, opts) do
-    if Keyword.get(opts, :built_check, false) do
+    if Keyword.get(opts, :built_check, true) do
+      clock = Keyword.get(opts, :built_clock, fn -> System.monotonic_time(:millisecond) end)
+      deadline = clock.() + Keyword.get(opts, :built_budget_ms, @built_budget_ms)
+
       ctx
       |> Context.closure_of(ctx.package)
-      |> Enum.map(&built_mismatch(ctx, report, &1))
+      |> Enum.map(&built_mismatch(ctx, report, &1, deadline - clock.()))
       |> Enum.reject(&is_nil/1)
       |> Enum.map(&("built outside the trace: " <> &1))
     else
@@ -543,12 +556,14 @@ defmodule NccWorker.Portability do
     end
   end
 
-  defp built_mismatch(ctx, report, app) do
+  defp built_mismatch(_ctx, _report, app, left_ms) when left_ms <= 0, do: "#{app} (no time left)"
+
+  defp built_mismatch(ctx, report, app, left_ms) do
     recorded = Map.get(report.built || %{}, app)
 
     case {recorded, Map.get(ctx.deps, app)} do
       {%{digest: want}, %{build: dir}} when is_binary(want) and is_binary(dir) ->
-        compare_built(app, want, digest_now(dir))
+        compare_built(app, want, digest_now(dir, left_ms))
 
       {%{error: why}, _dep} when is_binary(why) ->
         "#{app} (digest failed at window close: #{why})"
@@ -567,8 +582,9 @@ defmodule NccWorker.Portability do
   defp compare_built(app, _want, {:error, why}),
     do: "#{app} (digest failed now: #{inspect(why, limit: 5, printable_limit: 200)})"
 
-  defp digest_now(dir) do
-    case :ncc_tracer_digest.dir(dir) do
+  # The digest's own limits, its time cut to what is left of the budget.
+  defp digest_now(dir, left_ms) do
+    case :ncc_tracer_digest.dir(dir, %{timeout_ms: min(left_ms, @digest_timeout_ms)}) do
       {:ok, digest, files} when is_binary(digest) -> {:ok, digest, files}
       {:error, why} -> {:error, why}
       other -> {:error, {:unexpected, other}}
