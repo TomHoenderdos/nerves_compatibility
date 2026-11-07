@@ -935,7 +935,7 @@ defmodule Portal.Catalog.Ingestion do
       overall_status: overall,
       footprint: footprint_for(result, carried),
       toolchain: result["toolchain"],
-      argus: argus_map(result["argus"]),
+      argus: argus_for(result, carried),
       deps_lock: deps_lock(result["deps_lock"]),
       package_checksum: package_checksum(result["package_checksum"]),
       log: run_log(overall, opts),
@@ -953,7 +953,25 @@ defmodule Portal.Catalog.Ingestion do
   # scope that says the measurement is missing. A targets run built firmware
   # and measured it, so it keeps its own.
   defp footprint_for(%{"scope" => "argus_only"}, %{footprint: previous}), do: previous
-  defp footprint_for(result, _carried), do: get_in(result, ["package", "footprint"])
+
+  # A partial run that measured nothing at all -- a targets run stopped by the
+  # wall clock (`Portal.Catalog.BuildTimeout`) -- keeps the previous run's
+  # measurement too. A worker result always reports one.
+  defp footprint_for(result, carried) do
+    case {get_in(result, ["package", "footprint"]), carried} do
+      {nil, %{footprint: previous}} -> previous
+      {footprint, _carried} -> footprint
+    end
+  end
+
+  # As for the footprint: a partial run with no argus result of its own keeps
+  # the previous run's.
+  defp argus_for(result, carried) do
+    case {argus_map(result["argus"]), carried} do
+      {nil, %{argus: previous}} -> previous
+      {argus, _carried} -> argus
+    end
+  end
 
   @partial_scopes ["targets", "argus_only"]
 
@@ -965,7 +983,7 @@ defmodule Portal.Catalog.Ingestion do
   defp carry_candidates(%{"scope" => scope}, package_name, version, systems)
        when scope in @partial_scopes do
     case previous_run(package_name) do
-      %{id: run_id, version_tested: ^version, footprint: footprint} ->
+      %{id: run_id, version_tested: ^version, footprint: footprint, argus: argus} ->
         rows =
           Repo.all(
             from(s in "catalog_system_results",
@@ -980,7 +998,7 @@ defmodule Portal.Catalog.Ingestion do
             )
           )
 
-        %{run_id: run_id, footprint: footprint, rows: rows}
+        %{run_id: run_id, footprint: footprint, argus: argus, rows: rows}
 
       _ ->
         nil
@@ -1003,7 +1021,8 @@ defmodule Portal.Catalog.Ingestion do
         select: %{
           id: type(r.id, Ecto.UUID),
           version_tested: r.version_tested,
-          footprint: r.footprint
+          footprint: r.footprint,
+          argus: r.argus
         }
       )
     )
@@ -1524,4 +1543,6 @@ defmodule Portal.Catalog.Ingestion do
       _ -> nil
     end
   end
+
+  defp parse_datetime(_other), do: nil
 end

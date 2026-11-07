@@ -12,19 +12,28 @@ defmodule Portal.Catalog.BuildTimeout do
   what it left in `out/logs`, the way `Portal.Catalog.ToolingSkip` builds
   one, and goes through `Portal.Catalog.Ingestion`:
 
-    * `overall_status` is `error` (`forced_status`), and the run's `log` says
-      the build exceeded the limit.
-    * Every system the run would have built gets a `SystemResult`. One with a
+    * The run's `log` says the build exceeded the limit.
+    * A full run's `overall_status` is `error` (`forced_status`), and every
+      system it would have built gets a `SystemResult`. One with a
       `<system>.log` was reached: `error`, category `"Build timeout"`
       (`Portal.Catalog.FailureClassifier` matches `message/1`). One without
       was not: `skipped`.
+    * A targets run records only the targets it reached. The rest, with the
+      previous run's footprint and argus result, carry from the previous run
+      of the version as for any partial run, and `overall_status` is derived
+      from both. A target it never reached keeps its real result.
+    * An argus-only run builds no target, so it is not recorded here at all
+      (`Portal.Workers.Build`).
+    * The package keeps its stored description and native components.
     * The newest log, `host.log` included, is the phase that was running when
       the limit hit. When it is a target's, that log is stored as its
       `SystemLog`, with the usual size limits. The other targets it reached
       finished their builds, but their results never left the container.
   """
 
-  alias Portal.Catalog.{Ingestion, ToolingSkip}
+  require Ash.Query
+
+  alias Portal.Catalog.{Ingestion, Package, ToolingSkip}
 
   @category "Build timeout"
 
@@ -39,8 +48,8 @@ defmodule Portal.Catalog.BuildTimeout do
           required(:output_dir) => Path.t(),
           # The systems the run would have built, in build order.
           required(:systems) => [String.t()],
-          # "targets" or "argus_only" for a partial run (see
-          # `Portal.Catalog.Ingestion`'s carry), nil for a full one.
+          # "targets" for a targets run (see `Portal.Catalog.Ingestion`'s
+          # carry), nil for a full one. Argus only is never recorded.
           required(:scope) => String.t() | nil,
           optional(:scan_request_id) => String.t() | nil,
           optional(:arch) => String.t() | nil,
@@ -71,14 +80,14 @@ defmodule Portal.Catalog.BuildTimeout do
         "package" => %{
           "name" => attrs.package,
           "version" => attrs.version,
-          "description" => ToolingSkip.stored_description(attrs.package)
+          # The package upsert overwrites both; a timeout learned neither.
+          "description" => ToolingSkip.stored_description(attrs.package),
+          "native_components" => stored_native_components(attrs.package)
         },
-        "forced_status" => "error",
         "started_at" => DateTime.to_iso8601(attrs.started_at),
-        "finished_at" => DateTime.to_iso8601(attrs.finished_at),
-        "systems" => Map.new(systems, &{&1, system(&1 in reached, message)})
+        "finished_at" => DateTime.to_iso8601(attrs.finished_at)
       }
-      |> put_scope(attrs.scope)
+      |> put_systems(attrs.scope, systems, reached, message)
 
     with {:ok, run} <-
            Ingestion.ingest(result, %{
@@ -108,10 +117,32 @@ defmodule Portal.Catalog.BuildTimeout do
       "log_tail" => "Not reached before the build hit the wall-clock limit."
     }
 
-  defp put_scope(result, scope) when scope in ["targets", "argus_only"],
-    do: Map.put(result, "scope", scope)
+  # A targets run names only what it reached, so `Portal.Catalog.Ingestion`
+  # carries the rest from the previous run of the version and derives the
+  # status from both. A full run has nothing to carry from: every target it
+  # would have built is on the record, and the run is an error.
+  defp put_systems(result, "targets", _systems, reached, message) do
+    result
+    |> Map.put("scope", "targets")
+    |> Map.put("systems", Map.new(reached, &{&1, system(true, message)}))
+  end
 
-  defp put_scope(result, _scope), do: result
+  defp put_systems(result, _scope, systems, reached, message) do
+    result
+    |> Map.put("forced_status", "error")
+    |> Map.put("systems", Map.new(systems, &{&1, system(&1 in reached, message)}))
+  end
+
+  defp stored_native_components(name) do
+    Package
+    |> Ash.Query.filter(name == ^name)
+    |> Ash.Query.select([:native_components])
+    |> Ash.read_one(domain: Portal.Catalog)
+    |> case do
+      {:ok, %{native_components: native_components}} -> native_components
+      _ -> nil
+    end
+  end
 
   defp run_log(message, excerpt) when is_binary(excerpt) and excerpt != "",
     do: message <> "\n\n" <> excerpt

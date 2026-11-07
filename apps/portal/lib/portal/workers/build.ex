@@ -311,59 +311,88 @@ defmodule Portal.Workers.Build do
   # (`Portal.Catalog.BuildTimeout`); nothing reads it after this, so it goes
   # whatever happens. A failed record does not retry either -- that would
   # rebuild -- so it errors the request and cancels.
+  #
+  # An argus-only run builds no target, so its timeout has no result to
+  # record: the previous run of the version stays the package's latest, and
+  # the request closes on it, as the dedup path closes one on a run on file.
   defp record_timeout(ctx, build_args, started_at, seconds) do
     {package, version, image_digest, scan_request_id, run_id, _attempt, _max, _sweep_id} = ctx
     Logger.warning("Build of #{package} #{version} exceeded the #{seconds}s wall clock")
 
-    {scope, systems} = timeout_systems(build_args)
+    case timeout_systems(build_args) do
+      :argus_only ->
+        Builder.cleanup(run_id)
+        close_on_latest_run(package, scan_request_id)
 
-    attrs = %{
-      package: package,
-      version: version,
-      run_id: run_id,
-      image_digest: image_digest,
-      seconds: seconds,
-      started_at: started_at,
-      finished_at: DateTime.utc_now(),
-      output_dir: Builder.output_dir(run_id),
-      systems: systems,
-      scope: scope,
-      scan_request_id: scan_request_id,
-      arch: Compatibility.Arch.current(),
-      runner_excerpt: excerpt_from_file(Builder.runner_log_path(run_id))
-    }
+      {scope, systems} ->
+        attrs = %{
+          package: package,
+          version: version,
+          run_id: run_id,
+          image_digest: image_digest,
+          seconds: seconds,
+          started_at: started_at,
+          finished_at: DateTime.utc_now(),
+          output_dir: Builder.output_dir(run_id),
+          systems: systems,
+          scope: scope,
+          scan_request_id: scan_request_id,
+          arch: Compatibility.Arch.current(),
+          runner_excerpt: excerpt_from_file(Builder.runner_log_path(run_id))
+        }
 
-    recorded =
-      try do
-        BuildTimeout.record(attrs)
-      rescue
-        e -> {:error, Exception.message(e)}
-      end
-
-    Builder.cleanup(run_id)
-
-    case recorded do
-      {:ok, run} ->
-        Progress.mark(scan_request_id, :built, run_id: run.id)
-        Progress.broadcast(scan_request_id, :done, %{run_id: run.id, status: run.overall_status})
-        :ok
-
-      {:error, reason} ->
-        message = "build timed out after #{seconds}s; recording it failed: #{inspect(reason)}"
-        Logger.error("#{package} #{version}: #{message}")
-        Progress.mark(scan_request_id, :error, error_reason: message)
-        Progress.broadcast(scan_request_id, :error, %{reason: message})
-        {:cancel, message}
+        recorded = safe_record(attrs)
+        Builder.cleanup(run_id)
+        finish_timeout(recorded, package, version, scan_request_id, seconds)
     end
   end
 
-  # What the run would have built: the targets of a targets run, none for
-  # argus only (its systems carry from the previous run), the worker's
-  # default list otherwise.
-  defp timeout_systems(%{mode: "argus_only"}), do: {"argus_only", []}
+  # Anything the record raises, throws or exits with ends the job the same
+  # way: re-raised, it would reach Oban as a retry, which rebuilds.
+  defp safe_record(attrs) do
+    timeout_recorder().record(attrs)
+  rescue
+    e -> {:error, Exception.message(e)}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
 
+  defp finish_timeout({:ok, run}, _package, _version, scan_request_id, _seconds) do
+    Progress.mark(scan_request_id, :built, run_id: run.id)
+    Progress.broadcast(scan_request_id, :done, %{run_id: run.id, status: run.overall_status})
+    :ok
+  end
+
+  defp finish_timeout({:error, reason}, package, version, scan_request_id, seconds) do
+    message = "build timed out after #{seconds}s; recording it failed: #{inspect(reason)}"
+    Logger.error("#{package} #{version}: #{message}")
+    Progress.mark(scan_request_id, :error, error_reason: message)
+    Progress.broadcast(scan_request_id, :error, %{reason: message})
+    {:cancel, message}
+  end
+
+  defp close_on_latest_run(package, scan_request_id) do
+    case latest_run(package) do
+      %{id: id, overall_status: status} ->
+        Progress.mark(scan_request_id, :built, run_id: id)
+
+        Progress.broadcast(scan_request_id, :done, %{
+          run_id: id,
+          status: String.to_existing_atom(status)
+        })
+
+      nil ->
+        Progress.mark(scan_request_id, :built)
+        Progress.broadcast(scan_request_id, :done, %{deduped: true})
+    end
+
+    :ok
+  end
+
+  # What the run would have built: the targets of a targets run, nothing for
+  # argus only, the worker's default list otherwise.
+  defp timeout_systems(%{mode: "argus_only"}), do: :argus_only
   defp timeout_systems(%{systems_filter: [_ | _] = systems}), do: {"targets", systems}
-
   defp timeout_systems(_build_args), do: {nil, BulkRebuild.targets()}
 
   defp handle_outcome(:ingest, build, ctx) do
@@ -545,6 +574,20 @@ defmodule Portal.Workers.Build do
   # `finished_at`, then newest `inserted_at`, plain `DESC` -- the same rule
   # `Portal.Catalog.Ingestion.previous_run/1` and the pages use for "latest".
   # A partial scope is only valid when both pick the same run.
+  # The same latest-run rule as `latest_version_tested/1`.
+  defp latest_run(package) do
+    Repo.one(
+      from(r in "catalog_runs",
+        join: p in "catalog_packages",
+        on: p.id == r.package_id,
+        where: p.name == ^package,
+        order_by: [desc: r.finished_at, desc: r.inserted_at],
+        limit: 1,
+        select: %{id: type(r.id, Ecto.UUID), overall_status: r.overall_status}
+      )
+    )
+  end
+
   defp latest_version_tested(package) do
     Repo.one(
       from(r in "catalog_runs",
@@ -696,4 +739,7 @@ defmodule Portal.Workers.Build do
 
   # Builder module is injectable for tests via `config :portal, :build_runner`.
   defp builder, do: Application.get_env(:portal, :build_runner, Builder)
+
+  # Injectable for tests via `config :portal, :build_timeout_recorder`.
+  defp timeout_recorder, do: Application.get_env(:portal, :build_timeout_recorder, BuildTimeout)
 end

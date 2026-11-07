@@ -1154,15 +1154,49 @@ defmodule Portal.Workers.BuildTest do
       assert File.ls!(root) == []
     end
 
-    test "a targets run records only the targets it was asked for" do
-      previous_run!("partial", "1.0.0")
+    # The latest run of the version a partial timeout rebuilds, with real
+    # results the timeout must not replace.
+    defp earlier_run!(name) do
+      {:ok, run} =
+        Portal.Catalog.Ingestion.ingest(
+          %{
+            "package" => %{
+              "name" => name,
+              "version" => "1.0.0",
+              "footprint" => %{"total_bytes" => 1234},
+              "native_components" => %{"languages" => ["c"]}
+            },
+            "argus" => %{"status" => "ok", "findings" => []},
+            "finished_at" => "2026-10-10T10:00:00Z",
+            "systems" => %{
+              "nerves_system_rpi4" => %{"status" => "pass"},
+              "nerves_system_rpi5" => %{"status" => "pass"}
+            }
+          },
+          %{
+            package: name,
+            version: "1.0.0",
+            run_id: "earlier-#{System.unique_integer([:positive])}",
+            image_digest: "sha256:x",
+            files_dir: System.tmp_dir!()
+          }
+        )
 
+      run
+    end
+
+    defp partial_request!(name) do
       {:ok, request} =
-        ScanRequests.create_once(%{
-          package_name: "partial",
-          source: :hex_owner,
-          status: :accepted
-        })
+        ScanRequests.create_once(%{package_name: name, source: :hex_owner, status: :accepted})
+
+      request
+    end
+
+    test "a targets run keeps the earlier results of the targets it never reached", %{
+      root: root
+    } do
+      earlier = earlier_run!("partial")
+      request = partial_request!("partial")
 
       timed_out_logs([{"nerves_system_rpi4", "compiling\n", System.os_time(:second)}])
       set_response({:error, {:build_timeout, 7200, "ncc-partial"}})
@@ -1183,8 +1217,136 @@ defmodule Portal.Workers.BuildTest do
       results = results_by_system(run)
       assert results["nerves_system_rpi4"].status == :error
       assert results["nerves_system_rpi4"].failure_category == "Build timeout"
-      assert results["nerves_system_rpi5"].status == :skipped
+
+      # Never reached: its pass in the earlier run stands, carried.
+      assert results["nerves_system_rpi5"].status == :pass
+      assert results["nerves_system_rpi5"].carried_from_run_id == earlier.id
       refute Map.has_key?(results, "nerves_system_x86_64")
+
+      # Derived from reached and carried systems, not forced.
+      assert run.overall_status == :pass
+
+      # A timeout measured nothing: the run keeps the earlier run's data.
+      assert run.footprint == %{"total_bytes" => 1234}
+      assert run.argus == %{"status" => "ok", "findings" => []}
+
+      {:ok, updated} = ScanRequests.get_request(request.id)
+      assert updated.status == :built
+      assert updated.run_id == run.id
+      assert File.ls!(root) == []
+    end
+
+    test "a targets run that reached nothing carries every earlier result" do
+      earlier = earlier_run!("unreached")
+      request = partial_request!("unreached")
+
+      timed_out_logs([{"host", "compiling\n", System.os_time(:second)}])
+      set_response({:error, {:build_timeout, 7200, "ncc-unreached"}})
+
+      job =
+        timeout_job("unreached", request, 1, %{
+          "scope" => "targets",
+          "systems" => ["nerves_system_rpi4"]
+        })
+
+      assert :ok = Build.perform(job)
+
+      run =
+        Run
+        |> Ash.Query.filter(image_digest == "sha256:slow")
+        |> Ash.read_one!(domain: Portal.Catalog)
+
+      assert run.overall_status == :pass
+      results = results_by_system(run)
+      assert results["nerves_system_rpi4"].carried_from_run_id == earlier.id
+      assert results["nerves_system_rpi5"].carried_from_run_id == earlier.id
+    end
+
+    # Argus only builds no target, so a timeout has nothing new to say: the
+    # earlier run stays the package's latest, and the request points at it.
+    test "an argus-only run records nothing and closes the request on the earlier run", %{
+      root: root
+    } do
+      earlier = earlier_run!("argusy")
+      request = partial_request!("argusy")
+      set_response({:error, {:build_timeout, 7200, "ncc-argusy"}})
+
+      log =
+        capture_log(fn ->
+          assert :ok =
+                   Build.perform(timeout_job("argusy", request, 1, %{"scope" => "argus_only"}))
+        end)
+
+      assert log =~ "exceeded the 7200s wall clock"
+      assert [only] = Ash.read!(Run, domain: Portal.Catalog)
+      assert only.id == earlier.id
+
+      {:ok, updated} = ScanRequests.get_request(request.id)
+      assert updated.status == :built
+      assert updated.run_id == earlier.id
+      assert File.ls!(root) == []
+    end
+
+    test "a full run keeps the package's native components" do
+      earlier_run!("native")
+      request = partial_request!("native")
+      timed_out_logs([{"host", "compiling\n", System.os_time(:second)}])
+      set_response({:error, {:build_timeout, 7200, "ncc-native"}})
+
+      assert :ok = Build.perform(timeout_job("native", request, 1))
+
+      package =
+        Package
+        |> Ash.Query.filter(name == "native")
+        |> Ash.read_one!(domain: Portal.Catalog)
+
+      assert package.native_components == %{"languages" => ["c"]}
+    end
+
+    defmodule ExitingRecorder do
+      def record(_attrs), do: exit(:recorder_gone)
+    end
+
+    # Retrying would rebuild for another two hours; a failed record ends here.
+    test "a record that exits cancels, errors the request and frees the scratch dir", %{
+      root: root
+    } do
+      Application.put_env(:portal, :build_timeout_recorder, ExitingRecorder)
+      on_exit(fn -> Application.delete_env(:portal, :build_timeout_recorder) end)
+
+      request = partial_request!("exiting")
+      set_response({:error, {:build_timeout, 7200, "ncc-exiting"}})
+
+      assert {:cancel, message} = Build.perform(timeout_job("exiting", request, 1))
+      assert message =~ "recorder_gone"
+
+      {:ok, updated} = ScanRequests.get_request(request.id)
+      assert updated.status == :error
+      assert File.ls!(root) == []
+    end
+
+    # A full timeout records `skipped` for every default target the worker
+    # would have built; the two lists must not drift.
+    test "the targets a full timeout records are the worker's defaults" do
+      source =
+        Path.join([
+          __DIR__,
+          "..",
+          "..",
+          "..",
+          "..",
+          "ncc_worker",
+          "lib",
+          "ncc_worker",
+          "systems.ex"
+        ])
+        |> File.read!()
+
+      [_, list] = Regex.run(~r/@default \[(.*?)\]/s, source)
+      worker_defaults = Regex.scan(~r/"([a-z0-9_]+)"/, list, capture: :all_but_first)
+
+      assert Enum.sort(Portal.BulkRebuild.targets()) ==
+               worker_defaults |> List.flatten() |> Enum.sort()
     end
 
     test "any other docker failure still retries, and errors on the last attempt", %{root: root} do
