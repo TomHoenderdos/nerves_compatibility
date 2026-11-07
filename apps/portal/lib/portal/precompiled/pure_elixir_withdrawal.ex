@@ -14,8 +14,9 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
   optional-dependency pass matches), is unrevoked, traced
   (`compile_observations` set) and `skipped` for an R1 or R2 reason
   (`Compatibility.Portability.withdrawing_prefixes/0`): a host read, a host read in `mix.exs`, a write
-  outside `ebin`, a tracing or system flag, or a baked build path. Those say
-  the package's own compile observed the host.
+  outside `ebin`, a tracing or system flag, an Elixir patch dependence, or a
+  baked build path. Those say the package's own compile observed the host
+  (or read the Elixir version in a way that differs between patches).
 
   R3 closure taint (`closure dependency observed the host: `), a call into a
   natively built dependency, the rebar3 rules, "portability could not be

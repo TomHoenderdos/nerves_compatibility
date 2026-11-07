@@ -167,6 +167,7 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
           "compile-time host read in mix.exs: System.get_env/1 (mix.exs:3)",
           "compile-time write outside ebin: file:write_file/2 \"/tmp/x\"",
           "compile-time tracing or system flag: erlang:trace/3",
+          "compile-time Elixir patch dependence: System.build_info/0 in X (lib/x.ex:1)",
           "bakes the build path: Elixir.X \"<root>\""
         ] do
       toolchain_build!(reason, %{})

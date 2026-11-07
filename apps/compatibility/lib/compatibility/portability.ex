@@ -19,12 +19,15 @@ defmodule Compatibility.Portability do
     "bakes the build path: ",
     "closure dependency observed the host: ",
     "rebar3 build ",
-    "compile-time config read: "
+    "compile-time config read: ",
+    "compile-time Elixir patch dependence: "
   ]
 
   # R1 (the package's own compile observed the host; R4's `mix.exs` slice
   # judges R1 events) and R2 (a baked build path): the refusals that
-  # withdraw an earlier publication. R3 taint, a call into a natively built
+  # withdraw an earlier publication. The Elixir-patch rule is R1 too (the
+  # package's own compile read the Elixir version in a way that differs
+  # between patches). R3 taint, a call into a natively built
   # dependency and the rebar3 rules do not: they speak of a dependency or of
   # the trace's own coverage, not of the package's own compile.
   @withdrawing_prefixes [
@@ -32,6 +35,7 @@ defmodule Compatibility.Portability do
     "compile-time host read in mix.exs: ",
     "compile-time write outside ebin: ",
     "compile-time tracing or system flag: ",
+    "compile-time Elixir patch dependence: ",
     "bakes the build path: "
   ]
 

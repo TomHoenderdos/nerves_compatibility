@@ -18,8 +18,9 @@ defmodule Compatibility.PortabilityTest do
     end
   end
 
-  # Only R1 (the package's own compile observed the host) and R2 (a baked
-  # build path) withdraw an earlier publication.
+  # Only R1 (the package's own compile observed the host, or read the Elixir
+  # version in a way that differs between patches) and R2 (a baked build
+  # path) withdraw an earlier publication.
   test "the withdrawing prefixes are the R1 and R2 subset of the refusal prefixes" do
     assert Portability.withdrawing_prefixes() -- Portability.refusal_prefixes() == []
 
@@ -29,6 +30,7 @@ defmodule Compatibility.PortabilityTest do
                "compile-time host read in mix.exs: ",
                "compile-time write outside ebin: ",
                "compile-time tracing or system flag: ",
+               "compile-time Elixir patch dependence: ",
                "bakes the build path: "
              ])
 
@@ -61,5 +63,11 @@ defmodule Compatibility.PortabilityTest do
     reason = "compile-time config read: application:get_all_env/1 (x) has no key to match on"
     assert Portability.refusal?(reason)
     refute Portability.withdraws?(reason)
+  end
+
+  test "an Elixir patch dependence refusal is an R1 refusal that withdraws" do
+    reason = "compile-time Elixir patch dependence: System.build_info/0 in X (lib/x.ex:1)"
+    assert Portability.refusal?(reason)
+    assert Portability.withdraws?(reason)
   end
 end
