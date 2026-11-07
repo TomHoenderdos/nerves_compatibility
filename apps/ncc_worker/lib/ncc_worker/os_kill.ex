@@ -21,15 +21,21 @@ defmodule NccWorker.OsKill do
   def kill(target, find) do
     case {find.("kill"), find.("sh")} do
       {nil, nil} -> {:error, :no_kill}
-      {nil, sh} -> run(sh, ["-c", ~s(kill "$@"), "sh" | argv(target)])
+      {nil, sh} -> run(sh, ["-c", ~s(kill "$@"), "sh" | argv(target, :builtin)])
       {kill, _sh} -> run(kill, argv(target))
     end
   end
 
-  @doc "The kill(1) arguments for `target`: a group id is a negative pid."
-  @spec argv(target()) :: [String.t()]
-  def argv({:group, pgid}), do: ["-KILL", "--", "-" <> pgid]
-  def argv(pids) when is_list(pids), do: ["-KILL", "--" | pids]
+  @doc """
+  The kill arguments for `target`; a group id is a negative pid. kill(1)
+  gets `--` before the pids; the shell builtin does not, because dash's
+  rejects it (it reads a negative pid after the signal as a pid anyway).
+  """
+  @spec argv(target(), :binary | :builtin) :: [String.t()]
+  def argv(target, kind \\ :binary)
+  def argv({:group, pgid}, kind), do: argv(["-" <> pgid], kind)
+  def argv(pids, :binary) when is_list(pids), do: ["-KILL", "--" | pids]
+  def argv(pids, :builtin) when is_list(pids), do: ["-KILL" | pids]
 
   # Literal argv: the resolved kill or sh, fixed flags and pids read from
   # /proc or a port; the shell script is a constant and takes them as "$@".

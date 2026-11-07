@@ -58,6 +58,9 @@ defmodule NccWorker.OsKillTest do
   test "a group id is passed as a negative pid" do
     assert OsKill.argv({:group, "42"}) == ["-KILL", "--", "-42"]
     assert OsKill.argv(["1", "2"]) == ["-KILL", "--", "1", "2"]
+    # dash's builtin takes no `--`; it reads `-42` after the signal as a pid.
+    assert OsKill.argv({:group, "42"}, :builtin) == ["-KILL", "-42"]
+    assert OsKill.argv(["1", "2"], :builtin) == ["-KILL", "1", "2"]
   end
 
   test "group members are read from /proc stat, zombies left out" do
