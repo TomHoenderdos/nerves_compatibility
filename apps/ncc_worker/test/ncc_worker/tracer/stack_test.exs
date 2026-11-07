@@ -398,4 +398,47 @@ defmodule NccWorker.Tracer.StackTest do
     assert kind.(f(Phoenix.LiveView.TagEngine.Compiler, :compile, 2)) == "user"
     assert kind.(:not_a_frame) == "none"
   end
+
+  describe "a read made through IO.ANSI" do
+    @ansi_toolchain [Application, :application, IO.ANSI, Mix.Shell.IO | @toolchain]
+
+    defp ansi_extent(stack, user? \\ false),
+      do: :ncc_tracer_stack.extent(stack, 64, &(&1 in @ansi_toolchain), user?)
+
+    defp ansi_read,
+      do: [f(:application, :get_env, 3), f(Application, :get_env, 3), f(IO.ANSI, :enabled?, 0)]
+
+    test "is attributed to the frame that called IO.ANSI" do
+      shell = f(Mix.Shell.IO, :info, 1)
+      body = f(:elixir_compiler_3, :__MODULE__, 1, ~c"/p/deps/x/lib/x.ex", 2)
+      stack = ansi_read() ++ [f(IO.ANSI, :format, 1), shell, body]
+
+      assert {:user, :frame, ^shell, ^body} = ansi_extent(stack)
+      assert {:user, :frame, ^body, ^body} = ansi_extent(ansi_read() ++ [body])
+    end
+
+    test "from a macro's tail call is the package's, through the dispatcher" do
+      dispatcher = f(:elixir_dispatch, :"-expand_macro_fun/7-fun-0-", 3)
+
+      assert {:user, :dispatcher, ^dispatcher, :none} =
+               ansi_extent(ansi_read() ++ [dispatcher])
+    end
+
+    test "never changes a frame's kind, and only IO.ANSI itself is skipped" do
+      kind = &:ncc_tracer_stack.first_kind(&1, fn m -> m in @ansi_toolchain end)
+      shell = f(Mix.Shell.IO, :info, 1)
+      lookalike = f(:"Elixir.IO.ANSI.Fake", :enabled?, 0)
+      body = f(:elixir_compiler_3, :__MODULE__, 1)
+
+      assert {:user, :frame, ^shell, ^body} = ansi_extent(ansi_read() ++ [shell, body])
+      assert kind.(shell) == "toolchain"
+      assert {:user, :frame, ^lookalike, ^lookalike} = ansi_extent(ansi_read() ++ [lookalike])
+      assert kind.(lookalike) == "user"
+    end
+
+    test "with nothing below it has no first frame" do
+      assert :toolchain = ansi_extent(ansi_read())
+      assert {:user, :lineage, :none, :none} = ansi_extent(ansi_read(), true)
+    end
+  end
 end

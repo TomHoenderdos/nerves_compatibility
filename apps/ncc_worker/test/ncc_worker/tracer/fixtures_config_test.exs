@@ -50,6 +50,80 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
         def x, do: :ok
       end
       """),
+    # IO.warn's other forms: from a macro with the caller's env, with a
+    # stacktrace, with the module's env.
+    "fx_cfg_iowarn_forms" =>
+      lib("fx_cfg_iowarn_forms", """
+      defmodule FxCfgIoWarnForms.M do
+        defmacro m do
+          IO.warn("fixture macro warning, expected", __CALLER__)
+          :ok
+        end
+      end
+
+      defmodule FxCfgIoWarnForms do
+        require FxCfgIoWarnForms.M
+        IO.warn("fixture stacktrace warning, expected", [])
+        IO.warn("fixture env warning, expected", __ENV__)
+        def x, do: FxCfgIoWarnForms.M.m()
+      end
+      """),
+    # Logger at compile time beyond its macros' expansion: logging from a
+    # module body and a macro, and reading the level.
+    "fx_cfg_logbody" =>
+      lib("fx_cfg_logbody", """
+      defmodule FxCfgLogBody.M do
+        require Logger
+
+        defmacro m do
+          Logger.warning("fixture macro log, expected")
+          :ok
+        end
+      end
+
+      defmodule FxCfgLogBody do
+        require Logger
+        require FxCfgLogBody.M
+        Logger.info("fixture body log, expected")
+        @level Logger.level()
+        def level, do: @level
+        def x, do: FxCfgLogBody.M.m()
+      end
+      """),
+    # Package code reading :elixir, :ansi_enabled itself, directly or
+    # through IO.ANSI, and a macro tail-calling IO.ANSI.enabled?/0.
+    "fx_ansi_own" =>
+      lib("fx_ansi_own", """
+      defmodule FxAnsiOwn do
+        @enabled IO.ANSI.enabled?()
+        def enabled, do: @enabled
+      end
+      """),
+    "fx_ansi_read" =>
+      lib("fx_ansi_read", """
+      defmodule FxAnsiRead do
+        @enabled Application.get_env(:elixir, :ansi_enabled)
+        def enabled, do: @enabled
+      end
+      """),
+    "fx_ansi_format" =>
+      lib("fx_ansi_format", """
+      defmodule FxAnsiFormat do
+        @red IO.ANSI.format([:red, "x"])
+        def red, do: @red
+      end
+      """),
+    "fx_ansi_macro" =>
+      lib("fx_ansi_macro", """
+      defmodule FxAnsiMacro.M do
+        defmacro m, do: IO.ANSI.enabled?()
+      end
+
+      defmodule FxAnsiMacro do
+        require FxAnsiMacro.M
+        def enabled, do: FxAnsiMacro.M.m()
+      end
+      """),
     "fx_cfg_logger" =>
       lib("fx_cfg_logger", """
       defmodule FxCfgLogger do
@@ -225,6 +299,15 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
 
   @alone ["fx_cfg_set"]
 
+  # The fixtures whose toolchain reads the reviewed lists are pinned by.
+  @reviewed_fixtures [
+    "fx_cfg_logger",
+    "fx_cfg_iowarn",
+    "fx_cfg_iowarn_forms",
+    "fx_tc_shell",
+    "fx_tc_native"
+  ]
+
   setup_all do
     root =
       Path.join(
@@ -320,12 +403,6 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
              verdict(ctx, "fx_cfg_all")
   end
 
-  test "IO.warn at compile time records nothing", ctx do
-    v = passes(ctx, "fx_cfg_iowarn")
-    refute item(v, "elixir", "ansi_enabled")
-    assert v.observations["config_unreviewed"] == []
-  end
-
   test "Logger's compile-time reads are recorded with the value a client looks up", ctx do
     v = passes(ctx, "fx_cfg_logger")
 
@@ -345,23 +422,58 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
   # The reviewed lists are what this toolchain's own code reads: a key that
   # appears or disappears on a new toolchain image fails here, and the lists
   # are changed only after reviewing what the key does to generated code.
-  # Two reviewed entries are not read by these compiles on 1.19 or 1.20:
-  # Logger's macros never read `:level`, and `IO.warn/1` emits through
-  # `:elixir_errors` without reading `:ansi_enabled`; they are pinned here
-  # by name so that a toolchain which starts reading either shows up too.
   test "the toolchain's own config reads are exactly the reviewed lists", ctx do
     observed =
-      MapSet.union(
-        toolchain_reads(passes(ctx, "fx_cfg_logger"), "fx_cfg_logger"),
-        toolchain_reads(passes(ctx, "fx_cfg_iowarn"), "fx_cfg_iowarn")
-      )
+      for app <- @reviewed_fixtures,
+          r <- verdict(ctx, app).observations["config_reads"],
+          r["owner"] == app,
+          r["first_kind"] == "toolchain",
+          into: MapSet.new(),
+          do: {r["first"], r["arg"]["app_name"], r["arg"]["key_name"]}
 
     %{record: record, drop: drop} = ConfigReads.reviewed(System.version())
-    reviewed = MapSet.new(record ++ Enum.map(drop, fn {_first, app, key} -> {app, key} end))
-    unread = MapSet.new([{"logger", "level"}, {"elixir", "ansi_enabled"}])
 
-    assert observed == MapSet.difference(reviewed, unread), inspect(MapSet.to_list(observed))
-    assert MapSet.subset?(unread, reviewed)
+    expected =
+      MapSet.new(Enum.map(record, fn {app, key} -> {"Elixir.Logger", app, key} end) ++ drop)
+
+    assert observed == expected, inspect(MapSet.to_list(observed))
+  end
+
+  test "IO.warn in any form records nothing", ctx do
+    for app <- ["fx_cfg_iowarn", "fx_cfg_iowarn_forms"] do
+      v = passes(ctx, app)
+      assert v.observations["config_reads"] == [], app
+    end
+  end
+
+  # Logger's handler formats a message logged at compile time in the
+  # logging process, and its formatter reads :ansi_enabled: not reviewed.
+  # Logger.level/0 reads Logger's primary config, not the application env.
+  test "logging at compile time cannot be judged; no read of Logger's :level", ctx do
+    assert %{status: :skip, reason: @cnj, observations: obs} = verdict(ctx, "fx_cfg_logbody")
+
+    assert obs["problems"] == [
+             "unreviewed toolchain config read: elixir ansi_enabled from Elixir.Logger.Formatter"
+           ]
+
+    refute Enum.any?(obs["config_reads"], &(&1["arg"]["key_name"] == "level"))
+  end
+
+  # The value a package reads itself selects what it compiles: a match
+  # condition, never dropped, whether it reads the key or IO.ANSI does.
+  test "package code reading :ansi_enabled, itself or through IO.ANSI, records it", ctx do
+    for app <- ["fx_ansi_own", "fx_ansi_read", "fx_ansi_format", "fx_ansi_macro"] do
+      v = passes(ctx, app)
+      assert %{value: value} = item(v, "elixir", "ansi_enabled"), app
+
+      assert value ==
+               run_of(ctx, app).traced.report.config_env.entries[{"elixir", "ansi_enabled"}]
+
+      assert v.observations["config_unreviewed"] == [], app
+
+      for r <- v.observations["config_reads"],
+          do: assert(r["first_kind"] in ["user", "glue"], "#{app}: #{inspect(r)}")
+    end
   end
 
   test "a compiler warning records nothing", ctx do
@@ -394,14 +506,16 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
            ]
   end
 
-  test "printing through Mix's shell at compile time cannot be judged", ctx do
+  # Mix's shell colours its output by :ansi_enabled; nothing it prints
+  # reaches the beam, so the read is dropped.
+  test "printing through Mix's shell at compile time publishes with no config item", ctx do
     for app <- ["fx_tc_shell", "fx_tc_native"] do
-      assert %{status: :skip, reason: @cnj, observations: obs} = verdict(ctx, app), app
+      v = passes(ctx, app)
+      assert v.compile_env == [], app
+      assert v.observations["config_unreviewed"] == [], app
 
-      assert obs["problems"] == [
-               "unreviewed toolchain config read: elixir ansi_enabled from Elixir.IO.ANSI"
-             ],
-             app
+      assert [%{"first" => "Elixir.Mix.Shell.IO", "first_kind" => "toolchain"}] =
+               v.observations["config_reads"]
     end
   end
 

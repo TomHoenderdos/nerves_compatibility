@@ -144,15 +144,21 @@ defmodule NccWorker.Portability.ConfigReadsTest do
         "pkg",
         read("logger", "compile_time_purge_matching", kind: "toolchain", first: "Elixir.Logger")
       ),
-      obs("pkg", read("logger", "level", kind: "toolchain", first: "Elixir.Logger")),
-      obs("pkg", read("elixir", "ansi_enabled", kind: "toolchain", first: "Elixir.IO"))
+      obs(
+        "pkg",
+        read("logger", "compile_time_purge_level", kind: "toolchain", first: "Elixir.Logger")
+      ),
+      obs(
+        "pkg",
+        read("elixir", "ansi_enabled", kind: "toolchain", first: "Elixir.Mix.Shell.IO")
+      )
     ]
 
     result = judge(decided, snap(%{}))
 
     assert keys(result) == [
-             {"logger", ["compile_time_purge_matching"]},
-             {"logger", ["level"]}
+             {"logger", ["compile_time_purge_level"]},
+             {"logger", ["compile_time_purge_matching"]}
            ]
 
     assert %{problems: [], unreviewed: [], dropped: 1} = result
@@ -166,22 +172,29 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     assert %{"owner" => "dep", "arg" => %{"key_name" => "unknown_key"}} = flagged
   end
 
-  test "IO.warn's :elixir ansi_enabled is never recorded, set or not" do
-    decided = [obs("pkg", read("elixir", "ansi_enabled", kind: "toolchain", first: "Elixir.IO"))]
+  test "Mix's shell's :elixir ansi_enabled is never recorded, set or not" do
+    decided = [
+      obs(
+        "pkg",
+        read("elixir", "ansi_enabled", kind: "toolchain", first: "Elixir.Mix.Shell.IO")
+      )
+    ]
+
     entries = %{{"elixir", "ansi_enabled"} => enc({:ok, true})}
 
     assert %{items: [], problems: [], dropped: 1} = judge(decided, snap(entries))
   end
 
   # IO.ANSI.format/1,2 and format_fragment/1,2 bake escape codes, or none,
-  # by the same key: only IO.warn's read of it is reviewed as dropped.
-  test "IO.ANSI's :elixir ansi_enabled read cannot be judged" do
-    decided = [
-      obs("pkg", read("elixir", "ansi_enabled", kind: "toolchain", first: "Elixir.IO.ANSI"))
-    ]
+  # by the same key: only Mix's shell's read of it is reviewed as dropped,
+  # and the drop matches that first frame only.
+  test "another toolchain frame's :elixir ansi_enabled read cannot be judged" do
+    for first <- ["Elixir.IO.ANSI", "Elixir.IO", "Elixir.Logger.Formatter"] do
+      decided = [obs("pkg", read("elixir", "ansi_enabled", kind: "toolchain", first: first))]
 
-    assert %{items: [], dropped: 0, problems: [problem]} = judge(decided, snap(%{}))
-    assert problem == "unreviewed toolchain config read: elixir ansi_enabled from Elixir.IO.ANSI"
+      assert %{items: [], dropped: 0, problems: [problem]} = judge(decided, snap(%{}))
+      assert problem == "unreviewed toolchain config read: elixir ansi_enabled from #{first}"
+    end
   end
 
   test "a read reached through glue, or with no first frame, is the package's own" do
@@ -194,7 +207,12 @@ defmodule NccWorker.Portability.ConfigReadsTest do
   end
 
   test "a toolchain read on a toolchain with no reviewed lists cannot be judged" do
-    decided = [obs("pkg", read("logger", "level", kind: "toolchain", first: "Elixir.Logger"))]
+    decided = [
+      obs(
+        "pkg",
+        read("logger", "compile_time_purge_level", kind: "toolchain", first: "Elixir.Logger")
+      )
+    ]
 
     assert %{items: [], problems: ["no reviewed config reads for Elixir 1.99"]} =
              ConfigReads.judge(decided, "1.99.0", snap(%{}), @trees)
@@ -203,7 +221,7 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     assert ConfigReads.reviewed(nil) == nil
 
     for elixir <- ["1.19.5", "1.20.4"] do
-      assert %{record: [_ | _], drop: [{"Elixir.IO", "elixir", "ansi_enabled"}]} =
+      assert %{record: [_ | _], drop: [{"Elixir.Mix.Shell.IO", "elixir", "ansi_enabled"}]} =
                ConfigReads.reviewed(elixir)
     end
   end
@@ -275,11 +293,12 @@ defmodule NccWorker.Portability.ConfigReadsTest do
   # Application.get_env/fetch_env/compile_env of a literal :logger key that
   # Logger's macros run while they expand (their bodies and the module's
   # functions they call, outside `quote` but inside `unquote`), read from the
-  # running Elixir's own Logger source. `:level` is recorded on top: the
-  # spec lists it, and an extra item can only cost a hit, never give a false
-  # one.
+  # running Elixir's own Logger source. The `drop` list pins Mix's shell:
+  # IO.ANSI's only read of `:elixir, :ansi_enabled` is `enabled?/0`, and every
+  # IO.ANSI call in `Mix.Shell.IO` hands its result straight to IO.puts/write,
+  # so the value reaches the terminal and never code.
   describe "the reviewed list for the running Elixir" do
-    test "records exactly what Logger's macros read while they expand, plus :level" do
+    test "records exactly what Logger's macros read while they expand" do
       source = Path.join(:code.lib_dir(:logger), "lib/logger.ex")
       assert File.regular?(source), "no Logger source at #{source}"
 
@@ -288,9 +307,82 @@ defmodule NccWorker.Portability.ConfigReadsTest do
 
       %{record: record} = ConfigReads.reviewed(System.version())
 
-      assert Enum.sort(record) == Enum.sort([{"logger", "level"} | read])
+      assert Enum.sort(record) == Enum.sort(read)
+    end
+
+    test "drops only Mix's shell's ansi_enabled read, whose value only reaches output" do
+      ansi = source(:elixir, "lib/io/ansi.ex")
+      shell = source(:mix, "lib/mix/shell/io.ex")
+
+      assert app_reads(ansi) == [
+               {:elixir, :ansi_enabled, :enabled?},
+               {:elixir, :ansi_syntax_colors, :syntax_colors}
+             ]
+
+      assert app_reads(shell) == []
+
+      {direct, all} = ansi_calls(shell)
+      assert all != []
+      assert direct == all
+
+      assert %{drop: [{"Elixir.Mix.Shell.IO", "elixir", "ansi_enabled"}]} =
+               ConfigReads.reviewed(System.version())
     end
   end
+
+  defp source(app, rel) do
+    path = Path.join(:code.lib_dir(app), rel)
+    assert File.regular?(path), "no source at #{path}"
+    path |> File.read!() |> Code.string_to_quoted!()
+  end
+
+  # Every Application read of a literal app and key, with the function it is in.
+  defp app_reads(ast) do
+    {_ast, {_fun, reads}} =
+      Macro.traverse(
+        ast,
+        {nil, []},
+        fn
+          {kind, _, [head | _]} = node, {_fun, acc} when kind in [:def, :defp] ->
+            {node, {fun_name(head), acc}}
+
+          {{:., _, [{:__aliases__, _, [:Application]}, f]}, _, [app, key | _]} = node, {fun, acc}
+          when f in [:get_env, :fetch_env, :fetch_env!, :compile_env, :compile_env!] ->
+            {node, {fun, [{app, key, fun} | acc]}}
+
+          node, acc ->
+            {node, acc}
+        end,
+        fn node, acc -> {node, acc} end
+      )
+
+    Enum.sort(reads)
+  end
+
+  defp fun_name({:when, _, [head | _]}), do: fun_name(head)
+  defp fun_name({name, _, _}), do: name
+
+  # IO.ANSI calls that can depend on the key (format/1,2, format_fragment/1,2),
+  # all of them and those passed straight to IO.puts/IO.write.
+  defp ansi_calls(ast) do
+    {_ast, {direct, all}} =
+      Macro.prewalk(ast, {[], []}, fn
+        {{:., _, [{:__aliases__, _, [:IO]}, f]}, _, args} = node, {direct, all}
+        when f in [:puts, :write] ->
+          {node, {Enum.filter(args, &ansi_format?/1) ++ direct, all}}
+
+        node, {direct, all} ->
+          if ansi_format?(node), do: {node, {direct, [node | all]}}, else: {node, {direct, all}}
+      end)
+
+    {Enum.sort(direct), Enum.sort(all)}
+  end
+
+  defp ansi_format?({{:., _, [{:__aliases__, _, [:IO, :ANSI]}, f]}, _, _})
+       when f in [:format, :format_fragment],
+       do: true
+
+  defp ansi_format?(_node), do: false
 
   defp macro_reads(ast) do
     {_ast, defs} =

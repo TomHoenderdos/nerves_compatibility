@@ -16,16 +16,18 @@ defmodule NccWorker.Portability.ConfigReads do
       `erl_eval`, a macro or callback dispatcher), or no frame at all, is
       recorded;
     * one the toolchain's own code makes (`first_kind` "toolchain": Logger's
-      macros, `IO.warn`) is recorded when `{app, key}` is on the toolchain's
-      reviewed `record` list (Logger's compile-time keys, and `:level`),
+      macros, Mix's shell) is recorded when `{app, key}` is on the
+      toolchain's reviewed `record` list (Logger's compile-time keys),
       dropped when `{first frame, app, key}` is on its reviewed `drop` list
-      (only `IO.warn`'s `:elixir, :ansi_enabled`, which colours a warning
-      and generates no code; `IO.ANSI.format/1,2` reads the same key and
-      bakes escape codes, or none, into what it returns), and otherwise
-      cannot be judged: an unknown toolchain read may change code, so the
-      build does not publish. It is also listed in `unreviewed` for the
-      review. A toolchain with no reviewed lists judges no build with such
-      a read;
+      (only `Mix.Shell.IO`'s `:elixir, :ansi_enabled`, which colours Mix's
+      output and generates no code), and otherwise cannot be judged: an
+      unknown toolchain read may change code, so the build does not
+      publish. It is also listed in `unreviewed` for the review. A toolchain
+      with no reviewed lists judges no build with such a read. The tracer
+      attributes a read made through `IO.ANSI` to the frame that called it:
+      `IO.ANSI.format/1,2` returns escape codes, or none, by that key, so
+      package code calling it reads the key itself and the read is
+      recorded;
     * `application:get_all_env/0,1` from package code refuses (there is no
       key to match on); from the toolchain's own code it cannot be judged;
     * `application:get_env/1` (the caller's own application, which no
@@ -80,16 +82,22 @@ defmodule NccWorker.Portability.ConfigReads do
     {"logger", "always_evaluate_messages"},
     {"logger", "compile_time_application"},
     {"logger", "compile_time_purge_level"},
-    {"logger", "compile_time_purge_matching"},
-    {"logger", "level"}
+    {"logger", "compile_time_purge_matching"}
   ]
 
-  # Per Elixir minor, the toolchain's own compile-time config reads, reviewed:
-  # `record` ({app, key}) changes generated code; `drop` ({first frame
-  # module, app, key}) does not.
+  # `Mix.Shell.IO.info/1`, `error/1` (which a dependency's Mix compiler
+  # calls through `Mix.shell()`, as elixir_make does) pass
+  # `IO.ANSI.format/1`'s result straight to `IO.puts/1,2` and return `:ok`:
+  # the key only selects the escape codes in Mix's terminal output and
+  # never reaches the beam.
+  @mix_shell_ansi {"Elixir.Mix.Shell.IO", "elixir", "ansi_enabled"}
+
+  # Per Elixir minor, the toolchain's own compile-time config reads, reviewed
+  # against real compiles: `record` ({app, key}) changes generated code;
+  # `drop` ({first frame module, app, key}) does not.
   @reviewed %{
-    "1.19" => %{record: @logger_compile_keys, drop: [{"Elixir.IO", "elixir", "ansi_enabled"}]},
-    "1.20" => %{record: @logger_compile_keys, drop: [{"Elixir.IO", "elixir", "ansi_enabled"}]}
+    "1.19" => %{record: @logger_compile_keys, drop: [@mix_shell_ansi]},
+    "1.20" => %{record: @logger_compile_keys, drop: [@mix_shell_ansi]}
   }
 
   # Loaded before every compile: Mix's own extra applications

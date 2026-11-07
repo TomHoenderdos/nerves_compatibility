@@ -5,6 +5,15 @@
 -export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
+%% Frames a call is attributed through, to the frame that called them, when
+%% the first frame is picked: IO.ANSI reads `:elixir, :ansi_enabled` for its
+%% caller, and only the caller decides whether the answer reaches code (a
+%% module attribute holding IO.ANSI.format/1's result) or only output (Mix's
+%% shell). Skipping them changes which frame is first, never how a frame is
+%% classified: every frame keeps its own module's kind, the user-frame
+%% search sees the whole stack, and a stack of nothing else has no first
+%% frame (the package's own read).
+-define(ATTRIBUTED_THROUGH, ['Elixir.IO.ANSI']).
 %% The frames left on top when package code tail-calls a primitive from a
 %% compile-time hook. Pinned per toolchain by the fixture suite.
 -define(DISPATCHERS, [{elixir_module, "expand_callback"}, {elixir_module, "eval_callbacks"},
@@ -133,7 +142,7 @@ compiler_frame({M, _, _, _}) ->
     end.
 
 strip([{M, _, _, _} | Rest] = Stack) ->
-    case lists:member(M, ?WRAPPERS) of
+    case lists:member(M, ?WRAPPERS) orelse lists:member(M, ?ATTRIBUTED_THROUGH) of
         true -> strip(Rest);
         false -> Stack
     end;

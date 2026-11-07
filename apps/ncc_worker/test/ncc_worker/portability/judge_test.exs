@@ -1423,9 +1423,10 @@ defmodule NccWorker.Portability.JudgeTest do
     end
 
     test "a reviewed toolchain read is recorded", %{proj: proj} do
-      r = traced(proj, [config_event(35, "logger", "level", "toolchain")], @snap)
+      r =
+        traced(proj, [config_event(35, "logger", "compile_time_purge_level", "toolchain")], @snap)
 
-      assert %{status: :pass, compile_env: [%{app: "logger", path: ["level"]}]} =
+      assert %{status: :pass, compile_env: [%{app: "logger", path: ["compile_time_purge_level"]}]} =
                judge(proj, r)
     end
 
