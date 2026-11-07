@@ -35,14 +35,17 @@ defmodule NccWorker.TracerFixtures do
     File.write!(log, "")
 
     result =
-      Tracer.run(proj, packages,
-        trace_dir: trace_dir,
-        env: env(proj),
-        native: Keyword.get(opts, :native, []),
-        log_file: log,
-        timeout_ms: Keyword.get(opts, :timeout_ms, 240_000),
-        extra_env: Keyword.get(opts, :extra_env, []),
-        reap: Keyword.get(opts, :reap, &NccWorker.OptionalDepsTargets.reap_writers/1)
+      Tracer.run(
+        proj,
+        packages,
+        [
+          trace_dir: trace_dir,
+          env: env(proj),
+          native: Keyword.get(opts, :native, []),
+          log_file: log,
+          timeout_ms: Keyword.get(opts, :timeout_ms, 240_000),
+          extra_env: Keyword.get(opts, :extra_env, [])
+        ] ++ Keyword.take(opts, [:reap, :cleanup_find])
       )
 
     %{result: result, report: Report.read(trace_dir), log: File.read!(log)}

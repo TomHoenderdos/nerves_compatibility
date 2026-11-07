@@ -331,6 +331,75 @@ defmodule NccWorker.TracerTest do
            ]
   end
 
+  # A toolchain image may lack procps' kill(1); the cleanup must not need it.
+  test "without a kill binary the judge compile is judged as usual", %{tmp_dir: dir} do
+    proj =
+      TracerFixtures.project(dir, ["fx_nokill"], %{
+        "fx_nokill" => %{files: %{"lib/fx_nokill.ex" => "defmodule FxNokill do\nend\n"}}
+      })
+
+    no_kill = fn
+      "kill" -> nil
+      name -> System.find_executable(name)
+    end
+
+    traced = TracerFixtures.trace(proj, ["fx_nokill"], cleanup_find: no_kill)
+    assert {:ok, 0} = traced.result, traced.log
+    assert traced.report.problems == []
+  end
+
+  # With no way to signal at all, the run is judged only if it can see that
+  # nothing was left to signal: /proc shows no survivor (Linux, the worker's
+  # platform); without /proc it cannot tell, and that fails it.
+  test "with no way to kill, only a cleanup it cannot verify fails the run", %{tmp_dir: dir} do
+    proj =
+      TracerFixtures.project(dir, ["fx_nosig"], %{
+        "fx_nosig" => %{files: %{"lib/fx_nosig.ex" => "defmodule FxNosig do\nend\n"}}
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_nosig"], cleanup_find: fn _ -> nil end)
+
+    if File.dir?("/proc/self"),
+      do: assert({:ok, 0} = traced.result, traced.log),
+      else: assert({:error, :cleanup_unverified} = traced.result)
+  end
+
+  @tag skip: if(File.dir?("/proc/self"), do: false, else: "needs /proc")
+  test "without kill(1) a leftover process is still reaped; one that survives fails the run",
+       %{tmp_dir: dir} do
+    pid_file = Path.join(dir, "bg.pid")
+
+    body = """
+    defmodule FxBg2 do
+      {pid, 0} = System.cmd("sh", ["-c", "sleep 120 > /dev/null 2>&1 & echo $!"])
+      File.write!(#{inspect(pid_file)}, String.trim(pid))
+    end
+    """
+
+    proj =
+      TracerFixtures.project(dir, ["fx_bg2"], %{"fx_bg2" => TracerFixtures.lib("fx_bg2", body)})
+
+    no_kill = fn
+      "kill" -> nil
+      name -> System.find_executable(name)
+    end
+
+    traced = TracerFixtures.trace(proj, ["fx_bg2"], cleanup_find: no_kill)
+    assert {:ok, 0} = traced.result, traced.log
+    os_pid = File.read!(pid_file)
+
+    assert File.read("/proc/#{os_pid}/environ") in [
+             {:error, :enoent},
+             {:error, :esrch},
+             {:ok, ""}
+           ]
+
+    traced = TracerFixtures.trace(proj, ["fx_bg2"], cleanup_find: fn _ -> nil end)
+    os_pid = File.read!(pid_file)
+    assert {:error, {:writers_survived, [^os_pid]}} = traced.result
+    NccWorker.OsKill.kill([os_pid])
+  end
+
   test "the judge compile's leftover processes are reaped by build path, and survivors fail it",
        %{tmp_dir: dir} do
     proj =

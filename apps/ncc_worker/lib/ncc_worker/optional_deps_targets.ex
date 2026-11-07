@@ -50,7 +50,7 @@ defmodule NccWorker.OptionalDepsTargets do
   through a runner (`t:runners/0`), so tests replace them and stay offline.
   """
 
-  alias NccWorker.{AppFile, BeamScan, DepsLock, LockPolicy, Project}
+  alias NccWorker.{AppFile, BeamScan, DepsLock, LockPolicy, OsKill, Project}
 
   @typedoc "A system's name and the env and log its firmware build used."
   @type target ::
@@ -573,9 +573,14 @@ defmodule NccWorker.OptionalDepsTargets do
   # Kills every process whose environment names `build_path` as its
   # MIX_BUILD_PATH and waits until none is left. `:ok` without /proc (not
   # Linux), where there is nothing to look in.
-  @spec reap_writers(String.t()) :: :ok | {:error, {:writers_survived, [String.t()]}}
-  def reap_writers(build_path) do
+  #
+  # kill(1) is not needed (`NccWorker.OsKill`, `find` resolves it): a
+  # process that could not be signalled is still there and fails the reap.
+  @spec reap_writers(String.t(), OsKill.finder()) ::
+          :ok | {:error, {:writers_survived, [String.t()]}}
+  def reap_writers(build_path, find \\ &System.find_executable/1) do
     needle = "MIX_BUILD_PATH=" <> build_path <> <<0>>
+    kill = fn pids -> OsKill.kill(pids, find) end
 
     case writers(needle) do
       :no_proc ->
@@ -585,12 +590,12 @@ defmodule NccWorker.OptionalDepsTargets do
         :ok
 
       pids ->
-        kill(pids)
-        wait_for_writers(needle, System.monotonic_time(:millisecond) + @reap_wait_ms)
+        _ = kill.(pids)
+        wait_for_writers(needle, kill, System.monotonic_time(:millisecond) + @reap_wait_ms)
     end
   end
 
-  defp wait_for_writers(needle, until) do
+  defp wait_for_writers(needle, kill, until) do
     case writers(needle) do
       [] ->
         :ok
@@ -599,9 +604,9 @@ defmodule NccWorker.OptionalDepsTargets do
         if System.monotonic_time(:millisecond) >= until do
           {:error, {:writers_survived, pids}}
         else
-          kill(pids)
+          _ = kill.(pids)
           Process.sleep(@reap_poll_ms)
-          wait_for_writers(needle, until)
+          wait_for_writers(needle, kill, until)
         end
     end
   end
@@ -624,13 +629,6 @@ defmodule NccWorker.OptionalDepsTargets do
       {:error, _} ->
         :no_proc
     end
-  end
-
-  # Literal kill argv for pids read from /proc; no shell.
-  # sobelow_skip ["CI.System"]
-  defp kill(pids) do
-    System.cmd("kill", ["-KILL" | pids], stderr_to_stdout: true)
-    :ok
   end
 
   defp deps_get(project_dir, env, log_file, timeout_sec) do

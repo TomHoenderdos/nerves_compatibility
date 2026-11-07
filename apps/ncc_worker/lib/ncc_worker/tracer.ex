@@ -22,7 +22,7 @@ defmodule NccWorker.Tracer do
   `run_started_at:`, the run's start in monotonic seconds).
   """
 
-  alias NccWorker.OptionalDepsTargets
+  alias NccWorker.{OptionalDepsTargets, OsKill}
 
   @modules [
     :ncc_tracer,
@@ -44,6 +44,9 @@ defmodule NccWorker.Tracer do
   # How long after `timeout(1)`'s own deadline (plus its 10 s kill-after)
   # the Elixir side gives up waiting. A backstop only.
   @backstop_ms 30_000
+
+  # How long leftover processes get to die once signalled.
+  @reap_wait_ms 5_000
 
   @spec run(String.t(), [String.t()], keyword()) ::
           {:ok, non_neg_integer()} | {:error, term()}
@@ -217,8 +220,14 @@ defmodule NccWorker.Tracer do
 
     backstop = (timeout_sec + 10) * 1000 + @backstop_ms
     outcome = await(pid, monitor, ref, backstop)
-    kill_group(ref)
 
+    case kill_group(ref, Keyword.get(opts, :cleanup_find, &System.find_executable/1)) do
+      :ok -> exec_result(outcome)
+      {:error, _} = error -> error
+    end
+  end
+
+  defp exec_result(outcome) do
     case outcome do
       {:ok, {:ok, @timeout_exit}} -> {:error, :timeout}
       {:ok, {:ok, @killed_exit}} -> {:error, :killed}
@@ -270,7 +279,8 @@ defmodule NccWorker.Tracer do
   # over is killed (`OptionalDepsTargets.reap_writers/1`, /proc, so Linux);
   # one that survives fails the run.
   defp reap(env, opts) do
-    reap = Keyword.get(opts, :reap, &OptionalDepsTargets.reap_writers/1)
+    find = Keyword.get(opts, :cleanup_find, &System.find_executable/1)
+    reap = Keyword.get(opts, :reap, &OptionalDepsTargets.reap_writers(&1, find))
 
     case List.keyfind(env, "MIX_BUILD_PATH", 0) do
       {_, build_path} when is_binary(build_path) -> reap.(build_path)
@@ -280,20 +290,45 @@ defmodule NccWorker.Tracer do
 
   # `timeout(1)` makes itself the leader of a new process group, so its pid
   # is the group's id. Whatever the compile left running in the group (a
-  # backgrounded job, a port program) is killed here, after a normal exit
-  # as after a timeout. That reaches only what forked without a port: a
-  # port program, or a process that started a session of its own (setsid),
-  # has left the group; reap/2 kills those by build path, and the worker's
+  # backgrounded job) is killed here, after a normal exit as after a
+  # timeout. That reaches only what forked without a port: a port program,
+  # or a process that started a session of its own (setsid), has left the
+  # group; reap/2 kills those by build path, and the worker's
   # `NccWorker.ProcessSweep` stops anything left before the run ends.
-  # Literal kill argv for a pid the port reported; no shell.
-  # sobelow_skip ["CI.System"]
-  defp kill_group(ref) do
+  #
+  # The signal does not need kill(1) (`NccWorker.OsKill`). What fails the run
+  # is a member that survives, as /proc shows it; without /proc a group that
+  # could not be signalled at all cannot be shown empty, and fails it too.
+  defp kill_group(ref, find) do
     receive do
       {^ref, :os_pid, pid} ->
-        _ = System.cmd("kill", ["-KILL", "--", "-#{pid}"], stderr_to_stdout: true)
-        :ok
+        pgid = Integer.to_string(pid)
+        signalled = OsKill.kill({:group, pgid}, find)
+        group_gone(pgid, signalled, find, System.monotonic_time(:millisecond) + @reap_wait_ms)
     after
       0 -> :ok
+    end
+  end
+
+  defp group_gone(pgid, signalled, find, until) do
+    case OsKill.group_members(pgid) do
+      :no_proc when signalled == :ok ->
+        :ok
+
+      :no_proc ->
+        {:error, :cleanup_unverified}
+
+      [] ->
+        :ok
+
+      pids ->
+        if System.monotonic_time(:millisecond) >= until do
+          {:error, {:group_survived, pids}}
+        else
+          _ = OsKill.kill(pids, find)
+          Process.sleep(100)
+          group_gone(pgid, signalled, find, until)
+        end
     end
   end
 

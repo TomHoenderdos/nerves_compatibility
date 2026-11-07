@@ -74,4 +74,10 @@ defmodule NccWorker.DockerfileTest do
     assert text =~ "chmod -R a+rX /home/nerves /app"
     refute text =~ "a+rwX"
   end
+
+  # The worker's cleanup of leftover processes uses kill(1) where there is one
+  # (`NccWorker.OsKill`); the slim toolchain base has no procps.
+  test "the toolchain image installs procps for kill(1)" do
+    assert File.read!(@toolchain_dockerfile) =~ ~r/apt-get install[^\n]*\n?[^\n]*\bprocps\b/
+  end
 end
