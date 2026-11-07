@@ -44,7 +44,7 @@ defmodule NccWorker.Portability.ElixirVersionTest do
     assert %{refusals: [{"pkg", {:refuse, @prefix <> "Version.match?/2" <> rest}}]} =
              judge([obs("pkg", read()), obs("pkg", match(">= 1.19.6"))])
 
-    assert rest =~ "in Pkg (lib/pkg.ex:4)"
+    assert rest == " (1.19.5, >= 1.19.6) in Pkg (lib/pkg.ex:4)"
   end
 
   test "an exact-patch requirement refuses, a minor-pinned one passes" do
@@ -142,5 +142,15 @@ defmodule NccWorker.Portability.ElixirVersionTest do
              judge([obs("pkg", read())], "not a version")
 
     assert %{refusals: [], problems: []} = judge([], nil)
+  end
+
+  test "System.build_info/0 refuses even with no Elixir version in the trace" do
+    info = obs("pkg", ev("System.build_info/0"))
+
+    assert %{refusals: [{"pkg", {:refuse, @prefix <> "System.build_info/0" <> _}}], problems: []} =
+             judge([info], nil)
+
+    assert %{refusals: [{"dep", _}], problems: ["no Elixir version in the trace"]} =
+             judge([obs("dep", ev("System.build_info/0")), obs("pkg", read())], "not a version")
   end
 end

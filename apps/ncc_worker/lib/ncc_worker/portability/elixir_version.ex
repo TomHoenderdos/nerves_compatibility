@@ -33,6 +33,7 @@ defmodule NccWorker.Portability.ElixirVersion do
   @prefix "compile-time Elixir patch dependence: "
   @judged ["Version.match?/2", "Version.compare/2"]
   @last_patch 99
+  @no_version "no Elixir version in the trace"
 
   @type result :: %{refusals: [{term(), {:refuse, String.t()}}], problems: [String.t()]}
 
@@ -55,40 +56,44 @@ defmodule NccWorker.Portability.ElixirVersion do
     |> judge_windows(built, versions(built))
   end
 
-  defp judge_windows(by_owner, _built, _versions) when by_owner == %{},
-    do: %{refusals: [], problems: []}
+  # `System.build_info/0` refuses whatever the built version is, so a
+  # window with such a read refuses even when the version is unknown; every
+  # other window then cannot be judged.
+  defp judge_windows(by_owner, built, versions) do
+    results =
+      for {owner, items} <- Enum.sort(by_owner), do: {owner, window(items, built, versions)}
 
-  defp judge_windows(_by_owner, _built, :error),
-    do: %{refusals: [], problems: ["no Elixir version in the trace"]}
-
-  defp judge_windows(by_owner, built, {:ok, versions}) do
-    refusals =
-      for {owner, items} <- Enum.sort(by_owner),
-          reason = window(items, built, versions),
-          reason != nil,
-          do: {owner, {:refuse, reason}}
-
-    %{refusals: refusals, problems: []}
+    %{
+      refusals: for({owner, {:refuse, reason}} <- results, do: {owner, {:refuse, reason}}),
+      problems: if(Enum.any?(results, &match?({_, :unjudged}, &1)), do: [@no_version], else: [])
+    }
   end
 
   defp window(items, built, versions) do
+    case Enum.find(items, &(&1["mfa"] == "System.build_info/0")) do
+      nil -> compared(items, built, versions)
+      info -> {:refuse, @prefix <> "System.build_info/0" <> where(info)}
+    end
+  end
+
+  defp compared(_items, _built, :error), do: :unjudged
+
+  defp compared(items, built, {:ok, versions}) do
     reads = Enum.filter(items, &(&1["mfa"] == "System.version/0"))
     calls = Enum.filter(items, &compares_built?(&1, built))
 
     cond do
-      info = Enum.find(items, &(&1["mfa"] == "System.build_info/0")) ->
-        @prefix <> "System.build_info/0" <> where(info)
-
       bad = Enum.find(calls, &(not invariant?(&1, built, versions))) ->
-        @prefix <> bad["mfa"] <> " " <> args(bad) <> where(bad)
+        {:refuse, @prefix <> bad["mfa"] <> " " <> args(bad) <> where(bad)}
 
       length(reads) > length(calls) ->
-        @prefix <>
-          "System.version/0 read without a patch-invariant Version comparison" <>
-          where(hd(reads))
+        {:refuse,
+         @prefix <>
+           "System.version/0 read without a patch-invariant Version comparison" <>
+           where(hd(reads))}
 
       true ->
-        nil
+        :ok
     end
   end
 
@@ -141,7 +146,9 @@ defmodule NccWorker.Portability.ElixirVersion do
 
   defp unquoted(_value), do: nil
 
-  defp args(item), do: "(#{get_in(item, ["arg", "left"])}, #{get_in(item, ["arg", "right"])})"
+  defp args(item), do: "(#{shown(item, "left")}, #{shown(item, "right")})"
+
+  defp shown(item, side), do: arg(item, side) || "(not a literal string)"
 
   defp where(%{"module" => module, "file" => file, "line" => line}) when is_binary(module),
     do: " in #{display(module)} (#{file}:#{line})"
