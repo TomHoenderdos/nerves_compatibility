@@ -276,12 +276,20 @@ Status codes:
     - `package_checksum` — the package's own outer Hex checksum from the
       build's `mix.lock`, a string, or `null` for runs from before it was
       recorded and for argus-only runs.
-    - `compile_env` — the package's `.app` file `compile_env` reads, one item
-      per `{app, path, value}` triple: `app` and the elements of `path` are
-      strings, and `value` is `base64url(:erlang.term_to_binary({:ok, v} |
-      :error, [:deterministic]))`. `null` for runs from before it was
-      recorded or when the worker could not read the `.app` file; `[]` when
-      the file was read but had no `compile_env` reads of its own.
+    - `compile_env` — the compile-time application config the files depend
+      on, one item per `{app, path, value}` triple: `app` and the elements of
+      `path` are strings, and `value` is `base64url(:erlang.term_to_binary({:ok, v} |
+      :error, [:deterministic]))`. It lists the package's `.app` file
+      `compile_env` reads and, for builds since 2026-11 whose compile was
+      traced, every compile-time `Application.get_env` read the builder
+      observed while the package and its dependency closure compiled, with
+      the value the build project's config gave for that key before any
+      dependency was loaded (`:error`: unset). `null` for runs from before it
+      was recorded or when the worker could not read the `.app` file; `[]`
+      when there are no such reads. A value a dependency or the project's own
+      `mix.exs` sets with `Application.put_env` while compiling is not seen:
+      the item records the config value, so such a project may match a build
+      compiled without its value.
     - A carried-forward entry (a partial rebuild of the version that left this
       system out) describes the run that actually built the files, so its
       `run_id` can be older than the version's newest run.
@@ -417,7 +425,9 @@ What it lists:
   (its OS, environment, programs or files outside the dependency closure),
   wrote anything outside its own `ebin`, baked the build path into code, or
   depends on a package whose own compile did, and any build whose trace did
-  not finish; its beams are the traced compile's.
+  not finish; its beams are the traced compile's. Its `compile_env` lists
+  the config reads that trace observed, so a project whose config sets one
+  of those keys differently compiles the package itself.
 - A build whose `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
   is `null` is left out, since no client can match it (it stays in format 1).
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),

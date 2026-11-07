@@ -329,6 +329,7 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
   "deps_lock": {"jason": {"version": "1.4.4", "checksum": "<outer>"}},
   "package_checksum": "<outer>",
   "compile_env": [{"app": "...", "path": ["..."], "value": "<base64url term>"}],
+  "compile_env_rule": 1,
   "portability_rule": 1,
   "rule1_reason": "portable?'s reason when it skipped, else null",
   "compile_observations": {"trace_stats": {"windows": 14, "wall_ms": 9100, "host_compile_sec": 31.2}, "config_reads": [], "refusals": [], "taint": {}, "problems": []},
@@ -361,6 +362,18 @@ budget, processes that survived the cleanup, a crash) or its report was over bud
 `skipped` build as an `error`, which its backlog retries after a day; a could-not-judge the package causes on every
 run (a missing or unverified tarball, a rebar3 parent's `rebar.config.script`, a beam it cannot read, a missing
 `ebin`) has `transient: false` and stays `skipped`.
+
+`compile_env` is the package's `.app` `compile_env` list, and for a build whose trace passed also every
+compile-time `Application.get_env` read the trace observed while the package's dependency closure compiled
+(`NccWorker.Portability.ConfigReads`): one `{app, [key], value}` item per read key, valued with what the project's
+config gives in a Mix VM before any dependency loads (`:error` when unset), the same lookup a client makes; such a
+build has `"compile_env_rule": 1`, every other build `null`. The items never enter the published `.app`. Reads the
+toolchain's own code makes are recorded only when they change generated code (Logger's compile-time keys) or are not
+yet reviewed (`compile_observations.config_unreviewed`); `get_all_env` from package code, a read naming a non-atom key,
+and a compile-time Elixir version read that differs between patches of the minor
+(`compile-time Elixir patch dependence: ...`) are refusals. A trace pass that does not name its config reads at all
+is judged "portability could not be judged" and publishes nothing. A `pure_elixir` system result whose files are
+published carries the same list and `"compile_env_rule": 1`.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 

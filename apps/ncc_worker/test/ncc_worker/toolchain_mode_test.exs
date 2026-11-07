@@ -39,10 +39,12 @@ defmodule NccWorker.ToolchainModeTest do
   defp passing_host, do: %{status: :pass, error: nil}
 
   @finished %{"judge_compile" => "finished"}
+  # A pass always carries the config reads it observed, `[]` for none.
   @traced_pass %{
     status: :pass,
     reason: nil,
-    observations: %{"trace_stats" => Map.put(@finished, "windows", 2)}
+    observations: %{"trace_stats" => Map.put(@finished, "windows", 2)},
+    compile_env: []
   }
   # The traced compile finished, but its trace could not be used.
   @not_judged %{
@@ -436,6 +438,91 @@ defmodule NccWorker.ToolchainModeTest do
       host = %{status: :fail, error: "boom"}
 
       assert {:ok, nil} = Worker.toolchain_optional_deps("include", host, project, "sample", %{})
+    end
+  end
+
+  describe "compile-time config reads (R5)" do
+    @r5 [%{app: "phoenix_live_view", path: ["root_tag_attribute"], value: "g3cFZXJyb3I"}]
+
+    test "a passing trace's items join the .app's compile_env and mark the build",
+         %{tmp_dir: work_dir} do
+      {project, built} = project(work_dir, "circular_buffer-1.0.0")
+      app = Path.join(built, "ebin/sample.app")
+      before = File.read!(app)
+      verdict = Map.put(@traced_pass, :compile_env, @r5)
+
+      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict)
+
+      assert %{status: "pass", compile_env_rule: 1} = build
+      assert List.last(build.compile_env) == hd(@r5)
+      assert File.read!(app) == before
+    end
+
+    test "a pass with no reads keeps the .app's list and is marked; a refusal is not",
+         %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+
+      no_reads =
+        Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
+
+      assert %{status: "pass", compile_env_rule: 1} = no_reads
+
+      refused = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @refused)
+      assert %{status: "skipped", compile_env_rule: nil} = refused
+      assert refused.compile_env == no_reads.compile_env
+    end
+
+    test "a pass that carries no config reads is not published", %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+
+      for verdict <- [Map.delete(@traced_pass, :compile_env), %{@traced_pass | compile_env: nil}] do
+        build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict)
+
+        assert %{status: "skipped", reason: "portability could not be judged"} = build
+        assert %{compile_env_rule: nil, file_manifest: nil} = build
+        assert is_list(build.compile_env)
+
+        result = Worker.pure_elixir_result(project, "sample", fn _ -> verdict end)
+        assert %{compile_env_rule: nil, host_portability: %{status: "skipped"}} = result
+        refute Map.has_key?(result.beam_scan["footprint"] || %{}, "file_manifest")
+      end
+    end
+
+    test "r5_compile_env/2 never invents a list the .app could not give" do
+      assert Worker.r5_compile_env(nil, %{status: :pass, compile_env: @r5}) == {nil, nil}
+      assert Worker.r5_compile_env([], %{status: :skip, compile_env: nil}) == {[], nil}
+      assert Worker.r5_compile_env([], %{status: :skip, reason: "x"}) == {[], nil}
+      assert Worker.r5_compile_env([], %{status: :pass, compile_env: nil}) == {[], nil}
+      assert Worker.r5_compile_env([], %{status: :pass}) == {[], nil}
+      assert Worker.r5_compile_env([], nil) == {[], nil}
+      assert Worker.r5_compile_env([], %{status: :pass, compile_env: @r5}) == {@r5, 1}
+    end
+
+    test "a published pure_elixir result carries the merged list and the mark",
+         %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      verdict = Map.put(@traced_pass, :compile_env, @r5)
+
+      result = Worker.pure_elixir_result(project, "sample", fn _ -> verdict end)
+
+      assert %{compile_env_rule: 1, host_portability: %{status: "pass"}} = result
+      assert List.last(result.compile_env) == hd(@r5)
+
+      withheld = Worker.pure_elixir_result(project, "sample", fn _ -> @refused end)
+      assert withheld.compile_env_rule == nil
+      refute hd(@r5) in withheld.compile_env
+
+      out = Path.join(work_dir, "out")
+      File.mkdir_p!(out)
+      run = %{run_id: "r", image: %{}, toolchain: %{}, finished_at: "x"}
+
+      :ok = JsonWriter.write_result(out, Map.put(run, :systems, %{"pure_elixir" => result}))
+      json = out |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      assert get_in(json, ["systems", "pure_elixir", "compile_env_rule"]) == 1
+
+      :ok = JsonWriter.write_result(out, Map.put(run, :systems, %{"pure_elixir" => withheld}))
+      json = out |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      refute Map.has_key?(json["systems"]["pure_elixir"], "compile_env_rule")
     end
   end
 end

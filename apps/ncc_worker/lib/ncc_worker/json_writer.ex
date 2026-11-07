@@ -119,10 +119,12 @@ defmodule NccWorker.JsonWriter do
   # the firmware pass did not touch (`NccWorker.OptionalDepsTargets`):
   # `optional_deps` is only on a system that was passing when the pass ran,
   # `deps_lock` only on one that kept the optional dependencies, whose files
-  # were built against that lock rather than the run's.
+  # were built against that lock rather than the run's. `compile_env_rule`
+  # only on a `pure_elixir` result whose files are published with the trace's
+  # config reads.
   @spec convert_system_result(map()) :: map()
   defp convert_system_result(system_result) do
-    [:deps_lock, :optional_deps]
+    [:deps_lock, :optional_deps, :compile_env_rule]
     |> Enum.reduce(base_system_result(system_result), fn key, json ->
       put_present(json, key, Map.get(system_result, key))
     end)

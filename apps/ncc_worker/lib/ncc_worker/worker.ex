@@ -21,6 +21,7 @@ defmodule NccWorker.Worker do
     NervesCache,
     OptionalDepsTargets,
     Portability,
+    Portability.ConfigReads,
     Project,
     RunScope,
     Scanner,
@@ -107,6 +108,10 @@ defmodule NccWorker.Worker do
           deps_lock: %{String.t() => %{String.t() => String.t()}} | nil,
           package_checksum: String.t() | nil,
           compile_env: [map()] | nil,
+          # 1 when `compile_env` also lists the compile-time config reads the
+          # trace observed across the package's closure (`ConfigReads`, R5);
+          # nil when it is the `.app`'s own list alone.
+          compile_env_rule: 1 | nil,
           # The verdict's rule: 1 is `BuildSelection.portable?/4` AND the
           # compile-time trace's refusals (P1); nil for an "error" build.
           portability_rule: 1 | nil,
@@ -272,6 +277,10 @@ defmodule NccWorker.Worker do
                 dropped: [String.t()],
                 reason: String.t() | nil
               },
+              # 1 on a `pure_elixir` result published with the trace's
+              # config reads in `compile_env` (R5), nil on one that is not;
+              # absent on firmware results and from `result.json` when nil.
+              optional(:compile_env_rule) => 1 | nil,
               status: Compatibility.Types.status(),
               duration_sec: float(),
               phase_timings: map() | nil,
@@ -1152,12 +1161,15 @@ defmodule NccWorker.Worker do
   # Otherwise the scan keeps no `file_manifest`, so nothing is archived or
   # published. The status, the assumed-compatible verdict and the log tail's
   # first sentence never change; `host_portability` says what was decided.
+  # A published result lists the trace's config reads in its `compile_env`
+  # and carries `compile_env_rule` 1 (`r5_compile_env/2`); a trace pass that
+  # names no config reads at all is withheld as could-not-judge.
   @doc false
   @spec pure_elixir_result(String.t(), String.t(), (String.t() -> Portability.verdict())) ::
           map()
   def pure_elixir_result(project_dir, package_name, portability) do
     app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
-    {gate, host_portability} = publication_gate(project_dir, package_name, portability)
+    {gate, host_portability, verdict} = publication_gate(project_dir, package_name, portability)
 
     beam_scan =
       case BeamScan.analyze_app_dir(app_dir) do
@@ -1165,7 +1177,11 @@ defmodule NccWorker.Worker do
         {:error, reason} -> %{"errors" => ["beam scan failed: #{inspect(reason)}"]}
       end
 
-    compile_env = AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
+    app_env = AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
+
+    {compile_env, compile_env_rule} =
+      if gate == :publish, do: r5_compile_env(app_env, verdict), else: {app_env, nil}
+
     {beam_scan, unpublished} = apply_gate(beam_scan, gate)
 
     %{
@@ -1177,6 +1193,7 @@ defmodule NccWorker.Worker do
           "its dependencies contain only pure Elixir. No firmware targets were built." <>
           unpublished,
       compile_env: compile_env,
+      compile_env_rule: compile_env_rule,
       beam_scan: beam_scan,
       error: nil,
       host_portability: host_portability
@@ -1186,12 +1203,13 @@ defmodule NccWorker.Worker do
   defp publication_gate(project_dir, package_name, portability) do
     case BuildCache.os_agnostic?(Path.join([project_dir, "deps", package_name])) do
       :ok ->
-        verdict = portability.(package_name)
-        {trace_gate(verdict), host_portability(verdict)}
+        verdict = require_compile_env(portability.(package_name))
+        {trace_gate(verdict), host_portability(verdict), verdict}
 
       {:error, {file, needle}} ->
         reason = "OS-specific (#{file}: #{needle})"
-        {{:withhold, reason}, host_portability(%{status: :skip, reason: reason})}
+        verdict = %{status: :skip, reason: reason}
+        {{:withhold, reason}, host_portability(verdict), verdict}
     end
   end
 
@@ -1511,6 +1529,7 @@ defmodule NccWorker.Worker do
       deps_lock: nil,
       package_checksum: nil,
       compile_env: nil,
+      compile_env_rule: nil,
       file_manifest: nil,
       portability_rule: nil,
       rule1_reason: nil,
@@ -1527,7 +1546,7 @@ defmodule NccWorker.Worker do
   end
 
   defp judge_toolchain_build(build, project_dir, package_name, portability, host_result) do
-    portability = portability || not_traced()
+    portability = require_compile_env(portability || not_traced())
 
     if unfinished?(portability),
       do: unjudged_toolchain_build(build, project_dir, package_name, portability, host_result),
@@ -1567,13 +1586,15 @@ defmodule NccWorker.Worker do
     scan = scan_host_app(app_dir)
     tarball = package_tarball(project_dir, package_name)
     rule1 = BuildSelection.portable?(project_dir, package_name, scan, tarball: tarball)
+    app_env = AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
+    {compile_env, compile_env_rule} = r5_compile_env(app_env, portability)
 
     build = %{
       build
       | deps_lock: DepsLock.read(project_dir, package_name),
         package_checksum: DepsLock.package_checksum(project_dir, package_name),
-        compile_env:
-          AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"])),
+        compile_env: compile_env,
+        compile_env_rule: compile_env_rule,
         portability_rule: 1,
         rule1_reason: rule1_reason(rule1),
         compile_observations: with_host_time(portability.observations, host_result)
@@ -1602,6 +1623,37 @@ defmodule NccWorker.Worker do
 
   defp rule1_reason(:ok), do: nil
   defp rule1_reason({:skip, reason}), do: reason
+
+  @doc false
+  # R5: a build whose trace passed lists the config reads it observed after
+  # the `.app`'s own `compile_env` (`ConfigReads.merge/2`) and says so
+  # (`compile_env_rule` 1); any other build keeps the `.app`'s list alone,
+  # and a `.app` that could not be read stays nil. Nothing is written into
+  # the `.app` itself. Public for tests.
+  @spec r5_compile_env([map()] | nil, Portability.verdict() | nil) :: {[map()] | nil, 1 | nil}
+  def r5_compile_env(app_env, %{status: :pass, compile_env: items})
+      when is_list(app_env) and is_list(items),
+      do: {ConfigReads.merge(app_env, items), 1}
+
+  def r5_compile_env(app_env, _verdict), do: {app_env, nil}
+
+  # A pass names the config reads its files depend on (`compile_env`, `[]`
+  # for none). One that does not could have dropped them, so it is judged
+  # as a trace that could not be used: it never publishes.
+  defp require_compile_env(%{status: :pass, compile_env: items} = verdict) when is_list(items),
+    do: verdict
+
+  defp require_compile_env(%{status: :pass} = verdict) do
+    observations = Map.get(verdict, :observations) || %{}
+    problems = ["pass without config reads" | Map.get(observations, "problems", [])]
+
+    verdict
+    |> Map.merge(%{status: :skip, reason: PortabilityReasons.could_not_judge()})
+    |> Map.put(:observations, Map.put(observations, "problems", problems))
+    |> Map.delete(:compile_env)
+  end
+
+  defp require_compile_env(verdict), do: verdict
 
   # The host compile's own wall time (its `deps.get` included) next to the
   # traced judge compile's `wall_ms`, for the P1 benchmark (spec section 11).
