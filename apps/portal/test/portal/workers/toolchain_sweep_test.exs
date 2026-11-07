@@ -75,6 +75,7 @@ defmodule Portal.Workers.ToolchainSweepTest do
         status: status,
         compile_env_rule: Keyword.get(opts, :compile_env_rule, 1),
         compile_env: Keyword.get(opts, :compile_env, []),
+        deps_lock: Keyword.get(opts, :deps_lock),
         finished_at: Keyword.get(opts, :finished_at, DateTime.utc_now())
       })
       |> Ash.create!(domain: Catalog)
@@ -121,10 +122,10 @@ defmodule Portal.Workers.ToolchainSweepTest do
       backlog = Catalog.toolchain_backlog("1.19/28", 1, 100)
 
       assert Enum.sort_by(backlog, & &1.package) == [
-               %{package: "no_native", version: "1.0.0", variant: :with},
-               %{package: "old_error", version: "1.0.0", variant: :with},
-               %{package: "old_fail", version: "1.0.0", variant: :with},
-               %{package: "wanted", version: "1.0.0", variant: :with}
+               %{package: "no_native", version: "1.0.0", variant: :with, refresh: false},
+               %{package: "old_error", version: "1.0.0", variant: :with, refresh: false},
+               %{package: "old_fail", version: "1.0.0", variant: :with, refresh: false},
+               %{package: "wanted", version: "1.0.0", variant: :with, refresh: false}
              ]
     end
 
@@ -134,7 +135,7 @@ defmodule Portal.Workers.ToolchainSweepTest do
       toolchain_row!("other", "1.0.0", :pass, builder_version: 2)
 
       assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [
-               %{package: "other", version: "1.0.0", variant: :with}
+               %{package: "other", version: "1.0.0", variant: :with, refresh: false}
              ]
 
       assert Catalog.toolchain_backlog("1.20/29", 1, 100) == []
@@ -155,14 +156,14 @@ defmodule Portal.Workers.ToolchainSweepTest do
       run!("tie", "2.1.0", finished_at: ~U[2026-08-01 00:00:00Z])
 
       assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [
-               %{package: "many", version: "1.4.0", variant: :with},
-               %{package: "many", version: "1.3.0", variant: :with},
-               %{package: "many", version: "1.2.0", variant: :with},
-               %{package: "many", version: "1.1.0", variant: :with},
-               %{package: "many", version: "1.0.0", variant: :with},
-               %{package: "single", version: "0.1.0", variant: :with},
-               %{package: "tie", version: "2.1.0", variant: :with},
-               %{package: "tie", version: "2.0.0", variant: :with}
+               %{package: "many", version: "1.4.0", variant: :with, refresh: false},
+               %{package: "many", version: "1.3.0", variant: :with, refresh: false},
+               %{package: "many", version: "1.2.0", variant: :with, refresh: false},
+               %{package: "many", version: "1.1.0", variant: :with, refresh: false},
+               %{package: "many", version: "1.0.0", variant: :with, refresh: false},
+               %{package: "single", version: "0.1.0", variant: :with, refresh: false},
+               %{package: "tie", version: "2.1.0", variant: :with, refresh: false},
+               %{package: "tie", version: "2.0.0", variant: :with, refresh: false}
              ]
 
       assert length(Catalog.toolchain_backlog("1.19/28", 1, 2)) == 2
@@ -173,7 +174,7 @@ defmodule Portal.Workers.ToolchainSweepTest do
       run!("twice", "1.0.0", finished_at: ~U[2026-10-02 00:00:00Z])
 
       assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [
-               %{package: "twice", version: "1.0.0", variant: :with}
+               %{package: "twice", version: "1.0.0", variant: :with, refresh: false}
              ]
     end
   end
@@ -209,8 +210,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
       downloads!("obscure", 40)
 
       assert backlog() == [
-               %{package: "popular", version: "1.0.0", variant: :with},
-               %{package: "obscure", version: "9.0.0", variant: :with}
+               %{package: "popular", version: "1.0.0", variant: :with, refresh: false},
+               %{package: "obscure", version: "9.0.0", variant: :with, refresh: false}
              ]
     end
 
@@ -224,9 +225,9 @@ defmodule Portal.Workers.ToolchainSweepTest do
       release_downloads!("jason", "1.5.0-alpha.1", 10)
 
       assert backlog() == [
-               %{package: "jason", version: "1.4.4", variant: :with},
-               %{package: "jason", version: "1.4.5", variant: :with},
-               %{package: "jason", version: "1.5.0-alpha.1", variant: :with}
+               %{package: "jason", version: "1.4.4", variant: :with, refresh: false},
+               %{package: "jason", version: "1.4.5", variant: :with, refresh: false},
+               %{package: "jason", version: "1.5.0-alpha.1", variant: :with, refresh: false}
              ]
     end
 
@@ -240,9 +241,9 @@ defmodule Portal.Workers.ToolchainSweepTest do
       downloads!("some", 10)
 
       assert backlog() == [
-               %{package: "some", version: "1.0.0", variant: :with},
-               %{package: "zero", version: "1.0.0", variant: :with},
-               %{package: "unknown", version: "1.0.0", variant: :with}
+               %{package: "some", version: "1.0.0", variant: :with, refresh: false},
+               %{package: "zero", version: "1.0.0", variant: :with, refresh: false},
+               %{package: "unknown", version: "1.0.0", variant: :with, refresh: false}
              ]
     end
 
@@ -255,9 +256,9 @@ defmodule Portal.Workers.ToolchainSweepTest do
       release_downloads!("jason", "1.4.4", nil)
 
       assert backlog() == [
-               %{package: "jason", version: "1.4.3", variant: :with},
-               %{package: "jason", version: "1.4.5", variant: :with},
-               %{package: "jason", version: "1.4.4", variant: :with}
+               %{package: "jason", version: "1.4.3", variant: :with, refresh: false},
+               %{package: "jason", version: "1.4.5", variant: :with, refresh: false},
+               %{package: "jason", version: "1.4.4", variant: :with, refresh: false}
              ]
     end
 
@@ -272,8 +273,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
       release_downloads!("small", "1.0.0", 1_000_000)
 
       assert backlog() == [
-               %{package: "big", version: "1.0.0", variant: :with},
-               %{package: "small", version: "1.0.0", variant: :with}
+               %{package: "big", version: "1.0.0", variant: :with, refresh: false},
+               %{package: "small", version: "1.0.0", variant: :with, refresh: false}
              ]
     end
 
@@ -285,8 +286,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
       end
 
       assert Catalog.toolchain_backlog("1.19/28", 1, 2) == [
-               %{package: "d", version: "1.0.0", variant: :with},
-               %{package: "b", version: "1.0.0", variant: :with}
+               %{package: "d", version: "1.0.0", variant: :with, refresh: false},
+               %{package: "b", version: "1.0.0", variant: :with, refresh: false}
              ]
     end
 
@@ -299,7 +300,9 @@ defmodule Portal.Workers.ToolchainSweepTest do
       downloads!("popular", 9_000_000)
       release_downloads!("popular", "1.1.0", 9_000_000)
 
-      assert backlog() == [%{package: "popular", version: "1.0.0", variant: :with}]
+      assert backlog() == [
+               %{package: "popular", version: "1.0.0", variant: :with, refresh: false}
+             ]
     end
   end
 
@@ -382,6 +385,55 @@ defmodule Portal.Workers.ToolchainSweepTest do
 
       assert all_enqueued(worker: ToolchainBuild) |> Enum.map(& &1.args["version"]) |> Enum.sort() ==
                ["1.1.0", "1.2.0"]
+    end
+  end
+
+  describe "perform/1 with builds to refresh" do
+    # A served pass row (a recorded lock without a withheld package) that
+    # does not record its compile-time config reads, old enough to be rebuilt.
+    defp served_unmarked!(name, toolchain) do
+      toolchain_row!(name, "1.0.0", :pass,
+        toolchain: toolchain,
+        compile_env_rule: nil,
+        compile_env: nil,
+        deps_lock: %{},
+        finished_at: ago(30 * @day)
+      )
+    end
+
+    test "new builds on any toolchain take the cap before refresh rebuilds",
+         %{previous: previous} do
+      put_toolchains(previous,
+        max_per_run: 2,
+        images: [
+          %{toolchain: "1.19/28", image: "ncc-worker:elixir-1.19-otp-28"},
+          %{toolchain: "1.20/29", image: "ncc-worker:local"}
+        ]
+      )
+
+      for name <- ~w(a b c) do
+        run!(name, "1.0.0")
+        served_unmarked!(name, "1.19/28")
+      end
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      jobs = all_enqueued(worker: ToolchainBuild)
+      assert length(jobs) == 2
+      assert Enum.map(jobs, & &1.args["toolchain"]) == ["1.20/29", "1.20/29"]
+      assert Enum.map(jobs, & &1.priority) == [0, 0]
+    end
+
+    test "refresh rebuilds are enqueued at priority 3", %{previous: previous} do
+      one_toolchain(previous)
+      run!("served", "1.0.0")
+      served_unmarked!("served", "1.19/28")
+      run!("new", "1.0.0")
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert all_enqueued(worker: ToolchainBuild)
+             |> Map.new(&{&1.args["package"], &1.priority}) == %{"new" => 0, "served" => 3}
     end
   end
 

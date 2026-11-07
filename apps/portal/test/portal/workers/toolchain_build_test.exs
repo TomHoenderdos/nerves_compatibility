@@ -264,6 +264,31 @@ defmodule Portal.Workers.ToolchainBuildTest do
     assert [%{status: :pass}] = rows("jason")
   end
 
+  # The cap counts transient results in a row; an error that is not one
+  # breaks the run, so the kept row goes back to the weekly retry.
+  test "an error after the last attempt resets a kept row's transient count" do
+    package = package!("jason")
+
+    Portal.Catalog.ToolchainBuild
+    |> Ash.Changeset.for_create(:create, %{
+      package_id: package.id,
+      version: "1.4.4",
+      toolchain: "1.19/28",
+      builder_version: 1,
+      status: :pass,
+      transient_attempts: 1
+    })
+    |> Ash.create!(domain: Catalog)
+
+    respond(10)
+
+    capture_log(fn ->
+      assert {:error, _} = perform_job(ToolchainBuild, @args, attempt: 2)
+    end)
+
+    assert [%{status: :pass, transient_attempts: 0, attempted_at: %DateTime{}}] = rows("jason")
+  end
+
   describe "transient attempts" do
     # Two transient could-not-judge ingests of the job's identity: an `:error`
     # row counting 2.

@@ -234,11 +234,15 @@ defmodule Portal.Catalog.Ingestion do
   (its `:variant` `:with`). The result's `optional_deps` report is stored on
   the row as it is.
 
-  A later non-pass verdict for the same identity overwrites a pass row, and its
-  memberships with it. An `:error`, a build that gave no verdict, never does:
-  a pass or skipped row of the same identity is kept with its files, and
-  records the attempt (`attempted_at`), as `Portal.Workers.ToolchainBuild`
-  keeps it for a failed job.
+  A later `skipped` verdict for the same identity, a refusal included,
+  overwrites a pass row, and its memberships with it. An `:error`, a build
+  that gave no verdict, never does: a pass or skipped row of the same identity
+  is kept with its files, and records the attempt (`attempted_at`), as
+  `Portal.Workers.ToolchainBuild` keeps it for a failed job. Nor does a
+  failed compile: the same version on the same image compiled before, so a
+  compile that now fails is the environment's, and the pass row is kept the
+  same way, unless it is revoked. A `fail` the host refuses a build with
+  still replaces it.
 
   A `skipped` build whose reason is "portability could not be judged" and
   whose trace says that was transient
@@ -253,7 +257,9 @@ defmodule Portal.Catalog.Ingestion do
   the package causes again on every run, or one from a worker that does not
   report `transient`, stays `skipped`.
 
-  Another `:error` neither counts nor resets. Every ingest of one identity
+  Another `:error` neither counts nor resets an `:error` row's count; on a
+  kept row it ends the run of transient results and resets it, as a `fail`
+  does. Every ingest of one identity
   takes a transaction lock on it first (`lock_toolchain_identity/1`), so two
   ingests of the same identity at once cannot both read one count.
 
@@ -468,7 +474,7 @@ defmodule Portal.Catalog.Ingestion do
     transient? = transient_verdict?(verdict, build)
 
     with {:ok, package} <- ensure_package(package_name, package_info) do
-      case kept_toolchain_build(verdict, package.id, opts) do
+      case kept_toolchain_build(verdict, build, package.id, opts) do
         %ToolchainBuild{} = kept ->
           mark_retried(kept, transient?)
 
@@ -524,20 +530,38 @@ defmodule Portal.Catalog.Ingestion do
 
   # An `:error` gives no verdict, so a pass or skipped row of the same
   # identity stays, files and memberships alike.
-  defp kept_toolchain_build({:error, _reason}, package_id, opts) do
+  defp kept_toolchain_build({:error, _reason}, _build, package_id, opts),
+    do: kept_row(package_id, opts, [:pass, :skipped])
+
+  # A failed compile keeps a served `pass` row: the backlog only rebuilds an
+  # unchanged version on the same image to refresh what it records, so a
+  # compile that now fails is the environment's doing, not news about the
+  # package. Every other `fail` is a refusal (the host's priv check, a
+  # misplaced manifest entry, processes that survived the build), and a
+  # refusal or a skip is a verdict on what the build publishes, which
+  # replaces it. A revoked row serves nothing to keep, so a failed rebuild
+  # of one is stored, revocation and its reason included.
+  defp kept_toolchain_build({:fail, "compile failed: " <> _}, %{"status" => "error"}, id, opts),
+    do: kept_row(id, opts, [:pass], served_only: true)
+
+  defp kept_toolchain_build(_verdict, _build, _package_id, _opts), do: nil
+
+  defp kept_row(package_id, opts, statuses, kept_opts \\ []) do
     variant = Map.get(opts, :variant, :with)
 
     ToolchainBuild
     |> Ash.Query.filter(
       package_id == ^package_id and version == ^opts.version and
         toolchain == ^opts.toolchain and builder_version == ^opts.builder_version and
-        variant == ^variant and status in [:pass, :skipped]
+        variant == ^variant and status in ^statuses
     )
+    |> served_only(Keyword.get(kept_opts, :served_only, false))
     |> Ash.Query.limit(1)
     |> Ash.read_one!(domain: @domain)
   end
 
-  defp kept_toolchain_build(_verdict, _package_id, _opts), do: nil
+  defp served_only(query, true), do: Ash.Query.filter(query, is_nil(revoked_at))
+  defp served_only(query, false), do: query
 
   # A transient "could not be judged" says nothing about the package, so it
   # is retried; `ToolchainBuild.transient_cap/0` of them in a row at one

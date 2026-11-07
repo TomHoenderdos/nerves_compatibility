@@ -113,8 +113,12 @@ defmodule Portal.Catalog.ToolchainBuild do
     # attempt: the backlog re-opens a row by its last attempt, so the
     # identity then waits out its interval again rather than coming back next
     # sweep. `finished_at` stays the build's own, which the manifest serves.
+    # The failure was not a transient "could not be judged", so it ends any
+    # run of those: `transient_cap/0` counts them in a row, and the row goes
+    # back to the weekly retry.
     update :retried do
       change(set_attribute(:attempted_at, &DateTime.utc_now/0))
+      change(set_attribute(:transient_attempts, 0))
     end
 
     # A kept row whose rebuild came back as a transient "could not be judged":

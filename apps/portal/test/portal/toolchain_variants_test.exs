@@ -188,7 +188,7 @@ defmodule Portal.ToolchainVariantsTest do
   describe "the backlog per variant" do
     test "a version never built is wanted with its optional dependencies first" do
       run!("jason", "1.4.5")
-      assert backlog() == [%{package: "jason", version: "1.4.5", variant: :with}]
+      assert backlog() == [%{package: "jason", version: "1.4.5", variant: :with, refresh: false}]
     end
 
     # The case that started this: jason 1.4.5 is built with decimal, and an
@@ -197,7 +197,9 @@ defmodule Portal.ToolchainVariantsTest do
       run!("jason", "1.4.5")
       row!("jason", "1.4.5", :pass, variant: :with, optional_deps: @kept_decimal)
 
-      assert backlog() == [%{package: "jason", version: "1.4.5", variant: :without}]
+      assert backlog() == [
+               %{package: "jason", version: "1.4.5", variant: :without, refresh: false}
+             ]
     end
 
     test "a package without optional dependencies is built once" do
@@ -243,8 +245,8 @@ defmodule Portal.ToolchainVariantsTest do
       end
 
       assert Enum.sort_by(backlog(), & &1.package) == [
-               %{package: "dropa", version: "1.0.0", variant: :with},
-               %{package: "dropb", version: "1.0.0", variant: :with}
+               %{package: "dropa", version: "1.0.0", variant: :with, refresh: false},
+               %{package: "dropb", version: "1.0.0", variant: :with, refresh: false}
              ]
     end
 
@@ -274,7 +276,7 @@ defmodule Portal.ToolchainVariantsTest do
       )
 
       assert Catalog.toolchain_backlog("1.19/28", 2, 100) == [
-               %{package: "jason", version: "1.4.5", variant: :with}
+               %{package: "jason", version: "1.4.5", variant: :with, refresh: false}
              ]
     end
 
@@ -307,7 +309,9 @@ defmodule Portal.ToolchainVariantsTest do
         systems: %{"host" => %{"status" => "pass"}}
       )
 
-      assert backlog() == [%{package: "starved", version: "1.0.0", variant: :with}]
+      assert backlog() == [
+               %{package: "starved", version: "1.0.0", variant: :with, refresh: false}
+             ]
     end
 
     # A host result copied from a revoked run is not evidence of anything.
@@ -340,7 +344,9 @@ defmodule Portal.ToolchainVariantsTest do
       run!("withpriv", "1.0.0")
       row!("withpriv", "1.0.0", :skipped, reason: "ships priv files", finished_at: ago(8 * @day))
 
-      assert backlog() == [%{package: "withpriv", version: "1.0.0", variant: :with}]
+      assert backlog() == [
+               %{package: "withpriv", version: "1.0.0", variant: :with, refresh: false}
+             ]
     end
 
     test "any other skip reason stays a verdict" do
@@ -493,7 +499,9 @@ defmodule Portal.ToolchainVariantsTest do
       row!("jason", "1.4.5", :pass, variant: :with, optional_deps: nil)
       declares("jason", [dep("decimal", true), dep("telemetry", false)])
 
-      assert backlog() == [%{package: "jason", version: "1.4.5", variant: :without}]
+      assert backlog() == [
+               %{package: "jason", version: "1.4.5", variant: :without, refresh: false}
+             ]
     end
 
     test "gets none when the package declares no optional dependency" do
@@ -541,7 +549,7 @@ defmodule Portal.ToolchainVariantsTest do
 
       wanted = Enum.flat_map(1..2, fn _ -> backlog() end)
 
-      assert %{package: "legacy_200", version: "1.4.5", variant: :without} in wanted
+      assert %{package: "legacy_200", version: "1.4.5", variant: :without, refresh: false} in wanted
 
       after_rows = legacy_rows()
 
@@ -633,7 +641,7 @@ defmodule Portal.ToolchainVariantsTest do
         [ago(8 * @day)]
       )
 
-      assert %{package: "legacy_000", version: "1.4.5", variant: :without} in backlog()
+      assert %{package: "legacy_000", version: "1.4.5", variant: :without, refresh: false} in backlog()
     end
 
     # A registry that cannot answer says nothing about the version: the row
@@ -776,7 +784,7 @@ defmodule Portal.ToolchainVariantsTest do
         finished_at: ago(30 * @day)
       )
 
-      assert [%{package: "jason", variant: :with}] = backlog()
+      assert [%{package: "jason", variant: :with, refresh: false}] = backlog()
 
       fail_last_attempt("jason", "1.4.5")
 

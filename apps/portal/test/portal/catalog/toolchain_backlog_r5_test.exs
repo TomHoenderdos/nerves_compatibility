@@ -136,7 +136,35 @@ defmodule Portal.Catalog.ToolchainBacklogR5Test do
     run!("new", "1.0.0")
     downloads!("new", 1)
 
-    assert names() == ["withheld", "new", "plain"]
+    assert [
+             %{package: "withheld", refresh: false},
+             %{package: "new", refresh: false},
+             %{package: "plain", refresh: true}
+           ] = backlog()
+  end
+
+  test "the download ranking puts versions to refresh after the rest" do
+    run!("served", "1.0.0")
+    row!("served", "1.0.0", :pass, [])
+    downloads!("served", 1_000_000)
+    run!("new", "1.0.0")
+    downloads!("new", 5)
+
+    assert Catalog.toolchain_backlog_to_rank(1, 2) == [%{package: "new", version: "1.0.0"}]
+
+    assert Catalog.toolchain_backlog_to_rank(2, 2) == [
+             %{package: "new", version: "1.0.0"},
+             %{package: "served", version: "1.0.0"}
+           ]
+  end
+
+  test "within a package, a version to refresh ranks after a new one" do
+    run!("pkg", "1.0.0")
+    run!("pkg", "2.0.0")
+    row!("pkg", "2.0.0", :pass, [])
+    downloads!("pkg", 5)
+
+    assert Catalog.toolchain_backlog_to_rank(1, 1) == [%{package: "pkg", version: "1.0.0"}]
   end
 
   test "a pass row with no recorded lock is withheld and ranks as a new version" do

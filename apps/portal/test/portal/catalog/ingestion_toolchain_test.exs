@@ -973,4 +973,139 @@ defmodule Portal.Catalog.IngestionToolchainTest do
       assert tb.revoked_reason == "withheld closure"
     end
   end
+
+  describe "the rebuild of a served pass" do
+    defp served!(name) do
+      beam = blob("beam-#{name}")
+      priv = blob("priv-#{name}")
+
+      {:ok, passed} =
+        Ingestion.ingest_toolchain(
+          pass_result(name, beam, priv),
+          opts(name, files_dir_with([beam, priv]), "tc-served")
+        )
+
+      passed
+    end
+
+    defp compile_failed(name) do
+      skipped_result(name)
+      |> put_in(["toolchain_build", "status"], "error")
+      |> put_in(["toolchain_build", "reason"], "undefined function foo/0")
+    end
+
+    # Same version, same image: a pass that now fails to compile is the
+    # environment's doing, so the served build stays and records the attempt.
+    test "that fails keeps the served row and records the attempt" do
+      name = unique_name()
+      passed = served!(name)
+
+      assert {:ok, kept} =
+               Ingestion.ingest_toolchain(compile_failed(name), opts(name, files_dir_with([])))
+
+      assert kept.id == passed.id
+      assert {kept.status, kept.run_id} == {:pass, "tc-served"}
+      assert kept.file_manifest == passed.file_manifest
+      assert kept.finished_at == passed.finished_at
+      assert %DateTime{} = kept.attempted_at
+      assert length(memberships(kept)) == 2
+    end
+
+    test "that the trace refuses replaces the served row" do
+      name = unique_name()
+      passed = served!(name)
+
+      refused =
+        name
+        |> skipped_result()
+        |> put_in(
+          ["toolchain_build", "reason"],
+          "compile-time host read: os:type/0 in X.f/0 (lib/x.ex:2)"
+        )
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(refused, opts(name, files_dir_with([])))
+      assert tb.id == passed.id
+      assert tb.status == :skipped
+      assert tb.reason =~ "compile-time host read"
+      assert memberships(tb) == []
+    end
+
+    test "that the host refuses replaces the served row" do
+      name = unique_name()
+      passed = served!(name)
+      beam = blob("beam-#{name}")
+      priv = blob("priv-#{name}")
+      other = blob("other-#{name}")
+
+      misplaced =
+        name
+        |> pass_result(beam, priv)
+        |> put_in(["toolchain_build", "file_manifest", "ebin"], [
+          entry("ebin/#{name}.beam", beam),
+          entry("lib/#{name}.ex", other)
+        ])
+
+      assert {{:ok, tb}, log} =
+               ExUnit.CaptureLog.with_log(fn ->
+                 Ingestion.ingest_toolchain(
+                   misplaced,
+                   opts(name, files_dir_with([beam, priv, other]))
+                 )
+               end)
+
+      assert log =~ "publishing nothing"
+
+      assert {tb.id, tb.status} == {passed.id, :fail}
+      assert tb.reason =~ "manifest lists"
+      assert memberships(tb) == []
+    end
+
+    test "that fails replaces a skipped row, as before" do
+      name = unique_name()
+
+      {:ok, skipped} =
+        Ingestion.ingest_toolchain(skipped_result(name), opts(name, files_dir_with([])))
+
+      assert {:ok, tb} =
+               Ingestion.ingest_toolchain(compile_failed(name), opts(name, files_dir_with([])))
+
+      assert {tb.id, tb.status} == {skipped.id, :fail}
+    end
+  end
+
+  describe "a kept row's transient count" do
+    # The cap counts transient results in a row: an error that is not one
+    # breaks the run, so the kept row waits out the week again.
+    test "is reset by a non-transient error, back to the weekly retry" do
+      name = unique_name()
+      host_pass_run!(name)
+      served!(name)
+
+      transient = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+
+      assert {:ok, %{transient_attempts: 1}} =
+               Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+
+      sweep_failed =
+        skipped_result(name)
+        |> put_in(["toolchain_build", "status"], "error")
+        |> put_in(["toolchain_build", "reason"], "process sweep could not run: not linux")
+
+      assert {:ok, kept} =
+               Ingestion.ingest_toolchain(sweep_failed, opts(name, files_dir_with([])))
+
+      assert {kept.status, kept.transient_attempts} == {:pass, 0}
+
+      two_days_ago = DateTime.add(DateTime.utc_now(), -2, :day)
+
+      kept
+      |> Ecto.Changeset.change(
+        attempted_at: two_days_ago,
+        finished_at: DateTime.add(two_days_ago, -30, :day)
+      )
+      |> Portal.Repo.update!()
+
+      refute in_backlog?(name)
+    end
+  end
 end

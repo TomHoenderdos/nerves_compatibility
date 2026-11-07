@@ -1280,9 +1280,11 @@ defmodule Portal.Catalog do
     List.flatten(rows)
   end
 
-  # `Withheld.records_config_reads?/1` for the toolchain build `t`, NULL-safe:
-  # rule 1 next to a `compile_env` list.
-  @records_config_reads "coalesce(t.compile_env_rule = 1 AND t.compile_env IS NOT NULL, false)"
+  # `Withheld.records_config_reads?/1` for the toolchain build aliased
+  # `table`, NULL-safe: rule 1 next to a `compile_env` list.
+  records_config_reads = fn table ->
+    "coalesce(#{table}.compile_env_rule = 1 AND #{table}.compile_env IS NOT NULL, false)"
+  end
 
   # When a reopenable row is due: 7 days after its build or its last attempt
   # ($4), a day after a transient attempt ($3), never once it has had
@@ -1325,9 +1327,9 @@ defmodule Portal.Catalog do
   # `ToolchainBuild.transient_cap/0` ($8) of those in a row): a `pass` that
   # dropped its optional dependencies for a transient reason (a Hex hiccup or
   # a slow fetch); a `pass` that does not record its compile-time config
-  # reads (`@records_config_reads`, `Withheld.records_config_reads?/1`: from
-  # before builds recorded them, or from a rolled-back worker image, which
-  # then costs one rebuild a week); a `skipped` for shipping priv files,
+  # reads (`Withheld.records_config_reads?/1`: from before builds recorded
+  # them, or from a rolled-back worker image, which then costs one rebuild a
+  # week); a `skipped` for shipping priv files,
   # which the worker now judges file by file; any other `pass` or `skipped`
   # whose rebuild came back as a transient "could not be judged"; and a
   # revoked row an operator marked as revoked for its withheld closure
@@ -1354,7 +1356,7 @@ defmodule Portal.Catalog do
              AND o.variant = v.variant
              AND o.status = 'pass'
              AND o.revoked_at IS NULL
-             AND NOT #{String.replace(@records_config_reads, "t.", "o.")}
+             AND NOT #{records_config_reads.("o")}
              AND NOT (cardinality($7::text[]) > 0
                       AND (e.package = ANY($7::text[])
                            OR CASE WHEN jsonb_typeof(o.deps_lock) = 'object'
@@ -1413,7 +1415,7 @@ defmodule Portal.Catalog do
             AND NOT (
               -- `ToolchainBuild.withheld_revocation/0`
               t.revoked_reason IS NOT DISTINCT FROM 'withheld closure'
-              AND NOT #{@records_config_reads}
+              AND NOT #{records_config_reads.("t")}
               AND #{@reopen_due}
             )
           )
@@ -1423,7 +1425,7 @@ defmodule Portal.Catalog do
             AND NOT (
               (
                 coalesce(t.optional_deps ->> 'reason', '') IN ('deps_get_failed', 'timeout')
-                OR NOT #{@records_config_reads}
+                OR NOT #{records_config_reads.("t")}
                 OR t.transient_attempts > 0
               )
               AND #{@reopen_due}
@@ -1464,7 +1466,8 @@ defmodule Portal.Catalog do
   live `Portal.Catalog.ToolchainBuild` of its own is left out (see the
   query's comment for what is live). An already served build that only
   needs its compile-time config reads recorded comes after every other
-  candidate.
+  candidate, and says so as `refresh: true`
+  (`Portal.Workers.ToolchainSweep` queues those after every other build).
 
   Most wanted first, so a capped sweep builds what projects resolve before
   what nobody asks for: by the package's hex.pm recent downloads, then, within
@@ -1474,14 +1477,19 @@ defmodule Portal.Catalog do
   after every known one, zero included: it is not known demand.
   """
   @spec toolchain_backlog(String.t(), pos_integer(), non_neg_integer()) :: [
-          %{package: String.t(), version: String.t(), variant: :with | :without}
+          %{
+            package: String.t(),
+            version: String.t(),
+            variant: :with | :without,
+            refresh: boolean()
+          }
         ]
   def toolchain_backlog(toolchain, builder_version, limit) do
     %{rows: rows} =
       Repo.query!(
         """
         WITH candidates AS (#{@toolchain_candidates_sql})
-        SELECT c.package, c.version, c.variant
+        SELECT c.package, c.version, c.variant, c.refresh
         FROM candidates c
         LEFT JOIN catalog_release_downloads d
           ON d.package = c.package AND d.version = c.version
@@ -1501,8 +1509,8 @@ defmodule Portal.Catalog do
         ) ++ [limit]
       )
 
-    Enum.map(rows, fn [package, version, variant] ->
-      %{package: package, version: version, variant: variant(variant)}
+    Enum.map(rows, fn [package, version, variant, refresh] ->
+      %{package: package, version: version, variant: variant(variant), refresh: refresh}
     end)
   end
 
@@ -1521,6 +1529,11 @@ defmodule Portal.Catalog do
   sorts after every counted one whatever its releases say. The result is
   most downloaded package first, and never holds more than
   `top_packages * versions_per_package` entries.
+
+  A package whose only backlog, on every toolchain, refreshes builds already
+  served (`refresh` in `toolchain_backlog/3`) comes after every package with
+  something new to build, however downloaded; inside a package such a
+  version comes after the others the same way.
   """
   @spec toolchain_backlog_to_rank(pos_integer(), pos_integer()) :: [
           %{package: String.t(), version: String.t()}
@@ -1537,48 +1550,64 @@ defmodule Portal.Catalog do
           do: row
 
     rows
-    |> Enum.group_by(fn {package, recent, _finished_at, _version} -> {package, recent} end)
-    |> Enum.sort_by(fn {{package, recent}, _rows} -> {-recent, package} end)
+    |> Enum.group_by(fn {package, recent, _finished_at, _version, _refresh} ->
+      {package, recent}
+    end)
+    |> Enum.sort_by(fn {{package, recent}, rows} -> {all_refresh?(rows), -recent, package} end)
     |> Enum.take(top_packages)
-    |> Enum.flat_map(fn {{package, _recent}, versions} ->
-      versions
-      |> Enum.uniq_by(fn {_package, _recent, _finished_at, version} -> version end)
-      |> Enum.sort(&newer_run?/2)
+    |> Enum.flat_map(fn {{package, _recent}, rows} ->
+      rows
+      |> Enum.group_by(fn {_package, _recent, _finished_at, version, _refresh} -> version end)
+      |> Enum.map(fn {_version, [row | _] = same} -> put_elem(row, 4, all_refresh?(same)) end)
+      |> Enum.sort(&ranks_before?/2)
       |> Enum.take(versions_per_package)
-      |> Enum.map(fn {_package, _recent, _finished_at, version} ->
+      |> Enum.map(fn {_package, _recent, _finished_at, version, _refresh} ->
         %{package: package, version: version}
       end)
     end)
   end
+
+  # A package or version is only a refresh when it is one on every toolchain.
+  defp all_refresh?(rows), do: Enum.all?(rows, &elem(&1, 4))
+
+  # A version to build before a version to refresh, then newest run first.
+  defp ranks_before?({_, _, _, _, false}, {_, _, _, _, true}), do: true
+  defp ranks_before?({_, _, _, _, true}, {_, _, _, _, false}), do: false
+  defp ranks_before?(a, b), do: newer_run?(a, b)
 
   defp backlog_to_rank(toolchain, builder_version, top_packages, versions_per_package) do
     %{rows: rows} =
       Repo.query!(
         """
         WITH candidates AS (#{@toolchain_candidates_sql}),
-        -- Both variants of a version share its release's downloads.
+        -- Both variants of a version share its release's downloads; a
+        -- version is a refresh only when every variant it wants is one.
         versions AS (
-          SELECT package, recent, max(finished_at) AS finished_at, version
+          SELECT package, recent, max(finished_at) AS finished_at, version,
+                 bool_and(refresh) AS refresh
           FROM candidates
           GROUP BY package, recent, version
         ),
+        -- Packages with something to build before packages that only
+        -- refresh what is already served.
         top AS (
           SELECT package, recent
           FROM versions
           WHERE recent IS NOT NULL
           GROUP BY package, recent
-          ORDER BY recent DESC, package
+          ORDER BY bool_and(refresh), recent DESC, package
           LIMIT $9
         ),
         ranked AS (
-          SELECT c.package, c.recent, c.finished_at, c.version,
+          SELECT c.package, c.recent, c.finished_at, c.version, c.refresh,
                  row_number() OVER (
-                   PARTITION BY c.package ORDER BY c.finished_at DESC NULLS LAST, c.version DESC
+                   PARTITION BY c.package
+                   ORDER BY c.refresh, c.finished_at DESC NULLS LAST, c.version DESC
                  ) AS rank
           FROM versions c
           JOIN top t ON t.package = c.package
         )
-        SELECT package, recent, finished_at, version
+        SELECT package, recent, finished_at, version, refresh
         FROM ranked
         WHERE rank <= $10
         """,
@@ -1590,10 +1619,10 @@ defmodule Portal.Catalog do
 
   # Newest run first, no run time last, version breaking a tie: the order the
   # query above ranks a package's versions in, kept across toolchains.
-  defp newer_run?({_, _, same, a}, {_, _, same, b}), do: a >= b
-  defp newer_run?({_, _, nil, _}, _other), do: false
-  defp newer_run?(_row, {_, _, nil, _}), do: true
-  defp newer_run?({_, _, a, _}, {_, _, b, _}), do: NaiveDateTime.compare(a, b) == :gt
+  defp newer_run?({_, _, same, a, _}, {_, _, same, b, _}), do: a >= b
+  defp newer_run?({_, _, nil, _, _}, _other), do: false
+  defp newer_run?(_row, {_, _, nil, _, _}), do: true
+  defp newer_run?({_, _, a, _, _}, {_, _, b, _, _}), do: NaiveDateTime.compare(a, b) == :gt
 
   @doc """
   Per configured toolchain (`Portal.Toolchains.images/0`), at the current
