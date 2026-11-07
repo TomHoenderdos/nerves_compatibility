@@ -259,24 +259,88 @@ class LayoutGuardTest(unittest.TestCase):
                     self.assertIn("NCC_APACHE_UPSTREAM", result.stderr)
                     self.assertEqual(events, [])
 
+    TEMPLATE = (OPS / "ncc-upstream.conf.template").read_text()
+
+    def restart_on_blue_green(self, serving, flag="", active_color=True, include=True):
+        """A restart-path deploy on a host whose include serves $serving."""
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        root = Path(directory)
+        install = root / "install"
+        install.mkdir()
+        if active_color:
+            (install / "active-color").write_text(serving + "\n")
+        (install / "served-blue").write_text("b" * 40 + "\n")
+        (install / "releases" / serving).mkdir(parents=True)
+        (install / "releases" / serving / "ncc-upstream.conf.template").write_text(self.TEMPLATE)
+        upstream = root / "ncc-upstream.conf"
+        if include:
+            port = {"blue": 4002, "green": 4003}[serving]
+            upstream.write_text(self.TEMPLATE.replace("@PORT@", str(port)))
+        result, events = self.run_script(
+            "deploy.sh", ["a" * 40],
+            env_file_text=self.BG_LAYOUT.format(install=install)
+            + f"NCC_APACHE_UPSTREAM={upstream}\n" + flag)
+        return result, events, install, upstream
+
+    def assert_refused_untouched(self, result, events, install):
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("NCC_BLUE_GREEN=1", result.stderr)
+        self.assertEqual(events, [])
+        self.assertTrue((install / "served-blue").exists())
+        self.assertFalse((install / "deploy.lock").exists())
+
     def test_the_restart_path_refuses_on_a_blue_green_host(self):
         # active-color exists: this host runs blue/green, whatever the flag
         # says. A restart-path run would start the single unit and forget
         # the served records, so it stops before touching anything.
         for flag in ("", "NCC_BLUE_GREEN=\n", "NCC_BLUE_GREEN=0\n"):
-            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as install:
-                (Path(install) / "active-color").write_text("blue\n")
-                (Path(install) / "served-blue").write_text("b" * 40 + "\n")
-                result, events = self.run_script(
-                    "deploy.sh", ["a" * 40],
-                    env_file_text=self.BG_LAYOUT.format(install=install) + flag)
-                self.assertEqual(result.returncode, 1)
+            with self.subTest(flag=flag):
+                result, events, install, _ = self.restart_on_blue_green("blue", flag)
+                self.assert_refused_untouched(result, events, install)
                 self.assertIn("active-color", result.stderr)
-                self.assertIn("NCC_BLUE_GREEN=1", result.stderr)
-                self.assertIn(f"rm {install}/active-color", result.stderr)
-                self.assertEqual(events, [])
-                self.assertTrue((Path(install) / "served-blue").exists())
-                self.assertFalse((Path(install) / "deploy.lock").exists())
+
+    def test_the_refusal_while_blue_serves_lists_the_undo_steps(self):
+        result, events, install, upstream = self.restart_on_blue_green("blue")
+        self.assert_refused_untouched(result, events, install)
+        err = result.stderr
+        self.assertIn("blue serves", err)
+        self.assertIn(f"cp -a '{install}/releases/blue' '{install}/portal'", err)
+        self.assertIn("systemctl disable --now ncc-portal@blue && systemctl enable --now ncc-portal",
+                      err)
+        self.assertIn(f"rm -f '{install}/active-color'", err)
+        self.assertLess(err.index("cp -a"), err.index("systemctl disable --now"))
+        self.assertLess(err.index("systemctl disable --now"), err.index("rm -f '"))
+
+    def test_the_refusal_while_green_serves_points_the_include_at_4002_first(self):
+        result, events, install, upstream = self.restart_on_blue_green("green")
+        self.assert_refused_untouched(result, events, install)
+        err = result.stderr
+        self.assertIn("green serves", err)
+        self.assertIn("ops/deploy.sh rollback", err)
+        self.assertIn(f"cp -a '{install}/releases/green' '{install}/portal'", err)
+        render = f"sed \"s/@PORT@/4002/g\" '{install}/releases/green/ncc-upstream.conf.template'"
+        self.assertIn(render, err)
+        stop = err.index("systemctl disable --now ncc-portal@green")
+        self.assertLess(err.index(render), stop)
+        self.assertLess(err.index("systemctl reload apache2"), stop)
+        # Nothing before the include points at 4002 stops or disables green.
+        self.assertNotIn("ncc-portal@green", err[:err.index(render)].replace(
+            "green serves", ""))
+
+    def test_the_restart_path_refuses_while_the_include_names_4003(self):
+        # The second guard: active-color gone, but Apache still routes to
+        # green, where the single unit would never listen.
+        result, events, install, _ = self.restart_on_blue_green("green", active_color=False)
+        self.assert_refused_untouched(result, events, install)
+        self.assertIn("green serves", result.stderr)
+        self.assertIn("4003", result.stderr)
+
+    def test_without_a_readable_include_the_refusal_trusts_active_color(self):
+        result, events, install, _ = self.restart_on_blue_green("green", include=False)
+        self.assert_refused_untouched(result, events, install)
+        self.assertIn("green serves", result.stderr)
+        self.assertIn("active-color", result.stderr)
 
     def test_a_blue_green_value_other_than_empty_0_or_1_refuses(self):
         for value in ("true", "yes", "2", " 1"):

@@ -93,14 +93,71 @@ if [[ $mode == rollback && $blue_green != 1 ]]; then
   echo "rollback needs NCC_BLUE_GREEN=1: a single-release host rolls back from portal-previous.tar.gz by hand" >&2
   exit 1
 fi
-# active-color exists only on a blue/green host. The restart path there would
-# start the single unit beside the colours and forget their served records,
-# leaving nothing to roll back to, so a flag lost from the env file stops
-# here, before anything moves. Leaving blue/green on purpose ends with
-# removing active-color (the undo steps in the operator runbook).
-if [[ $blue_green != 1 && -e $NCC_INSTALL_DIR/active-color ]]; then
-  echo "refusing: $NCC_INSTALL_DIR/active-color exists, so this host deploys blue/green, but NCC_BLUE_GREEN is not 1. Set NCC_BLUE_GREEN=1 in the deploy env file; or, to leave blue/green on purpose, finish its undo steps first (copy the serving release to $NCC_INSTALL_DIR/portal, swap the units back, then rm $NCC_INSTALL_DIR/active-color)." >&2
-  exit 1
+# The colour the include ($1) routes to; empty when it is unreadable or
+# does not name exactly one colour port.
+include_color() {
+  local ports
+  [[ -n $1 && -r $1 ]] || return 0
+  ports=$(grep -oE '127\.0\.0\.1:400[23]([^0-9]|$)' "$1" | grep -oE '400[23]' | sort -u || true)
+  case $ports in
+    4002) echo blue ;;
+    4003) echo green ;;
+  esac
+}
+
+# Why the restart path refuses on this host, and how to leave blue/green on
+# purpose without routing Apache at a port nothing listens on: the single
+# ncc-portal unit listens on 4002, so the include must point there before
+# the serving colour stops.
+restart_path_refusal() { # color source-of-color upstream
+  local c=$1 i=$NCC_INSTALL_DIR inc=${3:-\$NCC_APACHE_UPSTREAM} rel copy
+  rel=$i/releases/$c
+  copy=$rel/ncc-upstream.conf.template
+  [[ -r $copy ]] || copy=$NCC_SRC_DIR/ops/ncc-upstream.conf.template
+  echo "refusing: this host deploys blue/green (${c:-an unknown colour} serves now, per $2), but NCC_BLUE_GREEN is not 1. Set NCC_BLUE_GREEN=1 in the deploy env file and deploy again."
+  case $c in
+    blue)
+      echo "To leave blue/green on purpose instead, in this order:"
+      echo "  1. remove NCC_BLUE_GREEN from the deploy env file"
+      echo "  2. cp -a '$rel' '$i/portal'"
+      echo "  3. the include already points at 4002, where the single ncc-portal unit listens"
+      echo "  4. systemctl disable --now ncc-portal@blue && systemctl enable --now ncc-portal   (the one restart)"
+      echo "  5. rm -f '$i/active-color'"
+      ;;
+    green)
+      echo "The single ncc-portal unit listens on 4002, but the include routes to green on 4003. To leave blue/green on purpose, either bring blue back first (with NCC_BLUE_GREEN=1: ops/deploy.sh rollback, or a deploy) and follow the steps this prints then, or accept one restart, in this order:"
+      echo "  1. remove NCC_BLUE_GREEN from the deploy env file"
+      echo "  2. cp -a '$rel' '$i/portal'"
+      echo "  3. point the include at 4002 (the site is down from this reload until step 4 has started the single unit):"
+      echo "     sed \"s/@PORT@/4002/g\" '$copy' > '$inc.new' && cp '$inc' '$inc.bak' && mv '$inc.new' '$inc' && apachectl configtest && systemctl reload apache2"
+      echo "     (if configtest fails: mv '$inc.bak' '$inc')"
+      echo "  4. systemctl disable --now ncc-portal@green && systemctl enable --now ncc-portal"
+      echo "  5. rm -f '$i/active-color'"
+      ;;
+    *)
+      echo "Which colour serves could not be read from the include or active-color; check $inc and $i/active-color by hand before anything else."
+      ;;
+  esac
+}
+
+# A restart-path deploy on a blue/green host would start the single unit
+# beside the colours and forget their served records, leaving nothing to roll
+# back to, so a flag lost from the env file stops here, before anything moves.
+# Two signs of such a host: active-color (removed last when leaving
+# blue/green), and an include still routing to green's 4003, where the
+# single unit never listens.
+if [[ $blue_green != 1 ]]; then
+  upstream=$(ncc_layout_flag NCC_APACHE_UPSTREAM)
+  serving=$(include_color "$upstream")
+  if [[ -e $NCC_INSTALL_DIR/active-color || $serving == green ]]; then
+    source_of="the include $upstream"
+    if [[ -z $serving ]]; then
+      serving=$(cat "$NCC_INSTALL_DIR/active-color" 2>/dev/null || true)
+      source_of="$NCC_INSTALL_DIR/active-color (the include could not be read)"
+    fi
+    restart_path_refusal "$serving" "$source_of" "$upstream" >&2
+    exit 1
+  fi
 fi
 
 SRC=$NCC_SRC_DIR
