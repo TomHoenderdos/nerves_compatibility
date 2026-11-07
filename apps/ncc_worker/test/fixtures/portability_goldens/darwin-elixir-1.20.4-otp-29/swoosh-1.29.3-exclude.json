@@ -1,4 +1,15 @@
 {
+  "compile_env": [
+    "jason [\"decoding_integer_digit_limit\"] = :error",
+    "logger [\"always_evaluate_messages\"] = {:ok, false}",
+    "logger [\"compile_time_application\"] = {:ok, nil}",
+    "logger [\"compile_time_purge_level\"] = :error",
+    "logger [\"compile_time_purge_matching\"] = {:ok, []}",
+    "mime [\"extensions\"] = :error",
+    "mime [\"suffixes\"] = :error",
+    "mime [\"types\"] = :error"
+  ],
+  "compile_env_rule": 1,
   "deps_lock": {
     "idna": "7.1.0",
     "jason": "1.4.5",
@@ -12,9 +23,15 @@
       {
         "arg": {
           "app": "jason",
-          "key": "decoding_integer_digit_limit"
+          "app_name": "jason",
+          "atoms": true,
+          "key": "decoding_integer_digit_limit",
+          "key_name": "decoding_integer_digit_limit"
         },
+        "extent": "frame",
         "file": "lib/decoder.ex",
+        "first": "elixir_compiler_N",
+        "first_kind": "user",
         "line": 167,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -23,9 +40,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/logger.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 29,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -34,9 +57,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/ms_graph.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 45,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -45,9 +74,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/sendmail.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 56,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -56,9 +91,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/sendmail.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 78,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -67,9 +108,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/smtp2go.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 61,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -78,9 +125,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/swoosh/api_client/finch.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 32,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -89,9 +142,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/swoosh/api_client/hackney.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 12,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -100,9 +159,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/swoosh/api_client/req.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 20,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -111,9 +176,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/swoosh/application.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 61,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -122,9 +193,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/swoosh/mailer.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 260,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -133,9 +210,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/logger.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 29,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -144,9 +227,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/ms_graph.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 45,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -155,9 +244,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/sendmail.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 56,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -166,9 +261,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/sendmail.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 78,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -177,9 +278,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/smtp2go.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 61,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -188,9 +295,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/swoosh/api_client/finch.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 32,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -199,9 +312,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/swoosh/api_client/hackney.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 12,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -210,9 +329,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/swoosh/api_client/req.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 20,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -221,9 +346,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/swoosh/application.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 61,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -232,9 +363,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/swoosh/mailer.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 260,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -243,9 +380,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/ms_graph.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 45,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -254,9 +397,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/sendmail.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 56,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -265,9 +414,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/sendmail.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 78,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -276,9 +431,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/smtp2go.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 61,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -287,9 +448,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/swoosh/api_client/finch.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 32,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -298,9 +465,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/swoosh/api_client/hackney.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 12,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -309,9 +482,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/swoosh/api_client/req.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 20,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -320,9 +499,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/swoosh/application.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 61,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -331,9 +516,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/swoosh/mailer.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 260,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -342,9 +533,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/logger.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 29,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -353,9 +550,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/ms_graph.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 45,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -364,9 +567,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/sendmail.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 56,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -375,9 +584,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/sendmail.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 78,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -386,9 +601,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/swoosh/adapters/smtp2go.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 61,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -397,9 +618,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/swoosh/api_client/finch.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 32,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -408,9 +635,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/swoosh/api_client/hackney.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 12,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -419,9 +652,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/swoosh/api_client/req.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 20,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -430,9 +669,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/swoosh/application.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 61,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -441,9 +686,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/swoosh/mailer.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 260,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -452,9 +703,15 @@
       {
         "arg": {
           "app": "mime",
-          "key": "extensions"
+          "app_name": "mime",
+          "atoms": true,
+          "key": "extensions",
+          "key_name": "extensions"
         },
+        "extent": "frame",
         "file": "lib/mime.ex",
+        "first": "elixir_compiler_N",
+        "first_kind": "user",
         "line": 149,
         "mfa": "application:get_env/2",
         "module": "elixir_compiler_N",
@@ -463,9 +720,15 @@
       {
         "arg": {
           "app": "mime",
-          "key": "suffixes"
+          "app_name": "mime",
+          "atoms": true,
+          "key": "suffixes",
+          "key_name": "suffixes"
         },
+        "extent": "frame",
         "file": "lib/mime.ex",
+        "first": "elixir_compiler_N",
+        "first_kind": "user",
         "line": 161,
         "mfa": "application:get_env/2",
         "module": "elixir_compiler_N",
@@ -474,36 +737,23 @@
       {
         "arg": {
           "app": "mime",
-          "key": "types"
+          "app_name": "mime",
+          "atoms": true,
+          "key": "types",
+          "key_name": "types"
         },
+        "extent": "frame",
         "file": "lib/mime.ex",
+        "first": "elixir_compiler_N",
+        "first_kind": "user",
         "line": 132,
         "mfa": "application:get_env/2",
         "module": "elixir_compiler_N",
         "owner": "mime"
       }
     ],
-    "elixir_version": [
-      {
-        "arg": {
-          "left": "\"1.20.4\"",
-          "right": "\"~> 1.12\""
-        },
-        "file": "<work>/work/proj/deps/jason/mix.exs",
-        "line": 38,
-        "mfa": "Version.match?/2",
-        "module": "Elixir.Jason.Mixfile",
-        "owner": "jason"
-      },
-      {
-        "arg": {},
-        "file": "<work>/work/proj/deps/jason/mix.exs",
-        "line": 38,
-        "mfa": "System.version/0",
-        "module": "Elixir.Jason.Mixfile",
-        "owner": "jason"
-      }
-    ],
+    "config_unreviewed": [],
+    "elixir_version": [],
     "mix_exs_allowed": [],
     "native_calls": [],
     "native_libs": [],

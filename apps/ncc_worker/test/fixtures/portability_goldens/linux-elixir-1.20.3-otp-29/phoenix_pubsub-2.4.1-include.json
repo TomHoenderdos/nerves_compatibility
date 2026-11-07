@@ -1,4 +1,11 @@
 {
+  "compile_env": [
+    "logger [\"always_evaluate_messages\"] = {:ok, false}",
+    "logger [\"compile_time_application\"] = {:ok, nil}",
+    "logger [\"compile_time_purge_level\"] = :error",
+    "logger [\"compile_time_purge_matching\"] = {:ok, []}"
+  ],
+  "compile_env_rule": 1,
   "deps_lock": {},
   "judge_compile": "finished",
   "observations": {
@@ -7,9 +14,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/phoenix/tracker/delta_generation.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 13,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -18,9 +31,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/phoenix/tracker/shard.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 623,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -29,9 +48,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/phoenix/tracker/delta_generation.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 13,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -40,9 +65,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/phoenix/tracker/shard.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 623,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -51,9 +82,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/phoenix/tracker/delta_generation.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 13,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -62,9 +99,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/phoenix/tracker/delta_generation.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 13,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -73,15 +116,22 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/phoenix/tracker/shard.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 623,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_pubsub"
       }
     ],
+    "config_unreviewed": [],
     "elixir_version": [],
     "mix_exs_allowed": [],
     "native_calls": [],

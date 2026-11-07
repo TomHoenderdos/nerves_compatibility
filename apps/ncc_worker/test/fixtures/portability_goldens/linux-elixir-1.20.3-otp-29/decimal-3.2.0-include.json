@@ -1,16 +1,22 @@
 {
+  "compile_env": [],
+  "compile_env_rule": 1,
   "deps_lock": {},
   "judge_compile": "finished",
   "observations": {
     "build_root_source_path": [],
     "config_reads": [],
+    "config_unreviewed": [],
     "elixir_version": [
       {
         "arg": {
           "left": "\"1.20.3\"",
           "right": "\">= 1.7.0\""
         },
+        "extent": "frame",
         "file": "lib/decimal/macros.ex",
+        "first": "Elixir.Decimal.Macros",
+        "first_kind": "user",
         "line": 5,
         "mfa": "Version.match?/2",
         "module": "Elixir.Decimal.Macros",
@@ -18,7 +24,10 @@
       },
       {
         "arg": {},
+        "extent": "frame",
         "file": "lib/decimal/macros.ex",
+        "first": "Elixir.Decimal.Macros",
+        "first_kind": "user",
         "line": 5,
         "mfa": "System.version/0",
         "module": "Elixir.Decimal.Macros",

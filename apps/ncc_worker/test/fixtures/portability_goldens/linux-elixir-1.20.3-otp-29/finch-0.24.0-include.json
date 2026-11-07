@@ -1,4 +1,14 @@
 {
+  "compile_env": [
+    "logger [\"always_evaluate_messages\"] = {:ok, false}",
+    "logger [\"compile_time_application\"] = {:ok, nil}",
+    "logger [\"compile_time_purge_level\"] = :error",
+    "logger [\"compile_time_purge_matching\"] = {:ok, []}",
+    "mime [\"extensions\"] = :error",
+    "mime [\"suffixes\"] = :error",
+    "mime [\"types\"] = :error"
+  ],
+  "compile_env_rule": 1,
   "deps_lock": {
     "hpax": "1.1.0",
     "mime": "2.0.7",
@@ -14,9 +24,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 301,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -25,9 +41,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 415,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -36,9 +58,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 478,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -47,9 +75,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 639,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -58,9 +92,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/mint/http1.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1233,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -69,9 +109,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1752,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -80,9 +126,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1922,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -91,9 +143,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2083,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -102,9 +160,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2407,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -113,9 +177,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2490,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -124,9 +194,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2617,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -135,9 +211,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2816,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -146,9 +228,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2834,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -157,9 +245,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2885,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -168,9 +262,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "always_evaluate_messages"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
         },
+        "extent": "frame",
         "file": "lib/nimble_pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1081,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -179,9 +279,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 301,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -190,9 +296,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 415,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -201,9 +313,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 478,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -212,9 +330,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 639,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -223,9 +347,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/mint/http1.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1233,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -234,9 +364,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1752,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -245,9 +381,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1922,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -256,9 +398,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2083,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -267,9 +415,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2407,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -278,9 +432,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2490,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -289,9 +449,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2617,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -300,9 +466,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2816,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -311,9 +483,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2834,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -322,9 +500,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2885,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -333,9 +517,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_application"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
         },
+        "extent": "frame",
         "file": "lib/nimble_pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1081,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -344,9 +534,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 301,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -355,9 +551,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 415,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -366,9 +568,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 478,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -377,9 +585,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 639,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -388,9 +602,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_level"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
         },
+        "extent": "frame",
         "file": "lib/nimble_pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1081,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -399,9 +619,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 301,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -410,9 +636,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 415,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -421,9 +653,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 478,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -432,9 +670,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/finch/http2/pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 639,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -443,9 +687,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/mint/http1.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1233,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -454,9 +704,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1752,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -465,9 +721,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1922,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -476,9 +738,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2083,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -487,9 +755,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2407,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -498,9 +772,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2490,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -509,9 +789,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2617,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -520,9 +806,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2816,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -531,9 +823,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2834,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -542,9 +840,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/mint/http2.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 2885,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -553,9 +857,15 @@
       {
         "arg": {
           "app": "logger",
-          "key": "compile_time_purge_matching"
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
         },
+        "extent": "frame",
         "file": "lib/nimble_pool.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 1081,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -564,9 +874,15 @@
       {
         "arg": {
           "app": "mime",
-          "key": "extensions"
+          "app_name": "mime",
+          "atoms": true,
+          "key": "extensions",
+          "key_name": "extensions"
         },
+        "extent": "frame",
         "file": "lib/mime.ex",
+        "first": "elixir_compiler_N",
+        "first_kind": "user",
         "line": 149,
         "mfa": "application:get_env/2",
         "module": "elixir_compiler_N",
@@ -575,9 +891,15 @@
       {
         "arg": {
           "app": "mime",
-          "key": "suffixes"
+          "app_name": "mime",
+          "atoms": true,
+          "key": "suffixes",
+          "key_name": "suffixes"
         },
+        "extent": "frame",
         "file": "lib/mime.ex",
+        "first": "elixir_compiler_N",
+        "first_kind": "user",
         "line": 161,
         "mfa": "application:get_env/2",
         "module": "elixir_compiler_N",
@@ -586,15 +908,22 @@
       {
         "arg": {
           "app": "mime",
-          "key": "types"
+          "app_name": "mime",
+          "atoms": true,
+          "key": "types",
+          "key_name": "types"
         },
+        "extent": "frame",
         "file": "lib/mime.ex",
+        "first": "elixir_compiler_N",
+        "first_kind": "user",
         "line": 132,
         "mfa": "application:get_env/2",
         "module": "elixir_compiler_N",
         "owner": "mime"
       }
     ],
+    "config_unreviewed": [],
     "elixir_version": [],
     "mix_exs_allowed": [],
     "native_calls": [],

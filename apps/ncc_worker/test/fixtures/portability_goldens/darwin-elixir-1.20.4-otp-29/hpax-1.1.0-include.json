@@ -1,9 +1,12 @@
 {
+  "compile_env": [],
+  "compile_env_rule": 1,
   "deps_lock": {},
   "judge_compile": "finished",
   "observations": {
     "build_root_source_path": [],
     "config_reads": [],
+    "config_unreviewed": [],
     "elixir_version": [],
     "mix_exs_allowed": [],
     "native_calls": [],

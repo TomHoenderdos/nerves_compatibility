@@ -1,4 +1,8 @@
 {
+  "compile_env": [
+    "jason [\"decoding_integer_digit_limit\"] = :error"
+  ],
+  "compile_env_rule": 1,
   "deps_lock": {
     "decimal": "3.2.0"
   },
@@ -9,49 +13,43 @@
       {
         "arg": {
           "app": "jason",
-          "key": "decoding_integer_digit_limit"
+          "app_name": "jason",
+          "atoms": true,
+          "key": "decoding_integer_digit_limit",
+          "key_name": "decoding_integer_digit_limit"
         },
+        "extent": "frame",
         "file": "lib/decoder.ex",
+        "first": "elixir_compiler_N",
+        "first_kind": "user",
         "line": 167,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "jason"
       }
     ],
+    "config_unreviewed": [],
     "elixir_version": [
       {
         "arg": {
           "left": "\"1.20.4\"",
           "right": "\">= 1.7.0\""
         },
+        "extent": "frame",
         "file": "lib/decimal/macros.ex",
+        "first": "Elixir.Decimal.Macros",
+        "first_kind": "user",
         "line": 5,
         "mfa": "Version.match?/2",
         "module": "Elixir.Decimal.Macros",
         "owner": "decimal"
       },
       {
-        "arg": {
-          "left": "\"1.20.4\"",
-          "right": "\"~> 1.12\""
-        },
-        "file": "<work>/work/proj/deps/jason/mix.exs",
-        "line": 38,
-        "mfa": "Version.match?/2",
-        "module": "Elixir.Jason.Mixfile",
-        "owner": "jason"
-      },
-      {
         "arg": {},
-        "file": "<work>/work/proj/deps/jason/mix.exs",
-        "line": 38,
-        "mfa": "System.version/0",
-        "module": "Elixir.Jason.Mixfile",
-        "owner": "jason"
-      },
-      {
-        "arg": {},
+        "extent": "frame",
         "file": "lib/decimal/macros.ex",
+        "first": "Elixir.Decimal.Macros",
+        "first_kind": "user",
         "line": 5,
         "mfa": "System.version/0",
         "module": "Elixir.Decimal.Macros",
