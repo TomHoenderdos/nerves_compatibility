@@ -240,6 +240,29 @@ class GoLiveTest(unittest.TestCase):
         self.assertIn("journalctl -u ncc-portal |", result.stdout)
         self.assertIn("is ncc-portal running?", result.stdout)
 
+    def test_blue_green_is_read_from_the_file_when_the_layout_is_exported(self):
+        # The layout is already in the environment, so ncc_layout never
+        # sources the file; NCC_BLUE_GREEN is set only there.
+        self.make_ca()
+        self.blue_green()
+        result = self.run_golive(NCC_INSTALL_DIR=str(self.root / "install"),
+                                 NCC_PORTAL_ENV=str(self.portal_env),
+                                 NCC_PORTAL_WORKDIR=str(self.workdir))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("green node=portal_green rpc", self.portal_calls())
+
+    def test_blue_green_hints_deploy_instead_of_restarting(self):
+        self.blue_green()
+        result = self.run_golive("--init-ca", FAKE_LISTENING="")
+        self.assertNotIn("restart", result.stdout.lower())
+        self.assertIn("ops/deploy.sh", result.stdout)
+        self.assertIn("ops/deploy.sh rollback", result.stdout)
+
+    def test_without_blue_green_the_hints_say_restart(self):
+        result = self.run_golive("--init-ca", FAKE_LISTENING="")
+        self.assertIn("restart the portal", result.stdout)
+        self.assertNotIn("ops/deploy.sh rollback", result.stdout)
+
     def test_blue_green_refuses_without_a_readable_include(self):
         self.make_ca()
         self.blue_green()

@@ -20,8 +20,9 @@
 # the key is missing: Portal.Builders.CA.init/1 as the portal user, which
 # writes a new key (mode 600) and ca.pem and refuses to overwrite either.
 # It is reversible until the first builder enrols (delete both files).
-# The portal must then be restarted for the listener to start; this script
-# never restarts anything.
+# The portal must then be restarted for the listener to start (under
+# blue/green: deployed, which starts the idle colour); this script never
+# restarts anything.
 #
 # Exit 0 when every check passes, 1 when any fails, 2 on bad usage. The
 # host layout comes from the deploy env file (ops/deploy.env.example).
@@ -50,6 +51,18 @@ ncc_layout() {
   fi
 }
 
+# One variable from the deploy env file when the environment does not set it.
+# ncc_layout sources the file only when a layout variable is missing, so a
+# flag such as NCC_BLUE_GREEN would otherwise go unread whenever the caller
+# exported the layout.
+ncc_layout_flag() {
+  local file=${NCC_DEPLOY_ENV:-/etc/ncc-deploy.env}
+  if [[ -n ${!1+x} ]]; then printf '%s\n' "${!1}"; return 0; fi
+  [[ -r $file ]] || return 0
+  # shellcheck source=/dev/null
+  (. "$file" && printf '%s\n' "${!1:-}")
+}
+
 init_ca=false
 case "${1:-}" in
   "") ;;
@@ -67,7 +80,11 @@ USER_NAME=${NCC_PORTAL_USER:-ncc}
 BIN=$NCC_INSTALL_DIR/portal/bin/portal
 UNIT=ncc-portal
 color_env=
-if [[ ${NCC_BLUE_GREEN:-} == 1 ]]; then
+# A restart takes the site down under blue/green; a deploy starts the other
+# colour with the new settings and switches to it, and a rollback swaps back.
+restart_hint="restart the portal"
+NCC_BLUE_GREEN=$(ncc_layout_flag NCC_BLUE_GREEN)
+if [[ $NCC_BLUE_GREEN == 1 ]]; then
   ncc_layout NCC_SRC_DIR NCC_APACHE_UPSTREAM || exit 1
   # shellcheck source=ops/blue-green.sh
   source "$NCC_SRC_DIR/ops/blue-green.sh"
@@ -76,6 +93,7 @@ if [[ ${NCC_BLUE_GREEN:-} == 1 ]]; then
   UNIT=$BG_UNIT@$color
   # The colour's own node name and tmp dir, as bg_rpc reads them.
   color_env=$(dirname "$NCC_PORTAL_ENV")/color-$color.env
+  restart_hint="run ops/deploy.sh (or ops/deploy.sh rollback), which starts the idle colour with the new settings and switches to it; bouncing $UNIT by hand takes the site down"
 fi
 failures=0
 
@@ -124,7 +142,7 @@ else
         {:ok, _} -> IO.puts("created")
         {:error, why} -> IO.puts("refused: #{inspect(why)}"); System.halt(1)
       end'; then
-      echo "  made  $ca_key and ca.pem; restart the portal to start the listener"
+      echo "  made  $ca_key and ca.pem; to start the listener, $restart_hint"
     else
       bad "CA init failed"
     fi
@@ -178,7 +196,7 @@ if [[ ! $port =~ ^[0-9]+$ ]]; then
 elif [[ -n $(ss -Hltn "sport = :$port" 2>/dev/null) ]]; then
   ok "something listens on TCP $port"
 else
-  bad "nothing listens on TCP $port (needs PHX_SERVER, a CA key that loads and a portal restart; journalctl -u $UNIT | grep 'builder listener')"
+  bad "nothing listens on TCP $port (needs PHX_SERVER, a CA key that loads, then: $restart_hint; journalctl -u $UNIT | grep 'builder listener')"
 fi
 
 # The first `key=value` line of the rpc report for key $1.
@@ -203,7 +221,7 @@ if report=$(portal rpc '
   if [[ $(field ca_loads) == true ]]; then
     ok "the running release reads ca.pem"
   else
-    bad "the running release cannot read the CA certificate (restart it after creating the CA)"
+    bad "the running release cannot read the CA certificate (after creating the CA, $restart_hint)"
   fi
   if [[ $(field images_load) == :ok && $(field worker) != none ]]; then
     ok "images.json ($(field images_path)) names worker $(field worker)"
@@ -230,7 +248,7 @@ cat <<EOF
 
 Next steps (manual):
   1. Fix every FAIL above. After creating the CA or changing $NCC_PORTAL_ENV,
-     restart the portal and rerun this script.
+     $restart_hint, and rerun this script.
   2. Open TCP $port on the web host's firewall. The client certificate is the
      gate; only ca.pem and enroll answer without one, and enroll needs a token.
   3. /admin/builders -> New enrolment token, named for the builder. It is shown

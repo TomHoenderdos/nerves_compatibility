@@ -47,6 +47,18 @@ ncc_layout() {
   fi
 }
 
+# One variable from the deploy env file when the environment does not set it.
+# ncc_layout sources the file only when a layout variable is missing, so a
+# flag such as NCC_BLUE_GREEN would otherwise go unread whenever the caller
+# exported the layout.
+ncc_layout_flag() {
+  local file=${NCC_DEPLOY_ENV:-/etc/ncc-deploy.env}
+  if [[ -n ${!1+x} ]]; then printf '%s\n' "${!1}"; return 0; fi
+  [[ -r $file ]] || return 0
+  # shellcheck source=/dev/null
+  (. "$file" && printf '%s\n' "${!1:-}")
+}
+
 # DOCKER_HOST on every host: build-release.sh builds the release on that
 # daemon (docker-ncc on a builder, the system dockerd on the web host), so an
 # env file without it stops here, before the checkout moves.
@@ -59,7 +71,8 @@ ncc_layout "${layout[@]}" || exit 1
 # Blue/green (ops/blue-green.sh) is the web host's opt-in: unset keeps the
 # single release and the restart below, and is the way back from it.
 blue_green=0
-if [[ $mode != builder && ${NCC_BLUE_GREEN:-} == 1 ]]; then
+NCC_BLUE_GREEN=$(ncc_layout_flag NCC_BLUE_GREEN)
+if [[ $mode != builder && $NCC_BLUE_GREEN == 1 ]]; then
   blue_green=1
   ncc_layout NCC_APACHE_UPSTREAM || exit 1
 fi
@@ -134,6 +147,17 @@ if [[ $blue_green == 1 ]]; then
   bash "$SRC/ops/images-sync.sh" "$target" "$NCC_IMAGES_JSON" || echo 'images.json not yet available; the sync timer will retry' >&2
   exit 0
 fi
+
+# The restart path: whatever the colour directories hold, this release and
+# its migrations now run past them. Their served records would let a later
+# `deploy.sh rollback`, once blue/green is back on, promote one of them over
+# a newer schema, so they go. Back on blue/green, a colour becomes a rollback
+# target again only by serving.
+for served in "$NCC_INSTALL_DIR"/served-*; do
+  [[ -e $served ]] || continue
+  rm -f "$served"
+  echo "removed $served: blue/green is off, so that colour's release is no longer a rollback target"
+done
 
 # Preserve the previous release before build-release.sh replaces it. This is
 # an operator rollback artifact; database migrations are not reversed here.

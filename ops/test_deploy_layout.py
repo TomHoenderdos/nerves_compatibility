@@ -44,6 +44,8 @@ class LayoutGuardTest(unittest.TestCase):
             bindir = recording_stubs(
                 root, ["git", "flock", "docker", "curl", "tar", "systemctl", "sudo", "nsenter"]
             )
+            if "GIT_STUB" in extra:
+                (bindir / "git").write_text(extra.pop("GIT_STUB"))
             env_file = root / "deploy.env"
             if env_file_text is not None:
                 env_file.write_text(env_file_text)
@@ -242,6 +244,82 @@ class LayoutGuardTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("NCC_APACHE_UPSTREAM", result.stderr)
         self.assertEqual(events, [])
+
+    def test_blue_green_is_read_from_the_file_when_the_layout_is_exported(self):
+        # Every layout variable is already in the environment, so ncc_layout
+        # never sources the file; NCC_BLUE_GREEN lives only there.
+        with tempfile.TemporaryDirectory() as install:
+            layout = dict(line.split("=", 1) for line in
+                          self.BG_LAYOUT.format(install=install).splitlines())
+            for args in (["a" * 40], ["rollback"]):
+                with self.subTest(args=args):
+                    result, events = self.run_script("deploy.sh", args,
+                                                      env_file_text="NCC_BLUE_GREEN=1\n", **layout)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("NCC_APACHE_UPSTREAM", result.stderr)
+                    self.assertEqual(events, [])
+
+    def test_the_restart_path_forgets_every_served_record(self):
+        # A single-release deploy moves the database past whatever the colour
+        # directories hold, so none of them may be rolled back to afterwards.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install = root / "install"
+            install.mkdir()
+            (install / "portal").mkdir()
+            # The tar stub writes nothing; deploy.sh moves its output.
+            (install / "portal-previous.tar.gz.tmp").write_text("")
+            for color in ("blue", "green"):
+                (install / f"served-{color}").write_text("b" * 40 + "\n")
+            build = install / "build-release.sh"
+            build.write_text('#!/bin/bash\necho "build-release $*" >> "$EVENTS"\n')
+            build.chmod(0o755)
+            src = root / "src"
+            (src / "ops").mkdir(parents=True)
+            (src / "ops" / "images-sync.sh").write_text('echo "images-sync $*" >> "$EVENTS"\n')
+            text = (f"NCC_SRC_DIR={src}\nNCC_INSTALL_DIR={install}\n"
+                    f"NCC_PORTAL_ENV={root}/portal.env\nNCC_PORTAL_WORKDIR={root}\n"
+                    f"NCC_IMAGES_JSON={root}/images.json\n"
+                    "DOCKER_HOST=unix:///var/run/docker.sock\n")
+            target = "a" * 40
+            git = (
+                '#!/bin/bash\necho "git $*" >> "$EVENTS"\n'
+                'case $1 in\n'
+                '  branch) echo main ;;\n'
+                f'  rev-parse) echo {target} ;;\n'
+                'esac\nexit 0\n'
+            )
+            result, events = self.run_script("deploy.sh", [target], env_file_text=text,
+                                              GIT_STUB=git)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(sorted(p.name for p in install.glob("served-*")), [])
+            self.assertIn("served-blue", result.stdout)
+            self.assertIn("served-green", result.stdout)
+            self.assertIn("systemctl restart ncc-portal", events)
+
+    def test_the_restart_path_is_quiet_without_served_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install = root / "install"
+            install.mkdir()
+            (install / "portal").mkdir()
+            # The tar stub writes nothing; deploy.sh moves its output.
+            (install / "portal-previous.tar.gz.tmp").write_text("")
+            build = install / "build-release.sh"
+            build.write_text("#!/bin/bash\n")
+            build.chmod(0o755)
+            src = root / "src"
+            (src / "ops").mkdir(parents=True)
+            (src / "ops" / "images-sync.sh").write_text("")
+            text = (f"NCC_SRC_DIR={src}\nNCC_INSTALL_DIR={install}\n"
+                    f"NCC_PORTAL_ENV={root}/portal.env\nNCC_PORTAL_WORKDIR={root}\n"
+                    f"NCC_IMAGES_JSON={root}/images.json\n"
+                    "DOCKER_HOST=unix:///var/run/docker.sock\n")
+            git = ('#!/bin/bash\ncase $1 in\n  branch) echo main ;;\n'
+                   f'  rev-parse) echo {"a" * 40} ;;\nesac\nexit 0\n')
+            result, _ = self.run_script("deploy.sh", ["a" * 40], env_file_text=text, GIT_STUB=git)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("served-", result.stdout)
 
     def run_rollback(self, bg_rollback_body):
         """deploy.sh rollback against a stub $NCC_SRC_DIR/ops/blue-green.sh,
