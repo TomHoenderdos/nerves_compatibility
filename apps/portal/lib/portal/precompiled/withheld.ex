@@ -86,12 +86,27 @@ defmodule Portal.Precompiled.Withheld do
   rule without the list, does not count: a rule this portal does not know
   says nothing it can check. A system result counts only as `pure_elixir`,
   the one run result whose build traces its compile; firmware results never
-  record their config reads.
+  record their config reads. A toolchain build's mark counts only while the
+  run that wrote it (`compile_env_run_id`) is the row's own `run_id`: a
+  release that does not know that column rebuilds the row with its own
+  `run_id` and `compile_env` and leaves the mark, which then vouches for
+  nothing. A build with no `run_id` never counts.
   """
   @spec records_config_reads?(map() | nil) :: boolean()
-  def records_config_reads?(%{system_pkg: system_pkg}) when system_pkg != "pure_elixir",
-    do: false
+  def records_config_reads?(%{system_pkg: "pure_elixir", compile_env_rule: 1, compile_env: env})
+      when is_list(env),
+      do: true
 
-  def records_config_reads?(%{compile_env_rule: 1, compile_env: env}) when is_list(env), do: true
+  def records_config_reads?(%{system_pkg: _system_pkg}), do: false
+
+  def records_config_reads?(%{
+        compile_env_rule: 1,
+        compile_env: env,
+        run_id: run_id,
+        compile_env_run_id: run_id
+      })
+      when is_list(env) and is_binary(run_id),
+      do: true
+
   def records_config_reads?(_build), do: false
 end

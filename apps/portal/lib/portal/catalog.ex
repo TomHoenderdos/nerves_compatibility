@@ -1204,7 +1204,8 @@ defmodule Portal.Catalog do
   # but a JSON object) is an unknown closure and withheld while the list is
   # not empty, as `Withheld.withheld?/4` reads `nil`, whatever the row
   # records. `$E` is `Withheld.records_config_reads?/1`: rule 1 next to a
-  # `compile_env`, for a system result only on `pure_elixir`; it lifts the
+  # `compile_env`, for a system result only on `pure_elixir`, for a toolchain
+  # build only when its own run wrote the rule (`compile_env_run_id`); it lifts the
   # closure check alone, and `coalesce` keeps a NULL from deciding either
   # way. A withdrawn result (`unpublished_at`) is withheld too: one
   # predicate, used by every query that selects published files.
@@ -1231,7 +1232,8 @@ defmodule Portal.Catalog do
                              |> String.replace("$L", "t.deps_lock")
                              |> String.replace(
                                "$E",
-                               "(t.compile_env_rule = 1 AND t.compile_env IS NOT NULL)"
+                               "(t.compile_env_rule = 1 AND t.compile_env IS NOT NULL " <>
+                                 "AND t.compile_env_run_id = t.run_id)"
                              )
 
   @packages_with_precompiled_files_sql_template """
@@ -1281,9 +1283,11 @@ defmodule Portal.Catalog do
   end
 
   # `Withheld.records_config_reads?/1` for the toolchain build aliased
-  # `table`, NULL-safe: rule 1 next to a `compile_env` list.
+  # `table`, NULL-safe: rule 1 next to a `compile_env` list, written by the
+  # row's own run (a NULL `run_id` never matches).
   records_config_reads = fn table ->
-    "coalesce(#{table}.compile_env_rule = 1 AND #{table}.compile_env IS NOT NULL, false)"
+    "coalesce(#{table}.compile_env_rule = 1 AND #{table}.compile_env IS NOT NULL " <>
+      "AND #{table}.compile_env_run_id = #{table}.run_id, false)"
   end
 
   # When a reopenable row is due: 7 days after its build or its last attempt
@@ -2647,6 +2651,7 @@ defmodule Portal.Catalog do
       :package_checksum,
       :compile_env,
       :compile_env_rule,
+      :compile_env_run_id,
       :file_manifest,
       :finished_at
     ])

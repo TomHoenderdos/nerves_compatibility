@@ -70,6 +70,7 @@ defmodule Portal.ToolchainVariantsTest do
       status: status,
       reason: Keyword.get(opts, :reason),
       compile_env_rule: Keyword.get(opts, :compile_env_rule, 1),
+      run_id: Keyword.get(opts, :run_id, "tc-row"),
       compile_env: Keyword.get(opts, :compile_env, []),
       finished_at: Keyword.get(opts, :finished_at, DateTime.utc_now())
     })

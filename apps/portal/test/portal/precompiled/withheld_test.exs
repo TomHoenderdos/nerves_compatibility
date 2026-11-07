@@ -514,7 +514,9 @@ defmodule Portal.Precompiled.WithheldTest do
     end)
   end
 
-  defp r5(env \\ []), do: %{compile_env_rule: 1, compile_env: env}
+  # A toolchain build's mark counts only for the run that wrote it.
+  defp r5(env \\ []),
+    do: %{compile_env_rule: 1, compile_env: env, run_id: "tc-1", compile_env_run_id: "tc-1"}
 
   defp results(system_pkg) do
     Portal.Catalog.SystemResult
@@ -577,6 +579,19 @@ defmodule Portal.Precompiled.WithheldTest do
       assert Withheld.withheld?("x", @liveview, pkgs, %{compile_env_rule: 2, compile_env: []})
       assert Withheld.withheld?("x", @liveview, pkgs, %{compile_env_rule: nil, compile_env: []})
       assert Withheld.withheld?("x", @liveview, pkgs, %{compile_env: []})
+
+      # A toolchain build's mark written by another run (an older release's
+      # rebuild replaced the row and kept the mark), or with no run at all.
+      assert Withheld.withheld?("x", @liveview, pkgs, %{r5() | run_id: "tc-2"})
+      assert Withheld.withheld?("x", @liveview, pkgs, %{r5() | compile_env_run_id: nil})
+
+      assert Withheld.withheld?("x", @liveview, pkgs, %{
+               r5()
+               | run_id: nil,
+                 compile_env_run_id: nil
+             })
+
+      assert Withheld.withheld?("x", @liveview, pkgs, Map.delete(r5(), :compile_env_run_id))
 
       # A run result counts only as `pure_elixir`: firmware results never
       # record their config reads.
@@ -811,6 +826,70 @@ defmodule Portal.Precompiled.WithheldTest do
       put_withheld(packages: ["decimal"])
       ingest_with_artifact(pure_run(@liveview, 1))
       assert_run_served("jason", @run_sha)
+    end
+  end
+
+  # An older release's ingest of the same identity upserts every field it
+  # knows, run_id and compile_env included, and leaves the mark it does not
+  # know about: the row then carries another run's mark.
+  defp old_release_rebuild!(build) do
+    sql!(
+      "UPDATE catalog_toolchain_builds SET run_id = 'old-release-run', " <>
+        "compile_env = '{}'::jsonb[] WHERE id = ANY($1)",
+      [build.id]
+    )
+
+    reload(build)
+  end
+
+  describe "a mark another run wrote" do
+    test "a new ingest records the run that wrote the mark" do
+      name = "tc_mark_run_#{System.unique_integer([:positive])}"
+      build = ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+
+      assert is_binary(build.run_id)
+      assert build.compile_env_run_id == build.run_id
+
+      plain = ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview)
+      assert {plain.compile_env_rule, plain.compile_env_run_id} == {nil, nil}
+    end
+
+    test "is withheld again, in both formats and for the blob" do
+      name = "tc_stale_mark_#{System.unique_integer([:positive])}"
+      build = ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+      assert_toolchain_served(name, toolchain_sha(build))
+
+      stale = old_release_rebuild!(build)
+      assert %{compile_env_rule: 1, compile_env: []} = stale
+      refute Withheld.records_config_reads?(stale)
+      assert_withheld(name, toolchain_sha(build))
+    end
+
+    test "a later ingest with the mark serves it again" do
+      name = "tc_stale_again_#{System.unique_integer([:positive])}"
+      build = ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+      old_release_rebuild!(build)
+
+      rebuilt = ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+      assert rebuilt.id == build.id
+      assert rebuilt.compile_env_run_id == rebuilt.run_id
+      assert Withheld.records_config_reads?(reload(build))
+      assert_toolchain_served(name, toolchain_sha(rebuilt))
+    end
+
+    test "a revoked row with another run's mark can be marked for rebuild" do
+      build =
+        "tc_stale_revoked_#{System.unique_integer([:positive])}"
+        |> ingest_toolchain_build("0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+        |> revoke!()
+
+      old_release_rebuild!(build)
+
+      assert %{marked: [id], skipped: []} =
+               Catalog.mark_withheld_revoked([build.id], dry_run: false)
+
+      assert id == build.id
+      assert reload(build).revoked_reason == "withheld closure"
     end
   end
 end

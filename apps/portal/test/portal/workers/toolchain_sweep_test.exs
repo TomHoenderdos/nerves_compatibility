@@ -74,6 +74,7 @@ defmodule Portal.Workers.ToolchainSweepTest do
         builder_version: Keyword.get(opts, :builder_version, 1),
         status: status,
         compile_env_rule: Keyword.get(opts, :compile_env_rule, 1),
+        run_id: Keyword.get(opts, :run_id, "tc-row"),
         compile_env: Keyword.get(opts, :compile_env, []),
         deps_lock: Keyword.get(opts, :deps_lock),
         finished_at: Keyword.get(opts, :finished_at, DateTime.utc_now())

@@ -65,6 +65,7 @@ defmodule Portal.Workers.ReleaseDownloadsRefreshTest do
       builder_version: 1,
       status: :pass,
       compile_env_rule: 1,
+      run_id: "tc-row",
       compile_env: [],
       finished_at: DateTime.utc_now()
     })

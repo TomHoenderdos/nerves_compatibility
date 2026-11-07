@@ -72,6 +72,7 @@ defmodule Portal.Catalog.ToolchainBacklogR5Test do
       deps_lock: Keyword.get(opts, :deps_lock, %{}),
       compile_env_rule: Keyword.get(opts, :compile_env_rule, if(marked?, do: 1)),
       compile_env: Keyword.get(opts, :compile_env, if(marked?, do: @env)),
+      run_id: Keyword.get(opts, :run_id, "tc-#{name}-#{version}"),
       transient_attempts: Keyword.get(opts, :transient_attempts, 0),
       attempted_at: Keyword.get(opts, :attempted_at),
       finished_at: Keyword.get(opts, :finished_at, ago(30 * @day))
@@ -112,6 +113,27 @@ defmodule Portal.Catalog.ToolchainBacklogR5Test do
     row!("other_rule", "1.0.0", :pass, compile_env_rule: 2, compile_env: @env)
 
     assert Enum.sort(names()) == ["other_rule", "rule_only"]
+  end
+
+  test "a mark another run wrote, or one with no run, is not the mark" do
+    run!("stale", "1.0.0")
+    stale = row!("stale", "1.0.0", :pass, marked: true)
+    run!("no_run", "1.0.0")
+    row!("no_run", "1.0.0", :pass, marked: true, run_id: nil)
+    run!("kept", "1.0.0")
+    row!("kept", "1.0.0", :pass, marked: true)
+
+    assert stale.compile_env_run_id == stale.run_id
+
+    # An older release's rebuild replaces run_id and compile_env and keeps
+    # the mark it does not know about.
+    Portal.Repo.query!(
+      "UPDATE catalog_toolchain_builds SET run_id = 'old-release-run', " <>
+        "compile_env = '{}'::jsonb[] WHERE id = $1",
+      [Ecto.UUID.dump!(stale.id)]
+    )
+
+    assert Enum.sort(names()) == ["no_run", "stale"]
   end
 
   test "a fresh unmarked pass row is not reopened (a rolled-back image)" do

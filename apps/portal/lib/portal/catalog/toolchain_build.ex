@@ -92,16 +92,18 @@ defmodule Portal.Catalog.ToolchainBuild do
 
     create :create do
       accept([:package_id, :version, :toolchain, :builder_version, :variant | @mutable])
+      change(Portal.Catalog.ToolchainBuild.MarkRun)
     end
 
     create :upsert do
       accept([:package_id, :version, :toolchain, :builder_version, :variant | @mutable])
+      change(Portal.Catalog.ToolchainBuild.MarkRun)
       upsert?(true)
       upsert_identity(:unique_identity)
       # Every mutable field, so a rebuild fully replaces the previous outcome:
       # a field the new build leaves nil (a cleared `reason`) must not survive.
       # `revoked_at` is deliberately absent: a rebuild does not un-revoke.
-      upsert_fields(@mutable)
+      upsert_fields([:compile_env_run_id | @mutable])
     end
 
     update :revoke do
@@ -266,6 +268,16 @@ defmodule Portal.Catalog.ToolchainBuild do
     # portability spec, R5); nil when it is the `.app`'s list alone. Such a
     # build is exempt from the withheld list (`Portal.Precompiled.Withheld`).
     attribute :compile_env_rule, :integer do
+      public?(true)
+    end
+
+    # The `run_id` of the write that set `compile_env_rule`, set in that
+    # same write (`Portal.Catalog.ToolchainBuild.MarkRun`); nil with no
+    # rule. The mark counts only while this is the row's own `run_id`
+    # (`Portal.Precompiled.Withheld.records_config_reads?/1`): a release
+    # that does not know this column replaces `run_id` and `compile_env` on
+    # a rebuild and leaves both mark columns as they were.
+    attribute :compile_env_run_id, :string do
       public?(true)
     end
 
