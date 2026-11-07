@@ -125,6 +125,17 @@ defmodule NccWorker.Portability.BuildRoot do
     end
   end
 
+  # A `-compile(compressed)` beam is the IFF container gzipped (what
+  # `beam_lib` accepts). It is inflated once, to at most 64 MiB, and must
+  # then be a plain container: a nested gzip is not.
+  defp chunks(<<31, 139, _::binary>> = gz, module) do
+    case Etf.gunzip(gz, @max_literal_bytes) do
+      {:ok, <<"FOR1", _::binary>> = inflated} -> chunks(inflated, module)
+      {:ok, _other} -> {:error, "unreadable beam #{module} (not a beam container)"}
+      {:error, why} -> {:error, "unreadable beam #{module} (gzip #{why})"}
+    end
+  end
+
   # The IFF container: "FOR1", the form size, "BEAM", then chunks of a
   # 4-byte id, a 32-bit size, the data and padding to 4 bytes. A chunk this
   # module reads may appear only once.

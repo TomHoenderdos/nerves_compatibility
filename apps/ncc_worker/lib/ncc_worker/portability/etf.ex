@@ -59,12 +59,23 @@ defmodule NccWorker.Portability.Etf do
   @spec inflate(binary(), non_neg_integer()) :: {:ok, binary()} | {:error, String.t()}
   def inflate(_compressed, size) when size > @max_bytes, do: {:error, "inflates past 64 MiB"}
 
-  def inflate(compressed, size) when is_binary(compressed) do
+  def inflate(compressed, size) when is_binary(compressed),
+    do: stream(compressed, 15, {:exact, size})
+
+  @doc """
+  Inflates one gzip member (a `-compile(compressed)` beam) to at most
+  `limit` bytes, never past 64 MiB, chunk by chunk.
+  """
+  @spec gunzip(binary(), non_neg_integer()) :: {:ok, binary()} | {:error, String.t()}
+  def gunzip(compressed, limit) when is_binary(compressed),
+    do: stream(compressed, 31, {:max, min(limit, @max_bytes)})
+
+  defp stream(compressed, window_bits, bound) do
     z = :zlib.open()
 
     try do
-      :ok = :zlib.inflateInit(z)
-      inflate_loop(z, :zlib.safeInflate(z, compressed), size, [], 0, 0)
+      :ok = :zlib.inflateInit(z, window_bits)
+      inflate_loop(z, :zlib.safeInflate(z, compressed), cap(bound), bound, [], 0, 0)
     catch
       _kind, _reason -> {:error, "does not inflate"}
     after
@@ -72,35 +83,40 @@ defmodule NccWorker.Portability.Etf do
     end
   end
 
-  defp inflate_loop(z, {:continue, out}, size, acc, total, empty) do
+  defp cap({_kind, size}), do: size
+
+  defp inflate_loop(z, {:continue, out}, cap, bound, acc, total, empty) do
     total = total + IO.iodata_length(out)
 
     cond do
-      total > size ->
+      total > cap ->
         {:error, "inflates past its declared size"}
 
       empty > 2 ->
         {:error, "compressed data truncated"}
 
       true ->
-        inflate_loop(
-          z,
-          :zlib.safeInflate(z, []),
-          size,
-          [acc | out],
-          total,
-          next_empty(out, empty)
-        )
+        next = :zlib.safeInflate(z, [])
+        inflate_loop(z, next, cap, bound, [acc | out], total, next_empty(out, empty))
     end
   end
 
-  defp inflate_loop(_z, {:finished, out}, size, acc, total, _empty) do
-    if total + IO.iodata_length(out) == size,
+  # `:finished` only says the input is used up; `inflateEnd/1` raises
+  # (caught in `stream/3`) unless the stream really ended, trailer included,
+  # so a truncated stream is an error.
+  defp inflate_loop(z, {:finished, out}, _cap, bound, acc, total, _empty) do
+    :ok = :zlib.inflateEnd(z)
+
+    if size_ok?(bound, total + IO.iodata_length(out)),
       do: {:ok, IO.iodata_to_binary([acc | out])},
       else: {:error, "inflates to other than its declared size"}
   end
 
-  defp inflate_loop(_z, _other, _size, _acc, _total, _empty), do: {:error, "does not inflate"}
+  defp inflate_loop(_z, _other, _cap, _bound, _acc, _total, _empty),
+    do: {:error, "does not inflate"}
+
+  defp size_ok?({:exact, size}, total), do: total == size
+  defp size_ok?({:max, cap}, total), do: total <= cap
 
   defp next_empty(out, empty), do: if(IO.iodata_length(out) == 0, do: empty + 1, else: 0)
 

@@ -327,6 +327,57 @@ defmodule NccWorker.Portability.BuildRootTest do
       assert :ok = check.("lib_mfa", {M, {:f, 0}, source, 1})
     end
 
+    test "a gzip-compressed beam (-compile(compressed)) is read and judged", %{tmp_dir: root} do
+      clean =
+        compressed_beam(Path.join(root, "gz_clean"), "ncc_br_gz_clean", ~s|f() -> {ok, "plain"}.|)
+
+      assert <<31, 139, _::binary>> = File.read!(Path.join(clean, "ncc_br_gz_clean.beam"))
+      assert :ok = BuildRoot.check(clean, [root], fn _ -> true end)
+
+      baked =
+        compressed_beam(Path.join(root, "gz_baked"), "ncc_br_gz_baked", ~s|f() -> ["#{root}/x"].|)
+
+      assert {:refuse, "bakes the build path: ncc_br_gz_baked " <> _} =
+               BuildRoot.check(baked, [root], fn _ -> true end)
+
+      strt = Path.join(root, "gz_strt")
+      File.mkdir_p!(strt)
+      File.write!(Path.join(strt, "m.beam"), :zlib.gzip(iff([{"StrT", root}])))
+      assert {:refuse, _} = BuildRoot.check(strt, [root], fn _ -> true end)
+    end
+
+    test "a gzip bomb or a truncated gzip beam is an error", %{tmp_dir: root} do
+      # A well-formed beam whose padding chunk inflates past 64 MiB.
+      big = iff([{"Pad ", :binary.copy(<<0>>, 65 * 1024 * 1024)}])
+      bomb = Path.join(root, "bomb")
+      File.mkdir_p!(bomb)
+      File.write!(Path.join(bomb, "m.beam"), :zlib.gzip(big))
+
+      assert {:error, "unreadable beam m (gzip inflates past" <> _} =
+               BuildRoot.check(bomb, [root], fn _ -> true end)
+
+      gz = :zlib.gzip(iff([{"LitT", lit_t([])}, {"StrT", "abc"}]))
+      cut = Path.join(root, "cut")
+      File.mkdir_p!(cut)
+      File.write!(Path.join(cut, "m.beam"), binary_part(gz, 0, byte_size(gz) - 9))
+      assert {:error, "unreadable beam m" <> _} = BuildRoot.check(cut, [root], fn _ -> true end)
+
+      corrupt = Path.join(root, "corrupt")
+      File.mkdir_p!(corrupt)
+      <<head::binary-size(12), _::binary-size(4), tail::binary>> = gz
+      File.write!(Path.join(corrupt, "m.beam"), head <> "XXXX" <> tail)
+
+      assert {:error, "unreadable beam m" <> _} =
+               BuildRoot.check(corrupt, [root], fn _ -> true end)
+
+      nested = Path.join(root, "nested")
+      File.mkdir_p!(nested)
+      File.write!(Path.join(nested, "m.beam"), :zlib.gzip(:zlib.gzip(iff([]))))
+
+      assert {:error, "unreadable beam m" <> _} =
+               BuildRoot.check(nested, [root], fn _ -> true end)
+    end
+
     test "a beam without any root passes", %{tmp_dir: root} do
       {ebin, ok?} = compile(root, "defmodule FxPlain do\n  def x, do: :ok\nend\n")
       assert :ok = BuildRoot.check(ebin, ["/definitely/not/here"], ok?)
@@ -340,8 +391,8 @@ defmodule NccWorker.Portability.BuildRootTest do
 
       gz = Path.join(root, "gz")
       File.mkdir_p!(gz)
-      File.write!(Path.join(gz, "x.beam"), :zlib.gzip(iff([{"LitT", lit_t([])}])))
-      assert {:error, _} = BuildRoot.check(gz, [root], fn _ -> true end)
+      File.write!(Path.join(gz, "x.beam"), :zlib.gzip("not a beam"))
+      assert {:error, "unreadable beam x" <> _} = BuildRoot.check(gz, [root], fn _ -> true end)
 
       bad_lit = Path.join(root, "badlit")
       write_beam(bad_lit, "x", [{"LitT", lit_t([<<131, 255>>])}])
@@ -401,6 +452,14 @@ defmodule NccWorker.Portability.BuildRootTest do
                )
 
       assert {:error, _} = BuildRoot.literal_table(<<100::32, "garbage">>)
+      # A zlib stream cut before its end, though every table byte is out.
+      z = :zlib.compress(table)
+
+      assert {:error, _} =
+               BuildRoot.literal_table(
+                 <<byte_size(table)::32, binary_part(z, 0, byte_size(z) - 4)::binary>>
+               )
+
       assert {:error, _} = BuildRoot.literal_table(<<0::32, 5::32>>)
       assert {:error, _} = BuildRoot.literal_table(<<0::32, 1::32, 2::32, 131>>)
       assert {:error, _} = BuildRoot.literal_table(<<1, 2>>)
@@ -442,6 +501,19 @@ defmodule NccWorker.Portability.BuildRootTest do
                )
       end
     end
+  end
+
+  # Compiles a one-function Erlang module with -compile(compressed) into dir.
+  defp compressed_beam(dir, name, body) do
+    File.mkdir_p!(dir)
+    src = Path.join(dir, name <> ".erl")
+    File.write!(src, "-module(#{name}).\n-compile(compressed).\n-export([f/0]).\n#{body}\n")
+
+    {:ok, _} =
+      :compile.file(String.to_charlist(src), [{:outdir, String.to_charlist(dir)}, :report])
+
+    File.rm!(src)
+    dir
   end
 
   # An Erlang module with assorted literals.
