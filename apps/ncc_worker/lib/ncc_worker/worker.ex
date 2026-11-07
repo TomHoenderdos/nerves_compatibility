@@ -738,7 +738,8 @@ defmodule NccWorker.Worker do
       full_run_portability(project_dir, paths,
         releases: releases,
         run_started_at: input[:started_at],
-        rebuild_timeout_sec: timeout
+        rebuild_timeout_sec: timeout,
+        host_compile_sec: host_result[:duration_sec]
       )
 
     build = %{
@@ -1228,8 +1229,10 @@ defmodule NccWorker.Worker do
   # The full run's compile-time trace for `pure_elixir_result/3`: the same
   # traced judge compile a toolchain build gets (`run_portability/4`), with
   # the same `opts` (`releases:`, `run_started_at:`), and `rebuild_timeout_sec:`
-  # (the per-system timeout). A traced compile that did not finish may have
-  # left `_build/host/lib` half-written, and the full run still reads it: the
+  # (the per-system timeout), and `host_compile_sec:`, the host compile's
+  # time, recorded next to the trace's as a toolchain build records it. A
+  # traced compile that did not finish may have left `_build/host/lib`
+  # half-written, and the full run still reads it: the
   # beam scan, `compile_env` and argus. So it is rebuilt untraced with
   # `mix compile` alone, bounded like the optional pass's compiles: no
   # `deps.get`, and no build cache store that could rewrite the candidates the
@@ -1247,7 +1250,7 @@ defmodule NccWorker.Worker do
     fn package_name ->
       verdict = guarded_trace(trace, project_dir, package_name, paths, opts)
       if unfinished?(verdict), do: guarded_rebuild(project_dir, paths, opts)
-      verdict
+      put_host_time(verdict, Keyword.get(opts, :host_compile_sec))
     end
   end
 
@@ -1607,6 +1610,11 @@ defmodule NccWorker.Worker do
     stats = Map.get(observations, "trace_stats") || %{}
     Map.put(observations, "trace_stats", Map.put(stats, "host_compile_sec", seconds))
   end
+
+  defp put_host_time(%{observations: %{} = observations} = verdict, seconds),
+    do: %{verdict | observations: with_host_time(observations, %{duration_sec: seconds})}
+
+  defp put_host_time(verdict, _seconds), do: verdict
 
   @doc false
   # P1 is rule 1 AND the trace. Reason precedence: both pass -> pass; a trace

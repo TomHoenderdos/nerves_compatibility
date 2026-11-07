@@ -430,6 +430,30 @@ defmodule NccWorker.ReleaseArtifactsTest do
       end
     end
 
+    test "the host compile's time is recorded next to the trace's, as in a toolchain build",
+         %{project: project, paths: paths} do
+      pass = fn _, _, _, _ ->
+        %{status: :pass, reason: nil, observations: %{"trace_stats" => %{"wall_ms" => 5}}}
+      end
+
+      {result, _stderr} =
+        run_guarded(project, paths, releases: {:ok, %{}}, trace: pass, host_compile_sec: 12.5)
+
+      assert %{"wall_ms" => 5, "host_compile_sec" => 12.5} =
+               result.host_portability.compile_observations["trace_stats"]
+
+      {result, _stderr} =
+        run_guarded(project, paths,
+          releases: {:ok, %{}},
+          trace: fn _, _, _, _ -> raise "boom" end,
+          compile: recording_compile(self()),
+          host_compile_sec: 3.0
+        )
+
+      assert %{"host_compile_sec" => 3.0, "transient" => true} =
+               result.host_portability.compile_observations["trace_stats"]
+    end
+
     test "a raising rebuild", %{
       project: project,
       paths: paths
