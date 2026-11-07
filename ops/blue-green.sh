@@ -124,15 +124,36 @@ bg_template_of() { # color
   printf '%s\n' "$NCC_SRC_DIR/ops/$BG_TEMPLATE"
 }
 
+# The commands that re-render the include for port $2 from template $1:
+# rendered aside, swapped in with a backup, then checked, and reloaded only
+# if the check passes. configtest reads the live path, so the new file has
+# to be in place for it to test anything.
+bg_rerender_hint() { # template port
+  local inc=$NCC_APACHE_UPSTREAM
+  echo "  sed \"s/@PORT@/$2/g\" '$1' > '$inc.new' && cp '$inc' '$inc.bak' && mv '$inc.new' '$inc' && apachectl configtest && systemctl reload apache2"
+  echo "  (if configtest fails: mv '$inc.bak' '$inc')"
+}
+
 # Refuses unless the include is exactly the serving release's template
 # rendered with the serving port: a deploy rewrites it from a template, so
 # anything edited into it by hand would be lost at the switch, silently.
-bg_check_include_rendered() { # template port
-  if ! cmp -s <(sed "s/@PORT@/$2/g" "$1") "$NCC_APACHE_UPSTREAM"; then
-    echo "refusing: $NCC_APACHE_UPSTREAM is not $1 (the serving release's template) rendered with port $2: it was edited by hand or has drifted. Put the change in ops/$BG_TEMPLATE and deploy it, or undo it by rendering the include again:" >&2
-    echo "  sed \"s/@PORT@/$2/g\" $1 > $NCC_APACHE_UPSTREAM && apachectl configtest && systemctl reload apache2" >&2
+bg_check_include_rendered() { # template port color
+  local copy sha
+  cmp -s <(sed "s/@PORT@/$2/g" "$1") "$NCC_APACHE_UPSTREAM" && return 0
+  copy=$(bg_release "$3")/$BG_TEMPLATE
+  if [[ $1 != "$copy" ]]; then
+    # The release predates template copies and the working tree's template
+    # differs: most likely the template changed since the release was
+    # built. Rendering the new template for the old release would be wrong;
+    # it needs the template it was built with.
+    sha=$(cat "$(bg_release "$3")/BUILD_SHA" 2>/dev/null || true)
+    echo "refusing: $NCC_APACHE_UPSTREAM is not the working tree's ops/$BG_TEMPLATE rendered with port $2, and the serving release ($3) carries no template copy to check it against: the template has probably changed since $3 was built (or the include was edited by hand or has drifted). Give the release the template it was built with, then deploy again:" >&2
+    echo "  git -C '$NCC_SRC_DIR' show ${sha:-<the commit $3 was built from>}:ops/$BG_TEMPLATE > '$copy'" >&2
     return 1
   fi
+  echo "refusing: $NCC_APACHE_UPSTREAM is not $1 (the serving release's template) rendered with port $2: it was edited by hand or has drifted. Put the change in ops/$BG_TEMPLATE and deploy it, or undo it by rendering the include again:" >&2
+  bg_rerender_hint "$1" "$2" >&2
+  return 1
 }
 
 bg_write_include() { # port [template]
@@ -168,7 +189,7 @@ bg_preflight() {
     return 1
   fi
   BG_ACTIVE_TEMPLATE=$(bg_template_of "$BG_ACTIVE")
-  bg_check_include_rendered "$BG_ACTIVE_TEMPLATE" "$(bg_port "$BG_ACTIVE")" || return 1
+  bg_check_include_rendered "$BG_ACTIVE_TEMPLATE" "$(bg_port "$BG_ACTIVE")" "$BG_ACTIVE" || return 1
   host=$(bg_public_host) || return 1
   vhost=$(bg_vhost_file "$host")
   if [[ -z $vhost ]] || ! bg_includes_upstream "$vhost"; then
@@ -328,8 +349,7 @@ bg_point_apache_at() { # color template; 0 ok, 1 failed & restored, 2 the
 # Called once Apache is verified serving $1. Its BUILD_SHA is recorded as
 # served-<colour> first, whatever happens to the rest: the one thing
 # bg_rollback accepts as proof that the release in a directory is one that
-# served, not a build that failed over it, and what the next preflight reads
-# the include's template from. The rest is chained with && so a failure stops
+# served, not a build that failed over it. The rest is chained with && so a failure stops
 # at the first broken step instead of silently running the rest; the caller
 # decides what "incomplete" means.
 bg_mark_serving() { # new old

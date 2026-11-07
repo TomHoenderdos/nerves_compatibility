@@ -315,9 +315,15 @@ class BlueGreenTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("edited by hand or has drifted", result.stderr)
                 copy = f"{self.install}/releases/blue/ncc-upstream.conf.template"
-                self.assertIn(f'sed "s/@PORT@/4002/g" {copy} > {self.upstream} '
+                inc = self.upstream
+                # Rendered aside, swapped in with a backup, checked, and only
+                # then reloaded; configtest reads the live path, so the new
+                # file has to be in place for it to test anything.
+                self.assertIn(f"sed \"s/@PORT@/4002/g\" '{copy}' > '{inc}.new' "
+                              f"&& cp '{inc}' '{inc}.bak' && mv '{inc}.new' '{inc}' "
                               "&& apachectl configtest && systemctl reload apache2",
                               result.stderr)
+                self.assertIn(f"mv '{inc}.bak' '{inc}'", result.stderr)
                 self.assertFalse([e for e in events if e.startswith("build")])
 
     def test_without_a_template_copy_it_falls_back_to_the_working_tree_and_says_so(self):
@@ -330,7 +336,14 @@ class BlueGreenTest(unittest.TestCase):
                                 NCC_SRC_DIR=str(src))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("edited by hand or has drifted", result.stderr)
-        self.assertIn(f'sed "s/@PORT@/4002/g" {src}/ops/ncc-upstream.conf.template', result.stderr)
+        # The transition case: the serving release predates template copies
+        # and the template changed since. Rendering the working tree's (new)
+        # template for the old release would be wrong; the fix is to give
+        # the release the template it was built with.
+        self.assertNotIn("sed ", result.stderr)
+        copy = f"{self.install}/releases/blue/ncc-upstream.conf.template"
+        self.assertIn(f"git -C '{src}' show {OLD}:ops/ncc-upstream.conf.template > '{copy}'",
+                      result.stderr)
 
     def test_a_switch_back_restores_the_old_releases_template(self):
         src, v1, _ = self.template_src()
@@ -969,6 +982,28 @@ class BlueGreenTest(unittest.TestCase):
             active="green")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("sha deadbeef", result.stdout)
+
+
+class BuildTest(unittest.TestCase):
+    """The real bg_build against a build-release.sh that, like the real one,
+    starts by deleting the release: the template copy must come after it."""
+
+    def test_the_template_copy_survives_the_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            install = Path(directory)
+            build = install / "build-release.sh"
+            build.write_text('#!/bin/bash\nrm -rf "$1"; mkdir -p "$1"\n')
+            build.chmod(0o755)
+            (install / "releases" / "green").mkdir(parents=True)
+            env = {**os.environ, "NCC_INSTALL_DIR": str(install), "NCC_SRC_DIR": str(SRC),
+                   "HELPER": str(OPS / "blue-green.sh")}
+            result = subprocess.run(["bash", "-c", 'source "$HELPER"; bg_build green'],
+                                    env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            copy = install / "releases" / "green" / "ncc-upstream.conf.template"
+            self.assertTrue(copy.exists(), "bg_build left no template copy in the release")
+            self.assertEqual(copy.read_text(),
+                             (SRC / "ops" / "ncc-upstream.conf.template").read_text())
 
 
 class CarryAssetsTest(unittest.TestCase):
