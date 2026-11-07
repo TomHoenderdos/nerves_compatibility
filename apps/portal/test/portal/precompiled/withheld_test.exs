@@ -286,4 +286,155 @@ defmodule Portal.Precompiled.WithheldTest do
     put_withheld(packages: ["decimal"])
     assert Catalog.precompiled_fingerprints()[name] != before
   end
+
+  defp revoke!(build) do
+    build |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update!(domain: Catalog)
+  end
+
+  defp reload(build), do: Ash.get!(Catalog.ToolchainBuild, build.id, domain: Catalog)
+
+  defp marked_build!(name) do
+    build = name |> ingest_toolchain_build("0.1.0", deps_lock: @liveview) |> revoke!()
+    assert %{marked: [_]} = Catalog.mark_withheld_revoked([build.id], dry_run: false)
+    build
+  end
+
+  describe "toolchain builds revoked for their withheld closure" do
+    test "are marked only when revoked, unmarked by R5 and withheld; dry run by default" do
+      lv = "tc_rev_lv_#{System.unique_integer([:positive])}"
+      ok = "tc_rev_ok_#{System.unique_integer([:positive])}"
+      lv_build = lv |> ingest_toolchain_build("0.1.0", deps_lock: @liveview) |> revoke!()
+      ok_build = ok |> ingest_toolchain_build("0.1.0", deps_lock: @decimal) |> revoke!()
+
+      live =
+        ingest_toolchain_build("tc_live_#{System.unique_integer([:positive])}", "0.1.0",
+          deps_lock: @liveview
+        )
+
+      ids = [lv_build.id, ok_build.id, live.id, Ecto.UUID.generate()]
+
+      assert %{marked: [id], skipped: skipped} = Catalog.mark_withheld_revoked(ids)
+      assert id == lv_build.id
+      assert reload(lv_build).revoked_reason == nil
+
+      assert Enum.sort(Enum.map(skipped, &elem(&1, 1))) ==
+               ["closure has no withheld package", "no such toolchain build", "not revoked"]
+
+      assert %{marked: [_]} = Catalog.mark_withheld_revoked(ids, dry_run: false)
+      assert reload(lv_build).revoked_reason == "withheld closure"
+    end
+
+    test "a dry run writes nothing" do
+      build =
+        "tc_dry_#{System.unique_integer([:positive])}"
+        |> ingest_toolchain_build("0.1.0", deps_lock: @liveview)
+        |> revoke!()
+
+      before = reload(build)
+
+      assert %{marked: [_], skipped: []} =
+               Catalog.mark_withheld_revoked([build.id], dry_run: true)
+
+      assert reload(build) == before
+    end
+
+    test "skips a row that already records its config reads and an id that is no uuid" do
+      build =
+        "tc_r5_#{System.unique_integer([:positive])}"
+        |> ingest_toolchain_build("0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+        |> revoke!()
+
+      assert %{marked: [], skipped: skipped} =
+               Catalog.mark_withheld_revoked([build.id, "not-a-uuid"], dry_run: false)
+
+      assert skipped == [
+               {build.id, "already records its config reads"},
+               {"not-a-uuid", "no such toolchain build"}
+             ]
+
+      assert reload(build).revoked_reason == nil
+    end
+
+    test "a marked row's rebuild with R5 un-revokes it; one without stays revoked" do
+      name = "tc_rebuild_#{System.unique_integer([:positive])}"
+      build = marked_build!(name)
+
+      ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview)
+      assert %DateTime{} = reload(build).revoked_at
+
+      ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+      rebuilt = reload(build)
+
+      assert {rebuilt.revoked_at, rebuilt.revoked_reason, rebuilt.compile_env_rule} ==
+               {nil, nil, 1}
+
+      assert rebuilt.transient_attempts == 0
+    end
+
+    test "a marked row's rebuild with the rule but no compile_env stays revoked" do
+      name = "tc_rebuild_nil_#{System.unique_integer([:positive])}"
+      build = marked_build!(name)
+
+      ingest_toolchain_build(name, "0.1.0",
+        deps_lock: @liveview,
+        compile_env_rule: 1,
+        compile_env: nil
+      )
+
+      rebuilt = reload(build)
+      assert %DateTime{} = rebuilt.revoked_at
+      assert rebuilt.revoked_reason == "withheld closure"
+    end
+
+    test "an unmarked revoked row stays revoked whatever its rebuild records" do
+      name = "tc_plain_rev_#{System.unique_integer([:positive])}"
+      build = name |> ingest_toolchain_build("0.1.0", deps_lock: @liveview) |> revoke!()
+      ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+      assert %DateTime{} = reload(build).revoked_at
+    end
+
+    test "a row revoked for another reason is never un-revoked" do
+      name = "tc_other_rev_#{System.unique_integer([:positive])}"
+      build = name |> ingest_toolchain_build("0.1.0", deps_lock: @liveview) |> revoke!()
+
+      Portal.Repo.query!(
+        "UPDATE catalog_toolchain_builds SET revoked_reason = 'leaked secret' WHERE id = $1",
+        [Ecto.UUID.dump!(build.id)]
+      )
+
+      ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+      rebuilt = reload(build)
+      assert %DateTime{} = rebuilt.revoked_at
+      assert rebuilt.revoked_reason == "leaked secret"
+    end
+
+    test "the un-revoke rolls back with the row write it belongs to" do
+      name = "tc_rollback_#{System.unique_integer([:positive])}"
+      build = marked_build!(name)
+
+      # Rejecting the membership insert fails the ingest after the row write
+      # and the un-revoke ran; neither may survive it.
+      Portal.Repo.query!("""
+      CREATE FUNCTION ncc_test_reject_membership() RETURNS trigger LANGUAGE plpgsql AS
+      $$ BEGIN RAISE EXCEPTION 'rejected'; END $$
+      """)
+
+      Portal.Repo.query!("""
+      CREATE TRIGGER ncc_test_reject_membership BEFORE INSERT ON catalog_artifact_memberships
+      FOR EACH ROW EXECUTE FUNCTION ncc_test_reject_membership()
+      """)
+
+      failed =
+        try do
+          ingest_toolchain_build(name, "0.1.0", deps_lock: @liveview, compile_env_rule: 1)
+        rescue
+          _ -> :failed
+        end
+
+      assert failed == :failed
+      kept = reload(build)
+      assert %DateTime{} = kept.revoked_at
+      assert {kept.revoked_reason, kept.compile_env_rule} == {"withheld closure", nil}
+    end
+  end
 end

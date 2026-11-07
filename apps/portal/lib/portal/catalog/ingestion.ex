@@ -481,10 +481,43 @@ defmodule Portal.Catalog.Ingestion do
 
   defp write_toolchain_row(result, build, counted, opts, package_id, staged) do
     with {:ok, toolchain_build} <-
-           upsert_toolchain_build(result, build, counted, opts, package_id) do
+           upsert_toolchain_build(result, build, counted, opts, package_id),
+         {:ok, toolchain_build} <- maybe_unrevoke(toolchain_build) do
       :ok = upsert_artifacts(staged)
       :ok = replace_toolchain_memberships(toolchain_build.id, staged)
       {:ok, toolchain_build}
+    end
+  end
+
+  # A row revoked for its withheld closure (`Portal.Catalog.mark_withheld_revoked/2`)
+  # whose rebuild records its compile-time config reads (R5: rule 1 next to a
+  # kept `compile_env`) is no longer withheld, so the rebuild un-revokes it,
+  # in the transaction that wrote the row. A rebuild without them (an older
+  # worker image), or a row revoked for any other reason, stays revoked.
+  defp maybe_unrevoke(%ToolchainBuild{compile_env_rule: 1, compile_env: env} = tb)
+       when is_list(env) do
+    if tb.revoked_at != nil and tb.revoked_reason == ToolchainBuild.withheld_revocation(),
+      do: unrevoke(tb),
+      else: {:ok, tb}
+  end
+
+  defp maybe_unrevoke(tb), do: {:ok, tb}
+
+  # The action's own filter re-checks the reason; a row that no longer
+  # matches it (a stale record) keeps its revocation rather than failing the
+  # ingest.
+  defp unrevoke(tb) do
+    case tb |> Ash.Changeset.for_update(:unrevoke_rebuilt, %{}) |> Ash.update(domain: @domain) do
+      {:ok, unrevoked} ->
+        {:ok, unrevoked}
+
+      {:error, %Ash.Error.Invalid{errors: errors} = error} ->
+        if Enum.all?(errors, &match?(%Ash.Error.Changes.StaleRecord{}, &1)),
+          do: {:ok, tb},
+          else: {:error, error}
+
+      {:error, error} ->
+        {:error, error}
     end
   end
 

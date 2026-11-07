@@ -1596,6 +1596,95 @@ defmodule Portal.Catalog do
   end
 
   @doc """
+  Marks revoked toolchain builds as revoked for their withheld closure
+  (`ToolchainBuild.withheld_revocation/0`), so the backlog rebuilds each once
+  with its compile-time config reads recorded and the rebuild un-revokes it
+  (`Portal.Catalog.Ingestion`). Only a row that is revoked, records no config
+  reads (`compile_env_rule` nil) and whose closure has a withheld package
+  (`Portal.Precompiled.Withheld`) is marked; every other id comes back under
+  `skipped` with the reason. `dry_run: true`, the default, changes nothing.
+
+  Each row is marked in its own transaction under the toolchain build
+  identity's lock (`Portal.Catalog.Ingestion.lock_toolchain_identity/1`),
+  checked again there, so an ingest of the same identity cannot interleave.
+  """
+  @spec mark_withheld_revoked([String.t()], keyword()) :: %{
+          marked: [String.t()],
+          skipped: [{String.t(), String.t()}]
+        }
+  def mark_withheld_revoked(ids, opts \\ []) when is_list(ids) do
+    dry_run = Keyword.get(opts, :dry_run, true)
+    packages = Withheld.packages()
+    rows = toolchain_builds_by_id(ids)
+
+    %{marked: marked, skipped: skipped} =
+      Enum.reduce(ids, %{marked: [], skipped: []}, fn id, acc ->
+        case mark_one(Map.get(rows, id), packages, dry_run) do
+          :ok -> %{acc | marked: [id | acc.marked]}
+          {:skip, why} -> %{acc | skipped: [{id, why} | acc.skipped]}
+        end
+      end)
+
+    %{marked: Enum.reverse(marked), skipped: Enum.reverse(skipped)}
+  end
+
+  defp toolchain_builds_by_id(ids) do
+    uuids = for id <- ids, {:ok, uuid} <- [Ecto.UUID.cast(id)], do: uuid
+
+    ToolchainBuild
+    |> Ash.Query.filter(id in ^uuids)
+    |> Ash.Query.load(:package)
+    |> Ash.read!(domain: __MODULE__)
+    |> Map.new(&{&1.id, &1})
+  end
+
+  defp mark_one(row, packages, true), do: markable(row, packages)
+
+  defp mark_one(row, packages, false) do
+    with :ok <- markable(row, packages) do
+      {:ok, result} = Repo.transaction(fn -> mark_locked(row, packages) end)
+      result
+    end
+  end
+
+  # Re-reads the row under the identity lock: what the first read saw may
+  # have changed before the lock was taken.
+  defp mark_locked(row, packages) do
+    :ok =
+      Portal.Catalog.Ingestion.lock_toolchain_identity(%{
+        package: row.package.name,
+        version: row.version,
+        toolchain: row.toolchain,
+        builder_version: row.builder_version,
+        variant: row.variant
+      })
+
+    current = Ash.get!(ToolchainBuild, row.id, load: [:package], domain: __MODULE__)
+
+    with :ok <- markable(current, packages) do
+      current
+      |> Ash.Changeset.for_update(:mark_withheld_revoked, %{})
+      |> Ash.update(domain: __MODULE__)
+      |> case do
+        {:ok, _row} -> :ok
+        {:error, _stale} -> {:skip, "not revoked"}
+      end
+    end
+  end
+
+  defp markable(nil, _packages), do: {:skip, "no such toolchain build"}
+  defp markable(%ToolchainBuild{revoked_at: nil}, _packages), do: {:skip, "not revoked"}
+
+  defp markable(%ToolchainBuild{compile_env_rule: rule}, _packages) when not is_nil(rule),
+    do: {:skip, "already records its config reads"}
+
+  defp markable(row, packages) do
+    if Withheld.withheld?(row.package.name, row.deps_lock, packages),
+      do: :ok,
+      else: {:skip, "closure has no withheld package"}
+  end
+
+  @doc """
   Returns a stored artifact by SHA256, or `nil` if unknown.
   """
   def artifact_by_sha256(sha256) do
