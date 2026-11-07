@@ -223,7 +223,8 @@ defmodule NccWorker.Portability.ConfigReadsTest do
                record: [_ | _],
                drop: [
                  {"Elixir.Mix.Shell.IO", "elixir", "ansi_enabled"},
-                 {"logger_h_common", "elixir", "ansi_enabled"}
+                 {"logger_h_common", "elixir", "ansi_enabled"},
+                 {"elixir_errors", "elixir", "ansi_enabled"}
                ]
              } =
                ConfigReads.reviewed(elixir)
@@ -368,6 +369,35 @@ defmodule NccWorker.Portability.ConfigReadsTest do
              ).drop
     end
 
+    # The compiler's diagnostics module reads :ansi_enabled in one function,
+    # reached only through `format_snippet/6`. The functions that call it
+    # write the text to standard error; the tracer keeps the module first
+    # only while one of them is on the stack (`printers/0`), and classifies
+    # it afresh on every event. Elixir installs often ship no `src`, so the
+    # forms come from the beam's abstract code then.
+    test "drops the compiler diagnostics printer's ansi_enabled read, whose value only reaches output" do
+      source = Path.join(:code.lib_dir(:elixir), "src/elixir_errors.erl")
+      forms = module_forms(:elixir_errors, source)
+
+      assert key_readers(forms, :ansi_enabled) == [:highlight]
+
+      assert Enum.sort(callers(forms, :highlight)) ==
+               [:highlight_at_position, :highlight_below_line, :prefix]
+
+      for via <- [:highlight_at_position, :highlight_below_line, :prefix],
+          do: assert(callers(forms, via) == [:format_snippet], inspect(via))
+
+      assert [{:elixir_errors, printers}] = :ncc_tracer_stack.printers()
+      assert Enum.sort(callers(forms, :format_snippet)) == Enum.sort(printers)
+
+      for printer <- printers,
+          do: assert(writes_stderr?(forms, printer), inspect(printer))
+
+      assert :elixir_errors in :ncc_tracer_stack.uncached()
+
+      assert {"elixir_errors", "elixir", "ansi_enabled"} in ConfigReads.reviewed(System.version()).drop
+    end
+
     # The fallback reads the same functions as the source, so the pin above
     # holds on an OTP install without `src`.
     test "the handler's beam abstract code gives the same callers as its source" do
@@ -385,18 +415,47 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     end
   end
 
-  # OTP's `logger_h_common` forms: from its source when the OTP install
-  # carries `src`, otherwise from the beam's own abstract code (OTP compiles
-  # its beams with debug_info). An install with neither fails the pin.
-  defp handler_forms do
-    source = Path.join(:code.lib_dir(:kernel), "src/logger_h_common.erl")
+  # OTP's `logger_h_common` forms.
+  defp handler_forms,
+    do:
+      module_forms(:logger_h_common, Path.join(:code.lib_dir(:kernel), "src/logger_h_common.erl"))
 
+  # A toolchain module's forms: from its source when the install carries
+  # `src`, otherwise from the beam's own abstract code (OTP and Elixir
+  # compile their beams with debug_info). An install with neither fails the
+  # pin.
+  defp module_forms(module, source) do
     if File.regular?(source) do
       {:ok, forms} = :epp.parse_file(String.to_charlist(source), [])
       forms
     else
-      beam_forms(:logger_h_common, source)
+      beam_forms(module, source)
     end
+  end
+
+  # The functions that mention `key` as an atom.
+  defp key_readers(forms, key) do
+    for {:function, _, name, _, clauses} <- forms,
+        has_call?(clauses, fn
+          {:atom, _, ^key} -> true
+          _ -> false
+        end),
+        uniq: true,
+        do: name
+  end
+
+  defp writes_stderr?(forms, name) do
+    Enum.any?(
+      for({:function, _, ^name, _, clauses} <- forms, do: clauses),
+      &has_call?(&1, fn
+        {:call, _, {:remote, _, {:atom, _, :io}, {:atom, _, :put_chars}},
+         [{:atom, _, :standard_error} | _]} ->
+          true
+
+        _ ->
+          false
+      end)
+    )
   end
 
   defp beam_forms(module, source) do

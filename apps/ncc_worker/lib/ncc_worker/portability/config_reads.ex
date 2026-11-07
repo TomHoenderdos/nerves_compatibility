@@ -19,8 +19,9 @@ defmodule NccWorker.Portability.ConfigReads do
       macros, Mix's shell) is recorded when `{app, key}` is on the
       toolchain's reviewed `record` list (Logger's compile-time keys),
       dropped when `{first frame, app, key}` is on its reviewed `drop` list
-      (`:elixir, :ansi_enabled` as read for `Mix.Shell.IO` and for Logger's
-      handler, which colour terminal output and generate no code), and otherwise cannot be judged: an
+      (`:elixir, :ansi_enabled` as read for `Mix.Shell.IO`, Logger's
+      handler and the compiler's diagnostics printer, which colour terminal
+      output and generate no code), and otherwise cannot be judged: an
       unknown toolchain read may change code, so the build does not
       publish. It is also listed in `unreviewed` for the review. A toolchain
       with no reviewed lists judges no build with such a read. The tracer
@@ -102,12 +103,28 @@ defmodule NccWorker.Portability.ConfigReads do
   # read is its own.
   @logger_handler_ansi {"logger_h_common", "elixir", "ansi_enabled"}
 
+  # The compiler prints a warning or error through `:elixir_errors`, which
+  # colours the diagnostic by the key while formatting it and writes the
+  # text to standard error: the key only colours compiler output and never
+  # reaches the beam. A checker warning is printed in a process the
+  # package's own top-level code spawned, so the read lands in its window.
+  # The tracer keeps `:elixir_errors` as the first frame only while one of
+  # its printing functions is on the stack; formatted text returned to a
+  # caller (`SyntaxError.message/1`) is the caller's read.
+  @compiler_diagnostic_ansi {"elixir_errors", "elixir", "ansi_enabled"}
+
   # Per Elixir minor, the toolchain's own compile-time config reads, reviewed
   # against real compiles: `record` ({app, key}) changes generated code;
   # `drop` ({first frame module, app, key}) does not.
   @reviewed %{
-    "1.19" => %{record: @logger_compile_keys, drop: [@mix_shell_ansi, @logger_handler_ansi]},
-    "1.20" => %{record: @logger_compile_keys, drop: [@mix_shell_ansi, @logger_handler_ansi]}
+    "1.19" => %{
+      record: @logger_compile_keys,
+      drop: [@mix_shell_ansi, @logger_handler_ansi, @compiler_diagnostic_ansi]
+    },
+    "1.20" => %{
+      record: @logger_compile_keys,
+      drop: [@mix_shell_ansi, @logger_handler_ansi, @compiler_diagnostic_ansi]
+    }
   }
 
   # Loaded before every compile: Mix's own extra applications

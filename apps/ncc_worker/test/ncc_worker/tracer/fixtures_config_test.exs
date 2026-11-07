@@ -222,6 +222,40 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
         def x(unused), do: 1
       end
       """),
+    # Warnings the compiler's checker prints after a module compiles: a call
+    # to a module that does not exist, and a clause the type checker finds
+    # unused (1.20 only). The file has top-level code besides `defmodule`,
+    # so the module is defined from package code and its checker process is
+    # the package's: the diagnostics printer's read lands in its window.
+    "fx_tc_checker" =>
+      lib("fx_tc_checker", """
+      defmodule FxTcChecker do
+        def x, do: FxTcCheckerMissing.y()
+        def z, do: check(%{k: 1})
+        defp check(%{k: :never} = m), do: m
+        defp check(m), do: m
+      end
+
+      if Code.ensure_loaded?(FxTcChecker) do
+        defmodule FxTcChecker.Other do
+          def y, do: FxTcCheckerMissing.z()
+        end
+      end
+      """),
+    # Package code asking the compiler for a formatted message and keeping
+    # it: `SyntaxError.message/1` formats a snippet through `:elixir_errors`
+    # and returns the coloured text.
+    "fx_tc_snippet" =>
+      lib("fx_tc_snippet", """
+      defmodule FxTcSnippet do
+        @msg (try do
+                Code.string_to_quoted!("x = (1 +\\n2", file: "fixture.ex")
+              rescue
+                e -> Exception.message(e)
+              end)
+        def msg, do: @msg
+      end
+      """),
     "fx_tc_shell" =>
       lib("fx_tc_shell", """
       defmodule FxTcShell do
@@ -366,7 +400,8 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
     "fx_cfg_iowarn_forms",
     "fx_cfg_logbody",
     "fx_tc_shell",
-    "fx_tc_native"
+    "fx_tc_native",
+    "fx_tc_checker"
   ]
 
   setup_all do
@@ -377,6 +412,15 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
       )
 
     on_exit(fn -> File.rm_rf(root) end)
+
+    # A path dependency has no Hex tarball, and without a verified file list
+    # no source file of a dependency is readable. The diagnostics printer
+    # reads the warned-about source line, so fx_tc_checker gets the release
+    # a Hex dependency would have.
+    hex_home = Path.join(root, "hex")
+
+    {app, release} =
+      TracerFixtures.hex_release(hex_home, "fx_tc_checker", ["lib", "mix.exs"])
 
     shared = @deps |> Map.drop(@alone ++ ["fx_cfg_d", "fx_ord_b", "fx_tc_comp"]) |> Map.keys()
 
@@ -405,7 +449,7 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
         )
     }
 
-    %{runs: runs}
+    %{runs: runs, judge_opts: [releases: %{app => release}, hex_home: hex_home]}
   end
 
   defp compile(root, top, deps, config) do
@@ -418,7 +462,7 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
 
   defp verdict(ctx, app) do
     run = run_of(ctx, app)
-    TracerFixtures.judge(run.proj, app, run.traced)
+    TracerFixtures.judge(run.proj, app, run.traced, [], ctx.judge_opts)
   end
 
   defp passes(ctx, app) do
@@ -560,6 +604,35 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
   test "a compiler warning records nothing", ctx do
     v = passes(ctx, "fx_tc_warn")
     assert v.observations["config_reads"] == []
+  end
+
+  # The compiler's diagnostics printer colours a checker warning by
+  # :ansi_enabled and writes it to standard error: dropped, as output only.
+  test "a checker warning printed in the package's process publishes", ctx do
+    v = passes(ctx, "fx_tc_checker")
+    assert v.compile_env == []
+    assert v.observations["config_unreviewed"] == []
+    refute item(v, "elixir", "ansi_enabled")
+
+    assert [_ | _] = reads = v.observations["config_reads"]
+
+    for r <- reads do
+      assert %{"first" => "elixir_errors", "first_kind" => "toolchain"} = r
+      assert r["arg"]["key_name"] == "ansi_enabled"
+    end
+  end
+
+  # The same formatter reached for a message the package keeps is not the
+  # printer: its frames are skipped, the caller is first, and a toolchain
+  # caller no reviewed list holds leaves the build unjudged.
+  test "a compiler message a package keeps is not taken for the printer's", ctx do
+    assert %{status: :skip, reason: @cnj, observations: obs} = verdict(ctx, "fx_tc_snippet")
+
+    assert obs["problems"] == [
+             "unreviewed toolchain config read: elixir ansi_enabled from Elixir.Exception"
+           ]
+
+    refute Enum.any?(obs["config_reads"], &(&1["first"] == "elixir_errors"))
   end
 
   test "no Mix config read of the compile around a package is its own", ctx do

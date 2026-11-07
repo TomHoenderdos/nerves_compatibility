@@ -495,4 +495,45 @@ defmodule NccWorker.Tracer.StackTest do
       assert {:user, :lineage, :none, :none} = ansi_extent(ansi_read(), true)
     end
   end
+
+  describe "a read made by the compiler's diagnostics module" do
+    @errors_toolchain [:application, :elixir_errors, Module.ParallelChecker, SyntaxError]
+
+    defp errors_extent(stack, tc? \\ &(&1 in @errors_toolchain)),
+      do: :ncc_tracer_stack.extent(stack, 64, tc?, true)
+
+    defp errors_read,
+      do: [
+        f(:application, :get_env, 3),
+        f(:elixir_errors, :highlight, 2),
+        f(:elixir_errors, :format_snippet, 6)
+      ]
+
+    test "is the module's own while one of its printing functions is below" do
+      highlight = f(:elixir_errors, :highlight, 2)
+      checker = f(Module.ParallelChecker, :"-spawn_checker/7-fun-0-", 0)
+
+      for printer <- [:print_diagnostic, :print_warning, :"-print_diagnostics/1-lc$^0/1-0-"] do
+        stack = errors_read() ++ [f(:elixir_errors, printer, 2), checker]
+        assert {:user, :lineage, ^highlight, :none} = errors_extent(stack)
+      end
+    end
+
+    test "returned to a caller, is the caller's" do
+      message = f(SyntaxError, :message, 1)
+      body = f(:elixir_compiler_3, :__MODULE__, 1)
+
+      assert {:user, :frame, ^message, ^body} = errors_extent(errors_read() ++ [message, body])
+      assert {:user, :frame, ^body, ^body} = errors_extent(errors_read() ++ [body])
+    end
+
+    test "a package's module of the same name stays first" do
+      highlight = f(:elixir_errors, :highlight, 2)
+      body = f(:elixir_compiler_3, :__MODULE__, 1)
+      forged = &(&1 in @errors_toolchain and &1 != :elixir_errors)
+
+      assert {:user, :frame, ^highlight, ^highlight} =
+               errors_extent(errors_read() ++ [body], forged)
+    end
+  end
 end

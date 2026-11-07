@@ -3,7 +3,7 @@
 %% (precompiled portability spec, R1 steps 1-3). The tracer passes in which
 %% modules are toolchain and whether the calling process is a user process.
 -export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2,
-         uncached/0]).
+         uncached/0, printers/0]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% Frames a call is attributed through, to the frame that called them, when
@@ -23,7 +23,15 @@
 %% tracer classifies them afresh on every event, never from its per-module
 %% cache, so a package that redefines one mid-compile is not taken for the
 %% toolchain's.
--define(UNCACHED, ?ATTRIBUTED_THROUGH ++ ['Elixir.Mix.Shell.IO', logger_h_common]).
+-define(UNCACHED, ?ATTRIBUTED_THROUGH ++ ['Elixir.Mix.Shell.IO', logger_h_common, elixir_errors]).
+%% The compiler's diagnostics module colours a warning or error by
+%% `:elixir, :ansi_enabled` while formatting it. Its frame stays first only
+%% when one of its printing functions (the ones that format a diagnostic and
+%% write it to standard error) is on the stack below. Reached any other way
+%% (`SyntaxError.message/1` formats a snippet and returns the coloured text
+%% to its caller) its frames are skipped like the ones above, so the read
+%% belongs to whoever asked for the text.
+-define(PRINTED_BY, [{elixir_errors, ["print_diagnostic", "print_diagnostics", "print_warning"]}]).
 %% A frame a read is attributed to only when the skipped frame right above
 %% it is the toolchain's module it is paired with: Logger's handler calls
 %% the formatter, and a package's formatter that tail-calls IO.ANSI leaves
@@ -160,7 +168,8 @@ strip(Stack, IsToolchain) -> strip(Stack, none, IsToolchain).
 
 strip([{M, _, _, _} = Frame | Rest] = Stack, Above, IsToolchain) ->
     Skip = lists:member(M, ?WRAPPERS)
-        orelse (lists:member(M, ?ATTRIBUTED_THROUGH) andalso IsToolchain(M)),
+        orelse (lists:member(M, ?ATTRIBUTED_THROUGH) andalso IsToolchain(M))
+        orelse unprinted(M, Stack, IsToolchain),
     case Skip of
         true -> strip(Rest, Frame, IsToolchain);
         false -> reached(Stack, Above)
@@ -175,7 +184,21 @@ reached([{M, _, _, _} | _] = Stack, {AboveM, _, _, _} = Above) ->
     end;
 reached(Stack, none) -> Stack.
 
+%% A frame of a PRINTED_BY module that no printing function of it lies
+%% at or below: a redefined module (not the toolchain's) is never skipped.
+unprinted(M, Below, IsToolchain) ->
+    case lists:keyfind(M, 1, ?PRINTED_BY) of
+        {M, Printers} ->
+            IsToolchain(M) andalso
+                not lists:any(fun({BM, BF, _, _}) ->
+                                      BM =:= M andalso lists:member(base_name(BF), Printers)
+                              end, Below);
+        false -> false
+    end.
+
 uncached() -> ?UNCACHED.
+
+printers() -> [{M, [list_to_atom(F) || F <- Fs]} || {M, Fs} <- ?PRINTED_BY].
 
 dispatcher({M, F, _, _}) -> lists:member({M, base_name(F)}, ?DISPATCHERS).
 
