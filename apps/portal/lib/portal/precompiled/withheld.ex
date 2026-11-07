@@ -10,7 +10,9 @@ defmodule Portal.Precompiled.Withheld do
   A build is withheld when the package itself is on the list, or when its
   recorded dependency lock (`deps_lock`; for a system result the result's own
   lock, else the lock of the run that built it) names a package on the list,
-  or when it has no recorded lock at all and so an unknown closure.
+  or when it has no recorded lock at all and so an unknown closure. The same
+  selectors also leave out a system result whose files were withdrawn
+  (`Portal.Catalog.SystemResult`'s `unpublished_at`), in the same predicate.
 
   Why: some packages change what their dependents compile to through
   application config the user's project sets and our builds do not. Every

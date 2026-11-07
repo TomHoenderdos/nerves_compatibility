@@ -66,6 +66,13 @@ defmodule Portal.Catalog.SystemResult do
         :failure_category
       ])
     end
+
+    # Withdraws this result's files from the precompiled API (spec section 7,
+    # "One withheld rule"): its run, status and logs stay as they are. No
+    # action undoes it; putting a result back is a deliberate SQL step.
+    update :withdraw_publication do
+      change(set_attribute(:unpublished_at, &DateTime.utc_now/0))
+    end
   end
 
   attributes do
@@ -149,6 +156,14 @@ defmodule Portal.Catalog.SystemResult do
     end
 
     attribute :failure_category, :string do
+      public?(true)
+    end
+
+    # Set when the result's precompiled files were withdrawn; every
+    # precompiled selector leaves it out (`Portal.Catalog`'s withheld clause
+    # and `reject_withheld_results/4`, beside `Portal.Precompiled.Withheld`).
+    # Carried copies keep it.
+    attribute :unpublished_at, :utc_datetime_usec do
       public?(true)
     end
 

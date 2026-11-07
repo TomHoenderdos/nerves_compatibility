@@ -5,6 +5,8 @@ defmodule Portal.Precompiled.WithheldTest do
   alias Portal.Catalog
   alias Portal.Precompiled.Withheld
 
+  require Ash.Query
+
   import Portal.PrecompiledFixtures
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
@@ -193,6 +195,84 @@ defmodule Portal.Precompiled.WithheldTest do
       assert Catalog.precompiled_manifest_v2(name) == nil
       refute name in Catalog.packages_with_precompiled_files()
       refute Catalog.published_sha256?(toolchain_sha(build))
+    end
+  end
+
+  defp withdraw!(system_pkg) do
+    Portal.Catalog.SystemResult
+    |> Ash.Query.filter(system_pkg == ^system_pkg)
+    |> Ash.read!(domain: Portal.Catalog)
+    |> Enum.each(fn result ->
+      result
+      |> Ash.Changeset.for_update(:withdraw_publication, %{})
+      |> Ash.update!(domain: Portal.Catalog)
+    end)
+  end
+
+  describe "a withdrawn system result (unpublished_at)" do
+    test "is in no manifest, does not list its package and its file is not served" do
+      ingest_with_artifact(run(@decimal))
+      before = Catalog.precompiled_fingerprints()["jason"]
+      withdraw!("nerves_system_rpi4")
+
+      assert Catalog.precompiled_manifest("jason") == nil
+      assert Catalog.precompiled_manifest_v2("jason") == nil
+      assert %{v1: nil, v2: nil} = Catalog.precompiled_manifests("jason")
+      refute "jason" in Catalog.packages_with_precompiled_files()
+      refute Catalog.published_sha256?(@run_sha)
+      assert Catalog.precompiled_fingerprints()["jason"] != before
+    end
+
+    test "is withheld even when nothing else is" do
+      put_withheld(packages: [])
+      ingest_with_artifact(run(@decimal))
+      withdraw!("nerves_system_rpi4")
+
+      assert Catalog.precompiled_manifest("jason") == nil
+      assert Catalog.precompiled_manifest_v2("jason") == nil
+      refute "jason" in Catalog.packages_with_precompiled_files()
+      refute Catalog.published_sha256?(@run_sha)
+    end
+
+    test "stays withdrawn when a partial run carries it" do
+      ingest_with_artifact(run(@decimal))
+      withdraw!("nerves_system_rpi4")
+
+      partial =
+        @decimal
+        |> run()
+        |> Map.merge(%{
+          "run_id" => "fixture-jason-targets",
+          "scope" => "targets",
+          "finished_at" => "2030-01-01T00:00:00Z"
+        })
+        |> Map.update!("systems", &Map.take(&1, ["nerves_system_x86_64"]))
+
+      ingest_with_artifact(partial)
+
+      carried =
+        Portal.Catalog.SystemResult
+        |> Ash.Query.filter(
+          system_pkg == "nerves_system_rpi4" and not is_nil(carried_from_run_id)
+        )
+        |> Ash.read!(domain: Portal.Catalog)
+
+      assert [%{unpublished_at: %DateTime{}}] = carried
+      assert Catalog.precompiled_manifest("jason") == nil
+      assert Catalog.precompiled_manifest_v2("jason") == nil
+      refute Catalog.published_sha256?(@run_sha)
+    end
+
+    # Ruling B1: the withdrawal only narrows the withheld rule. A result
+    # without a recorded lock that nobody withdrew is still an unknown
+    # closure and withheld, exactly as before.
+    test "leaves a lockless result withheld" do
+      ingest_with_artifact(run(nil))
+
+      assert Catalog.precompiled_manifest("jason") == nil
+      assert Catalog.precompiled_manifest_v2("jason") == nil
+      refute "jason" in Catalog.packages_with_precompiled_files()
+      refute Catalog.published_sha256?(@run_sha)
     end
   end
 

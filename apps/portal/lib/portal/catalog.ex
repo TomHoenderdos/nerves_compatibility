@@ -105,7 +105,8 @@ defmodule Portal.Catalog do
     :beam_scan,
     :carried_from_run_id,
     :compile_env,
-    :deps_lock
+    :deps_lock,
+    :unpublished_at
   ]
   @json_fields [
     :run_id,
@@ -1200,18 +1201,21 @@ defmodule Portal.Catalog do
   # was carried from; a result's closure is its own lock, else the lock of the
   # run that built it, as `build_inputs/2` publishes it. No lock (anything
   # but a JSON object) is an unknown closure and withheld while the list is
-  # not empty, as `Withheld.withheld?/3` reads `nil`.
+  # not empty, as `Withheld.withheld?/3` reads `nil`. A withdrawn result
+  # (`unpublished_at`) is withheld too: one predicate, used by every query
+  # that selects published files.
   @withheld_lock_clause """
   NOT (cardinality($W::text[]) > 0
        AND (p.name = ANY($W::text[])
             OR CASE WHEN jsonb_typeof($L) = 'object' THEN $L ?| $W::text[] ELSE true END))
   """
-  @withheld_result_clause String.replace(
-                            @withheld_lock_clause,
-                            "$L",
-                            "coalesce(s.deps_lock, CASE WHEN s.carried_from_run_id IS NULL " <>
-                              "THEN r.deps_lock ELSE b.deps_lock END)"
-                          )
+  @withheld_result_clause "s.unpublished_at IS NULL AND " <>
+                            String.replace(
+                              @withheld_lock_clause,
+                              "$L",
+                              "coalesce(s.deps_lock, CASE WHEN s.carried_from_run_id IS NULL " <>
+                                "THEN r.deps_lock ELSE b.deps_lock END)"
+                            )
   @withheld_toolchain_clause String.replace(@withheld_lock_clause, "$L", "t.deps_lock")
 
   @packages_with_precompiled_files_sql_template """
@@ -2248,14 +2252,15 @@ defmodule Portal.Catalog do
   end
 
   # A result's closure is its own lock, else that of the run that built it,
-  # as `build_inputs/2` publishes it.
+  # as `build_inputs/2` publishes it. A withdrawn result (`unpublished_at`) is
+  # left out the same way.
   defp reject_withheld_results(results, package_name, runs, withheld) do
     runs_by_id = Map.new(runs, &{&1.id, &1})
 
     Enum.reject(results, fn result ->
       built_by = Map.get(runs_by_id, result.carried_from_run_id || result.run_id)
       deps = result.deps_lock || (built_by && built_by.deps_lock)
-      Withheld.withheld?(package_name, deps, withheld)
+      not is_nil(result.unpublished_at) or Withheld.withheld?(package_name, deps, withheld)
     end)
   end
 

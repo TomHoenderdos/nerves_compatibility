@@ -783,7 +783,8 @@ defmodule Portal.Catalog.Ingestion do
   # timestamps -- plus its artifact memberships and stored log, so the
   # precompiled API and the log page behave as if the row had been built in
   # this run. `carried_from_run_id` keeps pointing at the run that built it,
-  # across any chain of partial runs.
+  # across any chain of partial runs. A withdrawn result stays withdrawn in
+  # its copies.
   #
   # Three statements however many systems carry, each joined against the
   # old-to-new id pairs: every statement crosses the build box's ~80ms link
@@ -801,11 +802,12 @@ defmodule Portal.Catalog.Ingestion do
       INSERT INTO catalog_system_results
         (id, run_id, system_pkg, system_version, status, firmware_size_bytes, duration_sec,
          phase_timings, hex_version_tested, beam_scan, compile_env, dependency_scans, log_path,
-         log_tail, failure_category, carried_from_run_id, deps_lock, inserted_at, updated_at)
+         log_tail, failure_category, carried_from_run_id, deps_lock, unpublished_at,
+         inserted_at, updated_at)
       SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
              s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan, s.compile_env,
              s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
-             s.deps_lock, now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
+             s.deps_lock, s.unpublished_at, now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
       FROM catalog_system_results s
       JOIN unnest($2::uuid[], $3::uuid[], $4::uuid[]) AS m(old_id, new_id, built_in)
         ON m.old_id = s.id
