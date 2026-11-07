@@ -361,7 +361,9 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
   #     stack come and go with code loading order (grpcbox, certifi), so
   #     refusals with a truncated stack are left out;
   #   * a tainted dependency's reason is its first refusal, which can be one
-  #     of those, so taint compares by dependency only.
+  #     of those, so taint compares by dependency only, and a dependency
+  #     whose only refusals are such truncated-stack reads is left out
+  #     (it is tainted in one run and clean in the next, grpcbox via sentry).
   defp stable(golden, full) do
     obs = golden["observations"]
 
@@ -375,11 +377,26 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     |> Map.delete("observations")
     |> Map.merge(lists)
     |> Map.merge(%{
-      "taint" => obs["taint"] |> Map.keys() |> Enum.sort(),
+      "taint" => stable_taint(obs["taint"], obs["refusals"] || []),
       "problems" => obs["problems"],
       "native_libs" => obs["native_libs"],
       "nif_check" => obs["nif_check"]
     })
+  end
+
+  defp stable_taint(taint, refusals) do
+    firm =
+      for r <- refusals,
+          not (r["reason"] =~ "(truncated stack"),
+          into: MapSet.new(),
+          do: r["owner"]
+
+    taint
+    |> Enum.reject(fn {dep, reason} ->
+      reason =~ "(truncated stack" and not MapSet.member?(firm, dep)
+    end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.sort()
   end
 
   defp full_kinds(golden),
