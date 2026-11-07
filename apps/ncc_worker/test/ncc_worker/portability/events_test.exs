@@ -619,10 +619,20 @@ defmodule NccWorker.Portability.EventsTest do
              Events.decide(version, ctx, "pkg")
   end
 
-  test "an Elixir version read in a dependency's mix.exs is no observation (R4)",
-       %{ctx: ctx, pkg: pkg} do
-    user = %{@user | "file" => Path.join(pkg, "mix.exs"), "module" => "Elixir.Pkg.MixProject"}
-    event = ev("elixir_version", "System.version/0", %{}, user: user)
-    assert :ignore = Events.decide(event, ctx, "pkg")
+  test "an Elixir version read in a dependency's mix.exs goes to R4", %{ctx: ctx, pkg: pkg} do
+    # Line 4 only picks deps, line 5 sets elixirc_options.
+    deps_read = in_mix_exs(ev("elixir_version", "System.version/0", %{}), pkg, 4)
+    opts_read = in_mix_exs(ev("elixir_version", "System.version/0", %{}), pkg, 5)
+
+    assert :ignore = Events.decide(deps_read, ctx, "pkg")
+
+    assert {:refuse,
+            "compile-time Elixir patch dependence: System.version/0 sets elixirc_options" <> _} =
+             Events.decide(opts_read, ctx, "pkg")
+
+    slices = Events.mix_exs_slices(ctx, [{"pkg", opts_read}])
+
+    assert {:refuse, "compile-time Elixir patch dependence: " <> _} =
+             Events.decide(opts_read, ctx, "pkg", slices)
   end
 end

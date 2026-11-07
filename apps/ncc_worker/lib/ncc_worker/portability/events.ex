@@ -8,8 +8,10 @@ defmodule NccWorker.Portability.Events do
   verdict over the whole closure (`NccWorker.Portability.ConfigReads`, R5,
   and `NccWorker.Portability.ElixirVersion`); their observations keep the
   first frame, its kind and the extent. An Elixir-version read in a closure
-  dependency's `mix.exs` is no observation (R4). Everything else is allowed
-  by a narrow rule or refused:
+  dependency's `mix.exs` goes to R4 (`MixExsSlice`) instead: one that can
+  reach a compile-relevant key refuses (`compile-time Elixir patch
+  dependence: `, compile options that may differ between patches), any
+  other is ignored. Everything else is allowed by a narrow rule or refused:
 
     * OS identity: `system_info(otp_release)` is allowed, and `os:type/0`,
       `os:version/0` or `system_info(os_type)` when the first frame after
@@ -125,6 +127,13 @@ defmodule NccWorker.Portability.Events do
 
   defp owned(_event, _ctx, :wrapper, _slices), do: :ignore
 
+  defp owned(%{"channel" => "elixir_version"} = event, ctx, owner, slices) do
+    case Context.mix_exs(ctx, event, owner) do
+      path when is_binary(path) -> version_in_mix_exs(event, path, slices)
+      _ -> {:observe, "elixir_version", traced_summary(event)}
+    end
+  end
+
   defp owned(%{"channel" => channel, "mfa" => mfa} = event, ctx, owner, slices) do
     case channel(channel, event, ctx, owner) do
       {:refuse, _} = refusal when channel in @slice_channels ->
@@ -149,12 +158,6 @@ defmodule NccWorker.Portability.Events do
     do: {:refuse, "compile-time tracing or system flag: " <> event["mfa"]}
 
   defp channel("cwd", event, _ctx, _owner), do: {:refuse, host_read(event, event["arg"]["path"])}
-
-  defp channel("elixir_version", event, ctx, owner) do
-    if is_binary(Context.mix_exs(ctx, event, owner)),
-      do: :ignore,
-      else: {:observe, "elixir_version", traced_summary(event)}
-  end
 
   defp channel("config", event, _ctx, _owner),
     do: {:observe, "config_reads", traced_summary(event)}
@@ -286,6 +289,31 @@ defmodule NccWorker.Portability.Events do
 
   defp sliced(event, path, line, {:refuse, why}),
     do: {:refuse, "compile-time host read in mix.exs: #{event["mfa"]} #{why} (#{path}:#{line})"}
+
+  # R4 for an Elixir-version read in a dependency's mix.exs: ignored unless
+  # it can reach a compile-relevant key (or the slice cannot tell).
+  defp version_in_mix_exs(event, path, slices) do
+    line = get_in(event, ["user", "line"])
+
+    verdict =
+      if is_integer(line) and line > 0 do
+        slices |> Map.get_lazy(path, fn -> analyse(path) end) |> slice_judge(line)
+      else
+        {:refuse, "has no line"}
+      end
+
+    case verdict do
+      :ok ->
+        :ignore
+
+      {:refuse, why} ->
+        {:refuse,
+         "compile-time Elixir patch dependence: #{event["mfa"]} #{why} (#{path}:#{line})"}
+    end
+  end
+
+  defp slice_judge({:ok, analysis}, line), do: MixExsSlice.judge(analysis, line)
+  defp slice_judge({:refuse, _why} = refusal, _line), do: refusal
 
   defp analyse(path) do
     case read_bounded(path) do

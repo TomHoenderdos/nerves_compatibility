@@ -596,18 +596,29 @@ defmodule NccWorker.Portability.JudgeTest do
     end
 
     test "config reads are capped at 200", %{proj: proj} do
+      keys = for n <- 1..250, do: "k#{n}"
+
       events =
-        for n <- 1..250 do
+        for key <- keys do
           %{
             event(35, "application:get_env/2", "lib/pkg.ex", "config")
-            | "arg" => %{"app" => "fx", "key" => "k#{n}"}
+            | "arg" => %{
+                "app" => "fx",
+                "key" => key,
+                "app_name" => "fx",
+                "key_name" => key,
+                "atoms" => true
+              }
           }
         end
 
-      assert %{observations: %{"config_reads" => reads}} =
-               judge(proj, report(proj, %{events: events}))
+      snap = %{@snap | entries: Map.new(keys, &{{"fx", &1}, enc({:ok, 1})})}
+
+      assert %{status: :pass, compile_env: items, observations: %{"config_reads" => reads}} =
+               judge(proj, traced(proj, events, snap))
 
       assert length(reads) == 200
+      assert length(items) == 250
     end
   end
 
@@ -644,6 +655,27 @@ defmodule NccWorker.Portability.JudgeTest do
                  "closure dependency observed the host: dep (compile-time host read in mix.exs: os:getenv/1 sets elixirc_options" <>
                    _
              } = judge(proj, r)
+    end
+
+    test "an Elixir version read only a compile-relevant key reaches taints", %{proj: proj} do
+      version_read = fn line ->
+        15
+        |> event(
+          "System.version/0",
+          Path.join([proj, "deps", "dep", "mix.exs"]),
+          "elixir_version"
+        )
+        |> put_in(["user", "line"], line)
+      end
+
+      assert %{status: :pass, observations: %{"elixir_version" => []}} =
+               judge(proj, report(proj, %{events: [version_read.(4)]}))
+
+      assert %{
+               reason:
+                 "closure dependency observed the host: dep (compile-time Elixir patch dependence: System.version/0 sets elixirc_options" <>
+                   _
+             } = judge(proj, report(proj, %{events: [version_read.(5)]}))
     end
 
     test "a MixExsSlice reason passes through unchanged, for every read in the file",
@@ -1329,6 +1361,16 @@ defmodule NccWorker.Portability.JudgeTest do
       assert obs["trace_stats"]["config_items"] == 2
       assert obs["trace_stats"]["config_dropped"] == 0
       assert obs["config_unreviewed"] == []
+    end
+
+    test "two owners reading the same key make one item", %{proj: proj} do
+      events = [config_event(15, "fx", "k"), config_event(35, "fx", "k")]
+      snap = %{@snap | entries: %{{"fx", "k"} => enc({:ok, 1})}}
+
+      assert %{status: :pass, compile_env: [%{app: "fx", path: ["k"], value: value}]} =
+               judge(proj, traced(proj, events, snap))
+
+      assert value == enc({:ok, 1})
     end
 
     test "a pass with no reads carries an empty list", %{proj: proj} do
