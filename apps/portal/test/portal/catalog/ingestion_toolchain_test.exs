@@ -704,6 +704,33 @@ defmodule Portal.Catalog.IngestionToolchainTest do
       assert {tb.revoked_at, tb.revoked_reason} == {nil, nil}
     end
 
+    test ":mark_withheld_revoked leaves a row that is not revoked alone" do
+      tb = Portal.PrecompiledFixtures.ingest_toolchain_build(unique_name(), "1.0.0")
+
+      assert {:error, %Ash.Error.Invalid{errors: errors}} =
+               tb
+               |> Ash.Changeset.for_update(:mark_withheld_revoked, %{})
+               |> Ash.update(domain: @domain)
+
+      assert Enum.any?(errors, &match?(%Ash.Error.Changes.StaleRecord{}, &1))
+      assert Ash.get!(ToolchainBuild, tb.id, domain: @domain).revoked_reason == nil
+    end
+
+    test ":unrevoke_rebuilt leaves a row revoked for another reason revoked" do
+      tb =
+        unique_name()
+        |> Portal.PrecompiledFixtures.ingest_toolchain_build("1.0.0")
+        |> Ash.Changeset.for_update(:revoke, %{})
+        |> Ash.update!(domain: @domain)
+
+      assert {:error, %Ash.Error.Invalid{}} =
+               tb
+               |> Ash.Changeset.for_update(:unrevoke_rebuilt, %{})
+               |> Ash.update(domain: @domain)
+
+      assert %DateTime{} = Ash.get!(ToolchainBuild, tb.id, domain: @domain).revoked_at
+    end
+
     test "a rebuild keeps the revocation reason" do
       name = unique_name()
 

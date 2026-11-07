@@ -127,14 +127,18 @@ defmodule Portal.Catalog.ToolchainBuild do
 
     # An operator's record that a revoked row was revoked for its withheld
     # closure (`Portal.Catalog.mark_withheld_revoked/2`), which the backlog
-    # rebuilds once with its config reads recorded.
+    # rebuilds once with its config reads recorded. Only a row that is
+    # revoked: the reason never stands on a row that is still published.
     update :mark_withheld_revoked do
       change(set_attribute(:revoked_reason, @withheld_revocation))
+      change(filter(expr(not is_nil(revoked_at))))
     end
 
     # The rebuild of a row revoked for its withheld closure recorded its
-    # config reads, so the withheld list no longer applies to it.
+    # config reads, so the withheld list no longer applies to it. A row
+    # revoked for any other reason stays revoked.
     update :unrevoke_rebuilt do
+      change(filter(expr(revoked_reason == ^@withheld_revocation)))
       change(set_attribute(:revoked_at, nil))
       change(set_attribute(:revoked_reason, nil))
     end
