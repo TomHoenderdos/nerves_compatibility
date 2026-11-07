@@ -372,6 +372,212 @@ defmodule Portal.Catalog.IngestionToolchainTest do
       assert %DateTime{} = kept.attempted_at
       assert length(memberships(kept)) == 2
     end
+
+    test "counts transient results and gives up at the cap, as a skip" do
+      name = unique_name()
+      transient = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+
+      for n <- 1..4 do
+        assert {:ok, tb} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+        assert {tb.status, tb.transient_attempts} == {:error, n}
+      end
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+      assert tb.status == :skipped
+      assert tb.reason == "portability could not be judged (transient 5 times)"
+      assert tb.transient_attempts == 5
+    end
+
+    test "a verdict resets the count" do
+      name = unique_name()
+      transient = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+
+      assert {:ok, %{transient_attempts: 1}} =
+               Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+
+      assert {:ok, tb} =
+               Ingestion.ingest_toolchain(skipped_result(name), opts(name, files_dir_with([])))
+
+      assert {tb.status, tb.transient_attempts} == {:skipped, 0}
+    end
+
+    test "a kept row counts its transient retries" do
+      name = unique_name()
+      beam = blob("beam-#{name}")
+      priv = blob("priv-#{name}")
+
+      {:ok, passed} =
+        Ingestion.ingest_toolchain(
+          pass_result(name, beam, priv),
+          opts(name, files_dir_with([beam, priv]))
+        )
+
+      transient = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+
+      assert {:ok, kept} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+      assert {kept.id, kept.status, kept.transient_attempts} == {passed.id, :pass, 1}
+      assert %DateTime{} = kept.attempted_at
+
+      assert {:ok, kept} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+      assert kept.transient_attempts == 2
+    end
+
+    # Reaching the cap on a kept pass row neither unpublishes nor downgrades
+    # it: the cap only turns a row with no verdict into a skip.
+    test "a kept pass row stays published at and past the cap" do
+      name = unique_name()
+      beam = blob("beam-#{name}")
+      priv = blob("priv-#{name}")
+
+      {:ok, passed} =
+        Ingestion.ingest_toolchain(
+          pass_result(name, beam, priv),
+          opts(name, files_dir_with([beam, priv]))
+        )
+
+      transient = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+
+      for _ <- 1..6 do
+        assert {:ok, _} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+      end
+
+      kept = Ash.get!(ToolchainBuild, passed.id, domain: @domain)
+      assert {kept.status, kept.reason, kept.transient_attempts} == {:pass, nil, 6}
+      assert kept.file_manifest == passed.file_manifest
+      assert kept.revoked_at == nil
+      assert length(memberships(kept)) == 2
+    end
+
+    test "a pass after the cap publishes and resets the count" do
+      name = unique_name()
+      transient = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+
+      for _ <- 1..5 do
+        assert {:ok, _} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+      end
+
+      beam = blob("beam-#{name}")
+      priv = blob("priv-#{name}")
+
+      assert {:ok, tb} =
+               Ingestion.ingest_toolchain(
+                 pass_result(name, beam, priv),
+                 opts(name, files_dir_with([beam, priv]))
+               )
+
+      assert {tb.status, tb.reason, tb.transient_attempts} == {:pass, nil, 0}
+      assert length(memberships(tb)) == 2
+    end
+
+    # An error that is not a transient could-not-judge is no verdict either:
+    # it neither counts towards the cap nor resets the count.
+    test "another error keeps the count" do
+      name = unique_name()
+      transient = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+
+      sweep_error =
+        skipped_result(name)
+        |> put_in(["toolchain_build", "status"], "error")
+        |> put_in(["toolchain_build", "reason"], "process sweep could not run: not linux")
+
+      for _ <- 1..2 do
+        assert {:ok, _} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+      end
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(sweep_error, opts(name, files_dir_with([])))
+      assert {tb.status, tb.transient_attempts} == {:error, 2}
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+      assert tb.transient_attempts == 3
+    end
+
+    test "a capped skip stays skipped, keeps counting and leaves the backlog" do
+      name = unique_name()
+      host_pass_run!(name)
+      transient = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+
+      for _ <- 1..4 do
+        assert {:ok, _} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+      end
+
+      # An error row from a day ago is retried ...
+      assert in_backlog?(name)
+
+      assert {:ok, %{status: :skipped}} =
+               Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+
+      # ... a capped skip is not, at this builder version.
+      refute in_backlog?(name)
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+      assert tb.status == :skipped
+      assert tb.reason == "portability could not be judged (transient 5 times)"
+      assert tb.transient_attempts == 6
+      assert %DateTime{} = tb.attempted_at
+      refute in_backlog?(name)
+    end
+
+    # Two ingests of one identity, from different nodes' ingest queues or a
+    # local and a remote build, must not both read the same count: each
+    # waits for the other's transaction on the identity's lock.
+    test "an ingest waits for another transaction holding the identity" do
+      name = unique_name()
+      transient = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+      parent = self()
+
+      holder =
+        Task.async(fn ->
+          :ok = Ecto.Adapters.SQL.Sandbox.checkout(Portal.Repo)
+
+          Portal.Repo.transaction(fn ->
+            :ok = Ingestion.lock_toolchain_identity(opts(name, nil))
+            send(parent, :locked)
+            receive do: (:release -> :ok)
+          end)
+
+          Ecto.Adapters.SQL.Sandbox.checkin(Portal.Repo)
+        end)
+
+      assert_receive :locked, 5_000
+
+      ingest_opts = opts(name, files_dir_with([]))
+      ingest = Task.async(fn -> Ingestion.ingest_toolchain(transient, ingest_opts) end)
+
+      assert Task.yield(ingest, 300) == nil
+
+      send(holder.pid, :release)
+      Task.await(holder)
+
+      assert {:ok, %{status: :error, transient_attempts: 1}} = Task.await(ingest)
+    end
+  end
+
+  defp host_pass_run!(name) do
+    {:ok, _run} =
+      Ingestion.ingest(
+        %{
+          "package" => %{
+            "name" => name,
+            "version" => "1.4.4",
+            "native_components" => %{"nif_language" => nil, "port_languages" => []}
+          },
+          "finished_at" => "2026-10-20T10:00:00Z",
+          "systems" => %{"host" => %{"status" => "pass"}}
+        },
+        %{
+          package: name,
+          version: "1.4.4",
+          run_id: "run-#{name}",
+          image_digest: "sha256:x",
+          files_dir: System.tmp_dir!()
+        }
+      )
+  end
+
+  defp in_backlog?(name) do
+    "1.19/28"
+    |> Portal.Catalog.toolchain_backlog(1, 1000)
+    |> Enum.any?(&(&1.package == name))
   end
 
   test "a rebuild that no longer passes drops the previous build's memberships" do

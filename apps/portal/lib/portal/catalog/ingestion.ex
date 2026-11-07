@@ -244,9 +244,18 @@ defmodule Portal.Catalog.Ingestion do
   whose trace says that was transient
   (`compile_observations.trace_stats.transient`: the traced compile did not
   finish, or its report was over the read budget) is stored as an `:error`,
-  which the backlog retries after a day. A could-not-judge the package
-  causes again on every run, or one from a worker that does not report
-  `transient`, stays `skipped`.
+  which the backlog retries after a day, and counted in
+  `transient_attempts`; the `ToolchainBuild.transient_cap/0`-th in a row is
+  stored as `skipped` ("portability could not be judged (transient N
+  times)"), which the backlog leaves alone at this builder version. A kept
+  `pass` or `skipped` row counts it too, and is retried after a day while
+  under the cap. Any build with a verdict resets the count. A could-not-judge
+  the package causes again on every run, or one from a worker that does not
+  report `transient`, stays `skipped`.
+
+  Another `:error` neither counts nor resets. Every ingest of one identity
+  takes a transaction lock on it first (`lock_toolchain_identity/1`), so two
+  ingests of the same identity at once cannot both read one count.
 
   A pass build with priv files is checked on the host first
   (`Portal.Catalog.ToolchainPriv`, which `opts.hex_outer_checksum` and
@@ -407,6 +416,8 @@ defmodule Portal.Catalog.Ingestion do
   defp write_toolchain_build(result, build, opts, staged) do
     Repo.transaction(
       fn ->
+        :ok = lock_toolchain_identity(opts)
+
         case do_ingest_toolchain(result, build, opts, staged) do
           {:ok, toolchain_build} -> toolchain_build
           {:error, reason} -> Repo.rollback(reason)
@@ -424,22 +435,53 @@ defmodule Portal.Catalog.Ingestion do
   defp toolchain_build_map(%{"toolchain_build" => %{} = build}), do: build
   defp toolchain_build_map(_result), do: raise("result.json missing toolchain_build")
 
+  @doc """
+  Takes the transaction-scoped lock on the toolchain build identity in
+  `opts` (`:package`, `:version`, `:toolchain`, `:builder_version` and
+  `:variant`, `:with` when absent), which every toolchain ingest takes before
+  it reads the identity's row. Call it inside a `Repo` transaction; the lock
+  is released when that transaction ends.
+  """
+  @spec lock_toolchain_identity(map()) :: :ok
+  def lock_toolchain_identity(opts) do
+    key =
+      Enum.join(
+        [
+          "toolchain_build",
+          opts.package,
+          opts.version,
+          opts.toolchain,
+          opts.builder_version,
+          Map.get(opts, :variant, :with)
+        ],
+        "@"
+      )
+
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1::text))", [key])
+    :ok
+  end
+
   defp do_ingest_toolchain(result, build, opts, staged) do
     package_info = result |> Map.get("package", %{}) |> with_job_version(opts)
     package_name = package_name(package_info, opts)
     verdict = toolchain_verdict(build)
+    transient? = transient_verdict?(verdict, build)
 
     with {:ok, package} <- ensure_package(package_name, package_info) do
       case kept_toolchain_build(verdict, package.id, opts) do
-        %ToolchainBuild{} = kept -> mark_retried(kept)
-        nil -> write_toolchain_row(result, build, verdict, opts, package.id, staged)
+        %ToolchainBuild{} = kept ->
+          mark_retried(kept, transient?)
+
+        nil ->
+          counted = counted(verdict, transient?, package.id, opts)
+          write_toolchain_row(result, build, counted, opts, package.id, staged)
       end
     end
   end
 
-  defp write_toolchain_row(result, build, verdict, opts, package_id, staged) do
+  defp write_toolchain_row(result, build, counted, opts, package_id, staged) do
     with {:ok, toolchain_build} <-
-           upsert_toolchain_build(result, build, verdict, opts, package_id) do
+           upsert_toolchain_build(result, build, counted, opts, package_id) do
       :ok = upsert_artifacts(staged)
       :ok = replace_toolchain_memberships(toolchain_build.id, staged)
       {:ok, toolchain_build}
@@ -463,7 +505,58 @@ defmodule Portal.Catalog.Ingestion do
 
   defp kept_toolchain_build(_verdict, _package_id, _opts), do: nil
 
-  defp mark_retried(row) do
+  # A transient "could not be judged" says nothing about the package, so it
+  # is retried; `ToolchainBuild.transient_cap/0` of them in a row at one
+  # builder version (a package that always times out) is a skip the backlog
+  # leaves alone. A verdict resets the count; another `:error` is no verdict
+  # and keeps it.
+  defp counted({:error, reason}, true, package_id, opts) do
+    attempts = previous_transient_attempts(package_id, opts) + 1
+
+    if attempts >= ToolchainBuild.transient_cap(),
+      do: {{:skipped, "#{reason} (transient #{attempts} times)"}, attempts},
+      else: {{:error, reason}, attempts}
+  end
+
+  defp counted({:error, _reason} = verdict, false, package_id, opts),
+    do: {verdict, previous_transient_attempts(package_id, opts)}
+
+  defp counted(verdict, false, _package_id, _opts), do: {verdict, 0}
+
+  # Only an `:error` row can carry a count to add to: a pass or skipped row
+  # is kept (above), and a `fail` is a verdict.
+  defp previous_transient_attempts(package_id, opts) do
+    variant = Map.get(opts, :variant, :with)
+
+    ToolchainBuild
+    |> Ash.Query.filter(
+      package_id == ^package_id and version == ^opts.version and
+        toolchain == ^opts.toolchain and builder_version == ^opts.builder_version and
+        variant == ^variant and status == :error
+    )
+    |> Ash.Query.select([:transient_attempts])
+    |> Ash.read_one!(domain: @domain)
+    |> case do
+      %ToolchainBuild{transient_attempts: n} when is_integer(n) -> n
+      _ -> 0
+    end
+  end
+
+  defp transient_verdict?({:error, reason}, build),
+    do: reason == Compatibility.Portability.could_not_judge() and transient_trace?(build)
+
+  defp transient_verdict?(_verdict, _build), do: false
+
+  # `:retried_transient` sets the count it is given; `:upsert` would reset it.
+  defp mark_retried(row, true) do
+    row
+    |> Ash.Changeset.for_update(:retried_transient, %{
+      transient_attempts: row.transient_attempts + 1
+    })
+    |> Ash.update(domain: @domain)
+  end
+
+  defp mark_retried(row, false) do
     row |> Ash.Changeset.for_update(:retried, %{}) |> Ash.update(domain: @domain)
   end
 
@@ -482,7 +575,7 @@ defmodule Portal.Catalog.Ingestion do
     |> Ash.create(domain: @domain, upsert_fields: [:name])
   end
 
-  defp upsert_toolchain_build(result, build, {status, reason}, opts, package_id) do
+  defp upsert_toolchain_build(result, build, {{status, reason}, attempts}, opts, package_id) do
     ToolchainBuild
     |> Ash.Changeset.for_create(:upsert, %{
       package_id: package_id,
@@ -506,6 +599,7 @@ defmodule Portal.Catalog.Ingestion do
       compile_observations: compile_observations(build["compile_observations"]),
       compile_env_rule:
         compile_env_rule(Map.get(build, "compile_env_rule"), Map.get(build, "compile_env")),
+      transient_attempts: attempts,
       finished_at: parse_datetime(result["finished_at"])
     })
     |> Ash.create(domain: @domain)
