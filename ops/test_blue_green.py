@@ -65,7 +65,8 @@ apachectl() {
         echo "         port 443 namevhost example.test ($VHOST:35)"
       fi
       # Other enabled vhosts, one apachectl -S line each.
-      if [[ -n ${EXTRA_S_LINES:-} ]]; then printf '%s\n' "$EXTRA_S_LINES"; fi ;;
+      if [[ -n ${EXTRA_S_LINES:-} ]]; then printf '%s\n' "$EXTRA_S_LINES"; fi
+      [[ ${APACHE_S_STATUS:-0} == 0 ]] ;;
     configtest)
       local f="$STATE/configtest-calls" n
       n=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
@@ -263,6 +264,107 @@ class BlueGreenTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse([e for e in events if e.startswith("build")])
 
+    # --- F1: the include is the template as of the commit that serves ------
+
+    def template_repo(self):
+        """A checkout whose template changed in its last commit: the serving
+        colour's commit (old) has v1, HEAD and the working tree have v2."""
+        directory = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        src = Path(directory)
+        (src / "ops").mkdir()
+        v1 = (SRC / "ops" / "ncc-upstream.conf.template").read_text()
+        v2 = v1 + "ProxyTimeout 300\n"
+
+        def git(*args):
+            return subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@example.test",
+                 "-c", "commit.gpgsign=false", "-C", str(src), *args],
+                check=True, capture_output=True, text=True).stdout.strip()
+
+        git("init", "-q")
+        shas = []
+        for text in (v1, v2):
+            (src / "ops" / "ncc-upstream.conf.template").write_text(text)
+            git("add", "ops/ncc-upstream.conf.template")
+            git("commit", "-q", "-m", "template")
+            shas.append(git("rev-parse", "HEAD"))
+        return src, shas[0], shas[1], v1, v2
+
+    @staticmethod
+    def render(text, port):
+        return text.replace("@PORT@", str(port))
+
+    def served_as(self, color, sha):
+        """Shell that records $color as having served $sha."""
+        return (f'echo {sha} > "$NCC_INSTALL_DIR/served-{color}"; '
+                f'echo {sha} > "$NCC_INSTALL_DIR/releases/{color}/BUILD_SHA"; '
+                f'echo {sha} > "$STATE/sha-{color}"; ')
+
+    def test_a_template_change_since_the_served_commit_passes_and_ships(self):
+        src, old, _, v1, v2 = self.template_repo()
+        result, events = self.run_bg(self.served_as("blue", old) + f"bg_deploy {TARGET}",
+                                     include_text=self.render(v1, 4002), NCC_SRC_DIR=str(src))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("drifted", result.stderr)
+        # The new colour's include is the checked-out (new) template.
+        self.assertEqual(self.include, self.render(v2, 4003))
+        self.assertEqual(self.cache, "green")
+
+    def test_the_served_commit_is_read_from_build_sha_without_a_served_record(self):
+        src, old, _, v1, _ = self.template_repo()
+        result, _ = self.run_bg(
+            self.served_as("blue", old) + 'rm -f "$NCC_INSTALL_DIR/served-blue"; bg_preflight',
+            include_text=self.render(v1, 4002), NCC_SRC_DIR=str(src))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_hand_edited_include_still_refuses_against_the_served_template(self):
+        src, old, _, v1, v2 = self.template_repo()
+        for text in (self.render(v1, 4002) + "# local tweak\n", self.render(v2, 4002)):
+            with self.subTest(text=text[-30:]):
+                result, events = self.run_bg(self.served_as("blue", old) + f"bg_deploy {TARGET}",
+                                             include_text=text, NCC_SRC_DIR=str(src))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("edited by hand or has drifted", result.stderr)
+                self.assertIn(old, result.stderr)
+                self.assertFalse([e for e in events if e.startswith("build")])
+
+    def test_without_a_served_commit_it_falls_back_to_the_working_tree_and_says_so(self):
+        src, _, _, v1, v2 = self.template_repo()
+        no_record = ('rm -f "$NCC_INSTALL_DIR/served-blue" '
+                     '"$NCC_INSTALL_DIR/releases/blue/BUILD_SHA"; ')
+        unknown = self.served_as("blue", "c" * 40)  # git show cannot find it
+        for setup in (no_record, unknown):
+            with self.subTest(setup=setup[:30]):
+                result, _ = self.run_bg(setup + "bg_preflight",
+                                        include_text=self.render(v2, 4002), NCC_SRC_DIR=str(src))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("working tree", result.stderr)
+                result, _ = self.run_bg(setup + "bg_preflight",
+                                        include_text=self.render(v1, 4002), NCC_SRC_DIR=str(src))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("edited by hand or has drifted", result.stderr)
+                self.assertIn("working tree", result.stderr)
+
+    def test_a_switch_back_restores_the_old_colours_template(self):
+        src, old, _, v1, _ = self.template_repo()
+        result, events = self.run_bg(self.served_as("blue", old) + f"bg_deploy {TARGET}",
+                                     include_text=self.render(v1, 4002), NCC_SRC_DIR=str(src),
+                                     CRASHES="green")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("switching back to blue", result.stderr)
+        self.assertEqual(self.include, self.render(v1, 4002))
+        self.assertEqual(self.running, ["blue"])
+
+    def test_a_rollback_across_a_template_change_restores_the_old_template(self):
+        src, old, new, v1, v2 = self.template_repo()
+        result, _ = self.run_bg(
+            self.served_as("blue", old) + self.served_as("green", new) + "bg_rollback && bg_preflight",
+            active="green", include_text=self.render(v2, 4003), NCC_SRC_DIR=str(src))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.include, self.render(v1, 4002))
+        self.assertEqual(self.cache, "blue")
+
     # --- I1: no other vhost may proxy straight to a colour port -------------
 
     def other_vhost(self, root_text, shape="namevhost"):
@@ -293,6 +395,14 @@ class BlueGreenTest(unittest.TestCase):
             "  ProxyPass / http://127.0.0.1:40021/\n</VirtualHost>\n")
         result, _ = self.run_bg("bg_preflight", EXTRA_S_LINES=line)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_direct_proxy_check_refuses_when_apachectl_lists_nothing(self):
+        for overrides in ({"VHOST": ""}, {"APACHE_S_STATUS": "1"}):
+            with self.subTest(**overrides):
+                result, _ = self.run_bg("bg_check_direct_proxies", **overrides)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("refusing", result.stderr)
+                self.assertIn("apachectl -S", result.stderr)
 
     def test_preflight_lists_every_vhost_file_in_both_line_shapes(self):
         result, _ = self.run_bg(
@@ -519,6 +629,25 @@ class BlueGreenTest(unittest.TestCase):
         self.assertNotIn("systemctl stop ncc-portal@blue", events)
         # Chained with &&: a failed enable must short-circuit before disable.
         self.assertNotIn("systemctl disable ncc-portal@blue", events)
+
+    # --- F2: the colour that serves is recorded even if marking it fails ---
+
+    def test_a_failed_mark_after_the_switch_still_records_the_new_colour(self):
+        for overrides in ({"DISABLE_FAILS": "blue"}, {"ENABLE_FAILS": "green"}):
+            with self.subTest(**overrides):
+                result, _ = self.deploy(**overrides)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("incomplete", result.stderr)
+                self.assertEqual(self.served["green"], TARGET)
+                self.assertIn("served-green", result.stderr)
+
+    def test_a_failed_mark_after_a_switch_back_still_records_the_old_colour(self):
+        result, _ = self.run_bg(f'rm -f "$NCC_INSTALL_DIR/served-blue"; bg_deploy {TARGET}',
+                                CRASHES="green", DISABLE_FAILS="green")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("127.0.0.1:4002/ retry=0", self.include)
+        self.assertEqual(self.served, {"blue": OLD, "green": None})
+        self.assertIn("served-blue", result.stderr)
 
     # --- IMPORTANT 1: a failed switch-back must not re-mark the cache or --
     # --- stop the colour that is still actually serving --------------------

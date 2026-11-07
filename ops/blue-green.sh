@@ -61,9 +61,11 @@ bg_vhost_file() {
 }
 
 # Every vhost file `apachectl -S` lists, on any port, in either of the two
-# line shapes bg_vhost_file reads, once each.
+# line shapes bg_vhost_file reads, once each. Fails when apachectl -S does.
 bg_all_vhost_files() {
-  apachectl -S 2>/dev/null |
+  local out
+  out=$(apachectl -S 2>/dev/null) || return 1
+  printf '%s\n' "$out" |
     awk '
       $1 == "port" && $3 == "namevhost" { print $5; next }
       $1 ~ /:[0-9]+$/ && $3 ~ /^\(/ { print $3 }
@@ -75,7 +77,11 @@ bg_all_vhost_files() {
 # to a colour's port: after the next switch it would keep sending traffic to
 # a colour that is stopped, or worse, to the idle one being built over.
 bg_check_direct_proxies() {
-  local f
+  local f files
+  if ! files=$(bg_all_vhost_files) || [[ -z $files ]]; then
+    echo "refusing: apachectl -S failed or listed no vhost files, so no vhost can be checked for a direct proxy to 127.0.0.1:4002/4003; run apachectl -S by hand and fix what it reports" >&2
+    return 1
+  fi
   while IFS= read -r f; do
     [[ -n $f && $f != "$NCC_APACHE_UPSTREAM" ]] || continue
     if [[ ! -r $f ]]; then
@@ -88,22 +94,64 @@ bg_check_direct_proxies() {
       echo "refusing: $f proxies straight to 127.0.0.1:4002 or 127.0.0.1:4003; replace those lines with Include $NCC_APACHE_UPSTREAM, so the switch moves its traffic too" >&2
       return 1
     fi
-  done < <(bg_all_vhost_files)
+  done <<<"$files"
 }
 
-# Refuses unless the include is exactly the template rendered with the
-# serving port: a deploy rewrites it from the template, so anything edited
-# into it by hand would be lost at the switch, silently.
-bg_check_include_rendered() { # port
-  if ! cmp -s <(sed "s/@PORT@/$1/g" "$NCC_SRC_DIR/ops/ncc-upstream.conf.template") "$NCC_APACHE_UPSTREAM"; then
-    echo "refusing: $NCC_APACHE_UPSTREAM is not ops/ncc-upstream.conf.template rendered with port $1: it was edited by hand or has drifted. Put the change in the template (or undo it), render the include from the template, and deploy again." >&2
+# The include belongs to a release: it is the template as of the commit the
+# serving colour runs, not the checkout's, which deploy.sh has already moved
+# to the commit being deployed. A template change ships when the colour that
+# carries it is switched to, and leaves again with a switch-back or rollback.
+
+# The commit $1 serves: its served-<colour> record, else its BUILD_SHA.
+bg_served_sha() { # color
+  local sha
+  sha=$(cat "$(bg_served_file "$1")" 2>/dev/null || true)
+  [[ -n $sha ]] || sha=$(cat "$(bg_release "$1")/BUILD_SHA" 2>/dev/null || true)
+  printf '%s\n' "$sha"
+}
+
+# Prints $1 when the checkout holds the template as of commit $1, nothing
+# otherwise (the working tree's template is then the one to use, and a note
+# says why). Empty $1 means the working tree's, without a note.
+bg_template_ref() { # sha-or-empty what
+  [[ -n $1 ]] || return 0
+  if [[ $1 =~ ^[0-9a-f]{7,40}$ ]] &&
+     git -C "$NCC_SRC_DIR" cat-file -e "$1:ops/ncc-upstream.conf.template" 2>/dev/null; then
+    printf '%s\n' "$1"
+    return 0
+  fi
+  echo "note: cannot read ops/ncc-upstream.conf.template as of $2 ($1) from $NCC_SRC_DIR; using the working tree's template instead" >&2
+}
+
+bg_template_name() { # ref
+  if [[ -n $1 ]]; then
+    printf '%s\n' "ops/ncc-upstream.conf.template as of $1"
+  else
+    printf '%s\n' "the working tree's ops/ncc-upstream.conf.template"
+  fi
+}
+
+bg_render_include() { # ref port
+  if [[ -n $1 ]]; then
+    git -C "$NCC_SRC_DIR" show "$1:ops/ncc-upstream.conf.template" | sed "s/@PORT@/$2/g"
+  else
+    sed "s/@PORT@/$2/g" "$NCC_SRC_DIR/ops/ncc-upstream.conf.template"
+  fi
+}
+
+# Refuses unless the include is exactly the serving commit's template
+# rendered with the serving port: a deploy rewrites it from a template, so
+# anything edited into it by hand would be lost at the switch, silently.
+bg_check_include_rendered() { # ref port
+  if ! cmp -s <(bg_render_include "$1" "$2") "$NCC_APACHE_UPSTREAM"; then
+    echo "refusing: $NCC_APACHE_UPSTREAM is not $(bg_template_name "$1") (the serving release's) rendered with port $2: it was edited by hand or has drifted. Put the change in the template (or undo it), render the include from the template, and deploy again." >&2
     return 1
   fi
 }
 
-bg_write_include() {
+bg_write_include() { # port [template-ref]
   local port=$1 status
-  sed "s/@PORT@/$port/g" "$NCC_SRC_DIR/ops/ncc-upstream.conf.template" > "$NCC_APACHE_UPSTREAM.new"
+  bg_render_include "${2:-}" "$port" > "$NCC_APACHE_UPSTREAM.new"
   status=$?
   if ((status != 0)) || [[ ! -s "$NCC_APACHE_UPSTREAM.new" ]] ||
      ! grep -q "127\.0\.0\.1:$port" "$NCC_APACHE_UPSTREAM.new"; then
@@ -114,8 +162,10 @@ bg_write_include() {
   mv "$NCC_APACHE_UPSTREAM.new" "$NCC_APACHE_UPSTREAM"
 }
 
+# Sets BG_ACTIVE, BG_IDLE and BG_ACTIVE_REF (the template ref the include was
+# rendered from, for a switch back to the active colour).
 bg_preflight() {
-  local cached host vhost state
+  local cached host vhost state sha
   BG_ACTIVE=$(bg_serving_color) || return 1
   BG_IDLE=$(bg_other "$BG_ACTIVE")
   cached=$(cat "$NCC_INSTALL_DIR/active-color" 2>/dev/null || true)
@@ -131,7 +181,12 @@ bg_preflight() {
     echo "refusing: $BG_UNIT@$BG_IDLE is ${state:-in an unknown state} (systemctl is-active), not inactive or failed: it is running or restarting but not serving (left from an incomplete deploy); look at it, stop it, then deploy again" >&2
     return 1
   fi
-  bg_check_include_rendered "$(bg_port "$BG_ACTIVE")" || return 1
+  sha=$(bg_served_sha "$BG_ACTIVE")
+  if [[ -z $sha ]]; then
+    echo "note: neither $(bg_served_file "$BG_ACTIVE") nor $(bg_release "$BG_ACTIVE")/BUILD_SHA names the commit $BG_ACTIVE serves; using the working tree's ops/ncc-upstream.conf.template instead" >&2
+  fi
+  BG_ACTIVE_REF=$(bg_template_ref "$sha" "the commit $BG_ACTIVE serves")
+  bg_check_include_rendered "$BG_ACTIVE_REF" "$(bg_port "$BG_ACTIVE")" || return 1
   host=$(bg_public_host) || return 1
   vhost=$(bg_vhost_file "$host")
   if [[ -z $vhost ]] || ! bg_includes_upstream "$vhost"; then
@@ -258,11 +313,12 @@ bg_fail_idle() { # color what
   systemctl stop "$BG_UNIT@$1" || true
 }
 
-bg_point_apache_at() { # color; 0 ok, 1 failed & restored, 2 the restore itself
-                        # failed too -- Apache's running config is unknown
+bg_point_apache_at() { # color template-ref; 0 ok, 1 failed & restored, 2 the
+                        # restore itself failed too -- Apache's running config
+                        # is unknown
   local out
   cp "$NCC_APACHE_UPSTREAM" "$NCC_APACHE_UPSTREAM.bak" || return 1
-  if ! bg_write_include "$(bg_port "$1")"; then
+  if ! bg_write_include "$(bg_port "$1")" "$2"; then
     mv "$NCC_APACHE_UPSTREAM.bak" "$NCC_APACHE_UPSTREAM" || return 2
     return 1
   fi
@@ -283,17 +339,19 @@ bg_point_apache_at() { # color; 0 ok, 1 failed & restored, 2 the restore itself
   fi
 }
 
-# Chained with && so a failure stops at the first broken step instead of
-# silently running the rest; the caller decides what "incomplete" means.
-# Once marked, the colour's BUILD_SHA is recorded as served-<colour>: the
-# one thing bg_rollback accepts as proof that the release in a directory is
-# one that served, not a build that failed over it.
+# Called once Apache is verified serving $1. Its BUILD_SHA is recorded as
+# served-<colour> first, whatever happens to the rest: the one thing
+# bg_rollback accepts as proof that the release in a directory is one that
+# served, not a build that failed over it, and what the next preflight reads
+# the include's template from. The rest is chained with && so a failure stops
+# at the first broken step instead of silently running the rest; the caller
+# decides what "incomplete" means.
 bg_mark_serving() { # new old
+  bg_record_served "$1"
   printf '%s\n' "$1" > "$NCC_INSTALL_DIR/active-color.tmp" &&
     mv "$NCC_INSTALL_DIR/active-color.tmp" "$NCC_INSTALL_DIR/active-color" &&
     systemctl enable "$BG_UNIT@$1" &&
-    systemctl disable "$BG_UNIT@$2" || return 1
-  bg_record_served "$1"
+    systemctl disable "$BG_UNIT@$2"
 }
 
 bg_served_file() { printf '%s\n' "$NCC_INSTALL_DIR/served-$1"; }
@@ -321,9 +379,9 @@ bg_record_served() { # color
 # the include was restored to the old colour (nothing changed). 2: the
 # restore itself failed, so Apache's running config is unknown -- the caller
 # must not assume either colour is the one actually being served.
-bg_switch() { # old new sha
+bg_switch() { # old new sha template-ref
   local rc=0
-  bg_point_apache_at "$2" || rc=$?
+  bg_point_apache_at "$2" "$4" || rc=$?
   if ((rc == 2)); then
     return 2
   elif ((rc != 0)); then
@@ -411,12 +469,13 @@ bg_drain() { # old new sha
 # Only reached once the new colour has already failed in the drain, so the
 # new colour keeps serving until the old one is proven to work again: a
 # failure here must never leave both the switch-back and the original switch
-# half-done.
-bg_switch_back() { # old new
+# half-done. The include goes back to the template the old colour's was
+# rendered from (preflight checked it).
+bg_switch_back() { # old new old-template-ref
   local rc=0
   echo "$BG_UNIT@$2 failed after taking traffic; switching back to $1" >&2
   journalctl -u "$BG_UNIT@$2" -n 50 --no-pager >&2 || true
-  bg_point_apache_at "$1" || rc=$?
+  bg_point_apache_at "$1" "$3" || rc=$?
   if ((rc == 2)); then
     echo "ERROR: Apache state unknown while switching back to $1; both colours left running. Check $NCC_APACHE_UPSTREAM and apachectl -S by hand before touching either unit." >&2
     bg_rpc "$1" "$BG_RESUME_EXPR" || echo "warning: could not resume $1's queues" >&2
@@ -438,15 +497,16 @@ bg_switch_back() { # old new
   fi
   rm -f "$NCC_APACHE_UPSTREAM.bak" || true
   bg_mark_serving "$1" "$2" ||
-    echo "ERROR: $1 serves again but marking it active failed (active-color cache, systemctl enable $1, or systemctl disable $2); fix each by hand." >&2
+    echo "ERROR: $1 serves again but marking it active failed (active-color cache, systemctl enable $1, or systemctl disable $2); fix each by hand, and check that $(bg_served_file "$1") holds $(bg_release "$1")/BUILD_SHA." >&2
   # $2 fell over while serving: never a release to roll back to.
   rm -f "$(bg_served_file "$2")" || true
   bg_rpc "$1" "$BG_RESUME_EXPR" || echo "warning: could not resume $1's queues" >&2
   systemctl stop "$BG_UNIT@$2" || true
 }
 
-bg_activate() { # old new sha-or-empty
-  local old=$1 new=$2 sha=$3 rc=0 i
+# old is BG_ACTIVE: a switch back renders its include from BG_ACTIVE_REF.
+bg_activate() { # old new sha-or-empty new-template-ref
+  local old=$1 new=$2 sha=$3 ref=$4 rc=0 i
   if ! systemctl start "$BG_UNIT@$new"; then
     bg_fail_idle "$new" "systemctl start"
     return 1
@@ -457,7 +517,7 @@ bg_activate() { # old new sha-or-empty
     bg_fail_idle "$new" "health check on its own port"
     return 1
   fi
-  bg_switch "$old" "$new" "$sha" || rc=$?
+  bg_switch "$old" "$new" "$sha" "$ref" || rc=$?
   if ((rc == 2)); then
     echo "ERROR: Apache state unknown after a failed restore; both colours left running. Check $NCC_APACHE_UPSTREAM and apachectl -S by hand before touching either unit." >&2
     return 1
@@ -469,13 +529,13 @@ bg_activate() { # old new sha-or-empty
   # restored again, and a failure from here on must not stop either colour.
   rm -f "$NCC_APACHE_UPSTREAM.bak" || true
   if ! bg_mark_serving "$new" "$old"; then
-    echo "ERROR: incomplete deploy: Apache now serves $new, but marking it active failed (active-color cache, systemctl enable $new, or systemctl disable $old). Fix each by hand, then verify systemctl is-enabled before the next deploy." >&2
+    echo "ERROR: incomplete deploy: Apache now serves $new, but marking it active failed (active-color cache, systemctl enable $new, or systemctl disable $old). Fix each by hand, check that $(bg_served_file "$new") holds $(bg_release "$new")/BUILD_SHA, then verify systemctl is-enabled before the next deploy." >&2
     return 1
   fi
   rc=0
   bg_drain "$old" "$new" "$sha" || rc=$?
   if ((rc == 2)); then
-    bg_switch_back "$old" "$new"
+    bg_switch_back "$old" "$new" "$BG_ACTIVE_REF"
     return 1
   fi
   if ! systemctl stop "$BG_UNIT@$old"; then
@@ -501,7 +561,9 @@ bg_deploy() { # target-sha
   bg_build "$BG_IDLE" || return 1
   bg_carry_assets "$BG_ACTIVE" "$BG_IDLE" || return 1
   bg_migrate "$BG_IDLE" || return 1
-  bg_activate "$BG_ACTIVE" "$BG_IDLE" "$1"
+  # The checked-out template: deploy.sh has moved the checkout to the
+  # commit being deployed, so this is how a template change ships.
+  bg_activate "$BG_ACTIVE" "$BG_IDLE" "$1" ""
 }
 
 # Back to the release in the other colour's directory: no build, no
@@ -528,5 +590,7 @@ bg_rollback() {
   echo "blue/green rollback: $BG_ACTIVE serves; bringing back $BG_IDLE (sha $target_sha)"
   bg_carry_assets "$BG_ACTIVE" "$BG_IDLE" ||
     echo "warning: could not carry $BG_ACTIVE's digested assets into $BG_IDLE; pages $BG_ACTIVE rendered may miss their assets after the switch" >&2
-  bg_activate "$BG_ACTIVE" "$BG_IDLE" "$target_sha"
+  # The release brings back its own include: the template as of its commit.
+  bg_activate "$BG_ACTIVE" "$BG_IDLE" "$target_sha" \
+    "$(bg_template_ref "$target_sha" "the commit $BG_IDLE served")"
 }
