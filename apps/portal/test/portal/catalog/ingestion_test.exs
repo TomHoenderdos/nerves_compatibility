@@ -968,6 +968,34 @@ defmodule Portal.Catalog.IngestionTest do
       assert second.footprint == %{"total_bytes" => 7}
     end
 
+    # Only a timeout's synthesized result (`"carry_run_data"`) inherits the
+    # previous run's argus and footprint; a real targets run stores its own,
+    # nil included.
+    test "a real targets run without argus or footprint stores nil" do
+      ingest!(
+        %{
+          full_result("realtargets", "1.0.0", %{"nerves_system_rpi4" => %{"status" => "pass"}})
+          | "package" => %{
+              "name" => "realtargets",
+              "version" => "1.0.0",
+              "footprint" => %{"total_bytes" => 42}
+            }
+        }
+        |> Map.put("argus", %{"status" => "ok", "findings" => []})
+      )
+
+      second =
+        ingest!(%{
+          "package" => %{"name" => "realtargets", "version" => "1.0.0"},
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "targets",
+          "systems" => %{"nerves_system_rpi4" => %{"status" => "pass"}}
+        })
+
+      assert second.argus == nil
+      assert second.footprint == nil
+    end
+
     test "a targets run replaces only the targets it built" do
       first =
         ingest!(

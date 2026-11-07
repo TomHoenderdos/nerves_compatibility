@@ -570,10 +570,6 @@ defmodule Portal.Workers.Build do
     end
   end
 
-  # Picks the run `Portal.Catalog.Ingestion` will carry from: newest
-  # `finished_at`, then newest `inserted_at`, plain `DESC` -- the same rule
-  # `Portal.Catalog.Ingestion.previous_run/1` and the pages use for "latest".
-  # A partial scope is only valid when both pick the same run.
   # The same latest-run rule as `latest_version_tested/1`.
   defp latest_run(package) do
     Repo.one(
@@ -588,6 +584,10 @@ defmodule Portal.Workers.Build do
     )
   end
 
+  # Picks the run `Portal.Catalog.Ingestion` will carry from: newest
+  # `finished_at`, then newest `inserted_at`, plain `DESC` -- the same rule
+  # `Portal.Catalog.Ingestion.previous_run/1` and the pages use for "latest".
+  # A partial scope is only valid when both pick the same run.
   defp latest_version_tested(package) do
     Repo.one(
       from(r in "catalog_runs",

@@ -774,6 +774,10 @@ defmodule Portal.Catalog.Ingestion do
     # Read before the new run exists, which would otherwise be the latest.
     carried = carry_candidates(result, package_name, version, systems)
     overall = overall_status(result, Map.merge(carried_statuses(carried), systems))
+    # Once, for both the run row and its triage sightings: a carried ok argus
+    # result makes the new run the package's latest argus run, and findings
+    # not sighted on it would all turn stale.
+    result = Map.put(result, "argus", argus_for(result, carried))
 
     with {:ok, package} <- upsert_package(package_name, package_info, finished_at),
          {:ok, run} <-
@@ -935,7 +939,7 @@ defmodule Portal.Catalog.Ingestion do
       overall_status: overall,
       footprint: footprint_for(result, carried),
       toolchain: result["toolchain"],
-      argus: argus_for(result, carried),
+      argus: result["argus"],
       deps_lock: deps_lock(result["deps_lock"]),
       package_checksum: package_checksum(result["package_checksum"]),
       log: run_log(overall, opts),
@@ -954,24 +958,15 @@ defmodule Portal.Catalog.Ingestion do
   # and measured it, so it keeps its own.
   defp footprint_for(%{"scope" => "argus_only"}, %{footprint: previous}), do: previous
 
-  # A partial run that measured nothing at all -- a targets run stopped by the
-  # wall clock (`Portal.Catalog.BuildTimeout`) -- keeps the previous run's
-  # measurement too. A worker result always reports one.
-  defp footprint_for(result, carried) do
-    case {get_in(result, ["package", "footprint"]), carried} do
-      {nil, %{footprint: previous}} -> previous
-      {footprint, _carried} -> footprint
-    end
-  end
+  # A targets run stopped by the wall clock (`Portal.Catalog.BuildTimeout`,
+  # which sets `carry_run_data`) measured nothing and ran no argus, so it
+  # keeps the previous run's footprint and argus result. A worker result
+  # never sets the key, so a real run keeps its own, nil included.
+  defp footprint_for(%{"carry_run_data" => true}, %{footprint: previous}), do: previous
+  defp footprint_for(result, _carried), do: get_in(result, ["package", "footprint"])
 
-  # As for the footprint: a partial run with no argus result of its own keeps
-  # the previous run's.
-  defp argus_for(result, carried) do
-    case {argus_map(result["argus"]), carried} do
-      {nil, %{argus: previous}} -> previous
-      {argus, _carried} -> argus
-    end
-  end
+  defp argus_for(%{"carry_run_data" => true}, %{argus: previous}), do: argus_map(previous)
+  defp argus_for(result, _carried), do: argus_map(result["argus"])
 
   @partial_scopes ["targets", "argus_only"]
 

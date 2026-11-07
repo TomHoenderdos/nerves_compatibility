@@ -1156,7 +1156,7 @@ defmodule Portal.Workers.BuildTest do
 
     # The latest run of the version a partial timeout rebuilds, with real
     # results the timeout must not replace.
-    defp earlier_run!(name) do
+    defp earlier_run!(name, argus \\ %{"status" => "ok", "findings" => []}) do
       {:ok, run} =
         Portal.Catalog.Ingestion.ingest(
           %{
@@ -1166,7 +1166,7 @@ defmodule Portal.Workers.BuildTest do
               "footprint" => %{"total_bytes" => 1234},
               "native_components" => %{"languages" => ["c"]}
             },
-            "argus" => %{"status" => "ok", "findings" => []},
+            "argus" => argus,
             "finished_at" => "2026-10-10T10:00:00Z",
             "systems" => %{
               "nerves_system_rpi4" => %{"status" => "pass"},
@@ -1234,6 +1234,44 @@ defmodule Portal.Workers.BuildTest do
       assert updated.status == :built
       assert updated.run_id == run.id
       assert File.ls!(root) == []
+    end
+
+    # The carried argus result makes the new run the package's latest ok
+    # argus run, so its findings must be sighted on it too, or every one of
+    # them turns stale and drops out of the triage counts.
+    test "a targets run re-sights the earlier run's argus findings" do
+      earlier =
+        earlier_run!(
+          "triaged",
+          Portal.Test.ArgusFixtures.ok([Portal.Test.ArgusFixtures.finding()])
+        )
+
+      request = partial_request!("triaged")
+
+      [row] = Ash.read!(Portal.Catalog.FindingTriage, domain: Portal.Catalog)
+      assert row.last_seen_run_id == earlier.id
+      counts = Portal.Catalog.triage_counts()
+
+      timed_out_logs([{"nerves_system_rpi4", "compiling\n", System.os_time(:second)}])
+      set_response({:error, {:build_timeout, 7200, "ncc-triaged"}})
+
+      job =
+        timeout_job("triaged", request, 1, %{
+          "scope" => "targets",
+          "systems" => ["nerves_system_rpi4"]
+        })
+
+      assert :ok = Build.perform(job)
+
+      run =
+        Run
+        |> Ash.Query.filter(image_digest == "sha256:slow")
+        |> Ash.read_one!(domain: Portal.Catalog)
+
+      [row] = Ash.read!(Portal.Catalog.FindingTriage, domain: Portal.Catalog)
+      assert row.last_seen_run_id == run.id
+      refute Portal.Catalog.triage_stale?(row)
+      assert Portal.Catalog.triage_counts() == counts
     end
 
     test "a targets run that reached nothing carries every earlier result" do

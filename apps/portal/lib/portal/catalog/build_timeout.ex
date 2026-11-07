@@ -124,6 +124,9 @@ defmodule Portal.Catalog.BuildTimeout do
   defp put_systems(result, "targets", _systems, reached, message) do
     result
     |> Map.put("scope", "targets")
+    # The carried run's footprint and argus result stand: this run measured
+    # and analysed nothing.
+    |> Map.put("carry_run_data", true)
     |> Map.put("systems", Map.new(reached, &{&1, system(true, message)}))
   end
 
