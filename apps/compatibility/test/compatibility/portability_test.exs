@@ -56,4 +56,10 @@ defmodule Compatibility.PortabilityTest do
   test "the could-not-judge reason is the one portable?/4 already writes" do
     assert Portability.could_not_judge() == "portability could not be judged"
   end
+
+  test "a compile-time config read refusal is a refusal that withdraws nothing" do
+    reason = "compile-time config read: application:get_all_env/1 (x) has no key to match on"
+    assert Portability.refusal?(reason)
+    refute Portability.withdraws?(reason)
+  end
 end

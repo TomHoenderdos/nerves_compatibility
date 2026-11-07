@@ -18,7 +18,8 @@ defmodule Compatibility.Portability do
     "calls natively built dependency at compile time: ",
     "bakes the build path: ",
     "closure dependency observed the host: ",
-    "rebar3 build "
+    "rebar3 build ",
+    "compile-time config read: "
   ]
 
   # R1 (the package's own compile observed the host; R4's `mix.exs` slice
