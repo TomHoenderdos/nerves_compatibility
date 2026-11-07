@@ -113,6 +113,15 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
         def red, do: @red
       end
       """),
+    "fx_ansi_logfmt" =>
+      lib("fx_ansi_logfmt", """
+      defmodule FxAnsiLogFmt do
+        {Logger.Formatter, config} = Logger.Formatter.new()
+        event = %{level: :info, msg: {:string, "x"}, meta: %{time: 0}}
+        @line IO.iodata_to_binary(Logger.Formatter.format(event, config))
+        def line, do: @line
+      end
+      """),
     "fx_ansi_macro" =>
       lib("fx_ansi_macro", """
       defmodule FxAnsiMacro.M do
@@ -304,6 +313,7 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
     "fx_cfg_logger",
     "fx_cfg_iowarn",
     "fx_cfg_iowarn_forms",
+    "fx_cfg_logbody",
     "fx_tc_shell",
     "fx_tc_native"
   ]
@@ -447,22 +457,30 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
   end
 
   # Logger's handler formats a message logged at compile time in the
-  # logging process, and its formatter reads :ansi_enabled: not reviewed.
+  # logging process, colouring it by :ansi_enabled: dropped, as output only.
   # Logger.level/0 reads Logger's primary config, not the application env.
-  test "logging at compile time cannot be judged; no read of Logger's :level", ctx do
-    assert %{status: :skip, reason: @cnj, observations: obs} = verdict(ctx, "fx_cfg_logbody")
+  test "logging at compile time publishes; no read of Logger's :level", ctx do
+    v = passes(ctx, "fx_cfg_logbody")
+    assert v.observations["config_unreviewed"] == []
+    refute item(v, "elixir", "ansi_enabled")
+    refute Enum.any?(v.observations["config_reads"], &(&1["arg"]["key_name"] == "level"))
 
-    assert obs["problems"] == [
-             "unreviewed toolchain config read: elixir ansi_enabled from Elixir.Logger.Formatter"
-           ]
-
-    refute Enum.any?(obs["config_reads"], &(&1["arg"]["key_name"] == "level"))
+    assert Enum.any?(
+             v.observations["config_reads"],
+             &(&1["first"] == "logger_h_common" and &1["arg"]["key_name"] == "ansi_enabled")
+           )
   end
 
   # The value a package reads itself selects what it compiles: a match
   # condition, never dropped, whether it reads the key or IO.ANSI does.
   test "package code reading :ansi_enabled, itself or through IO.ANSI, records it", ctx do
-    for app <- ["fx_ansi_own", "fx_ansi_read", "fx_ansi_format", "fx_ansi_macro"] do
+    for app <- [
+          "fx_ansi_own",
+          "fx_ansi_read",
+          "fx_ansi_format",
+          "fx_ansi_macro",
+          "fx_ansi_logfmt"
+        ] do
       v = passes(ctx, app)
       assert %{value: value} = item(v, "elixir", "ansi_enabled"), app
 

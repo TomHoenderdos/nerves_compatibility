@@ -400,7 +400,14 @@ defmodule NccWorker.Tracer.StackTest do
   end
 
   describe "a read made through IO.ANSI" do
-    @ansi_toolchain [Application, :application, IO.ANSI, Mix.Shell.IO | @toolchain]
+    @ansi_toolchain [
+      Application,
+      :application,
+      IO.ANSI,
+      Mix.Shell.IO,
+      Logger.Formatter,
+      :logger_h_common | @toolchain
+    ]
 
     defp ansi_extent(stack, user? \\ false),
       do: :ncc_tracer_stack.extent(stack, 64, &(&1 in @ansi_toolchain), user?)
@@ -415,6 +422,17 @@ defmodule NccWorker.Tracer.StackTest do
 
       assert {:user, :frame, ^shell, ^body} = ansi_extent(stack)
       assert {:user, :frame, ^body, ^body} = ansi_extent(ansi_read() ++ [body])
+    end
+
+    test "through Logger.Formatter is its caller's: Logger's handler or package code" do
+      handler = f(:logger_h_common, :try_format, 3)
+      body = f(:elixir_compiler_3, :__MODULE__, 1, ~c"/p/deps/x/lib/x.ex", 2)
+      formatter = [f(Logger.Formatter, :colorize, 4), f(Logger.Formatter, :format, 2)]
+
+      assert {:user, :frame, ^handler, ^body} =
+               ansi_extent(ansi_read() ++ formatter ++ [handler, body])
+
+      assert {:user, :frame, ^body, ^body} = ansi_extent(ansi_read() ++ formatter ++ [body])
     end
 
     test "from a macro's tail call is the package's, through the dispatcher" do

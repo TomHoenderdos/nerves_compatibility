@@ -6,14 +6,15 @@
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% Frames a call is attributed through, to the frame that called them, when
-%% the first frame is picked: IO.ANSI reads `:elixir, :ansi_enabled` for its
-%% caller, and only the caller decides whether the answer reaches code (a
-%% module attribute holding IO.ANSI.format/1's result) or only output (Mix's
-%% shell). Skipping them changes which frame is first, never how a frame is
+%% the first frame is picked: IO.ANSI and Logger.Formatter read
+%% `:elixir, :ansi_enabled` for their caller, and only the caller decides
+%% whether the answer reaches code (a module attribute holding
+%% IO.ANSI.format/1's or Logger.Formatter.format/2's result) or only output
+%% (Mix's shell, Logger's handler). Skipping them changes which frame is first, never how a frame is
 %% classified: every frame keeps its own module's kind, the user-frame
 %% search sees the whole stack, and a stack of nothing else has no first
 %% frame (the package's own read).
--define(ATTRIBUTED_THROUGH, ['Elixir.IO.ANSI']).
+-define(ATTRIBUTED_THROUGH, ['Elixir.IO.ANSI', 'Elixir.Logger.Formatter']).
 %% The frames left on top when package code tail-calls a primitive from a
 %% compile-time hook. Pinned per toolchain by the fixture suite.
 -define(DISPATCHERS, [{elixir_module, "expand_callback"}, {elixir_module, "eval_callbacks"},

@@ -19,14 +19,15 @@ defmodule NccWorker.Portability.ConfigReads do
       macros, Mix's shell) is recorded when `{app, key}` is on the
       toolchain's reviewed `record` list (Logger's compile-time keys),
       dropped when `{first frame, app, key}` is on its reviewed `drop` list
-      (only `Mix.Shell.IO`'s `:elixir, :ansi_enabled`, which colours Mix's
-      output and generates no code), and otherwise cannot be judged: an
+      (`:elixir, :ansi_enabled` as read for `Mix.Shell.IO` and for Logger's
+      handler, which colour terminal output and generate no code), and otherwise cannot be judged: an
       unknown toolchain read may change code, so the build does not
       publish. It is also listed in `unreviewed` for the review. A toolchain
       with no reviewed lists judges no build with such a read. The tracer
-      attributes a read made through `IO.ANSI` to the frame that called it:
-      `IO.ANSI.format/1,2` returns escape codes, or none, by that key, so
-      package code calling it reads the key itself and the read is
+      attributes a read made through `IO.ANSI` or `Logger.Formatter` to the
+      frame that called it: `IO.ANSI.format/1,2` and
+      `Logger.Formatter.format/2` return escape codes, or none, by that key,
+      so package code calling them reads the key itself and the read is
       recorded;
     * `application:get_all_env/0,1` from package code refuses (there is no
       key to match on); from the toolchain's own code it cannot be judged;
@@ -92,12 +93,21 @@ defmodule NccWorker.Portability.ConfigReads do
   # never reaches the beam.
   @mix_shell_ansi {"Elixir.Mix.Shell.IO", "elixir", "ansi_enabled"}
 
+  # A message logged at compile time is formatted in the logging process:
+  # `:logger_h_common` hands it to `Logger.Formatter.format/2`, which colours
+  # it by `IO.ANSI.enabled?/0`, and writes the result to the handler's
+  # device. The key only colours console output and never reaches the beam.
+  # Keyed on the handler frame, not the formatter's: package code calling
+  # `Logger.Formatter.format/2` itself gets the coloured text back, and its
+  # read is its own.
+  @logger_handler_ansi {"logger_h_common", "elixir", "ansi_enabled"}
+
   # Per Elixir minor, the toolchain's own compile-time config reads, reviewed
   # against real compiles: `record` ({app, key}) changes generated code;
   # `drop` ({first frame module, app, key}) does not.
   @reviewed %{
-    "1.19" => %{record: @logger_compile_keys, drop: [@mix_shell_ansi]},
-    "1.20" => %{record: @logger_compile_keys, drop: [@mix_shell_ansi]}
+    "1.19" => %{record: @logger_compile_keys, drop: [@mix_shell_ansi, @logger_handler_ansi]},
+    "1.20" => %{record: @logger_compile_keys, drop: [@mix_shell_ansi, @logger_handler_ansi]}
   }
 
   # Loaded before every compile: Mix's own extra applications

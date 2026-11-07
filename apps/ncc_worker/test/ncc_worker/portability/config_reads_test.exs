@@ -172,24 +172,21 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     assert %{"owner" => "dep", "arg" => %{"key_name" => "unknown_key"}} = flagged
   end
 
-  test "Mix's shell's :elixir ansi_enabled is never recorded, set or not" do
-    decided = [
-      obs(
-        "pkg",
-        read("elixir", "ansi_enabled", kind: "toolchain", first: "Elixir.Mix.Shell.IO")
-      )
-    ]
+  test "Mix's shell's and Logger's handler's :elixir ansi_enabled is never recorded, set or not" do
+    decided =
+      for first <- ["Elixir.Mix.Shell.IO", "logger_h_common"],
+          do: obs("pkg", read("elixir", "ansi_enabled", kind: "toolchain", first: first))
 
     entries = %{{"elixir", "ansi_enabled"} => enc({:ok, true})}
 
-    assert %{items: [], problems: [], dropped: 1} = judge(decided, snap(entries))
+    assert %{items: [], problems: [], dropped: 2} = judge(decided, snap(entries))
   end
 
   # IO.ANSI.format/1,2 and format_fragment/1,2 bake escape codes, or none,
   # by the same key: only Mix's shell's read of it is reviewed as dropped,
   # and the drop matches that first frame only.
   test "another toolchain frame's :elixir ansi_enabled read cannot be judged" do
-    for first <- ["Elixir.IO.ANSI", "Elixir.IO", "Elixir.Logger.Formatter"] do
+    for first <- ["Elixir.IO.ANSI", "Elixir.IO", "Elixir.Logger.Formatter", "logger_std_h"] do
       decided = [obs("pkg", read("elixir", "ansi_enabled", kind: "toolchain", first: first))]
 
       assert %{items: [], dropped: 0, problems: [problem]} = judge(decided, snap(%{}))
@@ -221,7 +218,13 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     assert ConfigReads.reviewed(nil) == nil
 
     for elixir <- ["1.19.5", "1.20.4"] do
-      assert %{record: [_ | _], drop: [{"Elixir.Mix.Shell.IO", "elixir", "ansi_enabled"}]} =
+      assert %{
+               record: [_ | _],
+               drop: [
+                 {"Elixir.Mix.Shell.IO", "elixir", "ansi_enabled"},
+                 {"logger_h_common", "elixir", "ansi_enabled"}
+               ]
+             } =
                ConfigReads.reviewed(elixir)
     end
   end
@@ -325,9 +328,85 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       assert all != []
       assert direct == all
 
-      assert %{drop: [{"Elixir.Mix.Shell.IO", "elixir", "ansi_enabled"}]} =
-               ConfigReads.reviewed(System.version())
+      assert {"Elixir.Mix.Shell.IO", "elixir", "ansi_enabled"} in ConfigReads.reviewed(
+               System.version()
+             ).drop
     end
+
+    # Logger.Formatter reads :ansi_enabled only through the `&IO.ANSI.enabled?/0`
+    # colouring default, and OTP's handler code calls a formatter only from
+    # `try_format/3`, whose text `log_to_binary/2` returns for the handler
+    # to write.
+    test "drops Logger's handler's ansi_enabled read, whose value only reaches output" do
+      formatter = source(:logger, "lib/logger/formatter.ex")
+
+      assert app_reads(formatter) == [
+               {:logger, :translator_inspect_opts, :translator_inspect_opts},
+               {:logger, :truncate, :new},
+               {:logger, :utc_log, :new}
+             ]
+
+      assert ansi_enabled_refs(formatter) == [:colors]
+
+      handler = Path.join(:code.lib_dir(:kernel), "src/logger_h_common.erl")
+      assert File.regular?(handler), "no source at #{handler}"
+      {:ok, forms} = :epp.parse_file(String.to_charlist(handler), [])
+
+      assert formatter_callers(forms) == [:try_format]
+      assert callers(forms, :try_format) == [:do_log_to_binary, :try_format]
+      assert callers(forms, :do_log_to_binary) == [:log_to_binary]
+
+      assert {"logger_h_common", "elixir", "ansi_enabled"} in ConfigReads.reviewed(
+               System.version()
+             ).drop
+    end
+  end
+
+  # The functions holding a reference to IO.ANSI.enabled?/0 (a call or a capture).
+  defp ansi_enabled_refs(ast) do
+    {_ast, {_fun, refs}} =
+      Macro.prewalk(ast, {nil, []}, fn
+        {kind, _, [head | _]} = node, {_fun, acc} when kind in [:def, :defp] ->
+          {node, {fun_name(head), acc}}
+
+        {{:., _, [{:__aliases__, _, [:IO, :ANSI]}, :enabled?]}, _, _} = node, {fun, acc} ->
+          {node, {fun, [fun | acc]}}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    refs |> Enum.uniq() |> Enum.sort()
+  end
+
+  # Erlang functions making a `Var:format(...)` call (a formatter callback).
+  defp formatter_callers(forms) do
+    for {:function, _, name, _, clauses} <- forms,
+        has_call?(clauses, fn
+          {:call, _, {:remote, _, {:var, _, _}, {:atom, _, :format}}, _} -> true
+          _ -> false
+        end),
+        uniq: true,
+        do: name
+  end
+
+  defp callers(forms, target) do
+    for {:function, _, name, _, clauses} <- forms,
+        has_call?(clauses, fn
+          {:call, _, {:atom, _, ^target}, _} -> true
+          _ -> false
+        end),
+        uniq: true,
+        do: name
+  end
+
+  defp has_call?(term, match?) do
+    match?.(term) or
+      case term do
+        t when is_tuple(t) -> t |> Tuple.to_list() |> has_call?(match?)
+        l when is_list(l) -> Enum.any?(l, &has_call?(&1, match?))
+        _ -> false
+      end
   end
 
   defp source(app, rel) do
