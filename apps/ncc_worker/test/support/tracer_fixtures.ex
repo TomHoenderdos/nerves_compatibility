@@ -18,6 +18,13 @@ defmodule NccWorker.TracerFixtures do
     proj
   end
 
+  @doc "Writes the wrapper project's `config/config.exs` (`body` after `import Config`)."
+  @spec put_config(String.t(), String.t()) :: :ok
+  def put_config(proj, body) do
+    File.mkdir_p!(Path.join(proj, "config"))
+    File.write!(Path.join(proj, "config/config.exs"), "import Config\n" <> body)
+  end
+
   @spec env(String.t()) :: [{String.t(), String.t()}]
   def env(proj) do
     [
