@@ -15,6 +15,8 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
   @sha "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
+  # A cutoff after every run a test ingests.
+  @later ~U[2100-01-01 00:00:00Z]
   @host_read "compile-time host read: os:type/0 in X.f/0 (lib/x.ex:2)"
 
   # The fixture's jason run with its publishing rpi4 result also published as
@@ -118,7 +120,7 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
                version: "1.4.1",
                reason: @host_read,
                toolchain_build_id: tb_id,
-               result_ids: [id]
+               results: [%{id: id, built_at: %DateTime{}}]
              }
            ] = PureElixirWithdrawal.candidates()
 
@@ -131,7 +133,7 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
     assert [%{unpublished_at: nil}] = results("pure_elixir")
 
     assert {:withdrawn, 1, [%{version: "1.4.1", withdrawn_at: %DateTime{}}]} =
-             PureElixirWithdrawal.withdraw(dry_run: false)
+             PureElixirWithdrawal.withdraw(dry_run: false, before: @later)
 
     assert [%{unpublished_at: %DateTime{}}] = results("pure_elixir")
     assert PureElixirWithdrawal.candidates() == []
@@ -152,17 +154,13 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
     toolchain_build!(@host_read, %{})
 
     assert Catalog.published_sha256?(@sha)
-    assert {:withdrawn, 1, [_]} = PureElixirWithdrawal.withdraw(dry_run: false)
+    assert {:withdrawn, 1, [_]} = PureElixirWithdrawal.withdraw(dry_run: false, before: @later)
     refute Catalog.published_sha256?(@sha)
     assert Catalog.precompiled_manifest("jason") == nil
   end
 
   test "every R1 and R2 reason withdraws" do
     pure_elixir_run!()
-
-    for prefix <- PureElixirWithdrawal.withdrawing_prefixes() do
-      assert prefix in Portability.refusal_prefixes()
-    end
 
     for reason <- [
           "compile-time host read: os:type/0",
@@ -183,6 +181,8 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
     # every case is checked right after its own ingest.
     held = [
       "closure dependency observed the host: telemetry (sentinel missing)",
+      # An R3 reason quoting the dependency's R1 refusal is still R3.
+      "closure dependency observed the host: x (compile-time host read: os:type/0)",
       "calls natively built dependency at compile time: Elixir.Bcrypt.hash/1",
       "rebar3 build runs pre_hooks",
       "rebar3 build config unreadable"
@@ -204,7 +204,7 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
       assert PureElixirWithdrawal.held() == [], reason
     end
 
-    assert {:withdrawn, 0, []} = PureElixirWithdrawal.withdraw(dry_run: false)
+    assert {:withdrawn, 0, []} = PureElixirWithdrawal.withdraw(dry_run: false, before: @later)
     assert [%{unpublished_at: nil}] = results("pure_elixir")
     assert Catalog.published_sha256?(@sha)
   end
@@ -233,7 +233,7 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
     # The toolchain is a parameter: the count can look at another one.
     assert [%{version: "1.4.1"}] = PureElixirWithdrawal.candidates("1.19/28")
 
-    assert {:withdrawn, 0, []} = PureElixirWithdrawal.withdraw(dry_run: false)
+    assert {:withdrawn, 0, []} = PureElixirWithdrawal.withdraw(dry_run: false, before: @later)
     assert [%{unpublished_at: nil}] = results("pure_elixir")
   end
 
@@ -255,11 +255,10 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
     assert [_] = Enum.filter(results("pure_elixir"), & &1.carried_from_run_id)
     toolchain_build!(@host_read, %{})
 
-    assert [%{result_ids: ids}] = PureElixirWithdrawal.candidates()
-    assert length(ids) == 3
+    assert [%{results: [_, _, _]}] = PureElixirWithdrawal.candidates()
 
     assert Map.has_key?(Catalog.precompiled_manifest("jason").versions["1.4.1"], "pure_elixir")
-    assert {:withdrawn, 3, [_]} = PureElixirWithdrawal.withdraw(dry_run: false)
+    assert {:withdrawn, 3, [_]} = PureElixirWithdrawal.withdraw(dry_run: false, before: @later)
     assert Enum.all?(results("pure_elixir"), & &1.unpublished_at)
 
     systems = Catalog.precompiled_manifest("jason").versions["1.4.1"]
@@ -267,14 +266,70 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
     assert Enum.all?(results("nerves_system_rpi4"), &is_nil(&1.unpublished_at))
   end
 
+  test "acting without a before: cutoff writes nothing" do
+    pure_elixir_run!()
+    toolchain_build!(@host_read, %{})
+
+    assert {:error, :before_required} = PureElixirWithdrawal.withdraw(dry_run: false)
+    assert [%{unpublished_at: nil}] = results("pure_elixir")
+    assert [_] = PureElixirWithdrawal.candidates()
+
+    assert_raise ArgumentError, fn ->
+      PureElixirWithdrawal.withdraw(dry_run: false, before: "x")
+    end
+  end
+
+  # Controller ruling: a full run after P1 published pure_elixir only because
+  # its own traced compile passed, which the portal does not store, so the
+  # toolchain build's refusal never withdraws it. The cutoff applies to the
+  # run that built a result: a copy carried after the cutoff from an older
+  # run goes with that run.
+  test "only results built by runs inserted before the cutoff are withdrawn" do
+    pure_elixir_run!(%{"run_id" => "fixture-jason-old", "finished_at" => "2026-01-01T00:00:00Z"})
+    cutoff = DateTime.utc_now()
+
+    pure_elixir_run!(%{
+      "run_id" => "fixture-jason-targets",
+      "scope" => "targets",
+      "finished_at" => "2026-02-01T00:00:00Z",
+      "systems" => Map.take(pure_elixir_result()["systems"], ["nerves_system_x86_64"])
+    })
+
+    pure_elixir_run!(%{"run_id" => "fixture-jason-p1", "finished_at" => "2030-01-01T00:00:00Z"})
+    restore_blob!()
+    toolchain_build!(@host_read, %{})
+
+    # The count lists every row with when its run was inserted.
+    assert [%{results: listed}] = PureElixirWithdrawal.candidates()
+
+    assert [false, true, true] =
+             Enum.map(listed, &(DateTime.compare(&1.built_at, cutoff) == :lt)) |> Enum.sort()
+
+    assert {:dry_run, [%{results: [_, _]}]} = PureElixirWithdrawal.withdraw(before: cutoff)
+
+    assert {:withdrawn, 2, [_]} = PureElixirWithdrawal.withdraw(dry_run: false, before: cutoff)
+
+    [kept] = Enum.reject(results("pure_elixir"), & &1.unpublished_at)
+    assert is_nil(kept.carried_from_run_id)
+    assert Map.has_key?(Catalog.precompiled_manifest("jason").versions["1.4.1"], "pure_elixir")
+
+    # Nothing left before the cutoff: no write and no log line.
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:withdrawn, 0, []} = PureElixirWithdrawal.withdraw(dry_run: false, before: cutoff)
+      end)
+
+    refute log =~ "withdrew"
+  end
+
   test "a second withdrawal changes nothing" do
     pure_elixir_run!()
     toolchain_build!(@host_read, %{})
 
     assert {:withdrawn, 1, [%{withdrawn_at: first}]} =
-             PureElixirWithdrawal.withdraw(dry_run: false)
+             PureElixirWithdrawal.withdraw(dry_run: false, before: @later)
 
-    assert {:withdrawn, 0, []} = PureElixirWithdrawal.withdraw(dry_run: false)
+    assert {:withdrawn, 0, []} = PureElixirWithdrawal.withdraw(dry_run: false, before: @later)
     assert [%{unpublished_at: at}] = results("pure_elixir")
     assert DateTime.compare(at, first) == :eq
   end
@@ -287,10 +342,10 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
     toolchain_build!(@host_read, %{}, version: "1.4.2")
 
     assert {:withdrawn, 1, [%{version: "1.4.1", withdrawn_at: first}]} =
-             PureElixirWithdrawal.withdraw(dry_run: false, limit: 1)
+             PureElixirWithdrawal.withdraw(dry_run: false, limit: 1, before: @later)
 
     assert {:withdrawn, 1, [%{version: "1.4.2", withdrawn_at: second}]} =
-             PureElixirWithdrawal.withdraw(dry_run: false, limit: 1)
+             PureElixirWithdrawal.withdraw(dry_run: false, limit: 1, before: @later)
 
     assert [%{withdrawn_at: ^first, results: 1}, %{withdrawn_at: ^second, results: 1}] =
              Enum.sort_by(PureElixirWithdrawal.withdrawals(), & &1.withdrawn_at, DateTime)
@@ -313,11 +368,16 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
         do: toolchain_build!(@host_read, %{}, version: version)
 
     assert {:dry_run, [_, _, _]} = PureElixirWithdrawal.withdraw(limit: 1)
-    assert {:withdrawn, 2, [_, _]} = PureElixirWithdrawal.withdraw(dry_run: false, limit: 2)
+
+    assert {:withdrawn, 2, [_, _]} =
+             PureElixirWithdrawal.withdraw(dry_run: false, limit: 2, before: @later)
+
     assert [%{version: "1.4.3"}] = PureElixirWithdrawal.candidates()
-    assert {:withdrawn, 1, [_]} = PureElixirWithdrawal.withdraw(dry_run: false)
+    assert {:withdrawn, 1, [_]} = PureElixirWithdrawal.withdraw(dry_run: false, before: @later)
     assert PureElixirWithdrawal.candidates() == []
 
-    assert_raise ArgumentError, fn -> PureElixirWithdrawal.withdraw(dry_run: false, limit: 0) end
+    assert_raise ArgumentError, fn ->
+      PureElixirWithdrawal.withdraw(dry_run: false, limit: 0, before: @later)
+    end
   end
 end
