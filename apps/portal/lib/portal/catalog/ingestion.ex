@@ -462,6 +462,9 @@ defmodule Portal.Catalog.Ingestion do
       compile_env: compile_env(build["compile_env"]),
       file_manifest: file_manifest(build["file_manifest"]),
       optional_deps: optional_deps(result["optional_deps"]),
+      portability_rule: portability_rule(build["portability_rule"]),
+      rule1_reason: bounded_reason(build["rule1_reason"]),
+      compile_observations: compile_observations(build["compile_observations"]),
       finished_at: parse_datetime(result["finished_at"])
     })
     |> Ash.create(domain: @domain)
@@ -469,6 +472,24 @@ defmodule Portal.Catalog.Ingestion do
 
   defp optional_deps(%{} = optional_deps), do: optional_deps
   defp optional_deps(_), do: nil
+
+  @max_observation_bytes 256 * 1024
+
+  defp portability_rule(rule) when is_integer(rule) and rule in 1..9, do: rule
+  defp portability_rule(_rule), do: nil
+
+  defp bounded_reason(reason) when is_binary(reason), do: String.slice(reason, 0, 1000)
+  defp bounded_reason(_reason), do: nil
+
+  # The trace's own account, kept for measurement and audit; bounded so one
+  # build cannot bloat the row.
+  defp compile_observations(%{} = observations) do
+    if byte_size(Jason.encode!(observations)) <= @max_observation_bytes,
+      do: observations,
+      else: %{"truncated" => true}
+  end
+
+  defp compile_observations(_observations), do: nil
 
   # The worker's `"error"` is a failed host compile, which is deterministic for
   # this package, version and toolchain: it is stored as a `:fail` verdict so

@@ -449,4 +449,76 @@ defmodule Portal.Catalog.IngestionToolchainTest do
       assert {:cancel, _} = Ingest.perform(%Oban.Job{args: args, attempt: 1, max_attempts: 5})
     end
   end
+
+  describe "compile-time trace fields (P1)" do
+    test "are stored as the worker reported them" do
+      name = unique_name()
+      beam = blob("beam-#{name}")
+      priv = blob("priv-#{name}")
+
+      result =
+        name
+        |> pass_result(beam, priv)
+        |> update_in(["toolchain_build"], fn build ->
+          Map.merge(build, %{
+            "portability_rule" => 1,
+            "rule1_reason" => nil,
+            "compile_observations" => %{"trace_stats" => %{"windows" => 3}, "taint" => %{}}
+          })
+        end)
+
+      assert {:ok, tb} =
+               Ingestion.ingest_toolchain(result, opts(name, files_dir_with([beam, priv])))
+
+      assert tb.portability_rule == 1
+      assert tb.rule1_reason == nil
+      assert tb.compile_observations == %{"trace_stats" => %{"windows" => 3}, "taint" => %{}}
+    end
+
+    test "a skipped build keeps both reasons" do
+      name = unique_name()
+
+      result =
+        name
+        |> skipped_result()
+        |> update_in(["toolchain_build"], fn build ->
+          Map.merge(build, %{
+            "reason" => "compile-time host read: os:type/0 in X.f/0 (lib/x.ex:2)",
+            "portability_rule" => 1,
+            "rule1_reason" => "calls System.cmd/2",
+            "compile_observations" => %{"refusals" => []}
+          })
+        end)
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+      assert tb.reason =~ "compile-time host read"
+      assert tb.rule1_reason == "calls System.cmd/2"
+    end
+
+    test "builds from before the trace store nils, and oversized observations a marker" do
+      name = unique_name()
+
+      assert {:ok, tb} =
+               Ingestion.ingest_toolchain(skipped_result(name), opts(name, files_dir_with([])))
+
+      assert {tb.portability_rule, tb.rule1_reason, tb.compile_observations} == {nil, nil, nil}
+
+      big = %{
+        "config_reads" =>
+          for(i <- 1..20_000, do: %{"key" => "k#{i}", "pad" => String.duplicate("x", 20)})
+      }
+
+      other = unique_name()
+
+      result =
+        update_in(
+          skipped_result(other),
+          ["toolchain_build"],
+          &Map.put(&1, "compile_observations", big)
+        )
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(other, files_dir_with([])))
+      assert tb.compile_observations == %{"truncated" => true}
+    end
+  end
 end

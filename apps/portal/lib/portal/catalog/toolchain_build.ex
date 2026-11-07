@@ -51,7 +51,10 @@ defmodule Portal.Catalog.ToolchainBuild do
     :file_manifest,
     :optional_deps,
     :finished_at,
-    :attempted_at
+    :attempted_at,
+    :portability_rule,
+    :rule1_reason,
+    :compile_observations
   ]
 
   postgres do
@@ -187,6 +190,24 @@ defmodule Portal.Catalog.ToolchainBuild do
     # The worker's `optional_deps` report: `added`, `dropped`, `skipped` and
     # `reason`, as `result.json` has them.
     attribute :optional_deps, :map do
+      public?(true)
+    end
+
+    # The precompiled verdict's rule. 1: `BuildSelection.portable?/4` AND the
+    # compile-time trace's refusals (P1); nil for builds made before the
+    # trace. Rule 2 is P4's.
+    attribute :portability_rule, :integer do
+      public?(true)
+    end
+
+    # What `portable?/4` alone said: its skip reason, nil when it passed.
+    attribute :rule1_reason, :string do
+      public?(true)
+    end
+
+    # What the compile-time trace observed (`NccWorker.Portability`),
+    # bounded at ingest. The container's word; nothing re-judges it.
+    attribute :compile_observations, :map do
       public?(true)
     end
 
