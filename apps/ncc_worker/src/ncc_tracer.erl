@@ -3,7 +3,7 @@
 %% the VM that compiles the package: start_main/0 from `mix ncc.trace_compile`,
 %% start_child/0 from ERL_AFLAGS in every other BEAM the compile starts
 %% (rebar3). Writes one JSON object per line; NccWorker.Tracer.Report reads them.
--export([start_main/0, start_child/0, window_open/2, window_close/2, closure/3,
+-export([start_main/0, start_child/0, window_open/2, window_close/2, closure/3, config_env/2,
          native_patterns/3, finish/2, fire/1, ebin_dir/0, flush/0, collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
 -export([safe_extent/4, maps_libs/1]).
@@ -71,6 +71,12 @@ window_close(Token, App) ->
     call(Token, {window_close, bin(App), now_ns(), Delivered =:= ok}).
 
 closure(Token, Packages, Deps) -> call(Token, {closure, [bin(P) || P <- Packages], Deps}).
+
+%% The driver's application-env snapshot (ncc_tracer_config:snapshot/0),
+%% written once, before the closure is loaded and anything compiles.
+config_env(Token, {Entries, Truncated}) when is_list(Entries), is_boolean(Truncated) ->
+    call(Token, {config_env, Entries, Truncated});
+config_env(Token, _Error) -> call(Token, config_env_error).
 
 native_patterns(Token, App, Ebin) -> call(Token, {native, bin(App), to_list(Ebin)}).
 
@@ -710,6 +716,12 @@ request({closure, Packages, Deps}, _From, St) ->
     write(St, #{kind => closure, packages => Packages, deps => Deps, ts => now_ns()}),
     {ok, St};
 request({native, App, Ebin}, _From, St) -> {ok, native(App, Ebin, St)};
+request({config_env, Entries, Truncated}, _From, St) ->
+    write(St, #{kind => config_env, entries => Entries, truncated => Truncated, ts => now_ns()}),
+    {ok, St};
+request(config_env_error, _From, St) ->
+    write(St, #{kind => config_env, error => true, ts => now_ns()}),
+    {ok, St};
 request(final_nonce, From, St) ->
     Nonce = random_hex(),
     {Nonce, St#st{final_pid = From, final_nonce = Nonce}};

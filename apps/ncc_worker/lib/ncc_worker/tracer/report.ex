@@ -31,6 +31,14 @@ defmodule NccWorker.Tracer.Report do
   elixir_make, whose app is `unknown`) is kept in `children` under its app
   and adds no problem: the judge reads children only for closure apps.
 
+  The Mix VM's `config_env` line, the application env before anything
+  compiled (`ncc_tracer_config`), is kept as `config_env`: its entries by
+  `{app, key}`, each value the base64url text the tracer wrote (never decoded
+  here), an oversized value as `:oversize`, and `:error` for an error line or
+  a malformed one. A truncated snapshot keeps `truncated: true` for the judge.
+  No such line, a second one, or one written after the `closure` line is a
+  problem: the driver writes it once, before any dependency's code has run.
+
   Window closes keep the mapped-library snapshot they carry (`libs`), and a
   child keeps its `libs` lines; `NccWorker.Portability.MappedLibs` judges
   them.
@@ -58,6 +66,7 @@ defmodule NccWorker.Tracer.Report do
             quiet: [],
             sentinels: [],
             events: [],
+            config_env: nil,
             stats: nil,
             ending: nil,
             overflow: [],
@@ -92,6 +101,13 @@ defmodule NccWorker.Tracer.Report do
           quiet: [%{app: String.t() | nil, open: integer() | nil, close: integer() | nil}],
           sentinels: [%{app: String.t() | nil, ts: integer() | nil}],
           events: [map()],
+          config_env:
+            nil
+            | :error
+            | %{
+                entries: %{{String.t(), String.t()} => String.t() | :oversize},
+                truncated: boolean()
+              },
           stats: map() | nil,
           ending: map() | nil,
           overflow: [map()],
@@ -224,6 +240,19 @@ defmodule NccWorker.Tracer.Report do
     %{r | sentinels: [sentinel | r.sentinels]} |> sentinel_checks(l, &problem/2)
   end
 
+  defp main_line({:line, %{"kind" => "config_env"} = l}, r) do
+    cond do
+      r.closure != nil or r.windows != [] ->
+        problem(r, "the config snapshot came after the closure was loaded")
+
+      r.config_env == nil ->
+        %{r | config_env: config_env(l)}
+
+      true ->
+        r
+    end
+  end
+
   defp main_line({:line, %{"kind" => "event"} = l}, r), do: %{r | events: [l | r.events]}
   defp main_line({:line, %{"kind" => "stats"} = l}, r), do: %{r | stats: r.stats || l}
 
@@ -304,6 +333,26 @@ defmodule NccWorker.Tracer.Report do
 
   # The mapped-library snapshot a window close carries (`MappedLibs`).
   defp libs(l), do: Map.take(l, ["nif_check", "mapped_libs"])
+
+  defp config_env(%{"entries" => entries, "truncated" => truncated})
+       when is_list(entries) and is_boolean(truncated) do
+    case Enum.reduce_while(entries, %{}, &config_entry/2) do
+      :error -> :error
+      map -> %{entries: map, truncated: truncated}
+    end
+  end
+
+  defp config_env(_line), do: :error
+
+  defp config_entry(%{"app" => a, "key" => k, "value" => v}, acc)
+       when is_binary(a) and is_binary(k) and is_binary(v),
+       do: {:cont, Map.put(acc, {a, k}, v)}
+
+  defp config_entry(%{"app" => a, "key" => k, "oversize" => true}, acc)
+       when is_binary(a) and is_binary(k),
+       do: {:cont, Map.put(acc, {a, k}, :oversize)}
+
+  defp config_entry(_entry, _acc), do: {:halt, :error}
 
   defp close_quiet(%{quiet: [%{close: nil} = q | rest]} = r, l),
     do: %{r | quiet: [%{q | close: l["ts"], delivered: l["delivered"]} | rest]}
@@ -425,8 +474,13 @@ defmodule NccWorker.Tracer.Report do
       |> length()
 
     Enum.flat_map(["start", "closure", "end"], &once(kinds, &1)) ++
+      snapshots(Enum.count(kinds, &(&1 == "config_env"))) ++
       if(after_end > 0, do: ["#{after_end} lines after the end line"], else: [])
   end
+
+  defp snapshots(1), do: []
+  defp snapshots(0), do: ["no config snapshot"]
+  defp snapshots(_n), do: ["more than one config snapshot"]
 
   defp once(kinds, kind) do
     case Enum.count(kinds, &(&1 == kind)) do

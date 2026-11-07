@@ -49,6 +49,45 @@ defmodule NccWorker.TracerTest do
     assert File.regular?(Path.join(proj, "_build/host/lib/fx_top/ebin/Elixir.FxTop.beam"))
   end
 
+  test "the config snapshot is the project's env, taken before a dependency's mix.exs runs",
+       %{tmp_dir: dir} do
+    # The dependency's mix.exs, which Mix evaluates while loading the
+    # closure, rewrites the project's value and adds one of its own.
+    mix_exs = """
+    defmodule FxCfg.MixProject do
+      use Mix.Project
+      Application.put_env(:fx_cfg, :level, :from_dep)
+      Application.put_env(:fx_cfg, :added, true)
+      def project, do: [app: :fx_cfg, version: "0.1.0", deps: []]
+    end
+    """
+
+    proj =
+      TracerFixtures.project(dir, ["fx_cfg"], %{
+        "fx_cfg" => TracerFixtures.lib("fx_cfg", "defmodule FxCfg do\nend\n", %{mix_exs: mix_exs})
+      })
+
+    File.mkdir_p!(Path.join(proj, "config"))
+
+    File.write!(
+      Path.join(proj, "config/config.exs"),
+      "import Config\nconfig :fx_cfg, level: :from_project\n"
+    )
+
+    traced = TracerFixtures.trace(proj, ["fx_cfg"])
+    assert {:ok, 0} = traced.result, traced.log
+    assert traced.report.problems == []
+    assert %{entries: entries, truncated: false} = traced.report.config_env
+
+    expected =
+      Base.url_encode64(:erlang.term_to_binary({:ok, :from_project}, [:deterministic]),
+        padding: false
+      )
+
+    assert entries[{"fx_cfg", "level"}] == expected
+    refute Map.has_key?(entries, {"fx_cfg", "added"})
+  end
+
   test "a set partition count stops the judge compile before anything compiles",
        %{tmp_dir: dir} do
     proj =

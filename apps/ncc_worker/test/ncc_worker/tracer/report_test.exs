@@ -24,6 +24,15 @@ defmodule NccWorker.Tracer.ReportTest do
         checks
       )
 
+  @snapshot %{
+    "kind" => "config_env",
+    "truncated" => false,
+    "entries" => [
+      %{"app" => "logger", "key" => "level", "value" => "g2gCZAACb2tkAARpbmZv"},
+      %{"app" => "fx", "key" => "big", "value" => nil, "oversize" => true}
+    ]
+  }
+
   @closure %{
     "kind" => "closure",
     "packages" => ["pkg"],
@@ -76,7 +85,11 @@ defmodule NccWorker.Tracer.ReportTest do
   }
 
   defp clean,
-    do: [@start, @closure] ++ window("r3", 10, 20) ++ window("pkg", 30, 40) ++ [@stats, @ending]
+    do:
+      [@start, @snapshot, @closure] ++
+        window("r3", 10, 20) ++ window("pkg", 30, 40) ++ [@stats, @ending]
+
+  defp without_snapshot, do: Enum.reject(clean(), &(&1["kind"] == "config_env"))
 
   defp write(dir, name, lines),
     do: File.write!(Path.join(dir, name), Enum.map_join(lines, "", &(JSON.encode!(&1) <> "\n")))
@@ -167,14 +180,14 @@ defmodule NccWorker.Tracer.ReportTest do
 
   test "a broken structure is a problem", %{tmp_dir: dir} do
     drop = fn kind -> Enum.reject(clean(), &(&1["kind"] == kind)) end
-    [start, closure | rest] = clean()
+    [start, snapshot, closure | rest] = clean()
 
     for {lines, problem} <- [
           {[], "trace-main.jsonl is empty"},
           {drop.("start"), "no start line"},
-          {[start, start, closure | rest], "2 start lines"},
+          {[start, start, snapshot, closure | rest], "2 start lines"},
           {drop.("closure"), "no closure line"},
-          {[start, closure, closure | rest], "2 closure lines"},
+          {[start, snapshot, closure, closure | rest], "2 closure lines"},
           {clean() ++ [@ending], "2 end lines"},
           {clean() ++ [%{"kind" => "event", "ts" => 200}], "1 lines after the end line"},
           {drop.("stats"), "no stats line"},
@@ -195,9 +208,10 @@ defmodule NccWorker.Tracer.ReportTest do
            "r3's window lost its backtrace depth"},
           {replace(clean(), "sentinel", "pkg", %{"depth_ok" => false}),
            "pkg's sentinel lost its backtrace depth"},
-          {[start, closure] ++ window("pkg", 10, 20) ++ window("r3", 30, 40) ++ [@stats, @ending],
+          {[start, snapshot, closure] ++
+             window("pkg", 10, 20) ++ window("r3", 30, 40) ++ [@stats, @ending],
            "windows [pkg, r3] do not match the closure [r3, pkg]"},
-          {[start, closure] ++ window("pkg", 30, 40) ++ [@stats, @ending],
+          {[start, snapshot, closure] ++ window("pkg", 30, 40) ++ [@stats, @ending],
            "windows [pkg] do not match the closure [r3, pkg]"},
           {clean() ++ [%{"kind" => "overflow", "what" => "calls"}], "trace overflowed: calls"},
           {clean() ++ [%{"kind" => "quiet_close", "app" => "r3", "ts" => 22, "delivered" => true}],
@@ -364,6 +378,68 @@ defmodule NccWorker.Tracer.ReportTest do
       write(dir, "trace-main.jsonl", clean())
       assert Report.read(dir, max_lines: length(clean()) + 10).over_budget
       refute Report.read(dir, max_lines: length(clean()) + 21).over_budget
+    end
+  end
+
+  describe "the config snapshot" do
+    test "is read into config_env, oversized values marked", %{tmp_dir: dir} do
+      r = read(dir, clean())
+
+      assert r.config_env == %{
+               entries: %{
+                 {"logger", "level"} => "g2gCZAACb2tkAARpbmZv",
+                 {"fx", "big"} => :oversize
+               },
+               truncated: false
+             }
+
+      assert r.problems == []
+    end
+
+    test "a truncated snapshot is kept as such for the judge", %{tmp_dir: dir} do
+      r = read(dir, replace(clean(), "config_env", nil, %{"truncated" => true}))
+      assert %{truncated: true} = r.config_env
+      assert r.problems == []
+    end
+
+    test "an error line or a malformed entry reads as :error", %{tmp_dir: dir} do
+      [start | rest] = without_snapshot()
+      r = read(dir, [start, %{"kind" => "config_env", "error" => true} | rest])
+      assert r.config_env == :error
+
+      for bad <- [
+            %{@snapshot | "entries" => [%{"app" => "fx"}]},
+            %{@snapshot | "entries" => [%{"app" => "fx", "key" => "k", "value" => 1}]},
+            %{@snapshot | "entries" => [%{"app" => "fx", "key" => "k", "oversize" => false}]},
+            %{@snapshot | "entries" => "x"},
+            %{@snapshot | "truncated" => nil},
+            Map.delete(@snapshot, "entries")
+          ] do
+        assert read(dir, [start, bad | rest]).config_env == :error, inspect(bad)
+      end
+    end
+
+    test "a second snapshot is a problem", %{tmp_dir: dir} do
+      [start, snapshot | rest] = clean()
+      r = read(dir, [start, snapshot, snapshot | rest])
+      assert "more than one config snapshot" in r.problems
+
+      # Appended after the end, as code writing to the file itself would.
+      r = read(dir, clean() ++ [@snapshot])
+      assert "more than one config snapshot" in r.problems
+    end
+
+    test "a snapshot after the closure line or a window is a problem", %{tmp_dir: dir} do
+      [start, closure | rest] = without_snapshot()
+      r = read(dir, [start, closure, @snapshot | rest])
+      assert "the config snapshot came after the closure was loaded" in r.problems
+      assert r.config_env == nil
+    end
+
+    test "a trace without one has none, and that is a problem", %{tmp_dir: dir} do
+      r = read(dir, without_snapshot())
+      assert r.config_env == nil
+      assert r.problems == ["no config snapshot"]
     end
   end
 end

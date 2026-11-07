@@ -31,6 +31,12 @@ run(_Args) ->
     end.
 
 traced(Token, Packages, Native) ->
+    %% First, before Mix.Dep.load_and_cache/0 evaluates any dependency's
+    %% mix.exs and before anything compiles: no package code has run in this
+    %% VM yet, so the env is the one the project's config left (spec R5,
+    %% ncc_tracer_config). The report refuses a trace without it, with two,
+    %% or with one written after the closure line.
+    _ = ncc_tracer:config_env(Token, ncc_tracer_config:snapshot()),
     Config = 'Elixir.Mix.Project':config(),
     case with_build_lock(Config, fun() -> compile(Token, Packages, Native) end) of
         ok ->

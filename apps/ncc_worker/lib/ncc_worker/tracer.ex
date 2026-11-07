@@ -28,6 +28,7 @@ defmodule NccWorker.Tracer do
     :ncc_tracer,
     :ncc_tracer_channels,
     :ncc_tracer_stack,
+    :ncc_tracer_config,
     :"Elixir.Mix.Tasks.Ncc.TraceCompile"
   ]
   @default_timeout_ms 30 * 60 * 1000
