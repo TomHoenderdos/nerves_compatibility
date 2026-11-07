@@ -2409,7 +2409,7 @@
     "native_libs": [],
     "nif_check": "waived",
     "problems": [
-      "idna: R2: unreadable beam idna_data (not a beam container)"
+      "hpack: a rebar3 parent evaluates rebar.config.script"
     ],
     "refusals": [
       {
@@ -2789,16 +2789,11 @@
       "certifi": "compile-time host read: erlang:system_info/1 in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)",
       "chatterbox": "rebar3 build evaluates rebar.config.script",
       "gproc": "rebar3 build evaluates rebar.config.script",
-      "grpcbox": "rebar3 build runs project_plugins",
-      "h2": "rebar3 build runs project_plugins",
       "hackney": "compile-time host read: erlang:system_info/1 in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)",
-      "mimerl": "rebar3 build runs project_plugins",
       "opentelemetry_semantic_conventions": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:93)",
       "parse_trans": "compile-time host read: erlang:system_info/1 in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)",
       "quic": "rebar3 build runs pre_hooks",
-      "telemetry": "rebar3 build runs plugins",
-      "tls_certificate_check": "rebar3 build evaluates rebar.config.script",
-      "webtransport": "rebar3 build runs project_plugins"
+      "tls_certificate_check": "rebar3 build evaluates rebar.config.script"
     }
   },
   "optional_deps": {

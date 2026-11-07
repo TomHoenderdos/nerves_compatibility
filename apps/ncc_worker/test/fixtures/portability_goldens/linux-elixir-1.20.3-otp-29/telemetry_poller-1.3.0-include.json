@@ -1,0 +1,31 @@
+{
+  "deps_lock": {
+    "telemetry": "1.4.2"
+  },
+  "judge_compile": "finished",
+  "observations": {
+    "build_root_source_path": [],
+    "config_reads": [],
+    "elixir_version": [],
+    "mix_exs_allowed": [],
+    "native_calls": [],
+    "native_libs": [],
+    "nif_check": "ok",
+    "problems": [],
+    "refusals": [],
+    "taint": {}
+  },
+  "optional_deps": {
+    "added": [],
+    "dropped": [],
+    "reason": null
+  },
+  "optional_deps_variant": "include",
+  "package": "telemetry_poller",
+  "platform": "linux-elixir-1.20.3-otp-29",
+  "reason": null,
+  "rule1_reason": null,
+  "status": "pass",
+  "trace_verdict": "pass",
+  "version": "1.3.0"
+}

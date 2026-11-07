@@ -1,0 +1,29 @@
+{
+  "deps_lock": {},
+  "judge_compile": "finished",
+  "observations": {
+    "build_root_source_path": [],
+    "config_reads": [],
+    "elixir_version": [],
+    "mix_exs_allowed": [],
+    "native_calls": [],
+    "native_libs": [],
+    "nif_check": "waived",
+    "problems": [],
+    "refusals": [],
+    "taint": {}
+  },
+  "optional_deps": {
+    "added": [],
+    "dropped": [],
+    "reason": null
+  },
+  "optional_deps_variant": "include",
+  "package": "plug_crypto",
+  "platform": "darwin-elixir-1.20.4-otp-29",
+  "reason": null,
+  "rule1_reason": null,
+  "status": "pass",
+  "trace_verdict": "pass",
+  "version": "2.2.1"
+}

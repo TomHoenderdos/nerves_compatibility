@@ -1,0 +1,175 @@
+{
+  "deps_lock": {
+    "expo": "1.1.1"
+  },
+  "judge_compile": "finished",
+  "observations": {
+    "build_root_source_path": [],
+    "config_reads": [
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/gettext/compiler.ex",
+        "line": 381,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "gettext"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/gettext/compiler.ex",
+        "line": 719,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "gettext"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/gettext/extractor_agent.ex",
+        "line": 85,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "gettext"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/gettext/compiler.ex",
+        "line": 381,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "gettext"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/gettext/compiler.ex",
+        "line": 719,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "gettext"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/gettext/extractor_agent.ex",
+        "line": 85,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "gettext"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/gettext/compiler.ex",
+        "line": 381,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "gettext"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/gettext/compiler.ex",
+        "line": 719,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "gettext"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/gettext/extractor_agent.ex",
+        "line": 85,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "gettext"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/gettext/compiler.ex",
+        "line": 381,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "gettext"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/gettext/compiler.ex",
+        "line": 719,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "gettext"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/gettext/extractor_agent.ex",
+        "line": 85,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "gettext"
+      }
+    ],
+    "elixir_version": [],
+    "mix_exs_allowed": [
+      {
+        "arg": {
+          "name": "DIALYZER_PLT_PRIV"
+        },
+        "file": "<work>/work/proj/deps/expo/mix.exs",
+        "line": 22,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Expo.MixProject",
+        "owner": "expo"
+      }
+    ],
+    "native_calls": [],
+    "native_libs": [],
+    "nif_check": "ok",
+    "problems": [],
+    "refusals": [],
+    "taint": {}
+  },
+  "optional_deps": {
+    "added": [],
+    "dropped": [],
+    "reason": null
+  },
+  "optional_deps_variant": "include",
+  "package": "gettext",
+  "platform": "linux-elixir-1.20.3-otp-29",
+  "reason": null,
+  "rule1_reason": null,
+  "status": "pass",
+  "trace_verdict": "pass",
+  "version": "1.0.2"
+}

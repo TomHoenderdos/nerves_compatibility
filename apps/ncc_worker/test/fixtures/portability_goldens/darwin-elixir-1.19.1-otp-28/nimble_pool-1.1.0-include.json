@@ -1,0 +1,74 @@
+{
+  "deps_lock": {},
+  "judge_compile": "finished",
+  "observations": {
+    "build_root_source_path": [],
+    "config_reads": [
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/nimble_pool.ex",
+        "line": 1081,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "nimble_pool"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/nimble_pool.ex",
+        "line": 1081,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "nimble_pool"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/nimble_pool.ex",
+        "line": 1081,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "nimble_pool"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/nimble_pool.ex",
+        "line": 1081,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "nimble_pool"
+      }
+    ],
+    "elixir_version": [],
+    "mix_exs_allowed": [],
+    "native_calls": [],
+    "native_libs": [],
+    "nif_check": "waived",
+    "problems": [],
+    "refusals": [],
+    "taint": {}
+  },
+  "optional_deps": {
+    "added": [],
+    "dropped": [],
+    "reason": null
+  },
+  "optional_deps_variant": "include",
+  "package": "nimble_pool",
+  "platform": "darwin-elixir-1.19.1-otp-28",
+  "reason": null,
+  "rule1_reason": null,
+  "status": "pass",
+  "trace_verdict": "pass",
+  "version": "1.1.0"
+}

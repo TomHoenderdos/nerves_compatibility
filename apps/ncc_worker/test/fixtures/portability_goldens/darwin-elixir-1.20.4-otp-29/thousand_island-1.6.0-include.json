@@ -1,0 +1,228 @@
+{
+  "deps_lock": {
+    "telemetry": "1.4.2"
+  },
+  "judge_compile": "finished",
+  "observations": {
+    "build_root_source_path": [],
+    "config_reads": [
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 107,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 133,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 146,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 107,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 133,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 146,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 107,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 133,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_level"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 146,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 107,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 120,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 133,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/thousand_island/logger.ex",
+        "line": 146,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      }
+    ],
+    "elixir_version": [
+      {
+        "arg": {
+          "left": "\"1.20.4\"",
+          "right": "\">= 1.17.0\""
+        },
+        "file": "lib/thousand_island/process_label.ex",
+        "line": 5,
+        "mfa": "Version.match?/2",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      },
+      {
+        "arg": {},
+        "file": "lib/thousand_island/process_label.ex",
+        "line": 5,
+        "mfa": "System.version/0",
+        "module": "elixir_compiler_N",
+        "owner": "thousand_island"
+      }
+    ],
+    "mix_exs_allowed": [],
+    "native_calls": [],
+    "native_libs": [],
+    "nif_check": "waived",
+    "problems": [],
+    "refusals": [],
+    "taint": {}
+  },
+  "optional_deps": {
+    "added": [],
+    "dropped": [],
+    "reason": null
+  },
+  "optional_deps_variant": "include",
+  "package": "thousand_island",
+  "platform": "darwin-elixir-1.20.4-otp-29",
+  "reason": null,
+  "rule1_reason": null,
+  "status": "pass",
+  "trace_verdict": "pass",
+  "version": "1.6.0"
+}

@@ -22,6 +22,9 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
 
       mix test --include integration apps/ncc_worker/test/ncc_worker/tracer/goldens_integration_test.exs
 
+  The same file holds the "no regression" goldens (`@hits`, tag
+  `:no_regression`): packages published today that must still judge pass.
+
   Needs network access to Hex.pm. `NCC_PORTABILITY_GOLDENS_UPDATE=1` writes
   the goldens instead of comparing them, `NCC_PORTABILITY_GOLDENS_DIR`
   writes them elsewhere, and `NCC_PORTABILITY_GOLDENS_KEEP=1` keeps each
@@ -45,49 +48,72 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
   @variants ["exclude", "include"]
 
   # The trace verdict class each golden has. The spec expects every one to
-  # be publishable under the trace ("pass"); none is in P1. Each entry names
-  # the first refusal (the golden lists them all). These record what the
-  # rules do today; they are not loosened here (P4 decides).
+  # be publishable under the trace ("pass"). Each refused entry names its
+  # first refusal (the golden lists them all). These record what the rules
+  # do today; they are not loosened here (P4 decides). Rule 1 still refuses
+  # every one of these builds in P1.
   @expected %{
-    # A closure dependency's rebar.config names plugins: telemetry's test
-    # profile `{plugins, [covertool]}` and its `project_plugins` (rebar3
-    # static rule, R3 taint). That is the only refusal.
-    {"phoenix", "exclude"} => "refused",
-    # The same telemetry taint first; cowboy_telemetry's `project_plugins` too.
-    {"phoenix", "include"} => "refused",
-    # The same telemetry taint, and nothing else.
-    {"phoenix_live_view", "exclude"} => "refused",
-    # fine (lazy_html's C++ headers dep) bakes `deps/fine/c_include` (R2);
-    # lazy_html's elixir_make precompiled-NIF download reads the host.
+    {"phoenix", "exclude"} => "pass",
+    {"phoenix", "include"} => "pass",
+    {"phoenix_live_view", "exclude"} => "pass",
+    # fine (lazy_html's C++ headers dependency) bakes `deps/fine/c_include`
+    # (R2 taint); lazy_html's elixir_make precompiled-NIF download reads the
+    # host (open_port, system_info, its download cache).
     {"phoenix_live_view", "include"} => "refused",
     # The package's own R2: `embed_templates "layouts/*"` keeps the template
     # directory `<root>/deps/phoenix_live_dashboard/lib/phoenix/live_dashboard`
     # in Phoenix.LiveDashboard.LayoutView, a directory and not a source file,
-    # so the Task 9 bare-source-path observation does not cover it.
+    # so the bare-source-path observation does not cover it.
     {"phoenix_live_dashboard", "exclude"} => "refused",
-    # The same R2 first; ecto's optional adapters add exqlite (elixir_make)
-    # and decimal (`:erlang.system_info` in a module body) host reads.
+    # The same R2 first; the optional ecto adapters add exqlite (elixir_make)
+    # and decimal (see @hits) host reads.
     {"phoenix_live_dashboard", "include"} => "refused",
-    # Not judged: idna_data is compiled `-compile(compressed)` (a gzip beam),
-    # which the R2 reader takes for "not a beam container"; telemetry's
-    # plugins taint too. (Rule 1 refuses it anyway: erlang:open_port/2.)
-    {"swoosh", "exclude"} => "could_not_judge",
-    # mimerl's `project_plugins` taint first (hackney, certifi, parse_trans,
-    # gen_smtp, h2, quic, webtransport and telemetry too), and the idna beam.
+    {"swoosh", "exclude"} => "pass",
+    # certifi's parse transform (certifi_pt.replace_cacerts/1) reads
+    # erlang:system_info/1 and resolves the OTP root's path components;
+    # parse_trans.get_file/1 does the same while compiling parse_trans and
+    # hackney; quic's rebar.config runs pre_hooks (all R3 taint).
     {"swoosh", "include"} => "refused",
     # sentry's mix.exs reads SENTRY_INTEGRATION for `test_paths` (line 17),
     # but project/0 ends `++ xref_options()`, an `if` on System.version(),
-    # so it is not a keyword list literal (Task 7 rule); and
-    # Sentry.OpenTelemetry.VersionChecker calls Application.loaded_applications/0
-    # at compile time.
+    # so it is not a keyword list literal (mix.exs rule); and
+    # Sentry.OpenTelemetry.VersionChecker calls
+    # Application.loaded_applications/0 at compile time.
     {"sentry", "exclude"} => "refused",
-    # Outside every window first: gproc's rebar.config.script, which Mix
-    # evaluates with erl_eval, reads os:getenv/1 and
-    # init:get_plain_arguments/0. Then the exclude refusals, and taint of
-    # certifi, parse_trans/hackney, opentelemetry_semantic_conventions and
-    # the rebar3 plugin/script rules.
+    # Outside every window first: a rebar.config.script (gproc's reads
+    # os:getenv/1) that Mix evaluates with erl_eval while loading deps. Then
+    # the exclude refusals and the closure's taint.
     {"sentry", "include"} => "refused"
   }
+
+  # Packages whose toolchain builds are published hits today (the
+  # 2026-11-06 benchmark's Phoenix and library locks), built as published:
+  # with their optional dependencies. The trace must not take any of them
+  # away: each must judge pass, observations allowed. A refusal or
+  # could-not-judge here is a P1 regression, reported, never loosened here.
+  @hits [
+    {"telemetry", "1.4.2"},
+    {"jason", "1.4.5"},
+    {"plug", "1.20.3"},
+    {"plug_crypto", "2.2.1"},
+    {"mime", "2.0.7"},
+    {"mint", "1.11.0"},
+    {"hpax", "1.1.0"},
+    {"finch", "0.24.0"},
+    {"nimble_options", "1.2.0"},
+    {"nimble_pool", "1.1.0"},
+    {"decimal", "3.2.0"},
+    {"idna", "7.1.0"},
+    {"thousand_island", "1.6.0"},
+    {"websock", "0.5.3"},
+    {"phoenix_pubsub", "2.4.1"},
+    {"phoenix_template", "1.1.0"},
+    {"gettext", "1.0.2"},
+    {"expo", "1.1.1"},
+    {"telemetry_metrics", "1.2.0"},
+    {"telemetry_poller", "1.3.0"},
+    {"dns_cluster", "0.2.0"}
+  ]
 
   @env_vars ~w(HEX_HOME NERVES_ARTIFACTS_DIR NERVES_DL_DIR XDG_DATA_HOME)
 
@@ -123,6 +149,25 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
       assert golden["trace_verdict"] == Map.fetch!(@expected, {package, variant}),
              "#{package} #{version} (#{variant}): " <>
                inspect(Map.take(golden, ["reason", "trace_verdict", "observations"]),
+                 pretty: true,
+                 limit: :infinity
+               )
+    end
+  end
+
+  for {package, version} <- @hits do
+    @tag package: package, version: version, variant: "include", no_regression: true
+    test "no regression: #{package} #{version}, published today, still judges pass", ctx do
+      %{package: package, version: version} = ctx
+      {golden, stats} = build(ctx, package, version, "include")
+
+      report(ctx, golden, stats)
+      compare(ctx.tag, golden)
+
+      assert golden["trace_verdict"] == "pass",
+             "P1 regression: #{package} #{version} (#{golden["trace_verdict"]}): " <>
+               "#{golden["reason"]}\n" <>
+               inspect(Map.take(golden["observations"], ["refusals", "taint", "problems"]),
                  pretty: true,
                  limit: :infinity
                )

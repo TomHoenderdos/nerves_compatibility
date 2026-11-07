@@ -2285,9 +2285,7 @@
     "nif_check": "ok",
     "problems": [],
     "refusals": [],
-    "taint": {
-      "telemetry": "rebar3 build runs plugins"
-    }
+    "taint": {}
   },
   "optional_deps": {
     "added": [],

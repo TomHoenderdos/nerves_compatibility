@@ -2514,8 +2514,7 @@
     ],
     "taint": {
       "fine": "bakes the build path: Elixir.Fine \"<root>/deps/fine/c_include\"",
-      "lazy_html": "compile-time host read: os:type/0 in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)",
-      "telemetry": "rebar3 build runs plugins"
+      "lazy_html": "compile-time host read: os:type/0 in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
     }
   },
   "optional_deps": {

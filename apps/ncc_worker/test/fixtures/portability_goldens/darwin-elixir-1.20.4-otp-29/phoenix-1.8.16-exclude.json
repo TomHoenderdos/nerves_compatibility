@@ -1732,9 +1732,7 @@
     "nif_check": "waived",
     "problems": [],
     "refusals": [],
-    "taint": {
-      "telemetry": "rebar3 build runs plugins"
-    }
+    "taint": {}
   },
   "optional_deps": {
     "added": [],
@@ -1744,9 +1742,9 @@
   "optional_deps_variant": "exclude",
   "package": "phoenix",
   "platform": "darwin-elixir-1.20.4-otp-29",
-  "reason": "closure dependency observed the host: telemetry (rebar3 build runs plugins)",
+  "reason": "calls System.cmd/2",
   "rule1_reason": "calls System.cmd/2",
   "status": "skipped",
-  "trace_verdict": "refused",
+  "trace_verdict": "pass",
   "version": "1.8.16"
 }

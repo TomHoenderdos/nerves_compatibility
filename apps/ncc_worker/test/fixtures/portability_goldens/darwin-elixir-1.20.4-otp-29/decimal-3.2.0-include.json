@@ -1,0 +1,58 @@
+{
+  "deps_lock": {},
+  "judge_compile": "finished",
+  "observations": {
+    "build_root_source_path": [],
+    "config_reads": [],
+    "elixir_version": [
+      {
+        "arg": {
+          "left": "\"1.20.4\"",
+          "right": "\">= 1.7.0\""
+        },
+        "file": "lib/decimal/macros.ex",
+        "line": 5,
+        "mfa": "Version.match?/2",
+        "module": "Elixir.Decimal.Macros",
+        "owner": "decimal"
+      },
+      {
+        "arg": {},
+        "file": "lib/decimal/macros.ex",
+        "line": 5,
+        "mfa": "System.version/0",
+        "module": "Elixir.Decimal.Macros",
+        "owner": "decimal"
+      }
+    ],
+    "mix_exs_allowed": [],
+    "native_calls": [],
+    "native_libs": [],
+    "nif_check": "waived",
+    "problems": [],
+    "refusals": [
+      {
+        "owner": "decimal",
+        "reason": "compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:198)"
+      },
+      {
+        "owner": "decimal",
+        "reason": "compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:206)"
+      }
+    ],
+    "taint": {}
+  },
+  "optional_deps": {
+    "added": [],
+    "dropped": [],
+    "reason": null
+  },
+  "optional_deps_variant": "include",
+  "package": "decimal",
+  "platform": "darwin-elixir-1.20.4-otp-29",
+  "reason": "compile-time host read: erlang:system_info/1 in elixir_compiler_N.__MODULE__/1 (lib/decimal.ex:198)",
+  "rule1_reason": null,
+  "status": "skipped",
+  "trace_verdict": "refused",
+  "version": "3.2.0"
+}

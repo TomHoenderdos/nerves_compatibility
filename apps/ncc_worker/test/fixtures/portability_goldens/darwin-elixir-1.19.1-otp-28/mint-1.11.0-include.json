@@ -1,0 +1,365 @@
+{
+  "deps_lock": {
+    "castore": "1.0.22",
+    "hpax": "1.1.0"
+  },
+  "judge_compile": "finished",
+  "observations": {
+    "build_root_source_path": [],
+    "config_reads": [
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http1.ex",
+        "line": 1233,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 1752,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 1922,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2083,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2407,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2490,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2617,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2816,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2834,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "always_evaluate_messages"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2885,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http1.ex",
+        "line": 1233,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 1752,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 1922,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2083,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2407,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2490,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2617,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2816,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2834,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_application"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2885,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http1.ex",
+        "line": 1233,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 1752,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 1922,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2083,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2407,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2490,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2617,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2816,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2834,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "key": "compile_time_purge_matching"
+        },
+        "file": "lib/mint/http2.ex",
+        "line": 2885,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "mint"
+      }
+    ],
+    "elixir_version": [],
+    "mix_exs_allowed": [],
+    "native_calls": [],
+    "native_libs": [],
+    "nif_check": "waived",
+    "problems": [],
+    "refusals": [],
+    "taint": {}
+  },
+  "optional_deps": {
+    "added": [
+      "castore"
+    ],
+    "dropped": [],
+    "reason": null
+  },
+  "optional_deps_variant": "include",
+  "package": "mint",
+  "platform": "darwin-elixir-1.19.1-otp-28",
+  "reason": null,
+  "rule1_reason": null,
+  "status": "pass",
+  "trace_verdict": "pass",
+  "version": "1.11.0"
+}
