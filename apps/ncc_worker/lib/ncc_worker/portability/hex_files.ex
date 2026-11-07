@@ -13,7 +13,8 @@ defmodule NccWorker.Portability.HexFiles do
   never creates an atom (an atom comes back as `{:atom, name}`), and anything
   it does not understand is an error, never a raise. It reads the subset Hex
   writes: binaries (with `/utf8`), strings, lists, tuples, maps, atoms and
-  numbers, `%` comments, each term ended by a `.`.
+  numbers, `%` comments, each term ended by a `.`. String escapes follow
+  `erl_scan`, so a rebar.config such as hackney's (`"^20\\.3"`) reads.
 
   Each entry is returned as its path segments, `.` segments dropped. An
   absolute or empty entry, or one with a `..` segment, is dropped, never
@@ -222,6 +223,19 @@ defmodule NccWorker.Portability.HexFiles do
 
   defp escape(<<c, rest::binary>>, q, acc) when is_map_key(@escapes, c),
     do: quoted(rest, q, [Map.fetch!(@escapes, c) | acc])
+
+  # `\^c`, a control character, as erl_scan reads it.
+  defp escape(<<"^?", rest::binary>>, q, acc), do: quoted(rest, q, [127 | acc])
+
+  defp escape(<<"^", c, rest::binary>>, q, acc) when c in ?@..?_ or c in ?a..?z,
+    do: quoted(rest, q, [Bitwise.band(c, 31) | acc])
+
+  defp escape(<<"^", _::binary>>, _q, _acc), do: fail()
+
+  # Any other escaped character stands for itself (erl_scan: `"^20\.3"` is
+  # `"^20.3"`, as in hackney's rebar.config).
+  defp escape(<<c::utf8, rest::binary>>, q, acc) when c not in [?\n, ?x],
+    do: quoted(rest, q, [c | acc])
 
   defp escape(_text, _q, _acc), do: fail()
 

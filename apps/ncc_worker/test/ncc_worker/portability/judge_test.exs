@@ -1052,6 +1052,34 @@ defmodule NccWorker.Portability.JudgeTest do
       end
     end
 
+    test "hackney 4.9.1's real rebar.config reads (erl_scan escapes) and refuses",
+         %{tmp_dir: dir} do
+      config =
+        File.read!(Path.join([__DIR__, "../../fixtures/rebar/hackney-4.9.1.rebar.config"]))
+
+      # A top-level `{pre_hooks, [{clean, "rm -rf ..."}]}`: any non-empty
+      # hook list refuses (fail closed), before its platform_define.
+      assert {:refuse, "rebar3 build runs pre_hooks"} =
+               Rebar.check(write(dir, "hackney", %{"rebar.config" => config}))
+
+      without_hook =
+        String.replace(
+          config,
+          ~s({pre_hooks, [{clean, "rm -rf *~ */*~ */*.xfm test/*.beam"}]}.),
+          ""
+        )
+
+      assert {:refuse, "rebar3 build uses platform_define"} =
+               Rebar.check(write(dir, "hackney_pd", %{"rebar.config" => without_hook}))
+
+      # As a parent it hands its children no overrides (only its test
+      # profile has any), so they are not refused through it.
+      child_sources = %{config: "{erl_opts, []}.\n", script?: false}
+
+      assert :ok =
+               Rebar.check_sources(child_sources, [%{config: config, script?: false}], nil)
+    end
+
     test "the mix.rebar.config Mix hands rebar3 is checked too", %{tmp_dir: dir} do
       dest = write(dir, "dest", %{"rebar.config" => "{erl_opts, []}.\n"})
       build = write(dir, "build", %{"mix.rebar.config" => "{erl_opts,[]}.\n"})

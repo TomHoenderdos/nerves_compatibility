@@ -54,13 +54,21 @@ defmodule NccWorker.Portability.HexFilesTest do
     for bad <- [
           ~s({<<"files">>,[<<"lib">>]}),
           ~s({<<"files">>,[<<"lib>>]}.),
-          ~s({<<"files">>,[<<"l\\qx">>]}.),
+          ~s({<<"files">>,[<<"l\\x{110000}">>]}.),
+          ~S({<<"files">>,[<<"l\^1">>]}.),
+          "{<<\"files\">>,[<<\"l\\",
           ~s({<<"files">>,[<<"lib">>}.),
           ~s({<<"files">>,[<<300>>]}.),
           String.duplicate("[", 200) <> String.duplicate("]", 200) <> "."
         ] do
       assert HexFiles.parse(bad) == :error, bad
     end
+  end
+
+  test "escapes follow erl_scan: an unknown one is the character itself, \\^c a control" do
+    # hackney 4.9.1's rebar.config: {platform_define, "^20\.3", ...}
+    assert {:ok, [{{:atom, "x"}, [94, 50, 48, 46, 51], [1, 113, 127, 27]}]} =
+             HexFiles.parse(~S({x, "^20\.3", "\^a\q\^?\^["}.) <> "\n")
   end
 
   test "entries are path segments; absolute, empty and .. entries are dropped" do
