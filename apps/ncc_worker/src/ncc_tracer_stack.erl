@@ -27,10 +27,10 @@
 %% The compiler's diagnostics module colours a warning or error by
 %% `:elixir, :ansi_enabled` while formatting it. Its frame stays first only
 %% when one of its printing functions (the ones that format a diagnostic and
-%% write it to standard error) is on the stack below. Reached any other way
-%% (`SyntaxError.message/1` formats a snippet and returns the coloured text
-%% to its caller) its frames are skipped like the ones above, so the read
-%% belongs to whoever asked for the text.
+%% write it to standard error) is below it with nothing else in between.
+%% Reached any other way (`SyntaxError.message/1` formats a snippet and
+%% returns the coloured text to its caller) its frames are skipped like the
+%% ones above, so the read belongs to whoever asked for the text.
 -define(PRINTED_BY, [{elixir_errors, ["print_diagnostic", "print_diagnostics", "print_warning"]}]).
 %% A frame a read is attributed to only when the skipped frame right above
 %% it is the toolchain's module it is paired with: Logger's handler calls
@@ -184,17 +184,24 @@ reached([{M, _, _, _} | _] = Stack, {AboveM, _, _, _} = Above) ->
     end;
 reached(Stack, none) -> Stack.
 
-%% A frame of a PRINTED_BY module that no printing function of it lies
-%% at or below: a redefined module (not the toolchain's) is never skipped.
-unprinted(M, Below, IsToolchain) ->
+%% A frame of a PRINTED_BY module not on an unbroken run down to one of its
+%% printing functions: only frames of the module itself and the toolchain's
+%% ATTRIBUTED_THROUGH frames may lie between. Any other frame (a package's
+%% Inspect implementation a printer reached while formatting a stacktrace
+%% entry, say) asked for the text itself, so the read is its own. A
+%% redefined module (not the toolchain's) is never skipped.
+unprinted(M, Stack, IsToolchain) ->
     case lists:keyfind(M, 1, ?PRINTED_BY) of
-        {M, Printers} ->
-            IsToolchain(M) andalso
-                not lists:any(fun({BM, BF, _, _}) ->
-                                      BM =:= M andalso lists:member(base_name(BF), Printers)
-                              end, Below);
+        {M, Printers} -> IsToolchain(M) andalso not printed_run(Stack, M, Printers, IsToolchain);
         false -> false
     end.
+
+printed_run([{M, F, _, _} | Rest], M, Printers, IsToolchain) ->
+    lists:member(base_name(F), Printers) orelse printed_run(Rest, M, Printers, IsToolchain);
+printed_run([{A, _, _, _} | Rest], M, Printers, IsToolchain) ->
+    lists:member(A, ?ATTRIBUTED_THROUGH) andalso IsToolchain(A)
+        andalso printed_run(Rest, M, Printers, IsToolchain);
+printed_run([], _M, _Printers, _IsToolchain) -> false.
 
 uncached() -> ?UNCACHED.
 

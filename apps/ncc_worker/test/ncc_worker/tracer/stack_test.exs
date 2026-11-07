@@ -527,6 +527,37 @@ defmodule NccWorker.Tracer.StackTest do
       assert {:user, :frame, ^body, ^body} = errors_extent(errors_read() ++ [body])
     end
 
+    # The printers format a stacktrace entry's arguments with `inspect`,
+    # which runs a package's own Inspect implementation: anything that code
+    # asks `:elixir_errors` for is its own, even with a printer further down.
+    test "a frame between the reading frame and the printer takes the read" do
+      inspect_impl = f(Inspect.FxThing, :inspect, 2, ~c"/p/deps/x/lib/x.ex", 3)
+      message = f(SyntaxError, :message, 1)
+
+      below = [
+        f(Exception, :format_stacktrace_entry, 1),
+        f(:elixir_errors, :print_diagnostic, 2),
+        f(Module.ParallelChecker, :"-spawn_checker/7-fun-0-", 0)
+      ]
+
+      assert {:user, :frame, ^message, ^inspect_impl} =
+               errors_extent(errors_read() ++ [message, inspect_impl] ++ below)
+
+      assert {:user, :frame, ^inspect_impl, ^inspect_impl} =
+               errors_extent(errors_read() ++ [inspect_impl] ++ below)
+    end
+
+    test "IO.ANSI frames between the reading frame and the printer keep it first" do
+      highlight = f(:elixir_errors, :highlight, 2)
+      tc? = &(&1 in [IO.ANSI | @errors_toolchain])
+
+      stack =
+        errors_read() ++
+          [f(IO.ANSI, :format, 1), f(:elixir_errors, :print_warning, 3)]
+
+      assert {:user, :lineage, ^highlight, :none} = errors_extent(stack, tc?)
+    end
+
     test "a package's module of the same name stays first" do
       highlight = f(:elixir_errors, :highlight, 2)
       body = f(:elixir_compiler_3, :__MODULE__, 1)
