@@ -80,4 +80,11 @@ defmodule NccWorker.DockerfileTest do
   test "the toolchain image installs procps for kill(1)" do
     assert File.read!(@toolchain_dockerfile) =~ ~r/apt-get install[^\n]*\n?[^\n]*\bprocps\b/
   end
+
+  # A cmake-based NIF build (elixir_make or a rebar3 port hook calling
+  # cmake) must not fail on one toolchain only: the main image's
+  # nerves_system_br base ships cmake, the slim toolchain base does not.
+  test "the toolchain image installs cmake, as the main image's base has it" do
+    assert File.read!(@toolchain_dockerfile) =~ ~r/apt-get install[^\n]*\n?[^\n]*\bcmake\b/
+  end
 end

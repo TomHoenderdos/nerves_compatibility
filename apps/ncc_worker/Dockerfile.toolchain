@@ -8,13 +8,14 @@
 ARG BASE
 FROM ${BASE}
 
-# The slim images lack a compiler and git. A package's own build (elixir_make,
-# rebar3 port hooks, build scripts that ask git for a version) needs them, the
-# worker's classifier shells out to grep, and its cleanup of leftover
-# processes uses procps' kill(1) where it can (NccWorker.OsKill).
+# The slim images lack a compiler, cmake and git. A package's own build
+# (elixir_make, rebar3 port hooks, cmake-based NIFs, build scripts that ask
+# git for a version) needs them, the worker's classifier shells out to grep,
+# and its cleanup of leftover processes uses procps' kill(1) where it can
+# (NccWorker.OsKill). The main image's base ships cmake already.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      git make gcc g++ grep procps ca-certificates curl && \
+      git make gcc g++ cmake grep procps ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 # No user: Portal.Builder runs the container as an arbitrary `--user uid:gid`
