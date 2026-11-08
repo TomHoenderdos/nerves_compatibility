@@ -424,7 +424,7 @@ What it lists:
   signed Hex registry lists, which must also be the build's
   `package_checksum`, and each file must hash to its manifest `sha256`. A
   build that fails publishes none of its files, beams included. A package
-  whose `priv` is anything else has no toolchain build.
+  whose `priv` is anything else gets a `skipped` toolchain build.
   The builder also recompiles the package's dependency closure under a
   compile-time trace and skips any build whose compile read the build host
   (its OS, environment, programs or files outside the dependency closure),
@@ -434,9 +434,11 @@ What it lists:
   runtime does not count: a package that runs programs, opens ports, looks
   up executables or reads the OS type when it runs is built and served like
   any other, since those calls run the same from a precompiled build. Native
-  code still does not: a package with native sources or build dependencies,
-  a NIF or driver load, a target read or a `nerves` name has no toolchain
-  build. Its `compile_env` lists the config reads that trace observed, so a
+  code and Nerves still do not: a package with native sources or build
+  dependencies, a NIF or driver load, a target read, a `nerves` name or a
+  mention of Nerves in its sources, or with a dependency whose sources read
+  the target or mention Nerves, gets a `skipped` toolchain build. Its
+  `compile_env` lists the config reads that trace observed, so a
   project whose config sets one of those keys differently compiles the
   package itself.
 - A build whose `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
@@ -616,6 +618,8 @@ them.
   depends on a package whose own compile did, or whose trace did not finish
   publishes no `pure_elixir` entry. Its files are the traced compile's, and
   they pass the same native-code checks as a toolchain build's (no NIF or
-  driver load, no native sources or build dependencies, no target read or
-  `nerves` name), including code an optional dependency compiles in. The
+  driver load, no native sources or build dependencies, no target read,
+  `nerves` name or mention of Nerves in the sources, and no dependency whose
+  sources read the target or mention Nerves), including code an optional
+  dependency compiles in. The
   run's status is unaffected.
