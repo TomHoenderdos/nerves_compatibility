@@ -861,7 +861,13 @@ defmodule Portal.Catalog.Ingestion do
          {:ok, run} <-
            create_run(result, opts, package.id, version, overall, finished_at, {carried, carry?}),
          :ok <-
-           create_system_results(systems, run.id, version, staged, logs),
+           create_system_results(
+             systems,
+             {run.id, host_portability_rule(result)},
+             version,
+             staged,
+             logs
+           ),
          :ok <- copy_carried(carried, run.id),
          :ok <- record_triage(package_name, version, run.id, result["argus"]) do
       {:ok, run}
@@ -1007,6 +1013,15 @@ defmodule Portal.Catalog.Ingestion do
 
   defp system_compile_env_rule(_system_pkg, _sys), do: nil
 
+  # The rule that judged a `pure_elixir` result's publication, from the
+  # result's top-level `host_portability`; only `pure_elixir` stores it.
+  defp host_portability_rule(result) do
+    case Map.get(result, "host_portability") do
+      %{} = hp -> portability_rule(Map.get(hp, "portability_rule"))
+      _ -> nil
+    end
+  end
+
   defp create_run(result, opts, package_id, version, overall, finished_at, {carried, carry?}) do
     Run
     |> Ash.Changeset.for_create(:create, %{
@@ -1132,11 +1147,12 @@ defmodule Portal.Catalog.Ingestion do
         (id, run_id, system_pkg, system_version, status, firmware_size_bytes, duration_sec,
          phase_timings, hex_version_tested, beam_scan, compile_env, dependency_scans, log_path,
          log_tail, failure_category, carried_from_run_id, deps_lock, unpublished_at,
-         compile_env_rule, inserted_at, updated_at)
+         compile_env_rule, portability_rule, inserted_at, updated_at)
       SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
              s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan, s.compile_env,
              s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
-             s.deps_lock, s.unpublished_at, s.compile_env_rule, now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
+             s.deps_lock, s.unpublished_at, s.compile_env_rule, s.portability_rule,
+             now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
       FROM catalog_system_results s
       JOIN unnest($2::uuid[], $3::uuid[], $4::uuid[]) AS m(old_id, new_id, built_in)
         ON m.old_id = s.id
@@ -1182,16 +1198,16 @@ defmodule Portal.Catalog.Ingestion do
 
   defp run_log(_overall, opts), do: Map.get(opts, :log)
 
-  defp create_system_results(systems, run_id, version, staged, logs) do
+  defp create_system_results(systems, run, version, staged, logs) do
     Enum.reduce_while(systems, :ok, fn {system_pkg, sys}, _acc ->
-      case create_system_result(system_pkg, sys, run_id, version, staged, logs) do
+      case create_system_result(system_pkg, sys, run, version, staged, logs) do
         {:ok, _} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
 
-  defp create_system_result(system_pkg, sys, run_id, version, staged, logs) do
+  defp create_system_result(system_pkg, sys, {run_id, rule}, version, staged, logs) do
     status = Compatibility.Types.parse_status(sys["status"])
 
     result =
@@ -1212,7 +1228,8 @@ defmodule Portal.Catalog.Ingestion do
         log_tail: sys["log_tail"],
         failure_category: Portal.Catalog.FailureClassifier.classify(sys),
         deps_lock: deps_lock(sys["deps_lock"]),
-        compile_env_rule: system_compile_env_rule(system_pkg, sys)
+        compile_env_rule: system_compile_env_rule(system_pkg, sys),
+        portability_rule: if(system_pkg == "pure_elixir", do: rule)
       })
       |> Ash.create(domain: @domain)
 

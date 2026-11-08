@@ -1133,6 +1133,69 @@ defmodule Portal.Catalog.IngestionTest do
       assert systems["nerves_system_bbb"].compile_env_rule == nil
     end
 
+    # The rule that decided a `pure_elixir` result's publication
+    # (`host_portability.portability_rule`), so a rule's publications can be
+    # found again. Only 1..9 is kept, as for a toolchain build.
+    test "a pure_elixir result stores the portability rule that judged it" do
+      for {rule, stored} <- [{2, 2}, {1, 1}, {0, nil}, {10, nil}, {"2", nil}, {nil, nil}] do
+        name = "rulepkg#{System.unique_integer([:positive])}"
+
+        result =
+          full_result(name, "1.0.0", %{
+            "pure_elixir" => %{"status" => "pass"},
+            "nerves_system_bbb" => %{"status" => "pass"}
+          })
+
+        run =
+          ingest!(
+            Map.put(result, "host_portability", %{
+              "status" => "pass",
+              "reason" => nil,
+              "portability_rule" => rule,
+              "compile_observations" => nil
+            })
+          )
+
+        systems = systems_of(run)
+        assert systems["pure_elixir"].portability_rule == stored
+        assert systems["nerves_system_bbb"].portability_rule == nil
+      end
+    end
+
+    test "a result without host_portability stores no portability rule" do
+      run =
+        ingest!(full_result("norulepkg", "1.0.0", %{"pure_elixir" => %{"status" => "pass"}}))
+
+      assert systems_of(run)["pure_elixir"].portability_rule == nil
+    end
+
+    test "a carried-forward system result keeps its portability rule" do
+      result = full_result("carryrulepkg", "1.0.0", %{"pure_elixir" => %{"status" => "pass"}})
+
+      first =
+        ingest!(
+          Map.put(result, "host_portability", %{
+            "status" => "pass",
+            "reason" => nil,
+            "portability_rule" => 2,
+            "compile_observations" => nil
+          })
+        )
+
+      second =
+        ingest!(%{
+          "package" => %{"name" => "carryrulepkg", "version" => "1.0.0"},
+          "finished_at" => "2026-10-11T10:00:00Z",
+          "scope" => "targets",
+          "systems" => %{"nerves_system_bbb" => %{"status" => "pass"}}
+        })
+
+      systems = systems_of(second)
+      assert systems["pure_elixir"].carried_from_run_id == first.id
+      assert systems["pure_elixir"].portability_rule == 2
+      assert systems["nerves_system_bbb"].portability_rule == nil
+    end
+
     test "a carried-forward system result keeps its own deps_lock" do
       deps_lock = %{"jason" => %{"version" => "1.4.4", "checksum" => "abc"}}
 

@@ -51,7 +51,8 @@ defmodule Portal.Catalog.SystemResult do
         :failure_category,
         :carried_from_run_id,
         :deps_lock,
-        :compile_env_rule
+        :compile_env_rule,
+        :portability_rule
       ])
     end
 
@@ -136,6 +137,15 @@ defmodule Portal.Catalog.SystemResult do
     # (a published `pure_elixir` result, R5); nil otherwise. Exempts the
     # result from the withheld list. Carried copies keep it.
     attribute :compile_env_rule, :integer do
+      public?(true)
+    end
+
+    # The precompiled portability rule that decided a `pure_elixir` result's
+    # publication (result.json `host_portability.portability_rule`, 1..9), so
+    # the results one rule published can be found again; nil on every other
+    # system and on results ingested before it was recorded. Carried copies
+    # keep it.
+    attribute :portability_rule, :integer do
       public?(true)
     end
 
