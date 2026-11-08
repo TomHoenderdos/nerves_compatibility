@@ -34,6 +34,18 @@ defmodule Portal.Precompiled.ToolchainRevocation do
       copy keeps both, and ingest stores a later rule-2 `pure_elixir` result
       of the same version withdrawn with the same reason and timestamp.
 
+  ## What a revocation does not cover
+
+  A revocation sticks per identity and version, never per package. A
+  revoked toolchain build keeps only its own identity (package, version,
+  toolchain, `builder_version`, optional-dependency variant and config
+  variant) from being rebuilt, and a revoked `pure_elixir` result only later
+  results of its own package and version. Anything new still publishes
+  under rule 2: the same version on the other toolchain, a `:without` build
+  made after the call, a config variant, a later version. To stop those,
+  repeat the call once they exist, or roll the worker image back to one
+  that judges by rule 1.
+
   ## Emergency: `everything: true`
 
   Takes every rule-2 publication, whatever rule 1 said or whether anything
