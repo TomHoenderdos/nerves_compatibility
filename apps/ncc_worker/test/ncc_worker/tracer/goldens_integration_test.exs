@@ -8,12 +8,14 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
   Hex cache, takes the lock snapshot before any compile and runs the real
   tracer and judge (`NccWorker.Portability.run/3`).
 
-  P1 only records: the spec expects these packages to become publishable
-  under the trace, but rule 1 still refuses them in P1, so the build's own
-  status is not asserted. What is asserted is the trace verdict class
-  (`@expected`), and that the normalised observations equal the committed
-  golden under `test/fixtures/portability_goldens/<os>-elixir-<x.y.z>-otp-<n>/`
-  in every part that repeats between identical runs (`stable/1`).
+  Under rule 2 the build's own status is the trace's verdict joined with the
+  static rules (`BuildSelection.static_rules/4`), so it is asserted too:
+  `pass` exactly where `@expected` says `pass`, `skipped` elsewhere.
+  `rule1_reason` records what rule 1 would have said. Also asserted are the
+  trace verdict class (`@expected`), and that the normalised observations
+  equal the committed golden under
+  `test/fixtures/portability_goldens/<os>-elixir-<x.y.z>-otp-<n>/` in every
+  part that repeats between identical runs (`stable/1`).
   A golden is compared only while the build resolved the same lock: Hex
   moves on, and a new lock is a reason to regenerate, not a failure. A
   toolchain without a golden of its own is only reported.
@@ -50,8 +52,7 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
   # The trace verdict class each golden has. The spec expects every one to
   # be publishable under the trace ("pass"). Each refused entry names its
   # first refusal (the golden lists them all). These record what the rules
-  # do today; they are not loosened here (P4 decides). Rule 1 still refuses
-  # every one of these builds in P1.
+  # do today; they are not loosened here.
   @expected %{
     {"phoenix", "exclude"} => "pass",
     {"phoenix", "include"} => "pass",
@@ -94,7 +95,7 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
   # 2026-11-06 benchmark's Phoenix and library locks), built as published:
   # with their optional dependencies. The trace must not take any of them
   # away: each must judge pass, observations allowed. A refusal or
-  # could-not-judge here is a P1 regression, reported, never loosened here.
+  # could-not-judge here is a regression, reported, never loosened here.
   @hits [
     {"telemetry", "1.4.2"},
     {"jason", "1.4.5"},
@@ -160,6 +161,14 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
                  limit: :infinity
                )
 
+      expected_status = if @expected[{package, variant}] == "pass", do: "pass", else: "skipped"
+      assert golden["status"] == expected_status, inspect(Map.take(golden, ["status", "reason"]))
+
+      if package in ["phoenix", "phoenix_live_view", "swoosh"] do
+        assert golden["rule1_reason"] in ["calls System.cmd/2", "calls erlang:open_port/2"],
+               inspect(golden["rule1_reason"])
+      end
+
       if {package, variant} == {"phoenix_live_view", "exclude"} do
         assert ~s(phoenix_live_view ["root_tag_attribute"] = :error) in golden["compile_env"],
                inspect(golden["compile_env"])
@@ -177,12 +186,30 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
       compare(ctx.tag, golden)
 
       assert golden["trace_verdict"] == "pass",
-             "P1 regression: #{package} #{version} (#{golden["trace_verdict"]}): " <>
+             "regression: #{package} #{version} (#{golden["trace_verdict"]}): " <>
                "#{golden["reason"]}\n" <>
                inspect(Map.take(golden["observations"], ["refusals", "taint", "problems"]),
                  pretty: true,
                  limit: :infinity
                )
+    end
+  end
+
+  # Packages rebar3 builds whose rebar.config has a platform_define: host
+  # dependence by definition when rebar compiles, refused under rule 2 too.
+  @negatives [{"poolboy", "1.5.2"}]
+
+  for {package, version} <- @negatives do
+    @tag package: package, version: version, variant: "include", negative: true
+    test "negative: #{package} #{version} stays refused", ctx do
+      %{package: package, version: version} = ctx
+      {golden, stats} = build(ctx, package, version, "include")
+      report(ctx, golden, stats)
+
+      assert golden["status"] == "skipped"
+
+      assert String.starts_with?(golden["reason"] || "", "rebar3 build "),
+             inspect(golden["reason"])
     end
   end
 
