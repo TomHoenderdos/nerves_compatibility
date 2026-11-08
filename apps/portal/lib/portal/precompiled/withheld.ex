@@ -14,6 +14,8 @@ defmodule Portal.Precompiled.Withheld do
   it records its compile-time config reads (`records_config_reads?/1`). The same
   selectors also leave out a system result whose files were withdrawn
   (`Portal.Catalog.SystemResult`'s `unpublished_at`), in the same predicate.
+  A named config variant of a toolchain build is served only beside its
+  served default (`config_variant_served?/2`).
 
   Why: some packages change what their dependents compile to through
   application config the user's project sets and our builds do not. Every
@@ -78,6 +80,29 @@ defmodule Portal.Precompiled.Withheld do
   def withheld?(package_name, deps_lock, packages, build) do
     not records_config_reads?(build) and
       (package_name in packages or Enum.any?(packages, &Map.has_key?(deps_lock, &1)))
+  end
+
+  @doc """
+  Whether a toolchain build's config variant lets it be served
+  (precompiled portability spec, R7): a `"default"` build always; a named
+  variant only when it records its config reads (`records_config_reads?/1`,
+  whatever the withheld list) and its `default` sibling (same version,
+  toolchain, builder version and optional-deps variant) is a pass that is not
+  revoked, in `served`: the package's toolchain builds that every other rule
+  serves (passing, unrevoked and not `withheld?/4`). A refusal, a revocation
+  or a withholding of the default applies to every config variant of it.
+  """
+  @spec config_variant_served?(map(), [map()]) :: boolean()
+  def config_variant_served?(%{config_variant: "default"}, _served), do: true
+
+  def config_variant_served?(build, served) do
+    records_config_reads?(build) and Enum.any?(served, &default_of?(&1, build))
+  end
+
+  defp default_of?(d, build) do
+    d.config_variant == "default" and d.status == :pass and is_nil(d.revoked_at) and
+      {d.version, d.toolchain, d.builder_version, d.variant} ==
+        {build.version, build.toolchain, build.builder_version, build.variant}
   end
 
   @doc """

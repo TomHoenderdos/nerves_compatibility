@@ -396,6 +396,10 @@ toolchain:
   `pure_elixir`. A client compares it with its own target only for a
   dependency that reads `Mix.target()` at compile time. Builds signed before
   2026-11 lack it; a client then assumes that same conventional name.
+- `build.config_variant` — optional, informational: the config variant a
+  toolchain build was compiled in (see below). Absent for the default build.
+  A client matches a
+  variant by its `compile_env` like any other build, and can ignore this key.
 - `updated_at` — the newest `finished_at` among the builds listed.
 
 What it lists:
@@ -431,9 +435,15 @@ What it lists:
 - A build whose `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
   is `null` is left out, since no client can match it (it stays in format 1).
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
-  `system_version` and `deps`: the newest wins. A toolchain build with and one
-  without the package's optional dependencies differ in `deps`, so both are
-  listed. Two versions of one Nerves
+  `system_version`, `deps` and config variant: the newest wins. A toolchain
+  build with and one without the package's optional dependencies differ in
+  `deps`, so both are listed. A toolchain build whose compile read LiveView's
+  compile-time config is also made in up to three config variants
+  (`phx_prod`, `phx_test`, `phx_dev`: the Phoenix and LiveView config a
+  `mix phx.new` app sets in each env), each listed with an informational
+  `build.config_variant`. Their `compile_env` lists the values their own
+  compile read, so at most one of them matches a project; a client needs no
+  rule for them. Two versions of one Nerves
   system are two builds, because a client takes a system build only at its own
   system version.
 
@@ -585,6 +595,13 @@ them.
   withheld whatever it records, and a revoked or withdrawn build stays
   unserved. LiveView-closure builds published before that come back as the
   builder rebuilds them.
+- A config variant is served only beside its default build: the default
+  build of the same version, toolchain and optional dependencies must itself
+  be served (passing, not revoked, not withheld), and the variant must record
+  its own config reads. Revoking, refusing or withholding the default
+  withdraws its variants in the same batch, in the format-2 manifest, the
+  package list and `files/{sha256}` alike. Format 1 never lists a toolchain
+  build, so it never lists a variant.
 - A `pure_elixir` entry is published only when the package's own source is
   OS-agnostic (no `:os.type()` or system architecture read, no
   `platform_define`, no `rebar.config.script`), the check toolchain builds

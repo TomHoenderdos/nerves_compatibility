@@ -267,4 +267,75 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
     assert %{"nerves_system_rpi4" => [rpi4]} = by_target(v2, "1.4.1")
     assert rpi4["build"]["deps"] == system_deps
   end
+
+  describe "config variants" do
+    test "four config variants of one build are listed side by side; each keeps its newest" do
+      drop_legacy_identity_index!()
+
+      default =
+        ingest_toolchain_build("cvm", "1.0.0", compile_env: lv_default_env(), compile_env_rule: 1)
+
+      named =
+        for name <- Compatibility.ConfigVariants.names(), into: %{} do
+          {name,
+           ingest_toolchain_build("cvm", "1.0.0",
+             config_variant: name,
+             compile_env: overlay_env(name),
+             compile_env_rule: 1
+           )}
+        end
+
+      # An older builder version's default and phx_prod: the newer of each
+      # replaces its predecessor, and neither shadows the other variants.
+      for config_variant <- ["default", "phx_prod"] do
+        env =
+          if config_variant == "default", do: lv_default_env(), else: overlay_env(config_variant)
+
+        ingest_toolchain_build("cvm", "1.0.0",
+          config_variant: config_variant,
+          builder_version: 0,
+          finished_at: "2026-10-01T10:00:00Z",
+          compile_env: env,
+          compile_env_rule: 1
+        )
+      end
+
+      builds = builds(Catalog.precompiled_manifest_v2("cvm"), "1.0.0")
+      assert length(builds) == 4
+
+      by_variant = Map.new(builds, &{&1["build"]["config_variant"] || "default", &1})
+      assert Map.keys(by_variant) |> Enum.sort() == ["default", "phx_dev", "phx_prod", "phx_test"]
+      refute Map.has_key?(by_variant["default"]["build"], "config_variant")
+      assert by_variant["default"]["build"]["run_id"] == default.run_id
+
+      for {name, row} <- named do
+        assert by_variant[name]["build"]["run_id"] == row.run_id
+        assert by_variant[name]["build"]["compile_env"] == overlay_env(name)
+      end
+    end
+
+    test "a package without named variants renders exactly as before" do
+      ingest_toolchain_build("cvn", "1.0.0", compile_env: [], compile_env_rule: 1)
+      [build] = builds(Catalog.precompiled_manifest_v2("cvn"), "1.0.0")
+
+      assert Map.keys(build["build"]) |> Enum.sort() ==
+               ~w(compile_env dep_env deps elixir image_digest mix_target otp package_checksum run_id system_version)
+    end
+
+    test "format 1 never lists a toolchain build, variant or not" do
+      drop_legacy_identity_index!()
+      ingest_with_artifact(keyed_run())
+      before = Catalog.precompiled_manifest("jason")
+      ingest_toolchain_build("jason", "1.4.1", compile_env: lv_default_env(), compile_env_rule: 1)
+
+      ingest_toolchain_build("jason", "1.4.1",
+        config_variant: "phx_prod",
+        compile_env: overlay_env("phx_prod"),
+        compile_env_rule: 1
+      )
+
+      assert Catalog.precompiled_manifest("jason") == before
+      assert length(builds(Catalog.precompiled_manifest_v2("jason"), "1.4.1")) == 3
+    end
+  end
 end

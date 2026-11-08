@@ -1082,8 +1082,10 @@ defmodule Portal.Catalog do
   unrevoked `Portal.Catalog.ToolchainBuild` whose files this host holds. A
   build without `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
   is left out: a client cannot match it. One build is kept per target,
-  toolchain (`"<elixir minor>/<otp>"`), system version and dependency lock,
-  the newest.
+  toolchain (`"<elixir minor>/<otp>"`), system version, dependency lock and
+  config variant, the newest. A named config variant of a toolchain build
+  carries `build["config_variant"]` and is listed only beside its served
+  default build (`Portal.Precompiled.Withheld.config_variant_served?/2`).
   """
   @spec precompiled_manifest_v2(String.t()) :: map() | nil
   def precompiled_manifest_v2(package_name) do
@@ -1196,6 +1198,14 @@ defmodule Portal.Catalog do
     Map.new(rows, fn [name, fingerprint] -> {name, fingerprint <> "|withheld:" <> withheld} end)
   end
 
+  # `Withheld.records_config_reads?/1` for the toolchain build aliased
+  # `table`, NULL-safe: rule 1 next to a `compile_env` list, written by the
+  # row's own run (a NULL `run_id` never matches).
+  records_config_reads = fn table ->
+    "coalesce(#{table}.compile_env_rule = 1 AND #{table}.compile_env IS NOT NULL " <>
+      "AND #{table}.compile_env_run_id = #{table}.run_id, false)"
+  end
+
   # `Portal.Precompiled.Withheld` in SQL, for the queries that select
   # published files without rendering a manifest: `$W` is its package list.
   # `p` is the package, `s` a system result, `r` its run and `b` the run it
@@ -1236,6 +1246,31 @@ defmodule Portal.Catalog do
                                  "AND t.compile_env_run_id = t.run_id)"
                              )
 
+  # `Withheld.config_variant_served?/2` for the toolchain build `t` of the
+  # package `p`: a default always; a named variant only when it records its
+  # own config reads and its default (same version, toolchain, builder
+  # version and optional-deps variant) is served, that is a pass, not
+  # revoked and not withheld (`@withheld_toolchain_clause` for that row).
+  # Every selector that applies `@withheld_toolchain_clause` applies this
+  # beside it.
+  @withheld_default_clause @withheld_lock_clause
+                           |> String.replace("$L", "dd.deps_lock")
+                           |> String.replace("$E", records_config_reads.("dd"))
+  @config_variant_served_clause """
+  (t.config_variant = 'default'
+   OR (#{records_config_reads.("t")}
+       AND EXISTS (SELECT 1 FROM catalog_toolchain_builds dd
+                   WHERE dd.package_id = t.package_id
+                     AND dd.version = t.version
+                     AND dd.toolchain = t.toolchain
+                     AND dd.builder_version = t.builder_version
+                     AND dd.variant = t.variant
+                     AND dd.config_variant = 'default'
+                     AND dd.status = 'pass'
+                     AND dd.revoked_at IS NULL
+                     AND #{@withheld_default_clause})))
+  """
+
   @packages_with_precompiled_files_sql_template """
   SELECT p.name
   FROM catalog_packages p
@@ -1258,6 +1293,7 @@ defmodule Portal.Catalog do
   WHERE t.revoked_at IS NULL
     AND t.status = 'pass'
     AND #{@withheld_toolchain_clause}
+    AND #{@config_variant_served_clause}
   ORDER BY 1
   """
   @packages_with_precompiled_files_sql String.replace(
@@ -1272,7 +1308,9 @@ defmodule Portal.Catalog do
   builder's run (and a result carried from one) counts only while the
   builder is enrolled and publishing, as in `precompiled_manifest/1`. A
   result or build whose closure has a withheld package
-  (`Portal.Precompiled.Withheld`) does not count.
+  (`Portal.Precompiled.Withheld`) does not count, nor does a named config
+  variant that is not served beside its default
+  (`Portal.Precompiled.Withheld.config_variant_served?/2`).
   """
   @spec packages_with_precompiled_files() :: [String.t()]
   def packages_with_precompiled_files do
@@ -1280,14 +1318,6 @@ defmodule Portal.Catalog do
       Portal.Repo.query!(@packages_with_precompiled_files_sql, [Withheld.packages()])
 
     List.flatten(rows)
-  end
-
-  # `Withheld.records_config_reads?/1` for the toolchain build aliased
-  # `table`, NULL-safe: rule 1 next to a `compile_env` list, written by the
-  # row's own run (a NULL `run_id` never matches).
-  records_config_reads = fn table ->
-    "coalesce(#{table}.compile_env_rule = 1 AND #{table}.compile_env IS NOT NULL " <>
-      "AND #{table}.compile_env_run_id = #{table}.run_id, false)"
   end
 
   # When a reopenable row is due: 7 days after its build or its last attempt
@@ -1970,6 +2000,7 @@ defmodule Portal.Catalog do
     AND t.revoked_at IS NULL
     AND t.status = 'pass'
     AND #{@withheld_toolchain_clause}
+    AND #{@config_variant_served_clause}
   LIMIT 1
   """
   @published_sha256_sql String.replace(@published_sha256_sql_template, "$W", "$2")
@@ -1982,7 +2013,9 @@ defmodule Portal.Catalog do
   passing unrevoked toolchain build, either one not withheld
   (`Portal.Precompiled.Withheld`). A blob a non-publishing or revoked
   builder uploaded, or one only withheld builds own, has an `Artifact` row
-  and a file but is not served.
+  and a file but is not served; so has one only named config variants own
+  whose default is not served
+  (`Portal.Precompiled.Withheld.config_variant_served?/2`).
   """
   @spec published_sha256?(String.t()) :: boolean()
   # The SQL is a module constant; the digest is a bound parameter the caller
@@ -2554,7 +2587,8 @@ defmodule Portal.Catalog do
   # them owns, and which of those blobs this host holds. A result or build
   # whose dependency closure has a withheld package
   # (`Portal.Precompiled.Withheld`) is left out here, before anything is
-  # rendered from it.
+  # rendered from it, and so is a named config variant whose default is not
+  # among the builds left (`Withheld.config_variant_served?/2`).
   defp precompiled_sources(package_name) do
     case packages(package_name) do
       [package] ->
@@ -2569,10 +2603,12 @@ defmodule Portal.Catalog do
         shas_by_system_result_id =
           results |> Enum.map(& &1.id) |> manifest_shas_for_system_results()
 
-        toolchain_builds =
+        served =
           package.id
           |> published_toolchain_builds()
           |> Enum.reject(&Withheld.withheld?(package.name, &1.deps_lock, withheld, &1))
+
+        toolchain_builds = Enum.filter(served, &Withheld.config_variant_served?(&1, served))
 
         shas_by_toolchain_build_id =
           toolchain_builds |> Enum.map(& &1.id) |> manifest_shas_for_toolchain_builds()
@@ -2719,10 +2755,18 @@ defmodule Portal.Catalog do
         "image_digest" => tb.image_digest
       }
 
+      build = put_config_variant(build, tb.config_variant)
+
       {tb.version, tb.finished_at,
        Map.merge(files, %{"target" => "pure_elixir", "build" => build})}
     end
   end
+
+  # Informational: the client matches a variant by its recorded
+  # `compile_env`, and ignores this key. Left out for the default, so a
+  # package without named variants renders the bytes it always did.
+  defp put_config_variant(build, "default"), do: build
+  defp put_config_variant(build, name), do: Map.put(build, "config_variant", name)
 
   # The MIX_TARGET a build was compiled under. The worker sets it from
   # `NccWorker.Systems`, whose target for `nerves_system_<x>` is always `<x>`;
@@ -2737,11 +2781,15 @@ defmodule Portal.Catalog do
 
   # A client takes a system build only at its own system version, so each
   # system version is its own key; `pure_elixir` builds all have nil there.
+  # Config variants of one build (precompiled portability spec, R7) are
+  # listed side by side, each its own key; a rebuild of a variant, of any
+  # builder version, still replaces its predecessor. Run results are all
+  # the default variant.
   defp newest_per_key(builds) do
     builds
     |> Enum.group_by(fn {version, _finished_at, %{"target" => target, "build" => build}} ->
       {version, target, "#{elixir_minor(build["elixir"])}/#{build["otp"]}",
-       build["system_version"], build["deps"]}
+       build["system_version"], build["deps"], build["config_variant"] || "default"}
     end)
     |> Enum.map(fn {_key, group} -> Enum.max_by(group, &recency/1) end)
   end
@@ -2764,6 +2812,12 @@ defmodule Portal.Catalog do
     |> Ash.Query.select([
       :id,
       :version,
+      :toolchain,
+      :builder_version,
+      :variant,
+      :config_variant,
+      :status,
+      :revoked_at,
       :elixir,
       :otp,
       :image_digest,

@@ -140,6 +140,42 @@ defmodule Portal.PrecompiledFixtures do
     :ok
   end
 
+  @lv_keys ~w(debug_attributes debug_heex_annotations enable_expensive_runtime_checks root_tag_attribute)
+
+  @doc """
+  The `compile_env` of a default build whose closure read the four
+  LiveView keys the config variants set and `phoenix` `json_library`, all
+  unset.
+  """
+  def lv_default_env do
+    unset =
+      :error |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
+
+    [%{"app" => "phoenix", "path" => ["json_library"], "value" => unset}] ++
+      for key <- @lv_keys,
+          do: %{"app" => "phoenix_live_view", "path" => [key], "value" => unset}
+  end
+
+  @doc """
+  `lv_default_env/0` as the config variant `name` reads it: each key its
+  overlay sets at the overlay's value, so ingest takes it as recorded.
+  """
+  def overlay_env(name) do
+    {:ok, items} = Compatibility.ConfigVariants.overlay(name)
+
+    values =
+      Map.new(items, fn {app, key, value} ->
+        {{"#{app}", "#{key}"}, Compatibility.ConfigVariants.encode(value)}
+      end)
+
+    Enum.map(lv_default_env(), fn %{"app" => app, "path" => [key]} = item ->
+      case Map.fetch(values, {app, key}) do
+        {:ok, value} -> %{item | "value" => value}
+        :error -> item
+      end
+    end)
+  end
+
   defp result_fixture do
     @fixture |> File.read!() |> Jason.decode!()
   end

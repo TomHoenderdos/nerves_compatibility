@@ -9,6 +9,8 @@ defmodule Portal.Precompiled.BatchesTest do
   # The one file `ingest_with_artifact/1` stores.
   @artifact_sha "ce51ace18fbd3f0295b9df8305b6655ac8a5c609a2a5995cc852610f55637651"
 
+  @lv_lock %{"phoenix_live_view" => %{"version" => "1.1.0", "checksum" => "lv"}}
+
   setup %{tmp_dir: dir} do
     old = Application.get_env(:portal, :precompiled_signing)
     on_exit(fn -> Application.put_env(:portal, :precompiled_signing, old) end)
@@ -209,6 +211,116 @@ defmodule Portal.Precompiled.BatchesTest do
       {:ok, b3} = Batches.build_and_sign()
       assert Batches.manifests(b3)[name] == sha
       assert_stored_bytes_are_fresh_renders(b3)
+    end
+  end
+
+  describe "a package with config variants" do
+    setup do
+      drop_legacy_identity_index!()
+      name = "cvb_#{System.unique_integer([:positive])}"
+
+      # A LiveView closure: each build is served only on its own mark.
+      default =
+        ingest_toolchain_build(name, "1.0.0",
+          deps_lock: @lv_lock,
+          compile_env: lv_default_env(),
+          compile_env_rule: 1
+        )
+
+      %{name: name, default: default}
+    end
+
+    defp v2_builds(batch, name) do
+      case Batches.manifests_v2(batch)[name] do
+        nil ->
+          []
+
+        sha ->
+          {:ok, bytes} = Manifests.read(sha)
+          JSON.decode!(bytes)["versions"]["1.0.0"]["builds"]
+      end
+    end
+
+    defp variant!(name, config_variant) do
+      ingest_toolchain_build(name, "1.0.0",
+        config_variant: config_variant,
+        deps_lock: @lv_lock,
+        compile_env: overlay_env(config_variant),
+        compile_env_rule: 1
+      )
+    end
+
+    test "the batch signs the bytes the format-2 route serves", %{name: name} do
+      variant!(name, "phx_dev")
+
+      assert {:ok, batch} = Batches.build_and_sign()
+      sha = JSON.decode!(batch.payload)["manifests_v2"][name]
+      {:ok, bytes} = Manifests.read(sha)
+      assert length(JSON.decode!(bytes)["versions"]["1.0.0"]["builds"]) == 2
+      assert {:ok, ^bytes} = Manifests.render_v2(name)
+      assert_stored_bytes_are_fresh_renders(batch)
+    end
+
+    test "adding a variant renders the package again", %{name: name} do
+      {:ok, b1} = Batches.build_and_sign()
+      assert length(v2_builds(b1, name)) == 1
+
+      variant!(name, "phx_prod")
+
+      {:ok, b2} = Batches.build_and_sign()
+      assert Batches.manifests_v2(b2)[name] != Batches.manifests_v2(b1)[name]
+      assert length(v2_builds(b2, name)) == 2
+      assert_stored_bytes_are_fresh_renders(b2)
+    end
+
+    test "revoking the default withdraws its variants in the same batch", ctx do
+      variant!(ctx.name, "phx_prod")
+      {:ok, b1} = Batches.build_and_sign()
+      assert length(v2_builds(b1, ctx.name)) == 2
+
+      ctx.default |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update!(domain: Portal.Catalog)
+
+      {:ok, b2} = Batches.build_and_sign()
+      assert v2_builds(b2, ctx.name) == []
+      refute Map.has_key?(Batches.manifests_v2(b2), ctx.name)
+    end
+
+    test "a default whose mark is lost in another transaction withdraws its variants", ctx do
+      variant!(ctx.name, "phx_prod")
+      {:ok, b1} = Batches.build_and_sign()
+      assert length(v2_builds(b1, ctx.name)) == 2
+
+      # A raw upsert's leftover mark: `updated_at` stays as it was.
+      {:ok, _} =
+        Repo.transaction(fn ->
+          Repo.query!(
+            "UPDATE catalog_toolchain_builds SET compile_env_run_id = 'tc-stale' WHERE id = $1",
+            [Ecto.UUID.dump!(ctx.default.id)]
+          )
+        end)
+
+      {:ok, b2} = Batches.build_and_sign()
+      assert v2_builds(b2, ctx.name) == []
+      refute Map.has_key?(Batches.manifests_v2(b2), ctx.name)
+    end
+
+    test "a variant whose own mark is lost is withdrawn alone", ctx do
+      variant = variant!(ctx.name, "phx_prod")
+      {:ok, b1} = Batches.build_and_sign()
+      assert length(v2_builds(b1, ctx.name)) == 2
+
+      {:ok, _} =
+        Repo.transaction(fn ->
+          Repo.query!(
+            "UPDATE catalog_toolchain_builds SET compile_env_run_id = 'tc-stale' WHERE id = $1",
+            [Ecto.UUID.dump!(variant.id)]
+          )
+        end)
+
+      {:ok, b2} = Batches.build_and_sign()
+      assert [build] = v2_builds(b2, ctx.name)
+      refute Map.has_key?(build["build"], "config_variant")
+      assert_stored_bytes_are_fresh_renders(b2)
     end
   end
 
