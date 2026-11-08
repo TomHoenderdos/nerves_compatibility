@@ -268,8 +268,8 @@ With `"mode": "toolchain"` (and an informational `"toolchain": {"elixir": "1.19"
 this Elixir and OTP, the same on every OS and architecture? Such an image has no nerves_bootstrap and possibly an
 OTP Nerves 2 does not accept, so the run uses a plain `mix new` project (`NccWorker.Project.create_plain/2`), adds
 the package, applies the lock policy (exit 11), adds the package's optional dependencies, compiles once on the host
-in `prod`, traced, and judges `_build/host/lib/<package>` with `NccWorker.BuildSelection.portable?/4` **and** the
-compile-time trace (`NccWorker.Portability`).
+in `prod`, traced, and judges `_build/host/lib/<package>` with `NccWorker.BuildSelection.static_rules/4` **and**
+the compile-time trace (`NccWorker.Portability`).
 
 The host compile is the traced one (`NccWorker.HostTrace`, `mode: :host`): after its own `mix deps.get` it runs
 `timeout --kill-after=10 <sec> elixir -pa <work>/trace/ebin -S mix ncc.trace_compile`, which compiles every
@@ -367,8 +367,8 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
   "compile_env": [{"app": "...", "path": ["..."], "value": "<base64url term>"}],
   "compile_env_rule": 1,
   "config_variant": "default",
-  "portability_rule": 1,
-  "rule1_reason": "portable?'s reason when it skipped, else null",
+  "portability_rule": 2,
+  "rule1_reason": "rule 1's reason when it would have skipped, else null",
   "compile_observations": {"trace_stats": {"windows": 14, "wall_ms": 9100, "host_compile_sec": 31.2}, "config_reads": [], "refusals": [], "taint": {}, "problems": []},
   "file_manifest": {"ebin": [{"path": "ebin/x.beam", "sha256": "...", "size": 1234, "mode": 33188}], "priv": []}
 }
@@ -383,14 +383,20 @@ mode does not run it through `NccWorker.DepsGetClassifier`; only a full, targets
 "What it does" above).
 
 `portability_rule`, `rule1_reason` and `compile_observations` are present for `pass` and `skipped` and `null` for
-`error`. `portability_rule` is `1`: `portable?/4` AND the trace (P1 only adds refusals). A build passes only when
-both pass. A skip reason from the trace starts with one of the prefixes in
-`Compatibility.Portability.refusal_prefixes/0` and wins over `portable?/4`'s; "portability could not be judged"
-means the trace itself failed (a crash, a timeout, a cap, a missing sentinel) and is never held against the package;
-the worker reports it as `skipped`, and the portal retries the transient ones (below). When the trace could not judge and `portable?/4` also skipped, the reason is
-`portable?/4`'s. When the traced compile itself did not finish (a crash, a timeout, a non-zero exit;
-`compile_observations.trace_stats.judge_compile` is `"not_finished"`), `_build` may be half-written, so `portable?/4`
-does not judge it either: the reason is "portability could not be judged", `rule1_reason` and `compile_env` are
+`error`. `portability_rule` is `2`: the static rules (`BuildSelection.static_rules/4`: compiled beams in Elixir or
+Erlang, no NIF or driver load, static priv only, no mention of Nerves in the sources, no native sources, native
+build dependencies, target reads or `nerves*` name) AND the compile-time trace. A program call, an executable lookup
+or an `:os.type()` in the sources no longer refuses a build; the trace refuses one made at compile time, and a
+module that holds a source path in a package that runs programs. `rule1_reason` is what rule 1 (`portable?/4`, the
+verdict before rule 2) would have said, `null` when it passes: a `pass` with a `rule1_reason` is a build only rule 2
+publishes. A skip reason from the trace starts with one of the prefixes in
+`Compatibility.Portability.refusal_prefixes/0` and wins over a static one; "portability could not be judged" means
+the trace itself failed and is never held against the package (the worker reports it as `skipped`, and the portal
+retries the transient ones, below); when the trace could not judge and a static rule also skipped, the reason is the
+static rule's. When the traced compile itself did not finish (a crash, a timeout, a
+non-zero exit; `compile_observations.trace_stats.judge_compile` is `"not_finished"`), `_build` may be half-written,
+so neither the static rules (`static_rules/4`) nor `portable?/4` judge it: the reason is
+"portability could not be judged", `rule1_reason` and `compile_env` are
 `null`. `compile_observations.trace_stats` carries the traced compile's `wall_ms`, `judge_compile` (`"finished"`,
 `"not_finished"` or `"not_run"`), `report_over_budget` (the trace files exceeded the report reader's shared 64 MiB /
 500 000-line budget), `transient`, the phase times `compile_ms`, `report_ms` and `judge_ms`, `tracer_error` (why

@@ -124,11 +124,14 @@ defmodule NccWorker.Worker do
           # the variant is the caller's input, not something the verdict
           # itself produces.
           config_variant: String.t(),
-          # The verdict's rule: 1 is `BuildSelection.portable?/4` AND the
-          # compile-time trace's refusals (P1); nil for an "error" build.
-          portability_rule: 1 | nil,
-          # What `portable?/4` alone said: its skip reason, nil when it passed
-          # or when the traced compile did not finish (it then judges nothing).
+          # The verdict's rule: 2 is the static rules
+          # (`BuildSelection.static_rules/4`, precompiled portability spec R0)
+          # AND the compile-time trace; nil for an "error" build.
+          portability_rule: 2 | nil,
+          # What `portable?/4` (rule 1, the verdict before rule 2) alone said:
+          # its skip reason, nil when it passed or when the traced compile did
+          # not finish. A pass with a reason here is a build rule 2 publishes
+          # and rule 1 did not.
           rule1_reason: String.t() | nil,
           # What the trace observed (`NccWorker.Portability`): "trace_stats"
           # (with "judge_compile", "finished" | "not_finished" | "not_run",
@@ -168,7 +171,7 @@ defmodule NccWorker.Worker do
           package_checksum: String.t() | nil,
           compile_env: [map()] | nil,
           compile_env_rule: 1 | nil,
-          portability_rule: 1 | nil,
+          portability_rule: 2 | nil,
           rule1_reason: String.t() | nil,
           compile_observations: map() | nil,
           file_manifest:
@@ -1793,10 +1796,11 @@ defmodule NccWorker.Worker do
   end
 
   # The traced compile did not run to its end (a crash, a timeout, a
-  # non-zero exit), so `_build/host/lib/<package>` may be half-written: rule 1
-  # does not judge it, nothing is read from it (`compile_env` stays nil) and
-  # the build is skipped as "portability could not be judged", never an
-  # error. The lock-derived fields still describe what was built.
+  # non-zero exit), so `_build/host/lib/<package>` may be half-written:
+  # neither the static rules nor rule 1 judge it, nothing is read from it
+  # (`compile_env` stays nil) and the build is skipped as "portability could
+  # not be judged", never an error. The lock-derived fields still describe
+  # what was built.
   defp unjudged_toolchain_build(build, project_dir, package_name, portability, host_result) do
     %{
       build
@@ -1804,7 +1808,7 @@ defmodule NccWorker.Worker do
         reason: PortabilityReasons.could_not_judge(),
         deps_lock: DepsLock.read(project_dir, package_name),
         package_checksum: DepsLock.package_checksum(project_dir, package_name),
-        portability_rule: 1,
+        portability_rule: 2,
         compile_observations: with_host_time(portability.observations, host_result)
     }
   end
@@ -1824,6 +1828,7 @@ defmodule NccWorker.Worker do
     app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
     scan = scan_host_app(app_dir)
     tarball = package_tarball(project_dir, package_name)
+    static = BuildSelection.static_rules(project_dir, package_name, scan, tarball: tarball)
     rule1 = BuildSelection.portable?(project_dir, package_name, scan, tarball: tarball)
     app_env = AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
     {compile_env, compile_env_rule} = r5_compile_env(app_env, portability)
@@ -1834,12 +1839,12 @@ defmodule NccWorker.Worker do
         package_checksum: DepsLock.package_checksum(project_dir, package_name),
         compile_env: compile_env,
         compile_env_rule: compile_env_rule,
-        portability_rule: 1,
+        portability_rule: 2,
         rule1_reason: rule1_reason(rule1),
         compile_observations: with_host_time(portability.observations, host_result)
     }
 
-    case combine(rule1, portability) do
+    case combine(static, portability) do
       :ok ->
         manifest = BeamScan.normalize(scan)["footprint"]["file_manifest"]
         %{build | status: "pass", file_manifest: manifest}
@@ -1913,11 +1918,11 @@ defmodule NccWorker.Worker do
   defp put_host_time(verdict, _seconds), do: verdict
 
   @doc false
-  # P1 is rule 1 AND the trace. Reason precedence: both pass -> pass; a trace
-  # refusal wins over rule 1's reason (it is the more precise one); when the
-  # trace could not judge, rule 1's own skip reason is kept, so the row stays
-  # reopenable when P4 relaxes rule 1, and a rule 1 pass becomes "portability
-  # could not be judged". Public for tests.
+  # Rule 2 is the static rules AND the trace. Reason precedence: both pass ->
+  # pass; a trace refusal wins over a static reason (the more precise one);
+  # when the trace could not judge, a static skip keeps its own reason (it
+  # is deterministic), and a static pass becomes "portability could not be
+  # judged". Public for tests.
   @spec combine(:ok | {:skip, String.t()}, Portability.verdict()) :: :ok | {:skip, String.t()}
   def combine(:ok, %{status: :pass}), do: :ok
   def combine(:ok, %{reason: reason}) when is_binary(reason), do: {:skip, reason}

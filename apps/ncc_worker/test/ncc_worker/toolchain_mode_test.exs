@@ -72,13 +72,13 @@ defmodule NccWorker.ToolchainModeTest do
     compile_env: @r5
   }
 
-  describe "the compile-time trace (P1)" do
+  describe "the compile-time trace" do
     test "a passing build records rule 1 and the trace's observations", %{tmp_dir: work_dir} do
       {project, _built} = project(work_dir, "circular_buffer-1.0.0")
       host = Map.put(passing_host(), :duration_sec, 12.0)
       build = Worker.toolchain_build(project, "sample", host, @toolchain, @traced_pass)
 
-      assert %{status: "pass", portability_rule: 1, rule1_reason: nil} = build
+      assert %{status: "pass", portability_rule: 2, rule1_reason: nil} = build
 
       assert build.compile_observations == %{
                "trace_stats" => %{
@@ -101,7 +101,7 @@ defmodule NccWorker.ToolchainModeTest do
                file_manifest: nil
              } = build
 
-      assert %{portability_rule: 1, rule1_reason: nil} = build
+      assert %{portability_rule: 2, rule1_reason: nil} = build
 
       assert build.compile_observations == %{
                "trace_stats" => %{"judge_compile" => "finished", "host_compile_sec" => nil}
@@ -120,7 +120,7 @@ defmodule NccWorker.ToolchainModeTest do
                  status: "skipped",
                  reason: "portability could not be judged",
                  file_manifest: nil,
-                 portability_rule: 1,
+                 portability_rule: 2,
                  rule1_reason: nil
                } = build
 
@@ -166,7 +166,7 @@ defmodule NccWorker.ToolchainModeTest do
                  status: "skipped",
                  reason: "portability could not be judged",
                  rule1_reason: nil,
-                 portability_rule: 1,
+                 portability_rule: 2,
                  file_manifest: nil
                } = build
 
@@ -185,6 +185,70 @@ defmodule NccWorker.ToolchainModeTest do
                rule1_reason: nil,
                compile_observations: nil
              } = build
+    end
+  end
+
+  # Adds a module whose function body runs a program to the host build.
+  defp add_runtime_cmd(built) do
+    name = "NccP4RuntimeCmd#{System.unique_integer([:positive])}"
+
+    [{module, beam}] =
+      Code.compile_string("defmodule #{name} do\n  def f, do: System.cmd(\"true\", [])\nend\n")
+
+    :code.purge(module)
+    :code.delete(module)
+    File.write!(Path.join([built, "ebin", "#{module}.beam"]), beam)
+    module
+  end
+
+  describe "rule 2 (P4)" do
+    test "a runtime program call passes; rule 1's reason is recorded", %{tmp_dir: work_dir} do
+      {project, built} = project(work_dir, "circular_buffer-1.0.0")
+      module = add_runtime_cmd(built)
+      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
+
+      assert %{status: "pass", portability_rule: 2, rule1_reason: "calls System.cmd/2"} = build
+      assert Enum.any?(build.file_manifest["ebin"], &(&1["path"] == "ebin/#{module}.beam"))
+    end
+
+    test "an :os.type() in the sources passes; rule 1's reason is recorded",
+         %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      source = Path.join([project, "deps", "sample", "lib", "sample.ex"])
+      File.write!(source, "defmodule Sample do\n  def os, do: :os.type()\nend\n")
+      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
+
+      assert %{status: "pass", portability_rule: 2} = build
+      assert "OS-specific (lib/sample.ex: :os.type()" = build.rule1_reason
+    end
+
+    test "R0 still refuses a NIF with rule 1's own reason", %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circuits_gpio-2.1.3")
+      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
+
+      assert %{status: "skipped", portability_rule: 2, reason: reason, rule1_reason: reason} =
+               build
+
+      assert is_binary(reason)
+    end
+
+    test "a trace refusal wins over a runtime call; could-not-judge stays could-not-judge",
+         %{tmp_dir: work_dir} do
+      {project, built} = project(work_dir, "circular_buffer-1.0.0")
+      add_runtime_cmd(built)
+
+      refused = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @refused)
+      assert %{status: "skipped", reason: "compile-time host read: " <> _} = refused
+
+      unjudged =
+        Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @not_judged)
+
+      assert %{
+               status: "skipped",
+               reason: "portability could not be judged",
+               rule1_reason: "calls System.cmd/2",
+               portability_rule: 2
+             } = unjudged
     end
   end
 
@@ -359,7 +423,7 @@ defmodule NccWorker.ToolchainModeTest do
              "deps_lock" => %{"dep" => _},
              "compile_env" => _,
              "file_manifest" => %{"ebin" => [_ | _], "priv" => []},
-             "portability_rule" => 1,
+             "portability_rule" => 2,
              "rule1_reason" => nil,
              "compile_observations" => %{
                "trace_stats" => %{
