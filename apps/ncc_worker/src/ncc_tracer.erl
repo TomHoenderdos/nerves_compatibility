@@ -21,6 +21,7 @@
 -define(LOADED_BY_MIX, [crypto, gen_tcp]).
 -define(SENTINEL, "NCC_TRACE_SENTINEL:").
 -define(TIMEOUT, 120000).
+-define(WRITE_BUFFER, 262144).
 -define(INTROSPECTION, ['__info__', module_info, behaviour_info]).
 -define(SPAWNS, [spawn, spawn_link, spawn_monitor, spawn_opt, spawn_request]).
 
@@ -244,6 +245,7 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
     put(roots, roots()),
     File = filename:join(Dir, file_name(Role, App)),
     {ok, Fd} = file:open(File, [write, raw, binary]),
+    ok = buffered(Role),
     %% Our own session (OTP 27+): a package's erlang:trace/3 or trace_pattern
     %% acts on the legacy session and cannot switch this one off. Its weak
     %% handle is {Name, Id}: a random name keeps it from being guessed; the
@@ -509,6 +511,7 @@ loop(St) ->
         {trace_ts, _Pid, _What, _, _, _} = Msg -> loop(traced(Msg, St));
         {ncc_call, From, Ref, Auth, Req} when Auth =:= St#st.token; Req =:= flush ->
             {Reply, St1} = request(Req, From, St),
+            ok = write_out(St1#st.fd),
             From ! {Ref, Reply},
             continue(Req, St1);
         {ncc_call, From, Ref, _BadAuth, Req} ->
@@ -971,6 +974,7 @@ finish_trace(Status, Ts, Delivered, #st{fd = Fd, session = Session} = St1) ->
                                                                 status => Status,
                       final_sentinel => St#st.final, overflow => St#st.overflow,
                       late_loaded => Late}),
+    ok = write_out(Fd),
     _ = file:close(Fd),
     _ = quietly(fun() -> trace:session_destroy(Session) end),
     ok.
@@ -1212,9 +1216,39 @@ random_hex() ->
     catch _:_ -> integer_to_binary(rand:uniform(1 bsl 128), 16)
     end.
 
+%% The Mix VM's collector writes through a buffer (buffered/1): one write
+%% per line is a dirty-IO NIF call each, which waits on the dirty IO
+%% schedulers the compile keeps busy. The buffer is written out at every
+%% request from the driver and before the file is closed. A collector that
+%% dies with lines still buffered leaves no end line, and its watcher's
+%% `collector_down` line, so the trace is not judged either way. A child
+%% VM writes every line at once: rebar3 halts it without warning.
 write(#st{fd = Fd}, Map) ->
     Line = try json:encode(Map) catch _:_ -> json:encode(#{kind => unencodable}) end,
-    ok = file:write(Fd, [Line, $\n]).
+    case get(write_buffer) of
+        {Size, Acc} ->
+            New = Size + iolist_size(Line) + 1,
+            put(write_buffer, {New, [Acc, Line, $\n]}),
+            case New >= ?WRITE_BUFFER of
+                true -> write_out(Fd);
+                false -> ok
+            end;
+        undefined -> ok = file:write(Fd, [Line, $\n])
+    end.
+
+buffered(main) ->
+    _ = put(write_buffer, {0, []}),
+    ok;
+buffered(child) -> ok.
+
+write_out(Fd) ->
+    case get(write_buffer) of
+        {0, _} -> ok;
+        {_, Acc} ->
+            _ = put(write_buffer, {0, []}),
+            ok = file:write(Fd, Acc);
+        undefined -> ok
+    end.
 
 now_ns() -> erlang:monotonic_time(nanosecond).
 
