@@ -301,26 +301,29 @@ defmodule Portal.Catalog.ToolchainBacklogRule2Test do
 
   defp variants(name), do: for(r <- backlog(), r.package == name, do: r.variant)
 
-  test "a rule-2 with refused for a dependency, that added an optional one, wants without" do
+  test "any rule-2 skipped with that added an optional dependency wants without" do
     for {reason, i} <-
           Enum.with_index([
             "closure dependency observed the host: fine (bakes the build path: Elixir.Fine \"<root>\")",
-            "calls natively built dependency at compile time: LazyHTML.from_fragment/1"
+            "calls natively built dependency at compile time: LazyHTML.from_fragment/1",
+            "portability could not be judged",
+            "dependency cc_precompiler reads the target",
+            "nerves-specific source in dependency leaf",
+            "compile-time host read: os:type/0 in X.f/0"
           ]) do
       run!("lv#{i}", "1.2.13")
       row!("lv#{i}", "1.2.13", :skipped, rule: 2, reason: reason, optional_deps: @added)
-      assert variants("lv#{i}") == [:without]
+      assert variants("lv#{i}") == [:without], reason
     end
   end
 
-  test "no without for an own refusal, rule 1, could-not-judge or nothing added" do
+  test "no without for a rule-1 skip or a with that added nothing" do
     cases = [
-      {[rule: 2, reason: "compile-time host read: os:type/0 in X.f/0", optional_deps: @added]},
       {[reason: "closure dependency observed the host: fine", optional_deps: @added]},
-      {[rule: 2, reason: "portability could not be judged", optional_deps: @added]},
+      {[reason: "portability could not be judged", optional_deps: @added]},
       {[
          rule: 2,
-         reason: "closure dependency observed the host: fine",
+         reason: "portability could not be judged",
          optional_deps: %{"added" => [], "dropped" => [], "reason" => nil}
        ]}
     ]
@@ -330,6 +333,20 @@ defmodule Portal.Catalog.ToolchainBacklogRule2Test do
       row!("n#{i}", "1.0.0", :skipped, opts)
       assert variants("n#{i}") == [], "case #{i}"
     end
+  end
+
+  test "a revoked rule-2 skipped with wants no without" do
+    run!("lv", "1.2.13")
+
+    "lv"
+    |> row!("1.2.13", :skipped,
+      rule: 2,
+      reason: "portability could not be judged",
+      optional_deps: @added
+    )
+    |> revoke!()
+
+    assert variants("lv") == []
   end
 
   test "a live without row ends it" do
