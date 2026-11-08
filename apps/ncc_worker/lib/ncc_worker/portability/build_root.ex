@@ -73,6 +73,73 @@ defmodule NccWorker.Portability.BuildRoot do
     end
   end
 
+  @doc """
+  The beams of `ebin` (by file name, `"Elixir.Foo"` or `"foo"`) whose
+  literal table holds a bare closure source path, the observation of
+  `check/3`, sorted. Errors and refusals as `check/3`'s for beams.
+  """
+  @spec source_path_modules(String.t(), [String.t()], (String.t() -> boolean())) ::
+          {:ok, [String.t()]} | {:refuse, String.t()} | {:error, String.t()}
+  def source_path_modules(ebin, roots, closure_file?) do
+    roots = needles(roots)
+
+    with :ok <- ebin_dir(ebin),
+         {:ok, modules} <-
+           ebin
+           |> files("*.beam")
+           |> Enum.reduce_while({:ok, []}, &observed_module(&1, &2, roots, closure_file?)) do
+      {:ok, Enum.sort(modules)}
+    end
+  end
+
+  defp observed_module(path, {:ok, acc}, roots, closure_file?) do
+    case check_beam(path, roots, closure_file?) do
+      {:ok, []} -> {:cont, {:ok, acc}}
+      {:ok, [_ | _]} -> {:cont, {:ok, [Path.basename(path, ".beam") | acc]}}
+      other -> {:halt, other}
+    end
+  end
+
+  @program_evidence [:shell_evidence, :os_exec_evidence, :executable_lookup_evidence]
+
+  @doc """
+  A bare closure source path is cosmetic only while no code hands it to
+  something outside the BEAM. In a package that also runs programs, opens
+  ports or looks up executables, the path could reach a program at runtime,
+  where a local compile would pass the user's own path: refused as a baked
+  build path, naming the first module (sorted) that holds one.
+
+  Judged per package, not per module: a path held in one module and run
+  from another refuses too. The beams are read once more with
+  `BeamScanner.analyze/1` for the calls, only when a path was found; a beam
+  that scan cannot read is an error, never a pass.
+  """
+  @spec program_source_paths(String.t(), [String.t()], (String.t() -> boolean())) ::
+          :ok | {:refuse, String.t()} | {:error, String.t()}
+  def program_source_paths(ebin, roots, closure_file?) do
+    case source_path_modules(ebin, roots, closure_file?) do
+      {:ok, []} -> :ok
+      {:ok, [module | _]} -> runs_programs(Path.dirname(ebin), module)
+      other -> other
+    end
+  end
+
+  defp runs_programs(app_dir, module) do
+    scan = BeamScanner.analyze(app_dir)
+
+    cond do
+      scan.errors != [] ->
+        {:error, "beam scan: " <> (scan.errors |> Enum.take(3) |> Enum.join("; "))}
+
+      Enum.any?(@program_evidence, &(Map.get(scan, &1, []) != [])) ->
+        {:refuse,
+         "bakes the build path: #{module} (a source path in a package that runs programs)"}
+
+      true ->
+        :ok
+    end
+  end
+
   # A missing ebin means the caller looked in the wrong place: never a pass.
   # sobelow_skip ["Traversal.FileModule"]
   defp ebin_dir(ebin) when is_binary(ebin) do

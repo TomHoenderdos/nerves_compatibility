@@ -1,0 +1,158 @@
+defmodule NccWorker.Portability.ProgramSourcePathTest do
+  use ExUnit.Case, async: true
+
+  alias NccWorker.Portability
+  alias NccWorker.Tracer.Report
+
+  @moduletag :tmp_dir
+
+  @libs %{"nif_check" => "ok", "mapped_libs" => ["/usr/lib/libc.so.6"]}
+  @refusal " (a source path in a package that runs programs)"
+
+  # deps/<app> and _build/host/lib/<app>/ebin for the package `fx` and its
+  # dependency `dep`.
+  setup %{tmp_dir: dir} do
+    proj = Path.join(dir, "proj")
+
+    for app <- ["dep", "fx"] do
+      File.mkdir_p!(Path.join([proj, "deps", app, "lib"]))
+      File.mkdir_p!(Path.join([proj, "_build/host/lib", app, "ebin"]))
+      File.write!(Path.join([proj, "deps", app, "mix.exs"]), "")
+    end
+
+    File.write!(Path.join(proj, "mix.exs"), "")
+    %{proj: proj}
+  end
+
+  # Compiles `source` as `deps/<app>/lib/<app>.ex` into the app's ebin.
+  defp build(proj, app, source) do
+    file = Path.join([proj, "deps", app, "lib", app <> ".ex"])
+    File.write!(file, source)
+    ebin = Path.join([proj, "_build/host/lib", app, "ebin"])
+
+    for {module, binary} <- Code.compile_string(source, file) do
+      File.write!(Path.join(ebin, "#{module}.beam"), binary)
+      :code.purge(module)
+      :code.delete(module)
+    end
+  end
+
+  defp dep(proj, app, children) do
+    %{
+      "app" => app,
+      "dest" => Path.join([proj, "deps", app]),
+      "build" => Path.join([proj, "_build/host/lib", app]),
+      "manager" => "mix",
+      "children" => children
+    }
+  end
+
+  defp window(app, open, close),
+    do: %{
+      app: app,
+      open: open,
+      close: close,
+      depth_ok: true,
+      integrity_ok: true,
+      delivered: true,
+      libs: @libs
+    }
+
+  # A clean hand-built report for `fx`, which depends on `dep`.
+  defp report(proj) do
+    %Report{
+      start: Map.merge(%{"otp_root" => "/nonexistent-otp"}, @libs),
+      closure: %{
+        "packages" => ["fx"],
+        "deps" => [dep(proj, "dep", []), dep(proj, "fx", ["dep"])]
+      },
+      windows: [window("dep", 10, 20), window("fx", 30, 40)],
+      sentinels: [
+        %{app: "dep", ts: 11, integrity_ok: true},
+        %{app: "fx", ts: 31, integrity_ok: true}
+      ],
+      stats: %{"kind" => "stats", "calls" => 10, "unjudged" => 0},
+      ending:
+        Map.merge(
+          %{
+            "status" => "ok",
+            "depth_ok" => true,
+            "final_sentinel" => true,
+            "overflow" => false,
+            "integrity_ok" => true,
+            "delivered" => true
+          },
+          @libs
+        )
+    }
+  end
+
+  defp judged(proj), do: Portability.judge(proj, "fx", report(proj), [], built_check: false)
+
+  defp judged(proj, fx_source) do
+    build(proj, "fx", fx_source)
+    judged(proj)
+  end
+
+  test "the package's program-running module with a bare source path refuses (R2)",
+       %{proj: proj} do
+    verdict =
+      judged(proj, """
+      defmodule FxPspjRun do
+        def run, do: System.cmd("cat", [file()])
+        defp file, do: __ENV__.file
+      end
+      """)
+
+    assert %{status: :skip, reason: "bakes the build path: Elixir.FxPspjRun" <> @refusal} =
+             verdict
+
+    assert Compatibility.Portability.withdraws?(verdict.reason)
+  end
+
+  test "a path held in one package module and run from another refuses", %{proj: proj} do
+    assert %{status: :skip, reason: "bakes the build path: Elixir.FxPspjHold" <> @refusal} =
+             judged(proj, """
+             defmodule FxPspjHold do
+               def file, do: __ENV__.file
+             end
+
+             defmodule FxPspjOther do
+               def run(file), do: System.find_executable(file)
+             end
+             """)
+  end
+
+  test "the same module without the path passes", %{proj: proj} do
+    assert %{status: :pass} =
+             judged(proj, """
+             defmodule FxPspjNoPath do
+               def run, do: System.cmd("true", [])
+             end
+             """)
+  end
+
+  test "the path without a program call passes, observed", %{proj: proj} do
+    assert %{status: :pass, observations: %{"build_root_source_path" => [%{"owner" => "fx"}]}} =
+             judged(proj, """
+             defmodule FxPspjPathOnly do
+               def file, do: __ENV__.file
+             end
+             """)
+  end
+
+  test "a closure dependency is not given the rule (its beams are not published)",
+       %{proj: proj} do
+    build(proj, "fx", "defmodule FxPspjPkg do\n  def x, do: :ok\nend\n")
+
+    build(proj, "dep", """
+    defmodule FxPspjDep do
+      def run, do: System.cmd("cat", [file()])
+      defp file, do: __ENV__.file
+    end
+    """)
+
+    assert %{status: :pass, observations: %{"build_root_source_path" => [%{"owner" => "dep"}]}} =
+             judged(proj)
+  end
+end

@@ -19,7 +19,9 @@ defmodule NccWorker.Portability do
     3. a refusal in the package's window (R1, R4 through `Events`);
     4. the package's window broken (missing, lowered depth, failed
        integrity, no sentinel);
-    5. R2 on the package's `ebin` (`BuildRoot`);
+    5. R2 on the package's `ebin` (`BuildRoot`), where a bare source path
+       also refuses when the package runs programs
+       (`BuildRoot.program_source_paths/3`);
     6. the rebar3 rules on the package (`Rebar`);
     7. host taint of a closure dependency (R3), the first in compile order:
        its window broken or without a sentinel, a refusal in its window, R2,
@@ -384,7 +386,7 @@ defmodule NccWorker.Portability do
 
     version = ElixirVersion.judge(decided, elixir)
     decided = decided ++ config.refusals ++ version.refusals
-    package_r2 = build_root(ctx, ctx.package)
+    package_r2 = ctx |> build_root(ctx.package) |> program_source_paths(ctx)
     deps = dep_results(ctx, report, decided)
 
     %{
@@ -655,6 +657,25 @@ defmodule NccWorker.Portability do
       ebin -> ebin |> BuildRoot.check(Context.roots(ctx), &Context.closure_file?(ctx, &1)) |> r2()
     end
   end
+
+  # R2 for the package's own beams only (closure dependencies are not
+  # published by this build): a bare source path, otherwise an observation,
+  # refuses in a package that also runs programs
+  # (`BuildRoot.program_source_paths/3`).
+  defp program_source_paths({:observe, _list} = r2, ctx) do
+    ebin = Context.ebin(ctx, ctx.package)
+
+    case BuildRoot.program_source_paths(
+           ebin,
+           Context.roots(ctx),
+           &Context.closure_file?(ctx, &1)
+         ) do
+      :ok -> r2
+      other -> r2(other)
+    end
+  end
+
+  defp program_source_paths(r2, _ctx), do: r2
 
   defp r2(:ok), do: nil
   defp r2({:observe, list}) when is_list(list), do: {:observe, list}

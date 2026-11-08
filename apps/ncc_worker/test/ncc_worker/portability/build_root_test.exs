@@ -427,6 +427,148 @@ defmodule NccWorker.Portability.BuildRootTest do
     end
   end
 
+  describe "source_path_modules/3 and program_source_paths/3" do
+    # `defp file` is not inlined, so the path stays a whole literal of its
+    # own (an observation) rather than part of a larger literal (a refusal).
+    @refusal " (a source path in a package that runs programs)"
+
+    test "names the modules holding a bare source path", %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxSpmBare do
+          def file, do: __ENV__.file
+        end
+
+        defmodule FxSpmClean do
+          def x, do: :ok
+        end
+        """)
+
+      assert BuildRoot.source_path_modules(ebin, [root], ok?) == {:ok, ["Elixir.FxSpmBare"]}
+    end
+
+    test "a bare source path in a module that runs programs refuses", %{tmp_dir: root} do
+      for {name, call} <- [
+            {"FxPspCmd", ~s|System.cmd("cat", [file()])|},
+            {"FxPspPort", ~s|Port.open({:spawn_executable, "/bin/cat"}, args: [file()])|},
+            {"FxPspShell", ~s|:os.cmd(String.to_charlist("cat " <> file()))|},
+            {"FxPspLookup", ~s|{System.find_executable("cat"), file()}|}
+          ] do
+        dir = Path.join(root, name)
+
+        {ebin, ok?} =
+          compile(dir, """
+          defmodule #{name} do
+            def run, do: #{call}
+            defp file, do: __ENV__.file
+          end
+          """)
+
+        # Only an observation for the literal scan: this rule is what refuses.
+        assert {:observe, [_]} = BuildRoot.check(ebin, [dir], ok?), name
+
+        assert BuildRoot.program_source_paths(ebin, [dir], ok?) ==
+                 {:refuse, "bakes the build path: Elixir.#{name}" <> @refusal},
+               name
+      end
+    end
+
+    test "a path held in one module and run from another refuses", %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxPspHold do
+          def file, do: __ENV__.file
+        end
+
+        defmodule FxPspRun do
+          def run, do: System.cmd("cat", [FxPspHold.file()])
+        end
+        """)
+
+      assert BuildRoot.program_source_paths(ebin, [root], ok?) ==
+               {:refuse, "bakes the build path: Elixir.FxPspHold" <> @refusal}
+    end
+
+    test "the first module with the path (sorted) is named", %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxPspZed do
+          def file, do: __ENV__.file
+        end
+
+        defmodule FxPspAbe do
+          def run, do: System.cmd("cat", [file()])
+          defp file, do: __ENV__.file
+        end
+        """)
+
+      assert BuildRoot.program_source_paths(ebin, [root], ok?) ==
+               {:refuse, "bakes the build path: Elixir.FxPspAbe" <> @refusal}
+    end
+
+    test "the path or the program call alone passes", %{tmp_dir: root} do
+      path_only = Path.join(root, "path")
+
+      {ebin, ok?} =
+        compile(path_only, """
+        defmodule FxPspPathOnly do
+          def file, do: __ENV__.file
+        end
+        """)
+
+      assert {:observe, [_]} = BuildRoot.check(ebin, [path_only], ok?)
+      assert BuildRoot.program_source_paths(ebin, [path_only], ok?) == :ok
+
+      cmd_only = Path.join(root, "cmd")
+
+      {ebin, ok?} =
+        compile(cmd_only, """
+        defmodule FxPspCmdOnly do
+          def run, do: System.cmd("true", [])
+          def look, do: System.find_executable("cat")
+          def port, do: Port.open({:spawn_executable, "/bin/true"}, [])
+          def shell, do: :os.cmd(~c"true")
+        end
+        """)
+
+      assert BuildRoot.program_source_paths(ebin, [cmd_only], ok?) == :ok
+    end
+
+    test "a path inside a larger literal still refuses as a baked path", %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxPspListLit do
+          def run, do: System.cmd("cat", [__ENV__.file])
+        end
+        """)
+
+      refusal =
+        {:refuse, ~s|bakes the build path: Elixir.FxPspListLit "<root>/deps/fx/lib/fx.ex"|}
+
+      assert BuildRoot.check(ebin, [root], ok?) == refusal
+      assert BuildRoot.program_source_paths(ebin, [root], ok?) == refusal
+    end
+
+    test "an unreadable beam is an error, never a pass", %{tmp_dir: root} do
+      ebin = Path.join(root, "ebin")
+      File.mkdir_p!(ebin)
+      File.write!(Path.join(ebin, "Elixir.Broken.beam"), "not a beam")
+      assert {:error, _} = BuildRoot.source_path_modules(ebin, [root], fn _ -> true end)
+      assert {:error, _} = BuildRoot.program_source_paths(ebin, [root], fn _ -> true end)
+      assert {:error, _} = BuildRoot.program_source_paths(Path.join(root, "none"), [root], & &1)
+    end
+
+    test "a path in a beam the call scan cannot read is an error", %{tmp_dir: root} do
+      {_ebin, ok?} = compile(root, "defmodule FxPspSrc do\n  def x, do: :ok\nend\n")
+      source = Path.join(root, "deps/fx/lib/fx.ex")
+      dir = Path.join(root, "lit_only/ebin")
+      # Read by the literal scan, but no beam `:beam_lib` could load for calls.
+      write_beam(dir, "m", [{"LitT", lit_t([:erlang.term_to_binary(source)])}])
+      assert BuildRoot.source_path_modules(dir, [root], ok?) == {:ok, ["m"]}
+      assert {:error, "beam scan: " <> _} = BuildRoot.program_source_paths(dir, [root], ok?)
+    end
+  end
+
   describe "literal_table/1" do
     test "an oversized literal-table header is an error, not a decode" do
       assert {:error, "literal table larger than 64 MiB"} =
