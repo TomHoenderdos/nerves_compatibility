@@ -178,6 +178,37 @@ defmodule NccWorker.BuildCacheTest do
       refute BuildCache.dep_target_agnostic?(ctx.deps, "peeker")
     end
 
+    test "holds out every spelling of a target read", ctx do
+      for {file, body} <- [
+            {"lib/a.ex", "@t Mix.target"},
+            {"lib/a.ex", "if Mix.target == :host, do: 1"},
+            {"lib/a.ex", "f = &Mix.target/0"},
+            {"lib/a.ex", "Mix .\n  target()"},
+            {"lib/a.ex", ~s|:"Elixir.Mix".target()|},
+            {"lib/a.ex", "apply(Mix, :target, [])"},
+            {"lib/a.ex", "import Mix, only: [target: 0]\ntarget()"},
+            {"lib/a.ex", "alias Mix, as: M\nM.target()"},
+            {"lib/a.ex", ~s|System.get_env("MIX_TARGET")|},
+            {"src/a.erl", "t() -> 'Elixir.Mix':target()."},
+            {"src/a.erl", "t() -> 'Elixir.Mix':'target'()."},
+            {"src/a.erl", "-import('Elixir.Mix', [target/0]).\nt() -> target()."},
+            {"include/a.hrl", "-define(T, 'Elixir.Mix' : target())."}
+          ] do
+        name = "dep#{System.unique_integer([:positive])}"
+        write_dep(ctx.deps, name, [{"mix.exs", "defmodule X do end"}, {file, body}])
+        refute BuildCache.dep_target_agnostic?(ctx.deps, name), inspect(body)
+      end
+    end
+
+    test "keeps a dependency whose target mentions are not Mix's", ctx do
+      write_dep(ctx.deps, "aimer", [
+        {"mix.exs", "defmodule X do end"},
+        {"lib/a.ex", "def target(x), do: x\nMix.targets_of(1)\nimport Mix.Config"}
+      ])
+
+      assert BuildCache.dep_target_agnostic?(ctx.deps, "aimer")
+    end
+
     test "does not confuse a beam file for a source read", ctx do
       write_dep(ctx.deps, "compiled", [
         {"mix.exs", "defmodule X do end"},

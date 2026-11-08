@@ -601,22 +601,45 @@ defmodule NccWorker.BuildCache do
     end
   end
 
-  # `grep -r` over the sources rather than a load-and-scan in Elixir: the tree is
-  # a few megabytes for the larger dependencies and this stays one process. The
-  # `--include` filters keep it off beam files and priv blobs. Exit 0 is a match,
-  # 1 is no match, and anything else (no grep, unreadable tree) counts as a match
-  # so the dependency stays target-scoped.
+  # A read of the Mix target in any spelling Elixir or Erlang accepts:
+  # `Mix.target()`, `Mix.target` without parentheses, `&Mix.target/0`,
+  # whitespace or a line break around the dot, `'Elixir.Mix':target()`,
+  # `:"Elixir.Mix".target`, quoted function names, `apply(Mix, :target, [])`,
+  # `-import('Elixir.Mix', [target/0])`,
+  # and `MIX_TARGET` from the environment. `import Mix` and `alias Mix, as:`
+  # count too, in a file that mentions `target`, because they let the call be
+  # written without the module name. Erring towards a match only costs a cache
+  # hit or a precompiled build.
+  defp target_read_pattern,
+    do:
+      ~r/Mix['"]?\s*[.:,]\s*\[?\s*:?['"]?target(?!\w)|MIX_TARGET|\bimport\s+Mix\b(?!\.)|\balias\s+Mix\s*,/
+
+  # `grep -r -l -i` over the sources lists the files that mention `target` at
+  # all, then each is read and matched against `target_read_pattern/0`, which spans
+  # lines where grep cannot. The `--include` filters keep it off beam files and
+  # priv blobs. grep exit 1 is no candidate; anything else (no grep, unreadable
+  # tree, a file that cannot be read) counts as a match so the dependency stays
+  # target-scoped.
   defp reads_target?(dir) do
-    args =
-      ["-r", "-q", "-F", "--include=*.ex", "--include=*.exs", "--include=*.erl"] ++
-        ["-e", "Mix.target(", "-e", "MIX_TARGET", "--", dir]
+    includes = Enum.map(~w(*.ex *.exs *.erl *.hrl), &"--include=#{&1}")
+    args = ["-r", "-l", "-i", "-F", "--null"] ++ includes ++ ["-e", "target", "--", dir]
 
     case System.cmd("grep", args, stderr_to_stdout: true) do
       {_, 1} -> false
+      {output, 0} -> output |> String.split(<<0>>, trim: true) |> Enum.any?(&target_read?/1)
       _ -> true
     end
   rescue
     _ -> true
+  end
+
+  # Read-only inspection of a dependency source file grep listed.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp target_read?(file) do
+    case File.read(file) do
+      {:ok, contents} -> Regex.match?(target_read_pattern(), contents)
+      _ -> true
+    end
   end
 
   @doc false

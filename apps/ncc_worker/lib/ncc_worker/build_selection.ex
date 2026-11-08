@@ -50,6 +50,9 @@ defmodule NccWorker.BuildSelection do
   for one already read (`nil` for one the caller could not find or trust). Without the option at all the package is
   skipped as "ships priv files", the verdict from before the files were
   judged one by one.
+
+  Rule 1: kept to record what it would have said (`rule1_reason`); the
+  precompiled verdict is `static_rules/4` and the trace.
   """
   @spec portable?(String.t(), String.t(), map(), keyword()) :: :ok | {:skip, String.t()}
   def portable?(project, package, scan, opts \\ []) do
@@ -75,10 +78,52 @@ defmodule NccWorker.BuildSelection do
 
   @portable_languages [:elixir, :erlang]
 
-  defp portable_scan(%{beam_count: count, errors: [], languages: languages} = scan)
+  @doc """
+  The static half of the precompiled verdict (precompiled portability spec,
+  R0), which the compile-time trace (`NccWorker.Portability`) does not
+  cover: compiled beams in portable languages, no NIF or driver load in
+  them, static priv data only (`portable?/4`'s priv rule), no mention of
+  Nerves in the sources, and no native sources, native build dependencies,
+  target reads or `nerves*` name (`BuildCache.dep_target_agnostic?/2`).
+  Unlike `portable?/4` it does not refuse program calls, executable lookups
+  or a look at the OS type in the sources: a runtime call runs the same from
+  a precompiled beam, and the trace refuses one made at compile time. Rebar
+  `platform_define` and `rebar.config.script` are the trace's to judge, and
+  only for a package rebar3 builds.
+
+  The Nerves and target checks stay because the trace does not see a read
+  of `Mix.target/0`: it is Mix state, not the host, and a build compiled for
+  `:host` would be served to firmware builds. Reasons are `portable?/4`'s.
+  Anything missing or unreadable fails closed.
+  """
+  @spec static_rules(String.t(), String.t(), map(), keyword()) :: :ok | {:skip, String.t()}
+  def static_rules(project, package, scan, opts \\ []) do
+    deps = Path.join(project, "deps")
+
+    with :ok <- static_scan(scan),
+         :ok <- portable_priv(project, package, scan, opts),
+         :ok <- check(not nerves_source?(Path.join(deps, package)), "nerves-specific source") do
+      check(
+        BuildCache.dep_target_agnostic?(deps, package),
+        "reads the target or ships native code"
+      )
+    end
+  rescue
+    _ -> {:skip, "portability could not be judged"}
+  end
+
+  defp static_scan(%{beam_count: count, errors: [], languages: languages} = scan)
        when is_integer(count) and count > 0 do
-    with :ok <- portable_languages(languages),
-         :ok <- no_calls(scan, :nif_calls?, :nif_evidence, "calls a NIF or port driver"),
+    with :ok <- portable_languages(languages) do
+      no_calls(scan, :nif_calls?, :nif_evidence, "calls a NIF or port driver")
+    end
+  end
+
+  defp static_scan(%{beam_count: 0}), do: {:skip, "no compiled beams"}
+  defp static_scan(_scan), do: {:skip, "beam scan incomplete"}
+
+  defp portable_scan(scan) do
+    with :ok <- static_scan(scan),
          :ok <- no_calls(scan, :shell_calls?, :shell_evidence, "calls a shell"),
          :ok <- no_calls(scan, :os_exec_calls?, :os_exec_evidence, "runs an OS command") do
       no_calls(
@@ -89,9 +134,6 @@ defmodule NccWorker.BuildSelection do
       )
     end
   end
-
-  defp portable_scan(%{beam_count: 0}), do: {:skip, "no compiled beams"}
-  defp portable_scan(_scan), do: {:skip, "beam scan incomplete"}
 
   defp portable_priv(_project, _package, %{footprint: %{priv: %{file_count: 0}}}, _opts), do: :ok
 

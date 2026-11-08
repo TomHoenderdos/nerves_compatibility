@@ -9,6 +9,28 @@ defmodule NccWorker.BuildSelectionTest do
     %{root: root}
   end
 
+  defp scan(overrides \\ %{}) do
+    Map.merge(
+      %{
+        beam_count: 2,
+        languages: [:elixir, :erlang],
+        errors: [],
+        nif_calls?: false,
+        nif_evidence: [],
+        shell_calls?: false,
+        shell_evidence: [],
+        os_exec_calls?: false,
+        os_exec_evidence: [],
+        executable_lookup_calls?: false,
+        executable_lookup_evidence: [],
+        footprint: %{priv: %{file_count: 0, total_bytes: 0}}
+      },
+      overrides
+    )
+  end
+
+  defp evidence(mfa), do: [%{beam: Example, file: "Example.beam", mfa: mfa}]
+
   defp package(root, name, fixture \\ "circular_buffer-1.0.0") do
     source = Path.join([root, "deps", name])
     File.mkdir_p!(Path.join(source, "lib"))
@@ -121,28 +143,6 @@ defmodule NccWorker.BuildSelectionTest do
   end
 
   describe "portable?/3" do
-    defp scan(overrides \\ %{}) do
-      Map.merge(
-        %{
-          beam_count: 2,
-          languages: [:elixir, :erlang],
-          errors: [],
-          nif_calls?: false,
-          nif_evidence: [],
-          shell_calls?: false,
-          shell_evidence: [],
-          os_exec_calls?: false,
-          os_exec_evidence: [],
-          executable_lookup_calls?: false,
-          executable_lookup_evidence: [],
-          footprint: %{priv: %{file_count: 0, total_bytes: 0}}
-        },
-        overrides
-      )
-    end
-
-    defp evidence(mfa), do: [%{beam: Example, file: "Example.beam", mfa: mfa}]
-
     test "Elixir and Erlang beams with no calls are portable", %{root: root} do
       package(root, "sample")
       assert BuildSelection.portable?(root, "sample", scan()) == :ok
@@ -248,6 +248,133 @@ defmodule NccWorker.BuildSelectionTest do
         assert BuildSelection.portable?(root, name, scan()) ==
                  {:skip, "OS-specific (#{file}: #{needle})"}
       end
+    end
+  end
+
+  describe "static_rules/4 (R0)" do
+    test "runtime program calls and the OS grep do not refuse", %{root: root} do
+      source = package(root, "sample")
+      File.write!(Path.join(source, "lib/example.ex"), "def os, do: :os.type()\n")
+
+      File.write!(
+        Path.join(source, "rebar.config"),
+        ~s|{erl_opts, [{platform_define, "win32", 'WIN'}]}.|
+      )
+
+      calls =
+        scan(%{
+          shell_calls?: true,
+          shell_evidence: evidence({:os, :cmd, 1}),
+          os_exec_calls?: true,
+          os_exec_evidence: evidence({System, :cmd, 3}),
+          executable_lookup_calls?: true,
+          executable_lookup_evidence: evidence({System, :find_executable, 1})
+        })
+
+      assert BuildSelection.static_rules(root, "sample", calls) == :ok
+      assert {:skip, "calls os:cmd/1"} = BuildSelection.portable?(root, "sample", calls)
+    end
+
+    test "a mention of nerves in the sources still refuses", %{root: root} do
+      source = package(root, "sample")
+      File.write!(Path.join(source, "lib/example.ex"), "# runs on Nerves.Runtime too\n")
+
+      assert BuildSelection.static_rules(root, "sample", scan()) ==
+               {:skip, "nerves-specific source"}
+    end
+
+    test "NIF loads keep rule 1's reason", %{root: root} do
+      package(root, "sample")
+      nif = scan(%{nif_calls?: true, nif_evidence: evidence({:erlang, :load_nif, 2})})
+
+      assert BuildSelection.static_rules(root, "sample", nif) ==
+               {:skip, "calls erlang:load_nif/2"}
+
+      assert BuildSelection.static_rules(root, "sample", scan(%{nif_calls?: true})) ==
+               {:skip, "calls a NIF or port driver"}
+    end
+
+    test "beams, languages and scan errors keep rule 1's reasons", %{root: root} do
+      package(root, "sample")
+
+      assert BuildSelection.static_rules(root, "sample", scan(%{beam_count: 0})) ==
+               {:skip, "no compiled beams"}
+
+      assert BuildSelection.static_rules(root, "sample", scan(%{errors: ["bad"]})) ==
+               {:skip, "beam scan incomplete"}
+
+      assert BuildSelection.static_rules(root, "sample", %{}) == {:skip, "beam scan incomplete"}
+
+      assert BuildSelection.static_rules(root, "sample", scan(%{languages: [:elixir, :lfe]})) ==
+               {:skip, "beam language lfe is not portable"}
+    end
+
+    test "priv files without a tarball keep rule 1's reason", %{root: root} do
+      package(root, "sample")
+      priv = scan(%{footprint: %{priv: %{file_count: 1, total_bytes: 10}}})
+      assert BuildSelection.static_rules(root, "sample", priv) == {:skip, "ships priv files"}
+    end
+
+    test "target reads, native sources, a nerves name and a missing source refuse",
+         %{root: root} do
+      source = package(root, "sample")
+      File.write!(Path.join(source, "lib/example.ex"), "Mix.target()")
+
+      assert BuildSelection.static_rules(root, "sample", scan()) ==
+               {:skip, "reads the target or ships native code"}
+
+      native = package(root, "native")
+      File.mkdir_p!(Path.join(native, "c_src"))
+
+      assert BuildSelection.static_rules(root, "native", scan()) ==
+               {:skip, "reads the target or ships native code"}
+
+      package(root, "nerves_thing")
+
+      assert BuildSelection.static_rules(root, "nerves_thing", scan()) ==
+               {:skip, "reads the target or ships native code"}
+
+      assert BuildSelection.static_rules(root, "absent", scan()) ==
+               {:skip, "reads the target or ships native code"}
+    end
+
+    test "every spelling of a target read refuses", %{root: root} do
+      for {file, body} <- [
+            {"lib/example.ex", "defmodule E do\n  @t Mix.target\nend\n"},
+            {"lib/example.ex", "if Mix.target == :host, do: :a, else: :b"},
+            {"lib/example.ex", "f = &Mix.target/0"},
+            {"lib/example.ex", "Mix . target()"},
+            {"lib/example.ex", "Mix.\n  target()"},
+            {"mix.exs", "def project, do: [t: Mix.target]"},
+            {"lib/example.ex", ~s|System.get_env("MIX_TARGET")|},
+            {"src/example.erl", "t() -> 'Elixir.Mix':target()."},
+            {"src/example.erl", "t() -> 'Elixir.Mix' : target()."},
+            {"include/example.hrl", "-define(T, 'Elixir.Mix':target())."}
+          ] do
+        name = "pkg#{System.unique_integer([:positive])}"
+        source = package(root, name)
+        File.mkdir_p!(Path.dirname(Path.join(source, file)))
+        File.write!(Path.join(source, file), body)
+
+        assert BuildSelection.static_rules(root, name, scan()) ==
+                 {:skip, "reads the target or ships native code"},
+               "not refused: #{inspect(body)}"
+
+        assert BuildSelection.portable?(root, name, scan()) ==
+                 {:skip, "reads the target or ships native code"}
+      end
+    end
+
+    test "a name that only starts like Mix.target does not refuse", %{root: root} do
+      source = package(root, "sample")
+      File.write!(Path.join(source, "lib/example.ex"), "Mix.targets_of(x)\nMyMix.target_dir()")
+      assert BuildSelection.static_rules(root, "sample", scan()) == :ok
+    end
+
+    test "a real scan of an Erlang-only package passes", %{root: root} do
+      package(root, "cerlc", "cerlc-0.2.1")
+      built = Path.join([root, "_build", "host", "lib", "cerlc"])
+      assert BuildSelection.static_rules(root, "cerlc", BeamScanner.analyze(built)) == :ok
     end
   end
 
