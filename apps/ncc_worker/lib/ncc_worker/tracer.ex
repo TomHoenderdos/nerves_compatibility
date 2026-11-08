@@ -84,6 +84,13 @@ defmodule NccWorker.Tracer do
   end
 
   @doc """
+  How much of a run, in seconds from its start, may pass before no compile
+  may run any longer (`Portal.Builder` kills the container at 2 h).
+  """
+  @spec run_ceiling_sec() :: pos_integer()
+  def run_ceiling_sec, do: @run_ceiling_sec
+
+  @doc """
   The judge compile's timeout in seconds: `timeout_ms` rounded up, cut to
   what is left of the run when `run_elapsed_sec` is known. `:exhausted` when
   less than a minute of the run is left.

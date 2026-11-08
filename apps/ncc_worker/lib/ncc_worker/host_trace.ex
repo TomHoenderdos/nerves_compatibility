@@ -47,17 +47,26 @@ defmodule NccWorker.HostTrace do
   alias Compatibility.Portability, as: Reasons
   alias NccWorker.{HexHome, LogTail, OptionalDepsTargets, Portability, Tracer, Worker}
 
-  # The untraced compile is the build's own, so only the run's ceiling
-  # (`Tracer.timeout_sec/2`) bounds it, never the traced compile's 30 min.
-  @fallback_timeout_ms 105 * 60 * 1000
   @survived ["group_survived", "cleanup_unverified", "writers_survived"]
   @left_running "the traced host compile left processes running"
 
   @type outcome :: :pass | {:fail, String.t()} | {:error, String.t()}
 
+  @doc """
+  Runs the host compile of `package_name` in `project_dir`. `paths` is the
+  worker's `%{work_dir, output_dir}`. Options:
+
+    * `releases:` (required), `NccWorker.Portability.lock_snapshot/1`;
+    * `run_started_at:` (required), the run's start in monotonic seconds,
+      which bounds both compiles by what is left of the run;
+    * `log_tail_bytes:`;
+    * `timeout_ms:`, `cmd:`, `reap:`, `portability:`, `fallback:`,
+      `deps_get:`, `rm_rf:` (tests).
+  """
   @spec compile(String.t(), String.t(), map(), keyword()) ::
           %{host: map(), verdict: Portability.verdict()}
   def compile(project_dir, package_name, paths, opts) do
+    _ = Keyword.fetch!(opts, :run_started_at)
     log_file = Path.join([paths.output_dir, "logs", "host.log"])
     started = System.monotonic_time(:second)
     hex_home = HexHome.prepare(project_dir, "host")
@@ -78,8 +87,10 @@ defmodule NccWorker.HostTrace do
   end
 
   defp traced(project_dir, package_name, paths, env, log_file, opts) do
+    portability = Keyword.get(opts, :portability, &Portability.run/3)
+
     verdict =
-      Portability.run(
+      portability.(
         project_dir,
         package_name,
         [
@@ -87,7 +98,7 @@ defmodule NccWorker.HostTrace do
           mode: :host,
           releases: Keyword.fetch!(opts, :releases),
           hex_home: System.get_env("HEX_HOME"),
-          run_started_at: Keyword.get(opts, :run_started_at),
+          run_started_at: Keyword.fetch!(opts, :run_started_at),
           trace_dir: Path.join(paths.work_dir, "trace"),
           log_file: log_file
         ] ++ Keyword.take(opts, [:timeout_ms, :cmd, :reap])
@@ -129,7 +140,7 @@ defmodule NccWorker.HostTrace do
 
     with {:reap, :ok} <- {:reap, reap(build_path, opts)},
          {:budget, sec} when is_integer(sec) <- {:budget, budget(opts)},
-         {:remove, :ok} <- {:remove, remove(build_path)} do
+         {:remove, :ok} <- {:remove, remove(build_path, opts)} do
       untraced(project_dir, build_path, env, log_file, sec, opts)
     else
       {:reap, _} -> {{:error, @left_running}, "none"}
@@ -156,20 +167,19 @@ defmodule NccWorker.HostTrace do
     end
   end
 
+  # The untraced compile is the build's own, so only the run's ceiling
+  # bounds it, never the traced compile's 30 min.
   defp budget(opts) do
-    elapsed =
-      case Keyword.get(opts, :run_started_at) do
-        nil -> nil
-        started -> max(System.monotonic_time(:second) - started, 0)
-      end
-
-    Tracer.timeout_sec(@fallback_timeout_ms, elapsed)
+    elapsed = max(System.monotonic_time(:second) - Keyword.fetch!(opts, :run_started_at), 0)
+    Tracer.timeout_sec(Tracer.run_ceiling_sec() * 1000, elapsed)
   end
 
   # The run's own project dir.
   # sobelow_skip ["Traversal.FileModule"]
-  defp remove(build_path) do
-    case File.rm_rf(build_path) do
+  defp remove(build_path, opts) do
+    rm_rf = Keyword.get(opts, :rm_rf, &File.rm_rf/1)
+
+    case rm_rf.(build_path) do
       {:ok, _} -> if File.exists?(build_path), do: {:error, :still_there}, else: :ok
       {:error, reason, _file} -> {:error, reason}
     end
@@ -227,7 +237,8 @@ defmodule NccWorker.HostTrace do
       observations: %{
         "problems" => ["host compile did not start"],
         "trace_stats" => %{"judge_compile" => "not_run", "transient" => true}
-      }
+      },
+      compile_env: nil
     }
   end
 
@@ -277,5 +288,6 @@ defmodule NccWorker.HostTrace do
   end
 
   defp describe(reason) when is_binary(reason), do: reason
+  defp describe(:timeout), do: "the untraced host compile timed out"
   defp describe(reason), do: inspect(reason, limit: 20)
 end

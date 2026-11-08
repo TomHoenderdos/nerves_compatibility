@@ -5,6 +5,8 @@ defmodule NccWorker.HostTraceTest do
 
   @moduletag :tmp_dir
 
+  @root? System.cmd("id", ["-u"]) |> elem(0) |> String.trim() == "0"
+
   defp paths(dir) do
     out = Path.join(dir, "out")
     File.mkdir_p!(Path.join(out, "logs"))
@@ -24,7 +26,8 @@ defmodule NccWorker.HostTraceTest do
       releases: {:ok, %{}},
       deps_get: fn _proj, _env, _log -> :ok end,
       fallback: fn _proj, _env, _log, _sec -> flunk("no fallback expected") end,
-      reap: fn _build_path -> :ok end
+      reap: fn _build_path -> :ok end,
+      run_started_at: System.monotonic_time(:second)
     ]
     |> Keyword.merge(extra)
   end
@@ -203,6 +206,10 @@ defmodule NccWorker.HostTraceTest do
     end
   end
 
+  if @root? do
+    @tag skip: "runs as root, where a read-only _build/ does not stop its removal"
+  end
+
   test "a build that cannot be removed is not rebuilt", %{tmp_dir: dir} do
     proj = project(dir)
     build_root = Path.join(proj, "_build")
@@ -262,6 +269,84 @@ defmodule NccWorker.HostTraceTest do
     assert %{status: :fail, error: "deps.get failed"} = host
     assert stats(verdict)["judge_compile"] == "not_run"
     assert stats(verdict)["host_build"] == "none"
+    assert verdict.compile_env == nil
+  end
+
+  test "a build still there after its removal is not rebuilt", %{tmp_dir: dir} do
+    proj = project(dir)
+
+    %{host: host, verdict: verdict} =
+      HostTrace.compile(
+        proj,
+        "pkg",
+        paths(dir),
+        opts(cmd: exiting(1), rm_rf: fn _path -> {:ok, []} end)
+      )
+
+    assert %{status: :error, error: "the traced host compile's build could not be removed"} = host
+    assert verdict.status == :skip
+    assert File.exists?(build_dir(proj))
+  end
+
+  test "an untraced compile that timed out says so", %{tmp_dir: dir} do
+    proj = project(dir)
+    fallback = fn _proj, _env, _log, _sec -> {:error, :timeout} end
+
+    %{host: host} =
+      HostTrace.compile(proj, "pkg", paths(dir), opts(cmd: exiting(1), fallback: fallback))
+
+    assert %{status: :fail, error: "the untraced host compile timed out"} = host
+  end
+
+  test "the run's start is required", %{tmp_dir: dir} do
+    proj = project(dir)
+    opts = Keyword.delete(opts(cmd: exiting(0)), :run_started_at)
+
+    assert_raise KeyError, ~r/run_started_at/, fn ->
+      HostTrace.compile(proj, "pkg", paths(dir), opts)
+    end
+  end
+
+  describe "a passing trace verdict for a build that is not the traced one" do
+    # What the judge would say of a clean trace; the build is not it.
+    defp passing(stats) do
+      fn _proj, _package, _opts ->
+        %{
+          status: :pass,
+          reason: nil,
+          compile_env: [%{"app" => "pkg", "key" => "k"}],
+          observations: %{"problems" => [], "trace_stats" => stats}
+        }
+      end
+    end
+
+    for {name, stats} <- [
+          {"a report in judge mode",
+           %{"judge_compile" => "finished", "trace_mode" => "judge", "transient" => false}},
+          {"a compile that did not finish",
+           %{"judge_compile" => "not_finished", "tracer_error" => "killed"}}
+        ] do
+      test "is withheld after #{name}", %{tmp_dir: dir} do
+        proj = project(dir)
+
+        %{host: host, verdict: verdict} =
+          HostTrace.compile(
+            proj,
+            "pkg",
+            paths(dir),
+            opts(
+              portability: passing(unquote(Macro.escape(stats))),
+              fallback: fn _proj, _env, _log, _sec -> :ok end
+            )
+          )
+
+        assert host.status == :pass
+        assert %{status: :skip, reason: "portability could not be judged"} = verdict
+        assert verdict.compile_env == nil
+        assert stats(verdict)["transient"] == true
+        assert stats(verdict)["host_build"] == "untraced"
+      end
+    end
   end
 
   test "with no time left there is no fallback", %{tmp_dir: dir} do
