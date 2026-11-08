@@ -1143,8 +1143,8 @@ toolchain_module(M) ->
         false -> object_code_toolchain(M)
     end.
 
-%% code:which/1 is asked every time; only what a path is, which never
-%% changes (the roots are fixed at start), is kept per path.
+%% code:which/1 is asked every time; only what an absolute path is, which
+%% never changes (the roots are fixed at start), is kept per path.
 object_code_toolchain(M) ->
     case code:which(M) of
         preloaded -> true;
@@ -1152,7 +1152,14 @@ object_code_toolchain(M) ->
         _ -> false
     end.
 
-under_roots(Path) ->
+%% Kept by the absolute path: a relative one (a relative code path entry)
+%% names whatever the working directory makes of it now, so it is resolved
+%% first and never cached as written.
+under_roots(Path0) ->
+    Path = case filename:pathtype(Path0) of
+               absolute -> Path0;
+               _ -> filename:absname(Path0)
+           end,
     case get({under_roots, Path}) of
         undefined ->
             V = under_any(norm(Path), get(roots)),
