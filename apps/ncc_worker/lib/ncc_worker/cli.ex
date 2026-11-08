@@ -200,11 +200,14 @@ defmodule NccWorker.CLI do
   # The JSON-to-input transform `read_input/1` applies; public for tests.
   @spec parse_input(String.t()) ::
           {:ok, map()}
-          | {:error, {:invalid_json, String.t()} | {:invalid_optional_deps, term()}}
+          | {:error,
+             {:invalid_json, String.t()}
+             | {:invalid_optional_deps, term()}
+             | {:invalid_config_variant, term()}}
   def parse_input(content) do
-    case decode_input(content) do
-      {:ok, input} -> validate_optional_deps(input)
-      error -> error
+    with {:ok, input} <- decode_input(content),
+         {:ok, input} <- validate_optional_deps(input) do
+      validate_config_variant(input)
     end
   end
 
@@ -224,7 +227,17 @@ defmodule NccWorker.CLI do
 
   defp validate_optional_deps(input), do: {:ok, input}
 
-  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages egress_probe optional_deps)a
+  # The portal records a toolchain build under the config variant it asked
+  # for; a name this image does not pin would build some other config.
+  defp validate_config_variant(%{config_variant: value} = input) do
+    if Compatibility.ConfigVariants.known?(value),
+      do: {:ok, input},
+      else: {:error, {:invalid_config_variant, value}}
+  end
+
+  defp validate_config_variant(input), do: {:ok, input}
+
+  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages egress_probe optional_deps config_variant)a
   @input_key_map Map.new(@input_keys, &{Atom.to_string(&1), &1})
 
   @spec atomize_keys(map()) :: map()

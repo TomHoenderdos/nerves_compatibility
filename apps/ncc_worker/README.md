@@ -328,6 +328,17 @@ malformed input is, rather than run as the default and recorded as the wrong var
 portal checks against the variant it queued the build as. The portal queues a version `"include"` first and
 `"exclude"` only when that build added one.
 
+`"config_variant"` in `NCC_INPUT` (toolchain mode) is a `Compatibility.ConfigVariants` name; its overlay is written as
+`config/config.exs` before the compile (`NccWorker.ConfigOverlay`). Absent is `"default"`, no overlay. The overlay
+is written after the project's `deps.get` and before the lock snapshot and the traced compile, so the traced
+compile's own `deps.get`, the compile and any untraced fallback all load it, and the trace's config reads record its
+values; it never enters `mix.exs` or the `.app`. A name this image does not pin is refused when the input is read
+(`{:error, {:invalid_config_variant, value}}`, exit `10` with no result), and a `config/config.exs` already in the
+project is never overwritten (`{:error, {:config_overlay_failed, :config_exists}}`, exit `10`): building without
+the overlay would record the build as the wrong variant. Other modes accept the key and ignore it.
+`toolchain_build.config_variant` is the config variant the build was made in, echoed for the portal to check
+against the job; it is always set in a toolchain run, `"default"` without an input value.
+
 A package that ships `priv` files is portable only when they are static data (`NccWorker.StaticPriv`): every file
 under `_build/host/lib/<package>/priv` (or `deps/<package>/priv`, the only link target followed there) is a regular file with one link, executable neither there nor in the
 tarball, carried byte for byte at `priv/<path>` in the `contents.tar.gz` of the package's own Hex tarball, and not
@@ -355,6 +366,7 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
   "package_checksum": "<outer>",
   "compile_env": [{"app": "...", "path": ["..."], "value": "<base64url term>"}],
   "compile_env_rule": 1,
+  "config_variant": "default",
   "portability_rule": 1,
   "rule1_reason": "portable?'s reason when it skipped, else null",
   "compile_observations": {"trace_stats": {"windows": 14, "wall_ms": 9100, "host_compile_sec": 31.2}, "config_reads": [], "refusals": [], "taint": {}, "problems": []},

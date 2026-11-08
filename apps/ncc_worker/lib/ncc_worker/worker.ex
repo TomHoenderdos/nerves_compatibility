@@ -68,6 +68,10 @@ defmodule NccWorker.Worker do
           # dependencies before the compile, "exclude" builds the package
           # without them.
           optional(:optional_deps) => String.t(),
+          # For "toolchain": a `Compatibility.ConfigVariants` name; its overlay
+          # is written as `config/config.exs` before the compile
+          # (`NccWorker.ConfigOverlay`). Absent is `default`, no overlay.
+          optional(:config_variant) => String.t(),
           optional(:argus) => %{
             optional(:analyses) => [String.t()],
             optional(:scope) => String.t(),
@@ -114,6 +118,9 @@ defmodule NccWorker.Worker do
           # trace observed across the package's closure (`ConfigReads`, R5);
           # nil when it is the `.app`'s own list alone.
           compile_env_rule: 1 | nil,
+          # The config variant the build was made in, echoed for the portal
+          # to check against the job.
+          config_variant: String.t(),
           # The verdict's rule: 1 is `BuildSelection.portable?/4` AND the
           # compile-time trace's refusals (P1); nil for an "error" build.
           portability_rule: 1 | nil,
@@ -1391,6 +1398,23 @@ defmodule NccWorker.Worker do
           {:ok, result()} | {:error, term()}
   def toolchain_project(project_dir, input, paths, toolchain, opts) do
     package_name = input.package.name
+    config_variant = input[:config_variant] || Compatibility.ConfigVariants.default()
+
+    with :ok <- overlay(project_dir, config_variant) do
+      toolchain_project(project_dir, input, paths, toolchain, opts, package_name, config_variant)
+    end
+  end
+
+  # A variant whose overlay cannot be written is a worker failure (exit 10):
+  # building it without the overlay would record it as the wrong variant.
+  defp overlay(project_dir, config_variant) do
+    case NccWorker.ConfigOverlay.write(project_dir, config_variant) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:config_overlay_failed, reason}}
+    end
+  end
+
+  defp toolchain_project(project_dir, input, paths, toolchain, opts, package_name, config_variant) do
     log_tail_bytes = get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes
 
     compile_opts =
@@ -1426,7 +1450,9 @@ defmodule NccWorker.Worker do
           finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
           scope: RunScope.to_string(:toolchain),
           toolchain_build:
-            toolchain_build(project_dir, package_name, compiled.host, toolchain, compiled.verdict)
+            project_dir
+            |> toolchain_build(package_name, compiled.host, toolchain, compiled.verdict)
+            |> Map.put(:config_variant, config_variant)
         }
         |> put_optional_deps(compiled.optional_deps)
         |> put_deps_lock(:toolchain, nil, project_dir, package_name)

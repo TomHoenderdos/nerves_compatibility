@@ -770,6 +770,91 @@ defmodule NccWorker.ToolchainModeTest do
     refute File.exists?(Path.join(out, "result.json"))
   end
 
+  # A toolchain run's project after `deps.get`: the plain project's mix.exs
+  # and lock, with the package built under `_build/host`.
+  defp toolchain_run(dir) do
+    {proj, _built} = project(Path.join(dir, "work"), "circular_buffer-1.0.0")
+
+    File.write!(
+      Path.join(proj, "mix.exs"),
+      "defp deps do\n  [\n    {:sample, \"1.0.0\"}\n  ]\nend\n"
+    )
+
+    out = Path.join(dir, "out")
+    File.mkdir_p!(Path.join(out, "logs"))
+    paths = %{work_dir: Path.join(dir, "work"), output_dir: out, logs_dir: Path.join(out, "logs")}
+
+    input = %{
+      run_id: "r1",
+      mode: "toolchain",
+      optional_deps: "exclude",
+      started_at: System.monotonic_time(:second),
+      image: %{name: "x", digest: "sha256:x"},
+      package: %{name: "sample", version: "1.0.0"},
+      paths: %{work_dir: paths.work_dir, output_dir: out, files_dir: Path.join(out, "files")}
+    }
+
+    {proj, input, paths}
+  end
+
+  defp passing_host_trace, do: %{host: passing_host(), verdict: @traced_pass}
+
+  test "a named config variant's overlay is in place before the compile, and the result says which",
+       %{tmp_dir: dir} do
+    parent = self()
+    {proj, input, paths} = toolchain_run(dir)
+
+    host_trace = fn project_dir, _package, _paths, _opts ->
+      send(parent, {:config, File.read(Path.join(project_dir, "config/config.exs"))})
+      passing_host_trace()
+    end
+
+    input = Map.put(input, :config_variant, "phx_dev")
+
+    assert {:ok, result} =
+             Worker.toolchain_project(proj, input, paths, @toolchain, host_trace: host_trace)
+
+    assert_received {:config, {:ok, text}}
+    assert text =~ "debug_heex_annotations: true"
+    assert result.toolchain_build.config_variant == "phx_dev"
+  end
+
+  test "without a config_variant nothing is written and the result is the default",
+       %{tmp_dir: dir} do
+    parent = self()
+    {proj, input, paths} = toolchain_run(dir)
+
+    host_trace = fn project_dir, _package, _paths, _opts ->
+      send(parent, {:config, File.exists?(Path.join(project_dir, "config"))})
+      passing_host_trace()
+    end
+
+    assert {:ok, result} =
+             Worker.toolchain_project(proj, input, paths, @toolchain, host_trace: host_trace)
+
+    assert_received {:config, false}
+    assert result.toolchain_build.config_variant == "default"
+  end
+
+  test "a config variant whose overlay cannot be written is a worker failure", %{tmp_dir: dir} do
+    {proj, input, paths} = toolchain_run(dir)
+    File.mkdir_p!(Path.join(proj, "config"))
+    File.write!(Path.join(proj, "config/config.exs"), "import Config\n")
+    input = Map.put(input, :config_variant, "phx_dev")
+
+    host_trace = fn _, _, _, _ -> flunk("compiled without its overlay") end
+
+    assert {:error, {:config_overlay_failed, :config_exists}} =
+             outcome =
+             CLI.run_input(
+               input,
+               &Worker.toolchain_project(proj, &1, paths, @toolchain, host_trace: host_trace)
+             )
+
+    assert CLI.exit_code(outcome) == 10
+    refute File.exists?(Path.join(paths.output_dir, "result.json"))
+  end
+
   describe "compile-time config reads (R5)" do
     test "a passing trace's items join the .app's compile_env and mark the build",
          %{tmp_dir: work_dir} do

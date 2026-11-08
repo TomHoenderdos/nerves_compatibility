@@ -63,4 +63,15 @@ defmodule NccWorker.CLITest do
     assert :ok = CLI.scrub_env()
     assert System.get_env("MIX_OS_DEPS_COMPILE_PARTITION_COUNT") == nil
   end
+
+  test "parse_input/1 keeps a known config_variant and refuses an unknown one" do
+    assert {:ok, %{config_variant: "phx_dev"}} =
+             CLI.parse_input(~s({"mode": "toolchain", "config_variant": "phx_dev"}))
+
+    assert {:ok, input} = CLI.parse_input(~s({"mode": "toolchain"}))
+    refute Map.has_key?(input, :config_variant)
+
+    assert {:error, {:invalid_config_variant, "phx_staging"}} =
+             CLI.parse_input(~s({"mode": "toolchain", "config_variant": "phx_staging"}))
+  end
 end
