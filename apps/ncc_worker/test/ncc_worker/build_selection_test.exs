@@ -365,6 +365,19 @@ defmodule NccWorker.BuildSelectionTest do
       end
     end
 
+    test "MIX_TARGET read in config refuses", %{root: root} do
+      source = package(root, "sample")
+      File.mkdir_p!(Path.join(source, "config"))
+
+      File.write!(
+        Path.join(source, "config/config.exs"),
+        ~s|import Config\nconfig :sample, target: System.get_env("MIX_TARGET")|
+      )
+
+      assert BuildSelection.static_rules(root, "sample", scan()) ==
+               {:skip, "reads the target or ships native code"}
+    end
+
     test "a name that only starts like Mix.target does not refuse", %{root: root} do
       source = package(root, "sample")
       File.write!(Path.join(source, "lib/example.ex"), "Mix.targets_of(x)\nMyMix.target_dir()")

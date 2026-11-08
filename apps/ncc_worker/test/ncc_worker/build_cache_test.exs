@@ -192,12 +192,51 @@ defmodule NccWorker.BuildCacheTest do
             {"src/a.erl", "t() -> 'Elixir.Mix':target()."},
             {"src/a.erl", "t() -> 'Elixir.Mix':'target'()."},
             {"src/a.erl", "-import('Elixir.Mix', [target/0]).\nt() -> target()."},
-            {"include/a.hrl", "-define(T, 'Elixir.Mix' : target())."}
+            {"include/a.hrl", "-define(T, 'Elixir.Mix' : target())."},
+            {"lib/a.ex", "import(Mix, only: [target: 0])"},
+            {"lib/a.ex", "alias(Mix, as: M)\nM.target()"},
+            {"lib/a.ex", ~s|alias :"Elixir.Mix", as: M\nM.target()|},
+            {"lib/a.ex", "mod = Mix\nmod.target()"},
+            {"lib/a.ex", "defmacro __using__(_), do: quote(do: import(Mix))"},
+            {"include/m.hrl", "-define(M, 'Elixir.Mix')."},
+            {"lib/t.eex", "<%= Mix.target() %>"},
+            {"lib/t.heex", "<p>{Mix.target()}</p>"},
+            {"config/config.exs", ~s|config :a, t: System.get_env("MIX_TARGET")|}
           ] do
         name = "dep#{System.unique_integer([:positive])}"
         write_dep(ctx.deps, name, [{"mix.exs", "defmodule X do end"}, {file, body}])
         refute BuildCache.dep_target_agnostic?(ctx.deps, name), inspect(body)
       end
+    end
+
+    test "holds out a __using__ that imports Mix and an Erlang macro for Mix", ctx do
+      write_dep(ctx.deps, "user", [
+        {"mix.exs", "defmodule X do end"},
+        {"lib/using.ex",
+         "defmodule U do\n  defmacro __using__(_) do\n    quote do\n      import Mix\n    end\n  end\nend"},
+        {"lib/caller.ex", "defmodule C do\n  use U\n  def t, do: target()\nend"}
+      ])
+
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "user")
+
+      write_dep(ctx.deps, "erlmacro", [
+        {"mix.exs", "defmodule X do end"},
+        {"include/m.hrl", "-define(M, 'Elixir.Mix')."},
+        {"src/a.erl", "-include(\"m.hrl\").\nt() -> ?M:target()."}
+      ])
+
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "erlmacro")
+    end
+
+    test "keeps a dependency that only mentions Mix in prose or uses its submodules", ctx do
+      write_dep(ctx.deps, "prose", [
+        {"mix.exs", "defmodule X.MixProject do\n  use Mix.Project\nend"},
+        {"lib/a.ex",
+         "@moduledoc \"Build it with Mix, the target dir is _build.\"\nalias Mix.Project\nimport Mix.Config"},
+        {"priv/static/app.js", "const target = event.target; // Mix"}
+      ])
+
+      assert BuildCache.dep_target_agnostic?(ctx.deps, "prose")
     end
 
     test "keeps a dependency whose target mentions are not Mix's", ctx do

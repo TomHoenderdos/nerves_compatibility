@@ -605,24 +605,35 @@ defmodule NccWorker.BuildCache do
   # `Mix.target()`, `Mix.target` without parentheses, `&Mix.target/0`,
   # whitespace or a line break around the dot, `'Elixir.Mix':target()`,
   # `:"Elixir.Mix".target`, quoted function names, `apply(Mix, :target, [])`,
-  # `-import('Elixir.Mix', [target/0])`,
-  # and `MIX_TARGET` from the environment. `import Mix` and `alias Mix, as:`
-  # count too, in a file that mentions `target`, because they let the call be
-  # written without the module name. Erring towards a match only costs a cache
-  # hit or a precompiled build.
+  # `-import('Elixir.Mix', [target/0])`, and `MIX_TARGET` from the
+  # environment. Anything that names the module `Mix` itself so a later call
+  # can drop the name counts too, wherever it is and whether or not the file
+  # mentions `target`: `import Mix` and `alias Mix` with or without
+  # parentheses (a `__using__` can quote one into another module), the atom
+  # `'Elixir.Mix'` or `:"Elixir.Mix"` (an Erlang `-define` can hide it behind
+  # a macro), and `Mix` bound to a variable. `Mix.Project` and other
+  # submodules do not. Erring towards a match only costs a cache hit or a
+  # precompiled build.
   defp target_read_pattern,
     do:
-      ~r/Mix['"]?\s*[.:,]\s*\[?\s*:?['"]?target(?!\w)|MIX_TARGET|\bimport\s+Mix\b(?!\.)|\balias\s+Mix\s*,/
+      ~r/Mix['"]?\s*[.:,]\s*\[?\s*:?['"]?target(?!\w)|MIX_TARGET|\b(?:import|alias)\b\s*\(?\s*:?['"]?(?:Elixir\.)?Mix\b(?![.\w])|['"]Elixir\.Mix['"](?!\.)|\b\w+\s*=\s*Mix\b(?![.\w])/
 
-  # `grep -r -l -i` over the sources lists the files that mention `target` at
-  # all, then each is read and matched against `target_read_pattern/0`, which spans
-  # lines where grep cannot. The `--include` filters keep it off beam files and
-  # priv blobs. grep exit 1 is no candidate; anything else (no grep, unreadable
-  # tree, a file that cannot be read) counts as a match so the dependency stays
-  # target-scoped.
+  # Files over this size are not read and count as a target read. Sources and
+  # templates are far smaller; a larger text file is a bundled asset, which
+  # `--exclude` keeps out of the listing in the usual layouts.
+  @target_scan_max_bytes 4 * 1024 * 1024
+
+  # `grep -r -l -I -i` lists every text file under the dependency that
+  # mentions `target` or `mix` at all (binary files such as beams and images
+  # are skipped by `-I`, beams by name too), then each is read and matched against
+  # `target_read_pattern/0`, which spans lines where grep cannot. Built
+  # artifacts and VCS metadata are skipped. grep exit 1 is no candidate;
+  # anything else (no grep, unreadable tree, a file that cannot be read or is
+  # too large) counts as a match so the dependency stays target-scoped.
   defp reads_target?(dir) do
-    includes = Enum.map(~w(*.ex *.exs *.erl *.hrl), &"--include=#{&1}")
-    args = ["-r", "-l", "-i", "-F", "--null"] ++ includes ++ ["-e", "target", "--", dir]
+    excludes = Enum.map(~w(.git _build node_modules), &"--exclude-dir=#{&1}")
+    args = ["-r", "-l", "-I", "-i", "-F", "--null", "--exclude=*.beam"] ++ excludes
+    args = args ++ ["-e", "target", "-e", "mix", "--", dir]
 
     case System.cmd("grep", args, stderr_to_stdout: true) do
       {_, 1} -> false
@@ -633,11 +644,13 @@ defmodule NccWorker.BuildCache do
     _ -> true
   end
 
-  # Read-only inspection of a dependency source file grep listed.
+  # Read-only inspection of a dependency file grep listed.
   # sobelow_skip ["Traversal.FileModule"]
   defp target_read?(file) do
-    case File.read(file) do
-      {:ok, contents} -> Regex.match?(target_read_pattern(), contents)
+    with {:ok, %File.Stat{size: size}} when size <= @target_scan_max_bytes <- File.stat(file),
+         {:ok, contents} <- File.read(file) do
+      Regex.match?(target_read_pattern(), contents)
+    else
       _ -> true
     end
   end
