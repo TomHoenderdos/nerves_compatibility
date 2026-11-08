@@ -16,6 +16,7 @@ defmodule NccWorker.Worker do
     HexCache,
     HexHome,
     HexMetadata,
+    HostTrace,
     LockPolicy,
     LogTail,
     NervesCache,
@@ -63,8 +64,9 @@ defmodule NccWorker.Worker do
             optional(:elixir) => String.t(),
             optional(:otp) => String.t()
           },
-          # For "toolchain": "include" (the default) runs the optional
-          # dependencies pass, "exclude" builds the package without it.
+          # For "toolchain": "include" (the default) adds the optional
+          # dependencies before the compile, "exclude" builds the package
+          # without them.
           optional(:optional_deps) => String.t(),
           optional(:argus) => %{
             optional(:analyses) => [String.t()],
@@ -90,8 +92,8 @@ defmodule NccWorker.Worker do
           String.t() => String.t() | [%{String.t() => String.t()}]
         }
 
-  # A "toolchain" run's verdict (`toolchain_build/5`): one prod host compile
-  # in a plain `mix new` project on a toolchain image, judged by
+  # A "toolchain" run's verdict (`toolchain_build/5`): one prod host compile,
+  # traced (`NccWorker.HostTrace`), in a plain `mix new` project on a toolchain image, judged by
   # `NccWorker.BuildSelection.portable?/4` AND the compile-time trace
   # (`NccWorker.Portability`, P1: it only adds refusals). `reason` is the
   # combined skip reason for "skipped" (`combine/2`) and what failed for
@@ -122,7 +124,13 @@ defmodule NccWorker.Worker do
           # (with "judge_compile", "finished" | "not_finished" | "not_run",
           # "transient", true when a could-not-judge says nothing about the
           # package and the portal stores it as an error to retry,
-          # "report_over_budget", and the host compile's "host_compile_sec"),
+          # "report_over_budget", the phase times "wall_ms", "compile_ms",
+          # "report_ms" and "judge_ms", "tracer_error", why the traced
+          # compile did not finish (nil when it did), "trace_mode", "host" | "judge", "host_build",
+          # "traced" | "untraced" | "none", which build the host status is
+          # (`NccWorker.HostTrace`), and "host_compile_sec": in a toolchain
+          # run the traced host compile's own time, its `deps.get` and any
+          # untraced fallback included),
           # "config_reads",
           # "elixir_version", "native_calls", "mix_exs_allowed",
           # "build_root_source_path", "refusals", "taint", "native_libs",
@@ -181,7 +189,9 @@ defmodule NccWorker.Worker do
           # "target_compile_failed", "timeout", "stale_build_not_removed",
           # "deps_lock_unreadable", "mix_exs_edit_failed",
           # "run_budget_exhausted" or "no_passing_target", `nil` when nothing
-          # was dropped. A toolchain run asked for `optional_deps: "exclude"`
+          # was dropped. A toolchain run adds them before its only compile
+          # instead, and is absent when the compile without them fails too
+          # (`toolchain_compile/5`); one asked for `optional_deps: "exclude"`
           # never tries: everything empty and "not_requested". Absent for
           # argus-only runs.
           # `skipped` were never tried: dev tooling and alternatives on
@@ -1358,120 +1368,244 @@ defmodule NccWorker.Worker do
 
   # A toolchain run (`mode: "toolchain"`, `NccWorker.RunScope`) answers one
   # question: are the package's own beams, built by this image's Elixir and
-  # OTP, the same on every OS and architecture? A toolchain image has no
-  # nerves_bootstrap and an OTP Nerves 2 may not accept, so the project is a
-  # plain `mix new` one: the package, the optional-dependency pass a
-  # pure-Elixir full run gets (unless the input's `optional_deps` is
-  # "exclude": the portal builds a version both ways), one prod host compile
-  # and the `BuildSelection.portable?/4` verdict. No firmware, no argus, no
-  # systems, and no Hex metadata fetch: the portal only queues versions a full
-  # run has already checked.
+  # OTP, the same on every OS and architecture? A plain `mix new` project
+  # gets the package and, unless the input's `optional_deps` is "exclude",
+  # its unresolved optional dependencies; then one host compile, traced
+  # (`NccWorker.HostTrace`), whose files are judged and archived. No
+  # firmware, no argus, no systems, no Hex metadata fetch, and no build
+  # cache: the trace must see every closure dependency compiled, so nothing
+  # is restored from the cache and nothing is stored for it.
   defp toolchain_run(input, paths, toolchain) do
     package_name = input.package.name
     log_tail_bytes = get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes
 
     with {:ok, project_dir} <- Project.create_plain(paths.work_dir, @wrapper_app),
          {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
-         :ok <- LockPolicy.validate(project_dir) do
-      # Right after `deps.get` and before any compile, host or judge: an
-      # untraced build step could rewrite the lock and a tarball together
-      # later (`NccWorker.Portability.lock_snapshot/1`). A build with
-      # optional deps added uses the pass's own snapshot (`judge_releases/2`).
-      releases = Portability.lock_snapshot(project_dir)
-      host = compile_host(project_dir, paths.output_dir, log_tail_bytes, package_name)
+         :ok <- LockPolicy.validate(project_dir),
+         {:ok, compiled} <-
+           toolchain_compile(project_dir, input[:optional_deps], package_name, paths,
+             # Right after `deps.get` and before any compile: an untraced
+             # build step could rewrite the lock and a tarball together later.
+             releases: Portability.lock_snapshot(project_dir),
+             run_started_at: input[:started_at],
+             log_tail_bytes: log_tail_bytes
+           ) do
+      result =
+        %{
+          run_id: input.run_id,
+          package: %{
+            name: package_name,
+            version: get_package_version(project_dir, input.package),
+            dependencies: [],
+            footprint: empty_footprint()
+          },
+          image: input.image,
+          toolchain: toolchain,
+          systems: %{},
+          argus: Argus.skipped(),
+          finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+          scope: RunScope.to_string(:toolchain),
+          toolchain_build:
+            toolchain_build(project_dir, package_name, compiled.host, toolchain, compiled.verdict)
+        }
+        |> put_optional_deps(compiled.optional_deps)
+        |> put_deps_lock(:toolchain, nil, project_dir, package_name)
+        |> put_requested_toolchain(input[:toolchain])
+        |> put_requested_optional_deps(input[:optional_deps])
 
-      with {:ok, optional_deps} <-
-             toolchain_optional_deps(
-               input[:optional_deps],
-               host,
-               project_dir,
-               package_name,
-               paths
-             ) do
-        {releases, optional_deps} = judge_releases(releases, optional_deps)
-
-        # After the optional pass: the traced judge compile recompiles the
-        # closure, so the files judged and archived are the traced ones.
-        portability =
-          toolchain_portability(host, project_dir, package_name, paths,
-            releases: releases,
-            run_started_at: input[:started_at]
-          )
-
-        result =
-          %{
-            run_id: input.run_id,
-            package: %{
-              name: package_name,
-              version: get_package_version(project_dir, input.package),
-              dependencies: [],
-              footprint: empty_footprint()
-            },
-            image: input.image,
-            toolchain: toolchain,
-            systems: %{},
-            argus: Argus.skipped(),
-            finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
-            scope: RunScope.to_string(:toolchain),
-            toolchain_build:
-              toolchain_build(project_dir, package_name, host, toolchain, portability)
-          }
-          |> put_optional_deps(optional_deps)
-          |> put_deps_lock(:toolchain, nil, project_dir, package_name)
-          |> put_requested_toolchain(input[:toolchain])
-          |> put_requested_optional_deps(input[:optional_deps])
-
-        {:ok, result}
-      end
+      {:ok, result}
     end
   end
 
   @doc false
-  # The same best-effort pass as a pure-Elixir full run, after the build
-  # without them has passed. A failed compile is the verdict already. A build
-  # asked for without them never starts the pass, and says so in the shape
-  # the pass reports, whether its compile passed or not. Public for tests.
-  @spec toolchain_optional_deps(String.t() | nil, map(), String.t(), String.t(), map()) ::
-          {:ok, map() | nil} | {:error, term()}
-  def toolchain_optional_deps("exclude", _host, _project_dir, _package_name, _paths),
-    do: {:ok, Map.put(optional_deps_info([], [], "not_requested"), :skipped, [])}
-
-  def toolchain_optional_deps(_request, %{status: :pass}, project_dir, package_name, paths),
-    do: resolve_optional_deps(:toolchain, :pure_elixir, project_dir, package_name, paths)
-
-  def toolchain_optional_deps(_request, _host, _project_dir, _package_name, _paths),
-    do: {:ok, nil}
-
-  @doc false
-  # Only a passing host compile is traced: a failed one is the verdict
-  # already ("error"), and `toolchain_build/5` never reads the trace for it.
-  # Guarded like the full run's (`full_run_portability/3`): a raise, a throw
-  # or an exit in the trace (`HexHome` may raise) is "portability could not
-  # be judged", never a failed run. Public for tests, which inject `trace:`
-  # (`run_portability/4`'s shape).
-  @spec toolchain_portability(map(), String.t(), String.t(), map(), keyword()) ::
-          Portability.verdict() | nil
-  def toolchain_portability(%{status: :pass}, project_dir, package_name, paths, opts) do
-    trace = Keyword.get(opts, :trace, &run_portability/4)
-    guarded_trace(trace, project_dir, package_name, paths, opts)
+  # The toolchain run's one compile (`NccWorker.HostTrace`). With "exclude"
+  # nothing is added. Otherwise the package's unresolved optional
+  # dependencies, read from the lock, are added before it, so the closure is
+  # compiled once, with them, the way an application that locks them
+  # compiles it. When they cannot be added, break the lock policy, or the
+  # compile with them fails, the project is put back, `_build/host` is
+  # removed and the compile runs without them; `optional_deps` says what was
+  # dropped and why, and is nil when that compile fails too.
+  #
+  # A host compile that is a worker error (processes left running, a
+  # `_build` that cannot be removed) or that raises, throws or exits is
+  # `{:error, _}`, a retryable worker failure (exit 10): it says nothing
+  # about the package, and no compile is tried after it.
+  #
+  # `opts`: `releases:`, the snapshot after the project's first `deps.get`;
+  # `run_started_at:`; `log_tail_bytes:`. Public for tests, which inject
+  # `host_trace:` (`HostTrace.compile/4`'s shape), `optional_deps:` (`fn
+  # project_dir, package -> {deps, skipped} end`) and `deps_get:`
+  # (`Project.add_optional_deps/5`'s); none of the three reaches the traced
+  # compile.
+  @spec toolchain_compile(String.t(), String.t() | nil, String.t(), map(), keyword()) ::
+          {:ok, %{host: map(), verdict: Portability.verdict(), optional_deps: map() | nil}}
+          | {:error, term()}
+  def toolchain_compile(project_dir, "exclude", package_name, paths, opts) do
+    with {:ok, compiled} <- host_trace(project_dir, package_name, paths, opts) do
+      info = Map.put(optional_deps_info([], [], "not_requested"), :skipped, [])
+      {:ok, Map.put(compiled, :optional_deps, info)}
+    end
   end
 
-  def toolchain_portability(_host, _project_dir, _package_name, _paths, _opts), do: nil
+  def toolchain_compile(project_dir, _request, package_name, paths, opts) do
+    resolve = Keyword.get(opts, :optional_deps, &optional_deps_to_add/2)
+    {deps, skipped} = resolve.(project_dir, package_name)
 
-  # The traced judge compile (`NccWorker.Portability.run/3`), shared by the
-  # toolchain run and the full run's `pure_elixir` path
-  # (`full_run_portability/3`), so both trace alike. It runs with the host
-  # compile's env and its own `HEX_HOME`, exactly as `compile_host/4` does,
-  # and judges dependency sources against the run's Hex cache (the one
-  # `package_tarball/2` reads). `opts`: `releases:`, the
+    if skipped != [] do
+      log_host(
+        paths,
+        "Not adding optional dependencies #{Enum.join(skipped, ", ")}: " <>
+          "tooling or alternatives most applications do not lock"
+      )
+    end
+
+    with {:ok, compiled} <- compile_with_optional(deps, project_dir, package_name, paths, opts) do
+      {:ok, Map.update!(compiled, :optional_deps, &put_skipped(&1, skipped))}
+    end
+  end
+
+  defp optional_deps_to_add(project_dir, package_name) do
+    project_dir
+    |> DepsLock.unresolved_optional_deps(package_name)
+    |> Project.optional_deps_to_add()
+  end
+
+  defp put_skipped(nil, _skipped), do: nil
+  defp put_skipped(info, skipped), do: Map.put(info, :skipped, skipped)
+
+  # `HostTrace.compile/4`'s own `deps_get:` takes three arguments, so the
+  # caller's injections are dropped before the options reach it.
+  defp host_trace(project_dir, package_name, paths, opts) do
+    trace = Keyword.get(opts, :host_trace, &HostTrace.compile/4)
+    forwarded = Keyword.drop(opts, [:deps_get, :optional_deps, :host_trace])
+
+    case guarded_host_trace(trace, project_dir, package_name, paths, forwarded) do
+      {:ok, %{host: %{status: :error} = host}} -> {:error, {:host_compile_error, host[:error]}}
+      other -> other
+    end
+  end
+
+  defp guarded_host_trace(trace, project_dir, package_name, paths, opts) do
+    {:ok, trace.(project_dir, package_name, paths, opts)}
+  rescue
+    e -> {:error, {:host_compile_crashed, Exception.message(e)}}
+  catch
+    kind, reason -> {:error, {:host_compile_crashed, "#{kind} #{inspect(reason, limit: 20)}"}}
+  end
+
+  defp compile_with_optional([], project_dir, package_name, paths, opts) do
+    with {:ok, compiled} <- host_trace(project_dir, package_name, paths, opts) do
+      {:ok, Map.put(compiled, :optional_deps, passed_info(compiled, [], [], nil))}
+    end
+  end
+
+  defp compile_with_optional(deps, project_dir, package_name, paths, opts) do
+    log_host(
+      paths,
+      "Adding optional dependencies: " <>
+        Enum.map_join(deps, ", ", &"#{&1.app} #{&1.requirement}")
+    )
+
+    with {:ok, snapshot} <- Project.snapshot(project_dir) do
+      case add_optional(project_dir, package_name, deps, opts) do
+        {:ok, []} ->
+          compile_with_optional([], project_dir, package_name, paths, opts)
+
+        {:ok, added} ->
+          compile_added(added, snapshot, project_dir, package_name, paths, opts)
+
+        {:error, {:restore_failed, _reason, _cause}} = error ->
+          error
+
+        # Restored already; compiled without them from a clean `_build/host`.
+        {:error, reason} ->
+          names = Enum.map(deps, & &1.app)
+
+          compile_without(project_dir, package_name, paths, opts, snapshot, names, %{
+            why: drop_why(reason),
+            detail: reason,
+            reason: drop_reason(reason)
+          })
+      end
+    end
+  end
+
+  defp add_optional(project_dir, package_name, deps, opts) do
+    env = host_env(project_dir)
+
+    case Keyword.fetch(opts, :deps_get) do
+      {:ok, deps_get} -> Project.add_optional_deps(project_dir, package_name, deps, env, deps_get)
+      :error -> Project.add_optional_deps(project_dir, package_name, deps, env)
+    end
+  end
+
+  defp compile_added(added, snapshot, project_dir, package_name, paths, opts) do
+    with {:policy, :ok} <- {:policy, LockPolicy.validate(project_dir)},
+         # After the `deps.get` that fetched them, before their compile.
+         with_opts = Keyword.put(opts, :releases, Portability.lock_snapshot(project_dir)),
+         {:ok, %{host: %{status: :pass}} = compiled} <-
+           host_trace(project_dir, package_name, paths, with_opts) do
+      {:ok, Map.put(compiled, :optional_deps, optional_deps_info(added, [], nil))}
+    else
+      {:policy, {:error, reason}} ->
+        compile_without(project_dir, package_name, paths, opts, snapshot, added, %{
+          why: "they bring in a dependency the lock policy rejects",
+          detail: reason,
+          reason: "lock_policy_violation"
+        })
+
+      {:ok, %{host: host}} ->
+        compile_without(project_dir, package_name, paths, opts, snapshot, added, %{
+          why: "the host compile failed with them",
+          detail: host[:error],
+          reason: "host_compile_failed"
+        })
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  # From a clean `_build/host`: nothing the compile with them built may
+  # stay. HostTrace's own `deps.get` re-resolves the restored `mix.exs`.
+  # The run's own project dir.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp compile_without(project_dir, package_name, paths, opts, snapshot, added, drop) do
+    log_host(paths, drop_warning(added, drop.why, drop.detail))
+    revert = Project.drop_optional_deps(snapshot, package_name, host_env(project_dir))
+
+    with {:revert, :ok} <- {:revert, revert},
+         {:revert, {:ok, _}} <- {:revert, File.rm_rf(Path.join([project_dir, "_build", "host"]))},
+         {:ok, compiled} <- host_trace(project_dir, package_name, paths, opts) do
+      {:ok, Map.put(compiled, :optional_deps, passed_info(compiled, [], added, drop.reason))}
+    else
+      {:revert, {:error, reason}} -> {:error, {:optional_deps_revert_failed, reason}}
+      {:revert, {:error, reason, _path}} -> {:error, {:optional_deps_revert_failed, reason}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp passed_info(%{host: %{status: :pass}}, added, dropped, reason),
+    do: optional_deps_info(added, dropped, reason)
+
+  defp passed_info(_compiled, _added, _dropped, _reason), do: nil
+
+  # The traced judge compile (`NccWorker.Portability.run/3`) of the full
+  # run's `pure_elixir` path (`full_run_portability/3`). A full run's closure
+  # is compiled by nerves_bootstrap inside `mix deps.get`, so its host
+  # compile cannot be the traced one, and this recompiles the closure. It
+  # runs with the host compile's env and its own `HEX_HOME`, exactly as
+  # `compile_host/4` does, and judges dependency sources against the run's
+  # Hex cache (the one `package_tarball/2` reads). `opts`: `releases:`, the
   # `Portability.lock_snapshot/1` matching the build being judged
   # (`judge_releases/2`), and `run_started_at:`, the run's start (`input.started_at`),
   # which bounds the compile by what is left of the run. It writes only under
   # `<work>/trace` and `<out>/logs/host-trace.log` (`setup_paths/1` made
   # `<out>/logs` at the run's start). A trace that fails is "portability
   # could not be judged" and changes no host status; `Portability.run/3`
-  # never raises, but `HexHome` may, which both callers guard against
-  # (`full_run_portability/3`, `toolchain_portability/5`).
+  # never raises, but `HexHome` may, which the caller guards against
+  # (`full_run_portability/3`).
   defp run_portability(project_dir, package_name, paths, opts) do
     hex_home = HexHome.prepare(project_dir, "host")
 
@@ -2294,13 +2428,7 @@ defmodule NccWorker.Worker do
   # it has to write into the same build path this stage reads, or the work is
   # done twice: once into `_build/dev` that nobody reads, once here.
   @spec host_env(String.t()) :: [{String.t(), String.t()}]
-  defp host_env(project_dir) do
-    [
-      {"MIX_BUILD_PATH", Path.join([project_dir, "_build", "host"])},
-      {"MIX_DEPS_PATH", Path.join([project_dir, "deps"])},
-      {"MIX_ENV", "prod"}
-    ]
-  end
+  defp host_env(project_dir), do: HostTrace.env(project_dir)
 
   @spec compile_host(String.t(), String.t(), integer(), String.t()) :: map()
   defp compile_host(project_dir, output_dir, log_tail_bytes, package_name) do

@@ -54,7 +54,9 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    files, and `result.json`'s `host_portability` says which. A tracer that crashes or trips a cap is
    `"portability could not be judged"`. The trace runs after the optional-dependency pass, only when the OS check
    passed, and before the beam scan, so the files scanned and archived are the traced compile's; it is judged against
-   the lock snapshot matching the build it judges, taken as in a toolchain run. A traced compile that did not finish
+   the lock snapshot matching the build it judges, taken as in a toolchain run. Unlike a toolchain run, a full run
+keeps this dedicated traced judge compile after its host compile: its closure is compiled by nerves_bootstrap
+inside `mix deps.get`, so its host compile cannot be the traced one. A traced compile that did not finish
    (killed, timed out) may leave `_build/host/lib` half-written, so the worker rebuilds it untraced before the scan
    (`mix compile` alone, under `timeout(1)` at the per-system timeout cut to what is left of the run; no `deps.get`,
    no build cache store; skipped when no time is left). A raise anywhere on this path is "portability could not be
@@ -265,12 +267,32 @@ With `"mode": "toolchain"` (and an informational `"toolchain": {"elixir": "1.19"
 `requested_toolchain`) the worker answers one question on a toolchain image: are the package's own beams, built by
 this Elixir and OTP, the same on every OS and architecture? Such an image has no nerves_bootstrap and possibly an
 OTP Nerves 2 does not accept, so the run uses a plain `mix new` project (`NccWorker.Project.create_plain/2`), adds
-the package, applies the lock policy (exit 11), compiles once on the host in `prod`, runs the same
-optional-dependency pass as a pure-Elixir full run and judges `_build/host/lib/<package>` with
-`NccWorker.BuildSelection.portable?/4` **and** the compile-time trace (`NccWorker.Portability`).
+the package, applies the lock policy (exit 11), adds the package's optional dependencies, compiles once on the host
+in `prod`, traced, and judges `_build/host/lib/<package>` with `NccWorker.BuildSelection.portable?/4` **and** the
+compile-time trace (`NccWorker.Portability`).
 
-After the optional-dependency pass the worker recompiles the package's dependency closure once more, one dependency
-at a time, as `timeout --kill-after=10 <sec> elixir -pa <work>/trace/ebin -S mix ncc.trace_compile`. An Erlang trace
+The host compile is the traced one (`NccWorker.HostTrace`, `mode: :host`): after its own `mix deps.get` it runs
+`timeout --kill-after=10 <sec> elixir -pa <work>/trace/ebin -S mix ncc.trace_compile`, which compiles every
+dependency of the package's closure, one at a time, each in its own trace window, and then the project. Nothing is
+restored from the build cache and nothing is stored for it: a dependency the trace did not see compiled cannot be
+judged. The closure is compiled once, and those are the files judged and archived.
+
+Unless the input says `"optional_deps": "exclude"`, the package's unresolved optional dependencies (the same list,
+and the same `skipped` tooling, as a pure-Elixir full run's pass) are added and fetched **before** that compile, so
+the closure is built with them the way an application that locks them builds it. When they cannot be added, their
+`deps.get` fails, they bring in a dependency the lock policy rejects, or the compile with them fails, `mix.exs` and
+`mix.lock` are put back, `_build/host` is removed, and the traced compile runs again without them; `optional_deps`
+names what was dropped and why, and is absent when that compile fails too.
+
+The host status never depends on the tracer. A traced compile that did not finish, or whose report is not a
+host-mode one, is not the build: the processes still writing `_build/host` are killed, `_build/host` is removed,
+and an untraced `mix compile`, bounded only by what is left of the run, gives the status. Such a build is "portability
+could not be judged" (transient) and publishes nothing. A traced compile that fails is rebuilt untraced the same way,
+because a package failure cannot be told from a tracer fault, and the untraced failure is the status. A host compile
+that leaves processes running that cannot be killed, or a `_build/host` that cannot be removed, is a worker failure
+(exit `10`, no result): one of those processes may still be writing `_build`.
+
+An Erlang trace
 session records every read of the host (OS type and version, environment, programs, files outside the closure, host
 names, install locations, the crypto build, native loading, tracing itself) and every write outside the dependency's
 own `ebin`, with the stack it came from. rebar3 dependencies are traced in their own VM through `ERL_AFLAGS`. Any
@@ -283,19 +305,19 @@ of these skips the build:
 - a rebar3 build with hooks, plugins, `platform_define` or `rebar.config.script`;
 - a trace that did not finish.
 
-The files judged and archived are the traced compile's own. The traced compile runs with the host compile's env and
-`HEX_HOME`, is bounded by what is left of the run, and writes only under `<work>/trace` and its log
-`logs/host-trace.log`. It judges dependency sources against a snapshot of the Hex releases in `mix.lock`. Two
+The files judged and archived are the traced compile's own. The traced compile runs with the host env
+(`MIX_BUILD_PATH=_build/host`, `MIX_ENV=prod`) and the run's own `HEX_HOME`, is bounded by what is left of the run,
+keeps its trace files under `<work>/trace` and logs to `logs/host.log`. It judges dependency sources against a snapshot of the Hex releases in `mix.lock`. Two
 snapshots are taken. The first is taken right after the project's `deps.get`, before any compile ran. The second is
-taken right after the optional-dependency pass's own `deps.get` fetched the dependencies it adds, before they are
-compiled. A build published with optional dependencies added is judged against the second; every other build
-against the first. `MIX_OS_DEPS_COMPILE_PARTITION_COUNT` is removed from the worker's environment at start.
+taken right after the `deps.get` that fetched the optional dependencies, before they are compiled. A build compiled
+with optional dependencies added is judged against the second; every other build, a build whose optional
+dependencies were dropped included, against the first. `MIX_OS_DEPS_COMPILE_PARTITION_COUNT` is removed from the worker's environment at start.
 
 No firmware, no argus (`argus.status` is `"skipped"`), no Nerves systems,
 no Hex metadata fetch; `toolchain.nerves_bootstrap` is `"absent"`.
 
-`"optional_deps"` in `NCC_INPUT` picks the build: `"include"` (the default, also when absent) runs the
-optional-dependency pass, `"exclude"` skips it entirely, so the package is built and published without its optional
+`"optional_deps"` in `NCC_INPUT` picks the build: `"include"` (the default, also when absent) adds the optional
+dependencies before the compile, `"exclude"` adds none, so the package is built and published without its optional
 dependencies, and `result.json`'s `optional_deps` is `{"added": [], "dropped": [], "skipped": [], "reason":
 "not_requested"}`, whether the compile passed or not. Any other value (`"maybe"`, `""`, `"INCLUDE"`, a number, a
 boolean, a list) is refused when the input is read (`{:error, {:invalid_optional_deps, value}}`, exit `10` with no result), as
@@ -356,7 +378,10 @@ the worker reports it as `skipped`, and the portal retries the transient ones (b
 does not judge it either: the reason is "portability could not be judged", `rule1_reason` and `compile_env` are
 `null`. `compile_observations.trace_stats` carries the traced compile's `wall_ms`, `judge_compile` (`"finished"`,
 `"not_finished"` or `"not_run"`), `report_over_budget` (the trace files exceeded the report reader's shared 64 MiB /
-500 000-line budget), `transient` and the first host compile's `host_compile_sec`. `transient` is `true` when a
+500 000-line budget), `transient`, the phase times `compile_ms`, `report_ms` and `judge_ms`, `tracer_error` (why
+the traced compile did not finish, `null` when it did), `trace_mode` (`"host"` for a toolchain run's report),
+`host_build` (`"traced"`, `"untraced"` or `"none"`: which build the host status is) and `host_compile_sec`, the
+host compile's own time, its `deps.get` and any untraced fallback included. `transient` is `true` when a
 could-not-judge says nothing about the package: the traced compile did not finish (a timeout, a kill, an exhausted run
 budget, processes that survived the cleanup, a crash) or its report was over budget. The portal stores such a
 `skipped` build as an `error`, which its backlog retries after a day; a could-not-judge the package causes on every
@@ -395,7 +420,8 @@ the run. Only `Portal.EgressCheck` sends it (see the operator runbook); otherwis
   exits `0`, and so does a full/targets/argus-only run whose own `deps.get` failed deterministically
   (`NccWorker.DepsGetClassifier`)
 - `10` — internal failure: no `result.json` was written (includes a `deps.get` failure classified transient, and
-  always a toolchain run's own `deps.get` failure)
+  always a toolchain run's own `deps.get` failure, or a toolchain host compile that left processes running or a
+  `_build/host` that could not be removed)
 - `11` — policy violation (non-Hex dependency in `mix.lock`)
 
 ## Develop

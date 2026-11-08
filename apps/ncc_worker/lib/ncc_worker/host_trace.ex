@@ -247,7 +247,10 @@ defmodule NccWorker.HostTrace do
     %{verdict | observations: Map.put(obs, "trace_stats", Map.put(stats, key, value))}
   end
 
-  defp env(project_dir) do
+  @doc false
+  # The host compile's env, shared with the worker's other host builds.
+  @spec env(String.t()) :: [{String.t(), String.t()}]
+  def env(project_dir) do
     [
       {"MIX_BUILD_PATH", Path.join([project_dir, "_build", "host"])},
       {"MIX_DEPS_PATH", Path.join(project_dir, "deps")},

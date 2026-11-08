@@ -1,7 +1,7 @@
 defmodule NccWorker.ToolchainModeTest do
   use ExUnit.Case, async: true
 
-  alias NccWorker.{CLI, FileArchiver, JsonWriter, Worker}
+  alias NccWorker.{CLI, FileArchiver, JsonWriter, Portability, Worker}
 
   @moduletag :tmp_dir
 
@@ -132,42 +132,6 @@ defmodule NccWorker.ToolchainModeTest do
 
       assert %{status: "skipped", reason: "portability could not be judged"} = build
       assert build.compile_observations["trace_stats"]["transient"] == true
-    end
-
-    test "a trace that raises, throws or exits is a transient could-not-judge, never a crash",
-         %{tmp_dir: work_dir} do
-      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
-      paths = %{work_dir: work_dir, output_dir: Path.join(work_dir, "out")}
-
-      for failure <- [
-            fn -> raise File.Error, reason: :eacces, action: "make directory", path: "/x" end,
-            fn -> throw(:boom) end,
-            fn -> exit(:boom) end
-          ] do
-        verdict =
-          Worker.toolchain_portability(passing_host(), project, "sample", paths,
-            releases: {:ok, %{}},
-            trace: fn _, _, _, _ -> failure.() end
-          )
-
-        assert %{status: :skip, reason: "portability could not be judged"} = verdict
-        assert ["portability failed: " <> _] = verdict.observations["problems"]
-
-        assert %{"judge_compile" => "not_finished", "transient" => true} =
-                 verdict.observations["trace_stats"]
-
-        build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict)
-        assert %{status: "skipped", reason: "portability could not be judged"} = build
-      end
-    end
-
-    test "a failed host compile is not traced", %{tmp_dir: work_dir} do
-      trace = fn _, _, _, _ -> flunk("traced a failed host compile") end
-
-      assert Worker.toolchain_portability(%{status: :error}, work_dir, "sample", %{},
-               trace: trace
-             ) ==
-               nil
     end
 
     test "rule 1's skip keeps its reason in rule1_reason", %{tmp_dir: work_dir} do
@@ -417,30 +381,264 @@ defmodule NccWorker.ToolchainModeTest do
     end
   end
 
-  # The without variant never starts the optional dependencies pass, and
-  # says so in the same shape the pass reports, so the portal can tell a build
-  # made without them from one whose pass dropped them.
-  describe "toolchain_optional_deps/5" do
-    test "an excluded build reports the pass as not requested", %{tmp_dir: work_dir} do
-      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+  describe "toolchain_compile/5" do
+    defp tc_paths(dir) do
+      File.mkdir_p!(Path.join([dir, "out", "logs"]))
 
-      assert {:ok, %{added: [], dropped: [], skipped: [], reason: "not_requested"}} =
-               Worker.toolchain_optional_deps("exclude", passing_host(), project, "sample", %{})
+      %{
+        work_dir: Path.join(dir, "work"),
+        output_dir: Path.join(dir, "out"),
+        logs_dir: Path.join([dir, "out", "logs"])
+      }
     end
 
-    test "an excluded build reports the same after a failed compile", %{tmp_dir: work_dir} do
-      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
-      host = %{status: :fail, error: "boom"}
+    # Records each traced compile: whether optional deps were in mix.exs,
+    # whether `_build/host` existed when it started, the releases it was
+    # given and the option keys it received.
+    defp recording_trace(test_pid, statuses) do
+      {:ok, agent} = Agent.start_link(fn -> statuses end)
 
-      assert {:ok, %{reason: "not_requested"}} =
-               Worker.toolchain_optional_deps("exclude", host, project, "sample", %{})
+      fn project_dir, _package, _paths, opts ->
+        status = Agent.get_and_update(agent, fn [s | rest] -> {s, rest} end)
+        mix = File.read!(Path.join(project_dir, "mix.exs"))
+
+        send(
+          test_pid,
+          {:traced, String.contains?(mix, ":opt_dep"),
+           File.exists?(Path.join(project_dir, "_build/host")), opts[:releases]}
+        )
+
+        send(test_pid, {:trace_opts, Keyword.keys(opts), opts[:run_started_at]})
+
+        error = if status in [:fail, :error], do: "boom"
+        %{host: %{status: status, error: error}, verdict: @traced_pass}
+      end
     end
 
-    test "an included build with a failed compile reports no pass", %{tmp_dir: work_dir} do
-      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
-      host = %{status: :fail, error: "boom"}
+    defp plain_project(dir) do
+      proj = Path.join([dir, "work", "proj"])
+      File.mkdir_p!(Path.join([proj, "_build", "host"]))
 
-      assert {:ok, nil} = Worker.toolchain_optional_deps("include", host, project, "sample", %{})
+      File.write!(
+        Path.join(proj, "mix.exs"),
+        "defp deps do\n  [\n    {:sample, \"1.0.0\"}\n  ]\nend\n"
+      )
+
+      File.write!(Path.join(proj, "mix.lock"), @lock)
+      proj
+    end
+
+    @opt [%{app: "opt_dep", package: "opt_dep", requirement: "~> 1.0"}]
+
+    test "exclude: one traced compile, nothing added", %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      assert {:ok, %{host: %{status: :pass}, optional_deps: od}} =
+               Worker.toolchain_compile(proj, "exclude", "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 host_trace: recording_trace(self(), [:pass])
+               )
+
+      assert_received {:traced, false, _, {:ok, :first}}
+      refute_received {:traced, _, _, _}
+      assert %{added: [], dropped: [], reason: "not_requested", skipped: []} = od
+    end
+
+    test "exclude reports the same when the compile fails", %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      assert {:ok, %{host: %{status: :fail}, optional_deps: od}} =
+               Worker.toolchain_compile(proj, "exclude", "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 host_trace: recording_trace(self(), [:fail])
+               )
+
+      assert %{added: [], dropped: [], reason: "not_requested", skipped: []} = od
+    end
+
+    test "include: the optional deps are added before the only compile", %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      assert {:ok, %{host: %{status: :pass}, optional_deps: od}} =
+               Worker.toolchain_compile(proj, "include", "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 host_trace: recording_trace(self(), [:pass]),
+                 optional_deps: fn _p, _pkg -> {@opt, ["igniter"]} end,
+                 deps_get: fn _p, _env -> :ok end
+               )
+
+      assert_received {:traced, true, _, releases}
+      # The snapshot taken after their `deps.get`, before their compile.
+      refute releases == {:ok, :first}
+      assert releases == Portability.lock_snapshot(proj)
+      refute_received {:traced, _, _, _}
+      assert %{added: ["opt_dep"], dropped: [], reason: nil, skipped: ["igniter"]} = od
+    end
+
+    test "the traced compile gets the run's options, not the caller's injections",
+         %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      assert {:ok, _} =
+               Worker.toolchain_compile(proj, "include", "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 run_started_at: 42,
+                 log_tail_bytes: 100,
+                 host_trace: recording_trace(self(), [:pass]),
+                 optional_deps: fn _p, _pkg -> {@opt, []} end,
+                 deps_get: fn _p, _env -> :ok end
+               )
+
+      assert_received {:trace_opts, keys, 42}
+      assert :log_tail_bytes in keys
+      for key <- [:deps_get, :optional_deps, :host_trace], do: refute(key in keys)
+    end
+
+    test "a drop removes _build/host before the compile without them", %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      assert {:ok, %{host: %{status: :pass}, optional_deps: od}} =
+               Worker.toolchain_compile(proj, "include", "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 host_trace: recording_trace(self(), [:fail, :pass]),
+                 optional_deps: fn _p, _pkg -> {@opt, []} end,
+                 deps_get: fn _p, _env -> :ok end
+               )
+
+      assert_received {:traced, true, _, _}
+      assert_received {:traced, false, false, {:ok, :first}}
+      assert %{added: [], dropped: ["opt_dep"], reason: "host_compile_failed"} = od
+    end
+
+    test "deps that break the lock policy are dropped before any compile with them",
+         %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      git_lock = fn p, _env ->
+        File.write!(
+          Path.join(p, "mix.lock"),
+          ~s|%{"opt_dep": {:git, "https://example.invalid/opt_dep.git", "abc", []}}\n|
+        )
+      end
+
+      assert {:ok, %{host: %{status: :pass}, optional_deps: od}} =
+               Worker.toolchain_compile(proj, "include", "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 host_trace: recording_trace(self(), [:pass]),
+                 optional_deps: fn _p, _pkg -> {@opt, []} end,
+                 deps_get: git_lock
+               )
+
+      assert_received {:traced, false, false, {:ok, :first}}
+      refute_received {:traced, _, _, _}
+      assert %{added: [], dropped: ["opt_dep"], reason: "lock_policy_violation"} = od
+      assert File.read!(Path.join(proj, "mix.lock")) == @lock
+    end
+
+    test "a failed deps.get for them compiles once, without them", %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      assert {:ok, %{host: %{status: :pass}, optional_deps: od}} =
+               Worker.toolchain_compile(proj, "include", "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 host_trace: recording_trace(self(), [:pass]),
+                 optional_deps: fn _p, _pkg -> {@opt, []} end,
+                 deps_get: fn _p, _env -> {:error, {:deps_get_failed, "nope"}} end
+               )
+
+      assert_received {:traced, false, false, {:ok, :first}}
+      refute_received {:traced, _, _, _}
+      assert %{added: [], dropped: ["opt_dep"], reason: "deps_get_failed"} = od
+    end
+
+    test "when the compile without them fails too, the host fails and optional_deps is nil",
+         %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      assert {:ok, %{host: %{status: :fail}, optional_deps: nil}} =
+               Worker.toolchain_compile(proj, "include", "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 host_trace: recording_trace(self(), [:fail, :fail]),
+                 optional_deps: fn _p, _pkg -> {@opt, []} end,
+                 deps_get: fn _p, _env -> :ok end
+               )
+    end
+
+    test "no optional deps to add: one compile", %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      assert {:ok, %{optional_deps: %{added: [], dropped: [], reason: nil, skipped: []}}} =
+               Worker.toolchain_compile(proj, nil, "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 host_trace: recording_trace(self(), [:pass]),
+                 optional_deps: fn _p, _pkg -> {[], []} end
+               )
+
+      assert_received {:traced, false, _, {:ok, :first}}
+      refute_received {:traced, _, _, _}
+    end
+
+    test "a failed compile with nothing to add reports no pass", %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      assert {:ok, %{host: %{status: :fail}, optional_deps: nil}} =
+               Worker.toolchain_compile(proj, "include", "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 host_trace: recording_trace(self(), [:fail]),
+                 optional_deps: fn _p, _pkg -> {[], []} end
+               )
+    end
+
+    # Processes left running, or a `_build` that cannot be removed: the
+    # environment, not the package, so a retryable worker failure.
+    test "a host compile error is a worker failure, never a verdict", %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      for request <- ["exclude", "include"] do
+        assert {:error, {:host_compile_error, "boom"}} =
+                 Worker.toolchain_compile(proj, request, "sample", tc_paths(dir),
+                   releases: {:ok, :first},
+                   host_trace: recording_trace(self(), [:error]),
+                   optional_deps: fn _p, _pkg -> {[], []} end
+                 )
+
+        assert CLI.exit_code({:error, {:host_compile_error, "boom"}}) == 10
+      end
+    end
+
+    test "a host compile error with the optional deps added is not retried without them",
+         %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      assert {:error, {:host_compile_error, "boom"}} =
+               Worker.toolchain_compile(proj, "include", "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 host_trace: recording_trace(self(), [:error, :pass]),
+                 optional_deps: fn _p, _pkg -> {@opt, []} end,
+                 deps_get: fn _p, _env -> :ok end
+               )
+
+      assert_received {:traced, true, _, _}
+      refute_received {:traced, _, _, _}
+    end
+
+    test "a host compile that raises, throws or exits is a worker failure, never a crash",
+         %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      for failure <- [
+            fn -> raise File.Error, reason: :eacces, action: "make directory", path: "/x" end,
+            fn -> throw(:boom) end,
+            fn -> exit(:boom) end
+          ] do
+        assert {:error, {:host_compile_crashed, why}} =
+                 Worker.toolchain_compile(proj, "exclude", "sample", tc_paths(dir),
+                   releases: {:ok, :first},
+                   host_trace: fn _, _, _, _ -> failure.() end
+                 )
+
+        assert is_binary(why)
+      end
     end
   end
 

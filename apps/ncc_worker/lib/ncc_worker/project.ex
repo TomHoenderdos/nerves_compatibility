@@ -243,10 +243,11 @@ defmodule NccWorker.Project do
   `mix deps.get` again, so they resolve alongside it the way they would in an
   application that has them in its lock.
 
-  This is the worker's best-effort second pass, run only after the package's
-  status has been decided by the build without them (see
-  `NccWorker.Worker`): it changes what gets published to the precompiled API,
-  never a status.
+  A full run calls this as a best-effort second pass, after the package's
+  status has been decided by the build without them; a toolchain run calls
+  it before its only compile and falls back to compiling without them
+  (`NccWorker.Worker.toolchain_compile/5`). Either way it changes what gets
+  published to the precompiled API, never a status.
 
   Returns `{:ok, apps}` with the application names actually injected: a
   dependency the template already declares is left alone and not listed, and
