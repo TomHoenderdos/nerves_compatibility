@@ -13,6 +13,8 @@ defmodule Portal.Toolchains do
   toolchain build stale, so the sweep rebuilds them.
   """
 
+  alias Compatibility.ConfigVariants
+
   @toolchain ~r/^\d+\.\d+\/\d+$/
 
   @type image :: %{toolchain: String.t(), image: String.t()}
@@ -28,6 +30,41 @@ defmodule Portal.Toolchains do
   @doc "How many toolchain builds one `Portal.Workers.ToolchainSweep` enqueues, at most."
   @spec max_per_run() :: pos_integer()
   def max_per_run, do: Keyword.get(config(), :max_per_run, 300)
+
+  @doc """
+  The named config variants the sweep builds (`Compatibility.ConfigVariants`),
+  in pinned order: every one unless `config :portal, Portal.Toolchains,
+  config_variants:` lists a subset (`NCC_CONFIG_VARIANTS`, `parse_config_variants/1`).
+  Builds already made of a variant left out stay served.
+  """
+  @spec config_variants() :: [String.t()]
+  def config_variants do
+    case Keyword.get(config(), :config_variants, :all) do
+      :all -> ConfigVariants.names()
+      list when is_list(list) -> Enum.filter(ConfigVariants.names(), &(&1 in list))
+    end
+  end
+
+  @doc "Parses `NCC_CONFIG_VARIANTS`: `all`, `none`, or comma-separated names. Raises on an unknown name."
+  @spec parse_config_variants(String.t()) :: :all | [String.t()]
+  def parse_config_variants(value) do
+    case value |> String.trim() |> String.downcase() do
+      v when v in ["", "all"] ->
+        :all
+
+      "none" ->
+        []
+
+      list ->
+        list |> String.split(",", trim: true) |> Enum.map(&String.trim/1) |> Enum.map(&known!/1)
+    end
+  end
+
+  defp known!(name) do
+    if name in ConfigVariants.names(),
+      do: name,
+      else: raise(ArgumentError, "NCC_CONFIG_VARIANTS lists an unknown variant: #{inspect(name)}")
+  end
 
   @doc """
   The toolchain string for the Elixir and OTP versions a build reports, e.g.

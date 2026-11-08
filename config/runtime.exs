@@ -119,6 +119,14 @@ if portal_available? do
     config :portal, Portal.Toolchains, images: Portal.Toolchains.parse(toolchains)
   end
 
+  # Which named config variants the toolchain sweep builds: `all` (the
+  # default), `none`, or comma-separated names. An unknown name stops the boot
+  # (`Portal.Toolchains.parse_config_variants/1`).
+  if value = System.get_env("NCC_CONFIG_VARIANTS") do
+    config :portal, Portal.Toolchains,
+      config_variants: Portal.Toolchains.parse_config_variants(value)
+  end
+
   config :portal,
     orchestrator_scan_request_url: System.get_env("ORCHESTRATOR_SCAN_REQUEST_URL"),
     scan_request_shared_secret: System.get_env("SCAN_REQUEST_SHARED_SECRET"),

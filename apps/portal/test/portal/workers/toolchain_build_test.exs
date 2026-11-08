@@ -64,6 +64,8 @@ defmodule Portal.Workers.ToolchainBuildTest do
     )
   end
 
+  defp job_args(extra), do: Map.merge(@args, extra)
+
   defp package!(name) do
     Package
     |> Ash.Changeset.for_create(:create, %{name: name})
@@ -179,6 +181,75 @@ defmodule Portal.Workers.ToolchainBuildTest do
 
     # The ingest reads the scratch dir, so the build leaves it alone.
     refute_received {:cleanup, _}
+  end
+
+  describe "config variants" do
+    test "a named config variant reaches the builder and the ingest job" do
+      respond(0)
+      assert :ok = perform_job(ToolchainBuild, job_args(%{"config_variant" => "phx_prod"}))
+      assert_received {:build_args, %{config_variant: "phx_prod"}}
+
+      assert [%Oban.Job{args: %{"config_variant" => "phx_prod"}}] =
+               all_enqueued(worker: Ingest)
+    end
+
+    test "a default job sends no config variant to the worker" do
+      respond(0)
+      assert :ok = perform_job(ToolchainBuild, job_args(%{}))
+      assert_received {:build_args, build_args}
+      assert Map.get(build_args, :config_variant) == nil
+
+      assert [%Oban.Job{args: %{"config_variant" => "default"}}] =
+               all_enqueued(worker: Ingest)
+    end
+
+    test "an explicit default job sends no config variant to the worker" do
+      respond(0)
+      assert :ok = perform_job(ToolchainBuild, job_args(%{"config_variant" => "default"}))
+      assert_received {:build_args, build_args}
+      assert Map.get(build_args, :config_variant) == nil
+    end
+
+    test "an unknown config variant is cancelled before anything runs" do
+      respond(0)
+
+      assert {:cancel, "unknown config variant \"phx_staging\""} =
+               perform_job(ToolchainBuild, job_args(%{"config_variant" => "phx_staging"}))
+
+      refute_received {:image_digest, _}
+      refute_received {:build_args, _}
+      refute_enqueued(worker: Ingest)
+    end
+
+    test "a default job and a named job of one version are both queued" do
+      base = %{
+        package: "p",
+        version: "1.0.0",
+        toolchain: "1.19/28",
+        image: "i",
+        builder_version: 1,
+        variant: "with"
+      }
+
+      insert = fn config_variant ->
+        base |> Map.put(:config_variant, config_variant) |> ToolchainBuild.new() |> Oban.insert()
+      end
+
+      assert {:ok, %Oban.Job{conflict?: false}} = insert.("phx_prod")
+      assert {:ok, %Oban.Job{conflict?: false}} = insert.("default")
+      assert {:ok, %Oban.Job{conflict?: true}} = insert.("default")
+    end
+
+    test "a named failure records its row under the named variant" do
+      Portal.PrecompiledFixtures.drop_legacy_identity_index!()
+      package!("jason")
+      respond(11)
+
+      assert {:cancel, _} =
+               perform_job(ToolchainBuild, job_args(%{"config_variant" => "phx_prod"}))
+
+      assert [%{status: :fail, config_variant: "phx_prod"}] = rows("jason")
+    end
   end
 
   test "exit 11 records a fail row and cancels" do

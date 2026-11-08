@@ -68,6 +68,8 @@ defmodule Portal.Builder do
           # For `mode: "toolchain"`: `"include"` runs the worker's optional
           # dependencies pass, `"exclude"` builds without it.
           optional(:optional_deps) => String.t() | nil,
+          # For mode: "toolchain": a Compatibility.ConfigVariants name; nil is "default".
+          optional(:config_variant) => String.t() | nil,
           optional(:argus) => map() | nil,
           # For `mode: "warm_nerves"`: `%{"name", "version"}` pairs to warm
           # (`Portal.Workers.WarmNerves`); `[]` warms what the template resolves.
@@ -236,6 +238,7 @@ defmodule Portal.Builder do
       mode: mode,
       toolchain: Map.get(args, :toolchain),
       optional_deps: Map.get(args, :optional_deps),
+      config_variant: Map.get(args, :config_variant),
       argus: Map.get(args, :argus),
       nerves_packages: Map.get(args, :nerves_packages),
       egress_probe: Map.get(args, :egress_probe)
@@ -778,6 +781,7 @@ defmodule Portal.Builder do
     |> maybe_put("mode", Map.get(job, :mode))
     |> maybe_put("toolchain", Map.get(job, :toolchain))
     |> maybe_put("optional_deps", Map.get(job, :optional_deps))
+    |> maybe_put("config_variant", Map.get(job, :config_variant))
     |> maybe_put("argus", Map.get(job, :argus))
     |> maybe_put("nerves_packages", Map.get(job, :nerves_packages))
     |> maybe_put("egress_probe", Map.get(job, :egress_probe))

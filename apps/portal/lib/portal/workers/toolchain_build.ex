@@ -12,7 +12,11 @@ defmodule Portal.Workers.ToolchainBuild do
   time) and `variant` (`"with"` or `"without"` the package's optional
   dependencies, see `Portal.Catalog.ToolchainBuild`), which the worker gets as
   `optional_deps: "include" | "exclude"`. A job without a `variant`, queued
-  before variants existed, is a `with` build. The image and its digest are
+  before variants existed, is a `with` build. `config_variant` is a
+  `Compatibility.ConfigVariants` name; a job without one, queued before config
+  variants, is `"default"`; the sweep always sets it, since Oban's unique match
+  is a containment that a missing key would widen. A name the worker does not
+  know cancels the job before anything runs. The image and its digest are
   resolved here, on the build host that has the images: the toolchain's image
   in this node's own `Portal.Toolchains.images/0`, and the job's `image` only
   when this node does not configure the toolchain at all.
@@ -51,7 +55,7 @@ defmodule Portal.Workers.ToolchainBuild do
     # One build per identity while one is pending or running. A `Build` job for
     # the same package and version is another worker, so it never conflicts.
     unique: [
-      keys: [:package, :version, :toolchain, :builder_version, :variant],
+      keys: [:package, :version, :toolchain, :builder_version, :variant, :config_variant],
       period: :infinity,
       states: :incomplete
     ]
@@ -59,6 +63,7 @@ defmodule Portal.Workers.ToolchainBuild do
   require Ash.Query
   require Logger
 
+  alias Compatibility.ConfigVariants
   alias Portal.Builder
   alias Portal.Catalog.Ingestion
   alias Portal.Catalog.LogSanitizer
@@ -69,6 +74,16 @@ defmodule Portal.Workers.ToolchainBuild do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: args} = job) do
+    name = config_variant(args)
+
+    if ConfigVariants.known?(name) do
+      perform_known(job)
+    else
+      {:cancel, "unknown config variant #{inspect(name)}"}
+    end
+  end
+
+  defp perform_known(%Oban.Job{args: args} = job) do
     case split_toolchain(args["toolchain"]) do
       {:ok, toolchain} ->
         image = local_image(args)
@@ -128,7 +143,8 @@ defmodule Portal.Workers.ToolchainBuild do
       image_digest: image_digest,
       mode: "toolchain",
       toolchain: toolchain,
-      optional_deps: optional_deps(variant(args))
+      optional_deps: optional_deps(variant(args)),
+      config_variant: input_config_variant(config_variant(args))
     })
   end
 
@@ -137,6 +153,12 @@ defmodule Portal.Workers.ToolchainBuild do
 
   defp optional_deps(:with), do: "include"
   defp optional_deps(:without), do: "exclude"
+
+  defp config_variant(args), do: Map.get(args, "config_variant", "default")
+
+  # The worker's NCC_INPUT names a variant only when it has an overlay.
+  defp input_config_variant("default"), do: nil
+  defp input_config_variant(name), do: name
 
   defp handle({:ok, %{exit_code: 0, result: result}}, job, run_id, image_digest)
        when is_map(result) do
@@ -216,7 +238,8 @@ defmodule Portal.Workers.ToolchainBuild do
       "version" => args["version"],
       "toolchain" => args["toolchain"],
       "builder_version" => args["builder_version"],
-      "variant" => Atom.to_string(variant(args))
+      "variant" => Atom.to_string(variant(args)),
+      "config_variant" => config_variant(args)
     }
 
     # This node's own queue: the scratch dir the ingest reads is on this disk.
@@ -243,7 +266,8 @@ defmodule Portal.Workers.ToolchainBuild do
       version: args["version"],
       toolchain: args["toolchain"],
       builder_version: args["builder_version"],
-      variant: variant(args)
+      variant: variant(args),
+      config_variant: config_variant(args)
     }
 
     # A failed create inside it can roll the transaction back before
@@ -273,6 +297,7 @@ defmodule Portal.Workers.ToolchainBuild do
         toolchain: identity.toolchain,
         builder_version: identity.builder_version,
         variant: identity.variant,
+        config_variant: identity.config_variant,
         status: status,
         reason: reason,
         image_digest: image_digest,
@@ -304,12 +329,14 @@ defmodule Portal.Workers.ToolchainBuild do
   # files alike.
   defp kept(package_id, args) do
     variant = variant(args)
+    config_variant = config_variant(args)
 
     Portal.Catalog.ToolchainBuild
     |> Ash.Query.filter(
       package_id == ^package_id and version == ^args["version"] and
         toolchain == ^args["toolchain"] and builder_version == ^args["builder_version"] and
-        variant == ^variant and status in [:pass, :skipped]
+        variant == ^variant and config_variant == ^config_variant and
+        status in [:pass, :skipped]
     )
     |> Ash.Query.limit(1)
     |> Ash.read_one!(domain: Portal.Catalog)
@@ -385,7 +412,12 @@ defmodule Portal.Workers.ToolchainBuild do
   def split_toolchain(_toolchain), do: :error
 
   defp describe(%Oban.Job{args: args}),
-    do: "#{args["package"]} #{args["version"]} (#{variant(args)}) on #{args["toolchain"]}"
+    do:
+      "#{args["package"]} #{args["version"]} (#{variant(args)}) on #{args["toolchain"]}" <>
+        describe_config_variant(config_variant(args))
+
+  defp describe_config_variant("default"), do: ""
+  defp describe_config_variant(name), do: " [#{name}]"
 
   defp run_id(package, version),
     do: "tc-#{package}-#{version}-#{System.system_time(:millisecond)}"

@@ -81,12 +81,47 @@ defmodule Portal.ToolchainsTest do
       assert Toolchains.builder_version() == 4
     end
 
+    test "config_variants/0: all by default, a subset in pinned order, none" do
+      assert Toolchains.parse_config_variants("all") == :all
+      assert Toolchains.parse_config_variants(" ") == :all
+      assert Toolchains.parse_config_variants("none") == []
+      assert Toolchains.parse_config_variants("phx_dev, phx_prod") == ["phx_dev", "phx_prod"]
+
+      assert_raise ArgumentError, ~r/phx_staging/, fn ->
+        Toolchains.parse_config_variants("phx_staging")
+      end
+
+      with_toolchains_config([config_variants: ["phx_dev", "phx_prod"]], fn ->
+        assert Toolchains.config_variants() == ["phx_prod", "phx_dev"]
+      end)
+
+      with_toolchains_config([config_variants: []], fn ->
+        assert Toolchains.config_variants() == []
+      end)
+
+      with_toolchains_config([], fn ->
+        assert Toolchains.config_variants() == Compatibility.ConfigVariants.names()
+      end)
+    end
+
     test "max_per_run/0 defaults to 300 when unset" do
       Application.put_env(:portal, Toolchains, images: [], builder_version: 1)
       assert Toolchains.max_per_run() == 300
 
       Application.put_env(:portal, Toolchains, images: [], builder_version: 1, max_per_run: 7)
       assert Toolchains.max_per_run() == 7
+    end
+  end
+
+  # Merges `overrides` into the `Portal.Toolchains` config while `fun` runs.
+  defp with_toolchains_config(overrides, fun) do
+    original = Application.get_env(:portal, Toolchains)
+    Application.put_env(:portal, Toolchains, Keyword.merge(original, overrides))
+
+    try do
+      fun.()
+    after
+      Application.put_env(:portal, Toolchains, original)
     end
   end
 end

@@ -327,6 +327,26 @@ defmodule Portal.BuilderTest do
 
       refute Map.has_key?(Builder.worker_input(@input_job), "egress_probe")
     end
+
+    test "passes a config variant and leaves it out when unset" do
+      base = %{
+        run_id: "r",
+        image_name: "i",
+        image_digest: "d",
+        systems_filter: nil,
+        mode: "toolchain"
+      }
+
+      assert %{"config_variant" => "phx_dev"} =
+               Builder.worker_input(Map.put(base, :config_variant, "phx_dev"))
+
+      refute Map.has_key?(Builder.worker_input(base), "config_variant")
+
+      refute Map.has_key?(
+               Builder.worker_input(Map.put(base, :config_variant, nil)),
+               "config_variant"
+             )
+    end
   end
 
   # The container's root filesystem is the image: a build that writes outside
