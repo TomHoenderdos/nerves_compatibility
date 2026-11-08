@@ -201,6 +201,21 @@ defmodule NccWorker.ToolchainModeTest do
     module
   end
 
+  # Adds a module whose function body loads a NIF to the host build.
+  defp add_nif_load(built) do
+    name = "NccNifLoad#{System.unique_integer([:positive])}"
+
+    [{module, beam}] =
+      Code.compile_string(
+        "defmodule #{name} do\n  def init, do: :erlang.load_nif(~c\"nif\", 0)\nend\n"
+      )
+
+    :code.purge(module)
+    :code.delete(module)
+    File.write!(Path.join([built, "ebin", "#{module}.beam"]), beam)
+    module
+  end
+
   describe "rule 2 (P4)" do
     test "a runtime program call passes; rule 1's reason is recorded", %{tmp_dir: work_dir} do
       {project, built} = project(work_dir, "circular_buffer-1.0.0")
@@ -987,6 +1002,31 @@ defmodule NccWorker.ToolchainModeTest do
       refute Map.has_key?(withheld.beam_scan["footprint"], "file_manifest")
       assert published.status == withheld.status
       assert published.log_tail =~ "Assumed compatible: host compilation passed"
+    end
+
+    # The optional-dependency pass recompiles the package after `classify/4`
+    # judged it: a NIF load that only compiles in when an optional dependency
+    # is present is in the beams that would be published, so the static rules
+    # judge those beams, as a toolchain build's.
+    test "a NIF load the optional dependencies compiled in publishes nothing",
+         %{tmp_dir: work_dir} do
+      {project, built} = project(work_dir, "circular_buffer-1.0.0")
+      verdict = Map.put(@traced_pass, :compile_env, @r5)
+
+      # Written by the traced compile, which runs first: the static rules
+      # judge the beams it left, the ones the scan would publish.
+      result =
+        Worker.pure_elixir_result(project, "sample", fn _ ->
+          add_nif_load(built)
+          verdict
+        end)
+
+      assert %{status: "skipped", reason: "calls erlang:load_nif/2", portability_rule: 2} =
+               result.host_portability
+
+      assert %{status: :pass, compile_env_rule: nil} = result
+      refute Map.has_key?(result.beam_scan["footprint"], "file_manifest")
+      assert result.log_tail =~ "Files not published: calls erlang:load_nif/2."
     end
 
     test "a pure_elixir result whose .app cannot be read publishes nothing",

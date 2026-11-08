@@ -7,6 +7,19 @@ defmodule NccWorker.ReleaseArtifactsTest do
 
   @moduletag :tmp_dir
 
+  # A real compiled module for the `pure_elixir` fixtures: the static rules
+  # read the beams a pure Elixir result would publish.
+  @plain_beam (fn ->
+                 [{module, beam}] =
+                   Code.compile_string(
+                     "defmodule NccWorker.ReleaseArtifactsTest.PlainBeam do\n  def hi, do: :hi\nend\n"
+                   )
+
+                 :code.purge(module)
+                 :code.delete(module)
+                 beam
+               end).()
+
   # The same application twice, as a firmware build leaves it: compiled into
   # `_build/<target>/lib/<app>` with debug_info, and copied into the release
   # with its BEAMs stripped. Only the `.app` and priv files are byte-identical.
@@ -270,7 +283,7 @@ defmodule NccWorker.ReleaseArtifactsTest do
   defp pure_build(project) do
     beam = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.beam"])
     File.mkdir_p!(Path.dirname(beam))
-    File.write!(beam, "pure beam")
+    File.write!(beam, @plain_beam)
     write_plain_app(Path.dirname(beam))
     write_source(project, "plain", "defmodule Plain do\n  def hi, do: :hi\nend\n")
   end
@@ -656,7 +669,7 @@ defmodule NccWorker.ReleaseArtifactsTest do
   test "a pure Elixir result carries the host build's file manifest", %{project: project} do
     beam = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.beam"])
     File.mkdir_p!(Path.dirname(beam))
-    File.write!(beam, "pure beam")
+    File.write!(beam, @plain_beam)
     write_plain_app(Path.dirname(beam))
     write_source(project, "plain", "defmodule Plain do\n  def hi, do: :hi\nend\n")
 
@@ -665,7 +678,7 @@ defmodule NccWorker.ReleaseArtifactsTest do
 
     assert [
              %{"path" => "ebin/plain.app", "size" => 26},
-             %{"path" => "ebin/plain.beam", "size" => 9}
+             %{"path" => "ebin/plain.beam", "size" => byte_size(@plain_beam)}
            ] ==
              scan["footprint"]["file_manifest"]["ebin"]
              |> Enum.map(&Map.take(&1, ["path", "size"]))
@@ -677,8 +690,9 @@ defmodule NccWorker.ReleaseArtifactsTest do
 
   # A module body that reads the OS bakes the build host into the beams, so a
   # Linux build must not be served to a macOS project. The compile-time trace
-  # refuses it; the status stands and only the files are not published: no
-  # manifest, so nothing is archived.
+  # refuses it (its refusal is injected here, so no source is needed); the
+  # status stands and only the files are not published: no manifest, so
+  # nothing is archived.
   test "a pure Elixir result whose trace refuses an OS read publishes no files", %{
     project: project,
     archive: archive,
@@ -686,14 +700,7 @@ defmodule NccWorker.ReleaseArtifactsTest do
   } do
     beam = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.beam"])
     File.mkdir_p!(Path.dirname(beam))
-    File.write!(beam, "pure beam")
-
-    write_source(project, "plain", """
-    defmodule Plain do
-      @os :os.type()
-      def os, do: @os
-    end
-    """)
+    File.write!(beam, @plain_beam)
 
     reason = "compile-time host read: os:type/0 in Plain (lib/plain.ex:2)"
     refusal = fn _ -> %{status: :skip, reason: reason, observations: %{}} end
@@ -722,7 +729,7 @@ defmodule NccWorker.ReleaseArtifactsTest do
   } do
     beam = Path.join([project, "_build", "host", "lib", "plain", "ebin", "plain.beam"])
     File.mkdir_p!(Path.dirname(beam))
-    File.write!(beam, "pure beam")
+    File.write!(beam, @plain_beam)
 
     assert %{status: :pass, beam_scan: scan} =
              NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
@@ -733,7 +740,7 @@ defmodule NccWorker.ReleaseArtifactsTest do
   test "a pure Elixir result records the host build's compile_env", %{project: project} do
     ebin = Path.join([project, "_build", "host", "lib", "plain", "ebin"])
     File.mkdir_p!(ebin)
-    File.write!(Path.join(ebin, "plain.beam"), "pure beam")
+    File.write!(Path.join(ebin, "plain.beam"), @plain_beam)
 
     File.write!(
       Path.join(ebin, "plain.app"),

@@ -49,10 +49,14 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    portal's coverage report reads too.
    `host.log` carries the same lines. The key is absent for argus-only runs.
 
-   Its `pure_elixir` host files are published only when the compile-time trace passes (see "Toolchain mode"); a
-   refusal keeps the assumed-compatible status and publishes no files, and `result.json`'s `host_portability` says
-   why. A tracer that crashes or trips a cap is `"portability could not be judged"`. The trace runs after the
-   optional-dependency pass and before the beam scan, so the files scanned and archived are the traced compile's; it is judged against
+   Its `pure_elixir` host files are published only when rule 2 passes, as for a toolchain build (see "Toolchain
+   mode"): the static rules (`BuildSelection.static_rules/4`) on the beams that would be published, and the
+   compile-time trace. A refusal keeps the assumed-compatible status and publishes no files, and `result.json`'s
+   `host_portability` says why. The static rules run again here because the selection judged the closure before the
+   optional-dependency pass recompiled it: code an optional dependency compiles in, such as a NIF load, is refused.
+   A tracer that crashes or trips a cap is `"portability could not be judged"`. The trace runs after the
+   optional-dependency pass and before the beam scan, so the files scanned and archived are the traced compile's; it
+   is judged against
    the lock snapshot matching the build it judges, taken as in a toolchain run. Unlike a toolchain run, a full run
    keeps this dedicated traced judge compile after its host compile: its closure is compiled by nerves_bootstrap
    inside `mix deps.get`, so its host compile cannot be the traced one. A traced compile that did not finish

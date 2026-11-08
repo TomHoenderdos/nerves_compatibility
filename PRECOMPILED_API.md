@@ -319,9 +319,10 @@ a different version or a different checksum means building from source.
   come from the host compile and are the same for every target, so a client
   without an entry for its own system can use this one. `system_version` is
   `null`. Such files are published only when the builder's compile-time trace
-  passes; a publication the trace later refuses on the same toolchain,
-  because the package's own compile read the host or baked the build path
-  into its beams, is withdrawn, and its files stop being served.
+  and its native-code checks pass; a publication the trace later refuses on
+  the same toolchain, because the package's own compile read the host or
+  baked the build path into its beams, is withdrawn, and its files stop
+  being served.
 - Each file entry contains:
   - `path` — relative path within the package, e.g. `ebin/myapp.beam`. An
     entry is published only under the key its path names: `ebin/...` under
@@ -612,5 +613,8 @@ them.
   passes, the same trace a toolchain build gets: a compile that read the
   build host, wrote outside its own `ebin`, baked the build path into code,
   depends on a package whose own compile did, or whose trace did not finish
-  publishes no `pure_elixir` entry. Its files are the traced compile's. The
+  publishes no `pure_elixir` entry. Its files are the traced compile's, and
+  they pass the same native-code checks as a toolchain build's (no NIF or
+  driver load, no native sources or build dependencies, no target read or
+  `nerves` name), including code an optional dependency compiles in. The
   run's status is unaffected.

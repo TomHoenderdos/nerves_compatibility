@@ -190,9 +190,11 @@ defmodule NccWorker.Worker do
           # no argus (`argus.status` "skipped"), no Nerves systems.
           optional(:toolchain_build) => toolchain_build(),
           # Only for a run whose selection was `pure_elixir`: whether its host
-          # files were published (the compile-time trace,
-          # `NccWorker.Portability`). "skipped" publishes no `pure_elixir`
-          # files and changes no status; `reason` is the trace's refusal or
+          # files were published (rule 2, as for a toolchain build: the
+          # static rules on the beams that would be published and the
+          # compile-time trace, `NccWorker.Portability`). "skipped" publishes
+          # no `pure_elixir` files and changes no status; `reason` is
+          # `combine/2`'s: the trace's refusal, a static rule's reason, or
           # "portability could not be judged" (the tracer failed, was killed,
           # overflowed or could not start). `compile_observations` as for a
           # toolchain build, nil only when the trace never ran.
@@ -1198,11 +1200,16 @@ defmodule NccWorker.Worker do
   # The host compile's BEAMs are the package's files on every target, so they
   # are scanned and archived like a firmware build's, and published as
   # precompiled files that fit any system. A client on any OS takes them, so
-  # they are published only when the compile-time trace passes
-  # (`portability`, `full_run_portability/3`): a module body that reads
-  # `:os.type()` bakes this Linux build host into the beams, and the trace
-  # refuses it. The trace runs before the scan: it recompiles the closure, so
-  # the files scanned and archived are the traced compile's own.
+  # they are published only when rule 2 passes, as for a toolchain build: the
+  # static rules (`BuildSelection.static_rules/4`) AND the compile-time trace
+  # (`portability`, `full_run_portability/3`), combined by `combine/2`. A
+  # module body that reads `:os.type()` bakes this Linux build host into the
+  # beams, and the trace refuses it. The trace runs first: it recompiles the
+  # closure, so the files scanned, judged by the static rules and archived are
+  # the traced compile's own. `classify/4` judged the closure before the
+  # optional-dependency pass recompiled it, so the static rules run again on
+  # these beams: code an optional dependency compiles in (a NIF load, say) is
+  # judged before it is published.
   # Otherwise the scan keeps no `file_manifest`, so nothing is archived or
   # published. The status, the assumed-compatible verdict and the log tail's
   # first sentence never change; `host_portability` says what was decided.
@@ -1214,16 +1221,18 @@ defmodule NccWorker.Worker do
           map()
   def pure_elixir_result(project_dir, package_name, portability) do
     app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
-    published = publication_gate(project_dir, package_name, portability)
+    trace = require_compile_env(portability.(package_name))
+    raw_scan = raw_scan(app_dir)
 
     beam_scan =
-      case BeamScan.analyze_app_dir(app_dir) do
-        {:ok, scan} -> scan
+      case raw_scan do
+        {:ok, scan} -> BeamScan.normalize(scan)
         {:error, reason} -> %{"errors" => ["beam scan failed: #{inspect(reason)}"]}
       end
 
     app_env = AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
-    {gate, host_portability, verdict} = require_app_env(published, app_env)
+    verdict = require_app_env(trace, app_env)
+    gate = publication_gate(project_dir, package_name, raw_scan, verdict)
 
     {compile_env, compile_env_rule} =
       if gate == :publish, do: r5_compile_env(app_env, verdict), else: {app_env, nil}
@@ -1242,34 +1251,52 @@ defmodule NccWorker.Worker do
       compile_env_rule: compile_env_rule,
       beam_scan: beam_scan,
       error: nil,
-      host_portability: host_portability
+      host_portability: host_portability(gate, verdict)
     }
   end
 
-  # The trace alone decides (precompiled portability spec): the OS grep
-  # the gate used to run first is gone. `classify/4` has already refused any
-  # closure with native code, program calls or priv, so the trace is the only
-  # check a `pure_elixir` result's publication still needs.
-  defp publication_gate(_project_dir, package_name, portability) do
-    verdict = require_compile_env(portability.(package_name))
-    {trace_gate(verdict), host_portability(verdict), verdict}
+  # `BeamScan.analyze_app_dir/1` without the normalization: the static rules
+  # read the raw `BeamScanner` result, the scan published is its normalized
+  # form.
+  defp raw_scan(app_dir) do
+    if File.dir?(app_dir),
+      do: {:ok, BeamScanner.analyze(app_dir)},
+      else: {:error, :app_dir_not_found}
+  rescue
+    error -> {:error, {:beam_scan_failed, Exception.message(error)}}
+  end
+
+  # Rule 2 on the beams that would be published: the static rules on the
+  # final scan (an unreadable scan is incomplete, which they refuse), then
+  # `combine/2` with the trace, the same order of reasons a toolchain build
+  # gets.
+  defp publication_gate(project_dir, package_name, raw_scan, verdict) do
+    scan =
+      case raw_scan do
+        {:ok, scan} -> scan
+        {:error, _reason} -> %{}
+      end
+
+    tarball = package_tarball(project_dir, package_name)
+
+    case combine(
+           BuildSelection.static_rules(project_dir, package_name, scan, tarball: tarball),
+           verdict
+         ) do
+      :ok -> :publish
+      {:skip, reason} -> {:withhold, reason}
+    end
   end
 
   # A `.app` that could not be read leaves `compile_env` nil, which no
   # client matches, so its files are withheld here rather than published
   # unmatched: a could-not-judge the package causes on every run.
-  defp require_app_env({:publish, _host_portability, verdict}, nil) do
-    verdict = cannot_judge(verdict, "compile_env unreadable: .app missing or unparsable")
-    {trace_gate(verdict), host_portability(verdict), verdict}
-  end
+  defp require_app_env(%{status: :pass} = verdict, nil),
+    do: cannot_judge(verdict, "compile_env unreadable: .app missing or unparsable")
 
-  defp require_app_env(published, _app_env), do: published
+  defp require_app_env(verdict, _app_env), do: verdict
 
-  defp trace_gate(%{status: :pass}), do: :publish
-  defp trace_gate(%{reason: reason}) when is_binary(reason), do: {:withhold, reason}
-  defp trace_gate(_verdict), do: {:withhold, PortabilityReasons.could_not_judge()}
-
-  defp host_portability(%{status: :pass} = verdict),
+  defp host_portability(:publish, verdict),
     do: %{
       status: "pass",
       reason: nil,
@@ -1277,16 +1304,13 @@ defmodule NccWorker.Worker do
       compile_observations: verdict[:observations]
     }
 
-  defp host_portability(verdict) do
-    {:withhold, reason} = trace_gate(verdict)
-
-    %{
+  defp host_portability({:withhold, reason}, verdict),
+    do: %{
       status: "skipped",
       reason: reason,
       portability_rule: 2,
       compile_observations: verdict[:observations]
     }
-  end
 
   defp apply_gate(%{"footprint" => %{} = footprint} = scan, {:withhold, reason}),
     do:
