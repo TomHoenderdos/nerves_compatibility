@@ -3512,7 +3512,7 @@
   "optional_deps_variant": "exclude",
   "package": "phoenix_live_dashboard",
   "platform": "darwin-elixir-1.20.4-otp-29",
-  "reason": "OS-specific (lib/phoenix/live_dashboard/pages/home_page.ex: system_architecture)",
+  "reason": "portability could not be judged",
   "rule1_reason": "OS-specific (lib/phoenix/live_dashboard/pages/home_page.ex: system_architecture)",
   "status": "skipped",
   "trace_verdict": "could_not_judge",

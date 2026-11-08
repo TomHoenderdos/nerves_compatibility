@@ -770,9 +770,9 @@
   "optional_deps_variant": "exclude",
   "package": "swoosh",
   "platform": "darwin-elixir-1.20.4-otp-29",
-  "reason": "calls erlang:open_port/2",
+  "reason": null,
   "rule1_reason": "calls erlang:open_port/2",
-  "status": "skipped",
+  "status": "pass",
   "trace_verdict": "pass",
   "version": "1.29.3"
 }

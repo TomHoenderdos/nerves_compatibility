@@ -69,7 +69,7 @@ test:
 	mix test
 
 test-integration:
-	mix test apps/portal/test/portal/workers/build_integration_test.exs apps/portal/test/portal/workers/toolchain_integration_test.exs --only integration
+	mix test apps/portal/test/portal/workers/build_integration_test.exs apps/portal/test/portal/workers/toolchain_integration_test.exs apps/portal/test/portal/workers/toolchain_rule2_integration_test.exs --only integration
 	$(MAKE) test-portability-goldens
 
 # Real Hex packages under the compile-time tracer, on this machine's

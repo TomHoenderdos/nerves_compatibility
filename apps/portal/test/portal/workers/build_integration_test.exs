@@ -130,7 +130,7 @@ defmodule Portal.Workers.BuildIntegrationTest do
     assert host["status"] == "pass"
     assert pure["status"] == "pass"
 
-    assert %{"status" => "pass", "reason" => nil, "portability_rule" => 1} =
+    assert %{"status" => "pass", "reason" => nil, "portability_rule" => 2} =
              hp = result["host_portability"]
 
     stats = hp["compile_observations"]["trace_stats"]

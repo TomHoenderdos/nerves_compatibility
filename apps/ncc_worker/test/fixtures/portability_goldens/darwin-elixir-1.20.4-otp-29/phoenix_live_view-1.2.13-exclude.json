@@ -3512,9 +3512,9 @@
   "optional_deps_variant": "exclude",
   "package": "phoenix_live_view",
   "platform": "darwin-elixir-1.20.4-otp-29",
-  "reason": "calls System.cmd/2",
+  "reason": null,
   "rule1_reason": "calls System.cmd/2",
-  "status": "skipped",
+  "status": "pass",
   "trace_verdict": "pass",
   "version": "1.2.13"
 }
