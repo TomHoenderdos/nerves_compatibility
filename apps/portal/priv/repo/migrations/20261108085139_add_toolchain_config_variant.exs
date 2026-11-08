@@ -7,7 +7,16 @@ defmodule Portal.Repo.Migrations.AddToolchainConfigVariant do
 
   use Ecto.Migration
 
+  # Both directions take an ACCESS EXCLUSIVE lock (ALTER TABLE) and then a
+  # SHARE lock (the index) on a table the running release keeps writing.
+  # Queued behind a long read, that lock request would hold every writer
+  # behind it in turn; a bounded wait instead fails the migration, and with it
+  # the deploy, loudly. SET LOCAL lasts for the migration's own transaction
+  # only, so this migration must keep its DDL transaction (no
+  # `@disable_ddl_transaction`).
   def up do
+    execute("SET LOCAL lock_timeout = '5s'")
+
     alter table(:catalog_toolchain_builds) do
       add(:config_variant, :text, null: false, default: "default")
     end
@@ -22,6 +31,8 @@ defmodule Portal.Repo.Migrations.AddToolchainConfigVariant do
   end
 
   def down do
+    execute("SET LOCAL lock_timeout = '5s'")
+
     drop_if_exists(
       unique_index(
         :catalog_toolchain_builds,

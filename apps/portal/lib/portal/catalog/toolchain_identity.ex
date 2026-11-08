@@ -10,16 +10,33 @@ defmodule Portal.Catalog.ToolchainIdentity do
   opens it; recreating it (a rollback) closes it again.
   """
 
+  require Logger
+
   @legacy_index "catalog_toolchain_builds_unique_identity_index"
 
   @spec legacy_index() :: String.t()
   def legacy_index, do: @legacy_index
 
-  @spec config_variants_ready?() :: boolean()
-  def config_variants_ready? do
-    %{rows: [[present]]} =
-      Portal.Repo.query!("SELECT to_regclass($1) IS NOT NULL", [@legacy_index])
+  @doc """
+  True once the legacy index is gone. Fails closed: when the database cannot
+  be asked (an error or a raise from `repo`), it logs a warning and answers
+  false, so the backlog proposes only defaults until it can be asked again.
+  """
+  @spec config_variants_ready?(module()) :: boolean()
+  def config_variants_ready?(repo \\ Portal.Repo) do
+    case repo.query("SELECT to_regclass($1) IS NOT NULL", [@legacy_index]) do
+      {:ok, %{rows: [[present]]}} -> not present
+      other -> closed(other)
+    end
+  rescue
+    exception -> closed(exception)
+  end
 
-    not present
+  defp closed(reason) do
+    Logger.warning(
+      "could not check for #{@legacy_index}, config variants stay off: #{inspect(reason)}"
+    )
+
+    false
   end
 end

@@ -2,6 +2,7 @@ defmodule Portal.Catalog.ToolchainIdentityTest do
   # Not async: drops an index inside the sandbox transaction.
   use Portal.DataCase, async: false
 
+  import ExUnit.CaptureLog
   import Portal.PrecompiledFixtures
 
   alias Portal.Catalog.{ToolchainBuild, ToolchainIdentity}
@@ -49,6 +50,48 @@ defmodule Portal.Catalog.ToolchainIdentityTest do
     reloaded = Ash.get!(ToolchainBuild, row.id, domain: Portal.Catalog)
     assert reloaded.status == :skipped
     assert reloaded.config_variant == "default"
+  end
+
+  test "the release before config variants can still insert a brand-new key",
+       %{package_id: id} do
+    # No row has this key yet: the five-column ON CONFLICT inserts it, and
+    # the new column fills in from its default.
+    %{rows: [[row_id]]} =
+      Repo.query!(
+        """
+        INSERT INTO catalog_toolchain_builds (package_id, version, toolchain, builder_version, variant, status)
+        VALUES ($1, '2.0.0', '1.19/28', 1, 'with', 'pass')
+        ON CONFLICT (package_id, version, toolchain, builder_version, variant)
+        DO UPDATE SET status = EXCLUDED.status
+        RETURNING id
+        """,
+        [Ecto.UUID.dump!(id)]
+      )
+
+    row = Ash.get!(ToolchainBuild, Ecto.UUID.load!(row_id), domain: Portal.Catalog)
+    assert row.version == "2.0.0"
+    assert row.status == :pass
+    assert row.config_variant == "default"
+  end
+
+  defmodule ErrorRepo do
+    @moduledoc false
+    def query(_sql, _params), do: {:error, %Postgrex.Error{message: "connection lost"}}
+  end
+
+  defmodule RaisingRepo do
+    @moduledoc false
+    def query(_sql, _params), do: raise(DBConnection.ConnectionError, "pool timeout")
+  end
+
+  test "the gate fails closed when its query errors" do
+    log = capture_log(fn -> refute ToolchainIdentity.config_variants_ready?(ErrorRepo) end)
+    assert log =~ "config variants stay off"
+  end
+
+  test "the gate fails closed when its query raises" do
+    log = capture_log(fn -> refute ToolchainIdentity.config_variants_ready?(RaisingRepo) end)
+    assert log =~ "config variants stay off"
   end
 
   test "while the legacy index exists the gate is shut and a named row cannot be stored",
