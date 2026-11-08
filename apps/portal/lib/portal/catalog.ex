@@ -1580,9 +1580,13 @@ defmodule Portal.Catalog do
   needs its compile-time config reads recorded comes after every other
   candidate, and says so as `refresh: true`
   (`Portal.Workers.ToolchainSweep` queues those after every other build).
-  Each row names its `config_variant`, here always `"default"`: only rows of
-  the default config variant decide whether a default build is wanted, so a
-  named variant's row never stands in for the default's.
+  Each row names its `config_variant`: `"default"`, or a named
+  `Compatibility.ConfigVariants` variant of a served default build. Only rows
+  of the default config variant decide whether a default build is wanted, so
+  a named variant's row never stands in for the default's. Named rows that
+  are not refreshes come first, ahead of every new default: they are bounded
+  (at most a few per served default build), and a long default backlog would
+  otherwise leave them past `limit` on every call.
 
   Most wanted first, so a capped sweep builds what projects resolve before
   what nobody asks for: by the package's hex.pm recent downloads, then, within
@@ -1614,7 +1618,7 @@ defmodule Portal.Catalog do
         LEFT JOIN catalog_release_downloads d
           ON d.package = c.package AND d.version = c.version
         ORDER BY c.refresh,
-                 c.config_variant <> 'default',
+                 c.config_variant = 'default',
                  c.recent DESC NULLS LAST,
                  d.downloads DESC NULLS LAST,
                  c.finished_at DESC NULLS LAST,

@@ -248,10 +248,10 @@ defmodule Portal.Catalog.ToolchainBacklogConfigVariantsTest do
       assert named(Catalog.toolchain_backlog("1.19/28", 1, 50)) == [{"lvy", "1.0.0", "phx_prod"}]
     end
 
-    test "named after every default, before every refresh" do
+    test "named before every default and every refresh" do
       for p <- ["new", "lvs", "stale"], do: run!(p, "1.0.0")
-      downloads!("new", 10)
-      downloads!("lvs", 1_000_000)
+      downloads!("new", 10_000_000)
+      downloads!("lvs", 10)
       downloads!("stale", 5_000_000)
       row!("lvs", "1.0.0", :pass, marked: true, compile_env: lv_env(@lv4))
       row!("stale", "1.0.0", :pass, marked: false, finished_days_ago: 8)
@@ -260,10 +260,32 @@ defmodule Portal.Catalog.ToolchainBacklogConfigVariantsTest do
         Catalog.toolchain_backlog("1.19/28", 1, 50)
         |> Enum.map(&{&1.package, &1.config_variant != "default", &1.refresh})
 
-      assert [{"new", false, false} | rest] = kinds
-      assert Enum.take(rest, 3) == List.duplicate({"lvs", true, false}, 3)
-      assert List.last(kinds) == {"stale", false, true}
-      assert length(kinds) == 5
+      assert Enum.take(kinds, 3) == List.duplicate({"lvs", true, false}, 3)
+      assert Enum.drop(kinds, 3) == [{"new", false, false}, {"stale", false, true}]
+    end
+
+    test "the limit keeps the named rows when the defaults alone exceed it" do
+      for i <- 1..5 do
+        run!("def#{i}", "1.0.0")
+        downloads!("def#{i}", 1_000_000 + i)
+      end
+
+      run!("lvs", "1.0.0")
+      downloads!("lvs", 1)
+      row!("lvs", "1.0.0", :pass, marked: true, compile_env: lv_env(@lv4))
+
+      backlog = Catalog.toolchain_backlog("1.19/28", 1, 4)
+
+      assert length(backlog) == 4
+
+      assert named(backlog) == [
+               {"lvs", "1.0.0", "phx_prod"},
+               {"lvs", "1.0.0", "phx_test"},
+               {"lvs", "1.0.0", "phx_dev"}
+             ]
+
+      assert [%{package: "def5", config_variant: "default"}] =
+               Enum.reject(backlog, &(&1.config_variant != "default"))
     end
 
     test "NCC_CONFIG_VARIANTS narrows the set and re-ranks" do

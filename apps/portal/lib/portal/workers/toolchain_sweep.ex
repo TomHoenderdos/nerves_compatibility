@@ -17,13 +17,18 @@ defmodule Portal.Workers.ToolchainSweep do
   share leaves the rest to the others.
 
   The run is taken in three tiers, each round-robin over the toolchains and
-  the cap over the whole: first every `default` build that is not a refresh,
-  then the named config variants (`config_variant` in
-  `Catalog.toolchain_backlog/3`: a served default build's variants under the
-  pinned `Compatibility.ConfigVariants` overlays it read) at priority 2, then
-  the refreshes (`refresh`: a rebuild of a build already served, only to
-  record its compile-time config reads) at priority 3. A version nobody has
-  a build of yet waits for no variant of another, and no build waits for a
+  the cap over the whole: first the named config variants (`config_variant`
+  in `Catalog.toolchain_backlog/3`: a served default build's variants under
+  the pinned `Compatibility.ConfigVariants` overlays it read), then every
+  `default` build that is not a refresh, then the refreshes (`refresh`: a
+  rebuild of a build already served, only to record its compile-time config
+  reads). Named variants go first because a long default backlog (a
+  `builder_version` bump makes every version new again) would otherwise take
+  the whole cap on every run and never leave them a slot; they are bounded
+  (at most a few per served default build), so new defaults slip by at most
+  that many. Their Oban priority stays 2, behind defaults at 0 and 1 and
+  ahead of refreshes at 3: the tier order decides what a capped run
+  enqueues, the priority what the queue runs first. No build waits for a
   refresh, in the run or in the queue.
 
   Jobs are inserted one at a time rather than with `Oban.insert_all/1`, which
@@ -55,10 +60,11 @@ defmodule Portal.Workers.ToolchainSweep do
         |> Enum.map(&{build_args(&1, image, builder_version), tier(&1)})
       end)
 
-    # Defaults, then named config variants, then refreshes: each tier
-    # round-robin over the toolchains, the cap over the whole.
+    # Named config variants, then defaults, then refreshes: each tier
+    # round-robin over the toolchains, the cap over the whole. Named first so
+    # a long default backlog cannot starve them out of every run.
     picked =
-      [:default, :named, :refresh]
+      [:named, :default, :refresh]
       |> Enum.flat_map(&round_robin(only(backlogs, &1)))
       |> Enum.take(cap)
 

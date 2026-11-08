@@ -651,7 +651,7 @@ defmodule Portal.Workers.ToolchainSweepTest do
       run!("new", "1.0.0")
     end
 
-    test "named variants queue after defaults, before refreshes, at priority 2",
+    test "named variants queue before defaults and refreshes, at priority 2",
          %{previous: previous} do
       three_tiers!(previous)
 
@@ -661,23 +661,46 @@ defmodule Portal.Workers.ToolchainSweepTest do
 
       assert Enum.map(jobs, &{&1.args["package"], &1.args["config_variant"], &1.priority}) ==
                [
-                 {"new", "default", 0},
                  {"lvs", "phx_prod", 2},
                  {"lvs", "phx_test", 2},
                  {"lvs", "phx_dev", 2},
+                 {"new", "default", 0},
                  {"stale", "default", 3}
                ]
     end
 
-    test "the cap takes defaults first, then named variants", %{previous: previous} do
-      three_tiers!(previous, max_per_run: 2)
+    test "the cap takes named variants first, then defaults", %{previous: previous} do
+      three_tiers!(previous, max_per_run: 4)
 
       assert :ok = perform_job(ToolchainSweep, %{})
 
       assert all_enqueued(worker: ToolchainBuild)
              |> Enum.sort_by(& &1.id)
              |> Enum.map(&{&1.args["package"], &1.args["config_variant"]}) ==
-               [{"new", "default"}, {"lvs", "phx_prod"}]
+               [
+                 {"lvs", "phx_prod"},
+                 {"lvs", "phx_test"},
+                 {"lvs", "phx_dev"},
+                 {"new", "default"}
+               ]
+    end
+
+    test "a default backlog longer than the cap never pushes out a named variant",
+         %{previous: previous} do
+      three_tiers!(previous, max_per_run: 5)
+      for i <- 1..6, do: run!("more#{i}", "1.0.0")
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      jobs = all_enqueued(worker: ToolchainBuild)
+      assert length(jobs) == 5
+
+      assert jobs
+             |> Enum.filter(&(&1.args["config_variant"] != "default"))
+             |> Enum.map(& &1.args["config_variant"])
+             |> Enum.sort() == ~w(phx_dev phx_prod phx_test)
+
+      refute Enum.any?(jobs, &(&1.args["package"] == "stale"))
     end
 
     test "a second sweep does not duplicate named variants still queued", %{previous: previous} do
