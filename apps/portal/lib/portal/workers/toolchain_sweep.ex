@@ -16,11 +16,15 @@ defmodule Portal.Workers.ToolchainSweep do
   starve the others inside a run. A toolchain with less backlog than its
   share leaves the rest to the others.
 
-  A refresh (`refresh` in `Catalog.toolchain_backlog/3`: a rebuild of a build
-  already served, only to record its compile-time config reads) comes after
-  every other build of every toolchain, and is queued at priority 3, below
-  both variants: what nobody has yet waits for no refresh, in the run or in
-  the queue.
+  The run is taken in three tiers, each round-robin over the toolchains and
+  the cap over the whole: first every `default` build that is not a refresh,
+  then the named config variants (`config_variant` in
+  `Catalog.toolchain_backlog/3`: a served default build's variants under the
+  pinned `Compatibility.ConfigVariants` overlays it read) at priority 2, then
+  the refreshes (`refresh`: a rebuild of a build already served, only to
+  record its compile-time config reads) at priority 3. A version nobody has
+  a build of yet waits for no variant of another, and no build waits for a
+  refresh, in the run or in the queue.
 
   Jobs are inserted one at a time rather than with `Oban.insert_all/1`, which
   does not check `unique`: a build the previous sweep enqueued and the
@@ -48,24 +52,29 @@ defmodule Portal.Workers.ToolchainSweep do
       Enum.map(Toolchains.images(), fn image ->
         image.toolchain
         |> Catalog.toolchain_backlog(builder_version, cap)
-        |> Enum.map(&{build_args(&1, image, builder_version), &1.refresh})
+        |> Enum.map(&{build_args(&1, image, builder_version), tier(&1)})
       end)
 
-    # Every toolchain's builds, round-robin, then every toolchain's refreshes.
+    # Defaults, then named config variants, then refreshes: each tier
+    # round-robin over the toolchains, the cap over the whole.
     picked =
-      [false, true]
+      [:default, :named, :refresh]
       |> Enum.flat_map(&round_robin(only(backlogs, &1)))
       |> Enum.take(cap)
 
     counts = Enum.frequencies_by(picked, &enqueue/1)
 
     for %{toolchain: toolchain} <- Toolchains.images() do
-      enqueued = Map.get(counts, {toolchain, :enqueued}, 0)
-      pending = Map.get(counts, {toolchain, :pending}, 0)
+      named = Map.get(counts, {toolchain, :enqueued, true}, 0)
+      enqueued = Map.get(counts, {toolchain, :enqueued, false}, 0) + named
+
+      pending =
+        Map.get(counts, {toolchain, :pending, false}, 0) +
+          Map.get(counts, {toolchain, :pending, true}, 0)
 
       Logger.info(
         "Toolchain sweep #{toolchain} (builder #{builder_version}): " <>
-          "enqueued #{enqueued}, already queued #{pending}"
+          "enqueued #{enqueued} (#{named} config variants), already queued #{pending}"
       )
     end
 
@@ -81,11 +90,15 @@ defmodule Portal.Workers.ToolchainSweep do
     end
   end
 
-  # Each toolchain's backlog, keeping only the entries whose `refresh` is
-  # `refresh`, in their order.
-  defp only(backlogs, refresh) do
-    Enum.map(backlogs, fn backlog -> Enum.filter(backlog, &(elem(&1, 1) == refresh)) end)
+  # Each toolchain's backlog, keeping only the entries of `tier`, in their
+  # order.
+  defp only(backlogs, tier) do
+    Enum.map(backlogs, fn backlog -> Enum.filter(backlog, &(elem(&1, 1) == tier)) end)
   end
+
+  defp tier(%{refresh: true}), do: :refresh
+  defp tier(%{config_variant: "default"}), do: :default
+  defp tier(%{config_variant: _named}), do: :named
 
   defp build_args(
          %{package: package, version: version, variant: variant, config_variant: config_variant},
@@ -103,27 +116,30 @@ defmodule Portal.Workers.ToolchainSweep do
     }
   end
 
-  defp enqueue({args, refresh}) do
-    case args |> ToolchainBuild.new(priority: priority(args.variant, refresh)) |> Oban.insert() do
+  defp enqueue({args, tier}) do
+    named? = tier == :named
+
+    case args |> ToolchainBuild.new(priority: priority(args.variant, tier)) |> Oban.insert() do
       {:ok, %Oban.Job{conflict?: true}} ->
-        {args.toolchain, :pending}
+        {args.toolchain, :pending, named?}
 
       {:ok, _job} ->
-        {args.toolchain, :enqueued}
+        {args.toolchain, :enqueued, named?}
 
       {:error, reason} ->
         Logger.error(
           "Toolchain sweep could not enqueue #{args.package} #{args.version} " <>
-            "(#{args.variant}) on #{args.toolchain}: #{inspect(reason)}"
+            "(#{args.variant}, #{args.config_variant}) on #{args.toolchain}: #{inspect(reason)}"
         )
 
-        {args.toolchain, :failed}
+        {args.toolchain, :failed, named?}
     end
   end
 
-  defp priority(_variant, true), do: 3
-  defp priority(:with, false), do: 0
-  defp priority(:without, false), do: 1
+  defp priority(_variant, :refresh), do: 3
+  defp priority(_variant, :named), do: 2
+  defp priority(:with, :default), do: 0
+  defp priority(:without, :default), do: 1
 
   # [[a1, a2, a3], [b1]] -> [a1, b1, a2, a3]
   defp round_robin(lists) do

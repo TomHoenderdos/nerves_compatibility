@@ -1299,6 +1299,72 @@ defmodule Portal.Catalog do
        <= CASE WHEN t.transient_attempts > 0 THEN $3::timestamp ELSE $4::timestamp END)
   """
 
+  # A live row of the identity (see `@toolchain_candidates_sql`'s comment for
+  # what is live): `t` is the row; `$PKG`, `$VERSION`, `$VARIANT` and
+  # `$CONFIG` are the candidate's package id, version, variant and config
+  # variant, which each query fills in.
+  @live_row_clause """
+  EXISTS (
+    SELECT 1 FROM catalog_toolchain_builds t
+    WHERE t.package_id = $PKG
+      AND t.version = $VERSION
+      AND t.toolchain = $1
+      AND t.builder_version = $2
+      AND t.variant = $VARIANT
+      AND t.config_variant = $CONFIG
+      AND (
+        (
+          t.revoked_at IS NOT NULL
+          AND NOT (
+            -- `ToolchainBuild.withheld_revocation/0`
+            t.revoked_reason IS NOT DISTINCT FROM 'withheld closure'
+            AND NOT #{records_config_reads.("t")}
+            AND #{@reopen_due}
+          )
+        )
+        OR (
+          t.revoked_at IS NULL
+          AND t.status = 'pass'
+          AND NOT (
+            (
+              coalesce(t.optional_deps ->> 'reason', '') IN ('deps_get_failed', 'timeout')
+              OR NOT #{records_config_reads.("t")}
+              OR t.transient_attempts > 0
+            )
+            AND #{@reopen_due}
+          )
+        )
+        OR (
+          t.revoked_at IS NULL
+          AND t.status = 'skipped'
+          AND NOT (
+            (t.reason IS NOT DISTINCT FROM 'ships priv files' OR t.transient_attempts > 0)
+            AND #{@reopen_due}
+          )
+        )
+        OR (
+          t.revoked_at IS NULL
+          AND t.status = 'error'
+          AND coalesce(t.finished_at, t.updated_at) > $3::timestamp
+        )
+        OR (
+          t.revoked_at IS NULL
+          AND t.status = 'fail'
+          AND coalesce(t.finished_at, t.updated_at) > $4::timestamp
+        )
+      )
+  )
+  """
+
+  # `@live_row_clause` for one query's candidate columns.
+  live_row = fn package_id, version, variant, config_variant ->
+    @live_row_clause
+    |> String.replace("$PKG", package_id)
+    |> String.replace("$VERSION", version)
+    |> String.replace("$VARIANT", variant)
+    |> String.replace("$CONFIG", config_variant)
+  end
+
   # Toolchain builds wanted (`toolchain_backlog/3`): one row per package
   # version and variant, with the newest `finished_at` of the version's
   # qualifying runs and the package's hex.pm recent downloads.
@@ -1370,7 +1436,8 @@ defmodule Portal.Catalog do
                       AND (e.package = ANY($7::text[])
                            OR CASE WHEN jsonb_typeof(o.deps_lock) = 'object'
                                    THEN o.deps_lock ?| $7::text[] ELSE true END))
-         ) AS refresh
+         ) AS refresh,
+         0 AS rank
   FROM (
     SELECT p.id AS package_id, p.name AS package, r.version_tested AS version,
            max(r.finished_at) AS finished_at, p.hex_downloads_recent AS recent
@@ -1412,56 +1479,60 @@ defmodule Portal.Catalog do
           AND jsonb_array_length(w.optional_deps -> 'added') > 0
       )
     )
-    AND NOT EXISTS (
-      SELECT 1 FROM catalog_toolchain_builds t
-      WHERE t.package_id = e.package_id
-        AND t.version = e.version
-        AND t.toolchain = $1
-        AND t.builder_version = $2
-        AND t.variant = v.variant
-        AND t.config_variant = 'default'
-        AND (
-          (
-            t.revoked_at IS NOT NULL
-            AND NOT (
-              -- `ToolchainBuild.withheld_revocation/0`
-              t.revoked_reason IS NOT DISTINCT FROM 'withheld closure'
-              AND NOT #{records_config_reads.("t")}
-              AND #{@reopen_due}
-            )
-          )
-          OR (
-            t.revoked_at IS NULL
-            AND t.status = 'pass'
-            AND NOT (
-              (
-                coalesce(t.optional_deps ->> 'reason', '') IN ('deps_get_failed', 'timeout')
-                OR NOT #{records_config_reads.("t")}
-                OR t.transient_attempts > 0
-              )
-              AND #{@reopen_due}
-            )
-          )
-          OR (
-            t.revoked_at IS NULL
-            AND t.status = 'skipped'
-            AND NOT (
-              (t.reason IS NOT DISTINCT FROM 'ships priv files' OR t.transient_attempts > 0)
-              AND #{@reopen_due}
-            )
-          )
-          OR (
-            t.revoked_at IS NULL
-            AND t.status = 'error'
-            AND coalesce(t.finished_at, t.updated_at) > $3::timestamp
-          )
-          OR (
-            t.revoked_at IS NULL
-            AND t.status = 'fail'
-            AND coalesce(t.finished_at, t.updated_at) > $4::timestamp
-          )
-        )
-    )
+    AND NOT #{live_row.("e.package_id", "e.version", "v.variant", "'default'")}
+  """
+
+  # `@withheld_toolchain_clause` for the default row aliased `d` (its package
+  # `p`, the withheld list in $7).
+  default_not_withheld =
+    @withheld_lock_clause
+    |> String.replace("$W", "$7")
+    |> String.replace("$L", "d.deps_lock")
+    |> String.replace("$E", records_config_reads.("d"))
+
+  # Named config variants wanted (precompiled portability spec, R7): for a
+  # `default` row that is a served pass recording its config reads, one
+  # candidate per enabled variant whose overlay cut down to the {app, key}
+  # pairs the row's `compile_env` read is non-empty and the first of its
+  # kind in rank order (`Compatibility.ConfigVariants.wanted/2`, which a test
+  # holds this to). Served: not revoked and not withheld
+  # (`@withheld_toolchain_clause`, which for a row recording its config reads
+  # asks only for a recorded lock). $9: config variants can be stored
+  # (`ToolchainIdentity`) and some are enabled; $10..$14:
+  # `ConfigVariants.rows/1`, column-wise. A live row of the variant's own
+  # identity removes it, as for a default. Never a refresh: a named variant
+  # is a new build. Its `rank` orders a version's variants as `wanted/2` does.
+  @config_variant_candidates_sql """
+  SELECT p.name AS package, d.version, d.variant, cv.name AS config_variant,
+         d.finished_at, p.hex_downloads_recent AS recent, false AS refresh,
+         cv.rank
+  FROM catalog_toolchain_builds d
+  JOIN catalog_packages p ON p.id = d.package_id
+  CROSS JOIN LATERAL (
+    SELECT w.name, w.rank
+    FROM (
+      SELECT o.name, o.rank,
+             row_number() OVER (
+               PARTITION BY array_agg(o.item ORDER BY o.item) ORDER BY o.rank
+             ) AS first
+      FROM unnest($10::text[], $11::integer[], $12::text[], $13::text[], $14::text[])
+             AS o(name, rank, app, key, item)
+      WHERE (o.app, o.key) IN (
+        SELECT ce ->> 'app', ce -> 'path' ->> 0 FROM unnest(d.compile_env) AS ce
+      )
+      GROUP BY o.name, o.rank
+    ) w
+    WHERE w.first = 1
+  ) cv
+  WHERE $9::boolean
+    AND d.toolchain = $1
+    AND d.builder_version = $2
+    AND d.config_variant = 'default'
+    AND d.status = 'pass'
+    AND d.revoked_at IS NULL
+    AND #{records_config_reads.("d")}
+    AND #{default_not_withheld}
+    AND NOT #{live_row.("d.package_id", "d.version", "d.variant", "cv.name")}
   """
 
   @doc """
@@ -1503,25 +1574,31 @@ defmodule Portal.Catalog do
     %{rows: rows} =
       Repo.query!(
         """
-        WITH candidates AS (#{@toolchain_candidates_sql})
+        WITH candidates AS (
+          #{@toolchain_candidates_sql}
+          UNION ALL
+          #{@config_variant_candidates_sql}
+        )
         SELECT c.package, c.version, c.variant, c.config_variant, c.refresh
         FROM candidates c
         LEFT JOIN catalog_release_downloads d
           ON d.package = c.package AND d.version = c.version
         ORDER BY c.refresh,
+                 c.config_variant <> 'default',
                  c.recent DESC NULLS LAST,
                  d.downloads DESC NULLS LAST,
                  c.finished_at DESC NULLS LAST,
                  c.version DESC,
                  c.variant = 'without',
+                 c.rank,
                  c.package
-        LIMIT $9
+        LIMIT $15
         """,
         toolchain_params(
           toolchain,
           builder_version,
           UnrecordedOptionalDeps.wanted(toolchain, builder_version)
-        ) ++ [limit]
+        ) ++ config_variant_params() ++ [limit]
       )
 
     Enum.map(rows, fn [package, version, variant, config_variant, refresh] ->
@@ -1692,11 +1769,27 @@ defmodule Portal.Catalog do
   defp toolchain_backlog_count(toolchain, builder_version) do
     %{rows: [[count]]} =
       Repo.query!(
-        "SELECT count(*) FROM (#{@toolchain_candidates_sql}) candidates",
-        toolchain_params(toolchain, builder_version)
+        """
+        SELECT count(*) FROM (
+          #{@toolchain_candidates_sql}
+          UNION ALL
+          #{@config_variant_candidates_sql}
+        ) candidates
+        """,
+        toolchain_params(toolchain, builder_version) ++ config_variant_params()
       )
 
     count
+  end
+
+  # `@config_variant_candidates_sql`'s $9..$14: whether named variants can be
+  # stored and some are enabled, then the enabled overlays' rows column-wise.
+  defp config_variant_params do
+    enabled = Portal.Toolchains.config_variants()
+    rows = Compatibility.ConfigVariants.rows(enabled)
+    ready = enabled != [] and Portal.Catalog.ToolchainIdentity.config_variants_ready?()
+
+    [ready | Enum.map(0..4, fn i -> Enum.map(rows, &elem(&1, i)) end)]
   end
 
   # `unrecorded` is `Portal.Catalog.UnrecordedOptionalDeps.wanted/2`'s answer,

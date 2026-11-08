@@ -619,6 +619,87 @@ defmodule Portal.Workers.ToolchainSweepTest do
     end
   end
 
+  describe "perform/1 with named config variants" do
+    # A served pass row that recorded reading every `:phoenix_live_view` key
+    # the overlays set, unset.
+    defp lv_default!(name) do
+      unset =
+        :error |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
+
+      env =
+        for key <-
+              ~w(debug_attributes debug_heex_annotations enable_expensive_runtime_checks root_tag_attribute),
+            do: %{"app" => "phoenix_live_view", "path" => [key], "value" => unset}
+
+      toolchain_row!(name, "1.0.0", :pass,
+        run_id: "tc-#{name}",
+        compile_env: env,
+        deps_lock: %{},
+        finished_at: ago(30 * @day)
+      )
+    end
+
+    # A default candidate, a named candidate's three variants and a refresh
+    # on one toolchain.
+    defp three_tiers!(previous, overrides \\ []) do
+      one_toolchain(previous, overrides)
+      Portal.PrecompiledFixtures.drop_legacy_identity_index!()
+      run!("stale", "1.0.0")
+      served_unmarked!("stale", "1.19/28")
+      run!("lvs", "1.0.0")
+      lv_default!("lvs")
+      run!("new", "1.0.0")
+    end
+
+    test "named variants queue after defaults, before refreshes, at priority 2",
+         %{previous: previous} do
+      three_tiers!(previous)
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      jobs = all_enqueued(worker: ToolchainBuild) |> Enum.sort_by(& &1.id)
+
+      assert Enum.map(jobs, &{&1.args["package"], &1.args["config_variant"], &1.priority}) ==
+               [
+                 {"new", "default", 0},
+                 {"lvs", "phx_prod", 2},
+                 {"lvs", "phx_test", 2},
+                 {"lvs", "phx_dev", 2},
+                 {"stale", "default", 3}
+               ]
+    end
+
+    test "the cap takes defaults first, then named variants", %{previous: previous} do
+      three_tiers!(previous, max_per_run: 2)
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert all_enqueued(worker: ToolchainBuild)
+             |> Enum.sort_by(& &1.id)
+             |> Enum.map(&{&1.args["package"], &1.args["config_variant"]}) ==
+               [{"new", "default"}, {"lvs", "phx_prod"}]
+    end
+
+    test "a second sweep does not duplicate named variants still queued", %{previous: previous} do
+      three_tiers!(previous)
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert length(all_enqueued(worker: ToolchainBuild)) == 5
+    end
+
+    test "with the legacy index in place no named variant is queued", %{previous: previous} do
+      one_toolchain(previous)
+      run!("lvs", "1.0.0")
+      lv_default!("lvs")
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert all_enqueued(worker: ToolchainBuild) == []
+    end
+  end
+
   describe "uniqueness" do
     test "a toolchain build and a firmware build of one version insert side by side" do
       args = %{
