@@ -1,6 +1,6 @@
 defmodule Portal.Catalog.ToolchainBacklogConfigVariantsTest do
-  # Not async: swaps the `Portal.Toolchains` application env, and drops the
-  # legacy identity index inside the sandbox transaction.
+  # Not async: swaps the `Portal.Toolchains` application env, and recreates
+  # the legacy identity index inside the sandbox transaction.
   use Portal.DataCase, async: false
 
   require Ash.Query
@@ -139,7 +139,8 @@ defmodule Portal.Catalog.ToolchainBacklogConfigVariantsTest do
     end
   end
 
-  test "the gate: no named candidate while the legacy index exists" do
+  test "the gate: no named candidate while the legacy index exists (a rollback)" do
+    recreate_legacy_identity_index!()
     run!("lvpkg", "1.0.0")
     row!("lvpkg", "1.0.0", :pass, marked: true, compile_env: lv_env(@lv4))
     assert named(Catalog.toolchain_backlog("1.19/28", 1, 50)) == []

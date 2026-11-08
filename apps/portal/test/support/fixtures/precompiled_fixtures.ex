@@ -133,10 +133,27 @@ defmodule Portal.PrecompiledFixtures do
   @doc """
   Drops the toolchain build identity's legacy five-column index inside the
   test's sandbox transaction (rolled back with it), so a test can store a
-  second config variant of one identity. Callers are `async: false`.
+  second config variant of one identity. A migration has dropped it since, so
+  this is a no-op unless the test recreated it with
+  `recreate_legacy_identity_index!/0`. Callers are `async: false`.
   """
   def drop_legacy_identity_index! do
     Portal.Repo.query!("DROP INDEX IF EXISTS #{Portal.Catalog.ToolchainIdentity.legacy_index()}")
+    :ok
+  end
+
+  @doc """
+  Recreates the legacy five-column index inside the test's sandbox
+  transaction (rolled back with it), as a rollback of its drop would, so a
+  test can check that config variants stay off while it exists. Callers are
+  `async: false`.
+  """
+  def recreate_legacy_identity_index! do
+    Portal.Repo.query!("""
+    CREATE UNIQUE INDEX #{Portal.Catalog.ToolchainIdentity.legacy_index()}
+    ON catalog_toolchain_builds (package_id, version, toolchain, builder_version, variant)
+    """)
+
     :ok
   end
 

@@ -689,7 +689,9 @@ defmodule Portal.Workers.ToolchainSweepTest do
       assert length(all_enqueued(worker: ToolchainBuild)) == 5
     end
 
-    test "with the legacy index in place no named variant is queued", %{previous: previous} do
+    test "with the legacy index recreated (a rollback) no named variant is queued",
+         %{previous: previous} do
+      Portal.PrecompiledFixtures.recreate_legacy_identity_index!()
       one_toolchain(previous)
       run!("lvs", "1.0.0")
       lv_default!("lvs")

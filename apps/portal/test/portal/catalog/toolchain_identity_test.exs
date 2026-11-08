@@ -1,9 +1,8 @@
 defmodule Portal.Catalog.ToolchainIdentityTest do
-  # Not async: drops an index inside the sandbox transaction.
   use Portal.DataCase, async: false
 
   import ExUnit.CaptureLog
-  import Portal.PrecompiledFixtures
+  import Portal.PrecompiledFixtures, only: [ingest_toolchain_build: 2]
 
   alias Portal.Catalog.{ToolchainBuild, ToolchainIdentity}
   alias Portal.Repo
@@ -32,46 +31,28 @@ defmodule Portal.Catalog.ToolchainIdentityTest do
     assert row!(id, "default").config_variant == "default"
   end
 
-  test "an upsert shaped like the release before config variants still lands on the default row",
-       %{package_id: id} do
-    row = row!(id, "default")
+  # The release before config variants upserts with ON CONFLICT on the
+  # five-column identity. No unique index matches it any more, so that release
+  # cannot write a toolchain build against this schema: every node that runs
+  # toolchain builds or their ingest must be on a release that names the
+  # six-column identity before the five-column index is dropped.
+  test "an upsert shaped like the release before config variants raises", %{package_id: id} do
+    row!(id, "default")
 
-    # What the pre-variant release sends: ON CONFLICT on the five-column identity.
-    Repo.query!(
-      """
-      INSERT INTO catalog_toolchain_builds (package_id, version, toolchain, builder_version, variant, status)
-      VALUES ($1, '1.0.0', '1.19/28', 1, 'with', 'skipped')
-      ON CONFLICT (package_id, version, toolchain, builder_version, variant)
-      DO UPDATE SET status = EXCLUDED.status
-      """,
-      [Ecto.UUID.dump!(id)]
-    )
+    error =
+      assert_raise Postgrex.Error, fn ->
+        Repo.query!(
+          """
+          INSERT INTO catalog_toolchain_builds (package_id, version, toolchain, builder_version, variant, status)
+          VALUES ($1, '1.0.0', '1.19/28', 1, 'with', 'skipped')
+          ON CONFLICT (package_id, version, toolchain, builder_version, variant)
+          DO UPDATE SET status = EXCLUDED.status
+          """,
+          [Ecto.UUID.dump!(id)]
+        )
+      end
 
-    reloaded = Ash.get!(ToolchainBuild, row.id, domain: Portal.Catalog)
-    assert reloaded.status == :skipped
-    assert reloaded.config_variant == "default"
-  end
-
-  test "the release before config variants can still insert a brand-new key",
-       %{package_id: id} do
-    # No row has this key yet: the five-column ON CONFLICT inserts it, and
-    # the new column fills in from its default.
-    %{rows: [[row_id]]} =
-      Repo.query!(
-        """
-        INSERT INTO catalog_toolchain_builds (package_id, version, toolchain, builder_version, variant, status)
-        VALUES ($1, '2.0.0', '1.19/28', 1, 'with', 'pass')
-        ON CONFLICT (package_id, version, toolchain, builder_version, variant)
-        DO UPDATE SET status = EXCLUDED.status
-        RETURNING id
-        """,
-        [Ecto.UUID.dump!(id)]
-      )
-
-    row = Ash.get!(ToolchainBuild, Ecto.UUID.load!(row_id), domain: Portal.Catalog)
-    assert row.version == "2.0.0"
-    assert row.status == :pass
-    assert row.config_variant == "default"
+    assert error.postgres.code == :invalid_column_reference
   end
 
   defmodule ErrorRepo do
@@ -94,21 +75,15 @@ defmodule Portal.Catalog.ToolchainIdentityTest do
     assert log =~ "config variants stay off"
   end
 
-  test "while the legacy index exists the gate is shut and a named row cannot be stored",
+  test "the legacy index is gone: the gate is open and a named row sits beside the default",
        %{package_id: id} do
-    row!(id, "default")
-    refute ToolchainIdentity.config_variants_ready?()
-    assert_raise Ash.Error.Invalid, fn -> row!(id, "phx_prod") end
-  end
-
-  test "once the legacy index is gone the gate opens and both rows coexist", %{package_id: id} do
-    drop_legacy_identity_index!()
     assert ToolchainIdentity.config_variants_ready?()
     a = row!(id, "default")
     b = row!(id, "phx_prod")
     assert a.id != b.id
     # The six-column upsert replaces its own row only.
     assert row!(id, "phx_prod").id == b.id
+    assert row!(id, "default").id == a.id
   end
 
   test "an unknown config variant is refused", %{package_id: id} do

@@ -43,8 +43,9 @@ defmodule Portal.Catalog.ToolchainBuild do
   The identity is `(package_id, version, toolchain, builder_version,
   variant, config_variant)`: a new build of the same inputs replaces the row
   (`:upsert`), and bumping `builder_version` keeps older builds side by side.
-  While the five-column index from before config variants still exists, only
-  the default can be stored (`Portal.Catalog.ToolchainIdentity`).
+  Were the five-column index from before config variants recreated (a
+  rollback), only the default could be stored again
+  (`Portal.Catalog.ToolchainIdentity`).
   """
 
   use Ash.Resource,
@@ -194,13 +195,6 @@ defmodule Portal.Catalog.ToolchainBuild do
   end
 
   identities do
-    # The identity before config variants, kept while the release before
-    # them may still be running: its upserts name these five columns. A later
-    # migration drops it; until then it also stops a second config variant
-    # of an identity being stored, which the backlog respects
-    # (`Portal.Catalog.ToolchainIdentity.config_variants_ready?/0`).
-    identity(:unique_identity, [:package_id, :version, :toolchain, :builder_version, :variant])
-
     identity(:unique_config_identity, [
       :package_id,
       :version,
