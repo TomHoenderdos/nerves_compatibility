@@ -83,9 +83,16 @@ defmodule NccWorker.Portability.EventsTest do
       "mfa" => mfa,
       "arg" => arg,
       "extent" => Keyword.get(opts, :extent, "frame"),
-      "first" => %{"module" => Keyword.get(opts, :first, "Elixir.Pkg")},
+      "first" => first(opts),
       "user" => Keyword.get(opts, :user, @user)
     }
+  end
+
+  defp first(opts) do
+    case Keyword.get(opts, :first, "Elixir.Pkg") do
+      {m, f, a} -> %{"module" => m, "function" => f, "arity" => a}
+      m -> %{"module" => m}
+    end
   end
 
   defp in_mix_exs(event, pkg, line) do
@@ -101,27 +108,28 @@ defmodule NccWorker.Portability.EventsTest do
     }
   end
 
+  @os_reads [
+    {"os:type/0", :os, :type, %{}},
+    {"os:version/0", :os, :version, %{}},
+    {"erlang:system_info/1", :erlang, :system_info, %{"key" => "os_type"}}
+  ]
+
   # The tracer writes no line for a read `:ncc_tracer_channels.path_os_read/3`
-  # names whose first frame is one of its `path_modules/0` (it counts it): the
-  # judge must ignore every such line wherever it falls, a mix.exs included,
-  # or dropping it would change a verdict.
+  # names whose first frame is one of its `path_os_frames/0` (it counts it):
+  # the judge must ignore every such line wherever it falls, a mix.exs
+  # included, or dropping it would change a verdict.
   test "every OS-family read the tracer only counts is ignored, for every owner", %{
     ctx: ctx,
     pkg: pkg
   } do
-    reads = [
-      {"os:type/0", :os, :type, %{}},
-      {"os:version/0", :os, :version, %{}},
-      {"erlang:system_info/1", :erlang, :system_info, %{"key" => "os_type"}}
-    ]
-
-    for {mfa, m, f, arg} <- reads,
-        module <- :ncc_tracer_channels.path_modules(),
+    for {mfa, m, f, arg} <- @os_reads,
+        {fm, ff, fa} = frame <- :ncc_tracer_channels.path_os_frames(),
         extent <- ~w(frame dispatcher truncated lineage),
         owner <- ["pkg", "dep", :outside, :quiet, :wrapper] do
       assert :ncc_tracer_channels.path_os_read(m, f, atom_keys(arg))
-      event = ev("os_identity", mfa, arg, first: Atom.to_string(module), extent: extent)
-      assert :ignore = Events.decide(event, ctx, owner), inspect({mfa, module, extent, owner})
+      assert :ncc_tracer_channels.path_os_frame(fm, ff, fa)
+      event = ev("os_identity", mfa, arg, first: frame, extent: extent)
+      assert :ignore = Events.decide(event, ctx, owner), inspect({mfa, frame, extent, owner})
       assert :ignore = Events.decide(in_mix_exs(event, pkg, 3), ctx, owner)
     end
 
@@ -129,14 +137,50 @@ defmodule NccWorker.Portability.EventsTest do
     refute :ncc_tracer_channels.path_os_read(:os, :getenv, %{})
   end
 
+  # A package fun that tail-calls the read leaves the frame that called the
+  # fun first: the module alone (Code, filelib, filename) says nothing.
+  test "an OS-family read under any other frame of a path module refuses", %{ctx: ctx} do
+    others = [
+      {"Elixir.Code", "with_diagnostics", 2},
+      {"Elixir.Code", "eval_string", 3},
+      {"filelib", "fold_files", 5},
+      {"filelib", "do_fold_files2", 7},
+      {"filelib", "wildcard", 2},
+      {"file", "read_file", 1},
+      {"code", "lib_dir", 1},
+      {"filename", "-split/1-fun-0-", 1},
+      {"filename", "split", 2},
+      {"filename", "basedir_os_type", 0},
+      {"filename", "validate", 1},
+      {"Elixir.Path", "join", 2},
+      {"Elixir.Path", "major_os_type", 1},
+      "Elixir.Path",
+      "filename"
+    ]
+
+    for {mfa, _m, _f, arg} <- @os_reads, frame <- others do
+      assert {:refuse, "compile-time host read: " <> _} =
+               Events.decide(ev("os_identity", mfa, arg, first: frame), ctx, "pkg"),
+             inspect({mfa, frame})
+    end
+  end
+
   defp atom_keys(arg), do: Map.new(arg, fn {k, v} -> {String.to_atom(k), v} end)
 
   test "OS identity: path handling and the OTP release pass, a direct read refuses", %{ctx: ctx} do
     assert :ignore =
-             Events.decide(ev("os_identity", "os:type/0", %{}, first: "Elixir.Path"), ctx, "pkg")
+             Events.decide(
+               ev("os_identity", "os:type/0", %{}, first: {"Elixir.Path", "major_os_type", 0}),
+               ctx,
+               "pkg"
+             )
 
     assert :ignore =
-             Events.decide(ev("os_identity", "os:type/0", %{}, first: "filename"), ctx, "pkg")
+             Events.decide(
+               ev("os_identity", "os:type/0", %{}, first: {"filename", "split", 1}),
+               ctx,
+               "pkg"
+             )
 
     assert :ignore =
              Events.decide(
@@ -159,7 +203,7 @@ defmodule NccWorker.Portability.EventsTest do
     assert {:refuse, _} =
              Events.decide(
                ev("os_identity", "erlang:system_info/1", %{"key" => "wordsize"},
-                 first: "filename"
+                 first: {"filename", "split", 1}
                ),
                ctx,
                "pkg"
@@ -307,7 +351,10 @@ defmodule NccWorker.Portability.EventsTest do
     # Even where a rule would ignore the call.
     assert {:unjudged, _} =
              Events.decide(
-               ev("os_identity", "os:type/0", %{}, first: "Elixir.Path", extent: "unjudged"),
+               ev("os_identity", "os:type/0", %{},
+                 first: {"Elixir.Path", "major_os_type", 0},
+                 extent: "unjudged"
+               ),
                ctx,
                "pkg"
              )

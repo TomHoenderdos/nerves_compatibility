@@ -3,7 +3,8 @@
 %% spec, R1 channel table) and the short summary of one call that the tracer
 %% writes when the call happens in user extent. Pure: no process, no I/O.
 -export([patterns/0, probe_mfas/0, patterned/3, classify/3, chars/1, term_bin/1,
-         checker_module/1, mix_patterns/0, mix_entry/1, path_modules/0, path_os_read/3]).
+         checker_module/1, mix_patterns/0, mix_entry/1, path_os_frames/0, path_os_frame/3,
+         path_os_read/3]).
 
 -define(READS, [{file, read_file}, {file, read_file_info}, {file, read_link_info},
                 {file, read_link}, {file, read_link_all}, {file, list_dir},
@@ -168,11 +169,28 @@ probe_mfas() ->
      {code, module_status, 1}, {code, get_object_code, 1},
      {erlang, module_loaded, 1}, {erlang, function_exported, 3}].
 
-%% The modules whose OS-family read is path handling: the judge's
-%% `NccWorker.Portability.Events` takes its list from here, and the tracer
-%% only counts such a read when one of these is the first frame past the
-%% wrappers (path_os_read/3).
-path_modules() -> [filename, 'Elixir.Path', file, filelib, code, 'Elixir.Code'].
+%% The functions whose OS-family read is path handling, as the first frame
+%% past the wrappers names them ({module, function, arity}, as text): the
+%% path internals of OTP's filename and filelib and of Elixir's Path that
+%% call os:type/0 themselves, to pick separators or a path type, and call no
+%% fun they were given (a pin checks both, on each toolchain). Only an exact
+%% frame counts: a package fun that tail-calls os:type/0 from a callback
+%% leaves its caller's frame first (filelib:fold_files/5, Code), and that
+%% caller is never on this list. The judge's path rule
+%% (`NccWorker.Portability.Events`) and the tracer's count (path_os_read/3)
+%% both take it from here.
+path_os_frames() ->
+    [{<<"Elixir.Path">>, <<"major_os_type">>, 0},
+     {<<"filename">>, <<"basename">>, 1},
+     {<<"filename">>, <<"major_os_type">>, 0},
+     {<<"filename">>, <<"nativename">>, 1},
+     {<<"filename">>, <<"pathtype">>, 1},
+     {<<"filename">>, <<"separators">>, 0},
+     {<<"filename">>, <<"split">>, 1},
+     {<<"filelib">>, <<"exists">>, 2}].
+
+path_os_frame(Module, Function, Arity) ->
+    lists:member({Module, Function, Arity}, path_os_frames()).
 
 %% The OS-identity reads the judge allows as path handling, by the summary
 %% classify/3 made of them: os:type/0, os:version/0 and

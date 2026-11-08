@@ -30,6 +30,29 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
         def os, do: :os.type()
       end
       """),
+    # A package fun that tail-calls the read from a callback leaves the
+    # frame that ran it first: Code's, filelib's. Neither is a path internal.
+    "fx_diag_tail" =>
+      lib("fx_diag_tail", """
+      defmodule FxDiagTail do
+        {os, _diagnostics} = Code.with_diagnostics(fn -> :os.type() end)
+        @os os
+        def os, do: @os
+      end
+      """),
+    "fx_fold_tail" =>
+      lib("fx_fold_tail", """
+      defmodule FxFoldTail do
+        @os :filelib.fold_files(
+              Path.join(:code.lib_dir(:elixir), "ebin"),
+              "^Elixir\\\\.Path\\\\.beam$",
+              false,
+              fn _file, _acc -> :os.type() end,
+              nil
+            )
+        def os, do: @os
+      end
+      """),
     "fx_attr" =>
       lib("fx_attr", """
       defmodule FxAttr do
@@ -284,6 +307,18 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
   test "tail calls from a macro and an @after_compile callback leave the dispatcher", ctx do
     for app <- ["fx_macro_tail", "fx_after_compile"] do
       assert "compile-time host read: os:type/0" <> _ = refused(ctx, app), app
+    end
+  end
+
+  test "a callback tail-calling the read under Code or filelib refuses", ctx do
+    for app <- ["fx_diag_tail", "fx_fold_tail"] do
+      assert %{status: :skip, observations: %{"refusals" => refusals}} = v = verdict(ctx, app)
+
+      assert Enum.any?(
+               refusals,
+               &(&1["owner"] == app and &1["reason"] =~ "compile-time host read: os:type/0")
+             ),
+             "#{app}: #{inspect(v, pretty: true)}"
     end
   end
 

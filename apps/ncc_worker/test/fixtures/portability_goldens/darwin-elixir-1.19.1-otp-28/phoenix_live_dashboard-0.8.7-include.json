@@ -3807,6 +3807,10 @@
       },
       {
         "owner": "exqlite",
+        "reason": "compile-time host read: erlang:system_info/1 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
+      },
+      {
+        "owner": "exqlite",
         "reason": "compile-time host read: erlang:system_info/1 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:228)"
       },
       {
@@ -3892,6 +3896,10 @@
       {
         "owner": "exqlite",
         "reason": "compile-time host read: os:type/0 in CCPrecompiler.current_target/1 (lib/cc_precompiler.ex:151)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: os:type/0 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
       },
       {
         "owner": "exqlite",

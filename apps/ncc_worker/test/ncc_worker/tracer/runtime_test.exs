@@ -118,23 +118,38 @@ defmodule NccWorker.Tracer.RuntimeTest do
         @joined Path.join("a", "b")
         @expanded :filename.join(["a", "b"])
         @os :os.type()
-        def all, do: {@joined, @expanded, @os}
+        @diag Code.with_diagnostics(fn -> :os.type() end)
+        @fold :filelib.fold_files(
+                Path.join(:code.lib_dir(:elixir), "ebin"),
+                "^Elixir\\.Path\\.beam$",
+                false,
+                fn _, _ -> :os.type() end,
+                nil
+              )
+        def all, do: {@joined, @expanded, @os, @diag, @fold}
       end
       """)
 
     events = for e <- kind(lines, "event"), (e["user"]["file"] || "") =~ "fx_path_os.ex", do: e
+    os_type = Enum.filter(events, &(&1["mfa"] == "os:type/0"))
 
     # The module body's own read stays a line (its first frame is the body).
-    assert [%{"mfa" => "os:type/0", "first_kind" => "user"}] =
-             Enum.filter(events, &(&1["mfa"] == "os:type/0"))
+    assert Enum.any?(os_type, &(&1["first_kind"] == "user"))
 
-    # Path.join/2 and :filename.join/1 read the OS family under a path
-    # module: no line for those, ignored by the judge wherever they fall.
-    refute Enum.any?(
-             kind(lines, "event"),
-             &(&1["channel"] == "os_identity" and
-                 &1["first"]["module"] in ~w(filename Elixir.Path file filelib code Elixir.Code))
-           )
+    # A package fun tail-calling the read leaves its caller first: written,
+    # whatever module that caller is in.
+    firsts = for e <- os_type, do: {e["first"]["module"], e["first"]["function"]}
+    assert {"Elixir.Code", "with_diagnostics"} in firsts, inspect(firsts)
+    assert Enum.any?(firsts, &match?({"filelib", _}, &1)), inspect(firsts)
+
+    # Path.join/2 and :filename.join/1 read the OS family in path internals:
+    # no line for those, ignored by the judge wherever they fall.
+    refute Enum.any?(kind(lines, "event"), fn e ->
+             f = e["first"] || %{}
+
+             e["channel"] == "os_identity" and
+               :ncc_tracer_channels.path_os_frame(f["module"], f["function"], f["arity"])
+           end)
 
     assert [%{"path_os_reads" => n, "unjudged" => 0}] = kind(lines, "stats")
     assert n > 0

@@ -715,16 +715,24 @@ record({Channel, Arg} = Class, {user, Kind, First, _} = Extent, {_, M, F, _, _, 
     end.
 
 %% The OS family a path function reads to know its separators (os:type/0
-%% under filename:join/1, Path.expand/1, ...): the judge ignores such a read
+%% under filename:split/1, Path.join/2, ...): the judge ignores such a read
 %% wherever it falls (NccWorker.Portability.Events, path handling), so it is
 %% only counted, never written. A compile that joins paths in a user
 %% process reads it hundreds of thousands of times, and a line each would
 %% outgrow the report's read budget (ash). Only a stack the tracer judged
-%% (not unjudged) whose first frame past the wrappers is a path module.
-path_os_read(os_identity, M, F, Arg, Kind, {FM, _, _, _}) when Kind =/= unjudged, is_atom(FM) ->
-    ncc_tracer_channels:path_os_read(M, F, Arg)
-        andalso lists:member(FM, ncc_tracer_channels:path_modules());
+%% (not unjudged) whose first frame past the wrappers renders and is one of
+%% the path internals (ncc_tracer_channels:path_os_frames/0); a frame that
+%% does not render is written, and frames/4 makes it unjudged.
+path_os_read(os_identity, M, F, Arg, Kind, First) when Kind =/= unjudged ->
+    ncc_tracer_channels:path_os_read(M, F, Arg) andalso path_frame(First);
 path_os_read(_Channel, _M, _F, _Arg, _Kind, _First) -> false.
+
+path_frame(First) ->
+    try ncc_tracer_stack:frame(First) of
+        #{module := M, function := F, arity := A} -> ncc_tracer_channels:path_os_frame(M, F, A);
+        _ -> false
+    catch _:_ -> false
+    end.
 
 user_line({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends}, St) ->
     {Kind, First, User, {Caller, Bottom}} = frames(Kind0, First0, User0, Ends),

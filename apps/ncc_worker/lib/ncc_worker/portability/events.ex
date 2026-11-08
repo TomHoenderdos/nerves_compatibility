@@ -15,7 +15,10 @@ defmodule NccWorker.Portability.Events do
 
     * OS identity: `system_info(otp_release)` is allowed, and `os:type/0`,
       `os:version/0` or `system_info(os_type)` when the first frame after
-      the wrappers is a path module. Every other key refuses. The tracer
+      the wrappers is one of the path internals that read it themselves
+      (`:ncc_tracer_channels.path_os_frames/0`: `Path.major_os_type/0`,
+      `:filename.split/1` and the like; never a function that runs a fun it
+      was given, so a package callback tail-calling the read is refused). Every other key refuses. The tracer
       writes no line for those path-handling reads (it counts them as
       `path_os_reads`): a line would always be ignored here.
       In an epp server process (no user frame, the stack's bottom frame
@@ -70,8 +73,8 @@ defmodule NccWorker.Portability.Events do
 
   # Shared with the tracer, which counts these path-handling reads rather
   # than writing them (`:ncc_tracer_channels.path_os_read/3`): the rule
-  # below and the tracer's drop must name the same modules.
-  @path_modules Enum.map(:ncc_tracer_channels.path_modules(), &Atom.to_string/1)
+  # below and the tracer's drop must name the same first frames.
+  @path_frames :ncc_tracer_channels.path_os_frames()
   @host_channels ~w(env programs network crypto native)
   @probe_channels ~w(probe app_call loaded_modules)
   # Host reads R4 may allow when made from a dependency's mix.exs. Of the
@@ -224,8 +227,9 @@ defmodule NccWorker.Portability.Events do
   defp os_identity(%{"mfa" => "erlang:system_info/1"} = e), do: {:refuse, host_read(e)}
   defp os_identity(e), do: path_handling(e)
 
-  defp path_handling(%{"first" => %{"module" => module}}) when module in @path_modules,
-    do: :ignore
+  defp path_handling(%{"first" => %{"module" => m, "function" => f, "arity" => a}} = e) do
+    if {m, f, a} in @path_frames, do: :ignore, else: {:refuse, host_read(e)}
+  end
 
   defp path_handling(e), do: {:refuse, host_read(e)}
 
