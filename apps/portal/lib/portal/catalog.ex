@@ -1329,6 +1329,38 @@ defmodule Portal.Catalog do
        <= CASE WHEN t.transient_attempts > 0 THEN $3::timestamp ELSE $4::timestamp END)
   """
 
+  # A skipped row the verdict before rule 2 refused for a reason rule 2 no
+  # longer has (precompiled portability spec, section 7): a runtime program
+  # call, executable lookup or shell, or the `:os.type`/`system_architecture`
+  # grep. Rebuilt once under rule 2: a day after the row's build at the
+  # earliest, a day after a transient attempt, a week after any other attempt
+  # (an error rebuild keeps the rule-1 row and resets its transient count, so
+  # a daily floor would rebuild it every day), and only once a rule-2 build
+  # exists on the toolchain that is newer than the row: before any build host
+  # runs a rule-2 image nothing reopens, and a row an older image wrote after
+  # the last rule-2 build (a rollback) is not rebuilt again. The two
+  # comparisons stay separate: `least()` would drop a NULL newest-rule-2 time
+  # and reopen everything. Every NULL (no rule-2 build yet, a row with no
+  # reason) reads as "not reopened": the clause sits under a NOT, where a
+  # NULL would make the live row not live. The word "nerves" stays a refusal
+  # under rule 2, so a `nerves-specific source` row is not reopened; rebar
+  # `platform_define`, native, priv and every trace reason stay as they are
+  # too.
+  @rule1_reopen """
+  coalesce(coalesce(t.portability_rule, 1) < 2
+   AND (t.reason ~ '^calls (System\\.(cmd|shell|find_executable)|os:(cmd|find_executable)|erlang:open_port|Port\\.open)/'
+        OR t.reason IN ('calls a shell', 'runs an OS command', 'calls an executable lookup')
+        OR t.reason ~ '^OS-specific \\(.*: (:os\\.type\\(|os:type\\(|system_architecture)\\)$')
+   AND t.transient_attempts < $8::integer
+   AND coalesce(t.attempted_at, t.finished_at, t.updated_at)
+       <= CASE WHEN t.attempted_at IS NULL OR t.transient_attempts > 0
+               THEN $3::timestamp ELSE $4::timestamp END
+   AND coalesce(t.attempted_at, t.finished_at, t.updated_at) <
+       (SELECT max(r2.finished_at) FROM catalog_toolchain_builds r2
+        WHERE r2.toolchain = $1 AND r2.builder_version = $2 AND r2.portability_rule = 2),
+   false)
+  """
+
   # A live row of the identity (see `@toolchain_candidates_sql`'s comment for
   # what is live): `t` is the row; `$PKG`, `$VERSION`, `$VARIANT` and
   # `$CONFIG` are the candidate's package id, version, variant and config
@@ -1368,8 +1400,11 @@ defmodule Portal.Catalog do
           t.revoked_at IS NULL
           AND t.status = 'skipped'
           AND NOT (
-            (t.reason IS NOT DISTINCT FROM 'ships priv files' OR t.transient_attempts > 0)
-            AND #{@reopen_due}
+            (
+              (t.reason IS NOT DISTINCT FROM 'ships priv files' OR t.transient_attempts > 0)
+              AND #{@reopen_due}
+            )
+            OR #{@rule1_reopen}
           )
         )
         OR (
@@ -1431,7 +1466,9 @@ defmodule Portal.Catalog do
   # them, or from a rolled-back worker image, which then costs one rebuild a
   # week); a `skipped` for shipping priv files,
   # which the worker now judges file by file; any other `pass` or `skipped`
-  # whose rebuild came back as a transient "could not be judged"; and a
+  # whose rebuild came back as a transient "could not be judged"; a
+  # `skipped` row the verdict before rule 2 refused for a runtime call or
+  # the OS grep (`@rule1_reopen`, which has its own timing), once; and a
   # revoked row an operator marked as revoked for its withheld closure
   # (`revoked_reason`, `mark_withheld_revoked/2`) that does not record its
   # config reads either. Each stays as it is until the new build replaces
