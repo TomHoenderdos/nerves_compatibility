@@ -87,14 +87,19 @@ defmodule Portal.Workers.ToolchainSweep do
     Enum.map(backlogs, fn backlog -> Enum.filter(backlog, &(elem(&1, 1) == refresh)) end)
   end
 
-  defp build_args(%{package: package, version: version, variant: variant}, image, builder_version) do
+  defp build_args(
+         %{package: package, version: version, variant: variant, config_variant: config_variant},
+         image,
+         builder_version
+       ) do
     %{
       package: package,
       version: version,
       toolchain: image.toolchain,
       image: image.image,
       builder_version: builder_version,
-      variant: variant
+      variant: variant,
+      config_variant: config_variant
     }
   end
 

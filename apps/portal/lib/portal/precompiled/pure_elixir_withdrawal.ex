@@ -93,10 +93,12 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
 
   # `$1` toolchain, `$2` builder_version, `$3` the prefixes, `$4` the
   # package name and `$5` the version (nulls: every version), `$6` the
-  # cutoff (null: none). `s` is any pure_elixir result of a run of the
-  # version, carried copies included, that still has files and is not
-  # withdrawn; `b` is the run it was carried from, so `coalesce(b, r)` is
-  # the run that built it, which the cutoff applies to.
+  # cutoff (null: none). `t` is a default config variant build: a named
+  # variant's verdict says nothing about the default's result. `s` is any
+  # pure_elixir result of a run of the version, carried copies included,
+  # that still has files and is not withdrawn; `b` is the run it was
+  # carried from, so `coalesce(b, r)` is the run that built it, which the
+  # cutoff applies to.
   @rows """
   FROM catalog_toolchain_builds t
   JOIN catalog_packages p ON p.id = t.package_id
@@ -106,6 +108,7 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
   WHERE t.toolchain = $1
     AND t.builder_version = $2
     AND t.variant = 'with'
+    AND t.config_variant = 'default'
     AND t.status = 'skipped'
     AND t.revoked_at IS NULL
     AND t.compile_observations IS NOT NULL

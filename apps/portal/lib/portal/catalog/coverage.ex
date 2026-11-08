@@ -228,12 +228,13 @@ defmodule Portal.Catalog.Coverage do
   defp highest(versions), do: versions |> Enum.max(Version) |> to_string()
 
   # `toolchain => package_id => [build]`, passing or not, of every builder
-  # version.
+  # version, of the default config variant only: a named variant's build
+  # covers nothing its default does not.
   defp builds([]), do: %{}
 
   defp builds(ids) do
     ToolchainBuild
-    |> Ash.Query.filter(package_id in ^ids and is_nil(revoked_at))
+    |> Ash.Query.filter(package_id in ^ids and is_nil(revoked_at) and config_variant == "default")
     # Not `file_manifest`: a build's file list is the largest thing on the
     # row and nothing here reads it.
     |> Ash.Query.select([:id, :package_id, :version, :toolchain, :status, :deps_lock])

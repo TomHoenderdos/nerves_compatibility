@@ -4,7 +4,9 @@ defmodule Portal.Catalog.UnrecordedOptionalDeps do
   @moduledoc """
   The `with` toolchain builds written before builds recorded their optional
   dependencies (`optional_deps` is nil) whose package still needs a `without`
-  build, for `Portal.Catalog.toolchain_backlog/3`.
+  build, for `Portal.Catalog.toolchain_backlog/3`. Only rows of the default
+  config variant are read, on both sides: the backlog asks this for default
+  builds only.
 
   Such a row says nothing about what the worker added. The registry does: a
   version that declares an optional Hex dependency the worker would add (one
@@ -141,6 +143,7 @@ defmodule Portal.Catalog.UnrecordedOptionalDeps do
           WHERE w.toolchain = $1
             AND w.builder_version = $2
             AND w.variant = 'with'
+            AND w.config_variant = 'default'
             AND w.status = 'pass'
             AND w.revoked_at IS NULL
             AND w.optional_deps IS NULL
@@ -151,6 +154,7 @@ defmodule Portal.Catalog.UnrecordedOptionalDeps do
                 AND o.toolchain = w.toolchain
                 AND o.builder_version = w.builder_version
                 AND o.variant = 'without'
+                AND o.config_variant = 'default'
                 AND (o.status IN ('pass', 'skipped') OR o.revoked_at IS NOT NULL)
             )
         ), top AS (

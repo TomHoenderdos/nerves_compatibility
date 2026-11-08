@@ -1349,8 +1349,12 @@ defmodule Portal.Catalog do
   # `Portal.Precompiled.Withheld`): it is already served, so it ranks after
   # every other candidate. A withheld one is not served at all and ranks as a
   # new version does.
+  #
+  # Only `default` config variant rows decide a default's candidacy; named
+  # variants are wanted by their own query (`@config_variant_candidates_sql`).
   @toolchain_candidates_sql """
-  SELECT e.package, e.version, v.variant, e.finished_at, e.recent,
+  SELECT e.package, e.version, v.variant, 'default'::text AS config_variant,
+         e.finished_at, e.recent,
          EXISTS (
            SELECT 1 FROM catalog_toolchain_builds o
            WHERE o.package_id = e.package_id
@@ -1358,6 +1362,7 @@ defmodule Portal.Catalog do
              AND o.toolchain = $1
              AND o.builder_version = $2
              AND o.variant = v.variant
+             AND o.config_variant = 'default'
              AND o.status = 'pass'
              AND o.revoked_at IS NULL
              AND NOT #{records_config_reads.("o")}
@@ -1400,6 +1405,7 @@ defmodule Portal.Catalog do
           AND w.toolchain = $1
           AND w.builder_version = $2
           AND w.variant = 'with'
+          AND w.config_variant = 'default'
           AND w.status = 'pass'
           AND w.revoked_at IS NULL
           AND jsonb_typeof(w.optional_deps -> 'added') = 'array'
@@ -1413,6 +1419,7 @@ defmodule Portal.Catalog do
         AND t.toolchain = $1
         AND t.builder_version = $2
         AND t.variant = v.variant
+        AND t.config_variant = 'default'
         AND (
           (
             t.revoked_at IS NOT NULL
@@ -1472,6 +1479,9 @@ defmodule Portal.Catalog do
   needs its compile-time config reads recorded comes after every other
   candidate, and says so as `refresh: true`
   (`Portal.Workers.ToolchainSweep` queues those after every other build).
+  Each row names its `config_variant`, here always `"default"`: only rows of
+  the default config variant decide whether a default build is wanted, so a
+  named variant's row never stands in for the default's.
 
   Most wanted first, so a capped sweep builds what projects resolve before
   what nobody asks for: by the package's hex.pm recent downloads, then, within
@@ -1485,6 +1495,7 @@ defmodule Portal.Catalog do
             package: String.t(),
             version: String.t(),
             variant: :with | :without,
+            config_variant: String.t(),
             refresh: boolean()
           }
         ]
@@ -1493,7 +1504,7 @@ defmodule Portal.Catalog do
       Repo.query!(
         """
         WITH candidates AS (#{@toolchain_candidates_sql})
-        SELECT c.package, c.version, c.variant, c.refresh
+        SELECT c.package, c.version, c.variant, c.config_variant, c.refresh
         FROM candidates c
         LEFT JOIN catalog_release_downloads d
           ON d.package = c.package AND d.version = c.version
@@ -1513,8 +1524,14 @@ defmodule Portal.Catalog do
         ) ++ [limit]
       )
 
-    Enum.map(rows, fn [package, version, variant, refresh] ->
-      %{package: package, version: version, variant: variant(variant), refresh: refresh}
+    Enum.map(rows, fn [package, version, variant, config_variant, refresh] ->
+      %{
+        package: package,
+        version: version,
+        variant: variant(variant),
+        config_variant: config_variant,
+        refresh: refresh
+      }
     end)
   end
 
@@ -1630,8 +1647,8 @@ defmodule Portal.Catalog do
 
   @doc """
   Per configured toolchain (`Portal.Toolchains.images/0`), at the current
-  `builder_version`: how many non-revoked toolchain builds have each status,
-  and how many builds `toolchain_backlog/3` would still make (a version
+  `builder_version`: how many non-revoked toolchain builds of the default
+  config variant have each status, and how many builds `toolchain_backlog/3` would still make (a version
   wanted with and without its optional dependencies counts twice). The count
   asks Hex nothing, so it leaves out the `without` builds that only the
   registry shows a pre-recording `with` build needs
@@ -1654,7 +1671,7 @@ defmodule Portal.Catalog do
         """
         SELECT toolchain, status, count(*)
         FROM catalog_toolchain_builds
-        WHERE builder_version = $1 AND revoked_at IS NULL
+        WHERE builder_version = $1 AND revoked_at IS NULL AND config_variant = 'default'
         GROUP BY toolchain, status
         """,
         [builder_version]
