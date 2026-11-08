@@ -19,15 +19,20 @@ defmodule NccWorker.ConfigOverlay do
 
     case ConfigVariants.overlay(name) do
       {:ok, []} -> :ok
-      {:ok, items} -> if File.exists?(path), do: {:error, :config_exists}, else: put(path, items)
+      {:ok, items} -> put(path, items)
       :error -> {:error, {:unknown_config_variant, name}}
     end
   end
 
+  # `:exclusive` creates the file or fails, in one step: nothing written
+  # there between a check and the write can be overwritten.
   # sobelow_skip ["Traversal.FileModule"]
   defp put(path, items) do
     with :ok <- File.mkdir_p(Path.dirname(path)) do
-      File.write(path, ConfigVariants.render(items))
+      case File.write(path, ConfigVariants.render(items), [:exclusive]) do
+        {:error, :eexist} -> {:error, :config_exists}
+        other -> other
+      end
     end
   end
 end

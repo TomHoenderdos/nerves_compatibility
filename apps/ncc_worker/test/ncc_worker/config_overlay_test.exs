@@ -24,6 +24,14 @@ defmodule NccWorker.ConfigOverlayTest do
     assert File.read!(Path.join(dir, "config/config.exs")) == "import Config\n"
   end
 
+  test "a dangling link at config/config.exs is never written through", %{tmp_dir: dir} do
+    File.mkdir_p!(Path.join(dir, "config"))
+    target = Path.join(dir, "elsewhere.exs")
+    File.ln_s!(target, Path.join(dir, "config/config.exs"))
+    assert {:error, :config_exists} = ConfigOverlay.write(dir, "phx_dev")
+    refute File.exists?(target)
+  end
+
   test "an unknown variant is an error", %{tmp_dir: dir} do
     assert {:error, {:unknown_config_variant, "nope"}} = ConfigOverlay.write(dir, "nope")
   end

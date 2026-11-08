@@ -1382,6 +1382,13 @@ defmodule NccWorker.Worker do
   # firmware, no argus, no systems, no Hex metadata fetch, and no build
   # cache: the trace must see every closure dependency compiled, so nothing
   # is restored from the cache and nothing is stored for it.
+  # The first `deps.get` (in `add_package/3`) runs before the config
+  # variant's overlay is written (`toolchain_project/5`). That is safe: the
+  # overlay sets only `:phoenix` and `:phoenix_live_view` keys, which
+  # resolving and fetching dependencies never reads, so every variant locks
+  # what the default build locks. The overlay is written in
+  # `toolchain_project/5` so it precedes every compile, the traced one
+  # included, on each path into it.
   defp toolchain_run(input, paths, toolchain) do
     with {:ok, project_dir} <- Project.create_plain(paths.work_dir, @wrapper_app),
          {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
