@@ -12,7 +12,8 @@ defmodule Compatibility.PortabilityTest do
           "calls natively built dependency at compile time: circuits_gpio:open/2",
           "bakes the build path: Elixir.X \"/p/deps/x\"",
           "closure dependency observed the host: d (compile-time host read: os:type/0)",
-          "rebar3 build runs pre_hooks"
+          "rebar3 build runs pre_hooks",
+          "compile-time native library load: /tmp/evil.so"
         ] do
       assert Portability.refusal?(reason), reason
     end
@@ -38,6 +39,7 @@ defmodule Compatibility.PortabilityTest do
           "closure dependency observed the host: d (compile-time host read: os:type/0)",
           "calls natively built dependency at compile time: circuits_gpio:open/2",
           "rebar3 build runs pre_hooks",
+          "compile-time native library load: /tmp/evil.so",
           "portability could not be judged"
         ] do
       refute Portability.withdraws?(reason), reason

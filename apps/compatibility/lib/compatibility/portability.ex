@@ -16,6 +16,7 @@ defmodule Compatibility.Portability do
     "compile-time write outside ebin: ",
     "compile-time tracing or system flag: ",
     "calls natively built dependency at compile time: ",
+    "compile-time native library load: ",
     "bakes the build path: ",
     "closure dependency observed the host: ",
     "rebar3 build ",
@@ -29,7 +30,9 @@ defmodule Compatibility.Portability do
   # package's own compile read the Elixir version in a way that differs
   # between patches). R3 taint, a call into a natively built
   # dependency and the rebar3 rules do not: they speak of a dependency or of
-  # the trace's own coverage, not of the package's own compile.
+  # the trace's own coverage, not of the package's own compile. A native
+  # library load (`NccWorker.Portability.MappedLibs`) is a refusal but, until
+  # that is decided on its own, withdraws nothing either.
   @withdrawing_prefixes [
     "compile-time host read: ",
     "compile-time host read in mix.exs: ",

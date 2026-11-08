@@ -21,6 +21,21 @@ defmodule NccWorker.Portability.MappedLibsTest do
              MappedLibs.check(start([@libc]), [later([@libc, "/tmp/evil.so"])], &allowed?/1)
   end
 
+  # The verdict keeps a trace refusal over rule 1's reason only when it
+  # starts with a shared refusal prefix (`NccWorker.Worker.combine/2`).
+  test "its refusal is a trace refusal, and wins over rule 1's reason" do
+    {:refuse, reason} =
+      MappedLibs.check(start([@libc]), [later([@libc, "/tmp/evil.so"])], &allowed?/1)
+
+    assert Compatibility.Portability.refusal?(reason)
+
+    assert {:skip, ^reason} =
+             NccWorker.Worker.combine(
+               {:skip, "calls System.cmd/2"},
+               %{status: :skip, reason: reason, observations: %{}}
+             )
+  end
+
   test "libraries mapped before the first window opened are ignored, wherever they are" do
     assert {:ok, []} =
              MappedLibs.check(
