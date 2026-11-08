@@ -119,7 +119,10 @@ defmodule NccWorker.Worker do
           # nil when it is the `.app`'s own list alone.
           compile_env_rule: 1 | nil,
           # The config variant the build was made in, echoed for the portal
-          # to check against the job.
+          # to check against the job. Added by `toolchain_project/7` once
+          # `toolchain_build/5` returns (see `t:toolchain_build_verdict/0`):
+          # the variant is the caller's input, not something the verdict
+          # itself produces.
           config_variant: String.t(),
           # The verdict's rule: 1 is `BuildSelection.portable?/4` AND the
           # compile-time trace's refusals (P1); nil for an "error" build.
@@ -142,6 +145,31 @@ defmodule NccWorker.Worker do
           # "elixir_version", "native_calls", "mix_exs_allowed",
           # "build_root_source_path", "refusals", "taint", "native_libs",
           # "nif_check", "problems"; nil for an "error" build.
+          compile_observations: map() | nil,
+          file_manifest:
+            %{
+              String.t() => [
+                %{String.t() => String.t() | non_neg_integer()}
+              ]
+            }
+            | nil
+        }
+
+  # What `toolchain_build/5` itself returns: every `t:toolchain_build/0`
+  # field except `config_variant`, which the verdict never sees and
+  # `toolchain_project/7` adds afterwards from its own input once the
+  # verdict comes back.
+  @type toolchain_build_verdict :: %{
+          status: String.t(),
+          reason: String.t() | nil,
+          elixir: String.t(),
+          otp: String.t(),
+          deps_lock: %{String.t() => %{String.t() => String.t()}} | nil,
+          package_checksum: String.t() | nil,
+          compile_env: [map()] | nil,
+          compile_env_rule: 1 | nil,
+          portability_rule: 1 | nil,
+          rule1_reason: String.t() | nil,
           compile_observations: map() | nil,
           file_manifest:
             %{
@@ -1730,7 +1758,7 @@ defmodule NccWorker.Worker do
   which cannot pass).
   """
   @spec toolchain_build(String.t(), String.t(), map(), map(), Portability.verdict() | nil) ::
-          toolchain_build()
+          toolchain_build_verdict()
   def toolchain_build(project_dir, package_name, host_result, toolchain, portability) do
     build = %{
       status: "error",
