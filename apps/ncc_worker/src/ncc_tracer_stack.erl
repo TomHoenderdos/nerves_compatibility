@@ -4,7 +4,7 @@
 %% modules are toolchain and whether the calling process is a user process.
 -export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2,
          uncached/0, printers/0, diagnosers/0, checker/2, made_by_toolchain/2,
-         made_by_mix/2]).
+         made_by_mix/2, compiler_frame/1]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% Frames a call is attributed through, to the frame that called them, when

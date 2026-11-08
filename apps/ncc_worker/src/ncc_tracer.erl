@@ -1103,18 +1103,46 @@ cached_toolchain(M) ->
 
 %% A module with no object file (elixir_compiler_N running a module body,
 %% a module defined from a string, the sentinel probe) is not toolchain.
+%% elixir_compiler_N never is, whatever code:which/1 finds: by the time the
+%% collector looks, the body has usually been purged, and code:which/1 would
+%% search the whole code path through the code server for a beam of that
+%% name (one planted under a root would have passed).
 toolchain_module(M) ->
+    case ncc_tracer_stack:compiler_frame({M, none, 0, []}) of
+        true -> false;
+        false -> object_code_toolchain(M)
+    end.
+
+%% code:which/1 is asked every time; only what a path is, which never
+%% changes (the roots are fixed at start), is kept per path.
+object_code_toolchain(M) ->
     case code:which(M) of
         preloaded -> true;
-        Path when is_list(Path), Path =/= [] -> under_any(norm(Path), get(roots));
+        Path when is_list(Path), Path =/= [] -> under_roots(Path);
         _ -> false
+    end.
+
+under_roots(Path) ->
+    case get({under_roots, Path}) of
+        undefined ->
+            V = under_any(norm(Path), get(roots)),
+            put({under_roots, Path}, V),
+            V;
+        V -> V
     end.
 
 under_any(Path, Roots) -> lists:any(fun(Root) -> lists:prefix(Root ++ "/", Path) end, Roots).
 
+%% An absolute path is split as it is: filename:absname/1 asks the file
+%% server for the working directory even then, and the collector must not
+%% wait on a server the compile keeps busy (with a flooded mailbox, every
+%% such call costs it a scan of what arrived meanwhile).
 norm(Path) ->
-    Parts = filename:split(filename:absname(Path)),
-    filename:join(lists:reverse(lists:foldl(fun norm_part/2, [], Parts))).
+    Abs = case filename:pathtype(Path) of
+              absolute -> Path;
+              _ -> filename:absname(Path)
+          end,
+    filename:join(lists:reverse(lists:foldl(fun norm_part/2, [], filename:split(Abs)))).
 
 norm_part(".", Acc) -> Acc;
 norm_part("..", ["/"] = Acc) -> Acc;
