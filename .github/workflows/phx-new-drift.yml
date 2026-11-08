@@ -1,0 +1,39 @@
+name: phx-new-drift
+
+# Weekly: the config variants pin phx_new's generated config. A new phx_new
+# release that sets another Phoenix or LiveView key makes new apps miss the
+# variants (a miss, never a wrong build); this says so.
+on:
+  schedule:
+    - cron: "41 6 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "28"
+
+      # The same cache as audit.yml: a schedule run on main restores only
+      # what runs on main saved.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: mix-${{ runner.os }}-
+
+      - run: mix deps.get
+
+      - run: mix test apps/compatibility/test/compatibility/config_variants/phx_new_drift_test.exs --only phx_new_drift
