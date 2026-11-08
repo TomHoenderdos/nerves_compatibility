@@ -49,11 +49,10 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    portal's coverage report reads too.
    `host.log` carries the same lines. The key is absent for argus-only runs.
 
-   Its `pure_elixir` host files are published only when the package's source passes the static OS check and the
-   compile-time trace (see "Toolchain mode"); either failure keeps the assumed-compatible status and publishes no
-   files, and `result.json`'s `host_portability` says which. A tracer that crashes or trips a cap is
-   `"portability could not be judged"`. The trace runs after the optional-dependency pass, only when the OS check
-   passed, and before the beam scan, so the files scanned and archived are the traced compile's; it is judged against
+   Its `pure_elixir` host files are published only when the compile-time trace passes (see "Toolchain mode"); a
+   refusal keeps the assumed-compatible status and publishes no files, and `result.json`'s `host_portability` says
+   why. A tracer that crashes or trips a cap is `"portability could not be judged"`. The trace runs after the
+   optional-dependency pass and before the beam scan, so the files scanned and archived are the traced compile's; it is judged against
    the lock snapshot matching the build it judges, taken as in a toolchain run. Unlike a toolchain run, a full run
    keeps this dedicated traced judge compile after its host compile: its closure is compiled by nerves_bootstrap
    inside `mix deps.get`, so its host compile cannot be the traced one. A traced compile that did not finish
@@ -62,9 +61,8 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    no build cache store; skipped when no time is left). A raise anywhere on this path is "portability could not be
    judged" and never fails the run. The host status, the `pure_elixir` verdict, its beam scan and `compile_env`, argus and the log tail's first sentence
    are what they would have been without a tracer. `host_portability` is
-   `{"status": "pass" | "skipped", "reason": null | "...", "portability_rule": 1, "compile_observations": {...} | null}`,
-   present only for a run whose selection was `pure_elixir` (`compile_observations` is null when the OS check failed
-   and the trace never ran).
+   `{"status": "pass" | "skipped", "reason": null | "...", "portability_rule": 2, "compile_observations": {...} | null}`,
+   present only for a run whose selection was `pure_elixir`.
 
    A firmware run gets the same idea, but after every target's firmware build has settled its status
    (`NccWorker.OptionalDepsTargets`): once `build_all_systems` returns, the worker reads the run-level `deps_lock`

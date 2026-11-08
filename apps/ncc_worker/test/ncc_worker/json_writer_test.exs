@@ -443,7 +443,7 @@ defmodule NccWorker.JsonWriterTest do
       hp = %{
         status: "skipped",
         reason: "portability could not be judged",
-        portability_rule: 1,
+        portability_rule: 2,
         compile_observations: nil
       }
 
@@ -453,7 +453,7 @@ defmodule NccWorker.JsonWriterTest do
                "host_portability" => %{
                  "status" => "skipped",
                  "reason" => "portability could not be judged",
-                 "portability_rule" => 1,
+                 "portability_rule" => 2,
                  "compile_observations" => nil
                }
              } = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()

@@ -318,11 +318,10 @@ a different version or a different checksum means building from source.
   closure is pure Elixir. No firmware is built for such a package; its files
   come from the host compile and are the same for every target, so a client
   without an entry for its own system can use this one. `system_version` is
-  `null`. Such files are published only when the package's source passes the
-  builder's OS check and its compile-time trace; a publication the trace
-  later refuses on the same toolchain, because the package's own compile
-  read the host or baked the build path into its beams, is withdrawn, and
-  its files stop being served.
+  `null`. Such files are published only when the builder's compile-time trace
+  passes; a publication the trace later refuses on the same toolchain,
+  because the package's own compile read the host or baked the build path
+  into its beams, is withdrawn, and its files stop being served.
 - Each file entry contains:
   - `path` — relative path within the package, e.g. `ebin/myapp.beam`. An
     entry is published only under the key its path names: `ebin/...` under
@@ -429,9 +428,15 @@ What it lists:
   (its OS, environment, programs or files outside the dependency closure),
   wrote anything outside its own `ebin`, baked the build path into code, or
   depends on a package whose own compile did, and any build whose trace did
-  not finish; its beams are the traced compile's. Its `compile_env` lists
-  the config reads that trace observed, so a project whose config sets one
-  of those keys differently compiles the package itself.
+  not finish; its beams are the traced compile's. What the package does at
+  runtime does not count: a package that runs programs, opens ports, looks
+  up executables or reads the OS type when it runs is built and served like
+  any other, since those calls run the same from a precompiled build. Native
+  code still does not: a package with native sources or build dependencies,
+  a NIF or driver load, a target read or a `nerves` name has no toolchain
+  build. Its `compile_env` lists the config reads that trace observed, so a
+  project whose config sets one of those keys differently compiles the
+  package itself.
 - A build whose `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
   is `null` is left out, since no client can match it (it stays in format 1).
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
@@ -603,13 +608,9 @@ them.
   withdraws its variants in the same batch, in the format-2 manifest, the
   package list and `files/{sha256}` alike. Format 1 never lists a toolchain
   build, so it never lists a variant.
-- A `pure_elixir` entry is published only when the package's own source is
-  OS-agnostic (no `:os.type()` or system architecture read, no
-  `platform_define`, no `rebar.config.script`), the check toolchain builds
-  already made: such a source bakes the Linux build host into its BEAMs. The
+- A `pure_elixir` entry is published only when the run's compile-time trace
+  passes, the same trace a toolchain build gets: a compile that read the
+  build host, wrote outside its own `ebin`, baked the build path into code,
+  depends on a package whose own compile did, or whose trace did not finish
+  publishes no `pure_elixir` entry. Its files are the traced compile's. The
   run's status is unaffected.
-  It is also published only when the run's compile-time trace passes, the
-  same trace a toolchain build gets: a compile that read the build host,
-  wrote outside its own `ebin`, baked the build path into code, depends on a
-  package whose own compile did, or whose trace did not finish publishes no
-  `pure_elixir` entry. Its files are the traced compile's.

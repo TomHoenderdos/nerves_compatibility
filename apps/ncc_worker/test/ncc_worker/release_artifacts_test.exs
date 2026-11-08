@@ -291,7 +291,7 @@ defmodule NccWorker.ReleaseArtifactsTest do
 
       assert %{
                status: :pass,
-               host_portability: %{status: "pass", reason: nil, portability_rule: 1}
+               host_portability: %{status: "pass", reason: nil, portability_rule: 2}
              } =
                result
 
@@ -333,26 +333,23 @@ defmodule NccWorker.ReleaseArtifactsTest do
       assert result.log_tail =~ "Files not published: #{reason}."
     end
 
-    test "an OS-specific source never starts the traced compile", %{project: project} do
+    test "an OS-specific source runs the traced compile, which decides", %{project: project} do
       write_source(project, "plain", "defmodule Plain do\n  def os, do: :os.type()\nend\n")
       test_pid = self()
 
       result =
-        NccWorker.Worker.pure_elixir_result(project, "plain", fn _ ->
+        NccWorker.Worker.pure_elixir_result(project, "plain", fn package ->
           send(test_pid, :traced)
-          %{status: :pass, reason: nil, observations: %{}}
+          traced_pass().(package)
         end)
 
-      refute_received :traced
-
-      assert %{status: "skipped", reason: "OS-specific" <> _, compile_observations: nil} =
-               result.host_portability
-
-      refute Map.has_key?(result.beam_scan["footprint"], "file_manifest")
+      assert_received :traced
+      assert %{status: "pass", portability_rule: 2} = result.host_portability
+      assert %{"footprint" => %{"file_manifest" => %{"ebin" => [_ | _]}}} = result.beam_scan
     end
 
     test "only a pure_elixir run carries host_portability" do
-      hp = %{status: "pass", reason: nil, portability_rule: 1, compile_observations: %{}}
+      hp = %{status: "pass", reason: nil, portability_rule: 2, compile_observations: %{}}
       pure = %{"pure_elixir" => %{status: :pass, host_portability: hp}, "host" => %{}}
       firmware = %{"nerves_system_rpi4" => %{status: :pass}, "host" => %{}}
 
@@ -679,9 +676,10 @@ defmodule NccWorker.ReleaseArtifactsTest do
   end
 
   # A module body that reads the OS bakes the build host into the beams, so a
-  # Linux build must not be served to a macOS project. The status stands; only
-  # the files are not published: no manifest, so nothing is archived.
-  test "a pure Elixir result of OS-specific source publishes no files", %{
+  # Linux build must not be served to a macOS project. The compile-time trace
+  # refuses it; the status stands and only the files are not published: no
+  # manifest, so nothing is archived.
+  test "a pure Elixir result whose trace refuses an OS read publishes no files", %{
     project: project,
     archive: archive,
     tmp_dir: work_dir
@@ -697,11 +695,14 @@ defmodule NccWorker.ReleaseArtifactsTest do
     end
     """)
 
+    reason = "compile-time host read: os:type/0 in Plain (lib/plain.ex:2)"
+    refusal = fn _ -> %{status: :skip, reason: reason, observations: %{}} end
+
     assert %{status: :pass, beam_scan: scan, log_tail: log_tail} =
-             NccWorker.Worker.pure_elixir_result(project, "plain", traced_pass())
+             NccWorker.Worker.pure_elixir_result(project, "plain", refusal)
 
     refute Map.has_key?(scan["footprint"], "file_manifest")
-    assert log_tail =~ "OS-specific"
+    assert log_tail =~ "Files not published: #{reason}."
 
     result = %{
       package: %{name: "plain"},
@@ -714,7 +715,8 @@ defmodule NccWorker.ReleaseArtifactsTest do
     assert File.ls!(archive) == []
   end
 
-  # No source to judge fails closed, as `BuildCache.os_agnostic?/1` does.
+  # Without the package's source or its `.app` nothing is published, even when
+  # the trace passes: a `.app` that cannot be read fails closed.
   test "a pure Elixir result without the package source publishes no files", %{
     project: project
   } do

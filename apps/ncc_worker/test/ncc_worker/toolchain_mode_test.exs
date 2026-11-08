@@ -965,19 +965,28 @@ defmodule NccWorker.ToolchainModeTest do
       end
     end
 
-    test "an OS-specific source publishes no config reads", %{tmp_dir: work_dir} do
+    test "an :os.type() in a function body no longer withholds; the trace decides",
+         %{tmp_dir: work_dir} do
       {project, _built} = project(work_dir, "circular_buffer-1.0.0")
       source = Path.join([project, "deps", "sample", "lib", "sample.ex"])
       File.write!(source, "defmodule Sample do\n  def os, do: :os.type()\nend\n")
       verdict = Map.put(@traced_pass, :compile_env, @r5)
 
-      result = Worker.pure_elixir_result(project, "sample", fn _ -> verdict end)
+      published = Worker.pure_elixir_result(project, "sample", fn _ -> verdict end)
 
-      assert %{compile_env_rule: nil} = result
-      assert %{status: "skipped", reason: "OS-specific" <> _} = result.host_portability
-      assert is_list(result.compile_env)
-      refute hd(@r5) in result.compile_env
-      refute Map.has_key?(result.beam_scan["footprint"], "file_manifest")
+      assert %{compile_env_rule: 1, host_portability: %{status: "pass", portability_rule: 2}} =
+               published
+
+      assert Map.has_key?(published.beam_scan["footprint"], "file_manifest")
+
+      withheld = Worker.pure_elixir_result(project, "sample", fn _ -> @refused end)
+
+      assert %{status: "skipped", reason: "compile-time host read: " <> _, portability_rule: 2} =
+               withheld.host_portability
+
+      refute Map.has_key?(withheld.beam_scan["footprint"], "file_manifest")
+      assert published.status == withheld.status
+      assert published.log_tail =~ "Assumed compatible: host compilation passed"
     end
 
     test "a pure_elixir result whose .app cannot be read publishes nothing",

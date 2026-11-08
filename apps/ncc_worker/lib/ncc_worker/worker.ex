@@ -190,18 +190,16 @@ defmodule NccWorker.Worker do
           # no argus (`argus.status` "skipped"), no Nerves systems.
           optional(:toolchain_build) => toolchain_build(),
           # Only for a run whose selection was `pure_elixir`: whether its host
-          # files were published (P0's OS check AND the compile-time trace,
+          # files were published (the compile-time trace,
           # `NccWorker.Portability`). "skipped" publishes no `pure_elixir`
-          # files and changes no status; `reason` is the OS check's
-          # ("OS-specific (<file>: <needle>)"), the trace's refusal, or
+          # files and changes no status; `reason` is the trace's refusal or
           # "portability could not be judged" (the tracer failed, was killed,
           # overflowed or could not start). `compile_observations` as for a
-          # toolchain build, nil when the OS check failed and the trace never
-          # ran.
+          # toolchain build, nil only when the trace never ran.
           optional(:host_portability) => %{
             status: String.t(),
             reason: String.t() | nil,
-            portability_rule: 1,
+            portability_rule: 2,
             compile_observations: map() | nil
           },
           # `NCC_INPUT.toolchain` echoed back, when present.
@@ -1200,12 +1198,11 @@ defmodule NccWorker.Worker do
   # The host compile's BEAMs are the package's files on every target, so they
   # are scanned and archived like a firmware build's, and published as
   # precompiled files that fit any system. A client on any OS takes them, so
-  # they are published only when the package's own source is OS-agnostic
-  # (`BuildCache.os_agnostic?/1`, P0: a module body that reads `:os.type()`
-  # bakes this Linux build host into the beams) AND the compile-time trace
-  # passes (`portability`, `full_run_portability/3`, P1). The trace runs only
-  # when the static check passed, and before the scan: it recompiles the
-  # closure, so the files scanned and archived are the traced compile's own.
+  # they are published only when the compile-time trace passes
+  # (`portability`, `full_run_portability/3`): a module body that reads
+  # `:os.type()` bakes this Linux build host into the beams, and the trace
+  # refuses it. The trace runs before the scan: it recompiles the closure, so
+  # the files scanned and archived are the traced compile's own.
   # Otherwise the scan keeps no `file_manifest`, so nothing is archived or
   # published. The status, the assumed-compatible verdict and the log tail's
   # first sentence never change; `host_portability` says what was decided.
@@ -1249,17 +1246,13 @@ defmodule NccWorker.Worker do
     }
   end
 
-  defp publication_gate(project_dir, package_name, portability) do
-    case BuildCache.os_agnostic?(Path.join([project_dir, "deps", package_name])) do
-      :ok ->
-        verdict = require_compile_env(portability.(package_name))
-        {trace_gate(verdict), host_portability(verdict), verdict}
-
-      {:error, {file, needle}} ->
-        reason = "OS-specific (#{file}: #{needle})"
-        verdict = %{status: :skip, reason: reason}
-        {{:withhold, reason}, host_portability(verdict), verdict}
-    end
+  # The trace alone decides (precompiled portability spec): the OS grep
+  # the gate used to run first is gone. `classify/4` has already refused any
+  # closure with native code, program calls or priv, so the trace is the only
+  # check a `pure_elixir` result's publication still needs.
+  defp publication_gate(_project_dir, package_name, portability) do
+    verdict = require_compile_env(portability.(package_name))
+    {trace_gate(verdict), host_portability(verdict), verdict}
   end
 
   # A `.app` that could not be read leaves `compile_env` nil, which no
@@ -1280,7 +1273,7 @@ defmodule NccWorker.Worker do
     do: %{
       status: "pass",
       reason: nil,
-      portability_rule: 1,
+      portability_rule: 2,
       compile_observations: verdict[:observations]
     }
 
@@ -1290,7 +1283,7 @@ defmodule NccWorker.Worker do
     %{
       status: "skipped",
       reason: reason,
-      portability_rule: 1,
+      portability_rule: 2,
       compile_observations: verdict[:observations]
     }
   end
