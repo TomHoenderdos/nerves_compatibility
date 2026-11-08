@@ -162,6 +162,10 @@ defmodule NccWorker.Portability do
   `"killed"`, `"run_budget_exhausted"`, `"group_survived"`,
   `"cleanup_unverified"`, `"writers_survived"`, `"tracer_modified"`,
   `"exited"`, `"cmd_failed"`, ...) or `"exit_<n>"` for a non-zero exit.
+  `trace_mode` (only when the compile finished) is the mode the report's start
+  line names (`NccWorker.Tracer.Report.mode/1`, `"judge"` without one): a
+  caller that asked for `:host` takes `_build` as the build only when it says
+  `"host"` (`NccWorker.HostTrace`).
   """
   @spec run(String.t(), String.t(), keyword()) :: verdict()
   def run(project_dir, package, opts) do
@@ -295,6 +299,7 @@ defmodule NccWorker.Portability do
 
     verdict
     |> put_stat("report_over_budget", report.over_budget)
+    |> put_stat("trace_mode", Atom.to_string(Report.mode(report)))
     |> put_stat("report_ms", report_ms)
     |> put_stat("judge_ms", judge_ms)
   end
