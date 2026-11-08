@@ -1916,6 +1916,11 @@ defmodule Portal.Catalog do
     end
   end
 
+  @doc "Revokes what rule 2 alone published (`Portal.Precompiled.ToolchainRevocation.revoke/1`)."
+  defdelegate revoke_toolchain_builds(opts),
+    to: Portal.Precompiled.ToolchainRevocation,
+    as: :revoke
+
   @withheld_revocation ToolchainBuild.withheld_revocation()
 
   @doc """
