@@ -20,8 +20,8 @@ defmodule NccWorker.Portability do
     4. the package's window broken (missing, lowered depth, failed
        integrity, no sentinel);
     5. R2 on the package's `ebin` (`BuildRoot`), where a bare source path
-       also refuses when the package runs programs
-       (`BuildRoot.program_source_paths/3`);
+       also refuses when anything in its closure runs programs
+       (`BuildRoot.program_source_paths/4`);
     6. the rebar3 rules on the package (`Rebar`);
     7. host taint of a closure dependency (R3), the first in compile order:
        its window broken or without a sentinel, a refusal in its window, R2,
@@ -386,7 +386,7 @@ defmodule NccWorker.Portability do
 
     version = ElixirVersion.judge(decided, elixir)
     decided = decided ++ config.refusals ++ version.refusals
-    package_r2 = ctx |> build_root(ctx.package) |> program_source_paths(ctx)
+    package_r2 = package_build_root(ctx)
     deps = dep_results(ctx, report, decided)
 
     %{
@@ -658,24 +658,37 @@ defmodule NccWorker.Portability do
     end
   end
 
-  # R2 for the package's own beams only (closure dependencies are not
-  # published by this build): a bare source path, otherwise an observation,
-  # refuses in a package that also runs programs
-  # (`BuildRoot.program_source_paths/3`).
-  defp program_source_paths({:observe, _list} = r2, ctx) do
-    ebin = Context.ebin(ctx, ctx.package)
+  # R2 for the package's own beams (closure dependencies are not published
+  # by this build): a bare source path, otherwise an observation, refuses
+  # when anything in the package's closure runs programs
+  # (`BuildRoot.program_source_paths/4`).
+  defp package_build_root(ctx) do
+    case closure_ebins(ctx) do
+      {:ok, [ebin | _] = ebins} ->
+        ebin
+        |> BuildRoot.program_source_paths(
+          Context.roots(ctx),
+          &Context.closure_file?(ctx, &1),
+          ebins
+        )
+        |> r2()
 
-    case BuildRoot.program_source_paths(
-           ebin,
-           Context.roots(ctx),
-           &Context.closure_file?(ctx, &1)
-         ) do
-      :ok -> r2
-      other -> r2(other)
+      error ->
+        r2(error)
     end
   end
 
-  defp program_source_paths(r2, _ctx), do: r2
+  # The package's ebin first, then every closure dependency's.
+  defp closure_ebins(ctx) do
+    apps = [ctx.package | List.delete(Context.closure_of(ctx, ctx.package), ctx.package)]
+
+    Enum.reduce_while(apps, {:ok, []}, fn app, {:ok, acc} ->
+      case Context.ebin(ctx, app) do
+        nil -> {:halt, {:error, "no ebin for #{inspect(app)}"}}
+        ebin -> {:cont, {:ok, acc ++ [ebin]}}
+      end
+    end)
+  end
 
   defp r2(:ok), do: nil
   defp r2({:observe, list}) when is_list(list), do: {:observe, list}

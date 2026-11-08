@@ -123,6 +123,37 @@ defmodule NccWorker.Portability.ProgramSourcePathTest do
              """)
   end
 
+  test "the package's path handed to a dependency that runs programs refuses", %{proj: proj} do
+    build(proj, "dep", """
+    defmodule FxPspjDepCmd do
+      def cmd(file), do: System.cmd("cat", [file])
+    end
+    """)
+
+    assert %{status: :skip, reason: "bakes the build path: Elixir.FxPspjPkgRun" <> @refusal} =
+             judged(proj, """
+             defmodule FxPspjPkgRun do
+               @compile {:no_warn_undefined, FxPspjDepCmd}
+               def run, do: FxPspjDepCmd.cmd(file())
+               defp file, do: __ENV__.file
+             end
+             """)
+  end
+
+  test "the package's path passes when nothing in the closure runs programs",
+       %{proj: proj} do
+    build(proj, "dep", "defmodule FxPspjDepQuiet do\n  def x, do: :ok\nend\n")
+
+    assert %{status: :pass, observations: %{"build_root_source_path" => [%{"owner" => "fx"}]}} =
+             judged(proj, """
+             defmodule FxPspjPkgQuiet do
+               @compile {:no_warn_undefined, FxPspjDepQuiet}
+               def run, do: FxPspjDepQuiet.x() && file()
+               defp file, do: __ENV__.file
+             end
+             """)
+  end
+
   test "the same module without the path passes", %{proj: proj} do
     assert %{status: :pass} =
              judged(proj, """

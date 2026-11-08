@@ -427,7 +427,7 @@ defmodule NccWorker.Portability.BuildRootTest do
     end
   end
 
-  describe "source_path_modules/3 and program_source_paths/3" do
+  describe "source_path_modules/3 and program_source_paths/4" do
     # `defp file` is not inlined, so the path stays a whole literal of its
     # own (an observation) rather than part of a larger literal (a refusal).
     @refusal " (a source path in a package that runs programs)"
@@ -516,8 +516,9 @@ defmodule NccWorker.Portability.BuildRootTest do
         end
         """)
 
-      assert {:observe, [_]} = BuildRoot.check(ebin, [path_only], ok?)
-      assert BuildRoot.program_source_paths(ebin, [path_only], ok?) == :ok
+      # Passes with the observation `check/3` gives.
+      assert {:observe, [_]} = observed = BuildRoot.check(ebin, [path_only], ok?)
+      assert BuildRoot.program_source_paths(ebin, [path_only], ok?) == observed
 
       cmd_only = Path.join(root, "cmd")
 
@@ -532,6 +533,45 @@ defmodule NccWorker.Portability.BuildRootTest do
         """)
 
       assert BuildRoot.program_source_paths(ebin, [cmd_only], ok?) == :ok
+    end
+
+    test "program calls anywhere in the closure count", %{tmp_dir: root} do
+      # The package holds the path and hands it to a dependency that runs it.
+      {dep_ebin, _} =
+        compile(Path.join(root, "dep"), """
+        defmodule FxPspDepCmd do
+          def cmd(file), do: System.cmd("cat", [file])
+        end
+        """)
+
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxPspPkg do
+          @compile {:no_warn_undefined, FxPspDepCmd}
+          def run, do: FxPspDepCmd.cmd(file())
+          defp file, do: __ENV__.file
+        end
+        """)
+
+      assert {:observe, [_]} = observed = BuildRoot.program_source_paths(ebin, [root], ok?)
+
+      assert BuildRoot.program_source_paths(ebin, [root], ok?, [ebin, dep_ebin]) ==
+               {:refuse, "bakes the build path: Elixir.FxPspPkg" <> @refusal}
+
+      # A closure without program calls keeps the observation.
+      {quiet_ebin, _} =
+        compile(Path.join(root, "quiet"), "defmodule FxPspQuiet do\n  def x, do: :ok\nend\n")
+
+      assert BuildRoot.program_source_paths(ebin, [root], ok?, [ebin, quiet_ebin]) == observed
+
+      # A closure ebin that is missing or unreadable is an error, never a pass.
+      assert {:error, _} =
+               BuildRoot.program_source_paths(ebin, [root], ok?, [ebin, Path.join(root, "none")])
+
+      File.write!(Path.join(quiet_ebin, "Elixir.Broken.beam"), "not a beam")
+
+      assert {:error, "beam scan: " <> _} =
+               BuildRoot.program_source_paths(ebin, [root], ok?, [ebin, quiet_ebin])
     end
 
     test "a path inside a larger literal still refuses as a baked path", %{tmp_dir: root} do

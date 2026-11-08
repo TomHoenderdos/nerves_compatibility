@@ -63,80 +63,111 @@ defmodule NccWorker.Portability.BuildRoot do
   def check(ebin, roots, closure_file?) do
     roots = needles(roots)
 
-    with :ok <- ebin_dir(ebin),
-         {:ok, observed} <- each(files(ebin, "*.beam"), &check_beam(&1, roots, closure_file?)),
-         {:ok, []} <- each(files(ebin, "*.app"), &check_app(&1, roots)) do
-      observed
-      |> Enum.map(&{:observe, "build_root_source_path", snippet_text(&1, roots)})
-      |> Enum.uniq()
-      |> then(&if(&1 == [], do: :ok, else: {:observe, &1}))
-    end
+    with {:ok, by_module} <- scan_ebin(ebin, roots, closure_file?),
+         do: observations(by_module, roots)
   end
 
   @doc """
   The beams of `ebin` (by file name, `"Elixir.Foo"` or `"foo"`) whose
   literal table holds a bare closure source path, the observation of
-  `check/3`, sorted. Errors and refusals as `check/3`'s for beams.
+  `check/3`, sorted. Errors and refusals as `check/3`'s.
   """
   @spec source_path_modules(String.t(), [String.t()], (String.t() -> boolean())) ::
           {:ok, [String.t()]} | {:refuse, String.t()} | {:error, String.t()}
   def source_path_modules(ebin, roots, closure_file?) do
-    roots = needles(roots)
+    with {:ok, by_module} <- scan_ebin(ebin, needles(roots), closure_file?),
+         do: {:ok, by_module |> Enum.map(&elem(&1, 0)) |> Enum.sort()}
+  end
 
+  # Every beam's bare source paths as `{module, paths}` (beams without any
+  # left out), once the `.app` is clean too.
+  defp scan_ebin(ebin, roots, closure_file?) do
     with :ok <- ebin_dir(ebin),
-         {:ok, modules} <-
-           ebin
-           |> files("*.beam")
-           |> Enum.reduce_while({:ok, []}, &observed_module(&1, &2, roots, closure_file?)) do
-      {:ok, Enum.sort(modules)}
+         {:ok, by_module} <-
+           each(files(ebin, "*.beam"), &observed_beam(&1, roots, closure_file?)),
+         {:ok, []} <- each(files(ebin, "*.app"), &check_app(&1, roots)),
+         do: {:ok, by_module}
+  end
+
+  defp observed_beam(path, roots, closure_file?) do
+    case check_beam(path, roots, closure_file?) do
+      {:ok, []} -> :ok
+      {:ok, observed} -> {:ok, [{Path.basename(path, ".beam"), observed}]}
+      other -> other
     end
   end
 
-  defp observed_module(path, {:ok, acc}, roots, closure_file?) do
-    case check_beam(path, roots, closure_file?) do
-      {:ok, []} -> {:cont, {:ok, acc}}
-      {:ok, [_ | _]} -> {:cont, {:ok, [Path.basename(path, ".beam") | acc]}}
-      other -> {:halt, other}
-    end
+  defp observations(by_module, roots) do
+    by_module
+    |> Enum.flat_map(&elem(&1, 1))
+    |> Enum.map(&{:observe, "build_root_source_path", snippet_text(&1, roots)})
+    |> Enum.uniq()
+    |> then(&if(&1 == [], do: :ok, else: {:observe, &1}))
   end
 
   @program_evidence [:shell_evidence, :os_exec_evidence, :executable_lookup_evidence]
 
   @doc """
-  A bare closure source path is cosmetic only while no code hands it to
-  something outside the BEAM. In a package that also runs programs, opens
-  ports or looks up executables, the path could reach a program at runtime,
-  where a local compile would pass the user's own path: refused as a baked
-  build path, naming the first module (sorted) that holds one.
+  `check/3` on a package's `ebin`, where a bare closure source path, there
+  otherwise an observation, refuses when anything in `program_ebins` (the
+  ebins of the package's whole closure, the package's own included) runs
+  programs, opens ports or looks up executables.
 
-  Judged per package, not per module: a path held in one module and run
-  from another refuses too. The beams are read once more with
-  `BeamScanner.analyze/1` for the calls, only when a path was found; a beam
-  that scan cannot read is an error, never a pass.
+  A bare source path is cosmetic only while no code hands it to something
+  outside the BEAM. Once the closure can run a program, the path could reach
+  it at runtime, where a local compile would pass the user's own path:
+  refused as a baked build path, naming the first module (sorted) that holds
+  one. Judged over the closure, not per module: a path held in one module
+  and handed to another, or to a dependency, that runs it refuses too.
+
+  The `ebin` is read once. `program_ebins` are read with
+  `BeamScanner.analyze/1` for the calls only when a path was found; one that
+  is missing or that scan cannot read is an error, never a pass.
   """
-  @spec program_source_paths(String.t(), [String.t()], (String.t() -> boolean())) ::
-          :ok | {:refuse, String.t()} | {:error, String.t()}
-  def program_source_paths(ebin, roots, closure_file?) do
-    case source_path_modules(ebin, roots, closure_file?) do
-      {:ok, []} -> :ok
-      {:ok, [module | _]} -> runs_programs(Path.dirname(ebin), module)
-      other -> other
+  @spec program_source_paths(String.t(), [String.t()], (String.t() -> boolean()), [String.t()]) ::
+          :ok | {:observe, [observation()]} | {:refuse, String.t()} | {:error, String.t()}
+  def program_source_paths(ebin, roots, closure_file?, program_ebins \\ nil) do
+    roots = needles(roots)
+
+    case scan_ebin(ebin, roots, closure_file?) do
+      {:ok, []} ->
+        :ok
+
+      {:ok, by_module} ->
+        [module | _] = by_module |> Enum.map(&elem(&1, 0)) |> Enum.sort()
+
+        with :ok <- runs_programs(program_ebins || [ebin], module),
+             do: observations(by_module, roots)
+
+      other ->
+        other
     end
   end
 
-  defp runs_programs(app_dir, module) do
-    scan = BeamScanner.analyze(app_dir)
+  defp runs_programs(ebins, module) do
+    Enum.reduce_while(ebins, :ok, fn ebin, :ok ->
+      case ebin_runs_programs(ebin, module) do
+        :ok -> {:cont, :ok}
+        other -> {:halt, other}
+      end
+    end)
+  end
 
-    cond do
-      scan.errors != [] ->
-        {:error, "beam scan: " <> (scan.errors |> Enum.take(3) |> Enum.join("; "))}
+  defp ebin_runs_programs(ebin, module) do
+    with :ok <- ebin_dir(ebin) do
+      scan = BeamScanner.analyze(Path.dirname(ebin))
 
-      Enum.any?(@program_evidence, &(Map.get(scan, &1, []) != [])) ->
-        {:refuse,
-         "bakes the build path: #{module} (a source path in a package that runs programs)"}
+      cond do
+        scan.errors != [] ->
+          {:error, "beam scan: " <> (scan.errors |> Enum.take(3) |> Enum.join("; "))}
 
-      true ->
-        :ok
+        Enum.any?(@program_evidence, &(Map.fetch!(scan, &1) != [])) ->
+          {:refuse,
+           "bakes the build path: #{module} (a source path in a package that runs programs)"}
+
+        true ->
+          :ok
+      end
     end
   end
 
