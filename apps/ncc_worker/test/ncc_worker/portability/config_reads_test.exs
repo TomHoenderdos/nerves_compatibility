@@ -292,9 +292,13 @@ defmodule NccWorker.Portability.ConfigReadsTest do
                judge(decided, snap(%{}))
 
       assert why ==
-               "compile-time config read: application:get_env/2 (#{app}) #{key} " <>
+               "compile-time host read: application:get_env/2 (#{app}) #{key} " <>
                  "is read by OTP's certificate, TLS or socket code (#{first}): " <>
                  "the compile reached the host's CA store, crypto or network in Pkg (lib/pkg.ex:3)"
+
+      # A host read, even one surfaced through config_reads, is R1 and
+      # withdraws an earlier `pure_elixir` publication.
+      assert Compatibility.Portability.withdraws?(why)
 
       # Package code reading the same key itself records it, and another
       # toolchain frame's read stays unreviewed.

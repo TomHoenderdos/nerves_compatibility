@@ -98,6 +98,14 @@ defmodule NccWorker.Portability.ConfigReads do
 
   @prefix "compile-time config read: "
 
+  # OTP's certificate, TLS and socket reads (`@host_reads` below) are
+  # themselves a compile-time host read (R1, `Compatibility.Portability`):
+  # the package's own compile reached the host's CA store, crypto library
+  # or the network. They carry that refusal's prefix, not `@prefix`, so
+  # they withdraw an earlier `pure_elixir` publication the way any other
+  # host read does.
+  @host_read_prefix "compile-time host read: "
+
   @logger_compile_keys [
     {"logger", "always_evaluate_messages"},
     {"logger", "compile_time_application"},
@@ -354,7 +362,8 @@ defmodule NccWorker.Portability.ConfigReads do
          reason(
            item,
            "#{key} is read by OTP's certificate, TLS or socket code (#{first}): " <>
-             "the compile reached the host's CA store, crypto or network"
+             "the compile reached the host's CA store, crypto or network",
+           @host_read_prefix
          )}
 
       true ->
@@ -423,8 +432,8 @@ defmodule NccWorker.Portability.ConfigReads do
 
   defp loaded_alike?(_app, _reader, _trees), do: false
 
-  defp reason(item, what) do
-    "#{@prefix}#{item["mfa"]} (#{get_in(item, ["arg", "app"])}) #{what}#{where(item)}"
+  defp reason(item, what, prefix \\ @prefix) do
+    "#{prefix}#{item["mfa"]} (#{get_in(item, ["arg", "app"])}) #{what}#{where(item)}"
   end
 
   defp where(%{"module" => module, "file" => file, "line" => line}) when is_binary(module),

@@ -782,14 +782,16 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
       for {first, read_app, key} <- reads do
         assert Enum.any?(
                  refusals,
-                 &(String.starts_with?(&1, "compile-time config read: ") and
+                 &(String.starts_with?(&1, "compile-time host read: ") and
                      &1 =~ "(#{read_app}) #{key} " and &1 =~ "(#{first})")
                ),
                "#{app}: #{inspect(refusals)}"
       end
 
-      # The same call is a host read of its own.
+      # The same call is a host read of its own, and both forms withdraw
+      # an earlier `pure_elixir` publication (R1).
       assert Enum.any?(refusals, &String.starts_with?(&1, "compile-time host read: ")), app
+      assert Enum.all?(refusals, &Compatibility.Portability.withdraws?/1), app
     end
   end
 

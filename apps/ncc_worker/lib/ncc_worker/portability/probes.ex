@@ -29,8 +29,8 @@ defmodule NccWorker.Portability.Probes do
       under the trace, `false` untraced until something loads it, listed or
       not. Never the same answer, with one exception.
     * `erlang:function_exported/3` of a module that the same process
-      ensure-loaded earlier in the same window, both in the package's or a
-      closure dependency's window, when that `code:ensure_loaded/1` was the
+      ensure-loaded earlier for the same owner, the package's own or a
+      closure dependency's, when that `code:ensure_loaded/1` was the
       same answer by the rule above (the module's application is on the
       owner's path, never the tracer's). Untraced, that ensure_loaded loaded
       the module, so by the time the process asks, the module is loaded
@@ -189,7 +189,7 @@ defmodule NccWorker.Portability.Probes do
   end
 
   # function_exported/3 after the same process's own same-answer
-  # ensure_loaded of the module, in the same window (moduledoc).
+  # ensure_loaded of the module, for the same owner (moduledoc).
   defp ensured_before?(
          %{"mfa" => "erlang:function_exported/3", "pid" => pid, "ts" => ts},
          module,

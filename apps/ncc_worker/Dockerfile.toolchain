@@ -12,10 +12,13 @@ FROM ${BASE}
 # (elixir_make, rebar3 port hooks, cmake-based NIFs, build scripts that ask
 # git for a version) needs them, the worker's classifier shells out to grep,
 # and its cleanup of leftover processes uses procps' kill(1) where it can
-# (NccWorker.OsKill). The main image's base ships cmake already.
+# (NccWorker.OsKill). The main image's base ships cmake already. cmake is
+# pinned to the version this base's bookworm archive ships (verified against
+# the pinned BASE above with `apt-cache policy cmake`), so a toolchain build
+# does not silently pick up a different cmake on a reused image.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      git make gcc g++ cmake grep procps ca-certificates curl && \
+      git make gcc g++ cmake=3.25.1-1 grep procps ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 # No user: Portal.Builder runs the container as an arbitrary `--user uid:gid`
