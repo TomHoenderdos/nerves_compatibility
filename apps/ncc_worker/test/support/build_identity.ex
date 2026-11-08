@@ -16,13 +16,23 @@ defmodule NccWorker.BuildIdentity do
   consolidated protocol, never a published file) may also differ in its
   `ExCk` chunk's bytes when it decodes to `===` terms: Mix consolidates
   protocols in parallel, so even two untraced compiles disagree on its map
-  key order. A beam anywhere else never gets that exception.
+  key order. A beam anywhere else never gets that exception from this option.
+
+  With `exck: :decoded`, every beam's `ExCk` chunk (the type checker's
+  export signatures, a `term_to_binary/1` of maps with atom keys) may differ
+  in its bytes when it decodes to `===` terms. It has the `Dbgi` chunk's
+  cause: the key order follows the compiling VM's atom table, and the order
+  in which a booting VM creates even common atoms (`fun`, `tuple`) varies
+  from boot to boot, so two untraced `mix compile`s of the same real
+  package, in the same directory, already disagree there now and then. The
+  fixtures in this suite do not reach such maps, and compare without it.
   """
 
   @doc """
   The differences between two `path => bytes` maps, `[]` when they are
-  identical in the sense above. Each entry is `{path, reason}`. Option:
-  `consolidated:` (default `false`), see the moduledoc.
+  identical in the sense above. Each entry is `{path, reason}`. Options:
+  `consolidated:` (default `false`) and `exck:` (`:bytes`, the default, or
+  `:decoded`), see the moduledoc.
   """
   @spec differences(%{String.t() => binary()}, %{String.t() => binary()}, keyword()) ::
           [{String.t(), term()}]
@@ -50,9 +60,11 @@ defmodule NccWorker.BuildIdentity do
 
   # The chunks compared as decoded terms for the beam at `path`.
   defp decoded(path, opts) do
-    if Keyword.get(opts, :consolidated, false) and consolidated?(path),
-      do: [~c"Dbgi", ~c"ExCk"],
-      else: [~c"Dbgi"]
+    exck? =
+      Keyword.get(opts, :exck, :bytes) == :decoded or
+        (Keyword.get(opts, :consolidated, false) and consolidated?(path))
+
+    if exck?, do: [~c"Dbgi", ~c"ExCk"], else: [~c"Dbgi"]
   end
 
   defp consolidated?(path), do: match?([_app, "consolidated", _file], Path.split(path))

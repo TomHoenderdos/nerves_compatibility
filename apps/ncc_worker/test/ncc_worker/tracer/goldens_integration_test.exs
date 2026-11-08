@@ -116,7 +116,10 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     {"expo", "1.1.1"},
     {"telemetry_metrics", "1.2.0"},
     {"telemetry_poller", "1.3.0"},
-    {"dns_cluster", "0.2.0"}
+    {"dns_cluster", "0.2.0"},
+    # Could not be judged on 1.20 for the type checker's warning colouring
+    # read until it was reviewed; served on 1.19.
+    {"polymorphic_embed", "5.0.6"}
   ]
 
   @env_vars ~w(HEX_HOME NERVES_ARTIFACTS_DIR NERVES_DL_DIR XDG_DATA_HOME)

@@ -166,6 +166,43 @@ defmodule NccWorker.BuildIdentityTest do
     end
   end
 
+  describe "exck: :decoded" do
+    setup do
+      b = beam()
+      other = with_chunk(b, ~c"ExCk", &reencode/1)
+      assert other != b
+      %{b: b, other: other, path: "fx_top/ebin/Elixir.FxTop.beam"}
+    end
+
+    test "a published beam's ExCk that encodes the same term differently is identical",
+         %{b: b, other: other, path: path} do
+      assert BuildIdentity.differences(%{path => b}, %{path => other}, exck: :decoded) == []
+    end
+
+    test "an ExCk that decodes to another term still differs", %{b: b, path: path} do
+      changed =
+        with_chunk(b, ~c"ExCk", fn p ->
+          :erlang.term_to_binary({:changed, :erlang.binary_to_term(p)})
+        end)
+
+      assert BuildIdentity.differences(%{path => b}, %{path => changed}, exck: :decoded) ==
+               [{path, {:chunk_differs, "ExCk"}}]
+    end
+
+    test "the other chunks stay byte-equal", %{b: b, path: path} do
+      code = with_chunk(b, ~c"Code", &flip_last/1)
+
+      assert BuildIdentity.differences(%{path => b}, %{path => code}, exck: :decoded) ==
+               [{path, {:chunk_differs, "Code"}}]
+
+      docs = with_docs(b)
+      redocs = with_chunk(docs, ~c"Docs", &reencode/1)
+
+      assert BuildIdentity.differences(%{path => docs}, %{path => redocs}, exck: :decoded) ==
+               [{path, {:chunk_differs, "Docs"}}]
+    end
+  end
+
   test "a non-beam file is compared byte for byte, and a missing file differs" do
     a = %{"a/priv/x.txt" => "x", "a/ebin/a.app" => "{}"}
     b = %{"a/priv/x.txt" => "y"}

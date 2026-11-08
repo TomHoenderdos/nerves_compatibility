@@ -12,6 +12,7 @@ end
 Ecto.Adapters.SQL.Sandbox.mode(Portal.Repo, :manual)
 
 # Integration tests (real Docker container) and the remote-builder e2e test
-# (a real agent process against the fake docker) are excluded by default.
-# Run explicitly with: mix test --only integration (or --only e2e)
-ExUnit.start(exclude: [:integration, :e2e])
+# (a real agent process against the fake docker) are excluded by default, and
+# the toolchain benchmark (`:benchmark`).
+# Run explicitly with: mix test --only integration (or --only e2e, --only benchmark)
+ExUnit.start(exclude: [:integration, :e2e, :benchmark])
