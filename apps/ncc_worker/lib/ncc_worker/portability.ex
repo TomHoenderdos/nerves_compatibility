@@ -375,7 +375,10 @@ defmodule NccWorker.Portability do
 
     decided = decided ++ libs.decided
     elixir = elixir_of(report)
-    config = ConfigReads.judge(decided, elixir, report.config_env, ConfigReads.trees(ctx))
+
+    config =
+      ConfigReads.judge(decided, elixir, report.config_env, ConfigReads.trees(ctx), ctx.nested)
+
     version = ElixirVersion.judge(decided, elixir)
     decided = decided ++ config.refusals ++ version.refusals
     package_r2 = build_root(ctx, ctx.package)

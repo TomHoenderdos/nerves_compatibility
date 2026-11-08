@@ -37,7 +37,7 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     do: term |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
 
   defp keys(result), do: Enum.map(result.items, &{&1.app, &1.path})
-  defp judge(decided, snapshot), do: ConfigReads.judge(decided, @elixir, snapshot, @trees)
+  defp judge(decided, snapshot), do: ConfigReads.judge(decided, @elixir, snapshot, @trees, %{})
 
   test "the closure's reads are recorded once, valued from the snapshot, :error when unset" do
     decided = [
@@ -93,14 +93,14 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       trees = ConfigReads.trees(ctx(["a"]))
       assert trees == %{"a" => ["a"], "r" => ["a", "r"]}
 
-      result = ConfigReads.judge([obs("r", read("a", "k"))], @elixir, snap(%{}), trees)
+      result = ConfigReads.judge([obs("r", read("a", "k"))], @elixir, snap(%{}), trees, %{})
       assert %{problems: [], items: [%{app: "a", path: ["k"], value: value}]} = result
       assert value == ConfigReads.unset()
     end
 
     test "is unset when the reader reads its own app" do
       trees = ConfigReads.trees(ctx([]))
-      result = ConfigReads.judge([obs("r", read("r", "k"))], @elixir, snap(%{}), trees)
+      result = ConfigReads.judge([obs("r", read("r", "k"))], @elixir, snap(%{}), trees, %{})
       assert %{problems: [], items: [%{app: "r", value: value}]} = result
       assert value == ConfigReads.unset()
     end
@@ -109,7 +109,7 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       trees = ConfigReads.trees(ctx([]))
 
       assert %{items: [], problems: ["config value cannot be told: a k"]} =
-               ConfigReads.judge([obs("r", read("a", "k"))], @elixir, snap(%{}), trees)
+               ConfigReads.judge([obs("r", read("a", "k"))], @elixir, snap(%{}), trees, %{})
     end
 
     test "cannot be told when any of its readers has the app outside its tree" do
@@ -117,7 +117,7 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       decided = [obs("a", read("a", "k")), obs("r", read("a", "k"))]
 
       assert %{items: [], problems: ["config value cannot be told: a k"]} =
-               ConfigReads.judge(decided, @elixir, snap(%{}), trees)
+               ConfigReads.judge(decided, @elixir, snap(%{}), trees, %{})
     end
 
     test "cannot be told outside every window" do
@@ -209,6 +209,55 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     assert %{items: [], problems: [], dropped: 2} = judge(decided, snap(entries))
   end
 
+  # The type checker's coloured text only reaches its diagnostics, which go
+  # to Mix unless package code compiled something itself, or captured
+  # diagnostics, in the same window: then the text can reach the package.
+  describe "the type checker's :elixir ansi_enabled read" do
+    defp types_obs(owner),
+      do:
+        obs(
+          owner,
+          read("elixir", "ansi_enabled", kind: "toolchain", first: "Elixir.Module.Types.Apply")
+        )
+
+    test "is dropped in a window where package code compiled nothing itself" do
+      entries = %{{"elixir", "ansi_enabled"} => enc({:ok, true})}
+      nested = %{"other" => "Code.compile_string/2"}
+
+      assert %{items: [], problems: [], unreviewed: [], dropped: 1} =
+               ConfigReads.judge([types_obs("pkg")], "1.20.4", snap(entries), @trees, nested)
+    end
+
+    test "cannot be judged in a window with a nested compile or a diagnostics capture" do
+      nested = %{"pkg" => "Code.with_diagnostics/2"}
+
+      assert %{items: [], dropped: 0, unreviewed: [], problems: [problem]} =
+               ConfigReads.judge([types_obs("pkg")], "1.20.4", snap(%{}), @trees, nested)
+
+      assert problem ==
+               "toolchain config read in a window with a nested compile (Code.with_diagnostics/2):" <>
+                 " elixir ansi_enabled from Elixir.Module.Types.Apply"
+    end
+
+    test "a mark outside every window counts for reads outside every window" do
+      nested = %{outside: "Kernel.ParallelCompiler.compile/2"}
+
+      assert %{dropped: 0, problems: [_]} =
+               ConfigReads.judge([types_obs(:outside)], "1.20.4", snap(%{}), @trees, nested)
+    end
+
+    test "the other output-only drops do not depend on the window" do
+      decided =
+        for first <- ["Elixir.Mix.Shell.IO", "logger_h_common", "elixir_errors"],
+            do: obs("pkg", read("elixir", "ansi_enabled", kind: "toolchain", first: first))
+
+      nested = %{"pkg" => "Code.with_diagnostics/2"}
+
+      assert %{problems: [], dropped: 3} =
+               ConfigReads.judge(decided, "1.20.4", snap(%{}), @trees, nested)
+    end
+  end
+
   # IO.ANSI.format/1,2, format_fragment/1,2 and Logger.Formatter.format/2
   # bake escape codes, or none, by the same key: only the reads made for
   # Mix's shell and Logger's handler are reviewed as dropped, each matched
@@ -240,21 +289,22 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     ]
 
     assert %{items: [], problems: ["no reviewed config reads for Elixir 1.99"]} =
-             ConfigReads.judge(decided, "1.99.0", snap(%{}), @trees)
+             ConfigReads.judge(decided, "1.99.0", snap(%{}), @trees, %{})
 
     assert ConfigReads.reviewed("1.99.0") == nil
     assert ConfigReads.reviewed(nil) == nil
 
-    for elixir <- ["1.19.5", "1.20.4"] do
-      assert %{
-               record: [_ | _],
-               drop: [
-                 {"Elixir.Mix.Shell.IO", "elixir", "ansi_enabled"},
-                 {"logger_h_common", "elixir", "ansi_enabled"},
-                 {"elixir_errors", "elixir", "ansi_enabled"}
-               ]
-             } =
-               ConfigReads.reviewed(elixir)
+    output = [
+      {"Elixir.Mix.Shell.IO", "elixir", "ansi_enabled"},
+      {"logger_h_common", "elixir", "ansi_enabled"},
+      {"elixir_errors", "elixir", "ansi_enabled"}
+    ]
+
+    for {elixir, drop} <- [
+          {"1.19.5", output ++ [{"Elixir.Module.Types.Apply", "elixir", "ansi_enabled"}]},
+          {"1.20.4", output ++ [{"Elixir.Module.Types.Apply", "elixir", "ansi_enabled"}]}
+        ] do
+      assert %{record: [_ | _], drop: ^drop} = ConfigReads.reviewed(elixir)
     end
   end
 
@@ -429,6 +479,90 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       assert {"elixir_errors", "elixir", "ansi_enabled"} in ConfigReads.reviewed(System.version()).drop
     end
 
+    # The type checker asks IO.ANSI.enabled?/0 in one function of
+    # Module.Types.Apply, whose text only ever becomes part of a diagnostic:
+    # format_diagnostic/1, which no toolchain module calls except
+    # Module.ParallelChecker's grouping function. That function is called
+    # only by the one that checks a module, which hands the diagnostics to
+    # the function that prints them and returns them to the compiler. The
+    # forms are the beam's abstract code; the test below compares them with
+    # the source where the install ships it.
+    test "drops the type checker's ansi_enabled read, whose value only reaches diagnostics" do
+      forms = beam_forms(Module.Types.Apply, "")
+
+      assert remote_callers(forms, IO.ANSI, :enabled?) == [:ansi_red]
+      assert callers(forms, :ansi_red) == [:args_to_quoted_string]
+      assert callers(forms, :args_to_quoted_string) == [:format_diagnostic]
+
+      checker = beam_forms(Module.ParallelChecker, "")
+
+      assert [{Module.Types.Apply, :ansi_red, Module.ParallelChecker, groupers}] =
+               :ncc_tracer_stack.diagnosers()
+
+      assert [grouper] = Enum.filter(groupers, &defined?(checker, &1))
+      assert dynamic_callers(checker, :format_diagnostic) == [grouper]
+      assert remote_callers(checker, Module.Types.Apply, :format_diagnostic) == []
+      # Its result goes only to the function that checks a module, which
+      # pipes it into the one that prints and returns the diagnostics.
+      assert callers(checker, grouper) == [:check_module]
+      assert [emit] = callers_of_result(checker, :check_module, grouper)
+      assert emit in [:emit_diagnostics, :emit_warnings]
+      assert prints?(checker, emit)
+
+      # No other module of the toolchain calls a format_diagnostic/1 of a
+      # module it does not name, or Apply's by name.
+      for module <- toolchain_modules(), module != Module.ParallelChecker do
+        forms = beam_forms(module, "")
+        assert dynamic_callers(forms, :format_diagnostic) == [], inspect(module)
+
+        assert remote_callers(forms, Module.Types.Apply, :format_diagnostic) == [],
+               inspect(module)
+      end
+
+      assert Module.Types.Apply in :ncc_tracer_stack.uncached()
+
+      assert {"Elixir.Module.Types.Apply", "elixir", "ansi_enabled"} in ConfigReads.reviewed(
+               System.version()
+             ).drop
+    end
+
+    # The type checker's pin above runs on the beam's abstract code. Where
+    # the install ships the Elixir source, its call graph must agree.
+    test "the type checker's abstract code gives the same call graph as its source" do
+      apply_src = Path.join(:code.lib_dir(:elixir), "lib/module/types/apply.ex")
+      checker_src = Path.join(:code.lib_dir(:elixir), "lib/module/parallel_checker.ex")
+      [{_, _, _, groupers}] = :ncc_tracer_stack.diagnosers()
+
+      if File.regular?(apply_src) and File.regular?(checker_src) do
+        apply_ast = apply_src |> File.read!() |> Code.string_to_quoted!()
+        apply_forms = beam_forms(Module.Types.Apply, apply_src)
+
+        assert ansi_enabled_refs(apply_ast) ==
+                 Enum.sort(remote_callers(apply_forms, IO.ANSI, :enabled?))
+
+        for target <- [:ansi_red, :args_to_quoted_string],
+            do: assert(ex_callers(apply_ast, target) == Enum.sort(callers(apply_forms, target)))
+
+        checker_ast = checker_src |> File.read!() |> Code.string_to_quoted!()
+        checker_forms = beam_forms(Module.ParallelChecker, checker_src)
+
+        assert ex_dynamic_callers(checker_ast, :format_diagnostic) ==
+                 Enum.sort(dynamic_callers(checker_forms, :format_diagnostic))
+
+        for grouper <- groupers,
+            defined?(checker_forms, grouper),
+            do:
+              assert(
+                ex_callers(checker_ast, grouper) == Enum.sort(callers(checker_forms, grouper))
+              )
+      else
+        refute File.exists?(apply_src) and File.exists?(checker_src)
+
+        for name <- [:ansi_red, :args_to_quoted_string, :format_diagnostic],
+            do: assert(defined?(beam_forms(Module.Types.Apply, ""), name), inspect(name))
+      end
+    end
+
     # The pins above read a module's source when the install ships `src` and
     # its beam's abstract code otherwise. Where `src` exists, the two must
     # give the same call graph. Where it does not, both sides would come from
@@ -591,6 +725,148 @@ defmodule NccWorker.Portability.ConfigReadsTest do
         end),
         uniq: true,
         do: name
+  end
+
+  # The functions calling `mod:fun` by name.
+  defp remote_callers(forms, mod, fun) do
+    for {:function, _, name, _, clauses} <- forms,
+        has_call?(clauses, fn
+          {:call, _, {:remote, _, {:atom, _, ^mod}, {:atom, _, ^fun}}, _} -> true
+          _ -> false
+        end),
+        uniq: true,
+        do: name
+  end
+
+  # The functions calling `fun` on a module that is not a literal.
+  defp dynamic_callers(forms, fun) do
+    for {:function, _, name, _, clauses} <- forms,
+        has_call?(clauses, fn
+          {:call, _, {:remote, _, {:atom, _, _}, _}, _} -> false
+          {:call, _, {:remote, _, _module, {:atom, _, ^fun}}, _} -> true
+          _ -> false
+        end),
+        uniq: true,
+        do: name
+  end
+
+  # The local functions `inner`'s result is handed to, inside `outer`
+  # (`inner(...) |> next(...)` compiles to `next(inner(...), ...)`).
+  defp callers_of_result(forms, outer, inner) do
+    clauses = for {:function, _, ^outer, _, clauses} <- forms, do: clauses
+
+    clauses
+    |> walk([], fn
+      {:call, _, {:atom, _, next}, [{:call, _, {:atom, _, ^inner}, _} | _]}, found ->
+        [next | found]
+
+      _, found ->
+        found
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp walk(term, acc, fun) do
+    acc = fun.(term, acc)
+
+    case term do
+      t when is_tuple(t) -> t |> Tuple.to_list() |> walk(acc, fun)
+      l when is_list(l) -> Enum.reduce(l, acc, &walk(&1, &2, fun))
+      _ -> acc
+    end
+  end
+
+  # Every clause of `name` calls a local function that prints through one
+  # of `:elixir_errors`' printing functions.
+  defp prints?(forms, name) do
+    clauses = for {:function, _, ^name, _, clauses} <- forms, clause <- clauses, do: clause
+    printers = printer_names()
+
+    printing? = fn local ->
+      Enum.any?(
+        for({:function, _, ^local, _, cs} <- forms, do: cs),
+        &has_call?(&1, fn
+          {:call, _, {:remote, _, {:atom, _, :elixir_errors}, {:atom, _, p}}, _} -> p in printers
+          _ -> false
+        end)
+      )
+    end
+
+    clauses != [] and Enum.all?(clauses, &Enum.any?(local_calls(&1), printing?))
+  end
+
+  defp local_calls(clause) do
+    clause
+    |> walk([], fn
+      {:call, _, {:atom, _, f}, _}, acc -> [f | acc]
+      _, acc -> acc
+    end)
+    |> Enum.uniq()
+  end
+
+  # The installed toolchain's modules: Elixir's and those of the
+  # applications that ship with it.
+  defp toolchain_modules do
+    for app <- [:elixir, :mix, :logger, :eex, :ex_unit, :iex],
+        :ok == ensure_loaded_app(app),
+        module <- Application.spec(app, :modules) || [],
+        do: module
+  end
+
+  defp ensure_loaded_app(app) do
+    case Application.load(app) do
+      :ok -> :ok
+      {:error, {:already_loaded, ^app}} -> :ok
+      other -> other
+    end
+  end
+
+  # Elixir source: the def/defp names whose body calls local `target`.
+  defp ex_callers(ast, target) do
+    ast
+    |> ex_functions()
+    |> Enum.filter(fn {_name, body} ->
+      has_call?(body, fn
+        {^target, _, args} when is_list(args) -> true
+        _ -> false
+      end)
+    end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  # Elixir source: the def/defp names whose body calls `fun` on a variable.
+  defp ex_dynamic_callers(ast, fun) do
+    ast
+    |> ex_functions()
+    |> Enum.filter(fn {_name, body} ->
+      has_call?(body, fn
+        {{:., _, [{var, _, ctx}, ^fun]}, _, args}
+        when is_atom(var) and is_atom(ctx) and is_list(args) ->
+          true
+
+        _ ->
+          false
+      end)
+    end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp ex_functions(ast) do
+    {_ast, acc} =
+      Macro.prewalk(ast, [], fn
+        {kind, _, [head, body]} = node, acc when kind in [:def, :defp] ->
+          {node, [{fun_name(head), body} | acc]}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    acc
   end
 
   defp has_call?(term, match?) do

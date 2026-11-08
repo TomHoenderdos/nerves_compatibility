@@ -242,6 +242,40 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
         end
       end
       """),
+    # A call the type checker finds can never succeed: its warning colours
+    # the offending argument while it is formatted. As in fx_tc_checker, the
+    # file's top-level code makes the checker process the package's, so the
+    # read lands in its window.
+    "fx_tc_types" =>
+      lib("fx_tc_types", """
+      defmodule FxTcTypes do
+        def f, do: Integer.to_string(:not_an_integer)
+      end
+
+      if Code.ensure_loaded?(FxTcTypes) do
+        defmodule FxTcTypes.Other do
+          def g, do: Integer.to_string(:not_an_integer_either)
+        end
+      end
+      """),
+    # The same warning in a compile the package starts itself, capturing
+    # its diagnostics and keeping the message.
+    "fx_tc_types_kept" =>
+      lib("fx_tc_types_kept", """
+      defmodule FxTcTypesKept do
+        {_result, diagnostics} =
+          Code.with_diagnostics(fn ->
+            Code.compile_string(\"""
+            defmodule FxTcTypesKept.Inner do
+              def f, do: Integer.to_string(:not_an_integer)
+            end
+            \""", "fx_tc_types_kept_inner.ex")
+          end)
+
+        @messages Enum.map(diagnostics, & &1.message)
+        def messages, do: @messages
+      end
+      """),
     # Package code asking the compiler for a formatted message and keeping
     # it: `SyntaxError.message/1` formats a snippet through `:elixir_errors`
     # and returns the coloured text.
@@ -401,7 +435,8 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
     "fx_cfg_logbody",
     "fx_tc_shell",
     "fx_tc_native",
-    "fx_tc_checker"
+    "fx_tc_checker",
+    "fx_tc_types"
   ]
 
   setup_all do
@@ -415,12 +450,15 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
 
     # A path dependency has no Hex tarball, and without a verified file list
     # no source file of a dependency is readable. The diagnostics printer
-    # reads the warned-about source line, so fx_tc_checker gets the release
-    # a Hex dependency would have.
+    # reads the warned-about source line, so fx_tc_checker and fx_tc_types
+    # get the release a Hex dependency would have.
     hex_home = Path.join(root, "hex")
 
-    {app, release} =
-      TracerFixtures.hex_release(hex_home, "fx_tc_checker", ["lib", "mix.exs"])
+    releases =
+      Map.new(
+        ["fx_tc_checker", "fx_tc_types"],
+        &TracerFixtures.hex_release(hex_home, &1, ["lib", "mix.exs"])
+      )
 
     shared = @deps |> Map.drop(@alone ++ ["fx_cfg_d", "fx_ord_b", "fx_tc_comp"]) |> Map.keys()
 
@@ -449,7 +487,7 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
         )
     }
 
-    %{runs: runs, judge_opts: [releases: %{app => release}, hex_home: hex_home]}
+    %{runs: runs, judge_opts: [releases: releases, hex_home: hex_home]}
   end
 
   defp compile(root, top, deps, config) do
@@ -620,6 +658,36 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
       assert %{"first" => "elixir_errors", "first_kind" => "toolchain"} = r
       assert r["arg"]["key_name"] == "ansi_enabled"
     end
+  end
+
+  # The type checker colours the offending argument of a bad call by
+  # :ansi_enabled while formatting its warning, which Mix prints and keeps in
+  # its manifest: dropped, as output only.
+  test "a type-checker warning publishes and records nothing", ctx do
+    v = passes(ctx, "fx_tc_types")
+    assert v.compile_env == []
+    assert v.observations["config_unreviewed"] == []
+    refute item(v, "elixir", "ansi_enabled")
+
+    for r <- v.observations["config_reads"] do
+      assert r["arg"]["key_name"] == "ansi_enabled"
+      assert r["first"] in ["Elixir.Module.Types.Apply", "elixir_errors"], inspect(r)
+      assert r["first_kind"] == "toolchain"
+    end
+  end
+
+  # In a compile the package started and whose diagnostics it captured, the
+  # coloured text reaches the package: the read is not dropped there.
+  test "a type-checker warning the package captures cannot be judged", ctx do
+    assert %{status: :skip, reason: @cnj, observations: obs} =
+             verdict(ctx, "fx_tc_types_kept")
+
+    assert Enum.any?(
+             obs["problems"],
+             &(&1 =~ "in a window with a nested compile" and
+                 &1 =~ "elixir ansi_enabled from Elixir.Module.Types.Apply")
+           ),
+           inspect(obs["problems"])
   end
 
   # The same formatter reached for a message the package keeps is not the

@@ -3,7 +3,7 @@
 %% (precompiled portability spec, R1 steps 1-3). The tracer passes in which
 %% modules are toolchain and whether the calling process is a user process.
 -export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2,
-         uncached/0, printers/0, checker/2, made_by_toolchain/2]).
+         uncached/0, printers/0, diagnosers/0, checker/2, made_by_toolchain/2]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% Frames a call is attributed through, to the frame that called them, when
@@ -23,7 +23,8 @@
 %% tracer classifies them afresh on every event, never from its per-module
 %% cache, so a package that redefines one mid-compile is not taken for the
 %% toolchain's.
--define(UNCACHED, ?ATTRIBUTED_THROUGH ++ ['Elixir.Mix.Shell.IO', logger_h_common, elixir_errors]).
+-define(UNCACHED, ?ATTRIBUTED_THROUGH ++ ['Elixir.Mix.Shell.IO', logger_h_common, elixir_errors,
+                                          'Elixir.Module.Types.Apply']).
 %% The compiler's diagnostics module colours a warning or error by
 %% `:elixir, :ansi_enabled` while formatting it. Its frame stays first only
 %% when one of its printing functions (the ones that format a diagnostic and
@@ -32,6 +33,20 @@
 %% returns the coloured text to its caller) its frames are skipped like the
 %% ones above, so the read belongs to whoever asked for the text.
 -define(PRINTED_BY, [{elixir_errors, ["print_diagnostic", "print_diagnostics", "print_warning"]}]).
+%% The type checker colours the offending part of a bad call by
+%% `:elixir, :ansi_enabled` (Module.Types.Apply's ansi_red/1) while it
+%% formats a warning. Its frame stays first only on the way down to the
+%% checker's grouping of diagnostics (group_diagnostics/1 on 1.20,
+%% group_warnings/1 on 1.19), which hands them to the function that prints
+%% and returns them: between the two only Apply's own frames and toolchain
+%% glue (the Enum and lists folds both use), and the first checker frame
+%% below them one of the grouping function's own. Reached any other way,
+%% Apply's frames are skipped like IO.ANSI's, so the read belongs to whoever
+%% asked for the text. Where the diagnostics go from there is the config
+%% read judge's business: a window in which package code compiled or
+%% captured diagnostics itself does not get the drop.
+-define(DIAGNOSED_BY, [{'Elixir.Module.Types.Apply', "ansi_red", 'Elixir.Module.ParallelChecker',
+                        ["group_diagnostics", "group_warnings"]}]).
 %% A frame a read is attributed to only when the skipped frame right above
 %% it is the toolchain's module it is paired with: Logger's handler calls
 %% the formatter, and a package's formatter that tail-calls IO.ANSI leaves
@@ -169,7 +184,8 @@ strip(Stack, IsToolchain) -> strip(Stack, none, IsToolchain).
 strip([{M, _, _, _} = Frame | Rest] = Stack, Above, IsToolchain) ->
     Skip = lists:member(M, ?WRAPPERS)
         orelse (lists:member(M, ?ATTRIBUTED_THROUGH) andalso IsToolchain(M))
-        orelse unprinted(M, Stack, IsToolchain),
+        orelse unprinted(M, Stack, IsToolchain)
+        orelse undiagnosed(M, Stack, IsToolchain),
     case Skip of
         true -> strip(Rest, Frame, IsToolchain);
         false -> reached(Stack, Above)
@@ -202,6 +218,32 @@ printed_run([{A, _, _, _} | Rest], M, Printers, IsToolchain) ->
     lists:member(A, ?ATTRIBUTED_THROUGH) andalso IsToolchain(A)
         andalso printed_run(Rest, M, Printers, IsToolchain);
 printed_run([], _M, _Printers, _IsToolchain) -> false.
+
+%% A frame of a DIAGNOSED_BY module is skipped unless it is the reading
+%% function on an unbroken run down to a grouping function. A redefined
+%% module (not the toolchain's) is never skipped.
+undiagnosed(M, [{M, F, _, _} | Below], IsToolchain) ->
+    case lists:keyfind(M, 1, ?DIAGNOSED_BY) of
+        {M, Reader, Checker, Groupers} ->
+            IsToolchain(M) andalso
+                not (base_name(F) =:= Reader
+                     andalso grouped_run(Below, M, Checker, Groupers, IsToolchain));
+        false -> false
+    end;
+undiagnosed(_M, _Stack, _IsToolchain) -> false.
+
+%% Down from the reader: frames of the module itself and toolchain glue,
+%% then a frame of the grouping function (its body or a fun in it). Any
+%% other frame, a checker frame of another function among them, ends the
+%% run.
+grouped_run([{M, _, _, _} | Rest], M, Checker, Groupers, IsToolchain) ->
+    grouped_run(Rest, M, Checker, Groupers, IsToolchain);
+grouped_run([{Checker, F, _, _} | _], _M, Checker, Groupers, IsToolchain) ->
+    IsToolchain(Checker) andalso lists:member(base_name(F), Groupers);
+grouped_run([{A, _, _, _} = Frame | Rest], M, Checker, Groupers, IsToolchain) ->
+    glue(Frame) andalso IsToolchain(A)
+        andalso grouped_run(Rest, M, Checker, Groupers, IsToolchain);
+grouped_run([], _M, _Checker, _Groupers, _IsToolchain) -> false.
 
 %% The toolchain frames a lookup is made through on its way from the type
 %% checker: the code server's loading functions and the error handlers.
@@ -271,6 +313,9 @@ checker_module(M) -> lists:prefix("Elixir.Module.Types.", atom_to_list(M)).
 uncached() -> ?UNCACHED.
 
 printers() -> [{M, [list_to_atom(F) || F <- Fs]} || {M, Fs} <- ?PRINTED_BY].
+
+diagnosers() ->
+    [{M, list_to_atom(R), C, [list_to_atom(G) || G <- Gs]} || {M, R, C, Gs} <- ?DIAGNOSED_BY].
 
 dispatcher({M, F, _, _}) -> lists:member({M, base_name(F)}, ?DISPATCHERS).
 

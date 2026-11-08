@@ -20,8 +20,9 @@ defmodule NccWorker.Portability.ConfigReads do
       toolchain's reviewed `record` list (Logger's compile-time keys),
       dropped when `{first frame, app, key}` is on its reviewed `drop` list
       (`:elixir, :ansi_enabled` as read for `Mix.Shell.IO`, Logger's
-      handler and the compiler's diagnostics printer, which colour terminal
-      output and generate no code), and otherwise cannot be judged: an
+      handler, the compiler's diagnostics printer and the type checker's
+      warning formatter, which colour terminal output and generate no
+      code), and otherwise cannot be judged: an
       unknown toolchain read may change code, so the build does not
       publish. It is also listed in `unreviewed` for the review. A toolchain
       with no reviewed lists judges no build with such a read. The tracer
@@ -30,6 +31,12 @@ defmodule NccWorker.Portability.ConfigReads do
       `Logger.Formatter.format/2` return escape codes, or none, by that key,
       so package code calling them reads the key itself and the read is
       recorded;
+    * the type checker's read is dropped only in a window where package
+      code neither started a compile nor captured diagnostics itself
+      (`Context.nested`): there the coloured warning goes to Mix alone.
+      In a window where it did, the warning can come back to the package
+      (`Code.with_diagnostics/2`, `Kernel.ParallelCompiler`'s results), so
+      the read cannot be judged;
     * `application:get_all_env/0,1` from package code refuses (there is no
       key to match on); from the toolchain's own code it cannot be judged;
     * `application:get_env/1` (the caller's own application, which no
@@ -120,17 +127,31 @@ defmodule NccWorker.Portability.ConfigReads do
   # caller (`SyntaxError.message/1`) is the caller's read.
   @compiler_diagnostic_ansi {"elixir_errors", "elixir", "ansi_enabled"}
 
+  # The type checker colours the offending argument of a bad call by the key
+  # while formatting a warning (`Module.Types.Apply`), and the checker prints
+  # the warning and returns it to the compiler, which Mix keeps in its
+  # manifest under `.mix`. A build publishes `ebin` and `priv` only, so the
+  # key only colours compiler output. The tracer keeps the frame first only
+  # on that path; text formatted for anyone else is the asker's read. A
+  # compile the package starts itself returns the warnings to the package,
+  # so the drop holds only in a window without one (`@diagnostic_drops`).
+  @type_checker_ansi {"Elixir.Module.Types.Apply", "elixir", "ansi_enabled"}
+
+  # Drops whose text reaches the diagnostics a compile returns, not only
+  # its output.
+  @diagnostic_drops [@type_checker_ansi]
+
   # Per Elixir minor, the toolchain's own compile-time config reads, reviewed
   # against real compiles: `record` ({app, key}) changes generated code;
   # `drop` ({first frame module, app, key}) does not.
   @reviewed %{
     "1.19" => %{
       record: @logger_compile_keys,
-      drop: [@mix_shell_ansi, @logger_handler_ansi, @compiler_diagnostic_ansi]
+      drop: [@mix_shell_ansi, @logger_handler_ansi, @compiler_diagnostic_ansi, @type_checker_ansi]
     },
     "1.20" => %{
       record: @logger_compile_keys,
-      drop: [@mix_shell_ansi, @logger_handler_ansi, @compiler_diagnostic_ansi]
+      drop: [@mix_shell_ansi, @logger_handler_ansi, @compiler_diagnostic_ansi, @type_checker_ansi]
     }
   }
 
@@ -179,17 +200,19 @@ defmodule NccWorker.Portability.ConfigReads do
   The items, refusals and problems of the `config_reads` observations in
   `decided` (`{owner, decision}`, already limited to the package's closure),
   for a trace made on Elixir `elixir` whose snapshot is `snapshot`; `trees`
-  is every owner's dependency tree (`trees/1`).
+  is every owner's dependency tree (`trees/1`), and `nested` the windows
+  package code started a compile or a capture of diagnostics in
+  (`Context.nested`).
   """
-  @spec judge([{term(), term()}], String.t() | nil, term(), trees()) :: result()
-  def judge(decided, elixir, snapshot, trees) when is_map(trees) do
+  @spec judge([{term(), term()}], String.t() | nil, term(), trees(), map()) :: result()
+  def judge(decided, elixir, snapshot, trees, nested) when is_map(trees) and is_map(nested) do
     toolchain = {elixir, reviewed(elixir)}
     acc = %{keys: %{}, refusals: [], problems: [], unreviewed: [], dropped: 0}
 
     decided
     |> Enum.reduce(acc, fn
       {owner, {:observe, "config_reads", item}}, acc ->
-        add(acc, owner, item, classify(item, toolchain))
+        add(acc, owner, item, nested_drop(classify(item, toolchain), owner, nested))
 
       _other, acc ->
         acc
@@ -209,6 +232,25 @@ defmodule NccWorker.Portability.ConfigReads do
     taken = MapSet.new(app_items, &{&1.app, &1.path})
     app_items ++ Enum.reject(items, &MapSet.member?(taken, {&1.app, &1.path}))
   end
+
+  # A diagnostic drop in a window with a nested compile: the warning text
+  # can reach the package there.
+  defp nested_drop({:drop, entry}, owner, nested) when entry in @diagnostic_drops do
+    case Map.fetch(nested, owner) do
+      {:ok, mfa} ->
+        {_first, app, key} = entry
+
+        {:unjudged,
+         "toolchain config read in a window with a nested compile (#{mfa}): " <>
+           "#{app} #{key} from #{elem(entry, 0)}"}
+
+      :error ->
+        :drop
+    end
+  end
+
+  defp nested_drop({:drop, _entry}, _owner, _nested), do: :drop
+  defp nested_drop(decision, _owner, _nested), do: decision
 
   defp add(acc, owner, _item, {:record, key}), do: put_key(acc, owner, key)
 
@@ -265,7 +307,7 @@ defmodule NccWorker.Portability.ConfigReads do
   defp toolchain_read({app, key}, first, {_elixir, %{record: record, drop: drop}}) do
     cond do
       {app, key} in record -> {:record, {app, key}}
-      {first, app, key} in drop -> :drop
+      {first, app, key} in drop -> {:drop, {first, app, key}}
       true -> {:unreviewed, "#{app} #{key}"}
     end
   end

@@ -613,4 +613,112 @@ defmodule NccWorker.Tracer.StackTest do
                errors_extent(errors_read() ++ [body], forged)
     end
   end
+
+  describe "a read made by the type checker's diagnostic formatting" do
+    @types_toolchain [
+      :application,
+      IO.ANSI,
+      Module.Types.Apply,
+      Module.ParallelChecker,
+      Enum,
+      :lists
+    ]
+
+    defp types_extent(stack, tc? \\ &(&1 in @types_toolchain)),
+      do: :ncc_tracer_stack.extent(stack, 64, tc?, true)
+
+    defp types_read,
+      do: [
+        f(:application, :get_env, 3),
+        f(IO.ANSI, :enabled?, 0),
+        f(Module.Types.Apply, :ansi_red, 1),
+        f(Module.Types.Apply, :args_to_quoted_string, 3),
+        f(Module.Types.Apply, :format_diagnostic, 1)
+      ]
+
+    test "stays first on the way down to the checker's grouping of diagnostics" do
+      reader = f(Module.Types.Apply, :ansi_red, 1)
+
+      for grouper <- [:group_diagnostics, :group_warnings] do
+        stack =
+          [
+            f(:application, :get_env, 3),
+            f(IO.ANSI, :enabled?, 0),
+            reader,
+            f(Module.Types.Apply, :"-args_to_quoted_string/3-fun-0-", 2),
+            f(Enum, :zip_with, 3),
+            f(Module.Types.Apply, :args_to_quoted_string, 3),
+            f(Module.Types.Apply, :format_diagnostic, 1)
+          ] ++
+            [
+              f(Module.ParallelChecker, :"-#{grouper}/1-fun-0-", 2),
+              f(:lists, :foldl, 3),
+              f(Module.ParallelChecker, grouper, 1),
+              f(Module.ParallelChecker, :check_module, 4)
+            ]
+
+        assert {:user, :lineage, ^reader, :none} = types_extent(stack)
+      end
+    end
+
+    test "is skipped when the text goes back to someone else" do
+      keep = f(PackageCode, :keep_message, 0, ~c"/p/deps/x/lib/x.ex", 3)
+
+      assert {:user, :frame, ^keep, ^keep} = types_extent(types_read() ++ [keep])
+
+      # The grouping function further down does not help: the package's
+      # frame in between asked for the text.
+      stack =
+        types_read() ++
+          [keep, f(Module.ParallelChecker, :group_diagnostics, 1)]
+
+      assert {:user, :frame, ^keep, ^keep} = types_extent(stack)
+    end
+
+    test "is skipped when another checker function asked for the text" do
+      verify = f(Module.ParallelChecker, :verify, 1)
+      stack = types_read() ++ [verify, f(Module.ParallelChecker, :group_diagnostics, 1)]
+
+      # The checker's verify/1 is a dispatcher: the read is not the formatter's.
+      assert {:user, :dispatcher, ^verify, :none} = types_extent(stack)
+    end
+
+    test "with no grouping function below, Apply's frames are skipped" do
+      check = f(Module.ParallelChecker, :check_module, 4)
+
+      assert {:user, :lineage, ^check, :none} = types_extent(types_read() ++ [check])
+      assert {:user, :lineage, :none, :none} = types_extent(types_read())
+    end
+
+    test "only the reading function stays first" do
+      other = f(Module.Types.Apply, :format_diagnostic, 1)
+      stack = [f(:application, :get_env, 3), f(IO.ANSI, :enabled?, 0), other]
+
+      assert {:user, :lineage, :none, :none} = types_extent(stack)
+    end
+
+    test "a package's module of the same name stays first" do
+      reader = f(Module.Types.Apply, :ansi_red, 1)
+      forged = &(&1 in @types_toolchain and &1 != Module.Types.Apply)
+      stack = types_read() ++ [f(PackageCode, :keep_message, 0)]
+
+      assert {:user, :frame, ^reader, ^reader} = types_extent(stack, forged)
+    end
+
+    test "a package's checker module of the same name ends the run" do
+      grouper = f(Module.ParallelChecker, :group_diagnostics, 1)
+      forged = &(&1 in @types_toolchain and &1 != Module.ParallelChecker)
+
+      assert {:user, :frame, ^grouper, ^grouper} =
+               types_extent(types_read() ++ [grouper], forged)
+    end
+
+    test "names the reader and the grouping functions it is scoped to" do
+      assert [{Module.Types.Apply, :ansi_red, Module.ParallelChecker, groupers}] =
+               :ncc_tracer_stack.diagnosers()
+
+      assert Enum.sort(groupers) == [:group_diagnostics, :group_warnings]
+      assert Module.Types.Apply in :ncc_tracer_stack.uncached()
+    end
+  end
 end
