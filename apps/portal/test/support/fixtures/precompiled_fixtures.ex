@@ -42,7 +42,10 @@ defmodule Portal.PrecompiledFixtures do
   Options: `:toolchain` (`"1.19/28"`), `:elixir` (`"1.19.1"`), `:otp` (`"28"`),
   `:builder_version` (1), `:finished_at` (`"2026-10-24T10:00:00Z"`),
   `:deps_lock`, `:package_checksum` (`"outer"`), `:compile_env` (`[]`),
-  `:compile_env_rule` (nil), `:status` (`"pass"`), `:mode` (`33_188`).
+  `:compile_env_rule` (nil, the result's R5 mark: 1 when `compile_env` also
+  lists the closure's traced config reads), `:status` (`"pass"`),
+  `:mode` (`33_188`), `:config_variant` (`"default"`, both the result's echo
+  and the job's value).
   """
   def ingest_toolchain_build(name, version, opts \\ []) do
     content = "toolchain-beam-#{name}-#{version}-#{System.unique_integer([:positive])}"
@@ -55,6 +58,8 @@ defmodule Portal.PrecompiledFixtures do
 
     deps_lock =
       Keyword.get(opts, :deps_lock, %{"decimal" => %{"version" => "2.1.1", "checksum" => "abc"}})
+
+    config_variant = Keyword.get(opts, :config_variant, "default")
 
     result = %{
       "scope" => "toolchain",
@@ -70,6 +75,7 @@ defmodule Portal.PrecompiledFixtures do
         "package_checksum" => Keyword.get(opts, :package_checksum, "outer"),
         "compile_env" => Keyword.get(opts, :compile_env, []),
         "compile_env_rule" => Keyword.get(opts, :compile_env_rule),
+        "config_variant" => config_variant,
         "file_manifest" => %{
           "ebin" => [
             %{
@@ -93,10 +99,21 @@ defmodule Portal.PrecompiledFixtures do
         files_dir: dir,
         output_dir: dir,
         toolchain: Keyword.get(opts, :toolchain, "1.19/28"),
-        builder_version: Keyword.get(opts, :builder_version, 1)
+        builder_version: Keyword.get(opts, :builder_version, 1),
+        config_variant: config_variant
       })
 
     build
+  end
+
+  @doc """
+  Drops the toolchain build identity's legacy five-column index inside the
+  test's sandbox transaction (rolled back with it), so a test can store a
+  second config variant of one identity. Callers are `async: false`.
+  """
+  def drop_legacy_identity_index! do
+    Portal.Repo.query!("DROP INDEX IF EXISTS #{Portal.Catalog.ToolchainIdentity.legacy_index()}")
+    :ok
   end
 
   defp result_fixture do

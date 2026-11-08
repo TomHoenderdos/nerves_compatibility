@@ -29,9 +29,22 @@ defmodule Portal.Catalog.ToolchainBuild do
   (`Portal.Catalog.toolchain_backlog/3`). A row written before variants
   existed was built the `:with` way, which is the default.
 
+  ## Config variants
+
+  A package that reads compile-time config compiles differently under the
+  config a client's project sets, and a client takes a build only when its
+  config agrees with the one the build was made in. So a version is also
+  built per `config_variant`: `"default"` writes no config at all, and a
+  `Compatibility.ConfigVariants` name (`"phx_prod"`, ...) has the worker
+  write that variant's overlay as the project's config before compiling. A
+  row written before config variants existed was built without an overlay,
+  which is the default.
+
   The identity is `(package_id, version, toolchain, builder_version,
-  variant)`: a new build of the same inputs replaces the row (`:upsert`), and
-  bumping `builder_version` keeps older builds side by side.
+  variant, config_variant)`: a new build of the same inputs replaces the row
+  (`:upsert`), and bumping `builder_version` keeps older builds side by side.
+  While the five-column index from before config variants still exists, only
+  the default can be stored (`Portal.Catalog.ToolchainIdentity`).
   """
 
   use Ash.Resource,
@@ -91,15 +104,35 @@ defmodule Portal.Catalog.ToolchainBuild do
     defaults([:read])
 
     create :create do
-      accept([:package_id, :version, :toolchain, :builder_version, :variant | @mutable])
+      accept([
+        :package_id,
+        :version,
+        :toolchain,
+        :builder_version,
+        :variant,
+        :config_variant
+        | @mutable
+      ])
+
+      validate({Portal.Catalog.ToolchainBuild.KnownConfigVariant, []})
       change(Portal.Catalog.ToolchainBuild.MarkRun)
     end
 
     create :upsert do
-      accept([:package_id, :version, :toolchain, :builder_version, :variant | @mutable])
+      accept([
+        :package_id,
+        :version,
+        :toolchain,
+        :builder_version,
+        :variant,
+        :config_variant
+        | @mutable
+      ])
+
+      validate({Portal.Catalog.ToolchainBuild.KnownConfigVariant, []})
       change(Portal.Catalog.ToolchainBuild.MarkRun)
       upsert?(true)
-      upsert_identity(:unique_identity)
+      upsert_identity(:unique_config_identity)
       # Every mutable field, so a rebuild fully replaces the previous outcome:
       # a field the new build leaves nil (a cleared `reason`) must not survive.
       # `revoked_at` is deliberately absent: a rebuild does not un-revoke.
@@ -161,7 +194,21 @@ defmodule Portal.Catalog.ToolchainBuild do
   end
 
   identities do
+    # The identity before config variants, kept while the release before
+    # them may still be running: its upserts name these five columns. A later
+    # migration drops it; until then it also stops a second config variant
+    # of an identity being stored, which the backlog respects
+    # (`Portal.Catalog.ToolchainIdentity.config_variants_ready?/0`).
     identity(:unique_identity, [:package_id, :version, :toolchain, :builder_version, :variant])
+
+    identity(:unique_config_identity, [
+      :package_id,
+      :version,
+      :toolchain,
+      :builder_version,
+      :variant,
+      :config_variant
+    ])
   end
 
   attributes do
@@ -192,6 +239,16 @@ defmodule Portal.Catalog.ToolchainBuild do
       public?(true)
       default(:with)
       constraints(one_of: [:with, :without])
+    end
+
+    # The config variant (precompiled portability spec, R7) the build was
+    # made in: "default" (no overlay) or a `Compatibility.ConfigVariants`
+    # name, whose overlay the worker wrote as the project's config. Part of
+    # the identity.
+    attribute :config_variant, :string do
+      allow_nil?(false)
+      public?(true)
+      default("default")
     end
 
     attribute :status, :atom do
