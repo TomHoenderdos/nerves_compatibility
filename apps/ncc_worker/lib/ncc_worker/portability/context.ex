@@ -4,8 +4,10 @@ defmodule NccWorker.Portability.Context do
   the closure the driver compiled (each dependency's source dir, build dir,
   manager, Hex file list and whether it builds native code), the windows and
   quiet intervals, the roots R2 searches literals for, the modules the
-  tracer loaded before anything compiled (`preloaded`), and the windows
-  package code started a nested compile in (`nested`).
+  tracer loaded before anything compiled (`preloaded`), the windows
+  package code started a nested compile in (`nested`), and, for the VM
+  whose events are being decided, its `code:ensure_loaded/1` probes
+  (`ensured`, `NccWorker.Portability.Probes.ensured/1`).
 
   Every app here is an OTP app name, as the trace's closure line carries
   them. The `package` given to `build/4` may be a Hex name that is not its
@@ -58,7 +60,8 @@ defmodule NccWorker.Portability.Context do
     cd: MapSet.new(),
     hex: {nil, %{}},
     preloaded: %{},
-    nested: %{}
+    nested: %{},
+    ensured: %{}
   ]
 
   @type dep :: %{
@@ -82,7 +85,8 @@ defmodule NccWorker.Portability.Context do
           cd: MapSet.t(),
           hex: {String.t() | nil, map()},
           preloaded: %{String.t() => String.t()},
-          nested: %{(String.t() | atom()) => String.t()}
+          nested: %{(String.t() | atom()) => String.t()},
+          ensured: %{{term(), String.t(), String.t()} => integer()}
         }
 
   @max_hops 40

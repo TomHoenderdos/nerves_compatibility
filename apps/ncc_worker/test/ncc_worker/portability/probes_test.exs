@@ -90,6 +90,88 @@ defmodule NccWorker.Portability.ProbesTest do
     end
   end
 
+  # `Code.ensure_loaded?(:json) and function_exported?(:json, f, a)`: the
+  # ensure_loaded loads :json untraced too (stdlib is on every path), so by
+  # the time the same process asks function_exported/3 the module is loaded
+  # either way and the answer is the same.
+  describe "function_exported/3 after the same process ensure-loaded the module" do
+    defp at(event, pid, ts),
+      do: Map.merge(event, %{"pid" => pid, "ts" => ts, "extent" => "frame"})
+
+    defp ensured(c, owned), do: %{c | ensured: Probes.ensured(owned)}
+
+    test "is the same answer in that process's window", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"], "dep" => ["kernel"]})
+      loaded = probe("json") |> at("<0.10.0>", 100)
+      exported = probe("json", mfa: "erlang:function_exported/3") |> at("<0.10.0>", 200)
+
+      assert {:unjudged, _} = Probes.decide(exported, c, "pkg")
+      c = ensured(c, [{"pkg", loaded}])
+      assert Probes.decide(exported, c, "pkg") == :ignore
+
+      # A closure dependency's window is judged the same way.
+      assert Probes.decide(exported, ensured(c, [{"dep", loaded}]), "dep") == :ignore
+    end
+
+    test "is judged when anything else differs", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"], "dep" => ["kernel"]})
+      loaded = probe("json") |> at("<0.10.0>", 100)
+      exported = probe("json", mfa: "erlang:function_exported/3") |> at("<0.10.0>", 200)
+
+      cases = [
+        # Another process, the same instant, later, another window, another module.
+        {[{"pkg", at(loaded, "<0.11.0>", 100)}], exported, "pkg"},
+        {[{"pkg", at(loaded, "<0.10.0>", 200)}], exported, "pkg"},
+        {[{"pkg", at(loaded, "<0.10.0>", 300)}], exported, "pkg"},
+        {[{"dep", loaded}], exported, "pkg"},
+        {[{"pkg", probe("dbg") |> at("<0.10.0>", 100)}], exported, "pkg"},
+        # Not an ensure_loaded: which/1 and get_object_code/1 load nothing.
+        {[{"pkg", probe("json", mfa: "code:which/1") |> at("<0.10.0>", 100)}], exported, "pkg"},
+        {[{"pkg", probe("json", mfa: "code:get_object_code/1") |> at("<0.10.0>", 100)}], exported,
+         "pkg"},
+        # The checker's own lookups, or an unjudged stack.
+        {[{"pkg", put_in(loaded, ["arg", "checker"], true)}], exported, "pkg"},
+        {[{"pkg", Map.put(loaded, "extent", "unjudged")}], exported, "pkg"},
+        # No window: nobody's package or closure.
+        {[{:outside, loaded}], exported, :outside},
+        # No pid or no time on either.
+        {[{"pkg", Map.delete(loaded, "pid")}], Map.delete(exported, "pid"), "pkg"},
+        {[{"pkg", Map.delete(loaded, "ts")}], exported, "pkg"},
+        {[{"pkg", loaded}], Map.delete(exported, "ts"), "pkg"}
+      ]
+
+      for {owned, event, owner} <- cases do
+        assert {:unjudged, _} = Probes.decide(event, ensured(c, owned), owner),
+               inspect({owned, event, owner})
+      end
+    end
+
+    test "only for a module on the owner's path, never the tracer's", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel", "inets"]})
+
+      for {module, verdict} <- [
+            {"httpc", :ignore},
+            {"dbg", :unjudged},
+            {"ncc_tracer_digest", :unjudged}
+          ] do
+        loaded = probe(module) |> at("<0.10.0>", 100)
+        exported = probe(module, mfa: "erlang:function_exported/3") |> at("<0.10.0>", 200)
+        decision = Probes.decide(exported, ensured(c, [{"pkg", loaded}]), "pkg")
+        assert if(decision == :ignore, do: :ignore, else: elem(decision, 0)) == verdict, module
+      end
+    end
+
+    test "only function_exported/3: the other loaded-now probes stay judged", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"]})
+      c = ensured(c, [{"pkg", probe("json") |> at("<0.10.0>", 100)}])
+
+      for mfa <- ~w(code:is_loaded/1 code:module_status/1 erlang:module_loaded/1) do
+        event = probe("json", mfa: mfa) |> at("<0.10.0>", 200)
+        assert {:unjudged, _} = Probes.decide(event, c, "pkg"), mfa
+      end
+    end
+  end
+
   test "a probe the code server makes inside a traced probe is that probe's", %{tmp_dir: dir} do
     c = ctx(dir, %{"pkg" => ["kernel"]})
 

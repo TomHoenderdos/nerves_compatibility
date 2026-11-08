@@ -383,6 +383,36 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert Enum.any?(probes(traced), &(&1["arg"]["module"] == "json"))
   end
 
+  # The pattern published packages use (jsv's native codec):
+  # `Code.ensure_loaded?(:json) && function_exported?(:json, f, a)`. The
+  # ensure_loaded loads :json untraced too, so the same process's
+  # function_exported/3 right after it answers the same traced or not.
+  test "function_exported of json after the same process ensure-loaded it passes",
+       %{tmp_dir: dir} do
+    expr = "Code.ensure_loaded?(:json) && function_exported?(:json, :encode, 1)"
+    proj = probe_fixture(dir, [], expr)
+    {untraced, host, traced} = both(proj)
+    assert BuildIdentity.differences(host, untraced) == []
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert Enum.any?(probes(traced), &(&1["mfa"] == "erlang:function_exported/3")),
+           "the probe was not traced, so the test shows nothing"
+  end
+
+  # Without the ensure_loaded first, nothing in an untraced compile has
+  # loaded :json by then: the answer is `false` untraced and `true` traced.
+  test "function_exported of json alone differs and is not judged", %{tmp_dir: dir} do
+    proj = probe_fixture(dir, [], "function_exported?(:json, :encode, 1)")
+    {untraced, host, traced} = both(proj)
+    refute host == untraced
+
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert ("compile-time probe of a module the trace loaded: json (stdlib) by " <>
+              "erlang:function_exported/3") in obs["problems"]
+  end
+
   # Mix loads these itself before it evaluates a dependency's mix.exs or
   # compiles anything, so the tracer does not count them as its own
   # (`:ncc_tracer.loaded_by_mix/0`): every kind of probe of them, from a

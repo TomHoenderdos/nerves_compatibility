@@ -27,7 +27,24 @@ defmodule NccWorker.Portability.Probes do
     * `code:is_loaded/1`, `code:module_status/1`, `erlang:module_loaded/1`
       and `erlang:function_exported/3` ask whether it is loaded now: `true`
       under the trace, `false` untraced until something loads it, listed or
-      not. Never the same answer.
+      not. Never the same answer, with one exception.
+    * `erlang:function_exported/3` of a module that the same process
+      ensure-loaded earlier in the same window, both in the package's or a
+      closure dependency's window, when that `code:ensure_loaded/1` was the
+      same answer by the rule above (the module's application is on the
+      owner's path, never the tracer's). Untraced, that ensure_loaded loaded
+      the module, so by the time the process asks, the module is loaded
+      either way and the answer is its exports either way: the
+      `Code.ensure_loaded?(:json) and function_exported?(:json, f, a)` of
+      published packages. Only the same process (`pid`) and a strictly
+      earlier time (`ts`): another process's load is not ordered before the
+      probe. Neither VM's clock nor pids mean anything in another's, so
+      `ensured` holds the ensure_loaded probes of the VM being decided only
+      (`NccWorker.Portability.decide_all`). Not the other loaded-now probes:
+      no published package needs them. A package that deletes the module
+      between the two calls (`erlang:delete_module/1`, which the trace does
+      not watch) could make the tracer's own next use reload it; that is a
+      deliberate attack on the trace, which the spec leaves out of scope.
 
   The tracer's own modules (application `ncc_tracer`) do not exist in an
   untraced compile and are on no path. The few modules Mix itself loads in
@@ -84,6 +101,8 @@ defmodule NccWorker.Portability.Probes do
   @path_probes ~w(code:ensure_loaded/1 code:which/1 code:get_object_code/1)
   @probe_functions ~w(ensure_loaded is_loaded which module_status get_object_code)
   @always ~w(kernel stdlib elixir compiler logger)
+  # The stacks the tracer judged (`NccWorker.Portability.Events`).
+  @extents ~w(frame dispatcher truncated lineage)
 
   @doc """
   `:ignore`, or `{:unjudged, why}` for a probe whose answer may differ
@@ -133,13 +152,62 @@ defmodule NccWorker.Portability.Probes do
   def decide(event, _ctx, _owner),
     do: {:unjudged, "unreadable probe event: #{inspect(event["mfa"])}"}
 
+  @doc """
+  The `code:ensure_loaded/1` probes among one VM's `{owner, event}` pairs,
+  by `{owner, pid, module}`, each with the earliest time it was made. Only
+  a probe on a stack the tracer judged, not the type checker's, with a pid
+  and a time.
+  """
+  @spec ensured([{term(), map()}]) :: %{{term(), String.t(), String.t()} => integer()}
+  def ensured(owned_events) do
+    for {owner, event} <- owned_events, key = ensure_key(owner, event), key != nil, reduce: %{} do
+      acc -> Map.update(acc, key, event["ts"], &min(&1, event["ts"]))
+    end
+  end
+
+  defp ensure_key(owner, %{
+         "channel" => "probe",
+         "mfa" => "code:ensure_loaded/1",
+         "arg" => %{"module" => module} = arg,
+         "pid" => pid,
+         "ts" => ts,
+         "extent" => extent
+       })
+       when is_binary(module) and is_binary(pid) and is_integer(ts) and extent in @extents do
+    if arg["checker"] in [nil, false], do: {owner, pid, module}
+  end
+
+  defp ensure_key(_owner, _event), do: nil
+
   defp decide(event, module, app, ctx, owner) do
     cond do
       nested?(event) -> :ignore
       event["mfa"] in @path_probes -> on_path(module, app, ctx, owner)
+      ensured_before?(event, module, app, ctx, owner) -> :ignore
       true -> {:unjudged, "#{why(module, app)} by #{event["mfa"]}"}
     end
   end
+
+  # function_exported/3 after the same process's own same-answer
+  # ensure_loaded of the module, in the same window (moduledoc).
+  defp ensured_before?(
+         %{"mfa" => "erlang:function_exported/3", "pid" => pid, "ts" => ts},
+         module,
+         app,
+         ctx,
+         owner
+       )
+       when is_binary(pid) and is_integer(ts) do
+    case Map.fetch(ctx.ensured, {owner, pid, module}) do
+      {:ok, first} when first < ts ->
+        Context.dep?(ctx, owner) and on_path(module, app, ctx, owner) == :ignore
+
+      _ ->
+        false
+    end
+  end
+
+  defp ensured_before?(_event, _module, _app, _ctx, _owner), do: false
 
   # A child VM's probe names its own VM's application for the module.
   defp app(%{"app" => app}, _module, _ctx) when is_binary(app), do: app

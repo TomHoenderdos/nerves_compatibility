@@ -73,6 +73,7 @@ defmodule NccWorker.Portability do
     ElixirVersion,
     Events,
     MappedLibs,
+    Probes,
     Rebar
   }
 
@@ -409,20 +410,24 @@ defmodule NccWorker.Portability do
   # Every event as `{owner, decision}`: the Mix VM's by `Context.owner/2`,
   # a closure dependency's child VM's by its app (child clocks do not align
   # with the Mix VM's windows). One `MixExsSlice.analyse/1` per `mix.exs`.
+  # Each VM's events are decided with that VM's own ensure_loaded probes
+  # (`Context.ensured`): pids and times mean nothing in another VM.
   defp decide_all(report, ctx, scope) do
     main = for event <- report.events, do: {Context.owner(ctx, event), event}
 
     children =
       for {app, child} <- Enum.sort(report.children),
           Context.dep?(ctx, app),
-          event <- child.events,
-          do: {app, event}
+          do: for(event <- child.events, do: {app, event})
 
-    owned = main ++ children
+    vms = [main | children]
+    owned = Enum.concat(vms)
     slices = Events.mix_exs_slices(ctx, Enum.reject(owned, &match?({:quiet, _}, &1)))
 
-    for {owner, event} <- owned,
-        decision = Events.decide(event, ctx, owner, slices),
+    for vm <- vms,
+        vm_ctx = %{ctx | ensured: Probes.ensured(vm)},
+        {owner, event} <- vm,
+        decision = Events.decide(event, vm_ctx, owner, slices),
         kept = keep(owner, decision, scope),
         kept != nil,
         do: kept
