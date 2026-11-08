@@ -22,7 +22,11 @@ defmodule NccWorker.Portability.ConfigReads do
       (`:elixir, :ansi_enabled` as read for `Mix.Shell.IO`, Logger's
       handler, the compiler's diagnostics printer and the type checker's
       warning formatter, which colour terminal output and generate no
-      code), and otherwise cannot be judged: an
+      code), refused when `{first frame, app, key}` is on its reviewed
+      `refuse` list (OTP's certificate store, TLS version table and socket
+      options, which read their key only on the way to the host's CA
+      store, its crypto library or the network: the compile reached the
+      host), and otherwise cannot be judged: an
       unknown toolchain read may change code, so the build does not
       publish. It is also listed in `unreviewed` for the review. A toolchain
       with no reviewed lists judges no build with such a read. The tracer
@@ -141,17 +145,44 @@ defmodule NccWorker.Portability.ConfigReads do
   # its output.
   @diagnostic_drops [@type_checker_ansi]
 
+  # OTP's own reads on the way to the host, each in one function of its
+  # module (pinned per toolchain by ConfigReadsTest), and each beside the
+  # host read the same call makes, which a toolchain read must not hide as
+  # unreviewed:
+  #
+  #   * `pubkey_os_cacerts:get/0` (`:public_key.cacerts_get/0`, Mint's,
+  #     RustlerPrecompiled's and Hex's TLS setup) picks the CA file to load
+  #     by `cacerts_path`, then loads the host's CA store and returns it;
+  #   * `tls_record` and `dtls_record`'s `supported_protocol_versions/0`
+  #     (`:ssl.versions/0` and every TLS connection's options) check this
+  #     host's crypto library for each version the key allows;
+  #   * `inet:connect_options/2` builds the socket options of an outgoing
+  #     connection (`:gen_tcp.connect`, and so every TLS connection).
+  #
+  # The value never decides only output: the CA store, the versions or the
+  # connection come back to the caller. So these refuse, from those frames
+  # only; a package reading the same key itself records it.
+  @host_reads [
+    {"pubkey_os_cacerts", "public_key", "cacerts_path"},
+    {"tls_record", "ssl", "protocol_version"},
+    {"dtls_record", "ssl", "dtls_protocol_version"},
+    {"inet", "kernel", "inet_default_connect_options"}
+  ]
+
   # Per Elixir minor, the toolchain's own compile-time config reads, reviewed
   # against real compiles: `record` ({app, key}) changes generated code;
-  # `drop` ({first frame module, app, key}) does not.
+  # `drop` ({first frame module, app, key}) does not; `refuse` (the same
+  # shape) means the compile reached the host.
   @reviewed %{
     "1.19" => %{
       record: @logger_compile_keys,
-      drop: [@mix_shell_ansi, @logger_handler_ansi, @compiler_diagnostic_ansi, @type_checker_ansi]
+      drop: [@mix_shell_ansi, @logger_handler_ansi, @compiler_diagnostic_ansi, @type_checker_ansi],
+      refuse: @host_reads
     },
     "1.20" => %{
       record: @logger_compile_keys,
-      drop: [@mix_shell_ansi, @logger_handler_ansi, @compiler_diagnostic_ansi, @type_checker_ansi]
+      drop: [@mix_shell_ansi, @logger_handler_ansi, @compiler_diagnostic_ansi, @type_checker_ansi],
+      refuse: @host_reads
     }
   }
 
@@ -173,7 +204,11 @@ defmodule NccWorker.Portability.ConfigReads do
 
   @doc "The reviewed toolchain reads for Elixir version `elixir`, or nil."
   @spec reviewed(term()) ::
-          %{record: [{String.t(), String.t()}], drop: [{String.t(), String.t(), String.t()}]}
+          %{
+            record: [{String.t(), String.t()}],
+            drop: [{String.t(), String.t(), String.t()}],
+            refuse: [{String.t(), String.t(), String.t()}]
+          }
           | nil
   def reviewed(elixir) when is_binary(elixir) do
     case Version.parse(elixir) do
@@ -294,21 +329,36 @@ defmodule NccWorker.Portability.ConfigReads do
        )
        when is_binary(app) and is_binary(key) do
     if toolchain?(item),
-      do: toolchain_read({app, key}, item["first"], toolchain),
+      do: toolchain_read(item, {app, key}, item["first"], toolchain),
       else: {:record, {app, key}}
   end
 
   defp classify(item, _toolchain),
     do: {:refuse, reason(item, "names a non-atom application or key")}
 
-  defp toolchain_read(_key, _first, {elixir, nil}),
+  defp toolchain_read(_item, _key, _first, {elixir, nil}),
     do: {:unjudged, "no reviewed config reads for Elixir #{minor(elixir)}"}
 
-  defp toolchain_read({app, key}, first, {_elixir, %{record: record, drop: drop}}) do
+  defp toolchain_read(item, {app, key}, first, {_elixir, reviewed}) do
+    %{record: record, drop: drop, refuse: refuse} = reviewed
+
     cond do
-      {app, key} in record -> {:record, {app, key}}
-      {first, app, key} in drop -> {:drop, {first, app, key}}
-      true -> {:unreviewed, "#{app} #{key}"}
+      {app, key} in record ->
+        {:record, {app, key}}
+
+      {first, app, key} in drop ->
+        {:drop, {first, app, key}}
+
+      {first, app, key} in refuse ->
+        {:refuse,
+         reason(
+           item,
+           "#{key} is read by OTP's certificate, TLS or socket code (#{first}): " <>
+             "the compile reached the host's CA store, crypto or network"
+         )}
+
+      true ->
+        {:unreviewed, "#{app} #{key}"}
     end
   end
 

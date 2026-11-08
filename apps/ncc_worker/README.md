@@ -399,7 +399,8 @@ compile-time config reads the trace records while the package's dependency closu
 config gives in a Mix VM before any dependency loads (`:error` when unset), the same lookup a client makes; such a
 build has `"compile_env_rule": 1`, every other build `null`. The items never enter the published `.app`. Reads the
 toolchain's own code makes are recorded only when they are reviewed as changing generated code (Logger's compile-time
-keys) and dropped when reviewed as not changing it; a toolchain read not yet reviewed makes the build "portability
+keys), dropped when reviewed as not changing it, and refused when reviewed as reaching the host (OTP's CA store, TLS
+version and socket option reads: `compile-time config read: ...`); a toolchain read not yet reviewed makes the build "portability
 could not be judged" and is listed in `compile_observations.config_unreviewed`. A read of Hex's config (`:hex`, any key:
 the builder's API and mirror URLs, repos, proxies and keys) is never recorded and makes the build "portability could not
 be judged" too. `get_all_env` from package code, a read naming a non-atom key, and a compile-time Elixir version read

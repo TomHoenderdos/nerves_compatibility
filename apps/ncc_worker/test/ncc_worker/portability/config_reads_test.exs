@@ -271,6 +271,41 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     end
   end
 
+  # OTP's certificate store, TLS version table and socket options read
+  # their own application env only on the way to the host's CA store, its
+  # crypto library or the network: the compile reached the host.
+  test "OTP's certificate, TLS and socket config reads refuse, from those frames only" do
+    reads = [
+      {"pubkey_os_cacerts", "public_key", "cacerts_path"},
+      {"tls_record", "ssl", "protocol_version"},
+      {"dtls_record", "ssl", "dtls_protocol_version"},
+      {"inet", "kernel", "inet_default_connect_options"}
+    ]
+
+    for elixir <- ["1.19.5", "1.20.4"],
+        do: assert(Enum.sort(ConfigReads.reviewed(elixir).refuse) == Enum.sort(reads))
+
+    for {first, app, key} <- reads do
+      decided = [obs("dep", read(app, key, kind: "toolchain", first: first))]
+
+      assert %{items: [], problems: [], unreviewed: [], refusals: [{"dep", {:refuse, why}}]} =
+               judge(decided, snap(%{}))
+
+      assert why ==
+               "compile-time config read: application:get_env/2 (#{app}) #{key} " <>
+                 "is read by OTP's certificate, TLS or socket code (#{first}): " <>
+                 "the compile reached the host's CA store, crypto or network in Pkg (lib/pkg.ex:3)"
+
+      # Package code reading the same key itself records it, and another
+      # toolchain frame's read stays unreviewed.
+      set = snap(%{{app, key} => enc({:ok, 1})})
+      assert keys(judge([obs("dep", read(app, key))], set)) == [{app, [key]}]
+
+      other = [obs("dep", read(app, key, kind: "toolchain", first: "ssl_config"))]
+      assert %{refusals: [], problems: [_]} = judge(other, snap(%{}))
+    end
+  end
+
   test "a read reached through glue, or with no first frame, is the package's own" do
     decided = [
       obs("pkg", read("elixir", "ansi_enabled", kind: "glue", first: "Elixir.Enum")),
@@ -602,6 +637,36 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     end
   end
 
+  # Each refused read's key is read in one function of its module, on the
+  # way to the host: `pubkey_os_cacerts:get/0` loads the host's CA store,
+  # the TLS and DTLS version tables check this host's crypto library for
+  # each version, and `inet:connect_options/2` builds a connection's
+  # socket options.
+  test "the refused reads are each read in the one function that reaches the host" do
+    for {module, app, key, reader} <- [
+          {:pubkey_os_cacerts, :public_key, :cacerts_path, :get},
+          {:tls_record, :ssl, :protocol_version, :supported_protocol_versions},
+          {:dtls_record, :ssl, :dtls_protocol_version, :supported_protocol_versions},
+          {:inet, :kernel, :inet_default_connect_options, :connect_options}
+        ] do
+      forms = module_forms(module, Path.join(:code.lib_dir(app), "src/#{module}.erl"))
+      assert env_readers(forms, app, key) == [reader], inspect(module)
+
+      assert {"#{module}", "#{app}", "#{key}"} in ConfigReads.reviewed(System.version()).refuse
+    end
+
+    cacerts_src = Path.join(:code.lib_dir(:public_key), "src/pubkey_os_cacerts.erl")
+    assert :get in callers(module_forms(:pubkey_os_cacerts, cacerts_src), :load)
+
+    for {module, check} <- [
+          tls_record: :sufficient_support,
+          dtls_record: :sufficient_dtlsv1_2_crypto_support
+        ] do
+      forms = module_forms(module, Path.join(:code.lib_dir(:ssl), "src/#{module}.erl"))
+      assert :supported_protocol_versions in callers(forms, check), inspect(module)
+    end
+  end
+
   # OTP's `logger_h_common` forms.
   defp handler_forms,
     do:
@@ -618,6 +683,24 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     else
       beam_forms(module, source)
     end
+  end
+
+  # The functions that call `application:get_env(app, key)`, or any
+  # `application` env read of `app` whose key is not that literal (fail
+  # closed: a computed key could be `key`).
+  defp env_readers(forms, app, key) do
+    for {:function, _, name, _, clauses} <- forms,
+        has_call?(clauses, fn
+          {:call, _, {:remote, _, {:atom, _, :application}, {:atom, _, f}},
+           [{:atom, _, ^app}, k | _]}
+          when f in [:get_env, :fetch_env, :get_all_env] ->
+            not match?({:atom, _, other} when other != key, k)
+
+          _ ->
+            false
+        end),
+        uniq: true,
+        do: name
   end
 
   # The functions that mention `key` as an atom.

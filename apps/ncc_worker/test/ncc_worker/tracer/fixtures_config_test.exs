@@ -392,6 +392,42 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
         end
         """
       }),
+    # OTP's certificate store and TLS stack read their own application env
+    # when a compile loads the host's CA certificates, asks which TLS
+    # versions this host's crypto supports, or opens a connection.
+    "fx_net_cacerts" =>
+      lib(
+        "fx_net_cacerts",
+        """
+        defmodule FxNetCacerts do
+          @n (try do
+                length(:public_key.cacerts_get())
+              rescue
+                _ -> 0
+              end)
+          def n, do: @n
+        end
+        """,
+        %{extra_applications: [:public_key]}
+      ),
+    "fx_net_tls" =>
+      lib(
+        "fx_net_tls",
+        """
+        defmodule FxNetTls do
+          @v :ssl.versions()
+          def v, do: @v
+        end
+        """,
+        %{extra_applications: [:ssl]}
+      ),
+    "fx_net_connect" =>
+      lib("fx_net_connect", """
+      defmodule FxNetConnect do
+        @r elem(:gen_tcp.connect(~c"127.0.0.1", 1, [], 100), 0)
+        def r, do: @r
+      end
+      """),
     "fx_ver_minor" =>
       lib("fx_ver_minor", """
       defmodule FxVerMinor do
@@ -499,7 +535,10 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
     "fx_tc_shell",
     "fx_tc_native",
     "fx_tc_checker",
-    "fx_tc_types"
+    "fx_tc_types",
+    "fx_net_cacerts",
+    "fx_net_tls",
+    "fx_net_connect"
   ]
 
   setup_all do
@@ -664,10 +703,12 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
           into: MapSet.new(),
           do: {r["first"], r["arg"]["app_name"], r["arg"]["key_name"]}
 
-    %{record: record, drop: drop} = ConfigReads.reviewed(System.version())
+    %{record: record, drop: drop, refuse: refuse} = ConfigReads.reviewed(System.version())
 
     expected =
-      MapSet.new(Enum.map(record, fn {app, key} -> {"Elixir.Logger", app, key} end) ++ drop)
+      MapSet.new(
+        Enum.map(record, fn {app, key} -> {"Elixir.Logger", app, key} end) ++ drop ++ refuse
+      )
 
     assert observed == expected, inspect(MapSet.to_list(observed))
   end
@@ -714,6 +755,41 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
 
       for r <- v.observations["config_reads"],
           do: assert(r["first_kind"] in ["user", "glue"], "#{app}: #{inspect(r)}")
+    end
+  end
+
+  # A compile that loads the host's CA certificates, asks which TLS versions
+  # this host's crypto supports or opens a connection reaches the host: the
+  # certificate store's and the TLS and socket code's own config reads say so
+  # and refuse, beside the host read the same call makes.
+  test "OTP's certificate, TLS and socket config reads refuse", ctx do
+    for {app, reads} <- [
+          {"fx_net_cacerts", [{"pubkey_os_cacerts", "public_key", "cacerts_path"}]},
+          {"fx_net_tls",
+           [
+             {"tls_record", "ssl", "protocol_version"},
+             {"dtls_record", "ssl", "dtls_protocol_version"}
+           ]},
+          {"fx_net_connect", [{"inet", "kernel", "inet_default_connect_options"}]}
+        ] do
+      v = verdict(ctx, app)
+      assert %{status: :skip, observations: obs} = v
+      assert obs["problems"] == [], "#{app}: #{inspect(obs["problems"])}"
+      assert obs["config_unreviewed"] == [], app
+      assert String.starts_with?(v.reason, "compile-time "), "#{app}: #{v.reason}"
+      refusals = for %{"owner" => ^app, "reason" => r} <- obs["refusals"], do: r
+
+      for {first, read_app, key} <- reads do
+        assert Enum.any?(
+                 refusals,
+                 &(String.starts_with?(&1, "compile-time config read: ") and
+                     &1 =~ "(#{read_app}) #{key} " and &1 =~ "(#{first})")
+               ),
+               "#{app}: #{inspect(refusals)}"
+      end
+
+      # The same call is a host read of its own.
+      assert Enum.any?(refusals, &String.starts_with?(&1, "compile-time host read: ")), app
     end
   end
 
