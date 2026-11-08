@@ -154,8 +154,11 @@ defmodule Portal.Catalog.IngestionConfigVariantTest do
     assert build.file_manifest != nil
   end
 
+  # The default's `:error` row carries a count; a lookup for the named
+  # variant of the same identity must not read it.
   test "a transient error of a named variant counts on its own row only" do
-    ingest_toolchain_build("cvpkg5", "1.0.0", compile_env: default_env(), compile_env_rule: 1)
+    transient("cvpkg5", [])
+    transient("cvpkg5", [])
     package_id = hd(rows("cvpkg5")).package_id
     opts = %{version: "1.0.0", toolchain: "1.19/28", builder_version: 1, variant: :with}
 
@@ -164,7 +167,7 @@ defmodule Portal.Catalog.IngestionConfigVariantTest do
              Map.put(opts, :config_variant, "phx_prod")
            ) == 0
 
-    assert Ingestion.previous_transient_attempts(package_id, opts) == 0
+    assert Ingestion.previous_transient_attempts(package_id, opts) == 2
   end
 
   # With an `:error` row for both the default and a named variant of one
@@ -198,6 +201,49 @@ defmodule Portal.Catalog.IngestionConfigVariantTest do
 
     assert [%{config_variant: "default", status: :pass}, %{config_variant: "phx_prod"}] =
              "cvpkg7" |> rows() |> Enum.sort_by(& &1.config_variant)
+  end
+
+  # The release before config variants joined these with "@"; a default row
+  # must keep taking exactly that lock, so both releases serialise on it.
+  test "a default's lock key is the literal key of the release before" do
+    base = %{
+      package: "jason",
+      version: "1.4.4",
+      toolchain: "1.20/29",
+      builder_version: 3,
+      variant: :without
+    }
+
+    assert Ingestion.toolchain_lock_key(base) == "toolchain_build@jason@1.4.4@1.20/29@3@without"
+
+    assert Ingestion.toolchain_lock_key(Map.put(base, :config_variant, "default")) ==
+             "toolchain_build@jason@1.4.4@1.20/29@3@without"
+  end
+
+  # Revoking a withheld row re-reads it under its identity's lock, which must
+  # be the lock its own ingest takes.
+  test "marking a row withheld takes the lock its ingest takes" do
+    ingest_toolchain_build("cvpkg8", "1.0.0", compile_env: default_env(), compile_env_rule: 1)
+
+    ingest_toolchain_build("cvpkg8", "1.0.0",
+      config_variant: "phx_prod",
+      compile_env: prod_env(),
+      compile_env_rule: 1
+    )
+
+    for row <-
+          ToolchainBuild
+          |> Ash.Query.filter(package.name == "cvpkg8")
+          |> Ash.Query.load(:package)
+          |> Ash.read!(domain: Portal.Catalog) do
+      job =
+        "cvpkg8"
+        |> ingest_opts("1.0.0", config_variant: row.config_variant)
+        |> Map.put(:variant, :with)
+
+      assert Ingestion.toolchain_lock_key(Portal.Catalog.toolchain_lock_identity(row)) ==
+               Ingestion.toolchain_lock_key(job)
+    end
   end
 
   test "a default's lock key is unchanged; a named one's differs" do

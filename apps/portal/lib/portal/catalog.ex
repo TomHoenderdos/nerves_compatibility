@@ -1772,14 +1772,7 @@ defmodule Portal.Catalog do
   # Re-reads the row under the identity lock: what the first read saw may
   # have changed before the lock was taken.
   defp mark_locked(row, packages) do
-    :ok =
-      Portal.Catalog.Ingestion.lock_toolchain_identity(%{
-        package: row.package.name,
-        version: row.version,
-        toolchain: row.toolchain,
-        builder_version: row.builder_version,
-        variant: row.variant
-      })
+    :ok = Portal.Catalog.Ingestion.lock_toolchain_identity(toolchain_lock_identity(row))
 
     current = toolchain_builds_by_id([row.id])[row.id]
 
@@ -1802,6 +1795,21 @@ defmodule Portal.Catalog do
   end
 
   defp marked({:error, error}), do: {:skip, "not marked: " <> Exception.message(error)}
+
+  @doc false
+  # The identity a stored toolchain build's ingest locks on
+  # (`Portal.Catalog.Ingestion.lock_toolchain_identity/1`). `row` has its
+  # package loaded.
+  def toolchain_lock_identity(%ToolchainBuild{} = row) do
+    %{
+      package: row.package.name,
+      version: row.version,
+      toolchain: row.toolchain,
+      builder_version: row.builder_version,
+      variant: row.variant,
+      config_variant: row.config_variant
+    }
+  end
 
   defp markable(nil, _packages), do: {:skip, "no such toolchain build"}
   defp markable(%ToolchainBuild{revoked_at: nil}, _packages), do: {:skip, "not revoked"}

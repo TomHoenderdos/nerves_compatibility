@@ -71,6 +71,9 @@ defmodule Portal.Catalog.Ingestion do
   # paths sit under.
   @manifest_keys ["ebin", "priv"]
 
+  # The config variant of every build without an overlay.
+  @default_config_variant ConfigVariants.default()
+
   # The worker caps argus findings at 200, so one batch covers a whole run.
   @max_triage_batch 200
 
@@ -490,7 +493,7 @@ defmodule Portal.Catalog.Ingestion do
   # (`ConfigVariants.overlay_recorded/2`). Anything else is a deterministic
   # skip with no files.
   defp gate_config_variant(%{"status" => "pass"} = build, %{config_variant: name})
-       when name != "default" do
+       when name != @default_config_variant do
     with {:mark, 1} <- {:mark, compile_env_rule(build["compile_env_rule"], build["compile_env"])},
          :ok <- ConfigVariants.overlay_recorded(name, compile_env(build["compile_env"])) do
       build
@@ -536,7 +539,7 @@ defmodule Portal.Catalog.Ingestion do
     # A default's key is the one the release before config variants takes,
     # so both releases serialise their writes of a default row on one lock.
     case Map.get(opts, :config_variant, ConfigVariants.default()) do
-      "default" -> Enum.join(base, "@")
+      @default_config_variant -> Enum.join(base, "@")
       name -> Enum.join(base ++ [name], "@")
     end
   end
