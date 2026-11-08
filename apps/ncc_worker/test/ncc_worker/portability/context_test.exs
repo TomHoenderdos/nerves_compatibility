@@ -292,6 +292,39 @@ defmodule NccWorker.Portability.ContextTest do
       refute Context.writable?(ctx, Path.join(proj, "_build/host/lib/pkg/ebin/loop"), "pkg")
     end
 
+    test "the link cache answers as the file system does, and only inside its call",
+         %{ctx: ctx, proj: proj} do
+      outside = Path.join(proj, "outside")
+      File.mkdir_p!(Path.join(outside, "sub"))
+      File.mkdir_p!(Path.join(outside, "lib/sub"))
+      File.ln_s!(Path.join(outside, "sub"), Path.join(proj, "deps/pkg/lnk"))
+      File.ln_s!("../../../mix.exs", Path.join(proj, "deps/pkg/lib/escape"))
+      File.ln_s!("loop_b", Path.join(proj, "deps/pkg/lib/loop_a"))
+      File.ln_s!("loop_a", Path.join(proj, "deps/pkg/lib/loop_b"))
+
+      paths =
+        ~w(lnk/../lib/sub/a.ex lib/../lib/sub/a.ex lib/escape lib/loop_a lib/missing.ex
+           missing.ex ./lib/./x lib//y ../pkg/lib/z)
+
+      answers = fn ->
+        for path <- paths do
+          real = Context.resolve(ctx, path, "pkg")
+
+          {real, Context.readable?(ctx, real),
+           Context.under?(real || "", Context.dest(ctx, "pkg"))}
+        end
+      end
+
+      direct = answers.()
+      assert Context.with_link_cache(fn -> {answers.(), answers.()} end) == {direct, direct}
+      assert Context.with_link_cache(fn -> :done end) == :done
+
+      # Nothing is kept once the call returns: a link made afterwards is seen.
+      File.rm!(Path.join(proj, "deps/pkg/lib/escape"))
+      File.ln_s!("loop_a", Path.join(proj, "deps/pkg/lib/escape"))
+      assert Context.resolve(ctx, "lib/escape", "pkg") == nil
+    end
+
     test "a missing file is judged by its path", %{ctx: ctx, proj: proj} do
       assert readable?(ctx, "lib/missing.ex", "pkg")
       refute readable?(ctx, "missing.ex", "pkg")

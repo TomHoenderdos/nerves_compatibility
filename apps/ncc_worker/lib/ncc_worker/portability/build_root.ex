@@ -56,6 +56,8 @@ defmodule NccWorker.Portability.BuildRoot do
   paths (each `{:observe, "build_root_source_path", "<root>/..."}`, once),
   else the first refusal or error.
   """
+  @pattern {__MODULE__, :pattern}
+
   @spec check(String.t(), [String.t()], (String.t() -> boolean())) ::
           :ok | {:observe, [observation()]} | {:refuse, String.t()} | {:error, String.t()}
   def check(ebin, roots, closure_file?) do
@@ -416,7 +418,22 @@ defmodule NccWorker.Portability.BuildRoot do
   defp codepoint?({:int, c}), do: c in 0..0xD7FF or c in 0xE000..0x10FFFF
   defp codepoint?(_node), do: false
 
-  defp contains_root?(s, roots), do: Enum.any?(roots, &(:binary.match(s, &1) != :nomatch))
+  defp contains_root?(_s, []), do: false
+  defp contains_root?(s, roots), do: :binary.match(s, pattern(roots)) != :nomatch
+
+  # The roots as one compiled pattern, kept for the list it was made from:
+  # a beam's literals are scanned against the same roots thousands of times.
+  defp pattern(roots) do
+    case Process.get(@pattern) do
+      {^roots, compiled} ->
+        compiled
+
+      _ ->
+        compiled = :binary.compile_pattern(roots)
+        Process.put(@pattern, {roots, compiled})
+        compiled
+    end
+  end
 
   # The offending string with each root shown as `<root>`, so the reason
   # names what was baked rather than where this run happened to build.

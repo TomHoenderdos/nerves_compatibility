@@ -86,6 +86,7 @@ defmodule NccWorker.Portability.Context do
         }
 
   @max_hops 40
+  @link_cache {__MODULE__, :link_cache}
 
   @doc """
   The context of one traced compile of `project_dir`. Options:
@@ -379,14 +380,29 @@ defmodule NccWorker.Portability.Context do
   """
   @spec under?(term(), term()) :: boolean()
   def under?(path, root) when is_binary(path) and is_binary(root) do
+    case Process.get(@link_cache) do
+      %{{:under, ^path, ^root} => under} ->
+        under
+
+      %{} = cache ->
+        under = split_under?(path, root)
+        Process.put(@link_cache, Map.put(cache, {:under, path, root}, under))
+        under
+
+      nil ->
+        split_under?(path, root)
+    end
+  end
+
+  def under?(_path, _root), do: false
+
+  defp split_under?(path, root) do
     path_parts = Path.split(path)
     root_parts = Path.split(root)
 
     clean?(path_parts) and clean?(root_parts) and length(root_parts) > 1 and
       List.starts_with?(path_parts, root_parts)
   end
-
-  def under?(_path, _root), do: false
 
   defp clean?(["/" | rest]), do: not Enum.any?(rest, &(&1 in [".", ".."]))
   defp clean?(_parts), do: false
@@ -416,24 +432,63 @@ defmodule NccWorker.Portability.Context do
       else: nil
   end
 
-  # `done` holds the resolved components so far, reversed, root first.
-  defp walk([], done, _hops), do: done |> Enum.reverse() |> Path.join()
+  # `done` holds the resolved prefixes so far, the longest first, down to
+  # "/": each one the path `Path.join/1` of its components gives.
+  defp walk([], [path | _], _hops), do: path
   defp walk(["/" | rest], _done, hops), do: walk(rest, ["/"], hops)
   defp walk(["." | rest], done, hops), do: walk(rest, done, hops)
   defp walk([".." | rest], ["/"], hops), do: walk(rest, ["/"], hops)
   defp walk([".." | rest], [_last | done], hops), do: walk(rest, done, hops)
 
   defp walk([part | rest], done, hops) do
-    case read_link(Enum.reverse([part | done])) do
+    path = join_part(done, part)
+
+    case read_link(path) do
       {:ok, _target} when hops >= @max_hops -> nil
       {:ok, target} -> walk(Path.split(target) ++ rest, done, hops + 1)
-      {:error, _reason} -> walk(rest, [part | done], hops)
+      {:error, _reason} -> walk(rest, [path | done], hops)
+    end
+  end
+
+  defp join_part(["/" | _], part), do: "/" <> part
+  defp join_part([prefix | _], part), do: prefix <> "/" <> part
+
+  @doc """
+  Runs `fun` with every symlink read this module makes remembered per path
+  for the length of the call, and every `under?/2` answer (a pure function
+  of its two paths) per pair. The judge resolves the same directories for
+  thousands of events, after the compile, when nothing writes the tree any
+  more. Outside such a call every read goes to the file system.
+  """
+  @spec with_link_cache((-> result)) :: result when result: term()
+  def with_link_cache(fun) do
+    previous = Process.put(@link_cache, %{})
+
+    try do
+      fun.()
+    after
+      if previous, do: Process.put(@link_cache, previous), else: Process.delete(@link_cache)
+    end
+  end
+
+  defp read_link(path) do
+    case Process.get(@link_cache) do
+      %{^path => result} ->
+        result
+
+      %{} = cache ->
+        result = file_read_link(path)
+        Process.put(@link_cache, Map.put(cache, path, result))
+        result
+
+      nil ->
+        file_read_link(path)
     end
   end
 
   # Reads links only, of paths the traced compile itself reported.
   # sobelow_skip ["Traversal.FileModule"]
-  defp read_link(parts), do: parts |> Path.join() |> File.read_link()
+  defp file_read_link(path), do: File.read_link(path)
 
   defp install_root(path) do
     case realpath(path) do

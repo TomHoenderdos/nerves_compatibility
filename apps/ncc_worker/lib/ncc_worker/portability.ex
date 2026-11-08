@@ -351,7 +351,9 @@ defmodule NccWorker.Portability do
   def judge(project_dir, package, report, native, opts \\ [])
 
   def judge(project_dir, package, %Report{} = report, native, opts) do
-    project_dir |> facts(package, report, native, opts) |> verdict_of()
+    Context.with_link_cache(fn ->
+      project_dir |> facts(package, report, native, opts) |> verdict_of()
+    end)
   rescue
     e -> not_judged("judge failed: " <> Exception.message(e))
   catch
