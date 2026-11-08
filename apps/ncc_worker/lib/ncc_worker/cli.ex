@@ -69,8 +69,21 @@ defmodule NccWorker.CLI do
   @spec run() :: :ok | {:error, term()}
   defp run() do
     with {:ok, input_path} <- get_input_path(),
-         {:ok, input} <- read_input(input_path),
-         {:ok, result} <- Worker.run(input),
+         {:ok, input} <- read_input(input_path) do
+      run_input(input, &Worker.run/1)
+    else
+      {:error, reason} = error ->
+        IO.puts(:stderr, "Worker failed: #{inspect(reason)}")
+        error
+    end
+  end
+
+  @doc false
+  # `run/0` once the input is read: `worker` is `Worker.run/1`, which tests
+  # replace. `result.json` is written only for a worker `{:ok, result}`.
+  @spec run_input(map(), (map() -> {:ok, map()} | {:error, term()})) :: :ok | {:error, term()}
+  def run_input(input, worker) do
+    with {:ok, result} <- worker.(input),
          # Nothing but the worker may still run while the files are archived
          # and result.json is written (`NccWorker.ProcessSweep`).
          result = ProcessSweep.enforce_and_report(result),

@@ -49,6 +49,8 @@ defmodule NccWorker.HostTrace do
 
   @survived ["group_survived", "cleanup_unverified", "writers_survived"]
   @left_running "the traced host compile left processes running"
+  @no_time_left "no time left for the host compile"
+  @untraced_timeout "the untraced host compile timed out"
 
   @type outcome :: :pass | {:fail, String.t()} | {:error, String.t()}
 
@@ -85,6 +87,17 @@ defmodule NccWorker.HostTrace do
       verdict: verdict
     }
   end
+
+  @doc """
+  Whether a failed host compile from `compile/4` failed because the run's
+  time ran out (no time left for the untraced compile, or that compile
+  timed out), rather than because the package does not compile.
+  """
+  @spec out_of_time?(map()) :: boolean()
+  def out_of_time?(%{status: :fail, error: error}),
+    do: error in [@no_time_left, @untraced_timeout]
+
+  def out_of_time?(_host), do: false
 
   defp traced(project_dir, package_name, paths, env, log_file, opts) do
     portability = Keyword.get(opts, :portability, &Portability.run/3)
@@ -144,7 +157,7 @@ defmodule NccWorker.HostTrace do
       untraced(project_dir, build_path, env, log_file, sec, opts)
     else
       {:reap, _} -> {{:error, @left_running}, "none"}
-      {:budget, :exhausted} -> {{:fail, "no time left for the host compile"}, "none"}
+      {:budget, :exhausted} -> {{:fail, @no_time_left}, "none"}
       {:remove, _} -> {{:error, "the traced host compile's build could not be removed"}, "none"}
     end
   end
@@ -291,6 +304,6 @@ defmodule NccWorker.HostTrace do
   end
 
   defp describe(reason) when is_binary(reason), do: reason
-  defp describe(:timeout), do: "the untraced host compile timed out"
+  defp describe(:timeout), do: @untraced_timeout
   defp describe(reason), do: inspect(reason, limit: 20)
 end

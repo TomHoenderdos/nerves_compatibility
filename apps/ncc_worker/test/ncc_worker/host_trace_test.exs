@@ -102,6 +102,7 @@ defmodule NccWorker.HostTraceTest do
       HostTrace.compile(proj, "pkg", paths(dir), opts(cmd: exiting(1), fallback: fallback))
 
     assert %{status: :fail, error: "mix command exited with code 1"} = host
+    refute HostTrace.out_of_time?(host)
     assert verdict.status == :skip
     assert stats(verdict)["tracer_error"] == "exit_1"
   end
@@ -296,6 +297,7 @@ defmodule NccWorker.HostTraceTest do
       HostTrace.compile(proj, "pkg", paths(dir), opts(cmd: exiting(1), fallback: fallback))
 
     assert %{status: :fail, error: "the untraced host compile timed out"} = host
+    assert HostTrace.out_of_time?(host)
   end
 
   test "the run's start is required", %{tmp_dir: dir} do
@@ -357,6 +359,7 @@ defmodule NccWorker.HostTraceTest do
       HostTrace.compile(proj, "pkg", paths(dir), opts(run_started_at: started, cmd: exiting(0)))
 
     assert %{status: :fail, error: "no time left for the host compile"} = host
+    assert HostTrace.out_of_time?(host)
     assert stats(verdict)["tracer_error"] == "run_budget_exhausted"
   end
 end

@@ -5,6 +5,8 @@ defmodule NccWorker.ToolchainModeTest do
 
   @moduletag :tmp_dir
 
+  @root? System.cmd("id", ["-u"]) |> elem(0) |> String.trim() == "0"
+
   @toolchain %{elixir: "1.19.1", erlang: "28", mix: "1.19.1", nerves_bootstrap: "absent"}
 
   @lock """
@@ -399,7 +401,9 @@ defmodule NccWorker.ToolchainModeTest do
       {:ok, agent} = Agent.start_link(fn -> statuses end)
 
       fn project_dir, _package, _paths, opts ->
-        status = Agent.get_and_update(agent, fn [s | rest] -> {s, rest} end)
+        {status, error} =
+          agent |> Agent.get_and_update(fn [s | rest] -> {s, rest} end) |> outcome()
+
         mix = File.read!(Path.join(project_dir, "mix.exs"))
 
         send(
@@ -410,10 +414,14 @@ defmodule NccWorker.ToolchainModeTest do
 
         send(test_pid, {:trace_opts, Keyword.keys(opts), opts[:run_started_at]})
 
-        error = if status in [:fail, :error], do: "boom"
         %{host: %{status: status, error: error}, verdict: @traced_pass}
       end
     end
+
+    # A status alone, or `{status, error}` for a failure with its own error.
+    defp outcome({_status, _error} = outcome), do: outcome
+    defp outcome(status) when status in [:fail, :error], do: {status, "boom"}
+    defp outcome(status), do: {status, nil}
 
     defp plain_project(dir) do
       proj = Path.join([dir, "work", "proj"])
@@ -640,6 +648,126 @@ defmodule NccWorker.ToolchainModeTest do
         assert is_binary(why)
       end
     end
+
+    # The compile with them used up the run, so the one without them had no
+    # time: that says nothing about the package, and the run is retried.
+    test "a compile without them that runs out of time is a worker failure", %{tmp_dir: dir} do
+      for out_of_time <- [
+            "no time left for the host compile",
+            "the untraced host compile timed out"
+          ] do
+        proj = plain_project(Path.join(dir, Base.encode16(out_of_time)))
+
+        assert {:error, {:no_time_left_without_optional_deps, ^out_of_time}} =
+                 Worker.toolchain_compile(proj, "include", "sample", tc_paths(dir),
+                   releases: {:ok, :first},
+                   host_trace: recording_trace(self(), [:fail, {:fail, out_of_time}]),
+                   optional_deps: fn _p, _pkg -> {@opt, []} end,
+                   deps_get: fn _p, _env -> :ok end
+                 )
+
+        assert CLI.exit_code({:error, {:no_time_left_without_optional_deps, out_of_time}}) == 10
+      end
+    end
+
+    # No compile ran before it, so the time it lacked is the package's own.
+    test "a first compile that runs out of time is the package's verdict", %{tmp_dir: dir} do
+      no_time = {:fail, "no time left for the host compile"}
+
+      for {request, resolve} <- [
+            {"exclude", fn _p, _pkg -> flunk("resolved for exclude") end},
+            {"include", fn _p, _pkg -> {[], []} end}
+          ] do
+        proj = plain_project(Path.join(dir, request))
+
+        assert {:ok, %{host: %{status: :fail, error: "no time left for the host compile"}}} =
+                 Worker.toolchain_compile(proj, request, "sample", tc_paths(dir),
+                   releases: {:ok, :first},
+                   host_trace: recording_trace(self(), [no_time]),
+                   optional_deps: resolve
+                 )
+      end
+    end
+
+    # Not reached by a deps.get or lock-policy drop: no compile with them ran.
+    test "a drop before any compile keeps an out-of-time compile as the verdict",
+         %{tmp_dir: dir} do
+      proj = plain_project(dir)
+
+      assert {:ok, %{host: %{status: :fail}, optional_deps: nil}} =
+               Worker.toolchain_compile(proj, "include", "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 host_trace:
+                   recording_trace(self(), [{:fail, "no time left for the host compile"}]),
+                 optional_deps: fn _p, _pkg -> {@opt, []} end,
+                 deps_get: fn _p, _env -> {:error, {:deps_get_failed, "nope"}} end
+               )
+    end
+
+    if @root? do
+      @tag skip: "runs as root, where a read-only _build/ does not stop its removal"
+    end
+
+    test "a _build/host that cannot be removed after a drop is a worker failure",
+         %{tmp_dir: dir} do
+      proj = plain_project(dir)
+      build_root = Path.join(proj, "_build")
+      File.chmod!(build_root, 0o555)
+      on_exit(fn -> File.chmod(build_root, 0o755) end)
+
+      assert {:error, {:optional_deps_revert_failed, :eacces}} =
+               Worker.toolchain_compile(proj, "include", "sample", tc_paths(dir),
+                 releases: {:ok, :first},
+                 host_trace: recording_trace(self(), [:fail, :pass]),
+                 optional_deps: fn _p, _pkg -> {@opt, []} end,
+                 deps_get: fn _p, _env -> :ok end
+               )
+
+      assert_received {:traced, true, _, _}
+      refute_received {:traced, _, _, _}
+      assert CLI.exit_code({:error, {:optional_deps_revert_failed, :eacces}}) == 10
+    end
+  end
+
+  # The whole toolchain run after its project is set up, through the CLI:
+  # a host compile that is a worker error leaves no result.json and exits 10.
+  test "a toolchain run whose host compile is a worker error writes no result", %{
+    tmp_dir: dir
+  } do
+    proj = Path.join([dir, "work", "proj"])
+    File.mkdir_p!(Path.join([proj, "_build", "host"]))
+
+    File.write!(
+      Path.join(proj, "mix.exs"),
+      "defp deps do\n  [\n    {:sample, \"1.0.0\"}\n  ]\nend\n"
+    )
+
+    File.write!(Path.join(proj, "mix.lock"), @lock)
+    out = Path.join(dir, "out")
+    File.mkdir_p!(Path.join(out, "logs"))
+    paths = %{work_dir: Path.join(dir, "work"), output_dir: out, logs_dir: Path.join(out, "logs")}
+
+    input = %{
+      run_id: "r1",
+      mode: "toolchain",
+      optional_deps: "exclude",
+      started_at: System.monotonic_time(:second),
+      image: %{name: "x", digest: "sha256:x"},
+      package: %{name: "sample", version: "1.0.0"},
+      paths: %{work_dir: paths.work_dir, output_dir: out, files_dir: Path.join(out, "files")}
+    }
+
+    host_error = fn _, _, _, _ ->
+      %{host: %{status: :error, error: "the traced host compile left processes running"}}
+    end
+
+    worker = fn input ->
+      Worker.toolchain_project(proj, input, paths, @toolchain, host_trace: host_error)
+    end
+
+    assert {:error, {:host_compile_error, _}} = outcome = CLI.run_input(input, worker)
+    assert CLI.exit_code(outcome) == 10
+    refute File.exists?(Path.join(out, "result.json"))
   end
 
   describe "compile-time config reads (R5)" do

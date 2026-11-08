@@ -1376,19 +1376,39 @@ defmodule NccWorker.Worker do
   # cache: the trace must see every closure dependency compiled, so nothing
   # is restored from the cache and nothing is stored for it.
   defp toolchain_run(input, paths, toolchain) do
+    with {:ok, project_dir} <- Project.create_plain(paths.work_dir, @wrapper_app),
+         {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
+         :ok <- LockPolicy.validate(project_dir) do
+      toolchain_project(project_dir, input, paths, toolchain, [])
+    end
+  end
+
+  @doc false
+  # The toolchain run once its project has the package and passed the lock
+  # policy: the compile (`toolchain_compile/5`) and the result. Public for
+  # tests, whose `opts` reach `toolchain_compile/5`.
+  @spec toolchain_project(String.t(), map(), map(), map(), keyword()) ::
+          {:ok, result()} | {:error, term()}
+  def toolchain_project(project_dir, input, paths, toolchain, opts) do
     package_name = input.package.name
     log_tail_bytes = get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes
 
-    with {:ok, project_dir} <- Project.create_plain(paths.work_dir, @wrapper_app),
-         {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
-         :ok <- LockPolicy.validate(project_dir),
-         {:ok, compiled} <-
-           toolchain_compile(project_dir, input[:optional_deps], package_name, paths,
-             # Right after `deps.get` and before any compile: an untraced
-             # build step could rewrite the lock and a tarball together later.
-             releases: Portability.lock_snapshot(project_dir),
-             run_started_at: input[:started_at],
-             log_tail_bytes: log_tail_bytes
+    compile_opts =
+      [
+        # Right after `deps.get` and before any compile: an untraced build
+        # step could rewrite the lock and a tarball together later.
+        releases: Portability.lock_snapshot(project_dir),
+        run_started_at: input[:started_at],
+        log_tail_bytes: log_tail_bytes
+      ] ++ opts
+
+    with {:ok, compiled} <-
+           toolchain_compile(
+             project_dir,
+             input[:optional_deps],
+             package_name,
+             paths,
+             compile_opts
            ) do
       result =
         %{
@@ -1577,7 +1597,8 @@ defmodule NccWorker.Worker do
 
     with {:revert, :ok} <- {:revert, revert},
          {:revert, {:ok, _}} <- {:revert, File.rm_rf(Path.join([project_dir, "_build", "host"]))},
-         {:ok, compiled} <- host_trace(project_dir, package_name, paths, opts) do
+         {:ok, compiled} <- host_trace(project_dir, package_name, paths, opts),
+         :ok <- in_time(compiled.host, drop) do
       {:ok, Map.put(compiled, :optional_deps, passed_info(compiled, [], added, drop.reason))}
     else
       {:revert, {:error, reason}} -> {:error, {:optional_deps_revert_failed, reason}}
@@ -1585,6 +1606,18 @@ defmodule NccWorker.Worker do
       {:error, _reason} = error -> error
     end
   end
+
+  # After a compile with them failed, the one without them may find the run
+  # used up: no verdict on the package, so a retryable worker failure. With
+  # no compile before it (a `deps.get` or lock-policy drop), the time it
+  # lacked is the package's own, as for a run's only compile.
+  defp in_time(host, %{reason: "host_compile_failed"}) do
+    if HostTrace.out_of_time?(host),
+      do: {:error, {:no_time_left_without_optional_deps, host.error}},
+      else: :ok
+  end
+
+  defp in_time(_host, _drop), do: :ok
 
   defp passed_info(%{host: %{status: :pass}}, added, dropped, reason),
     do: optional_deps_info(added, dropped, reason)

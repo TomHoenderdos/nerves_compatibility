@@ -55,8 +55,8 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    `"portability could not be judged"`. The trace runs after the optional-dependency pass, only when the OS check
    passed, and before the beam scan, so the files scanned and archived are the traced compile's; it is judged against
    the lock snapshot matching the build it judges, taken as in a toolchain run. Unlike a toolchain run, a full run
-keeps this dedicated traced judge compile after its host compile: its closure is compiled by nerves_bootstrap
-inside `mix deps.get`, so its host compile cannot be the traced one. A traced compile that did not finish
+   keeps this dedicated traced judge compile after its host compile: its closure is compiled by nerves_bootstrap
+   inside `mix deps.get`, so its host compile cannot be the traced one. A traced compile that did not finish
    (killed, timed out) may leave `_build/host/lib` half-written, so the worker rebuilds it untraced before the scan
    (`mix compile` alone, under `timeout(1)` at the per-system timeout cut to what is left of the run; no `deps.get`,
    no build cache store; skipped when no time is left). A raise anywhere on this path is "portability could not be
@@ -282,7 +282,9 @@ and the same `skipped` tooling, as a pure-Elixir full run's pass) are added and 
 the closure is built with them the way an application that locks them builds it. When they cannot be added, their
 `deps.get` fails, they bring in a dependency the lock policy rejects, or the compile with them fails, `mix.exs` and
 `mix.lock` are put back, `_build/host` is removed, and the traced compile runs again without them; `optional_deps`
-names what was dropped and why, and is absent when that compile fails too.
+names what was dropped and why, and is absent when that compile fails too. When the compile with them used up the
+run, so that the one without them finds no time left or times out, the run is a worker failure (exit `10`, no
+result) and is retried; a run's only compile that runs out of time is the package's verdict, as before.
 
 The host status never depends on the tracer. A traced compile that did not finish, or whose report is not a
 host-mode one, is not the build: the processes still writing `_build/host` are killed, `_build/host` is removed,
@@ -307,11 +309,12 @@ of these skips the build:
 
 The files judged and archived are the traced compile's own. The traced compile runs with the host env
 (`MIX_BUILD_PATH=_build/host`, `MIX_ENV=prod`) and the run's own `HEX_HOME`, is bounded by what is left of the run,
-keeps its trace files under `<work>/trace` and logs to `logs/host.log`. It judges dependency sources against a snapshot of the Hex releases in `mix.lock`. Two
-snapshots are taken. The first is taken right after the project's `deps.get`, before any compile ran. The second is
-taken right after the `deps.get` that fetched the optional dependencies, before they are compiled. A build compiled
-with optional dependencies added is judged against the second; every other build, a build whose optional
-dependencies were dropped included, against the first. `MIX_OS_DEPS_COMPILE_PARTITION_COUNT` is removed from the worker's environment at start.
+keeps its trace files under `<work>/trace` and logs to `logs/host.log`. It judges dependency sources against a
+snapshot of the Hex releases in `mix.lock`. Two snapshots are taken. The first is taken right after the project's
+`deps.get`, before any compile ran. The second is taken right after the `deps.get` that fetched the optional
+dependencies, before they are compiled. A build compiled with optional dependencies added is judged against the
+second; every other build, a build whose optional dependencies were dropped included, against the first.
+`MIX_OS_DEPS_COMPILE_PARTITION_COUNT` is removed from the worker's environment at start.
 
 No firmware, no argus (`argus.status` is `"skipped"`), no Nerves systems,
 no Hex metadata fetch; `toolchain.nerves_bootstrap` is `"absent"`.
@@ -421,7 +424,8 @@ the run. Only `Portal.EgressCheck` sends it (see the operator runbook); otherwis
   (`NccWorker.DepsGetClassifier`)
 - `10` — internal failure: no `result.json` was written (includes a `deps.get` failure classified transient, and
   always a toolchain run's own `deps.get` failure, or a toolchain host compile that left processes running or a
-  `_build/host` that could not be removed)
+  `_build/host` that could not be removed, or one without optional dependencies that ran out of time after the
+  compile with them failed)
 - `11` — policy violation (non-Hex dependency in `mix.lock`)
 
 ## Develop
