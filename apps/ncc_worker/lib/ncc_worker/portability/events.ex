@@ -15,7 +15,9 @@ defmodule NccWorker.Portability.Events do
 
     * OS identity: `system_info(otp_release)` is allowed, and `os:type/0`,
       `os:version/0` or `system_info(os_type)` when the first frame after
-      the wrappers is a path module. Every other key refuses.
+      the wrappers is a path module. Every other key refuses. The tracer
+      writes no line for those path-handling reads (it counts them as
+      `path_os_reads`): a line would always be ignored here.
       In an epp server process (no user frame, the stack's bottom frame
       `epp:server`/`epp:init_server`), `system_info(machine)`,
       `system_info(otp_release)` and `os:type/0` are its predefined macros
@@ -66,7 +68,10 @@ defmodule NccWorker.Portability.Events do
   alias Compatibility.Portability, as: Reasons
   alias NccWorker.Portability.{Context, MixExsSlice, Probes}
 
-  @path_modules ~w(filename Elixir.Path file filelib code Elixir.Code)
+  # Shared with the tracer, which counts these path-handling reads rather
+  # than writing them (`:ncc_tracer_channels.path_os_read/3`): the rule
+  # below and the tracer's drop must name the same modules.
+  @path_modules Enum.map(:ncc_tracer_channels.path_modules(), &Atom.to_string/1)
   @host_channels ~w(env programs network crypto native)
   @probe_channels ~w(probe app_call loaded_modules)
   # Host reads R4 may allow when made from a dependency's mix.exs. Of the

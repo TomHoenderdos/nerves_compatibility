@@ -101,6 +101,36 @@ defmodule NccWorker.Portability.EventsTest do
     }
   end
 
+  # The tracer writes no line for a read `:ncc_tracer_channels.path_os_read/3`
+  # names whose first frame is one of its `path_modules/0` (it counts it): the
+  # judge must ignore every such line wherever it falls, a mix.exs included,
+  # or dropping it would change a verdict.
+  test "every OS-family read the tracer only counts is ignored, for every owner", %{
+    ctx: ctx,
+    pkg: pkg
+  } do
+    reads = [
+      {"os:type/0", :os, :type, %{}},
+      {"os:version/0", :os, :version, %{}},
+      {"erlang:system_info/1", :erlang, :system_info, %{"key" => "os_type"}}
+    ]
+
+    for {mfa, m, f, arg} <- reads,
+        module <- :ncc_tracer_channels.path_modules(),
+        extent <- ~w(frame dispatcher truncated lineage),
+        owner <- ["pkg", "dep", :outside, :quiet, :wrapper] do
+      assert :ncc_tracer_channels.path_os_read(m, f, atom_keys(arg))
+      event = ev("os_identity", mfa, arg, first: Atom.to_string(module), extent: extent)
+      assert :ignore = Events.decide(event, ctx, owner), inspect({mfa, module, extent, owner})
+      assert :ignore = Events.decide(in_mix_exs(event, pkg, 3), ctx, owner)
+    end
+
+    refute :ncc_tracer_channels.path_os_read(:erlang, :system_info, %{key: "version"})
+    refute :ncc_tracer_channels.path_os_read(:os, :getenv, %{})
+  end
+
+  defp atom_keys(arg), do: Map.new(arg, fn {k, v} -> {String.to_atom(k), v} end)
+
   test "OS identity: path handling and the OTP release pass, a direct read refuses", %{ctx: ctx} do
     assert :ignore =
              Events.decide(ev("os_identity", "os:type/0", %{}, first: "Elixir.Path"), ctx, "pkg")

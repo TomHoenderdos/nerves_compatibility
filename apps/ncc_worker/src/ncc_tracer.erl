@@ -45,7 +45,7 @@
              spawning = #{}, parents = #{}, set_depth = ?DEPTH, depth = ?DEPTH, lowered = false,
              wanted = [], unpatterned = false, final_pid, final_nonce, unloaded = [],
              token, watcher, wref, tampered = false, libs = unavailable, libs_written = false,
-             calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0,
+             calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0, path_os_reads = 0,
              max_calls, max_user, max_queue, overflow = false, final = false}).
 
 %% --- API used by the driver ---------------------------------------------
@@ -708,7 +708,25 @@ record({env, #{name := <<?SENTINEL, App0/binary>>}}, {user, _, _, {?PROBE, _, _,
     {App, Final} = sentinel_app(App0, Pid, St),
     write(St, Checks#{kind => sentinel, app => App, ts => Ts, pid => pid_bin(Pid)}),
     St#st{final = St#st.final orelse Final};
-record({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends}, St) ->
+record({Channel, Arg} = Class, {user, Kind, First, _} = Extent, {_, M, F, _, _, _} = Info, St) ->
+    case path_os_read(Channel, M, F, Arg, Kind, First) of
+        true -> St#st{path_os_reads = St#st.path_os_reads + 1};
+        false -> user_line(Class, Extent, Info, St)
+    end.
+
+%% The OS family a path function reads to know its separators (os:type/0
+%% under filename:join/1, Path.expand/1, ...): the judge ignores such a read
+%% wherever it falls (NccWorker.Portability.Events, path handling), so it is
+%% only counted, never written. A compile that joins paths in a user
+%% process reads it hundreds of thousands of times, and a line each would
+%% outgrow the report's read budget (ash). Only a stack the tracer judged
+%% (not unjudged) whose first frame past the wrappers is a path module.
+path_os_read(os_identity, M, F, Arg, Kind, {FM, _, _, _}) when Kind =/= unjudged, is_atom(FM) ->
+    ncc_tracer_channels:path_os_read(M, F, Arg)
+        andalso lists:member(FM, ncc_tracer_channels:path_modules());
+path_os_read(_Channel, _M, _F, _Arg, _Kind, _First) -> false.
+
+user_line({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends}, St) ->
     {Kind, First, User, {Caller, Bottom}} = frames(Kind0, First0, User0, Ends),
     Line = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
              mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
@@ -968,7 +986,7 @@ finish_trace(Status, Ts, Delivered, #st{fd = Fd, session = Session} = St1) ->
     {Checks, St} = closing_checks(St0, Delivered),
     write(St, #{kind => stats, calls => St#st.calls, user_events => St#st.user,
                 truncated => St#st.truncated, unjudged => St#st.unjudged,
-                spawned => St#st.spawned}),
+                spawned => St#st.spawned, path_os_reads => St#st.path_os_reads}),
     Late = [atom_to_binary(M) || M <- St#st.unloaded, erlang:module_loaded(M)],
     write(St, (maps:merge(Checks, libs_fields(mapped_libs())))#{kind => 'end', ts => Ts,
                                                                 status => Status,

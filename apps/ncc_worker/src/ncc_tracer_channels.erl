@@ -3,7 +3,7 @@
 %% spec, R1 channel table) and the short summary of one call that the tracer
 %% writes when the call happens in user extent. Pure: no process, no I/O.
 -export([patterns/0, probe_mfas/0, patterned/3, classify/3, chars/1, term_bin/1,
-         checker_module/1, mix_patterns/0, mix_entry/1]).
+         checker_module/1, mix_patterns/0, mix_entry/1, path_modules/0, path_os_read/3]).
 
 -define(READS, [{file, read_file}, {file, read_file_info}, {file, read_link_info},
                 {file, read_link}, {file, read_link_all}, {file, list_dir},
@@ -167,6 +167,20 @@ probe_mfas() ->
     [{code, ensure_loaded, 1}, {code, is_loaded, 1}, {code, which, 1},
      {code, module_status, 1}, {code, get_object_code, 1},
      {erlang, module_loaded, 1}, {erlang, function_exported, 3}].
+
+%% The modules whose OS-family read is path handling: the judge's
+%% `NccWorker.Portability.Events` takes its list from here, and the tracer
+%% only counts such a read when one of these is the first frame past the
+%% wrappers (path_os_read/3).
+path_modules() -> [filename, 'Elixir.Path', file, filelib, code, 'Elixir.Code'].
+
+%% The OS-identity reads the judge allows as path handling, by the summary
+%% classify/3 made of them: os:type/0, os:version/0 and
+%% erlang:system_info(os_type).
+path_os_read(os, type, _Arg) -> true;
+path_os_read(os, version, _Arg) -> true;
+path_os_read(erlang, system_info, #{key := <<"os_type">>}) -> true;
+path_os_read(_M, _F, _Arg) -> false.
 
 nested_compile(true) -> {nested_compile, #{}};
 nested_compile(false) -> unknown.

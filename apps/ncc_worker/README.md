@@ -384,7 +384,9 @@ does not judge it either: the reason is "portability could not be judged", `rule
 500 000-line budget), `transient`, the phase times `compile_ms`, `report_ms` and `judge_ms`, `tracer_error` (why
 the traced compile did not finish, `null` when it did), `trace_mode` (`"host"` for a toolchain run's report),
 `host_build` (`"traced"`, `"untraced"` or `"none"`: which build the host status is) and `host_compile_sec`, the
-host compile's own time, its `deps.get` and any untraced fallback included. `transient` is `true` when a
+host compile's own time, its `deps.get` and any untraced fallback included, and the collector's own counts
+(`calls`, `user_events`, `path_os_reads`: the OS-family reads path functions make, which the judge ignores and the
+tracer counts without writing). `transient` is `true` when a
 could-not-judge says nothing about the package: the traced compile did not finish (a timeout, a kill, an exhausted run
 budget, processes that survived the cleanup, a crash) or its report was over budget. The portal stores such a
 `skipped` build as an `error`, which its backlog retries after a day; a could-not-judge the package causes on every

@@ -110,6 +110,36 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert calls > 0
   end
 
+  test "a path function's OS-family read is counted, not written; a direct one is written",
+       %{tmp_dir: dir} do
+    {lines, _out} =
+      compile_fixture(dir, "fx_path_os.ex", """
+      defmodule FxPathOs do
+        @joined Path.join("a", "b")
+        @expanded :filename.join(["a", "b"])
+        @os :os.type()
+        def all, do: {@joined, @expanded, @os}
+      end
+      """)
+
+    events = for e <- kind(lines, "event"), (e["user"]["file"] || "") =~ "fx_path_os.ex", do: e
+
+    # The module body's own read stays a line (its first frame is the body).
+    assert [%{"mfa" => "os:type/0", "first_kind" => "user"}] =
+             Enum.filter(events, &(&1["mfa"] == "os:type/0"))
+
+    # Path.join/2 and :filename.join/1 read the OS family under a path
+    # module: no line for those, ignored by the judge wherever they fall.
+    refute Enum.any?(
+             kind(lines, "event"),
+             &(&1["channel"] == "os_identity" and
+                 &1["first"]["module"] in ~w(filename Elixir.Path file filelib code Elixir.Code))
+           )
+
+    assert [%{"path_os_reads" => n, "unjudged" => 0}] = kind(lines, "stats")
+    assert n > 0
+  end
+
   test "System.user_home, File.lstat and File.read_link in a module body are user events",
        %{tmp_dir: dir} do
     {lines, _out} =
