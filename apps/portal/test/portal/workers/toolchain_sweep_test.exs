@@ -606,6 +606,83 @@ defmodule Portal.Workers.ToolchainSweepTest do
       assert Enum.map(jobs, & &1.priority) == [0, 0]
     end
 
+    # `count` new default candidates and `refreshes` served builds to
+    # refresh, on the one toolchain.
+    defp defaults_and_refreshes!(count, refreshes) do
+      for i <- 1..count//1, do: run!("new#{i}", "1.0.0")
+
+      for i <- 1..refreshes//1 do
+        run!("stale#{i}", "1.0.0")
+        served_unmarked!("stale#{i}", "1.19/28")
+      end
+    end
+
+    defp tiers_enqueued do
+      all_enqueued(worker: ToolchainBuild)
+      |> Enum.map(fn job ->
+        cond do
+          job.args["config_variant"] != "default" -> :named
+          job.priority == 3 -> :refresh
+          true -> :default
+        end
+      end)
+      |> Enum.frequencies()
+    end
+
+    test "a quarter of the cap goes to refreshes when defaults alone exceed it",
+         %{previous: previous} do
+      one_toolchain(previous, max_per_run: 8)
+      defaults_and_refreshes!(10, 4)
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert tiers_enqueued() == %{default: 6, refresh: 2}
+    end
+
+    test "without refreshes the defaults take the whole cap", %{previous: previous} do
+      one_toolchain(previous, max_per_run: 8)
+      defaults_and_refreshes!(10, 0)
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert tiers_enqueued() == %{default: 8}
+    end
+
+    test "a reserve the refreshes do not fill goes back to the defaults",
+         %{previous: previous} do
+      one_toolchain(previous, max_per_run: 8)
+      defaults_and_refreshes!(10, 1)
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert tiers_enqueued() == %{default: 7, refresh: 1}
+    end
+
+    test "a default backlog shorter than its share leaves the rest to refreshes",
+         %{previous: previous} do
+      one_toolchain(previous, max_per_run: 8)
+      defaults_and_refreshes!(2, 10)
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert tiers_enqueued() == %{default: 2, refresh: 6}
+    end
+
+    test "the backlog limit does not cut the refreshes off behind the defaults" do
+      for i <- 1..3 do
+        run!("new#{i}", "1.0.0")
+      end
+
+      run!("stale", "1.0.0")
+      served_unmarked!("stale", "1.19/28")
+
+      backlog = Catalog.toolchain_backlog("1.19/28", 1, 2)
+
+      assert Enum.count(backlog, & &1.refresh) == 1
+      assert Enum.count(backlog, &(not &1.refresh)) == 2
+      assert List.last(backlog).package == "stale"
+    end
+
     test "refresh rebuilds are enqueued at priority 3", %{previous: previous} do
       one_toolchain(previous)
       run!("served", "1.0.0")
@@ -669,7 +746,10 @@ defmodule Portal.Workers.ToolchainSweepTest do
                ]
     end
 
-    test "the cap takes named variants first, then defaults", %{previous: previous} do
+    test "the cap takes named variants first, then the refresh reserve before defaults",
+         %{previous: previous} do
+      # A cap of 4 reserves one slot for refreshes; the named variants take
+      # the other three.
       three_tiers!(previous, max_per_run: 4)
 
       assert :ok = perform_job(ToolchainSweep, %{})
@@ -681,7 +761,7 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  {"lvs", "phx_prod"},
                  {"lvs", "phx_test"},
                  {"lvs", "phx_dev"},
-                 {"new", "default"}
+                 {"stale", "default"}
                ]
     end
 
@@ -700,7 +780,28 @@ defmodule Portal.Workers.ToolchainSweepTest do
              |> Enum.map(& &1.args["config_variant"])
              |> Enum.sort() == ~w(phx_dev phx_prod phx_test)
 
-      refute Enum.any?(jobs, &(&1.args["package"] == "stale"))
+      # A quarter of the cap (one slot) stays reserved for the refresh.
+      assert Enum.count(jobs, &(&1.args["package"] == "stale")) == 1
+    end
+
+    test "named variants come first, then the defaults and the refresh reserve share the rest",
+         %{previous: previous} do
+      three_tiers!(previous, max_per_run: 8)
+      for i <- 1..6, do: run!("more#{i}", "1.0.0")
+
+      for i <- 1..3 do
+        run!("old#{i}", "1.0.0")
+        served_unmarked!("old#{i}", "1.19/28")
+      end
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      jobs = all_enqueued(worker: ToolchainBuild) |> Enum.sort_by(& &1.id)
+
+      assert jobs |> Enum.take(3) |> Enum.map(& &1.args["config_variant"]) ==
+               ~w(phx_prod phx_test phx_dev)
+
+      assert jobs |> Enum.drop(3) |> Enum.map(& &1.priority) == [0, 0, 0, 3, 3]
     end
 
     test "a second sweep does not duplicate named variants still queued", %{previous: previous} do

@@ -16,20 +16,34 @@ defmodule Portal.Workers.ToolchainSweep do
   starve the others inside a run. A toolchain with less backlog than its
   share leaves the rest to the others.
 
-  The run is taken in three tiers, each round-robin over the toolchains and
-  the cap over the whole: first the named config variants (`config_variant`
-  in `Catalog.toolchain_backlog/3`: a served default build's variants under
-  the pinned `Compatibility.ConfigVariants` overlays it read), then every
-  `default` build that is not a refresh, then the refreshes (`refresh`: a
-  rebuild of a build already served, only to record its compile-time config
-  reads). Named variants go first because a long default backlog (a
+  The run is taken in three tiers, each round-robin over the toolchains: the
+  named config variants (`config_variant` in `Catalog.toolchain_backlog/3`: a
+  served default build's variants under the pinned
+  `Compatibility.ConfigVariants` overlays it read), every `default` build
+  that is not a refresh, and the refreshes (`refresh`: a rebuild of a build
+  already served, only to record its compile-time config reads). They share
+  the cap in this order:
+
+    1. every named variant, up to the whole cap;
+    2. defaults, up to the cap less the refresh reserve and the named
+       variants taken;
+    3. refreshes, up to the reserve, a quarter of the cap;
+    4. any slot still free, to the defaults left over and then the
+       refreshes left over, so no slot goes unused.
+
+  Named variants go first because a long default backlog (a
   `builder_version` bump makes every version new again) would otherwise take
   the whole cap on every run and never leave them a slot; they are bounded
   (at most a few per served default build), so new defaults slip by at most
-  that many. Their Oban priority stays 2, behind defaults at 0 and 1 and
-  ahead of refreshes at 3: the tier order decides what a capped run
-  enqueues, the priority what the queue runs first. No build waits for a
-  refresh, in the run or in the queue.
+  that many. The reserve exists for the same reason: after a bump the new
+  defaults alone exceed the cap for days, and without it no refresh would be
+  queued until they ran out. A run with fewer refreshes than the reserve
+  gives the rest back to the defaults.
+
+  Oban priorities are independent of the tiers: defaults at 0 and 1, named
+  variants at 2, refreshes at 3. The tiers decide what a capped run
+  enqueues, the priority what the queue runs first, so no build waits in the
+  queue for a refresh.
 
   Jobs are inserted one at a time rather than with `Oban.insert_all/1`, which
   does not check `unique`: a build the previous sweep enqueued and the
@@ -60,27 +74,25 @@ defmodule Portal.Workers.ToolchainSweep do
         |> Enum.map(&{build_args(&1, image, builder_version), tier(&1)})
       end)
 
-    # Named config variants, then defaults, then refreshes: each tier
-    # round-robin over the toolchains, the cap over the whole. Named first so
-    # a long default backlog cannot starve them out of every run.
-    picked =
-      [:named, :default, :refresh]
-      |> Enum.flat_map(&round_robin(only(backlogs, &1)))
-      |> Enum.take(cap)
-
-    counts = Enum.frequencies_by(picked, &enqueue/1)
+    counts =
+      backlogs
+      |> pick(cap)
+      |> Enum.frequencies_by(&enqueue/1)
 
     for %{toolchain: toolchain} <- Toolchains.images() do
-      named = Map.get(counts, {toolchain, :enqueued, true}, 0)
-      enqueued = Map.get(counts, {toolchain, :enqueued, false}, 0) + named
+      [named, refresh, default] =
+        for tier <- [:named, :refresh, :default],
+            do: Map.get(counts, {toolchain, :enqueued, tier}, 0)
 
       pending =
-        Map.get(counts, {toolchain, :pending, false}, 0) +
-          Map.get(counts, {toolchain, :pending, true}, 0)
+        for tier <- [:named, :refresh, :default], reduce: 0 do
+          sum -> sum + Map.get(counts, {toolchain, :pending, tier}, 0)
+        end
 
       Logger.info(
         "Toolchain sweep #{toolchain} (builder #{builder_version}): " <>
-          "enqueued #{enqueued} (#{named} config variants), already queued #{pending}"
+          "enqueued #{named + default + refresh} (#{named} config variants, " <>
+          "#{refresh} refreshes), already queued #{pending}"
       )
     end
 
@@ -94,6 +106,23 @@ defmodule Portal.Workers.ToolchainSweep do
       {:ok, %Oban.Job{conflict?: true}} -> {:error, :already_queued}
       other -> other
     end
+  end
+
+  # The run's builds, in enqueue order: each tier round-robin over the
+  # toolchains, the cap shared as the moduledoc lays out. Named variants take
+  # what they need; then the defaults and the refreshes each get their share
+  # (the refreshes a quarter of the cap), and whatever either leaves goes to
+  # the other's leftovers, defaults first.
+  defp pick(backlogs, cap) do
+    [named, defaults, refreshes] =
+      Enum.map([:named, :default, :refresh], &round_robin(only(backlogs, &1)))
+
+    named = Enum.take(named, cap)
+    reserve = div(cap, 4)
+    {defaults, more_defaults} = Enum.split(defaults, max(cap - reserve - length(named), 0))
+    {refreshes, more_refreshes} = Enum.split(refreshes, reserve)
+
+    Enum.take(named ++ defaults ++ refreshes ++ more_defaults ++ more_refreshes, cap)
   end
 
   # Each toolchain's backlog, keeping only the entries of `tier`, in their
@@ -123,14 +152,12 @@ defmodule Portal.Workers.ToolchainSweep do
   end
 
   defp enqueue({args, tier}) do
-    named? = tier == :named
-
     case args |> ToolchainBuild.new(priority: priority(args.variant, tier)) |> Oban.insert() do
       {:ok, %Oban.Job{conflict?: true}} ->
-        {args.toolchain, :pending, named?}
+        {args.toolchain, :pending, tier}
 
       {:ok, _job} ->
-        {args.toolchain, :enqueued, named?}
+        {args.toolchain, :enqueued, tier}
 
       {:error, reason} ->
         Logger.error(
@@ -138,7 +165,7 @@ defmodule Portal.Workers.ToolchainSweep do
             "(#{args.variant}, #{args.config_variant}) on #{args.toolchain}: #{inspect(reason)}"
         )
 
-        {args.toolchain, :failed, named?}
+        {args.toolchain, :failed, tier}
     end
   end
 

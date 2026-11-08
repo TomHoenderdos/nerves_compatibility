@@ -1567,7 +1567,8 @@ defmodule Portal.Catalog do
 
   @doc """
   Toolchain builds to make on `toolchain` at `builder_version`, at most
-  `limit` of them, each a package version and its optional-deps `variant`
+  `limit` that are not refreshes and at most `limit` refreshes (see below),
+  each a package version and its optional-deps `variant`
   (see `Portal.Catalog.ToolchainBuild`): every version whose own `host`
   compile passed on a non-revoked run, of a package with no native
   components, is wanted `:with` its optional dependencies, and also
@@ -1578,8 +1579,10 @@ defmodule Portal.Catalog do
   live `Portal.Catalog.ToolchainBuild` of its own is left out (see the
   query's comment for what is live). An already served build that only
   needs its compile-time config reads recorded comes after every other
-  candidate, and says so as `refresh: true`
-  (`Portal.Workers.ToolchainSweep` queues those after every other build).
+  candidate, and says so as `refresh: true`. The limit applies to each of
+  the two kinds on its own, so a backlog of new builds longer than `limit`
+  never cuts the refreshes off: `Portal.Workers.ToolchainSweep` reserves part
+  of its cap for them, and has to see them to fill it.
   Each row names its `config_variant`: `"default"`, or a named
   `Compatibility.ConfigVariants` variant of a served default build. Only rows
   of the default config variant decide whether a default build is wanted, so
@@ -1613,20 +1616,26 @@ defmodule Portal.Catalog do
           UNION ALL
           #{@config_variant_candidates_sql}
         )
-        SELECT c.package, c.version, c.variant, c.config_variant, c.refresh
-        FROM candidates c
-        LEFT JOIN catalog_release_downloads d
-          ON d.package = c.package AND d.version = c.version
-        ORDER BY c.refresh,
-                 c.config_variant = 'default',
-                 c.recent DESC NULLS LAST,
-                 d.downloads DESC NULLS LAST,
-                 c.finished_at DESC NULLS LAST,
-                 c.version DESC,
-                 c.variant = 'without',
-                 c.rank,
-                 c.package
-        LIMIT $15
+        SELECT package, version, variant, config_variant, refresh
+        FROM (
+          SELECT c.package, c.version, c.variant, c.config_variant, c.refresh,
+                 row_number() OVER (
+                   PARTITION BY c.refresh
+                   ORDER BY c.config_variant = 'default',
+                            c.recent DESC NULLS LAST,
+                            d.downloads DESC NULLS LAST,
+                            c.finished_at DESC NULLS LAST,
+                            c.version DESC,
+                            c.variant = 'without',
+                            c.rank,
+                            c.package
+                 ) AS place
+          FROM candidates c
+          LEFT JOIN catalog_release_downloads d
+            ON d.package = c.package AND d.version = c.version
+        ) ranked
+        WHERE place <= $15
+        ORDER BY refresh, place
         """,
         toolchain_params(
           toolchain,
