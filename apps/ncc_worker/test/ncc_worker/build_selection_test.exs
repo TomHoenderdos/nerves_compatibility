@@ -39,7 +39,17 @@ defmodule NccWorker.BuildSelectionTest do
     build = Path.join([root, "_build", "host", "lib", name])
     File.mkdir_p!(Path.dirname(build))
     File.cp_r!(Path.join([__DIR__, "..", "fixture", fixture]), build)
+    lock(root, name, [])
     source
+  end
+
+  # Puts `name` in the project's mix.lock with `deps` as its dependencies.
+  defp lock(root, name, deps) do
+    path = Path.join(root, "mix.lock")
+    {entries, _} = if File.exists?(path), do: Code.eval_file(path), else: {%{}, []}
+    locked = for dep <- deps, do: {String.to_atom(dep), "~> 1.0", [hex: String.to_atom(dep)]}
+    entry = {:hex, String.to_atom(name), "1.0.0", "inner", [:mix], locked, "hexpm", "outer"}
+    File.write!(path, inspect(Map.put(entries, name, entry), limit: :infinity))
   end
 
   test "pure Elixir and its pure dependency closure skip firmware", %{root: root} do
@@ -382,6 +392,56 @@ defmodule NccWorker.BuildSelectionTest do
       source = package(root, "sample")
       File.write!(Path.join(source, "lib/example.ex"), "Mix.targets_of(x)\nMyMix.target_dir()")
       assert BuildSelection.static_rules(root, "sample", scan()) == :ok
+    end
+
+    test "a dependency's macro that reads the target refuses", %{root: root} do
+      package(root, "sample")
+      helper = package(root, "helper")
+      lock(root, "sample", ["helper"])
+
+      File.write!(
+        Path.join(helper, "lib/example.ex"),
+        "defmodule Helper do\n  defmacro target, do: Mix.target()\nend\n"
+      )
+
+      assert BuildSelection.static_rules(root, "sample", scan()) ==
+               {:skip, "dependency helper reads the target"}
+    end
+
+    test "a transitive dependency that mentions nerves refuses", %{root: root} do
+      package(root, "sample")
+      package(root, "middle")
+      leaf = package(root, "leaf")
+      lock(root, "sample", ["middle"])
+      lock(root, "middle", ["leaf"])
+      File.write!(Path.join(leaf, "lib/example.ex"), "# works with Nerves.Runtime\n")
+
+      assert BuildSelection.static_rules(root, "sample", scan()) ==
+               {:skip, "nerves-specific source in dependency leaf"}
+    end
+
+    test "ordinary dependencies pass, native ones included", %{root: root} do
+      package(root, "sample")
+      package(root, "helper")
+      native = package(root, "native")
+      File.mkdir_p!(Path.join(native, "c_src"))
+      lock(root, "sample", ["helper", "native"])
+
+      assert BuildSelection.static_rules(root, "sample", scan()) == :ok
+    end
+
+    test "a missing lock or dependency source fails closed", %{root: root} do
+      package(root, "sample")
+      lock(root, "sample", ["gone"])
+      lock(root, "gone", [])
+
+      assert BuildSelection.static_rules(root, "sample", scan()) ==
+               {:skip, "portability could not be judged"}
+
+      File.rm!(Path.join(root, "mix.lock"))
+
+      assert BuildSelection.static_rules(root, "sample", scan()) ==
+               {:skip, "portability could not be judged"}
     end
 
     test "a real scan of an Erlang-only package passes", %{root: root} do

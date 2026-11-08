@@ -630,7 +630,9 @@ defmodule NccWorker.BuildCache do
   # artifacts and VCS metadata are skipped. grep exit 1 is no candidate;
   # anything else (no grep, unreadable tree, a file that cannot be read or is
   # too large) counts as a match so the dependency stays target-scoped.
-  defp reads_target?(dir) do
+  @doc false
+  @spec reads_target?(String.t()) :: boolean()
+  def reads_target?(dir) do
     excludes = Enum.map(~w(.git _build node_modules), &"--exclude-dir=#{&1}")
     args = ["-r", "-l", "-I", "-i", "-F", "--null", "--exclude=*.beam"] ++ excludes
     args = args ++ ["-e", "target", "-e", "mix", "--", dir]

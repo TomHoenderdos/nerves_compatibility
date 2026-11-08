@@ -253,11 +253,17 @@ defmodule NccWorker.ReleaseArtifactsTest do
     assert File.read!(Path.join(archive, digest)) == beam
   end
 
-  # The package's own source, as `mix deps.get` leaves it under deps/.
+  # The package's own source and its lock entry, with no dependencies, as
+  # `mix deps.get` leaves them.
   defp write_source(project, package, body) do
     lib = Path.join([project, "deps", package, "lib"])
     File.mkdir_p!(lib)
     File.write!(Path.join(lib, "#{package}.ex"), body)
+
+    File.write!(
+      Path.join(project, "mix.lock"),
+      ~s|%{"#{package}": {:hex, :#{package}, "1.0.0", "i", [:mix], [], "hexpm", "o"}}\n|
+    )
   end
 
   # The compile-time trace's verdicts (`NccWorker.Portability.run/3`), as the

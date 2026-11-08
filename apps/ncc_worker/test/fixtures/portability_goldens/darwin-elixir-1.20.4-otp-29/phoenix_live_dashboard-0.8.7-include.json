@@ -3963,7 +3963,7 @@
   "optional_deps_variant": "include",
   "package": "phoenix_live_dashboard",
   "platform": "darwin-elixir-1.20.4-otp-29",
-  "reason": "portability could not be judged",
+  "reason": "dependency cc_precompiler reads the target",
   "rule1_reason": "OS-specific (lib/phoenix/live_dashboard/pages/home_page.ex: system_architecture)",
   "status": "skipped",
   "trace_verdict": "could_not_judge",

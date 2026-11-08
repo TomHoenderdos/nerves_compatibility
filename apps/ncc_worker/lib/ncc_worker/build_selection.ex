@@ -6,7 +6,7 @@ defmodule NccWorker.BuildSelection do
   Unavailable or ambiguous evidence always keeps firmware builds enabled.
   """
 
-  alias NccWorker.{BuildCache, StaticPriv}
+  alias NccWorker.{BuildCache, DepsLock, StaticPriv}
 
   @spec select(String.t(), String.t(), String.t(), map(), [{String.t(), String.t()}]) ::
           :pure_elixir | :firmware
@@ -84,7 +84,10 @@ defmodule NccWorker.BuildSelection do
   cover: compiled beams in portable languages, no NIF or driver load in
   them, static priv data only (`portable?/4`'s priv rule), no mention of
   Nerves in the sources, and no native sources, native build dependencies,
-  target reads or `nerves*` name (`BuildCache.dep_target_agnostic?/2`).
+  target reads or `nerves*` name (`BuildCache.dep_target_agnostic?/2`). The
+  Nerves and target-read checks also cover every dependency in the
+  package's locked closure, as `classify/4` does for a full run; native code
+  in a dependency does not refuse.
   Unlike `portable?/4` it does not refuse program calls, executable lookups
   or a look at the OS type in the sources: a runtime call runs the same from
   a precompiled beam, and the trace refuses one made at compile time. Rebar
@@ -93,7 +96,8 @@ defmodule NccWorker.BuildSelection do
 
   The Nerves and target checks stay because the trace does not see a read
   of `Mix.target/0`: it is Mix state, not the host, and a build compiled for
-  `:host` would be served to firmware builds. Reasons are `portable?/4`'s.
+  `:host` would be served to firmware builds. The package's own reasons are
+  `portable?/4`'s; a dependency's reason names the dependency.
   Anything missing or unreadable fails closed.
   """
   @spec static_rules(String.t(), String.t(), map(), keyword()) :: :ok | {:skip, String.t()}
@@ -102,14 +106,54 @@ defmodule NccWorker.BuildSelection do
 
     with :ok <- static_scan(scan),
          :ok <- portable_priv(project, package, scan, opts),
-         :ok <- check(not nerves_source?(Path.join(deps, package)), "nerves-specific source") do
-      check(
-        BuildCache.dep_target_agnostic?(deps, package),
-        "reads the target or ships native code"
-      )
+         :ok <- check(not nerves_source?(Path.join(deps, package)), "nerves-specific source"),
+         :ok <-
+           check(
+             BuildCache.dep_target_agnostic?(deps, package),
+             "reads the target or ships native code"
+           ) do
+      closure_static(project, package)
     end
   rescue
     _ -> {:skip, "portability could not be judged"}
+  end
+
+  # The Nerves word and target reads in every dependency the package compiles
+  # against (its locked closure, `NccWorker.DepsLock.read/2`): a dependency's
+  # macro that reads `Mix.target/0` expands into the package's own beams.
+  # Native code in a dependency is not refused, as the consumer compiles it.
+  # A lock that cannot be read or a dependency source that is missing fails
+  # closed.
+  defp closure_static(project, package) do
+    deps = Path.join(project, "deps")
+
+    case DepsLock.read(project, package) do
+      nil ->
+        {:skip, "portability could not be judged"}
+
+      closure ->
+        closure
+        |> Map.keys()
+        |> Enum.sort()
+        |> Enum.find_value(:ok, &dependency_skip(Path.join(deps, &1), &1))
+    end
+  end
+
+  # `nil` for a dependency that passes, else its `{:skip, reason}`.
+  defp dependency_skip(dir, dep) do
+    case dependency_static(dir, dep) do
+      :ok -> nil
+      skip -> skip
+    end
+  end
+
+  defp dependency_static(dir, dep) do
+    cond do
+      not File.dir?(dir) -> {:skip, "portability could not be judged"}
+      nerves_source?(dir) -> {:skip, "nerves-specific source in dependency #{dep}"}
+      BuildCache.reads_target?(dir) -> {:skip, "dependency #{dep} reads the target"}
+      true -> :ok
+    end
   end
 
   defp static_scan(%{beam_count: count, errors: [], languages: languages} = scan)

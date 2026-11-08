@@ -17,13 +17,17 @@ defmodule NccWorker.ToolchainModeTest do
   """
 
   # The project a toolchain run leaves behind: the package's sources under
-  # `deps/<pkg>`, its host build under `_build/host/lib/<pkg>`, and the lock.
+  # `deps/<pkg>` and its dependency's under `deps/dep`, its host build under
+  # `_build/host/lib/<pkg>`, and the lock.
   defp project(work_dir, fixture) do
     project = Path.join(work_dir, "proj")
     source = Path.join([project, "deps", "sample"])
     File.mkdir_p!(Path.join(source, "lib"))
     File.write!(Path.join(source, "mix.exs"), "defmodule Sample.MixProject do end")
     File.write!(Path.join(source, "lib/sample.ex"), "defmodule Sample do end")
+    dep = Path.join([project, "deps", "dep"])
+    File.mkdir_p!(Path.join(dep, "lib"))
+    File.write!(Path.join(dep, "lib/dep.ex"), "defmodule Dep do end")
 
     built = Path.join([project, "_build", "host", "lib", "sample"])
     File.mkdir_p!(Path.dirname(built))
