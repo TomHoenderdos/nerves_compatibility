@@ -444,6 +444,31 @@ defmodule NccWorker.BuildSelectionTest do
                {:skip, "portability could not be judged"}
     end
 
+    test "a project under a path that says nerves is judged by its contents", %{root: root} do
+      root = Path.join([root, "nerves_x", "nerves_compatibility"])
+      package(root, "sample")
+      package(root, "helper")
+      lock(root, "sample", ["helper"])
+
+      assert BuildSelection.static_rules(root, "sample", scan()) == :ok
+      assert BuildSelection.portable?(root, "sample", scan()) == :ok
+
+      graph = %{"root" => ["sample"], "sample" => ["helper"]}
+      assert BuildSelection.classify(root, "sample", "A collection", graph) == :pure_elixir
+
+      assert BuildSelection.static_rules(root, "absent", scan()) ==
+               {:skip, "reads the target or ships native code"}
+
+      assert BuildSelection.portable?(root, "absent", scan()) ==
+               {:skip, "reads the target or ships native code"}
+
+      lock(root, "sample", ["gone"])
+      lock(root, "gone", [])
+
+      assert BuildSelection.static_rules(root, "sample", scan()) ==
+               {:skip, "portability could not be judged"}
+    end
+
     test "a real scan of an Erlang-only package passes", %{root: root} do
       package(root, "cerlc", "cerlc-0.2.1")
       built = Path.join([root, "_build", "host", "lib", "cerlc"])

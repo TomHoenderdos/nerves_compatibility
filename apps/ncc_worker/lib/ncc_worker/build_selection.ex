@@ -61,7 +61,7 @@ defmodule NccWorker.BuildSelection do
 
     with :ok <- portable_scan(scan),
          :ok <- portable_priv(project, package, scan, opts),
-         :ok <- check(not nerves_source?(source), "nerves-specific source"),
+         :ok <- nerves_check(source),
          :ok <-
            check(
              BuildCache.dep_target_agnostic?(deps, package),
@@ -106,7 +106,7 @@ defmodule NccWorker.BuildSelection do
 
     with :ok <- static_scan(scan),
          :ok <- portable_priv(project, package, scan, opts),
-         :ok <- check(not nerves_source?(Path.join(deps, package)), "nerves-specific source"),
+         :ok <- nerves_check(Path.join(deps, package)),
          :ok <-
            check(
              BuildCache.dep_target_agnostic?(deps, package),
@@ -148,12 +148,17 @@ defmodule NccWorker.BuildSelection do
   end
 
   defp dependency_static(dir, dep) do
-    cond do
-      not File.dir?(dir) -> {:skip, "portability could not be judged"}
-      nerves_source?(dir) -> {:skip, "nerves-specific source in dependency #{dep}"}
-      BuildCache.reads_target?(dir) -> {:skip, "dependency #{dep} reads the target"}
-      true -> :ok
+    case nerves_mention(dir) do
+      :found -> {:skip, "nerves-specific source in dependency #{dep}"}
+      :none -> dependency_target(dir, dep)
+      _missing_or_error -> {:skip, "portability could not be judged"}
     end
+  end
+
+  defp dependency_target(dir, dep) do
+    if BuildCache.reads_target?(dir),
+      do: {:skip, "dependency #{dep} reads the target"},
+      else: :ok
   end
 
   defp static_scan(%{beam_count: count, errors: [], languages: languages} = scan)
@@ -227,7 +232,7 @@ defmodule NccWorker.BuildSelection do
     built = Path.join([project, "_build", "host", "lib", name])
 
     BuildCache.dep_target_agnostic?(deps, name) and
-      not nerves_source?(Path.join(deps, name)) and pure_beams?(BeamScanner.analyze(built))
+      nerves_mention(Path.join(deps, name)) == :none and pure_beams?(BeamScanner.analyze(built))
   end
 
   defp pure_beams?(%{
@@ -245,7 +250,29 @@ defmodule NccWorker.BuildSelection do
 
   defp pure_beams?(_), do: false
 
-  defp nerves_source?(dir) do
+  # The package's own Nerves check. A missing source is left to
+  # `BuildCache.dep_target_agnostic?/2`, the next check, which refuses it as
+  # target-specific; a grep that fails on a source that is there cannot be
+  # judged. Neither is reported as a mention of Nerves.
+  defp nerves_check(dir) do
+    case nerves_mention(dir) do
+      :found -> {:skip, "nerves-specific source"}
+      :none -> :ok
+      :missing -> :ok
+      :error -> {:skip, "portability could not be judged"}
+    end
+  end
+
+  # Whether the Elixir and Erlang sources under `dir` mention Nerves, by
+  # their contents only. A missing `dir` is answered before grep runs, because
+  # grep implementations disagree on it: GNU grep exits 2 for a missing path,
+  # BSD grep can exit 1 when `--include` filters it out. Any other grep
+  # failure is `:error`.
+  defp nerves_mention(dir) do
+    if File.dir?(dir), do: grep_nerves(dir), else: :missing
+  end
+
+  defp grep_nerves(dir) do
     args = [
       "-r",
       "-q",
@@ -260,8 +287,11 @@ defmodule NccWorker.BuildSelection do
     ]
 
     case System.cmd("grep", args, stderr_to_stdout: true) do
-      {_, 1} -> false
-      _ -> true
+      {_, 0} -> :found
+      {_, 1} -> :none
+      _ -> :error
     end
+  rescue
+    _ -> :error
   end
 end
