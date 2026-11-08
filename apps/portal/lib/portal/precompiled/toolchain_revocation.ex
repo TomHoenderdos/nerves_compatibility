@@ -25,32 +25,50 @@ defmodule Portal.Precompiled.ToolchainRevocation do
       status does not matter (rule 1 ran either way), and the row's
       `rule1_reason` is that build's. A result whose build rule 1 passed, or
       that has no such build yet, is not revoked; a later call reaches it
-      once that build exists. Every `pure_elixir` row of the version goes,
-      carried copies included. It gets `unpublished_at`, the one withheld
-      predicate in `Portal.Catalog`; firmware results are never touched.
+      once that build exists (or `everything: true` does now). Every
+      `pure_elixir` row of the version is a candidate, carried copies
+      included, though `limit:` may split one version's rows across calls.
+      It gets `unpublished_at` (the one withheld predicate in
+      `Portal.Catalog`) and `unpublished_reason` `"rule 2 revoked"`;
+      firmware results are never touched. The revocation sticks: a carried
+      copy keeps both, and ingest stores a later rule-2 `pure_elixir` result
+      of the same version withdrawn with the same reason and timestamp.
+
+  ## Emergency: `everything: true`
+
+  Takes every rule-2 publication, whatever rule 1 said or whether anything
+  recorded it: every passing toolchain build with `portability_rule` 2 at
+  the current `builder_version` and every `pure_elixir` result with
+  `portability_rule` 2 that still has files. It still only lists unless
+  given `dry_run: false`, combines with `package:`, `version:` and
+  `rule1_prefix:`, and is not capped unless given `limit:`. Rule 1's
+  publications (`portability_rule` nil) are never touched.
 
   ## Safety
 
     * `revoke/1` only lists unless given `dry_run: false`, and acting needs
-      `package:` (optionally with `version:`), `rule1_prefix:` or
-      `all: true`, else it returns `{:error, :filter_required}`;
+      `package:` (optionally with `version:`), `rule1_prefix:`, `all: true`
+      or `everything: true`, else it returns `{:error, :filter_required}`;
     * one call revokes at most `limit:` rows (default 50, toolchain builds
-      and system results together), in package, version, kind and identity
-      order; a dry run lists the same rows the same call would revoke;
-    * acting is one `UPDATE ... RETURNING` statement over rows it locks
-      first, and lists exactly the rows that statement changed;
+      and system results together; no default cap with `everything: true`),
+      in package, version, kind and identity order; a dry run lists the same
+      rows the same call would revoke;
+    * acting is one statement, one `UPDATE ... RETURNING` per table over
+      rows it locks first, and lists exactly the rows those updates changed;
     * it is idempotent: a revoked row no longer matches;
     * every row one call revokes carries the same timestamp (`revoked_at`
       or `unpublished_at`), which `revocations/0` lists and `undo/1` takes.
-      The `pure_elixir` side matches by timestamp alone: a `portability_rule`
-      2 result withdrawn some other way in the very same microsecond is
-      listed and put back with it.
+      Both match the reason as well, so they never list or put back what
+      another tool withdrew (`Portal.Precompiled.PureElixirWithdrawal`'s
+      withdrawals have no `unpublished_reason`).
 
   ## Operator commands (web host, through ops/portal-rpc.sh)
 
       Portal.Precompiled.ToolchainRevocation.revoke(all: true)
       Portal.Precompiled.ToolchainRevocation.revoke(dry_run: false, package: "phoenix", version: "1.8.16")
       Portal.Precompiled.ToolchainRevocation.revoke(dry_run: false, rule1_prefix: "calls erlang:open_port/", limit: 50)
+      Portal.Precompiled.ToolchainRevocation.revoke(everything: true)
+      Portal.Precompiled.ToolchainRevocation.revoke(dry_run: false, everything: true)
       Portal.Precompiled.ToolchainRevocation.revocations()
       Portal.Precompiled.ToolchainRevocation.undo(~U[2026-11-09 12:00:00.000000Z])
 
@@ -62,6 +80,8 @@ defmodule Portal.Precompiled.ToolchainRevocation do
   alias Portal.Repo
 
   @reason "rule 2 revoked"
+  # The same text, for system results, where ingest reads it too.
+  @result_reason Portal.Catalog.SystemResult.rule2_revocation()
   @default_limit 50
   # The toolchain a full run builds on, whose build says what rule 1 said
   # about a full run's `pure_elixir` result.
@@ -74,13 +94,13 @@ defmodule Portal.Precompiled.ToolchainRevocation do
           toolchain: String.t() | nil,
           variant: String.t() | nil,
           config_variant: String.t() | nil,
-          rule1_reason: String.t(),
+          rule1_reason: String.t() | nil,
           id: Ecto.UUID.t()
         }
 
   # $1 builder_version, $2 package (null: any), $3 version (null: any),
-  # $4 rule1_reason prefix (null: any), $5 limit, $6 the full run's
-  # toolchain. `<lock>` is `FOR UPDATE OF t` / `OF s` when acting, empty for
+  # $4 rule1_reason prefix (null: any), $5 limit (null: none), $6 the full
+  # run's toolchain, $7 everything (true: no rule-1 verdict needed). `<lock>` is `FOR UPDATE OF t` / `OF s` when acting, empty for
   # a dry run. Each kind takes its first $5 rows, so the union's first $5
   # are the first $5 overall.
   @candidates """
@@ -91,14 +111,14 @@ defmodule Portal.Precompiled.ToolchainRevocation do
     JOIN catalog_packages p ON p.id = t.package_id
     WHERE t.builder_version = $1
       AND t.portability_rule = 2
-      AND t.rule1_reason IS NOT NULL
+      AND ($7::boolean OR t.rule1_reason IS NOT NULL)
       AND t.revoked_at IS NULL
       AND t.status = 'pass'
       AND ($2::text IS NULL OR p.name = $2)
       AND ($3::text IS NULL OR t.version = $3)
       AND ($4::text IS NULL OR starts_with(t.rule1_reason, $4))
     ORDER BY p.name, t.version, t.toolchain, t.variant, t.config_variant, t.id
-    LIMIT $5
+    LIMIT $5::bigint
     <lock_t>
   ), sr AS (
     SELECT 'system_result'::text AS kind, s.id, p.name, r.version_tested AS version,
@@ -107,7 +127,7 @@ defmodule Portal.Precompiled.ToolchainRevocation do
     FROM catalog_system_results s
     JOIN catalog_runs r ON r.id = s.run_id
     JOIN catalog_packages p ON p.id = r.package_id
-    JOIN LATERAL (
+    LEFT JOIN LATERAL (
       SELECT t.rule1_reason
       FROM catalog_toolchain_builds t
       WHERE t.package_id = r.package_id
@@ -122,18 +142,19 @@ defmodule Portal.Precompiled.ToolchainRevocation do
     ) e ON true
     WHERE s.system_pkg = 'pure_elixir'
       AND s.portability_rule = 2
+      AND ($7::boolean OR e.rule1_reason IS NOT NULL)
       AND s.unpublished_at IS NULL
       AND EXISTS (SELECT 1 FROM catalog_artifact_memberships m WHERE m.system_result_id = s.id)
       AND ($2::text IS NULL OR p.name = $2)
       AND ($3::text IS NULL OR r.version_tested = $3)
       AND ($4::text IS NULL OR starts_with(e.rule1_reason, $4))
     ORDER BY p.name, r.version_tested, s.id
-    LIMIT $5
+    LIMIT $5::bigint
     <lock_s>
   ), cand AS (
     SELECT * FROM tc UNION ALL SELECT * FROM sr
     ORDER BY name, version, kind, toolchain, variant, config_variant, id
-    LIMIT $5
+    LIMIT $5::bigint
   )
   """
 
@@ -145,7 +166,7 @@ defmodule Portal.Precompiled.ToolchainRevocation do
                 |> String.replace("<lock_s>", "")) <>
                  "SELECT #{@columns} FROM cand c #{@order}"
 
-  # $7 the timestamp every row of the call carries. The updates re-check the
+  # $8 the timestamp every row of the call carries. The updates re-check the
   # row is still unrevoked, so a row another writer revoked in between is
   # neither changed nor listed.
   @revoke_sql (@candidates
@@ -154,13 +175,14 @@ defmodule Portal.Precompiled.ToolchainRevocation do
                 """
                 , tb_done AS (
                   UPDATE catalog_toolchain_builds
-                  SET revoked_at = $7, revoked_reason = '#{@reason}', updated_at = $7
+                  SET revoked_at = $8, revoked_reason = '#{@reason}', updated_at = $8
                   WHERE id IN (SELECT id FROM cand WHERE kind = 'toolchain_build')
                     AND revoked_at IS NULL
                   RETURNING id
                 ), sr_done AS (
                   UPDATE catalog_system_results
-                  SET unpublished_at = $7, updated_at = $7
+                  SET unpublished_at = $8, unpublished_reason = '#{@result_reason}',
+                      updated_at = $8
                   WHERE id IN (SELECT id FROM cand WHERE kind = 'system_result')
                     AND unpublished_at IS NULL
                   RETURNING id
@@ -179,7 +201,7 @@ defmodule Portal.Precompiled.ToolchainRevocation do
     UNION ALL
     SELECT unpublished_at, count(*)
     FROM catalog_system_results
-    WHERE system_pkg = 'pure_elixir' AND portability_rule = 2 AND unpublished_at IS NOT NULL
+    WHERE unpublished_reason = $2 AND unpublished_at IS NOT NULL
     GROUP BY unpublished_at
   ) x
   GROUP BY at
@@ -194,8 +216,8 @@ defmodule Portal.Precompiled.ToolchainRevocation do
     RETURNING 1
   ), sr AS (
     UPDATE catalog_system_results
-    SET unpublished_at = NULL, updated_at = now() AT TIME ZONE 'utc'
-    WHERE system_pkg = 'pure_elixir' AND portability_rule = 2 AND unpublished_at = $2
+    SET unpublished_at = NULL, unpublished_reason = NULL, updated_at = now() AT TIME ZONE 'utc'
+    WHERE unpublished_reason = $3 AND unpublished_at = $2
     RETURNING 1
   )
   SELECT (SELECT count(*) FROM tb) + (SELECT count(*) FROM sr)
@@ -207,8 +229,9 @@ defmodule Portal.Precompiled.ToolchainRevocation do
   Options: `dry_run:` (`true`), `package:`, `version:` (only with
   `package:`), `rule1_prefix:` (what rule 1 said starts with it, e.g.
   `"calls System.cmd/"`), `all: true` (acting without `package:` or
-  `rule1_prefix:`), `limit:` (#{@default_limit}, the most rows one call
-  lists or revokes).
+  `rule1_prefix:`), `everything: true` (every rule-2 publication, see the
+  moduledoc), `limit:` (#{@default_limit}, none with `everything: true`:
+  the most rows one call lists or revokes).
 
   Returns `{:dry_run, rows}`, `{:error, :filter_required}` for an act
   without a filter (nothing written), or `{:revoked, count, rows, at}`:
@@ -235,23 +258,24 @@ defmodule Portal.Precompiled.ToolchainRevocation do
 
   @doc """
   Every revocation on record, as `{timestamp, rows}`, oldest first: the
-  toolchain builds revoked `"rule 2 revoked"` and the `portability_rule` 2
-  `pure_elixir` results withdrawn, grouped by their timestamp.
+  toolchain builds and the `pure_elixir` results with the reason
+  `"rule 2 revoked"`, grouped by their timestamp.
   """
   @spec revocations() :: [{DateTime.t(), non_neg_integer()}]
   def revocations do
-    %{rows: rows} = Repo.query!(@revocations_sql, [@reason])
+    %{rows: rows} = Repo.query!(@revocations_sql, [@reason, @result_reason])
     Enum.map(rows, fn [at, n] -> {to_utc(at), n} end)
   end
 
   @doc """
   Puts back the rows one `revoke/1` call revoked at `at`: its toolchain
   builds get `revoked_at` and `revoked_reason` back to nil, its
-  `pure_elixir` results `unpublished_at`. Returns how many.
+  `pure_elixir` results (those ingest held back for it included)
+  `unpublished_at` and `unpublished_reason`. Returns how many.
   """
   @spec undo(DateTime.t()) :: {:ok, non_neg_integer()}
   def undo(%DateTime{} = at) do
-    %{rows: [[n]]} = Repo.query!(@undo_sql, [@reason, naive_utc(at)])
+    %{rows: [[n]]} = Repo.query!(@undo_sql, [@reason, naive_utc(at), @result_reason])
     Logger.warning("restored #{n} rule-2 publications revoked at #{DateTime.to_iso8601(at)}")
     {:ok, n}
   end
@@ -264,7 +288,7 @@ defmodule Portal.Precompiled.ToolchainRevocation do
     for row <- rows do
       Logger.warning(
         "revoked #{row.kind} #{row.package} #{row.version} at #{DateTime.to_iso8601(at)}: " <>
-          row.rule1_reason
+          (row.rule1_reason || "no rule 1 verdict recorded")
       )
     end
 
@@ -292,12 +316,13 @@ defmodule Portal.Precompiled.ToolchainRevocation do
   defp params(opts) do
     package = Keyword.get(opts, :package)
     version = Keyword.get(opts, :version)
-    limit = Keyword.get(opts, :limit, @default_limit)
+    everything? = Keyword.get(opts, :everything) == true
+    limit = Keyword.get(opts, :limit, if(everything?, do: nil, else: @default_limit))
 
     if version && is_nil(package),
       do: raise(ArgumentError, "version: needs package:, got: #{inspect(version)}")
 
-    unless is_integer(limit) and limit > 0,
+    unless is_nil(limit) or (is_integer(limit) and limit > 0),
       do: raise(ArgumentError, "limit must be a positive integer, got: #{inspect(limit)}")
 
     [
@@ -306,14 +331,15 @@ defmodule Portal.Precompiled.ToolchainRevocation do
       version,
       Keyword.get(opts, :rule1_prefix),
       limit,
-      @full_run_toolchain
+      @full_run_toolchain,
+      everything?
     ]
   end
 
   defp filtered?(opts),
     do:
       present?(Keyword.get(opts, :package)) or present?(Keyword.get(opts, :rule1_prefix)) or
-        Keyword.get(opts, :all) == true
+        Keyword.get(opts, :all) == true or Keyword.get(opts, :everything) == true
 
   defp present?(value), do: is_binary(value) and value != ""
 

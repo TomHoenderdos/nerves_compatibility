@@ -59,9 +59,11 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
     * every row one call withdraws carries the same `unpublished_at`
       (`withdrawn_at` in the result, listed by `withdrawals/0`), and
       `undo/1` sets the `pure_elixir` rows with that timestamp back to
-      `nil`. The match is by timestamp alone: a `pure_elixir` result
-      withdrawn through `SystemResult`'s `:withdraw_publication` action in
-      the very same microsecond would be listed and put back with it.
+      `nil`. The match is by timestamp and a nil `unpublished_reason`
+      (what this module writes): a `pure_elixir` result withdrawn through
+      `SystemResult`'s `:withdraw_publication` action in the very same
+      microsecond would be listed and put back with it, but never one
+      `Portal.Precompiled.ToolchainRevocation` revoked.
 
   Run it only once both hosts run a release with `unpublished_at`: an older
   release's partial-run ingest copies a carried result without it (a
@@ -143,6 +145,7 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
   JOIN catalog_runs r ON r.id = s.run_id
   JOIN catalog_packages p ON p.id = r.package_id
   WHERE s.system_pkg = 'pure_elixir' AND s.unpublished_at IS NOT NULL
+    AND s.unpublished_reason IS NULL
   GROUP BY s.unpublished_at
   ORDER BY s.unpublished_at
   """
@@ -150,7 +153,7 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
   @undo_sql """
   UPDATE catalog_system_results
   SET unpublished_at = NULL, updated_at = now() AT TIME ZONE 'utc'
-  WHERE system_pkg = 'pure_elixir' AND unpublished_at = $1
+  WHERE system_pkg = 'pure_elixir' AND unpublished_at = $1 AND unpublished_reason IS NULL
   """
 
   @type result :: %{id: String.t(), built_at: DateTime.t()}
@@ -228,7 +231,8 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
   `%{withdrawn_at, results, versions}`, oldest first. The grouping is by
   timestamp alone: a result withdrawn through `SystemResult`'s
   `:withdraw_publication` action in the very same microsecond would be
-  listed with this module's call.
+  listed with this module's call. A result with an `unpublished_reason`
+  (`Portal.Precompiled.ToolchainRevocation`'s) is never listed.
   """
   @spec withdrawals() :: [
           %{withdrawn_at: DateTime.t(), results: pos_integer(), versions: [String.t()]}
@@ -246,7 +250,8 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
   `withdrawn_at`, which is the rows one `withdraw/1` call took out. The
   match is by timestamp alone: a `pure_elixir` result withdrawn through
   `:withdraw_publication` in the very same microsecond would be put back
-  too. Returns how many.
+  too. A result with an `unpublished_reason` is never put back. Returns how
+  many.
   """
   @spec undo(DateTime.t() | NaiveDateTime.t()) :: {:restored, non_neg_integer()}
   def undo(%DateTime{} = withdrawn_at), do: withdrawn_at |> naive_utc() |> undo()

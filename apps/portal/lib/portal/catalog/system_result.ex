@@ -8,6 +8,16 @@ defmodule Portal.Catalog.SystemResult do
     domain: Portal.Catalog,
     data_layer: AshPostgres.DataLayer
 
+  @rule2_revocation "rule 2 revoked"
+
+  @doc """
+  The `unpublished_reason` of a `pure_elixir` result
+  `Portal.Precompiled.ToolchainRevocation` revoked, and of a later rule-2
+  result of the same version ingest holds back for it.
+  """
+  @spec rule2_revocation() :: String.t()
+  def rule2_revocation, do: @rule2_revocation
+
   postgres do
     table("catalog_system_results")
     repo(Portal.Repo)
@@ -52,7 +62,9 @@ defmodule Portal.Catalog.SystemResult do
         :carried_from_run_id,
         :deps_lock,
         :compile_env_rule,
-        :portability_rule
+        :portability_rule,
+        :unpublished_at,
+        :unpublished_reason
       ])
     end
 
@@ -182,6 +194,13 @@ defmodule Portal.Catalog.SystemResult do
     # and `reject_withheld_results/4`, beside `Portal.Precompiled.Withheld`).
     # Carried copies keep it.
     attribute :unpublished_at, :utc_datetime_usec do
+      public?(true)
+    end
+
+    # Which tool set `unpublished_at`: `rule2_revocation/0` for
+    # `Portal.Precompiled.ToolchainRevocation`, nil for every other way, so
+    # each tool lists and undoes only its own. Carried copies keep it.
+    attribute :unpublished_reason, :string do
       public?(true)
     end
 

@@ -9,7 +9,7 @@ defmodule Portal.Precompiled.ToolchainRevocationTest do
 
   alias Portal.Catalog
   alias Portal.Catalog.{Ingestion, Package, SystemResult, ToolchainBuild}
-  alias Portal.Precompiled.{Batches, Keys, ToolchainRevocation}
+  alias Portal.Precompiled.{Batches, Keys, PureElixirWithdrawal, ToolchainRevocation}
 
   @pure %{"nif_language" => nil, "port_languages" => [], "compatibility_basis" => "pure_elixir"}
   @day 86_400
@@ -365,6 +365,151 @@ defmodule Portal.Precompiled.ToolchainRevocationTest do
       pure_elixir_run!(nil)
       full_run_build!(@cmd)
       assert {:dry_run, [%{kind: :toolchain_build}]} = ToolchainRevocation.revoke(all: true)
+    end
+
+    test "a revoked result carries the reason, and only this tool's undo puts it back" do
+      pure_elixir_run!(2)
+      full_run_build!(@cmd, status: :skipped, reason: "closure dependency observed the host: x")
+      [result] = results("pure_elixir")
+
+      {:revoked, 1, _, at} = ToolchainRevocation.revoke(dry_run: false, all: true)
+      assert %{unpublished_at: %DateTime{}, unpublished_reason: "rule 2 revoked"} = reload(result)
+
+      # The other tool neither lists nor restores it.
+      assert PureElixirWithdrawal.withdrawals() == []
+      assert {:restored, 0} = PureElixirWithdrawal.undo(at)
+      assert %{unpublished_reason: "rule 2 revoked"} = reload(result)
+      assert {:ok, 1} = ToolchainRevocation.undo(at)
+      assert %{unpublished_at: nil, unpublished_reason: nil} = reload(result)
+    end
+
+    test "a withdrawal by another tool at the same instant is not listed or undone" do
+      pure_elixir_run!(2)
+      full_run_build!(@cmd, status: :skipped, reason: "closure dependency observed the host: x")
+      [result] = results("pure_elixir")
+      {:revoked, 1, _, at} = ToolchainRevocation.revoke(dry_run: false, all: true)
+
+      # The same row as if `PureElixirWithdrawal` had taken it: no reason.
+      Repo.query!("UPDATE catalog_system_results SET unpublished_reason = NULL WHERE id = $1", [
+        Ecto.UUID.dump!(result.id)
+      ])
+
+      assert ToolchainRevocation.revocations() == []
+      assert {:ok, 0} = ToolchainRevocation.undo(at)
+      assert %{unpublished_at: %DateTime{}} = reload(result)
+    end
+
+    test "a carried copy and a later rule-2 result of the version stay revoked" do
+      pure_elixir_run!(2)
+      full_run_build!(@cmd, status: :skipped, reason: "closure dependency observed the host: x")
+      {:revoked, 1, _, at} = ToolchainRevocation.revoke(dry_run: false, all: true)
+
+      # A partial run carries the revoked result.
+      ingest_with_artifact(%{
+        "run_id" => "fixture-jason-partial",
+        "package" => %{"name" => "jason", "version" => "1.4.1"},
+        "finished_at" => "2026-11-09T10:00:00Z",
+        "scope" => "targets",
+        "systems" => %{"nerves_system_x86_64" => %{"status" => "fail"}}
+      })
+
+      # A new full run that rule 2 published again.
+      pure_elixir_run!(2, %{
+        "run_id" => "fixture-jason-again",
+        "finished_at" => "2026-11-10T10:00:00Z"
+      })
+
+      # Another version is not held back.
+      pure_elixir_run!(2, %{
+        "run_id" => "fixture-jason-other",
+        "package" => %{"name" => "jason", "version" => "1.4.2"}
+      })
+
+      {held, other} =
+        "pure_elixir"
+        |> results()
+        |> Ash.load!(:run, domain: Catalog)
+        |> Enum.split_with(&(&1.run.version_tested == "1.4.1"))
+
+      held = Enum.reject(held, &is_nil(&1.unpublished_at))
+      assert length(results("pure_elixir")) == 4
+      assert length(held) == 3
+      assert Enum.all?(held, &(&1.unpublished_reason == "rule 2 revoked"))
+      assert Enum.all?(held, &(&1.unpublished_at == at))
+      assert [%{unpublished_at: nil}] = other
+      versions = Catalog.precompiled_manifest("jason").versions
+      refute Map.has_key?(versions["1.4.1"], "pure_elixir")
+      assert Map.has_key?(versions["1.4.2"], "pure_elixir")
+      assert [{^at, 3}] = ToolchainRevocation.revocations()
+
+      assert {:ok, 3} = ToolchainRevocation.undo(at)
+      assert Enum.all?(results("pure_elixir"), &is_nil(&1.unpublished_at))
+    end
+
+    test "a later result rule 1 published is not held back" do
+      pure_elixir_run!(2)
+      full_run_build!(@cmd, status: :skipped, reason: "closure dependency observed the host: x")
+      {:revoked, 1, _, _} = ToolchainRevocation.revoke(dry_run: false, all: true)
+
+      pure_elixir_run!(nil, %{
+        "run_id" => "fixture-jason-rule1",
+        "finished_at" => "2026-11-10T10:00:00Z"
+      })
+
+      assert [_] = Enum.filter(results("pure_elixir"), &is_nil(&1.unpublished_at))
+    end
+  end
+
+  describe "everything: true" do
+    test "lists every rule-2 publication, rule 1's verdict or not, and acts only when told" do
+      %{added: added, plain: plain, rule1: rule1} = seed!()
+      # A rule-2 result with no 1.20/29 build at all.
+      pure_elixir_run!(2)
+      [result] = results("pure_elixir")
+      ids = Enum.sort([added.id, plain.id, result.id])
+
+      assert {:dry_run, rows} = ToolchainRevocation.revoke(everything: true)
+      assert Enum.sort(Enum.map(rows, & &1.id)) == ids
+      assert reload(plain).revoked_at == nil
+
+      assert {:revoked, 3, rows, at} =
+               ToolchainRevocation.revoke(dry_run: false, everything: true)
+
+      assert Enum.sort(Enum.map(rows, & &1.id)) == ids
+      assert %{revoked_reason: "rule 2 revoked"} = reload(plain)
+      assert %{unpublished_reason: "rule 2 revoked"} = reload(result)
+      assert reload(rule1).revoked_at == nil
+      assert [{^at, 3}] = ToolchainRevocation.revocations()
+      assert {:revoked, 0, [], _} = ToolchainRevocation.revoke(dry_run: false, everything: true)
+    end
+
+    test "leaves rule 1's publications alone" do
+      %{rule1: rule1} = seed!()
+      pure_elixir_run!(nil)
+      [result] = results("pure_elixir")
+      assert {:dry_run, rows} = ToolchainRevocation.revoke(everything: true)
+      ids = Enum.map(rows, & &1.id)
+      refute rule1.id in ids
+      refute result.id in ids
+    end
+
+    test "is not capped unless given a limit, and returns exactly what changed" do
+      ids =
+        for i <- 1..60 do
+          run!("q#{i}", "1.0.0")
+          row!("q#{i}", "1.0.0", :pass, rule: 2, marked: true).id
+        end
+
+      assert {:dry_run, rows} = ToolchainRevocation.revoke(everything: true, limit: 7)
+      assert length(rows) == 7
+
+      assert {:revoked, 7, rows, _} =
+               ToolchainRevocation.revoke(dry_run: false, everything: true, limit: 7)
+
+      changed = Enum.filter(ids, &Ash.get!(ToolchainBuild, &1, domain: Catalog).revoked_at)
+      assert Enum.sort(Enum.map(rows, & &1.id)) == Enum.sort(changed)
+
+      assert {:revoked, 53, _, _} = ToolchainRevocation.revoke(dry_run: false, everything: true)
     end
   end
 end

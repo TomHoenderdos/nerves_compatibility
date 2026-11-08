@@ -857,13 +857,16 @@ defmodule Portal.Catalog.Ingestion do
     carry? = Map.get(opts, :carry_run_data, false) == true
     result = Map.put(result, "argus", argus_for(result, carried, carry?))
 
+    rule = host_portability_rule(result)
+
     with {:ok, package} <- upsert_package(package_name, package_info, finished_at),
+         hold = rule2_hold(package.id, version, rule, systems),
          {:ok, run} <-
            create_run(result, opts, package.id, version, overall, finished_at, {carried, carry?}),
          :ok <-
            create_system_results(
              systems,
-             {run.id, host_portability_rule(result)},
+             {run.id, rule, hold},
              version,
              staged,
              logs
@@ -1013,6 +1016,33 @@ defmodule Portal.Catalog.Ingestion do
 
   defp system_compile_env_rule(_system_pkg, _sys), do: nil
 
+  # A revocation of what rule 2 alone published sticks: when a `pure_elixir`
+  # result of this version was revoked that way
+  # (`Portal.Precompiled.ToolchainRevocation`), a new rule-2 `pure_elixir`
+  # result of it is stored withdrawn too, with the same reason and the newest
+  # such revocation's timestamp, so that call's `undo/1` puts it back with
+  # the rest. nil (publish as usual) otherwise.
+  @rule2_hold_sql """
+  SELECT max(s.unpublished_at)
+  FROM catalog_system_results s
+  JOIN catalog_runs r ON r.id = s.run_id
+  WHERE r.package_id = $1 AND r.version_tested = $2
+    AND s.system_pkg = 'pure_elixir' AND s.unpublished_reason = $3
+  """
+
+  defp rule2_hold(package_id, version, 2, %{"pure_elixir" => _}) do
+    %{rows: [[at]]} =
+      Repo.query!(@rule2_hold_sql, [
+        Ecto.UUID.dump!(package_id),
+        version,
+        SystemResult.rule2_revocation()
+      ])
+
+    if at, do: DateTime.from_naive!(at, "Etc/UTC")
+  end
+
+  defp rule2_hold(_package_id, _version, _rule, _systems), do: nil
+
   # The rule that judged a `pure_elixir` result's publication, from the
   # result's top-level `host_portability`; only `pure_elixir` stores it.
   defp host_portability_rule(result) do
@@ -1147,12 +1177,12 @@ defmodule Portal.Catalog.Ingestion do
         (id, run_id, system_pkg, system_version, status, firmware_size_bytes, duration_sec,
          phase_timings, hex_version_tested, beam_scan, compile_env, dependency_scans, log_path,
          log_tail, failure_category, carried_from_run_id, deps_lock, unpublished_at,
-         compile_env_rule, portability_rule, inserted_at, updated_at)
+         compile_env_rule, portability_rule, unpublished_reason, inserted_at, updated_at)
       SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
              s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan, s.compile_env,
              s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
              s.deps_lock, s.unpublished_at, s.compile_env_rule, s.portability_rule,
-             now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
+             s.unpublished_reason, now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
       FROM catalog_system_results s
       JOIN unnest($2::uuid[], $3::uuid[], $4::uuid[]) AS m(old_id, new_id, built_in)
         ON m.old_id = s.id
@@ -1207,8 +1237,9 @@ defmodule Portal.Catalog.Ingestion do
     end)
   end
 
-  defp create_system_result(system_pkg, sys, {run_id, rule}, version, staged, logs) do
+  defp create_system_result(system_pkg, sys, {run_id, rule, hold}, version, staged, logs) do
     status = Compatibility.Types.parse_status(sys["status"])
+    held_at = if system_pkg == "pure_elixir", do: hold
 
     result =
       SystemResult
@@ -1229,7 +1260,9 @@ defmodule Portal.Catalog.Ingestion do
         failure_category: Portal.Catalog.FailureClassifier.classify(sys),
         deps_lock: deps_lock(sys["deps_lock"]),
         compile_env_rule: system_compile_env_rule(system_pkg, sys),
-        portability_rule: if(system_pkg == "pure_elixir", do: rule)
+        portability_rule: if(system_pkg == "pure_elixir", do: rule),
+        unpublished_at: held_at,
+        unpublished_reason: if(held_at, do: SystemResult.rule2_revocation())
       })
       |> Ash.create(domain: @domain)
 
