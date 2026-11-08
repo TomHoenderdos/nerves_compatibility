@@ -216,7 +216,7 @@ defmodule NccWorker.ToolchainModeTest do
     module
   end
 
-  describe "rule 2 (P4)" do
+  describe "rule 2" do
     test "a runtime program call passes; rule 1's reason is recorded", %{tmp_dir: work_dir} do
       {project, built} = project(work_dir, "circular_buffer-1.0.0")
       module = add_runtime_cmd(built)
