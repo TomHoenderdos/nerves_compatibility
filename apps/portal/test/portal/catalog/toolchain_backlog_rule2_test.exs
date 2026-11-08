@@ -296,4 +296,58 @@ defmodule Portal.Catalog.ToolchainBacklogRule2Test do
              %{package: "fresh"}
            ] = Enum.filter(backlog(), &(&1.package in ["phoenix", "fresh"]))
   end
+
+  @added %{"added" => ["lazy_html"], "dropped" => [], "reason" => nil}
+
+  defp variants(name), do: for(r <- backlog(), r.package == name, do: r.variant)
+
+  test "a rule-2 with refused for a dependency, that added an optional one, wants without" do
+    for {reason, i} <-
+          Enum.with_index([
+            "closure dependency observed the host: fine (bakes the build path: Elixir.Fine \"<root>\")",
+            "calls natively built dependency at compile time: LazyHTML.from_fragment/1"
+          ]) do
+      run!("lv#{i}", "1.2.13")
+      row!("lv#{i}", "1.2.13", :skipped, rule: 2, reason: reason, optional_deps: @added)
+      assert variants("lv#{i}") == [:without]
+    end
+  end
+
+  test "no without for an own refusal, rule 1, could-not-judge or nothing added" do
+    cases = [
+      {[rule: 2, reason: "compile-time host read: os:type/0 in X.f/0", optional_deps: @added]},
+      {[reason: "closure dependency observed the host: fine", optional_deps: @added]},
+      {[rule: 2, reason: "portability could not be judged", optional_deps: @added]},
+      {[
+         rule: 2,
+         reason: "closure dependency observed the host: fine",
+         optional_deps: %{"added" => [], "dropped" => [], "reason" => nil}
+       ]}
+    ]
+
+    for {{opts}, i} <- Enum.with_index(cases) do
+      run!("n#{i}", "1.0.0")
+      row!("n#{i}", "1.0.0", :skipped, opts)
+      assert variants("n#{i}") == [], "case #{i}"
+    end
+  end
+
+  test "a live without row ends it" do
+    run!("lv", "1.2.13")
+
+    row!("lv", "1.2.13", :skipped,
+      rule: 2,
+      reason: "closure dependency observed the host: fine",
+      optional_deps: @added
+    )
+
+    row!("lv", "1.2.13", :pass,
+      rule: 2,
+      marked: true,
+      variant: :without,
+      run_id: "tc-lv-without"
+    )
+
+    assert variants("lv") == []
+  end
 end

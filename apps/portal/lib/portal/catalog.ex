@@ -1447,6 +1447,10 @@ defmodule Portal.Catalog do
   # The `with` variant is wanted for every qualifying version, the `without`
   # one only once a passing, unrevoked `with` build reports an optional
   # dependency it added: for a package with none the two builds are the same.
+  # The `without` one is also wanted when the `with` build was refused under
+  # rule 2 for a dependency (a host-tainted or natively built one) and added an
+  # optional dependency: the refusal may come from an optional dependency,
+  # which the `without` build does not have.
   # A `with` build from before builds recorded them reports nothing, so the
   # versions in $5/$6 (packages and versions, pairwise) want theirs too:
   # `Portal.Catalog.UnrecordedOptionalDeps` asks the registry which of those
@@ -1540,7 +1544,15 @@ defmodule Portal.Catalog do
           AND w.builder_version = $2
           AND w.variant = 'with'
           AND w.config_variant = 'default'
-          AND w.status = 'pass'
+          AND (
+            w.status = 'pass'
+            OR (
+              w.status = 'skipped'
+              AND w.portability_rule = 2
+              AND (starts_with(w.reason, 'closure dependency observed the host: ')
+                   OR starts_with(w.reason, 'calls natively built dependency at compile time: '))
+            )
+          )
           AND w.revoked_at IS NULL
           AND jsonb_typeof(w.optional_deps -> 'added') = 'array'
           AND jsonb_array_length(w.optional_deps -> 'added') > 0

@@ -411,8 +411,9 @@ What it lists:
   `system_version` `null`. Only passing, unrevoked builds whose files can all
   be served appear. A version is built once with every optional dependency a
   fresh lock would add (as for the `deps` of other entries), and, when that
-  build added any, once more without them: two builds whose `deps` differ by
-  those dependencies, so a project that locks them and one that does not each
+  build added any, once more without them (also when the build with them was
+  refused because of a dependency): two builds whose `deps` differ by those
+  dependencies, so a project that locks them and one that does not each
   find theirs. A toolchain build's files include the package's `priv` when it
   is static data: regular, non-executable files the package's own Hex tarball
   carries byte for byte, none of them native code (by name or by ELF, Mach-O,
