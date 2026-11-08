@@ -678,6 +678,30 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert build["build"]["dep_env"] == "prod"
   end
 
+  test "GET /api/precompiled/v2/manifests/:package.json documents a named config variant", %{
+    conn: conn
+  } do
+    drop_legacy_identity_index!()
+    ingest_toolchain_build("jason", "1.4.1", compile_env: lv_default_env(), compile_env_rule: 1)
+
+    ingest_toolchain_build("jason", "1.4.1",
+      config_variant: "phx_prod",
+      compile_env: overlay_env("phx_prod"),
+      compile_env_rule: 1
+    )
+
+    resp = get(conn, "/api/precompiled/v2/manifests/jason.json")
+    body = json_response(resp, 200)
+    assert_documented_response(resp, "getManifestV2")
+
+    assert %{"1.4.1" => %{"builds" => builds}} = body["versions"]
+
+    assert builds |> Enum.map(& &1["build"]["config_variant"]) |> Enum.sort() == [
+             nil,
+             "phx_prod"
+           ]
+  end
+
   test "GET /api/precompiled/v2/manifests is 404 without format-2 builds", %{conn: conn} do
     ingest_fixture_with_artifact()
 

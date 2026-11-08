@@ -156,8 +156,10 @@ defmodule PortalWeb.CatalogApiController do
     operation_id: "getManifestV2",
     summary: "Precompiled manifest, format 2",
     description:
-      "A build list per version: one build per target and toolchain, including toolchain " <>
-        "builds for projects that are not Nerves projects. Once a batch is signed, these are " <>
+      "A build list per version: one build per target, toolchain, system version, " <>
+        "dependency lock and config variant, including toolchain builds for projects that " <>
+        "are not Nerves projects. A named config variant (`build.config_variant`) is listed " <>
+        "only beside its served default build. Once a batch is signed, these are " <>
         "the exact bytes its `manifests_v2` names, with their SHA-256 as the `etag`.",
     parameters: [package: @package_param],
     responses: [

@@ -40,6 +40,14 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
         package_checksum: %Schema{
           type: :string,
           description: "The package's own outer Hex checksum."
+        },
+        config_variant: %Schema{
+          type: :string,
+          enum: Compatibility.ConfigVariants.names(),
+          description:
+            "Optional, informational: the named config variant a toolchain build was " <>
+              "compiled in. Absent for the default build. A client matches a variant by " <>
+              "its `compile_env` like any other build."
         }
       },
       required: [

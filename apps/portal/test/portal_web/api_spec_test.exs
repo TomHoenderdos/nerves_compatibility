@@ -83,6 +83,26 @@ defmodule PortalWeb.ApiSpecTest do
       end
     end
 
+    test "a format-2 build may name a known config variant, and nothing else" do
+      build =
+        ~s({"elixir": "1.19.1", "otp": "28", "dep_env": "prod", "mix_target": "host",
+            "system_version": null, "run_id": "r", "image_digest": null, "deps": {},
+            "compile_env": [], "package_checksum": "c"})
+        |> Jason.decode!()
+
+      assert_api_schema(build, "BuildInfoV2")
+      assert_api_schema(Map.put(build, "config_variant", "phx_dev"), "BuildInfoV2")
+
+      assert {:error, _} =
+               OpenApiSpex.cast_value(
+                 Map.put(build, "config_variant", "phx_staging"),
+                 api_spec().components.schemas["BuildInfoV2"],
+                 api_spec()
+               )
+
+      refute "config_variant" in api_spec().components.schemas["BuildInfoV2"].required
+    end
+
     test "names no host, address or internal detail in its text" do
       text = Jason.encode!(api_spec())
 

@@ -54,6 +54,14 @@ defmodule PortalWeb.ApiDocsControllerTest do
     assert LazyHTML.query(doc, "article#schema-batchpayload table tbody tr") |> Enum.count() > 0
   end
 
+  test "documents a format-2 build's optional config variant", %{conn: conn} do
+    doc = conn |> get("/api/docs") |> html_response(200) |> LazyHTML.from_document()
+    text = doc |> LazyHTML.query("table#op-getmanifestv2-200-fields tbody tr") |> LazyHTML.text()
+
+    assert text =~ "config_variant"
+    assert text =~ Enum.join(Compatibility.ConfigVariants.names(), " | ")
+  end
+
   test "the page carries no script of its own", %{conn: conn} do
     doc = conn |> get("/api/docs") |> html_response(200) |> LazyHTML.from_document()
 

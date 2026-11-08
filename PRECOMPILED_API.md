@@ -398,8 +398,8 @@ toolchain:
   2026-11 lack it; a client then assumes that same conventional name.
 - `build.config_variant` — optional, informational: the config variant a
   toolchain build was compiled in (see below). Absent for the default build.
-  A client matches a
-  variant by its `compile_env` like any other build, and can ignore this key.
+  A client matches a variant by its `compile_env` like any other build, and
+  can ignore this key.
 - `updated_at` — the newest `finished_at` among the builds listed.
 
 What it lists:
@@ -596,9 +596,10 @@ them.
   unserved. LiveView-closure builds published before that come back as the
   builder rebuilds them.
 - A config variant is served only beside its default build: the default
-  build of the same version, toolchain and optional dependencies must itself
-  be served (passing, not revoked, not withheld), and the variant must record
-  its own config reads. Revoking, refusing or withholding the default
+  build of the same version, toolchain, builder version and optional
+  dependencies must itself be served (passing, not revoked, not withheld),
+  and the variant must record its own config reads. Revoking, refusing or
+  withholding the default
   withdraws its variants in the same batch, in the format-2 manifest, the
   package list and `files/{sha256}` alike. Format 1 never lists a toolchain
   build, so it never lists a variant.
