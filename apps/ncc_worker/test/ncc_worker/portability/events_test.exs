@@ -144,6 +144,7 @@ defmodule NccWorker.Portability.EventsTest do
       {"Elixir.Code", "with_diagnostics", 2},
       {"Elixir.Code", "eval_string", 3},
       {"filelib", "fold_files", 5},
+      {"filelib", "exists", 2},
       {"filelib", "do_fold_files2", 7},
       {"filelib", "wildcard", 2},
       {"file", "read_file", 1},

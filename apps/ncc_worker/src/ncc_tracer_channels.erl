@@ -171,9 +171,11 @@ probe_mfas() ->
 
 %% The functions whose OS-family read is path handling, as the first frame
 %% past the wrappers names them ({module, function, arity}, as text): the
-%% path internals of OTP's filename and filelib and of Elixir's Path that
-%% call os:type/0 themselves, to pick separators or a path type, and call no
-%% fun they were given (a pin checks both, on each toolchain). Only an exact
+%% path internals of OTP's filename and of Elixir's Path that call
+%% os:type/0 themselves, to pick separators or a path type, and reach no fun
+%% or caller-chosen module through any local call (a pin checks both, on
+%% each toolchain). Not filelib:exists/2: it calls the caller's
+%% Mod:read_link_info/1. Only an exact
 %% frame counts: a package fun that tail-calls os:type/0 from a callback
 %% leaves its caller's frame first (filelib:fold_files/5, Code), and that
 %% caller is never on this list. The judge's path rule
@@ -186,8 +188,7 @@ path_os_frames() ->
      {<<"filename">>, <<"nativename">>, 1},
      {<<"filename">>, <<"pathtype">>, 1},
      {<<"filename">>, <<"separators">>, 0},
-     {<<"filename">>, <<"split">>, 1},
-     {<<"filelib">>, <<"exists">>, 2}].
+     {<<"filename">>, <<"split">>, 1}].
 
 path_os_frame(Module, Function, Arity) ->
     lists:member({Module, Function, Arity}, path_os_frames()).
