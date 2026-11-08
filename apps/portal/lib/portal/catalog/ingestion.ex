@@ -20,8 +20,8 @@ defmodule Portal.Catalog.Ingestion do
   ## The job's identity
 
   Every caller says what the job was enqueued for: `:package` and `:version`,
-  and for `ingest_toolchain/2` `:toolchain` and `:variant` (`:with` when
-  absent) as well. Ingest checks the result
+  and for `ingest_toolchain/2` `:toolchain`, `:variant` (`:with` when
+  absent) and `:config_variant` (`"default"` when absent) as well. Ingest checks the result
   against the job it was enqueued for: when `result.json` names another
   package, version or toolchain, nothing is staged or written and the call
   returns `{:error, {:identity_mismatch, job, result}}`, each side a map of
@@ -46,6 +46,7 @@ defmodule Portal.Catalog.Ingestion do
 
   import Ecto.Query, only: [from: 2]
 
+  alias Compatibility.ConfigVariants
   alias Portal.ArtifactStore
 
   alias Portal.Catalog.{
@@ -109,6 +110,7 @@ defmodule Portal.Catalog.Ingestion do
           required(:version) => String.t(),
           optional(:output_dir) => Path.t() | nil,
           optional(:variant) => :with | :without,
+          optional(:config_variant) => String.t(),
           optional(:hex_outer_checksum) => (String.t(), String.t() -> term()),
           optional(:hex_tarball) => (String.t(), String.t() -> term())
         }
@@ -118,7 +120,8 @@ defmodule Portal.Catalog.Ingestion do
           required(:package) => String.t() | nil,
           required(:version) => String.t() | nil,
           optional(:toolchain) => String.t() | nil,
-          optional(:variant) => :with | :without | term()
+          optional(:variant) => :with | :without | term(),
+          optional(:config_variant) => String.t()
         }
 
   @doc """
@@ -214,7 +217,8 @@ defmodule Portal.Catalog.Ingestion do
 
   The blobs named in `toolchain_build.file_manifest` are moved into the artifact
   store first, outside the transaction, as `ingest/2` does. The row is then
-  upserted on `(package, version, toolchain, builder_version, variant)`, and its
+  upserted on `(package, version, toolchain, builder_version, variant,
+  config_variant)`, and its
   memberships are made to match this build's manifest exactly: a rebuild that
   stops passing, or produces other files, must not keep publishing the old ones.
 
@@ -239,6 +243,20 @@ defmodule Portal.Catalog.Ingestion do
   refuses one that reports an added optional dependency whatever it echoes
   (its `:variant` `:with`). The result's `optional_deps` report is stored on
   the row as it is.
+
+  `opts.config_variant` is the config variant the job built (`"default"`
+  when absent, for an ingest job enqueued before config variants existed),
+  the row's `config_variant`, and part of its identity too: a result whose
+  `toolchain_build.config_variant` (`"default"` when absent, as a worker
+  that does not know the request reports nothing) differs is refused with
+  `{:error, {:identity_mismatch, job, result}}`, both sides carrying
+  `:config_variant`. The job's value is the one stored, never the echo. A
+  named variant's `pass` is published only when it shows its overlay was in
+  effect: marked (`compile_env_rule` 1 next to a kept `compile_env`) and
+  every overlay key it recorded at the overlay's value
+  (`Compatibility.ConfigVariants.overlay_recorded/2`). Otherwise it is
+  stored as `skipped`, with that reason ("config variant records no config
+  reads", or the one `overlay_recorded/2` gives) and no files.
 
   A later `skipped` verdict for the same identity, a refusal included,
   overwrites a pass row, and its memberships with it. An `:error`, a build
@@ -285,10 +303,32 @@ defmodule Portal.Catalog.Ingestion do
     keys = [:package, :version, :toolchain]
 
     with :ok <- check_identity(result, opts, keys),
-         :ok <- check_variant(result, opts, keys) do
+         :ok <- check_variant(result, opts, keys),
+         :ok <- check_config_variant(result, opts, keys) do
       stage_toolchain_build(result, opts)
     end
   end
+
+  # The config variant is the job's ("default" for a job from before config
+  # variants); the result must say it was built in it. A worker that does not
+  # know the request echoes nothing, which reads as "default".
+  defp check_config_variant(result, opts, keys) do
+    job = Map.get(opts, :config_variant, ConfigVariants.default())
+    reported = result_config_variant(result)
+
+    if reported == job,
+      do: :ok,
+      else:
+        {:error,
+         {:identity_mismatch, opts |> Map.take(keys) |> Map.put(:config_variant, job),
+          result |> result_identity(keys) |> Map.put(:config_variant, reported)}}
+  end
+
+  defp result_config_variant(%{"toolchain_build" => %{"config_variant" => name}})
+       when name != nil,
+       do: name
+
+  defp result_config_variant(_result), do: ConfigVariants.default()
 
   # The variant is part of a toolchain build's identity. The job's side
   # defaults to `:with`, for an ingest job enqueued before variants existed;
@@ -344,7 +384,7 @@ defmodule Portal.Catalog.Ingestion do
   defp result_variant(_result), do: nil
 
   defp stage_toolchain_build(result, opts) do
-    build = result |> toolchain_build_map() |> gate_manifest()
+    build = result |> toolchain_build_map() |> gate_manifest() |> gate_config_variant(opts)
 
     case ToolchainPriv.verify(result, build, opts) do
       :ok -> stage_toolchain_build(result, keyed(build), opts)
@@ -444,33 +484,61 @@ defmodule Portal.Catalog.Ingestion do
   defp gate_manifest(%{"status" => "pass"} = build), do: build
   defp gate_manifest(build), do: Map.put(build, "file_manifest", nil)
 
+  # A named variant is published only when it shows its overlay was in
+  # effect: marked (its config reads recorded, rule 1 next to a kept
+  # `compile_env`) and every recorded overlay key at the overlay's value
+  # (`ConfigVariants.overlay_recorded/2`). Anything else is a deterministic
+  # skip with no files.
+  defp gate_config_variant(%{"status" => "pass"} = build, %{config_variant: name})
+       when name != "default" do
+    with {:mark, 1} <- {:mark, compile_env_rule(build["compile_env_rule"], build["compile_env"])},
+         :ok <- ConfigVariants.overlay_recorded(name, compile_env(build["compile_env"])) do
+      build
+    else
+      {:mark, _} -> skip_variant(build, "config variant records no config reads")
+      {:error, reason} -> skip_variant(build, reason)
+    end
+  end
+
+  defp gate_config_variant(build, _opts), do: build
+
+  defp skip_variant(build, reason),
+    do: Map.merge(build, %{"status" => "skipped", "reason" => reason, "file_manifest" => nil})
+
   defp toolchain_build_map(%{"toolchain_build" => %{} = build}), do: build
   defp toolchain_build_map(_result), do: raise("result.json missing toolchain_build")
 
   @doc """
   Takes the transaction-scoped lock on the toolchain build identity in
-  `opts` (`:package`, `:version`, `:toolchain`, `:builder_version` and
-  `:variant`, `:with` when absent), which every toolchain ingest takes before
-  it reads the identity's row. Call it inside a `Repo` transaction; the lock
-  is released when that transaction ends.
+  `opts` (`:package`, `:version`, `:toolchain`, `:builder_version`,
+  `:variant`, `:with` when absent, and `:config_variant`, `"default"` when
+  absent), which every toolchain ingest takes before it reads the identity's
+  row. Call it inside a `Repo` transaction; the lock is released when that
+  transaction ends.
   """
   @spec lock_toolchain_identity(map()) :: :ok
   def lock_toolchain_identity(opts) do
-    key =
-      Enum.join(
-        [
-          "toolchain_build",
-          opts.package,
-          opts.version,
-          opts.toolchain,
-          opts.builder_version,
-          Map.get(opts, :variant, :with)
-        ],
-        "@"
-      )
-
-    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1::text))", [key])
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1::text))", [toolchain_lock_key(opts)])
     :ok
+  end
+
+  @doc false
+  def toolchain_lock_key(opts) do
+    base = [
+      "toolchain_build",
+      opts.package,
+      opts.version,
+      opts.toolchain,
+      opts.builder_version,
+      Map.get(opts, :variant, :with)
+    ]
+
+    # A default's key is the one the release before config variants takes,
+    # so both releases serialise their writes of a default row on one lock.
+    case Map.get(opts, :config_variant, ConfigVariants.default()) do
+      "default" -> Enum.join(base, "@")
+      name -> Enum.join(base ++ [name], "@")
+    end
   end
 
   defp do_ingest_toolchain(result, build, opts, staged) do
@@ -555,12 +623,13 @@ defmodule Portal.Catalog.Ingestion do
 
   defp kept_row(package_id, opts, statuses, kept_opts \\ []) do
     variant = Map.get(opts, :variant, :with)
+    config_variant = Map.get(opts, :config_variant, ConfigVariants.default())
 
     ToolchainBuild
     |> Ash.Query.filter(
       package_id == ^package_id and version == ^opts.version and
         toolchain == ^opts.toolchain and builder_version == ^opts.builder_version and
-        variant == ^variant and status in ^statuses
+        variant == ^variant and config_variant == ^config_variant and status in ^statuses
     )
     |> served_only(Keyword.get(kept_opts, :served_only, false))
     |> Ash.Query.limit(1)
@@ -590,20 +659,21 @@ defmodule Portal.Catalog.Ingestion do
 
   @doc """
   The `transient_attempts` of the `:error` row for the toolchain build
-  identity in `opts` (`:version`, `:toolchain`, `:builder_version` and
-  `:variant`, `:with` when absent) of the package `package_id`; 0 when there
-  is none. Only an `:error` row carries a count on: a pass or skipped row is
+  identity in `opts` (`:version`, `:toolchain`, `:builder_version`,
+  `:variant`, `:with` when absent, and `:config_variant`, `"default"` when
+  absent) of the package `package_id`; 0 when there is none. Only an `:error` row carries a count on: a pass or skipped row is
   kept, and a `fail` is a verdict. Read it under `lock_toolchain_identity/1`.
   """
   @spec previous_transient_attempts(String.t(), map()) :: non_neg_integer()
   def previous_transient_attempts(package_id, opts) do
     variant = Map.get(opts, :variant, :with)
+    config_variant = Map.get(opts, :config_variant, ConfigVariants.default())
 
     ToolchainBuild
     |> Ash.Query.filter(
       package_id == ^package_id and version == ^opts.version and
         toolchain == ^opts.toolchain and builder_version == ^opts.builder_version and
-        variant == ^variant and status == :error
+        variant == ^variant and config_variant == ^config_variant and status == :error
     )
     |> Ash.Query.select([:transient_attempts])
     |> Ash.read_one!(domain: @domain)
@@ -654,6 +724,7 @@ defmodule Portal.Catalog.Ingestion do
       toolchain: opts.toolchain,
       builder_version: opts.builder_version,
       variant: Map.get(opts, :variant, :with),
+      config_variant: Map.get(opts, :config_variant, ConfigVariants.default()),
       status: status,
       reason: reason,
       elixir: build["elixir"],

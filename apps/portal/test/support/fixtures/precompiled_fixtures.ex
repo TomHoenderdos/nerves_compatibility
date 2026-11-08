@@ -50,18 +50,29 @@ defmodule Portal.PrecompiledFixtures do
   def ingest_toolchain_build(name, version, opts \\ []) do
     content = "toolchain-beam-#{name}-#{version}-#{System.unique_integer([:positive])}"
     sha = Base.encode16(:crypto.hash(:sha256, content), case: :lower)
-    dir = Path.join(System.tmp_dir!(), "toolchain-files-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(dir)
-    on_exit(fn -> File.rm_rf(dir) end)
-
+    dir = tmp_files_dir()
     File.write!(Path.join(dir, sha), content)
+
+    result = toolchain_result(name, version, Keyword.put(opts, :content, content))
+
+    {:ok, build} =
+      Ingestion.ingest_toolchain(result, ingest_opts(name, version, [files_dir: dir] ++ opts))
+
+    build
+  end
+
+  @doc """
+  The `result.json` `ingest_toolchain_build/3` ingests, with the same options,
+  plus `:content` (the one ebin file's bytes).
+  """
+  def toolchain_result(name, version, opts \\ []) do
+    content = Keyword.get(opts, :content, "toolchain-beam-#{name}-#{version}")
+    sha = Base.encode16(:crypto.hash(:sha256, content), case: :lower)
 
     deps_lock =
       Keyword.get(opts, :deps_lock, %{"decimal" => %{"version" => "2.1.1", "checksum" => "abc"}})
 
-    config_variant = Keyword.get(opts, :config_variant, "default")
-
-    result = %{
+    %{
       "scope" => "toolchain",
       "finished_at" => Keyword.get(opts, :finished_at, "2026-10-24T10:00:00Z"),
       "package" => %{"name" => name, "version" => version},
@@ -75,7 +86,7 @@ defmodule Portal.PrecompiledFixtures do
         "package_checksum" => Keyword.get(opts, :package_checksum, "outer"),
         "compile_env" => Keyword.get(opts, :compile_env, []),
         "compile_env_rule" => Keyword.get(opts, :compile_env_rule),
-        "config_variant" => config_variant,
+        "config_variant" => Keyword.get(opts, :config_variant, "default"),
         "file_manifest" => %{
           "ebin" => [
             %{
@@ -89,21 +100,34 @@ defmodule Portal.PrecompiledFixtures do
         }
       }
     }
+  end
 
-    {:ok, build} =
-      Ingestion.ingest_toolchain(result, %{
-        package: result["package"]["name"],
-        version: result["package"]["version"],
-        run_id: "tc-#{System.unique_integer([:positive])}",
-        image_digest: "sha256:toolchain",
-        files_dir: dir,
-        output_dir: dir,
-        toolchain: Keyword.get(opts, :toolchain, "1.19/28"),
-        builder_version: Keyword.get(opts, :builder_version, 1),
-        config_variant: config_variant
-      })
+  @doc """
+  The job opts `ingest_toolchain_build/3` ingests with: `:toolchain`,
+  `:builder_version` and `:config_variant` as there, and `:files_dir` (a new
+  empty directory when absent).
+  """
+  def ingest_opts(name, version, opts \\ []) do
+    dir = Keyword.get_lazy(opts, :files_dir, &tmp_files_dir/0)
 
-    build
+    %{
+      package: name,
+      version: version,
+      run_id: "tc-#{System.unique_integer([:positive])}",
+      image_digest: "sha256:toolchain",
+      files_dir: dir,
+      output_dir: dir,
+      toolchain: Keyword.get(opts, :toolchain, "1.19/28"),
+      builder_version: Keyword.get(opts, :builder_version, 1),
+      config_variant: Keyword.get(opts, :config_variant, "default")
+    }
+  end
+
+  defp tmp_files_dir do
+    dir = Path.join(System.tmp_dir!(), "toolchain-files-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+    dir
   end
 
   @doc """

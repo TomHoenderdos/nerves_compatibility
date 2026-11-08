@@ -25,7 +25,7 @@ defmodule Portal.Workers.Ingest do
   ran leaves the run unlinked instead of failing it.
 
   A toolchain build (`kind: "toolchain"`, with `toolchain`, `builder_version`,
-  the queued `version` and `variant`) goes to `Portal.Catalog.Ingestion.ingest_toolchain/2`
+  the queued `version`, `variant` and `config_variant`) goes to `Portal.Catalog.Ingestion.ingest_toolchain/2`
   instead. It writes no `Run`, so none of a run's follow-up applies: no scan
   request to mark, no progress broadcast, no package metadata refresh.
 
@@ -33,11 +33,11 @@ defmodule Portal.Workers.Ingest do
 
   Ingest checks the result against the job it was enqueued for. A local build's
   job carries the `package` and `version` its `Portal.Workers.Build` was queued
-  with, and a toolchain build's job the `package`, `version`, `toolchain` and
-  `variant` its `Portal.Workers.ToolchainBuild` was queued with. Before
-  anything is recorded, `result.json` has to name the same package and
-  version, and for a toolchain build have been built on that toolchain and
-  for that variant; the rows, and the package metadata refresh after them, are
+  with, and a toolchain build's job the `package`, `version`, `toolchain`,
+  `variant` and `config_variant` its `Portal.Workers.ToolchainBuild` was
+  queued with. Before anything is recorded, `result.json` has to name the
+  same package and version, and for a toolchain build have been built on
+  that toolchain, for that variant and in that config variant; the rows, and the package metadata refresh after them, are
   then written under the job's identity, not the result's
   (`Portal.Catalog.Ingestion`).
 
@@ -45,6 +45,12 @@ defmodule Portal.Workers.Ingest do
   is a `with` build; the default is the job's, never read from the result. A
   `variant` other than `"with"` or `"without"` is no identity at all and is
   refused like a missing one.
+
+  The same holds for a toolchain job's `config_variant`: one without it was
+  queued before config variants and is a `"default"` build, and one that is
+  not a known variant (`Compatibility.ConfigVariants.known?/1`) is refused
+  as unidentified. The job's value is what the row is stored under; the
+  result's `toolchain_build.config_variant` echo only has to agree with it.
 
   A remote build's identity is its lease's `package` and `version`. Its
   upload is checked against them when the builder completes the lease and
@@ -246,8 +252,13 @@ defmodule Portal.Workers.Ingest do
   defp toolchain_identity(%{"toolchain" => toolchain} = args)
        when is_binary(toolchain) and toolchain != "" do
     with %{} = identity <- run_identity(args),
-         variant when variant != nil <- job_variant(args) do
-      Map.merge(identity, %{toolchain: toolchain, variant: variant})
+         variant when variant != nil <- job_variant(args),
+         config_variant when config_variant != nil <- job_config_variant(args) do
+      Map.merge(identity, %{
+        toolchain: toolchain,
+        variant: variant,
+        config_variant: config_variant
+      })
     end
   end
 
@@ -263,6 +274,13 @@ defmodule Portal.Workers.Ingest do
       {:ok, "without"} -> :without
       {:ok, _other} -> nil
     end
+  end
+
+  # A job queued before config variants carries none and was a default
+  # build. Any other value that is not a known variant is no identity.
+  defp job_config_variant(args) do
+    name = Map.get(args, "config_variant", "default")
+    if Compatibility.ConfigVariants.known?(name), do: name
   end
 
   # A remote build outlives its request's jobs by as long as it takes, so the
@@ -432,6 +450,7 @@ defmodule Portal.Workers.Ingest do
       version: identity.version,
       toolchain: identity.toolchain,
       variant: identity.variant,
+      config_variant: identity.config_variant,
       builder_version: args["builder_version"]
     }
 
@@ -497,8 +516,14 @@ defmodule Portal.Workers.Ingest do
         :error -> base
       end
 
-    case Map.fetch(identity, :variant) do
-      {:ok, variant} -> "#{base} (variant #{inspect(variant)})"
+    base =
+      case Map.fetch(identity, :variant) do
+        {:ok, variant} -> "#{base} (variant #{inspect(variant)})"
+        :error -> base
+      end
+
+    case Map.fetch(identity, :config_variant) do
+      {:ok, config_variant} -> "#{base} (config variant #{inspect(config_variant)})"
       :error -> base
     end
   end

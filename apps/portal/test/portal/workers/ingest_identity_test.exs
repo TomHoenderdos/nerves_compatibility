@@ -583,4 +583,95 @@ defmodule Portal.Workers.IngestIdentityTest do
       refute membership?(beam)
     end
   end
+
+  # A config variant is part of what the job asked to build. The job's value
+  # is the identity, never the result's echo; a job from before config
+  # variants carries none and was a default build.
+  describe "a toolchain build's config variant" do
+    defp config_variant_args(name, config_variant) do
+      base = %{
+        "run_id" => "tc-#{name}",
+        "image_digest" => "sha256:identity",
+        "kind" => "toolchain",
+        "package" => name,
+        "version" => "1.0.0",
+        "toolchain" => "1.19/28",
+        "builder_version" => 1
+      }
+
+      if config_variant, do: Map.put(base, "config_variant", config_variant), else: base
+    end
+
+    # A marked build that recorded the phx_prod overlay key at its value.
+    defp config_variant_result(name, beam, echo) do
+      env = [
+        %{
+          "app" => "phoenix_live_view",
+          "path" => ["root_tag_attribute"],
+          "value" => Compatibility.ConfigVariants.encode("phx-r")
+        }
+      ]
+
+      name
+      |> toolchain_result("1.0.0", beam)
+      |> update_in(["toolchain_build"], fn build ->
+        build
+        |> Map.merge(%{"compile_env" => env, "compile_env_rule" => 1})
+        |> then(&if(echo, do: Map.put(&1, "config_variant", echo), else: &1))
+      end)
+    end
+
+    setup do
+      Portal.PrecompiledFixtures.drop_legacy_identity_index!()
+      :ok
+    end
+
+    test "a named job's result is stored under the job's config variant" do
+      name = unique("tccvnamed")
+      beam = "beam-#{name}"
+      replay(config_variant_result(name, beam, "phx_prod"), files_dir_with([beam]))
+
+      assert :ok = ingest(config_variant_args(name, "phx_prod"))
+      assert [%{config_variant: "phx_prod", status: :pass}] = toolchain_rows_of(name)
+      assert membership?(beam)
+    end
+
+    test "a job without a config variant is a default job" do
+      name = unique("tccvnone")
+      beam = "beam-#{name}"
+      replay(config_variant_result(name, beam, nil), files_dir_with([beam]))
+
+      assert :ok = ingest(config_variant_args(name, nil))
+      assert [%{config_variant: "default", status: :pass}] = toolchain_rows_of(name)
+
+      # The result's echo does not make it a named build.
+      other = unique("tccvnoneecho")
+      other_beam = "beam-#{other}"
+      replay(config_variant_result(other, other_beam, "phx_prod"), files_dir_with([other_beam]))
+
+      log =
+        capture_log(fn ->
+          assert {:cancel, "ingest refused: " <> _} = ingest(config_variant_args(other, nil))
+        end)
+
+      assert toolchain_rows_of(other) == []
+      refute membership?(other_beam)
+      assert log =~ "security:"
+      assert log =~ "phx_prod"
+    end
+
+    test "refuses a job whose config variant is not a known one, writing nothing" do
+      name = unique("tccvbad")
+      beam = "beam-#{name}"
+      replay(config_variant_result(name, beam, "nope"), files_dir_with([beam]))
+
+      capture_log(fn ->
+        assert {:cancel, "ingest refused: " <> _} = ingest(config_variant_args(name, "nope"))
+      end)
+
+      assert toolchain_rows_of(name) == []
+      refute membership?(beam)
+      refute package?(name)
+    end
+  end
 end
