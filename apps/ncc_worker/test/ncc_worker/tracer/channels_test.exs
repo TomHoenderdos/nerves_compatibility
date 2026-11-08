@@ -213,6 +213,36 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert :unknown == classify(Module, :concat, [A, B])
   end
 
+  # Mix's compile entry points return the compile's diagnostics to their
+  # caller: running a compile task, and registering a hook that receives
+  # them (Mix.Task.Compiler.after_compiler/2, which only prepends it to the
+  # project stack). Patterned only where Mix has loaded them already.
+  test "Mix's compile entry points are nested compiles" do
+    mix = :ncc_tracer_channels.mix_patterns()
+
+    for {m, f, args} <- [
+          {Mix.Task, :run, ["compile.elixir"]},
+          {Mix.Task, :run, ["compile", ["--force"]]},
+          {Mix.Task, :rerun, ["compile.all"]},
+          {Mix.Task, :rerun, [:"compile.elixir", []]},
+          {Mix.Task, :run, ["deps.compile", []]},
+          {Mix.Task, :run, ["fx.compile_it", []]},
+          {Mix.ProjectStack, :prepend_after_compiler, [:elixir, :f]}
+        ] do
+      assert {:nested_compile, %{}} == classify(m, f, args), inspect({m, f, args})
+      assert {m, f, length(args)} in mix
+    end
+
+    for args <- [["deps.loadpaths"], ["loadpaths", []], [:help, []], [~c"x", []], [1]],
+        do: assert(:unknown == classify(Mix.Task, :run, args), inspect(args))
+
+    assert :unknown == classify(Mix.ProjectStack, :peek, [])
+    assert Enum.sort(Enum.uniq(for {m, _, _} <- mix, do: m)) == [Mix.ProjectStack, Mix.Task]
+    assert :ncc_tracer_channels.mix_entry(Mix.Task)
+    assert :ncc_tracer_channels.mix_entry(Mix.ProjectStack)
+    refute :ncc_tracer_channels.mix_entry(Mix.Project)
+  end
+
   test "patterned/3 says whether a call has a channel's pattern" do
     assert :ncc_tracer_channels.patterned(:ssl, :connect, 3)
     assert :ncc_tracer_channels.patterned(:dbg, :tracer, 0)

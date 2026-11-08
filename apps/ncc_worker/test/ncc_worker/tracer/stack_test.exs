@@ -445,6 +445,33 @@ defmodule NccWorker.Tracer.StackTest do
     refute by_tc.(:no_stack)
   end
 
+  test "made_by_mix/2: Mix's own frame on top past the wrappers and higher-order glue" do
+    tc = [Mix.Task, Mix.Tasks.Compile.All, Mix.Task.Compiler, Mix.Tasks.Deps.Compile | @toolchain]
+    by_mix = &:ncc_tracer_stack.made_by_mix(&1, fn m -> m in tc end)
+    pkg = f(:elixir_compiler_3, :__MODULE__, 1)
+    task = f(Mix.Tasks.Compile.FxTask, :run, 1)
+
+    assert by_mix.([f(Mix.Tasks.Compile.All, :"-compile/4-fun-0-", 3), pkg])
+    assert by_mix.([f(Enum, :reduce, 3), f(Mix.Tasks.Deps.Compile, :do_mix, 2)])
+    # A task module's run/1 the task runner called, or a package task that
+    # tail-called: the result goes to the runner, not to package code.
+    assert by_mix.([f(Mix.Task, :run_task, 5), pkg])
+    refute by_mix.([pkg])
+    refute by_mix.([task, f(Mix.Task, :run_task, 5)])
+    refute by_mix.([f(Enum, :map, 2), pkg])
+    # Registering a hook goes through after_compiler/2: the caller below it.
+    refute by_mix.([f(Mix.Task.Compiler, :after_compiler, 2), pkg])
+    assert by_mix.([f(Mix.Task.Compiler, :after_compiler, 2), f(Mix.Task, :run_task, 5)])
+    # Evaluated code is not Mix's even when Mix evaluates it.
+    refute by_mix.([f(:erl_eval, :do_apply, 7), f(Mix.Task, :run_task, 5)])
+    refute by_mix.([f(Code, :eval_string, 3), f(Mix.Task, :run_task, 5)])
+    # A package's module named like Mix's, a non-Mix toolchain frame.
+    refute :ncc_tracer_stack.made_by_mix([f(Mix.Task, :run_task, 5)], fn m -> m == Enum end)
+    refute by_mix.([f(Task.Supervised, :invoke_mfa, 2)])
+    refute by_mix.([])
+    refute by_mix.(:no_stack)
+  end
+
   describe "a read made through IO.ANSI or Logger.Formatter" do
     @ansi_toolchain [
       Application,
@@ -688,6 +715,25 @@ defmodule NccWorker.Tracer.StackTest do
 
       assert {:user, :lineage, ^check, :none} = types_extent(types_read() ++ [check])
       assert {:user, :lineage, :none, :none} = types_extent(types_read())
+    end
+
+    test "only the Enum and lists folds count as glue on the run" do
+      reader = f(Module.Types.Apply, :ansi_red, 1)
+      grouper = f(Module.ParallelChecker, :group_diagnostics, 1)
+      tc? = &(&1 in [Map, :erl_eval, Code, :elixir_eval | @types_toolchain])
+
+      assert {:user, :lineage, ^reader, :none} =
+               types_extent(types_read() ++ [f(:lists, :foldl, 3), grouper], tc?)
+
+      for glue <- [
+            f(Map, :update, 4),
+            f(:erl_eval, :do_apply, 7),
+            f(Code, :eval_string, 3),
+            f(:elixir_eval, :eval_forms, 4)
+          ] do
+        assert {:user, _kind, first, :none} = types_extent(types_read() ++ [glue, grouper], tc?)
+        refute first == reader, inspect(glue)
+      end
     end
 
     test "only the reading function stays first" do

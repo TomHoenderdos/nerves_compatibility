@@ -276,6 +276,62 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
         def messages, do: @messages
       end
       """),
+    # Mix's compile run from package code, its diagnostics kept: a Mix
+    # compiler a dependency ships, running `compile.elixir` itself through
+    # `Mix.Task.rerun/2` for the package that names it.
+    "fx_rerun_comp" => %{
+      files: %{
+        "lib/mix/tasks/compile.fx_rerun_comp.ex" => """
+        defmodule Mix.Tasks.Compile.FxRerunComp do
+          use Mix.Task.Compiler
+          def run(_args) do
+            {_status, diagnostics} = Mix.Task.rerun("compile.elixir", ["--return-errors"])
+            Process.put(:fx_rerun_comp, Enum.map(diagnostics, & &1.message))
+            {:ok, []}
+          end
+        end
+        """
+      }
+    },
+    "fx_mix_rerun" =>
+      lib(
+        "fx_mix_rerun",
+        """
+        defmodule FxMixRerun do
+          def f, do: Integer.to_string(:not_an_integer)
+        end
+        """,
+        %{
+          deps: ["fx_rerun_comp"],
+          mix_exs: """
+          defmodule FxMixRerun.MixProject do
+            use Mix.Project
+
+            def project do
+              [
+                app: :fx_mix_rerun,
+                version: "0.1.0",
+                compilers: [:fx_rerun_comp] ++ Mix.compilers(),
+                deps: [{:fx_rerun_comp, path: "../fx_rerun_comp"}]
+              ]
+            end
+          end
+          """
+        }
+      ),
+    # A hook on the compile that receives its diagnostics, registered from
+    # the package's top-level code, beside a type warning of its own.
+    "fx_mix_after" =>
+      lib("fx_mix_after", """
+      Mix.Task.Compiler.after_compiler(:elixir, fn {status, diagnostics} ->
+        Process.put(:fx_mix_after, Enum.map(diagnostics, & &1.message))
+        {status, diagnostics}
+      end)
+
+      defmodule FxMixAfter do
+        def f, do: Integer.to_string(:not_an_integer)
+      end
+      """),
     # Package code asking the compiler for a formatted message and keeping
     # it: `SyntaxError.message/1` formats a snippet through `:elixir_errors`
     # and returns the coloured text.
@@ -425,7 +481,14 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
       """)
   }
 
-  @alone ["fx_cfg_set", "fx_forge", "fx_forge_tail"]
+  @alone [
+    "fx_cfg_set",
+    "fx_forge",
+    "fx_forge_tail",
+    "fx_mix_rerun",
+    "fx_rerun_comp",
+    "fx_mix_after"
+  ]
 
   # The fixtures whose toolchain reads the reviewed lists are pinned by.
   @reviewed_fixtures [
@@ -450,13 +513,14 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
 
     # A path dependency has no Hex tarball, and without a verified file list
     # no source file of a dependency is readable. The diagnostics printer
-    # reads the warned-about source line, so fx_tc_checker and fx_tc_types
-    # get the release a Hex dependency would have.
+    # reads the warned-about source line, so fx_tc_checker, fx_tc_types,
+    # fx_mix_after and fx_mix_rerun get the release a Hex dependency would
+    # have.
     hex_home = Path.join(root, "hex")
 
     releases =
       Map.new(
-        ["fx_tc_checker", "fx_tc_types"],
+        ["fx_tc_checker", "fx_tc_types", "fx_mix_after", "fx_mix_rerun"],
         &TracerFixtures.hex_release(hex_home, &1, ["lib", "mix.exs"])
       )
 
@@ -483,6 +547,20 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
           Path.join(root, "forge_tail"),
           ["fx_forge_tail"],
           Map.take(@deps, ["fx_forge_tail"]),
+          nil
+        ),
+      "fx_mix_rerun" =>
+        compile(
+          Path.join(root, "mix_rerun"),
+          ["fx_mix_rerun"],
+          Map.take(@deps, ["fx_mix_rerun", "fx_rerun_comp"]),
+          nil
+        ),
+      "fx_mix_after" =>
+        compile(
+          Path.join(root, "mix_after"),
+          ["fx_mix_after"],
+          Map.take(@deps, ["fx_mix_after"]),
           nil
         )
     }
@@ -668,8 +746,10 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
     assert v.compile_env == []
     assert v.observations["config_unreviewed"] == []
     refute item(v, "elixir", "ansi_enabled")
+    assert [_ | _] = reads = v.observations["config_reads"]
+    assert Enum.any?(reads, &(&1["first"] == "Elixir.Module.Types.Apply")), inspect(reads)
 
-    for r <- v.observations["config_reads"] do
+    for r <- reads do
       assert r["arg"]["key_name"] == "ansi_enabled"
       assert r["first"] in ["Elixir.Module.Types.Apply", "elixir_errors"], inspect(r)
       assert r["first_kind"] == "toolchain"
@@ -688,6 +768,41 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
                  &1 =~ "elixir ansi_enabled from Elixir.Module.Types.Apply")
            ),
            inspect(obs["problems"])
+  end
+
+  defp nested_mfas(ctx, app) do
+    traced = run_of(ctx, app).traced
+
+    for e <- traced.report.events, e["channel"] == "nested_compile", uniq: true, do: e["mfa"]
+  end
+
+  # Running Mix's compile from package code hands the package the
+  # compile's diagnostics: the window is marked, so the type checker's read
+  # in it is not dropped.
+  test "Mix's compile run from package code marks the window", ctx do
+    assert %{status: :skip, reason: @cnj, observations: obs} = verdict(ctx, "fx_mix_rerun")
+    assert Enum.any?(obs["problems"], &(&1 =~ "in a window with a nested compile")), inspect(obs)
+    assert "Mix.Task.rerun/2" in nested_mfas(ctx, "fx_mix_rerun")
+  end
+
+  test "a hook on the compile's diagnostics registered from package code marks the window",
+       ctx do
+    assert %{status: :skip, reason: @cnj, observations: obs} = verdict(ctx, "fx_mix_after")
+
+    assert Enum.any?(
+             obs["problems"],
+             &(&1 =~
+                 "in a window with a nested compile (Mix.ProjectStack.prepend_after_compiler/2)" and
+                 &1 =~ "elixir ansi_enabled from Elixir.Module.Types.Apply")
+           ),
+           inspect(obs["problems"])
+  end
+
+  # Mix's own compile pipeline (compile.all running compile.elixir, every
+  # dependency's compile, a Mix compiler a dependency ships) marks nothing.
+  test "Mix's own compile tasks mark no window of the shared project", ctx do
+    mfas = nested_mfas(ctx, "fx_cfg_plain")
+    refute Enum.any?(mfas, &String.starts_with?(&1, "Mix.")), inspect(mfas)
   end
 
   # The same formatter reached for a message the package keeps is not the

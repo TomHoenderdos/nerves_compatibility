@@ -3,7 +3,8 @@
 %% (precompiled portability spec, R1 steps 1-3). The tracer passes in which
 %% modules are toolchain and whether the calling process is a user process.
 -export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2,
-         uncached/0, printers/0, diagnosers/0, checker/2, made_by_toolchain/2]).
+         uncached/0, printers/0, diagnosers/0, checker/2, made_by_toolchain/2,
+         made_by_mix/2]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% Frames a call is attributed through, to the frame that called them, when
@@ -39,7 +40,7 @@
 %% checker's grouping of diagnostics (group_diagnostics/1 on 1.20,
 %% group_warnings/1 on 1.19), which hands them to the function that prints
 %% and returns them: between the two only Apply's own frames and toolchain
-%% glue (the Enum and lists folds both use), and the first checker frame
+%% folds (the toolchain's Enum and lists), and the first checker frame
 %% below them one of the grouping function's own. Reached any other way,
 %% Apply's frames are skipped like IO.ANSI's, so the read belongs to whoever
 %% asked for the text. Where the diagnostics go from there is the config
@@ -232,16 +233,17 @@ undiagnosed(M, [{M, F, _, _} | Below], IsToolchain) ->
     end;
 undiagnosed(_M, _Stack, _IsToolchain) -> false.
 
-%% Down from the reader: frames of the module itself and toolchain glue,
-%% then a frame of the grouping function (its body or a fun in it). Any
-%% other frame, a checker frame of another function among them, ends the
-%% run.
+%% Down from the reader: frames of the module itself and the toolchain's
+%% Enum and lists (the folds and maps both use), then a frame of the
+%% grouping function (its body or a fun in it). Any other frame, a checker
+%% frame of another function or an eval frame among them, ends the run.
+-define(FOLDS, ['Elixir.Enum', lists]).
 grouped_run([{M, _, _, _} | Rest], M, Checker, Groupers, IsToolchain) ->
     grouped_run(Rest, M, Checker, Groupers, IsToolchain);
 grouped_run([{Checker, F, _, _} | _], _M, Checker, Groupers, IsToolchain) ->
     IsToolchain(Checker) andalso lists:member(base_name(F), Groupers);
-grouped_run([{A, _, _, _} = Frame | Rest], M, Checker, Groupers, IsToolchain) ->
-    glue(Frame) andalso IsToolchain(A)
+grouped_run([{A, _, _, _} | Rest], M, Checker, Groupers, IsToolchain) ->
+    lists:member(A, ?FOLDS) andalso IsToolchain(A)
         andalso grouped_run(Rest, M, Checker, Groupers, IsToolchain);
 grouped_run([], _M, _Checker, _Groupers, _IsToolchain) -> false.
 
@@ -290,6 +292,30 @@ made_by_toolchain(Stack, IsToolchain) when is_list(Stack) ->
         [] -> false
     end;
 made_by_toolchain(_Stack, _IsToolchain) -> false.
+
+%% Whether Mix made a call into one of its compile entry points
+%% (ncc_tracer_channels mix_entry/1): the first frame past the wrappers, the
+%% toolchain's higher-order glue (not its eval functions: evaluated code is
+%% not Mix's, whoever evaluates it) and Mix.Task.Compiler's after_compiler/2
+%% is one of Mix's own modules, the toolchain's. Mix.Task's task runner on
+%% top counts as Mix's: it runs every task, and a package task that
+%% tail-called the entry point left no frame to take the result.
+made_by_mix(Stack, IsToolchain) when is_list(Stack) ->
+    Skip = fun({M, F, _, _} = Frame) ->
+                   lists:member(M, ?WRAPPERS)
+                       orelse (IsToolchain(M) andalso
+                               ((glue(Frame) andalso not eval_glue(Frame) andalso not dispatcher(Frame))
+                                orelse (M =:= 'Elixir.Mix.Task.Compiler'
+                                        andalso base_name(F) =:= "after_compiler")))
+           end,
+    case lists:dropwhile(Skip, Stack) of
+        [{M, _, _, _} | _] -> IsToolchain(M) andalso lists:prefix("Elixir.Mix.", atom_to_list(M));
+        [] -> false
+    end;
+made_by_mix(_Stack, _IsToolchain) -> false.
+
+eval_glue({M, _, _, _} = Frame) ->
+    M =:= 'Elixir.Code' orelse M =:= elixir orelse M =:= elixir_eval orelse eval(Frame).
 
 %% The compiler's own call graph into the checker and the compile entry
 %% points: Elixir's compiler (elixir_*), Code, Module, the parallel compiler

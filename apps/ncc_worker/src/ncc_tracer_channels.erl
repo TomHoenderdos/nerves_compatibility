@@ -3,7 +3,7 @@
 %% spec, R1 channel table) and the short summary of one call that the tracer
 %% writes when the call happens in user extent. Pure: no process, no I/O.
 -export([patterns/0, probe_mfas/0, patterned/3, classify/3, chars/1, term_bin/1,
-         checker_module/1]).
+         checker_module/1, mix_patterns/0, mix_entry/1]).
 
 -define(READS, [{file, read_file}, {file, read_file_info}, {file, read_link_info},
                 {file, read_link}, {file, read_link_all}, {file, list_dir},
@@ -115,6 +115,30 @@ nested_compile_patterns() ->
         ++ [{'Elixir.Kernel.ParallelCompiler', '_', '_'}, {'Elixir.Module', create, 3},
             {'Elixir.Module.ParallelChecker', '_', '_'}].
 
+%% Mix's compile entry points, which hand a compile's diagnostics to their
+%% caller: running a task whose name says it compiles (Mix.Task.run/rerun of
+%% compile, compile.elixir, deps.compile, a package's own "x.compile"), and
+%% registering a hook that receives them (Mix.Task.Compiler.after_compiler/2,
+%% whose only work is prepend_after_compiler/2). Mix's own pipeline calls the
+%% same functions, so a call marks only when Mix did not make it
+%% (ncc_tracer_stack:made_by_mix/2). The tracer patterns them only in the
+%% Mix VM and only where the module is loaded already (Mix.Task and
+%% Mix.ProjectStack are, by the time Mix runs the driver): loading a Mix
+%% module for a pattern would make it `preloaded`. A task module's own
+%% run/1 (Mix.Tasks.Compile.Elixir) is not loaded then and is not
+%% patterned; its compile reaches Kernel.ParallelCompiler, which is.
+-define(NESTED_MIX, [{'Elixir.Mix.Task', run, [1, 2]}, {'Elixir.Mix.Task', rerun, [1, 2]},
+                     {'Elixir.Mix.ProjectStack', prepend_after_compiler, [2]}]).
+
+mix_patterns() -> [{M, F, A} || {M, F, As} <- ?NESTED_MIX, A <- As].
+
+mix_entry(M) -> lists:keymember(M, 1, ?NESTED_MIX).
+
+%% A task name that mentions compiling, as a string or an atom.
+compile_task(Task) when is_atom(Task) -> compile_task(atom_to_binary(Task));
+compile_task(Task) when is_binary(Task) -> binary:match(Task, <<"compile">>) =/= nomatch;
+compile_task(_Task) -> false.
+
 %% A call into Elixir's type checker is one too: a package can run it
 %% directly. Module.ParallelChecker is patterned (above); a call into it is
 %% recorded only when package code made it (the compiler calls the checker
@@ -169,6 +193,9 @@ specific('Elixir.Code', F, Args) ->
         false -> unknown
     end;
 specific('Elixir.Kernel.ParallelCompiler', _F, _Args) -> {nested_compile, #{}};
+specific('Elixir.Mix.Task', F, [Task | Rest]) when (F =:= run orelse F =:= rerun), length(Rest) =< 1 ->
+    nested_compile(compile_task(Task));
+specific('Elixir.Mix.ProjectStack', prepend_after_compiler, [_, _]) -> {nested_compile, #{}};
 specific('Elixir.Module', create, [_, _, _]) -> {nested_compile, #{}};
 specific(elixir_compiler, F, Args) ->
     nested_compile(lists:member({elixir_compiler, F, length(Args)}, ?NESTED_ERLANG));

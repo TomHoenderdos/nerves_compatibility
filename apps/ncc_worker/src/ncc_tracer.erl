@@ -265,7 +265,8 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
     Unloaded = load_uses(),
     Patterns = ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role),
     _ = [quietly(fun() -> code:ensure_loaded(M) end) || {M, _, _} <- Patterns],
-    Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth)) || MFA <- Patterns],
+    Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth))
+              || MFA <- Patterns ++ mix_patterns(Role)],
     Preloaded = preloaded(Before, Role),
     put(preloaded, Preloaded),
     Calls = app_calls(Preloaded),
@@ -315,6 +316,12 @@ reason_bin(Reason) -> ncc_tracer_channels:term_bin(Reason).
 
 role_patterns(child) -> [{compile, file, 2}];
 role_patterns(main) -> [].
+
+%% Mix's compile entry points, in the Mix VM, of the modules Mix has loaded
+%% already: never loaded for a pattern (ncc_tracer_channels mix_patterns/0).
+mix_patterns(main) ->
+    [MFA || {M, _, _} = MFA <- ncc_tracer_channels:mix_patterns(), erlang:module_loaded(M)];
+mix_patterns(child) -> [].
 
 %% Every spawn BIF: a spawn made in user extent makes the child a user
 %% process, whatever it runs (Task.async(System, :get_env, [..]) from a
@@ -619,6 +626,18 @@ classified(_M, _F, _Args, toolchain, _Info, _Stack, St) -> St;
 classified(M, F, Args, {user, _, _, _} = Extent, Info, Stack, St) ->
     case M =:= elixir_compiler orelse ncc_tracer_channels:checker_module(M) of
         true -> toolchain_entry(M, F, Args, Extent, Info, Stack, St);
+        false ->
+            case ncc_tracer_channels:mix_entry(M) of
+                true -> mix_entry(M, F, Args, Extent, Info, Stack, St);
+                false -> record(probed(channel(M, F, Args, St), Stack), Extent, Info, St)
+            end
+    end.
+
+%% A call into Mix's compile entry points marks its window only when Mix
+%% did not make it (ncc_tracer_stack:made_by_mix/2).
+mix_entry(M, F, Args, Extent, Info, Stack, St) ->
+    case (try ncc_tracer_stack:made_by_mix(Stack, fun toolchain/1) catch _:_ -> false end) of
+        true -> St;
         false -> record(probed(channel(M, F, Args, St), Stack), Extent, Info, St)
     end.
 
