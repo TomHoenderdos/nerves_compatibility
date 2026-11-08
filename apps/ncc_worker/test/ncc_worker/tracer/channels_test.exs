@@ -187,12 +187,28 @@ defmodule NccWorker.Tracer.ChannelsTest do
           {Code, :eval_file, ["x.exs"]},
           {Code, :with_diagnostics, [[], :f]},
           {Kernel.ParallelCompiler, :compile, [[]]},
-          {Module, :create, [X, :ok, []]}
+          {Module, :create, [X, :ok, []]},
+          {Code, :eval_quoted_with_env, [:ok, [], %{}]},
+          {Code, :eval_quoted_with_env, [:ok, [], %{}, []]},
+          {Code, :load_file, ["x.exs"]},
+          {Code, :load_file, ["x.exs", "."]},
+          {:elixir_compiler, :string, ["1", "nofile", :f]},
+          {:elixir_compiler, :quoted, [:ok, "nofile", :f]},
+          {:elixir_compiler, :file, ["x.ex", :f]}
         ] do
       assert {:nested_compile, %{}} == classify(m, f, args)
       assert {m, f, length(args)} in patterns or {m, :_, :_} in patterns
     end
 
+    # Into the type checker, any function: the tracer patterns every export.
+    assert {:nested_compile, %{}} ==
+             classify(Module.ParallelChecker, :fetch_export, [1, 2, 3, 4, 5])
+
+    assert {:nested_compile, %{}} == classify(Module.ParallelChecker, :verify, [:f])
+    assert {:nested_compile, %{}} == classify(Module.Types.Descr, :union, [1, 2])
+    assert {:nested_compile, %{}} == classify(Module.Types, :warnings, [1, 2, 3, 4, 5, 6])
+    assert {:nested_compile, %{}} == classify(:elixir_compiler, :string, [1, 2, 3])
+    assert :unknown == classify(:elixir_compiler, :get_opt, [:x])
     assert :unknown == classify(Code, :ensure_loaded?, [:x])
     assert :unknown == classify(Module, :concat, [A, B])
   end

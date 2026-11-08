@@ -616,8 +616,21 @@ classified(erlang, F, _Args, Extent, {Pid, _, _, _, _, _}, _Stack, St)
        F =:= spawn_request ->
     spawn_call(Pid, Extent, St);
 classified(_M, _F, _Args, toolchain, _Info, _Stack, St) -> St;
-classified(M, F, Args, Extent, Info, Stack, St) ->
-    record(probed(channel(M, F, Args, St), Stack), Extent, Info, St).
+classified(M, F, Args, {user, _, _, _} = Extent, Info, Stack, St) ->
+    case M =:= elixir_compiler orelse ncc_tracer_channels:checker_module(M) of
+        true -> toolchain_entry(M, F, Args, Extent, Info, Stack, St);
+        false -> record(probed(channel(M, F, Args, St), Stack), Extent, Info, St)
+    end.
+
+%% A call into the type checker or the compiler's entry points marks its
+%% window only when package code made it: the compiler makes such calls for
+%% every module it compiles (ncc_tracer_stack:made_by_toolchain/2), so those
+%% are not even written.
+toolchain_entry(M, F, Args, Extent, Info, Stack, St) ->
+    case (try ncc_tracer_stack:made_by_toolchain(Stack, fun toolchain/1) catch _:_ -> false end) of
+        true -> St;
+        false -> record(probed(channel(M, F, Args, St), Stack), Extent, Info, St)
+    end.
 
 %% A package can lower backtrace_depth (phoenix's start/2 sets it). Stacks
 %% are cut at the live value, so they are judged against the lowest value

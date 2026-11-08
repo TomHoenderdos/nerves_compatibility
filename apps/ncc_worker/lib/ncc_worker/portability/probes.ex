@@ -46,9 +46,11 @@ defmodule NccWorker.Portability.Probes do
   so it is dropped, with frames below it cut off or not (the checker's
   stacks are deep). Unless package code started a nested compile or a
   capture of diagnostics in the same window (`Context.nested`: `Code`'s
-  compile, require and eval functions, `Code.with_diagnostics`,
-  `Kernel.ParallelCompiler`, `Module.create/3`, or such a call whose stack
-  could not be told apart): then its warnings can reach the package, and
+  compile, require, load and eval functions, `Code.with_diagnostics`,
+  `Kernel.ParallelCompiler`, `Module.create/3`, `:elixir_compiler`'s
+  `string`, `quoted` and `file`, any call into `Module.ParallelChecker`; the
+  last two only when package code, not the compiler, made the call; or such
+  a call whose stack could not be told apart): then its warnings can reach the package, and
   every checker probe in that window is judged, except the checker's
   `function_exported/3` of a module whose application is on the owner's
   path: the checker calls it only on a module it loaded, and untraced that

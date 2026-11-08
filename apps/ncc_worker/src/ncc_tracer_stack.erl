@@ -3,7 +3,7 @@
 %% (precompiled portability spec, R1 steps 1-3). The tracer passes in which
 %% modules are toolchain and whether the calling process is a user process.
 -export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2,
-         uncached/0, printers/0, checker/2]).
+         uncached/0, printers/0, checker/2, made_by_toolchain/2]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% Frames a call is attributed through, to the frame that called them, when
@@ -222,7 +222,50 @@ checker(Stack, IsToolchain) when is_list(Stack) ->
     end;
 checker(_Stack, _IsToolchain) -> false.
 
+%% The dispatchers that run code of the toolchain's own: the checker and
+%% the parallel compiler. Every other one runs package code (a hook, a
+%% macro, a transform).
+-define(TOOLCHAIN_DISPATCHERS, [{'Elixir.Module.ParallelChecker', "verify"},
+                                {'Elixir.Kernel.ParallelCompiler', "verify_modules"}]).
+
+%% Whether the compiler made a call, judged by the first frame past the
+%% wrappers and the toolchain's glue (Enum and friends): one of the
+%% compiler's own modules (compiler_module/1), the toolchain's, that is not a
+%% dispatcher of package code. Any other toolchain frame on top (Task's, a
+%% GenServer's) may be running a fun package code handed it, which
+%% tail-called the checker: that is the package's call. So is a hook
+%% dispatcher on top, and a stack with no frame left (false).
+made_by_toolchain(Stack, IsToolchain) when is_list(Stack) ->
+    Skip = fun({M, _, _, _} = F) ->
+                   lists:member(M, ?WRAPPERS)
+                       orelse (IsToolchain(M) andalso glue(F) andalso not dispatcher(F))
+           end,
+    case lists:dropwhile(Skip, Stack) of
+        [{M, F, _, _} = Frame | _] ->
+            compiler_module(M) andalso IsToolchain(M) andalso
+                (not dispatcher(Frame)
+                 orelse lists:member({M, base_name(F)}, ?TOOLCHAIN_DISPATCHERS));
+        [] -> false
+    end;
+made_by_toolchain(_Stack, _IsToolchain) -> false.
+
+%% The compiler's own call graph into the checker and the compile entry
+%% points: Elixir's compiler (elixir_*), Code, Module, the parallel compiler
+%% and checker, the type checker, the error handlers and Mix's compilers.
+-define(COMPILER, ['Elixir.Code', 'Elixir.Module', 'Elixir.Kernel.ParallelCompiler',
+                   'Elixir.Module.ParallelChecker', 'Elixir.Module.Types', 'Elixir.Kernel.ErrorHandler',
+                   error_handler, code]).
+-define(COMPILER_PREFIXES, ["elixir_", "Elixir.Module.Types.", "Elixir.Mix.Compilers.",
+                            "Elixir.Mix.Tasks.Compile."]).
+
+compiler_module(M) -> lists:member(M, ?COMPILER) orelse compiler_prefix(atom_to_list(M)).
+
+%% elixir_compiler_N is a module body or eval'd code, never the compiler.
+compiler_prefix("elixir_compiler_" ++ _) -> false;
+compiler_prefix(Name) -> lists:any(fun(P) -> lists:prefix(P, Name) end, ?COMPILER_PREFIXES).
+
 checker_module('Elixir.Module.ParallelChecker') -> true;
+checker_module('Elixir.Module.Types') -> true;
 checker_module(M) -> lists:prefix("Elixir.Module.Types.", atom_to_list(M)).
 
 uncached() -> ?UNCACHED.

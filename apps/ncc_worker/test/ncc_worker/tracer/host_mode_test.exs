@@ -575,4 +575,64 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert checker != [], inspect(probes(traced), pretty: true)
     assert %{status: :pass} = TracerFixtures.judge(proj, "fx_top", traced)
   end
+
+  # Calling the type checker directly runs it in the package's own extent:
+  # what it found reaches the package. httpc is not on fx_probe's path, so
+  # the answer differs under the trace.
+  test "a direct call into the type checker marks the window", %{tmp_dir: dir} do
+    expr =
+      "(fn -> {:ok, c} = Module.ParallelChecker.start_link(); " <>
+        "Module.ParallelChecker.fetch_export(c, :httpc, :request, 1, true) end).()"
+
+    proj = probe_fixture(dir, [], expr)
+    {untraced, host, traced} = both(proj)
+    refute host == untraced
+
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert Enum.any?(obs["problems"], &(&1 =~ "nested compile (Module.ParallelChecker.")),
+           inspect(obs["problems"])
+  end
+
+  # :elixir_compiler.string/3 is what Code.compile_string/2 runs; called
+  # directly from a module body, the checker it runs looks :httpc up for
+  # the package.
+  test "a direct call into the Erlang compiler entry marks the window", %{tmp_dir: dir} do
+    inner = "defmodule FxProbe.Inner do\n  def get(u), do: :httpc.request(u)\nend\n"
+
+    expr =
+      "length(:elixir_compiler.string(#{inspect(String.to_charlist(inner))}, \"nofile\", fn _, _ -> :ok end))"
+
+    proj = probe_fixture(dir, [], expr)
+    traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+
+    ctx = NccWorker.Portability.Context.build(proj, "fx_probe", traced.report, [], releases: %{})
+    assert ctx.nested["fx_probe"] == "elixir_compiler:string/3"
+
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert Enum.any?(obs["problems"], &(&1 =~ "httpc (inets)")), inspect(obs["problems"])
+  end
+
+  # A fun handed to Task, which tail-calls the checker, leaves only Task's
+  # frames above it: that call is still the package's.
+  test "a call into the type checker from a task the package started marks the window",
+       %{tmp_dir: dir} do
+    expr =
+      "Task.await(Task.async(fn -> {:ok, c} = Module.ParallelChecker.start_link(); " <>
+        "Module.ParallelChecker.fetch_export(c, :httpc, :request, 1, true) end))"
+
+    proj = probe_fixture(dir, [], expr)
+    traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+
+    assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert Enum.any?(obs["problems"], &(&1 =~ "nested compile (Module.ParallelChecker.")),
+           inspect(obs["problems"])
+  end
 end

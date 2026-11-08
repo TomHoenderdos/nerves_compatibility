@@ -2,7 +2,8 @@
 %% The primitives the compile-time trace watches (precompiled portability
 %% spec, R1 channel table) and the short summary of one call that the tracer
 %% writes when the call happens in user extent. Pure: no process, no I/O.
--export([patterns/0, probe_mfas/0, patterned/3, classify/3, chars/1, term_bin/1]).
+-export([patterns/0, probe_mfas/0, patterned/3, classify/3, chars/1, term_bin/1,
+         checker_module/1]).
 
 -define(READS, [{file, read_file}, {file, read_file_info}, {file, read_link_info},
                 {file, read_link}, {file, read_link_all}, {file, list_dir},
@@ -102,11 +103,28 @@ patterns() ->
 %% marked, NccWorker.Portability.Probes).
 -define(NESTED_CODE, [{compile_string, [1, 2]}, {compile_quoted, [1, 2]}, {compile_file, [1, 2]},
                       {require_file, [1, 2]}, {eval_string, [1, 2, 3]}, {eval_quoted, [1, 2, 3]},
-                      {eval_file, [1, 2]}, {with_diagnostics, [1, 2]}]).
+                      {eval_file, [1, 2]}, {with_diagnostics, [1, 2]},
+                      {eval_quoted_with_env, [3, 4]}, {load_file, [1, 2]}]).
+%% What Code's compile functions run, called directly.
+-define(NESTED_ERLANG, [{elixir_compiler, string, 3}, {elixir_compiler, quoted, 3},
+                        {elixir_compiler, file, 2}]).
 
 nested_compile_patterns() ->
     [{'Elixir.Code', F, A} || {F, As} <- ?NESTED_CODE, A <- As]
-        ++ [{'Elixir.Kernel.ParallelCompiler', '_', '_'}, {'Elixir.Module', create, 3}].
+        ++ ?NESTED_ERLANG
+        ++ [{'Elixir.Kernel.ParallelCompiler', '_', '_'}, {'Elixir.Module', create, 3},
+            {'Elixir.Module.ParallelChecker', '_', '_'}].
+
+%% A call into Elixir's type checker is one too: a package can run it
+%% directly. Module.ParallelChecker is patterned (above); a call into it is
+%% recorded only when package code made it (the compiler calls the checker
+%% for every module; ncc_tracer toolchain_entry). Module.Types modules are
+%% classified the same way but not patterned: their every internal call
+%% would be traced.
+checker_module('Elixir.Module.ParallelChecker') -> true;
+checker_module('Elixir.Module.Types') -> true;
+checker_module(M) when is_atom(M) -> lists:prefix("Elixir.Module.Types.", atom_to_list(M));
+checker_module(_M) -> false.
 
 %% Whether a call has a pattern from patterns/0, so a channel of its own:
 %% the tracer's calls into a module it loaded (ncc_tracer app_call) are only
@@ -152,6 +170,8 @@ specific('Elixir.Code', F, Args) ->
     end;
 specific('Elixir.Kernel.ParallelCompiler', _F, _Args) -> {nested_compile, #{}};
 specific('Elixir.Module', create, [_, _, _]) -> {nested_compile, #{}};
+specific(elixir_compiler, F, Args) ->
+    nested_compile(lists:member({elixir_compiler, F, length(Args)}, ?NESTED_ERLANG));
 specific(erlang, function_exported, [M, _F, _A]) -> {probe, #{module => term_name(M)}};
 specific(erlang, process_info, [_Pid]) -> {integrity, #{item => <<"all">>}};
 specific(erlang, process_info, [_Pid, Item]) -> process_item(Item);
@@ -216,7 +236,11 @@ by_module(application, get_env, [App, Key | _]) ->
                key_name => atom_name(Key), atoms => is_atom(App) andalso is_atom(Key)}};
 by_module(application, get_all_env, Args) ->
     {config, #{app => first_term(Args), app_name => first_atom_name(Args), all => true}};
-by_module(_M, _F, _Args) -> unknown.
+by_module(M, _F, _Args) ->
+    case checker_module(M) of
+        true -> {nested_compile, #{}};
+        false -> unknown
+    end.
 
 open(Path, Modes) ->
     List = case is_list(Modes) of true -> Modes; false -> [Modes] end,

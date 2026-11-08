@@ -425,6 +425,26 @@ defmodule NccWorker.Tracer.StackTest do
     refute :ncc_tracer_stack.checker([cache], fn m -> m in [:code] end)
   end
 
+  test "made_by_toolchain/2: who called past the glue, a hook dispatcher being package code" do
+    tc = [Module.Types.Descr, Module.Types.Expr, Task.Supervised | @toolchain]
+    by_tc = &:ncc_tracer_stack.made_by_toolchain(&1, fn m -> m in tc end)
+    pkg = f(:elixir_compiler_3, :__MODULE__, 1)
+
+    assert by_tc.([f(Enum, :"-map/2-lists^map/1-1-", 2), f(Module.Types.Expr, :of_expr, 3)])
+    assert by_tc.([f(Kernel.ParallelCompiler, :verify_modules, 5)])
+    assert by_tc.([f(Module.ParallelChecker, :verify, 1), pkg])
+    assert by_tc.([f(Code, :compile_string, 2), pkg])
+    refute by_tc.([pkg])
+    refute by_tc.([f(Enum, :map, 2), pkg])
+    refute by_tc.([f(:elixir_module, :"-expand_callback/6-fun-0-", 3)])
+    refute by_tc.([f(Enum, :map, 2)])
+    # Task running a fun the package handed it, which tail-called.
+    refute by_tc.([f(Task.Supervised, :invoke_mfa, 2)])
+    refute by_tc.([f(:elixir_compiler_4, :__FILE__, 1)])
+    refute by_tc.([])
+    refute by_tc.(:no_stack)
+  end
+
   describe "a read made through IO.ANSI or Logger.Formatter" do
     @ansi_toolchain [
       Application,
