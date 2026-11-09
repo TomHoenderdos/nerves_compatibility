@@ -394,7 +394,11 @@ defmodule NccWorker.BuildSelectionTest do
       assert BuildSelection.static_rules(root, "sample", scan()) == :ok
     end
 
-    test "a dependency's macro that reads the target refuses", %{root: root} do
+    # The target and Nerves checks cover the package only. A dependency's
+    # compile-time `Mix.target/0` call, such as a macro expanded into the
+    # package's beams, is meant to be judged by the compile-time trace
+    # (`NccWorker.Portability`) instead.
+    test "a dependency's macro that reads the target passes", %{root: root} do
       package(root, "sample")
       helper = package(root, "helper")
       lock(root, "sample", ["helper"])
@@ -404,11 +408,10 @@ defmodule NccWorker.BuildSelectionTest do
         "defmodule Helper do\n  defmacro target, do: Mix.target()\nend\n"
       )
 
-      assert BuildSelection.static_rules(root, "sample", scan()) ==
-               {:skip, "dependency helper reads the target"}
+      assert BuildSelection.static_rules(root, "sample", scan()) == :ok
     end
 
-    test "a transitive dependency that mentions nerves refuses", %{root: root} do
+    test "a transitive dependency that mentions nerves passes", %{root: root} do
       package(root, "sample")
       package(root, "middle")
       leaf = package(root, "leaf")
@@ -416,8 +419,7 @@ defmodule NccWorker.BuildSelectionTest do
       lock(root, "middle", ["leaf"])
       File.write!(Path.join(leaf, "lib/example.ex"), "# works with Nerves.Runtime\n")
 
-      assert BuildSelection.static_rules(root, "sample", scan()) ==
-               {:skip, "nerves-specific source in dependency leaf"}
+      assert BuildSelection.static_rules(root, "sample", scan()) == :ok
     end
 
     test "ordinary dependencies pass, native ones included", %{root: root} do
@@ -428,20 +430,6 @@ defmodule NccWorker.BuildSelectionTest do
       lock(root, "sample", ["helper", "native"])
 
       assert BuildSelection.static_rules(root, "sample", scan()) == :ok
-    end
-
-    test "a missing lock or dependency source fails closed", %{root: root} do
-      package(root, "sample")
-      lock(root, "sample", ["gone"])
-      lock(root, "gone", [])
-
-      assert BuildSelection.static_rules(root, "sample", scan()) ==
-               {:skip, "portability could not be judged"}
-
-      File.rm!(Path.join(root, "mix.lock"))
-
-      assert BuildSelection.static_rules(root, "sample", scan()) ==
-               {:skip, "portability could not be judged"}
     end
 
     test "a project under a path that says nerves is judged by its contents", %{root: root} do
@@ -461,12 +449,6 @@ defmodule NccWorker.BuildSelectionTest do
 
       assert BuildSelection.portable?(root, "absent", scan()) ==
                {:skip, "reads the target or ships native code"}
-
-      lock(root, "sample", ["gone"])
-      lock(root, "gone", [])
-
-      assert BuildSelection.static_rules(root, "sample", scan()) ==
-               {:skip, "portability could not be judged"}
     end
 
     test "a real scan of an Erlang-only package passes", %{root: root} do
