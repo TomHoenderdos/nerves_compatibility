@@ -132,6 +132,36 @@ defmodule NccWorker.DepsLock do
   end
 
   @doc """
+  The dependencies `package` declares, from its own lock entry, as
+  `%{"app", "name", "requirement", "optional"}` sorted by app: every one,
+  optional or not, resolved or not. `[]` for a package that declares
+  none, nil when the lock is missing or does not name the package. A
+  device ranks builds with it: a build made without an optional dependency
+  the device has lacks that integration.
+  """
+  @spec declared(String.t(), String.t()) :: [%{String.t() => String.t() | boolean()}] | nil
+  def declared(project_dir, package) do
+    with {:ok, lock} <- read_lock(project_dir),
+         {:ok, name} <- lock_name(lock, package) do
+      lock[name]
+      |> lock_deps()
+      |> Enum.map(&declared_item/1)
+      |> Enum.sort_by(& &1["app"])
+    else
+      _ -> nil
+    end
+  end
+
+  defp declared_item({app, requirement, opts}) do
+    %{
+      "app" => to_string(app),
+      "name" => to_string(opts[:hex] || app),
+      "requirement" => to_string(requirement),
+      "optional" => opts[:optional] == true
+    }
+  end
+
+  @doc """
   Every Hex entry's locked version, keyed by lock name, or `:error` when the
   lock is missing or unreadable. `NccWorker.NervesCache` reads the Nerves
   systems and toolchains a run resolved out of it.

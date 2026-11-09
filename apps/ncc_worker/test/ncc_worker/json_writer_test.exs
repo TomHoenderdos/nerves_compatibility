@@ -234,6 +234,30 @@ defmodule NccWorker.JsonWriterTest do
       refute Map.has_key?(decoded, "package_checksum")
     end
 
+    test "declared is written when present and left out when nil" do
+      dir = Path.join(System.tmp_dir!(), "jw_declared_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      base = %{
+        run_id: "r",
+        package: %{name: "p", version: "1"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{},
+        finished_at: "2026-10-20T00:00:00Z"
+      }
+
+      declared = [%{"app" => "x", "name" => "x", "requirement" => "~> 1.0", "optional" => true}]
+      :ok = JsonWriter.write_result(dir, Map.put(base, :declared, declared))
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      assert %{"declared" => [%{"app" => "x"}]} = decoded
+
+      :ok = JsonWriter.write_result(dir, Map.put(base, :declared, nil))
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      refute Map.has_key?(decoded, "declared")
+    end
+
     test "aggregates cache candidates across systems and dedupes by key" do
       dir = Path.join(System.tmp_dir!(), "jw_cache_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)

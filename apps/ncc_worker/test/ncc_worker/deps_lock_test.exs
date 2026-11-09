@@ -131,6 +131,62 @@ defmodule NccWorker.DepsLockTest do
     map |> Map.fetch!(:spark) |> elem(7)
   end
 
+  describe "declared/2" do
+    test "lists every declared dependency of the package, optional ones marked", %{dir: dir} do
+      File.write!(Path.join(dir, "mix.lock"), """
+      %{
+        "phoenix_html" => {:hex, :phoenix_html, "4.2.1", "inner", [:mix], [
+          {:phoenix, "~> 1.7", [hex: :phoenix, repo: "hexpm", optional: true]},
+          {:telemetry, "~> 0.4 or ~> 1.0", [hex: :telemetry, repo: "hexpm", optional: false]},
+          {:my_fork, "~> 1.0", [hex: :real_name, repo: "hexpm", optional: false]}
+        ], "hexpm", "outer"},
+        "telemetry" => {:hex, :telemetry, "1.3.0", "i", [:rebar3], [], "hexpm", "o"}
+      }
+      """)
+
+      assert DepsLock.declared(dir, "phoenix_html") == [
+               %{
+                 "app" => "my_fork",
+                 "name" => "real_name",
+                 "requirement" => "~> 1.0",
+                 "optional" => false
+               },
+               %{
+                 "app" => "phoenix",
+                 "name" => "phoenix",
+                 "requirement" => "~> 1.7",
+                 "optional" => true
+               },
+               %{
+                 "app" => "telemetry",
+                 "name" => "telemetry",
+                 "requirement" => "~> 0.4 or ~> 1.0",
+                 "optional" => false
+               }
+             ]
+    end
+
+    test "[] for a package that declares nothing, nil without a lock entry", %{dir: dir} do
+      File.write!(
+        Path.join(dir, "mix.lock"),
+        ~s(%{"recon" => {:hex, :recon, "2.5.6", "i", [:rebar3], [], "hexpm", "o"}})
+      )
+
+      assert DepsLock.declared(dir, "recon") == []
+      assert DepsLock.declared(dir, "absent") == nil
+      assert DepsLock.declared(Path.join(dir, "nope"), "recon") == nil
+    end
+
+    test "a private-repo dependency is listed with its repo dropped from the item", %{dir: dir} do
+      File.write!(Path.join(dir, "mix.lock"), """
+      %{"a" => {:hex, :a, "1.0.0", "i", [:mix], [
+        {:b, "~> 1.0", [hex: :b, repo: "acme", optional: false]}], "hexpm", "o"}}
+      """)
+
+      assert [%{"app" => "b", "optional" => false}] = DepsLock.declared(dir, "a")
+    end
+  end
+
   describe "versions/1" do
     test "maps every Hex entry to its locked version and skips anything else", %{dir: dir} do
       File.write!(Path.join(dir, "mix.lock"), """

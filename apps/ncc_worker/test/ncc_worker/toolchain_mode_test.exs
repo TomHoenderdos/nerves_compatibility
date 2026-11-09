@@ -175,6 +175,7 @@ defmodule NccWorker.ToolchainModeTest do
                } = build
 
         assert build.compile_observations["problems"] == ["tracer: :timeout"]
+        assert [%{"app" => "dep", "optional" => false}] = build.declared
       end
     end
 
@@ -332,6 +333,11 @@ defmodule NccWorker.ToolchainModeTest do
       assert %{status: "pass", reason: nil, elixir: "1.19.1", otp: "28"} = build
       assert build.deps_lock == %{"dep" => %{"version" => "1.2.0", "checksum" => "o-dep"}}
       assert build.package_checksum == "o-sample"
+
+      assert build.declared == [
+               %{"app" => "dep", "name" => "dep", "requirement" => "~> 1.0", "optional" => false}
+             ]
+
       assert is_list(build.compile_env)
 
       assert %{"ebin" => ebin, "priv" => []} = build.file_manifest
@@ -356,7 +362,7 @@ defmodule NccWorker.ToolchainModeTest do
 
       build = Worker.toolchain_build(project, "sample", host, @toolchain, @traced_pass)
 
-      assert %{status: "error", file_manifest: nil, deps_lock: nil} = build
+      assert %{status: "error", file_manifest: nil, deps_lock: nil, declared: nil} = build
       assert build.reason =~ "host compile failed"
       assert build.reason =~ "exited with code 1"
     end

@@ -64,9 +64,10 @@ defmodule NccWorker.JsonWriter do
       scope: Map.get(result, :scope, "full")
     }
 
-    # Each absent rather than null when the result has none: `deps_lock` and
-    # `package_checksum` when the worker could not read the lock (the way a run
-    # from an image before lock recording looks too), `optional_deps` for
+    # Each absent rather than null when the result has none: `deps_lock`,
+    # `package_checksum` and `declared` when the worker could not read the
+    # lock (the way a run from an image before lock recording looks too,
+    # and, for `declared`, one from before it was recorded), `optional_deps` for
     # argus-only runs, which publish nothing, `toolchain_build` and
     # `requested_toolchain` for every run but a toolchain one
     # (`NccWorker.Worker.toolchain_build/5`), `nerves_cache` for a run with
@@ -85,6 +86,7 @@ defmodule NccWorker.JsonWriter do
       [
         :deps_lock,
         :package_checksum,
+        :declared,
         :optional_deps,
         :toolchain_build,
         :requested_toolchain,

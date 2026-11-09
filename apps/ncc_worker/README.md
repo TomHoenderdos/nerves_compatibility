@@ -133,6 +133,10 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    For a firmware run, the run-level `deps_lock` and `package_checksum` are the status build's, read before the
    per-target optional pass in step 4; a system that pass kept its optional dependencies for carries its own
    `deps_lock` instead (same shape), which the precompiled API prefers over the run's for that system's entries.
+   - `declared` — the package's declared dependencies from its own lock entry,
+     `[{"app", "name", "requirement", "optional"}]` sorted by app, optional ones
+     included whether or not the build resolved them. Absent when the lock could
+     not be read. `toolchain_build.declared` is the same for a toolchain run.
 7. Writes atomic `/out/result.json` plus per-system logs under `/out/logs/`, and archives compiled files by SHA256 under `/files`.
    The package's own files are its `ebin/` and `priv/` from `_build/<target>/lib/<package>/`, the target's compile
    output with `debug_info` intact, not the release copy, whose BEAMs are stripped (`NccWorker.BeamScan`,
@@ -356,7 +360,7 @@ the outer checksum the signed registry lists: a pass here is the container's wor
 publishes nothing. The tarball is bounded before it is unpacked: at most 8 MiB, a `contents.tar.gz` that inflates to
 at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
 
-`result.json` has `"scope": "toolchain"`, `"systems": {}`, the usual top-level `deps_lock`, `package_checksum` and
+`result.json` has `"scope": "toolchain"`, `"systems": {}`, the usual top-level `deps_lock`, `package_checksum`, `declared` and
 `optional_deps`, and:
 
 ```json
@@ -366,6 +370,7 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
   "elixir": "1.19.1", "otp": "28",
   "deps_lock": {"jason": {"version": "1.4.4", "checksum": "<outer>"}},
   "package_checksum": "<outer>",
+  "declared": [{"app": "decimal", "name": "decimal", "requirement": "~> 1.0 or ~> 2.0", "optional": true}],
   "compile_env": [{"app": "...", "path": ["..."], "value": "<base64url term>"}],
   "compile_env_rule": 1,
   "config_variant": "default",
@@ -376,7 +381,8 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
 }
 ```
 
-`deps_lock`, `package_checksum` and `compile_env` are present for `pass` and `skipped` and `null` for `error`;
+`deps_lock`, `package_checksum`, `declared` and `compile_env` are present for `pass` and `skipped` and `null` for
+`error` (`declared` is also `null` when the lock could not be read);
 `file_manifest` only for `pass`, and those files are archived by SHA256 from `_build/host/lib/<package>`. A failed
 host compile is `status: "error"`: `result.json` is still written and the exit code is `0`, so the portal ingests the
 verdict (as a `fail` row). A compile failure is deterministic for that package, version and toolchain, so it is

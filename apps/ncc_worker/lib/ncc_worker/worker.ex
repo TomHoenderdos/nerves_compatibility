@@ -113,6 +113,9 @@ defmodule NccWorker.Worker do
           otp: String.t(),
           deps_lock: %{String.t() => %{String.t() => String.t()}} | nil,
           package_checksum: String.t() | nil,
+          # The package's declared dependencies (`NccWorker.DepsLock.declared/2`),
+          # for a client's ranking; nil when the lock is unreadable.
+          declared: [map()] | nil,
           compile_env: [map()] | nil,
           # 1 when `compile_env` also lists the compile-time config reads the
           # trace observed across the package's closure (`ConfigReads`, R5);
@@ -169,6 +172,7 @@ defmodule NccWorker.Worker do
           otp: String.t(),
           deps_lock: %{String.t() => %{String.t() => String.t()}} | nil,
           package_checksum: String.t() | nil,
+          declared: [map()] | nil,
           compile_env: [map()] | nil,
           compile_env_rule: 1 | nil,
           portability_rule: 2 | nil,
@@ -251,6 +255,12 @@ defmodule NccWorker.Worker do
           # The package's own outer Hex checksum from the project's mix.lock.
           # Absent when the lock could not be read and for argus-only runs.
           optional(:package_checksum) => String.t(),
+          # The package's declared dependencies from its own lock entry
+          # (`NccWorker.DepsLock.declared/2`), `%{"app", "name",
+          # "requirement", "optional"}` sorted by app, optional ones included
+          # whether or not the build resolved them. Absent when the lock could
+          # not be read and for argus-only runs.
+          optional(:declared) => [map()],
           # A build's Nerves cache misses (artifacts Nerves had to extract into
           # the run's farm) and its locked nerves_system_*/nerves_toolchain_*
           # packages, string-keyed `%{"name", "version"}` pairs, for the host to
@@ -1108,7 +1118,8 @@ defmodule NccWorker.Worker do
   defp put_deps_lock(result, _scope, nil, project_dir, package) do
     run_lock = %{
       deps_lock: DepsLock.read(project_dir, package),
-      package_checksum: DepsLock.package_checksum(project_dir, package)
+      package_checksum: DepsLock.package_checksum(project_dir, package),
+      declared: DepsLock.declared(project_dir, package)
     }
 
     put_deps_lock(result, :full, run_lock, project_dir, package)
@@ -1118,6 +1129,7 @@ defmodule NccWorker.Worker do
     result
     |> put_present(:deps_lock, run_lock.deps_lock)
     |> put_present(:package_checksum, run_lock.package_checksum)
+    |> put_present(:declared, Map.get(run_lock, :declared))
   end
 
   defp put_present(result, _key, nil), do: result
@@ -1158,7 +1170,11 @@ defmodule NccWorker.Worker do
       log_target_pass(pass.paths, out.systems)
 
       {:ok, out.systems, Map.put(out.optional_deps, :skipped, skipped),
-       %{deps_lock: out.deps_lock, package_checksum: out.package_checksum}}
+       %{
+         deps_lock: out.deps_lock,
+         package_checksum: out.package_checksum,
+         declared: DepsLock.declared(pass.project_dir, pass.package)
+       }}
     end
   end
 
@@ -1787,6 +1803,7 @@ defmodule NccWorker.Worker do
       otp: toolchain.erlang,
       deps_lock: nil,
       package_checksum: nil,
+      declared: nil,
       compile_env: nil,
       compile_env_rule: nil,
       file_manifest: nil,
@@ -1825,6 +1842,7 @@ defmodule NccWorker.Worker do
         reason: PortabilityReasons.could_not_judge(),
         deps_lock: DepsLock.read(project_dir, package_name),
         package_checksum: DepsLock.package_checksum(project_dir, package_name),
+        declared: DepsLock.declared(project_dir, package_name),
         portability_rule: 2,
         compile_observations: with_host_time(portability.observations, host_result)
     }
@@ -1854,6 +1872,7 @@ defmodule NccWorker.Worker do
       build
       | deps_lock: DepsLock.read(project_dir, package_name),
         package_checksum: DepsLock.package_checksum(project_dir, package_name),
+        declared: DepsLock.declared(project_dir, package_name),
         compile_env: compile_env,
         compile_env_rule: compile_env_rule,
         portability_rule: 2,
