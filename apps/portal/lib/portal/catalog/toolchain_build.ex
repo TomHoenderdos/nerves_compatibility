@@ -61,6 +61,7 @@ defmodule Portal.Catalog.ToolchainBuild do
     :run_id,
     :deps_lock,
     :package_checksum,
+    :declared,
     :compile_env,
     :file_manifest,
     :optional_deps,
@@ -279,6 +280,11 @@ defmodule Portal.Catalog.ToolchainBuild do
     end
 
     attribute :package_checksum, :string do
+      public?(true)
+    end
+
+    # Same shape as `Portal.Catalog.Run.declared`.
+    attribute :declared, {:array, :map} do
       public?(true)
     end
 

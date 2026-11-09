@@ -47,6 +47,7 @@ defmodule Portal.Catalog.Run do
         :argus,
         :deps_lock,
         :package_checksum,
+        :declared,
         :log,
         :started_at,
         :finished_at,
@@ -142,6 +143,13 @@ defmodule Portal.Catalog.Run do
     # own lock entry before using the run's files. Nil for older runs and
     # argus-only runs.
     attribute :package_checksum, :string do
+      public?(true)
+    end
+
+    # The package's declared dependencies as the build's lock listed them
+    # (`NccWorker.DepsLock.declared/2`), published as `build.declared` in
+    # format 2 for a client's ranking. Nil for runs before it was recorded.
+    attribute :declared, {:array, :map} do
       public?(true)
     end
 

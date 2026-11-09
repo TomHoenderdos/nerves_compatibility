@@ -736,6 +736,7 @@ defmodule Portal.Catalog.Ingestion do
       run_id: opts.run_id,
       deps_lock: deps_lock(build["deps_lock"]),
       package_checksum: package_checksum(build["package_checksum"]),
+      declared: declared(build["declared"]),
       compile_env: compile_env(build["compile_env"]),
       file_manifest: file_manifest(build["file_manifest"]),
       optional_deps: optional_deps(result["optional_deps"]),
@@ -978,6 +979,33 @@ defmodule Portal.Catalog.Ingestion do
   defp package_checksum(v) when is_binary(v), do: v
   defp package_checksum(_), do: nil
 
+  # The package's declared dependencies (`NccWorker.DepsLock.declared/2`),
+  # kept only whole and well-formed: a client ranks builds by it, and a
+  # partial list would rank wrongly. Like deps_lock/1, a malformed item
+  # stores nothing at all and the ingest still succeeds; extra keys inside a
+  # well-formed item are stripped. An empty list says no more than a missing
+  # one, so it is stored as nil too.
+  defp declared([_ | _] = list) do
+    Enum.reduce_while(list, [], fn item, acc ->
+      case declared_item(item) do
+        nil -> {:halt, nil}
+        kept -> {:cont, [kept | acc]}
+      end
+    end)
+    |> then(fn
+      nil -> nil
+      acc -> Enum.reverse(acc)
+    end)
+  end
+
+  defp declared(_), do: nil
+
+  defp declared_item(%{"app" => a, "name" => n, "requirement" => r, "optional" => o})
+       when is_binary(a) and is_binary(n) and is_binary(r) and is_boolean(o),
+       do: %{"app" => a, "name" => n, "requirement" => r, "optional" => o}
+
+  defp declared_item(_), do: nil
+
   # Same contract as deps_lock/1: all or nothing per system, the ingest
   # itself still succeeds.
   defp compile_env(list) when is_list(list) do
@@ -1065,6 +1093,7 @@ defmodule Portal.Catalog.Ingestion do
       argus: result["argus"],
       deps_lock: deps_lock(result["deps_lock"]),
       package_checksum: package_checksum(result["package_checksum"]),
+      declared: declared(result["declared"]),
       log: run_log(overall, opts),
       started_at: parse_datetime(result["started_at"]),
       finished_at: finished_at,
