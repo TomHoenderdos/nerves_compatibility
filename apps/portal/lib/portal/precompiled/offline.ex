@@ -7,10 +7,11 @@ defmodule Portal.Precompiled.Offline do
   never on a portal host.
 
   `check_bundle/2` is the signer's check and never trusts the bundle on its
-  own: the bundle's `root.json` must be the trusted root the operator names,
-  or follow it by the chain rule (`Portal.Precompiled.Root.follows/2`). The
-  batch must verify under that root, and every manifest the bundle holds
-  must hash to the batch's entry. Only those manifests are signed.
+  own: trust comes from the root the operator names. The batch must verify
+  under that root's `batch` role, and every manifest the bundle holds must
+  hash to the batch's entry; only those manifests are signed. The bundle's
+  `root.json` must be that root, or follow it by the chain rule
+  (`Portal.Precompiled.Root.follows/2`), but it is never used to verify.
   """
   alias Portal.Precompiled.{Envelope, Root}
 
@@ -37,16 +38,19 @@ defmodule Portal.Precompiled.Offline do
 
   @doc """
   Checks the bundle in `dir` against `trusted`, the bytes of a root envelope
-  the operator trusts (the production `root.json`). Returns the batch payload
-  narrowed to the manifests the bundle holds, and the root in use: `trusted`,
-  or the bundle's newer root when it follows `trusted`. Expiry plays no part:
-  neither the root's nor the batch's.
+  the operator trusts (the current production `root.json`). All trust comes
+  from `trusted`: the batch must verify under its `batch` role, and the
+  returned root, which the signer's key must be in the `offline` role of, is
+  `trusted` itself. The bundle's `root.json` is only checked for
+  consistency: it must be `trusted`, or a newer root that follows it.
+  Returns the batch payload narrowed to the manifests the bundle holds.
+  Expiry plays no part: neither the root's nor the batch's.
   """
   @spec check_bundle(Path.t(), binary()) ::
           {:ok, %{batch: map(), root: map()}} | {:error, String.t()}
   def check_bundle(dir, trusted) when is_binary(trusted) do
-    with {:ok, trusted_root, trusted_bytes} <- trusted_root(trusted),
-         {:ok, root} <- bundle_root(dir, trusted_root, trusted_bytes),
+    with {:ok, root, trusted_bytes} <- trusted_root(trusted),
+         :ok <- bundle_root(dir, root, trusted_bytes),
          {:ok, batch} <- verified_batch(dir, root),
          {:ok, scoped} <- scope(dir, batch) do
       {:ok, %{batch: scoped, root: root}}
@@ -87,9 +91,11 @@ defmodule Portal.Precompiled.Offline do
 
   # The trusted root itself (the same payload bytes), or a newer one that
   # follows it. Same version with other bytes is a fork and does not chain.
+  # Either way the root in use stays the trusted one: a newer bundle root
+  # only says the device will adopt it, never what the signer trusts.
   defp chain(env, trusted, trusted_bytes) do
     case Root.verify_self(env) do
-      {:ok, _, ^trusted_bytes} -> {:ok, trusted}
+      {:ok, _, ^trusted_bytes} -> :ok
       {:ok, root, _} -> newer_root(env, root, trusted)
       :error -> {:error, "bundle root.json does not chain from the trusted root"}
     end
@@ -101,7 +107,7 @@ defmodule Portal.Precompiled.Offline do
 
   defp newer_root(env, _root, trusted) do
     case Root.follows(env, trusted) do
-      {:ok, root, _} -> {:ok, root}
+      {:ok, _root, _} -> :ok
       :error -> {:error, "bundle root.json does not chain from the trusted root"}
     end
   end
@@ -113,7 +119,7 @@ defmodule Portal.Precompiled.Offline do
          {:ok, %{} = batch} <- JSON.decode(bytes) do
       {:ok, batch}
     else
-      _ -> {:error, "batch.json does not verify under the root in use"}
+      _ -> {:error, "batch.json does not verify under the trusted root"}
     end
   end
 

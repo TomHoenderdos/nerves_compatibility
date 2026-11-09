@@ -6,7 +6,7 @@ defmodule Portal.Precompiled.KeysTest do
   setup %{tmp_dir: dir} do
     old = Application.get_env(:portal, :precompiled_signing)
     on_exit(fn -> Application.put_env(:portal, :precompiled_signing, old) end)
-    %{path: Path.join(dir, "signing.key")}
+    %{path: Path.join([dir, "keys", "signing.key"])}
   end
 
   test "keyid is the hex sha256 of the public key" do
@@ -25,6 +25,15 @@ defmodule Portal.Precompiled.KeysTest do
     assert Keys.root_path() == Path.join(Path.dirname(path), "root.json")
   end
 
+  test "write! leaves the mode of a directory that already exists alone", %{tmp_dir: dir} do
+    shared = Path.join(dir, "shared")
+    File.mkdir_p!(shared)
+    File.chmod!(shared, 0o755)
+    Keys.write!(Path.join(shared, "offline.key"), Keys.generate())
+    assert File.stat!(shared).mode |> Bitwise.band(0o777) == 0o755
+    assert File.stat!(Path.join(shared, "offline.key")).mode |> Bitwise.band(0o777) == 0o600
+  end
+
   test "load without a configured path is :no_key" do
     Application.put_env(:portal, :precompiled_signing, key_path: nil)
     assert {:error, :no_key} = Keys.load()
@@ -34,6 +43,7 @@ defmodule Portal.Precompiled.KeysTest do
   test "load with a missing or corrupt file is :unreadable", %{path: path} do
     Application.put_env(:portal, :precompiled_signing, key_path: path)
     assert {:error, :unreadable} = Keys.load()
+    File.mkdir_p!(Path.dirname(path))
     File.write!(path, "{}")
     assert {:error, :unreadable} = Keys.load()
   end

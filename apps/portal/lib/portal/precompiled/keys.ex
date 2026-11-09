@@ -34,8 +34,13 @@ defmodule Portal.Precompiled.Keys do
   # Path and directory come from PRECOMPILED_SIGNING_KEY config, not a request.
   def write!(path, %{public: public, private: private}) do
     dir = Path.dirname(path)
-    File.mkdir_p!(dir)
-    File.chmod!(dir, 0o700)
+
+    # Only a directory made here is narrowed to 0700; an existing one (an
+    # operator's home, say) keeps its mode.
+    unless File.dir?(dir) do
+      File.mkdir_p!(dir)
+      File.chmod!(dir, 0o700)
+    end
 
     json =
       JSON.encode!(%{"type" => "ed25519", "public" => b64(public), "private" => b64(private)})

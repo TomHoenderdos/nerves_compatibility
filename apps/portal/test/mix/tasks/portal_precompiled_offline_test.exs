@@ -57,26 +57,69 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
              Envelope.verify(off_env, %{online.keyid => online.public}, 1)
   end
 
-  test "a device trusting root 1 is served by a bundle that carries root 2",
+  test "--root must be the current root: an older one without the offline role is refused",
        %{tmp_dir: dir, online: online} do
     public = keygen!(dir)
     rotate!(dir, public)
     bundle = make_bundle!(dir, online, "root2.json")
 
-    # --root is the root the device already trusts; the bundle's root chains from it.
-    SignOffline.run([
-      "--bundle",
-      bundle,
-      "--key",
-      Path.join(dir, "off/offline.key"),
-      "--root",
-      Path.join(dir, "root.json")
-    ])
+    # The bundle's root 2 follows root 1, but trust comes from --root alone.
+    assert_raise Mix.Error, ~r/has no offline role/, fn ->
+      sign!(dir, bundle, "root.json")
+    end
 
-    assert File.exists?(Path.join(bundle, "offline.json"))
+    refute File.exists?(Path.join(bundle, "offline.json"))
   end
 
-  test "an expired batch under an expired root still gets a valid offline.json",
+  test "an attacker holding a revoked root key gets nothing signed",
+       %{tmp_dir: dir, online: k_old} do
+    public = keygen!(dir)
+    {:ok, off_public} = Base.url_decode64(public, padding: false)
+    off_id = Keys.keyid(off_public)
+    k_new = Keys.generate()
+
+    # The current root 2 replaced k_old with k_new and delegates the real offline key.
+    v2 =
+      Root.payload(%{
+        version: 2,
+        expires: ~U[2030-01-01 00:00:00Z],
+        keys: [{k_new.keyid, k_new.public}, {off_id, off_public}],
+        roles: %{
+          "root" => {[k_new.keyid], 1},
+          "batch" => {[k_new.keyid], 1},
+          "offline" => {[off_id], 1}
+        }
+      })
+
+    write_env!(Path.join(dir, "root2.json"), v2, [k_old, k_new])
+
+    # The attacker forges v99 after root 1, naming the real offline key, and a batch.
+    v99 =
+      Root.payload(%{
+        version: 99,
+        expires: ~U[2030-01-01 00:00:00Z],
+        keys: [{k_old.keyid, k_old.public}, {off_id, off_public}],
+        roles: %{
+          "root" => {[k_old.keyid], 1},
+          "batch" => {[k_old.keyid], 1},
+          "offline" => {[off_id], 1}
+        }
+      })
+
+    write_env!(Path.join(dir, "v99.json"), v99, [k_old])
+    bundle = make_bundle!(dir, k_old, "v99.json")
+
+    # Under the stale root 1 the delegation in v99 counts for nothing...
+    assert_raise Mix.Error, ~r/has no offline role/, fn -> sign!(dir, bundle, "root.json") end
+    # ...and v99 does not follow the current root.
+    assert_raise Mix.Error, ~r/does not chain from the trusted root/, fn ->
+      sign!(dir, bundle, "root2.json")
+    end
+
+    refute File.exists?(Path.join(bundle, "offline.json"))
+  end
+
+  test "an expired root still gets a valid offline.json, which outlives its batch",
        %{tmp_dir: dir, online: online} do
     public = keygen!(dir)
 
@@ -92,7 +135,7 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
       "0"
     ])
 
-    bundle = make_bundle!(dir, online, "root2.json", "2020-01-08T00:00:00Z")
+    bundle = make_bundle!(dir, online, "root2.json")
 
     SignOffline.run([
       "--bundle",
@@ -107,6 +150,37 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
     {:ok, root2, _} = dir |> Path.join("root2.json") |> File.read!() |> Root.verify_self()
     off_env = bundle |> Path.join("offline.json") |> File.read!() |> JSON.decode!()
     assert {:ok, %{"manifests_v2" => %{"recon" => _}}} = Offline.verify(off_env, root2)
+  end
+
+  test "sign_offline refuses a batch issued more than a day ago", %{tmp_dir: dir, online: online} do
+    public = keygen!(dir)
+    rotate!(dir, public)
+    issued = DateTime.add(DateTime.utc_now(), -25, :hour)
+    bundle = make_bundle!(dir, online, "root2.json", issued)
+
+    assert_raise Mix.Error, ~r/issued more than a day ago/, fn ->
+      sign!(dir, bundle, "root2.json")
+    end
+
+    refute File.exists?(Path.join(bundle, "offline.json"))
+  end
+
+  test "sign_offline refuses to overwrite offline.json, or write through a link",
+       %{tmp_dir: dir, online: online} do
+    public = keygen!(dir)
+    rotate!(dir, public)
+    bundle = make_bundle!(dir, online, "root2.json")
+    sign!(dir, bundle, "root2.json")
+    assert_received {:mix_shell, :info, ["signing offline.json sequence " <> _]}
+    before = File.read!(Path.join(bundle, "offline.json"))
+
+    assert_raise Mix.Error, ~r/refusing to overwrite/, fn -> sign!(dir, bundle, "root2.json") end
+    assert File.read!(Path.join(bundle, "offline.json")) == before
+
+    File.rm!(Path.join(bundle, "offline.json"))
+    File.ln_s!(Path.join(dir, "nowhere.json"), Path.join(bundle, "offline.json"))
+    assert_raise Mix.Error, ~r/refusing to overwrite/, fn -> sign!(dir, bundle, "root2.json") end
+    refute File.exists?(Path.join(dir, "nowhere.json"))
   end
 
   test "sign_offline needs --root", %{tmp_dir: dir, online: online} do
@@ -204,6 +278,110 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
     end
   end
 
+  test "keygen writes offline.pub, which rotate takes as --offline-public-file",
+       %{tmp_dir: dir} do
+    public = keygen!(dir)
+    assert File.read!(Path.join(dir, "off/offline.pub")) == public <> "\n"
+
+    RootRotate.run([
+      "--root",
+      Path.join(dir, "root.json"),
+      "--key",
+      Path.join(dir, "signing.key"),
+      "--offline-public-file",
+      Path.join(dir, "off/offline.pub"),
+      "--out",
+      Path.join(dir, "root2.json")
+    ])
+
+    {:ok, off_public} = Base.url_decode64(public, padding: false)
+    {:ok, root2, _} = dir |> Path.join("root2.json") |> File.read!() |> Root.verify_self()
+    assert root2["roles"]["offline"]["keyids"] == [Keys.keyid(off_public)]
+  end
+
+  test "rotate takes exactly one of --offline-public and --offline-public-file",
+       %{tmp_dir: dir} do
+    public = keygen!(dir)
+
+    assert_raise Mix.Error, ~r/exactly one of/, fn ->
+      RootRotate.run([
+        "--root",
+        Path.join(dir, "root.json"),
+        "--key",
+        Path.join(dir, "signing.key"),
+        "--offline-public=" <> public,
+        "--offline-public-file",
+        Path.join(dir, "off/offline.pub"),
+        "--out",
+        Path.join(dir, "root2.json")
+      ])
+    end
+
+    assert_raise Mix.Error, ~r/exactly one of/, fn ->
+      RootRotate.run([
+        "--root",
+        Path.join(dir, "root.json"),
+        "--key",
+        Path.join(dir, "signing.key"),
+        "--out",
+        Path.join(dir, "root2.json")
+      ])
+    end
+  end
+
+  test "keygen refuses a dangling link where offline.key would go", %{tmp_dir: dir} do
+    File.mkdir_p!(Path.join(dir, "off"))
+    File.ln_s!(Path.join(dir, "elsewhere.key"), Path.join(dir, "off/offline.key"))
+
+    assert_raise Mix.Error, ~r/refusing to overwrite/, fn ->
+      OfflineKeygen.run(["--out", Path.join(dir, "off")])
+    end
+
+    refute File.exists?(Path.join(dir, "elsewhere.key"))
+  end
+
+  test "rotate refuses an existing --out, a dangling link included", %{tmp_dir: dir} do
+    public = keygen!(dir)
+    File.write!(Path.join(dir, "root2.json"), "keep")
+    assert_raise Mix.Error, ~r/refusing to overwrite/, fn -> rotate!(dir, public) end
+    assert File.read!(Path.join(dir, "root2.json")) == "keep"
+
+    File.rm!(Path.join(dir, "root2.json"))
+    File.ln_s!(Path.join(dir, "elsewhere.json"), Path.join(dir, "root2.json"))
+    assert_raise Mix.Error, ~r/refusing to overwrite/, fn -> rotate!(dir, public) end
+    refute File.exists?(Path.join(dir, "elsewhere.json"))
+  end
+
+  test "rotate refuses a root role that needs more than one signature", %{tmp_dir: dir} do
+    a = Keys.generate()
+    b = Keys.generate()
+    Keys.write!(Path.join(dir, "a.key"), a)
+
+    payload =
+      Root.payload(%{
+        version: 1,
+        expires: ~U[2030-01-01 00:00:00Z],
+        keys: [{a.keyid, a.public}, {b.keyid, b.public}],
+        roles: %{"root" => {[a.keyid, b.keyid], 2}, "batch" => {[a.keyid], 1}}
+      })
+
+    write_env!(Path.join(dir, "root.json"), payload, [a, b])
+
+    assert_raise Mix.Error, ~r/needs 2 signatures/, fn ->
+      RootRotate.run([
+        "--root",
+        Path.join(dir, "root.json"),
+        "--key",
+        Path.join(dir, "a.key"),
+        "--offline-public=" <> Base.url_encode64(Keys.generate().public, padding: false),
+        "--out",
+        Path.join(dir, "root2.json")
+      ])
+    end
+
+    refute File.exists?(Path.join(dir, "root2.json"))
+  end
+
   test "rotate refuses a key that is not in the current root role", %{tmp_dir: dir} do
     stranger = Keys.generate()
     Keys.write!(Path.join(dir, "stranger.key"), stranger)
@@ -297,6 +475,17 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
     ])
   end
 
+  defp sign!(dir, bundle, root_file) do
+    SignOffline.run([
+      "--bundle",
+      bundle,
+      "--key",
+      Path.join(dir, "off/offline.key"),
+      "--root",
+      Path.join(dir, root_file)
+    ])
+  end
+
   defp dashed?(key), do: String.starts_with?(Base.url_encode64(key.public, padding: false), "-")
 
   defp write_env!(path, payload, signers) do
@@ -307,7 +496,7 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
   end
 
   # A bundle: the named root as root.json, a batch signed by `key`, one manifest.
-  defp make_bundle!(dir, key, root_file, expires \\ "2026-11-16T00:00:00Z") do
+  defp make_bundle!(dir, key, root_file, issued \\ DateTime.utc_now()) do
     b = Path.join(dir, "bundle")
     File.mkdir_p!(Path.join(b, "v2/manifests"))
     File.cp!(Path.join(dir, root_file), Path.join(b, "root.json"))
@@ -318,8 +507,8 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
       JSON.encode!(%{
         "version" => 1,
         "sequence" => 1,
-        "issued" => "2026-11-09T00:00:00Z",
-        "expires" => expires,
+        "issued" => DateTime.to_iso8601(issued),
+        "expires" => DateTime.to_iso8601(DateTime.add(issued, 24, :hour)),
         "manifests" => %{},
         "manifests_v2" => %{"recon" => sha}
       })

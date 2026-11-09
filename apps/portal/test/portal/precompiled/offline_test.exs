@@ -33,7 +33,7 @@ defmodule Portal.Precompiled.OfflineTest do
       other = Keys.generate()
       write_batch!(dir, other, %{"manifests_v2" => %{}})
 
-      assert {:error, "batch.json does not verify under the root in use"} =
+      assert {:error, "batch.json does not verify under the trusted root"} =
                Offline.check_bundle(dir, t)
     end
 
@@ -79,7 +79,7 @@ defmodule Portal.Precompiled.OfflineTest do
                Offline.check_bundle(dir, t)
     end
 
-    test "a newer root signed by the trusted root's key is the root in use",
+    test "a newer bundle root that follows is accepted, but trust stays with the trusted root",
          %{tmp_dir: dir, key: key, trusted: t} do
       next = Keys.generate()
 
@@ -88,9 +88,91 @@ defmodule Portal.Precompiled.OfflineTest do
         signed_root(2, ~U[2030-01-01 00:00:00Z], [next], [key, next])
       )
 
+      # The batch verifies under the trusted root's batch role, not the bundle's.
+      assert {:ok, %{root: %{"version" => 1}}} = Offline.check_bundle(dir, t)
+
       write_batch!(dir, next, %{"manifests_v2" => %{"recon" => sha256(@manifest)}})
 
-      assert {:ok, %{root: %{"version" => 2}}} = Offline.check_bundle(dir, t)
+      assert {:error, "batch.json does not verify under the trusted root"} =
+               Offline.check_bundle(dir, t)
+    end
+
+    test "a stale trusted root: a root forged by a key it still lists signs nothing",
+         %{tmp_dir: dir} do
+      # v1 trusts k_old; v2 (current) replaced it. Whoever kept k_old forges a
+      # v99 that follows v1, delegates the real offline key, and signs a batch.
+      k_old = Keys.generate()
+      offline = Keys.generate()
+      v1 = root_env(1, %{root: [k_old], batch: [k_old]}, [k_old])
+
+      v99 =
+        root_env(99, %{root: [k_old], batch: [k_old], offline: [offline]}, [k_old])
+
+      File.write!(Path.join(dir, "root.json"), v99)
+      write_batch!(dir, k_old, %{"manifests_v2" => %{"recon" => sha256(@manifest)}})
+
+      # The bundle root follows v1, but the root in use is v1, which has no
+      # offline role: the attacker's delegation counts for nothing.
+      assert {:ok, %{root: root}} = Offline.check_bundle(dir, v1)
+      assert root["version"] == 1
+      assert :error = Root.role_keys(root, "offline")
+    end
+
+    test "a forged root that follows a revoked root does not follow the current one",
+         %{tmp_dir: dir} do
+      k_old = Keys.generate()
+      k_new = Keys.generate()
+      offline = Keys.generate()
+      v2 = root_env(2, %{root: [k_new], batch: [k_new], offline: [offline]}, [k_old, k_new])
+      v99 = root_env(99, %{root: [k_old], batch: [k_old], offline: [offline]}, [k_old])
+      File.write!(Path.join(dir, "root.json"), v99)
+      write_batch!(dir, k_old, %{"manifests_v2" => %{"recon" => sha256(@manifest)}})
+
+      assert {:error, "bundle root.json does not chain from the trusted root"} =
+               Offline.check_bundle(dir, v2)
+    end
+
+    test "a newer root signed only by the batch-role key does not chain", %{tmp_dir: dir} do
+      r = Keys.generate()
+      b = Keys.generate()
+      trusted = root_env(1, %{root: [r], batch: [b]}, [r])
+      next = Keys.generate()
+
+      File.write!(
+        Path.join(dir, "root.json"),
+        root_env(2, %{root: [next], batch: [b]}, [b, next])
+      )
+
+      assert {:error, "bundle root.json does not chain from the trusted root"} =
+               Offline.check_bundle(dir, trusted)
+    end
+
+    test "a batch signed only by the root-role key is refused", %{tmp_dir: dir} do
+      r = Keys.generate()
+      b = Keys.generate()
+      trusted = root_env(1, %{root: [r], batch: [b]}, [r])
+      File.write!(Path.join(dir, "root.json"), trusted)
+      write_batch!(dir, r, %{"manifests_v2" => %{"recon" => sha256(@manifest)}})
+
+      assert {:error, "batch.json does not verify under the trusted root"} =
+               Offline.check_bundle(dir, trusted)
+
+      write_batch!(dir, b, %{"manifests_v2" => %{"recon" => sha256(@manifest)}})
+      assert {:ok, _} = Offline.check_bundle(dir, trusted)
+    end
+
+    test "a format-1 manifest that does not hash to the batch's sha is refused",
+         %{tmp_dir: dir, key: key, sha: sha, trusted: t} do
+      File.mkdir_p!(Path.join(dir, "manifests"))
+      File.write!(Path.join(dir, "manifests/recon.json"), ~s({"versions":{"x":1}}))
+
+      write_batch!(dir, key, %{
+        "manifests" => %{"recon" => sha256(~s({"versions":{}}))},
+        "manifests_v2" => %{"recon" => sha}
+      })
+
+      assert {:error, "format-1 manifest recon does not match the batch"} =
+               Offline.check_bundle(dir, t)
     end
 
     test "a bundle root older than the trusted root is refused", %{tmp_dir: dir, key: key} do
@@ -264,6 +346,23 @@ defmodule Portal.Precompiled.OfflineTest do
         expires: expires,
         keys: Enum.map(role_keys, &{&1.keyid, &1.public}),
         roles: %{"root" => {ids, 1}, "batch" => {ids, 1}}
+      })
+
+    JSON.encode!(Envelope.sign(payload, Enum.map(signers, &{&1.keyid, &1.private})))
+  end
+
+  # A root envelope with a key set per role (`root`, `batch`, `offline` when
+  # given), signed by `signers`.
+  defp root_env(version, roles, signers) do
+    keys = roles |> Map.values() |> List.flatten() |> Enum.uniq_by(& &1.keyid)
+
+    payload =
+      Root.payload(%{
+        version: version,
+        expires: ~U[2030-01-01 00:00:00Z],
+        keys: Enum.map(keys, &{&1.keyid, &1.public}),
+        roles:
+          Map.new(roles, fn {name, ks} -> {to_string(name), {Enum.map(ks, & &1.keyid), 1}} end)
       })
 
     JSON.encode!(Envelope.sign(payload, Enum.map(signers, &{&1.keyid, &1.private})))

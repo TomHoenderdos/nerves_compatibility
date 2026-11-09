@@ -2,8 +2,9 @@ defmodule Mix.Tasks.Portal.Precompiled.RootRotate do
   @shortdoc "Sign the next root.json, delegating the offline role to a key"
   @moduledoc """
   Reads the current signed root (`--root FILE`), keeps its keys and its
-  `root` and `batch` roles, names the key `--offline-public` (base64url, as
-  `mix portal.precompiled.offline_keygen` prints it) in the `offline` role,
+  `root` and `batch` roles, names the offline key in the `offline` role
+  (`--offline-public-file PATH`, the `offline.pub` that
+  `mix portal.precompiled.offline_keygen` writes, or `--offline-public=B64`),
   and writes the next version, signed by `--key`, to `--out FILE`.
 
   `--key` must be a key of the current root's `root` role, so the new root
@@ -15,24 +16,33 @@ defmodule Mix.Tasks.Portal.Precompiled.RootRotate do
   document does not depend on it (`PRECOMPILED_API.md`, "Offline bundles").
 
       mix portal.precompiled.root_rotate --root FILE --key FILE \\
-        --offline-public=B64 --out FILE [--years N]
+        --offline-public-file PATH --out FILE [--years N]
 
-  Pass the key in the `--offline-public=B64` form: a base64url key may start
-  with `-`, which the separate-argument form would read as a switch.
+  Give `--offline-public` in the `--offline-public=B64` form: a base64url key
+  may start with `-`, which the separate-argument form would read as a
+  switch. Refuses to overwrite `--out`.
   """
   use Mix.Task
   alias Portal.Precompiled.{Envelope, Keys, Root}
 
-  @switches [root: :string, key: :string, offline_public: :string, out: :string, years: :integer]
+  @switches [
+    root: :string,
+    key: :string,
+    offline_public: :string,
+    offline_public_file: :string,
+    out: :string,
+    years: :integer
+  ]
 
   @impl true
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, strict: @switches)
     root_path = required!(opts, :root, "--root FILE is required")
     key_path = required!(opts, :key, "--key FILE is required")
-    public_b64 = required!(opts, :offline_public, "--offline-public B64 is required")
+    public_b64 = offline_public!(opts)
     out = required!(opts, :out, "--out FILE is required")
-    if File.exists?(out), do: Mix.raise("#{out} exists; refusing to overwrite")
+    # lstat, so a link at --out counts as taken even when it dangles.
+    if match?({:ok, _}, File.lstat(out)), do: Mix.raise("#{out} exists; refusing to overwrite")
 
     current = read_root!(root_path)
     key = read_key!(key_path)
@@ -59,6 +69,21 @@ defmodule Mix.Tasks.Portal.Precompiled.RootRotate do
   end
 
   defp required!(opts, name, message), do: opts[name] || Mix.raise(message)
+
+  defp offline_public!(opts) do
+    case {opts[:offline_public], opts[:offline_public_file]} do
+      {b64, nil} when is_binary(b64) -> b64
+      {nil, path} when is_binary(path) -> read_public_file!(path)
+      _ -> Mix.raise("give exactly one of --offline-public=B64 and --offline-public-file PATH")
+    end
+  end
+
+  defp read_public_file!(path) do
+    case File.read(path) do
+      {:ok, body} -> String.trim(body)
+      {:error, reason} -> Mix.raise("cannot read #{path}: #{:file.format_error(reason)}")
+    end
+  end
 
   defp check_own_key!(current, offline_id) do
     if Map.has_key?(current["keys"], offline_id),
