@@ -400,6 +400,12 @@ toolchain:
   toolchain build was compiled in (see below). Absent for the default build.
   A client matches a variant by its `compile_env` like any other build, and
   can ignore this key.
+- `build.declared` — optional. Every dependency the package declares, as
+  `{"app", "name", "requirement", "optional"}`, optional ones included whether
+  or not the build resolved them. A client uses it to tell a build made
+  without an optional dependency it has (that integration is off in the
+  build) from one made with it. Absent on builds made before it was recorded;
+  a client that does not know the field ignores it. Format 1 never carries it.
 - `updated_at` — the newest `finished_at` among the builds listed.
 
 What it lists:
@@ -482,7 +488,10 @@ build fails as the reason it was not used:
    is also in `build.deps`. A package compiles differently when an optional
    dependency is loadable, so a build made without one does not serve a
    project that has it. Extra dependencies the package does not declare do not
-   matter.
+   matter. A client that cannot read the package's `mix.exs` (one installing
+   without Mix, for example) takes the list from `build.declared`; a build
+   without it gives no list, so such a client treats every dependency in its
+   lock as one the package may declare.
 9. **compile_env** — `build.compile_env` is present, and every `build.compile_env` item decodes to the value the
    project's config gives for that app and path.
 

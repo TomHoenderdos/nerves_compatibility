@@ -103,6 +103,25 @@ defmodule PortalWeb.ApiSpecTest do
       refute "config_variant" in api_spec().components.schemas["BuildInfoV2"].required
     end
 
+    test "a format-2 build may list the dependencies its package declares" do
+      build =
+        ~s({"elixir": "1.19.1", "otp": "28", "dep_env": "prod", "mix_target": "host",
+            "system_version": null, "run_id": "r", "image_digest": null, "deps": {},
+            "compile_env": [], "package_checksum": "c"})
+        |> Jason.decode!()
+
+      dep = %{"app" => "jason", "name" => "jason", "requirement" => "~> 1.0", "optional" => true}
+      schema = api_spec().components.schemas["BuildInfoV2"]
+
+      assert_api_schema(Map.put(build, "declared", [dep]), "BuildInfoV2")
+      refute "declared" in schema.required
+
+      for bad <- [Map.put(dep, "extra", 1), Map.delete(dep, "optional")] do
+        assert {:error, _} =
+                 OpenApiSpex.cast_value(Map.put(build, "declared", [bad]), schema, api_spec())
+      end
+    end
+
     test "names no host, address or internal detail in its text" do
       text = Jason.encode!(api_spec())
 

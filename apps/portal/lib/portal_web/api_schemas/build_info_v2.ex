@@ -2,7 +2,7 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
   @moduledoc "What a format-2 build was built with."
   require OpenApiSpex
   alias OpenApiSpex.Schema
-  alias PortalWeb.ApiSchemas.{CompileEnvEntry, DepLockEntry}
+  alias PortalWeb.ApiSchemas.{CompileEnvEntry, DeclaredDep, DepLockEntry}
 
   OpenApiSpex.schema(
     %{
@@ -48,6 +48,13 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
             "Optional, informational: the named config variant a toolchain build was " <>
               "compiled in. Absent for the default build. A client matches a variant by " <>
               "its `compile_env` like any other build."
+        },
+        declared: %Schema{
+          type: :array,
+          items: DeclaredDep,
+          description:
+            "Optional: every dependency the package declares, optional ones included, " <>
+              "from the build's lock. Absent for builds made before it was recorded."
         }
       },
       required: [

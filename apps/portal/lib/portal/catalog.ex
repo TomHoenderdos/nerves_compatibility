@@ -2793,6 +2793,7 @@ defmodule Portal.Catalog do
         |> build_inputs(result)
         |> Map.put("dep_env", "prod")
         |> Map.put("mix_target", mix_target(result.system_pkg))
+        |> put_declared(built_by.declared)
 
       {version, built_by.finished_at,
        Map.merge(files, %{"target" => result.system_pkg, "build" => build})}
@@ -2819,7 +2820,10 @@ defmodule Portal.Catalog do
         "image_digest" => tb.image_digest
       }
 
-      build = put_config_variant(build, tb.config_variant)
+      build =
+        build
+        |> put_config_variant(tb.config_variant)
+        |> put_declared(tb.declared)
 
       {tb.version, tb.finished_at,
        Map.merge(files, %{"target" => "pure_elixir", "build" => build})}
@@ -2831,6 +2835,12 @@ defmodule Portal.Catalog do
   # package without named variants renders the bytes it always did.
   defp put_config_variant(build, "default"), do: build
   defp put_config_variant(build, name), do: Map.put(build, "config_variant", name)
+
+  # Every dependency the package declares, as the build's lock listed it.
+  # Format 2 only, and left out when the row has none, so a build made before
+  # it was recorded renders the bytes it always did.
+  defp put_declared(build, nil), do: build
+  defp put_declared(build, declared), do: Map.put(build, "declared", declared)
 
   # The MIX_TARGET a build was compiled under. The worker sets it from
   # `NccWorker.Systems`, whose target for `nerves_system_<x>` is always `<x>`;
@@ -2888,6 +2898,7 @@ defmodule Portal.Catalog do
       :run_id,
       :deps_lock,
       :package_checksum,
+      :declared,
       :compile_env,
       :compile_env_rule,
       :compile_env_run_id,
@@ -2969,6 +2980,7 @@ defmodule Portal.Catalog do
       :image_digest,
       :deps_lock,
       :package_checksum,
+      :declared,
       :revoked_at
     ])
     |> Ash.read!(domain: __MODULE__)
