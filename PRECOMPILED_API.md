@@ -404,8 +404,9 @@ toolchain:
   `{"app", "name", "requirement", "optional"}`, optional ones included whether
   or not the build resolved them. A client uses it to tell a build made
   without an optional dependency it has (that integration is off in the
-  build) from one made with it. Absent on builds made before it was recorded;
-  a client that does not know the field ignores it. Format 1 never carries it.
+  build) from one made with it. Absent on builds made before it was recorded,
+  and on builds of a package that declares no dependencies; a client that
+  does not know the field ignores it. Format 1 never carries it.
 - `updated_at` — the newest `finished_at` among the builds listed.
 
 What it lists:
