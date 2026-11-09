@@ -54,9 +54,12 @@ defmodule Portal.Precompiled.Keys do
     end
   end
 
+  @doc false
+  # Also the Mix tasks' reader for a key file named on their command line.
+  @spec read(Path.t()) :: {:ok, t()} | {:error, :unreadable}
   # sobelow_skip ["Traversal.FileModule"]
-  # Path comes from PRECOMPILED_SIGNING_KEY config, not a request.
-  defp read(path) do
+  # Path comes from PRECOMPILED_SIGNING_KEY config or the operator's command line, not a request.
+  def read(path) do
     with {:ok, body} <- File.read(path),
          {:ok, %{"type" => "ed25519", "public" => pub, "private" => priv}} <- JSON.decode(body),
          {:ok, public} <- Base.url_decode64(pub, padding: false),

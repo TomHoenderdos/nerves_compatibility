@@ -26,7 +26,7 @@ defmodule PortalWeb.ApiSchemas.RootPayload do
         },
         roles: %Schema{
           type: :object,
-          properties: %{root: TrustRole, batch: TrustRole},
+          properties: %{root: TrustRole, batch: TrustRole, offline: TrustRole},
           required: [:root, :batch]
         }
       },
