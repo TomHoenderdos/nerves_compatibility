@@ -6,25 +6,31 @@ defmodule Mix.Tasks.Portal.Precompiled.SignOffline do
   then writes `DIR/offline.json`: the hashes of the manifests the bundle
   holds, signed by `--key`. All trust comes from `--root`: `--key` must be
   in its `offline` role and the batch must verify under its `batch` role.
-  The bundle's `root.json` must be `--root` or a newer root that follows it,
-  as a consistency check only. See `PRECOMPILED_API.md`, "Offline bundles".
+  The bundle's `root.json` must be `--root` itself; a newer one means
+  `--root` is stale. See `PRECOMPILED_API.md`, "Offline bundles".
 
   The batch must have been issued within the last day by the signer's
-  clock, and an existing `offline.json` is never overwritten. Nothing is
+  clock, and at most five minutes ahead of it. An expired `--root` is
+  refused unless `--allow-expired-root` is given, which prints a warning.
+  An existing `offline.json` is never overwritten. Nothing is
   signed that `Portal.Precompiled.Offline.check_bundle/2` did not verify.
   Run it on the offline key holder's machine, never on a portal host.
 
-      mix portal.precompiled.sign_offline --bundle DIR --key FILE --root FILE
+      mix portal.precompiled.sign_offline --bundle DIR --key FILE --root FILE \\
+        [--allow-expired-root]
   """
   use Mix.Task
   alias Portal.Precompiled.{Envelope, Keys, Offline}
 
   @max_batch_age 24 * 60 * 60
+  @max_clock_skew 5 * 60
 
   @impl true
   def run(args) do
     {opts, _, _} =
-      OptionParser.parse(args, strict: [bundle: :string, key: :string, root: :string])
+      OptionParser.parse(args,
+        strict: [bundle: :string, key: :string, root: :string, allow_expired_root: :boolean]
+      )
 
     dir = required!(opts, :bundle, "--bundle DIR is required")
     key = read_key!(required!(opts, :key, "--key FILE is required"))
@@ -37,7 +43,7 @@ defmodule Mix.Tasks.Portal.Precompiled.SignOffline do
     %{batch: batch, root: root} = ok!(Offline.check_bundle(dir, trusted), "")
     check_signer!(root, key)
     check_fresh!(batch)
-    warn_expired(root)
+    check_unexpired!(root, opts[:allow_expired_root] == true)
 
     sequence = System.os_time(:second)
     Mix.shell().info("signing offline.json sequence #{sequence}, batch issued #{batch["issued"]}")
@@ -64,8 +70,20 @@ defmodule Mix.Tasks.Portal.Precompiled.SignOffline do
   defp check_fresh!(%{"issued" => issued}) when is_binary(issued) do
     case DateTime.from_iso8601(issued) do
       {:ok, dt, _} ->
-        if DateTime.diff(DateTime.utc_now(), dt, :second) > @max_batch_age,
-          do: Mix.raise("batch.json was issued more than a day ago (#{issued}); refusing to sign")
+        age = DateTime.diff(DateTime.utc_now(), dt, :second)
+
+        cond do
+          age > @max_batch_age ->
+            Mix.raise("batch.json was issued more than a day ago (#{issued}); refusing to sign")
+
+          age < -@max_clock_skew ->
+            Mix.raise(
+              "batch.json was issued in the future (#{issued}); check this machine's clock"
+            )
+
+          true ->
+            :ok
+        end
 
       _ ->
         Mix.raise("batch.json has no valid issued time")
@@ -92,19 +110,28 @@ defmodule Mix.Tasks.Portal.Precompiled.SignOffline do
   end
 
   # The offline document does not depend on the root's expiry, but an
-  # expired --root usually means it is not the current production root.
-  defp warn_expired(%{"expires" => exp, "version" => v}) when is_binary(exp) do
-    with {:ok, dt, _} <- DateTime.from_iso8601(exp),
-         :lt <- DateTime.compare(dt, DateTime.utc_now()) do
-      Mix.shell().info(
-        "note: the root in use (version #{v}) expired at #{exp}; is --root the current root?"
-      )
+  # expired --root almost always means it is not the current production
+  # root, so it is refused unless the operator says otherwise.
+  defp check_unexpired!(%{"expires" => exp, "version" => v}, allow?) do
+    if expired?(exp) do
+      message = "--root (version #{v}) expired at #{exp}"
+
+      if allow?,
+        do: Mix.shell().error("warning: #{message}; signing anyway (--allow-expired-root)"),
+        else: Mix.raise("#{message}; pass the current root, or --allow-expired-root")
     end
 
     :ok
   end
 
-  defp warn_expired(_), do: :ok
+  defp expired?(exp) when is_binary(exp) do
+    case DateTime.from_iso8601(exp) do
+      {:ok, dt, _} -> DateTime.compare(dt, DateTime.utc_now()) != :gt
+      _ -> true
+    end
+  end
+
+  defp expired?(_), do: true
 
   defp check_signer!(root, key) do
     case get_in(root, ["roles", "offline", "keyids"]) do

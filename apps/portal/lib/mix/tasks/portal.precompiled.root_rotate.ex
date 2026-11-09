@@ -25,6 +25,8 @@ defmodule Mix.Tasks.Portal.Precompiled.RootRotate do
   use Mix.Task
   alias Portal.Precompiled.{Envelope, Keys, Root}
 
+  @max_public_file 4096
+
   @switches [
     root: :string,
     key: :string,
@@ -78,10 +80,20 @@ defmodule Mix.Tasks.Portal.Precompiled.RootRotate do
     end
   end
 
+  # A regular file (lstat, so never through a link) of at most 4 KiB.
   defp read_public_file!(path) do
-    case File.read(path) do
-      {:ok, body} -> String.trim(body)
-      {:error, reason} -> Mix.raise("cannot read #{path}: #{:file.format_error(reason)}")
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_public_file ->
+        path |> File.read!() |> String.trim()
+
+      {:ok, %File.Stat{type: :regular}} ->
+        Mix.raise("#{path} is larger than #{@max_public_file} bytes")
+
+      {:ok, _} ->
+        Mix.raise("#{path} is not a regular file")
+
+      {:error, reason} ->
+        Mix.raise("cannot read #{path}: #{:file.format_error(reason)}")
     end
   end
 

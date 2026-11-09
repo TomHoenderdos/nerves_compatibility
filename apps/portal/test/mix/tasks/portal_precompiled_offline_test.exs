@@ -57,16 +57,18 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
              Envelope.verify(off_env, %{online.keyid => online.public}, 1)
   end
 
-  test "--root must be the current root: an older one without the offline role is refused",
+  test "--root must be the current root: an older one is refused as stale",
        %{tmp_dir: dir, online: online} do
     public = keygen!(dir)
     rotate!(dir, public)
     bundle = make_bundle!(dir, online, "root2.json")
 
-    # The bundle's root 2 follows root 1, but trust comes from --root alone.
-    assert_raise Mix.Error, ~r/has no offline role/, fn ->
-      sign!(dir, bundle, "root.json")
-    end
+    # The bundle's root 2 follows root 1: --root is stale.
+    assert_raise Mix.Error,
+                 ~r/newer than the trusted root \(1\): pass the current root.json/,
+                 fn ->
+                   sign!(dir, bundle, "root.json")
+                 end
 
     refute File.exists?(Path.join(bundle, "offline.json"))
   end
@@ -109,8 +111,11 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
     write_env!(Path.join(dir, "v99.json"), v99, [k_old])
     bundle = make_bundle!(dir, k_old, "v99.json")
 
-    # Under the stale root 1 the delegation in v99 counts for nothing...
-    assert_raise Mix.Error, ~r/has no offline role/, fn -> sign!(dir, bundle, "root.json") end
+    # Under the stale root 1, v99 is refused as newer than --root...
+    assert_raise Mix.Error, ~r/newer than the trusted root/, fn ->
+      sign!(dir, bundle, "root.json")
+    end
+
     # ...and v99 does not follow the current root.
     assert_raise Mix.Error, ~r/does not chain from the trusted root/, fn ->
       sign!(dir, bundle, "root2.json")
@@ -119,7 +124,7 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
     refute File.exists?(Path.join(bundle, "offline.json"))
   end
 
-  test "an expired root still gets a valid offline.json, which outlives its batch",
+  test "an expired --root is refused unless allowed, and its offline.json outlives the batch",
        %{tmp_dir: dir, online: online} do
     public = keygen!(dir)
 
@@ -137,16 +142,23 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
 
     bundle = make_bundle!(dir, online, "root2.json")
 
+    assert_raise Mix.Error, ~r/--root \(version 2\) expired at .*--allow-expired-root/, fn ->
+      sign!(dir, bundle, "root2.json")
+    end
+
+    refute File.exists?(Path.join(bundle, "offline.json"))
+
     SignOffline.run([
       "--bundle",
       bundle,
       "--key",
       Path.join(dir, "off/offline.key"),
       "--root",
-      Path.join(dir, "root2.json")
+      Path.join(dir, "root2.json"),
+      "--allow-expired-root"
     ])
 
-    assert_received {:mix_shell, :info, ["note: the root in use (version 2) expired at " <> _]}
+    assert_received {:mix_shell, :error, ["warning: --root (version 2) expired at " <> _]}
     {:ok, root2, _} = dir |> Path.join("root2.json") |> File.read!() |> Root.verify_self()
     off_env = bundle |> Path.join("offline.json") |> File.read!() |> JSON.decode!()
     assert {:ok, %{"manifests_v2" => %{"recon" => _}}} = Offline.verify(off_env, root2)
@@ -181,6 +193,26 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
     File.ln_s!(Path.join(dir, "nowhere.json"), Path.join(bundle, "offline.json"))
     assert_raise Mix.Error, ~r/refusing to overwrite/, fn -> sign!(dir, bundle, "root2.json") end
     refute File.exists?(Path.join(dir, "nowhere.json"))
+  end
+
+  test "sign_offline refuses a batch issued more than five minutes ahead", %{
+    tmp_dir: dir,
+    online: online
+  } do
+    public = keygen!(dir)
+    rotate!(dir, public)
+
+    bundle =
+      make_bundle!(dir, online, "root2.json", DateTime.add(DateTime.utc_now(), 10, :minute))
+
+    assert_raise Mix.Error, ~r/issued in the future/, fn -> sign!(dir, bundle, "root2.json") end
+    refute File.exists?(Path.join(bundle, "offline.json"))
+
+    bundle2 =
+      make_bundle!(dir, online, "root2.json", DateTime.add(DateTime.utc_now(), 2, :minute))
+
+    sign!(dir, bundle2, "root2.json")
+    assert File.exists?(Path.join(bundle2, "offline.json"))
   end
 
   test "sign_offline needs --root", %{tmp_dir: dir, online: online} do
@@ -327,6 +359,32 @@ defmodule Mix.Tasks.Portal.PrecompiledOfflineTest do
         Path.join(dir, "root2.json")
       ])
     end
+  end
+
+  test "rotate refuses an --offline-public-file that is a link or over 4 KiB", %{tmp_dir: dir} do
+    public = keygen!(dir)
+    File.ln_s!(Path.join(dir, "off/offline.pub"), Path.join(dir, "link.pub"))
+    File.write!(Path.join(dir, "big.pub"), public <> String.duplicate(" ", 4097))
+
+    for {file, message} <- [
+          {"link.pub", ~r/not a regular file/},
+          {"big.pub", ~r/larger than 4096/}
+        ] do
+      assert_raise Mix.Error, message, fn ->
+        RootRotate.run([
+          "--root",
+          Path.join(dir, "root.json"),
+          "--key",
+          Path.join(dir, "signing.key"),
+          "--offline-public-file",
+          Path.join(dir, file),
+          "--out",
+          Path.join(dir, "root2.json")
+        ])
+      end
+    end
+
+    refute File.exists?(Path.join(dir, "root2.json"))
   end
 
   test "keygen refuses a dangling link where offline.key would go", %{tmp_dir: dir} do

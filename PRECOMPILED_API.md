@@ -593,65 +593,14 @@ least the highest offline sequence it has seen.
   `--root` is the current production `root.json`, never the bundle's own
   and never an older one, and all trust comes from it: the signing key must
   be in its `offline` role and `batch.json` must verify under its `batch`
-  role. The bundle's `root.json` must be that root or a newer root that
-  follows it, as a consistency check only. The task refuses a held
-  manifest that does not match the batch, a batch issued more than a day
-  before signing, and an existing `offline.json`. A batch can expire after
-  it was signed into `offline.json`; the offline document stays valid.
-- **Revocation** — there is no separate revoke endpoint. When a build is
-  withdrawn, the next signed batch drops the package from `manifests` and
-  `manifests_v2` or points at a different hash in each. A client that verifies
-  against the newest batch stops being told to fetch the withdrawn bytes from
-  the moment that batch is signed.
-
-## Offline bundles
-
-A bundle is a static copy of this API's layout for a device without
-network: `root.json`, `batch.json`, `v2/manifests/<package>.json` (and
-`manifests/<package>.json` for format 1) and `files/<sha256>` under one
-directory, read by a client through a `file://` source. Every byte is
-checked exactly as over https.
-
-`batch.json` in a bundle is the online batch and keeps its expiry (24 hours
-after `issued`); a client reading it from a bundle applies that expiry. For
-a device that stays offline longer, the bundle may also carry
-`offline.json`: an envelope signed by the root's `offline` role over
-
-    {"version": 1, "kind": "offline", "sequence": <int>, "issued": "<time>",
-     "manifests": {...}, "manifests_v2": {...}}
-
-with no expiry. `sequence` is the signing time in Unix seconds. A client
-honours it only from a source the user named as a bundle (`file://`), only
-when the root in use has an `offline` role, and only with a sequence at
-least the highest offline sequence it has seen.
-
-- **What it signs** — only the manifests the bundle holds, each with the
-  hash the batch gives it; a manifest the batch names but the bundle leaves
-  out is not in `offline.json`. A client refuses a manifest that is not in
-  the offline maps, or whose bytes do not hash to its entry.
-- **The root in use** — a bundle's `root.json` may be newer than the root a
-  device has. The client adopts it by the usual chain rule: it verifies
-  under its own `root` role and under the `root` role of the root the
-  device already trusts, and its version is higher. A device whose root has
-  no `offline` role gains one this way. A root that does not follow is
-  ignored, and the device keeps its own; it never trusts a bundle's root
-  for being in the bundle.
-- **Root expiry** — an offline document is valid indefinitely, and the
-  root's `expires` does not bound it. When verifying `offline.json` from a
-  bundle source, and when adopting that bundle's `root.json` for it, a
-  client does not refuse a root because its `expires` has passed; the
-  signatures and the chain are checked exactly as always. Every other path
-  (https sources, `batch.json`, a root adopted from an https source) keeps
-  checking expiry against the clock. A device's clock therefore never ends
-  its offline bundles.
-- **Signing** — `offline.json` is signed off the portal hosts, with
-  `mix portal.precompiled.sign_offline --bundle DIR --key FILE --root FILE`.
-  `--root` is the trusted production `root.json`, never the bundle's own:
-  the task refuses a bundle whose `root.json` is neither that root nor a
-  newer root that follows it, a `batch.json` that does not verify under the
-  root in use, a held manifest that does not match the batch, and a key
-  that is not in the root's `offline` role. The batch's own expiry is not
-  checked, so a bundle can be signed after its batch has expired.
+  role. The bundle's `root.json` must have the same version and payload as
+  `--root`; a newer one means `--root` is stale and is refused (devices
+  still adopt newer roots on their side). The task also refuses an expired
+  `--root` unless `--allow-expired-root` is given, a held manifest that
+  does not match the batch, a batch issued more than a day before the
+  signer's clock or more than five minutes after it, and an existing
+  `offline.json`. A batch can expire after it was signed into
+  `offline.json`; the offline document stays valid.
 - **Revocation** — an offline document cannot be withdrawn: the only way to
   stop trusting one is to rotate the offline key (`mix
   portal.precompiled.root_rotate`), which a device sees only when it adopts

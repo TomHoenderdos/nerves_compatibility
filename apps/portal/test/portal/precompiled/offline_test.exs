@@ -63,7 +63,7 @@ defmodule Portal.Precompiled.OfflineTest do
 
       write_batch!(dir, evil, %{"manifests_v2" => %{"recon" => sha256(@manifest)}})
 
-      assert {:error, "bundle root.json does not chain from the trusted root"} =
+      assert {:error, "bundle root.json does not match the trusted root"} =
                Offline.check_bundle(dir, t)
     end
 
@@ -79,7 +79,7 @@ defmodule Portal.Precompiled.OfflineTest do
                Offline.check_bundle(dir, t)
     end
 
-    test "a newer bundle root that follows is accepted, but trust stays with the trusted root",
+    test "a newer bundle root that follows means the trusted root is stale, and is refused",
          %{tmp_dir: dir, key: key, trusted: t} do
       next = Keys.generate()
 
@@ -88,13 +88,9 @@ defmodule Portal.Precompiled.OfflineTest do
         signed_root(2, ~U[2030-01-01 00:00:00Z], [next], [key, next])
       )
 
-      # The batch verifies under the trusted root's batch role, not the bundle's.
-      assert {:ok, %{root: %{"version" => 1}}} = Offline.check_bundle(dir, t)
-
-      write_batch!(dir, next, %{"manifests_v2" => %{"recon" => sha256(@manifest)}})
-
-      assert {:error, "batch.json does not verify under the trusted root"} =
-               Offline.check_bundle(dir, t)
+      assert {:error,
+              "bundle root.json is version 2, newer than the trusted root (1): " <>
+                "pass the current root.json as --root"} = Offline.check_bundle(dir, t)
     end
 
     test "a stale trusted root: a root forged by a key it still lists signs nothing",
@@ -111,11 +107,9 @@ defmodule Portal.Precompiled.OfflineTest do
       File.write!(Path.join(dir, "root.json"), v99)
       write_batch!(dir, k_old, %{"manifests_v2" => %{"recon" => sha256(@manifest)}})
 
-      # The bundle root follows v1, but the root in use is v1, which has no
-      # offline role: the attacker's delegation counts for nothing.
-      assert {:ok, %{root: root}} = Offline.check_bundle(dir, v1)
-      assert root["version"] == 1
-      assert :error = Root.role_keys(root, "offline")
+      # The bundle root follows v1, so v1 is stale: refused outright.
+      assert {:error, "bundle root.json is version 99, newer than the trusted root (1): " <> _} =
+               Offline.check_bundle(dir, v1)
     end
 
     test "a forged root that follows a revoked root does not follow the current one",

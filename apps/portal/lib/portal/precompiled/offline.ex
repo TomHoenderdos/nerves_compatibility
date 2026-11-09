@@ -10,8 +10,8 @@ defmodule Portal.Precompiled.Offline do
   own: trust comes from the root the operator names. The batch must verify
   under that root's `batch` role, and every manifest the bundle holds must
   hash to the batch's entry; only those manifests are signed. The bundle's
-  `root.json` must be that root, or follow it by the chain rule
-  (`Portal.Precompiled.Root.follows/2`), but it is never used to verify.
+  `root.json` must be that same root, byte for byte in its payload, and is
+  never used to verify.
   """
   alias Portal.Precompiled.{Envelope, Root}
 
@@ -41,8 +41,8 @@ defmodule Portal.Precompiled.Offline do
   the operator trusts (the current production `root.json`). All trust comes
   from `trusted`: the batch must verify under its `batch` role, and the
   returned root, which the signer's key must be in the `offline` role of, is
-  `trusted` itself. The bundle's `root.json` is only checked for
-  consistency: it must be `trusted`, or a newer root that follows it.
+  `trusted` itself. The bundle's `root.json` must be `trusted` (the same
+  payload bytes); a newer one that follows it means `trusted` is stale.
   Returns the batch payload narrowed to the manifests the bundle holds.
   Expiry plays no part: neither the root's nor the batch's.
   """
@@ -89,28 +89,40 @@ defmodule Portal.Precompiled.Offline do
     end
   end
 
-  # The trusted root itself (the same payload bytes), or a newer one that
-  # follows it. Same version with other bytes is a fork and does not chain.
-  # Either way the root in use stays the trusted one: a newer bundle root
-  # only says the device will adopt it, never what the signer trusts.
+  # The bundle must carry the trusted root itself: the same payload bytes.
+  # A newer root that follows it means the operator's root is stale, and is
+  # refused rather than trusted (devices still adopt newer roots on their
+  # side). A root that does not follow, or another root of the same
+  # version, is refused as a forgery.
   defp chain(env, trusted, trusted_bytes) do
     case Root.verify_self(env) do
       {:ok, _, ^trusted_bytes} -> :ok
-      {:ok, root, _} -> newer_root(env, root, trusted)
+      {:ok, root, _} -> mismatch(env, root, trusted)
       :error -> {:error, "bundle root.json does not chain from the trusted root"}
     end
   end
 
-  defp newer_root(_env, %{"version" => v}, %{"version" => tv})
-       when is_integer(v) and is_integer(tv) and v < tv,
-       do: {:error, "bundle root.json version #{v} is older than the trusted root (#{tv})"}
+  defp mismatch(env, %{"version" => v}, %{"version" => tv} = trusted)
+       when is_integer(v) and is_integer(tv) do
+    cond do
+      v < tv ->
+        {:error, "bundle root.json version #{v} is older than the trusted root (#{tv})"}
 
-  defp newer_root(env, _root, trusted) do
-    case Root.follows(env, trusted) do
-      {:ok, _root, _} -> :ok
-      :error -> {:error, "bundle root.json does not chain from the trusted root"}
+      v == tv ->
+        {:error, "bundle root.json does not match the trusted root"}
+
+      Root.follows(env, trusted) != :error ->
+        {:error,
+         "bundle root.json is version #{v}, newer than the trusted root (#{tv}): " <>
+           "pass the current root.json as --root"}
+
+      true ->
+        {:error, "bundle root.json does not chain from the trusted root"}
     end
   end
+
+  defp mismatch(_env, _root, _trusted),
+    do: {:error, "bundle root.json does not chain from the trusted root"}
 
   defp verified_batch(dir, root) do
     with {:ok, env} <- read_json(dir, ["batch.json"]),
