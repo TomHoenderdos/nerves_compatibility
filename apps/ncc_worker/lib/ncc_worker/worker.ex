@@ -1814,7 +1814,8 @@ defmodule NccWorker.Worker do
   `<project_dir>/_build/host/lib/<package_name>`, and the compile-time
   trace's verdict (`NccWorker.Portability.run/3`; `nil` when there was none,
   which cannot pass). `opts` are the toolchain run's judge options
-  (`makefile_rule2:`, item 1 of the judge refinements); `judge_revision` is
+  (`makefile_rule2:`, item 1 of the judge refinements; `hex_home:`, the Hex
+  cache the package's tarball is read from, default `HEX_HOME`); `judge_revision` is
   `Portability.judge_revision(opts)` for every judged build.
   """
   @spec toolchain_build(
@@ -1896,7 +1897,7 @@ defmodule NccWorker.Worker do
   defp judge_finished_build(build, project_dir, package_name, portability, host_result, opts) do
     app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
     scan = scan_host_app(app_dir)
-    tarball = package_tarball(project_dir, package_name)
+    tarball = package_tarball(project_dir, package_name, Keyword.get(opts, :hex_home))
 
     static =
       BuildSelection.static_rules(project_dir, package_name, scan,
@@ -2017,9 +2018,9 @@ defmodule NccWorker.Worker do
   # (`NccWorker.HexCache`), whose `HEX_HOME` every `mix` here inherits, and
   # it is used only while it is still the tarball the lock names: read once,
   # its bytes are both what is checked against the lock and what is judged.
-  defp package_tarball(project_dir, package_name) do
+  defp package_tarball(project_dir, package_name, home \\ nil) do
     with {:ok, release} <- DepsLock.package_release(project_dir, package_name),
-         home when is_binary(home) and home != "" <- System.get_env("HEX_HOME"),
+         home when is_binary(home) and home != "" <- home || System.get_env("HEX_HOME"),
          bytes when is_binary(bytes) <-
            HexCache.package_tarball(home, release.name, release.version, release.checksum) do
       {:binary, bytes}

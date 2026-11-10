@@ -5,8 +5,33 @@ defmodule NccWorker.NativeBuildTest do
 
   @moduletag :tmp_dir
 
-  # deps/<name> with `files` (path => body) and its lock entry's managers;
-  # `nil` managers leave the dependency out of the lock.
+  # A Hex tarball whose `metadata.config` lists `build_tools` (`nil`: no key).
+  defp tools_tarball(build_tools) do
+    meta =
+      [{"name", "x"}, {"version", "1.0.0"}] ++
+        if(build_tools, do: [{"build_tools", build_tools}], else: [])
+
+    meta = Enum.map_join(meta, "", &IO.chardata_to_string(:io_lib.format(~c"~p.~n", [&1])))
+    path = Path.join(System.tmp_dir!(), "ncc-tools-#{System.unique_integer([:positive])}.tar")
+    :ok = :erl_tar.create(String.to_charlist(path), [{~c"metadata.config", meta}])
+    bytes = File.read!(path)
+    File.rm!(path)
+    bytes
+  end
+
+  # The verified tarball of each dependency `dep/4` made, by name.
+  defp tarball_of(root), do: &read_tarball(root, &1)
+
+  defp read_tarball(root, name) do
+    case File.read(Path.join([root, "tarballs", name <> ".tar"])) do
+      {:ok, bytes} -> bytes
+      _ -> nil
+    end
+  end
+
+  # deps/<name> with `files` (path => body), its lock entry's managers and
+  # a verified tarball whose `build_tools` are the same; `nil` managers
+  # leave the dependency out of the lock and give it no tarball.
   defp dep(root, name, files, managers) do
     dir = Path.join([root, "deps", name])
     File.mkdir_p!(dir)
@@ -30,6 +55,13 @@ defmodule NccWorker.NativeBuildTest do
         else: entries
 
     File.write!(lock, inspect(entries, limit: :infinity))
+
+    if managers do
+      File.mkdir_p!(Path.join(root, "tarballs"))
+      tools = Enum.map(managers, &Atom.to_string/1)
+      File.write!(Path.join([root, "tarballs", name <> ".tar"]), tools_tarball(tools))
+    end
+
     dir
   end
 
@@ -72,7 +104,7 @@ defmodule NccWorker.NativeBuildTest do
     dep(root, "nerves_foo", %{"Makefile" => "", "src/f.erl" => "-module(f).\n"}, [:make, :rebar3])
     dep(root, "csrcmix", %{"Makefile" => "", "c_src/x.c" => "", "mix.exs" => ""}, [:mix])
 
-    assert NativeBuild.split(root) ==
+    assert NativeBuild.split(root, tarball_of(root)) ==
              {[
                 "csrc",
                 "csrcmix",
@@ -131,5 +163,36 @@ defmodule NccWorker.NativeBuildTest do
     refute BuildCache.dep_target_agnostic_rule2?(deps, "ranch", "make")
     refute BuildCache.dep_target_agnostic_rule2?(deps, "ranch", nil)
     assert BuildSelection.classify(root, "ranch", "", %{"root" => ["ranch"]}) == :firmware
+  end
+
+  describe "the build tools come from the verified tarball, never mix.lock" do
+    test "build_tools/1 reads metadata.config and fails closed" do
+      assert NativeBuild.build_tools(tools_tarball(["make", "rebar3"])) == ["make", "rebar3"]
+      assert NativeBuild.build_tools(tools_tarball(nil)) == nil
+      assert NativeBuild.build_tools(tools_tarball([])) == nil
+      assert NativeBuild.build_tools("not a tar") == nil
+      assert NativeBuild.build_tools(nil) == nil
+    end
+
+    test "a lock saying rebar3 over a tarball saying make stays native", %{tmp_dir: root} do
+      dep(root, "ranch", %{"Makefile" => "all:\n", "src/ranch.erl" => "-module(ranch).\n"}, [
+        :rebar3
+      ])
+
+      File.write!(Path.join([root, "tarballs", "ranch.tar"]), tools_tarball(["make"]))
+      assert NativeBuild.split(root, tarball_of(root)) == {["ranch"], %{}}
+
+      # No verified tarball: native, whatever the lock says.
+      assert NativeBuild.split(root, fn _ -> nil end) == {["ranch"], %{}}
+
+      # The tarball agreeing declassifies it.
+      File.write!(Path.join([root, "tarballs", "ranch.tar"]), tools_tarball(["rebar3"]))
+      assert NativeBuild.split(root, tarball_of(root)) == {[], %{"ranch" => "rebar3"}}
+
+      dest = Path.join([root, "deps", "ranch"])
+      assert NativeBuild.manager({:binary, tools_tarball(["make"])}, dest) == "make"
+      assert NativeBuild.manager({:binary, tools_tarball(["make", "rebar3"])}, dest) == "rebar3"
+      assert NativeBuild.manager(nil, dest) == nil
+    end
   end
 end

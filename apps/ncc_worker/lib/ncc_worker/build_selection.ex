@@ -103,7 +103,8 @@ defmodule NccWorker.BuildSelection do
 
   Options: `tarball:` as for `portable?/4`; `makefile_rule2: true` and
   `manager:` (the trace's manager for the package) let a native build file
-  Mix never runs pass (item 1, `NccWorker.NativeBuild`).
+  Mix never runs pass (item 1, `NccWorker.NativeBuild`), judged by the
+  `build_tools` in `tarball:`, never by `mix.lock`.
   """
   @spec static_rules(String.t(), String.t(), map(), keyword()) :: :ok | {:skip, String.t()}
   def static_rules(project, package, scan, opts \\ []) do
@@ -131,14 +132,15 @@ defmodule NccWorker.BuildSelection do
   # Item 1 (rule 2 only, behind `makefile_rule2: true`): a native build file
   # Mix never runs does not count, when the trace's manager for the package
   # (`manager:`, from its closure line) is "mix" or "rebar3" and is the one
-  # its lock and files give (`NativeBuild.manager/2`). Anything else is
+  # its `tarball:`'s `build_tools` and its files give
+  # (`NativeBuild.manager/2`; no tarball, no declassification). Anything else is
   # `dep_target_agnostic?/2`'s verdict, as before.
   defp target_agnostic(project, package, opts) do
     deps = Path.join(project, "deps")
     trace = Keyword.get(opts, :manager)
 
     if Keyword.get(opts, :makefile_rule2) == true and trace in ["mix", "rebar3"] and
-         NativeBuild.manager(project, package) == trace do
+         NativeBuild.manager(Keyword.get(opts, :tarball), Path.join(deps, package)) == trace do
       BuildCache.dep_target_agnostic_rule2?(deps, package, trace)
     else
       BuildCache.dep_target_agnostic?(deps, package)

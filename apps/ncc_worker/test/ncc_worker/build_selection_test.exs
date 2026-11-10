@@ -52,12 +52,24 @@ defmodule NccWorker.BuildSelectionTest do
     File.write!(path, inspect(Map.put(entries, name, entry), limit: :infinity))
   end
 
-  # Rewrites `name`'s lock entry with `managers` (Hex's `build_tools`).
+  # Rewrites `name`'s lock entry with `managers` (Hex's `build_tools`) and
+  # returns a `tarball:` whose `metadata.config` lists the same, the only
+  # place item 1 reads them from.
   defp lock_managers(root, name, managers) do
     path = Path.join(root, "mix.lock")
     {entries, _} = Code.eval_file(path)
     entry = {:hex, String.to_atom(name), "1.0.0", "inner", managers, [], "hexpm", "outer"}
     File.write!(path, inspect(Map.put(entries, name, entry), limit: :infinity))
+    tools_tarball(Enum.map(managers, &Atom.to_string/1))
+  end
+
+  defp tools_tarball(build_tools) do
+    meta = ~s({<<"build_tools">>,[#{Enum.map_join(build_tools, ",", &~s(<<"#{&1}">>))}]}.\n)
+    path = Path.join(System.tmp_dir!(), "ncc-tools-#{System.unique_integer([:positive])}.tar")
+    :ok = :erl_tar.create(String.to_charlist(path), [{~c"metadata.config", meta}])
+    bytes = File.read!(path)
+    File.rm!(path)
+    {:binary, bytes}
   end
 
   test "pure Elixir and its pure dependency closure skip firmware", %{root: root} do
@@ -274,57 +286,70 @@ defmodule NccWorker.BuildSelectionTest do
          %{root: root} do
       source = package(root, "sample")
       File.write!(Path.join(source, "Makefile"), "all:\n\tcc -o x x.c\n")
-      lock_managers(root, "sample", [:make, :rebar3])
+      tarball = lock_managers(root, "sample", [:make, :rebar3])
       native = {:skip, "reads the target or ships native code"}
+      on = [makefile_rule2: true, tarball: tarball]
 
-      assert BuildSelection.static_rules(root, "sample", scan(),
-               makefile_rule2: true,
-               manager: "rebar3"
-             ) == :ok
+      assert BuildSelection.static_rules(root, "sample", scan(), on ++ [manager: "rebar3"]) == :ok
 
       # Off, or no manager from the trace: today's verdict.
-      assert BuildSelection.static_rules(root, "sample", scan(), manager: "rebar3") == native
-      assert BuildSelection.static_rules(root, "sample", scan(), makefile_rule2: true) == native
-      # The trace says make, or disagrees with the lock (rebar3 vs mix).
+      assert BuildSelection.static_rules(root, "sample", scan(),
+               manager: "rebar3",
+               tarball: tarball
+             ) == native
+
+      assert BuildSelection.static_rules(root, "sample", scan(), on) == native
+      # The trace says make, or disagrees with the tarball (rebar3 vs mix).
       for trace <- ["make", "mix", nil] do
-        assert BuildSelection.static_rules(root, "sample", scan(),
-                 makefile_rule2: true,
-                 manager: trace
-               ) == native,
+        assert BuildSelection.static_rules(root, "sample", scan(), on ++ [manager: trace]) ==
+                 native,
                inspect(trace)
       end
 
-      # [:make] only: Mix falls to the files (mix.exs here, so "mix"), never
-      # the trace's rebar3.
-      lock_managers(root, "sample", [:make])
-
+      # No tarball: the lock alone never declassifies.
       assert BuildSelection.static_rules(root, "sample", scan(),
                makefile_rule2: true,
                manager: "rebar3"
+             ) == native
+
+      # A lock saying rebar3 over a tarball saying make stays native.
+      assert BuildSelection.static_rules(root, "sample", scan(),
+               makefile_rule2: true,
+               manager: "rebar3",
+               tarball: tools_tarball(["make"])
+             ) == native
+
+      # [:make] only: Mix falls to the files (mix.exs here, so "mix"), never
+      # the trace's rebar3.
+      tarball = lock_managers(root, "sample", [:make])
+
+      assert BuildSelection.static_rules(root, "sample", scan(),
+               makefile_rule2: true,
+               manager: "rebar3",
+               tarball: tarball
              ) == native
     end
 
     test "item 1 keeps every other rule-2 refusal: port_env, a target read, a nerves* name, c_src under mix",
          %{root: root} do
       native = {:skip, "reads the target or ships native code"}
-      opts = [makefile_rule2: true, manager: "rebar3"]
 
       with_makefile = fn name, managers ->
         source = package(root, name)
         File.write!(Path.join(source, "Makefile"), "all:\n")
-        lock_managers(root, name, managers)
-        source
+        tarball = lock_managers(root, name, managers)
+        {source, [makefile_rule2: true, manager: "rebar3", tarball: tarball]}
       end
 
-      port = with_makefile.("portenv", [:make, :rebar3])
+      {port, opts} = with_makefile.("portenv", [:make, :rebar3])
       File.write!(Path.join(port, "rebar.config"), "{port_env, []}.\n")
       assert BuildSelection.static_rules(root, "portenv", scan(), opts) == native
 
-      target = with_makefile.("target", [:make, :rebar3])
+      {target, opts} = with_makefile.("target", [:make, :rebar3])
       File.write!(Path.join(target, "lib/example.ex"), "Mix.target()")
       assert BuildSelection.static_rules(root, "target", scan(), opts) == native
 
-      with_makefile.("nerves_foo", [:make, :rebar3])
+      {_source, opts} = with_makefile.("nerves_foo", [:make, :rebar3])
       assert BuildSelection.static_rules(root, "nerves_foo", scan(), opts) == native
 
       refute NccWorker.BuildCache.dep_target_agnostic_rule2?(
@@ -333,17 +358,19 @@ defmodule NccWorker.BuildSelectionTest do
                "rebar3"
              )
 
-      csrc = with_makefile.("csrcmix", [:make, :mix])
+      {csrc, opts} = with_makefile.("csrcmix", [:make, :mix])
       File.mkdir_p!(Path.join(csrc, "c_src"))
 
-      assert BuildSelection.static_rules(root, "csrcmix", scan(),
-               makefile_rule2: true,
-               manager: "mix"
+      assert BuildSelection.static_rules(
+               root,
+               "csrcmix",
+               scan(),
+               Keyword.put(opts, :manager, "mix")
              ) == native
 
       # The same package without the extra refusal passes, so each case above
       # is held by its own rule, not by the Makefile.
-      with_makefile.("control", [:make, :rebar3])
+      {_source, opts} = with_makefile.("control", [:make, :rebar3])
       assert BuildSelection.static_rules(root, "control", scan(), opts) == :ok
     end
 
@@ -353,17 +380,20 @@ defmodule NccWorker.BuildSelectionTest do
 
       csrc = package(root, "csrc")
       File.mkdir_p!(Path.join(csrc, "c_src"))
-      lock_managers(root, "csrc", [:rebar3])
-      assert BuildSelection.static_rules(root, "csrc", scan(), opts) == native
+      tarball = lock_managers(root, "csrc", [:rebar3])
+
+      assert BuildSelection.static_rules(root, "csrc", scan(), opts ++ [tarball: tarball]) ==
+               native
 
       emake = package(root, "emake")
       File.write!(Path.join(emake, "Makefile"), "all:\n")
       File.write!(Path.join(emake, "mix.exs"), "def project, do: [compilers: [:elixir_make]]")
-      lock_managers(root, "emake", [:mix])
+      tarball = lock_managers(root, "emake", [:mix])
 
       assert BuildSelection.static_rules(root, "emake", scan(),
                makefile_rule2: true,
-               manager: "mix"
+               manager: "mix",
+               tarball: tarball
              ) ==
                native
 

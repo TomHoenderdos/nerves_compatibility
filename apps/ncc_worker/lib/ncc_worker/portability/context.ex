@@ -526,6 +526,14 @@ defmodule NccWorker.Portability.Context do
   @spec tarball(t(), term()) :: binary() | nil
   def tarball(%__MODULE__{hex: hex}, app), do: verified_tarball(app, hex)
 
+  @doc """
+  `tarball/2` before there is a context: `app`'s tarball in the Hex cache
+  `home`, only when its outer checksum is the one `releases` (a
+  `NccWorker.Portability.lock_snapshot/1`) gives; else `nil`.
+  """
+  @spec release_tarball(String.t() | nil, map(), String.t()) :: binary() | nil
+  def release_tarball(home, releases, app), do: verified_tarball(app, {home, releases})
+
   defp verified_tarball(app, {home, releases}) when is_binary(home) and home != "" do
     case Map.get(releases, app) do
       %{name: name, version: version, checksum: sum}

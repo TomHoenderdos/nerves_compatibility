@@ -180,26 +180,6 @@ defmodule NccWorker.DepsLock do
 
   defp locked_version(_entry), do: []
 
-  @doc """
-  Every Hex entry's `managers` (its package's `build_tools`, as Hex writes
-  them into the lock), as strings, keyed by lock name; `:error` when the
-  lock is missing or unreadable. `NccWorker.NativeBuild` reads which build
-  tool Mix runs from it.
-  """
-  @spec managers(String.t()) :: {:ok, %{String.t() => [String.t()]}} | :error
-  def managers(project_dir) do
-    with {:ok, lock} <- read_lock(project_dir) do
-      {:ok, lock |> Enum.flat_map(&locked_managers/1) |> Map.new()}
-    end
-  end
-
-  defp locked_managers({name, entry})
-       when is_tuple(entry) and tuple_size(entry) >= 5 and elem(entry, 0) == :hex and
-              is_list(elem(entry, 4)),
-       do: [{name, for(m <- elem(entry, 4), is_atom(m), do: Atom.to_string(m))}]
-
-  defp locked_managers(_entry), do: []
-
   defp lock_deps({:hex, _pkg, _version, _inner, _managers, deps, _repo, _outer})
        when is_list(deps),
        do: deps

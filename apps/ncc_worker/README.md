@@ -278,7 +278,8 @@ in `prod`, traced, and judges `_build/host/lib/<package>` with `NccWorker.BuildS
 the compile-time trace (`NccWorker.Portability`).
 
 `"judge": {"makefile_rule2": true}` in `NCC_INPUT` turns on item 1 of the judge refinements: a dependency whose
-`Makefile` (or another native build file) Mix never runs, because its lock names `mix` or `rebar3`, is not native
+`Makefile` (or another native build file) Mix never runs, because its checksum-verified Hex tarball's
+`build_tools` name `mix` or `rebar3` (never `mix.lock`, which an untraced `deps.get` can rewrite), is not native
 under rule 2, when the trace's closure line agrees on the manager (`manager mismatch: ` otherwise). Such a build
 records `judge_revision` one higher. `toolchain_build.manager` is the manager the trace says Mix built the package
 with. Any value other than `true` leaves item 1 off; with it on, a `deps/` the judge cannot list is "portability

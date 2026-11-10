@@ -225,26 +225,4 @@ defmodule NccWorker.DepsLockTest do
       assert DepsLock.hex_releases(dir) == :error
     end
   end
-
-  describe "managers/1" do
-    test "lists each Hex entry's build tools as strings", %{dir: dir} do
-      File.write!(Path.join(dir, "mix.lock"), """
-      %{
-        "ranch": {:hex, :ranch, "2.4.0", "inner", [:make, :rebar3], [], "hexpm", "outer"},
-        "jason": {:hex, :jason, "1.4.4", "inner", [:mix], [], "hexpm", "outer"},
-        "none": {:hex, :none, "1.0.0", "inner", [], [], "hexpm", "outer"},
-        "gitdep": {:git, "https://example.invalid/x.git", "abc", []},
-      }
-      """)
-
-      assert {:ok, %{"ranch" => ["make", "rebar3"], "jason" => ["mix"], "none" => []} = managers} =
-               NccWorker.DepsLock.managers(dir)
-
-      refute Map.has_key?(managers, "gitdep")
-    end
-
-    test "a missing lock is an error", %{dir: dir} do
-      assert :error = NccWorker.DepsLock.managers(Path.join(dir, "nope"))
-    end
-  end
 end

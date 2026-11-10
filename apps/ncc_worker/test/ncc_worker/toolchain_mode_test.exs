@@ -216,6 +216,37 @@ defmodule NccWorker.ToolchainModeTest do
       assert failed.judge_revision == nil
     end
 
+    test "a package whose Makefile Mix never runs is native with the flag off",
+         %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      File.write!(Path.join([project, "deps", "sample", "Makefile"]), "all:\n")
+
+      # The package's verified tarball says rebar3 builds it.
+      home = Path.join(work_dir, "hex")
+      File.mkdir_p!(Path.join(home, "packages/hexpm"))
+      tar = Path.join(home, "packages/hexpm/sample-1.0.0.tar")
+      meta = ~s({<<"name">>,<<"sample">>}.\n{<<"build_tools">>,[<<"rebar3">>]}.\n)
+      :ok = :erl_tar.create(String.to_charlist(tar), [{~c"metadata.config", meta}])
+      sum = sha256(tar)
+
+      File.write!(
+        Path.join(project, "mix.lock"),
+        ~s(%{"sample": {:hex, :sample, "1.0.0", "i", [:rebar3], [], "hexpm", "#{sum}"}}\n)
+      )
+
+      verdict = Map.put(@traced_pass, :manager, "rebar3")
+
+      build = fn rule2 ->
+        Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict,
+          makefile_rule2: rule2,
+          hex_home: home
+        )
+      end
+
+      assert %{status: "skipped", reason: "reads the target or ships native code"} = build.(false)
+      assert %{status: "pass", manager: "rebar3"} = build.(true)
+    end
+
     test "makefile_rule2 records one more; the build carries the trace's manager",
          %{tmp_dir: work_dir} do
       {project, _built} = project(work_dir, "circular_buffer-1.0.0")

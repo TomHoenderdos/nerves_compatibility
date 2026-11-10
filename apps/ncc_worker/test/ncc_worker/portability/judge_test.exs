@@ -1356,6 +1356,19 @@ defmodule NccWorker.Portability.JudgeTest do
     end
   end
 
+  # A Hex tarball whose `metadata.config` lists `build_tools`.
+  defp tools_tarball(build_tools) do
+    meta = ~s({<<"build_tools">>,[#{Enum.map_join(build_tools, ",", &~s(<<"#{&1}">>))}]}.\n)
+    path = Path.join(System.tmp_dir!(), "ncc-tools-#{System.unique_integer([:positive])}.tar")
+
+    :ok =
+      :erl_tar.create(String.to_charlist(path), [{~c"VERSION", "3"}, {~c"metadata.config", meta}])
+
+    bytes = File.read!(path)
+    File.rm!(path)
+    bytes
+  end
+
   describe "item 1: the manager of a declassified dependency" do
     test "must be the one the trace's closure line records", %{proj: proj} do
       r = report(proj)
@@ -1387,7 +1400,7 @@ defmodule NccWorker.Portability.JudgeTest do
     # otherwise: `NativeBuild.split/1`'s answer, held to the trace, refuses.
     # With only a Makefile, the files say make: never declassified, it stays
     # native and the manager check has nothing to hold.
-    test "a [:make] lock entry under a rebar3 parent, through split/1", %{proj: proj, dir: dir} do
+    test "a [:make] lock entry under a rebar3 parent, through split/2", %{proj: proj, dir: dir} do
       split = fn files ->
         root = Path.join(dir, "split#{System.unique_integer([:positive])}")
         dest = Path.join([root, "deps", "dep"])
@@ -1399,7 +1412,7 @@ defmodule NccWorker.Portability.JudgeTest do
           ~s(%{"dep": {:hex, :dep, "1.0.0", "i", [:make], [], "hexpm", "o"}}\n)
         )
 
-        NccWorker.NativeBuild.split(root)
+        NccWorker.NativeBuild.split(root, fn "dep" -> tools_tarball(["make"]) end)
       end
 
       r = report(proj)
@@ -1453,6 +1466,70 @@ defmodule NccWorker.Portability.JudgeTest do
       assert obs["trace_stats"]["judge_compile"] == "not_finished"
       # Nothing about the package: a later run may well judge it.
       assert obs["trace_stats"]["transient"] == true
+    end
+
+    test "the native list is today's with the flag off and item 1's with it on",
+         %{proj: proj, dir: dir} do
+      File.write!(Path.join([proj, "deps", "dep", "Makefile"]), "all:\n")
+      home = Path.join(dir, "hex")
+      File.mkdir_p!(Path.join(home, "packages/hexpm"))
+      tar = Path.join(home, "packages/hexpm/dep-1.0.0.tar")
+      File.write!(tar, tools_tarball(["rebar3"]))
+      sum = :sha256 |> :crypto.hash(File.read!(tar)) |> Base.encode16(case: :lower)
+      releases = %{"dep" => %{name: "dep", version: "1.0.0", checksum: sum}}
+
+      File.write!(
+        Path.join(proj, "mix.lock"),
+        ~s(%{"dep": {:hex, :dep, "1.0.0", "i", [:rebar3], [], "hexpm", "#{sum}"}}\n)
+      )
+
+      test_pid = self()
+
+      capture = fn _caller, _ref, _command, [_args, _dir, env], _log ->
+        {_, native} = List.keyfind(env, "NCC_TRACE_NATIVE", 0)
+        send(test_pid, {:native, String.split(native, ",", trim: true)})
+        {:ok, 0}
+      end
+
+      for {rule2, native} <- [{false, ["dep"]}, {true, []}, {"true", ["dep"]}] do
+        Portability.run(proj, "pkg",
+          env: [],
+          releases: releases,
+          hex_home: home,
+          trace_dir: Path.join(dir, "trace#{System.unique_integer([:positive])}"),
+          cmd: capture,
+          reap: fn _ -> :ok end,
+          makefile_rule2: rule2
+        )
+
+        assert_received {:native, ^native}, inspect(rule2)
+      end
+
+      # Without a verified tarball, the lock's rebar3 declassifies nothing.
+      Portability.run(proj, "pkg",
+        env: [],
+        releases: releases,
+        hex_home: Path.join(dir, "nohex"),
+        trace_dir: Path.join(dir, "trace-nohex"),
+        cmd: capture,
+        reap: fn _ -> :ok end,
+        makefile_rule2: true
+      )
+
+      assert_received {:native, ["dep"]}
+    end
+
+    test "unsplit/2 makes any verdict could-not-judge and keeps the problem" do
+      pass = %{status: :pass, reason: nil, compile_env: [], observations: %{"problems" => []}}
+      assert Portability.unsplit(pass, nil) == pass
+
+      assert %{
+               status: :skip,
+               reason: @cnj,
+               compile_env: nil,
+               observations: %{"problems" => ["p"]}
+             } =
+               Portability.unsplit(pass, "p")
     end
 
     test "with makefile_rule2 a deps/ that cannot be listed is could-not-judge",

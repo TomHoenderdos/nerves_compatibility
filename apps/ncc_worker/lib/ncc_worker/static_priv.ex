@@ -154,13 +154,17 @@ defmodule NccWorker.StaticPriv do
     end)
   end
 
-  # The tarball's bytes, read once and no more than the largest tarball the
-  # rules read at all; `nil` refuses every file.
-  defp tarball_bytes(nil), do: nil
-  defp tarball_bytes({:binary, bytes}) when is_binary(bytes), do: bytes
+  @doc """
+  The bytes of `check/3`'s `tarball` (a path or `{:binary, bytes}`), read
+  no further than the largest tarball the rules read at all; `nil` for none
+  or one that cannot be read.
+  """
+  @spec tarball_bytes(Path.t() | {:binary, binary()} | nil) :: binary() | nil
+  def tarball_bytes(nil), do: nil
+  def tarball_bytes({:binary, bytes}) when is_binary(bytes), do: bytes
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp tarball_bytes(path) when is_binary(path) do
+  def tarball_bytes(path) when is_binary(path) do
     max = Rules.max_tarball_bytes()
 
     case File.open(path, [:read, :raw, :binary], &IO.binread(&1, max + 1)) do

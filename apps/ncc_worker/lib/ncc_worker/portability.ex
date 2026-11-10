@@ -16,7 +16,7 @@ defmodule NccWorker.Portability do
        no digest then, none now, no build dir or no time left in the
        recompute budget is a mismatch too);
     1b. a declassified closure dependency built by another manager than its
-       lock gives (item 1, `judge/5`'s `declassified:`, "manager mismatch");
+       tarball's `build_tools` give (item 1, `judge/5`'s `declassified:`, "manager mismatch");
     2. a refusal outside every window (it counts against everything);
     3. a refusal in the package's window (R1, R4 through `Events`);
     4. the package's window broken (missing, lowered depth, failed
@@ -250,14 +250,15 @@ defmodule NccWorker.Portability do
   defp traced_run(project_dir, package, opts, releases) do
     env = Keyword.fetch!(opts, :env)
     trace_dir = Keyword.get_lazy(opts, :trace_dir, fn -> default_trace_dir(project_dir) end)
-    {native, declassified, split_problem} = native_split(project_dir, opts)
+    home = hex_home(opts, env)
+    {native, declassified, split_problem} = native_split(project_dir, opts, releases, home)
 
     {compile_ms, traced} =
       timed(fn ->
         Tracer.run(project_dir, [package], tracer_opts(opts, env, trace_dir, native))
       end)
 
-    ctx_opts = [releases: releases, hex_home: hex_home(opts, env), declassified: declassified]
+    ctx_opts = [releases: releases, hex_home: home, declassified: declassified]
 
     project_dir
     |> verdict(package, traced, trace_dir, native, ctx_opts)
@@ -270,18 +271,22 @@ defmodule NccWorker.Portability do
 
   # Item 1 (behind `makefile_rule2: true`): the native list without the
   # dependencies whose native build file Mix never runs, which the judge
-  # then holds to the manager the trace recorded (`declassified:`).
-  # `NativeBuild.split/1` reads an unlistable `deps/` as no dependencies at
+  # then holds to the manager the trace recorded (`declassified:`). The
+  # `build_tools` come from each dependency's tarball verified against the
+  # lock snapshot, never from `mix.lock` itself.
+  # `NativeBuild.split/2` reads an unlistable `deps/` as no dependencies at
   # all; with the flag on that is a problem instead (fail closed), which
   # `unsplit/2` turns into could-not-judge once the compile is over.
   # sobelow_skip ["Traversal.FileModule"]
-  defp native_split(project_dir, opts) do
+  defp native_split(project_dir, opts, releases, home) do
     cond do
       not makefile_rule2?(opts) ->
         {native_deps(project_dir), %{}, nil}
 
       match?({:ok, _}, File.ls(Path.join(project_dir, "deps"))) ->
-        {native, declassified} = NativeBuild.split(project_dir)
+        {native, declassified} =
+          NativeBuild.split(project_dir, &Context.release_tarball(home, releases, &1))
+
         {native, declassified, nil}
 
       true ->
@@ -291,9 +296,13 @@ defmodule NccWorker.Portability do
 
   defp makefile_rule2?(opts), do: Keyword.get(opts, :makefile_rule2) == true
 
-  defp unsplit(verdict, nil), do: verdict
+  @doc false
+  # Public for tests: a finished compile's verdict is not passed when
+  # `native_split/4` could not list `deps/`.
+  @spec unsplit(verdict(), String.t() | nil) :: verdict()
+  def unsplit(verdict, nil), do: verdict
 
-  defp unsplit(%{observations: obs} = verdict, problem) do
+  def unsplit(%{observations: obs} = verdict, problem) do
     %{
       verdict
       | status: :skip,
@@ -410,7 +419,7 @@ defmodule NccWorker.Portability do
   `built_budget_ms:` (default 5 minutes; `built_clock:` for tests);
   `built_check: false` turns that off for a hand-built report with no
   `built` lines (`run/3` always checks). `declassified:` is what
-  `NativeBuild.split/1` declassified (`%{app => manager}`, item 1, default
+  `NativeBuild.split/2` declassified (`%{app => manager}`, item 1, default
   none): each such dependency in the package's closure must have been built
   by that manager, as the trace's closure line records. The verdict's
   `manager` is the package's own manager from that line (nil when unknown).
@@ -469,15 +478,14 @@ defmodule NccWorker.Portability do
       package_r2: package_r2,
       package_rebar: rebar(ctx, report, ctx.package),
       deps: deps,
-      scope: scope,
       manager_mismatch: manager_mismatch(ctx, scope, Keyword.get(opts, :declassified, %{}))
     }
   end
 
   # Item 1: a closure dependency rule 2 took off the native list because its
-  # lock and files say Mix runs mix or rebar3 must have been built by
-  # exactly that manager, as the trace's closure line records Mix's own
-  # answer. Another manager, or none recorded, refuses: its Makefile may
+  # verified tarball's `build_tools` and its files say Mix runs mix or
+  # rebar3 must have been built by exactly that manager, as the trace's
+  # closure line records Mix's own answer. Another manager, or none recorded, refuses: its Makefile may
   # have run.
   defp manager_mismatch(ctx, scope, declassified) do
     declassified
