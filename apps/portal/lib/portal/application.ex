@@ -94,6 +94,9 @@ defmodule Portal.Application do
       # The public site's counterpart: owns the ETS table that
       # `PortalWeb.Plugs.RateLimit` counts in, so it too precedes the endpoint.
       Portal.RateLimiter,
+      # Owns the ETS table of recent hex.pm search answers the scan form's
+      # typeahead reads; see `PortalWeb.PageController`.
+      Portal.HexSearchCache,
       # Off-process work a LiveView starts and does not wait on, e.g. the
       # admin Queue page's bulk actions (`PortalWeb.Admin.QueueLive`): a
       # per-row hex.pm lookup must not run inside the LiveView itself, where

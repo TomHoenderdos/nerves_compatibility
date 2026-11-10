@@ -37,8 +37,8 @@ defmodule Portal.RateLimiter do
 
   @default_limits %{
     # Password hashing, TOTP and passkey checks: sign-in, sign-up, the second
-    # factor and re-authentication share one budget. One sign-in is a couple
-    # of hits, so ten a minute never stops a person.
+    # factor, re-authentication and password changes share one budget. One
+    # sign-in is a couple of hits, so ten a minute never stops a person.
     auth: {10, @minute},
     # Device flows started and polled against hex.pm and GitHub.
     provider_auth: {10, @minute},
@@ -47,9 +47,10 @@ defmodule Portal.RateLimiter do
     # The scan form's package typeahead, per client and for everyone at once:
     # it spends hex.pm's per-address quota, which the portal's own release
     # checks draw on too, and many clients each under their own limit would
-    # still exhaust it together.
+    # still exhaust it together. The global budget counts only searches that
+    # reach hex.pm, not those `Portal.HexSearchCache` answers.
     hex_search: {30, @minute},
-    hex_search_global: {60, @minute}
+    hex_search_global: {80, @minute}
   }
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)

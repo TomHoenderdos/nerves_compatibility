@@ -8,24 +8,34 @@ defmodule PortalWeb.PageController do
   alias PortalWeb.Plugs.RateLimit
 
   # Each of these costs something per request: a password hash, a device
-  # flow against hex.pm or GitHub, a row an admin must review, or a search
-  # against hex.pm's per-address quota. Budgets are in `Portal.RateLimiter`.
-  plug RateLimit, [bucket: :auth] when action in [:create_session, :create_account]
+  # flow against hex.pm or GitHub, or a row an admin must review. Budgets are
+  # in `Portal.RateLimiter`. A limited form comes back with a flash.
+  plug RateLimit,
+       [bucket: :auth, html: {__MODULE__, :rate_limited_auth}]
+       when action in [:create_session, :create_account]
 
   plug RateLimit,
-       [bucket: :provider_auth]
+       [bucket: :auth, html: {__MODULE__, :rate_limited_settings}]
+       when action in [:update_settings, :set_password]
+
+  plug RateLimit,
+       [bucket: :provider_auth, html: {__MODULE__, :rate_limited_request_scan}]
        when action in [:hex_start, :hex_complete, :github_start, :github_complete]
 
-  plug RateLimit, [bucket: :scan_request] when action in [:anonymous_request]
-
-  # `packages: []` keeps the scan form's typeahead quiet: it reads
-  # `body.packages` without looking at the status.
   plug RateLimit,
-       [bucket: :hex_search, json: %{packages: []}] when action in [:hex_package_search]
+       [bucket: :scan_request, html: {__MODULE__, :rate_limited_request_scan}]
+       when action in [:anonymous_request]
 
-  plug RateLimit,
-       [bucket: :hex_search_global, by: :global, json: %{packages: []}]
-       when action in [:hex_package_search]
+  # The hex search counts inside its action, which alone knows whether a
+  # request is free (too short to search) or a cache hit. `packages: []`
+  # keeps the scan form's typeahead quiet: it reads `body.packages` without
+  # looking at the status.
+  @hex_search_limit RateLimit.init(bucket: :hex_search, json: %{packages: []})
+  @hex_search_global_limit RateLimit.init(
+                             bucket: :hex_search_global,
+                             by: :global,
+                             json: %{packages: []}
+                           )
 
   @package_regex ~r/^[a-z][a-z0-9_]*$/
   @max_anonymous_packages 25
@@ -271,8 +281,9 @@ defmodule PortalWeb.PageController do
     description:
       "Package name suggestions from Hex.pm, as the scan request form offers them. A query " <>
         "shorter than two characters, a missing query, or Hex.pm being unreachable all " <>
-        "answer an empty list. Limited per client and across all clients; past either " <>
-        "limit it answers 429.",
+        "answer an empty list without counting against any limit. Answers are cached per " <>
+        "query for five minutes. Searches are limited per client, and those that reach " <>
+        "Hex.pm also across all clients; past either limit it answers 429.",
     parameters: [
       query: [in: :query, type: :string, description: "Part of a package name.", example: "jas"]
     ],
@@ -283,19 +294,74 @@ defmodule PortalWeb.PageController do
          PortalWeb.ApiSchemas.HexSearchRateLimited}
     ]
 
-  def hex_package_search(conn, %{"query" => query}) do
-    packages =
-      query
-      |> Portal.HexPm.search_packages()
-      |> case do
-        {:ok, packages} -> packages
-        {:error, _reason} -> []
+  # A query too short to search costs nothing and counts against nothing.
+  # Otherwise the client's own budget comes first; a cached answer costs
+  # hex.pm nothing, so only a miss also counts against the budget shared by
+  # every client, which is what protects hex.pm's per-address quota.
+  def hex_package_search(conn, %{"query" => query}) when is_binary(query) do
+    if String.length(String.trim(query)) < 2 do
+      json(conn, %{packages: []})
+    else
+      case RateLimit.check(conn, @hex_search_limit) do
+        {:ok, conn} -> cached_or_search(conn, query)
+        {:halted, conn} -> conn
       end
-
-    json(conn, %{packages: packages})
+    end
   end
 
   def hex_package_search(conn, _params), do: json(conn, %{packages: []})
+
+  defp cached_or_search(conn, query) do
+    case Portal.HexSearchCache.fetch(query) do
+      {:ok, packages} -> json(conn, %{packages: packages})
+      :miss -> search_hex(conn, query)
+    end
+  end
+
+  defp search_hex(conn, query) do
+    case RateLimit.check(conn, @hex_search_global_limit) do
+      {:ok, conn} ->
+        packages =
+          case Portal.HexPm.search_packages(query) do
+            {:ok, packages} ->
+              Portal.HexSearchCache.put(query, packages)
+              packages
+
+            {:error, _reason} ->
+              []
+          end
+
+        json(conn, %{packages: packages})
+
+      {:halted, conn} ->
+        conn
+    end
+  end
+
+  @doc false
+  # `PortalWeb.Plugs.RateLimit` renderers: the form the request came from,
+  # with the reason as a flash. The conn already carries the 429 status.
+  def rate_limited_auth(conn, message) do
+    template = if action_name(conn) == :create_account, do: :register, else: :login
+
+    conn
+    |> put_flash(:error, message)
+    |> render_auth(template, username: string_param(conn.params, "username"))
+  end
+
+  @doc false
+  def rate_limited_settings(conn, message) do
+    conn
+    |> put_flash(:error, message)
+    |> render_settings(settings_user(conn))
+  end
+
+  @doc false
+  def rate_limited_request_scan(conn, message) do
+    conn
+    |> put_flash(:error, message)
+    |> render_request_scan()
+  end
 
   def hex_start(conn, params) do
     {packages, invalid_packages} = normalize_packages(params)

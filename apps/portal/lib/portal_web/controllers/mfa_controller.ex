@@ -13,7 +13,17 @@ defmodule PortalWeb.MfaController do
   alias PortalWeb.UserAuth
 
   # Shares the password form's budget; see `Portal.RateLimiter`.
-  plug PortalWeb.Plugs.RateLimit, [bucket: :auth] when action in [:totp_verify]
+  plug PortalWeb.Plugs.RateLimit,
+       [bucket: :auth, html: {__MODULE__, :rate_limited}] when action in [:totp_verify]
+
+  @doc false
+  # The challenge page again, with the reason as a flash; the conn already
+  # carries the 429 status.
+  def rate_limited(conn, message) do
+    conn
+    |> put_flash(:error, message)
+    |> render_challenge()
+  end
 
   def totp_challenge(conn, _params) do
     case UserAuth.pending_user(conn) do

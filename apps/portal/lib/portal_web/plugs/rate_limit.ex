@@ -14,6 +14,10 @@ defmodule PortalWeb.Plugs.RateLimit do
     * `:by` -- `:ip` (default) counts per client; `:global` counts every
       client together, for a budget that is ours rather than theirs
     * `:json` -- extra fields for a JSON 429 body, next to `error`
+    * `:html` -- `{module, function}` called as `function(conn, message)` to
+      render an HTML 429, so a form can come back with a flash rather than a
+      bare text page. The conn already carries the status and `retry-after`.
+      Without it, HTML requests get `text/plain`
     * `:limit`, `:window_ms`, `:enabled`, `:clock` -- override the config
       and the clock; for tests
 
@@ -27,6 +31,21 @@ defmodule PortalWeb.Plugs.RateLimit do
   connection from, so that entry is the proxy's own observation, while every
   entry before it is whatever the client chose to send. A peer that is not
   loopback is the client itself and its `X-Forwarded-For` is ignored.
+
+  An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) is read as the IPv4 address
+  it carries, on the peer and on the forwarded entry alike: with the listener
+  bound to `::`, a proxy connecting to `127.0.0.1` arrives as
+  `::ffff:127.0.0.1`.
+
+  Any process on the host that can reach the listener on loopback can set
+  `X-Forwarded-For` to whatever it likes. On a single-tenant host that is
+  only ourselves, which is acceptable.
+
+  ## Keys
+
+  An IPv4 client is counted by its address, an IPv6 client by its /64: one
+  subscriber usually holds a whole /64, and counting each of its 2^64
+  addresses apart would make the limit meaningless.
 
   `conn.remote_ip` itself is left alone: nothing else in the portal reads it
   and the builder endpoint's limits want the real TCP peer.
@@ -44,6 +63,7 @@ defmodule PortalWeb.Plugs.RateLimit do
       bucket: Keyword.fetch!(opts, :bucket),
       by: Keyword.get(opts, :by, :ip),
       json: Keyword.get(opts, :json, %{}),
+      html: Keyword.get(opts, :html),
       limit: Keyword.get(opts, :limit),
       window_ms: Keyword.get(opts, :window_ms),
       enabled: Keyword.get(opts, :enabled),
@@ -53,17 +73,30 @@ defmodule PortalWeb.Plugs.RateLimit do
 
   @impl true
   def call(conn, opts) do
-    if enabled?(opts), do: count(conn, opts), else: conn
+    case check(conn, opts) do
+      {:ok, conn} -> conn
+      {:halted, conn} -> conn
+    end
+  end
+
+  @doc """
+  The plug as a function, for an action that decides mid-way whether a
+  request counts: `{:ok, conn}` within the budget, `{:halted, conn}` with the
+  429 already sent past it. `opts` is what `init/1` returned.
+  """
+  @spec check(Plug.Conn.t(), map()) :: {:ok | :halted, Plug.Conn.t()}
+  def check(conn, opts) do
+    if enabled?(opts), do: count(conn, opts), else: {:ok, conn}
   end
 
   defp count(conn, opts) do
     {limit, window_ms} = limit(opts)
-    key = if opts.by == :global, do: :global, else: client_ip(conn)
+    key = if opts.by == :global, do: :global, else: client_key(conn)
     clock = if opts.clock, do: [now_ms: opts.clock.()], else: []
 
     case RateLimiter.hit(opts.bucket, key, limit, window_ms, clock) do
-      :ok -> conn
-      {:error, retry_after_ms} -> reject(conn, retry_after_ms, opts)
+      :ok -> {:ok, conn}
+      {:error, retry_after_ms} -> {:halted, reject(conn, retry_after_ms, opts)}
     end
   end
 
@@ -79,17 +112,33 @@ defmodule PortalWeb.Plugs.RateLimit do
   @doc "The client's address as a tuple. See the moduledoc for the proxy rule."
   @spec client_ip(Plug.Conn.t()) :: :inet.ip_address()
   def client_ip(conn) do
-    with true <- loopback?(conn.remote_ip),
+    peer = unmap(conn.remote_ip)
+
+    with true <- loopback?(peer),
          [_ | _] = values <- get_req_header(conn, "x-forwarded-for"),
          last when last != "" <- values |> Enum.join(",") |> last_entry(),
          {:ok, ip} <- :inet.parse_strict_address(String.to_charlist(last)) do
-      ip
+      unmap(ip)
     else
-      _ -> conn.remote_ip
+      _ -> peer
+    end
+  end
+
+  @doc "What a client is counted by: its IPv4 address, or its IPv6 /64."
+  @spec client_key(Plug.Conn.t()) :: :inet.ip_address()
+  def client_key(conn) do
+    case client_ip(conn) do
+      {a, b, c, d, _, _, _, _} -> {a, b, c, d, 0, 0, 0, 0}
+      ipv4 -> ipv4
     end
   end
 
   defp last_entry(header), do: header |> String.split(",") |> List.last() |> String.trim()
+
+  defp unmap({0, 0, 0, 0, 0, 0xFFFF, hi, lo}),
+    do: {Bitwise.bsr(hi, 8), Bitwise.band(hi, 0xFF), Bitwise.bsr(lo, 8), Bitwise.band(lo, 0xFF)}
+
+  defp unmap(ip), do: ip
 
   defp loopback?({127, _, _, _}), do: true
   defp loopback?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
@@ -107,12 +156,17 @@ defmodule PortalWeb.Plugs.RateLimit do
     # The format the `:accepts` plug negotiated. `get_format/1` would fall
     # back to reading params, which a plug in a bare pipeline has not fetched.
     conn =
-      if conn.private[:phoenix_format] == "json" do
-        Phoenix.Controller.json(conn, Map.put(opts.json, :error, message))
-      else
-        conn
-        |> put_resp_content_type("text/plain")
-        |> send_resp(429, message <> "\n")
+      case {conn.private[:phoenix_format], opts.html} do
+        {"json", _} ->
+          Phoenix.Controller.json(conn, Map.put(opts.json, :error, message))
+
+        {_, {module, function}} ->
+          apply(module, function, [conn, message])
+
+        _ ->
+          conn
+          |> put_resp_content_type("text/plain")
+          |> send_resp(429, message <> "\n")
       end
 
     halt(conn)

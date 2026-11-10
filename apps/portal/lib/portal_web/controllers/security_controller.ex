@@ -50,7 +50,14 @@ defmodule PortalWeb.SecurityController do
 
   # Proving a credential again costs what signing in does, and shares its
   # budget; see `Portal.RateLimiter`.
-  plug PortalWeb.Plugs.RateLimit, [bucket: :auth] when action in [:reauth, :reauth_passkey]
+  plug PortalWeb.Plugs.RateLimit,
+       [bucket: :auth, html: {__MODULE__, :rate_limited}]
+       when action in [:reauth, :reauth_passkey]
+
+  @doc false
+  # The page again, with the reason as a flash; the conn already carries the
+  # 429 status. `reauth_passkey` answers JSON and never gets here.
+  def rate_limited(conn, message), do: render_page(conn, error: message)
 
   # Every action, not just the two that carry plaintext. `:show` renders the
   # page those two redirect back to, and the cheapest correct rule for a

@@ -271,8 +271,10 @@ of the schema-v2 documents and not cached.
 }
 ```
 
-Searches are rate limited per client and across all clients together (by
-default 30 and 60 a minute). Past either limit the answer is a `429` with a
+Answers are cached per query for five minutes. Searches are rate limited per
+client (by default 30 a minute) and, for those that miss the cache and reach
+hex.pm, across all clients together (80 a minute). A query too short to
+search counts against neither. Past either limit the answer is a `429` with a
 `retry-after` header in seconds and the body
 `{"error": "<string>", "packages": []}`.
 

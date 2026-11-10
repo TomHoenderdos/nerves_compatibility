@@ -102,7 +102,67 @@ defmodule PortalWeb.Plugs.RateLimitTest do
     refute RateLimit.call(request({198, 51, 100, 1}), opts).halted
   end
 
+  test "behind a proxy reaching a dual-stack listener, forwarded clients stay apart" do
+    opts = opts(limit: 1)
+    mapped_loopback = {0, 0, 0, 0, 0, 0xFFFF, 0x7F00, 1}
+
+    refute RateLimit.call(request(mapped_loopback, "203.0.113.1"), opts).halted
+    assert RateLimit.call(request(mapped_loopback, "203.0.113.1"), opts).halted
+    refute RateLimit.call(request(mapped_loopback, "203.0.113.2"), opts).halted
+  end
+
+  test "two IPv6 addresses in one /64 share a budget; another /64 has its own" do
+    opts = opts(limit: 1)
+
+    refute RateLimit.call(request({127, 0, 0, 1}, "2001:db8:0:1::a"), opts).halted
+    assert RateLimit.call(request({127, 0, 0, 1}, "2001:db8:0:1:ffff::b"), opts).halted
+    refute RateLimit.call(request({127, 0, 0, 1}, "2001:db8:0:2::a"), opts).halted
+  end
+
+  test "an IPv6 peer that is not the proxy is counted by its /64 too" do
+    opts = opts(limit: 1)
+
+    refute RateLimit.call(request({0x2001, 0xDB8, 0, 1, 0, 0, 0, 1}), opts).halted
+    assert RateLimit.call(request({0x2001, 0xDB8, 0, 1, 0, 0, 0, 2}), opts).halted
+    refute RateLimit.call(request({0x2001, 0xDB8, 0, 2, 0, 0, 0, 1}), opts).halted
+  end
+
+  test "check/2 says whether the request went through" do
+    opts = opts(limit: 1)
+
+    assert {:ok, %Plug.Conn{halted: false}} = RateLimit.check(request({198, 51, 100, 1}), opts)
+
+    assert {:halted, %Plug.Conn{status: 429}} =
+             RateLimit.check(request({198, 51, 100, 1}), opts)
+  end
+
+  defmodule Html do
+    def render(conn, message), do: send_resp(conn, conn.status, "page: " <> message)
+  end
+
+  test "an :html renderer draws the 429 page, keeping status and retry-after" do
+    conn = RateLimit.call(request({198, 51, 100, 1}), opts(limit: 0, html: {Html, :render}))
+
+    assert conn.halted
+    assert conn.status == 429
+    assert [_] = get_resp_header(conn, "retry-after")
+    assert conn.resp_body =~ "page: Too many requests"
+  end
+
   describe "client_ip/1" do
+    test "reads an IPv4-mapped loopback peer as the proxy" do
+      conn = request({0, 0, 0, 0, 0, 0xFFFF, 0x7F00, 1}, "203.0.113.9")
+      assert RateLimit.client_ip(conn) == {203, 0, 113, 9}
+    end
+
+    test "reads an IPv4-mapped peer or forwarded entry as plain IPv4" do
+      assert RateLimit.client_ip(request({0, 0, 0, 0, 0, 0xFFFF, 0xC633, 0x6407})) ==
+               {198, 51, 100, 7}
+
+      assert RateLimit.client_ip(request({127, 0, 0, 1}, "::ffff:203.0.113.9")) ==
+               {203, 0, 113, 9}
+    end
+
     test "behind the loopback proxy, uses the last X-Forwarded-For entry" do
       conn = request({127, 0, 0, 1}, "192.0.2.66, 203.0.113.9")
       assert RateLimit.client_ip(conn) == {203, 0, 113, 9}

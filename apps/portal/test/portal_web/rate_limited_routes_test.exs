@@ -5,17 +5,19 @@ defmodule PortalWeb.RateLimitedRoutesTest do
 
   import Portal.Test.AccountsFixtures, only: [user_fixture: 0]
 
-  alias Portal.RateLimiter
+  alias Portal.{HexSearchCache, RateLimiter}
 
   @buckets [:auth, :provider_auth, :scan_request, :hex_search, :hex_search_global]
 
   setup do
     previous = Application.get_env(:portal, RateLimiter)
     RateLimiter.reset()
+    HexSearchCache.reset()
 
     on_exit(fn ->
       Application.put_env(:portal, RateLimiter, previous)
       RateLimiter.reset()
+      HexSearchCache.reset()
     end)
 
     :ok
@@ -48,7 +50,9 @@ defmodule PortalWeb.RateLimitedRoutesTest do
     {:post, "/auth/github/login/complete", :anon},
     {:post, "/auth/choose-username", :anon},
     {:post, "/requests/anonymous", :anon},
-    {:get, "/api/packages/hex", :anon_json},
+    {:get, "/api/packages/hex?query=ab", :anon_json},
+    {:post, "/settings", :user},
+    {:post, "/settings/password/set", :user},
     {:post, "/settings/security/reauth", :user},
     {:post, "/settings/security/reauth/passkey", :user_json},
     {:post, "/settings/providers/hex/link", :user},
@@ -114,22 +118,87 @@ defmodule PortalWeb.RateLimitedRoutesTest do
     end
   end
 
-  test "a limited hex search answers the documented 429", %{conn: conn} do
-    limits(%{hex_search: {0, 60_000}, hex_search_global: {100, 60_000}})
+  describe "an HTML form over its budget" do
+    for {path, who, expect} <- [
+          {"/login", :anon, "Sign in"},
+          {"/register", :anon, "Create an account"},
+          {"/login/totp", :anon, "Two-factor"},
+          {"/requests/anonymous", :anon, "Request scans for packages"},
+          {"/auth/hex/start", :anon, "Request scans for packages"},
+          {"/settings", :user, "Settings"},
+          {"/settings/password/set", :user, "Settings"},
+          {"/settings/security/reauth", :user, "Security"}
+        ] do
+      test "POST #{path} comes back as its page with a flash and a 429", %{conn: conn} do
+        limits(Map.new(@buckets, &{&1, {0, 60_000}}))
+        conn = if unquote(who) == :user, do: signed_in(conn), else: conn
 
-    conn = get(conn, ~p"/api/packages/hex?query=a")
+        conn = post(conn, unquote(path), %{"username" => "someone"})
 
-    assert %{"packages" => [], "error" => _} = json_response(conn, 429)
-    PortalWeb.ApiSpecAssertions.assert_documented_response(conn, "searchHexPackages")
+        body = html_response(conn, 429)
+        assert body =~ "Too many requests. Try again in"
+        assert body =~ unquote(expect)
+        assert [_] = get_resp_header(conn, "retry-after")
+      end
+    end
   end
 
-  test "the global hex search budget is shared by every client", %{conn: conn} do
-    limits(%{hex_search: {100, 60_000}, hex_search_global: {1, 60_000}})
+  describe "hex search" do
+    @jason [
+      %{"name" => "jason", "description" => "JSON", "url" => "https://hex.pm/packages/jason"}
+    ]
 
-    assert conn |> from("203.0.113.1") |> get(~p"/api/packages/hex") |> Map.fetch!(:status) ==
-             200
+    test "past the client's budget answers the documented 429", %{conn: conn} do
+      limits(%{hex_search: {0, 60_000}})
 
-    assert conn |> from("203.0.113.2") |> get(~p"/api/packages/hex") |> Map.fetch!(:status) ==
-             429
+      conn = get(conn, ~p"/api/packages/hex?query=ab")
+
+      assert %{"packages" => [], "error" => _} = json_response(conn, 429)
+      PortalWeb.ApiSpecAssertions.assert_documented_response(conn, "searchHexPackages")
+    end
+
+    test "a query too short to search counts against nothing", %{conn: conn} do
+      limits(%{hex_search: {0, 60_000}, hex_search_global: {0, 60_000}})
+
+      for query <- ["", "a", " b "] do
+        conn = get(conn, ~p"/api/packages/hex?#{[query: query]}")
+        assert json_response(conn, 200) == %{"packages" => []}
+      end
+    end
+
+    test "a cached answer is served without touching the global budget", %{conn: conn} do
+      limits(%{hex_search: {100, 60_000}, hex_search_global: {0, 60_000}})
+      HexSearchCache.put("jason", @jason)
+
+      for client <- ["203.0.113.1", "203.0.113.2", "203.0.113.3"] do
+        conn = conn |> from(client) |> get(~p"/api/packages/hex?query=jason")
+        assert json_response(conn, 200) == %{"packages" => @jason}
+      end
+    end
+
+    test "the client's budget comes first and counts cached answers too", %{conn: conn} do
+      limits(%{hex_search: {1, 60_000}, hex_search_global: {100, 60_000}})
+      HexSearchCache.put("jason", @jason)
+
+      assert conn
+             |> from("203.0.113.1")
+             |> get(~p"/api/packages/hex?query=jason")
+             |> json_response(200)
+
+      assert conn
+             |> from("203.0.113.1")
+             |> get(~p"/api/packages/hex?query=jason")
+             |> json_response(429)
+    end
+
+    test "a miss counts against the budget every client shares", %{conn: conn} do
+      limits(%{hex_search: {100, 60_000}, hex_search_global: {1, 60_000}})
+      # Another client's miss, already counted.
+      assert :ok = RateLimiter.hit(:hex_search_global, :global, 1, 60_000)
+
+      conn = conn |> from("203.0.113.2") |> get(~p"/api/packages/hex?query=uncached")
+
+      assert %{"packages" => []} = json_response(conn, 429)
+    end
   end
 end
