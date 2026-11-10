@@ -18,6 +18,9 @@ defmodule PortalWeb.Plugs.RateLimit do
       render an HTML 429, so a form can come back with a flash rather than a
       bare text page. The conn already carries the status and `retry-after`.
       Without it, HTML requests get `text/plain`
+    * `:peek` -- `true` checks the budget without spending it
+      (`Portal.RateLimiter.peek/5`), for a budget the action spends itself
+      with `spend/2` once a request has succeeded
     * `:limit`, `:window_ms`, `:enabled`, `:clock` -- override the config
       and the clock; for tests
 
@@ -62,6 +65,7 @@ defmodule PortalWeb.Plugs.RateLimit do
     %{
       bucket: Keyword.fetch!(opts, :bucket),
       by: Keyword.get(opts, :by, :ip),
+      peek: Keyword.get(opts, :peek, false),
       json: Keyword.get(opts, :json, %{}),
       html: Keyword.get(opts, :html),
       limit: Keyword.get(opts, :limit),
@@ -94,10 +98,31 @@ defmodule PortalWeb.Plugs.RateLimit do
     key = if opts.by == :global, do: :global, else: client_key(conn)
     clock = if opts.clock, do: [now_ms: opts.clock.()], else: []
 
-    case RateLimiter.hit(opts.bucket, key, limit, window_ms, clock) do
+    count = if opts.peek, do: &RateLimiter.peek/5, else: &RateLimiter.hit/5
+
+    case count.(opts.bucket, key, limit, window_ms, clock) do
       :ok -> {:ok, conn}
       {:error, retry_after_ms} -> {:halted, reject(conn, retry_after_ms, opts)}
     end
+  end
+
+  @doc """
+  Spends one hit of a budget the plug only peeked at (`peek: true`). Takes
+  the same options as the plug; whether the budget was already over does not
+  matter, the request has been answered.
+  """
+  @spec spend(Plug.Conn.t(), keyword()) :: :ok
+  def spend(conn, opts) do
+    opts = init(opts)
+
+    if enabled?(opts) do
+      {limit, window_ms} = limit(opts)
+      key = if opts.by == :global, do: :global, else: client_key(conn)
+      clock = if opts.clock, do: [now_ms: opts.clock.()], else: []
+      _ = RateLimiter.hit(opts.bucket, key, limit, window_ms, clock)
+    end
+
+    :ok
   end
 
   defp limit(%{limit: limit, window_ms: window_ms})

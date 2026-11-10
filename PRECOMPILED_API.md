@@ -517,7 +517,9 @@ identical projects send identical reports, and the second must not be able
 to retract the first one's. The duplicate is counted on the stored report,
 not stored again.
 
-The body is at most 256 KiB of `application/json` (413 and 415 otherwise).
+The body is at most 256 KiB of `application/json`, with no `charset` or
+`charset=utf-8` (413 and 415 otherwise; 400 for a body that is not
+well-formed JSON).
 Every field at every level is checked and an unknown one refuses the report
 with 422 `{"error", "details"}`:
 
@@ -547,10 +549,12 @@ Reason codes: `hit`, `not_in_batch`, `not_built_version`,
 `deadline_passed`, `fetch_failed`, `verify_failed`, `install_failed`,
 `internal`. Another code is stored as `unknown`.
 
-Limits: 10 reports an hour per client, 300 an hour and 2000 a day in
-total; 429 with `retry-after` beyond them. A `DELETE` shares the same
-buckets as a `POST` and counts against the same limits. The limits are
-checked before the body is read. The client address is used only in
+Limits: 10 requests an hour per client, counting every `POST` and
+`DELETE`, refused ones included; and 300 accepted reports an hour and 2000
+a day in total, counting only `201` and `200` answers, so refused requests
+sent from many addresses cannot use up everyone's budget. 429 with
+`retry-after` beyond any of them. The limits are checked before the body
+is read. The client address is used only in
 memory, for the limits and a keyed digest of it; the address is never
 stored, nor logged at the production log level.
 

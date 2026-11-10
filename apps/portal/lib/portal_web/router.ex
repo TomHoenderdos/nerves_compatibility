@@ -34,12 +34,20 @@ defmodule PortalWeb.Router do
   # `PortalWeb.Plugs.ReportBody` reads at most 256 KiB of JSON. The routes
   # below set `log: false`, so no dispatch line with the parameters (the
   # contact among them) is logged; nothing here logs the client address.
-  # A DELETE counts against the same buckets as a POST.
+  # The per-client bucket counts every request, a DELETE included. The two
+  # global buckets are only peeked at here and spent by the controller on an
+  # accepted report (201 or a 200 duplicate), so junk sent from many
+  # addresses cannot lock real reporters out.
   pipeline :precompiled_reports do
     plug :accepts, ["json"]
     plug PortalWeb.Plugs.RateLimit, bucket: :precompiled_report
-    plug PortalWeb.Plugs.RateLimit, bucket: :precompiled_report_global, by: :global
-    plug PortalWeb.Plugs.RateLimit, bucket: :precompiled_report_global_day, by: :global
+    plug PortalWeb.Plugs.RateLimit, bucket: :precompiled_report_global, by: :global, peek: true
+
+    plug PortalWeb.Plugs.RateLimit,
+      bucket: :precompiled_report_global_day,
+      by: :global,
+      peek: true
+
     plug PortalWeb.Plugs.ReportBody
   end
 

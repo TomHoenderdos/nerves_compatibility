@@ -52,7 +52,7 @@ defmodule PortalWeb.ApiSchemas.ReportRequest do
       additionalProperties: false,
       required: [:format, :client, :elixir, :otp, :os, :target, :lines, :lock],
       properties: %{
-        format: %Schema{type: :integer, minimum: 1},
+        format: %Schema{type: :integer, minimum: 1, maximum: 1},
         client: %Schema{type: :string, description: "The client library version."},
         built_at: %Schema{type: :string, format: :"date-time", nullable: true},
         elixir: %Schema{type: :string},

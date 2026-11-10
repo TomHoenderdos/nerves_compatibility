@@ -188,6 +188,110 @@ defmodule PortalWeb.PrecompiledReportControllerTest do
     _ = conn
   end
 
+  test "junk does not use up the global budget; accepted reports do", %{conn: conn} do
+    Application.put_env(:portal, RateLimiter,
+      enabled: true,
+      limits: %{
+        precompiled_report_global: {1, 3_600_000},
+        precompiled_report_global_day: {1, 3_600_000}
+      }
+    )
+
+    big = Jason.encode!(%{"pad" => String.duplicate("x", 262_144)})
+
+    junk = [
+      fn c -> c |> put_req_header("content-type", "text/plain") |> post(@path, "{}") end,
+      fn c -> send_report(c, %{body() | "format" => 99}) end,
+      fn c -> c |> put_req_header("content-type", "application/json") |> post(@path, "{") end,
+      fn c -> c |> put_req_header("content-type", "application/json") |> post(@path, big) end
+    ]
+
+    for {send, n} <- Enum.with_index(junk) do
+      c = build_conn() |> put_req_header("x-forwarded-for", "2001:db8:#{n}::1")
+
+      try do
+        assert send.(c).status in [400, 413, 415, 422]
+      rescue
+        e in [Plug.Parsers.ParseError, Plug.Parsers.RequestTooLargeError] -> e
+      end
+    end
+
+    assert conn |> send_report(body(), "198.51.100.1") |> json_response(201)
+    # The duplicate is accepted too: answered, but the budget is spent now.
+    assert build_conn() |> send_report(body(), "198.51.100.2") |> Map.fetch!(:status) == 429
+  end
+
+  test "a duplicate spends the global budget", %{conn: conn} do
+    Application.put_env(:portal, RateLimiter,
+      enabled: true,
+      limits: %{precompiled_report_global: {2, 3_600_000}}
+    )
+
+    assert conn |> send_report(body(), "198.51.100.1") |> json_response(201)
+    assert build_conn() |> send_report(body(), "198.51.100.2") |> json_response(200)
+    assert build_conn() |> send_report(body(), "198.51.100.3") |> Map.fetch!(:status) == 429
+  end
+
+  test "malformed JSON is a documented 400", %{conn: conn} do
+    assert_error_sent 400, fn ->
+      conn |> put_req_header("content-type", "application/json") |> post(@path, "{")
+    end
+
+    responses = PortalWeb.ApiSpecAssertions.api_spec().paths[@path].post.responses
+    assert Map.has_key?(responses, 400)
+    assert Map.has_key?(responses, 413)
+  end
+
+  test "a charset other than utf-8 is refused with 415", %{conn: conn} do
+    for type <- ["application/json; charset=latin1", "application/json; charset=utf-16"] do
+      c = build_conn() |> put_req_header("content-type", type) |> post(@path, "{}")
+      assert c.status == 415, type
+    end
+
+    c =
+      conn
+      |> put_req_header("content-type", "application/json; charset=UTF-8")
+      |> post(@path, Jason.encode!(body()))
+
+    assert c.status == 201
+  end
+
+  test "a percent-encoded report path is not parsed by the endpoint", %{conn: conn} do
+    big = Jason.encode!(%{"pad" => String.duplicate("x", 262_144)})
+
+    assert_error_sent 413, fn ->
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> post("/api/precompiled/%72eports", big)
+    end
+
+    opts = PortalWeb.Plugs.BodyParsers.init(parsers: [:json], pass: ["*/*"], json_decoder: Jason)
+
+    for path <- [
+          "/api/precompiled/%72eports",
+          "/api/%70recompiled/reports/x",
+          "/%61pi/precompiled/reports"
+        ] do
+      skipped =
+        Plug.Test.conn(:post, path, ~s({"a":1}))
+        |> put_req_header("content-type", "application/json")
+        |> PortalWeb.Plugs.BodyParsers.call(opts)
+
+      assert %Plug.Conn.Unfetched{} = skipped.body_params, path
+    end
+  end
+
+  test "a body something else already parsed is refused" do
+    conn =
+      Plug.Test.conn(:post, @path, "")
+      |> put_req_header("content-type", "application/json")
+      |> Map.put(:body_params, %{"a" => 1})
+      |> PortalWeb.Plugs.ReportBody.call(PortalWeb.Plugs.ReportBody.init([]))
+
+    assert conn.halted
+    assert conn.status == 413
+  end
+
   test "a request over a limit is refused before its body is read", %{conn: conn} do
     Application.put_env(:portal, RateLimiter,
       enabled: true,

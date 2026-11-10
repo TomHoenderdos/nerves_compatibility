@@ -38,6 +38,19 @@ defmodule Portal.RateLimiterTest do
     assert :ok = RateLimiter.hit(bucket, :a, 1, 60_000, now_ms: now + 60_000)
   end
 
+  test "peek answers as the next hit would, without counting it" do
+    bucket = bucket()
+    now = 1_800_000_000_020_000
+
+    for _ <- 1..3, do: assert(:ok = RateLimiter.peek(bucket, :a, 1, 60_000, now_ms: now))
+
+    assert :ok = RateLimiter.hit(bucket, :a, 1, 60_000, now_ms: now)
+    assert {:error, 40_000} = RateLimiter.peek(bucket, :a, 1, 60_000, now_ms: now)
+    assert :ok = RateLimiter.peek(bucket, :b, 1, 60_000, now_ms: now)
+    assert :ok = RateLimiter.peek(bucket, :a, 1, 60_000, now_ms: now + 60_000)
+    assert {:error, _} = RateLimiter.peek(bucket(), :a, 0, 60_000)
+  end
+
   test "a limit of zero refuses the first hit" do
     assert {:error, _} = RateLimiter.hit(bucket(), :a, 0, 60_000)
   end

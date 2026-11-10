@@ -101,6 +101,29 @@ defmodule Portal.RateLimiter do
     if count <= limit, do: :ok, else: {:error, ends - now}
   end
 
+  @doc """
+  Whether one more hit for `key` in `bucket` would be within `limit`, without
+  counting it: `:ok`, or `{:error, retry_after_ms}` as `hit/5` would answer.
+  For a budget spent only on success, together with `hit/5` once the request
+  has succeeded. Concurrent requests may all peek before any hits, so such a
+  budget can be overrun by the requests in flight at once.
+  """
+  @spec peek(term(), term(), non_neg_integer(), pos_integer(), keyword()) ::
+          :ok | {:error, pos_integer()}
+  def peek(bucket, key, limit, window_ms, opts \\ []) do
+    now = Keyword.get_lazy(opts, :now_ms, fn -> System.system_time(:millisecond) end)
+    window = div(now, window_ms)
+    ends = (window + 1) * window_ms
+
+    count =
+      case :ets.lookup(@table, {{bucket, key}, window}) do
+        [{_counter, count, _ends}] -> count
+        [] -> 0
+      end
+
+    if count < limit, do: :ok, else: {:error, ends - now}
+  end
+
   @doc false
   def reset, do: :ets.delete_all_objects(@table)
 
