@@ -383,8 +383,9 @@ open(Path, Modes) ->
 %% argument is an atom (Path.wildcard/2 passes Path.Wildcard), and
 %% wildcard/3 takes both: its file calls go through that module, so only a
 %% module whose calls reach the traced file functions can be judged (item
-%% 5b). Any other module's reads are untraced: the call is unclassified,
-%% which the judge cannot judge.
+%% 5b). Any other module's reads are untraced, so the call is a read with
+%% no path, which the judge refuses as a host read (a could-not-judge would
+%% withdraw nothing).
 -define(WILDCARD_MODS, [file, 'Elixir.Path.Wildcard']).
 
 wildcard(Pattern, Cwd) -> {file_read, #{path => wildcard_dir(Pattern, Cwd), listing => true}}.
@@ -392,7 +393,7 @@ wildcard(Pattern, Cwd) -> {file_read, #{path => wildcard_dir(Pattern, Cwd), list
 wildcard_mod(Pattern, Cwd, Mod) ->
     case lists:member(Mod, ?WILDCARD_MODS) of
         true -> wildcard(Pattern, Cwd);
-        false -> {unclassified, #{module => term_bin(Mod)}}
+        false -> {file_read, #{module => term_bin(Mod)}}
     end.
 
 %% The process_info/2 items that expose another process's state.

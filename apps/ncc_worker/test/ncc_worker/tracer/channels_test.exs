@@ -71,11 +71,12 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert {:file_read, %{path: "/d/priv", listing: true}} =
              classify(:filelib, :wildcard, [~c"priv/*", ~c"/d", :file])
 
-    assert {:unclassified, %{module: "my_mod"}} =
-             classify(:filelib, :wildcard, ["x/*", :my_mod])
-
-    assert {:unclassified, %{module: "my_mod"}} =
-             classify(:filelib, :wildcard, ["x/*", ~c"/d", :my_mod])
+    # Any other module's reads are untraced: a read with no path, which the
+    # judge refuses.
+    for args <- [["x/*", :my_mod], ["x/*", ~c"/d", :my_mod]] do
+      assert {:file_read, %{module: "my_mod"} = arg} = classify(:filelib, :wildcard, args)
+      refute Map.has_key?(arg, :path)
+    end
 
     assert {:filelib, :wildcard, 3} in :ncc_tracer_channels.patterns()
   end

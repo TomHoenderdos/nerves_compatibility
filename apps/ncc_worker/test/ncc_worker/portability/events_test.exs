@@ -847,6 +847,18 @@ defmodule NccWorker.Portability.EventsTest do
                "compile-time host read: erlang:system_info/1 (system_architecture) " <>
                  "via CCPrecompiler.current_target/0 in Pkg.f/0 (lib/pkg.ex:3)"
 
+      # Item 5b: a wildcard through an untraced module is a read with no
+      # path, refused (withdrawing), never could-not-judge.
+      assert {:refuse,
+              "compile-time host read: filelib:wildcard/2 in Pkg.f/0 (lib/pkg.ex:3)" = wild} =
+               Events.decide(
+                 ev("file_read", "filelib:wildcard/2", %{"module" => "my_mod"}),
+                 ctx,
+                 "pkg"
+               )
+
+      assert Compatibility.Portability.withdraws?(wild)
+
       # The prefix the portal withdraws on is unchanged.
       assert Compatibility.Portability.refusal?(reason)
       assert Compatibility.Portability.withdraws?(reason)
