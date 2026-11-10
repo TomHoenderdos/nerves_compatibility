@@ -73,6 +73,7 @@ defmodule Portal.Precompiled.ToolchainRevocationTest do
       compile_env: if(marked?, do: @env),
       portability_rule: Keyword.get(opts, :rule),
       rule1_reason: Keyword.get(opts, :rule1_reason),
+      judge_revision: Keyword.get(opts, :judge_revision),
       run_id: "tc-#{name}-#{version}-#{System.unique_integer([:positive])}",
       finished_at: Keyword.get(opts, :finished_at, ago(30 * @day))
     })
@@ -280,6 +281,15 @@ defmodule Portal.Precompiled.ToolchainRevocationTest do
         Keyword.get(opts, :status, :pass),
         opts ++ [toolchain: "1.20/29", rule: 2, rule1_reason: rule1_reason, marked: true]
       )
+    end
+
+    test "a judge_revision call leaves them alone" do
+      pure_elixir_run!(2)
+      build = full_run_build!(@cmd, judge_revision: 1)
+      build_id = build.id
+
+      assert {:dry_run, [%{kind: :toolchain_build, id: ^build_id}]} =
+               ToolchainRevocation.revoke(judge_revision: 1)
     end
 
     defp results(system_pkg) do
@@ -510,6 +520,44 @@ defmodule Portal.Precompiled.ToolchainRevocationTest do
       assert Enum.sort(Enum.map(rows, & &1.id)) == Enum.sort(changed)
 
       assert {:revoked, 53, _, _} = ToolchainRevocation.revoke(dry_run: false, everything: true)
+    end
+  end
+
+  describe "judge_revision:" do
+    test "lists rule-2 passes judged at or after the revision, rule 1's verdict or not" do
+      run!("old", "1.0.0")
+      row!("old", "1.0.0", :pass, rule: 2, marked: true)
+      run!("one", "1.0.0")
+      one = row!("one", "1.0.0", :pass, rule: 2, marked: true, judge_revision: 1)
+      run!("two", "1.0.0")
+
+      two =
+        row!("two", "1.0.0", :pass, rule: 2, rule1_reason: @cmd, marked: true, judge_revision: 2)
+
+      run!("skip", "1.0.0")
+      row!("skip", "1.0.0", :skipped, rule: 2, judge_revision: 2)
+
+      assert {:dry_run, rows} = ToolchainRevocation.revoke(judge_revision: 1)
+      assert Enum.sort(Enum.map(rows, & &1.id)) == Enum.sort([one.id, two.id])
+      assert {:dry_run, [%{id: id}]} = ToolchainRevocation.revoke(judge_revision: 2)
+      assert id == two.id
+    end
+
+    test "is a filter of its own for acting, and undo puts the rows back" do
+      run!("one", "1.0.0")
+      one = row!("one", "1.0.0", :pass, rule: 2, marked: true, judge_revision: 1)
+
+      assert {:revoked, 1, [%{id: id}], at} =
+               ToolchainRevocation.revoke(dry_run: false, judge_revision: 1)
+
+      assert id == one.id
+      assert reload(one).revoked_reason == "rule 2 revoked"
+      assert {:ok, 1} = ToolchainRevocation.undo(at)
+    end
+
+    test "must be a positive integer" do
+      assert_raise ArgumentError, fn -> ToolchainRevocation.revoke(judge_revision: 0) end
+      assert_raise ArgumentError, fn -> ToolchainRevocation.revoke(judge_revision: "1") end
     end
   end
 end

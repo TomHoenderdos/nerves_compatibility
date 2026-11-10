@@ -1361,6 +1361,31 @@ defmodule Portal.Catalog do
    false)
   """
 
+  # A skipped row judged under an older judge revision (precompiled judge
+  # refinements spec, "Rollout"): its `judge_revision` is NULL (before
+  # revisions) or below the newest revision any row of the toolchain and
+  # builder version carries. Reopened once per revision, whatever its reason
+  # or rule, when due (`@reopen_due`), and only while its last activity is
+  # older than the newest build at that newest revision: before any build
+  # host writes a revision nothing reopens, and a row an older image wrote
+  # after the last newest-revision build (a rollback) is not rebuilt again.
+  # Revoked rows stay closed by the branch this sits in, transient-capped
+  # ones by `@reopen_due`. Every NULL reads as "not reopened", as in
+  # `@rule1_reopen`. Keyed on the revision only, never on reason text.
+  @judge_reopen """
+  coalesce(coalesce(t.judge_revision, 0) <
+     (SELECT max(jr.judge_revision) FROM catalog_toolchain_builds jr
+      WHERE jr.toolchain = $1 AND jr.builder_version = $2)
+   AND #{@reopen_due}
+   AND coalesce(t.attempted_at, t.finished_at, t.updated_at) <
+     (SELECT max(jf.finished_at) FROM catalog_toolchain_builds jf
+      WHERE jf.toolchain = $1 AND jf.builder_version = $2
+        AND jf.judge_revision =
+          (SELECT max(jm.judge_revision) FROM catalog_toolchain_builds jm
+           WHERE jm.toolchain = $1 AND jm.builder_version = $2)),
+   false)
+  """
+
   # A live row of the identity (see `@toolchain_candidates_sql`'s comment for
   # what is live): `t` is the row; `$PKG`, `$VERSION`, `$VARIANT` and
   # `$CONFIG` are the candidate's package id, version, variant and config
@@ -1405,6 +1430,7 @@ defmodule Portal.Catalog do
               AND #{@reopen_due}
             )
             OR #{@rule1_reopen}
+            OR #{@judge_reopen}
           )
         )
         OR (

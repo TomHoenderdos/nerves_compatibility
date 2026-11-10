@@ -56,11 +56,22 @@ defmodule Portal.Precompiled.ToolchainRevocation do
   `rule1_prefix:`, and is not capped unless given `limit:`. Rule 1's
   publications (`portability_rule` nil) are never touched.
 
+  ## By judge revision: `judge_revision: n`
+
+  Takes every passing toolchain build at the current `builder_version`
+  with `portability_rule` 2 judged at revision `n` or later
+  (`judge_revision >= n`), whatever rule 1 said: the one-call rollback of
+  a judge refinement that shipped at revision `n` (precompiled judge
+  refinements spec, "Revocation lever"). Full runs' `pure_elixir` results
+  record no revision and are left alone. It counts as a filter for acting,
+  combines with `package:`, `version:` and `rule1_prefix:`, and is capped
+  by `limit:` like any call.
+
   ## Safety
 
     * `revoke/1` only lists unless given `dry_run: false`, and acting needs
-      `package:` (optionally with `version:`), `rule1_prefix:`, `all: true`
-      or `everything: true`, else it returns `{:error, :filter_required}`;
+      `package:` (optionally with `version:`), `rule1_prefix:`,
+      `judge_revision:`, `all: true` or `everything: true`, else it returns `{:error, :filter_required}`;
     * one call revokes at most `limit:` rows (default 50, toolchain builds
       and system results together; no default cap with `everything: true`),
       in package, version, kind and identity order; a dry run lists the same
@@ -81,6 +92,7 @@ defmodule Portal.Precompiled.ToolchainRevocation do
       Portal.Precompiled.ToolchainRevocation.revoke(dry_run: false, rule1_prefix: "calls erlang:open_port/", limit: 50)
       Portal.Precompiled.ToolchainRevocation.revoke(everything: true)
       Portal.Precompiled.ToolchainRevocation.revoke(dry_run: false, everything: true)
+      Portal.Precompiled.ToolchainRevocation.revoke(dry_run: false, judge_revision: 1)
       Portal.Precompiled.ToolchainRevocation.revocations()
       Portal.Precompiled.ToolchainRevocation.undo(~U[2026-11-09 12:00:00.000000Z])
 
@@ -112,9 +124,11 @@ defmodule Portal.Precompiled.ToolchainRevocation do
 
   # $1 builder_version, $2 package (null: any), $3 version (null: any),
   # $4 rule1_reason prefix (null: any), $5 limit (null: none), $6 the full
-  # run's toolchain, $7 everything (true: no rule-1 verdict needed). `<lock>` is `FOR UPDATE OF t` / `OF s` when acting, empty for
-  # a dry run. Each kind takes its first $5 rows, so the union's first $5
-  # are the first $5 overall.
+  # run's toolchain, $7 everything (true: no rule-1 verdict needed), $8 the
+  # lowest judge revision (null: any; given, no rule-1 verdict is needed and
+  # system results are left alone: they record no revision). `<lock>` is
+  # `FOR UPDATE OF t` / `OF s` when acting, empty for a dry run. Each kind
+  # takes its first $5 rows, so the union's first $5 are the first $5 overall.
   @candidates """
   WITH tc AS (
     SELECT 'toolchain_build'::text AS kind, t.id, p.name, t.version, t.toolchain,
@@ -123,7 +137,8 @@ defmodule Portal.Precompiled.ToolchainRevocation do
     JOIN catalog_packages p ON p.id = t.package_id
     WHERE t.builder_version = $1
       AND t.portability_rule = 2
-      AND ($7::boolean OR t.rule1_reason IS NOT NULL)
+      AND ($7::boolean OR $8::integer IS NOT NULL OR t.rule1_reason IS NOT NULL)
+      AND ($8::integer IS NULL OR t.judge_revision >= $8)
       AND t.revoked_at IS NULL
       AND t.status = 'pass'
       AND ($2::text IS NULL OR p.name = $2)
@@ -153,6 +168,7 @@ defmodule Portal.Precompiled.ToolchainRevocation do
       LIMIT 1
     ) e ON true
     WHERE s.system_pkg = 'pure_elixir'
+      AND $8::integer IS NULL
       AND s.portability_rule = 2
       AND ($7::boolean OR e.rule1_reason IS NOT NULL)
       AND s.unpublished_at IS NULL
@@ -178,7 +194,7 @@ defmodule Portal.Precompiled.ToolchainRevocation do
                 |> String.replace("<lock_s>", "")) <>
                  "SELECT #{@columns} FROM cand c #{@order}"
 
-  # $8 the timestamp every row of the call carries. The updates re-check the
+  # $9 the timestamp every row of the call carries. The updates re-check the
   # row is still unrevoked, so a row another writer revoked in between is
   # neither changed nor listed.
   @revoke_sql (@candidates
@@ -187,14 +203,14 @@ defmodule Portal.Precompiled.ToolchainRevocation do
                 """
                 , tb_done AS (
                   UPDATE catalog_toolchain_builds
-                  SET revoked_at = $8, revoked_reason = '#{@reason}', updated_at = $8
+                  SET revoked_at = $9, revoked_reason = '#{@reason}', updated_at = $9
                   WHERE id IN (SELECT id FROM cand WHERE kind = 'toolchain_build')
                     AND revoked_at IS NULL
                   RETURNING id
                 ), sr_done AS (
                   UPDATE catalog_system_results
-                  SET unpublished_at = $8, unpublished_reason = '#{@result_reason}',
-                      updated_at = $8
+                  SET unpublished_at = $9, unpublished_reason = '#{@result_reason}',
+                      updated_at = $9
                   WHERE id IN (SELECT id FROM cand WHERE kind = 'system_result')
                     AND unpublished_at IS NULL
                   RETURNING id
@@ -242,7 +258,8 @@ defmodule Portal.Precompiled.ToolchainRevocation do
   `package:`), `rule1_prefix:` (what rule 1 said starts with it, e.g.
   `"calls System.cmd/"`), `all: true` (acting without `package:` or
   `rule1_prefix:`), `everything: true` (every rule-2 publication, see the
-  moduledoc), `limit:` (#{@default_limit}, none with `everything: true`:
+  moduledoc), `judge_revision:` (a positive integer, see the moduledoc),
+  `limit:` (#{@default_limit}, none with `everything: true`:
   the most rows one call lists or revokes).
 
   Returns `{:dry_run, rows}`, `{:error, :filter_required}` for an act
@@ -337,6 +354,15 @@ defmodule Portal.Precompiled.ToolchainRevocation do
     unless is_nil(limit) or (is_integer(limit) and limit > 0),
       do: raise(ArgumentError, "limit must be a positive integer, got: #{inspect(limit)}")
 
+    revision = Keyword.get(opts, :judge_revision)
+
+    unless is_nil(revision) or (is_integer(revision) and revision > 0),
+      do:
+        raise(
+          ArgumentError,
+          "judge_revision must be a positive integer, got: #{inspect(revision)}"
+        )
+
     [
       Portal.Toolchains.builder_version(),
       package,
@@ -344,14 +370,16 @@ defmodule Portal.Precompiled.ToolchainRevocation do
       Keyword.get(opts, :rule1_prefix),
       limit,
       @full_run_toolchain,
-      everything?
+      everything?,
+      revision
     ]
   end
 
   defp filtered?(opts),
     do:
       present?(Keyword.get(opts, :package)) or present?(Keyword.get(opts, :rule1_prefix)) or
-        Keyword.get(opts, :all) == true or Keyword.get(opts, :everything) == true
+        is_integer(Keyword.get(opts, :judge_revision)) or Keyword.get(opts, :all) == true or
+        Keyword.get(opts, :everything) == true
 
   defp present?(value), do: is_binary(value) and value != ""
 
