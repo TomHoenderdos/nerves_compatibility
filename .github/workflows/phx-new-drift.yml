@@ -36,4 +36,4 @@ jobs:
 
       - run: mix deps.get
 
-      - run: mix test apps/compatibility/test/compatibility/config_variants/phx_new_drift_test.exs --only phx_new_drift
+      - run: mix test --no-start apps/compatibility/test/compatibility/config_variants/phx_new_drift_test.exs --only phx_new_drift
