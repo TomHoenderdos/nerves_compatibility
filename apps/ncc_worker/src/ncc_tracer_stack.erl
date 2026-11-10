@@ -4,7 +4,10 @@
 %% modules are toolchain and whether the calling process is a user process.
 -export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2,
          uncached/0, printers/0, diagnosers/0, checker/2, made_by_toolchain/2,
-         made_by_mix/2, made_by_mix_strict/2, target_read_by_mix/2, compiler_frame/1]).
+         made_by_mix/2, made_by_mix_strict/2, target_read_by_mix/2, compiler_frame/1,
+         code_loading/1, code_loading/2, code_loading_shapes/1]).
+
+-include("ncc_code_loading_shapes.hrl").
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% Frames a call is attributed through, to the frame that called them, when
@@ -459,3 +462,27 @@ mfa_bin(M, F, A) ->
                             Plain -> {Plain, <<":">>}
                         end,
     iolist_to_binary([Name, Separator, atom_to_binary(F), "/", integer_to_binary(A)]).
+
+%% OTP's own code loading (precompiled judge refinements, item 5a): a read
+%% that erl_prim_loader makes while code:ensure_loaded/1 loads a module into
+%% the calling process, on a stack whose top is exactly one of the shapes
+%% recorded for this OTP release in its toolchain image
+%% (ncc_code_loading_shapes.hrl, test/fixtures/code_loading). Anything below
+%% the shape may be anything. Any other shape, a release with none recorded
+%% or a frame this cannot take apart is not code loading (fail closed).
+code_loading(Stack) -> code_loading(Stack, erlang:system_info(otp_release)).
+
+code_loading(Stack, Release) when is_list(Stack) ->
+    Frames = [shape_frame(Frame) || Frame <- Stack],
+    lists:any(fun(Shape) -> lists:prefix(Shape, Frames) end, code_loading_shapes(Release));
+code_loading(_Stack, _Release) -> false.
+
+code_loading_shapes(Release) ->
+    case lists:keyfind(Release, 1, ?CODE_LOADING_SHAPES) of
+        {Release, Shapes} -> Shapes;
+        false -> []
+    end.
+
+shape_frame({M, F, A, _Location}) when is_atom(M), is_atom(F), (is_integer(A) orelse is_list(A)) ->
+    {M, F, arity(A)};
+shape_frame(_Frame) -> bad.
