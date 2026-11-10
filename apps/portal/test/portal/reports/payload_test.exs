@@ -153,4 +153,126 @@ defmodule Portal.Reports.PayloadTest do
     assert "not_built_target" in Payload.known_codes()
     refute "unknown" in Payload.known_codes()
   end
+
+  describe "type confusion" do
+    test "floats and huge integers are not integers in range" do
+      assert errors(%{body() | "format" => 1.0}) =~ "format"
+      assert errors(%{body() | "otp" => 29.0}) =~ "otp"
+      assert errors(%{body() | "format" => 10 ** 40}) =~ "format"
+      assert errors(%{body() | "otp" => -(10 ** 40)}) =~ "otp"
+    end
+
+    test "a list or a map where a string is expected is refused" do
+      assert errors(%{body() | "client" => ["0.4.0"]}) =~ "client"
+      assert errors(%{body() | "target" => %{"a" => "b"}}) =~ "target"
+      assert errors(%{body() | "system" => ["nerves_system_rpi4"]}) =~ "system"
+      assert errors(Map.put(body(), "contact", %{"x" => 1})) =~ "contact"
+      assert errors(%{body() | "built_at" => [1]}) =~ "built_at"
+      assert errors(%{body() | "os" => %{"family" => ["unix"], "arch" => "x"}}) =~ "os.family"
+      assert errors(%{body() | "lines" => %{"0" => 1}}) =~ "lines"
+
+      bad = %{line("jason", "1.4.5", "miss", "fetch_failed", []) | "name" => ["jason"]}
+      assert errors(%{body() | "lines" => [bad]}) =~ "lines[0].name"
+      bad = %{line("jason", "1.4.5", "miss", "fetch_failed", []) | "reason" => ["x"]}
+      assert errors(%{body() | "lines" => [bad]}) =~ "lines[0].reason"
+    end
+
+    test "a reason_code that is not a string is refused" do
+      for code <- [5, nil, ["fetch_failed"], %{}] do
+        bad = %{line("jason", "1.4.5", "miss", "fetch_failed", []) | "reason_code" => code}
+        assert errors(%{body() | "lines" => [bad]}) =~ "lines[0].reason_code"
+      end
+    end
+  end
+
+  test "the os.family error names the field once" do
+    message = errors(%{body() | "os" => %{"family" => "darwin", "arch" => "x"}})
+    assert message =~ "os.family: must be unix or win32"
+    refute message =~ "os: os."
+  end
+
+  test "contact refuses bidi overrides, zero-width and other unprintable characters" do
+    for bad <- ["a\u202Eb", "a\u200Bb", "a\u2028b", "a\u2029b", "a\uE000b", "a\u0378b"] do
+      assert errors(Map.put(body(), "contact", bad)) =~ "contact"
+    end
+  end
+
+  test "the reason has unprintable characters replaced" do
+    l = %{
+      line("jason", "1.4.5", "miss", "fetch_failed", [])
+      | "reason" => "a\nb\u202Ec\u200Bd\te"
+    }
+
+    assert {:ok, %{lines: [line]}} = Payload.validate(%{body() | "lines" => [l]})
+    assert line.reason == "a b c d e"
+  end
+
+  test "an unknown reason code keeps its text, cut at 300 characters" do
+    l = %{
+      line("jason", "1.4.5", "miss", "brand_new", [])
+      | "reason" => String.duplicate("y", 400)
+    }
+
+    assert {:ok, %{lines: [line]}} = Payload.validate(%{body() | "lines" => [l]})
+    assert line.reason_code == "unknown"
+    assert line.reason == String.duplicate("y", 300)
+  end
+
+  test "checksums must be exactly 64 hex characters" do
+    for bad <- [
+          String.duplicate("a", 63),
+          String.duplicate("a", 65),
+          "g" <> String.duplicate("a", 63)
+        ] do
+      lock = %{"name" => "jason", "version" => "1.4.5", "checksum" => bad}
+      assert errors(%{body() | "lock" => [lock]}) =~ "lock[0].checksum"
+    end
+  end
+
+  test "a lock version that does not parse is refused" do
+    lock = %{lock("jason", "1.4.5") | "version" => "1.4"}
+    assert errors(%{body() | "lock" => [lock]}) =~ "lock[0].version"
+  end
+
+  describe "bounded error output" do
+    test "a long unknown key is cut and its control characters stripped" do
+      key = "evil\r\nkey\u202E" <> String.duplicate("k", 10_000)
+      message = errors(Map.put(body(), key, 1))
+      assert message =~ "evilkey" <> String.duplicate("k", 33) <> ": unknown field"
+      refute message =~ String.duplicate("k", 34)
+      refute message =~ ~r/[\r\n\x{202E}]/u
+    end
+
+    test "many unknown top-level keys name five and count the rest" do
+      extra = Map.new(1..20_000, &{"x#{&1}", 1})
+      assert {:error, errors} = Payload.validate(Map.merge(body(), extra))
+      assert length(errors) == 6
+      assert List.last(errors) =~ "and 19995 more unknown fields"
+      assert byte_size(Enum.join(errors, "\n")) < 1_000
+    end
+
+    test "many unknown keys in many entries stay bounded" do
+      extra = Map.new(1..1_000, &{"x#{&1}", 1})
+      bad_line = Map.merge(line("jason", "1.4.5", "miss", "fetch_failed", []), extra)
+      bad_lock = Map.merge(lock("jason", "1.4.5"), extra)
+      long = String.duplicate("z", 200)
+
+      bad_os =
+        Map.merge(%{"family" => "unix", "arch" => "x"}, Map.new(1..1_000, &{"#{long}#{&1}", 1}))
+
+      body =
+        Map.merge(body(), %{
+          "lines" => List.duplicate(bad_line, 500),
+          "lock" => List.duplicate(bad_lock, 1_000),
+          "os" => bad_os
+        })
+
+      assert {:error, errors} = Payload.validate(body)
+      message = Enum.join(errors, "\n")
+      assert message =~ "lines: and 495 more refused entries"
+      assert message =~ "lock: and 995 more refused entries"
+      assert message =~ "os.*: and 995 more unknown fields"
+      assert byte_size(message) < 8_000
+    end
+  end
 end

@@ -43,7 +43,10 @@ defmodule Portal.Reports.Payload do
   @target ~r/\A[a-z0-9_]{1,64}\z/
   @package ~r/\A[a-z][a-z0-9_]{0,63}\z/
   @checksum ~r/\A[0-9a-fA-F]{64}\z/
-  @control ~r/[\p{Cc}\p{Cf}]/u
+  @max_named 5
+  # Not printable: controls, format characters (bidi overrides, zero-width),
+  # line and paragraph separators, private use and unassigned code points.
+  @unprintable ~r/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}]/u
   # The client's own argument rule (`Precompiled.Reason`): names and versions.
   @arg ~r/\A[A-Za-z0-9_.+:\-]{0,64}\z/
 
@@ -89,7 +92,7 @@ defmodule Portal.Reports.Payload do
     current = Keyword.get(opts, :current_format, @current_format)
 
     {fields, errors} =
-      {%{}, unknown(body, @top, "")}
+      {%{}, Enum.reverse(unknown(body, @top, ""))}
       |> field(:format, body["format"], &format(&1, current))
       |> field(:client, body["client"], &version/1)
       |> field(:built_at, body["built_at"], optional(&datetime/1))
@@ -135,18 +138,33 @@ defmodule Portal.Reports.Payload do
 
   # ── plumbing ──────────────────────────────────────────────────────────────
 
+  # A check answers `{:error, why}` to be labelled with the field's name, or
+  # `{:error, {:full, why}}` when `why` already names the nested field.
   defp field({fields, errors}, key, value, check) do
     case check.(value) do
       {:ok, v} -> {Map.put(fields, key, v), errors}
+      {:error, {:full, why}} -> {fields, [why | errors]}
       {:error, why} -> {fields, ["#{key}: #{why}" | errors]}
     end
   end
 
+  # Names at most `@max_named` unknown keys, each cut to 40 printable
+  # characters, and counts the rest: the error never grows with the body.
   defp unknown(map, allowed, prefix) do
-    for key <- Map.keys(map), key not in allowed do
-      "#{prefix}#{key |> to_string() |> String.slice(0, 40)}: unknown field"
+    {named, rest} = map |> Map.keys() |> Enum.reject(&(&1 in allowed)) |> Enum.split(@max_named)
+    named = Enum.map(named, &"#{prefix}#{echo(&1)}: unknown field")
+
+    case length(rest) do
+      0 -> named
+      n -> named ++ ["#{prefix}*: and #{n} more unknown fields"]
     end
   end
+
+  defp echo(key) when is_binary(key) do
+    key |> String.replace_invalid("?") |> String.replace(@unprintable, "") |> String.slice(0, 40)
+  end
+
+  defp echo(key), do: key |> inspect(limit: 5, printable_limit: 40) |> echo()
 
   defp optional(check) do
     fn
@@ -192,22 +210,25 @@ defmodule Portal.Reports.Payload do
 
   defp os(%{} = os) do
     with [] <- unknown(os, @os_keys, "os."),
-         true <- os["family"] in ["unix", "win32"] || {:error, "os.family must be unix or win32"},
+         {:ok, family} <- labelled(family(os["family"]), "os.family"),
          {:ok, arch} <- labelled(matches(os["arch"], @arch), "os.arch") do
-      {:ok, %{family: os["family"], arch: arch}}
+      {:ok, %{family: family, arch: arch}}
     else
-      [_ | _] = unknown -> {:error, Enum.join(unknown, "; ")}
-      {:error, _} = error -> error
+      [_ | _] = unknown -> {:error, {:full, Enum.join(unknown, "; ")}}
+      {:error, why} -> {:error, {:full, why}}
     end
   end
 
   defp os(_os), do: {:error, "must be an object"}
 
+  defp family(f) when f in ["unix", "win32"], do: {:ok, f}
+  defp family(_f), do: {:error, "must be unix or win32"}
+
   defp contact(c) when is_binary(c) do
     cond do
       not String.valid?(c) -> {:error, "not UTF-8"}
       String.length(c) > @max_contact -> {:error, "at most #{@max_contact} characters"}
-      Regex.match?(@control, c) -> {:error, "control characters"}
+      Regex.match?(@unprintable, c) -> {:error, "unprintable characters"}
       String.trim(c) == "" -> {:ok, nil}
       true -> {:ok, String.trim(c)}
     end
@@ -240,9 +261,19 @@ defmodule Portal.Reports.Payload do
         end
       end)
 
-    if errors == [],
-      do: {:ok, Enum.reverse(items)},
-      else: {:error, errors |> Enum.reverse() |> Enum.take(5) |> Enum.join("; ")}
+    case Enum.reverse(errors) do
+      [] -> {:ok, Enum.reverse(items)}
+      errors -> {:error, {:full, summarise(errors, name)}}
+    end
+  end
+
+  defp summarise(errors, name) do
+    {named, rest} = Enum.split(errors, @max_named)
+
+    case length(rest) do
+      0 -> Enum.join(named, "; ")
+      n -> Enum.join(named ++ ["#{name}: and #{n} more refused entries"], "; ")
+    end
   end
 
   defp line(%{} = l, prefix) do
@@ -293,7 +324,7 @@ defmodule Portal.Reports.Payload do
 
   defp reason(r) when is_binary(r) do
     if String.valid?(r),
-      do: {:ok, r |> String.replace(@control, " ") |> String.slice(0, @max_reason)},
+      do: {:ok, r |> String.replace(@unprintable, " ") |> String.slice(0, @max_reason)},
       else: {:error, "not UTF-8"}
   end
 
