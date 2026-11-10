@@ -20,8 +20,9 @@ defmodule Portal.Reports do
 
   import Ecto.Query, only: [from: 2]
 
-  alias Portal.Reports.{Line, Payload, Report}
+  alias Portal.Reports.{Line, Payload, Report, Requeue}
   alias Portal.Repo
+  alias Portal.Workers.ReportRequeue
 
   @dedup_seconds 24 * 3600
 
@@ -128,6 +129,12 @@ defmodule Portal.Reports do
           return_errors?: true,
           stop_on_error?: true
         )
+    end
+
+    # In the report's own transaction: a report stored with a not-built miss
+    # always has its requeue job, and a rolled-back one never does.
+    if Enum.any?(rows, &(&1.status == :miss and &1.reason_code in Requeue.codes())) do
+      {:ok, _job} = Oban.insert(ReportRequeue.new(%{report_id: report.id}))
     end
 
     report.id

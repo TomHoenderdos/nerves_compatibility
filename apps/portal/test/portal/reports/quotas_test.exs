@@ -65,6 +65,26 @@ defmodule Portal.Reports.QuotasTest do
     assert {:ok, :ok} = reserve([{"global", 1}], Date.add(@day, 1))
   end
 
+  test "a cap of zero, or any cap that is not a positive integer, refuses without raising" do
+    for cap <- [0, -1, nil, 1.5, "3"] do
+      assert {:error, :cap} = reserve([{"global", 50}, {"package:zero", cap}])
+    end
+
+    assert used("global") in [nil, 0]
+    assert used("package:zero") in [nil, 0]
+  end
+
+  test "a key that is not a string is refused as a programming error" do
+    assert_raise FunctionClauseError, fn -> Quotas.reserve([{:global, 50}], @day) end
+  end
+
+  test "keys given in any order are reserved and refused alike" do
+    assert {:ok, :ok} = reserve([{"reporter:o", 1}, {"global", 50}, {"package:o", 3}])
+    assert {:error, :cap} = reserve([{"package:o", 3}, {"reporter:o", 1}, {"global", 50}])
+    assert used("global") == 1
+    assert used("package:o") == 1
+  end
+
   test "the defaults are 50 a day, 3 per package and 5 per reporter" do
     assert Quotas.caps() == %{global: 50, package: 3, reporter: 5}
   end
@@ -105,6 +125,55 @@ defmodule Portal.Reports.QuotasTest do
       %{key: key}
     end
 
+    # Concurrent transactions lock their keys in one order (sorted), so two
+    # reservations of the same keys given in opposite orders cannot deadlock.
+    # Shown by the lock it takes first: a reservation of [b, a] that waits on
+    # b already holds a.
+    test "keys are locked in sorted order, whatever order they are given in", %{key: key} do
+      a = key <> "-a"
+      b = key <> "-b"
+      parent = self()
+
+      on_exit(fn ->
+        Sandbox.unboxed_run(Repo, fn ->
+          Repo.delete_all(from(q in "precompiled_report_quotas", where: q.key in [^a, ^b]))
+        end)
+      end)
+
+      blocker =
+        Task.async(fn ->
+          Sandbox.unboxed_run(Repo, fn ->
+            Repo.transaction(fn ->
+              :ok = Quotas.reserve([{b, 5}], @day)
+              send(parent, :holding_b)
+              receive do: (:release -> :ok)
+            end)
+          end)
+        end)
+
+      assert_receive :holding_b, 5_000
+
+      waiter =
+        Task.async(fn -> Sandbox.unboxed_run(Repo, fn -> reserve([{b, 5}, {a, 5}]) end) end)
+
+      wait_for_lock_waiter()
+
+      # `a` is held by the waiter, so taking it now times out.
+      assert_raise Postgrex.Error, ~r/lock timeout/, fn ->
+        Sandbox.unboxed_run(Repo, fn ->
+          Repo.transaction(fn ->
+            Repo.query!("SET LOCAL lock_timeout = '200ms'")
+            Quotas.reserve([{a, 5}], @day)
+          end)
+        end)
+      end
+
+      send(blocker.pid, :release)
+      assert {:ok, :ok} = Task.await(blocker)
+      assert {:ok, :ok} = Task.await(waiter)
+      assert Sandbox.unboxed_run(Repo, fn -> {used(a), used(b)} end) == {1, 2}
+    end
+
     test "60 jobs racing for a cap of 50 reserve exactly 50", %{key: key} do
       results =
         1..60
@@ -120,6 +189,27 @@ defmodule Portal.Reports.QuotasTest do
       assert Enum.count(results, &(&1 == {:ok, :ok})) == 50
       assert Enum.count(results, &(&1 == {:error, :cap})) == 10
       assert Sandbox.unboxed_run(Repo, fn -> used(key) end) == 50
+    end
+  end
+
+  defp wait_for_lock_waiter(tries \\ 100)
+  defp wait_for_lock_waiter(0), do: flunk("no reservation ever waited on a lock")
+
+  defp wait_for_lock_waiter(tries) do
+    waiting =
+      Sandbox.unboxed_run(Repo, fn ->
+        Repo.query!(
+          "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%precompiled_report_quotas%'"
+        )
+      end)
+
+    case waiting.rows do
+      [[n]] when n > 0 ->
+        :ok
+
+      _ ->
+        Process.sleep(20)
+        wait_for_lock_waiter(tries - 1)
     end
   end
 end

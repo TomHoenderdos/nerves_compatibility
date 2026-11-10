@@ -92,7 +92,7 @@ if portal_available? do
   parsed_queues =
     case System.get_env("OBAN_QUEUES") do
       nil ->
-        [builds: 1, ingest: 2, intake: 5, maintenance: 1, toolchain: 1, remote: 2]
+        [builds: 1, ingest: 2, intake: 5, maintenance: 1, toolchain: 1, remote: 2, reports: 1]
 
       queues ->
         queues
@@ -107,6 +107,17 @@ if portal_available? do
           end
         end)
     end
+
+  # `reports` runs wherever `maintenance` does (the web host), without an
+  # OBAN_QUEUES change: both blue/green releases read one environment, and
+  # only a release with `Portal.Workers.ReportRequeue` adds the queue. Both
+  # branches above build a keyword list; anything else passes through.
+  parsed_queues =
+    if is_list(parsed_queues) and Keyword.keyword?(parsed_queues) and
+         Keyword.has_key?(parsed_queues, :maintenance) and
+         not Keyword.has_key?(parsed_queues, :reports),
+       do: parsed_queues ++ [reports: 1],
+       else: parsed_queues
 
   config :portal, Oban, queues: parsed_queues
 

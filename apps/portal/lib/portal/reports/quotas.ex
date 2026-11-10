@@ -42,10 +42,25 @@ defmodule Portal.Reports.Quotas do
     Map.new(@defaults, fn {k, v} -> {k, Keyword.get(config, k, v)} end)
   end
 
-  @doc "Takes one from every key's budget for `day`, or none (see the moduledoc)."
+  @doc """
+  Takes one from every key's budget for `day`, or none (see the moduledoc).
+
+  The keys are reserved in sorted order, whatever order they are given in, so
+  concurrent transactions lock shared keys in one order and cannot deadlock.
+  A cap that is not a positive integer (a cap of 0 included) refuses the
+  whole reservation with `{:error, :cap}` before anything is taken.
+  """
   @spec reserve([{String.t(), pos_integer()}], Date.t()) :: :ok | {:error, :cap}
-  def reserve(keys, %Date{} = day) do
-    Enum.reduce_while(keys, :ok, fn {key, cap}, :ok when is_integer(cap) and cap > 0 ->
+  def reserve(keys, %Date{} = day) when is_list(keys) do
+    keys = Enum.sort_by(keys, fn {key, _cap} when is_binary(key) -> key end)
+
+    if Enum.all?(keys, fn {_key, cap} -> is_integer(cap) and cap > 0 end),
+      do: reserve_sorted(keys, day),
+      else: {:error, :cap}
+  end
+
+  defp reserve_sorted(keys, day) do
+    Enum.reduce_while(keys, :ok, fn {key, cap}, :ok ->
       case Repo.query!(@reserve_sql, [key, day, cap]) do
         %{num_rows: 1} -> {:cont, :ok}
         %{num_rows: 0} -> {:halt, {:error, :cap}}
