@@ -19,7 +19,7 @@
     "plug_crypto": "2.2.1",
     "telemetry": "1.4.2",
     "websock": "0.5.3",
-    "websock_adapter": "0.7.1"
+    "websock_adapter": "0.7.2"
   },
   "judge_compile": "finished",
   "observations": {
@@ -3491,6 +3491,18 @@
         "owner": "plug"
       }
     ],
+    "mix_project_paths": [
+      {
+        "arg": {
+          "fun": "app_path"
+        },
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 171,
+        "mfa": "Mix.Project.app_path/1",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "lazy_html"
+      }
+    ],
     "native_calls": [
       {
         "arg": {
@@ -3561,39 +3573,39 @@
     "refusals": [
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: erlang:open_port/2 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+        "reason": "compile-time host read: erlang:open_port/2 via ram_file:ll_open/3 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: erlang:system_info/1 in CCPrecompiler.current_target/0 (lib/cc_precompiler.ex:93)"
+        "reason": "compile-time host read: erlang:system_info/1 (nif_version) in ElixirMake.Artefact.available_target_urls/2 (lib/elixir_make/artefact.ex:206)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: erlang:system_info/1 in CCPrecompiler.current_target/1 (lib/cc_precompiler.ex:143)"
+        "reason": "compile-time host read: erlang:system_info/1 (nif_version) in ElixirMake.Artefact.fallback_version/1 (lib/elixir_make/artefact.ex:169)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: erlang:system_info/1 in ElixirMake.Artefact.available_target_urls/2 (lib/elixir_make/artefact.ex:206)"
+        "reason": "compile-time host read: erlang:system_info/1 (nif_version) in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:228)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: erlang:system_info/1 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
+        "reason": "compile-time host read: erlang:system_info/1 (os_type) in CCPrecompiler.current_target/0 (lib/cc_precompiler.ex:93)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: erlang:system_info/1 in ElixirMake.Artefact.fallback_version/1 (lib/elixir_make/artefact.ex:169)"
+        "reason": "compile-time host read: erlang:system_info/1 (os_type) in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: erlang:system_info/1 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:228)"
+        "reason": "compile-time host read: erlang:system_info/1 (os_type) via filename:basedir_os_type/0 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: erlang:system_info/1 in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
+        "reason": "compile-time host read: erlang:system_info/1 (system_architecture) in CCPrecompiler.current_target/1 (lib/cc_precompiler.ex:143)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: file:open/2 <<\"./liblazy_html.so\"...>> in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+        "reason": "compile-time host read: file:open/2 <<\"./liblazy_html.so\"...>> via erl_tar:open1/4 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
       },
       {
         "owner": "lazy_html",
@@ -3601,23 +3613,23 @@
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: file:read_file_info/1 <work>/work/proj/_build/host/lib/lazy_html in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+        "reason": "compile-time host read: file:read_file_info/1 <work>/work/proj/_build/host/lib/lazy_html via filelib:do_is_dir/2 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: file:read_file_info/1 <work>/work/proj/_build/host/lib/lazy_html/priv in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+        "reason": "compile-time host read: file:read_file_info/1 <work>/work/proj/_build/host/lib/lazy_html/priv via filelib:do_is_dir/2 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: file:read_file_info/2 <home> in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
+        "reason": "compile-time host read: file:read_file_info/2 <home> via elixir_utils:read_file_type/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: file:read_file_info/2 <home>/.cache in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
+        "reason": "compile-time host read: file:read_file_info/2 <home>/.cache via elixir_utils:read_file_type/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: file:read_file_info/2 <home>/.cache/elixir_make in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
+        "reason": "compile-time host read: file:read_file_info/2 <home>/.cache/elixir_make via elixir_utils:read_file_type/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
       },
       {
         "owner": "lazy_html",
@@ -3629,31 +3641,35 @@
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: file:read_link/1 <work>/work/proj/_build/host/lib/lazy_html/priv/liblazy_html.so in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+        "reason": "compile-time host read: file:read_link/1 <work>/work/proj/_build/host/lib/lazy_html/priv/liblazy_html.so via filelib:srp_segment/4 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:100)"
+        "reason": "compile-time host read: os:getenv/1 (ELIXIR_MAKE_CACHE_DIR) in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:17)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:98)"
+        "reason": "compile-time host read: os:getenv/1 (HOME) via filename:basedir_join_home/1 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:99)"
+        "reason": "compile-time host read: os:getenv/1 (MIX_XDG) in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:13)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:13)"
+        "reason": "compile-time host read: os:getenv/1 (TARGET_ABI) in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:100)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:17)"
+        "reason": "compile-time host read: os:getenv/1 (TARGET_ARCH) in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:98)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
+        "reason": "compile-time host read: os:getenv/1 (TARGET_OS) in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:99)"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time host read: os:getenv/1 (XDG_CACHE_HOME) via filename:getenv/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
       },
       {
         "owner": "lazy_html",
@@ -3661,11 +3677,11 @@
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:type/0 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
+        "reason": "compile-time host read: os:type/0 in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:type/0 in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
+        "reason": "compile-time host read: os:type/0 via filename:basedir_os_type/0 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
       },
       {
         "owner": "lazy_html",
@@ -3699,6 +3715,25 @@
     "taint": {
       "fine": "bakes the build path: Elixir.Fine \"<root>/deps/fine/c_include\"",
       "lazy_html": "compile-time host read: os:type/0 in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
+    },
+    "tree_check": {
+      "cc_precompiler": "unverified: native build",
+      "elixir_make": "unverified: native build",
+      "fine": "ok",
+      "jason": "ok",
+      "lazy_html": "unverified: native build",
+      "mime": "ok",
+      "phoenix": "ok",
+      "phoenix_html": "ok",
+      "phoenix_live_view": "ok",
+      "phoenix_pubsub": "ok",
+      "phoenix_template": "ok",
+      "phoenix_view": "ok",
+      "plug": "ok",
+      "plug_crypto": "ok",
+      "telemetry": "ok",
+      "websock": "ok",
+      "websock_adapter": "ok"
     }
   },
   "optional_deps": {

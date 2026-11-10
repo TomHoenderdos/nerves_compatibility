@@ -315,12 +315,17 @@
       }
     ],
     "mix_exs_allowed": [],
+    "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "ok",
     "problems": [],
     "refusals": [],
-    "taint": {}
+    "taint": {},
+    "tree_check": {
+      "telemetry": "ok",
+      "thousand_island": "ok"
+    }
   },
   "optional_deps": {
     "added": [],

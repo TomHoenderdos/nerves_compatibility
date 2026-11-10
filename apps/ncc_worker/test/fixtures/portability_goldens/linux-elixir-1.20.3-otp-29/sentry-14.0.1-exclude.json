@@ -64,6 +64,7 @@
     "config_unreviewed": [],
     "elixir_version": [],
     "mix_exs_allowed": [],
+    "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "ok",
@@ -98,7 +99,12 @@
         "reason": "compile-time host read: application:loaded_applications/0 in Sentry.OpenTelemetry.VersionChecker.get_loaded_version/1 (lib/sentry/opentelemetry/version_checker.ex:55)"
       }
     ],
-    "taint": {}
+    "taint": {},
+    "tree_check": {
+      "nimble_options": "ok",
+      "nimble_ownership": "ok",
+      "sentry": "ok"
+    }
   },
   "optional_deps": {
     "added": [],
