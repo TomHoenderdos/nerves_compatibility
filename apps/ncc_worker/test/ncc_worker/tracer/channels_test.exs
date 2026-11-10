@@ -59,6 +59,27 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert {:file_read, %{path: "a"}} = classify(:file, :open, ["a", [:read, :binary]])
   end
 
+  # Item 5b: Path.wildcard/2 passes Path.Wildcard as filelib:wildcard/2's
+  # second argument, a module, not a directory.
+  test "a wildcard's module argument is not a directory; wildcard/3 is traced" do
+    assert {:file_read, %{path: "lib/assets", listing: true}} =
+             classify(:filelib, :wildcard, ["lib/assets/**", Path.Wildcard])
+
+    assert {:file_read, %{path: "lib/assets", listing: true}} =
+             classify(:filelib, :wildcard, ["lib/assets/*", :file])
+
+    assert {:file_read, %{path: "/d/priv", listing: true}} =
+             classify(:filelib, :wildcard, [~c"priv/*", ~c"/d", :file])
+
+    assert {:unclassified, %{module: "my_mod"}} =
+             classify(:filelib, :wildcard, ["x/*", :my_mod])
+
+    assert {:unclassified, %{module: "my_mod"}} =
+             classify(:filelib, :wildcard, ["x/*", ~c"/d", :my_mod])
+
+    assert {:filelib, :wildcard, 3} in :ncc_tracer_channels.patterns()
+  end
+
   test "System.user_home, File.lstat and File.read_link reach a channel (R4 allowlist)" do
     patterns = :ncc_tracer_channels.patterns()
 

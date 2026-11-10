@@ -19,7 +19,11 @@ defmodule NccWorker.Portability.Events do
       (`:ncc_tracer_channels.path_os_frames/0`: `Path.major_os_type/0`,
       `:filename.split/1` and the like, and `:erl_prim_loader`'s unexported
       `pathtype/1`, `normalize/2` and `real_path/4`; never a function that runs a fun it
-      was given, so a package callback tail-calling the read is refused). Every other key refuses. The tracer
+      was given, so a package callback tail-calling the read is refused).
+      `machine`, `smp_support`, `threads` and `heap_type` are allowed
+      (constant within an OTP major); every other key refuses, and the
+      reason names the key and, when another function than the package's
+      made the call, that function (`via`). The tracer
       writes no line for those path-handling reads (it counts them as
       `path_os_reads`): a line would always be ignored here.
       In an epp server process (no user frame, the stack's bottom frame
@@ -111,6 +115,12 @@ defmodule NccWorker.Portability.Events do
   @epp_server ~w(server init_server)
   @max_mix_exs_bytes 1024 * 1024
   @mix_paths ~w(build_path app_path compile_path)
+
+  # Item 5d: keys constant within an OTP major on every supported platform
+  # (BEAM; SMP and threads since OTP 21; private heaps). The client checks
+  # the OTP major. Exact atom keys only: `term_bin` renders a tuple key
+  # (`{allocator, ...}`) as something never in this list.
+  @same_within_major ~w(machine smp_support threads heap_type)
 
   @type decision ::
           :ignore
@@ -273,6 +283,10 @@ defmodule NccWorker.Portability.Events do
   defp os_identity(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => "os_type"}} = e),
     do: path_handling(e)
 
+  defp os_identity(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => key}})
+       when key in @same_within_major,
+       do: :ignore
+
   defp os_identity(%{"mfa" => "erlang:system_info/1"} = e), do: {:refuse, host_read(e)}
   defp os_identity(e), do: path_handling(e)
 
@@ -410,9 +424,33 @@ defmodule NccWorker.Portability.Events do
     end
   end
 
+  # Item 5c: the key or name the read asked for, the path, and the frame
+  # that made the call when it is not the package frame `where/1` names.
+  # The prefix stays exact: the portal withdraws on it.
   defp host_read(event, path \\ nil) do
-    "compile-time host read: " <> event["mfa"] <> path_part(path) <> where(event)
+    "compile-time host read: " <>
+      event["mfa"] <> detail(event) <> path_part(path) <> via(event) <> where(event)
   end
+
+  defp detail(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => key}}) when is_binary(key),
+    do: " (#{key})"
+
+  defp detail(%{"channel" => "env", "arg" => %{"name" => name}}) when is_binary(name),
+    do: " (#{name})"
+
+  defp detail(_event), do: ""
+
+  defp via(%{"first" => %{"module" => m, "function" => f, "arity" => a}, "user" => user})
+       when is_binary(m) and is_binary(f) and is_integer(a) and is_map(user) do
+    if user["module"] == m and user["function"] == f and user["arity"] == a,
+      do: "",
+      else: " via #{frame_text(m, f, a)}"
+  end
+
+  defp via(_event), do: ""
+
+  defp frame_text("Elixir." <> name, f, a), do: "#{name}.#{f}/#{a}"
+  defp frame_text(m, f, a), do: "#{m}:#{f}/#{a}"
 
   defp path_part(nil), do: ""
   defp path_part(path), do: " " <> show(path)

@@ -33,7 +33,7 @@ patterns() ->
      {file, read_link, 1}, {file, read_link_all, 1}, {file, list_dir, 1},
      {file, list_dir_all, 1},
      {file, open, 2}, {file, consult, 1}, {file, get_cwd, 0}, {file, get_cwd, 1},
-     {filelib, wildcard, 1}, {filelib, wildcard, 2},
+     {filelib, wildcard, 1}, {filelib, wildcard, 2}, {filelib, wildcard, 3},
      {prim_file, read_file, 1}, {prim_file, read_file_info, 1},
      {prim_file, read_file_info, 2}, {prim_file, list_dir, 1}, {prim_file, open, 2},
      {prim_file, read_link, 1}, {prim_file, get_cwd, 0},
@@ -305,8 +305,10 @@ specific(os, find_executable, [Name | _]) -> {programs, #{name => chars(Name)}};
 specific(M, open, [Path, Modes]) when M =:= file; M =:= prim_file -> open(Path, Modes);
 specific(M, get_cwd, _) when M =:= file; M =:= prim_file -> {file_read, #{cwd => true}};
 specific(M, set_cwd, [Dir]) when M =:= file; M =:= prim_file -> {cwd, #{path => chars(Dir)}};
-specific(filelib, wildcard, [Pattern]) -> {file_read, #{path => wildcard_dir(Pattern, "")}};
-specific(filelib, wildcard, [Pattern, Cwd]) -> {file_read, #{path => wildcard_dir(Pattern, Cwd)}};
+specific(filelib, wildcard, [Pattern]) -> wildcard(Pattern, "");
+specific(filelib, wildcard, [Pattern, Mod]) when is_atom(Mod) -> wildcard_mod(Pattern, "", Mod);
+specific(filelib, wildcard, [Pattern, Cwd]) -> wildcard(Pattern, Cwd);
+specific(filelib, wildcard, [Pattern, Cwd, Mod]) -> wildcard_mod(Pattern, Cwd, Mod);
 specific(M, rename, [From, To]) when M =:= file; M =:= prim_file ->
     {file_write, #{path => chars(To), from => chars(From), from_kind => write}};
 specific(M, copy, [From, To | _]) when M =:= file; M =:= prim_file ->
@@ -374,6 +376,23 @@ open(Path, Modes) ->
     case lists:any(fun(Mode) -> lists:member(Mode, ?WRITE_MODES) end, List) of
         true -> {file_write, #{path => chars(Path)}};
         false -> {file_read, #{path => chars(Path)}}
+    end.
+
+%% A wildcard lists the literal directory it starts from (`listing`).
+%% filelib:wildcard/2 takes a module, not a directory, when its second
+%% argument is an atom (Path.wildcard/2 passes Path.Wildcard), and
+%% wildcard/3 takes both: its file calls go through that module, so only a
+%% module whose calls reach the traced file functions can be judged (item
+%% 5b). Any other module's reads are untraced: the call is unclassified,
+%% which the judge cannot judge.
+-define(WILDCARD_MODS, [file, 'Elixir.Path.Wildcard']).
+
+wildcard(Pattern, Cwd) -> {file_read, #{path => wildcard_dir(Pattern, Cwd), listing => true}}.
+
+wildcard_mod(Pattern, Cwd, Mod) ->
+    case lists:member(Mod, ?WILDCARD_MODS) of
+        true -> wildcard(Pattern, Cwd);
+        false -> {unclassified, #{module => term_bin(Mod)}}
     end.
 
 %% The process_info/2 items that expose another process's state.

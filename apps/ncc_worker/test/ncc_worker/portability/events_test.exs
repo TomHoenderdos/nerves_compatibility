@@ -230,29 +230,22 @@ defmodule NccWorker.Portability.EventsTest do
     assert :ignore = Events.decide(epp("os:type/0", %{}, server), ctx, "pkg")
 
     # Not an epp server: a user process, a cut stack, another bottom frame.
+    # (`system_info(machine)` and `otp_release` are allowed everywhere since
+    # item 5d, so `os:type/0` stands for the predefined-macro reads here.)
     for bottom <- [
           nil,
           %{"module" => "Elixir.Pkg", "function" => "f", "arity" => 0},
           %{"module" => "epp"}
         ] do
-      assert {:refuse, _} =
-               Events.decide(
-                 epp("erlang:system_info/1", %{"key" => "machine"}, bottom),
-                 ctx,
-                 "pkg"
-               )
+      assert {:refuse, _} = Events.decide(epp("os:type/0", %{}, bottom), ctx, "pkg")
     end
 
     assert {:refuse, _} =
-             Events.decide(
-               Map.delete(epp("erlang:system_info/1", %{"key" => "machine"}), "bottom"),
-               ctx,
-               "pkg"
-             )
+             Events.decide(Map.delete(epp("os:type/0", %{}), "bottom"), ctx, "pkg")
 
     # A user frame on the stack is not the epp server's own work.
     framed = %{
-      epp("erlang:system_info/1", %{"key" => "machine"})
+      epp("os:type/0", %{})
       | "extent" => "frame",
         "user" => @user
     }
@@ -295,7 +288,7 @@ defmodule NccWorker.Portability.EventsTest do
              inspect(caller)
     end
 
-    for key <- ["version", "system_architecture", "os_type", "machine"] do
+    for key <- ["version", "system_architecture", "os_type", "endian"] do
       assert {:refuse, _} = Events.decide(wordsize(key, @big_int), ctx, "pkg"), key
     end
 
@@ -305,7 +298,7 @@ defmodule NccWorker.Portability.EventsTest do
 
   test "a stack without a user frame names its extent", %{ctx: ctx} do
     assert {:refuse,
-            "compile-time host read: os:getenv/1 (truncated stack, first frame Elixir.Macro)"} =
+            "compile-time host read: os:getenv/1 (X) (truncated stack, first frame Elixir.Macro)"} =
              Events.decide(
                ev("env", "os:getenv/1", %{"name" => "X"},
                  user: nil,
@@ -808,6 +801,55 @@ defmodule NccWorker.Portability.EventsTest do
         event = ev("os_identity", "erlang:system_info/1", %{"key" => key}, first: first)
         assert {:refuse, _} = Events.decide(event, ctx, "pkg"), inspect(first)
       end
+    end
+  end
+
+  describe "items 5c and 5d: system_info keys and reasons" do
+    test "keys constant within an OTP major are allowed; host-dependent ones are not",
+         %{ctx: ctx} do
+      for key <- ~w(machine smp_support threads heap_type) do
+        assert :ignore =
+                 Events.decide(
+                   ev("os_identity", "erlang:system_info/1", %{"key" => key}),
+                   ctx,
+                   "pkg"
+                 ),
+               key
+      end
+
+      for key <-
+            ~w(version nif_version driver_version endian wordsize system_architecture) ++
+              ["{allocator,sys_alloc}"] do
+        assert {:refuse, reason} =
+                 Events.decide(
+                   ev("os_identity", "erlang:system_info/1", %{"key" => key}),
+                   ctx,
+                   "pkg"
+                 )
+
+        assert reason ==
+                 "compile-time host read: erlang:system_info/1 (#{key}) in Pkg.f/0 (lib/pkg.ex:3)"
+      end
+    end
+
+    test "a reason names the env var and the frame that made the call", %{ctx: ctx} do
+      assert {:refuse, "compile-time host read: os:getenv/1 (FX_FLAG) in Pkg.f/0 (lib/pkg.ex:3)"} =
+               Events.decide(ev("env", "os:getenv/1", %{"name" => "FX_FLAG"}), ctx, "pkg")
+
+      event =
+        ev("os_identity", "erlang:system_info/1", %{"key" => "system_architecture"},
+          first: {"Elixir.CCPrecompiler", "current_target", 0}
+        )
+
+      assert {:refuse, reason} = Events.decide(event, ctx, "pkg")
+
+      assert reason ==
+               "compile-time host read: erlang:system_info/1 (system_architecture) " <>
+                 "via CCPrecompiler.current_target/0 in Pkg.f/0 (lib/pkg.ex:3)"
+
+      # The prefix the portal withdraws on is unchanged.
+      assert Compatibility.Portability.refusal?(reason)
+      assert Compatibility.Portability.withdraws?(reason)
     end
   end
 end

@@ -335,6 +335,15 @@ of these skips the build:
   ahead of the arch and wordsize, but the client checks only the major);
 - a trace that did not finish.
 
+A host-read reason names the `system_info` key or environment variable, the path, and with `via` the function that
+made the call when it is not the package's own (`compile-time host read: erlang:system_info/1 (os_type) via
+erl_prim_loader:pathtype/1 in ...`). `erlang:system_info/1` of `otp_release`, `machine`, `smp_support`, `threads` or
+`heap_type` is allowed: each is constant within an OTP major (item 5d), which the client checks; `version`,
+`nif_version`, `driver_version`, `endian` and every other key still refuse. A `Path.wildcard/2` (or
+`filelib:wildcard/2,3`) is judged as a read of the literal directory it starts from, relative to the working
+directory when its second argument is a module (`Path.Wildcard`, `file`) rather than a directory (item 5b); a
+wildcard through any other module is "portability could not be judged".
+
 The files judged and archived are the traced compile's own. The traced compile runs with the host env
 (`MIX_BUILD_PATH=_build/host`, `MIX_ENV=prod`) and the run's own `HEX_HOME`, is bounded by what is left of the run,
 keeps its trace files under `<work>/trace` and logs to `logs/host.log`. It judges dependency sources against a
