@@ -509,32 +509,91 @@ defmodule Portal.Reports.RequeueTest do
     assert decision(full) == "skipped:queued"
   end
 
-  test "a remote lease for other targets does not cover this system" do
-    image_builds_rpi4!()
-    package!("jason") |> run!("1.4.5", [])
+  # A waiting lease with the args `Portal.Workers.RemoteBuild` writes for a
+  # job with `job_args`: `systems_filter` and `mode` from `Build.scope_args/3`.
+  defp lease!(package, version, job_args) do
+    scope = Build.scope_args(package, version, job_args)
 
     Repo.insert_all("builder_leases", [
       %{
         id: Ecto.UUID.bingenerate(),
-        package: "jason",
-        version: "1.4.5",
+        package: package,
+        version: version,
         image_name: "img",
         image_digest: "sha256:" <> String.duplicate("2", 64),
         args: %{
-          "package" => "jason",
-          "version" => "1.4.5",
-          "scope" => "targets",
-          "systems" => ["nerves_system_bbb"]
+          "systems_filter" => scope.systems_filter,
+          "mode" => scope.mode,
+          "argus" => Portal.Settings.worker_argus(Portal.Settings.get()),
+          "force" => true,
+          "image_platforms" => %{}
         },
         state: "queued",
         inserted_at: DateTime.utc_now(),
         updated_at: DateTime.utc_now()
       }
     ])
+  end
 
+  test "a remote lease for other targets does not cover this system" do
+    image_builds_rpi4!()
+    package!("jason") |> run!("1.4.5", [])
+    lease!("jason", "1.4.5", %{"scope" => "targets", "systems" => ["nerves_system_bbb"]})
     id = miss!("jason", "1.4.5", code: "not_built_target")
     assert :ok = requeue(id)
     assert decision(id) == "queued"
+  end
+
+  test "a remote lease for this target, or a full one, covers it" do
+    image_builds_rpi4!()
+    package!("jason") |> run!("1.4.5", [])
+    package!("telemetry") |> run!("1.3.0", [])
+    lease!("jason", "1.4.5", %{"scope" => "targets", "systems" => ["nerves_system_rpi4"]})
+    lease!("telemetry", "1.3.0", %{})
+    targeted = miss!("jason", "1.4.5", code: "not_built_target")
+    full = miss!("telemetry", "1.3.0", code: "not_built_target")
+    assert :ok = requeue(targeted)
+    assert :ok = requeue(full)
+    assert decision(targeted) == "skipped:queued"
+    assert decision(full) == "skipped:queued"
+  end
+
+  test "an argus-only remote lease covers no system build" do
+    image_builds_rpi4!()
+    package!("jason") |> run!("1.4.5", [])
+    lease!("jason", "1.4.5", %{"scope" => "argus_only"})
+    id = miss!("jason", "1.4.5", code: "not_built_target")
+    assert :ok = requeue(id)
+    assert decision(id) == "queued"
+  end
+
+  test "a system version newer than any run recorded is unbuildable" do
+    image_builds_rpi4!()
+    package!("jason") |> run!("1.4.4", [])
+    id = miss!("jason", "1.4.5", body: %{"system_version" => "9.0.0"})
+    assert :ok = requeue(id)
+    assert decision(id) == "skipped:unbuildable"
+    refute_enqueued(worker: Build)
+  end
+
+  test "a revoked run's newer system version supersedes nothing" do
+    image_builds_rpi4!()
+    other = package!("other_revoked")
+    revoked = run!(other, "1.0.0", [{"nerves_system_rpi4", "1.32.0", :pass}])
+
+    Repo.update_all(from(r in "catalog_runs", where: r.id == type(^revoked.id, Ecto.UUID)),
+      set: [revoked_at: DateTime.utc_now()]
+    )
+
+    package!("jason") |> run!("1.4.4", [])
+    id = miss!("jason", "1.4.5")
+    assert :ok = requeue(id)
+    assert decision(id) == "queued"
+
+    stale = miss!("telemetry", "1.3.0", body: %{"system_version" => "1.32.0"})
+    package!("telemetry") |> run!("1.0.0", [])
+    assert :ok = requeue(stale)
+    assert decision(stale) == "skipped:unbuildable"
   end
 
   test "a package whose only runs are revoked is unknown" do

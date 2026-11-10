@@ -19,7 +19,8 @@ defmodule Portal.Reports.Requeue do
        (`Portal.Toolchains.from_versions/2` of its Elixir and OTP), and
        `skipped:unbuildable` for a device report without a system.
     2. `skipped:unknown_package`: no run of the package that is not revoked.
-    3. `skipped:unbuildable`: no run of the last 30 days recorded that system
+    3. `skipped:unbuildable`: no run of the last 30 days (revoked runs left
+       out) recorded that system
        version, or no configured image builds that toolchain.
        `skipped:superseded`: a newer version of that system was recorded in
        the window. A build now produces the newer one, so the old tuple would
@@ -365,7 +366,7 @@ defmodule Portal.Reports.Requeue do
           on: r.id == sr.run_id,
           where:
             sr.system_pkg == ^system and not is_nil(sr.system_version) and
-              r.inserted_at > type(^since, :utc_datetime_usec),
+              is_nil(r.revoked_at) and r.inserted_at > type(^since, :utc_datetime_usec),
           distinct: true,
           select: sr.system_version
         )
@@ -461,15 +462,19 @@ defmodule Portal.Reports.Requeue do
     )
   end
 
+  # A lease carries what `Portal.Workers.RemoteBuild` resolved from the job's
+  # scope (`Build.scope_args/3`): no `mode` and no `systems_filter` is a full
+  # build, a `systems_filter` builds only those systems, and `mode`
+  # `argus_only` builds none.
   defp lease_waiting?(package, version, system) do
     Repo.exists?(
       from(l in "builder_leases",
         where:
           l.package == ^package and l.version == ^version and
             l.state in ["queued", "leased", "uploading"] and
+            fragment("coalesce(?->>'mode', '') = ''", l.args) and
             fragment(
-              "(coalesce(?->>'scope', 'full') = 'full' OR (?->>'scope' = 'targets' AND coalesce(?->'systems', '[]'::jsonb) @> jsonb_build_array(?::text)))",
-              l.args,
+              "(jsonb_typeof(coalesce(?->'systems_filter', 'null'::jsonb)) <> 'array' OR ?->'systems_filter' @> jsonb_build_array(?::text))",
               l.args,
               l.args,
               ^system
