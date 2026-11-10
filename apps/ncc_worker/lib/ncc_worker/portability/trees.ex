@@ -3,6 +3,15 @@ defmodule NccWorker.Portability.Trees do
   Item 5e of the precompiled judge refinements: a closure dependency's own
   source files are its verified Hex tarball's.
 
+  The snapshot must be taken before any compile of the closure: Mix's own
+  compilers write into a dependency's source dir (leex and yecc put the
+  `.erl` they generate in `src/`), so a snapshot after one refuses what the
+  toolchain wrote. Callers take it right after the `deps.get` that fetched
+  the closure (`NccWorker.Portability.tree_snapshot/2`) and pass it to
+  `NccWorker.Portability.run/3` as `trees:`; `run/3` takes it itself only
+  when the build dir holds none of the closure's apps, and otherwise checks
+  nothing and cannot judge.
+
   Before the traced compile, `snapshot/5` checks every locked dependency
   under `deps/` that has a verified tarball: the regular files on disk must
   be exactly the members of the tarball's `contents.tar.gz` (inflated by
@@ -16,8 +25,9 @@ defmodule NccWorker.Portability.Trees do
   is a refusal of the build, "dependency tree differs from its tarball".
 
   The judge then re-checks only what the compile read (`check_read/4`): a
-  read regular file must still be its member, and a directory listing (a
-  wildcard, `list_dir`) must be exactly the members under that directory.
+  read regular file must still be its member, a probed directory a
+  member's ancestor, and a directory listing (a wildcard, `list_dir`) one
+  level deep must be the members' names at that level.
   A tree that matched before the compile and no longer does at judge time
   is not a refusal (the files the compile saw were the tarball's when the
   check ran): `NccWorker.Portability.Events` makes it could-not-judge.
@@ -96,6 +106,34 @@ defmodule NccWorker.Portability.Trees do
   # The run's own `deps/<d>`.
   # sobelow_skip ["Traversal.FileModule"]
   defp dir?(dest), do: match?({:ok, %File.Stat{type: :directory}}, File.lstat(dest))
+
+  @doc """
+  The snapshot for a lock `later_releases` that replaced `first_releases`
+  after a compile (optional dependencies fetched after the first host
+  compile): an app locked the same in both keeps its `first` tree, taken
+  before any compile wrote into it; any other app takes its `later` one,
+  taken after the second `deps.get` and before the compile that builds it.
+  An app whose release changed was refetched over a tree a compile may have
+  written into, so its `later` difference is "unverified", never a refusal.
+  """
+  @spec merge(map(), map(), map(), map()) :: %{String.t() => tree()}
+  def merge(first, first_releases, later, later_releases) do
+    Map.new(later_releases, fn {app, release} ->
+      cond do
+        Map.get(first_releases, app) == release and Map.has_key?(first, app) ->
+          {app, first[app]}
+
+        Map.has_key?(first_releases, app) ->
+          {app, refetched(Map.get(later, app, {:unverified, "no snapshot"}))}
+
+        true ->
+          {app, Map.get(later, app, {:unverified, "no snapshot"})}
+      end
+    end)
+  end
+
+  defp refetched({:differs, detail}), do: {:unverified, "refetched after a compile: " <> detail}
+  defp refetched(tree), do: tree
 
   @doc "The regular-file members of a Hex tarball's `contents.tar.gz`, by sha256."
   @spec members(binary()) :: {:ok, members()} | {:unverified, String.t()}
@@ -214,19 +252,26 @@ defmodule NccWorker.Portability.Trees do
   @doc """
   The judge-time re-check of one read under a dependency's source dir
   `dest`, `rel` relative to it (`""` for `dest` itself), whose tree matched
-  `members` before the compile: a listing must be exactly the members under
-  `rel`; a regular file must be its member. Anything else (a directory read
-  as a file, a path that is not there, the root files `snapshot/5` leaves
-  out) is today's verdict, `:ok`.
+  `members` before the compile.
+
+    * A listing (`listing?`) must be the direct children `list_dir` sees
+      there now, one level deep (a subdirectory as `name/`), equal to what
+      the members give at that level. Files a Mix compiler generated deeper
+      (leex, yecc) do not change a listing above them.
+    * A regular file must be its member, byte for byte.
+    * A directory must be a member's ancestor (one made after the check is
+      a change, though `File.dir?/1` only probed it).
+
+  A path that is not there, and anything under the root names `snapshot/5`
+  leaves out, is today's verdict, `:ok`.
   """
   @spec check_read(String.t(), String.t(), members(), boolean()) :: :ok | {:differs, String.t()}
   def check_read(dest, rel, members, true) do
     extras = extras(members)
-    want = for {path, _sha} <- members, under_rel?(path, rel), into: MapSet.new(), do: path
 
     cond do
       root_extra?(rel, extras) -> :ok
-      listing(dest, rel, extras) == {:ok, want} -> :ok
+      children(dest, rel, extras) == {:ok, member_children(members, rel)} -> :ok
       true -> {:differs, "listing " <> display(rel)}
     end
   end
@@ -239,13 +284,24 @@ defmodule NccWorker.Portability.Trees do
       root_extra?(rel, extras(members)) ->
         :ok
 
-      match?({:ok, %File.Stat{type: :regular}}, File.lstat(path)) ->
-        if file_sha256(path) == {:ok, Map.get(members, rel)},
-          do: :ok,
-          else: {:differs, "read " <> display(rel)}
-
       true ->
-        :ok
+        case File.lstat(path) do
+          {:ok, %File.Stat{type: :regular}} ->
+            if file_sha256(path) == {:ok, Map.get(members, rel)},
+              do: :ok,
+              else: {:differs, "read " <> display(rel)}
+
+          {:ok, %File.Stat{type: :directory}} ->
+            if rel == "" or Enum.any?(Map.keys(members), &under_rel?(&1, rel)),
+              do: :ok,
+              else: {:differs, "read " <> display(rel)}
+
+          {:ok, _link_or_other} ->
+            {:differs, "read " <> display(rel)}
+
+          {:error, _reason} ->
+            :ok
+        end
     end
   end
 
@@ -256,46 +312,37 @@ defmodule NccWorker.Portability.Trees do
     end
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
-  defp listing(dest, rel, extras) do
-    if dir?(Path.join(dest, rel)),
-      do: walk_names(dest, rel, extras, MapSet.new()),
-      else: {:ok, MapSet.new()}
-  end
+  # The members' names one level below `rel`, a directory as `name/`.
+  defp member_children(members, rel) do
+    for {path, _sha} <- members, under_rel?(path, rel), into: MapSet.new() do
+      rest =
+        if rel == "",
+          do: path,
+          else: binary_part(path, byte_size(rel) + 1, byte_size(path) - byte_size(rel) - 1)
 
-  # Every non-directory name under `rel`, a directory that cannot be listed
-  # as `<rel>/`, so it never equals the members.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp walk_names(dest, rel, extras, acc) do
-    case File.ls(Path.join(dest, rel)) do
-      {:ok, names} ->
-        Enum.reduce_while(names, {:ok, acc}, fn name, {:ok, acc} ->
-          cond do
-            rel == "" and name in extras -> {:cont, {:ok, acc}}
-            MapSet.size(acc) > @max_members -> {:halt, :error}
-            true -> {:cont, walk_name(dest, join(rel, name), extras, acc)}
-          end
-        end)
-
-      {:error, _reason} ->
-        :error
+      case String.split(rest, "/", parts: 2) do
+        [name] -> name
+        [dir, _below] -> dir <> "/"
+      end
     end
   end
 
+  # What `list_dir` of `dest/rel` gives now, a directory as `name/`; the
+  # empty set when it is not a directory. `:error` when it cannot be read.
   # sobelow_skip ["Traversal.FileModule"]
-  defp walk_name(dest, rel, extras, acc) do
-    case File.lstat(Path.join(dest, rel)) do
-      {:ok, %File.Stat{type: :directory}} ->
-        case walk_names(dest, rel, extras, acc) do
-          {:ok, acc} -> {:ok, acc}
-          _ -> {:ok, MapSet.put(acc, rel <> "/")}
-        end
+  defp children(dest, rel, extras) do
+    dir = Path.join(dest, rel)
 
-      {:ok, _file_or_link} ->
-        {:ok, MapSet.put(acc, rel)}
-
-      {:error, _reason} ->
-        {:ok, MapSet.put(acc, rel <> "?")}
+    with true <- dir?(dir),
+         {:ok, names} <- File.ls(dir),
+         true <- length(names) <= @max_members do
+      {:ok,
+       for name <- names, not (rel == "" and name in extras), into: MapSet.new() do
+         if dir?(Path.join(dir, name)), do: name <> "/", else: name
+       end}
+    else
+      false -> if dir?(dir), do: :error, else: {:ok, MapSet.new()}
+      _ -> :error
     end
   end
 

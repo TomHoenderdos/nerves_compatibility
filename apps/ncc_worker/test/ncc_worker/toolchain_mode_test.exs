@@ -385,6 +385,29 @@ defmodule NccWorker.ToolchainModeTest do
         assert {@first, ^info} = Worker.judge_releases(@first, info)
       end
     end
+
+    test "judge_trees/3: the tree snapshots matching the judged lock (item 5e)" do
+      first = %{"sample" => {:ok, %{}}}
+      later = %{"sample" => {:differs, "extra file src/s.erl"}, "opt" => {:ok, %{"a" => "b"}}}
+
+      info = %{
+        added: ["opt"],
+        dropped: [],
+        reason: nil,
+        skipped: [],
+        lock_snapshot: @second,
+        tree_snapshot: later
+      }
+
+      assert Worker.judge_trees(first, @first, info) ==
+               %{"sample" => {:ok, %{}}, "opt" => {:ok, %{"a" => "b"}}}
+
+      assert {@second, clean} = Worker.judge_releases(@first, info)
+      refute Map.has_key?(clean, :tree_snapshot)
+
+      for other <- [nil, %{added: [], dropped: ["opt"]}, {:per_target, [], []}],
+          do: assert(Worker.judge_trees(first, @first, other) == first)
+    end
   end
 
   test "combine/2: refusals win, rule 1 keeps its reason when the trace could not judge" do

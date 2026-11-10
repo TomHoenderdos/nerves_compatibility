@@ -290,9 +290,13 @@ tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/
 `contents.tar.gz` members, byte for byte, apart from the root files Hex writes (`.hex`, `hex_metadata.config`) and a
 root `_build` the tarball does not carry (rebar3's own state when Mix built the dependency). A closure dependency whose
 tree differs refuses with `dependency tree differs from its tarball: <app> (extra|missing|modified file <path> | link
-<path>)`, which withdraws nothing. At judge time each file and directory listing (a wildcard, `list_dir`) the compile
-read in such a dependency is re-checked; one that changed since the check is "portability could not be judged", not
-a refusal. A natively built dependency, one without a verified tarball, a tarball with links or over the 64 MiB
+<path>)`, which withdraws nothing. The check is taken right after the `deps.get` that fetched the closure, before its first compile (Mix's leex and
+yecc compilers write the `.erl` they generate into the dependency's `src/`): on a full run before the host compile,
+on a toolchain run before the traced host compile, and for optional dependencies before the compile that builds
+them, a dependency locked as before keeping its earlier check. A traced compile given no such check over a build dir
+that already holds the closure is "portability could not be judged". At judge time each file, probed directory and
+directory listing (a wildcard, `list_dir`, one level deep) the compile read in such a dependency is re-checked; one
+that changed since the check is "portability could not be judged", not a refusal. A natively built dependency, one without a verified tarball, a tarball with links or over the 64 MiB
 inflate cap, a tree over 64 MiB, and anything left once the check's 60 s budget is spent are not checked and keep
 today's verdict. `compile_observations.tree_check` says, per closure dependency, `ok`, `differs: ...` or
 `unverified: ...`; `trace_stats.trees_ms` is the check's time.

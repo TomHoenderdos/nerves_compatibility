@@ -159,6 +159,11 @@ defmodule NccWorker.Portability do
       the compile by what is left of the run (`NccWorker.Tracer`);
     * `mode:`, `:judge` (default) or `:host`, passed to `NccWorker.Tracer.run/3`;
       any other value runs nothing and the verdict is could-not-judge;
+    * `trees:`, item 5e: the `tree_snapshot/2` taken before the closure's
+      first compile, or `:off` for no tree check (today's verdict). Without
+      it `run/3` takes the snapshot itself, which is right only before any
+      compile: when the build dir already holds one of the closure's apps it
+      checks nothing and the verdict is could-not-judge;
     * `makefile_rule2:`, item 1 of the judge refinements (see
       `NccWorker.NativeBuild`): `true` takes off the native list the
       dependencies whose native build file Mix never runs, and the judge
@@ -258,7 +263,9 @@ defmodule NccWorker.Portability do
     trace_dir = Keyword.get_lazy(opts, :trace_dir, fn -> default_trace_dir(project_dir) end)
     home = hex_home(opts, env)
     {native, declassified, split_problem} = native_split(project_dir, opts, releases, home)
-    {trees_ms, trees} = timed(fn -> Trees.snapshot(project_dir, releases, home, native) end)
+
+    {trees_ms, {trees, tree_problem}} =
+      timed(fn -> trees(project_dir, opts, env, releases, home, native) end)
 
     {compile_ms, traced} =
       timed(fn ->
@@ -270,6 +277,7 @@ defmodule NccWorker.Portability do
     project_dir
     |> verdict(package, traced, trace_dir, native, ctx_opts)
     |> unsplit(split_problem)
+    |> unsplit(tree_problem)
     |> put_stat("judge_compile", judge_compile(traced))
     |> put_stat("trees_ms", trees_ms)
     |> put_stat("compile_ms", compile_ms)
@@ -303,6 +311,72 @@ defmodule NccWorker.Portability do
   end
 
   defp makefile_rule2?(opts), do: Keyword.get(opts, :makefile_rule2) == true
+
+  @doc """
+  Item 5e's tree snapshot (`NccWorker.Portability.Trees.snapshot/5`) of
+  `project_dir` for `run/3`'s `trees:`, with the native list `run/3` would
+  use for the same `opts` (`releases:`, `hex_home:` (default `HEX_HOME`),
+  `makefile_rule2:`). Take it before the first compile of the closure,
+  right after the `deps.get` that fetched it: a compile writes into a
+  dependency's own source dir (Mix's leex and yecc compilers put the `.erl`
+  they generate in `src/`). Never raises; `%{}` (nothing checked) when it
+  cannot be taken.
+  """
+  @spec tree_snapshot(String.t(), keyword()) :: %{String.t() => Trees.tree()}
+  def tree_snapshot(project_dir, opts) do
+    with {:ok, releases} <- releases(opts) do
+      home = Keyword.get_lazy(opts, :hex_home, fn -> System.get_env("HEX_HOME") end)
+      {native, _declassified, _problem} = native_split(project_dir, opts, releases, home)
+      Trees.snapshot(project_dir, releases, home, native)
+    else
+      _ -> %{}
+    end
+  rescue
+    _ -> %{}
+  end
+
+  # `run/3`'s trees: the caller's pre-compile snapshot (`trees:`, `:off` for
+  # none), else one taken now, which is before any compile only when the
+  # build dir holds none of the closure's apps; otherwise nothing is checked
+  # and the verdict is could-not-judge (a snapshot after a compile would
+  # refuse what the compile itself wrote). An app native now is never
+  # checked, whatever the snapshot said.
+  defp trees(project_dir, opts, env, releases, home, native) do
+    case Keyword.fetch(opts, :trees) do
+      {:ok, trees} when is_map(trees) ->
+        {Map.new(trees, fn {app, tree} -> {app, unless_native(app, tree, native)} end), nil}
+
+      {:ok, _off} ->
+        {%{}, nil}
+
+      :error ->
+        case compiled_apps(project_dir, env, releases) do
+          [] ->
+            {Trees.snapshot(project_dir, releases, home, native), nil}
+
+          apps ->
+            {%{},
+             "no tree snapshot taken before the closure was compiled: " <>
+               Enum.join(Enum.take(apps, 5), ", ")}
+        end
+    end
+  end
+
+  defp unless_native(app, tree, native),
+    do: if(app in native, do: {:unverified, "native build"}, else: tree)
+
+  # The locked apps the build dir the compile writes already holds an ebin of.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp compiled_apps(project_dir, env, releases) do
+    build =
+      env_value(env, "MIX_BUILD_PATH") ||
+        Path.join([project_dir, "_build", env_value(env, "MIX_ENV") || "dev"])
+
+    releases
+    |> Map.keys()
+    |> Enum.sort()
+    |> Enum.filter(&File.dir?(Path.join([build, "lib", &1, "ebin"])))
+  end
 
   @doc false
   # Public for tests: a finished compile's verdict is not passed when

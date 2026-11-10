@@ -128,8 +128,37 @@ defmodule NccWorker.Portability.TreesTest do
 
     File.write!(Path.join(f.dest, "lib/a/late.js"), "3\n")
     assert {:differs, "listing lib/a"} = Trees.check_read(f.dest, "lib/a", members, true)
+    # A listing is one level deep: a file generated deeper (leex, yecc)
+    # changes only the listing of its own directory.
+    assert :ok = Trees.check_read(f.dest, "", members, true)
+    assert :ok = Trees.check_read(f.dest, "lib", members, true)
+    File.mkdir_p!(Path.join(f.dest, "late"))
     assert {:differs, "listing ."} = Trees.check_read(f.dest, "", members, true)
+    # A directory made after the check, only probed (`File.dir?/1`).
+    assert {:differs, "read late"} = Trees.check_read(f.dest, "late", members, false)
+    assert :ok = Trees.check_read(f.dest, "lib/a", members, false)
     File.write!(Path.join(f.dest, "lib/x.ex"), "changed\n")
     assert {:differs, "read lib/x.ex"} = Trees.check_read(f.dest, "lib/x.ex", members, false)
+  end
+
+  test "merge: an unchanged release keeps its pre-compile tree; a refetched one never refuses" do
+    r = fn v -> %{name: "x", version: v, checksum: v} end
+    first = %{"a" => {:ok, %{}}, "b" => {:ok, %{}}}
+
+    later = %{
+      "a" => {:differs, "extra file src/a.erl"},
+      "b" => {:differs, "x"},
+      "c" => {:differs, "y"}
+    }
+
+    assert Trees.merge(first, %{"a" => r.("1"), "b" => r.("1")}, later, %{
+             "a" => r.("1"),
+             "b" => r.("2"),
+             "c" => r.("1")
+           }) == %{
+             "a" => {:ok, %{}},
+             "b" => {:unverified, "refetched after a compile: x"},
+             "c" => {:differs, "y"}
+           }
   end
 end

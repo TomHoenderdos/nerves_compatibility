@@ -744,6 +744,14 @@ defmodule NccWorker.Worker do
     # `Project.add_package/3` ran.
     first_releases = Portability.lock_snapshot(project_dir)
 
+    # Item 5e: the closure's trees against their tarballs, before the host
+    # compile writes into them (leex and yecc output in `src/`).
+    first_trees =
+      Portability.tree_snapshot(project_dir,
+        releases: first_releases,
+        hex_home: System.get_env("HEX_HOME")
+      )
+
     host_result =
       compile_host(project_dir, paths.output_dir, log_tail_bytes, input.package.name)
 
@@ -769,8 +777,9 @@ defmodule NccWorker.Worker do
 
     with {:ok, optional_deps} <-
            resolve_optional_deps(scope, selection, project_dir, input.package.name, paths) do
-      # The lock snapshot matching the build the traced judge compile
-      # judges; it is not part of `result.json`.
+      # The lock and tree snapshots matching the build the traced judge
+      # compile judges; neither is part of `result.json`.
+      trees = judge_trees(first_trees, first_releases, optional_deps)
       {releases, optional_deps} = judge_releases(first_releases, optional_deps)
 
       context = %{
@@ -789,7 +798,8 @@ defmodule NccWorker.Worker do
         runtime_apps: runtime_apps,
         source_before: source_before,
         pkg_source_dir: pkg_source_dir,
-        releases: releases
+        releases: releases,
+        trees: trees
       }
 
       finish_project(context, toolchain, github_url, optional_deps)
@@ -807,7 +817,8 @@ defmodule NccWorker.Worker do
            host_result: host_result,
            scope: scope,
            selection: selection,
-           releases: releases
+           releases: releases,
+           trees: trees
          } = context,
          toolchain,
          github_url,
@@ -816,6 +827,7 @@ defmodule NccWorker.Worker do
     portability =
       full_run_portability(project_dir, paths,
         releases: releases,
+        trees: trees,
         run_started_at: input[:started_at],
         rebuild_timeout_sec: timeout,
         host_compile_sec: host_result[:duration_sec]
@@ -1047,9 +1059,11 @@ defmodule NccWorker.Worker do
          # compile that builds them: the releases the build with them is
          # judged against (`judge_releases/2`), its own optional deps included.
          releases = Portability.lock_snapshot(project_dir),
+         trees = Portability.tree_snapshot(project_dir, releases: releases),
          {:compile, %{status: :pass}} <-
            {:compile, compile_host(project_dir, paths.output_dir, 0, package_name)} do
-      {:ok, Map.put(optional_deps_info(added, [], nil), :lock_snapshot, releases)}
+      info = optional_deps_info(added, [], nil)
+      {:ok, Map.merge(info, %{lock_snapshot: releases, tree_snapshot: trees})}
     else
       {:policy, {:error, reason}} ->
         drop_optional_deps(project_dir, package_name, paths, snapshot, added, %{
@@ -1501,12 +1515,20 @@ defmodule NccWorker.Worker do
     log_tail_bytes = get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes
 
     rule2 = makefile_rule2?(input)
+    # Right after `deps.get` and before any compile: an untraced build step
+    # could rewrite the lock and a tarball together later, and a compile
+    # writes into the trees (item 5e).
+    releases = Portability.lock_snapshot(project_dir)
 
     compile_opts =
       [
-        # Right after `deps.get` and before any compile: an untraced build
-        # step could rewrite the lock and a tarball together later.
-        releases: Portability.lock_snapshot(project_dir),
+        releases: releases,
+        trees:
+          Portability.tree_snapshot(project_dir,
+            releases: releases,
+            hex_home: System.get_env("HEX_HOME"),
+            makefile_rule2: rule2
+          ),
         run_started_at: input[:started_at],
         log_tail_bytes: log_tail_bytes,
         makefile_rule2: rule2
@@ -1681,8 +1703,13 @@ defmodule NccWorker.Worker do
 
   defp compile_added(added, snapshot, project_dir, package_name, paths, opts) do
     with {:policy, :ok} <- {:policy, LockPolicy.validate(project_dir)},
-         # After the `deps.get` that fetched them, before their compile.
-         with_opts = Keyword.put(opts, :releases, Portability.lock_snapshot(project_dir)),
+         # After the `deps.get` that fetched them, before their compile,
+         # which is the toolchain run's first.
+         releases = Portability.lock_snapshot(project_dir),
+         with_opts =
+           opts
+           |> Keyword.put(:releases, releases)
+           |> Keyword.put(:trees, added_trees(project_dir, releases, opts)),
          {:ok, %{host: %{status: :pass}} = compiled} <-
            host_trace(project_dir, package_name, paths, with_opts) do
       {:ok, Map.put(compiled, :optional_deps, optional_deps_info(added, [], nil))}
@@ -1704,6 +1731,14 @@ defmodule NccWorker.Worker do
       {:error, _reason} = error ->
         error
     end
+  end
+
+  defp added_trees(project_dir, releases, opts) do
+    Portability.tree_snapshot(project_dir,
+      releases: releases,
+      hex_home: System.get_env("HEX_HOME"),
+      makefile_rule2: Keyword.get(opts, :makefile_rule2) == true
+    )
   end
 
   # From a clean `_build/host`: nothing the compile with them built may
@@ -1772,7 +1807,7 @@ defmodule NccWorker.Worker do
           run_started_at: Keyword.get(opts, :run_started_at),
           trace_dir: Path.join(paths.work_dir, "trace"),
           log_file: Path.join([paths.output_dir, "logs", "host-trace.log"])
-        ] ++ Keyword.take(opts, [:timeout_ms, :cmd])
+        ] ++ Keyword.take(opts, [:timeout_ms, :cmd, :trees])
       )
 
     HexHome.publish(hex_home)
@@ -1789,10 +1824,34 @@ defmodule NccWorker.Worker do
   # tests.
   @spec judge_releases(term(), term()) :: {term(), term()}
   def judge_releases(_first, %{added: [_ | _], lock_snapshot: releases} = info),
-    do: {releases, Map.delete(info, :lock_snapshot)}
+    do: {releases, Map.drop(info, [:lock_snapshot, :tree_snapshot])}
 
-  def judge_releases(first, %{} = info), do: {first, Map.delete(info, :lock_snapshot)}
+  def judge_releases(first, %{} = info),
+    do: {first, Map.drop(info, [:lock_snapshot, :tree_snapshot])}
+
   def judge_releases(first, info), do: {first, info}
+
+  @doc false
+  # Item 5e: the tree snapshot matching `judge_releases/2`'s lock. With
+  # optional deps added (fetched after the first host compile), each app
+  # locked as before keeps its snapshot from before that compile
+  # (`Trees.merge/4`); the rest come from the snapshot taken before the
+  # compile with them. Public for tests.
+  @spec judge_trees(map(), term(), term()) :: map()
+  def judge_trees(first, first_releases, %{added: [_ | _], lock_snapshot: later_releases} = info),
+    do:
+      NccWorker.Portability.Trees.merge(
+        first,
+        releases_map(first_releases),
+        Map.get(info, :tree_snapshot, %{}),
+        releases_map(later_releases)
+      )
+
+  def judge_trees(first, _first_releases, _info), do: first
+
+  defp releases_map({:ok, map}) when is_map(map), do: map
+  defp releases_map(map) when is_map(map), do: map
+  defp releases_map(_other), do: %{}
 
   defp put_requested_toolchain(result, requested) when is_map(requested),
     do: Map.put(result, :requested_toolchain, requested)

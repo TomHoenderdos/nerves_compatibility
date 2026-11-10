@@ -114,7 +114,7 @@ defmodule NccWorker.HostTrace do
           run_started_at: Keyword.fetch!(opts, :run_started_at),
           trace_dir: Path.join(paths.work_dir, "trace"),
           log_file: log_file
-        ] ++ Keyword.take(opts, [:timeout_ms, :cmd, :reap, :makefile_rule2])
+        ] ++ Keyword.take(opts, [:timeout_ms, :cmd, :reap, :makefile_rule2, :trees])
       )
 
     {outcome, host_build} = outcome(verdict, project_dir, env, log_file, opts)
