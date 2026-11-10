@@ -143,8 +143,7 @@ defmodule NccWorker.Portability.Rebar do
   def tarball_sources(nil), do: {:unjudged, "rebar3 app has no verified Hex tarball"}
 
   def tarball_sources(bytes) when is_binary(bytes) do
-    with {:ok, gz} <- outer_contents(bytes),
-         {:ok, tar} <- inflate(gz),
+    with {:ok, tar} <- contents_tar(bytes),
          {:ok, files} <- :erl_tar.extract({:binary, tar}, [:memory, {:files, @config_files}]) do
       sources(Map.new(files, fn {name, body} -> {List.to_string(name), body} end))
     else
@@ -152,6 +151,17 @@ defmodule NccWorker.Portability.Rebar do
     end
   rescue
     _ -> {:unjudged, "rebar3 app's verified Hex tarball is unreadable"}
+  end
+
+  @doc """
+  The inflated `contents.tar.gz` of a Hex tarball's bytes, under the 64 MiB
+  cap; `:error` when it is missing, corrupt or over the cap. The one reader
+  of a tarball's contents the judge uses (`tarball_sources/1`,
+  `NccWorker.Portability.Trees`).
+  """
+  @spec contents_tar(binary()) :: {:ok, binary()} | :error
+  def contents_tar(bytes) when is_binary(bytes) do
+    with {:ok, gz} <- outer_contents(bytes), do: inflate(gz)
   end
 
   defp outer_contents(bytes) do

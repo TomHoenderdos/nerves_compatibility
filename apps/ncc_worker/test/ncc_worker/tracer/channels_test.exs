@@ -57,6 +57,12 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert {:file_read, %{path: "lib"}} = classify(:filelib, :wildcard, ["lib/*.ex"])
     assert {:file_read, %{path: "/d/priv"}} = classify(:filelib, :wildcard, [~c"priv/*", ~c"/d"])
     assert {:file_read, %{path: "a"}} = classify(:file, :open, ["a", [:read, :binary]])
+    assert {:file_read, %{path: "lib", listing: true}} = classify(:file, :list_dir, ["lib"])
+
+    assert {:file_read, %{path: "lib", listing: true}} =
+             classify(:prim_file, :list_dir_all, ["lib"])
+
+    refute Map.has_key?(elem(classify(:file, :read_file, ["a"]), 1), :listing)
   end
 
   # Item 5b: Path.wildcard/2 passes Path.Wildcard as filelib:wildcard/2's

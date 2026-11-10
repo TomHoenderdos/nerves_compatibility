@@ -45,7 +45,7 @@ defmodule NccWorker.Portability.Context do
   """
 
   alias NccWorker.{DepsLock, HexCache}
-  alias NccWorker.Portability.HexFiles
+  alias NccWorker.Portability.{HexFiles, Trees}
   alias NccWorker.Tracer.Report
 
   defstruct [
@@ -61,7 +61,8 @@ defmodule NccWorker.Portability.Context do
     hex: {nil, %{}},
     preloaded: %{},
     nested: %{},
-    ensured: %{}
+    ensured: %{},
+    trees: %{}
   ]
 
   @type dep :: %{
@@ -86,7 +87,8 @@ defmodule NccWorker.Portability.Context do
           hex: {String.t() | nil, map()},
           preloaded: %{String.t() => String.t()},
           nested: %{(String.t() | atom()) => String.t()},
-          ensured: %{{term(), String.t(), String.t()} => integer()}
+          ensured: %{{term(), String.t(), String.t()} => integer()},
+          trees: %{String.t() => Trees.tree()}
         }
 
   @max_hops 40
@@ -99,7 +101,9 @@ defmodule NccWorker.Portability.Context do
       tarballs (default: this process's `HEX_HOME`);
     * `:releases`, `{:ok, %{app => %{name, version, checksum}}}` or a bare
       map, the locked Hex releases that verify them (default: the project's
-      `mix.lock`, `NccWorker.DepsLock.hex_releases/1`).
+      `mix.lock`, `NccWorker.DepsLock.hex_releases/1`);
+    * `:trees`, the `NccWorker.Portability.Trees.snapshot/5` taken before
+      the compile (item 5e); without it no tree is checked.
 
   A dependency whose tarball is missing or does not match its lock entry has
   no file list, so none of its source files is readable.
@@ -121,11 +125,15 @@ defmodule NccWorker.Portability.Context do
       elixir_root: install_root(start["elixir_root"]),
       roots: roots(project_dir, start),
       hex: hex,
-      preloaded: preloaded(start["preloaded"])
+      preloaded: preloaded(start["preloaded"]),
+      trees: trees(Keyword.get(opts, :trees))
     }
 
     %{ctx | cd: changed_dir(ctx, report), nested: nested(ctx, report)}
   end
+
+  defp trees(trees) when is_map(trees), do: trees
+  defp trees(_trees), do: %{}
 
   # The windows a nested compile or diagnostics capture was started in
   # (channel `nested_compile`), each with the first such call: by owner for
@@ -278,6 +286,52 @@ defmodule NccWorker.Portability.Context do
       rel == [] -> true
       is_nil(files) -> false
       true -> Enum.any?(files, &(List.starts_with?(rel, &1) or List.starts_with?(&1, rel)))
+    end
+  end
+
+  @doc """
+  Item 5e: the re-check of a read of `real` under the source dir of a
+  closure dependency whose tree matched its tarball before the compile
+  (`Trees.check_read/4`), `listing?` for a directory listing. `:ok` for any
+  other path or dependency. Remembered per call of `with_link_cache/1`.
+  """
+  @spec tree_check(t(), String.t() | nil, boolean()) :: :ok | {:differs, String.t(), String.t()}
+  def tree_check(_ctx, nil, _listing?), do: :ok
+
+  def tree_check(ctx, real, listing?) when is_binary(real) do
+    Enum.find_value(ctx.deps, :ok, fn {app, dep} ->
+      with dest when is_binary(dest) <- dep.dest,
+           true <- under?(real, dest),
+           {:ok, members} <- Map.get(ctx.trees, app) do
+        rel = Path.split(real) |> Enum.drop(length(Path.split(dest))) |> rel_path()
+
+        case cached({:tree_check, app, rel, listing?}, fn ->
+               Trees.check_read(dest, rel, members, listing?)
+             end) do
+          :ok -> nil
+          {:differs, detail} -> {:differs, app, detail}
+        end
+      else
+        _ -> nil
+      end
+    end)
+  end
+
+  defp rel_path([]), do: ""
+  defp rel_path(parts), do: Path.join(parts)
+
+  defp cached(key, fun) do
+    case Process.get(@link_cache) do
+      %{^key => value} ->
+        value
+
+      %{} = cache ->
+        value = fun.()
+        Process.put(@link_cache, Map.put(cache, key, value))
+        value
+
+      nil ->
+        fun.()
     end
   end
 

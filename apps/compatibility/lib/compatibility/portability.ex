@@ -22,7 +22,8 @@ defmodule Compatibility.Portability do
     "rebar3 build ",
     "compile-time config read: ",
     "compile-time Elixir patch dependence: ",
-    "manager mismatch: "
+    "manager mismatch: ",
+    "dependency tree differs from its tarball: "
   ]
 
   # R1 (the package's own compile observed the host; R4's `mix.exs` slice
@@ -45,6 +46,7 @@ defmodule Compatibility.Portability do
 
   @could_not_judge "portability could not be judged"
   @manager_mismatch "manager mismatch: "
+  @tree_differs "dependency tree differs from its tarball: "
 
   @doc "Every prefix a trace refusal starts with."
   @spec refusal_prefixes() :: [String.t()]
@@ -73,6 +75,15 @@ defmodule Compatibility.Portability do
   """
   @spec manager_mismatch() :: String.t()
   def manager_mismatch, do: @manager_mismatch
+
+  @doc """
+  The prefix of a refusal of a closure dependency whose source tree, before
+  the traced compile, was not its verified Hex tarball's (precompiled judge
+  refinements, item 5e). A refusal that withdraws nothing: it speaks of the
+  build's inputs, not of the package's own compile.
+  """
+  @spec tree_differs() :: String.t()
+  def tree_differs, do: @tree_differs
 
   @doc "Whether `reason` is a trace refusal (and not a rule 1 reason or could-not-judge)."
   @spec refusal?(term()) :: boolean()

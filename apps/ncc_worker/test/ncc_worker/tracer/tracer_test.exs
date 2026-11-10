@@ -366,7 +366,7 @@ defmodule NccWorker.TracerTest do
       verdict = portability_run(dir, writing_cmd(%{"trace-main.jsonl" => "not json\n"}))
       stats = verdict.observations["trace_stats"]
 
-      for key <- ["compile_ms", "report_ms", "judge_ms", "wall_ms"],
+      for key <- ["trees_ms", "compile_ms", "report_ms", "judge_ms", "wall_ms"],
           do: assert(is_integer(stats[key]) and stats[key] >= 0, key)
 
       assert stats["tracer_error"] == nil
@@ -380,6 +380,7 @@ defmodule NccWorker.TracerTest do
       stats = portability_run(dir, failed).observations["trace_stats"]
       assert stats["tracer_error"] == "exit_1"
       assert is_integer(stats["compile_ms"])
+      assert is_integer(stats["trees_ms"])
       refute Map.has_key?(stats, "judge_ms")
     end
   end

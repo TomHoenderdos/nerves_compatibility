@@ -79,4 +79,11 @@ defmodule Compatibility.PortabilityTest do
     assert Compatibility.Portability.refusal?(reason)
     refute Compatibility.Portability.withdraws?(reason)
   end
+
+  test "a tree that differs from its tarball is a refusal that withdraws nothing" do
+    reason = Compatibility.Portability.tree_differs() <> "kino (extra file lib/x.js)"
+    assert reason == "dependency tree differs from its tarball: kino (extra file lib/x.js)"
+    assert Compatibility.Portability.refusal?(reason)
+    refute Compatibility.Portability.withdraws?(reason)
+  end
 end

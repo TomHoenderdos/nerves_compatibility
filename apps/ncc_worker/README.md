@@ -285,6 +285,18 @@ records `judge_revision` one higher. `toolchain_build.manager` is the manager th
 with. Any value other than `true` leaves item 1 off; with it on, a `deps/` the judge cannot list is "portability
 could not be judged".
 
+Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
+tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
+`contents.tar.gz` members, byte for byte, apart from the root files Hex writes (`.hex`, `hex_metadata.config`) and a
+root `_build` the tarball does not carry (rebar3's own state when Mix built the dependency). A closure dependency whose
+tree differs refuses with `dependency tree differs from its tarball: <app> (extra|missing|modified file <path> | link
+<path>)`, which withdraws nothing. At judge time each file and directory listing (a wildcard, `list_dir`) the compile
+read in such a dependency is re-checked; one that changed since the check is "portability could not be judged", not
+a refusal. A natively built dependency, one without a verified tarball, a tarball with links or over the 64 MiB
+inflate cap, a tree over 64 MiB, and anything left once the check's 60 s budget is spent are not checked and keep
+today's verdict. `compile_observations.tree_check` says, per closure dependency, `ok`, `differs: ...` or
+`unverified: ...`; `trace_stats.trees_ms` is the check's time.
+
 Fleet hazard: every node running the `:toolchain` queue must run the same worker image and the same
 `NCC_JUDGE_MAKEFILE_RULE2` value. A node at a lower judge revision than the fleet's newest leaves its toolchain rows
 at that lower revision, and the portal's judge-revision reopen requeues their `skipped` rows against the fleet's
@@ -445,7 +457,7 @@ so neither the static rules (`static_rules/4`) nor `portable?/4` judge it: the r
 "portability could not be judged", `rule1_reason` and `compile_env` are
 `null`. `compile_observations.trace_stats` carries the traced compile's `wall_ms`, `judge_compile` (`"finished"`,
 `"not_finished"` or `"not_run"`), `report_over_budget` (the trace files exceeded the report reader's shared 64 MiB /
-500 000-line budget), `transient`, the phase times `compile_ms`, `report_ms` and `judge_ms`, `tracer_error` (why
+500 000-line budget), `transient`, the phase times `trees_ms`, `compile_ms`, `report_ms` and `judge_ms`, `tracer_error` (why
 the traced compile did not finish, `null` when it did), `trace_mode` (`"host"` for a toolchain run's report),
 `host_build` (`"traced"`, `"untraced"` or `"none"`: which build the host status is) and `host_compile_sec`, the
 host compile's own time, its `deps.get` and any untraced fallback included, and the collector's own counts

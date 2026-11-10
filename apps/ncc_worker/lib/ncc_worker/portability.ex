@@ -17,6 +17,10 @@ defmodule NccWorker.Portability do
        recompute budget is a mismatch too);
     1b. a declassified closure dependency built by another manager than its
        tarball's `build_tools` give (item 1, `judge/5`'s `declassified:`, "manager mismatch");
+    1c. a closure dependency whose source tree was not its verified Hex
+       tarball's before the compile (item 5e, `Trees`, `judge/5`'s `trees:`,
+       "dependency tree differs from its tarball"); a file or listing the
+       compile read that changed after that check is could-not-judge (1);
     2. a refusal outside every window (it counts against everything);
     3. a refusal in the package's window (R1, R4 through `Events`);
     4. the package's window broken (missing, lowered depth, failed
@@ -78,7 +82,8 @@ defmodule NccWorker.Portability do
     Events,
     MappedLibs,
     Probes,
-    Rebar
+    Rebar,
+    Trees
   }
 
   alias NccWorker.Tracer
@@ -253,18 +258,20 @@ defmodule NccWorker.Portability do
     trace_dir = Keyword.get_lazy(opts, :trace_dir, fn -> default_trace_dir(project_dir) end)
     home = hex_home(opts, env)
     {native, declassified, split_problem} = native_split(project_dir, opts, releases, home)
+    {trees_ms, trees} = timed(fn -> Trees.snapshot(project_dir, releases, home, native) end)
 
     {compile_ms, traced} =
       timed(fn ->
         Tracer.run(project_dir, [package], tracer_opts(opts, env, trace_dir, native))
       end)
 
-    ctx_opts = [releases: releases, hex_home: home, declassified: declassified]
+    ctx_opts = [releases: releases, hex_home: home, declassified: declassified, trees: trees]
 
     project_dir
     |> verdict(package, traced, trace_dir, native, ctx_opts)
     |> unsplit(split_problem)
     |> put_stat("judge_compile", judge_compile(traced))
+    |> put_stat("trees_ms", trees_ms)
     |> put_stat("compile_ms", compile_ms)
     |> put_stat("tracer_error", tracer_error(traced))
     |> put_stat("makefile_rule2", makefile_rule2?(opts))
@@ -422,7 +429,11 @@ defmodule NccWorker.Portability do
   `built` lines (`run/3` always checks). `declassified:` is what
   `NativeBuild.split/2` declassified (`%{app => manager}`, item 1, default
   none): each such dependency in the package's closure must have been built
-  by that manager, as the trace's closure line records. The verdict's
+  by that manager, as the trace's closure line records. `trees:` is the
+  `NccWorker.Portability.Trees.snapshot/5` taken before the compile (item
+  5e, default none, so no tree is checked): a closure dependency whose tree
+  differed from its tarball refuses, and the files and listings the compile
+  read are re-checked. The verdict's
   `manager` is the package's own manager from that line (nil when unknown).
   Never raises.
   """
@@ -467,6 +478,7 @@ defmodule NccWorker.Portability do
 
     %{
       ctx: ctx,
+      scope: scope,
       report: report,
       decided: decided,
       config: config,
@@ -479,8 +491,23 @@ defmodule NccWorker.Portability do
       package_r2: package_r2,
       package_rebar: rebar(ctx, report, ctx.package),
       deps: deps,
-      manager_mismatch: manager_mismatch(ctx, scope, Keyword.get(opts, :declassified, %{}))
+      manager_mismatch: manager_mismatch(ctx, scope, Keyword.get(opts, :declassified, %{})),
+      tree_refusal: tree_refusal(ctx, scope)
     }
+  end
+
+  # Item 5e: a closure dependency whose source tree was not its verified
+  # tarball's before the compile refuses, the first by app name.
+  defp tree_refusal(ctx, scope) do
+    ctx.trees
+    |> Enum.sort()
+    |> Enum.find_value(fn
+      {app, {:differs, detail}} ->
+        if MapSet.member?(scope, app), do: Reasons.tree_differs() <> "#{app} (#{detail})"
+
+      _ ->
+        nil
+    end)
   end
 
   # Item 1: a closure dependency rule 2 took off the native list because its
@@ -905,6 +932,7 @@ defmodule NccWorker.Portability do
         [
           fn -> if facts.trace_problems != [], do: Reasons.could_not_judge() end,
           fn -> facts.manager_mismatch end,
+          fn -> facts.tree_refusal end,
           fn -> first_refusal(facts.decided, :outside) end,
           fn -> first_refusal(facts.decided, facts.ctx.package) end,
           fn -> if facts.package_window, do: Reasons.could_not_judge() end,
@@ -992,8 +1020,19 @@ defmodule NccWorker.Portability do
       "native_libs" => Enum.take(facts.libs.native, 50),
       "config_unreviewed" => Enum.take(facts.config.unreviewed, 50),
       "nif_check" => if(facts.libs.waived, do: "waived", else: "ok"),
+      "tree_check" => tree_summary(facts),
       "problems" => problems |> Enum.uniq() |> Enum.take(@max_problems)
     })
+  end
+
+  defp tree_summary(%{ctx: ctx, scope: scope}) do
+    for {app, tree} <- ctx.trees, MapSet.member?(scope, app), into: %{} do
+      case tree do
+        {:ok, _members} -> {app, "ok"}
+        {:differs, detail} -> {app, "differs: " <> detail}
+        {:unverified, why} -> {app, "unverified: " <> why}
+      end
+    end
   end
 
   defp r2_observed(facts) do

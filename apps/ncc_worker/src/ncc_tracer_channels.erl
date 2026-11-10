@@ -331,10 +331,15 @@ mix_target() -> {mix_state, #{'fun' => <<"target">>}}.
 
 generic(M, F, Args) ->
     case {lists:member({M, F}, ?READS), lists:member({M, F}, ?WRITES)} of
-        {true, _} -> {file_read, #{path => first_path(Args)}};
+        {true, _} -> {file_read, listing(F, #{path => first_path(Args)})};
         {_, true} -> {file_write, #{path => first_path(Args)}};
         _ -> by_module(M, F, Args)
     end.
+
+%% A directory listing, which the judge checks against the tarball's
+%% members under that directory (precompiled judge refinements, item 5e).
+listing(F, Arg) when F =:= list_dir; F =:= list_dir_all -> Arg#{listing => true};
+listing(_F, Arg) -> Arg.
 
 by_module(M, _F, _Args) when M =:= inet; M =:= net_adm; M =:= gen_tcp; M =:= ssl;
                              M =:= httpc; M =:= socket ->

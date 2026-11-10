@@ -49,7 +49,11 @@ defmodule NccWorker.Portability.Events do
     * Install locations: `lib_dir`/`priv_dir` of a closure app or an
       OTP/Elixir app; nothing else.
     * Reads: `Context.readable?/2` of the real path, relative paths and
-      `get_cwd` against the window's dependency (`Context.cwd/2`).
+      `get_cwd` against the window's dependency (`Context.cwd/2`). A read
+      file or directory listing in a closure dependency whose tree matched
+      its tarball before the compile must still be the tarball's
+      (`Context.tree_check/3`, item 5e); one that no longer is cannot be
+      judged.
     * Writes: only under the window's own `ebin` (`Context.writable?/3`); a
       rename's source too, a copy's source must be readable. Any symlink or
       hard link refuses, even inside `ebin`: the judge resolves paths after
@@ -324,10 +328,24 @@ defmodule NccWorker.Portability.Events do
 
   defp file_read(e, _ctx, _owner), do: {:refuse, host_read(e)}
 
+  # Readable by `Context.readable?/2` and, for a closure dependency whose
+  # tree matched its tarball before the compile, still the tarball's (item
+  # 5e, `Context.tree_check/3`). A tree changed since that check is no
+  # refusal (it was the tarball's when checked) but cannot be judged.
   defp readable(e, ctx, path, owner) do
-    if Context.readable?(ctx, Context.resolve(ctx, path, owner)),
-      do: :ignore,
-      else: {:refuse, host_read(e, path)}
+    real = Context.resolve(ctx, path, owner)
+
+    if Context.readable?(ctx, real) do
+      case Context.tree_check(ctx, real, e["arg"]["listing"] == true) do
+        :ok ->
+          :ignore
+
+        {:differs, app, detail} ->
+          unjudged("dependency tree changed after the check: #{app} (#{detail})")
+      end
+    else
+      {:refuse, host_read(e, path)}
+    end
   end
 
   defp file_write(%{"mfa" => mfa, "arg" => arg}, _ctx, _owner) when mfa in @links,
