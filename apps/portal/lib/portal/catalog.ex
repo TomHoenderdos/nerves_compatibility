@@ -1372,6 +1372,15 @@ defmodule Portal.Catalog do
   # Revoked rows stay closed by the branch this sits in, transient-capped
   # ones by `@reopen_due`. Every NULL reads as "not reopened", as in
   # `@rule1_reopen`. Keyed on the revision only, never on reason text.
+  #
+  # A reopened row whose rebuild errors or fails keeps its old revision and
+  # recurs on the existing weekly rules (`@reopen_due`), as `@rule1_reopen`'s
+  # do. Every node running the `:toolchain` queue must run the same worker
+  # image and the same `NCC_JUDGE_MAKEFILE_RULE2`: a node at a lower revision
+  # rebuilds a reopened row at that revision, which the next sweep reopens
+  # again, a loop of one rebuild per row a week for as long as the fleet is
+  # mixed. A reopen ranks after every new build (`reopen` in
+  # `toolchain_backlog/3`).
   @judge_reopen """
   coalesce(coalesce(t.judge_revision, 0) <
      (SELECT max(jr.judge_revision) FROM catalog_toolchain_builds jr
@@ -1430,7 +1439,7 @@ defmodule Portal.Catalog do
               AND #{@reopen_due}
             )
             OR #{@rule1_reopen}
-            OR #{@judge_reopen}
+            OR $JUDGE_REOPEN
           )
         )
         OR (
@@ -1447,9 +1456,13 @@ defmodule Portal.Catalog do
   )
   """
 
-  # `@live_row_clause` for one query's candidate columns.
-  live_row = fn package_id, version, variant, config_variant ->
+  # `@live_row_clause` for one query's candidate columns. `judge_reopen?`
+  # false leaves `@judge_reopen` out: a candidate whose identity is live that
+  # way is one only `@judge_reopen` reopened (`reopen` in
+  # `toolchain_backlog/3`).
+  live_row = fn package_id, version, variant, config_variant, judge_reopen? ->
     @live_row_clause
+    |> String.replace("$JUDGE_REOPEN", if(judge_reopen?, do: @judge_reopen, else: "false"))
     |> String.replace("$PKG", package_id)
     |> String.replace("$VERSION", version)
     |> String.replace("$VARIANT", variant)
@@ -1536,7 +1549,8 @@ defmodule Portal.Catalog do
                            OR CASE WHEN jsonb_typeof(o.deps_lock) = 'object'
                                    THEN o.deps_lock ?| $7::text[] ELSE true END))
          ) AS refresh,
-         0 AS rank
+         0 AS rank,
+         #{live_row.("e.package_id", "e.version", "v.variant", "'default'", false)} AS reopen
   FROM (
     SELECT p.id AS package_id, p.name AS package, r.version_tested AS version,
            max(r.finished_at) AS finished_at, p.hex_downloads_recent AS recent
@@ -1581,7 +1595,7 @@ defmodule Portal.Catalog do
           AND jsonb_array_length(w.optional_deps -> 'added') > 0
       )
     )
-    AND NOT #{live_row.("e.package_id", "e.version", "v.variant", "'default'")}
+    AND NOT #{live_row.("e.package_id", "e.version", "v.variant", "'default'", true)}
   """
 
   # `@withheld_toolchain_clause` for the default row aliased `d` (its package
@@ -1607,7 +1621,8 @@ defmodule Portal.Catalog do
   @config_variant_candidates_sql """
   SELECT p.name AS package, d.version, d.variant, cv.name AS config_variant,
          d.finished_at, p.hex_downloads_recent AS recent, false AS refresh,
-         cv.rank
+         cv.rank,
+         #{live_row.("d.package_id", "d.version", "d.variant", "cv.name", false)} AS reopen
   FROM catalog_toolchain_builds d
   JOIN catalog_packages p ON p.id = d.package_id
   CROSS JOIN LATERAL (
@@ -1634,7 +1649,7 @@ defmodule Portal.Catalog do
     AND d.revoked_at IS NULL
     AND #{records_config_reads.("d")}
     AND #{default_not_withheld}
-    AND NOT #{live_row.("d.package_id", "d.version", "d.variant", "cv.name")}
+    AND NOT #{live_row.("d.package_id", "d.version", "d.variant", "cv.name", true)}
   """
 
   @doc """
@@ -1663,6 +1678,16 @@ defmodule Portal.Catalog do
   (at most a few per served default build), and a long default backlog would
   otherwise leave them past `limit` on every call.
 
+  `reopen: true` marks a candidate whose only reason to build is that its
+  skipped row was judged under an older judge revision (`@judge_reopen`): not
+  a new identity, and not reopened by any other rule. Those rank after every
+  other candidate that is not a refresh, named or default, so a revision bump
+  never pushes a new build past `limit`; `Portal.Workers.ToolchainSweep`
+  gives them only the slots the new builds leave free.
+  This assumes every node running the `:toolchain` queue runs the same worker
+  image and the same `NCC_JUDGE_MAKEFILE_RULE2`; a fleet at mixed judge
+  revisions rebuilds the same reopened rows every week.
+
   Most wanted first, so a capped sweep builds what projects resolve before
   what nobody asks for: by the package's hex.pm recent downloads, then, within
   a package, by the release's own downloads
@@ -1676,7 +1701,8 @@ defmodule Portal.Catalog do
             version: String.t(),
             variant: :with | :without,
             config_variant: String.t(),
-            refresh: boolean()
+            refresh: boolean(),
+            reopen: boolean()
           }
         ]
   def toolchain_backlog(toolchain, builder_version, limit) do
@@ -1688,12 +1714,13 @@ defmodule Portal.Catalog do
           UNION ALL
           #{@config_variant_candidates_sql}
         )
-        SELECT package, version, variant, config_variant, refresh
+        SELECT package, version, variant, config_variant, refresh, reopen
         FROM (
-          SELECT c.package, c.version, c.variant, c.config_variant, c.refresh,
+          SELECT c.package, c.version, c.variant, c.config_variant, c.refresh, c.reopen,
                  row_number() OVER (
                    PARTITION BY c.refresh
-                   ORDER BY c.config_variant = 'default',
+                   ORDER BY c.reopen,
+                            c.config_variant = 'default',
                             c.recent DESC NULLS LAST,
                             d.downloads DESC NULLS LAST,
                             c.finished_at DESC NULLS LAST,
@@ -1716,13 +1743,14 @@ defmodule Portal.Catalog do
         ) ++ config_variant_params() ++ [limit]
       )
 
-    Enum.map(rows, fn [package, version, variant, config_variant, refresh] ->
+    Enum.map(rows, fn [package, version, variant, config_variant, refresh, reopen] ->
       %{
         package: package,
         version: version,
         variant: variant(variant),
         config_variant: config_variant,
-        refresh: refresh
+        refresh: refresh,
+        reopen: reopen
       }
     end)
   end

@@ -139,6 +139,10 @@ defmodule Portal.Catalog.ToolchainBacklogJudgeRevisionTest do
   # newest-revision build, and rebuilt the row since. Not reopened again.
   test "a row newer than the newest build at the newest revision stays closed" do
     revised!(1, 9 * @day)
+    # The rolled-back image's own build, after the row's last activity: only
+    # builds at the newest revision count, so it does not reopen the row.
+    run!("oldimage", "1.0.0")
+    row!("oldimage", "1.0.0", :pass, rule: 2, marked: true, finished_at: ago(3600))
     run!("phoenix", "1.8.16")
 
     row!("phoenix", "1.8.16", :skipped,
@@ -187,5 +191,45 @@ defmodule Portal.Catalog.ToolchainBacklogJudgeRevisionTest do
 
     # `marker1` itself now has no row on this toolchain: a new default.
     assert names() == ["marker1"]
+  end
+
+  test "a revision at another builder version does not count" do
+    run!("phoenix", "1.8.16")
+    row!("phoenix", "1.8.16", :skipped, reason: "nerves-specific source")
+    revised!(1, 3600, builder_version: 2)
+
+    # `marker1` has no row at builder version 1: a new default.
+    assert names() == ["marker1"]
+  end
+
+  defp downloads!(name, recent) do
+    Package
+    |> Ash.Query.filter(name == ^name)
+    |> Ash.read_one!(domain: Catalog)
+    |> Ash.Changeset.for_update(:update_hex_meta, %{hex_downloads_recent: recent})
+    |> Ash.update!(domain: Catalog)
+  end
+
+  test "a reopened row ranks behind a new version, whatever its downloads" do
+    revised!(1)
+    downloads!("marker1", 0)
+    run!("hot", "1.0.0")
+    downloads!("hot", 1_000_000)
+    row!("hot", "1.0.0", :skipped, reason: "nerves-specific source")
+    run!("cold", "1.0.0")
+    downloads!("cold", 1)
+
+    assert [%{package: "cold", reopen: false}] = Catalog.toolchain_backlog("1.19/28", 1, 1)
+
+    assert Enum.map(Catalog.toolchain_backlog("1.19/28", 1, 100), &{&1.package, &1.reopen}) ==
+             [{"cold", false}, {"hot", true}]
+  end
+
+  test "a row another rule reopens too is not marked as a reopen" do
+    revised!(1)
+    run!("priv", "1.0.0")
+    row!("priv", "1.0.0", :skipped, reason: "ships priv files")
+
+    assert [%{package: "priv", reopen: false}] = Catalog.toolchain_backlog("1.19/28", 1, 100)
   end
 end

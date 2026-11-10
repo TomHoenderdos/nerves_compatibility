@@ -16,20 +16,26 @@ defmodule Portal.Workers.ToolchainSweep do
   starve the others inside a run. A toolchain with less backlog than its
   share leaves the rest to the others.
 
-  The run is taken in three tiers, each round-robin over the toolchains: the
+  The run is taken in four tiers, each round-robin over the toolchains: the
   named config variants (`config_variant` in `Catalog.toolchain_backlog/3`: a
   served default build's variants under the pinned
   `Compatibility.ConfigVariants` overlays it read), every `default` build
-  that is not a refresh, and the refreshes (`refresh`: a rebuild of a build
-  already served, only to record its compile-time config reads). They share
-  the cap in this order:
+  that is not a refresh, the refreshes (`refresh`: a rebuild of a build
+  already served, only to record its compile-time config reads), and the
+  reopens (`reopen`: a skipped row, named or default, judged under an older
+  judge revision and rebuilt only for that). They share the cap in this
+  order:
 
-    1. every named variant, up to the whole cap;
-    2. defaults, up to the cap less the refresh reserve and the named
-       variants taken;
+    1. every named variant that is not a reopen, up to the whole cap;
+    2. defaults that are not reopens, up to the cap less the refresh
+       reserve and the named variants taken;
     3. refreshes, up to the reserve, a quarter of the cap;
-    4. any slot still free, to the defaults left over and then the
-       refreshes left over, so no slot goes unused.
+    4. any slot still free, to the defaults left over, then the reopens,
+       then the refreshes left over, so no slot goes unused.
+
+  Reopens come after every new build: a judge revision reopens the whole
+  skipped backlog of a toolchain at once, and it must not hold back a new
+  version of a package, however few downloads it has.
 
   Named variants go first because a long default backlog (a
   `builder_version` bump makes every version new again) would otherwise take
@@ -41,7 +47,7 @@ defmodule Portal.Workers.ToolchainSweep do
   gives the rest back to the defaults.
 
   Oban priorities are independent of the tiers: defaults at 0 and 1, named
-  variants at 2, refreshes at 3. The tiers decide what a capped run
+  variants at 2, refreshes and reopens at 3. The tiers decide what a capped run
   enqueues, the priority what the queue runs first, so no build waits in the
   queue for a refresh.
 
@@ -80,19 +86,19 @@ defmodule Portal.Workers.ToolchainSweep do
       |> Enum.frequencies_by(&enqueue/1)
 
     for %{toolchain: toolchain} <- Toolchains.images() do
-      [named, refresh, default] =
-        for tier <- [:named, :refresh, :default],
+      [named, refresh, default, reopen] =
+        for tier <- [:named, :refresh, :default, :reopen],
             do: Map.get(counts, {toolchain, :enqueued, tier}, 0)
 
       pending =
-        for tier <- [:named, :refresh, :default], reduce: 0 do
+        for tier <- [:named, :refresh, :default, :reopen], reduce: 0 do
           sum -> sum + Map.get(counts, {toolchain, :pending, tier}, 0)
         end
 
       Logger.info(
         "Toolchain sweep #{toolchain} (builder #{builder_version}): " <>
-          "enqueued #{named + default + refresh} (#{named} config variants, " <>
-          "#{refresh} refreshes), already queued #{pending}"
+          "enqueued #{named + default + refresh + reopen} (#{named} config variants, " <>
+          "#{refresh} refreshes, #{reopen} judge-revision reopens), already queued #{pending}"
       )
     end
 
@@ -112,17 +118,21 @@ defmodule Portal.Workers.ToolchainSweep do
   # toolchains, the cap shared as the moduledoc lays out. Named variants take
   # what they need; then the defaults and the refreshes each get their share
   # (the refreshes a quarter of the cap), and whatever either leaves goes to
-  # the other's leftovers, defaults first.
+  # the other's leftovers, defaults first. Reopens only fill what is left
+  # after the leftover defaults, ahead of the leftover refreshes.
   defp pick(backlogs, cap) do
-    [named, defaults, refreshes] =
-      Enum.map([:named, :default, :refresh], &round_robin(only(backlogs, &1)))
+    [named, defaults, refreshes, reopens] =
+      Enum.map([:named, :default, :refresh, :reopen], &round_robin(only(backlogs, &1)))
 
     named = Enum.take(named, cap)
     reserve = div(cap, 4)
     {defaults, more_defaults} = Enum.split(defaults, max(cap - reserve - length(named), 0))
     {refreshes, more_refreshes} = Enum.split(refreshes, reserve)
 
-    Enum.take(named ++ defaults ++ refreshes ++ more_defaults ++ more_refreshes, cap)
+    Enum.take(
+      named ++ defaults ++ refreshes ++ more_defaults ++ reopens ++ more_refreshes,
+      cap
+    )
   end
 
   # Each toolchain's backlog, keeping only the entries of `tier`, in their
@@ -132,6 +142,7 @@ defmodule Portal.Workers.ToolchainSweep do
   end
 
   defp tier(%{refresh: true}), do: :refresh
+  defp tier(%{reopen: true}), do: :reopen
   defp tier(%{config_variant: "default"}), do: :default
   defp tier(%{config_variant: _named}), do: :named
 
@@ -170,6 +181,7 @@ defmodule Portal.Workers.ToolchainSweep do
   end
 
   defp priority(_variant, :refresh), do: 3
+  defp priority(_variant, :reopen), do: 3
   defp priority(_variant, :named), do: 2
   defp priority(:with, :default), do: 0
   defp priority(:without, :default), do: 1

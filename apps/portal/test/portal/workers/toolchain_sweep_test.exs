@@ -77,6 +77,9 @@ defmodule Portal.Workers.ToolchainSweepTest do
         run_id: Keyword.get(opts, :run_id, "tc-row"),
         compile_env: Keyword.get(opts, :compile_env, []),
         deps_lock: Keyword.get(opts, :deps_lock),
+        config_variant: Keyword.get(opts, :config_variant, "default"),
+        reason: Keyword.get(opts, :reason),
+        judge_revision: Keyword.get(opts, :judge_revision),
         finished_at: Keyword.get(opts, :finished_at, DateTime.utc_now())
       })
       |> Ash.create!(domain: Catalog)
@@ -128,28 +131,32 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "old_error",
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "old_fail",
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "wanted",
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                }
              ]
     end
@@ -165,7 +172,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                }
              ]
 
@@ -192,56 +200,64 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  version: "1.4.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "many",
                  version: "1.3.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "many",
                  version: "1.2.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "many",
                  version: "1.1.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "many",
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "single",
                  version: "0.1.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "tie",
                  version: "2.1.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "tie",
                  version: "2.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                }
              ]
 
@@ -258,7 +274,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                }
              ]
     end
@@ -300,14 +317,16 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "obscure",
                  version: "9.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                }
              ]
     end
@@ -327,21 +346,24 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  version: "1.4.4",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "jason",
                  version: "1.4.5",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "jason",
                  version: "1.5.0-alpha.1",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                }
              ]
     end
@@ -361,21 +383,24 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "zero",
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "unknown",
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                }
              ]
     end
@@ -394,21 +419,24 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  version: "1.4.3",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "jason",
                  version: "1.4.5",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "jason",
                  version: "1.4.4",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                }
              ]
     end
@@ -429,14 +457,16 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "small",
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                }
              ]
     end
@@ -454,14 +484,16 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                },
                %{
                  package: "b",
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                }
              ]
     end
@@ -481,7 +513,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
-                 refresh: false
+                 refresh: false,
+                 reopen: false
                }
              ]
     end
@@ -802,6 +835,72 @@ defmodule Portal.Workers.ToolchainSweepTest do
                ~w(phx_prod phx_test phx_dev)
 
       assert jobs |> Enum.drop(3) |> Enum.map(& &1.priority) == [0, 0, 0, 3, 3]
+    end
+
+    test "a named variant reopened by a judge revision does not jump the cap",
+         %{previous: previous} do
+      # A cap of 4: one slot reserved for the refresh, two new named
+      # variants, one new default. The reopened `phx_prod` waits.
+      three_tiers!(previous, max_per_run: 4)
+      run!("marker", "1.0.0")
+
+      toolchain_row!("marker", "1.0.0", :pass,
+        run_id: "tc-marker",
+        deps_lock: %{},
+        judge_revision: 1,
+        finished_at: ago(3600)
+      )
+
+      toolchain_row!("lvs", "1.0.0", :skipped,
+        run_id: "tc-lvs-prod",
+        config_variant: "phx_prod",
+        reason: "nerves-specific source",
+        finished_at: ago(30 * @day)
+      )
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert all_enqueued(worker: ToolchainBuild)
+             |> Enum.map(&{&1.args["package"], &1.args["config_variant"]})
+             |> Enum.sort() ==
+               Enum.sort([
+                 {"lvs", "phx_test"},
+                 {"lvs", "phx_dev"},
+                 {"new", "default"},
+                 {"stale", "default"}
+               ])
+    end
+
+    test "reopened rows take the slots new builds leave free", %{previous: previous} do
+      three_tiers!(previous, max_per_run: 8)
+      run!("marker", "1.0.0")
+
+      toolchain_row!("marker", "1.0.0", :pass,
+        run_id: "tc-marker",
+        deps_lock: %{},
+        judge_revision: 1,
+        finished_at: ago(3600)
+      )
+
+      toolchain_row!("lvs", "1.0.0", :skipped,
+        run_id: "tc-lvs-prod",
+        config_variant: "phx_prod",
+        reason: "nerves-specific source",
+        finished_at: ago(30 * @day)
+      )
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      jobs = all_enqueued(worker: ToolchainBuild) |> Enum.sort_by(& &1.id)
+
+      assert Enum.map(jobs, &{&1.args["package"], &1.args["config_variant"], &1.priority}) ==
+               [
+                 {"lvs", "phx_test", 2},
+                 {"lvs", "phx_dev", 2},
+                 {"new", "default", 0},
+                 {"stale", "default", 3},
+                 {"lvs", "phx_prod", 3}
+               ]
     end
 
     test "a second sweep does not duplicate named variants still queued", %{previous: previous} do

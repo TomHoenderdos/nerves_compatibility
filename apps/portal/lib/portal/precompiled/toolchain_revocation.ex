@@ -63,15 +63,25 @@ defmodule Portal.Precompiled.ToolchainRevocation do
   (`judge_revision >= n`), whatever rule 1 said: the one-call rollback of
   a judge refinement that shipped at revision `n` (precompiled judge
   refinements spec, "Revocation lever"). Full runs' `pure_elixir` results
-  record no revision and are left alone. It counts as a filter for acting,
-  combines with `package:`, `version:` and `rule1_prefix:`, and is capped
-  by `limit:` like any call.
+  record no revision and are left alone, also when combined with
+  `everything: true`: `judge_revision:` takes precedence over it for system
+  results, so revoke those with a separate call. It counts as a filter for
+  acting, combines with `package:`, `version:` and `rule1_prefix:`, and is
+  capped by `limit:` like any call.
+
+  It is coarse: it takes every rule-2 pass at revision `n` or later, not
+  only those the refinement shipped at `n` made pass, so it also revokes
+  packages every earlier revision passed. And a revoked row is rebuilt only
+  on a `builder_version` bump, like any revocation: a fixed judge at a
+  higher revision does not bring it back. Narrow it with `package:` or
+  `rule1_prefix:` where the refinement's reach is known, or use `undo/1`.
 
   ## Safety
 
     * `revoke/1` only lists unless given `dry_run: false`, and acting needs
       `package:` (optionally with `version:`), `rule1_prefix:`,
-      `judge_revision:`, `all: true` or `everything: true`, else it returns `{:error, :filter_required}`;
+      `judge_revision:`, `all: true` or `everything: true`, else it
+      returns `{:error, :filter_required}`;
     * one call revokes at most `limit:` rows (default 50, toolchain builds
       and system results together; no default cap with `everything: true`),
       in package, version, kind and identity order; a dry run lists the same
