@@ -29,12 +29,20 @@ defmodule Portal.Reports.Requeue do
        Hex is asked only for lines that passed 1-3, once per package, and for
        at most 20 packages a run; the lines of the packages past that are
        left as they were, for `sweep/1`.
-    5. `skipped:judged`: a pass, fail or skipped result already stands for
+    5. `skipped:old_version` (system tuples only): the version is older than
+       the package's latest tested version (`Build.latest_version_tested/1`)
+       and is not Hex's newest release, or it already has a run but is not
+       the latest tested version. A build of it would make an old version
+       the package's public result (ingest moves `latest_version` to the
+       version it built) and, since `Build.scope_args/3` honours `targets`
+       only for the latest tested version, would rebuild every system.
+       Toolchain builds never move `latest_version` and are not checked.
+    6. `skipped:judged`: a pass, fail or skipped result already stands for
        the tuple. An error or unknown one (a timeout, retries spent) does not.
-    6. `skipped:queued`: a build that covers the tuple is already waiting: a
+    7. `skipped:queued`: a build that covers the tuple is already waiting: a
        full build of the package version, or a targets build naming the
        system (a job or a remote lease); for a toolchain, its toolchain build.
-    7. `skipped:cap`: the day's global, package or reporter budget is spent
+    8. `skipped:cap`: the day's global, package or reporter budget is spent
        (`Portal.Reports.Quotas`, on the UTC day; a report whose reporter key
        retention cleared counts against one shared `reporter:none` budget).
        The caps are reserved and the job inserted in one transaction, so a
@@ -43,10 +51,12 @@ defmodule Portal.Reports.Requeue do
        is `skipped:error` (logged). Once the global cap refuses, the run
        stops: every later line would be refused too, and stays as it was
        for the next day's sweep.
-    8. `queued`: a system build through `Portal.Builders.Routing.build_job/2`
-       (one forced target when the version already has a run, a full build
-       otherwise), or a toolchain build of the `with`/`default` variant;
-       either way `meta.report_id` names the report.
+    9. `queued`: a system build through `Portal.Builders.Routing.build_job/2`:
+       for the latest tested version, one forced target (the reported
+       system); for a version with no run (newer than the latest tested one,
+       or Hex's newest), a plain full build, as the update check would queue
+       for a new release. Or a toolchain build of the `with`/`default`
+       variant. Either way `meta.report_id` names the report.
 
   `sweep/1` decides again, once a day, the lines a cap refused and the ones
   nothing decided.
@@ -60,7 +70,7 @@ defmodule Portal.Reports.Requeue do
   alias Portal.Reports.Quotas
   alias Portal.Repo
   alias Portal.Toolchains
-  alias Portal.Workers.ToolchainBuild
+  alias Portal.Workers.{Build, ToolchainBuild}
 
   @codes ["not_built_version", "not_built_target"]
   @incomplete ~w(available scheduled executing retryable)
@@ -252,6 +262,7 @@ defmodule Portal.Reports.Requeue do
 
       {:ok, versions} ->
         with :ok <- on_hex(versions, line.version),
+             :ok <- current(key, versions),
              :ok <- not_judged(key),
              :ok <- not_queued(key),
              :ok <- reserve_and_queue(key, report, opts) do
@@ -534,9 +545,12 @@ defmodule Portal.Reports.Requeue do
   defp reporter_bucket(key) when is_binary(key), do: key
   defp reporter_bucket(nil), do: "none"
 
+  # `current/2` let through only the latest tested version (a forced target,
+  # which `Build.scope_args/3` honours for exactly that version) or a version
+  # with no run (a full build, which nothing needs to force).
   defp job({:system, package, version, system, _sv}, report) do
     args =
-      if run_exists?(package, version),
+      if version == Build.latest_version_tested(package),
         do: %{
           package: package,
           version: version,
@@ -565,6 +579,32 @@ defmodule Portal.Reports.Requeue do
       priority: @priority,
       meta: %{report_id: report.id}
     )
+  end
+
+  # Whether building `version` keeps the package's public result current:
+  # the latest tested version itself, or a version with no run that is newer
+  # than it or is Hex's newest release.
+  defp current({:toolchain, _package, _version, _toolchain}, _versions), do: :ok
+
+  defp current({:system, package, version, _system, _sv}, versions) do
+    latest = Build.latest_version_tested(package)
+
+    cond do
+      version == latest -> :ok
+      run_exists?(package, version) -> {:skip, "old_version"}
+      newer?(version, latest) -> :ok
+      version == newest(MapSet.to_list(versions)) -> :ok
+      true -> {:skip, "old_version"}
+    end
+  end
+
+  defp newer?(_version, nil), do: true
+
+  defp newer?(version, latest) do
+    case {Version.parse(version), Version.parse(latest)} do
+      {{:ok, v}, {:ok, l}} -> Version.compare(v, l) == :gt
+      _ -> false
+    end
   end
 
   # Highest by Version order; a version Elixir cannot parse sorts lowest.

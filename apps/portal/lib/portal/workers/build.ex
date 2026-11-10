@@ -130,10 +130,15 @@ defmodule Portal.Workers.Build do
     # failure to capture something the first attempt did not record has to be
     # able to run again. `force` is that escape hatch, set only by callers that
     # already know a run exists and want another one anyway
-    # (`Portal.LogBackfill`), or that are behind the admin gate
-    # (`Portal.Admin.queue_package/3`). It never comes from public input: an
-    # anonymous visitor who could set it would be able to spend a six-minute
-    # firmware build on a result we already have, as often as they liked.
+    # (`Portal.LogBackfill`), that are behind the admin gate
+    # (`Portal.Admin.queue_package/3`), or `Portal.Reports.Requeue`. The last
+    # is the one public path: an anonymous miss report can ask for one forced
+    # target of the latest tested version, and only when no pass, fail or
+    # skipped result stands for that system (`not_judged`), for no older
+    # version, within the per-day global, package and reporter caps. Nothing
+    # else public may set it: an anonymous visitor who could would be able to
+    # spend a six-minute firmware build on a result we already have, as often
+    # as they liked.
     force = args["force"] == true
 
     run_id = run_id(package, version)
@@ -584,11 +589,15 @@ defmodule Portal.Workers.Build do
     )
   end
 
-  # Picks the run `Portal.Catalog.Ingestion` will carry from: newest
-  # `finished_at`, then newest `inserted_at`, plain `DESC` -- the same rule
-  # `Portal.Catalog.Ingestion.previous_run/1` and the pages use for "latest".
-  # A partial scope is only valid when both pick the same run.
-  defp latest_version_tested(package) do
+  @doc """
+  The version of the package's latest run, the run `Portal.Catalog.Ingestion`
+  will carry from: newest `finished_at`, then newest `inserted_at`, plain
+  `DESC` -- the same rule `Portal.Catalog.Ingestion.previous_run/1` and the
+  pages use for "latest". A partial scope (`scope_args/3`) is only valid for
+  this version. `nil` when the package has no run.
+  """
+  @spec latest_version_tested(String.t()) :: String.t() | nil
+  def latest_version_tested(package) do
     Repo.one(
       from(r in "catalog_runs",
         join: p in "catalog_packages",

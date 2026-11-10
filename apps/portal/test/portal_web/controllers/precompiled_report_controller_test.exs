@@ -217,19 +217,59 @@ defmodule PortalWeb.PrecompiledReportControllerTest do
     end
 
     assert conn |> send_report(body(), "198.51.100.1") |> json_response(201)
-    # The duplicate is accepted too: answered, but the budget is spent now.
-    assert build_conn() |> send_report(body(), "198.51.100.2") |> Map.fetch!(:status) == 429
+    # The new report spent the budget.
+    assert build_conn()
+           |> send_report(%{body() | "target" => "other"}, "198.51.100.2")
+           |> Map.fetch!(:status) == 429
   end
 
-  test "a duplicate spends the global budget", %{conn: conn} do
+  test "a duplicate does not spend the global budget; only a new report does", %{conn: conn} do
     Application.put_env(:portal, RateLimiter,
       enabled: true,
-      limits: %{precompiled_report_global: {2, 3_600_000}}
+      limits: %{
+        precompiled_report_global: {2, 3_600_000},
+        precompiled_report_global_day: {2, 3_600_000}
+      }
     )
 
     assert conn |> send_report(body(), "198.51.100.1") |> json_response(201)
-    assert build_conn() |> send_report(body(), "198.51.100.2") |> json_response(200)
-    assert build_conn() |> send_report(body(), "198.51.100.3") |> Map.fetch!(:status) == 429
+
+    for client <- ["198.51.100.2", "198.51.100.3", "198.51.100.4"] do
+      assert build_conn() |> send_report(body(), client) |> json_response(200)
+    end
+
+    assert build_conn()
+           |> send_report(%{body() | "target" => "second"}, "198.51.100.5")
+           |> json_response(201)
+
+    assert build_conn()
+           |> send_report(%{body() | "target" => "third"}, "198.51.100.6")
+           |> Map.fetch!(:status) == 429
+  end
+
+  test "a spent global cap does not block a DELETE", %{conn: conn} do
+    Application.put_env(:portal, RateLimiter,
+      enabled: true,
+      limits: %{
+        precompiled_report_global: {1, 3_600_000},
+        precompiled_report_global_day: {1, 3_600_000}
+      }
+    )
+
+    %{"id" => id} = conn |> send_report(body(), "198.51.100.1") |> json_response(201)
+
+    assert build_conn()
+           |> send_report(%{body() | "target" => "other"}, "198.51.100.2")
+           |> Map.fetch!(:status) == 429
+
+    deleted =
+      build_conn()
+      |> put_req_header("x-forwarded-for", "198.51.100.1")
+      |> put_req_header("accept", "application/json")
+      |> delete("#{@path}/#{id}")
+
+    assert deleted.status == 204
+    assert [0] = Repo.query!("SELECT count(*) FROM precompiled_reports").rows |> List.flatten()
   end
 
   test "malformed JSON is a documented 400", %{conn: conn} do

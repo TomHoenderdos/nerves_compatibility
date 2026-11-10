@@ -553,11 +553,11 @@ Reason codes: `hit`, `not_in_batch`, `not_built_version`,
 `internal`. Another code is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
-`DELETE` counts against, refused ones included; and 300 accepted reports
-an hour and 2000 a day in total, counting only `201` and `200` answers
-(duplicates included), so refused requests
-sent from many addresses cannot use up everyone's budget. 429 with
-`retry-after` beyond any of them. The limits are checked before the body
+`DELETE` counts against, refused ones included; and, for `POST` only, 300
+newly stored reports an hour and 2000 a day in total, counting only `201`
+answers, so refused requests and duplicates sent from many addresses cannot
+use up everyone's budget. A `DELETE` is never held back by the shared
+limits. 429 with `retry-after` beyond any of them. The limits are checked before the body
 is read. The client address is used only in
 memory, for the limits and a keyed digest of it; the address is never
 stored, nor logged at the production log level.
@@ -575,6 +575,7 @@ system is `skipped:unbuildable` before anything else is checked):
 | `skipped:unbuildable` | No build here produces the missed tuple: a device report without a public system (`custom` included), a system version no run of the last 30 days recorded, or a toolchain no worker image builds. |
 | `skipped:superseded` | A run of the last 30 days recorded a newer version of that system. A build now produces the newer one, so the older tuple would never be judged. |
 | `skipped:not_on_hex` | Hex lists no such release. |
+| `skipped:old_version` | A system tuple for a version older than the package's latest tested one that is not Hex's newest release, or for a version that already has a run but is not the latest tested one. Building it would make an old version the package's public result. Host (toolchain) reports are not checked: a toolchain build does not change it. |
 | `skipped:judged` | A pass, fail or skipped result already stands for the tuple. An error or unknown one (a timeout, retries spent) does not count. |
 | `skipped:queued` | A build that covers the tuple is already waiting. |
 | `skipped:cap` | The day's budget is spent (below). |
@@ -583,9 +584,13 @@ system is `skipped:unbuildable` before anything else is checked):
 
 The tuple is `(package, version, system, system_version)` for a report with
 a Nerves system and `(package, version, toolchain)` for a host report, the
-toolchain following from its Elixir and OTP versions. A system tuple whose
-version already has a run is built as one forced target; any other version
-gets a full build. Every build a report queues runs at Oban priority 9,
+toolchain following from its Elixir and OTP versions. A system tuple for
+the package's latest tested version is built as one forced target, the
+reported system only. A system tuple for a version with no run (newer than
+the latest tested one, or Hex's newest release) gets a plain full build,
+the build the portal queues for a new release anyway; it becomes the
+package's latest result, as it would have. A host report gets a toolchain
+build of that package version. Every build a report queues runs at Oban priority 9,
 the lowest, so it never runs ahead of the regular builds.
 
 Budgets, per UTC day: 50 report builds in total, 3 per package and 5 per
@@ -603,9 +608,12 @@ day.
 
 A report is an anonymous trigger and a build runs third-party code. The
 rules above therefore never build a package the catalog has not built
-already: the portal builds every new release of those anyway, and only a
-package's owners can publish one, so a report can make a build happen
-sooner but never build something new. One report is enough; an earlier
+already, and only a package's owners can publish a release of it. For a
+Nerves system a report builds only what the portal would build anyway, only
+sooner: a missing target of the latest tested version, or a release newer
+than it. It never rebuilds an older version. A host report can ask for a
+toolchain build of any release Hex lists, which the toolchain sweep would
+reach in time. One report is enough; an earlier
 design required two distinct reporters before queueing, which was dropped
 on purpose, because the budgets bound what a single reporter can trigger.
 Report builds run in the same sandbox as every other build.

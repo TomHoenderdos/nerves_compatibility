@@ -666,4 +666,99 @@ defmodule Portal.Reports.RequeueTest do
       0 -> Enum.reverse(acc)
     end
   end
+
+  defp latest_version(name) do
+    Repo.one(from(p in "catalog_packages", where: p.name == ^name, select: p.latest_version))
+  end
+
+  describe "the version rule" do
+    test "an older version of a known package queues nothing" do
+      image_builds_rpi4!()
+      jason = package!("jason")
+      run!(jason, "1.4.5", [{"nerves_system_rpi4", "1.31.0", :pass}])
+
+      Repo.update_all(from(p in "catalog_packages", where: p.name == "jason"),
+        set: [latest_version: "1.4.5"]
+      )
+
+      id = miss!("jason", "1.4.4", code: "not_built_target")
+      assert :ok = requeue(id)
+      assert decision(id) == "skipped:old_version"
+      refute_enqueued(worker: Build)
+      assert latest_version("jason") == "1.4.5"
+    end
+
+    test "an older version with a run of its own queues nothing either" do
+      image_builds_rpi4!()
+      jason = package!("jason")
+      earlier = run!(jason, "1.4.4", [{"nerves_system_rpi4", "1.31.0", :error}])
+      later = run!(jason, "1.4.5", [{"nerves_system_rpi4", "1.31.0", :pass}])
+
+      for {run, ago} <- [{earlier, 7_200}, {later, 60}] do
+        Repo.update_all(from(r in "catalog_runs", where: r.id == type(^run.id, Ecto.UUID)),
+          set: [finished_at: DateTime.add(DateTime.utc_now(), -ago)]
+        )
+      end
+
+      id = miss!("jason", "1.4.4", code: "not_built_target")
+      assert :ok = requeue(id)
+      assert decision(id) == "skipped:old_version"
+      refute_enqueued(worker: Build)
+    end
+
+    test "the latest tested version queues exactly one forced target" do
+      image_builds_rpi4!()
+      package!("jason") |> run!("1.4.5", [{"nerves_system_bbb", "2.0.0", :pass}])
+      id = miss!("jason", "1.4.5", code: "not_built_target")
+      assert :ok = requeue(id)
+      assert decision(id) == "queued"
+
+      [job] = all_enqueued(worker: Build)
+      assert job.args["force"] == true
+
+      assert Build.scope_args("jason", "1.4.5", job.args) ==
+               %{systems_filter: ["nerves_system_rpi4"], mode: nil}
+    end
+
+    test "a newer version with no run is a plain full build" do
+      image_builds_rpi4!()
+      package!("jason") |> run!("1.4.4", [])
+      id = miss!("jason", "1.4.5")
+      assert :ok = requeue(id)
+      assert decision(id) == "queued"
+      [job] = all_enqueued(worker: Build)
+      assert job.args == %{"package" => "jason", "version" => "1.4.5"}
+    end
+
+    test "Hex's newest release is eligible even below the latest tested version" do
+      image_builds_rpi4!()
+      # 2.0.0 was tested and has since left Hex; 1.4.5 is Hex's newest.
+      package!("jason") |> run!("2.0.0", [])
+      newest = miss!("jason", "1.4.5")
+      older = miss!("jason", "1.4.4", reporter: "reporter-b")
+      assert :ok = requeue(newest)
+      assert :ok = requeue(older)
+      assert decision(newest) == "queued"
+      assert decision(older) == "skipped:old_version"
+    end
+
+    test "a toolchain build of an older version is still queued" do
+      package!("jason") |> run!("2.0.0", [])
+
+      id =
+        miss!("jason", "1.4.4",
+          body: %{
+            "target" => "host",
+            "system" => nil,
+            "system_version" => nil,
+            "elixir" => "1.19.5",
+            "otp" => 28
+          }
+        )
+
+      assert :ok = requeue(id)
+      assert decision(id) == "queued"
+      assert_enqueued(worker: ToolchainBuild, args: %{"package" => "jason", "version" => "1.4.4"})
+    end
+  end
 end

@@ -27,7 +27,8 @@ defmodule PortalWeb.PrecompiledReportController do
         "`{\"duplicate\": true}` without an id: the id is what retracts a report, and the first " <>
         "one may have come from someone else with the same project. At most 256 KiB of " <>
         "`application/json` (utf-8). 10 requests an hour per client; a shared limit of 300 " <>
-        "accepted reports an hour and 2000 a day, which refused requests do not use up.",
+        "newly stored reports an hour and 2000 a day, which refused requests and duplicates " <>
+        "do not use up.",
     request_body: {"The report", "application/json", ApiSchemas.ReportRequest},
     responses: [
       created: {"Stored", "application/json", ApiSchemas.ReportCreated},
@@ -47,7 +48,7 @@ defmodule PortalWeb.PrecompiledReportController do
 
         case Reports.record(payload, key) do
           {:created, id} -> conn |> spend_global() |> put_status(:created) |> json(%{id: id})
-          :duplicate -> conn |> spend_global() |> json(%{duplicate: true})
+          :duplicate -> json(conn, %{duplicate: true})
         end
 
       {:error, details} ->
@@ -57,8 +58,9 @@ defmodule PortalWeb.PrecompiledReportController do
     end
   end
 
-  # The router only peeks at the global buckets; an accepted report spends
-  # them, so refused requests cannot use up everyone's budget.
+  # The router only peeks at the global buckets; only a newly stored report
+  # spends them, so neither refused requests nor duplicates (which store
+  # nothing) use up everyone's budget.
   defp spend_global(conn) do
     for bucket <- [:precompiled_report_global, :precompiled_report_global_day] do
       RateLimit.spend(conn, bucket: bucket, by: :global)
@@ -73,7 +75,8 @@ defmodule PortalWeb.PrecompiledReportController do
     summary: "Retract a miss report",
     description:
       "Deletes a report and its lines. The id the report was answered with is all it takes. " <>
-        "Counts against the same per-client rate limit as sending.",
+        "Counts against the same per-client rate limit as sending, and never against the " <>
+        "shared limits, so a spent shared limit does not stop a retraction.",
     parameters: [id: [in: :path, type: :string, description: "The report id.", required: true]],
     responses: [
       no_content: %OpenApiSpex.Response{description: "Removed"},

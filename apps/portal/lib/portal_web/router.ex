@@ -35,9 +35,11 @@ defmodule PortalWeb.Router do
   # below set `log: false`, so no dispatch line with the parameters (the
   # contact among them) is logged; nothing here logs the client address.
   # The per-client bucket counts every request, a DELETE included. The two
-  # global buckets are only peeked at here and spent by the controller on an
-  # accepted report (201 or a 200 duplicate), so junk sent from many
-  # addresses cannot lock real reporters out.
+  # global buckets are only peeked at here and spent by the controller on a
+  # newly stored report (201), so junk or duplicates sent from many
+  # addresses cannot lock real reporters out. A DELETE has its own pipeline
+  # with only the per-client bucket: a spent global budget must never stop
+  # someone retracting their report.
   pipeline :precompiled_reports do
     plug :accepts, ["json"]
     plug PortalWeb.Plugs.RateLimit, bucket: :precompiled_report
@@ -49,6 +51,11 @@ defmodule PortalWeb.Router do
       peek: true
 
     plug PortalWeb.Plugs.ReportBody
+  end
+
+  pipeline :precompiled_report_retract do
+    plug :accepts, ["json"]
+    plug PortalWeb.Plugs.RateLimit, bucket: :precompiled_report
   end
 
   # For endpoints a browser calls with `fetch`, not by navigating: they need a
@@ -267,6 +274,11 @@ defmodule PortalWeb.Router do
     pipe_through :precompiled_reports
 
     post "/precompiled/reports", PrecompiledReportController, :create, log: false
+  end
+
+  scope "/api", PortalWeb do
+    pipe_through :precompiled_report_retract
+
     delete "/precompiled/reports/:id", PrecompiledReportController, :delete, log: false
   end
 
