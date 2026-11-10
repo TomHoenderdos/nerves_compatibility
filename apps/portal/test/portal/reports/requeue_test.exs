@@ -196,7 +196,18 @@ defmodule Portal.Reports.RequeueTest do
     Application.put_env(:portal, Portal.Reports.Quotas, package: 1)
     image_builds_rpi4!()
     package!("jason") |> run!("1.0.0", [])
-    a = miss!("jason", "1.4.4")
+    # A toolchain build of 1.4.4 and a system build of 1.4.5 share the budget.
+    a =
+      miss!("jason", "1.4.4",
+        body: %{
+          "target" => "host",
+          "system" => nil,
+          "system_version" => nil,
+          "elixir" => "1.19.5",
+          "otp" => 28
+        }
+      )
+
     b = miss!("jason", "1.4.5", reporter: "reporter-b")
     :ok = requeue(a)
     :ok = requeue(b)
@@ -720,7 +731,7 @@ defmodule Portal.Reports.RequeueTest do
                %{systems_filter: ["nerves_system_rpi4"], mode: nil}
     end
 
-    test "a newer version with no run is a plain full build" do
+    test "Hex's newest release with no run is a plain full build" do
       image_builds_rpi4!()
       package!("jason") |> run!("1.4.4", [])
       id = miss!("jason", "1.4.5")
@@ -728,6 +739,32 @@ defmodule Portal.Reports.RequeueTest do
       assert decision(id) == "queued"
       [job] = all_enqueued(worker: Build)
       assert job.args == %{"package" => "jason", "version" => "1.4.5"}
+    end
+
+    test "only Hex's newest release qualifies among versions newer than the latest tested" do
+      image_builds_rpi4!()
+      package!("jason") |> run!("1.4.5", [])
+      hex(%{"jason" => ["1.4.5", "1.4.6", "1.4.7"]})
+      between = miss!("jason", "1.4.6")
+      newest = miss!("jason", "1.4.7", reporter: "reporter-b")
+      assert :ok = requeue(between)
+      assert :ok = requeue(newest)
+      assert decision(between) == "skipped:old_version"
+      assert decision(newest) == "queued"
+      [job] = all_enqueued(worker: Build)
+      assert job.args == %{"package" => "jason", "version" => "1.4.7"}
+    end
+
+    test "an earlier pre-release does not qualify; Hex's newest pre-release does" do
+      image_builds_rpi4!()
+      package!("jason") |> run!("1.4.5", [])
+      hex(%{"jason" => ["1.4.5", "2.0.0-rc.0", "2.0.0-rc.1"]})
+      rc0 = miss!("jason", "2.0.0-rc.0")
+      rc1 = miss!("jason", "2.0.0-rc.1", reporter: "reporter-b")
+      assert :ok = requeue(rc0)
+      assert :ok = requeue(rc1)
+      assert decision(rc0) == "skipped:old_version"
+      assert decision(rc1) == "queued"
     end
 
     test "Hex's newest release is eligible even below the latest tested version" do

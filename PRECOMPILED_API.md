@@ -575,7 +575,7 @@ system is `skipped:unbuildable` before anything else is checked):
 | `skipped:unbuildable` | No build here produces the missed tuple: a device report without a public system (`custom` included), a system version no run of the last 30 days recorded, or a toolchain no worker image builds. |
 | `skipped:superseded` | A run of the last 30 days recorded a newer version of that system. A build now produces the newer one, so the older tuple would never be judged. |
 | `skipped:not_on_hex` | Hex lists no such release. |
-| `skipped:old_version` | A system tuple for a version older than the package's latest tested one that is not Hex's newest release, or for a version that already has a run but is not the latest tested one. Building it would make an old version the package's public result. Host (toolchain) reports are not checked: a toolchain build does not change it. |
+| `skipped:old_version` | A system tuple for a version that is neither the package's latest tested one nor Hex's newest release without a run yet (the highest version Hex lists, pre-releases included). Building any other version could make it the package's public result. Host (toolchain) reports are not checked: a toolchain build does not change it. |
 | `skipped:judged` | A pass, fail or skipped result already stands for the tuple. An error or unknown one (a timeout, retries spent) does not count. |
 | `skipped:queued` | A build that covers the tuple is already waiting. |
 | `skipped:cap` | The day's budget is spent (below). |
@@ -586,10 +586,9 @@ The tuple is `(package, version, system, system_version)` for a report with
 a Nerves system and `(package, version, toolchain)` for a host report, the
 toolchain following from its Elixir and OTP versions. A system tuple for
 the package's latest tested version is built as one forced target, the
-reported system only. A system tuple for a version with no run (newer than
-the latest tested one, or Hex's newest release) gets a plain full build,
-the build the portal queues for a new release anyway; it becomes the
-package's latest result, as it would have. A host report gets a toolchain
+reported system only. A system tuple for Hex's newest release, when it has
+no run yet, gets a plain full build, the build the portal queues for a new
+release anyway; it becomes the package's latest result, as it would have. A host report gets a toolchain
 build of that package version. Every build a report queues runs at Oban priority 9,
 the lowest, so it never runs ahead of the regular builds.
 
@@ -610,8 +609,8 @@ A report is an anonymous trigger and a build runs third-party code. The
 rules above therefore never build a package the catalog has not built
 already, and only a package's owners can publish a release of it. For a
 Nerves system a report builds only what the portal would build anyway, only
-sooner: a missing target of the latest tested version, or a release newer
-than it. It never rebuilds an older version. A host report can ask for a
+sooner: a missing target of the latest tested version, or Hex's newest
+release. It never builds any other version. A host report can ask for a
 toolchain build of any release Hex lists, which the toolchain sweep would
 reach in time. One report is enough; an earlier
 design required two distinct reporters before queueing, which was dropped
