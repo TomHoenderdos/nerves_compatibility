@@ -441,7 +441,14 @@ the traced compile did not finish, `null` when it did), `trace_mode` (`"host"` f
 `host_build` (`"traced"`, `"untraced"` or `"none"`: which build the host status is) and `host_compile_sec`, the
 host compile's own time, its `deps.get` and any untraced fallback included, and the collector's own counts
 (`calls`, `user_events`, `path_os_reads`: the OS-family reads path functions make, which the judge ignores and the
-tracer counts without writing). `transient` is `true` when a
+tracer counts without writing). OTP's own code loading in a rebar3 VM (`erl_prim_loader` resolving a beam's
+path for `code:ensure_loaded/1`, which an archive escript makes the calling process do) is not held against the
+package: its `erlang:system_info(os_type)` reads are path handling (`erl_prim_loader:pathtype/1`, `normalize/2`,
+`real_path/4`), and its `prim_file:read_link/1` reads carry an `arg.code_loading` flag the tracer sets only on the
+stack shape pinned for that read per toolchain (`src/ncc_code_loading_shapes.hrl`, recorded by
+`test/fixtures/code_loading/code_loading_repro.erl` in each image). The beam read that follows is judged as a read,
+and the same reads from package frames, an `on_load`, or a direct `erl_prim_loader` call still refuse.
+`transient` is `true` when a
 could-not-judge says nothing about the package: the traced compile did not finish (a timeout, a kill, an exhausted run
 budget, processes that survived the cleanup, a crash) or its report was over budget. The portal stores such a
 `skipped` build as an `error`, which its backlog retries after a day; a could-not-judge the package causes on every

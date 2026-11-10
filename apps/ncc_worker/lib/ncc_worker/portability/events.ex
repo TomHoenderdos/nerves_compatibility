@@ -27,6 +27,13 @@ defmodule NccWorker.Portability.Events do
       and ignored; every other read there stays user. `system_info(wordsize)`
       is ignored only when its immediate caller (the event's `caller`) is
       `erlang:big_binary_to_int/2`, OTP converting a big integer literal.
+    * OTP code loading (item 5a): `system_info(os_type)` and
+      `prim_file:read_link/1` with the tracer's `code_loading` flag are
+      ignored. The tracer sets it only on a stack whose top is exactly the
+      shape pinned per toolchain for that read (`erl_prim_loader` frames,
+      then `code:ensure_prepare_loading/3` and `code:ensure_loaded/1`;
+      `:ncc_tracer_stack.code_loading_read/4`). The beam read that follows
+      is judged as a read; `prim_file:get_cwd/0` is never flagged.
     * Environment, programs, network, crypto and native loading refuse.
     * Integrity (the trace API, `erts_internal` trace BIFs, `system_flag`,
       reading another process's stack, mailbox or dictionary, unsticking a
@@ -246,6 +253,15 @@ defmodule NccWorker.Portability.Events do
        }),
        do: :ignore
 
+  # Item 5a: the os_type read erl_prim_loader:pathtype/1 makes while OTP
+  # loads a module into the calling process, which the tracer flags only on
+  # that read's pinned stack shape (`:ncc_tracer_stack.code_loading_read/4`).
+  defp os_identity(%{
+         "mfa" => "erlang:system_info/1",
+         "arg" => %{"key" => "os_type", "code_loading" => true}
+       }),
+       do: :ignore
+
   defp os_identity(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => "otp_release"}}),
     do: :ignore
 
@@ -269,6 +285,13 @@ defmodule NccWorker.Portability.Events do
   end
 
   defp install(e, _ctx), do: {:refuse, host_read(e)}
+
+  # Item 5a: the link reads erl_prim_loader:real_path/4 makes of every path
+  # prefix while OTP loads a module into the calling process, flagged by the
+  # tracer only on that read's pinned stack shape. Only this MFA: get_cwd is
+  # never flagged, and the beam read that follows is still judged as a read.
+  defp file_read(%{"mfa" => "prim_file:read_link/1", "arg" => %{"code_loading" => true}}, _, _),
+    do: :ignore
 
   defp file_read(%{"arg" => %{"cwd" => true}} = e, ctx, owner) do
     case Context.cwd(ctx, owner) do

@@ -743,4 +743,71 @@ defmodule NccWorker.Portability.EventsTest do
       end
     end
   end
+
+  describe "item 5a: OTP code loading" do
+    test "flagged reads of OTP's own code loading are ignored", %{ctx: ctx} do
+      link = ev("file_read", "prim_file:read_link/1", %{"path" => "/usr", "code_loading" => true})
+      assert :ignore = Events.decide(link, ctx, "pkg")
+
+      os =
+        ev("os_identity", "erlang:system_info/1", %{"key" => "os_type", "code_loading" => true})
+
+      assert :ignore = Events.decide(os, ctx, "pkg")
+    end
+
+    test "the same reads without the flag, other calls with it, and the beam read still refuse",
+         %{ctx: ctx} do
+      for event <- [
+            ev("file_read", "prim_file:read_link/1", %{"path" => "/usr"}),
+            ev("file_read", "file:read_link/1", %{"path" => "/usr", "code_loading" => true}),
+            ev("file_read", "prim_file:read_link_all/1", %{
+              "path" => "/usr",
+              "code_loading" => true
+            }),
+            ev("file_read", "prim_file:read_file/1", %{
+              "path" => "/usr/x.beam",
+              "code_loading" => true
+            }),
+            ev("os_identity", "erlang:system_info/1", %{"key" => "endian", "code_loading" => true}),
+            ev("os_identity", "os:type/0", %{"code_loading" => true}),
+            # A flag that is not exactly `true` is no flag.
+            ev("file_read", "prim_file:read_link/1", %{"path" => "/usr", "code_loading" => "true"})
+          ] do
+        assert {:refuse, "compile-time host read: " <> _} = Events.decide(event, ctx, "pkg"),
+               inspect(event)
+      end
+    end
+
+    test "get_cwd is never a code-loading read: the flag changes nothing", %{ctx: ctx} do
+      for owner <- ["pkg", :outside] do
+        plain = ev("file_read", "prim_file:get_cwd/0", %{"cwd" => true})
+        flagged = ev("file_read", "prim_file:get_cwd/0", %{"cwd" => true, "code_loading" => true})
+        assert Events.decide(flagged, ctx, owner) == Events.decide(plain, ctx, owner)
+      end
+
+      flagged = ev("file_read", "prim_file:get_cwd/0", %{"cwd" => true, "code_loading" => true})
+      assert {:refuse, _} = Events.decide(flagged, ctx, :outside)
+    end
+
+    test "os_type read by erl_prim_loader's path helpers is path handling", %{ctx: ctx} do
+      for {f, a} <- [{"pathtype", 1}, {"normalize", 2}, {"real_path", 4}] do
+        event =
+          ev("os_identity", "erlang:system_info/1", %{"key" => "os_type"},
+            first: {"erl_prim_loader", f, a}
+          )
+
+        assert :ignore = Events.decide(event, ctx, "pkg"), f
+      end
+
+      # Not a path helper: a direct erl_prim_loader call's own frame, and any other key.
+      for {first, key} <- [
+            {{"erl_prim_loader", "read_file", 1}, "os_type"},
+            {{"erl_prim_loader", "name_split", 2}, "os_type"},
+            {{"erl_prim_loader", "pathtype", 1}, "endian"}
+          ] do
+        event = ev("os_identity", "erlang:system_info/1", %{"key" => key}, first: first)
+        assert {:refuse, _} = Events.decide(event, ctx, "pkg"), inspect(first)
+      end
+    end
+  end
 end

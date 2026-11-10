@@ -639,9 +639,27 @@ classified(M, F, Args, {user, _, _, _} = Extent, Info, Stack, St) ->
                   ncc_tracer_channels:mix_entry(M)} of
                 {true, _} -> mix_state_entry(M, F, Args, Extent, Info, Stack, St);
                 {false, true} -> mix_entry(M, F, Args, Extent, Info, Stack, St);
-                {false, false} -> record(probed(channel(M, F, Args, St), Stack), Extent, Info, St)
+                {false, false} ->
+                    Class = code_load(probed(channel(M, F, Args, St), Stack), M, F, Args, Stack),
+                    record(Class, Extent, Info, St)
             end
     end.
+
+%% OTP's own code loading (precompiled judge refinements, item 5a): a read
+%% erl_prim_loader makes while code:ensure_loaded/1 loads a module into the
+%% calling process, judged on the full stack (before frames/4 cuts it) and
+%% only under the pinned shape that makes that read
+%% (ncc_tracer_stack:code_loading_read/4). Only a flag: the judge decides
+%% (NccWorker.Portability.Events). The stack is looked at only for the two
+%% calls that can be one; a stack this cannot take apart sets no flag.
+code_load({Channel, Arg} = Class, M, F, Args, Stack)
+  when (M =:= erlang andalso F =:= system_info andalso Args =:= [os_type]);
+       (M =:= prim_file andalso F =:= read_link) ->
+    case (try ncc_tracer_stack:code_loading_read(M, F, Args, Stack) catch _:_ -> false end) of
+        true when is_map(Arg) -> {Channel, Arg#{code_loading => true}};
+        _ -> Class
+    end;
+code_load(Class, _M, _F, _Args, _Stack) -> Class.
 
 %% A read of Mix state (ncc_tracer_channels mix_state/3) marks only when Mix
 %% did not make it. A target read is Mix's only when one of the Mix

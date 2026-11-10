@@ -229,9 +229,16 @@ probe_mfas() ->
 %% leaves its caller's frame first (filelib:fold_files/5, Code), and that
 %% caller is never on this list. The judge's path rule
 %% (`NccWorker.Portability.Events`) and the tracer's count (path_os_read/3)
-%% both take it from here.
+%% both take it from here. erl_prim_loader's three read
+%% erlang:system_info(os_type) themselves while resolving a beam's path for
+%% code loading (precompiled judge refinements, item 5a); a package calling
+%% erl_prim_loader directly still has its prim_file:read_link/1 reads
+%% refused, which carry no code-loading flag (ncc_tracer code_load/5).
 path_os_frames() ->
     [{<<"Elixir.Path">>, <<"major_os_type">>, 0},
+     {<<"erl_prim_loader">>, <<"normalize">>, 2},
+     {<<"erl_prim_loader">>, <<"pathtype">>, 1},
+     {<<"erl_prim_loader">>, <<"real_path">>, 4},
      {<<"filename">>, <<"basename">>, 1},
      {<<"filename">>, <<"major_os_type">>, 0},
      {<<"filename">>, <<"nativename">>, 1},

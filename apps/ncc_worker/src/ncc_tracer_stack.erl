@@ -5,7 +5,8 @@
 -export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2,
          uncached/0, printers/0, diagnosers/0, checker/2, made_by_toolchain/2,
          made_by_mix/2, made_by_mix_strict/2, target_read_by_mix/2, compiler_frame/1,
-         code_loading/1, code_loading/2, code_loading_shapes/1]).
+         code_loading/1, code_loading/2, code_loading_shapes/1,
+         code_loading_read/4, code_loading_read/5]).
 
 -include("ncc_code_loading_shapes.hrl").
 
@@ -483,6 +484,29 @@ code_loading_shapes(Release) ->
         {Release, Shapes} -> Shapes;
         false -> []
     end.
+
+%% The reads the judge accepts as code loading, each only under the pinned
+%% shape that makes it (the E1 fixtures: erl_prim_loader:pathtype/1 reads
+%% system_info(os_type) for absname/1, real_path/4 reads every prefix's
+%% link). A shape does not say which call it was made from, so the call is
+%% checked first, and cheaply: the tracer asks for every traced call of these
+%% MFAs. prim_file:get_cwd/0 is never one: no pinned shape has absname/1 on
+%% top. The beam read itself (prim_file:read_file/1) is never one either: it
+%% is judged as a read.
+code_loading_read(M, F, Args, Stack) ->
+    code_loading_read(M, F, Args, Stack, erlang:system_info(otp_release)).
+
+code_loading_read(erlang, system_info, [os_type], Stack, Release) ->
+    shaped({erl_prim_loader, pathtype, 1}, Stack, Release);
+code_loading_read(prim_file, read_link, [_], Stack, Release) ->
+    shaped({erl_prim_loader, real_path, 4}, Stack, Release);
+code_loading_read(_M, _F, _Args, _Stack, _Release) -> false.
+
+shaped(Top, Stack, Release) ->
+    lists:any(fun([T | _] = Shape) -> T =:= Top andalso top_is(Shape, Stack);
+                 (_Shape) -> false
+              end,
+              code_loading_shapes(Release)).
 
 %% Only the frames the shape covers are taken apart; what is below them is
 %% never looked at.

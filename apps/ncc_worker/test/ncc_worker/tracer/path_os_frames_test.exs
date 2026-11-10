@@ -3,14 +3,14 @@ defmodule NccWorker.Tracer.PathOsFramesTest do
   Pins `:ncc_tracer_channels.path_os_frames/0`, the first frames under which
   the judge ignores an OS-family read (and the tracer only counts it), on
   the toolchain this VM runs: each one is a function that calls `os:type/0`
-  itself and, through every local function it can reach, calls no fun
+  or `erlang:system_info/1` itself and, through every local function it can reach, calls no fun
   value, no `apply` and no module it was given, so no package code can run
   with it as the first frame. Read from the beam's debug info, else from the module's
   source. A toolchain that changes any of these call sites fails here.
   """
   use ExUnit.Case, async: true
 
-  @os_reads [{:os, :type}, {:os, :version}]
+  @os_reads [{:os, :type}, {:os, :version}, {:erlang, :system_info}]
 
   defp frames do
     for {m, f, a} <- :ncc_tracer_channels.path_os_frames(),
@@ -21,7 +21,7 @@ defmodule NccWorker.Tracer.PathOsFramesTest do
   # Erlang source under the app's `src`.
   defp forms(module) do
     with {:ok, {^module, [debug_info: {:debug_info_v1, backend, data}]}} <-
-           :beam_lib.chunks(:code.which(module), [:debug_info]),
+           :beam_lib.chunks(beam(module), [:debug_info]),
          {:ok, forms} <- backend.debug_info(:erlang_v1, module, data, []) do
       forms
     else
@@ -30,17 +30,37 @@ defmodule NccWorker.Tracer.PathOsFramesTest do
   end
 
   defp source_forms(module) do
-    src =
-      module
-      |> :code.which()
-      |> List.to_string()
-      |> Path.dirname()
-      |> Path.join("../src/#{module}.erl")
-      |> Path.expand()
+    src = src(module)
 
     assert File.regular?(src), "#{module}: neither debug info nor source (#{src})"
     {:ok, forms} = :epp.parse_file(String.to_charlist(src), [])
     forms
+  end
+
+  # erl_prim_loader is preloaded: `code:which/1` says `:preloaded`, and its
+  # beam and source live in the erts app.
+  defp beam(module) do
+    case :code.which(module) do
+      :preloaded ->
+        String.to_charlist(Path.join([:code.lib_dir(:erts), "ebin", "#{module}.beam"]))
+
+      path ->
+        path
+    end
+  end
+
+  defp src(module) do
+    case :code.which(module) do
+      :preloaded ->
+        Path.join([:code.lib_dir(:erts), "src", "#{module}.erl"])
+
+      path ->
+        path
+        |> List.to_string()
+        |> Path.dirname()
+        |> Path.join("../src/#{module}.erl")
+        |> Path.expand()
+    end
   end
 
   defp functions(module) do
@@ -112,7 +132,8 @@ defmodule NccWorker.Tracer.PathOsFramesTest do
       own = reached[{name, arity}]
       where = "#{module}.#{name}/#{arity}"
 
-      assert Enum.any?(own, &(&1 in @os_reads)), "no os:type/0 call in " <> where
+      assert Enum.any?(own, &(&1 in @os_reads)),
+             "no os:type/0 or erlang:system_info/1 call in " <> where
 
       for {fa, found} <- reached, call <- found do
         refute match?({:dynamic, _}, call),
