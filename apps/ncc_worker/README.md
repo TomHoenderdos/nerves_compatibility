@@ -376,6 +376,7 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
   "config_variant": "default",
   "portability_rule": 2,
   "rule1_reason": "rule 1's reason when it would have skipped, else null",
+  "judge_revision": 1,
   "compile_observations": {"trace_stats": {"windows": 14, "wall_ms": 9100, "host_compile_sec": 31.2}, "config_reads": [], "refusals": [], "taint": {}, "problems": []},
   "file_manifest": {"ebin": [{"path": "ebin/x.beam", "sha256": "...", "size": 1234, "mode": 33188}], "priv": []}
 }
@@ -397,7 +398,9 @@ build dependencies, target reads or `nerves*` name) AND the compile-time trace. 
 or an `:os.type()` in the sources no longer refuses a build; the trace refuses one made at compile time, and a
 module that holds a source path in a package that runs programs. `rule1_reason` is what rule 1 (`portable?/4`, the
 verdict before rule 2) would have said, `null` when it passes: a `pass` with a `rule1_reason` is a build only rule 2
-publishes. A skip reason from the trace starts with one of the prefixes in
+publishes. `judge_revision` is the worker's judge revision (`NccWorker.Portability.judge_revision/1`), present for
+`pass` and `skipped` and `null` for `error`; the portal reopens skipped rows below the newest revision once. A skip
+reason from the trace starts with one of the prefixes in
 `Compatibility.Portability.refusal_prefixes/0` and wins over a static one; "portability could not be judged" means
 the trace itself failed and is never held against the package (the worker reports it as `skipped`, and the portal
 retries the transient ones, below); when the trace could not judge and a static rule also skipped, the reason is the

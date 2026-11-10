@@ -69,6 +69,7 @@ defmodule Portal.Catalog.ToolchainBuild do
     :attempted_at,
     :portability_rule,
     :rule1_reason,
+    :judge_revision,
     :compile_observations,
     :compile_env_rule,
     :transient_attempts
@@ -311,6 +312,16 @@ defmodule Portal.Catalog.ToolchainBuild do
 
     # What `portable?/4` alone said: its skip reason, nil when it passed.
     attribute :rule1_reason, :string do
+      public?(true)
+    end
+
+    # The worker's judge revision (`NccWorker.Portability.judge_revision/1`)
+    # the verdict was made under; nil for a build from before revisions and
+    # for a host-side error row. The backlog reopens a `skipped` row below
+    # its toolchain's newest revision once (`Portal.Catalog`,
+    # `@judge_reopen`); `Portal.Precompiled.ToolchainRevocation` revokes by
+    # it (`judge_revision:`).
+    attribute :judge_revision, :integer do
       public?(true)
     end
 

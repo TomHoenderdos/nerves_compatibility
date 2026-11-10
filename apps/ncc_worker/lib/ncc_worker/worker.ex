@@ -136,6 +136,9 @@ defmodule NccWorker.Worker do
           # not finish. A pass with a reason here is a build rule 2 publishes
           # and rule 1 did not.
           rule1_reason: String.t() | nil,
+          # The worker's judge revision (`NccWorker.Portability.judge_revision/1`)
+          # the verdict was made under; nil for an "error" build.
+          judge_revision: pos_integer() | nil,
           # What the trace observed (`NccWorker.Portability`): "trace_stats"
           # (with "judge_compile", "finished" | "not_finished" | "not_run",
           # "transient", true when a could-not-judge says nothing about the
@@ -177,6 +180,9 @@ defmodule NccWorker.Worker do
           compile_env_rule: 1 | nil,
           portability_rule: 2 | nil,
           rule1_reason: String.t() | nil,
+          # The worker's judge revision (`NccWorker.Portability.judge_revision/1`)
+          # the verdict was made under; nil for an "error" build.
+          judge_revision: pos_integer() | nil,
           compile_observations: map() | nil,
           file_manifest:
             %{
@@ -1791,11 +1797,19 @@ defmodule NccWorker.Worker do
   host compile, the package's host build under
   `<project_dir>/_build/host/lib/<package_name>`, and the compile-time
   trace's verdict (`NccWorker.Portability.run/3`; `nil` when there was none,
-  which cannot pass).
+  which cannot pass). `opts` are the toolchain run's judge options
+  (`makefile_rule2:`, Task B2); `judge_revision` is
+  `Portability.judge_revision(opts)` for every judged build.
   """
-  @spec toolchain_build(String.t(), String.t(), map(), map(), Portability.verdict() | nil) ::
-          toolchain_build_verdict()
-  def toolchain_build(project_dir, package_name, host_result, toolchain, portability) do
+  @spec toolchain_build(
+          String.t(),
+          String.t(),
+          map(),
+          map(),
+          Portability.verdict() | nil,
+          keyword()
+        ) :: toolchain_build_verdict()
+  def toolchain_build(project_dir, package_name, host_result, toolchain, portability, opts \\ []) do
     build = %{
       status: "error",
       reason: nil,
@@ -1809,20 +1823,22 @@ defmodule NccWorker.Worker do
       file_manifest: nil,
       portability_rule: nil,
       rule1_reason: nil,
+      judge_revision: nil,
       compile_observations: nil
     }
 
     case host_result do
       %{status: :pass} ->
-        judge_toolchain_build(build, project_dir, package_name, portability, host_result)
+        judge_toolchain_build(build, project_dir, package_name, portability, host_result, opts)
 
       host ->
         %{build | reason: "host compile failed: " <> describe_error(host[:error])}
     end
   end
 
-  defp judge_toolchain_build(build, project_dir, package_name, portability, host_result) do
+  defp judge_toolchain_build(build, project_dir, package_name, portability, host_result, opts) do
     portability = require_compile_env(portability || not_traced())
+    build = %{build | judge_revision: Portability.judge_revision(opts)}
 
     if unfinished?(portability),
       do: unjudged_toolchain_build(build, project_dir, package_name, portability, host_result),

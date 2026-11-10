@@ -105,6 +105,17 @@ defmodule NccWorker.Portability do
   @built_budget_ms 5 * 60 * 1000
   @digest_timeout_ms 60_000
 
+  # The judge's revision (precompiled judge refinements spec, principle 4):
+  # bumped by every change to what the judge accepts, written into each
+  # toolchain build's `judge_revision`, and what the portal reopens skipped
+  # rows by (`Portal.Catalog`, `@judge_reopen`). Never key anything on
+  # reason text instead.
+  @judge_revision 1
+
+  @doc "The judge revision a toolchain build made with `opts` records."
+  @spec judge_revision(keyword()) :: pos_integer()
+  def judge_revision(_opts \\ []), do: @judge_revision
+
   @doc """
   The project's Hex releases from its `mix.lock`, for `run/3`'s `releases:`.
   Take it right after `deps.get` and before any compile: an untraced build

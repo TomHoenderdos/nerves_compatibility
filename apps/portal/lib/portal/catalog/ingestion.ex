@@ -742,6 +742,7 @@ defmodule Portal.Catalog.Ingestion do
       optional_deps: optional_deps(result["optional_deps"]),
       portability_rule: portability_rule(build["portability_rule"]),
       rule1_reason: bounded_reason(build["rule1_reason"]),
+      judge_revision: judge_revision(build["judge_revision"]),
       compile_observations: compile_observations(build["compile_observations"]),
       compile_env_rule:
         compile_env_rule(Map.get(build, "compile_env_rule"), Map.get(build, "compile_env")),
@@ -758,6 +759,13 @@ defmodule Portal.Catalog.Ingestion do
 
   defp portability_rule(rule) when is_integer(rule) and rule in 1..9, do: rule
   defp portability_rule(_rule), do: nil
+
+  # The worker's judge revision; anything but a small positive integer is
+  # none, which the backlog reads as "before revisions".
+  defp judge_revision(revision) when is_integer(revision) and revision in 1..1_000_000,
+    do: revision
+
+  defp judge_revision(_revision), do: nil
 
   defp bounded_reason(reason) when is_binary(reason), do: String.slice(reason, 0, 1000)
   defp bounded_reason(_reason), do: nil

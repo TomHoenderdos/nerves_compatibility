@@ -235,6 +235,20 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert memberships(tb) == []
   end
 
+  test "a build stores the worker's judge revision; a bad or missing one is nil" do
+    for {given, stored} <- [{1, 1}, {7, 7}, {nil, nil}, {"1", nil}, {0, nil}] do
+      name = unique_name()
+
+      result =
+        name
+        |> skipped_result()
+        |> put_in(["toolchain_build", "judge_revision"], given)
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+      assert tb.judge_revision == stored, inspect(given)
+    end
+  end
+
   test "each version a job names gets its own row" do
     name = unique_name()
     queued = Map.put(opts(name, files_dir_with([])), :version, "1.4.5")

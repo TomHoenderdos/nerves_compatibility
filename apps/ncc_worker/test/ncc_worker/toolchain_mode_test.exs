@@ -193,6 +193,30 @@ defmodule NccWorker.ToolchainModeTest do
     end
   end
 
+  describe "the judge revision" do
+    test "every judged build records the worker's revision; an error build records none",
+         %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+
+      for verdict <- [@traced_pass, @refused, @not_judged, @unfinished, nil] do
+        build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict)
+        assert build.judge_revision == 1, inspect(verdict)
+        assert build.judge_revision == Portability.judge_revision()
+      end
+
+      failed =
+        Worker.toolchain_build(
+          project,
+          "sample",
+          %{status: :fail, error: "boom"},
+          @toolchain,
+          nil
+        )
+
+      assert failed.judge_revision == nil
+    end
+  end
+
   # Adds a module whose function body runs a program to the host build.
   defp add_runtime_cmd(built) do
     name = "NccP4RuntimeCmd#{System.unique_integer([:positive])}"
