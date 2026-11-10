@@ -246,6 +246,52 @@ defmodule Portal.Reports.RequeueSweepTest do
     assert decision(id) == "skipped:cap"
   end
 
+  test "the sweep decides at most its limit of lines a run, in its order" do
+    a1 = capped!("alpha", "r1")
+    a2 = capped!("alpha", "r2")
+    b = capped!("beta", "r3")
+
+    assert :ok = Requeue.sweep(today: ~D[2026-11-11], limit: 2)
+    assert {decision(a1), decision(a2)} == {"queued", "skipped:queued"}
+    assert decision(b) == "skipped:cap"
+  end
+
+  test "the sweep reads 500 lines a run by default" do
+    assert Requeue.sweep_limit() == 500
+  end
+
+  test "the sweep stops once the global cap refuses" do
+    Application.put_env(:portal, Portal.Reports.Quotas, global: 1)
+    spend!("global", ~D[2026-11-11])
+    a1 = capped!("alpha", "r1")
+    a2 = capped!("alpha", "r2")
+    b = miss!("beta", "r3")
+    discard_report_job!(b)
+    set_report!(b, received_at: ago(3_700))
+
+    assert :ok = Requeue.sweep(today: ~D[2026-11-11])
+    assert decision(a1) == "skipped:cap"
+    assert decision(a2) == "skipped:cap"
+    # Never reached: still undecided, for the next day's sweep.
+    assert decision(b) == nil
+  end
+
+  test "a package cap does not stop the sweep" do
+    Application.put_env(:portal, Portal.Reports.Quotas, package: 1)
+    spend!("package:alpha", ~D[2026-11-11])
+    a1 = capped!("alpha", "r1")
+    a2 = capped!("alpha", "r2")
+    b = capped!("beta", "r3")
+
+    assert :ok = Requeue.sweep(today: ~D[2026-11-11])
+    assert {decision(a1), decision(a2)} == {"skipped:cap", "skipped:cap"}
+    assert decision(b) == "queued"
+  end
+
+  defp spend!(key, day) do
+    {:ok, :ok} = Repo.transaction(fn -> Portal.Reports.Quotas.reserve([{key, 1}], day) end)
+  end
+
   test "the sweep prunes counters older than a week" do
     Repo.query!(
       "INSERT INTO precompiled_report_quotas (key, day, used) VALUES ('global', '2026-11-01', 3)"

@@ -436,4 +436,175 @@ defmodule Portal.Reports.RequeueTest do
     assert used("package:jason") in [nil, 0]
     refute_enqueued(worker: Build)
   end
+
+  test "a system version older than the newest one built is superseded, not rebuilt" do
+    jason = package!("jason")
+
+    run!(jason, "1.4.5", [
+      {"nerves_system_rpi4", "2.1.0", :pass},
+      {"nerves_system_rpi4", "2.0.0", :error}
+    ])
+
+    id = miss!("jason", "1.4.5", code: "not_built_target", body: %{"system_version" => "2.0.0"})
+    assert :ok = requeue(id)
+    assert decision(id) == "skipped:superseded"
+    refute_enqueued(worker: Build)
+  end
+
+  test "the newest system version built stays buildable" do
+    other = package!("other")
+
+    run!(other, "1.0.0", [
+      {"nerves_system_rpi4", "1.31.0", :pass},
+      {"nerves_system_rpi4", "1.9.0", :pass}
+    ])
+
+    package!("jason") |> run!("1.4.4", [])
+    id = miss!("jason", "1.4.5")
+    assert :ok = requeue(id)
+    assert decision(id) == "queued"
+  end
+
+  test "a waiting build of other targets does not cover this system" do
+    image_builds_rpi4!()
+    package!("jason") |> run!("1.4.5", [])
+
+    Oban.insert!(
+      Build.new(%{
+        package: "jason",
+        version: "1.4.5",
+        force: true,
+        scope: "targets",
+        systems: ["nerves_system_bbb"]
+      })
+    )
+
+    id = miss!("jason", "1.4.5", code: "not_built_target")
+    assert :ok = requeue(id)
+    assert decision(id) == "queued"
+  end
+
+  test "a waiting build of this target, or a full build, covers it" do
+    image_builds_rpi4!()
+    package!("jason") |> run!("1.4.5", [])
+    package!("telemetry") |> run!("1.0.0", [])
+
+    Oban.insert!(
+      Build.new(%{
+        package: "jason",
+        version: "1.4.5",
+        force: true,
+        scope: "targets",
+        systems: ["nerves_system_rpi4"]
+      })
+    )
+
+    Oban.insert!(Build.new(%{package: "telemetry", version: "1.3.0"}))
+
+    targeted = miss!("jason", "1.4.5", code: "not_built_target")
+    full = miss!("telemetry", "1.3.0")
+    assert :ok = requeue(targeted)
+    assert :ok = requeue(full)
+    assert decision(targeted) == "skipped:queued"
+    assert decision(full) == "skipped:queued"
+  end
+
+  test "a remote lease for other targets does not cover this system" do
+    image_builds_rpi4!()
+    package!("jason") |> run!("1.4.5", [])
+
+    Repo.insert_all("builder_leases", [
+      %{
+        id: Ecto.UUID.bingenerate(),
+        package: "jason",
+        version: "1.4.5",
+        image_name: "img",
+        image_digest: "sha256:" <> String.duplicate("2", 64),
+        args: %{
+          "package" => "jason",
+          "version" => "1.4.5",
+          "scope" => "targets",
+          "systems" => ["nerves_system_bbb"]
+        },
+        state: "queued",
+        inserted_at: DateTime.utc_now(),
+        updated_at: DateTime.utc_now()
+      }
+    ])
+
+    id = miss!("jason", "1.4.5", code: "not_built_target")
+    assert :ok = requeue(id)
+    assert decision(id) == "queued"
+  end
+
+  test "a package whose only runs are revoked is unknown" do
+    jason = package!("jason")
+    run = run!(jason, "1.4.4", [{"nerves_system_rpi4", "1.31.0", :pass}])
+    image_builds_rpi4!()
+
+    Repo.update_all(from(r in "catalog_runs", where: r.id == type(^run.id, Ecto.UUID)),
+      set: [revoked_at: DateTime.utc_now()]
+    )
+
+    id = miss!("jason", "1.4.5")
+    assert :ok = requeue(id)
+    assert decision(id) == "skipped:unknown_package"
+  end
+
+  defmodule CountingHex do
+    def releases(name, opts) do
+      send(self(), {:hex_asked, name})
+      Portal.Test.FakeHexDeps.releases(name, opts)
+    end
+  end
+
+  test "Hex is asked only for buildable lines, once per package, at most 20 packages a run" do
+    image_builds_rpi4!()
+    names = for i <- 1..22, do: "pkg_#{String.pad_leading(Integer.to_string(i), 2, "0")}"
+    for name <- names, do: package!(name) |> run!("1.0.0", [])
+    package!("jason") |> run!("1.0.0", [])
+    hex(Map.new(names, &{&1, ["1.0.1"]}))
+
+    lines = for name <- names, do: line(name, "1.0.1", "miss", "not_built_version", ["1.0.1"])
+    twice = line("pkg_01", "1.0.1", "miss", "not_built_target", [])
+
+    id =
+      record!(%{
+        "lines" => lines ++ [twice],
+        "lock" => Enum.map(names, &lock(&1, "1.0.1")),
+        "target" => "t#{System.unique_integer([:positive])}"
+      })
+
+    # An unbuildable line costs no lookup.
+    stale = miss!("jason", "1.4.5", body: %{"system_version" => "0.0.1"})
+    assert :ok = Requeue.run_report(stale, today: ~D[2026-11-10], hex_deps: CountingHex)
+    assert decision(stale) == "skipped:unbuildable"
+    refute_received {:hex_asked, _}
+
+    assert :ok = Requeue.run_report(id, today: ~D[2026-11-10], hex_deps: CountingHex)
+
+    asked = collect_asked([])
+    assert length(asked) == 20
+    assert asked == Enum.uniq(asked)
+
+    decisions =
+      Repo.all(
+        from(l in "precompiled_report_lines",
+          where: l.report_id == type(^id, Ecto.UUID),
+          select: {l.package, l.requeue}
+        )
+      )
+
+    undecided = for {p, nil} <- decisions, do: p
+    assert Enum.sort(undecided) == ["pkg_21", "pkg_22"]
+    refute Enum.any?(decisions, fn {p, _} -> p in ["pkg_21", "pkg_22"] and p in asked end)
+  end
+
+  defp collect_asked(acc) do
+    receive do
+      {:hex_asked, name} -> collect_asked([name | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
 end
