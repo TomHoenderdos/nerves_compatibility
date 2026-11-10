@@ -115,6 +115,15 @@ defmodule Portal.ObanConfigTest do
     assert Portal.Workers.CoverageRefresh.__opts__()[:queue] == :intake
   end
 
+  test "the report requeue sweep runs daily after midnight UTC on the reports queue" do
+    {_mod, opts} = plugin(Oban.Plugins.Cron)
+
+    assert {"29 0 * * *", Portal.Workers.ReportRequeueSweep} =
+             Enum.find(opts[:crontab], &match?({_e, Portal.Workers.ReportRequeueSweep}, &1))
+
+    assert Portal.Workers.ReportRequeueSweep.__opts__()[:queue] == :reports
+  end
+
   describe "the hex.pm update check" do
     defp update_check_entry do
       {_mod, opts} = plugin(Oban.Plugins.Cron)

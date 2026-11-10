@@ -124,7 +124,13 @@ config :portal, Oban,
        # page's precompiled coverage report, which asks the Hex registry
        # about every ranked package and so is stored rather than computed on
        # a page load. Carries `:intake`, the web host's queue.
-       {"49 * * * *", Portal.Workers.CoverageRefresh}
+       {"49 * * * *", Portal.Workers.CoverageRefresh},
+       # Daily at 00:29 UTC, just after the report caps reset at midnight:
+       # retry the miss-report lines a cap refused (or nothing decided),
+       # most-reported first. Carries `:reports`, which runs only where
+       # `:maintenance` does (the web host) and only in releases that have
+       # this worker.
+       {"29 0 * * *", Portal.Workers.ReportRequeueSweep}
      ]}
   ]
 

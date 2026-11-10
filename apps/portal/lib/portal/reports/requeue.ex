@@ -37,6 +37,9 @@ defmodule Portal.Reports.Requeue do
        (one forced target when the version already has a run, a full build
        otherwise), or a toolchain build of the `with`/`default` variant;
        either way `meta.report_id` names the report.
+
+  `sweep/1` decides again, once a day, the lines a cap refused and the ones
+  nothing decided.
   """
 
   import Ecto.Query, only: [from: 2]
@@ -57,6 +60,39 @@ defmodule Portal.Reports.Requeue do
   # report makes a build happen sooner than the sweeps would, never ahead of
   # them (`catalog_seed` and `backfill` builds also run at 9).
   @priority 9
+  @sweep_days 7
+  # An undecided line is the sweep's only once its report's own job had time.
+  @undecided_after 3_600
+
+  # $1 the oldest report retried, $2 the newest with undecided lines, $3 the
+  # codes, $4 the job states that still count as waiting. A cleared reporter
+  # key counts as one reporter (the empty string no key can equal).
+  @sweep_sql """
+  WITH candidates AS (
+    SELECT l.id, l.package, l.version, l.report_id, l.inserted_at,
+           coalesce(r.reporter_key, '') AS reporter, r.received_at
+    FROM precompiled_report_lines l
+    JOIN precompiled_reports r ON r.id = l.report_id
+    WHERE r.received_at >= $1 AND l.status = 'miss' AND l.reason_code = ANY($3)
+      AND (l.requeue = 'skipped:cap'
+           OR (l.requeue IS NULL AND r.received_at < $2
+               AND NOT EXISTS (
+                 SELECT 1 FROM oban_jobs j
+                 WHERE j.worker = 'Portal.Workers.ReportRequeue'
+                   AND j.state::text = ANY($4)
+                   AND j.args->>'report_id' = r.id::text)))
+  ), ranked AS (
+    SELECT package, version, count(DISTINCT reporter) AS reporters,
+           min(received_at) AS first_seen
+    FROM candidates
+    GROUP BY package, version
+  )
+  SELECT c.id, c.package, c.version, c.report_id
+  FROM candidates c
+  JOIN ranked k USING (package, version)
+  ORDER BY k.reporters DESC, k.first_seen ASC, c.package, c.version,
+           c.received_at ASC, c.inserted_at ASC, c.id
+  """
 
   @doc "The reason codes a requeue acts on."
   @spec codes() :: [String.t()]
@@ -82,6 +118,47 @@ defmodule Portal.Reports.Requeue do
       )
 
     decide_lines(lines, opts)
+  end
+
+  @doc """
+  The daily retry, just after the caps reset. It decides again, through
+  `decide_lines/2`, the not-built misses of reports received in the last
+  #{@sweep_days} days that either a cap refused (`skipped:cap`) or nothing
+  decided: undecided lines of a report received over an hour ago whose own
+  requeue job is no longer waiting (it gave up, say on a database error).
+
+  The order is contested first: the package version the most distinct
+  reporters asked for (a report whose reporter key retention cleared counts
+  as one reporter), then the one first seen earliest, so one reporter cannot
+  take the day's budget. Also prunes the counters of days more than a week
+  before `:today`.
+
+  Options as `decide_lines/2`, plus `:now`, which stands in for the clock.
+  """
+  @spec sweep(keyword()) :: :ok | {:error, :hex_unavailable}
+  def sweep(opts \\ []) do
+    now = Keyword.get_lazy(opts, :now, &DateTime.utc_now/0)
+    today = Keyword.get_lazy(opts, :today, &Date.utc_today/0)
+    _ = Quotas.prune(Date.add(today, -@sweep_days))
+
+    %{rows: rows} =
+      Repo.query!(@sweep_sql, [
+        DateTime.add(now, -@sweep_days * 86_400, :second),
+        DateTime.add(now, -@undecided_after, :second),
+        @codes,
+        @incomplete
+      ])
+
+    rows
+    |> Enum.map(fn [id, package, version, report_id] ->
+      %{
+        id: Ecto.UUID.load!(id),
+        package: package,
+        version: version,
+        report_id: Ecto.UUID.load!(report_id)
+      }
+    end)
+    |> decide_lines(opts)
   end
 
   @doc """
