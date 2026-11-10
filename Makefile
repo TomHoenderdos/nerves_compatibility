@@ -1,4 +1,4 @@
-.PHONY: build build-clean build-toolchains toolchain-tags dev test test-integration test-portability-goldens test-remote-e2e test-remote-integration test-report-e2e format clean help all
+.PHONY: build build-clean build-toolchains toolchain-tags check-code-loading-shapes dev test test-integration test-portability-goldens test-remote-e2e test-remote-integration test-report-e2e format clean help all
 
 WORKER_IMAGE := ncc-worker:local
 
@@ -29,6 +29,7 @@ help:
 	@echo "  test             Run the umbrella test suite"
 	@echo "  test-integration Run the Docker-backed portal build and toolchain integration tests"
 	@echo "                   and the Hex-backed compile-time trace tests (goldens, ColocatedHook)"
+	@echo "  check-code-loading-shapes  Re-record OTP code-loading stack shapes in the images and compare"
 	@echo "  test-portability-goldens  Only the trace goldens, the ColocatedHook and the identity tests (needs Hex.pm)"
 	@echo "  test-remote-e2e  Run a real ncc_agent process against the portal with a fake docker"
 	@echo "  test-remote-integration  Same against the real worker container (needs Docker)"
@@ -44,11 +45,13 @@ help:
 build: apps/ncc_worker/Dockerfile
 	@echo "Building worker Docker image..."
 	docker build -f apps/ncc_worker/Dockerfile -t $(WORKER_IMAGE) .
+	apps/ncc_worker/test/fixtures/code_loading/check_images.sh $(WORKER_IMAGE)
 	@echo "Build complete: $(WORKER_IMAGE)"
 
 build-clean: apps/ncc_worker/Dockerfile
 	@echo "Building worker Docker image from scratch..."
 	docker build --no-cache -f apps/ncc_worker/Dockerfile -t $(WORKER_IMAGE) .
+	apps/ncc_worker/test/fixtures/code_loading/check_images.sh $(WORKER_IMAGE)
 	@echo "Build complete: $(WORKER_IMAGE)"
 
 build-toolchains: apps/ncc_worker/Dockerfile.toolchain
@@ -56,6 +59,7 @@ build-toolchains: apps/ncc_worker/Dockerfile.toolchain
 	  tag=$${pair%%=*}; base=$${pair#*=}; \
 	  echo "Building toolchain image $$tag$(TOOLCHAIN_SUFFIX) from $$base..."; \
 	  docker build -f apps/ncc_worker/Dockerfile.toolchain --build-arg BASE=$$base -t $$tag$(TOOLCHAIN_SUFFIX) .; \
+	  apps/ncc_worker/test/fixtures/code_loading/check_images.sh $$tag$(TOOLCHAIN_SUFFIX); \
 	done
 	@echo "Toolchain images built."
 
@@ -69,9 +73,16 @@ dev:
 test:
 	mix test
 
+# OTP's code-loading stack shapes in the worker and toolchain images against
+# the pinned fixtures (apps/ncc_worker/test/fixtures/code_loading). Also run
+# after every image build above; a mismatch fails it.
+check-code-loading-shapes:
+	apps/ncc_worker/test/fixtures/code_loading/check_images.sh $(WORKER_IMAGE) $(foreach pair,$(TOOLCHAIN_IMAGES),$(firstword $(subst =, ,$(pair)))$(TOOLCHAIN_SUFFIX))
+
 test-integration:
 	mix test apps/portal/test/portal/workers/build_integration_test.exs apps/portal/test/portal/workers/toolchain_integration_test.exs apps/portal/test/portal/workers/toolchain_rule2_integration_test.exs --only integration
 	$(MAKE) test-portability-goldens
+	$(MAKE) check-code-loading-shapes
 
 # Real Hex packages under the compile-time tracer, on this machine's
 # toolchain: the golden observations (apps/ncc_worker/test/fixtures/

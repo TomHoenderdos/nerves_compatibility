@@ -37,8 +37,19 @@ defmodule NccWorker.Tracer.CodeLoadingTest do
     refute :ncc_tracer_stack.code_loading(:none, ~c"28")
     refute :ncc_tracer_stack.code_loading([:garbage | frames(shape)], ~c"28")
     refute :ncc_tracer_stack.code_loading([{:m, :f, :bad, []} | frames(shape)], ~c"28")
+    # Malformed below the shape: never looked at.
+    assert :ncc_tracer_stack.code_loading(frames(shape) ++ [:garbage], ~c"28")
+    # Not a proper list, inside or below the shape: no crash, no flag.
+    [first | rest] = frames(shape)
+    refute :ncc_tracer_stack.code_loading([first | :tail], ~c"28")
+    refute :ncc_tracer_stack.code_loading(:none, ~c"29")
+    assert :ncc_tracer_stack.code_loading([first | rest] ++ [{:m, :f, 0, []} | :tail], ~c"28")
   end
 
+  # Integration: CI's OTP floats to the newest patch while the images are
+  # pinned; the images themselves are checked after every build by
+  # check_images.sh (`make check-code-loading-shapes`).
+  @tag :integration
   @tag :tmp_dir
   test "on this VM's OTP, the live reproduction shows only pinned shapes", %{tmp_dir: dir} do
     release = :erlang.system_info(:otp_release)

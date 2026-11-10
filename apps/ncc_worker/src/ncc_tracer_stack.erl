@@ -468,20 +468,28 @@ mfa_bin(M, F, A) ->
 %% the calling process, on a stack whose top is exactly one of the shapes
 %% recorded for this OTP release in its toolchain image
 %% (ncc_code_loading_shapes.hrl, test/fixtures/code_loading). Anything below
-%% the shape may be anything. Any other shape, a release with none recorded
-%% or a frame this cannot take apart is not code loading (fail closed).
+%% the shape may be anything, a malformed frame included. Any other shape, a
+%% release with none recorded, a stack that is not a proper list or a frame
+%% this cannot take apart within the shape is not code loading (fail closed).
+%% Matching by name alone relies on code and erl_prim_loader carrying trace
+%% patterns, so a package that reloads either is caught by patterns_check.
 code_loading(Stack) -> code_loading(Stack, erlang:system_info(otp_release)).
 
-code_loading(Stack, Release) when is_list(Stack) ->
-    Frames = [shape_frame(Frame) || Frame <- Stack],
-    lists:any(fun(Shape) -> lists:prefix(Shape, Frames) end, code_loading_shapes(Release));
-code_loading(_Stack, _Release) -> false.
+code_loading(Stack, Release) ->
+    lists:any(fun(Shape) -> top_is(Shape, Stack) end, code_loading_shapes(Release)).
 
 code_loading_shapes(Release) ->
     case lists:keyfind(Release, 1, ?CODE_LOADING_SHAPES) of
         {Release, Shapes} -> Shapes;
         false -> []
     end.
+
+%% Only the frames the shape covers are taken apart; what is below them is
+%% never looked at.
+top_is([], _Stack) -> true;
+top_is([Frame | Shape], [Top | Stack]) ->
+    shape_frame(Top) =:= Frame andalso top_is(Shape, Stack);
+top_is(_Shape, _Stack) -> false.
 
 shape_frame({M, F, A, _Location}) when is_atom(M), is_atom(F), (is_integer(A) orelse is_list(A)) ->
     {M, F, arity(A)};
