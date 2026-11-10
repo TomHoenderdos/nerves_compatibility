@@ -27,8 +27,9 @@ defmodule NccWorker.NervesCode do
 
   In both languages a string, charlist or `~w` word whose whole content is
   a module or app name (`Elixir.Nerves.Runtime`, `Nerves`, `nerves_runtime`)
-  counts: it is how code builds that name (`String.to_atom/1`,
-  `Module.concat/1`). Other string, charlist and sigil contents and comments
+  counts, and so does a prefix of one (`"Elixir.Nerves."`, `"nerves_"`) or
+  an interpolated string that starts with one: it is how code builds that
+  name (`String.to_atom/1`, `Module.concat/1`). Other string, charlist and sigil contents and comments
   are prose and do not count. A name built by concatenation (`"Ner" <>
   "ves"`) is seen by neither this nor the old grep.
 
@@ -142,10 +143,11 @@ defmodule NccWorker.NervesCode do
 
   defp raw?(source), do: Regex.match?(~r/nerves/i, source)
 
-  # A string's whole content is a module or app name that names Nerves.
+  # A string's whole content is a module or app name that names Nerves, or
+  # the prefix of one (`"Elixir.Nerves." <> x`, `"nerves_" ++ X`).
   defp name_literal?(text) when is_binary(text) do
-    Regex.match?(~r/\A(Elixir\.)?Nerves(\.[A-Z]\w*)*\z/, text) or
-      Regex.match?(~r/\Anerves(_\w+)?\z/i, text)
+    Regex.match?(~r/\A(Elixir\.)?Nerves(\.[A-Z]\w*)*\.?\z/, text) or
+      Regex.match?(~r/\Anerves(_\w*)?\z/i, text)
   end
 
   defp code_mention?(_path, source) when byte_size(source) > @max_file_bytes, do: true
@@ -215,6 +217,12 @@ defmodule NccWorker.NervesCode do
       part when is_binary(part) -> part |> String.split() |> Enum.any?(&name_literal?/1)
       other -> ast_mention?(other)
     end)
+  end
+
+  # An interpolated string: its first literal part may be a name prefix
+  # (`"Elixir.Nerves.#{x}"`); the interpolations are code.
+  defp ast_mention?({:<<>>, _, [first | _] = parts}) when is_binary(first) do
+    name_literal?(first) or Enum.any?(parts, &ast_mention?/1)
   end
 
   defp ast_mention?(text) when is_binary(text), do: name_literal?(text)
@@ -342,7 +350,8 @@ defmodule NccWorker.NervesCode do
     end
   end
 
-  # The text up to the closing `quote`, skipping each backslash escape.
+  # The text up to the closing `quote`, skipping each backslash escape:
+  # three bytes for a control escape (`\^X`), two for any other.
   defp quoted(source, quote, from) do
     size = byte_size(source)
 
@@ -354,6 +363,9 @@ defmodule NccWorker.NervesCode do
         cond do
           :binary.at(source, pos) == quote ->
             {binary_part(source, 0, pos), binary_part(source, pos + 1, size - pos - 1)}
+
+          pos + 3 <= size and :binary.at(source, pos + 1) == ?^ ->
+            quoted(source, quote, pos + 3)
 
           pos + 2 <= size ->
             quoted(source, quote, pos + 2)

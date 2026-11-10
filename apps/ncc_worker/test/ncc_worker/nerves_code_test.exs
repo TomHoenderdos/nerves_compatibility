@@ -1,6 +1,8 @@
 defmodule NccWorker.NervesCodeTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias NccWorker.{BuildSelection, NervesCode}
 
   @moduletag :tmp_dir
@@ -47,7 +49,12 @@ defmodule NccWorker.NervesCodeTest do
             ~S|def f, do: ~w(foo nerves)a|,
             ~S|def f, do: :erlang.list_to_atom(~c"Elixir.Nerves.Runtime")|,
             "def f, do: :erlang.list_to_atom('Elixir.Nerves.Runtime')\n",
-            ~S|def f, do: Application.spec(String.to_atom("NERVES_runtime"))|
+            ~S|def f, do: Application.spec(String.to_atom("NERVES_runtime"))|,
+            # A name prefix, completed by concatenation or interpolation.
+            ~S|def f(x), do: String.to_atom("Elixir.Nerves." <> x)|,
+            ~S|def f(x), do: String.to_atom("nerves_" <> x)|,
+            ~S|def f(x), do: String.to_atom("Elixir.Nerves.#{x}")|,
+            ~S|def f(x), do: String.to_atom("nerves_#{x}")|
           ] do
         assert NervesCode.elixir_mention?(source), source
       end
@@ -104,6 +111,8 @@ defmodule NccWorker.NervesCodeTest do
       assert NervesCode.erlang_mention?(
                ~s|-module(a).\nf() -> list_to_atom("Elixir.Nerves.Runtime").\n|
              )
+
+      assert NervesCode.erlang_mention?(~s|-module(a).\nf(X) -> list_to_atom("nerves_" ++ X).\n|)
     end
 
     # OTP 27+ sigils and triple-quoted strings: the lexer does not model them,
@@ -122,6 +131,17 @@ defmodule NccWorker.NervesCodeTest do
 
       # A `~` in a comment or a string is not a sigil.
       refute NervesCode.erlang_mention?(~s|-module(a).\n% ~p nerves\nf() -> "~p".\n|)
+    end
+
+    # `\^X` is a three-byte control escape; ev11 and ev12 from the second review.
+    test "a control escape does not swallow the code after it" do
+      assert NervesCode.erlang_mention?(
+               ~s|-module(ev11).\nf() -> {"\\^\\", nerves_runtime:serial_number(), "\\"", ok}.\n|
+             )
+
+      assert NervesCode.erlang_mention?(
+               ~s|-module(ev12).\nf() -> {'\\^\\', nerves_runtime:serial_number(), '\\'', ok}.\n|
+             )
     end
 
     test "the lexer is linear on unterminated escapes" do
@@ -184,7 +204,9 @@ defmodule NccWorker.NervesCodeTest do
     end
 
     test "a crash falls back" do
-      assert NervesCode.bounded(fn -> raise "boom" end) == :fallback
+      capture_log(fn ->
+        assert NervesCode.bounded(fn -> raise "boom" end) == :fallback
+      end)
     end
 
     # Monotone: over real packages, every new refusal is an old one.
