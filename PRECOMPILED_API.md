@@ -291,14 +291,25 @@ Status codes:
       the item records the config value, so such a project may match a build
       compiled without its value. Every `value` is uncompressed ETF, at most
       65,536 bytes, containing no funs, pids, ports or references
-      (`Compatibility.RecordedValue.acceptable?/1`): the worker and the
-      portal both refuse to record or re-serve an entry whose value fails
-      this check, dropping the whole `compile_env` list to `null` for that
-      build instead, because a client's own match (`precompiled`'s
+      (`Compatibility.RecordedValue.acceptable?/1`, checked by a tag-level
+      walk of the raw bytes, never `binary_to_term`, so acceptance never
+      depends on which atoms happen to be loaded in whichever VM decides
+      it): because a client's own match (`precompiled`'s
       `Match.recorded_equals?/2`) decodes a value with
       `:erlang.binary_to_term(bin, [:safe])`, which inflates compressed ETF
       before `:safe` runs and still admits a fun of an already-loaded
-      module.
+      module. A value that fails this check is handled differently
+      depending on where it is caught:
+      - during the worker's own compile-time trace (R5), it is one of the
+        read's problems, and any problem forces that `pure_elixir`
+        package's whole verdict to could-not-judge: no files are published
+        for it at all, not merely a dropped `compile_env`;
+      - read back from a built `.app` file, or re-checked at portal ingest
+        against what the container's `result.json` reported, it drops the
+        whole `compile_env` list to `null` for that build or system
+        instead, the same as an unreadable `.app`: the files still publish,
+        but rule 4 above means no client can ever match that entry, so
+        every client falls back to building it from source.
     - A carried-forward entry (a partial rebuild of the version that left this
       system out) describes the run that actually built the files, so its
       `run_id` can be older than the version's newest run.

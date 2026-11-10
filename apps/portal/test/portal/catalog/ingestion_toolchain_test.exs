@@ -239,6 +239,31 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert tb.compile_env == [%{"app" => name, "path" => ["k"], "value" => "g2o"}]
   end
 
+  # Fix round 1: acceptability must not depend on whether the deciding VM
+  # (here, the portal's own) happens to have a given atom loaded already.
+  test "a compile_env value naming an atom absent from this VM's atom table still stores" do
+    name = unique_name()
+    beam = blob("beam-#{name}")
+    priv = blob("priv-#{name}")
+
+    # Hand-built ETF for {:ok, :zz_ingestion_absent_atom}.
+    absent_atom =
+      <<131, 104, 2, 119, 2, "ok", 119, 24, "zz_ingestion_absent_atom">>
+      |> Base.url_encode64(padding: false)
+
+    result =
+      name
+      |> pass_result(beam, priv)
+      |> update_in(["toolchain_build", "compile_env"], fn _ ->
+        [%{"app" => name, "path" => ["k"], "value" => absent_atom}]
+      end)
+
+    assert {:ok, tb} =
+             Ingestion.ingest_toolchain(result, opts(name, files_dir_with([beam, priv])))
+
+    assert tb.compile_env == [%{"app" => name, "path" => ["k"], "value" => absent_atom}]
+  end
+
   test "re-ingesting the same build keeps one row and its memberships" do
     name = unique_name()
     beam = blob("beam-#{name}")

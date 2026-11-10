@@ -1051,7 +1051,7 @@ defmodule Portal.Catalog.IngestionTest do
 
     test "a carried-forward system result keeps its compile_env" do
       compile_env = [
-        %{"app" => "sample", "path" => ["mode"], "value" => "g2gCdwJva20AAAAEZmFzdA"}
+        %{"app" => "sample", "path" => ["mode"], "value" => "g2gCZAACb2tkAARmYXN0"}
       ]
 
       first =
@@ -1077,7 +1077,7 @@ defmodule Portal.Catalog.IngestionTest do
 
     test "a system result stores its R5 mark only next to a kept compile_env" do
       compile_env = [
-        %{"app" => "sample", "path" => ["mode"], "value" => "g2gCdwJva20AAAAEZmFzdA"}
+        %{"app" => "sample", "path" => ["mode"], "value" => "g2gCZAACb2tkAARmYXN0"}
       ]
 
       run =
@@ -1110,7 +1110,7 @@ defmodule Portal.Catalog.IngestionTest do
 
     test "a carried-forward system result keeps its R5 mark" do
       compile_env = [
-        %{"app" => "sample", "path" => ["mode"], "value" => "g2gCdwJva20AAAAEZmFzdA"}
+        %{"app" => "sample", "path" => ["mode"], "value" => "g2gCZAACb2tkAARmYXN0"}
       ]
 
       first =

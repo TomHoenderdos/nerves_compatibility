@@ -415,6 +415,20 @@ defmodule NccWorker.Portability.ConfigReadsTest do
              judge(decided, snap(%{{"fx", "k"} => fun}))
   end
 
+  test "a snapshot value naming an atom absent from this VM's atom table is still recordable" do
+    decided = [obs("pkg", read("fx", "k"))]
+
+    # Hand-built ETF for {:ok, :zz_config_reads_absent_atom}: acceptability
+    # must not depend on whether this escript VM happens to have that atom
+    # loaded (fix round 1 — a stock VM's `binary_to_term` would raise here).
+    absent_atom =
+      <<131, 104, 2, 119, 2, "ok", 119, 27, "zz_config_reads_absent_atom">>
+      |> Base.url_encode64(padding: false)
+
+    assert %{items: [%{app: "fx", path: ["k"], value: ^absent_atom}], problems: []} =
+             judge(decided, snap(%{{"fx", "k"} => absent_atom}))
+  end
+
   test "more than 500 distinct reads cannot be judged" do
     decided = for i <- 1..501, do: obs("pkg", read("fx", "k#{i}"))
 

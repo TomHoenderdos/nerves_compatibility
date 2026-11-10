@@ -33,6 +33,23 @@ defmodule Compatibility.RecordedValueTest do
       assert byte_size(bin) == 65_536
       assert RecordedValue.acceptable?(Base.url_encode64(bin, padding: false))
     end
+
+    test "an improper list with a plain tail" do
+      assert RecordedValue.acceptable?(encode([1 | 2], []))
+    end
+
+    test "a large tuple (LARGE_TUPLE_EXT)" do
+      term = List.to_tuple(Enum.to_list(1..300))
+      assert RecordedValue.acceptable?(encode(term, []))
+    end
+
+    test "an atom absent from this VM's atom table" do
+      # Hand-built ETF for {:ok, :zz_recorded_value_absent_atom_8f3c1d}: this
+      # module must accept it without ever creating the atom or depending on
+      # whether it already exists anywhere.
+      bin = <<131, 104, 2, 119, 2, "ok", 119, 29, "zz_recorded_value_absent_atom">>
+      assert RecordedValue.acceptable?(Base.url_encode64(bin, padding: false))
+    end
   end
 
   describe "acceptable?/1, refused" do
@@ -91,6 +108,25 @@ defmodule Compatibility.RecordedValueTest do
     test "a non-binary input" do
       refute RecordedValue.acceptable?(nil)
       refute RecordedValue.acceptable?(123)
+    end
+
+    test "an export fun" do
+      refute RecordedValue.acceptable?(encode(&Enum.map/2, []))
+    end
+
+    test "trailing bytes after a complete term" do
+      bin = :erlang.term_to_binary(:ok) <> <<0>>
+      refute RecordedValue.acceptable?(Base.url_encode64(bin, padding: false))
+    end
+
+    test "a truncated term" do
+      bin = binary_part(:erlang.term_to_binary({1, 2, 3}), 0, 5)
+      refute RecordedValue.acceptable?(Base.url_encode64(bin, padding: false))
+    end
+
+    test "an absurd LIST_EXT length header (2^32 - 1)" do
+      bin = <<131, 108, 255, 255, 255, 255, 106>>
+      refute RecordedValue.acceptable?(Base.url_encode64(bin, padding: false))
     end
   end
 end

@@ -495,8 +495,10 @@ defmodule Portal.Catalog.Ingestion do
   # skip with no files.
   defp gate_config_variant(%{"status" => "pass"} = build, %{config_variant: name})
        when name != @default_config_variant do
-    with {:mark, 1} <- {:mark, compile_env_rule(build["compile_env_rule"], build["compile_env"])},
-         :ok <- ConfigVariants.overlay_recorded(name, compile_env(build["compile_env"])) do
+    resolved = compile_env(build["compile_env"])
+
+    with {:mark, 1} <- {:mark, compile_env_rule(build["compile_env_rule"], resolved)},
+         :ok <- ConfigVariants.overlay_recorded(name, resolved) do
       build
     else
       {:mark, _} -> skip_variant(build, "config variant records no config reads")
@@ -721,6 +723,8 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp upsert_toolchain_build(result, build, {{status, reason}, attempts}, opts, package_id) do
+    compiled_env = compile_env(build["compile_env"], {opts.package, opts.version})
+
     ToolchainBuild
     |> Ash.Changeset.for_create(:upsert, %{
       package_id: package_id,
@@ -738,7 +742,7 @@ defmodule Portal.Catalog.Ingestion do
       deps_lock: deps_lock(build["deps_lock"]),
       package_checksum: package_checksum(build["package_checksum"]),
       declared: declared(build["declared"]),
-      compile_env: compile_env(build["compile_env"], {opts.package, opts.version}),
+      compile_env: compiled_env,
       file_manifest: file_manifest(build["file_manifest"]),
       optional_deps: optional_deps(result["optional_deps"]),
       portability_rule: portability_rule(build["portability_rule"]),
@@ -746,8 +750,7 @@ defmodule Portal.Catalog.Ingestion do
       judge_revision: judge_revision(build["judge_revision"]),
       manager: manager(build["manager"]),
       compile_observations: compile_observations(build["compile_observations"]),
-      compile_env_rule:
-        compile_env_rule(Map.get(build, "compile_env_rule"), Map.get(build, "compile_env")),
+      compile_env_rule: compile_env_rule(Map.get(build, "compile_env_rule"), compiled_env),
       transient_attempts: attempts,
       finished_at: parse_datetime(result["finished_at"])
     })
@@ -1069,19 +1072,23 @@ defmodule Portal.Catalog.Ingestion do
   # The R5 mark only next to a `compile_env` this ingest keeps: a mark on a
   # list it rejected would exempt a build from the withheld list with no
   # match conditions to show for it. A missing or null mark stays nil.
-  defp compile_env_rule(rule, list) when is_integer(rule) and rule in 1..9 do
-    if compile_env(list) == nil, do: nil, else: rule
+  # `resolved_compile_env` is the already-decoded `compile_env/2` result for
+  # this same build or system, not the raw `result.json` list: every caller
+  # computes `compile_env/2` once and reuses it here, rather than deciding
+  # the mark from a second, separate decode of the same values.
+  defp compile_env_rule(rule, resolved_compile_env) when is_integer(rule) and rule in 1..9 do
+    if resolved_compile_env == nil, do: nil, else: rule
   end
 
-  defp compile_env_rule(_rule, _list), do: nil
+  defp compile_env_rule(_rule, _resolved_compile_env), do: nil
 
   # Only a `pure_elixir` result traces its compile and so records its config
   # reads; a firmware result never does, so a mark on one is dropped rather
   # than stored on a row no selector would exempt.
-  defp system_compile_env_rule("pure_elixir", sys),
-    do: compile_env_rule(Map.get(sys, "compile_env_rule"), Map.get(sys, "compile_env"))
+  defp system_compile_env_rule("pure_elixir", sys, resolved_compile_env),
+    do: compile_env_rule(Map.get(sys, "compile_env_rule"), resolved_compile_env)
 
-  defp system_compile_env_rule(_system_pkg, _sys), do: nil
+  defp system_compile_env_rule(_system_pkg, _sys, _resolved_compile_env), do: nil
 
   # A revocation of what rule 2 alone published sticks: when a `pure_elixir`
   # result of this version was revoked that way
@@ -1316,6 +1323,7 @@ defmodule Portal.Catalog.Ingestion do
        ) do
     status = Compatibility.Types.parse_status(sys["status"])
     held_at = if system_pkg == "pure_elixir", do: hold
+    compiled_env = compile_env(sys["compile_env"], {package_name, version})
 
     result =
       SystemResult
@@ -1329,13 +1337,13 @@ defmodule Portal.Catalog.Ingestion do
         phase_timings: sys["phase_timings"],
         hex_version_tested: version,
         beam_scan: sys["beam_scan"],
-        compile_env: compile_env(sys["compile_env"], {package_name, version}),
+        compile_env: compiled_env,
         dependency_scans: drop_file_manifests(sys["dependency_scans"]),
         log_path: nil,
         log_tail: sys["log_tail"],
         failure_category: Portal.Catalog.FailureClassifier.classify(sys),
         deps_lock: deps_lock(sys["deps_lock"]),
-        compile_env_rule: system_compile_env_rule(system_pkg, sys),
+        compile_env_rule: system_compile_env_rule(system_pkg, sys, compiled_env),
         portability_rule: if(system_pkg == "pure_elixir", do: rule),
         unpublished_at: held_at,
         unpublished_reason: if(held_at, do: SystemResult.rule2_revocation())
