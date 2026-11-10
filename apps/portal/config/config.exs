@@ -24,7 +24,8 @@ config :portal,
     Portal.Catalog,
     Portal.Settings,
     Portal.Precompiled,
-    Portal.Builders
+    Portal.Builders,
+    Portal.Reports
   ],
   ecto_repos: [Portal.Repo],
   generators: [timestamp_type: :utc_datetime]
