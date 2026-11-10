@@ -525,9 +525,15 @@ defmodule NccWorker.BuildCache do
       not reads_target?(dir)
   end
 
-  defp native?(dir) do
+  defp native?(dir), do: native_build?(dir, true)
+
+  # The one list of native-build refusals, shared by rule 1 (`native?/1`) and
+  # rule 2 (`native_rule2?/2`), so a refusal added here reaches both. `files?`
+  # says whether a native build file (`@native_files`) counts on its own;
+  # rule 2 passes false and judges those files by manager instead.
+  defp native_build?(dir, files?) do
     Enum.any?(@native_dirs, &File.dir?(Path.join(dir, &1))) or
-      Enum.any?(@native_files, &File.regular?(Path.join(dir, &1))) or
+      (files? and Enum.any?(@native_files, &File.regular?(Path.join(dir, &1)))) or
       mentions?(Path.join(dir, "mix.exs"), @native_deps) or
       mentions?(Path.join(dir, "rebar.config"), @rebar_native)
   end
@@ -554,12 +560,8 @@ defmodule NccWorker.BuildCache do
       manager not in ["mix", "rebar3"] and
         Enum.any?(@native_files, &File.regular?(Path.join(dir, &1)))
 
-  defp native_rule2?(dir, manager) do
-    Enum.any?(@native_dirs, &File.dir?(Path.join(dir, &1))) or
-      native_build_files?(dir, manager) or
-      mentions?(Path.join(dir, "mix.exs"), @native_deps) or
-      mentions?(Path.join(dir, "rebar.config"), @rebar_native)
-  end
+  defp native_rule2?(dir, manager),
+    do: native_build?(dir, false) or native_build_files?(dir, manager)
 
   # Read-only inspection of mix.exs/rebar.config in the worker dependency tree.
   # sobelow_skip ["Traversal.FileModule"]

@@ -15,10 +15,14 @@ defmodule NccWorker.NativeBuild do
   declassified.
 
   `c_src`/`native`/`zig_src`/`go_src`, rebar `port_specs`/`port_env`, a
-  `mix.exs` naming `elixir_make` and the like, a target read and a
-  `nerves*` name stay native. A custom Mix compiler that shells out is the
-  trace's to refuse (`programs`). Rule 1, the build cache and the Nerves
-  classification keep `NccWorker.BuildCache.dep_target_agnostic?/2`.
+  target read and a `nerves*` name stay native. The grep for a `mix.exs`
+  naming `elixir_make`, `rustler` and the like stays too, but it is only a
+  hint: the defences that hold are the trace refusing a compile-time
+  `open_port`/`os:cmd` (`programs`, which also catches a custom Mix
+  compiler that shells out), a `load_nif` call failing the static beam
+  scan, and `NccWorker.StaticPriv` refusing priv files the tarball does not
+  carry. Rule 1, the build cache and the Nerves classification keep
+  `NccWorker.BuildCache.dep_target_agnostic?/2`.
   """
 
   alias NccWorker.{BuildCache, DepsLock}

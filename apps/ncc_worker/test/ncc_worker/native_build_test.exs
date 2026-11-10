@@ -62,9 +62,58 @@ defmodule NccWorker.NativeBuildTest do
     dep(root, "emake", %{"Makefile" => "", "mix.exs" => "compilers: [:elixir_make]"}, [:mix])
     dep(root, "unlocked", %{"Makefile" => "all:\n"}, nil)
     dep(root, "plain", %{"mix.exs" => "defmodule P.MixProject do end"}, [:mix])
+    # A Makefile Mix never runs beside another rule-2 refusal stays native.
+    dep(root, "portenv", %{"Makefile" => "", "rebar.config" => "{port_env, []}.\n"}, [
+      :make,
+      :rebar3
+    ])
+
+    dep(root, "target", %{"Makefile" => "", "lib/t.ex" => "Mix.target()"}, [:make, :rebar3])
+    dep(root, "nerves_foo", %{"Makefile" => "", "src/f.erl" => "-module(f).\n"}, [:make, :rebar3])
+    dep(root, "csrcmix", %{"Makefile" => "", "c_src/x.c" => "", "mix.exs" => ""}, [:mix])
 
     assert NativeBuild.split(root) ==
-             {["csrc", "emake", "makeonly", "unlocked"], %{"ranch" => "rebar3"}}
+             {[
+                "csrc",
+                "csrcmix",
+                "emake",
+                "makeonly",
+                "nerves_foo",
+                "portenv",
+                "target",
+                "unlocked"
+              ], %{"ranch" => "rebar3"}}
+  end
+
+  test "under make or no manager, the rule-2 predicate is dep_target_agnostic?/2",
+       %{tmp_dir: root} do
+    fixtures = %{
+      "plain" => %{"mix.exs" => "defmodule P.MixProject do end"},
+      "makefile" => %{"Makefile" => "all:\n", "src/a.erl" => "-module(a).\n"},
+      "cmake" => %{"CMakeLists.txt" => "", "mix.exs" => ""},
+      "gnumake" => %{"GNUmakefile" => ""},
+      "csrc" => %{"c_src/x.c" => ""},
+      "zig" => %{"zig_src/x.zig" => ""},
+      "emake" => %{"mix.exs" => "compilers: [:elixir_make]"},
+      "rustler" => %{"mix.exs" => "{:rustler, \"~> 0.30\"}"},
+      "portspecs" => %{"rebar.config" => "{port_specs, []}.\n"},
+      "portenv" => %{"rebar.config" => "{port_env, []}.\n"},
+      "target" => %{"lib/t.ex" => "Mix.target()"},
+      "nerves_foo" => %{"mix.exs" => ""}
+    }
+
+    Enum.each(fixtures, fn {name, files} -> dep(root, name, files, [:rebar3]) end)
+    deps = Path.join(root, "deps")
+
+    for name <- ["missing" | Map.keys(fixtures)], manager <- ["make", nil] do
+      assert BuildCache.dep_target_agnostic_rule2?(deps, name, manager) ==
+               BuildCache.dep_target_agnostic?(deps, name),
+             "#{name} under #{inspect(manager)}"
+    end
+
+    # Only the plain one is agnostic, so the comparison above is not vacuous.
+    assert Enum.filter(Map.keys(fixtures), &BuildCache.dep_target_agnostic?(deps, &1)) ==
+             ["plain"]
   end
 
   test "rule 1, the build cache and the Nerves classification do not move", %{tmp_dir: root} do

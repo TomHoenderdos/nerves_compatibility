@@ -304,6 +304,49 @@ defmodule NccWorker.BuildSelectionTest do
              ) == native
     end
 
+    test "item 1 keeps every other rule-2 refusal: port_env, a target read, a nerves* name, c_src under mix",
+         %{root: root} do
+      native = {:skip, "reads the target or ships native code"}
+      opts = [makefile_rule2: true, manager: "rebar3"]
+
+      with_makefile = fn name, managers ->
+        source = package(root, name)
+        File.write!(Path.join(source, "Makefile"), "all:\n")
+        lock_managers(root, name, managers)
+        source
+      end
+
+      port = with_makefile.("portenv", [:make, :rebar3])
+      File.write!(Path.join(port, "rebar.config"), "{port_env, []}.\n")
+      assert BuildSelection.static_rules(root, "portenv", scan(), opts) == native
+
+      target = with_makefile.("target", [:make, :rebar3])
+      File.write!(Path.join(target, "lib/example.ex"), "Mix.target()")
+      assert BuildSelection.static_rules(root, "target", scan(), opts) == native
+
+      with_makefile.("nerves_foo", [:make, :rebar3])
+      assert BuildSelection.static_rules(root, "nerves_foo", scan(), opts) == native
+
+      refute NccWorker.BuildCache.dep_target_agnostic_rule2?(
+               Path.join(root, "deps"),
+               "nerves_foo",
+               "rebar3"
+             )
+
+      csrc = with_makefile.("csrcmix", [:make, :mix])
+      File.mkdir_p!(Path.join(csrc, "c_src"))
+
+      assert BuildSelection.static_rules(root, "csrcmix", scan(),
+               makefile_rule2: true,
+               manager: "mix"
+             ) == native
+
+      # The same package without the extra refusal passes, so each case above
+      # is held by its own rule, not by the Makefile.
+      with_makefile.("control", [:make, :rebar3])
+      assert BuildSelection.static_rules(root, "control", scan(), opts) == :ok
+    end
+
     test "item 1 never lets c_src, elixir_make or a missing lock entry through", %{root: root} do
       native = {:skip, "reads the target or ships native code"}
       opts = [makefile_rule2: true, manager: "rebar3"]
