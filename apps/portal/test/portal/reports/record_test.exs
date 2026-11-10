@@ -42,10 +42,10 @@ defmodule Portal.Reports.RecordTest do
     assert statuses == ["fail", "miss"]
   end
 
-  test "the same report within 24 hours returns the same id and writes no rows" do
-    {:created, id} = Reports.record(payload(), "k1")
+  test "the same report within 24 hours is counted, not stored, and gets no id" do
+    {:created, _id} = Reports.record(payload(), "k1")
 
-    assert {:duplicate, ^id} =
+    assert :duplicate =
              Reports.record(
                payload(%{"contact" => "@other", "built_at" => "2026-11-09T08:00:00Z"}),
                "k2"
@@ -54,6 +54,26 @@ defmodule Portal.Reports.RecordTest do
     assert count("precompiled_reports") == 1
     assert count("precompiled_report_lines") == 2
     assert Repo.one(from(r in "precompiled_reports", select: r.seen_count)) == 2
+  end
+
+  test "the same report with its lock in another order is a duplicate" do
+    {:created, _id} = Reports.record(payload(), "k1")
+    assert :duplicate = Reports.record(payload(%{"lock" => Enum.reverse(body()["lock"])}), "k1")
+    assert count("precompiled_reports") == 1
+  end
+
+  test "a duplicate whose report was retracted meanwhile is stored anew" do
+    {:created, id} = Reports.record(payload(), "k1")
+    hash = Payload.hash(payload())
+    now = DateTime.utc_now()
+
+    # The row the duplicate check found is gone by the time it is counted.
+    :ok = Reports.retract(id)
+
+    assert {:created, new} = Reports.count_or_insert(payload(), hash, "k1", now, id)
+    refute new == id
+    assert count("precompiled_reports") == 1
+    assert count("precompiled_report_lines") == 2
   end
 
   test "a different report within 24 hours is a new report" do

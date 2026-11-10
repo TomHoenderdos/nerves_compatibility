@@ -141,9 +141,11 @@ defmodule Portal.Reports.PayloadTest do
     {:ok, b} = Payload.validate(Map.merge(body(), %{"contact" => "x", "built_at" => nil}))
     {:ok, c} = Payload.validate(%{body() | "lines" => Enum.reverse(body()["lines"])})
     {:ok, d} = Payload.validate(%{body() | "target" => "rpi5"})
+    {:ok, e} = Payload.validate(%{body() | "lock" => Enum.reverse(body()["lock"])})
 
     assert Payload.hash(a) == Payload.hash(b)
     assert Payload.hash(a) == Payload.hash(c)
+    assert Payload.hash(a) == Payload.hash(e)
     refute Payload.hash(a) == Payload.hash(d)
     assert Payload.hash(a) =~ ~r/\A[0-9a-f]{64}\z/
   end

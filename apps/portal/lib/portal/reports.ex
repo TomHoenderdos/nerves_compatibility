@@ -29,13 +29,15 @@ defmodule Portal.Reports do
   Stores a validated report, or counts it again.
 
   The same report (`Payload.hash/1`) received within 24 hours is not stored
-  twice: its `seen_count` goes up and its id comes back as `{:duplicate, id}`.
+  twice: its `seen_count` goes up and the answer is `:duplicate`, without the
+  id. The id is the capability to retract a report, so it goes only to the
+  sender who created it, never to someone who sent the same report later.
   A transaction-scoped advisory lock on the hash makes two identical reports
   arriving at once agree on one row. `reporter_key` is `reporter_key/2`'s
   digest; the address itself is never stored. `:now` stands in for the clock.
   """
   @spec record(Payload.normalized(), String.t() | nil, keyword()) ::
-          {:created, Ecto.UUID.t()} | {:duplicate, Ecto.UUID.t()}
+          {:created, Ecto.UUID.t()} | :duplicate
   def record(payload, reporter_key, opts \\ []) do
     now = Keyword.get_lazy(opts, :now, &DateTime.utc_now/0)
     hash = Payload.hash(payload)
@@ -44,13 +46,26 @@ defmodule Portal.Reports do
       Repo.transaction(fn ->
         Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [hash])
 
-        case duplicate_of(hash, now) do
-          nil -> {:created, insert(payload, hash, reporter_key, now)}
-          id -> {:duplicate, bump(id)}
-        end
+        count_or_insert(payload, hash, reporter_key, now, duplicate_of(hash, now))
       end)
 
     result
+  end
+
+  # `retract/1` does not take the advisory lock, so the row `duplicate_of/2`
+  # found may be gone when it is counted; the report is then stored anew.
+  @doc false
+  def count_or_insert(payload, hash, reporter_key, now, nil),
+    do: {:created, insert(payload, hash, reporter_key, now)}
+
+  def count_or_insert(payload, hash, reporter_key, now, id) do
+    case Repo.update_all(
+           from(r in "precompiled_reports", where: r.id == type(^id, Ecto.UUID)),
+           inc: [seen_count: 1]
+         ) do
+      {1, _} -> :duplicate
+      {0, _} -> count_or_insert(payload, hash, reporter_key, now, nil)
+    end
   end
 
   defp duplicate_of(hash, now) do
@@ -64,16 +79,6 @@ defmodule Portal.Reports do
         select: type(r.id, Ecto.UUID)
       )
     )
-  end
-
-  defp bump(id) do
-    {1, _} =
-      Repo.update_all(
-        from(r in "precompiled_reports", where: r.id == type(^id, Ecto.UUID)),
-        inc: [seen_count: 1]
-      )
-
-    id
   end
 
   defp insert(payload, hash, reporter_key, now) do
