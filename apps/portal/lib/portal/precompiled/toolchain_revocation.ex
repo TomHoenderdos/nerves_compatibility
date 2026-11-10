@@ -352,6 +352,12 @@ defmodule Portal.Precompiled.ToolchainRevocation do
   defp kind("toolchain_build"), do: :toolchain_build
   defp kind("system_result"), do: :system_result
 
+  defp positive_or_nil!(value, _name) when is_nil(value) or (is_integer(value) and value > 0),
+    do: value
+
+  defp positive_or_nil!(value, name),
+    do: raise(ArgumentError, "#{name} must be a positive integer, got: #{inspect(value)}")
+
   defp params(opts) do
     package = Keyword.get(opts, :package)
     version = Keyword.get(opts, :version)
@@ -361,17 +367,8 @@ defmodule Portal.Precompiled.ToolchainRevocation do
     if version && is_nil(package),
       do: raise(ArgumentError, "version: needs package:, got: #{inspect(version)}")
 
-    unless is_nil(limit) or (is_integer(limit) and limit > 0),
-      do: raise(ArgumentError, "limit must be a positive integer, got: #{inspect(limit)}")
-
-    revision = Keyword.get(opts, :judge_revision)
-
-    unless is_nil(revision) or (is_integer(revision) and revision > 0),
-      do:
-        raise(
-          ArgumentError,
-          "judge_revision must be a positive integer, got: #{inspect(revision)}"
-        )
+    positive_or_nil!(limit, "limit")
+    revision = positive_or_nil!(Keyword.get(opts, :judge_revision), "judge_revision")
 
     [
       Portal.Toolchains.builder_version(),

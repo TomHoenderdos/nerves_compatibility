@@ -324,12 +324,14 @@ defmodule NccWorker.Portability do
   """
   @spec tree_snapshot(String.t(), keyword()) :: %{String.t() => Trees.tree()}
   def tree_snapshot(project_dir, opts) do
-    with {:ok, releases} <- releases(opts) do
-      home = Keyword.get_lazy(opts, :hex_home, fn -> System.get_env("HEX_HOME") end)
-      {native, _declassified, _problem} = native_split(project_dir, opts, releases, home)
-      Trees.snapshot(project_dir, releases, home, native)
-    else
-      _ -> %{}
+    case releases(opts) do
+      {:ok, releases} ->
+        home = Keyword.get_lazy(opts, :hex_home, fn -> System.get_env("HEX_HOME") end)
+        {native, _declassified, _problem} = native_split(project_dir, opts, releases, home)
+        Trees.snapshot(project_dir, releases, home, native)
+
+      _ ->
+        %{}
     end
   rescue
     _ -> %{}

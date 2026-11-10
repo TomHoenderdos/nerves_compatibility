@@ -199,23 +199,18 @@ defmodule NccWorker.Portability.Trees do
     case File.ls(Path.join(dest, rel)) do
       {:ok, names} ->
         Enum.reduce_while(Enum.sort(names), {:ok, acc}, fn name, {:ok, acc} ->
-          case walk_entry(
-                 dest,
-                 join(rel, name),
-                 rel == "" and name in extras,
-                 extras,
-                 acc,
-                 limits
-               ) do
-            {:ok, _acc} = ok -> {:cont, ok}
-            other -> {:halt, other}
-          end
+          dest
+          |> walk_entry(join(rel, name), rel == "" and name in extras, extras, acc, limits)
+          |> walk_step()
         end)
 
       {:error, _reason} ->
         :error
     end
   end
+
+  defp walk_step({:ok, _acc} = ok), do: {:cont, ok}
+  defp walk_step(other), do: {:halt, other}
 
   defp walk_entry(_dest, _rel, true, _extras, acc, _limits), do: {:ok, acc}
 
@@ -276,34 +271,27 @@ defmodule NccWorker.Portability.Trees do
     end
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
   def check_read(dest, rel, members, false) do
+    if root_extra?(rel, extras(members)), do: :ok, else: check_entry(dest, rel, members)
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp check_entry(dest, rel, members) do
     path = Path.join(dest, rel)
 
-    cond do
-      root_extra?(rel, extras(members)) ->
-        :ok
-
-      true ->
-        case File.lstat(path) do
-          {:ok, %File.Stat{type: :regular}} ->
-            if file_sha256(path) == {:ok, Map.get(members, rel)},
-              do: :ok,
-              else: {:differs, "read " <> display(rel)}
-
-          {:ok, %File.Stat{type: :directory}} ->
-            if rel == "" or Enum.any?(Map.keys(members), &under_rel?(&1, rel)),
-              do: :ok,
-              else: {:differs, "read " <> display(rel)}
-
-          {:ok, _link_or_other} ->
-            {:differs, "read " <> display(rel)}
-
-          {:error, _reason} ->
-            :ok
-        end
-    end
+    if entry_matches?(File.lstat(path), path, rel, members),
+      do: :ok,
+      else: {:differs, "read " <> display(rel)}
   end
+
+  defp entry_matches?({:ok, %File.Stat{type: :regular}}, path, rel, members),
+    do: file_sha256(path) == {:ok, Map.get(members, rel)}
+
+  defp entry_matches?({:ok, %File.Stat{type: :directory}}, _path, rel, members),
+    do: rel == "" or Enum.any?(Map.keys(members), &under_rel?(&1, rel))
+
+  defp entry_matches?({:ok, _link_or_other}, _path, _rel, _members), do: false
+  defp entry_matches?({:error, _reason}, _path, _rel, _members), do: true
 
   defp root_extra?(rel, extras) do
     case Path.split(rel) do

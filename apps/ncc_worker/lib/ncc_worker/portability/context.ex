@@ -303,18 +303,23 @@ defmodule NccWorker.Portability.Context do
       with dest when is_binary(dest) <- dep.dest,
            true <- under?(real, dest),
            {:ok, members} <- Map.get(ctx.trees, app) do
-        rel = Path.split(real) |> Enum.drop(length(Path.split(dest))) |> rel_path()
-
-        case cached({:tree_check, app, rel, listing?}, fn ->
-               Trees.check_read(dest, rel, members, listing?)
-             end) do
-          :ok -> nil
-          {:differs, detail} -> {:differs, app, detail}
-        end
+        dep_tree_check(app, dest, real, members, listing?)
       else
         _ -> nil
       end
     end)
+  end
+
+  # nil when the read matches `app`'s tree, else `{:differs, app, detail}`.
+  defp dep_tree_check(app, dest, real, members, listing?) do
+    rel = Path.split(real) |> Enum.drop(length(Path.split(dest))) |> rel_path()
+
+    case cached({:tree_check, app, rel, listing?}, fn ->
+           Trees.check_read(dest, rel, members, listing?)
+         end) do
+      :ok -> nil
+      {:differs, detail} -> {:differs, app, detail}
+    end
   end
 
   defp rel_path([]), do: ""

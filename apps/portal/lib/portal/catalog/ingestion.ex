@@ -1063,9 +1063,7 @@ defmodule Portal.Catalog.Ingestion do
 
   defp warn_unrecordable({package, version}) do
     Logger.warning(
-      "compile_env dropped: an entry's value is not plain, small ETF",
-      package: package,
-      version: version
+      "compile_env dropped for #{package} #{version}: an entry's value is not plain, small ETF"
     )
   end
 
