@@ -15,6 +15,8 @@ defmodule NccWorker.Portability do
        closed (`built_check:`, on unless turned off and always in `run/3`;
        no digest then, none now, no build dir or no time left in the
        recompute budget is a mismatch too);
+    1b. a declassified closure dependency built by another manager than its
+       lock gives (item 1, `judge/5`'s `declassified:`, "manager mismatch");
     2. a refusal outside every window (it counts against everything);
     3. a refusal in the package's window (R1, R4 through `Events`);
     4. the package's window broken (missing, lowered depth, failed
@@ -66,7 +68,7 @@ defmodule NccWorker.Portability do
   """
 
   alias Compatibility.Portability, as: Reasons
-  alias NccWorker.{BuildCache, DepsLock}
+  alias NccWorker.{BuildCache, DepsLock, NativeBuild}
 
   alias NccWorker.Portability.{
     BuildRoot,
@@ -86,7 +88,8 @@ defmodule NccWorker.Portability do
           required(:status) => :pass | :skip,
           required(:reason) => String.t() | nil,
           required(:observations) => map(),
-          optional(:compile_env) => [ConfigReads.item()] | nil
+          optional(:compile_env) => [ConfigReads.item()] | nil,
+          optional(:manager) => String.t() | nil
         }
 
   @default_timeout_ms 30 * 60 * 1000
@@ -113,8 +116,12 @@ defmodule NccWorker.Portability do
   @judge_revision 1
 
   @doc "The judge revision a toolchain build made with `opts` records."
+  # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on
+  # re-judges every skipped row once without an image change. While that
+  # flag exists, the next refinement to ship bumps `@judge_revision` by two.
   @spec judge_revision(keyword()) :: pos_integer()
-  def judge_revision(_opts \\ []), do: @judge_revision
+  def judge_revision(opts \\ []),
+    do: @judge_revision + if(makefile_rule2?(opts), do: 1, else: 0)
 
   @doc """
   The project's Hex releases from its `mix.lock`, for `run/3`'s `releases:`.
@@ -146,6 +153,12 @@ defmodule NccWorker.Portability do
       the compile by what is left of the run (`NccWorker.Tracer`);
     * `mode:`, `:judge` (default) or `:host`, passed to `NccWorker.Tracer.run/3`;
       any other value runs nothing and the verdict is could-not-judge;
+    * `makefile_rule2:`, item 1 of the judge refinements (see
+      `NccWorker.NativeBuild`): `true` takes off the native list the
+      dependencies whose native build file Mix never runs, and the judge
+      holds them to the trace's manager (`judge/5`'s `declassified:`); a
+      `deps/` that cannot be listed is then could-not-judge. Anything but
+      `true` is off;
     * `trace_dir:` (default `<project_dir>/../trace`), `log_file:`,
       `timeout_ms:`, `extra_env:`, `reap:`, `cmd:` (tests).
 
@@ -237,20 +250,57 @@ defmodule NccWorker.Portability do
   defp traced_run(project_dir, package, opts, releases) do
     env = Keyword.fetch!(opts, :env)
     trace_dir = Keyword.get_lazy(opts, :trace_dir, fn -> default_trace_dir(project_dir) end)
-    native = native_deps(project_dir)
+    {native, declassified, split_problem} = native_split(project_dir, opts)
 
     {compile_ms, traced} =
       timed(fn ->
         Tracer.run(project_dir, [package], tracer_opts(opts, env, trace_dir, native))
       end)
 
-    ctx_opts = [releases: releases, hex_home: hex_home(opts, env)]
+    ctx_opts = [releases: releases, hex_home: hex_home(opts, env), declassified: declassified]
 
     project_dir
     |> verdict(package, traced, trace_dir, native, ctx_opts)
+    |> unsplit(split_problem)
     |> put_stat("judge_compile", judge_compile(traced))
     |> put_stat("compile_ms", compile_ms)
     |> put_stat("tracer_error", tracer_error(traced))
+    |> put_stat("makefile_rule2", makefile_rule2?(opts))
+  end
+
+  # Item 1 (behind `makefile_rule2: true`): the native list without the
+  # dependencies whose native build file Mix never runs, which the judge
+  # then holds to the manager the trace recorded (`declassified:`).
+  # `NativeBuild.split/1` reads an unlistable `deps/` as no dependencies at
+  # all; with the flag on that is a problem instead (fail closed), which
+  # `unsplit/2` turns into could-not-judge once the compile is over.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp native_split(project_dir, opts) do
+    cond do
+      not makefile_rule2?(opts) ->
+        {native_deps(project_dir), %{}, nil}
+
+      match?({:ok, _}, File.ls(Path.join(project_dir, "deps"))) ->
+        {native, declassified} = NativeBuild.split(project_dir)
+        {native, declassified, nil}
+
+      true ->
+        {[], %{}, "deps/ could not be listed for rule 2 (makefile_rule2)"}
+    end
+  end
+
+  defp makefile_rule2?(opts), do: Keyword.get(opts, :makefile_rule2) == true
+
+  defp unsplit(verdict, nil), do: verdict
+
+  defp unsplit(%{observations: obs} = verdict, problem) do
+    %{
+      verdict
+      | status: :skip,
+        reason: Reasons.could_not_judge(),
+        observations: Map.put(obs, "problems", [problem | Map.get(obs, "problems") || []])
+    }
+    |> Map.put(:compile_env, nil)
   end
 
   defp judge_compile({:ok, 0}), do: "finished"
@@ -359,7 +409,12 @@ defmodule NccWorker.Portability do
   took when its window closed, all of them recomputed within
   `built_budget_ms:` (default 5 minutes; `built_clock:` for tests);
   `built_check: false` turns that off for a hand-built report with no
-  `built` lines (`run/3` always checks). Never raises.
+  `built` lines (`run/3` always checks). `declassified:` is what
+  `NativeBuild.split/1` declassified (`%{app => manager}`, item 1, default
+  none): each such dependency in the package's closure must have been built
+  by that manager, as the trace's closure line records. The verdict's
+  `manager` is the package's own manager from that line (nil when unknown).
+  Never raises.
   """
   @spec judge(String.t(), String.t(), Report.t(), [String.t()], keyword()) :: verdict()
   def judge(project_dir, package, report, native, opts \\ [])
@@ -413,8 +468,26 @@ defmodule NccWorker.Portability do
       package_window: window_problem(report, ctx.package),
       package_r2: package_r2,
       package_rebar: rebar(ctx, report, ctx.package),
-      deps: deps
+      deps: deps,
+      scope: scope,
+      manager_mismatch: manager_mismatch(ctx, scope, Keyword.get(opts, :declassified, %{}))
     }
+  end
+
+  # Item 1: a closure dependency rule 2 took off the native list because its
+  # lock and files say Mix runs mix or rebar3 must have been built by
+  # exactly that manager, as the trace's closure line records Mix's own
+  # answer. Another manager, or none recorded, refuses: its Makefile may
+  # have run.
+  defp manager_mismatch(ctx, scope, declassified) do
+    declassified
+    |> Enum.sort()
+    |> Enum.find_value(fn {app, computed} ->
+      traced = Context.manager(ctx, app)
+
+      if MapSet.member?(scope, app) and traced != computed,
+        do: Reasons.manager_mismatch() <> "#{app} (trace #{traced || "none"}, lock #{computed})"
+    end)
   end
 
   defp elixir_of(%Report{start: %{"elixir" => elixir}}) when is_binary(elixir), do: elixir
@@ -820,6 +893,7 @@ defmodule NccWorker.Portability do
       Enum.find_value(
         [
           fn -> if facts.trace_problems != [], do: Reasons.could_not_judge() end,
+          fn -> facts.manager_mismatch end,
           fn -> first_refusal(facts.decided, :outside) end,
           fn -> first_refusal(facts.decided, facts.ctx.package) end,
           fn -> if facts.package_window, do: Reasons.could_not_judge() end,
@@ -836,7 +910,8 @@ defmodule NccWorker.Portability do
       status: status,
       reason: reason,
       observations: observations(facts, problems),
-      compile_env: if(status == :pass, do: facts.config.items)
+      compile_env: if(status == :pass, do: facts.config.items),
+      manager: Context.manager(facts.ctx, facts.ctx.package)
     }
   end
 

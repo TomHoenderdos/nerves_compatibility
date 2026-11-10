@@ -139,6 +139,9 @@ defmodule NccWorker.Worker do
           # The worker's judge revision (`NccWorker.Portability.judge_revision/1`)
           # the verdict was made under; nil for an "error" build.
           judge_revision: pos_integer() | nil,
+          # The manager Mix built the package with, from the trace's closure
+          # line; nil when unknown or for an "error" build.
+          manager: String.t() | nil,
           # What the trace observed (`NccWorker.Portability`): "trace_stats"
           # (with "judge_compile", "finished" | "not_finished" | "not_run",
           # "transient", true when a could-not-judge says nothing about the
@@ -183,6 +186,9 @@ defmodule NccWorker.Worker do
           # The worker's judge revision (`NccWorker.Portability.judge_revision/1`)
           # the verdict was made under; nil for an "error" build.
           judge_revision: pos_integer() | nil,
+          # The manager Mix built the package with, from the trace's closure
+          # line; nil when unknown or for an "error" build.
+          manager: String.t() | nil,
           compile_observations: map() | nil,
           file_manifest:
             %{
@@ -1494,13 +1500,16 @@ defmodule NccWorker.Worker do
   defp toolchain_project(project_dir, input, paths, toolchain, opts, package_name, config_variant) do
     log_tail_bytes = get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes
 
+    rule2 = makefile_rule2?(input)
+
     compile_opts =
       [
         # Right after `deps.get` and before any compile: an untraced build
         # step could rewrite the lock and a tarball together later.
         releases: Portability.lock_snapshot(project_dir),
         run_started_at: input[:started_at],
-        log_tail_bytes: log_tail_bytes
+        log_tail_bytes: log_tail_bytes,
+        makefile_rule2: rule2
       ] ++ opts
 
     with {:ok, compiled} <-
@@ -1528,7 +1537,9 @@ defmodule NccWorker.Worker do
           scope: RunScope.to_string(:toolchain),
           toolchain_build:
             project_dir
-            |> toolchain_build(package_name, compiled.host, toolchain, compiled.verdict)
+            |> toolchain_build(package_name, compiled.host, toolchain, compiled.verdict,
+              makefile_rule2: rule2
+            )
             |> Map.put(:config_variant, config_variant)
         }
         |> put_optional_deps(compiled.optional_deps)
@@ -1539,6 +1550,11 @@ defmodule NccWorker.Worker do
       {:ok, result}
     end
   end
+
+  # NCC_INPUT.judge.makefile_rule2 (precompiled judge refinements, item 1):
+  # off unless the portal sends exactly `true` (`Portal.Builder.judge_input/1`).
+  defp makefile_rule2?(%{judge: %{makefile_rule2: true}}), do: true
+  defp makefile_rule2?(_input), do: false
 
   @doc false
   # The toolchain run's one compile (`NccWorker.HostTrace`). With "exclude"
@@ -1798,7 +1814,7 @@ defmodule NccWorker.Worker do
   `<project_dir>/_build/host/lib/<package_name>`, and the compile-time
   trace's verdict (`NccWorker.Portability.run/3`; `nil` when there was none,
   which cannot pass). `opts` are the toolchain run's judge options
-  (`makefile_rule2:`, Task B2); `judge_revision` is
+  (`makefile_rule2:`, item 1 of the judge refinements); `judge_revision` is
   `Portability.judge_revision(opts)` for every judged build.
   """
   @spec toolchain_build(
@@ -1824,6 +1840,7 @@ defmodule NccWorker.Worker do
       portability_rule: nil,
       rule1_reason: nil,
       judge_revision: nil,
+      manager: nil,
       compile_observations: nil
     }
 
@@ -1842,7 +1859,7 @@ defmodule NccWorker.Worker do
 
     if unfinished?(portability),
       do: unjudged_toolchain_build(build, project_dir, package_name, portability, host_result),
-      else: judge_finished_build(build, project_dir, package_name, portability, host_result)
+      else: judge_finished_build(build, project_dir, package_name, portability, host_result, opts)
   end
 
   # The traced compile did not run to its end (a crash, a timeout, a
@@ -1860,6 +1877,7 @@ defmodule NccWorker.Worker do
         package_checksum: DepsLock.package_checksum(project_dir, package_name),
         declared: DepsLock.declared(project_dir, package_name),
         portability_rule: 2,
+        manager: portability[:manager],
         compile_observations: with_host_time(portability.observations, host_result)
     }
   end
@@ -1875,11 +1893,18 @@ defmodule NccWorker.Worker do
         "not_run"
       ]
 
-  defp judge_finished_build(build, project_dir, package_name, portability, host_result) do
+  defp judge_finished_build(build, project_dir, package_name, portability, host_result, opts) do
     app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
     scan = scan_host_app(app_dir)
     tarball = package_tarball(project_dir, package_name)
-    static = BuildSelection.static_rules(project_dir, package_name, scan, tarball: tarball)
+
+    static =
+      BuildSelection.static_rules(project_dir, package_name, scan,
+        tarball: tarball,
+        makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
+        manager: portability[:manager]
+      )
+
     rule1 = BuildSelection.portable?(project_dir, package_name, scan, tarball: tarball)
     app_env = AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
     {compile_env, compile_env_rule} = r5_compile_env(app_env, portability)
@@ -1893,6 +1918,7 @@ defmodule NccWorker.Worker do
         compile_env_rule: compile_env_rule,
         portability_rule: 2,
         rule1_reason: rule1_reason(rule1),
+        manager: portability[:manager],
         compile_observations: with_host_time(portability.observations, host_result)
     }
 

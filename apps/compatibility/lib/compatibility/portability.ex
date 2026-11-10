@@ -21,7 +21,8 @@ defmodule Compatibility.Portability do
     "closure dependency observed the host: ",
     "rebar3 build ",
     "compile-time config read: ",
-    "compile-time Elixir patch dependence: "
+    "compile-time Elixir patch dependence: ",
+    "manager mismatch: "
   ]
 
   # R1 (the package's own compile observed the host; R4's `mix.exs` slice
@@ -43,6 +44,7 @@ defmodule Compatibility.Portability do
   ]
 
   @could_not_judge "portability could not be judged"
+  @manager_mismatch "manager mismatch: "
 
   @doc "Every prefix a trace refusal starts with."
   @spec refusal_prefixes() :: [String.t()]
@@ -62,6 +64,15 @@ defmodule Compatibility.Portability do
   @doc "The reason for a build whose trace could not be used."
   @spec could_not_judge() :: String.t()
   def could_not_judge, do: @could_not_judge
+
+  @doc """
+  The prefix of a refusal of a dependency rule 2 took off the native list
+  because Mix runs mix or rebar3 for it (precompiled judge refinements,
+  item 1), when the trace says another manager built it. A refusal that
+  withdraws nothing: it speaks of a dependency.
+  """
+  @spec manager_mismatch() :: String.t()
+  def manager_mismatch, do: @manager_mismatch
 
   @doc "Whether `reason` is a trace refusal (and not a rule 1 reason or could-not-judge)."
   @spec refusal?(term()) :: boolean()

@@ -74,4 +74,9 @@ defmodule NccWorker.CLITest do
     assert {:error, {:invalid_config_variant, "phx_staging"}} =
              CLI.parse_input(~s({"mode": "toolchain", "config_variant": "phx_staging"}))
   end
+
+  test "parse_input/1 reads the judge options" do
+    assert {:ok, %{judge: %{makefile_rule2: true}}} =
+             CLI.parse_input(~s({"mode": "toolchain", "judge": {"makefile_rule2": true}}))
+  end
 end

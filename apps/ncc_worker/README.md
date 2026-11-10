@@ -277,6 +277,13 @@ the package, applies the lock policy (exit 11), adds the package's optional depe
 in `prod`, traced, and judges `_build/host/lib/<package>` with `NccWorker.BuildSelection.static_rules/4` **and**
 the compile-time trace (`NccWorker.Portability`).
 
+`"judge": {"makefile_rule2": true}` in `NCC_INPUT` turns on item 1 of the judge refinements: a dependency whose
+`Makefile` (or another native build file) Mix never runs, because its lock names `mix` or `rebar3`, is not native
+under rule 2, when the trace's closure line agrees on the manager (`manager mismatch: ` otherwise). Such a build
+records `judge_revision` one higher. `toolchain_build.manager` is the manager the trace says Mix built the package
+with. Any value other than `true` leaves item 1 off; with it on, a `deps/` the judge cannot list is "portability
+could not be judged".
+
 The host compile is the traced one (`NccWorker.HostTrace`, `mode: :host`): after its own `mix deps.get` it runs
 `timeout --kill-after=10 <sec> elixir -pa <work>/trace/ebin -S mix ncc.trace_compile`, which compiles every
 dependency of the package's closure, one at a time, each in its own trace window, and then the project. Nothing is
@@ -377,6 +384,7 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
   "portability_rule": 2,
   "rule1_reason": "rule 1's reason when it would have skipped, else null",
   "judge_revision": 1,
+  "manager": "rebar3",
   "compile_observations": {"trace_stats": {"windows": 14, "wall_ms": 9100, "host_compile_sec": 31.2}, "config_reads": [], "refusals": [], "taint": {}, "problems": []},
   "file_manifest": {"ebin": [{"path": "ebin/x.beam", "sha256": "...", "size": 1234, "mode": 33188}], "priv": []}
 }
@@ -399,7 +407,9 @@ or an `:os.type()` in the sources no longer refuses a build; the trace refuses o
 module that holds a source path in a package that runs programs. `rule1_reason` is what rule 1 (`portable?/4`, the
 verdict before rule 2) would have said, `null` when it passes: a `pass` with a `rule1_reason` is a build only rule 2
 publishes. `judge_revision` is the worker's judge revision (`NccWorker.Portability.judge_revision/1`), present for
-`pass` and `skipped` and `null` for `error`; the portal reopens skipped rows below the newest revision once. A skip
+`pass` and `skipped` and `null` for `error`; the portal reopens skipped rows below the newest revision once. `manager`
+is the manager the trace says Mix built the package with (`"mix"`, `"rebar3"`, `"make"`), `null` when the trace's
+closure line names none and for `error`. A skip
 reason from the trace starts with one of the prefixes in
 `Compatibility.Portability.refusal_prefixes/0` and wins over a static one; "portability could not be judged" means
 the trace itself failed and is never held against the package (the worker reports it as `skipped`, and the portal

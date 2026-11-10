@@ -1356,6 +1356,72 @@ defmodule NccWorker.Portability.JudgeTest do
     end
   end
 
+  describe "item 1: the manager of a declassified dependency" do
+    test "must be the one the trace's closure line records", %{proj: proj} do
+      r = report(proj)
+
+      assert %{status: :pass, manager: "mix"} = judge(proj, r, declassified: %{"dep" => "mix"})
+
+      assert %{status: :skip, reason: "manager mismatch: dep (trace mix, lock rebar3)"} =
+               judge(proj, r, declassified: %{"dep" => "rebar3"})
+
+      # Outside the package's closure it does not count.
+      assert %{status: :pass} = judge(proj, r, declassified: %{"other" => "rebar3"})
+    end
+
+    test "a closure line without a manager refuses", %{proj: proj} do
+      r = report(proj)
+
+      deps =
+        for d <- r.closure["deps"],
+            do: if(d["app"] == "dep", do: Map.put(d, "manager", nil), else: d)
+
+      r = %{r | closure: %{r.closure | "deps" => deps}}
+
+      assert %{status: :skip, reason: "manager mismatch: dep (trace none, lock mix)"} =
+               judge(proj, r, declassified: %{"dep" => "mix"})
+    end
+
+    # Spec item 1: a `[:make]` lock entry under a rebar3 parent. Mix takes
+    # the parent's manager (the trace says rebar3), the lock and files say
+    # otherwise: `NativeBuild.split/1`'s answer, held to the trace, refuses.
+    # With only a Makefile, the files say make: never declassified, it stays
+    # native and the manager check has nothing to hold.
+    test "a [:make] lock entry under a rebar3 parent, through split/1", %{proj: proj, dir: dir} do
+      split = fn files ->
+        root = Path.join(dir, "split#{System.unique_integer([:positive])}")
+        dest = Path.join([root, "deps", "dep"])
+        File.mkdir_p!(dest)
+        Enum.each(files, fn {name, body} -> File.write!(Path.join(dest, name), body) end)
+
+        File.write!(
+          Path.join(root, "mix.lock"),
+          ~s(%{"dep": {:hex, :dep, "1.0.0", "i", [:make], [], "hexpm", "o"}}\n)
+        )
+
+        NccWorker.NativeBuild.split(root)
+      end
+
+      r = report(proj)
+
+      deps =
+        for d <- r.closure["deps"],
+            do: if(d["app"] == "dep", do: dep(proj, "dep", [], "rebar3"), else: d)
+
+      r = %{r | closure: %{r.closure | "deps" => deps}}
+
+      assert {[], %{"dep" => "mix"} = declassified} =
+               split.(%{"Makefile" => "all:\n", "mix.exs" => ""})
+
+      assert %{status: :skip, reason: "manager mismatch: dep (trace rebar3, lock mix)"} =
+               judge(proj, r, declassified: declassified)
+
+      assert {["dep"], %{} = none} = split.(%{"Makefile" => "all:\n"})
+      assert none == %{}
+      refute match?(%{reason: "manager mismatch: " <> _}, judge(proj, r, declassified: none))
+    end
+  end
+
   describe "run/3" do
     test "without a pre-compile lock snapshot nothing runs", %{proj: proj, dir: dir} do
       trace_dir = Path.join(dir, "trace")
@@ -1387,6 +1453,30 @@ defmodule NccWorker.Portability.JudgeTest do
       assert obs["trace_stats"]["judge_compile"] == "not_finished"
       # Nothing about the package: a later run may well judge it.
       assert obs["trace_stats"]["transient"] == true
+    end
+
+    test "with makefile_rule2 a deps/ that cannot be listed is could-not-judge",
+         %{proj: proj, dir: dir} do
+      File.rm_rf!(Path.join(proj, "deps"))
+
+      finishing = fn _caller, _ref, _command, _argv, _log -> {:ok, 0} end
+
+      for rule2 <- [true, false] do
+        assert %{status: :skip, reason: @cnj, observations: obs} =
+                 Portability.run(proj, "pkg",
+                   env: [],
+                   releases: %{},
+                   trace_dir: Path.join(dir, "trace#{rule2}"),
+                   cmd: finishing,
+                   reap: fn _ -> :ok end,
+                   makefile_rule2: rule2
+                 )
+
+        assert obs["trace_stats"]["judge_compile"] == "finished"
+        assert obs["trace_stats"]["makefile_rule2"] == rule2
+
+        assert Enum.any?(obs["problems"], &(&1 =~ "deps/ could not be listed")) == rule2
+      end
     end
 
     test "never raises", %{proj: proj} do

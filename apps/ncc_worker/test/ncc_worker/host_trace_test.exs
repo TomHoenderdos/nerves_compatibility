@@ -253,6 +253,31 @@ defmodule NccWorker.HostTraceTest do
     assert File.exists?(build_dir(proj))
   end
 
+  test "makefile_rule2 reaches the traced compile's judge", %{tmp_dir: dir} do
+    proj = project(dir)
+    test_pid = self()
+
+    portability = fn ^proj, "pkg", opts ->
+      send(test_pid, {:rule2, Keyword.get(opts, :makefile_rule2)})
+
+      %{
+        status: :pass,
+        reason: nil,
+        compile_env: [],
+        observations: %{"trace_stats" => %{"judge_compile" => "finished", "trace_mode" => "host"}}
+      }
+    end
+
+    HostTrace.compile(
+      proj,
+      "pkg",
+      paths(dir),
+      opts(portability: portability, makefile_rule2: true)
+    )
+
+    assert_received {:rule2, true}
+  end
+
   test "a failed deps.get is the host failure and nothing is traced", %{tmp_dir: dir} do
     proj = project(dir)
 

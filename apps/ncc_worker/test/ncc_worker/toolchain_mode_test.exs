@@ -215,6 +215,36 @@ defmodule NccWorker.ToolchainModeTest do
 
       assert failed.judge_revision == nil
     end
+
+    test "makefile_rule2 records one more; the build carries the trace's manager",
+         %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      host = passing_host()
+
+      build =
+        Worker.toolchain_build(
+          project,
+          "sample",
+          host,
+          @toolchain,
+          Map.put(@traced_pass, :manager, "mix"),
+          makefile_rule2: true
+        )
+
+      assert %{judge_revision: 2, manager: "mix"} = build
+      assert Portability.judge_revision(makefile_rule2: true) == 2
+      assert Portability.judge_revision(makefile_rule2: "true") == 1
+
+      unfinished = Map.put(@unfinished, :manager, "rebar3")
+
+      assert %{manager: "rebar3"} =
+               Worker.toolchain_build(project, "sample", host, @toolchain, unfinished)
+
+      assert %{manager: nil} = Worker.toolchain_build(project, "sample", host, @toolchain, nil)
+
+      assert %{manager: nil} =
+               Worker.toolchain_build(project, "sample", %{status: :fail}, @toolchain, nil)
+    end
   end
 
   # Adds a module whose function body runs a program to the host build.
@@ -947,6 +977,32 @@ defmodule NccWorker.ToolchainModeTest do
 
     assert_received {:config, false}
     assert result.toolchain_build.config_variant == "default"
+  end
+
+  test "NCC_INPUT.judge.makefile_rule2 reaches the compile and the revision only when true",
+       %{tmp_dir: dir} do
+    for {judge, want, revision} <- [
+          {%{makefile_rule2: true}, true, 2},
+          {%{makefile_rule2: "yes"}, false, 1},
+          {nil, false, 1}
+        ] do
+      parent = self()
+      sub = Path.join(dir, "case#{System.unique_integer([:positive])}")
+      {proj, input, paths} = toolchain_run(sub)
+
+      host_trace = fn _project_dir, _package, _paths, opts ->
+        send(parent, {:flag, Keyword.get(opts, :makefile_rule2)})
+        passing_host_trace()
+      end
+
+      input = if judge, do: Map.put(input, :judge, judge), else: input
+
+      assert {:ok, result} =
+               Worker.toolchain_project(proj, input, paths, @toolchain, host_trace: host_trace)
+
+      assert_received {:flag, ^want}
+      assert result.toolchain_build.judge_revision == revision
+    end
   end
 
   test "a config variant whose overlay cannot be written is a worker failure", %{tmp_dir: dir} do
