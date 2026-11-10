@@ -29,6 +29,13 @@ defmodule NccWorker.Portability.RebarPlatformDefineTest do
     end
 
     assert check(~s({erl_opts, [{platform_define, "^2", 'X', true}]}.\n)) == :ok
+
+    # `^` and `^()` always define: a start anchor with nothing, or an
+    # anchored empty group, matches at the start of every string, so both
+    # probes agree and the result is the same on every host.
+    for regex <- [~s("^"), ~s{"^()"}] do
+      assert check(define(regex)) == :ok, regex
+    end
   end
 
   test "anything that can see past the major, or is not a regex string, keeps refusing" do
@@ -44,7 +51,16 @@ defmodule NccWorker.Portability.RebarPlatformDefineTest do
           ~s("^(2"),
           ~s("^[^0]"),
           ~s('atom'),
-          ~s(42)
+          ~s(42),
+          # Passes the grammar (a digit range inside `[...]`) but fails
+          # `Regex.compile/1` (descending range), exercising the
+          # compile-failure branch `"^(2"` never reaches.
+          ~s("^[9-0]"),
+          # Top-level alternation: the `|` sits outside any `( | )` group,
+          # so the second branch, `musl`, drops the `^` anchor.
+          ~s("^2|musl"),
+          ~s("^[0-9.]"),
+          ~s("^\\\\d")
         ] do
       assert check(define(regex)) == @refusal, regex
     end

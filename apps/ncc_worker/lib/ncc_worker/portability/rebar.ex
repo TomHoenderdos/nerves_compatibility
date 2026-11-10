@@ -4,8 +4,10 @@ defmodule NccWorker.Portability.Rebar do
   dependencies. rebar3 compiles in its own VM, which the trace reaches only
   through `ERL_AFLAGS`; hooks and plugins run programs no trace sees, and
   `platform_define` and `rebar.config.script` are host dependence by
-  definition when rebar compiles. Any `provider_hooks` entry refuses too:
-  providers come from plugins or run arbitrary build steps.
+  definition when rebar compiles, except a `platform_define` whose regex can
+  consume only the leading OTP major (precompiled judge refinements, item 3),
+  which decides the same on every host. Any `provider_hooks` entry refuses
+  too: providers come from plugins or run arbitrary build steps.
 
   Only what rebar3 runs when Mix compiles the dependency counts. Mix
   (`Mix.Tasks.Deps.Compile.do_rebar3/2`, Elixir 1.19 and 1.20) runs
