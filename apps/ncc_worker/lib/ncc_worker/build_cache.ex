@@ -532,6 +532,35 @@ defmodule NccWorker.BuildCache do
       mentions?(Path.join(dir, "rebar.config"), @rebar_native)
   end
 
+  # Rule 2 only (precompiled judge refinements, item 1; `NccWorker.NativeBuild`):
+  # `dep_target_agnostic?/2` with a native build file counting only when
+  # `manager`, the one Mix runs for the dependency, is not "mix" or
+  # "rebar3". Every other check is the same, so it holds wherever
+  # `dep_target_agnostic?/2` does. Rule 1, `classify/4` and the cache keys
+  # keep `dep_target_agnostic?/2`.
+  @doc false
+  @spec dep_target_agnostic_rule2?(String.t(), String.t(), String.t() | nil) :: boolean()
+  def dep_target_agnostic_rule2?(deps_path, name, manager) do
+    dir = Path.join(deps_path, name)
+
+    File.dir?(dir) and not String.starts_with?(name, "nerves") and
+      not native_rule2?(dir, manager) and not reads_target?(dir)
+  end
+
+  @doc false
+  @spec native_build_files?(String.t(), String.t() | nil) :: boolean()
+  def native_build_files?(dir, manager),
+    do:
+      manager not in ["mix", "rebar3"] and
+        Enum.any?(@native_files, &File.regular?(Path.join(dir, &1)))
+
+  defp native_rule2?(dir, manager) do
+    Enum.any?(@native_dirs, &File.dir?(Path.join(dir, &1))) or
+      native_build_files?(dir, manager) or
+      mentions?(Path.join(dir, "mix.exs"), @native_deps) or
+      mentions?(Path.join(dir, "rebar.config"), @rebar_native)
+  end
+
   # Read-only inspection of mix.exs/rebar.config in the worker dependency tree.
   # sobelow_skip ["Traversal.FileModule"]
   defp mentions?(path, needles) do

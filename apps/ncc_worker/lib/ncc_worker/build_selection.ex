@@ -6,7 +6,7 @@ defmodule NccWorker.BuildSelection do
   Unavailable or ambiguous evidence always keeps firmware builds enabled.
   """
 
-  alias NccWorker.{BuildCache, StaticPriv}
+  alias NccWorker.{BuildCache, NativeBuild, StaticPriv}
 
   @spec select(String.t(), String.t(), String.t(), map(), [{String.t(), String.t()}]) ::
           :pure_elixir | :firmware
@@ -100,6 +100,10 @@ defmodule NccWorker.BuildSelection do
   of `Mix.target/0`: it is Mix state, not the host, and a build compiled for
   `:host` would be served to firmware builds. Reasons are `portable?/4`'s.
   Anything missing or unreadable fails closed.
+
+  Options: `tarball:` as for `portable?/4`; `makefile_rule2: true` and
+  `manager:` (the trace's manager for the package) let a native build file
+  Mix never runs pass (item 1, `NccWorker.NativeBuild`).
   """
   @spec static_rules(String.t(), String.t(), map(), keyword()) :: :ok | {:skip, String.t()}
   def static_rules(project, package, scan, opts \\ []) do
@@ -108,10 +112,7 @@ defmodule NccWorker.BuildSelection do
     with :ok <- static_scan(scan),
          :ok <- portable_priv(project, package, scan, opts),
          :ok <- nerves_check(Path.join(deps, package)) do
-      check(
-        BuildCache.dep_target_agnostic?(deps, package),
-        "reads the target or ships native code"
-      )
+      check(target_agnostic(project, package, opts), "reads the target or ships native code")
     end
   rescue
     _ -> {:skip, "portability could not be judged"}
@@ -126,6 +127,23 @@ defmodule NccWorker.BuildSelection do
 
   defp static_scan(%{beam_count: 0}), do: {:skip, "no compiled beams"}
   defp static_scan(_scan), do: {:skip, "beam scan incomplete"}
+
+  # Item 1 (rule 2 only, behind `makefile_rule2: true`): a native build file
+  # Mix never runs does not count, when the trace's manager for the package
+  # (`manager:`, from its closure line) is "mix" or "rebar3" and is the one
+  # its lock and files give (`NativeBuild.manager/2`). Anything else is
+  # `dep_target_agnostic?/2`'s verdict, as before.
+  defp target_agnostic(project, package, opts) do
+    deps = Path.join(project, "deps")
+    trace = Keyword.get(opts, :manager)
+
+    if Keyword.get(opts, :makefile_rule2) == true and trace in ["mix", "rebar3"] and
+         NativeBuild.manager(project, package) == trace do
+      BuildCache.dep_target_agnostic_rule2?(deps, package, trace)
+    else
+      BuildCache.dep_target_agnostic?(deps, package)
+    end
+  end
 
   defp portable_scan(scan) do
     with :ok <- static_scan(scan),

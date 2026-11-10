@@ -52,6 +52,14 @@ defmodule NccWorker.BuildSelectionTest do
     File.write!(path, inspect(Map.put(entries, name, entry), limit: :infinity))
   end
 
+  # Rewrites `name`'s lock entry with `managers` (Hex's `build_tools`).
+  defp lock_managers(root, name, managers) do
+    path = Path.join(root, "mix.lock")
+    {entries, _} = Code.eval_file(path)
+    entry = {:hex, String.to_atom(name), "1.0.0", "inner", managers, [], "hexpm", "outer"}
+    File.write!(path, inspect(Map.put(entries, name, entry), limit: :infinity))
+  end
+
   test "pure Elixir and its pure dependency closure skip firmware", %{root: root} do
     package(root, "wrapper")
     package(root, "leaf")
@@ -262,6 +270,72 @@ defmodule NccWorker.BuildSelectionTest do
   end
 
   describe "static_rules/4 (R0)" do
+    test "item 1: a Makefile Mix never runs passes only with the flag and a matching manager",
+         %{root: root} do
+      source = package(root, "sample")
+      File.write!(Path.join(source, "Makefile"), "all:\n\tcc -o x x.c\n")
+      lock_managers(root, "sample", [:make, :rebar3])
+      native = {:skip, "reads the target or ships native code"}
+
+      assert BuildSelection.static_rules(root, "sample", scan(),
+               makefile_rule2: true,
+               manager: "rebar3"
+             ) == :ok
+
+      # Off, or no manager from the trace: today's verdict.
+      assert BuildSelection.static_rules(root, "sample", scan(), manager: "rebar3") == native
+      assert BuildSelection.static_rules(root, "sample", scan(), makefile_rule2: true) == native
+      # The trace says make, or disagrees with the lock (rebar3 vs mix).
+      for trace <- ["make", "mix", nil] do
+        assert BuildSelection.static_rules(root, "sample", scan(),
+                 makefile_rule2: true,
+                 manager: trace
+               ) == native,
+               inspect(trace)
+      end
+
+      # [:make] only: Mix falls to the files (mix.exs here, so "mix"), never
+      # the trace's rebar3.
+      lock_managers(root, "sample", [:make])
+
+      assert BuildSelection.static_rules(root, "sample", scan(),
+               makefile_rule2: true,
+               manager: "rebar3"
+             ) == native
+    end
+
+    test "item 1 never lets c_src, elixir_make or a missing lock entry through", %{root: root} do
+      native = {:skip, "reads the target or ships native code"}
+      opts = [makefile_rule2: true, manager: "rebar3"]
+
+      csrc = package(root, "csrc")
+      File.mkdir_p!(Path.join(csrc, "c_src"))
+      lock_managers(root, "csrc", [:rebar3])
+      assert BuildSelection.static_rules(root, "csrc", scan(), opts) == native
+
+      emake = package(root, "emake")
+      File.write!(Path.join(emake, "Makefile"), "all:\n")
+      File.write!(Path.join(emake, "mix.exs"), "def project, do: [compilers: [:elixir_make]]")
+      lock_managers(root, "emake", [:mix])
+
+      assert BuildSelection.static_rules(root, "emake", scan(),
+               makefile_rule2: true,
+               manager: "mix"
+             ) ==
+               native
+
+      unlocked = package(root, "unlocked")
+      File.write!(Path.join(unlocked, "Makefile"), "all:\n")
+      {entries, _} = Code.eval_file(Path.join(root, "mix.lock"))
+
+      File.write!(
+        Path.join(root, "mix.lock"),
+        inspect(Map.delete(entries, "unlocked"), limit: :infinity)
+      )
+
+      assert BuildSelection.static_rules(root, "unlocked", scan(), opts) == native
+    end
+
     test "runtime program calls and the OS grep do not refuse", %{root: root} do
       source = package(root, "sample")
       File.write!(Path.join(source, "lib/example.ex"), "def os, do: :os.type()\n")
