@@ -17,4 +17,153 @@ defmodule Portal.Reports do
     resource(Portal.Reports.Line)
     resource(Portal.Reports.Quota)
   end
+
+  import Ecto.Query, only: [from: 2]
+
+  alias Portal.Reports.{Line, Payload, Report}
+  alias Portal.Repo
+
+  @dedup_seconds 24 * 3600
+
+  @doc """
+  Stores a validated report, or counts it again.
+
+  The same report (`Payload.hash/1`) received within 24 hours is not stored
+  twice: its `seen_count` goes up and its id comes back as `{:duplicate, id}`.
+  A transaction-scoped advisory lock on the hash makes two identical reports
+  arriving at once agree on one row. `reporter_key` is `reporter_key/2`'s
+  digest; the address itself is never stored. `:now` stands in for the clock.
+  """
+  @spec record(Payload.normalized(), String.t() | nil, keyword()) ::
+          {:created, Ecto.UUID.t()} | {:duplicate, Ecto.UUID.t()}
+  def record(payload, reporter_key, opts \\ []) do
+    now = Keyword.get_lazy(opts, :now, &DateTime.utc_now/0)
+    hash = Payload.hash(payload)
+
+    {:ok, result} =
+      Repo.transaction(fn ->
+        Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [hash])
+
+        case duplicate_of(hash, now) do
+          nil -> {:created, insert(payload, hash, reporter_key, now)}
+          id -> {:duplicate, bump(id)}
+        end
+      end)
+
+    result
+  end
+
+  defp duplicate_of(hash, now) do
+    since = DateTime.add(now, -@dedup_seconds, :second)
+
+    Repo.one(
+      from(r in "precompiled_reports",
+        where: r.payload_hash == ^hash and r.received_at > ^since and r.received_at <= ^now,
+        order_by: [desc: r.received_at],
+        limit: 1,
+        select: type(r.id, Ecto.UUID)
+      )
+    )
+  end
+
+  defp bump(id) do
+    {1, _} =
+      Repo.update_all(
+        from(r in "precompiled_reports", where: r.id == type(^id, Ecto.UUID)),
+        inc: [seen_count: 1]
+      )
+
+    id
+  end
+
+  defp insert(payload, hash, reporter_key, now) do
+    count = fn status -> Enum.count(payload.lines, &(&1.status == status)) end
+
+    report =
+      Report
+      |> Ash.Changeset.for_create(:create, %{
+        received_at: now,
+        built_at: payload.built_at,
+        payload_hash: hash,
+        format: payload.format,
+        client: payload.client,
+        elixir: payload.elixir,
+        otp: payload.otp,
+        os_family: payload.os.family,
+        os_arch: payload.os.arch,
+        target: payload.target,
+        system: payload.system,
+        system_version: payload.system_version,
+        contact: payload.contact,
+        reporter_key: reporter_key,
+        lock: %{"entries" => payload.lock},
+        hit_count: count.(:hit),
+        miss_count: count.(:miss),
+        fail_count: count.(:fail)
+      })
+      |> Ash.create!(domain: __MODULE__)
+
+    rows =
+      for l <- payload.lines, l.status in [:miss, :fail] do
+        %{
+          report_id: report.id,
+          package: l.name,
+          version: l.version,
+          status: l.status,
+          reason_code: l.reason_code,
+          reason_args: l.reason_args,
+          reason: l.reason
+        }
+      end
+
+    if rows != [] do
+      %Ash.BulkResult{status: :success} =
+        Ash.bulk_create(rows, Line, :create,
+          domain: __MODULE__,
+          return_errors?: true,
+          stop_on_error?: true
+        )
+    end
+
+    report.id
+  end
+
+  @doc """
+  Deletes a report and, by cascade, its lines. The id is the capability: who
+  holds it may retract it. An unknown or malformed id runs the same delete
+  against a random id, so both answers take the same work.
+  """
+  @spec retract(term()) :: :ok | :not_found
+  def retract(id) do
+    uuid =
+      case is_binary(id) && Ecto.UUID.cast(id) do
+        {:ok, uuid} -> uuid
+        _ -> Ecto.UUID.generate()
+      end
+
+    case Repo.delete_all(from(r in "precompiled_reports", where: r.id == type(^uuid, Ecto.UUID))) do
+      {1, _} -> :ok
+      {0, _} -> :not_found
+    end
+  end
+
+  @doc """
+  What a reporter is counted by for the requeue cap: an HMAC-SHA256 of the
+  client's address (an IPv4 address, or an IPv6 /64 as
+  `PortalWeb.Plugs.RateLimit.client_key/1` gives it) under a key derived from
+  `secret_key_base`, truncated to 16 bytes, in hex. Not reversible without the
+  secret.
+  """
+  @spec reporter_key(:inet.ip_address(), binary()) :: String.t()
+  def reporter_key(ip, secret_key_base) do
+    key =
+      Plug.Crypto.KeyGenerator.generate(secret_key_base, "precompiled report reporter",
+        length: 32
+      )
+
+    :hmac
+    |> :crypto.mac(:sha256, key, ip |> :inet.ntoa() |> to_string())
+    |> binary_part(0, 16)
+    |> Base.encode16(case: :lower)
+  end
 end

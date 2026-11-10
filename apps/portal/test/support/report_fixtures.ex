@@ -29,6 +29,17 @@ defmodule Portal.Test.ReportFixtures do
     )
   end
 
+  @doc "Validates `body(overrides)` and records it; the report id."
+  def record!(overrides \\ %{}, opts \\ []) do
+    {:ok, payload} = Portal.Reports.Payload.validate(body(overrides))
+    key = Keyword.get(opts, :reporter_key, "r" <> String.duplicate("0", 31))
+
+    case Portal.Reports.record(payload, key, Keyword.take(opts, [:now])) do
+      {:created, id} -> id
+      {:duplicate, id} -> id
+    end
+  end
+
   def line(name, version, status, code, args) do
     %{
       "name" => name,
