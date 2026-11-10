@@ -39,6 +39,11 @@ defmodule Portal.Workers.LogRetention do
       no longer stores one for a passing run; this clears what the old behaviour
       left behind, and stays as the backstop if the gate is ever lost.
 
+    * **Miss reports.** `Portal.Reports` keeps each report's `contact` and
+      `reporter_key` for 90 days (`:report_anonymise_days`) and the report,
+      with its lines, for 365 (`:report_retention_days`). Both are set in
+      `config :portal, Portal.Workers.LogRetention`.
+
   ## Why queue `:maintenance`
 
   Purely database work, so unlike `Portal.Workers.Sweep` — which must run on the
@@ -78,8 +83,17 @@ defmodule Portal.Workers.LogRetention do
   # that actually matters without evicting logs a user might still want to read.
   @default_budget_bytes 2 * 1024 * 1024 * 1024
 
+  @default_report_anonymise_days 90
+  @default_report_retention_days 365
+
   @type tally :: %{count: non_neg_integer(), bytes: non_neg_integer()}
-  @type report :: %{unreachable: tally(), over_budget: tally(), run_logs: tally()}
+  @type report :: %{
+          unreachable: tally(),
+          over_budget: tally(),
+          run_logs: tally(),
+          report_contacts: tally(),
+          reports: tally()
+        }
 
   @impl Oban.Worker
   def perform(%Oban.Job{}) do
@@ -108,17 +122,29 @@ defmodule Portal.Workers.LogRetention do
     unreachable = prune_unreachable(opts)
     over_budget = enforce_budget(opts)
     run_logs = clear_passing_run_logs(opts)
+    report_contacts = anonymise_reports(opts)
+    reports = delete_reports(opts)
 
-    report = %{unreachable: unreachable, over_budget: over_budget, run_logs: run_logs}
+    report = %{
+      unreachable: unreachable,
+      over_budget: over_budget,
+      run_logs: run_logs,
+      report_contacts: report_contacts,
+      reports: reports
+    }
 
-    total = report.unreachable.count + report.over_budget.count + report.run_logs.count
+    total =
+      report.unreachable.count + report.over_budget.count + report.run_logs.count +
+        report.report_contacts.count + report.reports.count
 
     if total > 0 do
       Logger.info(
         "LogRetention#{dry_run_suffix(opts)}: " <>
           "#{describe(report.unreachable, "unreachable system log")}, " <>
           "#{describe(report.over_budget, "over-budget system log")}, " <>
-          "#{describe(report.run_logs, "passing run log")}"
+          "#{describe(report.run_logs, "passing run log")}, " <>
+          "#{describe(report.report_contacts, "anonymised report")}, " <>
+          "#{describe(report.reports, "expired report")}"
       )
     end
 
@@ -224,6 +250,44 @@ defmodule Portal.Workers.LogRetention do
       [],
       "SELECT bytes FROM (#{select}) d"
     )
+  end
+
+  # ── Rules 4 and 5: miss reports ──────────────────────────────────────────
+
+  defp anonymise_reports(opts) do
+    days = setting(opts, :report_anonymise_days, @default_report_anonymise_days)
+
+    where = """
+    WHERE received_at < now() - make_interval(days => $1)
+      AND (contact IS NOT NULL OR reporter_key IS NOT NULL)
+    """
+
+    execute(
+      opts,
+      "UPDATE precompiled_reports SET contact = NULL, reporter_key = NULL " <>
+        where <> "RETURNING 0",
+      [days],
+      "SELECT 0 FROM precompiled_reports " <> where
+    )
+  end
+
+  # Lines go with their report (ON DELETE CASCADE).
+  defp delete_reports(opts) do
+    days = setting(opts, :report_retention_days, @default_report_retention_days)
+    where = "WHERE received_at < now() - make_interval(days => $1)"
+
+    execute(
+      opts,
+      "DELETE FROM precompiled_reports " <> where <> " RETURNING octet_length(lock::text)",
+      [days],
+      "SELECT octet_length(lock::text) FROM precompiled_reports " <> where
+    )
+  end
+
+  defp setting(opts, key, default) do
+    Keyword.get_lazy(opts, key, fn ->
+      :portal |> Application.get_env(__MODULE__, []) |> Keyword.get(key, default)
+    end)
   end
 
   # ── Plumbing ───────────────────────────────────────────────────────────────
