@@ -21,10 +21,35 @@ defmodule NccWorker.NervesCodeTest do
       for source <- [
             ~s(defmodule Fledex do\n  @moduledoc "Drive LED strips, also on Nerves devices"\nend\n),
             "# Works with Nerves.Runtime\ndefmodule A do end\n",
-            ~s(defmodule A do\n  def s, do: "nerves"\nend\n),
-            ~s|defmodule A do\n  def c, do: ~c"nerves"\n  def w, do: ~w(nerves)a\nend\n|
+            ~s(defmodule A do\n  def s, do: "steady nerves"\nend\n),
+            ~s|defmodule A do\n  def c, do: ~c"runs on Nerves"\n  def w, do: ~w(steady-nerves)a\nend\n|,
+            ~s(defmodule A do\n  def s, do: "Nerves devices"\n  def t, do: "nerves-y"\nend\n),
+            ~s(defmodule A do\n  def s, do: "Elixir.Nerves.runtime"\nend\n)
           ] do
         refute NervesCode.elixir_mention?(source), source
+      end
+    end
+
+    test "a literal interpolated into an atom counts" do
+      assert NervesCode.elixir_mention?(~S|def f(x), do: :"Elixir.Nerves.#{x}"|)
+      assert NervesCode.elixir_mention?(~S|def f(x), do: ["nerves_#{x}": 1]|)
+      refute NervesCode.elixir_mention?(~S|def f(x), do: :"plain_#{x}"|)
+    end
+
+    # Ruled in review: a literal whose whole content is a module or app name
+    # is code that builds that name; a sentence is still prose.
+    test "a string, charlist or ~w word that is a whole module or app name counts" do
+      for source <- [
+            ~S|def f, do: String.to_atom("Elixir.Nerves.Runtime").serial_number()|,
+            ~S|def f, do: Module.concat(["Nerves", "Runtime"])|,
+            ~S|def f, do: Module.concat("Nerves.Runtime")|,
+            ~S|def f, do: ~w(nerves_runtime)a|,
+            ~S|def f, do: ~w(foo nerves)a|,
+            ~S|def f, do: :erlang.list_to_atom(~c"Elixir.Nerves.Runtime")|,
+            "def f, do: :erlang.list_to_atom('Elixir.Nerves.Runtime')\n",
+            ~S|def f, do: Application.spec(String.to_atom("NERVES_runtime"))|
+          ] do
+        assert NervesCode.elixir_mention?(source), source
       end
     end
 
@@ -63,12 +88,48 @@ defmodule NccWorker.NervesCodeTest do
   describe "Erlang" do
     test "comments, strings and character literals do not count; atoms and calls do" do
       refute NervesCode.erlang_mention?("% nerves\n-module(a).\n")
-      refute NervesCode.erlang_mention?(~s|-module(a).\nf() -> "nerves".\n|)
+      refute NervesCode.erlang_mention?(~s|-module(a).\nf() -> "steady nerves".\n|)
+      refute NervesCode.erlang_mention?(~s|-module(a).\nf() -> io:format("~p nerves~n", []).\n|)
       refute NervesCode.erlang_mention?(~s|-module(a).\nf() -> "50% nerves".\n|)
       assert NervesCode.erlang_mention?("-module(a).\nf() -> nerves_runtime:reboot().\n")
       assert NervesCode.erlang_mention?("-module(a).\nf() -> 'Nerves'.\n")
       # `$%` is a character, not a comment; `$"` is not a string.
       assert NervesCode.erlang_mention?(~s|-module(a).\nf() -> {$%, $", nerves}.\n|)
+    end
+
+    test "a string that is a whole module or app name counts" do
+      assert NervesCode.erlang_mention?(~s|-module(a).\nf() -> list_to_atom("nerves_runtime").\n|)
+      assert NervesCode.erlang_mention?(~s|-module(a).\nf() -> binary_to_atom(<<"nerves">>).\n|)
+
+      assert NervesCode.erlang_mention?(
+               ~s|-module(a).\nf() -> list_to_atom("Elixir.Nerves.Runtime").\n|
+             )
+    end
+
+    # OTP 27+ sigils and triple-quoted strings: the lexer does not model them,
+    # so their files keep the raw verdict instead of hiding code as string.
+    test "sigils and triple-quoted strings keep the raw verdict" do
+      for source <- [
+            # ev1, ev2, ev5 from the review: all compile on OTP 28.
+            ~s|-module(ev1).\nf() -> {~S"\\", nerves_runtime:serial_number(), "x"}.\n|,
+            ~s|-module(ev2).\nf() -> {"""\n  a " b\n  """, nerves_runtime:serial_number(), "c"}.\n|,
+            ~s|-module(ev5).\nf() -> {~s{a"b}, nerves_runtime:serial_number(), "c"}.\n|,
+            # The raw verdict also refuses prose, which is today's rule.
+            ~s|-module(a).\nf() -> ~"steady nerves".\n|
+          ] do
+        assert NervesCode.erlang_mention?(source), source
+      end
+
+      # A `~` in a comment or a string is not a sigil.
+      refute NervesCode.erlang_mention?(~s|-module(a).\n% ~p nerves\nf() -> "~p".\n|)
+    end
+
+    test "the lexer is linear on unterminated escapes" do
+      for unit <- [~s|"\\|, ~s|'\\|, ~s|$\\|] do
+        source = "% nerves\nf() -> ok.\n" <> String.duplicate(unit, 80_000)
+        {us, _} = :timer.tc(fn -> NervesCode.erlang_mention?(source) end)
+        assert us < 2_000_000, "#{inspect(unit)} took #{div(us, 1000)} ms"
+      end
     end
   end
 
@@ -94,6 +155,36 @@ defmodule NccWorker.NervesCodeTest do
     test "a file over 2 MB uses the raw search", %{tmp_dir: dir} do
       big = "# nerves\n" <> String.duplicate("# padding line\n", 150_000)
       assert NervesCode.mention(pkg(dir, %{"lib/big.ex" => big})) == :found
+    end
+
+    test "a file over 2 MB without the word is :none", %{tmp_dir: dir} do
+      big = String.duplicate("# padding line nerve s\n", 150_000)
+      assert NervesCode.mention(pkg(dir, %{"lib/big.ex" => big})) == :none
+    end
+
+    test "past the time budget, files use the raw search", %{tmp_dir: dir} do
+      root = pkg(dir, %{"lib/a.ex" => "# runs on Nerves\ndefmodule A do end\n"})
+      assert NervesCode.mention(root) == :none
+      assert NervesCode.mention(root, budget_ms: 0) == :found
+    end
+  end
+
+  describe "bounded/2" do
+    test "a result comes back" do
+      assert NervesCode.bounded(fn -> {:ok, true} end) == {:ok, true}
+    end
+
+    test "a timeout falls back" do
+      assert NervesCode.bounded(fn -> Process.sleep(:infinity) end, timeout_ms: 50) == :fallback
+    end
+
+    test "the heap cap falls back" do
+      grow = fn -> {:ok, List.last(Enum.to_list(1..5_000_000)) > 0} end
+      assert NervesCode.bounded(grow, max_heap_words: 100_000) == :fallback
+    end
+
+    test "a crash falls back" do
+      assert NervesCode.bounded(fn -> raise "boom" end) == :fallback
     end
 
     # Monotone: over real packages, every new refusal is an old one.
