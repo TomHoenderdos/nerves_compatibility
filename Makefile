@@ -1,4 +1,4 @@
-.PHONY: build build-clean build-toolchains toolchain-tags dev test test-integration test-portability-goldens test-remote-e2e test-remote-integration format clean help all
+.PHONY: build build-clean build-toolchains toolchain-tags dev test test-integration test-portability-goldens test-remote-e2e test-remote-integration test-report-e2e format clean help all
 
 WORKER_IMAGE := ncc-worker:local
 
@@ -32,6 +32,7 @@ help:
 	@echo "  test-portability-goldens  Only the trace goldens, the ColocatedHook and the identity tests (needs Hex.pm)"
 	@echo "  test-remote-e2e  Run a real ncc_agent process against the portal with a fake docker"
 	@echo "  test-remote-integration  Same against the real worker container (needs Docker)"
+	@echo "  test-report-e2e  Run the precompiled client's report command against the portal"
 	@echo "  format           Format the umbrella projects"
 	@echo "  clean            Remove generated umbrella build artifacts"
 
@@ -88,6 +89,11 @@ test-remote-e2e:
 # The same through the real worker container (ncc-worker:local, `make build`).
 test-remote-integration:
 	mix test apps/portal/test/portal/builders/remote_integration_test.exs --only integration
+
+# The precompiled client's report command against a live test endpoint.
+# PRECOMPILED_CLIENT_DIR names a precompiled checkout.
+test-report-e2e:
+	mix test apps/portal/test/portal_web/precompiled_report_client_e2e_test.exs --only e2e
 
 format:
 	mix format
