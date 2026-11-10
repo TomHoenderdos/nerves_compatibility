@@ -91,6 +91,9 @@ defmodule Portal.Application do
       # Owns the ETS table of builder rate-limit counters; precedes both
       # endpoints, whose requests count against it.
       Portal.Builders.RateLimit,
+      # The public site's counterpart: owns the ETS table that
+      # `PortalWeb.Plugs.RateLimit` counts in, so it too precedes the endpoint.
+      Portal.RateLimiter,
       # Off-process work a LiveView starts and does not wait on, e.g. the
       # admin Queue page's bulk actions (`PortalWeb.Admin.QueueLive`): a
       # per-row hex.pm lookup must not run inside the LiveView itself, where

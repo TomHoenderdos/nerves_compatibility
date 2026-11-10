@@ -13,6 +13,10 @@ defmodule PortalWeb.PasskeyController do
   alias Portal.Accounts.WebAuthn
   alias PortalWeb.{UserAuth, WebAuthnSession}
 
+  # Shares the password form's budget; see `Portal.RateLimiter`.
+  plug PortalWeb.Plugs.RateLimit,
+       [bucket: :auth] when action in [:login_challenge, :login_verify]
+
   @session_key :passkey_login_challenge
 
   def login_challenge(conn, _params) do

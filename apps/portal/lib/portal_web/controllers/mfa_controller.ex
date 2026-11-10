@@ -12,6 +12,9 @@ defmodule PortalWeb.MfaController do
   alias Portal.Accounts.{RecoveryCodes, Totp}
   alias PortalWeb.UserAuth
 
+  # Shares the password form's budget; see `Portal.RateLimiter`.
+  plug PortalWeb.Plugs.RateLimit, [bucket: :auth] when action in [:totp_verify]
+
   def totp_challenge(conn, _params) do
     case UserAuth.pending_user(conn) do
       {:ok, _user} -> render_challenge(conn)

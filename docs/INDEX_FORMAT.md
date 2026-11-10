@@ -271,6 +271,11 @@ of the schema-v2 documents and not cached.
 }
 ```
 
+Searches are rate limited per client and across all clients together (by
+default 30 and 60 a minute). Past either limit the answer is a `429` with a
+`retry-after` header in seconds and the body
+`{"error": "<string>", "packages": []}`.
+
 At most 8 packages, in hex.pm's order. `description` is `""` when hex.pm has
 none, and `url` is the package's hex.pm page.
 

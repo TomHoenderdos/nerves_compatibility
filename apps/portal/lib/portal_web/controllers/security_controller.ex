@@ -48,6 +48,10 @@ defmodule PortalWeb.SecurityController do
   # page, and to start a re-authentication, without already holding one.
   plug :require_fresh_reauth when action in @guarded_actions
 
+  # Proving a credential again costs what signing in does, and shares its
+  # budget; see `Portal.RateLimiter`.
+  plug PortalWeb.Plugs.RateLimit, [bucket: :auth] when action in [:reauth, :reauth_passkey]
+
   # Every action, not just the two that carry plaintext. `:show` renders the
   # page those two redirect back to, and the cheapest correct rule for a
   # settings page nobody caches on purpose is "never store any of it".

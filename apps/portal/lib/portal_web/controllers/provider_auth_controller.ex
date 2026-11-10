@@ -16,6 +16,20 @@ defmodule PortalWeb.ProviderAuthController do
 
   @pending_ttl_seconds 600
 
+  # Every start and completion asks the provider's API; see
+  # `Portal.RateLimiter`. `unlink` and `choose_username` ask nothing.
+  plug PortalWeb.Plugs.RateLimit,
+       [bucket: :provider_auth]
+       when action in [
+              :start_login,
+              :complete_login,
+              :create_with_username,
+              :start_link,
+              :complete_link,
+              :start_confirm,
+              :complete_confirm
+            ]
+
   # --- Sign in ---------------------------------------------------------------
 
   def start_login(conn, %{"provider" => provider}) do

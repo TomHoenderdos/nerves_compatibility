@@ -5,6 +5,28 @@ defmodule PortalWeb.PageController do
   # need no `operation` of their own.
   use OpenApiSpex.ControllerSpecs
 
+  alias PortalWeb.Plugs.RateLimit
+
+  # Each of these costs something per request: a password hash, a device
+  # flow against hex.pm or GitHub, a row an admin must review, or a search
+  # against hex.pm's per-address quota. Budgets are in `Portal.RateLimiter`.
+  plug RateLimit, [bucket: :auth] when action in [:create_session, :create_account]
+
+  plug RateLimit,
+       [bucket: :provider_auth]
+       when action in [:hex_start, :hex_complete, :github_start, :github_complete]
+
+  plug RateLimit, [bucket: :scan_request] when action in [:anonymous_request]
+
+  # `packages: []` keeps the scan form's typeahead quiet: it reads
+  # `body.packages` without looking at the status.
+  plug RateLimit,
+       [bucket: :hex_search, json: %{packages: []}] when action in [:hex_package_search]
+
+  plug RateLimit,
+       [bucket: :hex_search_global, by: :global, json: %{packages: []}]
+       when action in [:hex_package_search]
+
   @package_regex ~r/^[a-z][a-z0-9_]*$/
   @max_anonymous_packages 25
 
@@ -249,12 +271,16 @@ defmodule PortalWeb.PageController do
     description:
       "Package name suggestions from Hex.pm, as the scan request form offers them. A query " <>
         "shorter than two characters, a missing query, or Hex.pm being unreachable all " <>
-        "answer an empty list.",
+        "answer an empty list. Limited per client and across all clients; past either " <>
+        "limit it answers 429.",
     parameters: [
       query: [in: :query, type: :string, description: "Part of a package name.", example: "jas"]
     ],
     responses: [
-      ok: {"Matching packages", "application/json", PortalWeb.ApiSchemas.HexSearchResponse}
+      ok: {"Matching packages", "application/json", PortalWeb.ApiSchemas.HexSearchResponse},
+      too_many_requests:
+        {"Too many searches; see the retry-after header", "application/json",
+         PortalWeb.ApiSchemas.HexSearchRateLimited}
     ]
 
   def hex_package_search(conn, %{"query" => query}) do

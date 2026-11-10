@@ -16,6 +16,10 @@ config :portal, Oban, testing: :manual
 # aggregates between them. 0 bypasses the cache entirely.
 config :portal, Portal.Catalog.Cache, ttl_ms: 0
 
+# Suites sign in and submit forms far faster than any person, all from one
+# address. The rate limit tests turn it back on themselves.
+config :portal, Portal.RateLimiter, enabled: false
+
 # Every checkout and test partition gets its own tmp root, so suites running
 # side by side from several worktrees never share (and remove) each other's
 # scratch dirs and stored artifacts.
