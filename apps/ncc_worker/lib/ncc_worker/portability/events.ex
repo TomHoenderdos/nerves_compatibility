@@ -59,11 +59,17 @@ defmodule NccWorker.Portability.Events do
       be), a call into one, and listing the loaded modules are judged by
       `NccWorker.Portability.Probes`; a nested compile only marks its
       window for it.
-    * Mix state (`mix_state`, precompiled judge refinements item 2):
-      `Mix.target/0,1` refuses outside a closure dependency's own `mix.exs`;
-      `Mix.Project.build_path`, `app_path` and `compile_path` are observed
-      as `mix_project_paths` and refuse nothing (refusing them would refuse
-      legitimate Mix compilers; `config/0` is not traced at all).
+    * Mix state (`mix_state`, precompiled judge refinements item 2): the
+      target read (`Mix.target/0,1`, `Mix.State.get`/`fetch` of `:target`,
+      `:ets.lookup`/`lookup_element` of `Mix.State`'s `:target`) refuses
+      unless it is made in a closure dependency's own `mix.exs`, by the
+      project code Mix pushed for it (`Context.pushed_project?/3`: a
+      `@file "mix.exs"` function in `lib/` is not); `Mix.Project.build_path`,
+      `app_path` and `compile_path` are observed as `mix_project_paths` and
+      refuse nothing (refusing them would refuse legitimate Mix compilers;
+      `config/0` is not traced at all). Reading the table whole
+      (`:ets.tab2list/1`, `:ets.select/2`) is a known gap. Any other
+      `mix_state` function could not be judged.
     * Our generated project's own `mix.exs` (owner `:wrapper`) is ignored.
 
   Fail closed: an event whose stack the tracer could not judge (extent
@@ -92,6 +98,7 @@ defmodule NccWorker.Portability.Events do
   @links ~w(file:make_symlink/2 file:make_link/2 prim_file:make_symlink/2 prim_file:make_link/2)
   @epp_server ~w(server init_server)
   @max_mix_exs_bytes 1024 * 1024
+  @mix_paths ~w(build_path app_path compile_path)
 
   @type decision ::
           :ignore
@@ -183,13 +190,20 @@ defmodule NccWorker.Portability.Events do
   # Item 2's gap: Mix state read through a module name. The target refuses
   # (a host build would be served to firmware targets) except in a closure
   # dependency's own `mix.exs`, whose project config the build already
-  # records; the build paths are observed only (see the moduledoc).
+  # records, and only in the project code Mix pushed for it
+  # (`Context.pushed_project?/3`); the build paths are observed only (see
+  # the moduledoc). Any other function could not be judged.
   defp channel("mix_state", %{"arg" => %{"fun" => "target"}} = event, ctx, owner) do
-    if Context.mix_exs(ctx, event, owner), do: :ignore, else: {:refuse, host_read(event)}
+    path = Context.mix_exs(ctx, event, owner)
+
+    if is_binary(path) and Context.pushed_project?(ctx, event, path),
+      do: :ignore,
+      else: {:refuse, host_read(event)}
   end
 
-  defp channel("mix_state", event, _ctx, _owner),
-    do: {:observe, "mix_project_paths", summary(event)}
+  defp channel("mix_state", %{"arg" => %{"fun" => fun}} = event, _ctx, _owner)
+       when fun in @mix_paths,
+       do: {:observe, "mix_project_paths", summary(event)}
 
   defp channel("install", event, ctx, _owner), do: install(event, ctx)
   defp channel("file_read", event, ctx, owner), do: file_read(event, ctx, owner)

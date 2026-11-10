@@ -44,7 +44,15 @@ defmodule NccWorker.Portability.EventsTest do
         ]
       },
       windows: [%{app: "pkg", open: 0, close: 100, depth_ok: true}],
-      events: events
+      events: events,
+      project_pushes: [
+        %{
+          "kind" => "project_push",
+          "module" => "Elixir.Pkg.MixProject",
+          "file" => Path.join(pkg, "mix.exs"),
+          "md5" => "PROJMD5"
+        }
+      ]
     }
   end
 
@@ -715,6 +723,21 @@ defmodule NccWorker.Portability.EventsTest do
   end
 
   describe "mix_state (item 2's gap)" do
+    # A mix_state event as the tracer writes it from a frame in pkg's mix.exs:
+    # the frame module's md5 and object file when the collector saw it.
+    defp project_frame(event, pkg, opts \\ []) do
+      event = in_mix_exs(event, pkg, 3)
+      md5 = Keyword.get(opts, :md5, "PROJMD5")
+      which = Keyword.get(opts, :which, "")
+      module = Keyword.get(opts, :module, "Elixir.Pkg.MixProject")
+
+      %{
+        event
+        | "arg" => Map.merge(event["arg"], %{"frame_md5" => md5, "frame_which" => which}),
+          "user" => %{event["user"] | "module" => module}
+      }
+    end
+
     test "Mix.target in code refuses; in a dependency's mix.exs it is ignored", %{
       ctx: ctx,
       pkg: pkg
@@ -724,7 +747,49 @@ defmodule NccWorker.Portability.EventsTest do
       assert {:refuse, "compile-time host read: Mix.target/0 in Pkg.f/0 (lib/pkg.ex:3)"} =
                Events.decide(event, ctx, "pkg")
 
-      assert :ignore = Events.decide(in_mix_exs(event, pkg, 3), ctx, "pkg")
+      assert :ignore = Events.decide(project_frame(event, pkg), ctx, "pkg")
+    end
+
+    # `@file "mix.exs"` on a function in lib/ forges the frame's file; the
+    # exemption also needs the project module Mix pushed for that file, with
+    # the code it had then, and not loaded from a .beam.
+    test "a mix.exs frame that is not the pushed project's code refuses", %{ctx: ctx, pkg: pkg} do
+      event = ev("mix_state", "Mix.target/0", %{"fun" => "target"})
+
+      for opts <- [
+            [module: "Elixir.Pkg.Forged"],
+            [md5: "OTHER"],
+            [md5: nil],
+            [which: "/p/_build/host/lib/pkg/ebin/Elixir.Pkg.MixProject.beam"],
+            [which: nil]
+          ] do
+        assert {:refuse, "compile-time host read: Mix.target/0" <> _} =
+                 Events.decide(project_frame(event, pkg, opts), ctx, "pkg"),
+               inspect(opts)
+      end
+
+      no_md5 = Map.put(project_frame(event, pkg), "arg", %{"fun" => "target"})
+
+      assert {:refuse, _} = Events.decide(no_md5, ctx, "pkg")
+    end
+
+    # Mix re-pushes a project it loaded before; a package that redefined the
+    # module in memory in between gets its own md5 pushed for the same file.
+    test "a project pushed with two different md5s exempts nothing", %{
+      dir: dir,
+      proj: proj,
+      pkg: pkg
+    } do
+      report = report(dir, proj, pkg, [])
+      [push] = report.project_pushes
+      report = %{report | project_pushes: [push, %{push | "md5" => "FAKEMD5"}]}
+      ctx = build(dir, proj, report)
+      event = ev("mix_state", "Mix.target/0", %{"fun" => "target"})
+
+      for md5 <- ["PROJMD5", "FAKEMD5"] do
+        assert {:refuse, "compile-time host read: Mix.target/0" <> _} =
+                 Events.decide(project_frame(event, pkg, md5: md5), ctx, "pkg")
+      end
     end
 
     test "Mix.Project's path functions are observed, never refused", %{ctx: ctx} do
@@ -733,6 +798,13 @@ defmodule NccWorker.Portability.EventsTest do
 
         assert {:observe, "mix_project_paths", %{"mfa" => "Mix.Project." <> _}} =
                  Events.decide(event, ctx, "pkg")
+      end
+    end
+
+    test "an unknown mix_state function could not be judged", %{ctx: ctx} do
+      for arg <- [%{"fun" => "env"}, %{}] do
+        assert {:unjudged, "portability could not be judged" <> _} =
+                 Events.decide(ev("mix_state", "Mix.env/0", arg), ctx, "pkg")
       end
     end
   end

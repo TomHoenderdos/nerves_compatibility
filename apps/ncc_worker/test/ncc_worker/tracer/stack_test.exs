@@ -472,6 +472,25 @@ defmodule NccWorker.Tracer.StackTest do
     refute by_mix.(:no_stack)
   end
 
+  # Mix state (`Mix.target`): a dispatcher on top is the package's call, so
+  # a package task that tail-called the read hands its value to package code
+  # through Mix.Task.run/1 (precompiled judge refinements item 2).
+  test "made_by_mix_strict/2: a dispatcher on top is not Mix's" do
+    tc = [Mix.Task, Mix.Project, Mix.State, Mix.Tasks.Compile.All | @toolchain]
+    strict = &:ncc_tracer_stack.made_by_mix_strict(&1, fn m -> m in tc end)
+    pkg = f(:elixir_compiler_3, :__MODULE__, 1)
+
+    refute strict.([f(Mix.Task, :run_task, 5), pkg])
+    refute strict.([f(Enum, :map, 2), f(Mix.Task, :run_task, 5), pkg])
+    assert strict.([f(Mix.Project, :build_path, 1), pkg])
+    assert strict.([f(Mix.State, :get, 2), pkg])
+    assert strict.([f(Enum, :reduce, 3), f(Mix.Tasks.Compile.All, :run, 1)])
+    refute strict.([pkg])
+    refute strict.([f(Code, :eval_string, 3), f(Mix.Project, :build_path, 1)])
+    refute strict.([])
+    refute strict.(:no_stack)
+  end
+
   describe "a read made through IO.ANSI or Logger.Formatter" do
     @ansi_toolchain [
       Application,

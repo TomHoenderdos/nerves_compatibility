@@ -61,7 +61,8 @@ defmodule NccWorker.Portability.Context do
     hex: {nil, %{}},
     preloaded: %{},
     nested: %{},
-    ensured: %{}
+    ensured: %{},
+    projects: MapSet.new()
   ]
 
   @type dep :: %{
@@ -86,7 +87,8 @@ defmodule NccWorker.Portability.Context do
           hex: {String.t() | nil, map()},
           preloaded: %{String.t() => String.t()},
           nested: %{(String.t() | atom()) => String.t()},
-          ensured: %{{term(), String.t(), String.t()} => integer()}
+          ensured: %{{term(), String.t(), String.t()} => integer()},
+          projects: MapSet.t({String.t(), String.t(), String.t()})
         }
 
   @max_hops 40
@@ -121,7 +123,8 @@ defmodule NccWorker.Portability.Context do
       elixir_root: install_root(start["elixir_root"]),
       roots: roots(project_dir, start),
       hex: hex,
-      preloaded: preloaded(start["preloaded"])
+      preloaded: preloaded(start["preloaded"]),
+      projects: projects(report.project_pushes)
     }
 
     %{ctx | cd: changed_dir(ctx, report), nested: nested(ctx, report)}
@@ -333,6 +336,57 @@ defmodule NccWorker.Portability.Context do
   end
 
   def mix_exs(_ctx, _event, _owner), do: nil
+
+  @doc """
+  Whether a `mix_state` event's user frame, in the `mix.exs` at `path`
+  (`mix_exs/3`), runs the project code Mix pushed for that file: the frame's
+  module is the pushed module, its md5 when the tracer saw the read is the
+  one it had when pushed (and every push of it had that md5), and it was
+  compiled in memory (object file `""`), not loaded from a `.beam`. A
+  function in `lib/` that names the file with `@file "mix.exs"`, or a module
+  redefined under the project's name, fails. The md5 and object file are
+  read by the trace collector after the call, so a package that swaps the
+  real project code back in before the collector reads them is a known gap.
+  """
+  @spec pushed_project?(t(), map(), String.t()) :: boolean()
+  def pushed_project?(
+        %__MODULE__{projects: projects},
+        %{
+          "user" => %{"module" => module},
+          "arg" => %{"frame_md5" => md5, "frame_which" => ""}
+        },
+        path
+      )
+      when is_binary(module) and is_binary(md5) and is_binary(path),
+      do: MapSet.member?(projects, {module, path, md5})
+
+  def pushed_project?(_ctx, _event, _path), do: false
+
+  # A project's mix.exs compiles to the same code every time Mix loads it, so
+  # one pushed with two different md5s was redefined in between (a package
+  # compiling a module of that name in memory): it exempts nothing.
+  defp projects(pushes) do
+    pushes
+    |> Enum.flat_map(fn
+      %{"module" => module, "file" => file, "md5" => md5}
+      when is_binary(module) and is_binary(md5) and is_binary(file) ->
+        case realpath(file) do
+          real when is_binary(real) -> [{{module, real}, md5}]
+          _ -> []
+        end
+
+      _ ->
+        []
+    end)
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.flat_map(fn {{module, real}, md5s} ->
+      case Enum.uniq(md5s) do
+        [md5] -> [{module, real, md5}]
+        _ -> []
+      end
+    end)
+    |> MapSet.new()
+  end
 
   defp dep_mix_exs(ctx, real) do
     if mix_exs_app(ctx, real) in [nil, :wrapper], do: nil, else: real

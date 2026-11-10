@@ -4,7 +4,7 @@
 %% modules are toolchain and whether the calling process is a user process.
 -export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2,
          uncached/0, printers/0, diagnosers/0, checker/2, made_by_toolchain/2,
-         made_by_mix/2, compiler_frame/1]).
+         made_by_mix/2, made_by_mix_strict/2, compiler_frame/1]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% Frames a call is attributed through, to the frame that called them, when
@@ -300,7 +300,15 @@ made_by_toolchain(_Stack, _IsToolchain) -> false.
 %% is one of Mix's own modules, the toolchain's. Mix.Task's task runner on
 %% top counts as Mix's: it runs every task, and a package task that
 %% tail-called the entry point left no frame to take the result.
-made_by_mix(Stack, IsToolchain) when is_list(Stack) ->
+made_by_mix(Stack, IsToolchain) -> made_by_mix(Stack, IsToolchain, true).
+
+%% The same for a read of Mix state (ncc_tracer_channels mix_state/3), except
+%% that a dispatcher on top (Mix.Task's task runner) is the package's call: a
+%% package task's run/1 that tail-called the read returns its value through
+%% Mix.Task.run/1 to the package code that ran the task.
+made_by_mix_strict(Stack, IsToolchain) -> made_by_mix(Stack, IsToolchain, false).
+
+made_by_mix(Stack, IsToolchain, DispatcherIsMix) when is_list(Stack) ->
     Skip = fun({M, F, _, _} = Frame) ->
                    lists:member(M, ?WRAPPERS)
                        orelse (IsToolchain(M) andalso
@@ -309,10 +317,12 @@ made_by_mix(Stack, IsToolchain) when is_list(Stack) ->
                                         andalso base_name(F) =:= "after_compiler")))
            end,
     case lists:dropwhile(Skip, Stack) of
-        [{M, _, _, _} | _] -> IsToolchain(M) andalso lists:prefix("Elixir.Mix.", atom_to_list(M));
+        [{M, _, _, _} = Frame | _] ->
+            (DispatcherIsMix orelse not dispatcher(Frame))
+                andalso IsToolchain(M) andalso lists:prefix("Elixir.Mix.", atom_to_list(M));
         [] -> false
     end;
-made_by_mix(_Stack, _IsToolchain) -> false.
+made_by_mix(_Stack, _IsToolchain, _DispatcherIsMix) -> false.
 
 eval_glue({M, _, _, _} = Frame) ->
     M =:= 'Elixir.Code' orelse M =:= elixir orelse M =:= elixir_eval orelse eval(Frame).

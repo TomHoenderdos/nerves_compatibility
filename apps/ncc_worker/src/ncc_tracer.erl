@@ -503,7 +503,12 @@ match_spec({erlang, process_info, 2}, _Role, Depth) ->
     Msg = {message, {current_stacktrace, Depth}},
     [{['_', Item], [], [Msg]} || Item <- [dictionary, backtrace, messages, {dictionary, '_'}]]
         ++ [{['_', '$1'], [{is_list, '$1'}], [Msg]}];
-match_spec(_MFA, _Role, Depth) -> [{'_', [], [{message, {current_stacktrace, Depth}}]}].
+match_spec(MFA, _Role, Depth) ->
+    Msg = {message, {current_stacktrace, Depth}},
+    case ncc_tracer_channels:mix_state_heads(MFA) of
+        undefined -> [{'_', [], [Msg]}];
+        Heads -> [{Head, [], [Msg]} || Head <- Heads]
+    end.
 
 loop(St) ->
     receive
@@ -625,15 +630,61 @@ classified(erlang, F, _Args, Extent, {Pid, _, _, _, _, _}, _Stack, St)
   when F =:= spawn; F =:= spawn_link; F =:= spawn_monitor; F =:= spawn_opt;
        F =:= spawn_request ->
     spawn_call(Pid, Extent, St);
+classified('Elixir.Mix.ProjectStack', push, [Module, _Config, File], Extent,
+           {_, _, _, _, Ts, _}, _Stack, St) ->
+    project_push(Module, File, Extent, Ts, St);
 classified(_M, _F, _Args, toolchain, _Info, _Stack, St) -> St;
 classified(M, F, Args, {user, _, _, _} = Extent, Info, Stack, St) ->
     case M =:= elixir_compiler orelse ncc_tracer_channels:checker_module(M) of
         true -> toolchain_entry(M, F, Args, Extent, Info, Stack, St);
         false ->
-            case ncc_tracer_channels:mix_entry(M) of
-                true -> mix_entry(M, F, Args, Extent, Info, Stack, St);
-                false -> record(probed(channel(M, F, Args, St), Stack), Extent, Info, St)
+            case {ncc_tracer_channels:mix_state(M, F, length(Args)),
+                  ncc_tracer_channels:mix_entry(M)} of
+                {true, _} -> mix_state_entry(M, F, Args, Extent, Info, Stack, St);
+                {false, true} -> mix_entry(M, F, Args, Extent, Info, Stack, St);
+                {false, false} -> record(probed(channel(M, F, Args, St), Stack), Extent, Info, St)
             end
+    end.
+
+%% A project Mix pushed with no package frame on the stack (a dependency's
+%% mix.exs loaded by Mix): its module, file and md5 then, written once each.
+%% A push made under package code (Code.compile_string of a module that
+%% uses Mix.Project, with any file) is not written: the judge's mix.exs
+%% exemption for a mix_state read needs a push of this kind.
+project_push(Module, File, toolchain, Ts, St) when is_atom(Module) ->
+    Line = #{module => atom_to_binary(Module), file => push_file(File),
+             md5 => module_md5(Module)},
+    case get({project_push, Line}) of
+        true -> St;
+        undefined ->
+            put({project_push, Line}, true),
+            write(St, Line#{kind => project_push, ts => Ts}),
+            St
+    end;
+project_push(_Module, _File, _Extent, _Ts, St) -> St.
+
+push_file(File) ->
+    try ncc_tracer_channels:chars(File) catch _:_ -> null end.
+
+module_md5(Module) ->
+    try binary:encode_hex(erlang:get_module_info(Module, md5)) catch _:_ -> null end.
+
+%% The object file of a frame's module as the collector sees it: "" for a
+%% module compiled in memory (a mix.exs), a path for one loaded from a beam.
+module_which(Module) ->
+    try code:which(Module) of
+        Path when is_list(Path) -> ncc_tracer_channels:chars(Path);
+        Other when is_atom(Other) -> atom_to_binary(Other)
+    catch _:_ -> null
+    end.
+
+%% A read of Mix state (ncc_tracer_channels mix_state/3) marks only when Mix
+%% did not make it; a dispatcher on top is the package's call
+%% (ncc_tracer_stack:made_by_mix_strict/2).
+mix_state_entry(M, F, Args, Extent, Info, Stack, St) ->
+    case (try ncc_tracer_stack:made_by_mix_strict(Stack, fun toolchain/1) catch _:_ -> false end) of
+        true -> St;
+        false -> record(probed(channel(M, F, Args, St), Stack), Extent, Info, St)
     end.
 
 %% A call into Mix's compile entry points marks its window only when Mix
@@ -738,9 +789,18 @@ user_line({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, En
     {Kind, First, User, {Caller, Bottom}} = frames(Kind0, First0, User0, Ends),
     Line = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
              mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
-             arg => enrich(Channel, Arg), extent => Kind, first => First, user => User,
+             arg => frame_code(Channel, enrich(Channel, Arg), User0), extent => Kind,
+             first => First, user => User,
              caller => Caller, bottom => Bottom, first_kind => first_kind(First0)},
     user_event(Line, Kind =:= unjudged orelse Channel =:= unclassified, St).
+
+%% A mix_state read carries its user frame's module code (md5 and object
+%% file) as the collector sees it: the judge's mix.exs exemption needs the
+%% code Mix pushed for that file (project_push/5), not a module that names
+%% the file with `@file`.
+frame_code(mix_state, Arg, {M, _, _, _}) when is_atom(M), is_map(Arg) ->
+    Arg#{frame_md5 => module_md5(M), frame_which => module_which(M)};
+frame_code(_Channel, Arg, _User) -> Arg.
 
 sentinel_app(<<"__final__:", Nonce/binary>>, Pid, #st{final_pid = Pid, final_nonce = Nonce}) ->
     {<<"__final__">>, true};

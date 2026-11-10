@@ -3,7 +3,8 @@
 %% spec, R1 channel table) and the short summary of one call that the tracer
 %% writes when the call happens in user extent. Pure: no process, no I/O.
 -export([patterns/0, probe_mfas/0, patterned/3, classify/3, chars/1, term_bin/1,
-         checker_module/1, mix_patterns/0, mix_entry/1, path_os_frames/0, path_os_frame/3,
+         checker_module/1, mix_patterns/0, mix_entry/1, mix_state/3, mix_state_heads/1,
+         path_os_frames/0, path_os_frame/3,
          path_os_read/3]).
 
 -define(READS, [{file, read_file}, {file, read_file_info}, {file, read_link_info},
@@ -134,19 +135,52 @@ nested_compile_patterns() ->
 %% Mix state a package can read at compile time through a module name no
 %% grep sees (`Module.concat(["Mi" <> "x"]).target()`), precompiled judge
 %% refinements item 2: the target, which refuses, and the build paths, which
-%% hold `<target>_<env>` on a Nerves build and are observed. Patterned like
-%% ?NESTED_MIX: in the Mix VM, where loaded, and recorded only when Mix did
-%% not make the call (ncc_tracer_stack:made_by_mix/2), so Mix's own reads
-%% are never written. Mix.Project.config/0 is not patterned: it is hot, and
-%% packages read its static keys (`:version`, `:app`) at compile time.
+%% hold `<target>_<env>` on a Nerves build and are observed. The target is
+%% also read where Mix keeps it: Mix.State.get/fetch and the Mix.State ETS
+%% table, whose patterns fire only for the `target` key (mix_state_heads/1);
+%% `ets:tab2list/1`, `ets:select/2` and the like over that table are a known
+%% gap. Patterned like ?NESTED_MIX: in the Mix VM, where loaded, and recorded
+%% only when Mix did not make the call (ncc_tracer_stack:made_by_mix_strict/2,
+%% where a dispatcher on top is the package's: a package task's run/1 that
+%% tail-called the read hands its value to whoever ran the task), so Mix's
+%% own reads are never written. Mix.Project.config/0 is not patterned: it is
+%% hot, and packages read its static keys (`:version`, `:app`) at compile
+%% time.
 -define(MIX_STATE, [{'Elixir.Mix', target, [0, 1]},
                     {'Elixir.Mix.Project', build_path, [0, 1]},
                     {'Elixir.Mix.Project', app_path, [0, 1]},
-                    {'Elixir.Mix.Project', compile_path, [0, 1]}]).
+                    {'Elixir.Mix.Project', compile_path, [0, 1]},
+                    {'Elixir.Mix.State', get, [1, 2]},
+                    {'Elixir.Mix.State', fetch, [1]},
+                    {ets, lookup, [2]},
+                    {ets, lookup_element, [3, 4]}]).
+%% The projects Mix pushes (the tracer writes a `project_push` line for each
+%% one pushed with no package frame on the stack): a mix_state read in a
+%% dependency's mix.exs is exempt only in that project's own code.
+-define(PROJECT_PUSH, {'Elixir.Mix.ProjectStack', push, 3}).
 
-mix_patterns() -> [{M, F, A} || {M, F, As} <- ?NESTED_MIX ++ ?MIX_STATE, A <- As].
+mix_patterns() ->
+    [{M, F, A} || {M, F, As} <- ?NESTED_MIX ++ ?MIX_STATE, A <- As] ++ [?PROJECT_PUSH].
 
-mix_entry(M) -> lists:keymember(M, 1, ?NESTED_MIX) orelse lists:keymember(M, 1, ?MIX_STATE).
+mix_entry(M) ->
+    lists:keymember(M, 1, ?NESTED_MIX) orelse
+        (M =/= ets andalso lists:keymember(M, 1, ?MIX_STATE)) orelse
+        M =:= element(1, ?PROJECT_PUSH).
+
+mix_state(M, F, A) ->
+    lists:any(fun({M1, F1, As}) -> M1 =:= M andalso F1 =:= F andalso lists:member(A, As) end,
+              ?MIX_STATE).
+
+%% The match-spec heads of the patterns that must fire only for the target
+%% key: ets:lookup/2 is called everywhere, and the head keeps every other
+%% call out of the trace. `undefined` for a pattern without one.
+mix_state_heads({'Elixir.Mix.State', get, 1}) -> [[target]];
+mix_state_heads({'Elixir.Mix.State', get, 2}) -> [[target, '_']];
+mix_state_heads({'Elixir.Mix.State', fetch, 1}) -> [[target]];
+mix_state_heads({ets, lookup, 2}) -> [['Elixir.Mix.State', target]];
+mix_state_heads({ets, lookup_element, 3}) -> [['Elixir.Mix.State', target, '_']];
+mix_state_heads({ets, lookup_element, 4}) -> [['Elixir.Mix.State', target, '_', '_']];
+mix_state_heads(_MFA) -> undefined.
 
 %% A task name that mentions compiling, as a string or an atom.
 compile_task(Task) when is_atom(Task) -> compile_task(atom_to_binary(Task));
@@ -271,11 +305,18 @@ specific(M, copy, [From, To | _]) when M =:= file; M =:= prim_file ->
 specific(M, F, [_Existing, New])
   when (M =:= file orelse M =:= prim_file), (F =:= make_symlink orelse F =:= make_link) ->
     {file_write, #{path => chars(New)}};
-specific('Elixir.Mix', target, Args) when length(Args) =< 1 -> {mix_state, #{'fun' => <<"target">>}};
+specific('Elixir.Mix', target, Args) when length(Args) =< 1 -> mix_target();
+specific('Elixir.Mix.State', get, [target | Rest]) when length(Rest) =< 1 -> mix_target();
+specific('Elixir.Mix.State', fetch, [target]) -> mix_target();
+specific(ets, lookup, ['Elixir.Mix.State', target]) -> mix_target();
+specific(ets, lookup_element, ['Elixir.Mix.State', target | Rest]) when length(Rest) =< 2 ->
+    mix_target();
 specific('Elixir.Mix.Project', F, Args)
   when (F =:= build_path orelse F =:= app_path orelse F =:= compile_path), length(Args) =< 1 ->
     {mix_state, #{'fun' => atom_to_binary(F)}};
 specific(_M, _F, _Args) -> unknown.
+
+mix_target() -> {mix_state, #{'fun' => <<"target">>}}.
 
 generic(M, F, Args) ->
     case {lists:member({M, F}, ?READS), lists:member({M, F}, ?WRITES)} of

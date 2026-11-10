@@ -75,6 +75,7 @@ defmodule NccWorker.Tracer.Report do
             quiet: [],
             sentinels: [],
             events: [],
+            project_pushes: [],
             config_env: nil,
             stats: nil,
             ending: nil,
@@ -111,6 +112,7 @@ defmodule NccWorker.Tracer.Report do
           quiet: [%{app: String.t() | nil, open: integer() | nil, close: integer() | nil}],
           sentinels: [%{app: String.t() | nil, ts: integer() | nil}],
           events: [map()],
+          project_pushes: [map()],
           config_env:
             nil
             | :error
@@ -279,6 +281,13 @@ defmodule NccWorker.Tracer.Report do
     do: %{r | built: Map.put(r.built, app, built(r, app, l))}
 
   defp main_line({:line, %{"kind" => "event"} = l}, r), do: %{r | events: [l | r.events]}
+
+  # A project Mix pushed itself (`Mix.ProjectStack.push/3` with no package
+  # frame on the stack): its module, file and code's md5 then. The judge
+  # exempts a `mix_state` read only in such a project's code.
+  defp main_line({:line, %{"kind" => "project_push"} = l}, r),
+    do: %{r | project_pushes: [l | r.project_pushes]}
+
   defp main_line({:line, %{"kind" => "stats"} = l}, r), do: %{r | stats: r.stats || l}
 
   defp main_line({:line, %{"kind" => "end"} = l}, r) do
@@ -498,6 +507,7 @@ defmodule NccWorker.Tracer.Report do
         quiet: Enum.reverse(r.quiet),
         sentinels: Enum.reverse(r.sentinels),
         events: r.events |> Enum.reverse() |> Enum.sort_by(&(&1["ts"] || 0)),
+        project_pushes: Enum.reverse(r.project_pushes),
         overflow: Enum.reverse(r.overflow),
         problems: Enum.reverse(r.problems)
     }

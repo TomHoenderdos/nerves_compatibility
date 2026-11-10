@@ -239,7 +239,7 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert :unknown == classify(Mix.ProjectStack, :peek, [])
 
     assert Enum.sort(Enum.uniq(for {m, _, _} <- mix, do: m)) ==
-             [Mix, Mix.Project, Mix.ProjectStack, Mix.Task]
+             [Mix, Mix.Project, Mix.ProjectStack, Mix.State, Mix.Task, :ets]
 
     assert :ncc_tracer_channels.mix_entry(Mix.Task)
     assert :ncc_tracer_channels.mix_entry(Mix.ProjectStack)
@@ -262,6 +262,44 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert {:mix_state, %{fun: "target"}} = classify(Mix, :target, [])
     assert {:mix_state, %{fun: "build_path"}} = classify(Mix.Project, :build_path, [[]])
     assert :unknown = classify(Mix.Project, :config, [])
+  end
+
+  test "Mix.State and its table are mix_state only for the target key" do
+    mix = :ncc_tracer_channels.mix_patterns()
+
+    for mfa <- [
+          {Mix.State, :get, 1},
+          {Mix.State, :get, 2},
+          {Mix.State, :fetch, 1},
+          {:ets, :lookup, 2},
+          {:ets, :lookup_element, 3},
+          {:ets, :lookup_element, 4},
+          {Mix.ProjectStack, :push, 3}
+        ],
+        do: assert(mfa in mix, inspect(mfa))
+
+    for {m, f, args} <- [
+          {Mix.State, :get, [:target]},
+          {Mix.State, :get, [:target, :host]},
+          {Mix.State, :fetch, [:target]},
+          {:ets, :lookup, [Mix.State, :target]},
+          {:ets, :lookup_element, [Mix.State, :target, 2]},
+          {:ets, :lookup_element, [Mix.State, :target, 2, :host]}
+        ],
+        do: assert({:mix_state, %{fun: "target"}} == classify(m, f, args), inspect({m, f}))
+
+    for {m, f, args} <- [
+          {Mix.State, :get, [:env, :prod]},
+          {:ets, :lookup, [Mix.State, :env]},
+          {:ets, :lookup, [:other, :target]}
+        ],
+        do: assert(:unknown == classify(m, f, args), inspect({m, f, args}))
+
+    for {m, f, a} <- [{Mix.State, :get, 2}, {:ets, :lookup, 2}, {Mix, :target, 0}],
+        do: assert(:ncc_tracer_channels.mix_state(m, f, a), inspect({m, f, a}))
+
+    refute :ncc_tracer_channels.mix_state(Mix.Task, :run, 1)
+    refute :ncc_tracer_channels.mix_state(:ets, :insert, 2)
   end
 
   test "patterned/3 says whether a call has a channel's pattern" do
