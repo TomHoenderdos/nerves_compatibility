@@ -713,4 +713,27 @@ defmodule NccWorker.Portability.EventsTest do
     assert {:refuse, "compile-time Elixir patch dependence: " <> _} =
              Events.decide(opts_read, ctx, "pkg", slices)
   end
+
+  describe "mix_state (item 2's gap)" do
+    test "Mix.target in code refuses; in a dependency's mix.exs it is ignored", %{
+      ctx: ctx,
+      pkg: pkg
+    } do
+      event = ev("mix_state", "Mix.target/0", %{"fun" => "target"})
+
+      assert {:refuse, "compile-time host read: Mix.target/0 in Pkg.f/0 (lib/pkg.ex:3)"} =
+               Events.decide(event, ctx, "pkg")
+
+      assert :ignore = Events.decide(in_mix_exs(event, pkg, 3), ctx, "pkg")
+    end
+
+    test "Mix.Project's path functions are observed, never refused", %{ctx: ctx} do
+      for fun <- ["build_path", "app_path", "compile_path"] do
+        event = ev("mix_state", "Mix.Project.#{fun}/0", %{"fun" => fun})
+
+        assert {:observe, "mix_project_paths", %{"mfa" => "Mix.Project." <> _}} =
+                 Events.decide(event, ctx, "pkg")
+      end
+    end
+  end
 end

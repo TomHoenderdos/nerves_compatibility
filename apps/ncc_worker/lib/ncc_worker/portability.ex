@@ -98,7 +98,8 @@ defmodule NccWorker.Portability do
     "elixir_version" => 50,
     "native_calls" => 50,
     "mix_exs_allowed" => 50,
-    "build_root_source_path" => 50
+    "build_root_source_path" => 50,
+    "mix_project_paths" => 50
   }
   @max_refusals 100
   @max_problems 20

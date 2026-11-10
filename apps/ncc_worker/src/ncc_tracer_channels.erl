@@ -131,9 +131,22 @@ nested_compile_patterns() ->
 -define(NESTED_MIX, [{'Elixir.Mix.Task', run, [1, 2]}, {'Elixir.Mix.Task', rerun, [1, 2]},
                      {'Elixir.Mix.ProjectStack', prepend_after_compiler, [2]}]).
 
-mix_patterns() -> [{M, F, A} || {M, F, As} <- ?NESTED_MIX, A <- As].
+%% Mix state a package can read at compile time through a module name no
+%% grep sees (`Module.concat(["Mi" <> "x"]).target()`), precompiled judge
+%% refinements item 2: the target, which refuses, and the build paths, which
+%% hold `<target>_<env>` on a Nerves build and are observed. Patterned like
+%% ?NESTED_MIX: in the Mix VM, where loaded, and recorded only when Mix did
+%% not make the call (ncc_tracer_stack:made_by_mix/2), so Mix's own reads
+%% are never written. Mix.Project.config/0 is not patterned: it is hot, and
+%% packages read its static keys (`:version`, `:app`) at compile time.
+-define(MIX_STATE, [{'Elixir.Mix', target, [0, 1]},
+                    {'Elixir.Mix.Project', build_path, [0, 1]},
+                    {'Elixir.Mix.Project', app_path, [0, 1]},
+                    {'Elixir.Mix.Project', compile_path, [0, 1]}]).
 
-mix_entry(M) -> lists:keymember(M, 1, ?NESTED_MIX).
+mix_patterns() -> [{M, F, A} || {M, F, As} <- ?NESTED_MIX ++ ?MIX_STATE, A <- As].
+
+mix_entry(M) -> lists:keymember(M, 1, ?NESTED_MIX) orelse lists:keymember(M, 1, ?MIX_STATE).
 
 %% A task name that mentions compiling, as a string or an atom.
 compile_task(Task) when is_atom(Task) -> compile_task(atom_to_binary(Task));
@@ -258,6 +271,10 @@ specific(M, copy, [From, To | _]) when M =:= file; M =:= prim_file ->
 specific(M, F, [_Existing, New])
   when (M =:= file orelse M =:= prim_file), (F =:= make_symlink orelse F =:= make_link) ->
     {file_write, #{path => chars(New)}};
+specific('Elixir.Mix', target, Args) when length(Args) =< 1 -> {mix_state, #{'fun' => <<"target">>}};
+specific('Elixir.Mix.Project', F, Args)
+  when (F =:= build_path orelse F =:= app_path orelse F =:= compile_path), length(Args) =< 1 ->
+    {mix_state, #{'fun' => atom_to_binary(F)}};
 specific(_M, _F, _Args) -> unknown.
 
 generic(M, F, Args) ->

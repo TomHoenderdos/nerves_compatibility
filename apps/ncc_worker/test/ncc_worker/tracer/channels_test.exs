@@ -237,10 +237,31 @@ defmodule NccWorker.Tracer.ChannelsTest do
         do: assert(:unknown == classify(Mix.Task, :run, args), inspect(args))
 
     assert :unknown == classify(Mix.ProjectStack, :peek, [])
-    assert Enum.sort(Enum.uniq(for {m, _, _} <- mix, do: m)) == [Mix.ProjectStack, Mix.Task]
+
+    assert Enum.sort(Enum.uniq(for {m, _, _} <- mix, do: m)) ==
+             [Mix, Mix.Project, Mix.ProjectStack, Mix.Task]
+
     assert :ncc_tracer_channels.mix_entry(Mix.Task)
     assert :ncc_tracer_channels.mix_entry(Mix.ProjectStack)
-    refute :ncc_tracer_channels.mix_entry(Mix.Project)
+    assert :ncc_tracer_channels.mix_entry(Mix.Project)
+    refute :ncc_tracer_channels.mix_entry(Mix.Dep)
+  end
+
+  # Item 2's gap: Mix state read through a module name no grep sees.
+  test "Mix.target and Mix.Project's path functions are mix_state; config/0 is not traced" do
+    mix = :ncc_tracer_channels.mix_patterns()
+
+    for {f, a} <- [target: 0, target: 1],
+        do: assert({Mix, f, a} in mix)
+
+    for f <- [:build_path, :app_path, :compile_path],
+        a <- [0, 1],
+        do: assert({Mix.Project, f, a} in mix)
+
+    refute {Mix.Project, :config, 0} in mix
+    assert {:mix_state, %{fun: "target"}} = classify(Mix, :target, [])
+    assert {:mix_state, %{fun: "build_path"}} = classify(Mix.Project, :build_path, [[]])
+    assert :unknown = classify(Mix.Project, :config, [])
   end
 
   test "patterned/3 says whether a call has a channel's pattern" do

@@ -59,6 +59,11 @@ defmodule NccWorker.Portability.Events do
       be), a call into one, and listing the loaded modules are judged by
       `NccWorker.Portability.Probes`; a nested compile only marks its
       window for it.
+    * Mix state (`mix_state`, precompiled judge refinements item 2):
+      `Mix.target/0,1` refuses outside a closure dependency's own `mix.exs`;
+      `Mix.Project.build_path`, `app_path` and `compile_path` are observed
+      as `mix_project_paths` and refuse nothing (refusing them would refuse
+      legitimate Mix compilers; `config/0` is not traced at all).
     * Our generated project's own `mix.exs` (owner `:wrapper`) is ignored.
 
   Fail closed: an event whose stack the tracer could not judge (extent
@@ -174,6 +179,17 @@ defmodule NccWorker.Portability.Events do
 
   defp channel("config", event, _ctx, _owner),
     do: {:observe, "config_reads", traced_summary(event)}
+
+  # Item 2's gap: Mix state read through a module name. The target refuses
+  # (a host build would be served to firmware targets) except in a closure
+  # dependency's own `mix.exs`, whose project config the build already
+  # records; the build paths are observed only (see the moduledoc).
+  defp channel("mix_state", %{"arg" => %{"fun" => "target"}} = event, ctx, owner) do
+    if Context.mix_exs(ctx, event, owner), do: :ignore, else: {:refuse, host_read(event)}
+  end
+
+  defp channel("mix_state", event, _ctx, _owner),
+    do: {:observe, "mix_project_paths", summary(event)}
 
   defp channel("install", event, ctx, _owner), do: install(event, ctx)
   defp channel("file_read", event, ctx, owner), do: file_read(event, ctx, owner)
