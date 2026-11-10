@@ -32,7 +32,7 @@
     "plug_crypto": "2.2.1",
     "telemetry": "1.4.2",
     "websock": "0.5.3",
-    "websock_adapter": "0.7.1"
+    "websock_adapter": "0.7.2"
   },
   "judge_compile": "finished",
   "observations": {
@@ -1643,23 +1643,6 @@
         "file": "lib/phoenix_live_view/channel.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 1749,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_application",
-          "key_name": "compile_time_application"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/channel.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
         "line": 389,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -1712,6 +1695,23 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 297,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix_live_view/test/upload_client.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
+        "line": 184,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -2391,23 +2391,6 @@
         "file": "lib/phoenix_live_view/channel.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 1749,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_purge_level",
-          "key_name": "compile_time_purge_level"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/channel.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
         "line": 389,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -2460,6 +2443,23 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 297,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix_live_view"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix_live_view/test/upload_client.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
+        "line": 184,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -3583,12 +3583,32 @@
         "owner": "plug"
       }
     ],
+    "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "waived",
     "problems": [],
     "refusals": [],
-    "taint": {}
+    "taint": {},
+    "tree_check": {
+      "attrs": "ok",
+      "decimal": "ok",
+      "ecto": "ok",
+      "jason": "ok",
+      "mime": "ok",
+      "phoenix": "ok",
+      "phoenix_html": "ok",
+      "phoenix_html_helpers": "ok",
+      "phoenix_live_view": "ok",
+      "phoenix_pubsub": "ok",
+      "phoenix_template": "ok",
+      "plug": "ok",
+      "plug_crypto": "ok",
+      "polymorphic_embed": "ok",
+      "telemetry": "ok",
+      "websock": "ok",
+      "websock_adapter": "ok"
+    }
   },
   "optional_deps": {
     "added": [

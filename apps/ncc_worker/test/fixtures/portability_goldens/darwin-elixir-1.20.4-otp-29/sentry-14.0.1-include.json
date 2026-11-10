@@ -9,8 +9,8 @@
     "finch": "0.24.0",
     "gproc": "1.2.0",
     "grpcbox": "0.18.0",
-    "h2": "0.12.7",
-    "hackney": "4.9.1",
+    "h2": "0.15.1",
+    "hackney": "4.10.2",
     "hpack": "0.3.0",
     "hpax": "1.1.0",
     "idna": "7.1.0",
@@ -33,13 +33,13 @@
     "phoenix_template": "1.1.0",
     "plug": "1.20.3",
     "plug_crypto": "2.2.1",
-    "quic": "2.1.4",
+    "quic": "2.6.1",
     "ssl_verify_fun": "1.1.9",
     "telemetry": "1.4.2",
     "tls_certificate_check": "1.36.0",
     "websock": "0.5.3",
-    "websock_adapter": "0.7.1",
-    "webtransport": "0.4.8"
+    "websock_adapter": "0.7.2",
+    "webtransport": "0.5.5"
   },
   "judge_compile": "finished",
   "observations": {
@@ -3567,6 +3567,7 @@
         "owner": "plug"
       }
     ],
+    "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "waived",
@@ -3574,174 +3575,6 @@
       "hpack: a rebar3 parent evaluates rebar.config.script"
     ],
     "refusals": [
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: erlang:system_info/1 (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: erlang:system_info/1 in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: prim_file:read_link/1  (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: prim_file:read_link/1  in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: prim_file:read_link/1 /Users (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: prim_file:read_link/1 /Users in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: prim_file:read_link/1 <home> (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: prim_file:read_link/1 <home> in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "certifi",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)"
-      },
-      {
-        "owner": "grpcbox",
-        "reason": "compile-time host read: erlang:system_info/1 (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "grpcbox",
-        "reason": "compile-time host read: prim_file:read_link/1  (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "grpcbox",
-        "reason": "compile-time host read: prim_file:read_link/1 /Users (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "grpcbox",
-        "reason": "compile-time host read: prim_file:read_link/1 <home> (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "grpcbox",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "grpcbox",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "grpcbox",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang (truncated stack, first frame erl_prim_loader)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: erlang:system_info/1 in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: erlang:system_info/1 in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: erlang:system_info/1 in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1  in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1  in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1  in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 /Users in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 /Users in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 /Users in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 <home> in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 <home> in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 <home> in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:85)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang in ct_expand.xform_fun/6 (<work>/work/proj/deps/parse_trans/src/ct_expand.erl:95)"
-      },
-      {
-        "owner": "hackney",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
       {
         "owner": "opentelemetry_semantic_conventions",
         "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:27)"
@@ -3908,43 +3741,11 @@
       },
       {
         "owner": "outside",
-        "reason": "compile-time host read: os:getenv/1 (dispatcher stack, first frame erl_eval)"
+        "reason": "compile-time host read: os:getenv/1 (GPROC_DIST) (dispatcher stack, first frame erl_eval)"
       },
       {
-        "owner": "parse_trans",
-        "reason": "compile-time host read: erlang:system_info/1 in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
-      {
-        "owner": "parse_trans",
-        "reason": "compile-time host read: erlang:system_info/1 in parse_trans_codegen.xform_fun/4 (<work>/work/proj/deps/parse_trans/src/parse_trans_codegen.erl:154)"
-      },
-      {
-        "owner": "parse_trans",
-        "reason": "compile-time host read: prim_file:read_link/1  in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
-      {
-        "owner": "parse_trans",
-        "reason": "compile-time host read: prim_file:read_link/1  in parse_trans_codegen.xform_fun/4 (<work>/work/proj/deps/parse_trans/src/parse_trans_codegen.erl:154)"
-      },
-      {
-        "owner": "parse_trans",
-        "reason": "compile-time host read: prim_file:read_link/1 /Users in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
-      {
-        "owner": "parse_trans",
-        "reason": "compile-time host read: prim_file:read_link/1 <home> in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
-      {
-        "owner": "parse_trans",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
-      {
-        "owner": "parse_trans",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
-      },
-      {
-        "owner": "parse_trans",
-        "reason": "compile-time host read: prim_file:read_link/1 <home>/.asdf/installs/erlang in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)"
+        "owner": "outside",
+        "reason": "compile-time host read: os:getenv/1 (REBAR_DEPS) (dispatcher stack, first frame erl_eval)"
       },
       {
         "owner": "sentry",
@@ -3976,15 +3777,53 @@
       }
     ],
     "taint": {
-      "certifi": "compile-time host read: erlang:system_info/1 in certifi_pt.replace_cacerts/1 (<work>/work/proj/deps/certifi/src/certifi_pt.erl:9)",
       "chatterbox": "rebar3 build evaluates rebar.config.script",
       "gproc": "rebar3 build evaluates rebar.config.script",
-      "grpcbox": "compile-time host read: erlang:system_info/1 (truncated stack, first frame erl_prim_loader)",
-      "hackney": "compile-time host read: erlang:system_info/1 in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)",
+      "hackney": "rebar3 build runs pre_hooks",
       "opentelemetry_semantic_conventions": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:93)",
-      "parse_trans": "compile-time host read: erlang:system_info/1 in parse_trans.get_file/1 (<work>/work/proj/deps/parse_trans/src/parse_trans.erl:226)",
       "quic": "rebar3 build runs pre_hooks",
       "tls_certificate_check": "rebar3 build evaluates rebar.config.script"
+    },
+    "tree_check": {
+      "acceptor_pool": "ok",
+      "certifi": "ok",
+      "chatterbox": "ok",
+      "ctx": "ok",
+      "finch": "ok",
+      "gproc": "ok",
+      "grpcbox": "ok",
+      "h2": "ok",
+      "hackney": "ok",
+      "hpack": "ok",
+      "hpax": "ok",
+      "idna": "ok",
+      "jason": "ok",
+      "mime": "ok",
+      "mimerl": "unverified: native build",
+      "mint": "ok",
+      "nimble_options": "ok",
+      "nimble_ownership": "ok",
+      "nimble_pool": "ok",
+      "opentelemetry": "ok",
+      "opentelemetry_api": "ok",
+      "opentelemetry_exporter": "ok",
+      "opentelemetry_semantic_conventions": "ok",
+      "parse_trans": "ok",
+      "phoenix": "ok",
+      "phoenix_html": "ok",
+      "phoenix_live_view": "ok",
+      "phoenix_pubsub": "ok",
+      "phoenix_template": "ok",
+      "plug": "ok",
+      "plug_crypto": "ok",
+      "quic": "unverified: native build",
+      "sentry": "ok",
+      "ssl_verify_fun": "unverified: native build",
+      "telemetry": "ok",
+      "tls_certificate_check": "unverified: native build",
+      "websock": "ok",
+      "websock_adapter": "ok",
+      "webtransport": "ok"
     }
   },
   "optional_deps": {
@@ -4007,7 +3846,7 @@
   "optional_deps_variant": "include",
   "package": "sentry",
   "platform": "darwin-elixir-1.20.4-otp-29",
-  "reason": "compile-time host read: os:getenv/1 (dispatcher stack, first frame erl_eval)",
+  "reason": "compile-time host read: os:getenv/1 (REBAR_DEPS) (dispatcher stack, first frame erl_eval)",
   "rule1_reason": "OS-specific (lib/sentry/event.ex: :os.type()",
   "status": "skipped",
   "trace_verdict": "refused",

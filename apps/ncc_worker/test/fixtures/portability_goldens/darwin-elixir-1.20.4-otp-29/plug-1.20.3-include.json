@@ -562,12 +562,19 @@
         "owner": "plug"
       }
     ],
+    "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "waived",
     "problems": [],
     "refusals": [],
-    "taint": {}
+    "taint": {},
+    "tree_check": {
+      "mime": "ok",
+      "plug": "ok",
+      "plug_crypto": "ok",
+      "telemetry": "ok"
+    }
   },
   "optional_deps": {
     "added": [],

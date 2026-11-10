@@ -19,7 +19,7 @@
     "plug_crypto": "2.2.1",
     "telemetry": "1.4.2",
     "websock": "0.5.3",
-    "websock_adapter": "0.7.1"
+    "websock_adapter": "0.7.2"
   },
   "judge_compile": "finished",
   "observations": {
@@ -2658,12 +2658,24 @@
         "owner": "plug"
       }
     ],
+    "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "waived",
     "problems": [],
     "refusals": [],
-    "taint": {}
+    "taint": {},
+    "tree_check": {
+      "mime": "ok",
+      "phoenix": "ok",
+      "phoenix_pubsub": "ok",
+      "phoenix_template": "ok",
+      "plug": "ok",
+      "plug_crypto": "ok",
+      "telemetry": "ok",
+      "websock": "ok",
+      "websock_adapter": "ok"
+    }
   },
   "optional_deps": {
     "added": [],
