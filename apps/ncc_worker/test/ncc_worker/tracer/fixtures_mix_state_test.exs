@@ -96,6 +96,73 @@ defmodule NccWorker.Tracer.FixturesMixStateTest do
         """,
         %{deps: ["fx_taskdef"]}
       ),
+    # Round 2: a dependency's mix.exs function called from its lib/ code
+    # launders the read through the file the exemption used to trust.
+    "fx_launder_mixexs" =>
+      lib(
+        "fx_launder_mixexs",
+        """
+        defmodule FxLaunderMixexs do
+          @t FxLaunderMixexs.MixProject.t()
+          def t, do: @t
+        end
+        """,
+        %{
+          mix_exs: """
+          defmodule FxLaunderMixexs.MixProject do
+            use Mix.Project
+            def project, do: [app: :fx_launder_mixexs, version: "0.1.0", deps: []]
+            def application, do: [extra_applications: [:logger]]
+            def t, do: elem({Module.concat(["Mi" <> "x"]).target()}, 0)
+          end
+          """
+        }
+      ),
+    # A literal Mix.target() in mix.exs, as Nerves projects write it: the
+    # static scan (BuildCache.reads_target?/1) already makes it native.
+    "fx_mixexs_literal" =>
+      lib("fx_mixexs_literal", "defmodule FxMixexsLiteral do\nend\n", %{
+        mix_exs: mix_exs("fx_mixexs_literal", ~s|, description: to_string(Mix.target())|)
+      }),
+    # Mix's fun-calling helpers on top of a tail-called read.
+    "fx_recur" =>
+      lib("fx_recur", """
+      defmodule FxRecur do
+        @t Mix.ProjectStack.recur(fn -> Module.concat(["Mi" <> "x"]).target() end)
+        def t, do: @t
+      end
+      """),
+    "fx_recur_static" =>
+      lib("fx_recur_static", """
+      defmodule FxRecurStatic do
+        @t Mix.ProjectStack.recur(&Mix.target/0)
+        def t, do: @t
+      end
+      """),
+    # lib/2's `files:` would replace the source, so both are given here.
+    "fx_inproject" => %{
+      files: %{
+        "lib/fx_inproject.ex" => """
+        defmodule FxInproject do
+          @t Mix.Project.in_project(:fx_sub, Path.expand("sub"), fn _ ->
+               Module.concat(["Mi" <> "x"]).target()
+             end)
+          def t, do: @t
+        end
+        """,
+        "sub/mix.exs" =>
+          "defmodule FxSub.MixProject do\n  use Mix.Project\n" <>
+            "  def project, do: [app: :fx_sub, version: \"0.1.0\"]\nend\n"
+      }
+    },
+    # The table by its id, not its name.
+    "fx_ets_whereis" =>
+      lib("fx_ets_whereis", """
+      defmodule FxEtsWhereis do
+        @t :ets.lookup(:ets.whereis(Mix.State), :target)
+        def t, do: @t
+      end
+      """),
     "fx_project_version" =>
       lib("fx_project_version", """
       defmodule FxProjectVersion do
@@ -179,7 +246,38 @@ defmodule NccWorker.Tracer.FixturesMixStateTest do
     assert %{status: :pass} = verdict(ctx, "fx_taskdef")
   end
 
-  test "Mix.target in a dependency's own mix.exs is not refused", ctx do
-    assert %{status: :pass} = verdict(ctx, "fx_mixexs_target")
+  # Round 2 (ruled): no mix.exs exemption. A dynamic read there refuses; a
+  # literal one is native by the static scan before the trace is judged.
+  test "Mix.target in a dependency's mix.exs refuses, however it is reached", ctx do
+    for app <- ["fx_mixexs_target", "fx_launder_mixexs", "fx_mixexs_literal"] do
+      assert %{status: :skip, reason: "compile-time host read: Mix.target/0" <> _} =
+               verdict(ctx, app),
+             app
+    end
+
+    deps = Path.join(ctx.proj, "deps")
+    refute NccWorker.BuildCache.dep_target_agnostic_rule2?(deps, "fx_mixexs_literal", "mix")
+    assert NccWorker.BuildCache.dep_target_agnostic_rule2?(deps, "fx_project_version", "mix")
+  end
+
+  # in_project/4 also changes directory (refused on its own), so the target
+  # read is looked for among the refusals, not only as the first reason.
+  test "a read handed to Mix's fun-calling helpers refuses", ctx do
+    for app <- ["fx_recur", "fx_recur_static", "fx_inproject"] do
+      assert %{status: :skip, observations: %{"refusals" => refusals}} = verdict(ctx, app), app
+
+      assert Enum.any?(
+               refusals,
+               &(&1["owner"] == app and
+                   &1["reason"] =~
+                     ~r/^compile-time host read: (Mix\.target\/0|Mix\.State\.get\/2) /)
+             ),
+             inspect({app, refusals})
+    end
+  end
+
+  test "a lookup of Mix.State by its table id refuses", ctx do
+    assert %{status: :skip, reason: "compile-time host read: ets:lookup/2" <> _} =
+             verdict(ctx, "fx_ets_whereis")
   end
 end

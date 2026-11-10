@@ -61,15 +61,18 @@ defmodule NccWorker.Portability.Events do
       window for it.
     * Mix state (`mix_state`, precompiled judge refinements item 2): the
       target read (`Mix.target/0,1`, `Mix.State.get`/`fetch` of `:target`,
-      `:ets.lookup`/`lookup_element` of `Mix.State`'s `:target`) refuses
-      unless it is made in a closure dependency's own `mix.exs`, by the
-      project code Mix pushed for it (`Context.pushed_project?/3`: a
-      `@file "mix.exs"` function in `lib/` is not); `Mix.Project.build_path`,
-      `app_path` and `compile_path` are observed as `mix_project_paths` and
-      refuse nothing (refusing them would refuse legitimate Mix compilers;
-      `config/0` is not traced at all). Reading the table whole
-      (`:ets.tab2list/1`, `:ets.select/2`) is a known gap. Any other
-      `mix_state` function could not be judged.
+      `:ets.lookup`/`lookup_element` of `Mix.State`'s `:target`, by the
+      table's name or its id) refuses wherever it is made, a dependency's
+      `mix.exs` included (a literal one there is native by the static scan
+      already). Only the Mix functions that read the target for Mix's own
+      work are Mix's (`ncc_tracer_stack:target_read_by_mix/2`); anything
+      else, Mix's fun-calling helpers included, is the package's read.
+      `Mix.Project.build_path`, `app_path` and `compile_path` are observed
+      as `mix_project_paths` and refuse nothing (refusing them would refuse
+      legitimate Mix compilers; `config/0` is not traced at all). Reading
+      the table other ways (`:ets.match_object`, `select`, `tab2list`,
+      `first`/`next`, `match`) is a known gap. Any other `mix_state`
+      function could not be judged.
     * Our generated project's own `mix.exs` (owner `:wrapper`) is ignored.
 
   Fail closed: an event whose stack the tracer could not judge (extent
@@ -188,18 +191,13 @@ defmodule NccWorker.Portability.Events do
     do: {:observe, "config_reads", traced_summary(event)}
 
   # Item 2's gap: Mix state read through a module name. The target refuses
-  # (a host build would be served to firmware targets) except in a closure
-  # dependency's own `mix.exs`, whose project config the build already
-  # records, and only in the project code Mix pushed for it
-  # (`Context.pushed_project?/3`); the build paths are observed only (see
-  # the moduledoc). Any other function could not be judged.
-  defp channel("mix_state", %{"arg" => %{"fun" => "target"}} = event, ctx, owner) do
-    path = Context.mix_exs(ctx, event, owner)
-
-    if is_binary(path) and Context.pushed_project?(ctx, event, path),
-      do: :ignore,
-      else: {:refuse, host_read(event)}
-  end
+  # wherever it is made, a dependency's `mix.exs` included: a literal
+  # `Mix.target` there already makes the dependency native by the static
+  # scan (`BuildCache.reads_target?/1`), so an exemption would only help the
+  # reads that scan cannot see. The build paths are observed only (see the
+  # moduledoc). Any other function could not be judged.
+  defp channel("mix_state", %{"arg" => %{"fun" => "target"}} = event, _ctx, _owner),
+    do: {:refuse, host_read(event)}
 
   defp channel("mix_state", %{"arg" => %{"fun" => fun}} = event, _ctx, _owner)
        when fun in @mix_paths,

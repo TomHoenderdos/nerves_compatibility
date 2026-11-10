@@ -131,25 +131,6 @@ defmodule NccWorker.Tracer.ReportTest do
     assert %{"unjudged" => 0} = r.stats
   end
 
-  test "project pushes Mix made are kept, in order, and are no problem", %{tmp_dir: dir} do
-    push = fn m, ts ->
-      %{
-        "kind" => "project_push",
-        "module" => m,
-        "file" => "/p/mix.exs",
-        "md5" => "AB",
-        "ts" => ts
-      }
-    end
-
-    [start, snapshot | rest] = clean()
-    r = read(dir, [start, snapshot, push.("Elixir.A.MixProject", 2), push.("Elixir.B", 3) | rest])
-    assert r.problems == []
-
-    assert [%{"module" => "Elixir.A.MixProject", "md5" => "AB"}, %{"module" => "Elixir.B"}] =
-             r.project_pushes
-  end
-
   test "every failed integrity or delivery check is a problem", %{tmp_dir: dir} do
     for {lines, problem} <- [
           {replace(clean(), "window_close", "r3", %{"integrity_ok" => false}),

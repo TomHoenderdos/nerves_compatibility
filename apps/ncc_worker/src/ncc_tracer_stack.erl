@@ -4,7 +4,7 @@
 %% modules are toolchain and whether the calling process is a user process.
 -export([extent/4, extent/5, frame/1, mfa_bin/3, dispatcher/1, dispatchers/0, first_kind/2,
          uncached/0, printers/0, diagnosers/0, checker/2, made_by_toolchain/2,
-         made_by_mix/2, made_by_mix_strict/2, compiler_frame/1]).
+         made_by_mix/2, made_by_mix_strict/2, target_read_by_mix/2, compiler_frame/1]).
 
 -define(WRAPPERS, [os, 'Elixir.System', 'Elixir.Application', application, 'Elixir.File']).
 %% Frames a call is attributed through, to the frame that called them, when
@@ -76,6 +76,43 @@
                lists, maps, proplists, sets, ordsets, gb_trees, gb_sets, orddict, dict,
                array, digraph, erl_eval, elixir, elixir_eval]).
 -define(GLUE_PREFIXES, ["Elixir.Enumerable.", "Elixir.Collectable."]).
+%% The Mix functions that read the target (Mix.target/0, so Mix.State.get/2
+%% and its ets:lookup/2) for Mix's own work: every call site in Mix 1.19 and
+%% 1.20, by enclosing function. Mix.State's own get/fetch make the lookup
+%% under Mix.target/0 or a direct call, which is judged at that call.
+-define(MIX_TARGET_READERS, [{'Elixir.Mix.State', "get"}, {'Elixir.Mix.State', "fetch"},
+                             {'Elixir.Mix.Tasks.Compile.App', "matching_target?"},
+                             {'Elixir.Mix.Tasks.Deps', "run"},
+                             {'Elixir.Mix.Tasks.Escript.Build', "gen_main"},
+                             {'Elixir.Mix.Tasks.Escript.Build', "main_body_for"},
+                             {'Elixir.Mix.Tasks.Release', "build_rel"},
+                             {'Elixir.Mix.Tasks.Release', "maybe_add_config_reader_provider"},
+                             {'Elixir.Mix.Tasks.Loadconfig', "load_compile"},
+                             {'Elixir.Mix.Tasks.Loadconfig', "load_runtime"},
+                             {'Elixir.Mix.Tasks.Deps.Partition', "server"},
+                             {'Elixir.Mix.Dep', "cached"},
+                             {'Elixir.Mix.Dep', "load_and_cache"},
+                             {'Elixir.Mix.Config', "eval!"},
+                             {'Elixir.Mix.Config', "read!"},
+                             {'Elixir.Mix.Project', "push_config"},
+                             {'Elixir.Mix.Project', "build_target"},
+                             {'Elixir.Mix.CLI', "maybe_change_env_and_target"}]).
+%% Mix functions that run a fun they were given: a package fun that
+%% tail-called a read leaves one of these on top.
+-define(MIX_FUN_HELPERS, [{'Elixir.Mix.ProjectStack', "recur"},
+                          {'Elixir.Mix.ProjectStack', "on_clean_slate"},
+                          {'Elixir.Mix.ProjectStack', "handle_call"},
+                          {'Elixir.Mix.Project', "in_project"},
+                          {'Elixir.Mix.Project', "with_build_lock"},
+                          {'Elixir.Mix.Project', "with_deps_lock"},
+                          {'Elixir.Mix.Project', "traverse_deps_depth"},
+                          {'Elixir.Mix.Project', "traverse_deps_map"},
+                          {'Elixir.Mix.Sync.Lock', "with_lock"},
+                          {'Elixir.Mix.Dep', "in_dependency"},
+                          {'Elixir.Mix.Dep.Loader', "with_system_env"},
+                          {'Elixir.Mix.State', "update"},
+                          {'Elixir.Mix.Tasks.Loadconfig', "preserve_config"},
+                          {'Elixir.Mix', "in_install_project"}]).
 
 extent(Stack, Depth, IsToolchain, ProcessIsUser) ->
     extent(Stack, Depth, IsToolchain, ProcessIsUser, fun(_File) -> false end).
@@ -302,27 +339,44 @@ made_by_toolchain(_Stack, _IsToolchain) -> false.
 %% tail-called the entry point left no frame to take the result.
 made_by_mix(Stack, IsToolchain) -> made_by_mix(Stack, IsToolchain, true).
 
-%% The same for a read of Mix state (ncc_tracer_channels mix_state/3), except
-%% that a dispatcher on top (Mix.Task's task runner) is the package's call: a
-%% package task's run/1 that tail-called the read returns its value through
-%% Mix.Task.run/1 to the package code that ran the task.
+%% The same for a build path read (ncc_tracer_channels mix_state/3), except
+%% that a dispatcher (Mix.Task's task runner) or one of Mix's fun-calling
+%% helpers (?MIX_FUN_HELPERS) on top is the package's call: a package fun
+%% or task run/1 that tail-called the read returns its value to package
+%% code. Only observations depend on it; target reads use the allow-list
+%% (target_read_by_mix/2).
 made_by_mix_strict(Stack, IsToolchain) -> made_by_mix(Stack, IsToolchain, false).
 
+%% Whether one of the Mix functions that read the target for Mix's own work
+%% (?MIX_TARGET_READERS, every Mix.target() call site in Mix 1.19 and 1.20)
+%% made a target read: the first frame past the wrappers and the toolchain's
+%% higher-order glue. Anything else (a package fun Mix.ProjectStack.recur/1
+%% or Mix.Project.in_project/4 ran, a package task, any Mix function this
+%% list does not name) is the package's read: fail closed.
+target_read_by_mix(Stack, IsToolchain) when is_list(Stack) ->
+    case lists:dropwhile(fun(Frame) -> mix_skip(Frame, IsToolchain) end, Stack) of
+        [{M, F, _, _} | _] ->
+            IsToolchain(M) andalso lists:member({M, base_name(F)}, ?MIX_TARGET_READERS);
+        [] -> false
+    end;
+target_read_by_mix(_Stack, _IsToolchain) -> false.
+
 made_by_mix(Stack, IsToolchain, DispatcherIsMix) when is_list(Stack) ->
-    Skip = fun({M, F, _, _} = Frame) ->
-                   lists:member(M, ?WRAPPERS)
-                       orelse (IsToolchain(M) andalso
-                               ((glue(Frame) andalso not eval_glue(Frame) andalso not dispatcher(Frame))
-                                orelse (M =:= 'Elixir.Mix.Task.Compiler'
-                                        andalso base_name(F) =:= "after_compiler")))
-           end,
-    case lists:dropwhile(Skip, Stack) of
-        [{M, _, _, _} = Frame | _] ->
-            (DispatcherIsMix orelse not dispatcher(Frame))
+    case lists:dropwhile(fun(Frame) -> mix_skip(Frame, IsToolchain) end, Stack) of
+        [{M, F, _, _} = Frame | _] ->
+            (DispatcherIsMix orelse
+             not (dispatcher(Frame) orelse lists:member({M, base_name(F)}, ?MIX_FUN_HELPERS)))
                 andalso IsToolchain(M) andalso lists:prefix("Elixir.Mix.", atom_to_list(M));
         [] -> false
     end;
 made_by_mix(_Stack, _IsToolchain, _DispatcherIsMix) -> false.
+
+mix_skip({M, F, _, _} = Frame, IsToolchain) ->
+    lists:member(M, ?WRAPPERS)
+        orelse (IsToolchain(M) andalso
+                ((glue(Frame) andalso not eval_glue(Frame) andalso not dispatcher(Frame))
+                 orelse (M =:= 'Elixir.Mix.Task.Compiler'
+                         andalso base_name(F) =:= "after_compiler"))).
 
 eval_glue({M, _, _, _} = Frame) ->
     M =:= 'Elixir.Code' orelse M =:= elixir orelse M =:= elixir_eval orelse eval(Frame).

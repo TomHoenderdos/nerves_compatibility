@@ -487,8 +487,31 @@ defmodule NccWorker.Tracer.StackTest do
     assert strict.([f(Enum, :reduce, 3), f(Mix.Tasks.Compile.All, :run, 1)])
     refute strict.([pkg])
     refute strict.([f(Code, :eval_string, 3), f(Mix.Project, :build_path, 1)])
+    # Mix's fun-calling helpers on top: a package fun tail-called the read.
+    refute strict.([f(Mix.ProjectStack, :recur, 1), pkg])
+    refute strict.([f(Mix.Project, :"-in_project/4-fun-0-", 1), pkg])
     refute strict.([])
     refute strict.(:no_stack)
+  end
+
+  test "target_read_by_mix/2: only Mix's own target readers" do
+    tc = [Mix.Dep, Mix.State, Mix.ProjectStack, Mix.Project, Mix.Tasks.Loadconfig | @toolchain]
+    by_mix = &:ncc_tracer_stack.target_read_by_mix(&1, fn m -> m in tc end)
+    pkg = f(:elixir_compiler_3, :__MODULE__, 1)
+
+    assert by_mix.([f(Mix.Dep, :load_and_cache, 0), pkg])
+    assert by_mix.([f(Mix.Tasks.Loadconfig, :load_compile, 1)])
+    assert by_mix.([f(Enum, :map, 2), f(Mix.Dep, :"-cached/0-fun-0-", 1)])
+    assert by_mix.([f(Mix.State, :get, 2), pkg])
+    refute by_mix.([f(Mix.ProjectStack, :recur, 1), pkg])
+    refute by_mix.([f(Mix.Project, :in_project, 4), pkg])
+    refute by_mix.([f(Mix.Task, :run_task, 5), pkg])
+    refute by_mix.([f(Mix.Project, :config, 0), pkg])
+    refute by_mix.([pkg])
+    # A package module named like a reader is not the toolchain's.
+    refute :ncc_tracer_stack.target_read_by_mix([f(Mix.Dep, :cached, 0)], fn _ -> false end)
+    refute by_mix.([])
+    refute by_mix.(:no_stack)
   end
 
   describe "a read made through IO.ANSI or Logger.Formatter" do

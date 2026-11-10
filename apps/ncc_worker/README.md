@@ -321,6 +321,13 @@ of these skips the build:
 
 - a host read or write in the package's compile window or outside every window;
 - one in a closure dependency's window (that dependency is then host-tainted);
+- a read of the Mix target that the static grep cannot see (`Mix.target/0,1` through a computed module name,
+  `Mix.State.get`/`fetch` of `:target`, or `:ets.lookup`/`lookup_element` of `Mix.State`'s `:target` by the table's
+  name or id), anywhere, a dependency's `mix.exs` included. Only the Mix functions that read the target for Mix's own
+  work count as Mix's; a package fun that Mix runs (`Mix.ProjectStack.recur/1`, `Mix.Project.in_project/4`, a
+  package task) is the package's. Reading `Mix.State`'s table other ways (`:ets.match_object`, `select`, `match`,
+  `tab2list`, `first`/`next`) is a known gap. `Mix.Project.build_path`, `app_path` and `compile_path` are recorded as
+  `mix_project_paths` observations and refuse nothing;
 - a build path baked into the beams outside diagnostic metadata;
 - a call into a natively built dependency while the package compiles;
 - a rebar3 build with hooks, plugins, `platform_define` or `rebar.config.script`;

@@ -273,8 +273,7 @@ defmodule NccWorker.Tracer.ChannelsTest do
           {Mix.State, :fetch, 1},
           {:ets, :lookup, 2},
           {:ets, :lookup_element, 3},
-          {:ets, :lookup_element, 4},
-          {Mix.ProjectStack, :push, 3}
+          {:ets, :lookup_element, 4}
         ],
         do: assert(mfa in mix, inspect(mfa))
 
@@ -297,6 +296,10 @@ defmodule NccWorker.Tracer.ChannelsTest do
 
     for {m, f, a} <- [{Mix.State, :get, 2}, {:ets, :lookup, 2}, {Mix, :target, 0}],
         do: assert(:ncc_tracer_channels.mix_state(m, f, a), inspect({m, f, a}))
+
+    # By table id too: the head matches any table's target key, guarded.
+    assert [{[Mix.State, :target], []}, {[:"$1", :target], [{:is_reference, :"$1"}]}] =
+             :ncc_tracer_channels.mix_state_heads({:ets, :lookup, 2})
 
     refute :ncc_tracer_channels.mix_state(Mix.Task, :run, 1)
     refute :ncc_tracer_channels.mix_state(:ets, :insert, 2)
