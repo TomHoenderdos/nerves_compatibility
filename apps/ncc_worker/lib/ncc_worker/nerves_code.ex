@@ -319,8 +319,9 @@ defmodule NccWorker.NervesCode do
         {:ok, [source | code], strings}
 
       {pos, 1} ->
-        <<plain::binary-size(pos), char, rest::binary>> = source
-        token(char, rest, [" ", plain | code], strings)
+        plain = binary_part(source, 0, pos)
+        rest = binary_part(source, pos + 1, byte_size(source) - pos - 1)
+        token(:binary.at(source, pos), rest, [" ", plain | code], strings)
     end
   end
 
