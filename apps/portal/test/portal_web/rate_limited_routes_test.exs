@@ -7,7 +7,16 @@ defmodule PortalWeb.RateLimitedRoutesTest do
 
   alias Portal.{HexSearchCache, RateLimiter}
 
-  @buckets [:auth, :provider_auth, :scan_request, :hex_search, :hex_search_global]
+  @buckets [
+    :auth,
+    :provider_auth,
+    :scan_request,
+    :hex_search,
+    :hex_search_global,
+    :precompiled_report,
+    :precompiled_report_global,
+    :precompiled_report_global_day
+  ]
 
   setup do
     previous = Application.get_env(:portal, RateLimiter)
@@ -51,6 +60,8 @@ defmodule PortalWeb.RateLimitedRoutesTest do
     {:post, "/auth/choose-username", :anon},
     {:post, "/requests/anonymous", :anon},
     {:get, "/api/packages/hex?query=ab", :anon_json},
+    {:post, "/api/precompiled/reports", :anon_json},
+    {:delete, "/api/precompiled/reports/00000000-0000-0000-0000-000000000000", :anon_json},
     {:post, "/settings", :user},
     {:post, "/settings/password/set", :user},
     {:post, "/settings/security/reauth", :user},

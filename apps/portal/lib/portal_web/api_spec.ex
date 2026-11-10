@@ -42,12 +42,13 @@ defmodule PortalWeb.ApiSpec do
         title: "Nerves Compatibility API",
         version: "2",
         description: """
-        Read-only JSON API of the Nerves Compatibility Tracker: the latest build \
+        JSON API of the Nerves Compatibility Tracker: the latest build \
         result of every package on every Nerves system, aggregate statistics, the \
         most-downloaded failing packages, and the precompiled package files \
-        published from passing builds.
+        published from passing builds. A client may also send a miss report about \
+        its own build.
 
-        No authentication. Responses are cacheable for a minute \
+        No authentication. Read responses are cacheable for a minute \
         (`cache-control: public, max-age=60`). Send `accept: application/json` or \
         no `accept` header.
         """

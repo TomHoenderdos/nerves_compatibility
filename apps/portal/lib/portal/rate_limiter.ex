@@ -50,7 +50,14 @@ defmodule Portal.RateLimiter do
     # still exhaust it together. The global budget counts only searches that
     # reach hex.pm, not those `Portal.HexSearchCache` answers.
     hex_search: {30, @minute},
-    hex_search_global: {80, @minute}
+    hex_search_global: {80, @minute},
+    # Miss reports from the precompiled client (`mix precompiled.report`),
+    # each a stored row: per client, and for everyone at once per hour and
+    # per day, so many clients each under their own limit cannot fill the
+    # table either. A retraction (DELETE) counts against the same buckets.
+    precompiled_report: {10, :timer.hours(1)},
+    precompiled_report_global: {300, :timer.hours(1)},
+    precompiled_report_global_day: {2000, :timer.hours(24)}
   }
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)

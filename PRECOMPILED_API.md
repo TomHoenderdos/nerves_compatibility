@@ -500,6 +500,60 @@ Among the builds that pass, the client prefers an exact Elixir patch match,
 then the closest older patch, then `pure_elixir` over a system build, then the
 newest `run_id`.
 
+## Miss reports (`/api/precompiled/reports`)
+
+A client may send what its last build hit, missed and failed, so misses can
+be analysed and fixed (`mix precompiled.report` in the `precompiled`
+package). Sending is always explicit; nothing is sent during a build.
+
+| Method | Path | Answer |
+| --- | --- | --- |
+| `POST` | `/api/precompiled/reports` | `201 {"id": "<uuid>"}`; `200 {"duplicate": true}` for the same report within 24 h |
+| `DELETE` | `/api/precompiled/reports/<id>` | `204`; `404` for an unknown id |
+
+The id is all a `DELETE` takes, so it is the capability to retract a
+report. A duplicate is therefore answered without an id: two testers with
+identical projects send identical reports, and the second must not be able
+to retract the first one's. The duplicate is counted on the stored report,
+not stored again.
+
+The body is at most 256 KiB of `application/json` (413 and 415 otherwise).
+Every field at every level is checked and an unknown one refuses the report
+with 422 `{"error", "details"}`:
+
+- `format` (integer, 1 today; older formats stay accepted), `client`
+  (the client's version), `built_at` (optional ISO 8601);
+- `elixir` (version), `otp` (integer major), `os` (`family`: `unix` or
+  `win32`; `arch`: `[a-z0-9_.-]{1,64}`), `target` (Mix target),
+  optional `system` and `system_version` (the Nerves system; `system`
+  follows the Hex package-name rule);
+- `lines` (at most 500): `name`, `version`, `status` (`hit`, `miss`,
+  `fail`), `reason_code`, `reason_args` (at most 8 strings of at most 64
+  characters of `[A-Za-z0-9_.+:-]`: package names, versions,
+  Elixir/OTP/target/system names), `reason` (the code's fixed template,
+  rendered);
+- `lock` (at most 1000): `name`, `version`, `checksum` (the outer
+  checksum) of the public Hex entries of the candidates and their closure;
+- optional `contact` (at most 100 printable characters).
+
+Reason codes: `hit`, `not_in_batch`, `not_built_version`,
+`not_built_target`, `build_method_unknown`, `build_method_override`,
+`build_method_mismatch`, `malformed_entry`, `rule8_unscannable`,
+`rule8_env`, `rule8_target`, `build_predates`, `toolchain_elixir`,
+`toolchain_otp`, `dep_env_differs`, `checksum_differs`,
+`closure_mismatch`, `closure_checksum`, `closure_absent`,
+`closure_without`, `compile_env_differs`, `excepted`,
+`revoked_provenance`, `revoked_not_in_batch`, `remove_failed`,
+`deadline_passed`, `fetch_failed`, `verify_failed`, `install_failed`,
+`internal`. Another code is stored as `unknown`.
+
+Limits: 10 reports an hour per client, 300 an hour and 2000 a day in
+total; 429 with `retry-after` beyond them. A `DELETE` shares the same
+buckets as a `POST` and counts against the same limits. The limits are
+checked before the body is read. The client address is used only in
+memory, for the limits and a keyed digest of it; the address is never
+stored, nor logged at the production log level.
+
 ## Trust
 
 A manifest or file is only as trustworthy as the chain that names it: `root.json`

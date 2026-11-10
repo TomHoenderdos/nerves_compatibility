@@ -29,6 +29,20 @@ defmodule PortalWeb.Router do
     plug OpenApiSpex.Plug.PutApiSpec, module: PortalWeb.ApiSpec
   end
 
+  # Miss reports from the precompiled client. Rate limits first, then the
+  # body: `PortalWeb.Plugs.BodyParsers` left it unread in the endpoint, and
+  # `PortalWeb.Plugs.ReportBody` reads at most 256 KiB of JSON. The routes
+  # below set `log: false`, so no dispatch line with the parameters (the
+  # contact among them) is logged; nothing here logs the client address.
+  # A DELETE counts against the same buckets as a POST.
+  pipeline :precompiled_reports do
+    plug :accepts, ["json"]
+    plug PortalWeb.Plugs.RateLimit, bucket: :precompiled_report
+    plug PortalWeb.Plugs.RateLimit, bucket: :precompiled_report_global, by: :global
+    plug PortalWeb.Plugs.RateLimit, bucket: :precompiled_report_global_day, by: :global
+    plug PortalWeb.Plugs.ReportBody
+  end
+
   # For endpoints a browser calls with `fetch`, not by navigating: they need a
   # session and a CSRF check like any other browser route, but they answer
   # JSON. `:browser` cannot serve them -- it opens with `plug :accepts,
@@ -238,6 +252,14 @@ defmodule PortalWeb.Router do
     pipe_through :browser
 
     get "/docs", ApiDocsController, :index
+  end
+
+  # Every route here has an `operation` spec too (`PortalWeb.ApiSpecTest`).
+  scope "/api", PortalWeb do
+    pipe_through :precompiled_reports
+
+    post "/precompiled/reports", PrecompiledReportController, :create, log: false
+    delete "/precompiled/reports/:id", PrecompiledReportController, :delete, log: false
   end
 
   # Every route in this scope must have an `operation` spec on its controller

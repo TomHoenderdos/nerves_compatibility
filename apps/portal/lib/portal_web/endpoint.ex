@@ -38,7 +38,9 @@ defmodule PortalWeb.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
-  plug Plug.Parsers,
+  # `Plug.Parsers` everywhere except the miss report routes, which parse
+  # their own capped body after their rate limits.
+  plug PortalWeb.Plugs.BodyParsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
     json_decoder: Phoenix.json_library()
