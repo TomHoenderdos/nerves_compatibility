@@ -94,6 +94,7 @@ defmodule NccWorker.Portability.ConfigReads do
   build's `compile_env` list only.
   """
 
+  alias Compatibility.RecordedValue
   alias NccWorker.Portability.Context
 
   @prefix "compile-time config read: "
@@ -411,10 +412,21 @@ defmodule NccWorker.Portability.ConfigReads do
   defp value(entries, {app, key}, truncated, readers, trees) do
     case Map.fetch(entries, {app, key}) do
       {:ok, :oversize} -> {:error, "config value too large: #{app} #{key}"}
-      {:ok, value} -> {:ok, value}
+      {:ok, value} -> recordable(value, app, key)
       :error when truncated -> {:error, "config snapshot truncated"}
       :error -> unset_value(app, key, readers, trees)
     end
+  end
+
+  # A snapshot value is already the base64url text the manifest records
+  # (R5's own `encode/1` or the tracer's; see the moduledoc). Task I: a
+  # compile-time-set term that is not plain, small ETF (compressed, over
+  # 64 KiB, or holding a fun, pid, port or reference) is treated exactly
+  # like an `:oversize` entry rather than published.
+  defp recordable(value, app, key) do
+    if RecordedValue.acceptable?(value),
+      do: {:ok, value},
+      else: {:error, "config value unrecordable: #{app} #{key}"}
   end
 
   # An unset key reads the same in both VMs only when its application's

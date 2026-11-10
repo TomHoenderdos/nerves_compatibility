@@ -289,7 +289,16 @@ Status codes:
       when there are no such reads. A value a dependency or the project's own
       `mix.exs` sets with `Application.put_env` while compiling is not seen:
       the item records the config value, so such a project may match a build
-      compiled without its value.
+      compiled without its value. Every `value` is uncompressed ETF, at most
+      65,536 bytes, containing no funs, pids, ports or references
+      (`Compatibility.RecordedValue.acceptable?/1`): the worker and the
+      portal both refuse to record or re-serve an entry whose value fails
+      this check, dropping the whole `compile_env` list to `null` for that
+      build instead, because a client's own match (`precompiled`'s
+      `Match.recorded_equals?/2`) decodes a value with
+      `:erlang.binary_to_term(bin, [:safe])`, which inflates compressed ETF
+      before `:safe` runs and still admits a fun of an already-loaded
+      module.
     - A carried-forward entry (a partial rebuild of the version that left this
       system out) describes the run that actually built the files, so its
       `run_id` can be older than the version's newest run.

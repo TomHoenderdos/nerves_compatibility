@@ -395,6 +395,26 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     assert %{items: [], problems: []} = judge([], nil)
   end
 
+  test "a snapshot value that is not plain, small ETF cannot be recorded" do
+    decided = [obs("pkg", read("fx", "k"))]
+
+    compressed =
+      {:ok, List.duplicate(:ok, 2000)}
+      |> :erlang.term_to_binary(compressed: 9)
+      |> Base.url_encode64(padding: false)
+
+    assert %{items: [], problems: ["config value unrecordable: fx k"]} =
+             judge(decided, snap(%{{"fx", "k"} => compressed}))
+
+    fun =
+      {:ok, &Enum.map/2}
+      |> :erlang.term_to_binary([:deterministic])
+      |> Base.url_encode64(padding: false)
+
+    assert %{items: [], problems: ["config value unrecordable: fx k"]} =
+             judge(decided, snap(%{{"fx", "k"} => fun}))
+  end
+
   test "more than 500 distinct reads cannot be judged" do
     decided = for i <- 1..501, do: obs("pkg", read("fx", "k#{i}"))
 

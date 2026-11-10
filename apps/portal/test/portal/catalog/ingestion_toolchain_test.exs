@@ -191,6 +191,54 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert stored.latest_version == "1.4.3"
   end
 
+  # Task I: a recorded compile_env value must be plain, small ETF; the
+  # container writes result.json, so the portal re-checks it the same way
+  # the worker already does before recording one.
+  test "a compile_env with an unrecordable value stores nil for the whole list" do
+    name = unique_name()
+    beam = blob("beam-#{name}")
+    priv = blob("priv-#{name}")
+
+    compressed =
+      List.duplicate(:ok, 2000)
+      |> :erlang.term_to_binary(compressed: 9)
+      |> Base.url_encode64(padding: false)
+
+    result =
+      name
+      |> pass_result(beam, priv)
+      |> update_in(["toolchain_build", "compile_env"], fn _ ->
+        [%{"app" => name, "path" => ["k"], "value" => compressed}]
+      end)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, tb} =
+                 Ingestion.ingest_toolchain(result, opts(name, files_dir_with([beam, priv])))
+
+        assert tb.compile_env == nil
+        send(self(), {:tb, tb})
+      end)
+
+    assert_received {:tb, _tb}
+    assert log =~ "compile_env"
+    refute log =~ compressed
+  end
+
+  test "a compile_env with every value recordable still stores as reported" do
+    name = unique_name()
+    beam = blob("beam-#{name}")
+    priv = blob("priv-#{name}")
+
+    assert {:ok, tb} =
+             Ingestion.ingest_toolchain(
+               pass_result(name, beam, priv),
+               opts(name, files_dir_with([beam, priv]))
+             )
+
+    assert tb.compile_env == [%{"app" => name, "path" => ["k"], "value" => "g2o"}]
+  end
+
   test "re-ingesting the same build keeps one row and its memberships" do
     name = unique_name()
     beam = blob("beam-#{name}")

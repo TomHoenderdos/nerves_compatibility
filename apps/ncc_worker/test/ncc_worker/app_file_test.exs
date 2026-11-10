@@ -42,6 +42,20 @@ defmodule NccWorker.AppFileTest do
     assert AppFile.read_compile_env(path) == []
   end
 
+  test "a fun-valued compile_env entry cannot be recorded, so the whole read is nil",
+       %{tmp_dir: dir} do
+    path =
+      write_app(dir, "sample", [
+        {:compile_env,
+         [
+           {:sample, [:backend], {:ok, SomeBackend}},
+           {:sample, [:bad], {:ok, &Enum.map/2}}
+         ]}
+      ])
+
+    assert AppFile.read_compile_env(path) == nil
+  end
+
   test "a missing or unparseable app file gives nil", %{tmp_dir: dir} do
     assert AppFile.read_compile_env(Path.join(dir, "nope.app")) == nil
     bad = Path.join(dir, "bad.app")

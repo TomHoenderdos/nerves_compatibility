@@ -210,7 +210,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
       |> Map.put("package_checksum", "deadbeef")
       |> update_in(["systems", "nerves_system_rpi4"], fn sys ->
         Map.put(sys, "compile_env", [
-          %{"app" => "sample", "path" => ["mode"], "value" => "g2gCZAACb2tkAARmYXN0"}
+          %{"app" => "sample", "path" => ["mode"], "value" => "g2gCdwJva20AAAAEZmFzdA"}
         ])
       end)
 
@@ -226,7 +226,7 @@ defmodule PortalWeb.CatalogApiControllerTest do
     assert build["package_checksum"] == "deadbeef"
 
     assert build["compile_env"] == [
-             %{"app" => "sample", "path" => ["mode"], "value" => "g2gCZAACb2tkAARmYXN0"}
+             %{"app" => "sample", "path" => ["mode"], "value" => "g2gCdwJva20AAAAEZmFzdA"}
            ]
   end
 

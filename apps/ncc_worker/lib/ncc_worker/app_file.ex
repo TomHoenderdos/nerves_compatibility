@@ -133,7 +133,11 @@ defmodule NccWorker.AppFile do
   The `compile_env` triples of an `.app` file as JSON-safe maps. Values are
   arbitrary terms, so each is the deterministic external term format of
   `{:ok, value}` or `:error`, base64url. `[]` when the key is absent, `nil`
-  when the file is missing or does not parse.
+  when the file is missing or does not parse, and `nil` too (Task I) when
+  any entry's encoded value is not plain, small ETF
+  (`Compatibility.RecordedValue.acceptable?/1`): the compiled code set a
+  term at compile time that a client could never safely decode, so the
+  build gets no `compile_env` at all, the same as an unreadable `.app`.
   """
   @spec read_compile_env(Path.t()) ::
           [%{app: String.t(), path: [String.t()], value: String.t()}] | nil
@@ -142,22 +146,36 @@ defmodule NccWorker.AppFile do
       {:ok, [{:application, _app, props}]} ->
         props
         |> Keyword.get(:compile_env, [])
-        |> Enum.map(fn {app, path, value} ->
-          %{
-            app: Atom.to_string(app),
-            path: Enum.map(List.wrap(path), &to_string/1),
-            value:
-              value
-              |> :erlang.term_to_binary([:deterministic])
-              |> Base.url_encode64(padding: false)
-          }
-        end)
+        |> Enum.reduce_while([], &compile_env_item/2)
+        |> case do
+          :unrecordable -> nil
+          items -> Enum.reverse(items)
+        end
 
       _ ->
         nil
     end
   rescue
     _ -> nil
+  end
+
+  defp compile_env_item({app, path, value}, acc) do
+    encoded =
+      value
+      |> :erlang.term_to_binary([:deterministic])
+      |> Base.url_encode64(padding: false)
+
+    if Compatibility.RecordedValue.acceptable?(encoded) do
+      item = %{
+        app: Atom.to_string(app),
+        path: Enum.map(List.wrap(path), &to_string/1),
+        value: encoded
+      }
+
+      {:cont, [item | acc]}
+    else
+      {:halt, :unrecordable}
+    end
   end
 
   @doc "The release copy of `package`'s `.app` under a firmware build path."

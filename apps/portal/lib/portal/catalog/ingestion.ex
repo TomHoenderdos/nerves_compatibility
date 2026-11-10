@@ -47,6 +47,7 @@ defmodule Portal.Catalog.Ingestion do
   import Ecto.Query, only: [from: 2]
 
   alias Compatibility.ConfigVariants
+  alias Compatibility.RecordedValue
   alias Portal.ArtifactStore
 
   alias Portal.Catalog.{
@@ -737,7 +738,7 @@ defmodule Portal.Catalog.Ingestion do
       deps_lock: deps_lock(build["deps_lock"]),
       package_checksum: package_checksum(build["package_checksum"]),
       declared: declared(build["declared"]),
-      compile_env: compile_env(build["compile_env"]),
+      compile_env: compile_env(build["compile_env"], {opts.package, opts.version}),
       file_manifest: file_manifest(build["file_manifest"]),
       optional_deps: optional_deps(result["optional_deps"]),
       portability_rule: portability_rule(build["portability_rule"]),
@@ -880,6 +881,7 @@ defmodule Portal.Catalog.Ingestion do
            create_system_results(
              systems,
              {run.id, rule, hold},
+             package_name,
              version,
              staged,
              logs
@@ -1019,14 +1021,29 @@ defmodule Portal.Catalog.Ingestion do
   defp declared_item(_), do: nil
 
   # Same contract as deps_lock/1: all or nothing per system, the ingest
-  # itself still succeeds.
-  defp compile_env(list) when is_list(list) do
+  # itself still succeeds. Task I: an entry whose value is not plain, small
+  # ETF (`Compatibility.RecordedValue.acceptable?/1`) drops the whole list,
+  # the same as a malformed one, because the container that wrote
+  # result.json could have recorded any term the package set in its own
+  # application env. `context` (`{package, version}`) is used only for the
+  # warning; never the value itself.
+  defp compile_env(list, context \\ nil)
+
+  defp compile_env(list, context) when is_list(list) do
     Enum.reduce_while(list, [], fn
       %{"app" => app, "path" => path, "value" => value}, acc
       when is_binary(app) and is_list(path) and is_binary(value) ->
-        if Enum.all?(path, &is_binary/1),
-          do: {:cont, [%{"app" => app, "path" => path, "value" => value} | acc]},
-          else: {:halt, nil}
+        cond do
+          not Enum.all?(path, &is_binary/1) ->
+            {:halt, nil}
+
+          not RecordedValue.acceptable?(value) ->
+            warn_unrecordable(context)
+            {:halt, nil}
+
+          true ->
+            {:cont, [%{"app" => app, "path" => path, "value" => value} | acc]}
+        end
 
       _, _ ->
         {:halt, nil}
@@ -1037,7 +1054,17 @@ defmodule Portal.Catalog.Ingestion do
     end)
   end
 
-  defp compile_env(_), do: nil
+  defp compile_env(_list, _context), do: nil
+
+  defp warn_unrecordable(nil), do: :ok
+
+  defp warn_unrecordable({package, version}) do
+    Logger.warning(
+      "compile_env dropped: an entry's value is not plain, small ETF",
+      package: package,
+      version: version
+    )
+  end
 
   # The R5 mark only next to a `compile_env` this ingest keeps: a mark on a
   # list it rejected would exempt a build from the withheld list with no
@@ -1269,16 +1296,24 @@ defmodule Portal.Catalog.Ingestion do
 
   defp run_log(_overall, opts), do: Map.get(opts, :log)
 
-  defp create_system_results(systems, run, version, staged, logs) do
+  defp create_system_results(systems, run, package_name, version, staged, logs) do
     Enum.reduce_while(systems, :ok, fn {system_pkg, sys}, _acc ->
-      case create_system_result(system_pkg, sys, run, version, staged, logs) do
+      case create_system_result(system_pkg, sys, run, package_name, version, staged, logs) do
         {:ok, _} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
 
-  defp create_system_result(system_pkg, sys, {run_id, rule, hold}, version, staged, logs) do
+  defp create_system_result(
+         system_pkg,
+         sys,
+         {run_id, rule, hold},
+         package_name,
+         version,
+         staged,
+         logs
+       ) do
     status = Compatibility.Types.parse_status(sys["status"])
     held_at = if system_pkg == "pure_elixir", do: hold
 
@@ -1294,7 +1329,7 @@ defmodule Portal.Catalog.Ingestion do
         phase_timings: sys["phase_timings"],
         hex_version_tested: version,
         beam_scan: sys["beam_scan"],
-        compile_env: compile_env(sys["compile_env"]),
+        compile_env: compile_env(sys["compile_env"], {package_name, version}),
         dependency_scans: drop_file_manifests(sys["dependency_scans"]),
         log_path: nil,
         log_tail: sys["log_tail"],
@@ -1438,7 +1473,7 @@ defmodule Portal.Catalog.Ingestion do
   #
   # An ambient transaction is required, not optional: outside one, `SAVEPOINT`
   # is itself an error, the `catch` below swallows it, and every log is silently
-  # dropped with a warning. The only caller is `create_system_result/6`, inside
+  # dropped with a warning. The only caller is `create_system_result/7`, inside
   # the transaction `ingest/2` opens.
   #
   # Nothing about the log's *content* can trigger that: the sanitizer guarantees
