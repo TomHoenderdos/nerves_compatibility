@@ -13,7 +13,7 @@
     "telemetry": "1.4.2",
     "telemetry_metrics": "1.2.0",
     "websock": "0.5.3",
-    "websock_adapter": "0.7.1"
+    "websock_adapter": "0.7.2"
   },
   "judge_compile": "finished",
   "observations": {
@@ -3495,6 +3495,7 @@
         "owner": "plug"
       }
     ],
+    "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "waived",
@@ -3502,7 +3503,22 @@
       "config value cannot be told: phoenix_view template_engines"
     ],
     "refusals": [],
-    "taint": {}
+    "taint": {},
+    "tree_check": {
+      "mime": "ok",
+      "phoenix": "ok",
+      "phoenix_html": "ok",
+      "phoenix_live_dashboard": "ok",
+      "phoenix_live_view": "ok",
+      "phoenix_pubsub": "ok",
+      "phoenix_template": "ok",
+      "plug": "ok",
+      "plug_crypto": "ok",
+      "telemetry": "ok",
+      "telemetry_metrics": "ok",
+      "websock": "ok",
+      "websock_adapter": "ok"
+    }
   },
   "optional_deps": {
     "added": [],

@@ -9,12 +9,16 @@
     "config_unreviewed": [],
     "elixir_version": [],
     "mix_exs_allowed": [],
+    "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "waived",
     "problems": [],
     "refusals": [],
-    "taint": {}
+    "taint": {},
+    "tree_check": {
+      "nimble_options": "ok"
+    }
   },
   "optional_deps": {
     "added": [],

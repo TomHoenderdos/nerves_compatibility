@@ -20,12 +20,16 @@
         "owner": "expo"
       }
     ],
+    "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "waived",
     "problems": [],
     "refusals": [],
-    "taint": {}
+    "taint": {},
+    "tree_check": {
+      "expo": "ok"
+    }
   },
   "optional_deps": {
     "added": [],

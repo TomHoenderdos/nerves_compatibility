@@ -74,10 +74,9 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     # (elixir_make) and decimal (see @hits) host reads.
     {"phoenix_live_dashboard", "include"} => "could_not_judge",
     {"swoosh", "exclude"} => "pass",
-    # certifi's parse transform (certifi_pt.replace_cacerts/1) reads
-    # erlang:system_info/1 and resolves the OTP root's path components;
-    # parse_trans.get_file/1 does the same while compiling parse_trans and
-    # hackney; quic's rebar.config runs pre_hooks (all R3 taint).
+    # quic's and hackney's rebar.config run pre_hooks (R3 taint). The reads
+    # certifi_pt and parse_trans made through OTP's own code loading
+    # (erl_prim_loader) no longer refuse (judge refinements, item 5a).
     {"swoosh", "include"} => "refused",
     # sentry's mix.exs reads SENTRY_INTEGRATION for `test_paths` (line 17),
     # but project/0 ends `++ xref_options()`, an `if` on System.version(),
@@ -195,21 +194,21 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     end
   end
 
-  # Packages rebar3 builds whose rebar.config has a platform_define: host
-  # dependence by definition when rebar compiles, refused under rule 2 too.
-  @negatives [{"poolboy", "1.5.2"}]
+  # Packages rebar3 builds whose only platform_define regex sees nothing
+  # but the OTP major (judge refinements, item 3): poolboy's `"^R"` decides
+  # the same on every host of one OTP major, so it passes under rule 2. A
+  # regex that sees past the major keeps refusing; rebar_platform_define_test
+  # pins that.
+  @platform_define_major_only [{"poolboy", "1.5.2"}]
 
-  for {package, version} <- @negatives do
-    @tag package: package, version: version, variant: "include", negative: true
-    test "negative: #{package} #{version} stays refused", ctx do
+  for {package, version} <- @platform_define_major_only do
+    @tag package: package, version: version, variant: "include"
+    test "platform_define on the OTP major only: #{package} #{version} passes", ctx do
       %{package: package, version: version} = ctx
       {golden, stats} = build(ctx, package, version, "include")
       report(ctx, golden, stats)
 
-      assert golden["status"] == "skipped"
-
-      assert String.starts_with?(golden["reason"] || "", "rebar3 build "),
-             inspect(golden["reason"])
+      assert golden["status"] == "pass", inspect(Map.take(golden, ["status", "reason"]))
     end
   end
 
