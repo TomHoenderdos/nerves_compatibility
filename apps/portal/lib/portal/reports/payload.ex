@@ -160,8 +160,16 @@ defmodule Portal.Reports.Payload do
     end
   end
 
+  # A key with nothing printable in it still gets a label, so the error
+  # never reads ": unknown field" with an empty name.
   defp echo(key) when is_binary(key) do
-    key |> String.replace_invalid("?") |> String.replace(@unprintable, "") |> String.slice(0, 40)
+    case key
+         |> String.replace_invalid("?")
+         |> String.replace(@unprintable, "")
+         |> String.slice(0, 40) do
+      "" -> "(unprintable)"
+      label -> label
+    end
   end
 
   defp echo(key), do: key |> inspect(limit: 5, printable_limit: 40) |> echo()

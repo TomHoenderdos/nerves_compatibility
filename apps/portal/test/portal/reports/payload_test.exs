@@ -209,6 +209,16 @@ defmodule Portal.Reports.PayloadTest do
     assert line.reason == "a b c d e"
   end
 
+  test "the reason has separators, private use and unassigned code points replaced" do
+    l = %{
+      line("jason", "1.4.5", "miss", "fetch_failed", [])
+      | "reason" => "a\u2028b\u2029c\uE000d\u0378e"
+    }
+
+    assert {:ok, %{lines: [line]}} = Payload.validate(%{body() | "lines" => [l]})
+    assert line.reason == "a b c d e"
+  end
+
   test "an unknown reason code keeps its text, cut at 300 characters" do
     l = %{
       line("jason", "1.4.5", "miss", "brand_new", [])
@@ -243,6 +253,12 @@ defmodule Portal.Reports.PayloadTest do
       assert message =~ "evilkey" <> String.duplicate("k", 33) <> ": unknown field"
       refute message =~ String.duplicate("k", 34)
       refute message =~ ~r/[\r\n\x{202E}]/u
+    end
+
+    test "a key made only of unprintable characters gets a placeholder label" do
+      message = errors(Map.put(body(), "\r\n\u202E\u200B", 1))
+      assert message =~ "(unprintable): unknown field"
+      refute message =~ ~r/(^|\n): unknown field/
     end
 
     test "many unknown top-level keys name five and count the rest" do

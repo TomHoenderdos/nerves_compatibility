@@ -376,4 +376,32 @@ defmodule PortalWeb.PrecompiledReportControllerTest do
 
     assert near.body_params == %{"a" => 1}
   end
+
+  test "segments are decoded once, as the router decodes them", %{conn: conn} do
+    opts = PortalWeb.Plugs.BodyParsers.init(parsers: [:json], pass: ["*/*"], json_decoder: Jason)
+
+    # An encoded slash stays inside its segment, a double encoding decodes
+    # to "%72eports" and a NUL makes a different name: none is a report
+    # route, so the endpoint parser reads them as usual and the router
+    # finds no route.
+    for path <- [
+          "/api/precompiled%2Freports",
+          "/api/precompiled/%2572eports",
+          "/api/precompiled/reports%00"
+        ] do
+      parsed =
+        Plug.Test.conn(:post, path, ~s({"a":1}))
+        |> put_req_header("content-type", "application/json")
+        |> PortalWeb.Plugs.BodyParsers.call(opts)
+
+      assert parsed.body_params == %{"a" => 1}, path
+
+      sent =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post(path, ~s({"a":1}))
+
+      assert sent.status == 404, path
+    end
+  end
 end
