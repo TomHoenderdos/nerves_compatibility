@@ -330,7 +330,9 @@ of these skips the build:
   `mix_project_paths` observations and refuse nothing;
 - a build path baked into the beams outside diagnostic metadata;
 - a call into a natively built dependency while the package compiles;
-- a rebar3 build with hooks, plugins, `platform_define` or `rebar.config.script`;
+- a rebar3 build with hooks, plugins, `rebar.config.script`, or a `platform_define` whose regex can see past the
+  leading OTP major (precompiled judge refinements, item 3; `rebar_utils:get_arch/0` puts the full OTP version
+  ahead of the arch and wordsize, but the client checks only the major);
 - a trace that did not finish.
 
 The files judged and archived are the traced compile's own. The traced compile runs with the host env

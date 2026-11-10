@@ -19,7 +19,8 @@ defmodule NccWorker.Portability.Rebar do
   other profile (`test`, `docs`, ...) are ignored. A hook or plugin key
   counts only as a key of an active section; inside `overrides` it counts
   at any depth (fail closed). `platform_define` counts at any depth of an
-  active section.
+  active section, unless its regex can consume only the leading OTP major
+  (precompiled judge refinements, item 3).
 
   The judge (`check_sources/3`) reads the dependency's `rebar.config` and
   `rebar.config.script` from its checksum-verified Hex tarball
@@ -248,7 +249,10 @@ defmodule NccWorker.Portability.Rebar do
     end)
   end
 
-  # Ignoring `project_plugins` and inactive profiles at the top level.
+  # Ignoring `project_plugins` and inactive profiles at the top level. Item 3
+  # (precompiled judge refinements): a `platform_define` whose regex can
+  # consume only the leading OTP major (`otp_major_only?/1`) is accepted;
+  # any other one refuses, as before.
   defp platform_define(sections) do
     searched =
       Enum.map(sections, fn
@@ -256,17 +260,92 @@ defmodule NccWorker.Portability.Rebar do
         other -> other
       end)
 
-    pd? =
-      any_term?(
+    defines =
+      collect(
         searched,
         &(is_tuple(&1) and tuple_size(&1) > 0 and elem(&1, 0) == {:atom, "platform_define"})
       )
 
-    if pd?, do: {:refuse, "rebar3 build uses platform_define"}, else: :ok
+    if Enum.all?(defines, &otp_major_only?/1),
+      do: :ok,
+      else: {:refuse, "rebar3 build uses platform_define"}
   end
 
   defp inactive?({{:atom, key}, _value}), do: key in ["profiles", "project_plugins"]
   defp inactive?(_term), do: false
+
+  # Every term in `term`, itself included, for which `fun` holds.
+  defp collect(term, fun) do
+    own = if fun.(term), do: [term], else: []
+    own ++ Enum.flat_map(inner(term), &collect(&1, fun))
+  end
+
+  # `rebar_utils:get_arch/0` is `<full OTP version>-<arch>-<wordsize>`, and
+  # the client checks only the OTP major. A regex of `^` followed only by
+  # digits, `R`, classes of digits and `( | )` groups of the same can only
+  # consume characters before the first `.` or `-`, so it decides the same
+  # on every host and patch of the build's major. Evaluated against the
+  # major followed by `.` and by `-`: both must agree.
+  defp otp_major_only?({{:atom, "platform_define"}, regex, _key}), do: major_regex?(regex)
+
+  defp otp_major_only?({{:atom, "platform_define"}, regex, _key, _value}),
+    do: major_regex?(regex)
+
+  defp otp_major_only?(_define), do: false
+
+  defp major_regex?(regex) do
+    with {:ok, text} <- regex_text(regex),
+         "^" <> body <- text,
+         {:ok, ""} <- major_seq(body),
+         {:ok, compiled} <- Regex.compile(text) do
+      major = :erlang.system_info(:otp_release) |> List.to_string()
+      Regex.match?(compiled, major <> ".") == Regex.match?(compiled, major <> "-")
+    else
+      _ -> false
+    end
+  end
+
+  defp regex_text(text) when is_binary(text),
+    do: if(String.valid?(text), do: {:ok, text}, else: :error)
+
+  defp regex_text([_ | _] = chars) do
+    if Enum.all?(chars, &is_integer/1), do: {:ok, List.to_string(chars)}, else: :error
+  rescue
+    _ -> :error
+  end
+
+  defp regex_text(_regex), do: :error
+
+  # The grammar: items until something else, returning what is left.
+  defp major_seq(<<c, rest::binary>>) when c in ?0..?9 or c == ?R, do: major_seq(rest)
+
+  defp major_seq("[" <> rest) do
+    with {:ok, rest} <- major_class(rest), do: major_seq(rest)
+  end
+
+  defp major_seq("(" <> rest) do
+    with {:ok, rest} <- major_group(rest), do: major_seq(rest)
+  end
+
+  defp major_seq(rest), do: {:ok, rest}
+
+  defp major_group(text) do
+    case major_seq(text) do
+      {:ok, "|" <> rest} -> major_group(rest)
+      {:ok, ")" <> rest} -> {:ok, rest}
+      _ -> :error
+    end
+  end
+
+  # Digits and digit ranges, at least one, up to `]`.
+  defp major_class(<<d, ?-, e, rest::binary>>) when d in ?0..?9 and e in ?0..?9,
+    do: major_class_more(rest)
+
+  defp major_class(<<d, rest::binary>>) when d in ?0..?9, do: major_class_more(rest)
+  defp major_class(_text), do: :error
+
+  defp major_class_more("]" <> rest), do: {:ok, rest}
+  defp major_class_more(text), do: major_class(text)
 
   # Whether `fun` holds for `term` or anything inside it (lists, tuples,
   # maps). The parser bounds the nesting depth.
