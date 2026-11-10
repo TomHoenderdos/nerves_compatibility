@@ -6,7 +6,7 @@ defmodule NccWorker.BuildSelection do
   Unavailable or ambiguous evidence always keeps firmware builds enabled.
   """
 
-  alias NccWorker.{BuildCache, NativeBuild, StaticPriv}
+  alias NccWorker.{BuildCache, NativeBuild, NervesCode, StaticPriv}
 
   @spec select(String.t(), String.t(), String.t(), map(), [{String.t(), String.t()}]) ::
           :pure_elixir | :firmware
@@ -83,7 +83,8 @@ defmodule NccWorker.BuildSelection do
   R0), which the compile-time trace (`NccWorker.Portability`) does not
   cover: compiled beams in portable languages, no NIF or driver load in
   them, static priv data only (`portable?/4`'s priv rule), no mention of
-  Nerves in the sources, and no native sources, native build dependencies,
+  Nerves in the code of its sources (`NccWorker.NervesCode`; rule 1 keeps
+  the plain grep), and no native sources, native build dependencies,
   target reads or `nerves*` name (`BuildCache.dep_target_agnostic?/2`).
   These checks cover the package only, not the dependencies in its closure:
   a dependency that mentions Nerves or reads the target, such as a Mix
@@ -112,7 +113,7 @@ defmodule NccWorker.BuildSelection do
 
     with :ok <- static_scan(scan),
          :ok <- portable_priv(project, package, scan, opts),
-         :ok <- nerves_check(Path.join(deps, package)) do
+         :ok <- nerves_code_check(Path.join(deps, package)) do
       check(target_agnostic(project, package, opts), "reads the target or ships native code")
     end
   rescue
@@ -225,6 +226,17 @@ defmodule NccWorker.BuildSelection do
        do: true
 
   defp pure_beams?(_), do: false
+
+  # Rule 2's Nerves check (item 2, `NccWorker.NervesCode`): code, not prose.
+  # The same outcomes as `nerves_check/1`, which rule 1 keeps.
+  defp nerves_code_check(dir) do
+    case NervesCode.mention(dir) do
+      :found -> {:skip, "nerves-specific source"}
+      :none -> :ok
+      :missing -> :ok
+      :error -> {:skip, "portability could not be judged"}
+    end
+  end
 
   # The package's own Nerves check. A missing source is left to
   # `BuildCache.dep_target_agnostic?/2`, the next check, which refuses it as

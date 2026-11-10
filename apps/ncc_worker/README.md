@@ -407,7 +407,8 @@ mode does not run it through `NccWorker.DepsGetClassifier`; only a full, targets
 
 `portability_rule`, `rule1_reason` and `compile_observations` are present for `pass` and `skipped` and `null` for
 `error`. `portability_rule` is `2`: the static rules (`BuildSelection.static_rules/4`: compiled beams in Elixir or
-Erlang, no NIF or driver load, static priv only, no mention of Nerves in the sources, no native sources, native
+Erlang, no NIF or driver load, static priv only, no mention of Nerves in the code of its sources
+(`NccWorker.NervesCode`; rule 1 keeps the plain grep), no native sources, native
 build dependencies, target reads or `nerves*` name) AND the compile-time trace. A program call, an executable lookup
 or an `:os.type()` in the sources no longer refuses a build; the trace refuses one made at compile time, and a
 module that holds a source path in a package that runs programs. `rule1_reason` is what rule 1 (`portable?/4`, the

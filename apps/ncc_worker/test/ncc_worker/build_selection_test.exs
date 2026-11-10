@@ -432,9 +432,15 @@ defmodule NccWorker.BuildSelectionTest do
       assert {:skip, "calls os:cmd/1"} = BuildSelection.portable?(root, "sample", calls)
     end
 
-    test "a mention of nerves in the sources still refuses", %{root: root} do
+    test "Nerves named in code refuses; in prose it no longer does (item 2)", %{root: root} do
       source = package(root, "sample")
       File.write!(Path.join(source, "lib/example.ex"), "# runs on Nerves.Runtime too\n")
+      assert BuildSelection.static_rules(root, "sample", scan()) == :ok
+
+      File.write!(
+        Path.join(source, "lib/example.ex"),
+        "defmodule E do\n  alias Nerves.Runtime\nend\n"
+      )
 
       assert BuildSelection.static_rules(root, "sample", scan()) ==
                {:skip, "nerves-specific source"}
