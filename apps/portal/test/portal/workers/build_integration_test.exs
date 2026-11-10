@@ -355,6 +355,15 @@ defmodule Portal.Workers.BuildIntegrationTest do
     # Promotion already ran inside Build.perform/1, into tmp_cache, which is
     # outside the scratch tree and survives that cleanup.
     assert {:ok, %{result: result}} = Builder.load_run(run_id)
+
+    # Candidates come only from a passing host compile (`BuildCache.store/2`);
+    # a host failure, such as a Hex release not yet visible everywhere, then
+    # reads as itself rather than as "no candidate".
+    host = get_in(result, ["systems", "host"]) || %{}
+
+    assert host["status"] == "pass",
+           "expected jason's host compile to pass: #{inspect(Map.take(host, ["status", "error", "log_tail"]))}"
+
     candidates = get_in(result, ["cache", "candidates"]) || []
     assert candidates != [], "expected jason to report at least one build cache candidate"
     assert Enum.all?(candidates, &(&1["dep"] == "jason"))
