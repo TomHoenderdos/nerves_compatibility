@@ -33,6 +33,11 @@ defmodule NccWorker.Tracer.PathOsFramesTest do
     src = src(module)
 
     assert File.regular?(src), "#{module}: neither debug info nor source (#{src})"
+    # erl_prim_loader's source includes inet_boot.hrl, which erts/src does
+    # not ship: epp turns what needs it into error forms. Only the inet boot
+    # functions use it, and none of the path helpers reaches them; if a
+    # function the pin needs is lost that way, reach/3 fails on "local not
+    # found" (fail closed).
     {:ok, forms} = :epp.parse_file(String.to_charlist(src), [])
     forms
   end

@@ -651,7 +651,10 @@ classified(M, F, Args, {user, _, _, _} = Extent, Info, Stack, St) ->
 %% only under the pinned shape that makes that read
 %% (ncc_tracer_stack:code_loading_read/4). Only a flag: the judge decides
 %% (NccWorker.Portability.Events). The stack is looked at only for the two
-%% calls that can be one; a stack this cannot take apart sets no flag.
+%% calls that can be one; a stack this cannot take apart sets no flag. The
+%% os_type branch is deliberate defence in depth: a real pathtype os_type
+%% read is already path handling (erl_prim_loader:pathtype/1 is a path
+%% frame, so record/4 counts it), and only read_link depends on the flag.
 code_load({Channel, Arg} = Class, M, F, Args, Stack)
   when (M =:= erlang andalso F =:= system_info andalso Args =:= [os_type]);
        (M =:= prim_file andalso F =:= read_link) ->

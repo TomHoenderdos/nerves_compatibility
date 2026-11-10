@@ -17,7 +17,8 @@ defmodule NccWorker.Portability.Events do
       `os:version/0` or `system_info(os_type)` when the first frame after
       the wrappers is one of the path internals that read it themselves
       (`:ncc_tracer_channels.path_os_frames/0`: `Path.major_os_type/0`,
-      `:filename.split/1` and the like; never a function that runs a fun it
+      `:filename.split/1` and the like, and `:erl_prim_loader`'s unexported
+      `pathtype/1`, `normalize/2` and `real_path/4`; never a function that runs a fun it
       was given, so a package callback tail-calling the read is refused). Every other key refuses. The tracer
       writes no line for those path-handling reads (it counts them as
       `path_os_reads`): a line would always be ignored here.
@@ -27,12 +28,13 @@ defmodule NccWorker.Portability.Events do
       and ignored; every other read there stays user. `system_info(wordsize)`
       is ignored only when its immediate caller (the event's `caller`) is
       `erlang:big_binary_to_int/2`, OTP converting a big integer literal.
-    * OTP code loading (item 5a): `system_info(os_type)` and
-      `prim_file:read_link/1` with the tracer's `code_loading` flag are
-      ignored. The tracer sets it only on a stack whose top is exactly the
-      shape pinned per toolchain for that read (`erl_prim_loader` frames,
-      then `code:ensure_prepare_loading/3` and `code:ensure_loaded/1`;
-      `:ncc_tracer_stack.code_loading_read/4`). The beam read that follows
+    * OTP code loading (item 5a): erl_prim_loader resolving a beam's path
+      for `code:ensure_loaded/1`. Its `system_info(os_type)` reads are path
+      handling (`erl_prim_loader:pathtype/1` and friends, above), and its
+      `prim_file:read_link/1` reads are ignored when they carry the tracer's
+      `code_loading` flag, which it sets only on a stack whose top is
+      exactly the shape pinned per toolchain for that read
+      (`:ncc_tracer_stack.code_loading_read/4`). The beam read that follows
       is judged as a read; `prim_file:get_cwd/0` is never flagged.
     * Environment, programs, network, crypto and native loading refuse.
     * Integrity (the trace API, `erts_internal` trace BIFs, `system_flag`,
@@ -256,6 +258,9 @@ defmodule NccWorker.Portability.Events do
   # Item 5a: the os_type read erl_prim_loader:pathtype/1 makes while OTP
   # loads a module into the calling process, which the tracer flags only on
   # that read's pinned stack shape (`:ncc_tracer_stack.code_loading_read/4`).
+  # Deliberate defence in depth: a real pathtype os_type read is already
+  # accepted as path handling (its first frame is a path frame), so this
+  # clause only matters if that list ever loses the frame.
   defp os_identity(%{
          "mfa" => "erlang:system_info/1",
          "arg" => %{"key" => "os_type", "code_loading" => true}
