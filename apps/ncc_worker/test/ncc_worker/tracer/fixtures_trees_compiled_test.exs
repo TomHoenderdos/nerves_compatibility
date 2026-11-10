@@ -48,6 +48,8 @@ defmodule NccWorker.Tracer.FixturesTreesCompiledTest do
     # Compiled first, untraced, after a pre-compile snapshot.
     proj = TracerFixtures.project(Path.join(root, "compiled"), ["fx_lex"], %{"fx_lex" => @dep})
     before = Portability.tree_snapshot(proj, releases: {:ok, releases}, hex_home: home)
+    snap_opts = [releases: {:ok, releases}, hex_home: home]
+    first_before = Portability.first_tree_snapshot(proj, TracerFixtures.env(proj), snap_opts)
 
     {out, status} =
       System.cmd("mix", ["compile"],
@@ -57,9 +59,12 @@ defmodule NccWorker.Tracer.FixturesTreesCompiledTest do
       )
 
     after_compile = Trees.snapshot(proj, releases, home, [])
+    # The full run's guard (item 5e, M4): taken after a compile, it is `nil`.
+    first_after = Portability.first_tree_snapshot(proj, TracerFixtures.env(proj), snap_opts)
     run = &portability_run(&1, &2, releases, home, &3)
     with_snapshot = run.(proj, "with", trees: before)
     without = run.(proj, "without", [])
+    too_late = run.(proj, "too_late", trees: first_after)
 
     # Tampered before its first compile, the toolchain path's own snapshot.
     tampered =
@@ -74,6 +79,9 @@ defmodule NccWorker.Tracer.FixturesTreesCompiledTest do
       after_compile: after_compile,
       with_snapshot: with_snapshot,
       without: without,
+      first_before: first_before,
+      first_after: first_after,
+      too_late: too_late,
       tampered: run.(tampered, "tampered", mode: :host)
     }
   end
@@ -110,6 +118,23 @@ defmodule NccWorker.Tracer.FixturesTreesCompiledTest do
 
   test "without a snapshot a compiled closure cannot be judged, never refused", ctx do
     v = ctx.without
+    assert %{status: :skip, reason: "portability could not be judged"} = v
+
+    assert Enum.any?(
+             v.observations["problems"],
+             &String.starts_with?(&1, "no tree snapshot taken before the closure was compiled")
+           ),
+           inspect(v.observations["problems"])
+  end
+
+  test "the full run's first snapshot is nil once the closure was compiled", ctx do
+    assert ctx.first_before == ctx.before
+    assert {:ok, _members} = ctx.first_before["fx_lex"]
+    assert ctx.first_after == nil
+  end
+
+  test "a nil first snapshot cannot be judged, never refused", ctx do
+    v = ctx.too_late
     assert %{status: :skip, reason: "portability could not be judged"} = v
 
     assert Enum.any?(

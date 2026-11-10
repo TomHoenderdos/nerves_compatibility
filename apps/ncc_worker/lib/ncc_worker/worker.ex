@@ -745,9 +745,12 @@ defmodule NccWorker.Worker do
     first_releases = Portability.lock_snapshot(project_dir)
 
     # Item 5e: the closure's trees against their tarballs, before the host
-    # compile writes into them (leex and yecc output in `src/`).
+    # compile writes into them (leex and yecc output in `src/`). Nerves 2's
+    # `deps.get` compiles nothing; should one ever compile the closure again
+    # (Nerves 1's nerves_bootstrap did), this is too late and is `nil`,
+    # which the judge reads as could-not-judge, never as a refusal.
     first_trees =
-      Portability.tree_snapshot(project_dir,
+      Portability.first_tree_snapshot(project_dir, host_env(project_dir),
         releases: first_releases,
         hex_home: System.get_env("HEX_HOME")
       )
@@ -1779,9 +1782,11 @@ defmodule NccWorker.Worker do
   defp passed_info(_compiled, _added, _dropped, _reason), do: nil
 
   # The traced judge compile (`NccWorker.Portability.run/3`) of the full
-  # run's `pure_elixir` path (`full_run_portability/3`). A full run's closure
-  # is compiled by nerves_bootstrap inside `mix deps.get`, so its host
-  # compile cannot be the traced one, and this recompiles the closure. It
+  # run's `pure_elixir` path (`full_run_portability/3`). A full run's host
+  # compile (`compile_host/4`) is untraced, so this recompiles the closure
+  # (`mix deps.get` compiles nothing under Nerves 2; the tree snapshot this
+  # judges against comes from before the host compile,
+  # `Portability.first_tree_snapshot/3`). It
   # runs with the host compile's env and its own `HEX_HOME`, exactly as
   # `compile_host/4` does, and judges dependency sources against the run's
   # Hex cache (the one `package_tarball/2` reads). `opts`: `releases:`, the
@@ -1836,8 +1841,11 @@ defmodule NccWorker.Worker do
   # optional deps added (fetched after the first host compile), each app
   # locked as before keeps its snapshot from before that compile
   # (`Trees.merge/4`); the rest come from the snapshot taken before the
-  # compile with them. Public for tests.
-  @spec judge_trees(map(), term(), term()) :: map()
+  # compile with them. `nil` (no snapshot before the first compile,
+  # `Portability.first_tree_snapshot/3`) stays `nil`. Public for tests.
+  @spec judge_trees(map() | nil, term(), term()) :: map() | nil
+  def judge_trees(nil, _first_releases, _info), do: nil
+
   def judge_trees(first, first_releases, %{added: [_ | _], lock_snapshot: later_releases} = info),
     do:
       NccWorker.Portability.Trees.merge(
@@ -2660,10 +2668,10 @@ defmodule NccWorker.Worker do
     end
   end
 
-  # Shared with `Project.add_package/3`, and that sharing is the point. The first
-  # `mix deps.get` already compiles the whole tree by way of nerves_bootstrap, so
-  # it has to write into the same build path this stage reads, or the work is
-  # done twice: once into `_build/dev` that nobody reads, once here.
+  # Shared with `Project.add_package/3`. Under Nerves 2 its `mix deps.get`
+  # compiles nothing; under Nerves 1 nerves_bootstrap compiled the whole tree
+  # there, and the shared env kept that compile in the build path this stage
+  # reads instead of a `_build/dev` nobody reads.
   @spec host_env(String.t()) :: [{String.t(), String.t()}]
   defp host_env(project_dir), do: HostTrace.env(project_dir)
 

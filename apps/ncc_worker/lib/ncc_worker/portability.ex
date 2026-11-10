@@ -161,7 +161,7 @@ defmodule NccWorker.Portability do
       any other value runs nothing and the verdict is could-not-judge;
     * `trees:`, item 5e: the `tree_snapshot/2` taken before the closure's
       first compile, or `:off` for no tree check (today's verdict). Without
-      it `run/3` takes the snapshot itself, which is right only before any
+      it (or with `nil`, `first_tree_snapshot/3`'s "too late") `run/3` takes the snapshot itself, which is right only before any
       compile: when the build dir already holds one of the closure's apps it
       checks nothing and the verdict is could-not-judge;
     * `makefile_rule2:`, item 1 of the judge refinements (see
@@ -337,21 +337,47 @@ defmodule NccWorker.Portability do
     _ -> %{}
   end
 
-  # `run/3`'s trees: the caller's pre-compile snapshot (`trees:`, `:off` for
-  # none), else one taken now, which is before any compile only when the
-  # build dir holds none of the closure's apps; otherwise nothing is checked
-  # and the verdict is could-not-judge (a snapshot after a compile would
-  # refuse what the compile itself wrote). An app native now is never
-  # checked, whatever the snapshot said.
-  defp trees(project_dir, opts, env, releases, home, native) do
-    case Keyword.fetch(opts, :trees) do
-      {:ok, trees} when is_map(trees) ->
-        {Map.new(trees, fn {app, tree} -> {app, unless_native(app, tree, native)} end), nil}
-
-      {:ok, _off} ->
-        {%{}, nil}
+  @doc """
+  `tree_snapshot/2` for a run whose first compile is still to come (the
+  full run's, taken after `Project.add_package/3`'s `deps.get`), or `nil`
+  when the build dir `env` names already holds one of the locked apps: some
+  step compiled the closure before it (a `deps.get` hook such as Nerves 1's
+  nerves_bootstrap), so the trees may already hold what that compile wrote
+  (leex and yecc output in `src/`). `nil` passed on as `run/3`'s `trees:`
+  is could-not-judge, as no `trees:` at all is once the closure is
+  compiled, never a refusal. Never raises.
+  """
+  @spec first_tree_snapshot(String.t(), [{String.t(), String.t()}], keyword()) ::
+          %{String.t() => Trees.tree()} | nil
+  def first_tree_snapshot(project_dir, env, opts) do
+    case releases(opts) do
+      {:ok, releases} ->
+        if compiled_apps(project_dir, env, releases) == [],
+          do: tree_snapshot(project_dir, opts)
 
       :error ->
+        tree_snapshot(project_dir, opts)
+    end
+  rescue
+    _ -> nil
+  end
+
+  # `run/3`'s trees: the caller's pre-compile snapshot (`trees:`, `:off` for
+  # none), else (no `trees:`, or `nil`, `first_tree_snapshot/3`'s "too late")
+  # one taken now, which is before any compile only when the build dir holds
+  # none of the closure's apps; otherwise nothing is checked and the verdict
+  # is could-not-judge (a snapshot after a compile would refuse what the
+  # compile itself wrote). An app native now is never checked, whatever the
+  # snapshot said.
+  defp trees(project_dir, opts, env, releases, home, native) do
+    case Keyword.get(opts, :trees) do
+      trees when is_map(trees) ->
+        {Map.new(trees, fn {app, tree} -> {app, unless_native(app, tree, native)} end), nil}
+
+      :off ->
+        {%{}, nil}
+
+      _none ->
         case compiled_apps(project_dir, env, releases) do
           [] ->
             {Trees.snapshot(project_dir, releases, home, native), nil}

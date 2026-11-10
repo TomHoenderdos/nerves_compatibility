@@ -136,14 +136,16 @@ defmodule NccWorker.Project do
   Adds the target package to the project by editing mix.exs and running
   `mix deps.get`.
 
-  `env` is not optional on purpose. nerves_bootstrap hooks `deps.get` and
-  compiles the whole dependency tree there, because it has to load every dep to
-  resolve Nerves artifacts. With no env that compile runs in `MIX_ENV=dev` into
-  `_build/dev`, which nothing downstream ever reads: the host build uses
-  `_build/host` in `:prod` and each target its own `_build/<target>`. Measured on
-  a project with `ash` as its only dep, that threw away 393 seconds and 2106
-  beam files per run. Handing in the host build's env makes the same compile
-  land where the host stage will pick it up.
+  `env` is not optional on purpose. Under Nerves 2 (the pinned template)
+  `deps.get` compiles nothing: nerves_bootstrap's aliases only hook
+  `deps.loadpaths` and `compile`, so the closure's first compile is the host
+  stage's, and the worker takes its item-5e tree snapshot right after this
+  (`NccWorker.Portability.first_tree_snapshot/3`, `nil` if anything was
+  compiled already). Under Nerves 1 nerves_bootstrap compiled the whole tree
+  inside `deps.get`; with no env that compile ran in `MIX_ENV=dev` into
+  `_build/dev`, which nothing downstream reads (measured on `ash`: 393 seconds
+  and 2106 beam files thrown away per run). The host build's env keeps any
+  such compile where the host stage picks it up.
 
   Note: we deliberately avoid `mix igniter.install`. That command temporarily
   injects igniter into mix.exs with `only: [:dev, :test]`, which fails with

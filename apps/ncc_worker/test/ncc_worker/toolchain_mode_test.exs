@@ -407,6 +407,10 @@ defmodule NccWorker.ToolchainModeTest do
 
       for other <- [nil, %{added: [], dropped: ["opt"]}, {:per_target, [], []}],
           do: assert(Worker.judge_trees(first, @first, other) == first)
+
+      # No snapshot before the first compile stays none, optional deps or not.
+      assert Worker.judge_trees(nil, @first, info) == nil
+      assert Worker.judge_trees(nil, @first, nil) == nil
     end
   end
 
