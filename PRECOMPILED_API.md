@@ -519,7 +519,8 @@ not stored again.
 
 The body is at most 256 KiB of `application/json`, with no `charset` or
 `charset=utf-8` (413 and 415 otherwise; 400 for a body that is not
-well-formed JSON).
+well-formed JSON). The size limit applies before the body is parsed, also
+for a request whose path is percent-encoded (`/api/precompiled/%72eports`).
 Every field at every level is checked and an unknown one refuses the report
 with 422 `{"error", "details"}`:
 
@@ -528,7 +529,9 @@ with 422 `{"error", "details"}`:
 - `elixir` (version), `otp` (integer major), `os` (`family`: `unix` or
   `win32`; `arch`: `[a-z0-9_.-]{1,64}`), `target` (Mix target),
   optional `system` and `system_version` (the Nerves system; `system`
-  follows the Hex package-name rule);
+  follows the Hex package-name rule). A Nerves system that is not a public
+  Hex package arrives as `custom`, with the target `custom` and no
+  `system_version`, so a private system's name is never sent;
 - `lines` (at most 500): `name`, `version`, `status` (`hit`, `miss`,
   `fail`), `reason_code`, `reason_args` (at most 8 strings of at most 64
   characters of `[A-Za-z0-9_.+:-]`: package names, versions,
@@ -549,14 +552,92 @@ Reason codes: `hit`, `not_in_batch`, `not_built_version`,
 `deadline_passed`, `fetch_failed`, `verify_failed`, `install_failed`,
 `internal`. Another code is stored as `unknown`.
 
-Limits: 10 requests an hour per client, counting every `POST` and
-`DELETE`, refused ones included; and 300 accepted reports an hour and 2000
-a day in total, counting only `201` and `200` answers, so refused requests
+Limits: 10 requests an hour per client, one budget that every `POST` and
+`DELETE` counts against, refused ones included; and 300 accepted reports
+an hour and 2000 a day in total, counting only `201` and `200` answers
+(duplicates included), so refused requests
 sent from many addresses cannot use up everyone's budget. 429 with
 `retry-after` beyond any of them. The limits are checked before the body
 is read. The client address is used only in
 memory, for the limits and a keyed digest of it; the address is never
 stored, nor logged at the production log level.
+
+### What a report triggers
+
+A `miss` line whose code is `not_built_version` or `not_built_target` may
+queue a build of what was missed. Each such line gets one decision, the
+first rule in this order that applies (a device report without a public
+system is `skipped:unbuildable` before anything else is checked):
+
+| Decision | When |
+| --- | --- |
+| `skipped:unknown_package` | The catalog has no run of the package. |
+| `skipped:unbuildable` | No build here produces the missed tuple: a device report without a public system (`custom` included), a system version no run of the last 30 days recorded, or a toolchain no worker image builds. |
+| `skipped:superseded` | A run of the last 30 days recorded a newer version of that system. A build now produces the newer one, so the older tuple would never be judged. |
+| `skipped:not_on_hex` | Hex lists no such release. |
+| `skipped:judged` | A pass, fail or skipped result already stands for the tuple. An error or unknown one (a timeout, retries spent) does not count. |
+| `skipped:queued` | A build that covers the tuple is already waiting. |
+| `skipped:cap` | The day's budget is spent (below). |
+| `skipped:error` | Queueing the build failed; the failure is logged. |
+| `queued` | A build was queued. |
+
+The tuple is `(package, version, system, system_version)` for a report with
+a Nerves system and `(package, version, toolchain)` for a host report, the
+toolchain following from its Elixir and OTP versions. A system tuple whose
+version already has a run is built as one forced target; any other version
+gets a full build. Every build a report queues runs at Oban priority 9,
+the lowest, so it never runs ahead of the regular builds.
+
+Budgets, per UTC day: 50 report builds in total, 3 per package and 5 per
+reporter (a keyed digest of the client address). A report whose reporter
+digest retention already cleared counts against one shared `reporter:none`
+budget. A line that queues nothing spends nothing.
+
+Once a day, just after the budgets reset, a sweep decides again the lines
+of the last 7 days that a budget refused, and the lines left undecided for
+more than an hour (their report's own job gave up). The package version
+the most distinct reporters asked for goes first, then the one first seen
+earliest, so one reporter cannot take the day's budget. A sweep takes at
+most 500 lines and stops once the global budget is spent; the rest waits a
+day.
+
+A report is an anonymous trigger and a build runs third-party code. The
+rules above therefore never build a package the catalog has not built
+already: the portal builds every new release of those anyway, and only a
+package's owners can publish one, so a report can make a build happen
+sooner but never build something new. One report is enough; an earlier
+design required two distinct reporters before queueing, which was dropped
+on purpose, because the budgets bound what a single reporter can trigger.
+Report builds run in the same sandbox as every other build.
+
+### Retention and storage
+
+A report's `contact` and reporter digest are cleared after 90 days, and
+the report, with its lines, is deleted after 365 days. Both periods are
+configurable (`:report_anonymise_days` and `:report_retention_days` of
+`Portal.Workers.LogRetention`). The client address itself is never stored.
+
+`lock` dominates a report's size: up to 1000 entries of about 100 bytes,
+about 100 KiB at worst. The global limits (2000 accepted reports a day)
+bound how fast the tables grow, and the 365-day retention bounds their
+total.
+
+### Analysis
+
+Until an admin page shows them, `Portal.Reports.Summary` groups the stored
+lines for analysis, run on the serving release through the rpc helper:
+
+    ops/portal-rpc.sh 'Portal.Reports.Summary.by_package() |> IO.inspect(limit: :infinity)'
+    ops/portal-rpc.sh 'Portal.Reports.Summary.storage() |> IO.inspect()'
+
+`by_package/1` groups by package, version and reason code, `by_client/1`
+by client version and reason code, and `by_target/1` by Mix target, OTP
+major and reason code. Each row has `count` (lines), `reports` and
+`reporters` (distinct), `first_seen` and `last_seen`, and the requeue state
+of its lines (`queued`, `skipped`, `open`). Options: `since:` (a
+`DateTime`, default 30 days back) and `limit:` (default 100 rows).
+`storage/0` gives the row count and on-disk size, indexes included, of
+both report tables.
 
 ## Trust
 
