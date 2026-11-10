@@ -2878,6 +2878,7 @@ defmodule Portal.Catalog do
         build
         |> put_config_variant(tb.config_variant)
         |> put_declared(tb.declared)
+        |> put_manager(tb.manager)
 
       {tb.version, tb.finished_at,
        Map.merge(files, %{"target" => "pure_elixir", "build" => build})}
@@ -2895,6 +2896,13 @@ defmodule Portal.Catalog do
   # it was recorded renders the bytes it always did.
   defp put_declared(build, nil), do: build
   defp put_declared(build, declared), do: Map.put(build, "declared", declared)
+
+  # The manager Mix built the package with, as the worker's trace recorded
+  # it (precompiled judge refinements, item 1). A client skips a build whose
+  # manager differs from its own dependency's. Left out when unknown, so a
+  # build made before it was recorded renders the bytes it always did.
+  defp put_manager(build, nil), do: build
+  defp put_manager(build, manager), do: Map.put(build, "manager", manager)
 
   # The MIX_TARGET a build was compiled under. The worker sets it from
   # `NccWorker.Systems`, whose target for `nerves_system_<x>` is always `<x>`;
@@ -2953,6 +2961,7 @@ defmodule Portal.Catalog do
       :deps_lock,
       :package_checksum,
       :declared,
+      :manager,
       :compile_env,
       :compile_env_rule,
       :compile_env_run_id,

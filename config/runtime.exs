@@ -195,6 +195,19 @@ if portal_available? do
     # as its HEX_HOME, as before the isolation work: the one-release rollback.
     # Anything else, or unset, keeps it read-only.
     hex_cache_rw: if(System.get_env("NCC_HEX_CACHE_RW") == "1", do: true),
+    # `1` lets rule 2 accept a dependency whose native build file Mix never
+    # runs (precompiled judge refinements, item 1): toolchain builds get
+    # `NCC_INPUT.judge.makefile_rule2`. Anything else, or unset, keeps it off
+    # until clients older than elixir_precompiled 0.3.1 are decided on.
+    #
+    # Fleet hazard: every node running the `:toolchain` queue must use the
+    # same worker image and the same value of this flag. A node on a lower
+    # judge revision (the flag off) than another node's toolchain rows
+    # leaves `judge_revision` lower on the rows it builds, and the backlog's
+    # judge-revision reopen (`Portal.Catalog`, `@judge_reopen`) requeues
+    # those `skipped` rows against the fleet's newest revision every sweep,
+    # rebuilding the same package weekly instead of once.
+    judge_makefile_rule2: if(System.get_env("NCC_JUDGE_MAKEFILE_RULE2") == "1", do: true),
     build_cache: System.get_env("NCC_BUILD_CACHE"),
     cpus: System.get_env("NCC_BUILD_CPUS"),
     memory: System.get_env("NCC_BUILD_MEMORY"),

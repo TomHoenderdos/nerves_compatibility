@@ -55,6 +55,14 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
           description:
             "Optional: every dependency the package declares, optional ones included, " <>
               "from the build's lock. Absent for builds made before it was recorded."
+        },
+        manager: %Schema{
+          type: :string,
+          enum: ["mix", "rebar3", "make"],
+          description:
+            "Optional: the manager Mix built the package with, from the build's trace. A " <>
+              "client skips a build whose manager differs from its own dependency's. Absent " <>
+              "on builds made before it was recorded."
         }
       },
       required: [

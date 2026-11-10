@@ -285,6 +285,11 @@ records `judge_revision` one higher. `toolchain_build.manager` is the manager th
 with. Any value other than `true` leaves item 1 off; with it on, a `deps/` the judge cannot list is "portability
 could not be judged".
 
+Fleet hazard: every node running the `:toolchain` queue must run the same worker image and the same
+`NCC_JUDGE_MAKEFILE_RULE2` value. A node at a lower judge revision than the fleet's newest leaves its toolchain rows
+at that lower revision, and the portal's judge-revision reopen requeues their `skipped` rows against the fleet's
+newest revision on every sweep instead of once.
+
 The host compile is the traced one (`NccWorker.HostTrace`, `mode: :host`): after its own `mix deps.get` it runs
 `timeout --kill-after=10 <sec> elixir -pa <work>/trace/ebin -S mix ncc.trace_compile`, which compiles every
 dependency of the package's closure, one at a time, each in its own trace window, and then the project. Nothing is

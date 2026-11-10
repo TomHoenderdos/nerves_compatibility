@@ -1375,7 +1375,7 @@ defmodule NccWorker.Portability.JudgeTest do
 
       assert %{status: :pass, manager: "mix"} = judge(proj, r, declassified: %{"dep" => "mix"})
 
-      assert %{status: :skip, reason: "manager mismatch: dep (trace mix, lock rebar3)"} =
+      assert %{status: :skip, reason: "manager mismatch: dep (trace mix, tarball rebar3)"} =
                judge(proj, r, declassified: %{"dep" => "rebar3"})
 
       # Outside the package's closure it does not count.
@@ -1391,7 +1391,7 @@ defmodule NccWorker.Portability.JudgeTest do
 
       r = %{r | closure: %{r.closure | "deps" => deps}}
 
-      assert %{status: :skip, reason: "manager mismatch: dep (trace none, lock mix)"} =
+      assert %{status: :skip, reason: "manager mismatch: dep (trace none, tarball mix)"} =
                judge(proj, r, declassified: %{"dep" => "mix"})
     end
 
@@ -1426,7 +1426,7 @@ defmodule NccWorker.Portability.JudgeTest do
       assert {[], %{"dep" => "mix"} = declassified} =
                split.(%{"Makefile" => "all:\n", "mix.exs" => ""})
 
-      assert %{status: :skip, reason: "manager mismatch: dep (trace rebar3, lock mix)"} =
+      assert %{status: :skip, reason: "manager mismatch: dep (trace rebar3, tarball mix)"} =
                judge(proj, r, declassified: declassified)
 
       assert {["dep"], %{} = none} = split.(%{"Makefile" => "all:\n"})

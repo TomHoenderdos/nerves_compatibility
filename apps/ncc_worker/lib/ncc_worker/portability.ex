@@ -494,7 +494,9 @@ defmodule NccWorker.Portability do
       traced = Context.manager(ctx, app)
 
       if MapSet.member?(scope, app) and traced != computed,
-        do: Reasons.manager_mismatch() <> "#{app} (trace #{traced || "none"}, lock #{computed})"
+        do:
+          Reasons.manager_mismatch() <>
+            "#{app} (trace #{traced || "none"}, tarball #{computed})"
     end)
   end
 

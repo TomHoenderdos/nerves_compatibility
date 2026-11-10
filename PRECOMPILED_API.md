@@ -407,6 +407,13 @@ toolchain:
   build) from one made with it. Absent on builds made before it was recorded,
   and on builds of a package that declares no dependencies; a client that
   does not know the field ignores it. Format 1 never carries it.
+- `build.manager` — optional: the manager Mix built the package with
+  (`mix`, `rebar3` or `make`), from the build's compile-time trace. A client
+  skips, as a miss, a build whose `manager` differs from its own
+  `Mix.Dep.manager` for that dependency, and any dependency the project
+  gives `:manager`, `:compile` or `:system_env` options. Toolchain builds
+  only; absent on builds made before it was recorded, and a client that
+  does not know the field ignores it.
 - `updated_at` — the newest `finished_at` among the builds listed.
 
 What it lists:

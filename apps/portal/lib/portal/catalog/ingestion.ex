@@ -743,6 +743,7 @@ defmodule Portal.Catalog.Ingestion do
       portability_rule: portability_rule(build["portability_rule"]),
       rule1_reason: bounded_reason(build["rule1_reason"]),
       judge_revision: judge_revision(build["judge_revision"]),
+      manager: manager(build["manager"]),
       compile_observations: compile_observations(build["compile_observations"]),
       compile_env_rule:
         compile_env_rule(Map.get(build, "compile_env_rule"), Map.get(build, "compile_env")),
@@ -766,6 +767,9 @@ defmodule Portal.Catalog.Ingestion do
     do: revision
 
   defp judge_revision(_revision), do: nil
+
+  defp manager(manager) when manager in ["mix", "rebar3", "make"], do: manager
+  defp manager(_manager), do: nil
 
   defp bounded_reason(reason) when is_binary(reason), do: String.slice(reason, 0, 1000)
   defp bounded_reason(_reason), do: nil

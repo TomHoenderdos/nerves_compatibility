@@ -45,8 +45,8 @@ defmodule Portal.PrecompiledFixtures do
   `:compile_env_rule` (nil, the result's R5 mark: 1 when `compile_env` also
   lists the closure's traced config reads), `:status` (`"pass"`),
   `:mode` (`33_188`), `:config_variant` (`"default"`, both the result's echo
-  and the job's value), `:portability_rule`, `:rule1_reason` and `:declared`
-  (each absent from the result unless given).
+  and the job's value), `:portability_rule`, `:rule1_reason`, `:declared`,
+  `:manager` and `:judge_revision` (each absent from the result unless given).
   """
   def ingest_toolchain_build(name, version, opts \\ []) do
     content = "toolchain-beam-#{name}-#{version}-#{System.unique_integer([:positive])}"
@@ -105,7 +105,7 @@ defmodule Portal.PrecompiledFixtures do
       Map.merge(
         build,
         opts
-        |> Keyword.take([:portability_rule, :rule1_reason, :declared])
+        |> Keyword.take([:portability_rule, :rule1_reason, :declared, :manager, :judge_revision])
         |> Map.new(fn {k, v} -> {Atom.to_string(k), v} end)
       )
     end)

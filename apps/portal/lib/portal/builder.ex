@@ -75,7 +75,9 @@ defmodule Portal.Builder do
           # (`Portal.Workers.WarmNerves`); `[]` warms what the template resolves.
           optional(:nerves_packages) => [%{String.t() => String.t()}] | nil,
           # TCP targets the worker probes before any `mix` (`Portal.EgressCheck`).
-          optional(:egress_probe) => [%{String.t() => String.t() | pos_integer()}] | nil
+          optional(:egress_probe) => [%{String.t() => String.t() | pos_integer()}] | nil,
+          # NCC_INPUT.judge (precompiled judge refinements): judge options for a toolchain build.
+          optional(:judge) => map() | nil
         }
 
   @type build_result :: %{
@@ -165,6 +167,20 @@ defmodule Portal.Builder do
   @spec egress_check?() :: boolean()
   def egress_check?, do: config(:egress_check, true) != false
 
+  @doc """
+  The `NCC_INPUT.judge` options for a build of `mode` (precompiled judge
+  refinements, item 1): `%{"makefile_rule2" => true}` for a toolchain
+  build while `NCC_JUDGE_MAKEFILE_RULE2=1` (`:judge_makefile_rule2`), else
+  nil, which the worker reads as off. Remote builds never run toolchain
+  builds, so the builder API sends none.
+  """
+  @spec judge_input(String.t() | nil) :: map() | nil
+  def judge_input("toolchain") do
+    if config(:judge_makefile_rule2, false) == true, do: %{"makefile_rule2" => true}
+  end
+
+  def judge_input(_mode), do: nil
+
   defp config(key, default) do
     :portal
     |> Application.get_env(__MODULE__, [])
@@ -241,7 +257,8 @@ defmodule Portal.Builder do
       config_variant: Map.get(args, :config_variant),
       argus: Map.get(args, :argus),
       nerves_packages: Map.get(args, :nerves_packages),
-      egress_probe: Map.get(args, :egress_probe)
+      egress_probe: Map.get(args, :egress_probe),
+      judge: judge_input(mode)
     }
 
     # Free space first: it is the cheapest check in the chain, and it is the
@@ -785,6 +802,7 @@ defmodule Portal.Builder do
     |> maybe_put("argus", Map.get(job, :argus))
     |> maybe_put("nerves_packages", Map.get(job, :nerves_packages))
     |> maybe_put("egress_probe", Map.get(job, :egress_probe))
+    |> maybe_put("judge", Map.get(job, :judge))
   end
 
   # A warm run fills the Nerves cache and builds no package.

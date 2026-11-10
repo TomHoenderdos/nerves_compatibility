@@ -70,6 +70,7 @@ defmodule Portal.Catalog.ToolchainBuild do
     :portability_rule,
     :rule1_reason,
     :judge_revision,
+    :manager,
     :compile_observations,
     :compile_env_rule,
     :transient_attempts
@@ -322,6 +323,14 @@ defmodule Portal.Catalog.ToolchainBuild do
     # `@judge_reopen`); `Portal.Precompiled.ToolchainRevocation` revokes by
     # it (`judge_revision:`).
     attribute :judge_revision, :integer do
+      public?(true)
+    end
+
+    # The manager Mix built the package with ("mix", "rebar3" or "make"), as
+    # the worker's trace recorded it (precompiled judge refinements, item
+    # 1); nil when unknown. Published as the format-2 `build.manager`, which
+    # a client compares with its own `Mix.Dep.manager`.
+    attribute :manager, :string do
       public?(true)
     end
 

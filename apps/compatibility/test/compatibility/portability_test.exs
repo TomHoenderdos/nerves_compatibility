@@ -74,8 +74,8 @@ defmodule Compatibility.PortabilityTest do
   end
 
   test "a manager mismatch is a refusal that withdraws nothing" do
-    reason = Compatibility.Portability.manager_mismatch() <> "ranch (trace make, lock rebar3)"
-    assert reason == "manager mismatch: ranch (trace make, lock rebar3)"
+    reason = Compatibility.Portability.manager_mismatch() <> "ranch (trace make, tarball rebar3)"
+    assert reason == "manager mismatch: ranch (trace make, tarball rebar3)"
     assert Compatibility.Portability.refusal?(reason)
     refute Compatibility.Portability.withdraws?(reason)
   end
