@@ -45,13 +45,11 @@ help:
 build: apps/ncc_worker/Dockerfile
 	@echo "Building worker Docker image..."
 	docker build -f apps/ncc_worker/Dockerfile -t $(WORKER_IMAGE) .
-	apps/ncc_worker/test/fixtures/code_loading/check_images.sh $(WORKER_IMAGE)
 	@echo "Build complete: $(WORKER_IMAGE)"
 
 build-clean: apps/ncc_worker/Dockerfile
 	@echo "Building worker Docker image from scratch..."
 	docker build --no-cache -f apps/ncc_worker/Dockerfile -t $(WORKER_IMAGE) .
-	apps/ncc_worker/test/fixtures/code_loading/check_images.sh $(WORKER_IMAGE)
 	@echo "Build complete: $(WORKER_IMAGE)"
 
 build-toolchains: apps/ncc_worker/Dockerfile.toolchain
@@ -59,7 +57,6 @@ build-toolchains: apps/ncc_worker/Dockerfile.toolchain
 	  tag=$${pair%%=*}; base=$${pair#*=}; \
 	  echo "Building toolchain image $$tag$(TOOLCHAIN_SUFFIX) from $$base..."; \
 	  docker build -f apps/ncc_worker/Dockerfile.toolchain --build-arg BASE=$$base -t $$tag$(TOOLCHAIN_SUFFIX) .; \
-	  apps/ncc_worker/test/fixtures/code_loading/check_images.sh $$tag$(TOOLCHAIN_SUFFIX); \
 	done
 	@echo "Toolchain images built."
 
@@ -74,8 +71,10 @@ test:
 	mix test
 
 # OTP's code-loading stack shapes in the worker and toolchain images against
-# the pinned fixtures (apps/ncc_worker/test/fixtures/code_loading). Also run
-# after every image build above; a mismatch fails it.
+# the pinned fixtures (apps/ncc_worker/test/fixtures/code_loading); part of
+# test-integration, never of an image build: a mismatch only fails closed.
+# A mismatch means re-record the shapes: run check_images.sh (or the recording
+# step in the fixture directory) and commit the new otp-<release>.term.
 check-code-loading-shapes:
 	apps/ncc_worker/test/fixtures/code_loading/check_images.sh $(WORKER_IMAGE) $(foreach pair,$(TOOLCHAIN_IMAGES),$(firstword $(subst =, ,$(pair)))$(TOOLCHAIN_SUFFIX))
 

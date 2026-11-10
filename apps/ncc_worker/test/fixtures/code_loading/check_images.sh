@@ -4,8 +4,9 @@
 # (otp-<release>.term, the table in src/ncc_code_loading_shapes.hrl). Exits
 # non-zero when an image prints other shapes, an unmatched event, or a
 # release with no fixture: re-record with the README's steps and regenerate
-# the include. Run by `make build`, `make build-toolchains` and
-# `make test-integration`.
+# the include. Run by `make check-code-loading-shapes` and
+# `make test-integration`, never by an image build: a mismatch only fails
+# closed.
 #
 # Usage: check_images.sh IMAGE...
 set -u

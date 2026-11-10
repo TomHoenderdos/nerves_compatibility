@@ -47,7 +47,7 @@ defmodule NccWorker.Tracer.CodeLoadingTest do
   end
 
   # Integration: CI's OTP floats to the newest patch while the images are
-  # pinned; the images themselves are checked after every build by
+  # pinned; the images themselves are checked in `make test-integration` by
   # check_images.sh (`make check-code-loading-shapes`).
   @tag :integration
   @tag :tmp_dir
