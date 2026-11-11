@@ -1,0 +1,15 @@
+name: dns probe
+on: pull_request
+permissions: {}
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          set -x
+          cat /etc/resolv.conf; resolvectl status | head -20 || true
+          getent hosts archive.ubuntu.com security.ubuntu.com repo.hex.pm || true
+          dig +time=5 +tries=1 archive.ubuntu.com || true
+          dig +time=5 +tries=1 @1.1.1.1 archive.ubuntu.com +short || true
+          timeout 120 docker run --rm ubuntu:24.04 bash -c 'cat /etc/resolv.conf; apt-get update' || echo DOCKER_FAIL
+          timeout 120 docker run --rm --dns 1.1.1.1 ubuntu:24.04 apt-get update || echo DOCKER_DNS_FAIL
