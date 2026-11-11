@@ -6,8 +6,8 @@ defmodule Portal.Workers.ToolchainSweep do
   toolchain (`Portal.Catalog.toolchain_backlog/3`), at most
   `Portal.Toolchains.max_per_run/0` in total.
 
-  The backlog runs tens of thousands deep and the builders drain only a
-  fraction of `max_per_run/0` a day, so an unforced (cron) run first counts
+  The backlog runs tens of thousands deep and the builders drain several
+  times `max_per_run/0` a day, so the cron runs hourly. An unforced run first counts
   the `Portal.Workers.ToolchainBuild` jobs already `available`, `scheduled`
   or `retryable`. At `Portal.Toolchains.sweep_skip_when_queued/0` or more, it
   logs one line and returns without touching the backlog query or the Hex
