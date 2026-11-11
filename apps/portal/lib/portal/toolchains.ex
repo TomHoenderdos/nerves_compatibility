@@ -32,6 +32,32 @@ defmodule Portal.Toolchains do
   def max_per_run, do: Keyword.get(config(), :max_per_run, 300)
 
   @doc """
+  How far back the toolchain backlog reaches into a popular package's Hex
+  releases (`Portal.Catalog.VersionBackfill`): the `top_packages` packages
+  with the most hex.pm recent downloads get their last `top_versions`
+  releases, the `packages` most downloaded get their last `versions`. Read
+  from `config :portal, Portal.Toolchains` as `backfill_top_versions_packages`
+  (default 100), `backfill_top_versions` (10), `backfill_packages` (500) and
+  `backfill_versions` (4). A zero turns a tier off.
+  """
+  @spec version_backfill() :: %{
+          top_packages: non_neg_integer(),
+          top_versions: non_neg_integer(),
+          packages: non_neg_integer(),
+          versions: non_neg_integer()
+        }
+  def version_backfill do
+    config = config()
+
+    %{
+      top_packages: Keyword.get(config, :backfill_top_versions_packages, 100),
+      top_versions: Keyword.get(config, :backfill_top_versions, 10),
+      packages: Keyword.get(config, :backfill_packages, 500),
+      versions: Keyword.get(config, :backfill_versions, 4)
+    }
+  end
+
+  @doc """
   The named config variants the sweep builds (`Compatibility.ConfigVariants`),
   in pinned order: every one unless `config :portal, Portal.Toolchains,
   config_variants:` lists a subset (`NCC_CONFIG_VARIANTS`, `parse_config_variants/1`).

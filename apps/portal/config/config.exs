@@ -184,7 +184,14 @@ config :portal, Portal.Toolchains,
     %{toolchain: "1.19/28", image: "ncc-worker:elixir-1.19-otp-28"}
   ],
   builder_version: 1,
-  max_per_run: 300
+  max_per_run: 300,
+  # Older Hex releases of popular pure packages the toolchain backlog also
+  # builds (`Portal.Catalog.VersionBackfill`): the 100 most downloaded
+  # packages get their last 10 releases, the 500 most downloaded their last 4.
+  backfill_top_versions_packages: 100,
+  backfill_top_versions: 10,
+  backfill_packages: 500,
+  backfill_versions: 4
 
 # Host-side Docker invocation for worker builds.
 # Runtime-overridable in config/runtime.exs.

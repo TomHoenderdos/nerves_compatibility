@@ -242,6 +242,33 @@ defmodule Portal.Catalog.ToolchainBacklogJudgeRevisionTest do
              [{"csv", false}, {"hot", true}]
   end
 
+  # An older release the version backfill nominates (`Portal.Catalog.VersionBackfill`)
+  # is new work as well: it ranks ahead of every reopen.
+  test "a backfilled old release ranks ahead of a reopened row, whatever its downloads" do
+    revised!(1)
+    downloads!("marker1", 0)
+    run!("hot", "1.0.0")
+    downloads!("hot", 1_000_000)
+    row!("hot", "1.0.0", :skipped, reason: "nerves-specific source")
+    run!("cold", "2.0.0")
+    downloads!("cold", 1)
+    row!("cold", "2.0.0", :pass, rule: 2, marked: true, judge_revision: 1)
+
+    Process.put({Portal.Test.FakeHexDeps, :releases}, %{
+      "cold" =>
+        Enum.map(
+          ["1.0.0", "2.0.0"],
+          &%{version: &1, retired?: false, deps: [], outer_checksum: nil}
+        )
+    })
+
+    assert [%{package: "cold", version: "1.0.0", reopen: false}] =
+             Catalog.toolchain_backlog("1.19/28", 1, 1)
+
+    assert Enum.map(Catalog.toolchain_backlog("1.19/28", 1, 100), &{&1.package, &1.reopen}) ==
+             [{"cold", false}, {"hot", true}]
+  end
+
   test "a row another rule reopens too is not marked as a reopen" do
     revised!(1)
     run!("priv", "1.0.0")

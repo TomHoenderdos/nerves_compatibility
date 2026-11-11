@@ -41,7 +41,8 @@ defmodule Portal.Catalog do
     SystemLog,
     SystemResult,
     ToolchainBuild,
-    UnrecordedOptionalDeps
+    UnrecordedOptionalDeps,
+    VersionBackfill
   }
 
   alias Portal.Precompiled.Withheld
@@ -1469,19 +1470,44 @@ defmodule Portal.Catalog do
     |> String.replace("$CONFIG", config_variant)
   end
 
+  # A pure BEAM package `p`: no NIF language and no port language, read as
+  # `native_breakdown/0` reads them. A package with no `native_components` at
+  # all counts as pure, since the worker writes the map whenever it can see
+  # the source.
+  @pure_beam_clause """
+  (p.native_components ->> 'nif_language' IS NULL
+   AND NOT EXISTS (
+     SELECT 1
+     FROM jsonb_array_elements_text(
+       CASE
+         WHEN jsonb_typeof(p.native_components -> 'port_languages') = 'array'
+         THEN p.native_components -> 'port_languages'
+       END
+     ) AS l(lang)
+     WHERE l.lang IS NOT NULL
+   ))
+  """
+
+  # The system result `s` of the run `r` is evidence the version is pure: a
+  # passing `host` compile or `registry_deps` assessment of its own (not
+  # carried from an earlier run) in a run that is not revoked.
+  @pure_evidence_clause """
+  (s.system_pkg IN ('host', 'registry_deps')
+   AND s.status = 'pass'
+   AND s.carried_from_run_id IS NULL
+   AND r.revoked_at IS NULL)
+  """
+
   # Toolchain builds wanted (`toolchain_backlog/3`): one row per package
   # version and variant, with the newest `finished_at` of the version's
   # qualifying runs and the package's hex.pm recent downloads.
   #
   # A version qualifies on a passing `host` compile of its own in a run that is
-  # not revoked. Its own: a partial run carries the results it did not build
-  # from an earlier run, host included for a targets run, and a copy shows
-  # nothing about this image. The run's other systems do not matter, so a
-  # targets or argus-only run that compiled the host itself counts. Pure BEAM
-  # means the package records no NIF language and no port language, read as
-  # `native_breakdown/0` reads them; a package with no `native_components` at
-  # all counts as pure, since the worker writes the map whenever it can see the
-  # source.
+  # not revoked (`@pure_evidence_clause`), of a pure BEAM package
+  # (`@pure_beam_clause`). Its own: a partial run carries the results it did
+  # not build from an earlier run, host included for a targets run, and a copy
+  # shows nothing about this image. The run's other systems do not matter, so
+  # a targets or argus-only run that compiled the host itself counts.
   #
   # A passing `registry_deps` result qualifies the same way: the bulk
   # intake's registry assessment (`Portal.Catalog.RegistryAssessment`), which
@@ -1494,6 +1520,13 @@ defmodule Portal.Catalog do
   # registry pass never gets anything served that was not built and judged.
   # A version with no compile on file would otherwise never get a toolchain
   # build at all.
+  #
+  # The versions in $BACKFILL_PACKAGES/$BACKFILL_VERSIONS (pairwise) qualify
+  # too, with no run of their own and no `finished_at`: older Hex releases of
+  # popular packages already known to be pure (`Portal.Catalog.VersionBackfill`,
+  # which reads the registry in Elixir). Only `toolchain_backlog/3` fills them
+  # in ($16/$17); every other reader of this query gets empty lists. A version
+  # that also qualifies on a run is one row, with that run's `finished_at`.
   #
   # The `with` variant is wanted for every qualifying version, the `without`
   # one only once a passing, unrevoked `with` build reports an optional
@@ -1542,7 +1575,7 @@ defmodule Portal.Catalog do
   #
   # Only `default` config variant rows decide a default's candidacy; named
   # variants are wanted by their own query (`@config_variant_candidates_sql`).
-  @toolchain_candidates_sql """
+  @toolchain_candidates_template """
   SELECT e.package, e.version, v.variant, 'default'::text AS config_variant,
          e.finished_at, e.recent,
          EXISTS (
@@ -1564,27 +1597,21 @@ defmodule Portal.Catalog do
          0 AS rank,
          #{live_row.("e.package_id", "e.version", "v.variant", "'default'", false)} AS reopen
   FROM (
-    SELECT p.id AS package_id, p.name AS package, r.version_tested AS version,
-           max(r.finished_at) AS finished_at, p.hex_downloads_recent AS recent
-    FROM catalog_packages p
-    JOIN catalog_runs r ON r.package_id = p.id
-    JOIN catalog_system_results s ON s.run_id = r.id
-    WHERE s.system_pkg IN ('host', 'registry_deps')
-      AND s.status = 'pass'
-      AND s.carried_from_run_id IS NULL
-      AND r.revoked_at IS NULL
-      AND p.native_components ->> 'nif_language' IS NULL
-      AND NOT EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements_text(
-          CASE
-            WHEN jsonb_typeof(p.native_components -> 'port_languages') = 'array'
-            THEN p.native_components -> 'port_languages'
-          END
-        ) AS l(lang)
-        WHERE l.lang IS NOT NULL
-      )
-    GROUP BY p.id, p.name, r.version_tested
+    SELECT q.package_id, q.package, q.version, max(q.finished_at) AS finished_at, q.recent
+    FROM (
+      SELECT p.id AS package_id, p.name AS package, r.version_tested AS version,
+             r.finished_at, p.hex_downloads_recent AS recent
+      FROM catalog_packages p
+      JOIN catalog_runs r ON r.package_id = p.id
+      JOIN catalog_system_results s ON s.run_id = r.id
+      WHERE #{@pure_evidence_clause}
+        AND #{@pure_beam_clause}
+      UNION ALL
+      SELECT p.id, p.name, b.version, NULL, p.hex_downloads_recent
+      FROM unnest($BACKFILL_PACKAGES::text[], $BACKFILL_VERSIONS::text[]) AS b(package, version)
+      JOIN catalog_packages p ON p.name = b.package
+    ) q
+    GROUP BY q.package_id, q.package, q.version, q.recent
   ) e
   CROSS JOIN (VALUES ('with'), ('without')) AS v(variant)
   WHERE (
@@ -1609,6 +1636,18 @@ defmodule Portal.Catalog do
     )
     AND NOT #{live_row.("e.package_id", "e.version", "v.variant", "'default'", true)}
   """
+
+  # A candidate's `major.minor.patch` as a numeric array, for ordering
+  # versions newest first (text order puts 1.9.0 above 1.10.0). NULL for a
+  # string that does not start that way, which sorts last.
+  @candidate_version_order "(regexp_match(c.version, '^(\\d+)\\.(\\d+)\\.(\\d+)'))::numeric[]"
+
+  @toolchain_candidates_sql @toolchain_candidates_template
+                            |> String.replace("$BACKFILL_PACKAGES", "'{}'")
+                            |> String.replace("$BACKFILL_VERSIONS", "'{}'")
+  @toolchain_candidates_backfill_sql @toolchain_candidates_template
+                                     |> String.replace("$BACKFILL_PACKAGES", "$16")
+                                     |> String.replace("$BACKFILL_VERSIONS", "$17")
 
   # `@withheld_toolchain_clause` for the default row aliased `d` (its package
   # `p`, the withheld list in $7).
@@ -1689,6 +1728,18 @@ defmodule Portal.Catalog do
   toolchain build compiles it on the host and the portability judge runs on
   that compile, so nothing unbuilt is ever served. A registry-only version is
   new work, so it ranks with the other new defaults, ahead of every reopen.
+
+  Older Hex releases of popular packages are wanted too, with no run of their
+  own (`Portal.Catalog.VersionBackfill`, the `:backfill` option, default its
+  `wanted/0`): of the packages already known to be pure (a `host` or
+  `registry_deps` pass of any version, no native components), the 100 most
+  downloaded on hex.pm get their last 10 releases and the 500 most
+  downloaded their last 4, retired releases and pre-releases left out
+  (`Portal.Toolchains.version_backfill/0`). Each is a new default under the
+  same variant and live-row rules, judged on its own build, so it ranks with
+  the other new defaults and ahead of every reopen. Reading the release lists
+  is the other part of the backlog that asks Hex, from `repo.hex.pm` and
+  through `Portal.HexDeps`'s one-hour cache.
   Each row names its `config_variant`: `"default"`, or a named
   `Compatibility.ConfigVariants` variant of a served default build. Only rows
   of the default config variant decide whether a default build is wanted, so
@@ -1710,11 +1761,14 @@ defmodule Portal.Catalog do
   Most wanted first, so a capped sweep builds what projects resolve before
   what nobody asks for: by the package's hex.pm recent downloads, then, within
   a package, by the release's own downloads
-  (`Portal.Catalog.ReleaseDownloads`), then newest run first, with version
-  breaking a tie and `:with` ahead of `:without`. An unknown count sorts
+  (`Portal.Catalog.ReleaseDownloads`), then newest run first (a backfilled
+  release has none, so it follows the versions with a run), then newest
+  version first by `major.minor.patch`, and `:with` ahead of `:without`. So
+  an old release of a much downloaded package comes before the newest release
+  of a little downloaded one. An unknown count sorts
   after every known one, zero included: it is not known demand.
   """
-  @spec toolchain_backlog(String.t(), pos_integer(), non_neg_integer()) :: [
+  @spec toolchain_backlog(String.t(), pos_integer(), non_neg_integer(), keyword()) :: [
           %{
             package: String.t(),
             version: String.t(),
@@ -1724,12 +1778,14 @@ defmodule Portal.Catalog do
             reopen: boolean()
           }
         ]
-  def toolchain_backlog(toolchain, builder_version, limit) do
+  def toolchain_backlog(toolchain, builder_version, limit, opts \\ []) do
+    backfill = Keyword.get_lazy(opts, :backfill, &VersionBackfill.wanted/0)
+
     %{rows: rows} =
       Repo.query!(
         """
         WITH candidates AS (
-          #{@toolchain_candidates_sql}
+          #{@toolchain_candidates_backfill_sql}
           UNION ALL
           #{@config_variant_candidates_sql}
         )
@@ -1743,6 +1799,7 @@ defmodule Portal.Catalog do
                             c.recent DESC NULLS LAST,
                             d.downloads DESC NULLS LAST,
                             c.finished_at DESC NULLS LAST,
+                            #{@candidate_version_order} DESC NULLS LAST,
                             c.version DESC,
                             c.variant = 'without',
                             c.rank,
@@ -1759,7 +1816,7 @@ defmodule Portal.Catalog do
           toolchain,
           builder_version,
           UnrecordedOptionalDeps.wanted(toolchain, builder_version)
-        ) ++ config_variant_params() ++ [limit]
+        ) ++ config_variant_params() ++ [limit | backfill_params(backfill)]
       )
 
     Enum.map(rows, fn [package, version, variant, config_variant, refresh, reopen] ->
@@ -1778,11 +1835,61 @@ defmodule Portal.Catalog do
   defp variant("without"), do: :without
 
   @doc """
+  The packages `Portal.Catalog.VersionBackfill` may reach back into, as
+  `{name, rank}` in rank order: of the `limit` packages with the most hex.pm
+  recent downloads (rank 1 the most; a package without a count is unranked),
+  those already known to be pure. Known: at least one non-revoked run of the
+  package, any version, has a `host` or `registry_deps` pass of its own, and
+  the package records no native components, as `toolchain_backlog/3` reads
+  both. The rank is among every counted package, so a native package in the
+  top still takes its place.
+  """
+  @spec version_backfill_packages(non_neg_integer()) :: [{String.t(), pos_integer()}]
+  def version_backfill_packages(limit) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT p.name, p.rank
+        FROM (
+          SELECT id, name, native_components,
+                 row_number() OVER (ORDER BY hex_downloads_recent DESC, name) AS rank
+          FROM catalog_packages
+          WHERE hex_downloads_recent IS NOT NULL
+        ) p
+        WHERE p.rank <= $1
+          AND #{@pure_beam_clause}
+          AND EXISTS (
+            SELECT 1
+            FROM catalog_runs r
+            JOIN catalog_system_results s ON s.run_id = r.id
+            WHERE r.package_id = p.id
+              AND #{@pure_evidence_clause}
+          )
+        ORDER BY p.rank
+        """,
+        [limit]
+      )
+
+    Enum.map(rows, &List.to_tuple/1)
+  end
+
+  # `@toolchain_candidates_backfill_sql`'s $16/$17: the backfill pairs,
+  # column-wise.
+  defp backfill_params(pairs) do
+    {packages, versions} = Enum.unzip(pairs)
+    [packages, versions]
+  end
+
+  @doc """
   The backlog versions whose release downloads are worth asking hex.pm for
   (`Portal.Workers.ReleaseDownloadsRefresh`): across every configured
   toolchain at the current `builder_version`, the `top_packages` packages
   with the most recent downloads that still have backlog, and of each at
   most `versions_per_package`, newest run first.
+
+  Older releases the version backfill nominates (`Portal.Catalog.VersionBackfill`)
+  are not ranked here: asking for them would read the registry, and they
+  already rank after the versions with a run inside their package.
 
   A package without a recent download count is left out: release counts only
   order versions inside a package, and a package with no count of its own
@@ -1891,7 +1998,8 @@ defmodule Portal.Catalog do
   wanted with and without its optional dependencies counts twice). The count
   asks Hex nothing, so it leaves out the `without` builds that only the
   registry shows a pre-recording `with` build needs
-  (`Portal.Catalog.UnrecordedOptionalDeps`).
+  (`Portal.Catalog.UnrecordedOptionalDeps`) and the older releases of popular
+  packages (`Portal.Catalog.VersionBackfill`).
   """
   @spec toolchain_counts() :: %{
           String.t() => %{

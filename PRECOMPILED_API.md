@@ -447,7 +447,13 @@ What it lists:
   passing host compile of it or a passing registry assessment
   (`registry_deps`, which compiled nothing), and the package records no
   native code; either way the toolchain build compiles it itself and is
-  judged on that compile. A version is built once with every optional dependency a
+  judged on that compile. Older releases of popular packages are queued too,
+  without a catalog run of their own, once some version of the package has
+  such a pass and it records no native code: the last 10 releases of the 100
+  packages with the most hex.pm recent downloads, and the last 4 of the 500
+  most downloaded (retired releases and pre-releases left out; the operator
+  can change the four numbers). Each is judged on its own build like any
+  other. A version is built once with every optional dependency a
   fresh lock would add (as for the `deps` of other entries), and, when that
   build added any, once more without them (also when the build with them was
   skipped, whatever the reason, since it may be one of them): two builds whose `deps` differ by those

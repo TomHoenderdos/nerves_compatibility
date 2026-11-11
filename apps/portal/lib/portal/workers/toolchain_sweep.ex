@@ -33,6 +33,10 @@ defmodule Portal.Workers.ToolchainSweep do
     4. any slot still free, to the defaults left over, then the reopens,
        then the refreshes left over, so no slot goes unused.
 
+  An older Hex release of a popular package (`Portal.Catalog.VersionBackfill`)
+  is a new default build like any other: it sits in tier 2, ranked with the
+  rest by package downloads, and ahead of every reopen.
+
   Reopens come after every new build: a judge revision reopens the whole
   skipped backlog of a toolchain at once, and it must not hold back a new
   version of a package, however few downloads it has.
