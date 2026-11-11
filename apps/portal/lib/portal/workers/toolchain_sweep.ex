@@ -1,10 +1,20 @@
 defmodule Portal.Workers.ToolchainSweep do
   @moduledoc """
-  Oban worker (queue `:maintenance`, daily cron and the admin Maintenance
+  Oban worker (queue `:maintenance`, hourly cron and the admin Maintenance
   button) that enqueues a `Portal.Workers.ToolchainBuild` for every package
   version and optional-deps variant still missing a build on a configured
   toolchain (`Portal.Catalog.toolchain_backlog/3`), at most
   `Portal.Toolchains.max_per_run/0` in total.
+
+  The backlog runs tens of thousands deep and the builders drain only a
+  fraction of `max_per_run/0` a day, so an unforced (cron) run first counts
+  the `Portal.Workers.ToolchainBuild` jobs already `available`, `scheduled`
+  or `retryable`. At `Portal.Toolchains.sweep_skip_when_queued/0` or more, it
+  logs one line and returns without touching the backlog query or the Hex
+  registry. This is what makes the hourly cron cheap: the expensive part of
+  a run only happens when the queue actually needs topping up. The
+  manual/admin trigger (`enqueue/0`, the Maintenance button) sets `force:
+  true` in the job's args and always runs, queue or no queue.
 
   A `with` build is queued ahead of a `without` one (a lower Oban priority):
   it is the build a fresh project resolves, and the `without` build is only
@@ -66,21 +76,68 @@ defmodule Portal.Workers.ToolchainSweep do
   single-slot `:toolchain` queue has not reached yet is still backlog, and has
   to conflict rather than be queued twice. A conflict still counts against the
   cap; the queue's limit of 1, not the count, bounds the load.
+
+  This worker's own `unique` (24 h, `states: :incomplete`) only blocks a new
+  cron insert while an earlier one is still `available`, `scheduled`,
+  `executing` or `retryable` -- not while one has `completed`, which is every
+  run that returned `:ok`, skipped or not. Each hourly cron insert carries the
+  same args (`%{}`) as the last, so this only ever matters if a run is still
+  in flight an hour later; it does not turn the cron back into a daily one.
   """
 
   use Oban.Worker,
     queue: :maintenance,
     unique: [period: 86_400, states: :incomplete]
 
+  import Ecto.Query
+
   require Logger
 
   alias Portal.Catalog
   alias Portal.Catalog.VersionBackfill
+  alias Portal.Repo
   alias Portal.Toolchains
   alias Portal.Workers.ToolchainBuild
 
+  # Oban states in which a ToolchainBuild job is still backlog: not yet run,
+  # or waiting to be retried. `executing` is left out deliberately -- a job
+  # the single-slot `:toolchain` queue is actively running is about to leave
+  # this count, not stay in it, and counting it would make the guard trigger
+  # one job sooner than the threshold says.
+  @queued_states ~w(available scheduled retryable)
+
   @impl Oban.Worker
-  def perform(%Oban.Job{}) do
+  def perform(%Oban.Job{args: args}) do
+    if args["force"] == true or not queue_topped_up?() do
+      sweep()
+    else
+      Logger.info(
+        "Toolchain sweep skipped: at least #{Toolchains.sweep_skip_when_queued()} " <>
+          "ToolchainBuild jobs are already queued"
+      )
+
+      :ok
+    end
+  end
+
+  # Whether at least `threshold` ToolchainBuild jobs are already queued, without
+  # counting past it: an existence check for the threshold-th row (`offset`
+  # skips to it, `limit: 1` asks for no more), one indexed scan bounded by the
+  # threshold rather than a full count of a backlog that can run into the
+  # thousands.
+  defp queue_topped_up? do
+    threshold = Toolchains.sweep_skip_when_queued()
+
+    from(j in Oban.Job,
+      where: j.worker == "Portal.Workers.ToolchainBuild",
+      where: j.state in @queued_states,
+      offset: ^(threshold - 1),
+      limit: 1
+    )
+    |> Repo.exists?()
+  end
+
+  defp sweep do
     cap = Toolchains.max_per_run()
     builder_version = Toolchains.builder_version()
 
@@ -119,10 +176,16 @@ defmodule Portal.Workers.ToolchainSweep do
     :ok
   end
 
-  @doc "Queue a sweep now (the admin button). `{:error, :already_queued}` while one is pending."
+  @doc """
+  Queue a sweep now (the admin button). Carries `force: true`, so it always
+  runs `perform/1`'s backlog query and Hex calls even when the hourly cron's
+  top-up guard would otherwise skip -- a different `args` from the cron's
+  `%{}`, so it never conflicts with a pending cron run either.
+  `{:error, :already_queued}` while a forced sweep of its own is pending.
+  """
   @spec enqueue() :: {:ok, Oban.Job.t()} | {:error, :already_queued | term()}
   def enqueue do
-    case %{} |> new() |> Oban.insert() do
+    case %{force: true} |> new() |> Oban.insert() do
       {:ok, %Oban.Job{conflict?: true}} -> {:error, :already_queued}
       other -> other
     end

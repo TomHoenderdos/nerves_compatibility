@@ -32,6 +32,19 @@ defmodule Portal.Toolchains do
   def max_per_run, do: Keyword.get(config(), :max_per_run, 300)
 
   @doc """
+  The hourly `Portal.Workers.ToolchainSweep` cron's top-up guard: an unforced
+  run that finds at least this many `Portal.Workers.ToolchainBuild` jobs
+  already `available`, `scheduled` or `retryable` skips the backlog query and
+  every Hex call and logs one line instead. Read from `config :portal,
+  Portal.Toolchains` as `sweep_skip_when_queued`, default `max_per_run/0`
+  itself. The manual/admin trigger (`Portal.Workers.ToolchainSweep.enqueue/0`)
+  always bypasses this guard.
+  """
+  @spec sweep_skip_when_queued() :: pos_integer()
+  def sweep_skip_when_queued,
+    do: Keyword.get(config(), :sweep_skip_when_queued, max_per_run())
+
+  @doc """
   The most of a `Portal.Workers.ToolchainSweep` run's new default builds that
   older Hex releases (`Portal.Catalog.VersionBackfill`) may take, as a
   fraction of those slots: `backfill_share` under `config :portal,

@@ -124,6 +124,19 @@ defmodule Portal.Workers.ToolchainSweepTest do
 
   defp ago(seconds), do: DateTime.add(DateTime.utc_now(), -seconds, :second)
 
+  # `n` distinct, already-`available` ToolchainBuild jobs: the top-up guard's
+  # "already queued" count, without going through a real sweep.
+  defp queue_filler!(n, toolchain \\ "1.19/28") do
+    for i <- 1..n do
+      {:ok, job} =
+        %{package: "filler#{i}", version: "1.0.0", toolchain: toolchain, builder_version: 1}
+        |> ToolchainBuild.new()
+        |> Oban.insert()
+
+      job
+    end
+  end
+
   @day 86_400
 
   describe "Catalog.toolchain_backlog/3" do
@@ -775,6 +788,64 @@ defmodule Portal.Workers.ToolchainSweepTest do
 
       assert all_enqueued(worker: ToolchainBuild) |> Enum.map(& &1.args["version"]) |> Enum.sort() ==
                ["1.1.0", "1.2.0"]
+    end
+  end
+
+  describe "perform/1 top-up guard" do
+    test "at or above the threshold, an unforced sweep enqueues nothing and skips the backlog",
+         %{previous: previous} do
+      one_toolchain(previous, sweep_skip_when_queued: 2)
+      queue_filler!(2)
+      run!("wanted", "1.0.0")
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert all_enqueued(worker: ToolchainBuild) |> Enum.map(& &1.args["package"]) |> Enum.sort() ==
+               ~w(filler1 filler2)
+    end
+
+    test "below the threshold, an unforced sweep runs as before", %{previous: previous} do
+      one_toolchain(previous, sweep_skip_when_queued: 3)
+      queue_filler!(2)
+      run!("wanted", "1.0.0")
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert "wanted" in (all_enqueued(worker: ToolchainBuild) |> Enum.map(& &1.args["package"]))
+    end
+
+    test "a forced sweep runs even when the queue is already at the threshold",
+         %{previous: previous} do
+      one_toolchain(previous, sweep_skip_when_queued: 1)
+      queue_filler!(1)
+      run!("wanted", "1.0.0")
+
+      assert :ok = perform_job(ToolchainSweep, %{"force" => true})
+
+      assert "wanted" in (all_enqueued(worker: ToolchainBuild) |> Enum.map(& &1.args["package"]))
+    end
+
+    test "sweep_skip_when_queued defaults to max_per_run", %{previous: previous} do
+      one_toolchain(previous, max_per_run: 5)
+
+      refute Keyword.has_key?(
+               Application.fetch_env!(:portal, Portal.Toolchains),
+               :sweep_skip_when_queued
+             )
+
+      assert Portal.Toolchains.sweep_skip_when_queued() == 5
+    end
+
+    test "enqueue/0 carries force: true, so the admin trigger bypasses the guard",
+         %{previous: previous} do
+      one_toolchain(previous, sweep_skip_when_queued: 1)
+      queue_filler!(1)
+      run!("wanted", "1.0.0")
+
+      assert {:ok, job} = ToolchainSweep.enqueue()
+      assert :ok = perform_job(ToolchainSweep, job.args)
+
+      assert "wanted" in (all_enqueued(worker: ToolchainBuild) |> Enum.map(& &1.args["package"]))
     end
   end
 

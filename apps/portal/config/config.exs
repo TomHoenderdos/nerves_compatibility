@@ -101,12 +101,19 @@ config :portal, Oban,
        # Every 15 minutes: render and sign a precompiled batch. Only the web
        # host has the signing key and rsynced artifact files. Carries `:maintenance`.
        {"*/15 * * * *", Portal.Workers.PrecompiledBatch},
-       # Daily at 03:17, a minute no other entry here uses: enqueue the
+       # Hourly at :17, a minute no other entry here uses: enqueue the
        # pure-BEAM package versions still missing a build on each configured
-       # toolchain (`Portal.Toolchains`), up to `max_per_run`. The sweep
-       # itself is a few queries and carries `:maintenance`; the builds it
-       # queues run on the build host's single-slot `:toolchain` queue.
-       {"17 3 * * *", Portal.Workers.ToolchainSweep},
+       # toolchain (`Portal.Toolchains`), up to `max_per_run`. The backlog is
+       # far bigger than a day's builder throughput, so this used to run once
+       # a day and otherwise rely on an external poller to keep the queue
+       # fed; it now runs hourly instead and skips itself (after one cheap
+       # count query, before the backlog query or any Hex call) whenever at
+       # least `sweep_skip_when_queued` ToolchainBuild jobs are already
+       # available/scheduled/retryable, so the extra runs stay nearly free
+       # once the queue is topped up. The sweep itself is a few queries and
+       # carries `:maintenance`; the builds it queues run on the build
+       # host's single-slot `:toolchain` queue.
+       {"17 * * * *", Portal.Workers.ToolchainSweep},
        # Weekly, Monday 04:53: re-fetch every package's hex.pm metadata so the
        # download counts `/failing` ranks on do not go stale. Enqueues one
        # `PackageMeta` job per package, 1.5 s apart (~1 h for ~2,500), which
@@ -177,7 +184,14 @@ config :portal, Portal.Catalog.Cache, ttl_ms: :timer.seconds(60)
 # worker image that carries it (`make build-toolchains`). `images` is
 # runtime-overridable from NCC_TOOLCHAINS in config/runtime.exs. Bumping
 # `builder_version` makes every toolchain build stale. `max_per_run` caps how
-# many builds one toolchain sweep enqueues.
+# many builds one toolchain sweep enqueues. `sweep_skip_when_queued` is the
+# hourly cron's top-up guard: an unforced run that finds at least this many
+# ToolchainBuild jobs already available/scheduled/retryable skips its backlog
+# query and every Hex call and logs one line instead; it defaults to
+# `max_per_run` itself, so the queue roughly oscillates between empty and one
+# run's worth. The admin "Run toolchain sweep now" button and
+# `ToolchainSweep.enqueue/0` bypass this guard (they queue with `force: true`)
+# and always run.
 config :portal, Portal.Toolchains,
   images: [
     %{toolchain: "1.20/29", image: "ncc-worker:local"},
