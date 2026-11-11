@@ -443,7 +443,11 @@ What it lists:
 - Toolchain builds: a pure-BEAM package version built on a plain Elixir/OTP
   image for `Mix.install` and non-Nerves projects, `target` `pure_elixir` and
   `system_version` `null`. Only passing, unrevoked builds whose files can all
-  be served appear. A version is built once with every optional dependency a
+  be served appear. A version is queued for one once the catalog has a
+  passing host compile of it or a passing registry assessment
+  (`registry_deps`, which compiled nothing), and the package records no
+  native code; either way the toolchain build compiles it itself and is
+  judged on that compile. A version is built once with every optional dependency a
   fresh lock would add (as for the `deps` of other entries), and, when that
   build added any, once more without them (also when the build with them was
   skipped, whatever the reason, since it may be one of them): two builds whose `deps` differ by those

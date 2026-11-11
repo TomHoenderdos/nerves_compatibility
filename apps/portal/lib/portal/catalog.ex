@@ -1483,6 +1483,18 @@ defmodule Portal.Catalog do
   # all counts as pure, since the worker writes the map whenever it can see the
   # source.
   #
+  # A passing `registry_deps` result qualifies the same way: the bulk
+  # intake's registry assessment (`Portal.Catalog.RegistryAssessment`), which
+  # records a version only once `Portal.NativeClosure` found no native code in
+  # its dependency closure and compiled nothing. Its `native_components` is
+  # `%{"compatibility_basis" => "registry_deps"}`, no NIF or port language, so
+  # the pure-BEAM test above reads it as pure, as the closure check did. This
+  # only nominates the version: the toolchain build compiles the package on
+  # the host itself and the portability judge runs on that compile, so a
+  # registry pass never gets anything served that was not built and judged.
+  # A version with no compile on file would otherwise never get a toolchain
+  # build at all.
+  #
   # The `with` variant is wanted for every qualifying version, the `without`
   # one only once a passing, unrevoked `with` build reports an optional
   # dependency it added: for a package with none the two builds are the same.
@@ -1557,7 +1569,7 @@ defmodule Portal.Catalog do
     FROM catalog_packages p
     JOIN catalog_runs r ON r.package_id = p.id
     JOIN catalog_system_results s ON s.run_id = r.id
-    WHERE s.system_pkg = 'host'
+    WHERE s.system_pkg IN ('host', 'registry_deps')
       AND s.status = 'pass'
       AND s.carried_from_run_id IS NULL
       AND r.revoked_at IS NULL
@@ -1657,8 +1669,10 @@ defmodule Portal.Catalog do
   `limit` that are not refreshes and at most `limit` refreshes (see below),
   each a package version and its optional-deps `variant`
   (see `Portal.Catalog.ToolchainBuild`): every version whose own `host`
-  compile passed on a non-revoked run, of a package with no native
-  components, is wanted `:with` its optional dependencies, and also
+  compile passed on a non-revoked run, or whose registry assessment
+  (`registry_deps`, `Portal.Catalog.RegistryAssessment`) passed on one, of a
+  package with no native components, is wanted `:with` its optional
+  dependencies, and also
   `:without` them once a `:with` build reports adding one, or, for a `:with`
   build from before builds reported them, once the registry shows the
   version declares one (`Portal.Catalog.UnrecordedOptionalDeps`, the one
@@ -1670,6 +1684,11 @@ defmodule Portal.Catalog do
   the two kinds on its own, so a backlog of new builds longer than `limit`
   never cuts the refreshes off: `Portal.Workers.ToolchainSweep` reserves part
   of its cap for them, and has to see them to fill it.
+
+  A registry pass compiled nothing: it only nominates the version. The
+  toolchain build compiles it on the host and the portability judge runs on
+  that compile, so nothing unbuilt is ever served. A registry-only version is
+  new work, so it ranks with the other new defaults, ahead of every reopen.
   Each row names its `config_variant`: `"default"`, or a named
   `Compatibility.ConfigVariants` variant of a served default build. Only rows
   of the default config variant decide whether a default build is wanted, so

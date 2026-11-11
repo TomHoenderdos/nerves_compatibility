@@ -57,6 +57,37 @@ defmodule Portal.Workers.ToolchainSweepTest do
     run_id
   end
 
+  # A bulk-intake registry assessment of `name` `version`: one `registry_deps`
+  # system and nothing compiled, as `Portal.Catalog.RegistryAssessment` records
+  # it, with `status` and `native` to vary what the catalog shows.
+  defp registry_run!(name, version, opts \\ []) do
+    finished_at = Keyword.get(opts, :finished_at, ~U[2026-10-20 10:00:00Z])
+    run_id = "registry-#{name}-#{version}-#{System.unique_integer([:positive])}"
+
+    {:ok, _run} =
+      Ingestion.ingest(
+        %{
+          "package" => %{
+            "name" => name,
+            "version" => version,
+            "native_components" =>
+              Keyword.get(opts, :native, %{"compatibility_basis" => "registry_deps"})
+          },
+          "finished_at" => DateTime.to_iso8601(finished_at),
+          "systems" => %{"registry_deps" => %{"status" => Keyword.get(opts, :status, "pass")}}
+        },
+        %{
+          package: name,
+          version: version,
+          run_id: run_id,
+          image_digest: Portal.Catalog.RegistryAssessment.image_digest(),
+          files_dir: System.tmp_dir!()
+        }
+      )
+
+    run_id
+  end
+
   defp package_id!(name) do
     Package
     |> Ash.Query.filter(name == ^name)
@@ -277,6 +308,119 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  refresh: false,
                  reopen: false
                }
+             ]
+    end
+  end
+
+  describe "Catalog.toolchain_backlog/3 with registry assessments" do
+    defp wanted(name, version \\ "1.0.0"),
+      do: %{
+        package: name,
+        version: version,
+        variant: :with,
+        config_variant: "default",
+        refresh: false,
+        reopen: false
+      }
+
+    # The bulk intake's registry shortcut never compiles, so a package it
+    # assessed has no host result: the toolchain build is its first compile.
+    test "a version whose only result is a registry_deps pass is wanted" do
+      registry_run!("csv", "3.2.2")
+
+      assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [wanted("csv", "3.2.2")]
+    end
+
+    test "the run RegistryAssessment records is wanted as it stands" do
+      {:ok, _run} = Portal.Catalog.RegistryAssessment.record("dotenv", "3.1.0", nil)
+
+      assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [wanted("dotenv", "3.1.0")]
+    end
+
+    test "a registry_deps pass of a package with native components is not wanted" do
+      registry_run!("nif", "1.0.0", native: %{"nif_language" => "c", "port_languages" => []})
+
+      registry_run!("port", "1.0.0", native: %{"nif_language" => nil, "port_languages" => ["c"]})
+
+      assert Catalog.toolchain_backlog("1.19/28", 1, 100) == []
+    end
+
+    test "a registry_deps result that did not pass is not wanted" do
+      registry_run!("failed", "1.0.0", status: "fail")
+      registry_run!("errored", "1.0.0", status: "error")
+
+      assert Catalog.toolchain_backlog("1.19/28", 1, 100) == []
+    end
+
+    test "a revoked registry run is not wanted" do
+      "revoked" |> registry_run!("1.0.0") |> Catalog.revoke_run()
+
+      assert Catalog.toolchain_backlog("1.19/28", 1, 100) == []
+    end
+
+    test "a registry-only version with a live build is left out like a host one" do
+      registry_run!("built", "1.0.0")
+      toolchain_row!("built", "1.0.0", :pass)
+      registry_run!("fresh_fail", "1.0.0")
+      toolchain_row!("fresh_fail", "1.0.0", :fail, finished_at: ago(2 * @day))
+      registry_run!("old_fail", "1.0.0")
+      toolchain_row!("old_fail", "1.0.0", :fail, finished_at: ago(8 * @day))
+
+      assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [wanted("old_fail")]
+    end
+
+    test "a version with both a host and a registry pass is listed once" do
+      registry_run!("both", "1.0.0", finished_at: ~U[2026-10-01 00:00:00Z])
+      run!("both", "1.0.0", finished_at: ~U[2026-10-02 00:00:00Z])
+
+      assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [wanted("both")]
+    end
+
+    # Registry-assessed packages rank on the package's hex.pm recent downloads
+    # like any other, so the top of Hex is not buried behind host-built ones.
+    test "registry-only and host-built versions rank together, most downloaded first" do
+      registry_run!("dialyxir", "1.4.5")
+      run!("obscure", "9.0.0", finished_at: ~U[2026-10-30 00:00:00Z])
+      registry_run!("countries", "1.6.0")
+      run!("middling", "1.0.0")
+      registry_run!("unknown", "1.0.0", finished_at: ~U[2026-10-31 00:00:00Z])
+
+      for {name, recent} <- [
+            {"dialyxir", 9_000_000},
+            {"obscure", 40},
+            {"countries", 200_000},
+            {"middling", 5_000}
+          ] do
+        Package
+        |> Ash.Query.filter(name == ^name)
+        |> Ash.read_one!(domain: Catalog)
+        |> Ash.Changeset.for_update(:update_hex_meta, %{hex_downloads_recent: recent})
+        |> Ash.update!(domain: Catalog)
+      end
+
+      assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [
+               wanted("dialyxir", "1.4.5"),
+               wanted("countries", "1.6.0"),
+               wanted("middling"),
+               wanted("obscure", "9.0.0"),
+               wanted("unknown")
+             ]
+    end
+
+    # `Portal.Workers.ReleaseDownloadsRefresh` asks hex.pm about the same
+    # backlog, so registry-only versions get their release counts too.
+    test "registry-only versions are ranked for release downloads", %{previous: previous} do
+      one_toolchain(previous, builder_version: 1)
+      registry_run!("ecto_ulid", "0.3.0")
+
+      Package
+      |> Ash.Query.filter(name == "ecto_ulid")
+      |> Ash.read_one!(domain: Catalog)
+      |> Ash.Changeset.for_update(:update_hex_meta, %{hex_downloads_recent: 100_000})
+      |> Ash.update!(domain: Catalog)
+
+      assert Catalog.toolchain_backlog_to_rank(10, 3) == [
+               %{package: "ecto_ulid", version: "0.3.0"}
              ]
     end
   end

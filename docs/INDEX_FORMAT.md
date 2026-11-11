@@ -303,7 +303,9 @@ with `status: "pass"`. This means **assumed compatible from registry data
 alone**: the package was assessed from registry metadata without a build.
 Nothing was compiled, not even on the host. Package metadata
 exposes `native_components.compatibility_basis: "registry_deps"`. A requested
-scan of the package replaces the assessment with a real build.
+scan of the package replaces the assessment with a real build. The assessment
+also makes the version a candidate for a precompiled toolchain build, which
+compiles the package itself; nothing is published from the assessment alone.
 
 ### Nerves tooling
 

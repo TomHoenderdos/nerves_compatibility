@@ -225,6 +225,23 @@ defmodule Portal.Catalog.ToolchainBacklogJudgeRevisionTest do
              [{"cold", false}, {"hot", true}]
   end
 
+  # A registry-only version (the bulk intake's `registry_deps` pass, nothing
+  # compiled) is new work, so it ranks ahead of every reopen too.
+  test "a registry-only version ranks ahead of a reopened row, whatever its downloads" do
+    revised!(1)
+    downloads!("marker1", 0)
+    run!("hot", "1.0.0")
+    downloads!("hot", 1_000_000)
+    row!("hot", "1.0.0", :skipped, reason: "nerves-specific source")
+    {:ok, _run} = Portal.Catalog.RegistryAssessment.record("csv", "3.2.2", nil)
+    downloads!("csv", 1)
+
+    assert [%{package: "csv", reopen: false}] = Catalog.toolchain_backlog("1.19/28", 1, 1)
+
+    assert Enum.map(Catalog.toolchain_backlog("1.19/28", 1, 100), &{&1.package, &1.reopen}) ==
+             [{"csv", false}, {"hot", true}]
+  end
+
   test "a row another rule reopens too is not marked as a reopen" do
     revised!(1)
     run!("priv", "1.0.0")
