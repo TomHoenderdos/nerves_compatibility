@@ -949,7 +949,7 @@ defmodule Portal.Workers.ToolchainSweepTest do
     end
 
     test "backfill takes at most its share of the defaults' slots", %{previous: previous} do
-      one_toolchain(previous, max_per_run: 8)
+      one_toolchain(previous, max_per_run: 8, backfill_share: 1 / 3)
       hot_backfill!()
 
       for i <- 1..6 do
