@@ -197,7 +197,8 @@ defmodule Portal.ToolchainVariantsTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -215,7 +216,8 @@ defmodule Portal.ToolchainVariantsTest do
                  variant: :without,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -269,7 +271,8 @@ defmodule Portal.ToolchainVariantsTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "dropb",
@@ -277,7 +280,8 @@ defmodule Portal.ToolchainVariantsTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -314,7 +318,8 @@ defmodule Portal.ToolchainVariantsTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -355,7 +360,8 @@ defmodule Portal.ToolchainVariantsTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -397,7 +403,8 @@ defmodule Portal.ToolchainVariantsTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -559,7 +566,8 @@ defmodule Portal.ToolchainVariantsTest do
                  variant: :without,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -615,7 +623,8 @@ defmodule Portal.ToolchainVariantsTest do
                variant: :without,
                config_variant: "default",
                refresh: false,
-               reopen: false
+               reopen: false,
+               backfill: false
              } in wanted
 
       after_rows = legacy_rows()
@@ -714,7 +723,8 @@ defmodule Portal.ToolchainVariantsTest do
                variant: :without,
                config_variant: "default",
                refresh: false,
-               reopen: false
+               reopen: false,
+               backfill: false
              } in backlog()
     end
 

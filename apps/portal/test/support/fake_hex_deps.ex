@@ -15,12 +15,27 @@ defmodule Portal.Test.FakeHexDeps do
   # `{#{inspect(__MODULE__)}, :releases}` holds `%{name => [release]}` for a
   # test that needs a package's declared dependencies; any other name is one
   # the registry does not list.
+  # A caller may ask from a task it started (`Portal.Catalog.VersionBackfill`
+  # asks several at once), so the test process's dictionary is read through
+  # `$callers` when the asking process has no answers of its own.
   def releases(name, _opts \\ []) do
-    case Process.get({__MODULE__, :releases}, %{}) do
+    case lookup({__MODULE__, :releases}) do
       %{^name => releases} -> {:ok, releases}
       _ -> {:error, :not_found}
     end
   end
+
+  defp lookup(key) do
+    Enum.find_value([self() | Process.get(:"$callers", [])], fn pid ->
+      case Process.info(pid, :dictionary) do
+        {:dictionary, dictionary} -> List.keyfind(dictionary, key, 0) |> value()
+        nil -> nil
+      end
+    end)
+  end
+
+  defp value({_key, value}), do: value
+  defp value(nil), do: nil
 
   def outer_checksum(_name, _version, _opts \\ []),
     do: Process.get({__MODULE__, :outer_checksum}, {:error, :hex_registry_unavailable})

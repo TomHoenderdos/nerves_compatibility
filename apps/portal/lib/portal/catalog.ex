@@ -1396,6 +1396,26 @@ defmodule Portal.Catalog do
    false)
   """
 
+  # An `error` row of a version only the version backfill nominates
+  # (`Portal.Catalog.VersionBackfill`) is built again only under a newer judge
+  # revision: its last activity is older than the first build at the newest
+  # revision any row of the toolchain and builder version carries. An old
+  # release whose deps do not resolve, or that does not compile, errors the
+  # same way every day, and the row records nothing that tells that from a
+  # transient error (a deterministic `deps_get_failed` included), so the
+  # day-old-error rule does not apply to it. A `builder_version` bump is a new
+  # identity and builds it anyway. NULL (no revision yet) reads as "not
+  # reopened".
+  @backfill_error_reopen """
+  coalesce(coalesce(t.attempted_at, t.finished_at, t.updated_at) <
+     (SELECT min(bf.finished_at) FROM catalog_toolchain_builds bf
+      WHERE bf.toolchain = $1 AND bf.builder_version = $2
+        AND bf.judge_revision =
+          (SELECT max(bm.judge_revision) FROM catalog_toolchain_builds bm
+           WHERE bm.toolchain = $1 AND bm.builder_version = $2)),
+   false)
+  """
+
   # A live row of the identity (see `@toolchain_candidates_sql`'s comment for
   # what is live): `t` is the row; `$PKG`, `$VERSION`, `$VARIANT` and
   # `$CONFIG` are the candidate's package id, version, variant and config
@@ -1446,7 +1466,10 @@ defmodule Portal.Catalog do
         OR (
           t.revoked_at IS NULL
           AND t.status = 'error'
-          AND coalesce(t.finished_at, t.updated_at) > $3::timestamp
+          AND (
+            coalesce(t.finished_at, t.updated_at) > $3::timestamp
+            OR ($BACKFILL AND NOT #{@backfill_error_reopen})
+          )
         )
         OR (
           t.revoked_at IS NULL
@@ -1457,13 +1480,15 @@ defmodule Portal.Catalog do
   )
   """
 
-  # `@live_row_clause` for one query's candidate columns. `judge_reopen?`
+  # `@live_row_clause` for one query's candidate columns, `backfill` the SQL
+  # boolean for a version only the version backfill nominates. `judge_reopen?`
   # false leaves `@judge_reopen` out: a candidate whose identity is live that
   # way is one only `@judge_reopen` reopened (`reopen` in
   # `toolchain_backlog/3`).
-  live_row = fn package_id, version, variant, config_variant, judge_reopen? ->
+  live_row = fn package_id, version, variant, config_variant, judge_reopen?, backfill ->
     @live_row_clause
     |> String.replace("$JUDGE_REOPEN", if(judge_reopen?, do: @judge_reopen, else: "false"))
+    |> String.replace("$BACKFILL", backfill)
     |> String.replace("$PKG", package_id)
     |> String.replace("$VERSION", version)
     |> String.replace("$VARIANT", variant)
@@ -1527,6 +1552,9 @@ defmodule Portal.Catalog do
   # which reads the registry in Elixir). Only `toolchain_backlog/3` fills them
   # in ($16/$17); every other reader of this query gets empty lists. A version
   # that also qualifies on a run is one row, with that run's `finished_at`.
+  # `backfill` marks a version only the backfill nominates: its `error` rows
+  # follow `@backfill_error_reopen` rather than the day-old-error rule, and
+  # `Portal.Workers.ToolchainSweep` caps how many it takes per run.
   #
   # The `with` variant is wanted for every qualifying version, the `without`
   # one only once a passing, unrevoked `with` build reports an optional
@@ -1595,19 +1623,21 @@ defmodule Portal.Catalog do
                                    THEN o.deps_lock ?| $7::text[] ELSE true END))
          ) AS refresh,
          0 AS rank,
-         #{live_row.("e.package_id", "e.version", "v.variant", "'default'", false)} AS reopen
+         #{live_row.("e.package_id", "e.version", "v.variant", "'default'", false, "e.backfill")} AS reopen,
+         e.backfill
   FROM (
-    SELECT q.package_id, q.package, q.version, max(q.finished_at) AS finished_at, q.recent
+    SELECT q.package_id, q.package, q.version, max(q.finished_at) AS finished_at, q.recent,
+           bool_and(q.backfill) AS backfill
     FROM (
       SELECT p.id AS package_id, p.name AS package, r.version_tested AS version,
-             r.finished_at, p.hex_downloads_recent AS recent
+             r.finished_at, p.hex_downloads_recent AS recent, false AS backfill
       FROM catalog_packages p
       JOIN catalog_runs r ON r.package_id = p.id
       JOIN catalog_system_results s ON s.run_id = r.id
       WHERE #{@pure_evidence_clause}
         AND #{@pure_beam_clause}
       UNION ALL
-      SELECT p.id, p.name, b.version, NULL, p.hex_downloads_recent
+      SELECT p.id, p.name, b.version, NULL, p.hex_downloads_recent, true
       FROM unnest($BACKFILL_PACKAGES::text[], $BACKFILL_VERSIONS::text[]) AS b(package, version)
       JOIN catalog_packages p ON p.name = b.package
     ) q
@@ -1634,13 +1664,28 @@ defmodule Portal.Catalog do
           AND jsonb_array_length(w.optional_deps -> 'added') > 0
       )
     )
-    AND NOT #{live_row.("e.package_id", "e.version", "v.variant", "'default'", true)}
+    AND NOT #{live_row.("e.package_id", "e.version", "v.variant", "'default'", true, "e.backfill")}
   """
 
   # A candidate's `major.minor.patch` as a numeric array, for ordering
   # versions newest first (text order puts 1.9.0 above 1.10.0). NULL for a
   # string that does not start that way, which sorts last.
   @candidate_version_order "(regexp_match(c.version, '^(\\d+)\\.(\\d+)\\.(\\d+)'))::numeric[]"
+
+  # `toolchain_backlog/3`'s ranking of the candidates `c` (release downloads
+  # `d`), most wanted first.
+  @backlog_order """
+  c.reopen,
+  c.config_variant = 'default',
+  c.recent DESC NULLS LAST,
+  d.downloads DESC NULLS LAST,
+  c.finished_at DESC NULLS LAST,
+  #{@candidate_version_order} DESC NULLS LAST,
+  c.version DESC,
+  c.variant = 'without',
+  c.rank,
+  c.package
+  """
 
   @toolchain_candidates_sql @toolchain_candidates_template
                             |> String.replace("$BACKFILL_PACKAGES", "'{}'")
@@ -1673,7 +1718,8 @@ defmodule Portal.Catalog do
   SELECT p.name AS package, d.version, d.variant, cv.name AS config_variant,
          d.finished_at, p.hex_downloads_recent AS recent, false AS refresh,
          cv.rank,
-         #{live_row.("d.package_id", "d.version", "d.variant", "cv.name", false)} AS reopen
+         #{live_row.("d.package_id", "d.version", "d.variant", "cv.name", false, "false")} AS reopen,
+         false AS backfill
   FROM catalog_toolchain_builds d
   JOIN catalog_packages p ON p.id = d.package_id
   CROSS JOIN LATERAL (
@@ -1700,7 +1746,7 @@ defmodule Portal.Catalog do
     AND d.revoked_at IS NULL
     AND #{records_config_reads.("d")}
     AND #{default_not_withheld}
-    AND NOT #{live_row.("d.package_id", "d.version", "d.variant", "cv.name", true)}
+    AND NOT #{live_row.("d.package_id", "d.version", "d.variant", "cv.name", true, "false")}
   """
 
   @doc """
@@ -1739,7 +1785,15 @@ defmodule Portal.Catalog do
   same variant and live-row rules, judged on its own build, so it ranks with
   the other new defaults and ahead of every reopen. Reading the release lists
   is the other part of the backlog that asks Hex, from `repo.hex.pm` and
-  through `Portal.HexDeps`'s one-hour cache.
+  through `Portal.HexDeps`'s one-hour cache. Such a version says so as
+  `backfill: true` (a reopen or refresh never does), and the limit applies to it on its
+  own as well, so a long backfill never pushes other new builds past
+  `limit`: `Portal.Workers.ToolchainSweep` gives backfill only a share of its
+  defaults. Its `error` rows are built again only under a newer judge
+  revision or `builder_version`, not a day later (see the query's comment).
+  Callers that build every toolchain pass `:backfill` once
+  (`VersionBackfill.wanted/0`), so the registry is read once per sweep.
+
   Each row names its `config_variant`: `"default"`, or a named
   `Compatibility.ConfigVariants` variant of a served default build. Only rows
   of the default config variant decide whether a default build is wanted, so
@@ -1775,7 +1829,8 @@ defmodule Portal.Catalog do
             variant: :with | :without,
             config_variant: String.t(),
             refresh: boolean(),
-            reopen: boolean()
+            reopen: boolean(),
+            backfill: boolean()
           }
         ]
   def toolchain_backlog(toolchain, builder_version, limit, opts \\ []) do
@@ -1789,28 +1844,24 @@ defmodule Portal.Catalog do
           UNION ALL
           #{@config_variant_candidates_sql}
         )
-        SELECT package, version, variant, config_variant, refresh, reopen
+        SELECT package, version, variant, config_variant, refresh, reopen, backfill
         FROM (
           SELECT c.package, c.version, c.variant, c.config_variant, c.refresh, c.reopen,
+                 c.backfill AND NOT c.reopen AND NOT c.refresh AS backfill,
+                 row_number() OVER (
+                   PARTITION BY c.refresh, c.backfill AND NOT c.reopen AND NOT c.refresh
+                   ORDER BY #{@backlog_order}
+                 ) AS place,
                  row_number() OVER (
                    PARTITION BY c.refresh
-                   ORDER BY c.reopen,
-                            c.config_variant = 'default',
-                            c.recent DESC NULLS LAST,
-                            d.downloads DESC NULLS LAST,
-                            c.finished_at DESC NULLS LAST,
-                            #{@candidate_version_order} DESC NULLS LAST,
-                            c.version DESC,
-                            c.variant = 'without',
-                            c.rank,
-                            c.package
-                 ) AS place
+                   ORDER BY #{@backlog_order}
+                 ) AS overall
           FROM candidates c
           LEFT JOIN catalog_release_downloads d
             ON d.package = c.package AND d.version = c.version
         ) ranked
         WHERE place <= $15
-        ORDER BY refresh, place
+        ORDER BY refresh, overall
         """,
         toolchain_params(
           toolchain,
@@ -1819,14 +1870,15 @@ defmodule Portal.Catalog do
         ) ++ config_variant_params() ++ [limit | backfill_params(backfill)]
       )
 
-    Enum.map(rows, fn [package, version, variant, config_variant, refresh, reopen] ->
+    Enum.map(rows, fn [package, version, variant, config_variant, refresh, reopen, backfill] ->
       %{
         package: package,
         version: version,
         variant: variant(variant),
         config_variant: config_variant,
         refresh: refresh,
-        reopen: reopen
+        reopen: reopen,
+        backfill: backfill
       }
     end)
   end

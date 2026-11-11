@@ -191,7 +191,9 @@ config :portal, Portal.Toolchains,
   backfill_top_versions_packages: 100,
   backfill_top_versions: 10,
   backfill_packages: 500,
-  backfill_versions: 4
+  backfill_versions: 4,
+  # The most of a sweep's new default builds those older releases may take.
+  backfill_share: 1 / 3
 
 # Host-side Docker invocation for worker builds.
 # Runtime-overridable in config/runtime.exs.

@@ -219,7 +219,8 @@ defmodule Portal.Catalog.ToolchainBacklogJudgeRevisionTest do
     run!("cold", "1.0.0")
     downloads!("cold", 1)
 
-    assert [%{package: "cold", reopen: false}] = Catalog.toolchain_backlog("1.19/28", 1, 1)
+    assert [%{package: "cold", reopen: false, backfill: false}] =
+             Catalog.toolchain_backlog("1.19/28", 1, 1)
 
     assert Enum.map(Catalog.toolchain_backlog("1.19/28", 1, 100), &{&1.package, &1.reopen}) ==
              [{"cold", false}, {"hot", true}]
@@ -236,7 +237,8 @@ defmodule Portal.Catalog.ToolchainBacklogJudgeRevisionTest do
     {:ok, _run} = Portal.Catalog.RegistryAssessment.record("csv", "3.2.2", nil)
     downloads!("csv", 1)
 
-    assert [%{package: "csv", reopen: false}] = Catalog.toolchain_backlog("1.19/28", 1, 1)
+    assert [%{package: "csv", reopen: false, backfill: false}] =
+             Catalog.toolchain_backlog("1.19/28", 1, 1)
 
     assert Enum.map(Catalog.toolchain_backlog("1.19/28", 1, 100), &{&1.package, &1.reopen}) ==
              [{"csv", false}, {"hot", true}]
@@ -262,7 +264,8 @@ defmodule Portal.Catalog.ToolchainBacklogJudgeRevisionTest do
         )
     })
 
-    assert [%{package: "cold", version: "1.0.0", reopen: false}] =
+    # The limit counts backfill on its own, so the reopen comes back beside it.
+    assert [%{package: "cold", version: "1.0.0", reopen: false, backfill: true}, %{reopen: true}] =
              Catalog.toolchain_backlog("1.19/28", 1, 1)
 
     assert Enum.map(Catalog.toolchain_backlog("1.19/28", 1, 100), &{&1.package, &1.reopen}) ==
@@ -274,6 +277,7 @@ defmodule Portal.Catalog.ToolchainBacklogJudgeRevisionTest do
     run!("priv", "1.0.0")
     row!("priv", "1.0.0", :skipped, reason: "ships priv files")
 
-    assert [%{package: "priv", reopen: false}] = Catalog.toolchain_backlog("1.19/28", 1, 100)
+    assert [%{package: "priv", reopen: false, backfill: false}] =
+             Catalog.toolchain_backlog("1.19/28", 1, 100)
   end
 end

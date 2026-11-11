@@ -85,19 +85,20 @@ defmodule Portal.Catalog.VersionBackfillTest do
 
   defp minors(major, range), do: Enum.map(range, &release("#{major}.#{&1}.0"))
 
-  defp row!(name, version, status) do
+  defp row!(name, version, status, opts \\ []) do
     Portal.Catalog.ToolchainBuild
     |> Ash.Changeset.for_create(:create, %{
       package_id: package!(name).id,
       version: version,
       toolchain: "1.19/28",
-      builder_version: 1,
+      builder_version: Keyword.get(opts, :builder_version, 1),
       status: status,
       compile_env_rule: 1,
       compile_env: [],
       deps_lock: %{},
+      judge_revision: Keyword.get(opts, :judge_revision),
       run_id: "tc-row",
-      finished_at: DateTime.utc_now()
+      finished_at: Keyword.get(opts, :finished_at, DateTime.utc_now())
     })
     |> Ash.create!(domain: Catalog)
   end
@@ -175,6 +176,28 @@ defmodule Portal.Catalog.VersionBackfillTest do
       assert versions("pkg") == ~w(1.2.0 1.0.0)
     end
 
+    test "an error on a backfilled version is final until a new judge revision" do
+      run!("pkg", "1.2.0")
+      downloads!("pkg", 1_000)
+      releases!(%{"pkg" => minors(1, 0..2)})
+      two_days_ago = DateTime.add(DateTime.utc_now(), -2 * 86_400, :second)
+      row!("pkg", "1.2.0", :error, finished_at: two_days_ago)
+      row!("pkg", "1.1.0", :error, finished_at: two_days_ago)
+      row!("pkg", "1.0.0", :pass)
+
+      # The version with a run of its own is retried a day later; the
+      # backfilled one is not.
+      assert Enum.map(backlog(), &{&1.version, &1.backfill}) == [{"1.2.0", false}]
+
+      # A judge revision first written after the error reopens it once.
+      row!("pkg", "1.0.0", :pass, builder_version: 2, judge_revision: 1)
+      assert versions("pkg") == ["1.2.0"]
+
+      run!("other", "1.0.0")
+      row!("other", "1.0.0", :pass, judge_revision: 1)
+      assert versions("pkg") == ~w(1.2.0 1.1.0)
+    end
+
     test "an old release of a popular package ranks before a new one of an obscure one" do
       run!("popular", "2.0.0")
       downloads!("popular", 1_000_000)
@@ -233,9 +256,46 @@ defmodule Portal.Catalog.VersionBackfillTest do
         Map.fetch!(answers, name)
       end
 
+      # Asked several at a time, so "f" may be asked, but its answer is not used.
       assert VersionBackfill.wanted(hex_releases: hex_releases) == [{"b", "0.1.0"}]
       for name <- ~w(a b c d e), do: assert_received({:asked, ^name})
-      refute_received {:asked, "f"}
+    end
+
+    test "asks at most eight packages at once" do
+      for i <- 1..24 do
+        run!("pkg#{i}", "1.0.0")
+        downloads!("pkg#{i}", 100 - i)
+      end
+
+      table = :ets.new(:in_flight, [:public])
+      :ets.insert(table, [{:now, 0}, {:max, 0}])
+
+      hex_releases = fn _name ->
+        now = :ets.update_counter(table, :now, 1)
+        [{:max, max}] = :ets.lookup(table, :max)
+        if now > max, do: :ets.insert(table, {:max, now})
+        Process.sleep(20)
+        :ets.update_counter(table, :now, -1)
+        {:ok, [release("0.1.0")]}
+      end
+
+      assert length(VersionBackfill.wanted(hex_releases: hex_releases)) == 24
+      assert [{:max, max}] = :ets.lookup(table, :max)
+      assert max in 2..8
+    end
+
+    @tag :capture_log
+    test "past its time budget it starts no request and keeps what it has" do
+      run!("pkg", "1.0.0")
+      downloads!("pkg", 1)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert VersionBackfill.wanted(hex_releases: fn _ -> flunk("asked") end, budget_ms: 0) ==
+                   []
+        end)
+
+      assert log =~ "time budget"
     end
 
     test "a tier of zero versions asks nothing for it" do

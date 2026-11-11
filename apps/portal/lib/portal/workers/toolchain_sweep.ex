@@ -33,9 +33,15 @@ defmodule Portal.Workers.ToolchainSweep do
     4. any slot still free, to the defaults left over, then the reopens,
        then the refreshes left over, so no slot goes unused.
 
-  An older Hex release of a popular package (`Portal.Catalog.VersionBackfill`)
-  is a new default build like any other: it sits in tier 2, ranked with the
-  rest by package downloads, and ahead of every reopen.
+  An older Hex release of a popular package (`Portal.Catalog.VersionBackfill`,
+  `backfill` in `Catalog.toolchain_backlog/3`) is a new default build: it
+  sits in tier 2 and ranks with the rest by package downloads, ahead of every
+  reopen. It takes at most `Portal.Toolchains.backfill_share/0` (a third by
+  default) of tier 2's slots, so the thousands of old releases of the top
+  packages never hold back a new release of a lower-ranked one; a share the
+  backfill does not fill goes to the other defaults, and slots the other
+  defaults leave free go to the backfill. The registry is read for it once
+  per run, not per toolchain.
 
   Reopens come after every new build: a judge revision reopens the whole
   skipped backlog of a toolchain at once, and it must not hold back a new
@@ -69,6 +75,7 @@ defmodule Portal.Workers.ToolchainSweep do
   require Logger
 
   alias Portal.Catalog
+  alias Portal.Catalog.VersionBackfill
   alias Portal.Toolchains
   alias Portal.Workers.ToolchainBuild
 
@@ -77,10 +84,12 @@ defmodule Portal.Workers.ToolchainSweep do
     cap = Toolchains.max_per_run()
     builder_version = Toolchains.builder_version()
 
+    backfill = VersionBackfill.wanted()
+
     backlogs =
       Enum.map(Toolchains.images(), fn image ->
         image.toolchain
-        |> Catalog.toolchain_backlog(builder_version, cap)
+        |> Catalog.toolchain_backlog(builder_version, cap, backfill: backfill)
         |> Enum.map(&{build_args(&1, image, builder_version), tier(&1)})
       end)
 
@@ -90,19 +99,20 @@ defmodule Portal.Workers.ToolchainSweep do
       |> Enum.frequencies_by(&enqueue/1)
 
     for %{toolchain: toolchain} <- Toolchains.images() do
-      [named, refresh, default, reopen] =
-        for tier <- [:named, :refresh, :default, :reopen],
+      [named, refresh, default, backfill, reopen] =
+        for tier <- [:named, :refresh, :default, :backfill, :reopen],
             do: Map.get(counts, {toolchain, :enqueued, tier}, 0)
 
       pending =
-        for tier <- [:named, :refresh, :default, :reopen], reduce: 0 do
+        for tier <- [:named, :refresh, :default, :backfill, :reopen], reduce: 0 do
           sum -> sum + Map.get(counts, {toolchain, :pending, tier}, 0)
         end
 
       Logger.info(
         "Toolchain sweep #{toolchain} (builder #{builder_version}): " <>
-          "enqueued #{named + default + refresh + reopen} (#{named} config variants, " <>
-          "#{refresh} refreshes, #{reopen} judge-revision reopens), already queued #{pending}"
+          "enqueued #{named + default + backfill + refresh + reopen} " <>
+          "(#{named} config variants, #{backfill} old releases, #{refresh} refreshes, " <>
+          "#{reopen} judge-revision reopens), already queued #{pending}"
       )
     end
 
@@ -130,7 +140,10 @@ defmodule Portal.Workers.ToolchainSweep do
 
     named = Enum.take(named, cap)
     reserve = div(cap, 4)
-    {defaults, more_defaults} = Enum.split(defaults, max(cap - reserve - length(named), 0))
+
+    {defaults, more_defaults} =
+      split_defaults(defaults, max(cap - reserve - length(named), 0))
+
     {refreshes, more_refreshes} = Enum.split(refreshes, reserve)
 
     Enum.take(
@@ -139,14 +152,39 @@ defmodule Portal.Workers.ToolchainSweep do
     )
   end
 
-  # Each toolchain's backlog, keeping only the entries of `tier`, in their
-  # order.
+  # Tier 2: `slots` of the defaults, backfill included, in backlog order, and
+  # the rest, other defaults ahead of backfill. Backfill takes at most its
+  # share of the slots unless the other defaults leave some free; a share it
+  # does not fill goes to them.
+  defp split_defaults(defaults, slots) do
+    {backfill, others} = Enum.split_with(defaults, &(elem(&1, 1) == :backfill))
+    share = trunc(slots * Toolchains.backfill_share())
+    others_taken = min(length(others), slots - min(length(backfill), share))
+    backfill_taken = min(length(backfill), slots - others_taken)
+
+    taken =
+      MapSet.new(Enum.take(others, others_taken) ++ Enum.take(backfill, backfill_taken))
+
+    {picked, rest} = Enum.split_with(defaults, &MapSet.member?(taken, &1))
+    {more_backfill, more_others} = Enum.split_with(rest, &(elem(&1, 1) == :backfill))
+    {picked, more_others ++ more_backfill}
+  end
+
+  # Each toolchain's backlog, keeping only the entries of `tier` (`:default`
+  # includes `:backfill`), in their order.
+  defp only(backlogs, :default) do
+    Enum.map(backlogs, fn backlog ->
+      Enum.filter(backlog, &(elem(&1, 1) in [:default, :backfill]))
+    end)
+  end
+
   defp only(backlogs, tier) do
     Enum.map(backlogs, fn backlog -> Enum.filter(backlog, &(elem(&1, 1) == tier)) end)
   end
 
   defp tier(%{refresh: true}), do: :refresh
   defp tier(%{reopen: true}), do: :reopen
+  defp tier(%{config_variant: "default", backfill: true}), do: :backfill
   defp tier(%{config_variant: "default"}), do: :default
   defp tier(%{config_variant: _named}), do: :named
 
@@ -189,6 +227,7 @@ defmodule Portal.Workers.ToolchainSweep do
   defp priority(_variant, :named), do: 2
   defp priority(:with, :default), do: 0
   defp priority(:without, :default), do: 1
+  defp priority(variant, :backfill), do: priority(variant, :default)
 
   # [[a1, a2, a3], [b1]] -> [a1, b1, a2, a3]
   defp round_robin(lists) do

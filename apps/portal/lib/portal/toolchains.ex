@@ -32,6 +32,16 @@ defmodule Portal.Toolchains do
   def max_per_run, do: Keyword.get(config(), :max_per_run, 300)
 
   @doc """
+  The most of a `Portal.Workers.ToolchainSweep` run's new default builds that
+  older Hex releases (`Portal.Catalog.VersionBackfill`) may take, as a
+  fraction of those slots: `backfill_share` under `config :portal,
+  Portal.Toolchains`, default a third. Slots the other defaults leave free
+  go to the backfill anyway.
+  """
+  @spec backfill_share() :: number()
+  def backfill_share, do: Keyword.get(config(), :backfill_share, 1 / 3)
+
+  @doc """
   How far back the toolchain backlog reaches into a popular package's Hex
   releases (`Portal.Catalog.VersionBackfill`): the `top_packages` packages
   with the most hex.pm recent downloads get their last `top_versions`

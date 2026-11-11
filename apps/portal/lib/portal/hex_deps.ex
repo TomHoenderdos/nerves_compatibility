@@ -19,7 +19,11 @@ defmodule Portal.HexDeps do
   fetches. Sequential walks and staggered seed jobs make repeats rare; when
   concurrent callers miss the same cache key, each may fetch once, and that is
   accepted because the only cost is an extra CDN request, never a wrong answer.
-  Errors are never cached: a CDN hiccup must not be remembered for an hour.
+  Errors are not cached by default: a CDN hiccup must not be remembered for
+  an hour by a caller that needs the answer. A caller that only wants to
+  bound its load, such as `Portal.Catalog.VersionBackfill`, passes
+  `negative_cache: true` and has errors kept for the same hour, under a key
+  of their own that no other caller reads.
 
   The table is node-local and owned by this process, like
   `PortalWeb.WebAuthnSession`'s.
@@ -63,14 +67,27 @@ defmodule Portal.HexDeps do
   as in `Portal.HexRegistry.snapshot/1`. `:receive_timeout` (default 30 s) and
   `:retry` (default Req's) and `:connect_options` pass through to the
   request, for a caller with someone waiting on the answer.
+  `:negative_cache` (default `false`) also keeps an error for the TTL and
+  answers it again from the cache, for that caller only (see the moduledoc).
   """
   @spec releases(String.t(), keyword()) :: {:ok, [release()]} | {:error, error()}
   def releases(name, opts \\ []) when is_binary(name) do
     cache? = Keyword.get(opts, :cache, true)
+    negative? = cache? and Keyword.get(opts, :negative_cache, false)
 
-    case cache? && cached(name) do
+    with :miss <- if(cache?, do: cached(name), else: :miss),
+         :miss <- if(negative?, do: cached({:negative, name}), else: :miss) do
+      case fetch_and_store(name, opts, cache?) do
+        {:error, _reason} = error when negative? ->
+          :ets.insert(@table, {{:negative, name}, error, now() + @ttl_seconds})
+          error
+
+        other ->
+          other
+      end
+    else
+      {:ok, {:error, _reason} = error} -> error
       {:ok, releases} -> {:ok, releases}
-      _ -> fetch_and_store(name, opts, cache?)
     end
   end
 
@@ -223,7 +240,8 @@ defmodule Portal.HexDeps do
     {:noreply, state}
   end
 
-  # Rows are `{name, releases, expires_at}`; delete every one that has expired.
+  # Rows are `{name, releases, expires_at}`, or `{{:negative, name}, error,
+  # expires_at}`; delete every one that has expired.
   defp sweep do
     now = now()
     :ets.select_delete(@table, [{{:_, :_, :"$1"}, [{:"=<", :"$1", now}], [true]}])
@@ -231,11 +249,11 @@ defmodule Portal.HexDeps do
 
   defp schedule_sweep, do: Process.send_after(self(), :sweep, :timer.seconds(@ttl_seconds))
 
-  defp cached(name) do
+  defp cached(key) do
     now = now()
 
-    case :ets.lookup(@table, name) do
-      [{^name, releases, expires_at}] when expires_at > now -> {:ok, releases}
+    case :ets.lookup(@table, key) do
+      [{^key, releases, expires_at}] when expires_at > now -> {:ok, releases}
       _ -> :miss
     end
   end

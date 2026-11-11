@@ -134,6 +134,24 @@ defmodule Portal.HexDepsTest do
     assert {:ok, [_]} = releases("jason", context)
   end
 
+  test "negative_cache: true keeps an error or a not_found for the hour", context do
+    serve("jason", {:status, 503})
+    assert {:error, :hex_registry_unavailable} = releases("jason", context, negative_cache: true)
+    assert_received {:fetched, "/packages/jason"}
+
+    serve("jason", resource("jason", [{"1.4.4", [], %{}}], context.private))
+    assert {:error, :hex_registry_unavailable} = releases("jason", context, negative_cache: true)
+    refute_received {:fetched, "/packages/jason"}
+
+    # Only the caller that asked for it reads the kept error.
+    assert {:ok, [_]} = releases("jason", context)
+
+    assert {:error, :not_found} = releases("gone", context, negative_cache: true)
+    assert {:error, :not_found} = releases("gone", context, negative_cache: true)
+    assert_received {:fetched, "/packages/gone"}
+    refute_received {:fetched, "/packages/gone"}
+  end
+
   test "cache: false always fetches", context do
     serve("jason", resource("jason", [{"1.4.4", [], %{}}], context.private))
     assert {:ok, _} = releases("jason", context, cache: false)

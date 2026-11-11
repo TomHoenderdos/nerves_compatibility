@@ -163,7 +163,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "old_error",
@@ -171,7 +172,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "old_fail",
@@ -179,7 +181,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "wanted",
@@ -187,7 +190,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -204,7 +208,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
 
@@ -232,7 +237,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "many",
@@ -240,7 +246,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "many",
@@ -248,7 +255,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "many",
@@ -256,7 +264,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "many",
@@ -264,7 +273,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "single",
@@ -272,7 +282,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "tie",
@@ -280,7 +291,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "tie",
@@ -288,7 +300,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
 
@@ -306,7 +319,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -320,7 +334,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
         variant: :with,
         config_variant: "default",
         refresh: false,
-        reopen: false
+        reopen: false,
+        backfill: false
       }
 
     # The bulk intake's registry shortcut never compiles, so a package it
@@ -462,7 +477,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "obscure",
@@ -470,7 +486,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -491,7 +508,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "jason",
@@ -499,7 +517,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "jason",
@@ -507,7 +526,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -528,7 +548,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "zero",
@@ -536,7 +557,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "unknown",
@@ -544,7 +566,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -564,7 +587,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "jason",
@@ -572,7 +596,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "jason",
@@ -580,7 +605,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -602,7 +628,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "small",
@@ -610,7 +637,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -629,7 +657,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                },
                %{
                  package: "b",
@@ -637,7 +666,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -658,7 +688,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  variant: :with,
                  config_variant: "default",
                  refresh: false,
-                 reopen: false
+                 reopen: false,
+                 backfill: false
                }
              ]
     end
@@ -804,6 +835,78 @@ defmodule Portal.Workers.ToolchainSweepTest do
         end
       end)
       |> Enum.frequencies()
+    end
+
+    # The top package's twelve releases on hex.pm, oldest first: ten of them
+    # are backfill candidates (its newest has a run of its own).
+    defp hot_backfill! do
+      run!("hot", "1.11.0")
+      downloads!("hot", 1_000_000)
+
+      Process.put({Portal.Test.FakeHexDeps, :releases}, %{
+        "hot" =>
+          for(
+            minor <- 0..11,
+            do: %{version: "1.#{minor}.0", retired?: false, deps: [], outer_checksum: nil}
+          )
+      })
+    end
+
+    defp enqueued_versions do
+      for job <- all_enqueued(worker: ToolchainBuild),
+          do: {job.args["package"], job.args["version"]}
+    end
+
+    # The review's case: a run full of old releases of the top package still
+    # queues a new release of a lower-ranked one.
+    test "a new release of a lower-ranked package is queued in a run full of backfill",
+         %{previous: previous} do
+      one_toolchain(previous, max_per_run: 8)
+      hot_backfill!()
+      run!("cold", "2.0.0")
+      downloads!("cold", 10)
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      versions = enqueued_versions()
+      # 8 slots, 2 of them the refresh reserve that no refresh fills.
+      assert length(versions) == 8
+      assert {"cold", "2.0.0"} in versions
+      assert {"hot", "1.11.0"} in versions
+      # The other defaults leave their slots to the backfill.
+      assert Enum.count(versions, &match?({"hot", _}, &1)) == 7
+    end
+
+    test "backfill takes at most its share of the defaults' slots", %{previous: previous} do
+      one_toolchain(previous, max_per_run: 8)
+      hot_backfill!()
+
+      for i <- 1..6 do
+        run!("cold#{i}", "1.0.0")
+        downloads!("cold#{i}", 10 - i)
+      end
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      versions = enqueued_versions()
+      # Defaults get 8 - 2 (reserve) = 6 slots, a third of them backfill;
+      # the unused reserve then goes to the other defaults left over.
+      backfilled =
+        Enum.reject(versions, &(&1 in [{"hot", "1.11.0"}] or match?({"cold" <> _, _}, &1)))
+
+      assert length(backfilled) == 2
+      assert length(versions) == 8
+      assert Enum.count(versions, &match?({"cold" <> _, _}, &1)) == 5
+    end
+
+    test "a share the backfill does not fill goes to the other defaults",
+         %{previous: previous} do
+      one_toolchain(previous, max_per_run: 8, backfill_share: 0.5)
+      defaults_and_refreshes!(10, 0)
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert tiers_enqueued() == %{default: 8}
     end
 
     test "a quarter of the cap goes to refreshes when defaults alone exceed it",
