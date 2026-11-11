@@ -189,16 +189,16 @@ config :portal, Portal.Catalog.Cache, ttl_ms: :timer.seconds(60)
 # ToolchainBuild jobs already available/scheduled/retryable skips its backlog
 # query and every Hex call and logs one line instead; it defaults to
 # `max_per_run` itself, so the queue roughly oscillates between empty and one
-# run's worth. The admin "Run toolchain sweep now" button and
-# `ToolchainSweep.enqueue/0` bypass this guard (they queue with `force: true`)
-# and always run.
+# run's worth; 1000 keeps ten-odd build slots busy between hourly runs. The
+# admin "Run toolchain sweep now" button and `ToolchainSweep.enqueue/0` bypass
+# this guard (they queue with `force: true`) and always run.
 config :portal, Portal.Toolchains,
   images: [
     %{toolchain: "1.20/29", image: "ncc-worker:local"},
     %{toolchain: "1.19/28", image: "ncc-worker:elixir-1.19-otp-28"}
   ],
   builder_version: 1,
-  max_per_run: 300,
+  max_per_run: 1000,
   # Older Hex releases of popular pure packages the toolchain backlog also
   # builds (`Portal.Catalog.VersionBackfill`): the 100 most downloaded
   # packages get their last 10 releases, the 500 most downloaded their last 4.

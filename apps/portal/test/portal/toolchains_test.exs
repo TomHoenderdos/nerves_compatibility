@@ -68,7 +68,7 @@ defmodule Portal.ToolchainsTest do
              ]
 
       assert Toolchains.builder_version() == 1
-      assert Toolchains.max_per_run() == 300
+      assert Toolchains.max_per_run() == 1000
     end
 
     test "images/0 and builder_version/0 read the application environment" do
