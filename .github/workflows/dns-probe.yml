@@ -3,13 +3,22 @@ on: pull_request
 permissions: {}
 jobs:
   probe:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        dns: [default, public]
+    runs-on: ${{ matrix.runner }}
     steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        if: matrix.dns == 'default'
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        if: matrix.dns == 'public'
+        with:
+          buildkitd-config-inline: |
+            [dns]
+              nameservers = ["1.1.1.1", "8.8.8.8"]
       - run: |
-          set -x
-          cat /etc/resolv.conf; resolvectl status | head -20 || true
-          getent hosts archive.ubuntu.com security.ubuntu.com repo.hex.pm || true
-          dig +time=5 +tries=1 archive.ubuntu.com || true
-          dig +time=5 +tries=1 @1.1.1.1 archive.ubuntu.com +short || true
-          timeout 120 docker run --rm ubuntu:24.04 bash -c 'cat /etc/resolv.conf; apt-get update' || echo DOCKER_FAIL
-          timeout 120 docker run --rm --dns 1.1.1.1 ubuntu:24.04 apt-get update || echo DOCKER_DNS_FAIL
+          mkdir p && cd p
+          printf 'FROM ghcr.io/nerves-project/nerves_system_br:1.35.3\nRUN cat /etc/resolv.conf; getent hosts archive.ubuntu.com ports.ubuntu.com || true; sudo apt-get update\n' > Dockerfile
+          timeout 300 docker buildx build --no-cache --progress=plain . 2>&1 | tail -30
