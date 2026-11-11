@@ -419,8 +419,13 @@ defmodule Portal.Workers.ToolchainBuild do
   defp describe_config_variant("default"), do: ""
   defp describe_config_variant(name), do: " [#{name}]"
 
+  # Names the run's scratch dir and container on this node. A package's builds
+  # on two toolchains can start in the same millisecond, so a node-unique
+  # integer follows the time.
   defp run_id(package, version),
-    do: "tc-#{package}-#{version}-#{System.system_time(:millisecond)}"
+    do:
+      "tc-#{package}-#{version}-#{System.system_time(:millisecond)}-" <>
+        "#{System.unique_integer([:positive])}"
 
   # A snooze raises `attempt`, and Oban's default backoff is quartic in it; cap
   # it at an hour as `Portal.Workers.Build` does.

@@ -97,6 +97,16 @@ defmodule Portal.Workers.ToolchainBuildTest do
     assert "tc-jason-1.4.4-" <> _ = build_args.run_id
   end
 
+  test "follows the run id's millisecond with a node-unique integer" do
+    respond(0)
+    assert :ok = perform_job(ToolchainBuild, @args)
+    assert_received {:build_args, %{run_id: first}}
+
+    # The millisecond is not enough: a package's builds on two toolchains
+    # can start together, and the run id names the scratch dir and container.
+    assert first =~ ~r/^tc-jason-1\.4\.4-\d+-\d+$/
+  end
+
   test "snoozes without a build or a row when the image has no digest" do
     package!("jason")
     Process.put(:stub_image_digest, "sha256:" <> String.duplicate("0", 64))
