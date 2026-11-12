@@ -28,6 +28,7 @@ defmodule NccWorker.Worker do
     Scanner,
     SeedGate,
     Systems,
+    TargetDepsGet,
     WarmNerves
   }
 
@@ -2407,16 +2408,7 @@ defmodule NccWorker.Worker do
         {"MIX_ENV", "prod"}
       ] ++ hex_env(hex_home)
 
-    deps =
-      case System.cmd("mix", ["deps.get"],
-             cd: project_dir,
-             env: env,
-             stderr_to_stdout: true,
-             into: File.stream!(log_file, [:append])
-           ) do
-        {_, 0} -> :ok
-        {_, exit_code} -> {:error, exit_code}
-      end
+    deps = TargetDepsGet.run(fn -> target_deps_get(project_dir, env, log_file) end)
 
     {cache_plan, cache_stats} =
       case deps do
@@ -2436,6 +2428,16 @@ defmodule NccWorker.Worker do
       out_root: out_root,
       deps_duration: System.monotonic_time(:second) - start_time
     }
+  end
+
+  # One `mix deps.get` for a target, appended to its log; returns this
+  # attempt's output, which `TargetDepsGet` reads to decide on a retry.
+  defp target_deps_get(project_dir, env, log_file) do
+    {output, code} =
+      System.cmd("mix", ["deps.get"], cd: project_dir, env: env, stderr_to_stdout: true)
+
+    File.write(log_file, output, [:append])
+    {output, code}
   end
 
   # Fills `_build/<target>/lib` from the shared root and the run-local tier
