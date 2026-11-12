@@ -1170,6 +1170,48 @@ defmodule PortalWeb.CatalogApiControllerTest do
       assert sha_of(response(resp, 200)) == old
     end
 
+    test "the systems table a batch names, by sha" do
+      ingest_toolchain_build("tc_systems_#{System.unique_integer([:positive])}", "0.3.0")
+
+      {:ok, _row} =
+        Portal.Catalog.SystemAbi.observe(%{
+          system_pkg: "nerves_system_rpi4",
+          version: "2.2.2",
+          source: "lock",
+          toolchain_pkg: "nerves_toolchain_aarch64_nerves_linux_gnu",
+          toolchain_version: "15.3.1",
+          otp: "28.1.2",
+          libs: %{"libc.so.6" => ["GLIBC_2.17"]}
+        })
+
+      {:ok, batch} = Portal.Precompiled.Batches.build_and_sign()
+      sha = JSON.decode!(batch.payload)["systems"]
+      path = "/api/precompiled/systems/by-sha/#{sha}.json"
+
+      resp = build_conn() |> get(path)
+      assert sha_of(response(resp, 200)) == sha
+      assert ["application/json" <> _] = get_resp_header(resp, "content-type")
+      assert get_resp_header(resp, "cache-control") == ["public, max-age=31536000, immutable"]
+      assert get_resp_header(resp, "etag") == [~s("#{sha}")]
+
+      assert %{"format" => 1, "systems" => %{"nerves_system_rpi4" => %{"2.2.2" => _}}} =
+               assert_documented_response(resp, "getSystemsBySha")
+
+      again = build_conn() |> put_req_header("if-none-match", ~s("#{sha}")) |> get(path)
+      assert response(again, 304) == ""
+
+      # Without the suffix, an unknown sha, or a manifest's sha: 404, no-store.
+      manifest_sha = Portal.Precompiled.Batches.manifests_v2(batch) |> Map.values() |> hd()
+
+      for raw <- [sha, "#{String.duplicate("a", 64)}.json", "#{manifest_sha}.json"] do
+        miss = build_conn() |> get("/api/precompiled/systems/by-sha/#{raw}")
+        assert response(miss, 404), raw
+        assert get_resp_header(miss, "cache-control") == ["no-store"], raw
+        assert get_resp_header(miss, "etag") == [], raw
+        assert_documented_response(miss, "getSystemsBySha")
+      end
+    end
+
     # The store holds file blobs too; by-sha must not serve one past the
     # files route's publication gate.
     test "a file blob is not a manifest" do

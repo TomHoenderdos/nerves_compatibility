@@ -110,7 +110,13 @@ defmodule Portal.Catalog do
     :compile_env,
     :deps_lock,
     :unpublished_at,
-    :compile_env_rule
+    :compile_env_rule,
+    :native,
+    :portable,
+    :elf_needs,
+    :otp_full,
+    :toolchain_pkg,
+    :toolchain_version
   ]
   @json_fields [
     :run_id,
@@ -1134,7 +1140,10 @@ defmodule Portal.Catalog do
   # status) are in it as values too. Memberships are only ever inserted and
   # deleted, and number millions, so they are an order-independent count and
   # sum of row hashes rather than a sorted digest. `format/2` keeps a NULL
-  # column's place, so no two rows' fields can shift into each other.
+  # column's place, so no two rows' fields can shift into each other. A
+  # system result's ABI facts are in it as values too: the ELF facts land
+  # after the ingest commits, so a manifest rendered between the two must not
+  # be vouched for once they arrive.
   @precompiled_fingerprints_sql """
   WITH runs AS (
     SELECT r.package_id,
@@ -1147,8 +1156,11 @@ defmodule Portal.Catalog do
     GROUP BY r.package_id
   ), results AS (
     SELECT r.package_id,
-           md5(string_agg(format('%s|%s|%s|%s|%s', s.id, s.xmin, s.updated_at,
-                                 s.carried_from_run_id, pg_column_size(s.beam_scan)),
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', s.id, s.xmin,
+                                 s.updated_at, s.carried_from_run_id,
+                                 pg_column_size(s.beam_scan), s.native, s.portable,
+                                 md5(s.elf_needs::text), s.otp_full, s.toolchain_pkg,
+                                 s.toolchain_version),
                           ',' ORDER BY s.id)) AS fp
     FROM catalog_system_results s
     JOIN catalog_runs r ON r.id = s.run_id
@@ -3031,6 +3043,7 @@ defmodule Portal.Catalog do
         |> Map.put("dep_env", "prod")
         |> Map.put("mix_target", mix_target(result.system_pkg))
         |> put_declared(built_by.declared)
+        |> put_abi_facts(result)
 
       {version, built_by.finished_at,
        Map.merge(files, %{"target" => result.system_pkg, "build" => build})}
@@ -3086,6 +3099,32 @@ defmodule Portal.Catalog do
   # build made before it was recorded renders the bytes it always did.
   defp put_manager(build, nil), do: build
   defp put_manager(build, manager), do: Map.put(build, "manager", manager)
+
+  # Format 2 only, each left out while unknown, so a build made before they
+  # were recorded renders the bytes it always did: whether its priv holds ELF
+  # files (`native`), whether those can be judged on another release of the
+  # system (`portable`), the system's full OTP version, the toolchain its
+  # lock resolved, and for a native build what its ELF files need.
+  defp put_abi_facts(build, result) do
+    build
+    |> put_known("native", result.native)
+    |> put_known("portable", result.portable)
+    |> put_known("otp_full", result.otp_full)
+    |> put_known("toolchain", toolchain_fact(result))
+    |> put_known("elf", elf_fact(result))
+  end
+
+  defp put_known(build, _key, nil), do: build
+  defp put_known(build, key, value), do: Map.put(build, key, value)
+
+  defp toolchain_fact(%{toolchain_pkg: package, toolchain_version: version})
+       when is_binary(package) and is_binary(version),
+       do: %{"package" => package, "version" => version}
+
+  defp toolchain_fact(_result), do: nil
+
+  defp elf_fact(%{native: true, elf_needs: needs}) when is_map(needs), do: %{"needs" => needs}
+  defp elf_fact(_result), do: nil
 
   # The MIX_TARGET a build was compiled under. The worker sets it from
   # `NccWorker.Systems`, whose target for `nerves_system_<x>` is always `<x>`;

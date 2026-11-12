@@ -268,6 +268,144 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
     assert rpi4["build"]["deps"] == system_deps
   end
 
+  describe "a target build's ABI facts" do
+    @toolchain "nerves_toolchain_aarch64_nerves_linux_gnu"
+    @needs %{"libc.so.6" => ["GLIBC_2.17", "GLIBC_2.38"], "libz.so.1" => []}
+
+    defp set_facts!(facts) do
+      {sets, params} =
+        facts
+        |> Enum.with_index(1)
+        |> Enum.map(fn {{column, value}, i} -> {"#{column} = $#{i}", value} end)
+        |> Enum.unzip()
+
+      Repo.query!(
+        "UPDATE catalog_system_results SET #{Enum.join(sets, ", ")} " <>
+          "WHERE system_pkg = 'nerves_system_rpi4'",
+        params
+      )
+    end
+
+    defp rpi4_build do
+      assert %{"nerves_system_rpi4" => [rpi4]} =
+               by_target(Catalog.precompiled_manifest_v2("jason"), "1.4.1")
+
+      rpi4
+    end
+
+    @native %{
+      native: true,
+      portable: true,
+      elf_needs: @needs,
+      otp_full: "28.1.2",
+      toolchain_pkg: @toolchain,
+      toolchain_version: "15.3.1"
+    }
+
+    test "a native build carries them in build" do
+      ingest_with_artifact(keyed_run())
+      set_facts!(@native)
+
+      build = rpi4_build()["build"]
+      assert build["native"] == true
+      assert build["portable"] == true
+      assert build["otp_full"] == "28.1.2"
+      assert build["toolchain"] == %{"package" => @toolchain, "version" => "15.3.1"}
+      assert build["elf"] == %{"needs" => @needs}
+    end
+
+    test "every key a 0.4 client reads keeps its type and value" do
+      ingest_with_artifact(keyed_run())
+      before = rpi4_build()
+      set_facts!(@native)
+      rpi4 = rpi4_build()
+
+      assert rpi4["target"] == "nerves_system_rpi4"
+      assert rpi4["ebin"] == before["ebin"]
+      assert [%{"path" => "ebin/jason.beam", "mode" => 33_188, "sha256" => _}] = rpi4["ebin"]
+      assert rpi4["priv"] == []
+
+      assert Map.take(rpi4["build"], [
+               "elixir",
+               "otp",
+               "system_version",
+               "deps",
+               "compile_env",
+               "package_checksum",
+               "dep_env",
+               "mix_target"
+             ]) == %{
+               "elixir" => "1.16.0",
+               "otp" => "26",
+               "system_version" => "1.24.0",
+               "deps" => @deps,
+               "compile_env" => [],
+               "package_checksum" => "outer",
+               "dep_env" => "prod",
+               "mix_target" => "rpi4"
+             }
+
+      assert Map.drop(rpi4["build"], ~w(native portable otp_full toolchain elf)) ==
+               before["build"]
+
+      v2 = Catalog.precompiled_manifest_v2("jason")
+      assert v2["format"] == 2
+    end
+
+    test "a beam-only build says so and carries no elf" do
+      ingest_with_artifact(keyed_run())
+      set_facts!(%{@native | native: false, elf_needs: %{}})
+
+      build = rpi4_build()["build"]
+      assert build["native"] == false
+      assert build["portable"] == true
+      refute Map.has_key?(build, "elf")
+    end
+
+    test "unknown facts are left out, and format 1 never carries them" do
+      ingest_with_artifact(keyed_run())
+      v1_before = Catalog.precompiled_manifest("jason")
+
+      build = rpi4_build()["build"]
+
+      for key <- ~w(native portable otp_full toolchain elf),
+          do: refute(Map.has_key?(build, key), key)
+
+      assert Catalog.precompiled_manifest_v2("jason")["format"] == 2
+
+      set_facts!(@native)
+      assert Catalog.precompiled_manifest("jason") == v1_before
+    end
+
+    test "a toolchain without its package or version is left out" do
+      ingest_with_artifact(keyed_run())
+      set_facts!(%{toolchain_pkg: @toolchain})
+      refute Map.has_key?(rpi4_build()["build"], "toolchain")
+    end
+
+    test "the fingerprint changes when the ELF facts arrive" do
+      ingest_with_artifact(keyed_run())
+      before = Catalog.precompiled_fingerprints()["jason"]
+
+      set_facts!(%{elf_needs: @needs})
+      after_needs = Catalog.precompiled_fingerprints()["jason"]
+      assert after_needs != before
+
+      set_facts!(%{native: true})
+      assert Catalog.precompiled_fingerprints()["jason"] != after_needs
+    end
+
+    test "a rendered build conforms to the published schema" do
+      ingest_with_artifact(keyed_run())
+      set_facts!(@native)
+
+      PortalWeb.ApiSpecAssertions.assert_api_schema(
+        Catalog.precompiled_manifest_v2("jason"),
+        "ManifestV2"
+      )
+    end
+  end
+
   describe "config variants" do
     test "four config variants of one build are listed side by side; each keeps its newest" do
       drop_legacy_identity_index!()

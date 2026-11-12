@@ -63,6 +63,47 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
             "Optional: the manager Mix built the package with, from the build's trace. A " <>
               "client skips a build whose manager differs from its own dependency's. Absent " <>
               "on builds made before it was recorded."
+        },
+        native: %Schema{
+          type: :boolean,
+          description:
+            "Optional: whether any `priv` file is ELF. Absent when unknown (builds made " <>
+              "before it was recorded)."
+        },
+        portable: %Schema{
+          type: :boolean,
+          description:
+            "Optional: false when an ELF file is neither a shared object nor an " <>
+              "executable (a kernel module, an object file); such a build is used on its " <>
+              "own system version only. Absent when unknown."
+        },
+        otp_full: %Schema{
+          type: :string,
+          description: "Optional: the system's full OTP version, such as `28.1.2`."
+        },
+        toolchain: %Schema{
+          type: :object,
+          description: "Optional: the Nerves toolchain the build's lock resolved.",
+          properties: %{
+            package: %Schema{type: :string},
+            version: %Schema{type: :string}
+          },
+          required: [:package, :version],
+          additionalProperties: false
+        },
+        elf: %Schema{
+          type: :object,
+          description:
+            "Optional, native builds only: `needs` maps every library soname the ELF " <>
+              "files need to the symbol versions they need from it.",
+          properties: %{
+            needs: %Schema{
+              type: :object,
+              additionalProperties: %Schema{type: :array, items: %Schema{type: :string}}
+            }
+          },
+          required: [:needs],
+          additionalProperties: false
         }
       },
       required: [

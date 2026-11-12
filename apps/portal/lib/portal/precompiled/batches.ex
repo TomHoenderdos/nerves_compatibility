@@ -25,12 +25,14 @@ defmodule Portal.Precompiled.Batches do
   Content origins (`Portal.Precompiled.Content`) are read for every batch and
   go into the payload only; no manifest depends on them, so they are not part
   of the fingerprint and a change takes effect at the next batch without
-  invalidating the memo.
+  invalidating the memo. The systems table (`Portal.Precompiled.SystemAbi`)
+  is the same: rendered for every batch, named in the payload as `systems`,
+  and stored in the transaction that inserts the batch.
   """
   require Ash.Query
   require Logger
   alias Portal.{ArtifactStore, Catalog}
-  alias Portal.Precompiled.{Batch, Content, Envelope, Keys, ManifestRefs, Manifests}
+  alias Portal.Precompiled.{Batch, Content, Envelope, Keys, ManifestRefs, Manifests, SystemAbi}
 
   # `{name, fingerprint, v1_sha | nil, v2_sha | nil, absent_shas}` per package.
   @memo Module.concat(__MODULE__, Memo)
@@ -86,6 +88,10 @@ defmodule Portal.Precompiled.Batches do
     remember(rendered, Catalog.precompiled_fingerprints())
     forget_all_but(names)
 
+    # Rendered once per batch; no manifest depends on it, so a new system
+    # release changes this sha and the batch's, and no manifest's.
+    systems = systems_table()
+
     issued = DateTime.utc_now()
     expires = DateTime.add(issued, @ttl_hours, :hour)
     # No locking: this runs from one Oban cron job with a uniqueness
@@ -107,6 +113,7 @@ defmodule Portal.Precompiled.Batches do
         "manifests_v2" => manifests_v2
       }
       |> put_content(Content.origins())
+      |> put_systems(systems)
       |> JSON.encode!()
 
     %{"signatures" => signatures} = Envelope.sign(payload, [{key.keyid, key.private}])
@@ -125,6 +132,7 @@ defmodule Portal.Precompiled.Batches do
     # servable by sha, and a batch whose insert fails leaves no refs behind.
     Portal.Repo.transaction(fn ->
       with :ok <- ManifestRefs.record(sequence, manifests, manifests_v2),
+           :ok <- store_systems(systems),
            {:ok, batch} <- Ash.create(changeset, domain: Portal.Precompiled) do
         batch
       else
@@ -204,6 +212,22 @@ defmodule Portal.Precompiled.Batches do
   # origins the payload is byte-for-byte what it was before the field existed.
   defp put_content(doc, []), do: doc
   defp put_content(doc, origins), do: Map.put(doc, "content", origins)
+
+  # The systems table (`Portal.Precompiled.SystemAbi`) as `{sha, body}`, or
+  # nil while it has no rows. Additive like `content`: a client that does not
+  # know `systems` ignores it, and without rows the payload is what it was.
+  defp systems_table do
+    case SystemAbi.table() do
+      table when map_size(table) == 0 -> nil
+      table -> SystemAbi.render(table)
+    end
+  end
+
+  defp put_systems(doc, nil), do: doc
+  defp put_systems(doc, {sha, _body}), do: Map.put(doc, "systems", sha)
+
+  defp store_systems(nil), do: :ok
+  defp store_systems({sha, body}), do: SystemAbi.store(sha, body)
 
   # Packages whose fingerprint changed during the batch are left for the next
   # one to render again.

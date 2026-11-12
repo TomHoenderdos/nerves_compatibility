@@ -5,7 +5,7 @@ defmodule PortalWeb.CatalogApiController do
   alias OpenApiSpex.Schema
   alias Portal.Catalog
   alias Portal.Catalog.TopFailing
-  alias Portal.Precompiled.{Batches, ManifestRefs, Manifests, Root}
+  alias Portal.Precompiled.{Batches, ManifestRefs, Manifests, Root, SystemAbi}
   alias PortalWeb.PrecompiledHTTP
 
   alias PortalWeb.ApiSchemas.{
@@ -15,7 +15,8 @@ defmodule PortalWeb.CatalogApiController do
     ManifestV2,
     PackagesResponse,
     SignedEnvelope,
-    StatsResponse
+    StatsResponse,
+    SystemsTable
   }
 
   # Shared by the operation specs below, which are evaluated at compile time.
@@ -269,6 +270,42 @@ defmodule PortalWeb.CatalogApiController do
         |> PrecompiledHTTP.no_store()
         |> put_status(:not_found)
         |> json(%{error: "precompiled manifest not found"})
+    end
+  end
+
+  operation :precompiled_systems_by_sha,
+    tags: ["Precompiled"],
+    operation_id: "getSystemsBySha",
+    summary: "Systems table by SHA-256",
+    description:
+      "The systems table bytes a signed batch named with this SHA-256 in `systems`. " <>
+        "Content-addressed and immutable, so caches and content origins may keep it forever.",
+    parameters: [
+      sha:
+        Keyword.put(
+          @by_sha_param,
+          :description,
+          "Lowercase hex SHA-256 of the table bytes, then `.json`."
+        )
+    ],
+    responses: [
+      ok: {"The systems table", "application/json", SystemsTable, headers: @etag_header},
+      not_modified: @not_modified,
+      not_found: {"No batch named a systems table with this digest", "application/json", Error}
+    ]
+
+  # Only bytes a batch stored for this sha (`SystemAbi.store/2`) that still
+  # hash to it; every miss looks the same.
+  def precompiled_systems_by_sha(conn, %{"sha" => raw}) do
+    with sha when is_binary(sha) <- by_sha_name(raw),
+         {:ok, body} <- SystemAbi.stored(sha) do
+      PrecompiledHTTP.send_bytes(conn, body, PrecompiledHTTP.quote_sha(sha), :immutable)
+    else
+      _ ->
+        conn
+        |> PrecompiledHTTP.no_store()
+        |> put_status(:not_found)
+        |> json(%{error: "systems table not found"})
     end
   end
 

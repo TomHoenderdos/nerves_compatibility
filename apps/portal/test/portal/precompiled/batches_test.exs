@@ -134,11 +134,11 @@ defmodule Portal.Precompiled.BatchesTest do
       assert Map.has_key?(Batches.manifests(b2), name)
 
       # Three packages took a handful of queries each the first time.
-      # The second batch reads the fingerprints (before and after) and the
-      # package list, records the named shas in one statement, and signs:
-      # a count that does not grow with the catalog.
+      # The second batch reads the fingerprints (before and after), the
+      # package list and the systems table, records the named shas in one
+      # statement, and signs: a count that does not grow with the catalog.
       assert first > 12
-      assert second <= 8, "second batch ran #{second} queries"
+      assert second <= 9, "second batch ran #{second} queries"
     end
 
     test "a revoked run drops out of the next batch" do
@@ -404,8 +404,63 @@ defmodule Portal.Precompiled.BatchesTest do
 
       assert JSON.decode!(b2.payload)["content"] == ["https://mirror.example"]
       assert Batches.manifests(b2) == Batches.manifests(b1)
-      assert second <= 8, "second batch ran #{second} queries"
+      assert second <= 9, "second batch ran #{second} queries"
       assert_stored_bytes_are_fresh_renders(b2)
+    end
+  end
+
+  describe "the systems table" do
+    defp abi_row!(system, version) do
+      {:ok, _row} =
+        Portal.Catalog.SystemAbi.observe(%{
+          system_pkg: system,
+          version: version,
+          source: "lock",
+          toolchain_pkg: "nerves_toolchain_aarch64_nerves_linux_gnu",
+          toolchain_version: "15.3.1",
+          otp: "28.1.2",
+          libs: %{"libc.so.6" => ["GLIBC_2.17"]}
+        })
+
+      :ok
+    end
+
+    test "a batch names the table by the SHA-256 of the bytes stored for it" do
+      ingest_toolchain_build("tc_sys_#{System.unique_integer([:positive])}", "0.1.0")
+      abi_row!("nerves_system_rpi4", "2.2.2")
+
+      assert {:ok, batch} = Batches.build_and_sign()
+      doc = JSON.decode!(batch.payload)
+
+      assert doc["version"] == 1
+      assert doc["systems"] =~ ~r/\A[0-9a-f]{64}\z/
+      assert {:ok, body} = Portal.Precompiled.SystemAbi.stored(doc["systems"])
+      assert Base.encode16(:crypto.hash(:sha256, body), case: :lower) == doc["systems"]
+      assert {doc["systems"], body} == Portal.Precompiled.SystemAbi.render()
+    end
+
+    test "without rows the payload has no systems key" do
+      ingest_toolchain_build("tc_nosys_#{System.unique_integer([:positive])}", "0.1.0")
+      assert {:ok, batch} = Batches.build_and_sign()
+      refute Map.has_key?(JSON.decode!(batch.payload), "systems")
+    end
+
+    test "a new release changes the table and no manifest" do
+      ingest_with_artifact()
+      ingest_toolchain_build("tc_stable_#{System.unique_integer([:positive])}", "0.1.0")
+      abi_row!("nerves_system_rpi4", "2.2.2")
+      {:ok, b1} = Batches.build_and_sign()
+
+      abi_row!("nerves_system_rpi4", "2.3.0")
+      {:ok, b2} = Batches.build_and_sign()
+
+      systems = &JSON.decode!(&1.payload)["systems"]
+      assert systems.(b2) != systems.(b1)
+      assert {:ok, _} = Portal.Precompiled.SystemAbi.stored(systems.(b1))
+      assert {:ok, _} = Portal.Precompiled.SystemAbi.stored(systems.(b2))
+      assert map_size(Batches.manifests_v2(b2)) > 0
+      assert Batches.manifests_v2(b2) == Batches.manifests_v2(b1)
+      assert Batches.manifests(b2) == Batches.manifests(b1)
     end
   end
 

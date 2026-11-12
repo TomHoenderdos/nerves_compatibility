@@ -312,6 +312,12 @@ humans in the loop.
   target identifier is a name and a version. A host build has none of that
   pinned. OS, libc and ABI would all have to join the key, and the builder
   would have to exist for each combination. Out of scope for phase 1.
+
+  Note: the exact system version this assumed is no longer required. A
+  beam-only target build is used on any release of its system, and a native
+  one on another release when it passes the ABI rules (same toolchain
+  series, OTP and the libraries and symbol versions it needs); see
+  "Using a system build on another release" in `PRECOMPILED_API.md`.
 - **`MIX_ENV`.** Only `prod` target builds are published. The prototype's
   client gates on the target and not on the environment, so it should add
   an environment check before any wider use.

@@ -118,6 +118,60 @@ Status codes:
 - `404` — malformed digest, no batch named it in this format, or the stored
   bytes no longer hash to it; `cache-control: no-store`
 
+### GET /api/precompiled/systems/by-sha/{sha256}.json
+
+The systems table bytes whose SHA256 a signed batch named in `systems` (see
+`batch.json`): per Nerves system and release, the toolchain, OTP and shared
+libraries a native target build is matched against on a release other than
+its own. Content-addressed and cached like the by-sha manifests
+(`immutable`, the quoted SHA256 as `etag`, `304` on `If-None-Match`), and
+served at `<origin>/systems/by-sha/<sha256>.json` by each content origin
+too. The `.json` suffix is required.
+
+```json
+{
+  "format": 1,
+  "systems": {
+    "nerves_system_rpi4": {
+      "2.2.2": {
+        "toolchain": {"package": "nerves_toolchain_aarch64_nerves_linux_gnu",
+                      "version": "15.3.1", "series": "15.3"},
+        "otp": "28.1.2",
+        "libs": {"libc.so.6": ["GLIBC_2.17", "...", "GLIBC_2.41"],
+                 "libstdc++.so.6": ["GLIBCXX_3.4", "...", "CXXABI_1.3.15"],
+                 "libssl.so.3": ["OPENSSL_3.0.0", "OPENSSL_3.2.0"]}
+      }
+    }
+  }
+}
+```
+
+- The bytes are canonical JSON: keys sorted at every level, no whitespace,
+  so equal tables have equal hashes. A client refuses a body over 4 MiB.
+- `format` is `1`; a client that gets another value ignores the table.
+- One entry per release the portal knows:
+  - A release a build ran on has `toolchain.version` from that build's lock,
+    `series` its `major.minor`, its full `otp`, and `libs`: the shared
+    libraries of its root filesystem (`lib` and `usr/lib`), each with the
+    symbol versions it defines. `libs` lists only the sonames published
+    builds of that system need, plus the toolchain's own libraries
+    (`libc.so.6`, `libc.so`, `libm.so.6`, `libpthread.so.0`, `libdl.so.2`,
+    `librt.so.1`, `libgcc_s.so.1`, `libstdc++.so.6`, `ld-linux-*`,
+    `ld-musl-*`).
+  - A release known only from Hex (newer than the oldest one built on) has
+    the system's toolchain requirement instead: `toolchain.version` is
+    `null`, `series` is `X.Y` for a `~> X.Y.Z` requirement and `null` for
+    any other shape, and `otp` and `libs` are `null` until the portal reads
+    the release itself.
+- A new release changes this table and the batch, never a manifest.
+
+Status codes:
+
+- `200` — the table bytes
+- `304` — `If-None-Match` names them
+- `404` — malformed digest, no batch named it, or the stored bytes no
+  longer hash to it; `cache-control: no-store`
+
 ### GET /api/precompiled/files/{sha256}
 
 Returns artifact content by SHA256.
@@ -195,7 +249,8 @@ Response: a signed envelope wrapping:
     "circuits_gpio": "1f0c...",
     "jason": "8a2e..."
   },
-  "content": ["https://cdn.example"]
+  "content": ["https://cdn.example"],
+  "systems": "5d1a..."
 }
 ```
 
@@ -216,6 +271,12 @@ those paths there first and must fall back to the source; everything is
 checked against the hashes the batch and manifests name. Its presence also
 says the source serves the by-sha paths. Absent when no origin is
 configured. `version` stays `1`: like `manifests_v2`, it is an added field.
+
+`systems`, when present, is the SHA256 of the systems table bytes, served at
+`/api/precompiled/systems/by-sha/<sha256>.json` (and at each content
+origin's `systems/by-sha/` path). It is rendered for every batch and absent
+while the portal knows no release. Another added field: `version` stays `1`,
+and a client that does not know it ignores it.
 
 An `etag` header of the SHA256 of the envelope bytes (quoted, strong) is set,
 with `cache-control: public, max-age=60, must-revalidate`. Send it back as
@@ -434,6 +495,22 @@ toolchain:
   gives `:manager`, `:compile` or `:system_env` options. Toolchain builds
   only; absent on builds made before it was recorded, and a client that
   does not know the field ignores it.
+- `build.native`, `build.portable`, `build.otp_full`, `build.toolchain`,
+  `build.elf` — optional, Nerves system builds only, each absent while
+  unknown (builds made before they were recorded). Format 1 never carries
+  them, and every other key keeps its meaning.
+  - `native` — whether any `priv` file is ELF; `false` for a beam-only
+    build, including one with an empty `priv`.
+  - `portable` — `false` when an ELF file is neither a shared object
+    (`ET_DYN`: NIFs, shared libraries, PIE executables) nor an executable
+    (`ET_EXEC`: ports), such as a kernel module or an object file.
+  - `otp_full` — the full OTP version of the system the build ran on, such
+    as `"28.1.2"`.
+  - `toolchain` — `{"package", "version"}`, the Nerves toolchain the build's
+    lock resolved.
+  - `elf` — native builds only: `{"needs": {soname: [version]}}`, every
+    library the ELF files need (`DT_NEEDED`) and the symbol versions they
+    need from it (`.gnu.version_r`), over all of the build's ELF files.
 - `updated_at` — the newest `finished_at` among the builds listed.
 
 What it lists:
@@ -497,8 +574,8 @@ What it lists:
   `build.config_variant`. Their `compile_env` lists the values their own
   compile read, so at most one of them matches a project; a client needs no
   rule for them. Two versions of one Nerves
-  system are two builds, because a client takes a system build only at its own
-  system version.
+  system are two builds: a client prefers the build made on its own system
+  version (see below).
 
 ### Matching a format-2 build to a project
 
@@ -506,7 +583,8 @@ The client checks each build in this order, and reports the first rule a
 build fails as the reason it was not used:
 
 1. **Target** — `target` is `pure_elixir`, or equals the project's Nerves
-   system with `build.system_version` equal to the system's version.
+   system with `build.system_version` equal to the system's version, or one
+   that may be used on the project's release (below).
 2. **Toolchain recorded** — `build.elixir` and `build.otp` are present.
 3. **Elixir minor** — the running Elixir has the same major.minor as
    `build.elixir`, and its patch is at least the built patch. Code compiled on
@@ -536,6 +614,41 @@ build fails as the reason it was not used:
 Among the builds that pass, the client prefers an exact Elixir patch match,
 then the closest older patch, then `pure_elixir` over a system build, then the
 newest `run_id`.
+
+#### Using a system build on another release
+
+A build for the project's Nerves system made on another release of it is
+used when:
+
+- **Beam-only** (`build.native` is `false`): always, unless its compile read
+  the Nerves system itself, which bakes the system version into a beam
+  (`system_bound_compile`).
+- **Native** (`build.native` `true` and `build.portable` `true`), when every
+  one of these holds against the systems table entry for the project's
+  release (`systems` in the batch):
+  - the same toolchain package, and the same series: the build's from
+    `build.toolchain.version` (`major.minor`), the release's from the table
+    (`system_version_abi`);
+  - the same OTP major, with the built `build.otp_full` no newer than the
+    release's `otp` (`toolchain_otp_minor`);
+  - every soname in `build.elf.needs` present in the release's `libs`
+    (`needed_lib_missing`);
+  - every needed symbol version a client can read (`GLIBC_2.38`,
+    `GLIBCXX_3.4.32`, `CXXABI_1.3.15`, `OPENSSL_3.0.0`) among that
+    library's definitions (`symbol_version_missing`). Names it cannot read,
+    such as `GLIBC_PRIVATE`, are skipped.
+
+  A release missing from the table, or one whose `otp` or `libs` is still
+  `null`, matches only builds made on it (`system_unknown`); so does one
+  whose `series` is `null`.
+- **Anything else** — `portable` `false`, or `native` or `portable` absent —
+  is used on its own `system_version` only.
+
+When several builds of the system pass, the client takes:
+
+1. the build made on the project's exact system version;
+2. else the one on the highest version below the project's;
+3. else the one on the lowest version above it.
 
 ## Miss reports (`/api/precompiled/reports`)
 

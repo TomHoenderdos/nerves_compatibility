@@ -36,6 +36,13 @@ defmodule PortalWeb.ApiSchemas.BatchPayload do
           description:
             "Content origins (https) that also serve `files/` and the by-sha manifest " <>
               "paths. Absent when none are configured; clients then use the source only."
+        },
+        systems: %Schema{
+          type: :string,
+          pattern: "^[0-9a-f]{64}$",
+          description:
+            "SHA-256 of the systems table bytes (`/systems/by-sha/<sha>.json`). Absent " <>
+              "while the table is empty."
         }
       },
       required: [:version, :sequence, :issued, :expires, :manifests]
