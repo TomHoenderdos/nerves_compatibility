@@ -1514,4 +1514,89 @@ defmodule Portal.BuilderTest do
       assert Builder.build_concurrency() == nil
     end
   end
+
+  # An OOM-killed build retries with one target at a time and an explicit
+  # memory limit (`Portal.Workers.OomRetry`): both are per-call overrides of
+  # the configured values.
+  describe "per-call memory and concurrency overrides" do
+    @describetag :capture_log
+
+    test "the argv carries a job's own memory and build concurrency", %{previous: previous} do
+      put_builder([memory: "3g", build_concurrency: "2"], previous)
+
+      job = Map.merge(@job, %{memory: "5g", build_concurrency: 1})
+      argv = Builder.build_docker_args(job, "/scratch/work", "/scratch/out", "/scratch/files")
+
+      assert ["--memory", "5g" | _] = Enum.drop_while(argv, &(&1 != "--memory"))
+      assert "NCC_BUILD_CONCURRENCY=1" in argv
+      refute "NCC_BUILD_CONCURRENCY=2" in argv
+
+      assert "NCC_BUILD_CONCURRENCY=2" in args()
+    end
+
+    test "build/2 refuses an invalid memory override before touching docker",
+         %{previous: previous} do
+      root = Path.join(System.tmp_dir!(), "override-root-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(root) end)
+
+      put_builder(
+        [scratch_root: root, min_free_disk_gb: 0, exec_probe: fn _ -> :ok end, memory: "3g"],
+        previous
+      )
+
+      for value <- ["lots", "", "0", 0, -1] do
+        assert {:error, {:invalid_memory_override, ^value}} =
+                 Builder.build(Map.put(@build_args, :memory, value))
+      end
+
+      refute File.exists?(Path.join(root, "run-1"))
+    end
+
+    test "build/2 runs the container with the overrides", %{previous: previous} do
+      tmp = Path.join(System.tmp_dir!(), "builder-ovr-#{System.unique_integer([:positive])}")
+      bin = Path.join(tmp, "bin")
+      File.mkdir_p!(bin)
+      docker = Path.join(bin, "docker")
+
+      File.write!(docker, """
+      #!/bin/sh
+      case "$1" in
+        version) echo 99.0 ;;
+        run) printf '%s\\n' "$@" > #{tmp}/run.args ;;
+      esac
+      exit 0
+      """)
+
+      File.chmod!(docker, 0o755)
+      old_path = System.get_env("PATH")
+      System.put_env("PATH", bin <> ":" <> old_path)
+
+      on_exit(fn ->
+        System.put_env("PATH", old_path)
+        File.rm_rf(tmp)
+      end)
+
+      put_builder(
+        [
+          scratch_root: Path.join(tmp, "scratch"),
+          nerves_cache: Path.join(tmp, "nerves"),
+          hex_cache: Path.join(tmp, "hex"),
+          min_free_disk_gb: 0,
+          exec_probe: fn _ -> :ok end,
+          egress_check: false,
+          memory: "3g",
+          build_concurrency: "2",
+          hex_cache_image_label: ""
+        ],
+        previous
+      )
+
+      assert {:ok, %{exit_code: 0}} =
+               Builder.build(Map.merge(@build_args, %{memory: "5g", build_concurrency: 1}))
+
+      argv = tmp |> Path.join("run.args") |> File.read!() |> String.split("\n", trim: true)
+      assert ["--memory", "5g" | _] = Enum.drop_while(argv, &(&1 != "--memory"))
+      assert "NCC_BUILD_CONCURRENCY=1" in argv
+    end
+  end
 end

@@ -69,7 +69,7 @@ defmodule Portal.Workers.ToolchainBuild do
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Package
   alias Portal.Catalog.RunMemory
-  alias Portal.Workers.Ingest
+  alias Portal.Workers.{Ingest, OomRetry}
 
   @zero_digest "sha256:" <> String.duplicate("0", 64)
 
@@ -136,17 +136,19 @@ defmodule Portal.Workers.ToolchainBuild do
   end
 
   defp build(%Oban.Job{args: args} = job, run_id, image, image_digest, toolchain) do
-    build_args = %{
-      package: args["package"],
-      version: args["version"],
-      run_id: run_id,
-      image: image,
-      image_digest: image_digest,
-      mode: "toolchain",
-      toolchain: toolchain,
-      optional_deps: optional_deps(variant(args)),
-      config_variant: input_config_variant(config_variant(args))
-    }
+    build_args =
+      %{
+        package: args["package"],
+        version: args["version"],
+        run_id: run_id,
+        image: image,
+        image_digest: image_digest,
+        mode: "toolchain",
+        toolchain: toolchain,
+        optional_deps: optional_deps(variant(args)),
+        config_variant: input_config_variant(config_variant(args))
+      }
+      |> Map.merge(oom_overrides(job))
 
     started_at = DateTime.utc_now()
     outcome = builder().build(build_args)
@@ -158,6 +160,21 @@ defmodule Portal.Workers.ToolchainBuild do
     })
 
     outcome
+  end
+
+  # A toolchain run gets the smaller `NCC_TOOLCHAIN_MEMORY`; the attempt after
+  # one is OOM-killed (exit 137) runs at the build limit instead. It has one
+  # target, so there is no concurrency to lower.
+  defp oom_overrides(job) do
+    if OomRetry.oom_retry?(job) do
+      Logger.info(
+        "Retrying toolchain build #{describe(job)} after exit 137 at the build memory limit"
+      )
+
+      %{memory: Builder.memory_for(%{mode: nil})}
+    else
+      %{}
+    end
   end
 
   defp variant(%{"variant" => "without"}), do: :without

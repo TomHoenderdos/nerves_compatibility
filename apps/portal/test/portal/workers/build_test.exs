@@ -20,6 +20,7 @@ defmodule Portal.Workers.BuildTest do
   defmodule StubBuilder do
     def build(args, _opts \\ []) do
       send(self(), :stub_build_called)
+      send(self(), {:stub_build_args, args})
 
       # Portal.Builder creates the scratch dir before it runs docker, so a
       # failure returned from here still leaves one on disk — including the
@@ -2042,6 +2043,87 @@ defmodule Portal.Workers.BuildTest do
 
       assert {:snooze, 900} = perform_job(Build, @memory_args)
       assert memory_rows() == []
+    end
+  end
+
+  # ~20 heavy packages are OOM-killed inside their container while two
+  # firmware targets compile at once (`NCC_BUILD_CONCURRENCY=2`): the retry
+  # after an exit 137 builds one target at a time, at the host's build limit
+  # (`Portal.Workers.OomRetry`).
+  describe "OOM retry" do
+    @describetag :capture_log
+
+    @oom_args %{"package" => "jason", "version" => "1.4.1", "image_digest" => "sha256:oom"}
+
+    setup do
+      previous = Application.get_env(:portal, Portal.Builder)
+
+      Application.put_env(
+        :portal,
+        Portal.Builder,
+        Keyword.merge(previous || [], memory: "6g", build_concurrency: "2")
+      )
+
+      on_exit(fn -> restore_builder_env(previous) end)
+
+      level = Logger.level()
+      Logger.configure(level: :info)
+      on_exit(fn -> Logger.configure(level: level) end)
+
+      set_response(
+        {:ok, %{exit_code: 137, result: nil, files_dir: "", output_dir: "", log: "Killed"}}
+      )
+
+      :ok
+    end
+
+    defp oom_job(attempt, error) do
+      Build
+      |> Oban.Testing.build_job(@oom_args, attempt: attempt)
+      |> Map.put(:errors, [
+        %{
+          "attempt" => attempt - 1,
+          "at" => "2026-11-12T10:00:00Z",
+          "error" => "** (Oban.PerformError) Portal.Workers.Build failed with #{error}"
+        }
+      ])
+    end
+
+    defp memory_row!, do: Ash.read_one!(Portal.Catalog.RunMemory, domain: Portal.Catalog)
+
+    test "the attempt after an exit 137 builds one target at the build limit" do
+      log =
+        capture_log([level: :info], fn ->
+          assert {:error, _} = Build.perform(oom_job(2, ~s({:error, "worker/runner exit 137"})))
+        end)
+
+      assert_received {:stub_build_args, %{build_concurrency: 1, memory: "6g"}}
+      assert log =~ "Retrying jason 1.4.1 after exit 137 with one target at a time"
+
+      # The ledger row records what the container ran with.
+      assert %{build_concurrency: 1, memory_limit_bytes: 6_442_450_944, attempt: 2} =
+               memory_row!()
+    end
+
+    test "an attempt after any other error builds as configured" do
+      log =
+        capture_log([level: :info], fn ->
+          assert {:error, _} = Build.perform(oom_job(2, ~s({:error, "worker/runner exit 10"})))
+        end)
+
+      assert_received {:stub_build_args, args}
+      refute Map.has_key?(args, :build_concurrency)
+      refute Map.has_key?(args, :memory)
+      refute log =~ "Retrying"
+      assert %{build_concurrency: 2} = memory_row!()
+    end
+
+    test "the first attempt builds as configured" do
+      assert {:error, _} = perform_job(Build, @oom_args, attempt: 1)
+
+      assert_received {:stub_build_args, args}
+      refute Map.has_key?(args, :build_concurrency)
+      refute Map.has_key?(args, :memory)
     end
   end
 end

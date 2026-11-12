@@ -472,4 +472,68 @@ defmodule Portal.Workers.ToolchainBuildTest do
       assert memory_rows() == []
     end
   end
+
+  # A toolchain run gets the smaller `NCC_TOOLCHAIN_MEMORY`; one OOM-killed
+  # there retries at the build limit (`Portal.Workers.OomRetry`).
+  describe "OOM retry" do
+    @describetag :capture_log
+
+    setup do
+      previous = Application.get_env(:portal, Portal.Builder)
+
+      Application.put_env(
+        :portal,
+        Portal.Builder,
+        Keyword.merge(previous || [], memory: "6g", toolchain_memory: "2g")
+      )
+
+      on_exit(fn ->
+        if previous,
+          do: Application.put_env(:portal, Portal.Builder, previous),
+          else: Application.delete_env(:portal, Portal.Builder)
+      end)
+
+      level = Logger.level()
+      Logger.configure(level: :info)
+      on_exit(fn -> Logger.configure(level: level) end)
+
+      package!("jason")
+      respond(137)
+      :ok
+    end
+
+    defp oom_job(error) do
+      ToolchainBuild
+      |> Oban.Testing.build_job(@args, attempt: 2)
+      |> Map.put(:errors, [
+        %{
+          "attempt" => 1,
+          "at" => "2026-11-12T10:00:00Z",
+          "error" => "** (Oban.PerformError) Portal.Workers.ToolchainBuild failed with #{error}"
+        }
+      ])
+    end
+
+    test "attempt 2 after an exit 137 runs at the build memory limit" do
+      job = oom_job(~s({:error, "worker/runner exit 137"}))
+
+      log =
+        capture_log([level: :info], fn ->
+          assert {:error, _} = ToolchainBuild.perform(job)
+        end)
+
+      assert_received {:build_args, %{memory: "6g"} = args}
+      refute Map.has_key?(args, :build_concurrency)
+      assert log =~ "Retrying toolchain build jason 1.4.4"
+      assert log =~ "after exit 137 at the build memory limit"
+    end
+
+    test "attempt 2 after another error keeps the toolchain limit" do
+      job = oom_job(~s({:error, "worker/runner exit 10"}))
+      capture_log(fn -> assert {:error, _} = ToolchainBuild.perform(job) end)
+
+      assert_received {:build_args, args}
+      refute Map.has_key?(args, :memory)
+    end
+  end
 end

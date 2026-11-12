@@ -72,7 +72,7 @@ defmodule Portal.Workers.Build do
   alias Portal.HexCache
   alias Portal.NervesCache
   alias Portal.Repo
-  alias Portal.Workers.{Ingest, Progress}
+  alias Portal.Workers.{Ingest, OomRetry, Progress}
 
   # The attempt this process runs, for `stale_attempt?/0`.
   @attempt_key {__MODULE__, :attempt}
@@ -82,7 +82,17 @@ defmodule Portal.Workers.Build do
         %Oban.Job{meta: meta, args: args, attempt: attempt, max_attempts: max_attempts} = job
       ) do
     Process.put(@attempt_key, {job.id, attempt, job.attempted_by})
-    do_perform(args, attempt, max_attempts, meta["sweep_id"])
+    do_perform(args, attempt, max_attempts, meta["sweep_id"], oom_overrides(job))
+  end
+
+  # The attempt after an OOM kill (exit 137) builds one target at a time:
+  # two firmware targets compiling at once in one container double the
+  # demand of exactly the packages that run out. The memory is the host's
+  # build limit, named explicitly so a future lower default does not apply.
+  defp oom_overrides(job) do
+    if OomRetry.oom_retry?(job),
+      do: %{build_concurrency: 1, memory: Builder.memory_for(%{mode: nil})},
+      else: %{}
   end
 
   # Whether this attempt's row has stopped being its own while the build ran:
@@ -117,7 +127,7 @@ defmodule Portal.Workers.Build do
   # reloads `Portal.BulkRebuild.status/1` while this job still shows
   # `executing`. It is threaded through here only so a successful build can
   # hand it to the `Ingest` job it enqueues (see `enqueue_ingest/5` below).
-  defp do_perform(args, attempt, max_attempts, sweep_id) do
+  defp do_perform(args, attempt, max_attempts, sweep_id, overrides) do
     package = args["package"]
     version = args["version"]
     image_digest = args["image_digest"] || Builder.docker_image() |> Builder.image_digest()
@@ -161,7 +171,7 @@ defmodule Portal.Workers.Build do
            sweep_id}
 
         with_crash_cleanup(scan_request_id, run_id, attempt, max_attempts, fn ->
-          do_build(ctx, args)
+          do_build(ctx, args, overrides)
         end)
     end
   end
@@ -188,11 +198,15 @@ defmodule Portal.Workers.Build do
   end
 
   # `ctx` is the same tuple `handle_outcome/3` pattern-matches: building it once
-  # here, before the call, is what keeps `do_build/2` at two parameters rather
-  # than the eight separate fields (seven before `sweep_id` joined them) it
-  # would otherwise need to close over.
-  defp do_build(ctx, args) do
+  # here, before the call, is what keeps `do_build/3` from taking the eight
+  # separate fields (seven before `sweep_id` joined them) it would otherwise
+  # need to close over. `overrides` are `oom_overrides/1`'s.
+  defp do_build(ctx, args, overrides) do
     {package, version, image_digest, _scan_request_id, run_id, attempt, _max, _sweep_id} = ctx
+
+    if overrides != %{} do
+      Logger.info("Retrying #{package} #{version} after exit 137 with one target at a time")
+    end
 
     build_args =
       %{
@@ -204,10 +218,18 @@ defmodule Portal.Workers.Build do
         argus: Portal.Settings.worker_argus(Portal.Settings.get())
       }
       |> Map.merge(scope_args(package, version, args))
+      |> Map.merge(overrides)
 
     started_at = DateTime.utc_now()
     result = builder().build(build_args)
-    RunMemory.record(:firmware, build_args, result, %{attempt: attempt, started_at: started_at})
+
+    # The row records the concurrency the container ran with, not the host's.
+    meta =
+      overrides
+      |> Map.take([:build_concurrency])
+      |> Map.merge(%{attempt: attempt, started_at: started_at})
+
+    RunMemory.record(:firmware, build_args, result, meta)
 
     case if(stale_attempt?(), do: :stale_attempt, else: result) do
       :stale_attempt ->

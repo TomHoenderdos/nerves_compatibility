@@ -77,7 +77,12 @@ defmodule Portal.Builder do
           # TCP targets the worker probes before any `mix` (`Portal.EgressCheck`).
           optional(:egress_probe) => [%{String.t() => String.t() | pos_integer()}] | nil,
           # NCC_INPUT.judge (precompiled judge refinements): judge options for a toolchain build.
-          optional(:judge) => map() | nil
+          optional(:judge) => map() | nil,
+          # Per-call overrides of `NCC_BUILD_MEMORY` (or the run kind's limit,
+          # `memory_for/1`) and `NCC_BUILD_CONCURRENCY`: the retry of an
+          # OOM-killed build (`Portal.Workers.OomRetry`).
+          optional(:memory) => String.t() | pos_integer() | nil,
+          optional(:build_concurrency) => pos_integer() | nil
         }
 
   @type build_result :: %{
@@ -296,6 +301,11 @@ defmodule Portal.Builder do
   past the wall clock (`total_timeout_ms/0`, or `opts[:timeout_ms]`) and is
   being stopped; the scratch dir, with whatever `out/logs` the worker had
   written, is left for the caller to read and remove.
+
+  `args[:memory]` and `args[:build_concurrency]`, when set, override the
+  configured limit and concurrency for this one run. A `:memory` that is not
+  a memory limit (`Argv.memory_limit?/1`) returns
+  `{:error, {:invalid_memory_override, value}}` before anything runs.
   """
   @spec build(build_args(), keyword()) :: {:ok, build_result()} | {:error, term()}
   def build(args, opts \\ []) do
@@ -326,7 +336,9 @@ defmodule Portal.Builder do
       argus: Map.get(args, :argus),
       nerves_packages: Map.get(args, :nerves_packages),
       egress_probe: Map.get(args, :egress_probe),
-      judge: judge_input(mode)
+      judge: judge_input(mode),
+      memory: Map.get(args, :memory),
+      build_concurrency: Map.get(args, :build_concurrency)
     }
 
     # Free space first: it is the cheapest check in the chain, and it is the
@@ -335,7 +347,8 @@ defmodule Portal.Builder do
     # ahead of `check_docker/0` so the log carries the disk error rather than a
     # downstream `:enospc` from `IO.binwrite/2` — which is the exception that
     # took the host down.
-    with :ok <- distrust_rw_cache(job),
+    with :ok <- check_memory_override(job.memory),
+         :ok <- distrust_rw_cache(job),
          :ok <- check_memory_limit(),
          :ok <- check_free_space(scratch_root()),
          :ok <- check_scratch_exec(scratch_root()),
@@ -683,6 +696,16 @@ defmodule Portal.Builder do
   defp memory_limit_ok?({_var, nil, :optional}), do: true
   defp memory_limit_ok?({_var, memory, _}), do: Argv.memory_limit?(memory)
 
+  # A caller's own `:memory` (`build_args`) must be a limit `docker run
+  # --memory` reads, or the build is refused before anything runs.
+  defp check_memory_override(nil), do: :ok
+
+  defp check_memory_override(memory) do
+    if Argv.memory_limit?(memory),
+      do: :ok,
+      else: {:error, {:invalid_memory_override, memory}}
+  end
+
   @doc """
   The egress preflight: `:ok` when the build egress filter is loaded in the
   host's network namespace, where docker-ncc's bridge lives, or when
@@ -950,7 +973,7 @@ defmodule Portal.Builder do
       image: image_ref(job),
       cpus: config(:cpus, nil),
       memory: memory_for(job),
-      build_concurrency: config(:build_concurrency, nil),
+      build_concurrency: Map.get(job, :build_concurrency) || config(:build_concurrency, nil),
       nerves_cache_mode: nerves_cache_mode(job),
       hex_cache_mode: Map.get_lazy(job, :hex_cache_mode, fn -> resolved_hex_cache_mode!(job) end),
       paths: %{
