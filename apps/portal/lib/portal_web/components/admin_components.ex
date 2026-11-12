@@ -18,6 +18,7 @@ defmodule PortalWeb.AdminComponents do
     {:memory, "Memory", "/admin/memory"},
     {:users, "Users", "/admin/users"},
     {:failures, "Failures", "/admin/failures"},
+    {:not_precompiled, "Not precompiled", "/admin/not-precompiled"},
     {:argus, "Argus", "/admin/argus"},
     {:triage, "Triage", "/admin/argus/findings"},
     {:maintenance, "Maintenance", "/admin/maintenance"}
