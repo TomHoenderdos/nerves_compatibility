@@ -250,6 +250,7 @@ defmodule PortalWeb.Router do
       live "/users", PortalWeb.Admin.UsersLive, :index
       live "/queue", PortalWeb.Admin.QueueLive, :index
       live "/builders", PortalWeb.Admin.BuildersLive, :index
+      live "/memory", PortalWeb.Admin.MemoryLive, :index
       live "/maintenance", PortalWeb.Admin.MaintenanceLive, :index
     end
   end

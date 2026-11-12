@@ -34,6 +34,12 @@ defmodule PortalWeb.PackageLive do
          |> assign(:docs_url, "https://hexdocs.pm/#{name}")
          |> assign(:github_url, github_url(hex_meta.links))
          |> assign(:owners, hex_meta.owners)
+         |> assign(
+           :memory_line,
+           PortalWeb.MemoryFormat.package_line(
+             Portal.Catalog.RunMemoryStats.latest_for_package(name)
+           )
+         )
          |> assign_progress(Portal.ScanRequests.package_progress(name))
          |> assign_argus(name, session)
          |> assign(:badge_url, badge_url)
@@ -221,6 +227,10 @@ defmodule PortalWeb.PackageLive do
               class="font-medium text-base-content/80 hover:text-primary hover:underline"
             >{owner}</a>
           </span>
+        </p>
+
+        <p :if={@memory_line} id="package-memory" class="text-sm text-base-content/60">
+          {@memory_line}
         </p>
 
         <section

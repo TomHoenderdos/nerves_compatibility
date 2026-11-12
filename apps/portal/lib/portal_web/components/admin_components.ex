@@ -15,6 +15,7 @@ defmodule PortalWeb.AdminComponents do
     {:overview, "Overview", "/admin"},
     {:queue, "Queue", "/admin/queue"},
     {:builders, "Builders", "/admin/builders"},
+    {:memory, "Memory", "/admin/memory"},
     {:users, "Users", "/admin/users"},
     {:failures, "Failures", "/admin/failures"},
     {:argus, "Argus", "/admin/argus"},
