@@ -16,7 +16,6 @@ defmodule Portal.Precompiled.SystemAbi do
   it, and `stored/1` serves them by that SHA-256.
   """
 
-  require Ash.Query
   require Logger
 
   alias Portal.Catalog.SystemAbi, as: Row
