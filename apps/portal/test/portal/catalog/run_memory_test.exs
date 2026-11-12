@@ -43,7 +43,9 @@ defmodule Portal.Catalog.RunMemoryTest do
     {:ok, previous: previous}
   end
 
-  test "a firmware build writes its memory record" do
+  test "a firmware build writes its memory record", %{previous: previous} do
+    Application.put_env(:portal, Portal.Builder, Keyword.put(previous, :memory, "3g"))
+
     assert :ok = RunMemory.record(:firmware, @firmware_args, ok(0, @resources), %{attempt: 2})
 
     assert [row] = rows()
@@ -58,14 +60,33 @@ defmodule Portal.Catalog.RunMemoryTest do
     assert row.exit_code == 0
     refute row.timed_out
     refute row.oom_killed
-    # The sampler's MemTotal is the limit the container actually had.
-    assert row.memory_limit_bytes == 4_294_967_296
+    # The configured limit wins over the guest's MemTotal: the side file is
+    # written by the container itself, and gVisor may floor it.
+    assert row.memory_limit_bytes == 3 * 1024 * 1024 * 1024
     assert row.peak_used_bytes == 1_500_000_000
     assert row.peak_total_bytes == 2_000_000_000
     assert row.samples == 12
     assert row.started_at == ~U[2026-11-12 10:00:00.000000Z]
     assert %DateTime{} = row.finished_at
     assert %DateTime{} = row.inserted_at
+  end
+
+  test "the side file's limit is used only when no limit is configured", %{previous: previous} do
+    Application.put_env(:portal, Portal.Builder, Keyword.delete(previous, :memory))
+
+    assert :ok = RunMemory.record(:firmware, @firmware_args, ok(0, @resources), %{attempt: 1})
+
+    assert [%{memory_limit_bytes: 4_294_967_296}] = rows()
+  end
+
+  test "a caller's limit wins over the side file's" do
+    assert :ok =
+             RunMemory.record(:firmware, @firmware_args, ok(0, @resources), %{
+               attempt: 1,
+               memory_limit_bytes: 1024
+             })
+
+    assert [%{memory_limit_bytes: 1024}] = rows()
   end
 
   test "a toolchain run with no side file records the toolchain limit", %{previous: previous} do

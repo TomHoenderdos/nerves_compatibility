@@ -510,8 +510,10 @@ the run. Only `Portal.EgressCheck` sends it (see the operator runbook); otherwis
 ## Resources
 
 Every run, whatever its mode, samples the container's memory from `/proc/meminfo` every 5 seconds
-(`NccWorker.Resources`), from just after the output directories exist until just before `run/1` returns. Inside
-gVisor `MemTotal` is the container's `--memory`. Each sample computes used as
+(`NccWorker.Resources`), from just after the output directories exist until just before `run/1` returns.
+`limit_bytes` is `MemTotal`, what the guest sees: advisory only, since gVisor may floor it (at 2 GiB for a small
+`--memory`) and the container that writes it runs package code. The portal records its own configured limit and
+falls back to `limit_bytes` only when none is configured. Each sample computes used as
 `MemTotal - MemFree - Buffers - Cached` and total as `MemTotal - MemFree`, in bytes, and keeps their peaks.
 
 After every sample the worker atomically rewrites `/out/resources.json`:

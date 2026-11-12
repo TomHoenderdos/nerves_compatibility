@@ -120,8 +120,10 @@ defmodule Portal.Catalog.RunMemory do
     * `:memory_limit_bytes`, `:build_concurrency` - what the container ran
       with; default the configured values (`Portal.Builder.memory_limit_bytes/1`
       of `build_args`, the limit of the run's kind, and
-      `Portal.Builder.build_concurrency/0`). The side file's `limit_bytes`, the
-      limit the container saw, wins over either.
+      `Portal.Builder.build_concurrency/0`). The side file's `limit_bytes` is
+      advisory, what the guest reports as `MemTotal` (written by the same
+      container that runs package code, and gVisor may floor it), and is
+      recorded only when no limit is configured.
 
   Writes a row only when a container ran: an exit code, or a wall-clock
   timeout (`exit_code` nil, `timed_out`). Every other `{:error, _}` from
@@ -168,9 +170,11 @@ defmodule Portal.Catalog.RunMemory do
       exit_code: fields.exit_code,
       timed_out: fields.timed_out,
       oom_killed: fields.exit_code == 137,
+      # The configured limit first: the side file's is the guest's own
+      # report (`MemTotal`), which gVisor may floor, so it is only a fallback.
       memory_limit_bytes:
-        size(resources["limit_bytes"]) ||
-          Map.get_lazy(meta, :memory_limit_bytes, fn -> Builder.memory_limit_bytes(build_args) end),
+        Map.get_lazy(meta, :memory_limit_bytes, fn -> Builder.memory_limit_bytes(build_args) end) ||
+          size(resources["limit_bytes"]),
       cpus: Builder.cpus(),
       build_concurrency: Map.get_lazy(meta, :build_concurrency, &Builder.build_concurrency/0),
       peak_used_bytes: size(resources["peak_used_bytes"]),
