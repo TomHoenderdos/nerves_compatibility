@@ -32,6 +32,24 @@ defmodule NccWorker.SystemAbiTest do
       assert SystemAbi.toolchain(@lock, "nerves_system_bbb") == nil
     end
 
+    test "skips nerves_toolchain_ctng, which older systems list first" do
+      lock =
+        @lock
+        |> Map.update!(:nerves_system_rpi4, fn entry ->
+          deps = [{:nerves_toolchain_ctng, "~> 1.10", [hex_repo: "hexpm"]} | elem(entry, 5)]
+          put_elem(entry, 5, deps)
+        end)
+        |> Map.put(
+          :nerves_toolchain_ctng,
+          {:hex, :nerves_toolchain_ctng, "1.10.0", "c", [:mix], [], "hexpm", "d"}
+        )
+
+      assert SystemAbi.toolchain(lock, "nerves_system_rpi4") == %{
+               "package" => "nerves_toolchain_aarch64_nerves_linux_gnu",
+               "version" => "15.3.1"
+             }
+    end
+
     test "reads a lock keyed by string, as DepsLock reads one" do
       lock = Map.new(@lock, fn {k, v} -> {Atom.to_string(k), v} end)
 

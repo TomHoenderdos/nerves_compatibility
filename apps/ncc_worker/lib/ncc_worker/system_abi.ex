@@ -130,7 +130,8 @@ defmodule NccWorker.SystemAbi do
 
   @doc """
   The locked toolchain of `system_name`: the dependency of its lock entry
-  whose name starts with `nerves_toolchain_`, at the version the lock
+  whose name starts with `nerves_toolchain_` (other than
+  `nerves_toolchain_ctng`), at the version the lock
   resolved it to. nil when either is not in the lock. Keys may be atoms or
   strings.
   """
@@ -150,9 +151,13 @@ defmodule NccWorker.SystemAbi do
     end
   end
 
+  # `nerves_toolchain_ctng` is the toolchain builder older systems also
+  # list; it is not the toolchain.
   defp toolchain_dep({dep, _requirement, _opts}) when is_atom(dep) or is_binary(dep) do
     dep = to_string(dep)
-    if String.starts_with?(dep, "nerves_toolchain_"), do: dep
+
+    if String.starts_with?(dep, "nerves_toolchain_") and dep != "nerves_toolchain_ctng",
+      do: dep
   end
 
   defp toolchain_dep(_dep), do: nil
