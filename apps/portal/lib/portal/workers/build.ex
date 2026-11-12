@@ -95,6 +95,11 @@ defmodule Portal.Workers.Build do
       else: %{}
   end
 
+  defp log_oom_retry(overrides, _package, _version) when overrides == %{}, do: :ok
+
+  defp log_oom_retry(_overrides, package, version),
+    do: Logger.info("Retrying #{package} #{version} after exit 137 with one target at a time")
+
   # Whether this attempt's row has stopped being its own while the build ran:
   # rescued by Lifeline, retried or finished elsewhere. A build whose `docker
   # kill` hung once came back fifteen hours late and, writing as if it still
@@ -204,9 +209,7 @@ defmodule Portal.Workers.Build do
   defp do_build(ctx, args, overrides) do
     {package, version, image_digest, _scan_request_id, run_id, attempt, _max, _sweep_id} = ctx
 
-    if overrides != %{} do
-      Logger.info("Retrying #{package} #{version} after exit 137 with one target at a time")
-    end
+    log_oom_retry(overrides, package, version)
 
     build_args =
       %{
