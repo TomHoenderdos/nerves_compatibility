@@ -2432,6 +2432,8 @@ defmodule NccWorker.Worker do
 
   # One `mix deps.get` for a target, appended to its log; returns this
   # attempt's output, which `TargetDepsGet` reads to decide on a retry.
+  # log_file is prepare_system/4's, under the worker output mount.
+  # sobelow_skip ["Traversal.FileModule"]
   defp target_deps_get(project_dir, env, log_file) do
     {output, code} =
       System.cmd("mix", ["deps.get"], cd: project_dir, env: env, stderr_to_stdout: true)
