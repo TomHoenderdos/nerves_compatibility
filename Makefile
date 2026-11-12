@@ -79,7 +79,7 @@ check-code-loading-shapes:
 	apps/ncc_worker/test/fixtures/code_loading/check_images.sh $(WORKER_IMAGE) $(foreach pair,$(TOOLCHAIN_IMAGES),$(firstword $(subst =, ,$(pair)))$(TOOLCHAIN_SUFFIX))
 
 test-integration:
-	mix test apps/portal/test/portal/workers/build_integration_test.exs apps/portal/test/portal/workers/toolchain_integration_test.exs apps/portal/test/portal/workers/toolchain_rule2_integration_test.exs --only integration
+	mix test apps/portal/test/portal/workers/build_integration_test.exs apps/portal/test/portal/workers/toolchain_integration_test.exs apps/portal/test/portal/workers/toolchain_rule2_integration_test.exs apps/portal/test/portal/workers/system_abi_integration_test.exs --only integration
 	$(MAKE) test-portability-goldens
 	$(MAKE) check-code-loading-shapes
 
