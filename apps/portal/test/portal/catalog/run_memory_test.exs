@@ -68,6 +68,24 @@ defmodule Portal.Catalog.RunMemoryTest do
     assert %DateTime{} = row.inserted_at
   end
 
+  test "a toolchain run with no side file records the toolchain limit", %{previous: previous} do
+    Application.put_env(
+      :portal,
+      Portal.Builder,
+      Keyword.merge(previous, memory: "3g", toolchain_memory: "2g", warm_memory: "256m")
+    )
+
+    toolchain_args = Map.put(@firmware_args, :mode, "toolchain")
+    warm_args = %{run_id: "warm-1", mode: "warm_nerves"}
+
+    assert :ok = RunMemory.record(:toolchain, toolchain_args, ok(137, nil), %{attempt: 1})
+    assert :ok = RunMemory.record(:warm, warm_args, ok(0, nil), %{attempt: 1})
+
+    rows = Map.new(rows(), &{&1.kind, &1})
+    assert rows.toolchain.memory_limit_bytes == 2 * 1024 * 1024 * 1024
+    assert rows.warm.memory_limit_bytes == 256 * 1024 * 1024
+  end
+
   test "an OOM-killed container with no side file is still counted", %{previous: previous} do
     Application.put_env(
       :portal,

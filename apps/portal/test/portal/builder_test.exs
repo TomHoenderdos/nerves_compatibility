@@ -416,6 +416,86 @@ defmodule Portal.BuilderTest do
       put_builder([memory: "6g"], previous)
       assert ["--memory", "6g" | _] = Enum.drop_while(args(), &(&1 != "--memory"))
     end
+
+    test "check_memory_limit/0 rejects a set-but-invalid per-kind limit and names it",
+         %{previous: previous} do
+      for {key, var} <- [toolchain_memory: "NCC_TOOLCHAIN_MEMORY", warm_memory: "NCC_WARM_MEMORY"],
+          value <- ["lots", "", "0"] do
+        put_builder(
+          Keyword.put([memory: "8g", toolchain_memory: nil, warm_memory: nil], key, value),
+          previous
+        )
+
+        log =
+          capture_log(fn ->
+            assert {:error, :build_memory_limit_missing} = Builder.check_memory_limit()
+          end)
+
+        assert log =~ var, "for #{key}=#{inspect(value)}"
+        assert log =~ inspect(value)
+        assert log =~ "refusing to build"
+      end
+    end
+
+    test "check_memory_limit/0 passes per-kind limits that are unset or valid",
+         %{previous: previous} do
+      put_builder([memory: "8g", toolchain_memory: "2g", warm_memory: nil], previous)
+      assert :ok = Builder.check_memory_limit()
+    end
+  end
+
+  # Toolchain runs peak near 1.7 GiB and warm runs under 200 MiB, while a
+  # firmware build needs 3-4 GiB: each kind gets its own limit, falling back
+  # to NCC_BUILD_MEMORY.
+  describe "per-kind memory limits" do
+    defp memory_arg(job) do
+      job = Map.merge(@job, job)
+      args = Builder.build_docker_args(job, "/scratch/work", "/scratch/out", "/scratch/files")
+      ["--memory", memory | _] = Enum.drop_while(args, &(&1 != "--memory"))
+      memory
+    end
+
+    test "a toolchain job carries NCC_TOOLCHAIN_MEMORY, else NCC_BUILD_MEMORY",
+         %{previous: previous} do
+      put_builder([memory: "3g", toolchain_memory: "2g", warm_memory: "256m"], previous)
+      assert memory_arg(%{mode: "toolchain"}) == "2g"
+
+      put_builder([memory: "3g", toolchain_memory: nil, warm_memory: "256m"], previous)
+      assert memory_arg(%{mode: "toolchain"}) == "3g"
+    end
+
+    test "a warm job carries NCC_WARM_MEMORY, else NCC_BUILD_MEMORY", %{previous: previous} do
+      put_builder([memory: "3g", toolchain_memory: "2g", warm_memory: "256m"], previous)
+      assert memory_arg(%{mode: "warm_nerves"}) == "256m"
+
+      put_builder([memory: "3g", toolchain_memory: "2g", warm_memory: nil], previous)
+      assert memory_arg(%{mode: "warm_nerves"}) == "3g"
+    end
+
+    test "firmware and argus_only jobs carry NCC_BUILD_MEMORY", %{previous: previous} do
+      put_builder([memory: "3g", toolchain_memory: "2g", warm_memory: "256m"], previous)
+      assert memory_arg(%{mode: nil}) == "3g"
+      assert memory_arg(%{}) == "3g"
+      assert memory_arg(%{mode: "argus_only"}) == "3g"
+    end
+
+    test "memory_for/1: a job's own :memory wins over all three", %{previous: previous} do
+      put_builder([memory: "3g", toolchain_memory: "2g", warm_memory: "256m"], previous)
+
+      for mode <- [nil, "toolchain", "warm_nerves"] do
+        assert Builder.memory_for(%{mode: mode, memory: "5g"}) == "5g"
+      end
+
+      assert Builder.memory_for(%{mode: "toolchain", memory: nil}) == "2g"
+    end
+
+    test "memory_limit_bytes/1 is the limit of the job's kind", %{previous: previous} do
+      put_builder([memory: "3g", toolchain_memory: "2g", warm_memory: "256m"], previous)
+      assert Builder.memory_limit_bytes(%{mode: "toolchain"}) == 2 * 1024 * 1024 * 1024
+      assert Builder.memory_limit_bytes(%{mode: "warm_nerves"}) == 256 * 1024 * 1024
+      assert Builder.memory_limit_bytes(%{mode: nil}) == 3 * 1024 * 1024 * 1024
+      assert Builder.memory_limit_bytes() == 3 * 1024 * 1024 * 1024
+    end
   end
 
   describe "exec preflight" do

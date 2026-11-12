@@ -118,7 +118,8 @@ defmodule Portal.Catalog.RunMemory do
     * `:toolchain` - `"1.19/28"` for a toolchain run
     * `:started_at` - used when the side file names none
     * `:memory_limit_bytes`, `:build_concurrency` - what the container ran
-      with; default the configured values (`Portal.Builder.memory_limit_bytes/0`,
+      with; default the configured values (`Portal.Builder.memory_limit_bytes/1`
+      of `build_args`, the limit of the run's kind, and
       `Portal.Builder.build_concurrency/0`). The side file's `limit_bytes`, the
       limit the container saw, wins over either.
 
@@ -169,7 +170,7 @@ defmodule Portal.Catalog.RunMemory do
       oom_killed: fields.exit_code == 137,
       memory_limit_bytes:
         size(resources["limit_bytes"]) ||
-          Map.get_lazy(meta, :memory_limit_bytes, &Builder.memory_limit_bytes/0),
+          Map.get_lazy(meta, :memory_limit_bytes, fn -> Builder.memory_limit_bytes(build_args) end),
       cpus: Builder.cpus(),
       build_concurrency: Map.get_lazy(meta, :build_concurrency, &Builder.build_concurrency/0),
       peak_used_bytes: size(resources["peak_used_bytes"]),

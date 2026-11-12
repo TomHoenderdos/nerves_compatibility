@@ -184,14 +184,26 @@ defmodule Portal.Builder do
   def judge_input(_mode), do: nil
 
   @doc """
-  The configured `NCC_BUILD_MEMORY` (`:memory`) in bytes, or nil when it is
-  not a memory limit (`Argv.memory_limit?/1`). The units are docker's, which
-  are binary: `"3g"` is 3 GiB, `"512m"`, `"4096k"`, and a plain number is
-  bytes.
+  The memory limit `job`'s container runs with: its own `:memory` when set,
+  else `NCC_TOOLCHAIN_MEMORY` (`:toolchain_memory`) for a toolchain run and
+  `NCC_WARM_MEMORY` (`:warm_memory`) for a warm run, falling back to
+  `NCC_BUILD_MEMORY` (`:memory`), which every other run uses.
   """
-  @spec memory_limit_bytes() :: pos_integer() | nil
-  def memory_limit_bytes do
-    memory = config(:memory, nil)
+  @spec memory_for(map()) :: String.t() | nil
+  def memory_for(%{memory: memory}) when not is_nil(memory), do: memory
+  def memory_for(%{mode: "toolchain"}), do: config(:toolchain_memory, nil) || config(:memory, nil)
+  def memory_for(%{mode: "warm_nerves"}), do: config(:warm_memory, nil) || config(:memory, nil)
+  def memory_for(_job), do: config(:memory, nil)
+
+  @doc """
+  The memory limit of `job`'s kind (`memory_for/1`) in bytes, or nil when it
+  is not a memory limit (`Argv.memory_limit?/1`). The units are docker's,
+  which are binary: `"3g"` is 3 GiB, `"512m"`, `"4096k"`, and a plain number
+  is bytes. `memory_limit_bytes/0` is a firmware build's.
+  """
+  @spec memory_limit_bytes(map()) :: pos_integer() | nil
+  def memory_limit_bytes(job \\ %{mode: nil}) do
+    memory = memory_for(job)
 
     cond do
       not Argv.memory_limit?(memory) -> nil
@@ -635,29 +647,41 @@ defmodule Portal.Builder do
 
   @doc """
   The memory limit preflight: `:ok` when `NCC_BUILD_MEMORY` (`:memory`) is a
-  positive size `docker run --memory` reads (`Argv.memory_limit?/1`).
+  positive size `docker run --memory` reads (`Argv.memory_limit?/1`), and
+  `NCC_TOOLCHAIN_MEMORY` (`:toolchain_memory`) and `NCC_WARM_MEMORY`
+  (`:warm_memory`) are each unset or one too.
 
-  Otherwise logs why and returns `{:error, :build_memory_limit_missing}`,
-  which every worker that builds snoozes on, as for a missing egress filter:
-  docker-ncc's authz policy denies a container without a memory limit, and
-  under gVisor's kvm platform, which does not enforce `--pids-limit`, it is
-  the only bound on a fork bomb.
+  Otherwise logs which variable is wrong and returns
+  `{:error, :build_memory_limit_missing}`, which every worker that builds
+  snoozes on, as for a missing egress filter: docker-ncc's authz policy
+  denies a container without a memory limit, and under gVisor's kvm
+  platform, which does not enforce `--pids-limit`, it is the only bound on a
+  fork bomb.
   """
   @spec check_memory_limit() :: :ok | {:error, :build_memory_limit_missing}
   def check_memory_limit do
-    memory = config(:memory, nil)
+    limits = [
+      {"NCC_BUILD_MEMORY", config(:memory, nil), :required},
+      {"NCC_TOOLCHAIN_MEMORY", config(:toolchain_memory, nil), :optional},
+      {"NCC_WARM_MEMORY", config(:warm_memory, nil), :optional}
+    ]
 
-    if Argv.memory_limit?(memory) do
-      :ok
-    else
-      Logger.error(
-        "NCC_BUILD_MEMORY is #{inspect(memory)}, not a memory limit such as 8g; " <>
-          "refusing to build: every build container needs one"
-      )
+    case Enum.find(limits, &(not memory_limit_ok?(&1))) do
+      nil ->
+        :ok
 
-      {:error, :build_memory_limit_missing}
+      {var, memory, _} ->
+        Logger.error(
+          "#{var} is #{inspect(memory)}, not a memory limit such as 8g; " <>
+            "refusing to build: every build container needs one"
+        )
+
+        {:error, :build_memory_limit_missing}
     end
   end
+
+  defp memory_limit_ok?({_var, nil, :optional}), do: true
+  defp memory_limit_ok?({_var, memory, _}), do: Argv.memory_limit?(memory)
 
   @doc """
   The egress preflight: `:ok` when the build egress filter is loaded in the
@@ -925,7 +949,7 @@ defmodule Portal.Builder do
       user: run_as_user(),
       image: image_ref(job),
       cpus: config(:cpus, nil),
-      memory: config(:memory, nil),
+      memory: memory_for(job),
       build_concurrency: config(:build_concurrency, nil),
       nerves_cache_mode: nerves_cache_mode(job),
       hex_cache_mode: Map.get_lazy(job, :hex_cache_mode, fn -> resolved_hex_cache_mode!(job) end),

@@ -182,6 +182,9 @@ if portal_available? do
   # NCC_BUILD_CPUS caps a single build's CPUs; unset means unbounded.
   # NCC_BUILD_MEMORY caps its memory and is required on a node that builds:
   # without it `Portal.Builder.check_memory_limit/0` refuses every build.
+  # NCC_TOOLCHAIN_MEMORY and NCC_WARM_MEMORY each cap one container of that
+  # kind (a toolchain run, a Nerves cache warm) and fall back to
+  # NCC_BUILD_MEMORY when unset; set but not a limit, they refuse every build.
   builder_env = [
     docker_image: System.get_env("NCC_DOCKER_IMAGE"),
     scratch_root: System.get_env("NCC_SCRATCH_ROOT"),
@@ -211,6 +214,8 @@ if portal_available? do
     build_cache: System.get_env("NCC_BUILD_CACHE"),
     cpus: System.get_env("NCC_BUILD_CPUS"),
     memory: System.get_env("NCC_BUILD_MEMORY"),
+    toolchain_memory: System.get_env("NCC_TOOLCHAIN_MEMORY"),
+    warm_memory: System.get_env("NCC_WARM_MEMORY"),
     build_concurrency: System.get_env("NCC_BUILD_CONCURRENCY"),
     run_as_user: System.get_env("NCC_BUILD_USER"),
     # `Portal.Builder.min_free_bytes/0` parses this, so the string is fine.
