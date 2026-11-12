@@ -128,6 +128,28 @@ defmodule PortalWeb.PageController do
   defp put_repair_file_modes_flash(conn, {:error, reason}),
     do: put_flash(conn, :error, PortalWeb.AdminMessages.error(reason))
 
+  # Redirects like the file mode repair, so a refresh does not queue it again.
+  def admin_system_abi_backfill(conn, _params) do
+    case require_admin(conn) do
+      {:ok, conn, _user} ->
+        conn
+        |> put_system_abi_backfill_flash(Portal.Workers.SystemAbiBackfill.enqueue())
+        |> redirect(to: ~p"/admin/maintenance")
+
+      {:error, conn} ->
+        conn
+    end
+  end
+
+  defp put_system_abi_backfill_flash(conn, {:ok, %Oban.Job{conflict?: true}}),
+    do: put_flash(conn, :info, "A system ABI backfill is already queued.")
+
+  defp put_system_abi_backfill_flash(conn, {:ok, _job}),
+    do: put_flash(conn, :info, "System ABI backfill queued.")
+
+  defp put_system_abi_backfill_flash(conn, {:error, reason}),
+    do: put_flash(conn, :error, PortalWeb.AdminMessages.error(reason))
+
   def admin_argus_settings(conn, params) do
     case require_admin(conn) do
       {:ok, conn, user} ->

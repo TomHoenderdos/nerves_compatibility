@@ -701,7 +701,9 @@ Reason codes: `hit`, `not_in_batch`, `not_built_version`,
 `closure_without`, `compile_env_differs`, `excepted`,
 `revoked_provenance`, `revoked_not_in_batch`, `remove_failed`,
 `deadline_passed`, `fetch_failed`, `verify_failed`, `install_failed`,
-`internal`. Another code is stored as `unknown`.
+`internal`, `system_version_abi`, `toolchain_otp_minor`,
+`needed_lib_missing`, `symbol_version_missing`, `system_unknown`,
+`system_bound_compile`. Another code is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
 `DELETE` counts against, refused ones included; and, for `POST` only, 300

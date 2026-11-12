@@ -25,7 +25,8 @@ defmodule Portal.Reports.Payload do
                   closure_mismatch closure_checksum closure_absent closure_without
                   compile_env_differs excepted revoked_provenance revoked_not_in_batch
                   remove_failed deadline_passed fetch_failed verify_failed install_failed
-                  internal)
+                  internal system_version_abi toolchain_otp_minor needed_lib_missing
+                  symbol_version_missing system_unknown system_bound_compile)
 
   @top ~w(format client built_at elixir otp os target system system_version lines lock contact)
   @os_keys ~w(family arch)

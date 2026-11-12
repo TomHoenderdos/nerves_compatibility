@@ -180,6 +180,29 @@ defmodule Portal.ObanConfigTest do
     assert queues[:ingest_portal_host_c] == 2
   end
 
+  # Hourly, at :13, which no other entry uses: rows and a Hex read, on the
+  # web host's queue; the runs it queues need Docker and go to the build
+  # nodes' `:system_abi` queue, one at a time per node.
+  test "the system ABI observer runs hourly on maintenance, its runs on the build nodes" do
+    {_mod, opts} = plugin(Oban.Plugins.Cron)
+
+    assert {"13 * * * *", Portal.Workers.SystemAbiObserve} =
+             Enum.find(opts[:crontab], &match?({_e, Portal.Workers.SystemAbiObserve}, &1))
+
+    minutes =
+      opts[:crontab]
+      |> Enum.reject(&match?({_e, Portal.Workers.SystemAbiObserve}, &1))
+      |> Enum.map(fn {expr, _worker} -> expr |> String.split() |> hd() end)
+
+    refute Enum.any?(minutes, &(&1 == "13" or String.contains?(&1, "13,") or &1 == "*"))
+    assert Portal.Workers.SystemAbiObserve.__opts__()[:queue] == :maintenance
+    assert Portal.Workers.SystemAbiBackfill.__opts__()[:queue] == :maintenance
+    assert Portal.Workers.SystemAbiRun.__opts__()[:queue] == :system_abi
+
+    queues = Portal.Workers.SystemAbiRun.with_queue(queues: [builds: 3, ingest: 2])[:queues]
+    assert queues[:system_abi] == 1
+  end
+
   test "the hex metadata refresh is scheduled weekly on the intake queue" do
     {_mod, opts} = plugin(Oban.Plugins.Cron)
 

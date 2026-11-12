@@ -108,6 +108,7 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
       assert html =~ "Precompiled signing"
       assert html =~ ~s(action="/admin/maintenance/revoke-run")
       assert html =~ ~s(action="/admin/maintenance/repair-file-modes")
+      assert html =~ ~s(action="/admin/maintenance/system-abi-backfill")
       assert html =~ ~s(action="/admin/maintenance/toolchain-sweep")
       assert html =~ "Toolchains"
     end

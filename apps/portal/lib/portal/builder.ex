@@ -55,7 +55,8 @@ defmodule Portal.Builder do
 
   @type build_args :: %{
           required(:run_id) => String.t(),
-          # Required for every mode except "warm_nerves", which builds no package.
+          # Required for every mode except "warm_nerves" and "system_abi",
+          # which build no package.
           optional(:package) => String.t(),
           optional(:version) => String.t(),
           optional(:image) => String.t(),
@@ -74,6 +75,9 @@ defmodule Portal.Builder do
           # For `mode: "warm_nerves"`: `%{"name", "version"}` pairs to warm
           # (`Portal.Workers.WarmNerves`); `[]` warms what the template resolves.
           optional(:nerves_packages) => [%{String.t() => String.t()}] | nil,
+          # For `mode: "system_abi"`: at most eight `%{"system", "version"}`
+          # pairs whose ABI to read (`Portal.Workers.SystemAbiRun`).
+          optional(:system_abi) => [%{String.t() => String.t()}] | nil,
           # TCP targets the worker probes before any `mix` (`Portal.EgressCheck`).
           optional(:egress_probe) => [%{String.t() => String.t() | pos_integer()}] | nil,
           # NCC_INPUT.judge (precompiled judge refinements): judge options for a toolchain build.
@@ -336,6 +340,7 @@ defmodule Portal.Builder do
       config_variant: Map.get(args, :config_variant),
       argus: Map.get(args, :argus),
       nerves_packages: Map.get(args, :nerves_packages),
+      system_abi: Map.get(args, :system_abi),
       egress_probe: Map.get(args, :egress_probe),
       judge: judge_input(mode),
       memory: Map.get(args, :memory),
@@ -371,6 +376,7 @@ defmodule Portal.Builder do
              hex_cache()
            ]),
          {:ok, prefetch_line} <- prefetch_build_cache(job),
+         job = with_known_system_abi(job),
          :ok <- write_worker_input(job, work_dir),
          {:ok, exit_code} <-
            run_container(
@@ -919,12 +925,16 @@ defmodule Portal.Builder do
     |> maybe_put("config_variant", Map.get(job, :config_variant))
     |> maybe_put("argus", Map.get(job, :argus))
     |> maybe_put("nerves_packages", Map.get(job, :nerves_packages))
+    |> maybe_put("system_abi", Map.get(job, :system_abi))
+    |> maybe_put("known_system_abi", Map.get(job, :known_system_abi))
     |> maybe_put("egress_probe", Map.get(job, :egress_probe))
     |> maybe_put("judge", Map.get(job, :judge))
   end
 
-  # A warm run fills the Nerves cache and builds no package.
+  # A warm run fills the Nerves cache and a system ABI run reads system
+  # releases; neither builds a package.
   defp job_package("warm_nerves", _args), do: nil
+  defp job_package("system_abi", _args), do: nil
 
   defp job_package(_mode, args) do
     %{
@@ -932,6 +942,41 @@ defmodule Portal.Builder do
       "version" => Map.fetch!(args, :version),
       "source" => "hex"
     }
+  end
+
+  @doc """
+  `job` with `:known_system_abi` added when it builds targets (a package
+  build with no `mode`): every `"system@version"` with a library table in
+  `catalog_system_abi`, which the worker then does not read again. One
+  query per job; when it fails the list is left out, and the worker reads
+  every release's table as it would without one.
+  """
+  @spec with_known_system_abi(map()) :: map()
+  def with_known_system_abi(job) do
+    if Map.get(job, :mode) == nil and Map.get(job, :package) != nil do
+      case known_system_abi() do
+        {:ok, known} -> Map.put(job, :known_system_abi, known)
+        :error -> job
+      end
+    else
+      job
+    end
+  end
+
+  @known_system_abi """
+  SELECT system_pkg || '@' || version FROM catalog_system_abi
+  WHERE libs IS NOT NULL ORDER BY 1
+  """
+
+  # The statement is a module constant with no parameters.
+  # sobelow_skip ["SQL.Query"]
+  defp known_system_abi do
+    %{rows: rows} = Portal.Repo.query!(@known_system_abi)
+    {:ok, Enum.map(rows, fn [key] -> key end)}
+  rescue
+    error ->
+      Logger.warning("Could not list the known system ABIs: #{Exception.message(error)}")
+      :error
   end
 
   # work_dir is the run scratch directory constructed by build/2; input.json is fixed.

@@ -25,9 +25,15 @@ defmodule Portal.Workers.IngestQueueTest do
     # (ops/builder-deploy.sh). A build that finishes while draining enqueues
     # its ingest on the local queue; leaving that queue out would restart the
     # node in the middle of that ingest.
-    test "a build node drains builds, the shared ingest queue, its own and its warm queue" do
+    test "a build node drains builds, the shared ingest queue, its own, its warm and system ABI queues" do
       assert Ingest.builder_queues(:"portal@host-c", builds: 3, ingest: 2) ==
-               ["builds", "ingest", "ingest_portal_host_c", "warm_nerves_portal_host_c"]
+               [
+                 "builds",
+                 "ingest",
+                 "ingest_portal_host_c",
+                 "warm_nerves_portal_host_c",
+                 "system_abi"
+               ]
     end
 
     # Only when the node runs it: `Oban.check_queue/1` finds no producer for a
@@ -39,11 +45,18 @@ defmodule Portal.Workers.IngestQueueTest do
                  "ingest",
                  "ingest_portal_host_c",
                  "warm_nerves_portal_host_c",
+                 "system_abi",
                  "toolchain"
                ]
 
       assert Ingest.builder_queues(:"portal@host-c", builds: 3, toolchain: 0) ==
-               ["builds", "ingest", "ingest_portal_host_c", "warm_nerves_portal_host_c"]
+               [
+                 "builds",
+                 "ingest",
+                 "ingest_portal_host_c",
+                 "warm_nerves_portal_host_c",
+                 "system_abi"
+               ]
     end
   end
 

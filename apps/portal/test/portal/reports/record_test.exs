@@ -42,6 +42,16 @@ defmodule Portal.Reports.RecordTest do
     assert statuses == ["fail", "miss"]
   end
 
+  test "a system ABI reason code is stored as itself, not as unknown" do
+    l = line("circuits_gpio", "2.1.0", "miss", "needed_lib_missing", ["libssl.so.3"])
+    assert {:created, _id} = Reports.record(payload(%{"lines" => [l]}), "k1")
+
+    assert [{"needed_lib_missing", ["libssl.so.3"]}] =
+             Repo.all(
+               from(l in "precompiled_report_lines", select: {l.reason_code, l.reason_args})
+             )
+  end
+
   test "the same report within 24 hours is counted, not stored, and gets no id" do
     {:created, _id} = Reports.record(payload(), "k1")
 

@@ -136,7 +136,14 @@ config :portal, Oban,
        # most-reported first. Carries `:reports`, which runs only where
        # `:maintenance` does (the web host) and only in releases that have
        # this worker.
-       {"29 0 * * *", Portal.Workers.ReportRequeueSweep}
+       {"29 0 * * *", Portal.Workers.ReportRequeueSweep},
+       # Hourly at :13, a minute no other entry here uses: record the
+       # toolchain requirement of new Hex releases of the systems published
+       # native builds target, and queue a `system_abi` run for up to eight
+       # releases without a library table. Rows and one Hex read per system;
+       # carries `:maintenance`, the web host's queue. The runs it queues go
+       # to the build nodes' `:system_abi` queue.
+       {"13 * * * *", Portal.Workers.SystemAbiObserve}
      ]}
   ]
 

@@ -517,6 +517,21 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               Copies each file's real mode from its run's footprint into the published manifests. One-off; safe to repeat.
             </span>
           </.form>
+
+          <.form
+            for={%{}}
+            id="system-abi-backfill-form"
+            action={~p"/admin/maintenance/system-abi-backfill"}
+            method="post"
+            class="mt-3 flex flex-wrap items-center gap-2"
+          >
+            <button type="submit" id="system-abi-backfill-button" class="btn btn-sm btn-outline">
+              Backfill system ABI
+            </button>
+            <span class="text-sm text-base-content/60">
+              Reads the ELF facts of older published target builds, fills their toolchain and OTP, and queues library reads for their system releases. Safe to repeat.
+            </span>
+          </.form>
         </div>
       </section>
 

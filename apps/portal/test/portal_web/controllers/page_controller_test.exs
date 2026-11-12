@@ -411,7 +411,8 @@ defmodule PortalWeb.PageControllerTest do
     for path <- [
           ~p"/admin/argus",
           ~p"/admin/maintenance/toolchain-sweep",
-          ~p"/admin/maintenance/repair-file-modes"
+          ~p"/admin/maintenance/repair-file-modes",
+          ~p"/admin/maintenance/system-abi-backfill"
         ] do
       assert redirected_to(post(recycle(conn), path)) == ~p"/login"
     end
@@ -517,6 +518,22 @@ defmodule PortalWeb.PageControllerTest do
     conn = post(conn, ~p"/admin/maintenance/repair-file-modes")
     assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "already queued"
     assert [_job] = all_enqueued(worker: Portal.Workers.ManifestModeRepair)
+  end
+
+  test "system-abi-backfill enqueues a backfill and redirects", %{conn: conn} do
+    {conn, _admin} = signed_in_admin(conn, "admin_system_abi")
+
+    assert html_response(get(conn, ~p"/admin/maintenance"), 200) =~
+             ~s(action="/admin/maintenance/system-abi-backfill")
+
+    conn = post(conn, ~p"/admin/maintenance/system-abi-backfill")
+    assert redirected_to(conn) == ~p"/admin/maintenance"
+    assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "System ABI backfill queued"
+    assert [_job] = all_enqueued(worker: Portal.Workers.SystemAbiBackfill)
+
+    conn = post(conn, ~p"/admin/maintenance/system-abi-backfill")
+    assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "already queued"
+    assert [_job] = all_enqueued(worker: Portal.Workers.SystemAbiBackfill)
   end
 
   test "revoke-run revokes and redirects", %{conn: conn} do

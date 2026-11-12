@@ -80,13 +80,16 @@ defmodule Portal.Application do
       # jobs still `executing` under this node's name were orphaned by its
       # last shutdown, and would block their own schedule until Lifeline.
       Portal.OrphanRescue,
-      # A build node also runs its own ingest queue and its own Nerves cache
-      # warm queue; see `Portal.Workers.Ingest` and `Portal.Workers.WarmNerves`.
+      # A build node also runs its own ingest queue, its own Nerves cache
+      # warm queue and the shared system ABI queue; see
+      # `Portal.Workers.Ingest`, `Portal.Workers.WarmNerves` and
+      # `Portal.Workers.SystemAbiRun`.
       {Oban,
        :portal
        |> Application.fetch_env!(Oban)
        |> Portal.Workers.Ingest.with_local_queue()
-       |> Portal.Workers.WarmNerves.with_local_queue()},
+       |> Portal.Workers.WarmNerves.with_local_queue()
+       |> Portal.Workers.SystemAbiRun.with_queue()},
       {Phoenix.PubSub, name: Portal.PubSub},
       # Owns the ETS table of builder rate-limit counters; precedes both
       # endpoints, whose requests count against it.

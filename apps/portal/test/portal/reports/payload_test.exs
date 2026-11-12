@@ -97,6 +97,19 @@ defmodule Portal.Reports.PayloadTest do
     assert line.reason_code == "unknown" and line.reason == "something new"
   end
 
+  test "the system ABI codes are known, with their arguments" do
+    for code <-
+          ~w(system_version_abi toolchain_otp_minor needed_lib_missing symbol_version_missing
+             system_unknown system_bound_compile) do
+      assert code in Payload.known_codes()
+    end
+
+    l = line("circuits_gpio", "2.1.0", "miss", "needed_lib_missing", ["libssl.so.3"])
+    assert {:ok, %{lines: [line]}} = Payload.validate(%{body() | "lines" => [l]})
+    assert line.reason_code == "needed_lib_missing"
+    assert line.reason_args == ["libssl.so.3"]
+  end
+
   test "reason args are bounded, the reason is cut at 300 characters" do
     many = line("jason", "1.4.5", "miss", "compile_env_differs", Enum.map(1..9, &"a#{&1}"))
     assert errors(%{body() | "lines" => [many]}) =~ "reason_args"
@@ -151,7 +164,7 @@ defmodule Portal.Reports.PayloadTest do
   end
 
   test "known codes are the shared table" do
-    assert length(Payload.known_codes()) == 30
+    assert length(Payload.known_codes()) == 36
     assert "not_built_target" in Payload.known_codes()
     refute "unknown" in Payload.known_codes()
   end
