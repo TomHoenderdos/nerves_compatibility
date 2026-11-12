@@ -42,6 +42,17 @@ defmodule NccWorker.CLITest do
     assert {:ok, %{known_system_abi: ["nerves_system_rpi4@2.2.2"]}} = CLI.parse_input(json)
   end
 
+  test "parse_input/1 keeps system_abi pairs as string-keyed maps" do
+    json =
+      ~s({"run_id":"r1","mode":"system_abi","system_abi":[{"system":"nerves_system_rpi4","version":"2.1.0"}]})
+
+    assert {:ok,
+            %{
+              mode: "system_abi",
+              system_abi: [%{"system" => "nerves_system_rpi4", "version" => "2.1.0"}]
+            }} = CLI.parse_input(json)
+  end
+
   test "parse_input/1 reports malformed JSON" do
     assert {:error, {:invalid_json, _}} = CLI.parse_input("{")
   end

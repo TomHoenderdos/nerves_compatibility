@@ -145,13 +145,7 @@ defmodule NccWorker.WarmNerves do
 
   defp resolve(project_dir, systems, mix, log_file, hex_home) do
     Enum.reduce_while(systems, :ok, fn system, :ok ->
-      env = [
-        {"HEX_HOME", hex_home},
-        {"MIX_TARGET", system.target},
-        {"MIX_ENV", "prod"},
-        {"MIX_BUILD_PATH", Path.join([project_dir, "_build", system.target])},
-        {"MIX_DEPS_PATH", Path.join(project_dir, "deps_#{system.target}")}
-      ]
+      env = [{"HEX_HOME", hex_home} | target_env(project_dir, system)]
 
       with :ok <- step(mix, ["deps.get"], project_dir, env, log_file, system),
            :ok <- step(mix, ["nerves.artifact.get"], project_dir, env, log_file, system) do
@@ -162,6 +156,18 @@ defmodule NccWorker.WarmNerves do
     end)
   end
 
+  @doc false
+  # The environment every per-target `mix` of a template project runs with;
+  # `NccWorker.SystemAbiRun` resolves its releases the same way.
+  @spec target_env(Path.t(), Systems.t()) :: [{String.t(), String.t()}]
+  def target_env(project_dir, system),
+    do: [
+      {"MIX_TARGET", system.target},
+      {"MIX_ENV", "prod"},
+      {"MIX_BUILD_PATH", Path.join([project_dir, "_build", system.target])},
+      {"MIX_DEPS_PATH", Path.join(project_dir, "deps_#{system.target}")}
+    ]
+
   defp step(mix, args, project_dir, env, log_file, system) do
     case mix.(args, project_dir, env, log_file) do
       :ok -> :ok
@@ -169,9 +175,14 @@ defmodule NccWorker.WarmNerves do
     end
   end
 
-  # Literal mix tasks in the generated project; log_file is under the /out mount.
+  @doc false
+  # Runs `mix args` in `project_dir` with `env`, its output appended to
+  # `log_file`. Literal mix tasks in the generated project; log_file is under
+  # the /out mount.
+  @spec run_mix([String.t()], Path.t(), [{String.t(), String.t()}], Path.t()) ::
+          :ok | {:error, non_neg_integer()}
   # sobelow_skip ["CI.System", "Traversal.FileModule"]
-  defp run_mix(args, project_dir, env, log_file) do
+  def run_mix(args, project_dir, env, log_file) do
     case System.cmd("mix", args,
            cd: project_dir,
            env: env,

@@ -75,7 +75,8 @@ defmodule NccWorker.JsonWriter do
     # (`NccWorker.NervesCache.report/2`), `hex_cache` for a run that neither
     # downloaded a Hex tarball nor used a cached one
     # (`NccWorker.HexCache.report/2`), `warm` for every run but a warm
-    # one (`NccWorker.WarmNerves`), `egress_probe` for every run that was
+    # one (`NccWorker.WarmNerves`), `system_abi` for every run but a
+    # system_abi one (`NccWorker.SystemAbiRun`), `egress_probe` for every run that was
     # not asked to probe (`NccWorker.EgressProbe`), `process_sweep` for a
     # result that never went through `NccWorker.ProcessSweep.enforce_and_report/2`,
     # `requested_optional_deps` for a run whose input made no optional-deps
@@ -94,6 +95,7 @@ defmodule NccWorker.JsonWriter do
         :nerves_cache,
         :hex_cache,
         :warm,
+        :system_abi,
         :egress_probe,
         :process_sweep,
         :requested_optional_deps,

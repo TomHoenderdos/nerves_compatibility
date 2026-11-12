@@ -4,7 +4,9 @@ defmodule NccWorker.RunScope do
   `systems_filter` (`:targets`), nothing but the host compile and argus
   (`:argus_only`), or one host build in a plain, non-Nerves project on a
   toolchain image, judged for portability (`:toolchain`), or nothing at all
-  but fill the shared Nerves cache (`:warm_nerves`, `NccWorker.WarmNerves`).
+  but fill the shared Nerves cache (`:warm_nerves`, `NccWorker.WarmNerves`), or
+  nothing but read given Nerves system releases' toolchain, OTP and libraries
+  (`:system_abi`, `NccWorker.SystemAbiRun`).
 
   The scope travels into `result.json` because ingestion has to know what a
   run left out: a partial run's missing systems are copied from the package's
@@ -12,12 +14,13 @@ defmodule NccWorker.RunScope do
   systems simply were not built.
   """
 
-  @type t :: :full | :targets | :argus_only | :toolchain | :warm_nerves
+  @type t :: :full | :targets | :argus_only | :toolchain | :warm_nerves | :system_abi
 
   @spec from_input(map()) :: t()
   def from_input(%{mode: "argus_only"}), do: :argus_only
   def from_input(%{mode: "toolchain"}), do: :toolchain
   def from_input(%{mode: "warm_nerves"}), do: :warm_nerves
+  def from_input(%{mode: "system_abi"}), do: :system_abi
   def from_input(%{systems_filter: [_ | _]}), do: :targets
   def from_input(_input), do: :full
 

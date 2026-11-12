@@ -29,6 +29,7 @@ defmodule NccWorker.Worker do
     Scanner,
     SeedGate,
     SystemAbi,
+    SystemAbiRun,
     Systems,
     TargetDepsGet,
     WarmNerves
@@ -44,17 +45,22 @@ defmodule NccWorker.Worker do
             required(:name) => String.t(),
             required(:digest) => String.t()
           },
-          # Absent only for "warm_nerves", which builds no package.
+          # Absent only for "warm_nerves" and "system_abi", which build no
+          # package.
           optional(:package) => %{
             required(:name) => String.t(),
             optional(:requirement) => String.t(),
             optional(:version) => String.t()
           },
-          # "argus_only", "toolchain" or "warm_nerves" (`NccWorker.RunScope`).
+          # "argus_only", "toolchain", "warm_nerves" or "system_abi"
+          # (`NccWorker.RunScope`).
           optional(:mode) => String.t(),
           # For "warm_nerves": `%{"name", "version"}` pairs to warm, string-keyed
           # (`NccWorker.WarmNerves.plan/2`); `[]` warms what the template resolves.
           optional(:nerves_packages) => [%{String.t() => String.t()}],
+          # For "system_abi": at most 8 `%{"system", "version"}` Nerves system
+          # releases to report on, string-keyed (`NccWorker.SystemAbiRun`).
+          optional(:system_abi) => [%{String.t() => String.t()}],
           # TCP targets to probe before any `mix` runs (`NccWorker.EgressProbe`),
           # string-keyed `%{"address", "port"}`; only `Portal.EgressCheck` sends it.
           optional(:egress_probe) => [%{String.t() => String.t() | pos_integer()}],
@@ -207,7 +213,8 @@ defmodule NccWorker.Worker do
         }
 
   @type result :: %{
-          # "full", "targets", "argus_only", "toolchain" or "warm_nerves".
+          # "full", "targets", "argus_only", "toolchain", "warm_nerves" or
+          # "system_abi".
           optional(:scope) => String.t(),
           # Only for a "toolchain" run, whose `systems` is `%{}`: no firmware,
           # no argus (`argus.status` "skipped"), no Nerves systems.
@@ -292,6 +299,12 @@ defmodule NccWorker.Worker do
           # Only for a "warm_nerves" run, whose `package` is nil and `systems`
           # `%{}` (`NccWorker.WarmNerves`).
           optional(:warm) => NccWorker.WarmNerves.warm(),
+          # Only for a "system_abi" run, whose `package` is nil and `systems`
+          # `%{}` (`NccWorker.SystemAbiRun`): one entry per requested release,
+          # in input order, `%{"system", "version", "toolchain", "otp_full",
+          # "system_libs"}` shaped like a passing target's facts, or
+          # `%{"system", "version", "error"}` for one that could not be read.
+          optional(:system_abi) => [NccWorker.SystemAbiRun.entry()],
           # The outcome per `NCC_INPUT.egress_probe` target, when it had any.
           optional(:egress_probe) => [NccWorker.EgressProbe.outcome()],
           # How the process sweep went: "ok", "skipped" or "tainted", set by
@@ -303,7 +316,7 @@ defmodule NccWorker.Worker do
           # (`NccWorker.Resources`); the same map the run's resources.json holds.
           optional(:resources) => NccWorker.Resources.report(),
           run_id: String.t(),
-          # nil for a "warm_nerves" run.
+          # nil for a "warm_nerves" or "system_abi" run.
           package:
             %{
               name: String.t(),
@@ -486,18 +499,29 @@ defmodule NccWorker.Worker do
   defp run_scope(:warm_nerves, input, paths, toolchain, nerves),
     do: WarmNerves.run(input, paths, toolchain, nerves)
 
+  defp run_scope(:system_abi, input, paths, toolchain, nerves),
+    do:
+      SystemAbiRun.run(input,
+        paths: paths,
+        toolchain: toolchain,
+        artifacts_dir: nerves.artifacts_dir
+      )
+
   defp run_scope(_scope, input, paths, toolchain, nerves),
     do: input |> full_run(paths, toolchain) |> put_nerves_cache(nerves, paths)
 
   # Before any `mix` runs, `detect_toolchain/1`'s included: every later
   # invocation is a child of this process and inherits both variables, so
   # Nerves never falls back to `~/.nerves` (`NccWorker.NervesCache`). Every
-  # mode sets them; only a full, targets or argus-only run reports.
+  # mode sets them; only a full, targets or argus-only run reports. A
+  # system_abi run always gets the farm, NCC_NERVES_CACHE_RW=1 or not: it
+  # never writes the cache.
   defp prepare_nerves_cache(scope, input, paths) do
     kind = if scope == :warm_nerves, do: :warm, else: :build
+    opts = [work_dir: paths.work_dir, run_id: input.run_id]
+    opts = if scope == :system_abi, do: [rw: false] ++ opts, else: opts
 
-    with {:ok, layout} <-
-           NervesCache.prepare(kind, work_dir: paths.work_dir, run_id: input.run_id) do
+    with {:ok, layout} <- NervesCache.prepare(kind, opts) do
       :ok = NervesCache.export_env(layout)
       {:ok, layout}
     end
@@ -2228,11 +2252,16 @@ defmodule NccWorker.Worker do
     end
   end
 
-  # A warm run fills the Nerves cache and builds no package.
+  # A warm run fills the Nerves cache and builds no package; a system_abi
+  # run builds none either, and its pairs are checked before any cache is
+  # prepared.
   defp validate_package(input) do
     cond do
       RunScope.from_input(input) == :warm_nerves ->
         :ok
+
+      RunScope.from_input(input) == :system_abi ->
+        with {:ok, _pairs} <- SystemAbiRun.validate(input[:system_abi]), do: :ok
 
       !is_map(input[:package]) ->
         {:error, :missing_package}

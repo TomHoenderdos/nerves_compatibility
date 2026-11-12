@@ -577,6 +577,40 @@ defmodule NccWorker.JsonWriterTest do
       assert decoded["scope"] == "warm_nerves"
       assert decoded["warm"]["installed"] == ["nerves_system_rpi4-2.0.0"]
     end
+
+    @tag :tmp_dir
+    test "a system_abi run writes its entries and a null package", %{tmp_dir: dir} do
+      entries = [
+        %{
+          "system" => "nerves_system_rpi4",
+          "version" => "2.1.0",
+          "toolchain" => %{
+            "package" => "nerves_toolchain_aarch64_nerves_linux_gnu",
+            "version" => "15.3.0"
+          },
+          "otp_full" => "28.0.2",
+          "system_libs" => %{"libc.so.6" => ["GLIBC_2.17"]}
+        },
+        %{"system" => "nerves_system_bbb", "version" => "2.1.0", "error" => "deps.get failed"}
+      ]
+
+      assert :ok =
+               JsonWriter.write_result(
+                 dir,
+                 nerves_result(%{package: nil, scope: "system_abi", system_abi: entries})
+               )
+
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+
+      assert decoded["package"] == nil
+      assert decoded["scope"] == "system_abi"
+      assert decoded["systems"] == %{}
+      assert decoded["system_abi"] == entries
+
+      assert :ok = JsonWriter.write_result(dir, nerves_result(%{}))
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      refute Map.has_key?(decoded, "system_abi")
+    end
   end
 
   describe "per-system optional dependencies" do

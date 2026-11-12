@@ -307,6 +307,37 @@ way. `result.json` has `"scope": "warm_nerves"`, `"package": null`, `"systems": 
 where `resolved` lists the project's locked `nerves_system_*`/`nerves_toolchain_*` as `<name>-<version>`. With no pairs
 it warms whatever the template resolves; `ops/builder-deploy.sh` runs that after every builder deploy.
 
+## System ABI mode
+
+With `"mode": "system_abi"` and `"system_abi": [{"system": "nerves_system_rpi4", "version": "2.1.0"}]` (and no
+`package`) the worker builds nothing and reports the "System ABI" facts above for each listed release, for releases
+no current build covers (`NccWorker.SystemAbiRun`). At most 8 pairs; more, or a list that is not one of
+`{"system", "version"}` string maps, is an input error and the run exits `10` before anything is prepared.
+
+Each pair gets its own template project with only that system's target, the system pinned to `== version`, and runs
+`mix deps.get` and `mix nerves.artifact.get` with `MIX_TARGET` set to that target. Unlike a warm, and like a build,
+Nerves resolves through the per-run farm over the read-only `/nerves-cache` (also under `NCC_NERVES_CACHE_RW=1`): the
+run never writes the cache, and what it lacks is extracted into the run's own dir. A pair failing never stops the next.
+
+`result.json` has `"scope": "system_abi"`, `"package": null`, `"systems": {}` and one `system_abi` entry per pair, in
+input order:
+
+```json
+"system_abi": [
+  {"system": "nerves_system_rpi4", "version": "2.1.0",
+   "toolchain": {"package": "nerves_toolchain_aarch64_nerves_linux_gnu", "version": "15.3.0"},
+   "otp_full": "28.0.2", "system_libs": {"libc.so.6": ["GLIBC_2.17", "..."], "...": []}},
+  {"system": "nerves_system_bbb", "version": "2.0.0", "error": "deps.get failed"}
+]
+```
+
+An entry has all three facts or none: a pair any of them could not be read for has only `system`, `version` and one
+of these `error`s: `unknown system`, `invalid version`, `project failed`, `deps.get failed`,
+`nerves.artifact.get failed`, `no artifact`, `no toolchain`, `no OTP version`, `no rootfs`, `no libc in rootfs` (an
+extraction with no libc, failed or timed out: never an empty table) or `internal error`. Details go to stderr and
+`logs/system_abi.log`, never into the entry. Each extraction is bounded as in a build (120 s); the run has no shared
+budget of its own beyond its 8 pairs.
+
 ## Toolchain mode
 
 With `"mode": "toolchain"` (and an informational `"toolchain": {"elixir": "1.19", "otp": "28"}`, echoed back as
