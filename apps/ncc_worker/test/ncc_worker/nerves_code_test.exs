@@ -187,6 +187,84 @@ defmodule NccWorker.NervesCodeTest do
       assert NervesCode.mention(root) == :none
       assert NervesCode.mention(root, budget_ms: 0) == :found
     end
+
+    # Packages the plain grep refused as "nerves-specific source": Nerves
+    # named only in prose, in shapes taken from their Hex releases.
+    test "a mention only in README.md is :none", %{tmp_dir: dir} do
+      root =
+        pkg(dir, %{
+          "README.md" => "Runs on Nerves; set `MIX_TARGET` and see nerves_livebook.\n",
+          "lib/a.ex" => "defmodule A do\n  def f, do: :ok\nend\n"
+        })
+
+      assert NervesCode.mention(root) == :none
+    end
+
+    test "elixir_make 0.10.1: Nerves in a Mix task's @moduledoc heredoc is :none",
+         %{tmp_dir: dir} do
+      root =
+        pkg(dir, %{
+          "lib/mix/tasks/compile.elixir_make.ex" => ~S'''
+          defmodule Mix.Tasks.Compile.ElixirMake do
+            @moduledoc """
+            Copy the artifacts to `$MIX_APP_PATH/priv/$MIX_TARGET`. This is relevant for
+            projects like Nerves that build for several targets and may involve
+            cross-compilation.
+            """
+
+            use Mix.Task
+
+            def run(args), do: ElixirMake.Compiler.compile(Mix.Project.config(), args)
+          end
+          '''
+        })
+
+      assert NervesCode.mention(root) == :none
+    end
+
+    test "fledex 0.8.1: Nerves in mix.exs's description and the README is :none",
+         %{tmp_dir: dir} do
+      root =
+        pkg(dir, %{
+          "README.md" =>
+            "Written for a RaspberryPi Zero W running [Nerves](https://nerves-project.org/).\n",
+          "mix.exs" => ~S'''
+          defmodule Fledex.MixProject do
+            use Mix.Project
+
+            def project do
+              [app: :fledex, version: "0.8.1", description: description(), deps: []]
+            end
+
+            defp description do
+              "A small library to easily control an LED strip with nerves (or nerves-livebook)"
+            end
+          end
+          '''
+        })
+
+      assert NervesCode.mention(root) == :none
+    end
+
+    test "nerves_time 0.4.8: a package that calls Nerves code is :found", %{tmp_dir: dir} do
+      root =
+        pkg(dir, %{
+          "README.md" => "# nerves_time\n",
+          "lib/nerves_time/application.ex" => ~S'''
+          defmodule NervesTime.Application do
+            @moduledoc false
+            use Application
+
+            def start(_type, _args) do
+              children = [NervesTime.SystemTime, NervesTime.Ntpd]
+              Supervisor.start_link(children, strategy: :one_for_one, name: NervesTime.Supervisor)
+            end
+          end
+          '''
+        })
+
+      assert NervesCode.mention(root) == :found
+    end
   end
 
   describe "bounded/2" do
