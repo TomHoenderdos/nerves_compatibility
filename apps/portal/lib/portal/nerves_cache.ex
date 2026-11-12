@@ -25,6 +25,7 @@ defmodule Portal.NervesCache do
 
   require Logger
 
+  alias Portal.Catalog.RunMemory
   alias Portal.Repo
   alias Portal.Workers.WarmNerves
 
@@ -379,6 +380,9 @@ defmodule Portal.NervesCache do
   instead of `ensure_trusted/1` this removes `trusted_marker/1`: the next
   read-only deploy then wipes the cache before trusting it.
 
+  The warm container writes its `Portal.Catalog.RunMemory` row (kind
+  `:warm`) like every other, so `/admin/memory` sees the template warm too.
+
   `opts[:builder]` and `opts[:root]` replace `Portal.Builder` and its
   `nerves_cache/0` in tests, `opts[:rw]` its `nerves_cache_mode/1`.
   """
@@ -402,13 +406,19 @@ defmodule Portal.NervesCache do
       :ok = ensure_trusted(root)
     end
 
+    build_args = %{
+      run_id: run_id,
+      mode: "warm_nerves",
+      nerves_packages: [],
+      image_digest: digest
+    }
+
     try do
-      case builder.build(%{
-             run_id: run_id,
-             mode: "warm_nerves",
-             nerves_packages: [],
-             image_digest: digest
-           }) do
+      started_at = DateTime.utc_now()
+      result = builder.build(build_args)
+      :ok = record_memory(build_args, result, started_at)
+
+      case result do
         {:ok, %{exit_code: 0, result: %{"warm" => %{"resolved" => resolved}}}}
         when is_list(resolved) ->
           write_template(root, digest, Enum.filter(resolved, &entry?/1))
@@ -425,6 +435,32 @@ defmodule Portal.NervesCache do
     after
       builder.cleanup(run_id)
     end
+  end
+
+  # The deploy warm's `catalog_run_memory` row, as `Portal.Workers.WarmNerves`
+  # writes one. The release `eval` it runs under starts no applications, so
+  # the repo is started for the insert when it is not running; a failure is
+  # logged and never fails the warm.
+  defp record_memory(build_args, result, started_at) do
+    record = fn -> RunMemory.record(:warm, build_args, result, %{started_at: started_at}) end
+
+    if Process.whereis(Repo) do
+      record.()
+    else
+      with {:error, reason} <- Ecto.Migrator.with_repo(Repo, fn _repo -> record.() end) do
+        Logger.warning("Could not record the deploy warm's memory: #{inspect(reason)}")
+      end
+
+      :ok
+    end
+  rescue
+    e ->
+      Logger.warning("Could not record the deploy warm's memory: #{Exception.message(e)}")
+      :ok
+  catch
+    class, reason ->
+      Logger.warning("Could not record the deploy warm's memory: #{inspect({class, reason})}")
+      :ok
   end
 
   # A `<name>-<version>` cache entry `pair_tuple/1` accepts. Names have no

@@ -185,6 +185,7 @@ if portal_available? do
   # NCC_TOOLCHAIN_MEMORY and NCC_WARM_MEMORY each cap one container of that
   # kind (a toolchain run, a Nerves cache warm) and fall back to
   # NCC_BUILD_MEMORY when unset; set but not a limit, they refuse every build.
+  # NCC_WARM_MEMORY also bounds the deploy-time warm (ops/builder-deploy.sh).
   builder_env = [
     docker_image: System.get_env("NCC_DOCKER_IMAGE"),
     scratch_root: System.get_env("NCC_SCRATCH_ROOT"),

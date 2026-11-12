@@ -419,6 +419,22 @@ defmodule Portal.NervesCacheTest do
                {:ok, MapSet.new(["nerves_system_bbb-2.0.0", "nerves_system_rpi4-2.0.0"])}
     end
 
+    # The template warm is the largest one, so /admin/memory must see it.
+    test "writes one warm memory row for its container", %{root: root} do
+      Process.put(:warm_response, warm_ok(["nerves_system_rpi4-2.0.0"]))
+
+      assert :ok = NervesCache.deploy_warm(builder: WarmStub, root: root)
+
+      assert_received {:warm_build, %{run_id: run_id}}
+
+      assert [row] = Ash.read!(Portal.Catalog.RunMemory, domain: Portal.Catalog)
+      assert row.kind == :warm
+      assert row.run_id == run_id
+      assert row.exit_code == 0
+      assert row.image_digest == "sha256:live"
+      assert %DateTime{} = row.started_at
+    end
+
     test "a failed warm leaves the template file alone and says why", %{root: root} do
       :ok = NervesCache.ensure_trusted(root)
       :ok = NervesCache.write_template(root, "sha256:old", ["nerves_system_rpi4-1.0.0"])

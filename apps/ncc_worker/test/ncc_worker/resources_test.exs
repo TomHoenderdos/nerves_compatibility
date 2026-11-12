@@ -152,5 +152,23 @@ defmodule NccWorker.ResourcesTest do
       assert decoded["resources"] == side_file(dir)
       assert decoded["resources"]["samples"] >= 1
     end
+
+    # A work dir that is a file fails the Nerves cache step, the first one
+    # under the sampler, before any `mix` or network.
+    test "run/1 samples under the sampler and writes the side file", %{tmp_dir: dir} do
+      work = Path.join(dir, "work")
+      File.write!(work, "not a directory")
+      out = Path.join(dir, "out")
+
+      assert {:error, _reason} =
+               Worker.run(%{
+                 run_id: "resources-wiring-1",
+                 image: %{name: "ncc-worker:local", digest: "sha256:test"},
+                 package: %{name: "jason", version: "1.4.4"},
+                 paths: %{work_dir: work, output_dir: out}
+               })
+
+      assert Enum.sort(Map.keys(side_file(out))) == Enum.sort(@keys)
+    end
   end
 end

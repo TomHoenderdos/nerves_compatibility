@@ -192,9 +192,10 @@ defmodule Portal.Builder do
   The memory limit `job`'s container runs with: its own `:memory` when set,
   else `NCC_TOOLCHAIN_MEMORY` (`:toolchain_memory`) for a toolchain run and
   `NCC_WARM_MEMORY` (`:warm_memory`) for a warm run, falling back to
-  `NCC_BUILD_MEMORY` (`:memory`), which every other run uses.
+  `NCC_BUILD_MEMORY` (`:memory`), which every other run uses. The warm limit
+  also bounds the deploy-time warm (`Portal.NervesCache.deploy_warm/1`).
   """
-  @spec memory_for(map()) :: String.t() | nil
+  @spec memory_for(map()) :: String.t() | pos_integer() | nil
   def memory_for(%{memory: memory}) when not is_nil(memory), do: memory
   def memory_for(%{mode: "toolchain"}), do: config(:toolchain_memory, nil) || config(:memory, nil)
   def memory_for(%{mode: "warm_nerves"}), do: config(:warm_memory, nil) || config(:memory, nil)
