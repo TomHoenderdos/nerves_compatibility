@@ -104,6 +104,9 @@ defmodule Portal.Catalog.Ingestion do
           # Set only by `Portal.Catalog.BuildTimeout`, never from a result:
           # a partial run keeps the previous run's footprint and argus result.
           optional(:carry_run_data) => boolean(),
+          # Tests only: replaces the query for the run's results to read as
+          # ELF after commit, to show a failure there cannot fail the ingest.
+          optional(:elf_candidates) => (Ecto.UUID.t() -> [map()]),
           required(:package) => String.t(),
           required(:version) => String.t()
         }
@@ -177,22 +180,29 @@ defmodule Portal.Catalog.Ingestion do
       timeout: @transaction_timeout
     )
     |> tap(fn
-      {:ok, run} -> record_system_abi(run, systems)
-      _error -> :ok
+      {:ok, run} ->
+        best_effort("record the system ABI facts of run", run.id, fn ->
+          record_system_abi(run, systems, Map.get(opts, :elf_candidates, &elf_candidates/1))
+        end)
+
+      _error ->
+        :ok
     end)
   end
 
   # After the rows are committed, and best-effort: what a target build says
   # about its system release, and what its published priv files are as ELF,
   # are facts for matching builds across releases, never a reason to fail an
-  # ingest that already wrote the run.
-  defp record_system_abi(run, systems) do
+  # ingest that already wrote the run: the caller runs this whole step under
+  # `best_effort/3`, so nothing it raises, throws or exits with reaches
+  # `ingest/2`'s return value.
+  defp record_system_abi(run, systems, elf_candidates) do
     Enum.each(systems, fn {system_pkg, sys} ->
       best_effort("observe", system_pkg, fn -> observe_release(system_pkg, sys) end)
     end)
 
     run.id
-    |> elf_candidates()
+    |> elf_candidates.()
     |> Enum.each(fn %{id: id, system_pkg: system_pkg} ->
       best_effort("read the ELF facts of", system_pkg, fn -> store_elf_facts(id, system_pkg) end)
     end)
@@ -247,14 +257,17 @@ defmodule Portal.Catalog.Ingestion do
     )
   end
 
-  defp best_effort(what, system_pkg, fun) do
+  defp best_effort(what, subject, fun) do
     fun.()
+    :ok
   rescue
-    error -> warn_abi(what, system_pkg, Exception.message(error))
+    error -> warn_abi(what, subject, Exception.message(error))
+  catch
+    kind, reason -> warn_abi(what, subject, {kind, reason})
   end
 
-  defp warn_abi(what, system_pkg, reason) do
-    Logger.warning("Could not #{what} #{inspect(system_pkg)}: #{inspect(reason)}")
+  defp warn_abi(what, subject, reason) do
+    Logger.warning("Could not #{what} #{inspect(subject)}: #{inspect(reason)}")
   end
 
   defp system_toolchain(%{"package" => package, "version" => version}),

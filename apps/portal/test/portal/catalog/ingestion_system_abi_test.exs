@@ -74,16 +74,22 @@ defmodule Portal.Catalog.IngestionSystemAbiTest do
     }
   end
 
-  defp ingest(result, files_dir) do
-    Ingestion.ingest(result, %{
-      package: result["package"]["name"],
-      version: result["package"]["version"],
-      run_id: result["run_id"] <> "-#{System.unique_integer([:positive])}",
-      image_digest: "sha256:abi",
-      files_dir: files_dir,
-      scan_request_id: nil,
-      log: nil
-    })
+  defp ingest(result, files_dir, extra \\ %{}) do
+    Ingestion.ingest(
+      result,
+      Map.merge(
+        %{
+          package: result["package"]["name"],
+          version: result["package"]["version"],
+          run_id: result["run_id"] <> "-#{System.unique_integer([:positive])}",
+          image_digest: "sha256:abi",
+          files_dir: files_dir,
+          scan_request_id: nil,
+          log: nil
+        },
+        extra
+      )
+    )
   end
 
   defp system_result(run, system_pkg) do
@@ -224,6 +230,39 @@ defmodule Portal.Catalog.IngestionSystemAbiTest do
     end
   end
 
+  # The run is committed before these facts are read: however reading them
+  # fails, the ingest has succeeded, or the job would retry a stored run.
+  describe "a failure after the ingest commits" do
+    for {label, fail} <- [
+          raise: quote(do: fn _run_id -> raise DBConnection.ConnectionError, "dropped" end),
+          exit: quote(do: fn _run_id -> exit(:pool_timeout) end),
+          throw: quote(do: fn _run_id -> throw(:boom) end)
+        ] do
+      test "a candidates query that fails by #{label} still returns the run" do
+        name = unique("abipkg")
+        version = "1.37.#{System.unique_integer([:positive])}"
+        beam = "beam-#{name}"
+        so = nif()
+        result = result(name, version, "29.1.2", beam, [{"priv/gpio_nif.so", so}])
+
+        log =
+          capture_log(fn ->
+            assert {:ok, run} =
+                     ingest(result, files_dir_with([beam, so]), %{elf_candidates: unquote(fail)})
+
+            send(self(), {:run, run})
+          end)
+
+        assert_received {:run, run}
+        assert log =~ "Could not record the system ABI facts of run"
+        assert log =~ run.id
+        assert system_result(run, "nerves_system_rpi4").native == nil
+        # The observations made before the failure stand.
+        assert abi_row("nerves_system_rpi4", version).otp == "29.1.2"
+      end
+    end
+  end
+
   describe "observe/1" do
     test "fills a null field of an existing row" do
       version = "2.0.#{System.unique_integer([:positive])}"
@@ -243,7 +282,7 @@ defmodule Portal.Catalog.IngestionSystemAbiTest do
         end)
 
       assert abi_row("nerves_system_bbb", version).libs == nil
-      assert log =~ "libc"
+      assert log =~ "it is empty"
     end
 
     test "a library table without a libc is not stored" do
@@ -291,6 +330,42 @@ defmodule Portal.Catalog.IngestionSystemAbiTest do
       assert row.series == "15.3"
       assert row.otp == "29.1.2"
       assert row.libs == @libs
+    end
+
+    test "a lock observation without a toolchain package keeps the row's" do
+      version = "2.5.#{System.unique_integer([:positive])}"
+
+      assert {:ok, _} =
+               SystemAbi.observe(%{
+                 system_pkg: "nerves_system_bbb",
+                 version: version,
+                 toolchain_pkg: @toolchain,
+                 toolchain_version: "~> 15.3.0",
+                 source: "requirement"
+               })
+
+      assert {:ok, _} =
+               SystemAbi.observe(observed("nerves_system_bbb", version, %{toolchain_pkg: nil}))
+
+      row = abi_row("nerves_system_bbb", version)
+      assert row.source == "lock"
+      assert row.toolchain_pkg == @toolchain
+      assert row.toolchain_version == "15.3.1"
+    end
+
+    test "a malformed library table is refused for being malformed" do
+      version = "2.6.#{System.unique_integer([:positive])}"
+      libs = %{"libc.so.6" => "GLIBC_2.17"}
+
+      log =
+        capture_log(fn ->
+          assert {:ok, _} =
+                   SystemAbi.observe(observed("nerves_system_bbb", version, %{libs: libs}))
+        end)
+
+      assert abi_row("nerves_system_bbb", version).libs == nil
+      assert log =~ "not a map of soname to version names"
+      refute log =~ "names no libc"
     end
 
     test "a conflicting toolchain on a lock row is kept, logged and counted" do

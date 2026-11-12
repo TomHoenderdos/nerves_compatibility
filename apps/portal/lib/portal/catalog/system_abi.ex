@@ -120,8 +120,8 @@ defmodule Portal.Catalog.SystemAbi do
       and series and makes it a `"lock"` row; a `"requirement"` observation
       of a `"lock"` row changes nothing.
 
-  A `libs` table that is empty or names no libc (`libc.so.6`, `libc.so`) is
-  logged and taken as nil.
+  A `libs` table that is malformed, empty or names no libc (`libc.so.6`,
+  `libc.so`) is logged with its reason and taken as nil.
   """
   @spec observe(observation()) :: {:ok, t()} | {:error, term()}
   def observe(%{system_pkg: system_pkg, version: version, source: source} = observation)
@@ -240,11 +240,17 @@ defmodule Portal.Catalog.SystemAbi do
   end
 
   # A lock observation's toolchain replaces a requirement row's, and makes it
-  # a lock row; every other field is merged.
+  # a lock row; every other field is merged. The package is replaced only
+  # when the observation names one: a lock observation without it keeps the
+  # row's.
   defp replaced_toolchain(%{source: "requirement"}, "lock", %{toolchain_version: v} = incoming)
        when is_binary(v) do
-    {%{source: "lock", toolchain_pkg: incoming.toolchain_pkg, toolchain_version: v},
-     [:otp, :libs]}
+    base = %{source: "lock", toolchain_version: v}
+
+    case incoming.toolchain_pkg do
+      pkg when is_binary(pkg) -> {Map.put(base, :toolchain_pkg, pkg), [:otp, :libs]}
+      nil -> {base, [:otp, :libs]}
+    end
   end
 
   defp replaced_toolchain(_row, _source, _incoming), do: {%{}, @fields}
@@ -300,17 +306,23 @@ defmodule Portal.Catalog.SystemAbi do
   defp libs(nil, _system_pkg, _version), do: nil
 
   defp libs(libs, system_pkg, version) do
-    normalized = normalize_libs(libs)
+    case libs_refusal(normalize_libs(libs)) do
+      {:ok, normalized} ->
+        normalized
 
-    if is_map(normalized) and Enum.any?(@libcs, &Map.has_key?(normalized, &1)) do
-      normalized
-    else
-      Logger.warning(
-        "Not recording the library table of #{system_pkg} #{version}: it names no libc"
-      )
-
-      nil
+      {:refused, why} ->
+        Logger.warning("Not recording the library table of #{system_pkg} #{version}: #{why}")
+        nil
     end
+  end
+
+  defp libs_refusal(nil), do: {:refused, "it is not a map of soname to version names"}
+  defp libs_refusal(libs) when map_size(libs) == 0, do: {:refused, "it is empty"}
+
+  defp libs_refusal(libs) do
+    if Enum.any?(@libcs, &Map.has_key?(libs, &1)),
+      do: {:ok, libs},
+      else: {:refused, "it names no libc (libc.so.6 or libc.so)"}
   end
 
   # soname => sorted, deduplicated version names; nil for anything else.
