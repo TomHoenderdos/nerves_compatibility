@@ -79,9 +79,10 @@ defmodule NccWorker.JsonWriter do
     # not asked to probe (`NccWorker.EgressProbe`), `process_sweep` for a
     # result that never went through `NccWorker.ProcessSweep.enforce_and_report/2`,
     # `requested_optional_deps` for a run whose input made no optional-deps
-    # request (`NccWorker.Worker.put_requested_optional_deps/2`), and
+    # request (`NccWorker.Worker.put_requested_optional_deps/2`),
     # `host_portability` for every run whose selection was not `pure_elixir`
-    # (`NccWorker.Worker.pure_elixir_result/3`).
+    # (`NccWorker.Worker.pure_elixir_result/3`), and `resources` for a result
+    # that did not come from `NccWorker.Worker.run/1` (`NccWorker.Resources`).
     json =
       [
         :deps_lock,
@@ -96,7 +97,8 @@ defmodule NccWorker.JsonWriter do
         :egress_probe,
         :process_sweep,
         :requested_optional_deps,
-        :host_portability
+        :host_portability,
+        :resources
       ]
       |> Enum.reduce(json, &put_present(&2, &1, Map.get(result, &1)))
 

@@ -507,6 +507,26 @@ in `NCC_INPUT`, the worker tries a TCP connect to each target before any `mix` r
 `unreachable` (no route), `invalid_target`, or the socket error's name. Advisory: it never changes a status or fails
 the run. Only `Portal.EgressCheck` sends it (see the operator runbook); otherwise the key is absent.
 
+## Resources
+
+Every run, whatever its mode, samples the container's memory from `/proc/meminfo` every 5 seconds
+(`NccWorker.Resources`), from just after the output directories exist until just before `run/1` returns. Inside
+gVisor `MemTotal` is the container's `--memory`. Each sample computes used as
+`MemTotal - MemFree - Buffers - Cached` and total as `MemTotal - MemFree`, in bytes, and keeps their peaks.
+
+After every sample the worker atomically rewrites `/out/resources.json`:
+
+```json
+{"peak_used_bytes": 1610612736, "peak_total_bytes": 2147483648, "limit_bytes": 4294967296,
+ "samples": 42, "read_errors": 0, "interval_ms": 5000,
+ "started_at": "2026-11-12T10:00:00Z", "sampled_at": "2026-11-12T10:03:25Z"}
+```
+
+so a run the kernel OOM-kills, which writes no `result.json`, still leaves its last record. A finished run takes one
+last sample and puts the same object into `result.json` as top-level `resources`. A meminfo that cannot be read or
+parsed counts in `read_errors` and never fails the run; until a sample succeeds the peaks, `limit_bytes` and
+`sampled_at` are `null`. Informational: it changes no status.
+
 ## Exit codes
 
 - `0` — success (some systems may still have failed; check `result.json`) — a toolchain run whose compile failed

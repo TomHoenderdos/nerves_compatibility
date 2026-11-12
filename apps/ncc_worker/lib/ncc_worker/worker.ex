@@ -24,6 +24,7 @@ defmodule NccWorker.Worker do
     Portability,
     Portability.ConfigReads,
     Project,
+    Resources,
     RunScope,
     Scanner,
     SeedGate,
@@ -293,6 +294,9 @@ defmodule NccWorker.Worker do
           # `run/1` returns. Informational: the container's own account, for
           # monitoring; the portal does not trust it.
           optional(:process_sweep) => String.t(),
+          # Peak guest memory over the run, sampled from /proc/meminfo
+          # (`NccWorker.Resources`); the same map the run's resources.json holds.
+          optional(:resources) => NccWorker.Resources.report(),
           run_id: String.t(),
           # nil for a "warm_nerves" run.
           package:
@@ -399,17 +403,43 @@ defmodule NccWorker.Worker do
     scope = RunScope.from_input(input)
 
     with :ok <- validate_input(input),
-         {:ok, paths} <- setup_paths(input),
-         # Before any `mix`, so the probe sees the network a build's
-         # `deps.get` would (isolation spec, section 3). Advisory.
-         egress = EgressProbe.run(input[:egress_probe]),
-         {:ok, nerves} <- prepare_nerves_cache(scope, input, paths),
+         {:ok, paths} <- setup_paths(input) do
+      with_resources(paths.output_dir, fn -> run_paths(input, scope, started_at, paths) end)
+    end
+  end
+
+  defp run_paths(input, scope, started_at, paths) do
+    # Before any `mix`, so the probe sees the network a build's
+    # `deps.get` would (isolation spec, section 3). Advisory.
+    egress = EgressProbe.run(input[:egress_probe])
+
+    with {:ok, nerves} <- prepare_nerves_cache(scope, input, paths),
          {:ok, hex} <- prepare_hex_cache(scope, paths),
          {:ok, toolchain} <- detect_toolchain(scope) do
       scope
       |> run_scope(Map.put(input, :started_at, started_at), paths, toolchain, nerves)
       |> put_hex_cache(hex, paths)
       |> EgressProbe.put_result(egress)
+    end
+  end
+
+  @doc false
+  # Runs `fun` under the memory sampler (`NccWorker.Resources`), which writes
+  # `<output_dir>/resources.json` as it goes, and puts its final report into
+  # an `{:ok, result}` as `resources`. `opts` go to the sampler; tests pass a
+  # fixture `meminfo_path`.
+  @spec with_resources(String.t(), (-> {:ok, map()} | {:error, term()}), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def with_resources(output_dir, fun, opts \\ []) do
+    {:ok, sampler} = Resources.start_link([output_dir: output_dir] ++ opts)
+
+    case fun.() do
+      {:ok, result} ->
+        {:ok, Map.put(result, :resources, Resources.stop(sampler))}
+
+      other ->
+        Resources.stop(sampler)
+        other
     end
   end
 
