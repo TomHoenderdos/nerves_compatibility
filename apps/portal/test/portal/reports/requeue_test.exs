@@ -35,6 +35,19 @@ defmodule Portal.Reports.RequeueTest do
     )
   end
 
+  # Hex lists `name` `version` declaring `deps` (`[{dep, requirement}]`).
+  defp hex_deps(name, version, deps) do
+    release = %{
+      version: version,
+      retired?: false,
+      deps: Enum.map(deps, fn {dep, req} -> %{package: dep, requirement: req} end),
+      outer_checksum: nil
+    }
+
+    key = {Portal.Test.FakeHexDeps, :releases}
+    Process.put(key, Map.put(Process.get(key, %{}), name, [release]))
+  end
+
   defp package!(name) do
     Ash.create!(Package, %{name: name, latest_version: "1.0.0"},
       action: :create,
@@ -737,6 +750,12 @@ defmodule Portal.Reports.RequeueTest do
       )
     end
 
+    # jason 1.4.5 asks for elixir_make `~> 0.10`, which 0.10.1 matches.
+    setup do
+      hex_deps("jason", "1.4.5", [{"elixir_make", "~> 0.10"}])
+      :ok
+    end
+
     @host %{
       "target" => "host",
       "system" => nil,
@@ -811,6 +830,44 @@ defmodule Portal.Reports.RequeueTest do
       assert :ok = requeue(same)
       assert decision(short) == "skipped:judged"
       assert decision(same) == "skipped:judged"
+      refute_enqueued(worker: Build)
+    end
+
+    test "a lock version the package's own requirement refuses is judged" do
+      hex_deps("jason", "1.4.5", [{"elixir_make", "~> 0.10.0"}])
+      image_builds_rpi4!()
+      jason = package!("jason")
+      locked_run!(jason, "1.4.5", [{"elixir_make", "0.10.0"}])
+      id = closure_miss!("jason", "1.4.5", ["elixir_make", "0.10.0", "0.11.0"])
+      assert :ok = requeue(id)
+      assert decision(id) == "skipped:judged"
+      refute_enqueued(worker: Build)
+    end
+
+    test "a transitive dependency, which the release declares no requirement on, is judged" do
+      hex_deps("jason", "1.4.5", [{"telemetry", "~> 1.0"}])
+      image_builds_rpi4!()
+      jason = package!("jason")
+      locked_run!(jason, "1.4.5", [{"elixir_make", "0.10.0"}, {"telemetry", "1.3.0"}])
+      id = closure_miss!("jason", "1.4.5", ["elixir_make", "0.10.0", "0.10.1"])
+      assert :ok = requeue(id)
+      assert decision(id) == "skipped:judged"
+      refute_enqueued(worker: Build)
+    end
+
+    test "a requirement or lock version that cannot be read is judged" do
+      hex_deps("jason", "1.4.5", [{"elixir_make", "not a requirement"}])
+      image_builds_rpi4!()
+      jason = package!("jason")
+      locked_run!(jason, "1.4.5", [{"elixir_make", "0.10.0"}])
+      bad_req = closure_miss!("jason", "1.4.5", ["elixir_make", "0.10.0", "0.10.1"])
+      assert :ok = requeue(bad_req)
+      assert decision(bad_req) == "skipped:judged"
+
+      hex_deps("jason", "1.4.5", [{"elixir_make", "~> 0.10"}])
+      bad_version = closure_miss!("jason", "1.4.5", ["elixir_make", "0.10.0", "latest"])
+      assert :ok = requeue(bad_version)
+      assert decision(bad_version) == "skipped:judged"
       refute_enqueued(worker: Build)
     end
 

@@ -45,8 +45,13 @@ defmodule Portal.Reports.Requeue do
        For a `closure_mismatch` line (args `[dep, built_version,
        lock_version]`: the build the client saw was compiled against `dep`
        at `built_version`, the client's lock has `lock_version`), a standing
-       pass is stale and does not block when the tuple's newest result that
-       is not revoked is that pass, its recorded lock (the system result's
+       pass is stale and does not block when the package release's own Hex
+       requirement on `dep` admits `lock_version` (rule 4's lookup; a
+       transitive `dep`, which the release declares no requirement on, or a
+       requirement or version `Version` cannot read never does, since Hex
+       resolution might never pick `lock_version` and every report would
+       rebuild the tuple again), the tuple's newest result that is not
+       revoked is that pass, its recorded lock (the system result's
        `deps_lock`, else its run's; a toolchain build's `deps_lock`, of the
        `with`/`default` row this rule would rebuild) holds `dep` at
        `built_version`, and `built_version` differs from `lock_version`. A
@@ -285,7 +290,7 @@ defmodule Portal.Reports.Requeue do
       {:ok, versions} ->
         with :ok <- on_hex(versions, line.version),
              :ok <- current(key, versions),
-             :ok <- not_judged(key, line),
+             :ok <- not_judged(key, line, Map.fetch!(versions, line.version)),
              :ok <- not_queued(key),
              :ok <- reserve_and_queue(key, report, opts) do
           "queued"
@@ -345,7 +350,8 @@ defmodule Portal.Reports.Requeue do
     |> MapSet.new()
   end
 
-  # The release versions Hex lists for the packages of the lines that passed
+  # The release versions Hex lists, each with its declared dependencies, for
+  # the packages of the lines that passed
   # `precheck/3`, in line order, once each, the first `@max_hex_packages`.
   defp hex_versions(keyed, opts) do
     hex =
@@ -362,9 +368,14 @@ defmodule Portal.Reports.Requeue do
     |> Enum.take(@max_hex_packages)
     |> Enum.reduce_while({:ok, %{}}, fn name, {:ok, acc} ->
       case hex.releases(name, receive_timeout: 10_000) do
-        {:ok, releases} -> {:cont, {:ok, Map.put(acc, name, MapSet.new(releases, & &1.version))}}
-        {:error, :not_found} -> {:cont, {:ok, Map.put(acc, name, MapSet.new())}}
-        {:error, _unavailable} -> {:halt, {:error, :hex_unavailable}}
+        {:ok, releases} ->
+          {:cont, {:ok, Map.put(acc, name, Map.new(releases, &{&1.version, &1.deps}))}}
+
+        {:error, :not_found} ->
+          {:cont, {:ok, Map.put(acc, name, %{})}}
+
+        {:error, _unavailable} ->
+          {:halt, {:error, :hex_unavailable}}
       end
     end)
   end
@@ -385,7 +396,7 @@ defmodule Portal.Reports.Requeue do
     do: if(MapSet.member?(known, package), do: :ok, else: {:skip, "unknown_package"})
 
   defp on_hex(versions, version),
-    do: if(MapSet.member?(versions, version), do: :ok, else: {:skip, "not_on_hex"})
+    do: if(Map.has_key?(versions, version), do: :ok, else: {:skip, "not_on_hex"})
 
   # Only the newest version of the system recorded in the window: what a
   # build made now would produce.
@@ -421,17 +432,42 @@ defmodule Portal.Reports.Requeue do
   # A `closure_mismatch` line whose tuple's newest result is a pass asks
   # whether that pass is stale; any other newest result is decided as for
   # every other code.
-  defp not_judged(key, %{reason_code: "closure_mismatch"} = line) do
+  defp not_judged(key, %{reason_code: "closure_mismatch"} = line, declared) do
+    args = Map.get(line, :reason_args)
+
     case standing(key) do
       %{status: "pass", lock: lock} ->
-        if stale?(lock, Map.get(line, :reason_args)), do: :ok, else: {:skip, "judged"}
+        if admits?(declared, args) and stale?(lock, args),
+          do: :ok,
+          else: {:skip, "judged"}
 
       _other ->
         not_judged(key)
     end
   end
 
-  defp not_judged(key, _line), do: not_judged(key)
+  defp not_judged(key, _line, _declared), do: not_judged(key)
+
+  # Whether the release's own requirement on `dep` admits the client's
+  # version, so that resolving afresh from Hex can pick it. A transitive
+  # dependency (no requirement of the release's own) or a requirement or
+  # version that cannot be read never admits it: a rebuild could record the
+  # old version again, and every later report would queue another.
+  defp admits?(declared, [dep, _built, wanted]) when is_binary(dep) and is_binary(wanted) do
+    case Enum.find(declared, &(&1.package == dep)) do
+      %{requirement: requirement} when is_binary(requirement) ->
+        try do
+          Version.match?(wanted, requirement)
+        rescue
+          _invalid -> false
+        end
+
+      _none ->
+        false
+    end
+  end
+
+  defp admits?(_declared, _args), do: false
 
   # Built against `dep` at `built`, which the client's lock has moved past.
   # A lock that already holds another version was rebuilt since the client
@@ -684,7 +720,7 @@ defmodule Portal.Reports.Requeue do
     cond do
       version == latest -> :ok
       run_exists?(package, version) -> {:skip, "old_version"}
-      version == newest(MapSet.to_list(versions)) -> :ok
+      version == newest(Map.keys(versions)) -> :ok
       true -> {:skip, "old_version"}
     end
   end

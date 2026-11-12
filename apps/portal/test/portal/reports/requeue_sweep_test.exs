@@ -259,6 +259,20 @@ defmodule Portal.Reports.RequeueSweepTest do
   test "the sweep retries a capped closure_mismatch line against a stale build" do
     alpha = Repo.one!(from(p in Package, where: p.name == "alpha"))
 
+    Process.put(
+      {Portal.Test.FakeHexDeps, :releases},
+      %{
+        "alpha" => [
+          %{
+            version: "1.0.0",
+            retired?: false,
+            deps: [%{package: "elixir_make", requirement: "~> 0.10"}],
+            outer_checksum: nil
+          }
+        ]
+      }
+    )
+
     # The setup's 0.9.0 run finished first: 1.0.0 is the latest tested.
     Repo.update_all(from(r in Run, where: r.package_id == ^alpha.id),
       set: [finished_at: DateTime.add(DateTime.utc_now(), -86_400)]
