@@ -201,7 +201,7 @@ builder_queues_drained
         self.assertIn("function_exported?(Portal.BuilderDrain, :report, 1)", expression)
         self.assertIn("%{paused: true, running: []}", expression)
 
-    def run_build_image(self, pull_status="0", **env):
+    def run_build_image(self, pull_status="0", inspect_status="0", **env):
         script = r'''
 set -euo pipefail
 source "$HELPER"
@@ -211,8 +211,12 @@ docker() {
   echo "docker $*" >> "$EVENTS"
   echo "docker ${DOCKER_HOST-unset}" >> "$HOSTS"
   [[ $1 != pull ]] || return "$PULL_STATUS"
+  [[ $1 != image || $2 != inspect ]] || return "$INSPECT_STATUS"
 }
-make() { echo "make $*" >> "$EVENTS"; echo "make ${DOCKER_HOST-unset}" >> "$HOSTS"; }
+make() {
+  echo "make $*" >> "$EVENTS"; echo "make ${DOCKER_HOST-unset}" >> "$HOSTS"
+  [[ $1 != -s || $2 != toolchain-tags ]] || echo ncc-worker:elixir-1.19-otp-28
+}
 sudo() { echo "sudo $*" >> "$HOSTS"; }
 builder_build_image
 '''
@@ -222,7 +226,8 @@ builder_build_image
             result = subprocess.run(
                 ["bash", "-c", script],
                 env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
-                     "HOSTS": str(hosts), "PULL_STATUS": pull_status, **env},
+                     "HOSTS": str(hosts), "PULL_STATUS": pull_status,
+                     "INSPECT_STATUS": inspect_status, **env},
                 capture_output=True, text=True, timeout=5,
             )
             self.hosts = hosts.read_text().splitlines() if hosts.exists() else []
@@ -360,6 +365,30 @@ builder_activate_image
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(e.startswith("docker pull") for e in events))
         self.assertIn("make build WORKER_IMAGE=ncc-worker:deploy", events)
+
+    def test_builds_the_toolchain_images_by_default(self):
+        result, events = self.run_build_image()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
+        self.assertFalse(any(e.startswith("docker image inspect") for e in events))
+
+    # A host whose image builds cannot run a RUN step (docker-ncc in an
+    # OrbStack machine runs them under gVisor and every dpkg install fails)
+    # gets its toolchain images loaded from elsewhere, under the `-deploy`
+    # tags, before the deploy; the deploy then only checks they are there.
+    def test_prebuilt_toolchain_images_skip_the_build(self):
+        result, events = self.run_build_image(NCC_TOOLCHAIN_PREBUILT="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
+        self.assertIn("docker image inspect ncc-worker:elixir-1.19-otp-28-deploy", events)
+        self.assertIn("ncc-worker:elixir-1.19-otp-28-deploy", result.stdout)
+
+    def test_a_missing_prebuilt_toolchain_image_stops_the_deploy(self):
+        result, events = self.run_build_image(NCC_TOOLCHAIN_PREBUILT="1", inspect_status="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
+        self.assertIn("ncc-worker:elixir-1.19-otp-28-deploy", result.stderr)
+        self.assertIn("NCC_TOOLCHAIN_PREBUILT", result.stderr)
 
     def run_warm(self, status, running=""):
         script = r'''

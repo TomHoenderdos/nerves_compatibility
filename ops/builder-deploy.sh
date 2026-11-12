@@ -298,7 +298,30 @@ builder_build_image() {
   fi
   # The same for every toolchain image: `<tag>-deploy` beside the live `<tag>`.
   # A failure here stops the deploy before any tag moves, like the main image.
-  make build-toolchains TOOLCHAIN_SUFFIX=-deploy
+  #
+  # A host whose image builds cannot run a RUN step gets them prebuilt:
+  # docker-ncc in an OrbStack machine runs BuildKit's RUN steps under gVisor,
+  # and every dpkg install in them fails (EXDEV, then ESTALE), so the images
+  # are built elsewhere on the same architecture and `docker load`ed under
+  # the `<tag>-deploy` names before the deploy. `NCC_TOOLCHAIN_PREBUILT=1`
+  # (ncc-deploy.env) then only checks each one is there.
+  if [[ ${NCC_TOOLCHAIN_PREBUILT:-0} == 1 ]]; then
+    builder_check_prebuilt_toolchains
+  else
+    make build-toolchains TOOLCHAIN_SUFFIX=-deploy
+  fi
+}
+
+builder_check_prebuilt_toolchains() {
+  local tag
+  while read -r tag; do
+    [[ -n $tag ]] || continue
+    if ! builder_docker image inspect "$tag-deploy" >/dev/null 2>&1; then
+      echo "NCC_TOOLCHAIN_PREBUILT=1 but $tag-deploy is not loaded on this host; load the prebuilt image first" >&2
+      return 1
+    fi
+    echo "toolchain image: prebuilt $tag-deploy"
+  done < <(builder_toolchain_tags)
 }
 
 # The live toolchain tags, one per line, from the Makefile's TOOLCHAIN_IMAGES.
