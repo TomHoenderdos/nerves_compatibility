@@ -28,9 +28,9 @@ defmodule NccWorker.SystemAbi do
   @lib_roots ["lib", "usr/lib"]
   @libc ["libc.so.6", "libc.so"]
   @max_files 5000
-  @max_depth 32
   @max_hops 40
   @timeout_sec 120
+  @budget_sec 300
 
   @type libs :: %{String.t() => [String.t()]}
 
@@ -40,39 +40,72 @@ defmodule NccWorker.SystemAbi do
   `"<name>@<version>"` is not in `known`. Each fact is computed on its own,
   and one that fails or is unknown is left out.
 
+  The library tables share one deadline, `:budget_sec` from the start of
+  the call, so this advisory pass never costs the run more than that: each
+  extraction gets at most what is left of it, and once it has passed the
+  remaining targets get no `system_libs` (logged once). Toolchain and OTP are
+  cheap and always filled in.
+
   Options: `:artifacts_dir` (default `NERVES_ARTIFACTS_DIR`), `:concurrency`
-  (default 1), and `rootfs_libs/2`'s.
+  (default 1), `:budget_sec` (default #{@budget_sec}), and `rootfs_libs/2`'s.
   """
   @spec put(map(), map(), [String.t()], keyword()) :: map()
   def put(systems, lock, known, opts \\ []) do
     artifacts =
       Keyword.get_lazy(opts, :artifacts_dir, fn -> System.get_env("NERVES_ARTIFACTS_DIR") end)
 
-    systems
-    |> Task.async_stream(
-      fn {name, result} -> {name, put_one(name, result, lock, known, artifacts, opts)} end,
-      max_concurrency: Keyword.get(opts, :concurrency, 1),
-      timeout: :infinity
-    )
-    |> Enum.zip(systems)
-    |> Map.new(fn
-      {{:ok, entry}, _} -> entry
-      {{:exit, _reason}, entry} -> entry
-    end)
+    deadline =
+      System.monotonic_time(:millisecond) + Keyword.get(opts, :budget_sec, @budget_sec) * 1000
+
+    ctx = %{lock: lock, known: known, root: artifacts, deadline: deadline, opts: opts}
+
+    outcomes =
+      systems
+      |> Task.async_stream(fn {name, result} -> put_one(name, result, ctx) end,
+        max_concurrency: Keyword.get(opts, :concurrency, 1),
+        timeout: :infinity
+      )
+      |> Enum.zip(systems)
+      |> Enum.map(fn
+        {{:ok, {result, skipped?}}, {name, _}} -> {name, result, skipped?}
+        {{:exit, _reason}, {name, result}} -> {name, result, false}
+      end)
+
+    case for({name, _, true} <- outcomes, do: name) do
+      [] ->
+        :ok
+
+      skipped ->
+        IO.puts(
+          :stderr,
+          "Warning: system ABI budget spent, no library table for " <>
+            Enum.join(Enum.sort(skipped), ", ")
+        )
+    end
+
+    Map.new(outcomes, fn {name, result, _} -> {name, result} end)
   end
 
-  defp put_one(name, %{status: :pass, system_version: version} = result, lock, known, root, opts)
+  defp put_one(name, %{status: :pass, system_version: version} = result, ctx)
        when is_binary(version) do
-    dir = if is_binary(root), do: artifact_dir(root, name, version)
-    known? = "#{name}@#{version}" in known
+    dir = if is_binary(ctx.root), do: artifact_dir(ctx.root, name, version)
+    wants_libs? = dir != nil and "#{name}@#{version}" not in ctx.known
+    left_sec = div(ctx.deadline - System.monotonic_time(:millisecond), 1000)
+    skipped? = wants_libs? and left_sec < 1
+    lib_opts = Keyword.put(ctx.opts, :timeout_sec, min(@timeout_sec, left_sec))
 
-    result
-    |> put_fact(:toolchain, name, fn -> toolchain(lock, name) end)
-    |> put_fact(:otp_full, name, fn -> dir && otp(dir) end)
-    |> put_fact(:system_libs, name, fn -> if dir && not known?, do: rootfs_libs(dir, opts) end)
+    result =
+      result
+      |> put_fact(:toolchain, name, fn -> toolchain(ctx.lock, name) end)
+      |> put_fact(:otp_full, name, fn -> dir && otp(dir) end)
+      |> put_fact(:system_libs, name, fn ->
+        if wants_libs? and not skipped?, do: rootfs_libs(dir, lib_opts)
+      end)
+
+    {result, skipped?}
   end
 
-  defp put_one(_name, result, _lock, _known, _root, _opts), do: result
+  defp put_one(_name, result, _ctx), do: {result, false}
 
   defp put_fact(result, key, name, fun) do
     case fun.() do
@@ -147,13 +180,16 @@ defmodule NccWorker.SystemAbi do
   @doc """
   The shared libraries of a release's rootfs: every DT_SONAME, file name and
   name of a link to the file, mapped to the symbol versions the file
-  defines. nil when the squashfs is absent, `unsquashfs` is missing, fails
-  or times out, the tree holds more than #{@max_files} library names, or the
-  table has no libc.
+  defines. Only entries directly in `lib` and `usr/lib`, the dynamic
+  linker's default search path, are keys; a link there may point anywhere
+  in the tree. nil when the squashfs is absent, `unsquashfs` is missing,
+  fails or times out, `lib` or `usr/lib` cannot be listed, they hold more
+  than #{@max_files} library names, or the table has no libc.
 
-  Options: `:runner` (`fn squashfs, dest -> :ok | {:error, term} end`, in
-  place of `unsquashfs`), `:unsquashfs` (its path, default found on PATH),
-  `:tmp_dir` (default `System.tmp_dir!/0`).
+  Options: `:runner` (`fn squashfs, dest, timeout_sec -> :ok | {:error,
+  term} end`, in place of `unsquashfs`), `:unsquashfs` (its path, default
+  found on PATH), `:timeout_sec` (default #{@timeout_sec}), `:tmp_dir`
+  (default `System.tmp_dir!/0`).
   """
   @spec rootfs_libs(Path.t(), keyword()) :: libs() | nil
   # artifact_dir is the run's own Nerves artifacts dir, the extraction dir a
@@ -167,15 +203,15 @@ defmodule NccWorker.SystemAbi do
     found =
       with true <- File.regular?(squashfs) || {:error, :no_squashfs},
            {:ok, runner} <- runner(opts) do
-        extract(runner, squashfs, dest)
+        extract(runner, squashfs, dest, Keyword.get(opts, :timeout_sec, @timeout_sec))
       end
 
     outcome(found, artifact_dir)
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp extract(runner, squashfs, dest) do
-    with :ok <- runner.(squashfs, dest), do: table(dest)
+  defp extract(runner, squashfs, dest, timeout_sec) do
+    with :ok <- runner.(squashfs, dest, timeout_sec), do: table(dest)
   after
     File.rm_rf(dest)
   end
@@ -198,25 +234,25 @@ defmodule NccWorker.SystemAbi do
         exe = Keyword.get_lazy(opts, :unsquashfs, fn -> System.find_executable("unsquashfs") end)
 
         if is_binary(exe) and File.regular?(exe),
-          do: {:ok, &unsquash(exe, &1, &2)},
+          do: {:ok, &unsquash(exe, &1, &2, &3)},
           else: {:error, :no_unsquashfs}
     end
   end
 
   # Under `timeout(1)` when the image has it, so the process itself dies at
   # the limit; the task's own limit is the backstop.
-  defp unsquash(exe, squashfs, dest) do
+  defp unsquash(exe, squashfs, dest, timeout_sec) do
     args = ["-n", "-d", dest, squashfs | @lib_roots]
 
     {command, argv} =
       case System.find_executable("timeout") do
         nil -> {exe, args}
-        timeout -> {timeout, ["--kill-after=10", "#{@timeout_sec}", exe | args]}
+        timeout -> {timeout, ["--kill-after=10", "#{timeout_sec}", exe | args]}
       end
 
     task = Task.async(fn -> run(command, argv) end)
 
-    case Task.yield(task, (@timeout_sec + 15) * 1000) || Task.shutdown(task, :brutal_kill) do
+    case Task.yield(task, (timeout_sec + 15) * 1000) || Task.shutdown(task, :brutal_kill) do
       {:ok, {_output, 0}} -> :ok
       {:ok, {:error, reason}} -> {:error, reason}
       {:ok, {output, code}} -> {:error, {:unsquashfs_exit, code, String.slice(output, -500..-1)}}
@@ -234,22 +270,30 @@ defmodule NccWorker.SystemAbi do
   end
 
   defp table(root) do
-    found =
-      @lib_roots
-      |> Enum.filter(&real_dir?(root, &1))
-      |> Enum.reduce(%{files: [], links: [], count: 0}, &walk(root, &1, &2, 0))
+    with {:ok, %{entries: entries}} <- scan_roots(root) do
+      libs = libs(root, Enum.reverse(entries))
 
-    libs = libs(root, found)
-
-    if Enum.any?(@libc, &Map.has_key?(libs, &1)),
-      do: {:ok, libs},
-      else: {:error, :no_libc}
+      if Enum.any?(@libc, &Map.has_key?(libs, &1)),
+        do: {:ok, libs},
+        else: {:error, :no_libc}
+    end
   catch
     :too_many -> {:error, :too_many_files}
   end
 
-  # Every component a real directory, so the walk never leaves the tree:
-  # with a merged /usr, `lib` is a link to `usr/lib` and is walked once.
+  defp scan_roots(root) do
+    @lib_roots
+    |> Enum.filter(&real_dir?(root, &1))
+    |> Enum.reduce_while({:ok, %{entries: [], count: 0}}, fn dir, {:ok, acc} ->
+      case scan(root, dir, acc) do
+        {:ok, acc} -> {:cont, {:ok, acc}}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  # Every component a real directory, so the scan never leaves the tree:
+  # with a merged /usr, `lib` is a link to `usr/lib` and is scanned once.
   # sobelow_skip ["Traversal.FileModule"]
   defp real_dir?(root, rel) do
     rel
@@ -258,62 +302,82 @@ defmodule NccWorker.SystemAbi do
     |> Enum.all?(&match?({:ok, %File.Stat{type: :directory}}, File.lstat(Path.join(root, &1))))
   end
 
+  # Only the directory's own entries: the dynamic linker never searches its
+  # subdirectories (`priv/lib`, `engines-3`, `gconv`), so a library there is
+  # not one a NIF can load by soname. A directory that cannot be listed is a
+  # partial table, never a short one.
   # sobelow_skip ["Traversal.FileModule"]
-  defp walk(_root, _rel, acc, depth) when depth > @max_depth, do: acc
-
-  defp walk(root, rel, acc, depth) do
-    case File.ls(Path.join(root, rel)) do
-      {:ok, names} -> names |> Enum.sort() |> Enum.reduce(acc, &entry(root, rel, &1, &2, depth))
-      {:error, _} -> acc
+  defp scan(root, dir, acc) do
+    case File.ls(Path.join(root, dir)) do
+      {:ok, names} -> {:ok, names |> Enum.sort() |> Enum.reduce(acc, &entry(root, dir, &1, &2))}
+      {:error, reason} -> {:error, {:unreadable, dir, reason}}
     end
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp entry(root, dir, name, acc, depth) do
+  defp entry(root, dir, name, acc) do
     rel = Path.join(dir, name)
 
-    case File.lstat(Path.join(root, rel)) do
-      {:ok, %File.Stat{type: :directory}} -> walk(root, rel, acc, depth + 1)
-      {:ok, %File.Stat{type: :regular}} -> if library?(name), do: add(acc, :files, rel), else: acc
-      {:ok, %File.Stat{type: :symlink}} -> if library?(name), do: add(acc, :links, rel), else: acc
+    case library?(name) && File.lstat(Path.join(root, rel)) do
+      {:ok, %File.Stat{type: :regular}} -> add(acc, {:file, rel})
+      {:ok, %File.Stat{type: :symlink}} -> add(acc, {:link, rel})
       _ -> acc
     end
   end
 
   defp library?(name), do: Regex.match?(~r/\.so(\.|\z)/, name)
 
-  defp add(%{count: count}, _kind, _rel) when count >= @max_files, do: throw(:too_many)
+  defp add(%{count: count}, _entry) when count >= @max_files, do: throw(:too_many)
 
-  defp add(acc, kind, rel),
-    do: acc |> Map.update!(kind, &[rel | &1]) |> Map.update!(:count, &(&1 + 1))
+  defp add(acc, entry),
+    do: %{acc | entries: [entry | acc.entries], count: acc.count + 1}
 
-  # Files in walk order, `lib` before `usr/lib` as the dynamic linker
-  # searches them, so a name both have maps to the one it would load.
-  defp libs(root, %{files: files, links: links}) do
-    defines =
-      for rel <- Enum.reverse(files),
-          {:ok, info} <- [Elf.read_file(Path.join(root, rel))],
-          into: %{},
-          do: {rel, info}
+  # Entries in scan order, `lib` before `usr/lib` as the dynamic linker
+  # searches them, so a name both have maps to the one it would load. A file
+  # is keyed by its soname and its name, a link by its own name, with the
+  # definitions of the file it resolves to wherever that is in the tree.
+  defp libs(root, entries) do
+    {table, _cache} =
+      Enum.reduce(entries, {%{}, %{}}, fn entry, {table, cache} ->
+        {kind, target} = target(root, entry)
 
-    names_by_file =
-      for link <- Enum.reverse(links),
-          target = resolve(root, link),
-          Map.has_key?(defines, target),
-          reduce: %{} do
-        acc -> Map.update(acc, target, [Path.basename(link)], &(&1 ++ [Path.basename(link)]))
-      end
+        case read(root, target, cache) do
+          {nil, cache} -> {table, cache}
+          {info, cache} -> {put_names(table, names(kind, entry, info), info.defines), cache}
+        end
+      end)
 
-    for rel <- Enum.reverse(files),
-        info = defines[rel],
-        info != nil,
-        name <-
-          Enum.reject(
-            [info.soname, Path.basename(rel) | Map.get(names_by_file, rel, [])],
-            &is_nil/1
-          ),
-        reduce: %{} do
-      acc -> Map.put_new(acc, name, info.defines |> Enum.uniq() |> Enum.sort())
+    table
+  end
+
+  defp target(_root, {:file, rel}), do: {:file, rel}
+  defp target(root, {:link, rel}), do: {:link, resolve(root, rel)}
+
+  defp names(:file, {:file, rel}, %{soname: soname}),
+    do: Enum.reject([Path.basename(rel), soname], &is_nil/1)
+
+  defp names(:link, {:link, rel}, _info), do: [Path.basename(rel)]
+
+  defp put_names(table, names, defines) do
+    defines = defines |> Enum.uniq() |> Enum.sort()
+    Enum.reduce(names, table, &Map.put_new(&2, &1, defines))
+  end
+
+  defp read(_root, nil, cache), do: {nil, cache}
+
+  defp read(root, rel, cache) do
+    case cache do
+      %{^rel => info} ->
+        {info, cache}
+
+      _ ->
+        info =
+          case Elf.read_file(Path.join(root, rel)) do
+            {:ok, info} -> info
+            _ -> nil
+          end
+
+        {info, Map.put(cache, rel, info)}
     end
   end
 

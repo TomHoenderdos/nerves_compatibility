@@ -176,12 +176,17 @@ portal can match a build made on one release of a system against another:
   resolved it to.
 - `otp_full`: the trimmed `staging/usr/lib/erlang/releases/*/OTP_VERSION` of the release's artifact directory,
   `<NERVES_ARTIFACTS_DIR>/<system>-<version>` (`NccWorker.NervesCache`).
-- `system_libs`: `unsquashfs -n -d <tmp> images/rootfs.squashfs lib usr/lib` (no shell, 120 s limit), then every
-  regular `*.so` or `*.so.*` under `lib` and `usr/lib`, read with `Compatibility.Elf`, walked without following
-  links (a merged `/usr`'s `lib` link is walked once, as `usr/lib`), at most 5000 library names. Each file's
-  DT_SONAME, its file name and the name of every link that resolves to it map to the symbol versions it defines.
-  A table without `libc.so.6` or `libc.so` is a failed or partial extraction and is left out. The extraction
-  directory is removed afterwards.
+- `system_libs`: `unsquashfs -n -d <tmp> images/rootfs.squashfs lib usr/lib` (no shell, at most 120 s), then the
+  `*.so` and `*.so.*` entries directly in `lib` and `usr/lib`, the dynamic linker's default search path, read with
+  `Compatibility.Elf`; subdirectories (`priv/lib`, `engines-3`, `gconv`) give no keys. A merged `/usr`'s `lib` link
+  is scanned once, as `usr/lib`; at most 5000 library names. A regular file's DT_SONAME and file name, and a link's
+  own name (its target may be anywhere in the tree), map to the symbol versions the file defines. A table without
+  `libc.so.6` or `libc.so`, or with `lib` or `usr/lib` unlistable, is a failed or partial extraction and is left
+  out. The extraction directory is removed afterwards.
+
+The library tables of one run share a wall-clock budget, `NCC_SYSTEM_ABI_BUDGET_SEC` (default 300): each extraction
+gets at most what is left of it, and once it is spent the remaining targets record no `system_libs` (one stderr line
+names them) while still recording `toolchain` and `otp_full`.
 
 `NCC_INPUT.known_system_abi` (`["nerves_system_rpi4@2.2.2", ...]`, default `[]`) names the releases the portal already
 has a library table for; a target on one of them records `toolchain` and `otp_full` but no `system_libs`.

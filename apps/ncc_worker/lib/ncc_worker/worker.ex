@@ -1268,7 +1268,20 @@ defmodule NccWorker.Worker do
         :error -> %{}
       end
 
-    SystemAbi.put(results, lock, pass.known_system_abi, concurrency: build_concurrency())
+    SystemAbi.put(results, lock, pass.known_system_abi,
+      concurrency: build_concurrency(),
+      budget_sec: system_abi_budget()
+    )
+  end
+
+  # The ABI pass's own wall-clock budget, NCC_SYSTEM_ABI_BUDGET_SEC (default
+  # 300): its extractions are advisory, and the time they take comes out of
+  # the optional pass's budget and the run's.
+  defp system_abi_budget do
+    case Integer.parse(System.get_env("NCC_SYSTEM_ABI_BUDGET_SEC", "")) do
+      {n, ""} when n >= 0 -> n
+      _ -> 300
+    end
   end
 
   # The per-target pass's wall-clock budget, NCC_OPTIONAL_PASS_BUDGET_SEC

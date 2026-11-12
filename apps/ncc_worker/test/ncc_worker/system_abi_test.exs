@@ -100,7 +100,7 @@ defmodule NccWorker.SystemAbiTest do
     end
 
     test "nil when the runner fails", %{tmp_dir: dir} do
-      runner = fn _squashfs, _dest -> {:error, :boom} end
+      runner = fn _squashfs, _dest, _timeout -> {:error, :boom} end
 
       assert capture_io(:stderr, fn ->
                assert SystemAbi.rootfs_libs(artifact(dir), runner: runner, tmp_dir: dir) == nil
@@ -117,6 +117,42 @@ defmodule NccWorker.SystemAbiTest do
                       ) ==
                         nil
              end) =~ ":no_unsquashfs"
+    end
+
+    test "a library only in a subdirectory is no key, a link into one is", %{tmp_dir: dir} do
+      runner = fn squashfs, dest, timeout ->
+        :ok = tree_runner(libc: true).(squashfs, dest, timeout)
+        sub = Path.join(dest, "usr/lib/sub")
+        File.mkdir_p!(sub)
+        File.cp!(Path.join(@fixtures, "libz_aarch64.so.1"), Path.join(sub, "libonly.so.1"))
+        File.rename!(Path.join(dest, "usr/lib/libz.so.1.3.2"), Path.join(sub, "libz.so.1.3.2"))
+        File.rm!(Path.join(dest, "usr/lib/libz.so.1"))
+        File.rm!(Path.join(dest, "usr/lib/libz.so"))
+        File.ln_s!("sub/libz.so.1.3.2", Path.join(dest, "usr/lib/libz.so.1"))
+        :ok
+      end
+
+      libs = SystemAbi.rootfs_libs(artifact(dir), runner: runner, tmp_dir: dir)
+
+      assert Map.keys(libs) |> Enum.sort() == ["libc.so.6", "libz.so.1"]
+      assert length(libs["libz.so.1"]) == 16
+      assert Enum.all?(libs["libz.so.1"], &String.starts_with?(&1, "ZLIB_"))
+    end
+
+    test "nil when lib cannot be listed", %{tmp_dir: dir} do
+      runner = fn squashfs, dest, timeout ->
+        :ok = tree_runner(libc: true).(squashfs, dest, timeout)
+        File.chmod!(Path.join(dest, "lib"), 0o000)
+        :ok
+      end
+
+      on_exit(fn ->
+        for lib <- Path.wildcard(Path.join(dir, "ncc-rootfs-*/lib")), do: File.chmod(lib, 0o755)
+      end)
+
+      assert capture_io(:stderr, fn ->
+               assert SystemAbi.rootfs_libs(artifact(dir), runner: runner, tmp_dir: dir) == nil
+             end) =~ ":unreadable"
     end
 
     test "nil without a squashfs", %{tmp_dir: dir} do
@@ -158,6 +194,42 @@ defmodule NccWorker.SystemAbiTest do
       assert out["nerves_system_bbb"] == systems["nerves_system_bbb"]
     end
 
+    test "each extraction gets at most the time the budget has left", %{opts: opts} do
+      systems = %{"nerves_system_rpi4" => %{status: :pass, system_version: "2.2.2"}}
+      test = self()
+
+      runner = fn squashfs, dest, timeout ->
+        send(test, {:timeout, timeout})
+        tree_runner(libc: true).(squashfs, dest, timeout)
+      end
+
+      opts = Keyword.put(opts, :runner, runner)
+      assert %{system_libs: _} = SystemAbi.put(systems, @lock, [], opts)["nerves_system_rpi4"]
+      assert_received {:timeout, 120}
+
+      SystemAbi.put(systems, @lock, [], Keyword.put(opts, :budget_sec, 50))
+      assert_received {:timeout, left} when left in 49..50
+    end
+
+    test "a spent budget skips the library tables only, and says so once", %{opts: opts} do
+      systems = %{
+        "nerves_system_rpi4" => %{status: :pass, system_version: "2.2.2"},
+        "nerves_system_rpi4_copy" => %{status: :pass, system_version: "2.2.2"}
+      }
+
+      runner = fn _, _, _ -> flunk("no extraction once the budget is spent") end
+      opts = opts |> Keyword.put(:runner, runner) |> Keyword.put(:budget_sec, 0)
+
+      {out, log} = with_io(:stderr, fn -> SystemAbi.put(systems, @lock, [], opts) end)
+      rpi4 = out["nerves_system_rpi4"]
+
+      assert rpi4.otp_full == "29.1.2"
+      assert %{"version" => "15.3.1"} = rpi4.toolchain
+      refute Map.has_key?(rpi4, :system_libs)
+      assert log =~ "budget spent"
+      assert length(String.split(log, "budget spent")) == 2
+    end
+
     test "leaves the library table out for a release the portal knows", %{opts: opts} do
       systems = %{"nerves_system_rpi4" => %{status: :pass, system_version: "2.2.2"}}
 
@@ -170,7 +242,7 @@ defmodule NccWorker.SystemAbiTest do
 
     test "leaves out what it cannot learn and never raises", %{opts: opts} do
       systems = %{"nerves_system_rpi4" => %{status: :pass, system_version: "2.2.2"}}
-      raising = Keyword.put(opts, :runner, fn _, _ -> raise "boom" end)
+      raising = Keyword.put(opts, :runner, fn _, _, _ -> raise "boom" end)
 
       {rpi4, log} =
         with_io(:stderr, fn -> SystemAbi.put(systems, %{}, [], raising)["nerves_system_rpi4"] end)
@@ -249,7 +321,7 @@ defmodule NccWorker.SystemAbiTest do
 
   # Stands in for unsquashfs: the tree it would extract from a rootfs.
   defp tree_runner(opts) do
-    fn _squashfs, dest ->
+    fn _squashfs, dest, _timeout ->
       usr_lib = Path.join(dest, "usr/lib")
       File.mkdir_p!(usr_lib)
       File.cp!(Path.join(@fixtures, "libz_aarch64.so.1"), Path.join(usr_lib, "libz.so.1.3.2"))
