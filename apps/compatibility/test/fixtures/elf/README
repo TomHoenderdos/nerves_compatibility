@@ -1,0 +1,7 @@
+`nif_*` are `priv/gpio_nif.so` from circuits_gpio (Apache-2.0) as built
+by the Nerves compatibility portal. `libz_aarch64.so.1` is zlib (zlib
+licence) from a Nerves rpi4 system. `rel_aarch64.o` is
+`nif_aarch64.so` with `e_type` set to `ET_REL`. `noshdr_aarch64.so` is
+`nif_aarch64.so` with `e_shoff` and `e_shnum` zeroed, and
+`shnum0_aarch64.so` is it with only `e_shnum` zeroed. Ground truth from
+readelf: see the tests.
