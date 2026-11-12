@@ -115,10 +115,10 @@ defmodule Portal.ObanConfigTest do
     assert Portal.Workers.CoverageRefresh.__opts__()[:queue] == :intake
   end
 
-  test "the toolchain sweep runs hourly at :17, on the maintenance queue" do
+  test "the toolchain sweep runs every 15 minutes, on the maintenance queue" do
     {_mod, opts} = plugin(Oban.Plugins.Cron)
 
-    assert {"17 * * * *", Portal.Workers.ToolchainSweep} =
+    assert {"2,17,32,47 * * * *", Portal.Workers.ToolchainSweep} =
              Enum.find(opts[:crontab], &match?({_e, Portal.Workers.ToolchainSweep}, &1))
 
     assert Portal.Workers.ToolchainSweep.__opts__()[:queue] == :maintenance

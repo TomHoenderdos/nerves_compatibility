@@ -826,7 +826,7 @@ defmodule Portal.Workers.ToolchainSweepTest do
     end
 
     test "sweep_skip_when_queued defaults to max_per_run", %{previous: previous} do
-      one_toolchain(previous, max_per_run: 5)
+      one_toolchain(Keyword.delete(previous, :sweep_skip_when_queued), max_per_run: 5)
 
       refute Keyword.has_key?(
                Application.fetch_env!(:portal, Portal.Toolchains),

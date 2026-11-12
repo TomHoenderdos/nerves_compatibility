@@ -1,18 +1,18 @@
 defmodule Portal.Workers.ToolchainSweep do
   @moduledoc """
-  Oban worker (queue `:maintenance`, hourly cron and the admin Maintenance
-  button) that enqueues a `Portal.Workers.ToolchainBuild` for every package
-  version and optional-deps variant still missing a build on a configured
-  toolchain (`Portal.Catalog.toolchain_backlog/3`), at most
+  Oban worker (queue `:maintenance`, a cron every 15 minutes and the admin
+  Maintenance button) that enqueues a `Portal.Workers.ToolchainBuild` for
+  every package version and optional-deps variant still missing a build on a
+  configured toolchain (`Portal.Catalog.toolchain_backlog/3`), at most
   `Portal.Toolchains.max_per_run/0` in total.
 
-  The backlog runs tens of thousands deep and the builders drain several
-  times `max_per_run/0` a day, so the cron runs hourly. An unforced run first counts
-  the `Portal.Workers.ToolchainBuild` jobs already `available`, `scheduled`
-  or `retryable`. At `Portal.Toolchains.sweep_skip_when_queued/0` or more, it
-  logs one line and returns without touching the backlog query or the Hex
-  registry. This is what makes the hourly cron cheap: the expensive part of
-  a run only happens when the queue actually needs topping up. The
+  The backlog runs tens of thousands deep and the builders drain several times
+  `max_per_run/0` a day, so the cron runs every 15 minutes. An unforced run
+  first counts the `Portal.Workers.ToolchainBuild` jobs already `available`,
+  `scheduled` or `retryable`. At `Portal.Toolchains.sweep_skip_when_queued/0`
+  or more, it logs one line and returns without touching the backlog query or
+  the Hex registry. This is what makes the frequent cron cheap: the expensive
+  part of a run only happens when the queue actually needs topping up. The
   manual/admin trigger (`enqueue/0`, the Maintenance button) sets `force:
   true` in the job's args and always runs, queue or no queue.
 
@@ -80,9 +80,9 @@ defmodule Portal.Workers.ToolchainSweep do
   This worker's own `unique` (24 h, `states: :incomplete`) only blocks a new
   cron insert while an earlier one is still `available`, `scheduled`,
   `executing` or `retryable` -- not while one has `completed`, which is every
-  run that returned `:ok`, skipped or not. Each hourly cron insert carries the
+  run that returned `:ok`, skipped or not. Each cron insert carries the
   same args (`%{}`) as the last, so this only ever matters if a run is still
-  in flight an hour later; it does not turn the cron back into a daily one.
+  in flight at the next tick; it does not turn the cron back into a daily one.
   """
 
   use Oban.Worker,
@@ -178,7 +178,7 @@ defmodule Portal.Workers.ToolchainSweep do
 
   @doc """
   Queue a sweep now (the admin button). Carries `force: true`, so it always
-  runs `perform/1`'s backlog query and Hex calls even when the hourly cron's
+  runs `perform/1`'s backlog query and Hex calls even when the cron's
   top-up guard would otherwise skip -- a different `args` from the cron's
   `%{}`, so it never conflicts with a pending cron run either.
   `{:error, :already_queued}` while a forced sweep of its own is pending.

@@ -32,7 +32,7 @@ defmodule Portal.Toolchains do
   def max_per_run, do: Keyword.get(config(), :max_per_run, 300)
 
   @doc """
-  The hourly `Portal.Workers.ToolchainSweep` cron's top-up guard: an unforced
+  The `Portal.Workers.ToolchainSweep` cron's top-up guard: an unforced
   run that finds at least this many `Portal.Workers.ToolchainBuild` jobs
   already `available`, `scheduled` or `retryable` skips the backlog query and
   every Hex call and logs one line instead. Read from `config :portal,

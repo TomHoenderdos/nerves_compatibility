@@ -101,19 +101,18 @@ config :portal, Oban,
        # Every 15 minutes: render and sign a precompiled batch. Only the web
        # host has the signing key and rsynced artifact files. Carries `:maintenance`.
        {"*/15 * * * *", Portal.Workers.PrecompiledBatch},
-       # Hourly at :17, a minute no other entry here uses: enqueue the
-       # pure-BEAM package versions still missing a build on each configured
-       # toolchain (`Portal.Toolchains`), up to `max_per_run`. The backlog is
-       # far bigger than a day's builder throughput, so this used to run once
-       # a day and otherwise rely on an external poller to keep the queue
-       # fed; it now runs hourly instead and skips itself (after one cheap
-       # count query, before the backlog query or any Hex call) whenever at
-       # least `sweep_skip_when_queued` ToolchainBuild jobs are already
-       # available/scheduled/retryable, so the extra runs stay nearly free
-       # once the queue is topped up. The sweep itself is a few queries and
-       # carries `:maintenance`; the builds it queues run on the build
-       # host's single-slot `:toolchain` queue.
-       {"17 * * * *", Portal.Workers.ToolchainSweep},
+       # Every 15 minutes, at :02/:17/:32/:47, minutes no other entry here uses:
+       # enqueue the pure-BEAM package versions still missing a build on each
+       # configured toolchain (`Portal.Toolchains`), up to `max_per_run`. The
+       # builders drain over a thousand builds an hour, more than one run's
+       # worth, so an hourly run left them idle; each run skips itself (after
+       # one cheap count query, before the backlog query or any Hex call)
+       # whenever at least `sweep_skip_when_queued` ToolchainBuild jobs are
+       # already available/scheduled/retryable, so the extra runs stay nearly
+       # free once the queue is topped up. The sweep itself is a few queries and
+       # carries `:maintenance`; the builds it queues run on the build host's
+       # single-slot `:toolchain` queue.
+       {"2,17,32,47 * * * *", Portal.Workers.ToolchainSweep},
        # Weekly, Monday 04:53: re-fetch every package's hex.pm metadata so the
        # download counts `/failing` ranks on do not go stale. Enqueues one
        # `PackageMeta` job per package, 1.5 s apart (~1 h for ~2,500), which
@@ -181,17 +180,18 @@ config :portal, :queue_filter, enabled: false
 config :portal, Portal.Catalog.Cache, ttl_ms: :timer.seconds(60)
 
 # The toolchains packages are built on beyond the firmware run, each with the
-# worker image that carries it (`make build-toolchains`). `images` is
-# runtime-overridable from NCC_TOOLCHAINS in config/runtime.exs. Bumping
+# worker image that carries it (`make build-toolchains`). `images` is runtime-
+# overridable from NCC_TOOLCHAINS in config/runtime.exs. Bumping
 # `builder_version` makes every toolchain build stale. `max_per_run` caps how
 # many builds one toolchain sweep enqueues. `sweep_skip_when_queued` is the
-# hourly cron's top-up guard: an unforced run that finds at least this many
+# cron's top-up guard: an unforced run that finds at least this many
 # ToolchainBuild jobs already available/scheduled/retryable skips its backlog
 # query and every Hex call and logs one line instead; it defaults to
-# `max_per_run` itself, so the queue roughly oscillates between empty and one
-# run's worth; 1000 keeps ten-odd build slots busy between hourly runs. The
-# admin "Run toolchain sweep now" button and `ToolchainSweep.enqueue/0` bypass
-# this guard (they queue with `force: true`) and always run.
+# `max_per_run` itself; here it is half of it, so a run (every 15 minutes)
+# refills the queue once half of the last one has drained, and the queue stays
+# between 500 and 1000 deep for the ten-odd build slots. The admin "Run
+# toolchain sweep now" button and `ToolchainSweep.enqueue/0` bypass this guard
+# (they queue with `force: true`) and always run.
 config :portal, Portal.Toolchains,
   images: [
     %{toolchain: "1.20/29", image: "ncc-worker:local"},
@@ -199,6 +199,7 @@ config :portal, Portal.Toolchains,
   ],
   builder_version: 1,
   max_per_run: 1000,
+  sweep_skip_when_queued: 500,
   # Older Hex releases of popular pure packages the toolchain backlog also
   # builds (`Portal.Catalog.VersionBackfill`): the 100 most downloaded
   # packages get their last 10 releases, the 500 most downloaded their last 4.
