@@ -256,6 +256,71 @@ defmodule Portal.Reports.RequeueSweepTest do
     assert decision(b) == "skipped:cap"
   end
 
+  test "the sweep retries a capped closure_mismatch line against a stale build" do
+    alpha = Repo.one!(from(p in Package, where: p.name == "alpha"))
+
+    # The setup's 0.9.0 run finished first: 1.0.0 is the latest tested.
+    Repo.update_all(from(r in Run, where: r.package_id == ^alpha.id),
+      set: [finished_at: DateTime.add(DateTime.utc_now(), -86_400)]
+    )
+
+    run =
+      Ash.create!(
+        Run,
+        %{
+          run_id: "r-alpha-1.0.0",
+          package_id: alpha.id,
+          version_tested: "1.0.0",
+          image_digest: "d",
+          overall_status: :pass,
+          deps_lock: %{"elixir_make" => %{"version" => "0.10.0", "checksum" => "c"}},
+          finished_at: DateTime.utc_now()
+        },
+        action: :create,
+        domain: Portal.Catalog
+      )
+
+    Ash.create!(
+      SystemResult,
+      %{
+        run_id: run.id,
+        system_pkg: "nerves_system_rpi4",
+        system_version: "1.31.0",
+        status: :pass
+      },
+      action: :create,
+      domain: Portal.Catalog
+    )
+
+    id =
+      record!(
+        %{
+          "lines" => [
+            line("alpha", "1.0.0", "miss", "closure_mismatch", ["elixir_make", "0.10.0", "0.10.1"])
+          ],
+          "target" => "t#{System.unique_integer([:positive])}"
+        },
+        reporter_key: "r1"
+      )
+
+    set_line!(id, requeue: "skipped:cap")
+
+    assert :ok = Requeue.sweep(today: ~D[2026-11-11])
+    assert decision(id) == "queued"
+
+    assert_enqueued(
+      worker: Build,
+      args: %{
+        package: "alpha",
+        version: "1.0.0",
+        force: true,
+        scope: "targets",
+        systems: ["nerves_system_rpi4"]
+      },
+      meta: %{report_id: id}
+    )
+  end
+
   test "the sweep reads 500 lines a run by default" do
     assert Requeue.sweep_limit() == 500
   end

@@ -1,7 +1,8 @@
 defmodule Portal.Reports.Requeue do
   @moduledoc """
-  Turns a report's "not built" misses (`codes/0`) into builds, when the portal
-  would build them anyway.
+  Turns a report's "not built" misses, and its `closure_mismatch` misses
+  against a build whose dependency closure has since moved on (`codes/0`),
+  into builds, when the portal would build them anyway.
 
   A report is an anonymous trigger and a build runs third-party code, so a
   line is queued only for a package the catalog already has a run of: the
@@ -41,6 +42,21 @@ defmodule Portal.Reports.Requeue do
        never move `latest_version` and are not checked.
     6. `skipped:judged`: a pass, fail or skipped result already stands for
        the tuple. An error or unknown one (a timeout, retries spent) does not.
+       For a `closure_mismatch` line (args `[dep, built_version,
+       lock_version]`: the build the client saw was compiled against `dep`
+       at `built_version`, the client's lock has `lock_version`), a standing
+       pass is stale and does not block when the tuple's newest result that
+       is not revoked is that pass, its recorded lock (the system result's
+       `deps_lock`, else its run's; a toolchain build's `deps_lock`, of the
+       `with`/`default` row this rule would rebuild) holds `dep` at
+       `built_version`, and `built_version` differs from `lock_version`. A
+       rebuild resolves the dependencies afresh from Hex and usually picks
+       up the newer one. A lock without `dep`, one that already holds
+       another version (the portal rebuilt since the client read its
+       manifest, which is what stops a client pinned to an older version
+       from rebuilding the tuple again and again) and malformed args leave
+       the pass judged. Any other newest result is decided as for every
+       other code.
     7. `skipped:queued`: a build that covers the tuple is already waiting: a
        full build of the package version, or a targets build naming the
        system (a job or a remote lease); for a toolchain, its toolchain build.
@@ -73,7 +89,7 @@ defmodule Portal.Reports.Requeue do
   alias Portal.Toolchains
   alias Portal.Workers.{Build, ToolchainBuild}
 
-  @codes ["not_built_version", "not_built_target"]
+  @codes ["not_built_version", "not_built_target", "closure_mismatch"]
   @incomplete ~w(available scheduled executing retryable)
   @judged ~w(pass fail skipped)
   @buildable_days 30
@@ -94,7 +110,8 @@ defmodule Portal.Reports.Requeue do
   # key counts as one reporter (the empty string no key can equal).
   @sweep_sql """
   WITH candidates AS (
-    SELECT l.id, l.package, l.version, l.report_id, l.inserted_at,
+    SELECT l.id, l.package, l.version, l.report_id, l.reason_code, l.reason_args,
+           l.inserted_at,
            coalesce(r.reporter_key, '') AS reporter, r.received_at
     FROM precompiled_report_lines l
     JOIN precompiled_reports r ON r.id = l.report_id
@@ -112,7 +129,7 @@ defmodule Portal.Reports.Requeue do
     FROM candidates
     GROUP BY package, version
   )
-  SELECT c.id, c.package, c.version, c.report_id
+  SELECT c.id, c.package, c.version, c.report_id, c.reason_code, c.reason_args
   FROM candidates c
   JOIN ranked k USING (package, version)
   ORDER BY k.reporters DESC, k.first_seen ASC, c.package, c.version,
@@ -124,7 +141,7 @@ defmodule Portal.Reports.Requeue do
   @spec codes() :: [String.t()]
   def codes, do: @codes
 
-  @doc "Decides every undecided not-built miss of a report. A retracted report is `:ok`."
+  @doc "Decides every undecided miss of a report with one of `codes/0`. A retracted report is `:ok`."
   @spec run_report(Ecto.UUID.t(), keyword()) :: :ok | {:error, :hex_unavailable}
   def run_report(report_id, opts \\ []) do
     lines =
@@ -138,7 +155,9 @@ defmodule Portal.Reports.Requeue do
             id: type(l.id, Ecto.UUID),
             package: l.package,
             version: l.version,
-            report_id: type(l.report_id, Ecto.UUID)
+            report_id: type(l.report_id, Ecto.UUID),
+            reason_code: l.reason_code,
+            reason_args: l.reason_args
           }
         )
       )
@@ -148,7 +167,7 @@ defmodule Portal.Reports.Requeue do
 
   @doc """
   The daily retry, just after the caps reset. It decides again, through
-  `decide_lines/2`, the not-built misses of reports received in the last
+  `decide_lines/2`, the misses with one of `codes/0` of reports received in the last
   #{@sweep_days} days that either a cap refused (`skipped:cap`) or nothing
   decided: undecided lines of a report received over an hour ago whose own
   requeue job is no longer waiting (it gave up, say on a database error).
@@ -180,12 +199,14 @@ defmodule Portal.Reports.Requeue do
       ])
 
     rows
-    |> Enum.map(fn [id, package, version, report_id] ->
+    |> Enum.map(fn [id, package, version, report_id, reason_code, reason_args] ->
       %{
         id: Ecto.UUID.load!(id),
         package: package,
         version: version,
-        report_id: Ecto.UUID.load!(report_id)
+        report_id: Ecto.UUID.load!(report_id),
+        reason_code: reason_code,
+        reason_args: reason_args
       }
     end)
     |> decide_lines(opts)
@@ -264,7 +285,7 @@ defmodule Portal.Reports.Requeue do
       {:ok, versions} ->
         with :ok <- on_hex(versions, line.version),
              :ok <- current(key, versions),
-             :ok <- not_judged(key),
+             :ok <- not_judged(key, line),
              :ok <- not_queued(key),
              :ok <- reserve_and_queue(key, report, opts) do
           "queued"
@@ -395,6 +416,73 @@ defmodule Portal.Reports.Requeue do
     if Enum.any?(Toolchains.images(), &(&1.toolchain == toolchain)),
       do: :ok,
       else: {:skip, "unbuildable"}
+  end
+
+  # A `closure_mismatch` line whose tuple's newest result is a pass asks
+  # whether that pass is stale; any other newest result is decided as for
+  # every other code.
+  defp not_judged(key, %{reason_code: "closure_mismatch"} = line) do
+    case standing(key) do
+      %{status: "pass", lock: lock} ->
+        if stale?(lock, Map.get(line, :reason_args)), do: :ok, else: {:skip, "judged"}
+
+      _other ->
+        not_judged(key)
+    end
+  end
+
+  defp not_judged(key, _line), do: not_judged(key)
+
+  # Built against `dep` at `built`, which the client's lock has moved past.
+  # A lock that already holds another version was rebuilt since the client
+  # read the manifest.
+  defp stale?(lock, [dep, built, wanted])
+       when is_binary(dep) and is_binary(built) and is_binary(wanted) and built != wanted do
+    match?(%{^dep => %{"version" => ^built}}, lock)
+  end
+
+  defp stale?(_lock, _args), do: false
+
+  # The tuple's newest result that is not revoked (carried copies left out,
+  # as `not_judged/1` leaves them out), with the lock its build recorded.
+  defp standing({:system, package, version, system, sv}) do
+    Repo.one(
+      from(sr in "catalog_system_results",
+        join: r in "catalog_runs",
+        on: r.id == sr.run_id,
+        join: p in "catalog_packages",
+        on: p.id == r.package_id,
+        where:
+          p.name == ^package and r.version_tested == ^version and sr.system_pkg == ^system and
+            sr.system_version == ^sv and is_nil(sr.carried_from_run_id) and
+            is_nil(r.revoked_at),
+        order_by: [
+          desc_nulls_last: r.finished_at,
+          desc: r.inserted_at,
+          desc: sr.inserted_at
+        ],
+        limit: 1,
+        select: %{
+          status: sr.status,
+          lock: fragment("coalesce(?, ?)", sr.deps_lock, r.deps_lock)
+        }
+      )
+    )
+  end
+
+  # The `with`/`default` row of the current builder: the one `job/2` rebuilds.
+  defp standing({:toolchain, package, version, toolchain}) do
+    Repo.one(
+      from(t in "catalog_toolchain_builds",
+        join: p in "catalog_packages",
+        on: p.id == t.package_id,
+        where:
+          p.name == ^package and t.version == ^version and t.toolchain == ^toolchain and
+            t.builder_version == ^Toolchains.builder_version() and t.variant == "with" and
+            t.config_variant == "default" and is_nil(t.revoked_at),
+        select: %{status: t.status, lock: t.deps_lock}
+      )
+    )
   end
 
   defp not_judged({:system, package, version, system, sv}) do

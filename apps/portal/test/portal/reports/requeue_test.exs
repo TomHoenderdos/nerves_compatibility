@@ -682,6 +682,188 @@ defmodule Portal.Reports.RequeueTest do
     Repo.one(from(p in "catalog_packages", where: p.name == ^name, select: p.latest_version))
   end
 
+  describe "a closure_mismatch miss" do
+    defp lock_of(versions),
+      do: Map.new(versions, fn {dep, v} -> {dep, %{"version" => v, "checksum" => "c" <> v}} end)
+
+    # A run of `version` whose own lock is `run_lock`, with one rpi4 result
+    # of `status` carrying `system_lock` (nil: the run's lock stands).
+    defp locked_run!(package, version, run_lock, opts \\ []) do
+      run =
+        Ash.create!(
+          Run,
+          %{
+            run_id: "rid-#{System.unique_integer([:positive])}",
+            package_id: package.id,
+            version_tested: version,
+            image_digest: "sha256:" <> String.duplicate("1", 64),
+            overall_status: :pass,
+            deps_lock: lock_of(run_lock),
+            finished_at: Keyword.get(opts, :finished_at, DateTime.utc_now())
+          },
+          action: :create,
+          domain: Portal.Catalog
+        )
+
+      system_lock = Keyword.get(opts, :system_lock)
+
+      Ash.create!(
+        SystemResult,
+        %{
+          run_id: run.id,
+          system_pkg: "nerves_system_rpi4",
+          system_version: "1.31.0",
+          status: Keyword.get(opts, :status, :pass),
+          deps_lock: system_lock && lock_of(system_lock)
+        },
+        action: :create,
+        domain: Portal.Catalog
+      )
+
+      run
+    end
+
+    defp closure_miss!(name, version, args, body \\ %{}) do
+      record!(
+        Map.merge(
+          %{
+            "lines" => [line(name, version, "miss", "closure_mismatch", args)],
+            "lock" => [lock(name, version)],
+            "target" => "t#{System.unique_integer([:positive])}"
+          },
+          body
+        ),
+        reporter_key: "reporter-a"
+      )
+    end
+
+    @host %{
+      "target" => "host",
+      "system" => nil,
+      "system_version" => nil,
+      "elixir" => "1.19.5",
+      "otp" => 28
+    }
+
+    test "is one of the codes a requeue acts on" do
+      assert "closure_mismatch" in Requeue.codes()
+    end
+
+    test "a pass built against the reported dependency version is rebuilt as one forced target" do
+      image_builds_rpi4!()
+      jason = package!("jason")
+      locked_run!(jason, "1.4.5", [{"elixir_make", "0.10.0"}])
+      id = closure_miss!("jason", "1.4.5", ["elixir_make", "0.10.0", "0.10.1"])
+
+      assert :ok = requeue(id)
+      assert decision(id) == "queued"
+
+      assert [job] = all_enqueued(worker: Build)
+      assert job.meta["report_id"] == id
+      assert job.priority == 9
+
+      assert job.args == %{
+               "package" => "jason",
+               "version" => "1.4.5",
+               "force" => true,
+               "scope" => "targets",
+               "systems" => ["nerves_system_rpi4"]
+             }
+    end
+
+    test "a result rebuilt since the client's manifest is judged" do
+      image_builds_rpi4!()
+      jason = package!("jason")
+
+      locked_run!(jason, "1.4.5", [{"elixir_make", "0.10.0"}],
+        finished_at: DateTime.add(DateTime.utc_now(), -7_200)
+      )
+
+      # The newer run's own lock still says 0.10.0; its rpi4 result, whose
+      # files the manifest serves, was built against 0.10.1.
+      locked_run!(jason, "1.4.5", [{"elixir_make", "0.10.0"}],
+        system_lock: [{"elixir_make", "0.10.1"}]
+      )
+
+      id = closure_miss!("jason", "1.4.5", ["elixir_make", "0.10.0", "0.10.1"])
+      assert :ok = requeue(id)
+      assert decision(id) == "skipped:judged"
+      refute_enqueued(worker: Build)
+    end
+
+    test "a dependency the recorded lock does not hold is judged" do
+      image_builds_rpi4!()
+      jason = package!("jason")
+      locked_run!(jason, "1.4.5", [{"telemetry", "1.3.0"}])
+      id = closure_miss!("jason", "1.4.5", ["elixir_make", "0.10.0", "0.10.1"])
+      assert :ok = requeue(id)
+      assert decision(id) == "skipped:judged"
+      refute_enqueued(worker: Build)
+    end
+
+    test "malformed args are judged" do
+      image_builds_rpi4!()
+      jason = package!("jason")
+      locked_run!(jason, "1.4.5", [{"elixir_make", "0.10.0"}])
+      short = closure_miss!("jason", "1.4.5", ["elixir_make", "0.10.0"])
+      same = closure_miss!("jason", "1.4.5", ["elixir_make", "0.10.0", "0.10.0"])
+      assert :ok = requeue(short)
+      assert :ok = requeue(same)
+      assert decision(short) == "skipped:judged"
+      assert decision(same) == "skipped:judged"
+      refute_enqueued(worker: Build)
+    end
+
+    test "a fail standing for the tuple stays judged" do
+      image_builds_rpi4!()
+      jason = package!("jason")
+      locked_run!(jason, "1.4.5", [{"elixir_make", "0.10.0"}], status: :fail)
+      id = closure_miss!("jason", "1.4.5", ["elixir_make", "0.10.0", "0.10.1"])
+      assert :ok = requeue(id)
+      assert decision(id) == "skipped:judged"
+    end
+
+    test "a host report rebuilds the toolchain build made against the reported version" do
+      jason = package!("jason")
+      run!(jason, "1.0.0", [])
+
+      Ash.create!(
+        Portal.Catalog.ToolchainBuild,
+        %{
+          package_id: jason.id,
+          version: "1.4.5",
+          toolchain: "1.19/28",
+          builder_version: Portal.Toolchains.builder_version(),
+          status: :pass,
+          deps_lock: lock_of([{"elixir_make", "0.10.0"}])
+        },
+        action: :create,
+        domain: Portal.Catalog
+      )
+
+      id = closure_miss!("jason", "1.4.5", ["elixir_make", "0.10.0", "0.10.1"], @host)
+      assert :ok = requeue(id)
+      assert decision(id) == "queued"
+
+      assert_enqueued(
+        worker: ToolchainBuild,
+        args: %{
+          "package" => "jason",
+          "version" => "1.4.5",
+          "toolchain" => "1.19/28",
+          "variant" => "with",
+          "config_variant" => "default"
+        },
+        meta: %{"report_id" => id},
+        priority: 9
+      )
+
+      rebuilt = closure_miss!("jason", "1.4.5", ["elixir_make", "0.10.1", "0.10.2"], @host)
+      assert :ok = requeue(rebuilt)
+      assert decision(rebuilt) == "skipped:judged"
+    end
+  end
+
   describe "the version rule" do
     test "an older version of a known package queues nothing" do
       image_builds_rpi4!()
