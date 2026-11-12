@@ -10,6 +10,7 @@ defmodule PortalWeb.CatalogApiRoutesTest do
         "/api/precompiled/manifests/no_such_package.json",
         "/api/precompiled/manifests/by-sha/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
         "/api/precompiled/v2/manifests/by-sha/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+        "/api/precompiled/systems/by-sha/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
         "/api/precompiled/root.json",
         "/api/precompiled/batch.json",
         "/api/precompiled/batches/1.json",

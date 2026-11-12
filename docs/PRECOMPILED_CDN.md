@@ -38,6 +38,7 @@ SHA256):
 | `/files/<sha256>` | precompiled files |
 | `/manifests/by-sha/<sha256>.json` | format-1 manifests |
 | `/v2/manifests/by-sha/<sha256>.json` | format-2 manifests |
+| `/systems/by-sha/<sha256>.json` | systems tables (`systems` in the batch) |
 
 Settings for these paths:
 
@@ -51,7 +52,7 @@ Settings for these paths:
 
 ## 3. What to bypass
 
-Only the three content-addressed path families in section 2 belong on the
+Only the four content-addressed path families in section 2 belong on the
 CDN. Everything else is fetched by clients only from the portal (the
 source), never from a content origin. Do not cache any of it on the CDN;
 blocking it there (a 404, or simply not proxying the path) is fine and is
@@ -113,8 +114,8 @@ file blob on the strength of a newer batch existing:
   dependency build cache, the Hex cache and the Nerves cache, all of which
   are rebuildable working storage, never the published artifact or manifest
   stores. A CDN or mirror in front of this API must hold to the same rule:
-  never evict a `/files/<sha256>` or `*/manifests/by-sha/<sha256>.json`
-  object it has ever served, for the same reason the portal doesn't — an
+  never evict a `/files/<sha256>`, `*/manifests/by-sha/<sha256>.json` or
+  `/systems/by-sha/<sha256>.json` object it has ever served, for the same reason the portal doesn't — an
   older, still-fresh client's batch may still name it.
 - **Purging is only for taking bytes off the CDN outright** — for example on
   a legal request — never for correctness. The cached paths (section 2) never

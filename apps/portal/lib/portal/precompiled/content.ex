@@ -1,10 +1,12 @@
 defmodule Portal.Precompiled.Content do
   @moduledoc """
   Content origins: CDNs or mirrors that a signed batch tells clients they may
-  fetch files and by-sha manifests from (`content` in the batch payload),
-  before the source. Each one serves this API's content-addressed paths under
-  its own prefix: `<origin>/files/<sha>`, `<origin>/manifests/by-sha/<sha>.json`,
-  `<origin>/v2/manifests/by-sha/<sha>.json`. Clients hash everything they
+  fetch files, by-sha manifests and systems tables from (`content` in the
+  batch payload), before the source. Each one serves this API's
+  content-addressed paths under its own prefix: `<origin>/files/<sha>`,
+  `<origin>/manifests/by-sha/<sha>.json`,
+  `<origin>/v2/manifests/by-sha/<sha>.json`,
+  `<origin>/systems/by-sha/<sha>.json`. Clients hash everything they
   fetch, so an origin can only cause a fallback, never a wrong install.
 
   Set by `NCC_PRECOMPILED_CONTENT_ORIGINS`, comma-separated. Each origin is

@@ -265,7 +265,8 @@ format 2 has no `manifests_v2`; a client falls back to `manifests`.
 `content`, when present, lists content origins: https URLs that serve this
 API's content-addressed paths under their own prefix
 (`<origin>/files/<sha256>`, `<origin>/manifests/by-sha/<sha256>.json`,
-`<origin>/v2/manifests/by-sha/<sha256>.json`). It is signed with the rest of
+`<origin>/v2/manifests/by-sha/<sha256>.json`,
+`<origin>/systems/by-sha/<sha256>.json`). It is signed with the rest of
 the payload, so only the portal's key can add an origin. A client may fetch
 those paths there first and must fall back to the source; everything is
 checked against the hashes the batch and manifests name. Its presence also
