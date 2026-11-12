@@ -15,13 +15,6 @@ export DOCKER_BUILDKIT := 1
 # build candidate tags beside the live ones.
 TOOLCHAIN_IMAGES := ncc-worker:elixir-1.19-otp-28=hexpm/elixir:1.19.3-erlang-28.5.0.2-debian-bookworm-20260610-slim
 TOOLCHAIN_SUFFIX :=
-# The toolchain images build under BuildKit too, unless a host sets
-# TOOLCHAIN_BUILDKIT=0 (in its environment or ncc-deploy.env). A docker-ncc
-# inside an OrbStack machine needs that: there gVisor cannot remove files of a
-# lower layer through BuildKit's overlay mounts, so every apt-get in a RUN step
-# fails, while the legacy builder's mounts work. Dockerfile.toolchain uses no
-# BuildKit-only syntax; the worker image keeps BuildKit.
-TOOLCHAIN_BUILDKIT ?= 1
 
 all: help
 
@@ -63,7 +56,7 @@ build-toolchains: apps/ncc_worker/Dockerfile.toolchain
 	@set -e; for pair in $(TOOLCHAIN_IMAGES); do \
 	  tag=$${pair%%=*}; base=$${pair#*=}; \
 	  echo "Building toolchain image $$tag$(TOOLCHAIN_SUFFIX) from $$base..."; \
-	  DOCKER_BUILDKIT=$(TOOLCHAIN_BUILDKIT) docker build -f apps/ncc_worker/Dockerfile.toolchain --build-arg BASE=$$base -t $$tag$(TOOLCHAIN_SUFFIX) .; \
+	  docker build -f apps/ncc_worker/Dockerfile.toolchain --build-arg BASE=$$base -t $$tag$(TOOLCHAIN_SUFFIX) .; \
 	done
 	@echo "Toolchain images built."
 
