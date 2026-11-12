@@ -8,8 +8,9 @@ defmodule Portal.Catalog.IngestionSystemAbiTest do
   use Portal.DataCase, async: false
 
   require Ash.Query
+  require Logger
 
-  import ExUnit.CaptureLog, only: [capture_log: 1]
+  import ExUnit.CaptureLog, only: [capture_log: 1, capture_log: 2]
 
   alias Portal.Catalog.{Ingestion, SystemAbi, SystemResult}
 
@@ -198,17 +199,34 @@ defmodule Portal.Catalog.IngestionSystemAbiTest do
                        %{system_pkg: "nerves_system_rpi4", version: ^version, field: :otp}}
     end
 
-    test "a target without priv files has no ELF facts" do
+    test "a target with ebin files and an empty priv is beam-only" do
       name = unique("abipkg")
       version = "1.35.#{System.unique_integer([:positive])}"
       beam = "beam-#{name}"
       {:ok, run} = ingest(result(name, version, "29.1.2", beam, []), files_dir_with([beam]))
 
       row = system_result(run, "nerves_system_rpi4")
+      assert row.native == false
+      assert row.portable == true
+      assert row.elf_needs == %{}
+      assert row.otp_full == "29.1.2"
+    end
+
+    test "a target without a file manifest has no ELF facts" do
+      name = unique("abipkg")
+      version = "1.38.#{System.unique_integer([:positive])}"
+      beam = "beam-#{name}"
+      result = result(name, version, "29.1.2", beam, [])
+
+      result =
+        update_in(result, ["systems", "nerves_system_rpi4"], &Map.put(&1, "beam_scan", nil))
+
+      {:ok, run} = ingest(result, files_dir_with([beam]))
+
+      row = system_result(run, "nerves_system_rpi4")
       assert row.native == nil
       assert row.portable == nil
       assert row.elf_needs == nil
-      assert row.otp_full == "29.1.2"
     end
 
     test "a priv blob that never reached the store leaves the ELF facts null" do
@@ -366,6 +384,31 @@ defmodule Portal.Catalog.IngestionSystemAbiTest do
       assert abi_row("nerves_system_bbb", version).libs == nil
       assert log =~ "not a map of soname to version names"
       refute log =~ "names no libc"
+    end
+
+    test "another patch of the same toolchain series is not a conflict" do
+      attach_conflicts()
+      version = "2.7.#{System.unique_integer([:positive])}"
+      assert {:ok, _} = SystemAbi.observe(observed("nerves_system_bbb", version))
+      Logger.put_module_level(SystemAbi, :info)
+      on_exit(fn -> Logger.delete_module_level(SystemAbi) end)
+
+      log =
+        capture_log([level: :info], fn ->
+          assert {:ok, _} =
+                   SystemAbi.observe(
+                     observed("nerves_system_bbb", version, %{toolchain_version: "15.3.2"})
+                   )
+        end)
+
+      row = abi_row("nerves_system_bbb", version)
+      assert row.toolchain_version == "15.3.1"
+      assert row.series == "15.3"
+      assert log =~ "[info]"
+      assert log =~ "15.3.2"
+      refute log =~ "[error]"
+      refute log =~ "conflict"
+      refute_received {:conflict, _, _}
     end
 
     test "a conflicting toolchain on a lock row is kept, logged and counted" do

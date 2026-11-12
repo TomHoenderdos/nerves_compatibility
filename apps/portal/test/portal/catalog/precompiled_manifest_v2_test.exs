@@ -57,7 +57,10 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
              "compile_env" => [],
              "package_checksum" => "outer",
              "run_id" => "fixture-jason-1.4.1",
-             "image_digest" => "sha256:precompiled"
+             "image_digest" => "sha256:precompiled",
+             # ebin files and an empty priv: a beam-only build.
+             "native" => false,
+             "portable" => true
            }
 
     assert [%{"path" => "ebin/jason.beam", "size" => _, "mode" => 33_188}] = tc["ebin"]
@@ -345,8 +348,8 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
                "mix_target" => "rpi4"
              }
 
-      assert Map.drop(rpi4["build"], ~w(native portable otp_full toolchain elf)) ==
-               before["build"]
+      facts = ~w(native portable otp_full toolchain elf)
+      assert Map.drop(rpi4["build"], facts) == Map.drop(before["build"], facts)
 
       v2 = Catalog.precompiled_manifest_v2("jason")
       assert v2["format"] == 2
@@ -362,9 +365,20 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
       refute Map.has_key?(build, "elf")
     end
 
+    test "an ingested ebin-only build is beam-only" do
+      ingest_with_artifact(keyed_run())
+
+      build = rpi4_build()["build"]
+      assert build["native"] == false
+      assert build["portable"] == true
+      refute Map.has_key?(build, "elf")
+    end
+
     test "unknown facts are left out, and format 1 never carries them" do
       ingest_with_artifact(keyed_run())
       v1_before = Catalog.precompiled_manifest("jason")
+      # As a build made before the facts were recorded.
+      set_facts!(%{native: nil, portable: nil, elf_needs: nil})
 
       build = rpi4_build()["build"]
 

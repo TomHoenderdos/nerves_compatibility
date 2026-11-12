@@ -46,6 +46,15 @@ defmodule Portal.Workers.SystemAbiBackfillTest do
     }
   end
 
+  # A beam-only build: ebin files and an empty priv.
+  defp ebin_only(version) do
+    put_in(
+      system(version, []),
+      ["beam_scan", "footprint", "file_manifest", "ebin"],
+      [entry("ebin/circuits_gpio.beam", "a beam")]
+    )
+  end
+
   # One run from before the facts were recorded: three target builds with
   # priv files and no toolchain, OTP or library table, ingested without
   # reading their ELF facts.
@@ -63,6 +72,7 @@ defmodule Portal.Workers.SystemAbiBackfillTest do
         "nerves_system_rpi4" => system("2.2.2", [{"priv/gpio_nif.so", nif()}]),
         "nerves_system_bbb" => system("2.0.0", [{"priv/data.txt", "a plain data file"}]),
         "nerves_system_rpi3" => system("2.0.0", [{"priv/gone.so", missing}]),
+        "nerves_system_rpi0" => ebin_only("2.0.0"),
         "host" => %{"status" => "pass", "duration_sec" => 5.0, "beam_scan" => nil}
       },
       "finished_at" => "2026-11-12T10:00:00Z"
@@ -150,6 +160,16 @@ defmodule Portal.Workers.SystemAbiBackfillTest do
 
       assert elf_checked_at(row(run, "nerves_system_rpi3")) == checked
       refute second =~ "nerves_system_rpi3"
+    end
+
+    test "an ebin-only build with an empty priv becomes beam-only", %{run: run} do
+      assert row(run, "nerves_system_rpi0").native == nil
+
+      capture_log(fn -> assert :ok = perform_job(SystemAbiBackfill, %{}) end)
+
+      rpi0 = row(run, "nerves_system_rpi0")
+      assert rpi0.native == false and rpi0.portable == true and rpi0.elf_needs == %{}
+      assert elf_checked_at(rpi0) != nil
     end
 
     test "queues a system_abi run for a native release without a library table", %{run: run} do

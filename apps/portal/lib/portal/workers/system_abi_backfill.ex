@@ -6,8 +6,9 @@ defmodule Portal.Workers.SystemAbiBackfill do
   their system needs. Each perform:
 
     1. reads the ELF facts (`Portal.Precompiled.ElfFacts.store_for/1`) of up
-       to 500 published target results with priv files and a null
-       `native`, by id, marking each `elf_checked_at` so a result whose blob
+       to 500 published target results with a file manifest (an `ebin`
+       list, with or without priv files) and a null `native`, by id,
+       marking each `elf_checked_at` so a result whose blob
        cannot be read is not read again; it snoozes 60 s while more remain;
     2. fills the toolchain and OTP of published passing target results from
        their release's `catalog_system_abi` row (`fill_release_facts/1`);
@@ -92,7 +93,8 @@ defmodule Portal.Workers.SystemAbiBackfill do
     |> Repo.update_all(set: [elf_checked_at: DateTime.utc_now()])
   end
 
-  # Published target results with priv files whose facts were never read,
+  # Published target results with a file manifest whose facts were never
+  # read (an empty priv makes a beam-only build: not native, portable),
   # one past the batch so the caller knows whether more remain. Carried
   # copies are read too: they publish the same files as the result they
   # copy, and were copied before it had facts.
@@ -105,7 +107,7 @@ defmodule Portal.Workers.SystemAbiBackfill do
       where: is_nil(s.native) and is_nil(s.elf_checked_at),
       where:
         fragment(
-          "jsonb_array_length(coalesce(? #> '{footprint,file_manifest,priv}', '[]'::jsonb)) > 0",
+          "jsonb_typeof(? #> '{footprint,file_manifest,ebin}') = 'array'",
           s.beam_scan
         ),
       order_by: s.id,

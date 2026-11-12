@@ -263,8 +263,31 @@ defmodule Portal.Catalog.SystemAbi do
         Map.put(acc, field, value)
 
       old ->
-        if same?(field, old, value), do: acc, else: conflict(row, field, old, value, acc)
+        cond do
+          same?(field, old, value) -> acc
+          same_series?(row, field, old, value) -> other_patch(row, old, value, acc)
+          true -> conflict(row, field, old, value, acc)
+        end
     end
+  end
+
+  # Builds of one release resolve the system's `~> X.Y.Z` toolchain
+  # requirement to whichever patch Hex had then: another patch of the same
+  # series is the same ABI, not a conflict.
+  defp same_series?(%{source: "lock"}, :toolchain_version, old, new) do
+    series = series("lock", old)
+    series != nil and series == series("lock", new)
+  end
+
+  defp same_series?(_row, _field, _old, _new), do: false
+
+  defp other_patch(row, old, new, acc) do
+    Logger.info(
+      "System ABI of #{row.system_pkg} #{row.version}: toolchain_version " <>
+        "#{short(new)} observed, same series as #{short(old)}; keeping the first"
+    )
+
+    acc
   end
 
   defp same?(:libs, old, new), do: normalize_libs(old) == new

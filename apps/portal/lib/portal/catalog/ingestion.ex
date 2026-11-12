@@ -238,7 +238,8 @@ defmodule Portal.Catalog.Ingestion do
 
   defp observe_release(_system_pkg, _sys), do: :ok
 
-  # This run's own target results that publish priv files; host results and
+  # This run's own target results that publish a file manifest (an `ebin`
+  # list; an empty priv makes them beam-only); host results and
   # carried copies (which keep the facts of the run that built them) are left
   # out.
   defp elf_candidates(run_id) do
@@ -249,7 +250,7 @@ defmodule Portal.Catalog.Ingestion do
         where: s.system_pkg not in ^@host_systems,
         where:
           fragment(
-            "jsonb_array_length(coalesce(? #> '{footprint,file_manifest,priv}', '[]'::jsonb)) > 0",
+            "jsonb_typeof(? #> '{footprint,file_manifest,ebin}') = 'array'",
             s.beam_scan
           ),
         select: %{id: type(s.id, Ecto.UUID), system_pkg: s.system_pkg}
