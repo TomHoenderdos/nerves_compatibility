@@ -13,7 +13,9 @@ defmodule Portal.Catalog.RunMemory do
   most of these runs never become a `Portal.Catalog.Run`.
 
   The Oban workers that call `Portal.Builder.build/2` write the row through
-  `record/4` as soon as it returns, before the scratch dir is removed.
+  `record/4` as soon as it returns, before the scratch dir is removed. A
+  build that never reached `docker run` (a host-condition refusal, docker
+  unavailable, scratch setup) writes no row.
   """
 
   use Ash.Resource,
@@ -28,9 +30,6 @@ defmodule Portal.Catalog.RunMemory do
 
   # `:integer` columns are bigint.
   @max_bigint 9_223_372_036_854_775_807
-
-  # `Portal.Builder.build/2` refusals for a host condition: no container ran.
-  @no_container [:scratch_noexec, :egress_filter_missing, :build_memory_limit_missing]
 
   postgres do
     table("catalog_run_memory")
@@ -93,8 +92,7 @@ defmodule Portal.Catalog.RunMemory do
     # The node that ran the container.
     attribute(:host, :string, public?: true)
     attribute(:attempt, :integer, public?: true)
-    # Nil when the build returned no exit code: a wall-clock timeout
-    # (`timed_out`) or a runner-side failure.
+    # Nil only for a wall-clock timeout (`timed_out`), which returns no exit code.
     attribute(:exit_code, :integer, public?: true)
     attribute(:timed_out, :boolean, allow_nil?: false, default: false, public?: true)
     # Exit 137: the container was SIGKILLed, which under `--memory` is the OOM killer.
@@ -124,7 +122,10 @@ defmodule Portal.Catalog.RunMemory do
       `Portal.Builder.build_concurrency/0`). The side file's `limit_bytes`, the
       limit the container saw, wins over either.
 
-  Writes nothing for a host-condition refusal, which ran no container. Never
+  Writes a row only when a container ran: an exit code, or a wall-clock
+  timeout (`exit_code` nil, `timed_out`). Every other `{:error, _}` from
+  `build/2` is a step before `docker run` (a host-condition refusal, docker
+  unavailable, scratch setup) and writes nothing. Never
   raises: a failure is logged and the build goes on, `:ok` either way.
   """
   @spec record(atom(), map(), term(), map()) :: :ok
@@ -135,17 +136,15 @@ defmodule Portal.Catalog.RunMemory do
     end
   end
 
-  defp run_fields({:error, {:insufficient_disk, _free, _needed}}, _run_id), do: :no_container
-  defp run_fields({:error, reason}, _run_id) when reason in @no_container, do: :no_container
-
   defp run_fields({:ok, %{exit_code: exit_code} = build}, _run_id),
     do: %{exit_code: exit_code, timed_out: false, resources: Map.get(build, :resources)}
 
   defp run_fields({:error, {:build_timeout, _seconds, _container}}, run_id),
     do: %{exit_code: nil, timed_out: true, resources: read_resources(run_id)}
 
-  defp run_fields(_runner_failure, run_id),
-    do: %{exit_code: nil, timed_out: false, resources: read_resources(run_id)}
+  # Every other error comes from a step before `docker run`: a host-condition
+  # refusal or a runner failure (docker unavailable, scratch setup, ...).
+  defp run_fields({:error, _before_container}, _run_id), do: :no_container
 
   defp read_resources(run_id) do
     Builder.read_resources(run_id)

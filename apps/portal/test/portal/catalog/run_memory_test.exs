@@ -120,17 +120,10 @@ defmodule Portal.Catalog.RunMemoryTest do
     assert row.peak_used_bytes == 1_500_000_000
   end
 
-  test "a runner failure is a row with no exit code" do
-    assert :ok =
-             RunMemory.record(:firmware, @firmware_args, {:error, :docker_unavailable}, %{
-               attempt: 1
-             })
-
-    assert [%{exit_code: nil, timed_out: false, oom_killed: false}] = rows()
-  end
-
-  test "a host-condition snooze ran no container and writes no row" do
+  test "a runner failure or a host-condition snooze ran no container and writes no row" do
     for reason <- [
+          :docker_unavailable,
+          {:input_write_failed, "eacces"},
           {:insufficient_disk, 1, 2},
           :scratch_noexec,
           :egress_filter_missing,

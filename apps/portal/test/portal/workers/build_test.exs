@@ -2030,11 +2030,11 @@ defmodule Portal.Workers.BuildTest do
       assert [%{exit_code: nil, timed_out: true, oom_killed: false}] = memory_rows()
     end
 
-    test "a runner failure writes a row with no exit code" do
+    test "a runner failure ran no container and writes no row" do
       set_response({:error, :docker_unavailable})
 
       assert {:error, :docker_unavailable} = perform_job(Build, @memory_args)
-      assert [%{exit_code: nil, timed_out: false}] = memory_rows()
+      assert memory_rows() == []
     end
 
     test "a host-condition snooze ran no container and writes no row" do

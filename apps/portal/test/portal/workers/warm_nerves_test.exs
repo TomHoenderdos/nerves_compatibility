@@ -197,5 +197,14 @@ defmodule Portal.Workers.WarmNervesTest do
 
       assert memory_rows() == []
     end
+
+    test "a runner failure ran no container and writes no row" do
+      Process.put(:warm_response, {:error, :docker_unavailable})
+
+      assert {:error, :docker_unavailable} =
+               perform_job(WarmNerves, %{"image_digest" => "sha256:x", "pairs" => @pairs})
+
+      assert memory_rows() == []
+    end
   end
 end

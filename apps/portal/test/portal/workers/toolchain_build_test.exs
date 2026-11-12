@@ -464,5 +464,12 @@ defmodule Portal.Workers.ToolchainBuildTest do
       assert {:snooze, 900} = perform_job(ToolchainBuild, @args)
       assert memory_rows() == []
     end
+
+    test "a runner failure ran no container and writes no row" do
+      Process.put(:stub_build_response, {:error, :docker_unavailable})
+
+      assert {:error, :docker_unavailable} = perform_job(ToolchainBuild, @args)
+      assert memory_rows() == []
+    end
   end
 end
