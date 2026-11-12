@@ -512,6 +512,9 @@ toolchain:
   - `elf` — native builds only: `{"needs": {soname: [version]}}`, every
     library the ELF files need (`DT_NEEDED`) and the symbol versions they
     need from it (`.gnu.version_r`), over all of the build's ELF files.
+    `needs` leaves out the libraries the build ships itself: an ELF file of
+    its own whose `DT_SONAME` or file name is the needed soname, such as
+    `priv/lib/libfoo.so.1` loaded through a `$ORIGIN` RUNPATH.
 - `updated_at` — the newest `finished_at` among the builds listed.
 
 What it lists:
@@ -639,9 +642,15 @@ used when:
     library's definitions (`symbol_version_missing`). Names it cannot read,
     such as `GLIBC_PRIVATE`, are skipped.
 
+  A native build without `build.elf` misses on another release as a build
+  that predates the field (`build_predates`, `["elf"]`), and is used on its
+  own release as before.
+
   A release missing from the table, or one whose `otp` or `libs` is still
-  `null`, matches only builds made on it (`system_unknown`); so does one
-  whose `series` is `null`.
+  `null` (a release the portal knows only from its Hex requirement), matches
+  only builds made on it, and misses as `system_unknown` before its series
+  or OTP is compared. One whose `series` is `null` matches only builds made
+  on it too, and misses as `system_version_abi`, its series shown as `?`.
 - **Anything else** — `portable` `false`, or `native` or `portable` absent —
   is used on its own `system_version` only.
 

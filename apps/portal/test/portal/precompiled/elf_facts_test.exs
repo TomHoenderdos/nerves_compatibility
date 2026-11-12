@@ -79,6 +79,34 @@ defmodule Portal.Precompiled.ElfFactsTest do
     assert %{needs: %{"libc.so" => []}} = compute([{"priv/x.so", fixture("nif_x86_64.so")}])
   end
 
+  test "a library the build ships itself is not a need, matched by file name" do
+    # The NIF needs ld-linux-aarch64.so.1; a copy under priv/lib provides it.
+    %{needs: needs} =
+      compute([
+        {"priv/gpio_nif.so", fixture("nif_aarch64.so")},
+        {"priv/lib/ld-linux-aarch64.so.1", fixture("libz_aarch64.so.1")}
+      ])
+
+    assert needs == %{"libc.so.6" => ["GLIBC_2.17"]}
+  end
+
+  test "a library the build ships itself is not a need, matched by its soname" do
+    {:ok, libz} = Compatibility.Elf.read(fixture("libz_aarch64.so.1"))
+    assert libz.soname == "libz.so.1"
+
+    needs = %{"libz.so.1" => ["ZLIB_1.2.0"], "libc.so.6" => ["GLIBC_2.17"]}
+
+    # Shipped under another file name, found by DT_SONAME.
+    assert ElfFacts.without_bundled(needs, [{"priv/lib/libz-1.3.so", libz}]) ==
+             %{"libc.so.6" => ["GLIBC_2.17"]}
+
+    # Shipped under its soname, with no DT_SONAME of its own.
+    assert ElfFacts.without_bundled(needs, [{"priv/lib/libz.so.1", %{soname: nil}}]) ==
+             %{"libc.so.6" => ["GLIBC_2.17"]}
+
+    assert ElfFacts.without_bundled(needs, []) == needs
+  end
+
   test "a blob that cannot be read is an error naming it" do
     entries = [%{"path" => "priv/gone.so", "sha256" => String.duplicate("a", 64)}]
 
