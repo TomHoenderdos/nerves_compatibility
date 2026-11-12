@@ -39,6 +39,7 @@ defmodule Portal.Catalog do
     ReleaseDownloads,
     Run,
     RunMemory,
+    SystemAbi,
     SystemLog,
     SystemResult,
     ToolchainBuild,
@@ -135,6 +136,7 @@ defmodule Portal.Catalog do
     resource(ReleaseDownloads)
     resource(CoverageReport)
     resource(RunMemory)
+    resource(SystemAbi)
   end
 
   @doc """

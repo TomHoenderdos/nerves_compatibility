@@ -64,7 +64,10 @@ defmodule Portal.Catalog.SystemResult do
         :compile_env_rule,
         :portability_rule,
         :unpublished_at,
-        :unpublished_reason
+        :unpublished_reason,
+        :toolchain_pkg,
+        :toolchain_version,
+        :otp_full
       ])
     end
 
@@ -79,6 +82,12 @@ defmodule Portal.Catalog.SystemResult do
         :log_path,
         :failure_category
       ])
+    end
+
+    # What `Portal.Precompiled.ElfFacts.store_for/1` read from the result's
+    # published priv files once their blobs were stored.
+    update :store_elf_facts do
+      accept([:native, :portable, :elf_needs])
     end
 
     # Withdraws this result's files from the precompiled API (spec section 7,
@@ -203,6 +212,24 @@ defmodule Portal.Catalog.SystemResult do
     attribute :unpublished_reason, :string do
       public?(true)
     end
+
+    # The toolchain the build's lock resolved for this system
+    # (result.json `toolchain`, `%{"package", "version"}`) and the system
+    # release's full OTP version (`otp_full`, e.g. "29.1.2"). Only on a
+    # passing target build from an image that reports them; nil otherwise.
+    attribute(:toolchain_pkg, :string, public?: true)
+    attribute(:toolchain_version, :string, public?: true)
+    attribute(:otp_full, :string, public?: true)
+
+    # Read from the published priv files after ingest
+    # (`Portal.Precompiled.ElfFacts`): whether any is ELF, whether every ELF
+    # file reads as a loadable object whose needs are known, and those needs,
+    # soname => sorted symbol versions. Nil when not computed: a host result,
+    # a target without priv files, a blob that could not be read, or a
+    # result ingested before they were recorded.
+    attribute(:native, :boolean, public?: true)
+    attribute(:portable, :boolean, public?: true)
+    attribute(:elf_needs, :map, public?: true)
 
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)

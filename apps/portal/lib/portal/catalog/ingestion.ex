@@ -57,13 +57,14 @@ defmodule Portal.Catalog.Ingestion do
     LogSanitizer,
     Package,
     Run,
+    SystemAbi,
     SystemLog,
     SystemResult,
     ToolchainBuild,
     ToolchainPriv
   }
 
-  alias Portal.Precompiled.Withheld
+  alias Portal.Precompiled.{ElfFacts, Withheld}
   alias Portal.Repo
 
   @domain Portal.Catalog
@@ -71,6 +72,9 @@ defmodule Portal.Catalog.Ingestion do
   # The keys of a stored file manifest, each the top directory its entries'
   # paths sit under.
   @manifest_keys ["ebin", "priv"]
+
+  # Results built on the host, not for a Nerves system: no target ELF facts.
+  @host_systems ["host", "pure_elixir"]
 
   # The config variant of every build without an overlay.
   @default_config_variant ConfigVariants.default()
@@ -172,7 +176,95 @@ defmodule Portal.Catalog.Ingestion do
       end,
       timeout: @transaction_timeout
     )
+    |> tap(fn
+      {:ok, run} -> record_system_abi(run, systems)
+      _error -> :ok
+    end)
   end
+
+  # After the rows are committed, and best-effort: what a target build says
+  # about its system release, and what its published priv files are as ELF,
+  # are facts for matching builds across releases, never a reason to fail an
+  # ingest that already wrote the run.
+  defp record_system_abi(run, systems) do
+    Enum.each(systems, fn {system_pkg, sys} ->
+      best_effort("observe", system_pkg, fn -> observe_release(system_pkg, sys) end)
+    end)
+
+    run.id
+    |> elf_candidates()
+    |> Enum.each(fn %{id: id, system_pkg: system_pkg} ->
+      best_effort("read the ELF facts of", system_pkg, fn -> store_elf_facts(id, system_pkg) end)
+    end)
+  end
+
+  defp store_elf_facts(system_result_id, system_pkg) do
+    case ElfFacts.store_for(system_result_id) do
+      {:ok, _row} -> :ok
+      {:error, reason} -> warn_abi("read the ELF facts of", system_pkg, reason)
+    end
+  end
+
+  defp observe_release(system_pkg, %{"system_version" => version} = sys)
+       when is_binary(version) and
+              (is_map_key(sys, "toolchain") or is_map_key(sys, "system_libs")) do
+    {toolchain_pkg, toolchain_version} = system_toolchain(sys["toolchain"])
+
+    observation = %{
+      system_pkg: system_pkg,
+      version: version,
+      toolchain_pkg: toolchain_pkg,
+      toolchain_version: toolchain_version,
+      otp: fact_string(sys["otp_full"]),
+      libs: sys["system_libs"],
+      source: "lock"
+    }
+
+    case SystemAbi.observe(observation) do
+      {:ok, _row} -> :ok
+      {:error, reason} -> warn_abi("observe", system_pkg, reason)
+    end
+  end
+
+  defp observe_release(_system_pkg, _sys), do: :ok
+
+  # This run's own target results that publish priv files; host results and
+  # carried copies (which keep the facts of the run that built them) are left
+  # out.
+  defp elf_candidates(run_id) do
+    Repo.all(
+      from(s in "catalog_system_results",
+        where: s.run_id == type(^run_id, Ecto.UUID),
+        where: is_nil(s.carried_from_run_id),
+        where: s.system_pkg not in ^@host_systems,
+        where:
+          fragment(
+            "jsonb_array_length(coalesce(? #> '{footprint,file_manifest,priv}', '[]'::jsonb)) > 0",
+            s.beam_scan
+          ),
+        select: %{id: type(s.id, Ecto.UUID), system_pkg: s.system_pkg}
+      )
+    )
+  end
+
+  defp best_effort(what, system_pkg, fun) do
+    fun.()
+  rescue
+    error -> warn_abi(what, system_pkg, Exception.message(error))
+  end
+
+  defp warn_abi(what, system_pkg, reason) do
+    Logger.warning("Could not #{what} #{inspect(system_pkg)}: #{inspect(reason)}")
+  end
+
+  defp system_toolchain(%{"package" => package, "version" => version}),
+    do: {fact_string(package), fact_string(version)}
+
+  defp system_toolchain(_toolchain), do: {nil, nil}
+
+  # A short string from result.json, or nil.
+  defp fact_string(value) when is_binary(value) and byte_size(value) in 1..200, do: value
+  defp fact_string(_value), do: nil
 
   # Checks the result against the job's identity, which the caller must
   # pass in full. A result that names no package at all is not checked here:
@@ -1250,12 +1342,14 @@ defmodule Portal.Catalog.Ingestion do
         (id, run_id, system_pkg, system_version, status, firmware_size_bytes, duration_sec,
          phase_timings, hex_version_tested, beam_scan, compile_env, dependency_scans, log_path,
          log_tail, failure_category, carried_from_run_id, deps_lock, unpublished_at,
-         compile_env_rule, portability_rule, unpublished_reason, inserted_at, updated_at)
+         compile_env_rule, portability_rule, unpublished_reason, native, portable, elf_needs,
+         toolchain_pkg, toolchain_version, otp_full, inserted_at, updated_at)
       SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
              s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan, s.compile_env,
              s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
              s.deps_lock, s.unpublished_at, s.compile_env_rule, s.portability_rule,
-             s.unpublished_reason, now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
+             s.unpublished_reason, s.native, s.portable, s.elf_needs, s.toolchain_pkg,
+             s.toolchain_version, s.otp_full, now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
       FROM catalog_system_results s
       JOIN unnest($2::uuid[], $3::uuid[], $4::uuid[]) AS m(old_id, new_id, built_in)
         ON m.old_id = s.id
@@ -1322,6 +1416,7 @@ defmodule Portal.Catalog.Ingestion do
     status = Compatibility.Types.parse_status(sys["status"])
     held_at = if system_pkg == "pure_elixir", do: hold
     compiled_env = compile_env(sys["compile_env"], {package_name, version})
+    {toolchain_pkg, toolchain_version} = system_toolchain(sys["toolchain"])
 
     result =
       SystemResult
@@ -1344,7 +1439,10 @@ defmodule Portal.Catalog.Ingestion do
         compile_env_rule: system_compile_env_rule(system_pkg, sys, compiled_env),
         portability_rule: if(system_pkg == "pure_elixir", do: rule),
         unpublished_at: held_at,
-        unpublished_reason: if(held_at, do: SystemResult.rule2_revocation())
+        unpublished_reason: if(held_at, do: SystemResult.rule2_revocation()),
+        toolchain_pkg: toolchain_pkg,
+        toolchain_version: toolchain_version,
+        otp_full: fact_string(sys["otp_full"])
       })
       |> Ash.create(domain: @domain)
 
