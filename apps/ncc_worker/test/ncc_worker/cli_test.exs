@@ -35,6 +35,13 @@ defmodule NccWorker.CLITest do
     refute Map.has_key?(input, :optional_deps)
   end
 
+  test "parse_input/1 reads known_system_abi beside systems_filter" do
+    json =
+      ~s({"run_id":"r1","systems_filter":["nerves_system_rpi4"],"known_system_abi":["nerves_system_rpi4@2.2.2"]})
+
+    assert {:ok, %{known_system_abi: ["nerves_system_rpi4@2.2.2"]}} = CLI.parse_input(json)
+  end
+
   test "parse_input/1 reports malformed JSON" do
     assert {:error, {:invalid_json, _}} = CLI.parse_input("{")
   end

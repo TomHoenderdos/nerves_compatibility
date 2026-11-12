@@ -30,7 +30,8 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    When the host compile failed, rpi4 builds alone first; if it fails too, the rest are recorded as
    `skipped` ("host and <system> failed to compile") without being built (`NccWorker.SeedGate`).
    A `systems_filter` in `NCC_INPUT` builds only those systems and reports `"scope": "targets"` in `result.json`;
-   otherwise the scope is `"full"`.
+   otherwise the scope is `"full"`. Each passing firmware target then records its system release's `toolchain`,
+   `otp_full` and, unless `NCC_INPUT.known_system_abi` names the release, `system_libs` (see "System ABI" below).
    For a `pure_elixir` package, a best-effort second pass then adds the package's optional dependencies that the
    project left unresolved (`NccWorker.DepsLock.unresolved_optional_deps/2`, from the package's own `mix.lock` entry)
    and recompiles the package on the host with them loadable. A real application almost always has them in its lock
@@ -154,6 +155,40 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    Dependencies other than the package under test still get stored, but to a run-local tier under the container's
    own `/tmp` rather than the shared cache, so a multi-target run still compiles a shared dependency once and
    restores it for the other targets without trusting the container to fill the shared cache itself.
+
+## System ABI
+
+Once the firmware builds have settled their statuses, and before the per-target optional pass, every passing
+firmware target records what its Nerves system release offers a precompiled NIF (`NccWorker.SystemAbi`), so the
+portal can match a build made on one release of a system against another:
+
+```json
+"nerves_system_rpi4": {
+  "status": "pass",
+  "system_version": "2.2.2",
+  "toolchain": {"package": "nerves_toolchain_aarch64_nerves_linux_gnu", "version": "15.3.1"},
+  "otp_full": "29.1.2",
+  "system_libs": {"libz.so": ["ZLIB_1.2.0", "..."], "libz.so.1": ["..."], "libc.so.6": ["GLIBC_2.17", "..."]}
+}
+```
+
+- `toolchain`: the system's `nerves_toolchain_*` dependency from its `mix.lock` entry, at the version the lock
+  resolved it to.
+- `otp_full`: the trimmed `staging/usr/lib/erlang/releases/*/OTP_VERSION` of the release's artifact directory,
+  `<NERVES_ARTIFACTS_DIR>/<system>-<version>` (`NccWorker.NervesCache`).
+- `system_libs`: `unsquashfs -n -d <tmp> images/rootfs.squashfs lib usr/lib` (no shell, 120 s limit), then every
+  regular `*.so` or `*.so.*` under `lib` and `usr/lib`, read with `Compatibility.Elf`, walked without following
+  links (a merged `/usr`'s `lib` link is walked once, as `usr/lib`), at most 5000 library names. Each file's
+  DT_SONAME, its file name and the name of every link that resolves to it map to the symbol versions it defines.
+  A table without `libc.so.6` or `libc.so` is a failed or partial extraction and is left out. The extraction
+  directory is removed afterwards.
+
+`NCC_INPUT.known_system_abi` (`["nerves_system_rpi4@2.2.2", ...]`, default `[]`) names the releases the portal already
+has a library table for; a target on one of them records `toolchain` and `otp_full` but no `system_libs`.
+
+All three are advisory: each is absent, never `null`, when it cannot be read (a missing artifact directory or
+squashfs, no `unsquashfs`, a failed or timed-out extraction, an unreadable lock), the reason goes to stderr, and no
+status or exit code ever changes because of them. Failed, skipped and `pure_elixir` systems never carry them.
 
 ## Process sweep
 

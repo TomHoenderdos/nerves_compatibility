@@ -28,6 +28,7 @@ defmodule NccWorker.Worker do
     RunScope,
     Scanner,
     SeedGate,
+    SystemAbi,
     Systems,
     TargetDepsGet,
     WarmNerves
@@ -59,6 +60,10 @@ defmodule NccWorker.Worker do
           optional(:egress_probe) => [%{String.t() => String.t() | pos_integer()}],
           optional(:systems_override) => %{String.t() => String.t()},
           optional(:systems_filter) => [String.t()],
+          # `"<system>@<version>"` releases the portal already has a library
+          # table for: a passing target of one records no `system_libs`
+          # (`NccWorker.SystemAbi`). Absent is `[]`.
+          optional(:known_system_abi) => [String.t()],
           # The toolchain a "toolchain" run was queued for. Informational: the
           # worker records what it actually runs on, and echoes this back as
           # `requested_toolchain`.
@@ -356,6 +361,19 @@ defmodule NccWorker.Worker do
               # config reads in `compile_env` (R5), nil on one that is not;
               # absent on firmware results and from `result.json` when nil.
               optional(:compile_env_rule) => 1 | nil,
+              # Only on a passing firmware target, each absent when it could
+              # not be read (`NccWorker.SystemAbi`, advisory): the toolchain
+              # the project's lock resolved for the system,
+              # `%{"package", "version"}`.
+              optional(:toolchain) => %{String.t() => String.t()},
+              # The system release's full OTP version, e.g. "29.1.2", from its
+              # staging `OTP_VERSION`.
+              optional(:otp_full) => String.t(),
+              # The release rootfs's shared libraries: every soname, file name
+              # and link name under `lib` and `usr/lib` mapped to the symbol
+              # versions the file defines. Only when the release is not in
+              # `NCC_INPUT.known_system_abi`, and never without a libc.
+              optional(:system_libs) => %{String.t() => [String.t()]},
               status: Compatibility.Types.status(),
               duration_sec: float(),
               phase_timings: map() | nil,
@@ -888,7 +906,8 @@ defmodule NccWorker.Worker do
       systems: systems,
       paths: paths,
       timeout: timeout,
-      started_at: Map.get(input, :started_at, System.monotonic_time(:second))
+      started_at: Map.get(input, :started_at, System.monotonic_time(:second)),
+      known_system_abi: List.wrap(input[:known_system_abi])
     }
 
     with {:ok, system_results, optional_deps, run_lock} <-
@@ -1207,6 +1226,7 @@ defmodule NccWorker.Worker do
 
   defp build_systems(_scope, :firmware, %{firmware: build}, pass, {:per_target, deps, skipped}) do
     {results, envs} = build.()
+    results = put_system_abi(results, pass)
 
     targets =
       for system <- pass.systems, env = envs[system.name], env != nil do
@@ -1236,6 +1256,19 @@ defmodule NccWorker.Worker do
          declared: DepsLock.declared(pass.project_dir, pass.package)
        }}
     end
+  end
+
+  # Each passing target's toolchain, OTP and rootfs library table
+  # (`NccWorker.SystemAbi`), advisory, once its status is settled and before
+  # the optional pass can touch the lock.
+  defp put_system_abi(results, pass) do
+    lock =
+      case DepsLock.lock(pass.project_dir) do
+        {:ok, lock} -> lock
+        :error -> %{}
+      end
+
+    SystemAbi.put(results, lock, pass.known_system_abi, concurrency: build_concurrency())
   end
 
   # The per-target pass's wall-clock budget, NCC_OPTIONAL_PASS_BUDGET_SEC

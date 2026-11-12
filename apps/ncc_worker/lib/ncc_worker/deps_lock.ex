@@ -173,6 +173,14 @@ defmodule NccWorker.DepsLock do
     end
   end
 
+  @doc """
+  The project's whole lock, keyed by lock name, or `:error` when it is
+  missing or unreadable. `NccWorker.SystemAbi` reads each system's toolchain
+  out of it.
+  """
+  @spec lock(String.t()) :: {:ok, %{String.t() => tuple()}} | :error
+  def lock(project_dir), do: read_lock(project_dir)
+
   defp locked_version({name, entry})
        when is_tuple(entry) and tuple_size(entry) >= 3 and elem(entry, 0) == :hex and
               is_binary(elem(entry, 2)),
