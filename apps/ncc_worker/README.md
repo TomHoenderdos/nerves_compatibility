@@ -334,9 +334,18 @@ input order:
 An entry has all three facts or none: a pair any of them could not be read for has only `system`, `version` and one
 of these `error`s: `unknown system`, `invalid version`, `project failed`, `deps.get failed`,
 `nerves.artifact.get failed`, `no artifact`, `no toolchain`, `no OTP version`, `no rootfs`, `no libc in rootfs` (an
-extraction with no libc, failed or timed out: never an empty table) or `internal error`. Details go to stderr and
-`logs/system_abi.log`, never into the entry. Each extraction is bounded as in a build (120 s); the run has no shared
-budget of its own beyond its 8 pairs.
+extraction with no libc, failed or timed out: never an empty table), `requires nerves 1`, `timeout` or
+`internal error`. Details go to stderr and `logs/system_abi.log`, never into the entry.
+
+`requires nerves 1` is a `deps.get` that Hex could not resolve because the release does not accept the template's
+pinned nerves (`Failed to use "nerves"`, or `depends on nerves ~> 1...`), a permanent failure for that release; any
+other `deps.get` failure, a network one included, is `deps.get failed`.
+
+Each pair has a deadline over all of its work, `NCC_SYSTEM_ABI_PAIR_TIMEOUT_SEC` (default 600). Every `mix` runs
+under `timeout(1)` with what is left of it, which kills mix and what it started, and the extraction gets at most
+what is left too (and at most 120 s, as in a build). The pair's work is also killed 30 s past the deadline, for an
+image without `timeout(1)`. A pair past its deadline is `timeout`, and the run goes on to the next pair and writes
+`result.json` as usual.
 
 ## Toolchain mode
 

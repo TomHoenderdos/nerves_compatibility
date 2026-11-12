@@ -175,14 +175,9 @@ defmodule NccWorker.WarmNerves do
     end
   end
 
-  @doc false
-  # Runs `mix args` in `project_dir` with `env`, its output appended to
-  # `log_file`. Literal mix tasks in the generated project; log_file is under
-  # the /out mount.
-  @spec run_mix([String.t()], Path.t(), [{String.t(), String.t()}], Path.t()) ::
-          :ok | {:error, non_neg_integer()}
+  # Literal mix tasks in the generated project; log_file is under the /out mount.
   # sobelow_skip ["CI.System", "Traversal.FileModule"]
-  def run_mix(args, project_dir, env, log_file) do
+  defp run_mix(args, project_dir, env, log_file) do
     case System.cmd("mix", args,
            cd: project_dir,
            env: env,

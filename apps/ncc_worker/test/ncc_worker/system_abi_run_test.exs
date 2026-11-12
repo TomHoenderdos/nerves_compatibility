@@ -55,13 +55,16 @@ defmodule NccWorker.SystemAbiRunTest do
   defp fake_mix(artifacts, opts \\ []) do
     me = self()
 
-    fn args, dir, env, _log ->
+    fn args, dir, env, _log, timeout_sec ->
       {"MIX_TARGET", target} = List.keyfind(env, "MIX_TARGET", 0)
-      send(me, {:mix, target, args})
+      send(me, {:mix, target, args, timeout_sec})
 
       cond do
         {target, args} == opts[:fail] ->
-          {:error, 1}
+          {:error, {1, Keyword.get(opts, :output, "")}}
+
+        {target, args} == opts[:hang] ->
+          Process.sleep(:infinity)
 
         args == ["deps.get"] ->
           File.write!(Path.join(dir, "mix.lock"), @lock)
@@ -119,8 +122,9 @@ defmodule NccWorker.SystemAbiRunTest do
     assert {:ok, result} = run(input([pair("nerves_system_rpi4", "2.1.0")]), ctx, [])
 
     assert_received {:created, %{"nerves_system_rpi4" => "== 2.1.0"}, ["rpi4"]}
-    assert_received {:mix, "rpi4", ["deps.get"]}
-    assert_received {:mix, "rpi4", ["nerves.artifact.get"]}
+    assert_received {:mix, "rpi4", ["deps.get"], 600}
+    assert_received {:mix, "rpi4", ["nerves.artifact.get"], left}
+    assert left in 599..600
 
     assert result.scope == "system_abi"
     assert result.systems == %{}
@@ -199,6 +203,89 @@ defmodule NccWorker.SystemAbiRunTest do
            ] = result.system_abi
 
     assert map_size(hd(result.system_abi)) == 3
+  end
+
+  test "a pair that hangs times out and the next still runs", ctx do
+    pairs = [pair("nerves_system_bbb", "2.1.0"), pair("nerves_system_rpi4", "2.1.0")]
+    mix = fake_mix(ctx.artifacts, hang: {"bbb", ["deps.get"]})
+
+    assert {:ok, result} =
+             run(input(pairs), ctx, mix: mix, pair_timeout_sec: 1, kill_grace_sec: 0)
+
+    assert [
+             %{"system" => "nerves_system_bbb", "version" => "2.1.0", "error" => "timeout"},
+             %{
+               "system" => "nerves_system_rpi4",
+               "otp_full" => "28.0.2",
+               "system_libs" => %{"libc.so.6" => _}
+             }
+           ] = result.system_abi
+
+    assert map_size(hd(result.system_abi)) == 3
+    refute File.exists?(Path.join(ctx.paths.work_dir, "system_abi/0"))
+
+    assert :ok = NccWorker.JsonWriter.write_result(ctx.paths.output_dir, result)
+    json = ctx.paths.output_dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+    assert [%{"error" => "timeout"}, %{"otp_full" => "28.0.2"}] = json["system_abi"]
+  end
+
+  test "the pair timeout comes from NCC_SYSTEM_ABI_PAIR_TIMEOUT_SEC" do
+    assert SystemAbiRun.pair_timeout_sec(nil) == 600
+    assert SystemAbiRun.pair_timeout_sec("120") == 120
+    assert SystemAbiRun.pair_timeout_sec("0") == 600
+    assert SystemAbiRun.pair_timeout_sec("soon") == 600
+  end
+
+  describe "deps_get_error/1" do
+    test "a release that cannot resolve with the pinned nerves" do
+      for output <- [
+            """
+            Resolving Hex dependencies...
+            Failed to use "nerves" (version 2.0.0-pre.3) because
+              mix.exs specifies == 2.0.0-pre.3
+              nerves_system_rpi4 (version 1.24.0) requires ~> 1.10
+            ** (Mix) Hex dependency resolution failed
+            """,
+            """
+            Resolving Hex dependencies...
+            Because nerves_system_rpi4 1.24.0 depends on nerves ~> 1.10 and your app depends on nerves 2.0.0-pre.3, version solving failed.
+            ** (Mix) Hex dependency resolution failed
+            """
+          ] do
+        assert SystemAbiRun.deps_get_error(output) == "requires nerves 1"
+      end
+    end
+
+    test "a network failure stays a deps.get failure" do
+      output = """
+      Resolving Hex dependencies...
+      ** (Mix) Failed to fetch record for nerves from registry: {:failed_connect, [{:to_address, {~c"repo.hex.pm", 443}}, {:inet, [:inet], :nxdomain}]}
+      """
+
+      assert SystemAbiRun.deps_get_error(output) == "deps.get failed"
+    end
+
+    test "an unrelated conflict stays a deps.get failure" do
+      output = """
+      Resolving Hex dependencies...
+      Failed to use "decimal" (version 2.1.1) because
+        nerves (version 2.0.0-pre.3) requires ~> 2.0
+        nerves_system_rpi4 (version 2.1.0) requires ~> 1.6
+      ** (Mix) Hex dependency resolution failed
+      """
+
+      assert SystemAbiRun.deps_get_error(output) == "deps.get failed"
+    end
+  end
+
+  test "a deps.get that cannot use the pinned nerves says so", ctx do
+    output = ~s{Failed to use "nerves" (version 2.0.0-pre.3) because\n}
+    mix = fake_mix(ctx.artifacts, fail: {"rpi4", ["deps.get"]}, output: output)
+
+    assert {:ok, %{system_abi: [entry]}} =
+             run(input([pair("nerves_system_rpi4", "2.1.0")]), ctx, mix: mix)
+
+    assert entry["error"] == "requires nerves 1"
   end
 
   test "each pair gets its own project", ctx do
