@@ -35,6 +35,9 @@ defmodule Portal.Precompiled.SystemAbi do
                     "libstdc++.so.6"
                   ])
 
+  @warn_bytes 3 * 1024 * 1024
+  @client_cap_bytes 4 * 1024 * 1024
+
   @hex_opts [
     retry: false,
     receive_timeout: 10_000,
@@ -238,8 +241,19 @@ defmodule Portal.Precompiled.SystemAbi do
   @spec render(t()) :: {String.t(), binary()}
   def render(table \\ table()) do
     body = canonical(%{"format" => 1, "systems" => table})
+    warn_size(byte_size(body))
     {sha256(body), body}
   end
+
+  # A client refuses a table over 4 MiB; warn well before one gets there.
+  defp warn_size(size) when size > @warn_bytes do
+    Logger.warning(
+      "The rendered systems.json is #{size} bytes, past #{@warn_bytes}; " <>
+        "clients refuse one over #{@client_cap_bytes}"
+    )
+  end
+
+  defp warn_size(_size), do: :ok
 
   defp canonical(map) when is_map(map) do
     inner =

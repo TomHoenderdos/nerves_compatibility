@@ -125,6 +125,23 @@ defmodule Portal.Workers.SystemAbiRunTest do
       assert [%{args: %{"pairs" => [@rpi3]}}] = all_enqueued(worker: SystemAbiRun)
     end
 
+    test "every run has its own run id, even within one millisecond" do
+      respond([])
+
+      for _ <- 1..2, do: assert(:ok = perform_job(SystemAbiRun, %{"pairs" => [@rpi4]}))
+
+      assert_received {:system_abi_build, %{run_id: first}}
+      assert_received {:system_abi_build, %{run_id: second}}
+      assert first != second
+      assert_received {:cleanup, ^first}
+      assert_received {:cleanup, ^second}
+
+      {:ok, job} = SystemAbiRun.enqueue([@bbb])
+      assert :ok = SystemAbiRun.perform(job)
+      assert_received {:system_abi_build, %{run_id: run_id}}
+      assert run_id =~ ~r/\Asystem_abi-#{job.id}-\d+\z/
+    end
+
     test "a failed container is retried and the scratch dir is removed" do
       respond([], 10)
 

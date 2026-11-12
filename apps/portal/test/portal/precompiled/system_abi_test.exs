@@ -194,6 +194,21 @@ defmodule Portal.Precompiled.SystemAbiTest do
       assert SystemAbi.render() == {sha, body}
     end
 
+    test "warns with its size past 3 MiB, under the client's 4 MiB cap" do
+      versions = for n <- 1..40_000, do: "GLIBC_2.#{n}_#{String.duplicate("x", 80)}"
+      table = %{"nerves_system_rpi4" => %{"2.2.2" => %{"libs" => %{"libc.so.6" => versions}}}}
+
+      log = capture_log(fn -> send(self(), {:body, elem(SystemAbi.render(table), 1)}) end)
+      assert_received {:body, body}
+      assert byte_size(body) > 3 * 1024 * 1024
+      assert log =~ "[warning]"
+      assert log =~ "systems.json"
+      assert log =~ Integer.to_string(byte_size(body))
+
+      small = capture_log(fn -> SystemAbi.render(%{}) end)
+      refute small =~ "systems.json"
+    end
+
     test "is stored once and read back only while it hashes to its name" do
       lock_row!("nerves_system_rpi4", "2.2.2")
       {sha, body} = SystemAbi.render()

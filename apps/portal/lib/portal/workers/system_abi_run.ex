@@ -163,8 +163,8 @@ defmodule Portal.Workers.SystemAbiRun do
   end
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"pairs" => pairs}}) when is_list(pairs) do
-    if valid_pairs?(pairs), do: run(pairs), else: malformed(pairs)
+  def perform(%Oban.Job{id: id, args: %{"pairs" => pairs}}) when is_list(pairs) do
+    if valid_pairs?(pairs), do: run(id, pairs), else: malformed(pairs)
   end
 
   def perform(%Oban.Job{args: args}), do: malformed(args)
@@ -179,8 +179,10 @@ defmodule Portal.Workers.SystemAbiRun do
       end)
   end
 
-  defp run(pairs) do
-    run_id = "system_abi-#{System.system_time(:millisecond)}"
+  # Names the run's scratch dir and container on this node: the job id, and a
+  # node-unique integer, so two runs never share one.
+  defp run(job_id, pairs) do
+    run_id = "system_abi-#{job_id}-#{System.unique_integer([:positive])}"
 
     try do
       outcome(builder().build(%{run_id: run_id, mode: "system_abi", system_abi: pairs}), pairs)
