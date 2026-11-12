@@ -85,7 +85,9 @@ defmodule Portal.Builder do
           result: map() | nil,
           files_dir: Path.t(),
           output_dir: Path.t(),
-          log: String.t()
+          log: String.t(),
+          # The parsed `/out/resources.json` (`read_resources/1`), or nil.
+          resources: map() | nil
         }
 
   # ── Config ───────────────────────────────────────────────────────────────
@@ -181,6 +183,59 @@ defmodule Portal.Builder do
 
   def judge_input(_mode), do: nil
 
+  @doc """
+  The configured `NCC_BUILD_MEMORY` (`:memory`) in bytes, or nil when it is
+  not a memory limit (`Argv.memory_limit?/1`). The units are docker's, which
+  are binary: `"3g"` is 3 GiB, `"512m"`, `"4096k"`, and a plain number is
+  bytes.
+  """
+  @spec memory_limit_bytes() :: pos_integer() | nil
+  def memory_limit_bytes do
+    memory = config(:memory, nil)
+
+    cond do
+      not Argv.memory_limit?(memory) -> nil
+      is_integer(memory) -> memory
+      true -> parse_memory(memory)
+    end
+  end
+
+  @memory_units %{"" => 0, "k" => 1, "m" => 2, "g" => 3, "t" => 4, "p" => 5}
+
+  defp parse_memory(memory) do
+    [_, number, unit] = Regex.run(~r/\A([0-9]+(?:\.[0-9]+)?)([kmgtp]?)i?b?\z/i, memory)
+    {value, ""} = Float.parse(number)
+    trunc(value * Integer.pow(1024, Map.fetch!(@memory_units, String.downcase(unit))))
+  end
+
+  @doc "The configured `NCC_BUILD_CONCURRENCY` (`:build_concurrency`), or nil when unset."
+  @spec build_concurrency() :: pos_integer() | nil
+  def build_concurrency do
+    case config(:build_concurrency, nil) do
+      value when is_integer(value) and value > 0 ->
+        value
+
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {n, ""} when n > 0 -> n
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc "The configured `NCC_BUILD_CPUS` (`:cpus`) as a string, or nil when unset."
+  @spec cpus() :: String.t() | nil
+  def cpus do
+    case config(:cpus, nil) do
+      nil -> nil
+      "" -> nil
+      value -> to_string(value)
+    end
+  end
+
   defp config(key, default) do
     :portal
     |> Application.get_env(__MODULE__, [])
@@ -220,8 +275,9 @@ defmodule Portal.Builder do
   `scratch_root/<run_id>`, writes `input.json`, runs the container, and reads
   `/out/result.json`.
 
-  Returns `{:ok, %{exit_code:, result:, files_dir:, output_dir:, log:}}` where
-  `result` is the parsed `result.json` (or `nil` if the container produced none).
+  Returns `{:ok, %{exit_code:, result:, resources:, files_dir:, output_dir:, log:}}`
+  where `result` is the parsed `result.json` (or `nil` if the container produced
+  none) and `resources` the parsed `resources.json` (`read_resources/1`).
   The caller maps `exit_code` → outcome. `{:error, reason}` is reserved for
   runner-side failures (docker unavailable, scratch setup, etc).
   `{:error, {:build_timeout, seconds, container}}` means the container ran
@@ -307,6 +363,7 @@ defmodule Portal.Builder do
        %{
          exit_code: exit_code,
          result: result,
+         resources: read_resources_json(output_dir),
          files_dir: files_dir,
          output_dir: output_dir,
          log: log
@@ -340,6 +397,7 @@ defmodule Portal.Builder do
          %{
            exit_code: 0,
            result: result,
+           resources: read_resources_json(output_dir),
            files_dir: files_dir,
            output_dir: output_dir,
            log: read_log(Path.join(output_dir, "runner.log"))
@@ -374,6 +432,18 @@ defmodule Portal.Builder do
     |> Path.join("out")
     |> Path.join("runner.log")
   end
+
+  @doc """
+  A run's `out/resources.json`, the memory record the worker rewrites after
+  every sample (`NccWorker.Resources`), parsed with its string keys; nil when
+  it is missing or not a JSON object.
+
+  For the callers that only have the run id: a timed-out build returns no
+  build map, and an OOM-killed container leaves this file but no
+  `result.json`.
+  """
+  @spec read_resources(String.t()) :: map() | nil
+  def read_resources(run_id), do: run_id |> output_dir() |> read_resources_json()
 
   @doc """
   Resolve the digest for a (usually local) image via `docker inspect`.
@@ -1214,6 +1284,17 @@ defmodule Portal.Builder do
     case ResultJson.read(path) do
       {:ok, _bytes, parsed} -> parsed
       {:error, _reason} -> nil
+    end
+  end
+
+  # Written by the worker into the same host-mounted `/out` as `result.json`,
+  # so read the same bounded way; the honest file is a few hundred bytes.
+  @resources_max_bytes 64 * 1024
+
+  defp read_resources_json(output_dir) do
+    case ResultJson.read(Path.join(output_dir, "resources.json"), @resources_max_bytes, 4) do
+      {:ok, _bytes, parsed} when is_map(parsed) -> parsed
+      _ -> nil
     end
   end
 

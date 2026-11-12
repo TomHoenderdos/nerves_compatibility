@@ -1292,4 +1292,146 @@ defmodule Portal.BuilderTest do
       assert log =~ "Wall-clock timeout exceeded"
     end
   end
+
+  # The worker writes `/out/resources.json` after every memory sample, so a
+  # container the kernel OOM-kills, which never writes `result.json`, still
+  # leaves its peak behind (`NccWorker.Resources`).
+  describe "resources side file" do
+    @describetag :capture_log
+
+    @resources %{
+      "peak_used_bytes" => 1_500_000_000,
+      "peak_total_bytes" => 2_000_000_000,
+      "limit_bytes" => 8_589_934_592,
+      "samples" => 12,
+      "read_errors" => 0,
+      "interval_ms" => 5000,
+      "started_at" => "2026-11-12T10:00:00.000000Z",
+      "sampled_at" => "2026-11-12T10:01:00.000000Z"
+    }
+
+    setup %{previous: previous} do
+      tmp = Path.join(System.tmp_dir!(), "builder-res-#{System.unique_integer([:positive])}")
+      bin = Path.join(tmp, "bin")
+      File.mkdir_p!(bin)
+      out = Path.join([tmp, "scratch", "run-1", "out"])
+      docker = Path.join(bin, "docker")
+
+      # `run` leaves in /out whatever the test put in `#{tmp}/resources.json`.
+      File.write!(docker, """
+      #!/bin/sh
+      case "$1" in
+        version) echo 99.0 ;;
+        run) [ -e #{tmp}/resources.json ] && cp #{tmp}/resources.json #{out}/resources.json
+             exit "$(cat #{tmp}/exit 2>/dev/null || echo 0)" ;;
+      esac
+      exit 0
+      """)
+
+      File.chmod!(docker, 0o755)
+      old_path = System.get_env("PATH")
+      System.put_env("PATH", bin <> ":" <> old_path)
+
+      on_exit(fn ->
+        System.put_env("PATH", old_path)
+        File.rm_rf(tmp)
+      end)
+
+      put_builder(
+        [
+          scratch_root: Path.join(tmp, "scratch"),
+          nerves_cache: Path.join(tmp, "nerves"),
+          hex_cache: Path.join(tmp, "hex"),
+          min_free_disk_gb: 0,
+          exec_probe: fn _ -> :ok end,
+          egress_check: false
+        ],
+        previous
+      )
+
+      %{tmp: tmp}
+    end
+
+    test "build/2 returns the parsed side file", %{tmp: tmp} do
+      File.write!(Path.join(tmp, "resources.json"), Jason.encode!(@resources))
+
+      assert {:ok, %{exit_code: 0, result: nil, resources: @resources}} =
+               Builder.build(@build_args)
+
+      assert Builder.read_resources("run-1") == @resources
+    end
+
+    test "an OOM-killed container still returns its side file", %{tmp: tmp} do
+      File.write!(Path.join(tmp, "resources.json"), Jason.encode!(@resources))
+      File.write!(Path.join(tmp, "exit"), "137")
+
+      assert {:ok, %{exit_code: 137, result: nil, resources: @resources}} =
+               Builder.build(@build_args)
+    end
+
+    test "a missing or unparsable side file is nil", %{tmp: tmp} do
+      assert {:ok, %{resources: nil}} = Builder.build(@build_args)
+      assert Builder.read_resources("run-1") == nil
+
+      File.write!(Path.join(tmp, "resources.json"), "{not json")
+      assert {:ok, %{resources: nil}} = Builder.build(@build_args)
+
+      File.write!(Path.join(tmp, "resources.json"), "[1, 2]")
+      assert {:ok, %{resources: nil}} = Builder.build(@build_args)
+    end
+
+    test "read_resources/1 refuses a symlink left by package code", %{tmp: tmp} do
+      out = Path.join([tmp, "scratch", "run-1", "out"])
+      File.mkdir_p!(out)
+      target = Path.join(tmp, "elsewhere.json")
+      File.write!(target, Jason.encode!(@resources))
+      File.ln_s!(target, Path.join(out, "resources.json"))
+
+      assert Builder.read_resources("run-1") == nil
+    end
+  end
+
+  describe "memory_limit_bytes/0" do
+    test "converts the configured limit to bytes", %{previous: previous} do
+      for {memory, bytes} <- [
+            {"3g", 3 * 1024 * 1024 * 1024},
+            {"512m", 512 * 1024 * 1024},
+            {"4096k", 4096 * 1024},
+            {"1000", 1000},
+            {"8G", 8 * 1024 * 1024 * 1024},
+            {"2gb", 2 * 1024 * 1024 * 1024},
+            {"1.5g", 1_610_612_736},
+            {1_073_741_824, 1_073_741_824}
+          ] do
+        put_builder([memory: memory], previous)
+        assert Builder.memory_limit_bytes() == bytes, "for #{inspect(memory)}"
+      end
+    end
+
+    test "is nil when unset or not a limit", %{previous: previous} do
+      for memory <- [nil, "", "0", "lots"] do
+        put_builder([memory: memory], previous)
+        assert Builder.memory_limit_bytes() == nil, "for #{inspect(memory)}"
+      end
+    end
+  end
+
+  describe "build_concurrency/0 and cpus/0" do
+    test "parse the configured values", %{previous: previous} do
+      put_builder([build_concurrency: "4", cpus: "2"], previous)
+      assert Builder.build_concurrency() == 4
+      assert Builder.cpus() == "2"
+
+      put_builder([build_concurrency: 3, cpus: 1.5], previous)
+      assert Builder.build_concurrency() == 3
+      assert Builder.cpus() == "1.5"
+
+      put_builder([build_concurrency: nil, cpus: nil], previous)
+      assert Builder.build_concurrency() == nil
+      assert Builder.cpus() == nil
+
+      put_builder([build_concurrency: "many"], previous)
+      assert Builder.build_concurrency() == nil
+    end
+  end
 end

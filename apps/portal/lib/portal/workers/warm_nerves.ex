@@ -27,6 +27,7 @@ defmodule Portal.Workers.WarmNerves do
   require Logger
 
   alias Portal.Builder
+  alias Portal.Catalog.RunMemory
   alias Portal.Workers.Ingest
 
   @doc "This node's own warm queue."
@@ -65,14 +66,22 @@ defmodule Portal.Workers.WarmNerves do
   end
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"image_digest" => digest, "pairs" => pairs}})
+  def perform(%Oban.Job{args: %{"image_digest" => digest, "pairs" => pairs}, attempt: attempt})
       when is_binary(digest) and is_list(pairs) do
     run_id = "warm_nerves-#{System.system_time(:millisecond)}"
 
+    build_args = %{
+      run_id: run_id,
+      mode: "warm_nerves",
+      nerves_packages: pairs,
+      image_digest: digest
+    }
+
     try do
-      %{run_id: run_id, mode: "warm_nerves", nerves_packages: pairs, image_digest: digest}
-      |> builder().build()
-      |> outcome(pairs)
+      started_at = DateTime.utc_now()
+      result = builder().build(build_args)
+      RunMemory.record(:warm, build_args, result, %{attempt: attempt, started_at: started_at})
+      outcome(result, pairs)
     after
       builder().cleanup(run_id)
     end

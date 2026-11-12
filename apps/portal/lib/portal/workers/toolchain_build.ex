@@ -68,6 +68,7 @@ defmodule Portal.Workers.ToolchainBuild do
   alias Portal.Catalog.Ingestion
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Package
+  alias Portal.Catalog.RunMemory
   alias Portal.Workers.Ingest
 
   @zero_digest "sha256:" <> String.duplicate("0", 64)
@@ -134,8 +135,8 @@ defmodule Portal.Workers.ToolchainBuild do
     end
   end
 
-  defp build(%Oban.Job{args: args}, run_id, image, image_digest, toolchain) do
-    builder().build(%{
+  defp build(%Oban.Job{args: args} = job, run_id, image, image_digest, toolchain) do
+    build_args = %{
       package: args["package"],
       version: args["version"],
       run_id: run_id,
@@ -145,7 +146,18 @@ defmodule Portal.Workers.ToolchainBuild do
       toolchain: toolchain,
       optional_deps: optional_deps(variant(args)),
       config_variant: input_config_variant(config_variant(args))
+    }
+
+    started_at = DateTime.utc_now()
+    outcome = builder().build(build_args)
+
+    RunMemory.record(:toolchain, build_args, outcome, %{
+      attempt: job.attempt,
+      toolchain: args["toolchain"],
+      started_at: started_at
     })
+
+    outcome
   end
 
   defp variant(%{"variant" => "without"}), do: :without

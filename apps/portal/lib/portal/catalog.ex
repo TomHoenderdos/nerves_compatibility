@@ -38,6 +38,7 @@ defmodule Portal.Catalog do
     PackageOverride,
     ReleaseDownloads,
     Run,
+    RunMemory,
     SystemLog,
     SystemResult,
     ToolchainBuild,
@@ -133,6 +134,7 @@ defmodule Portal.Catalog do
     resource(ToolchainBuild)
     resource(ReleaseDownloads)
     resource(CoverageReport)
+    resource(RunMemory)
   end
 
   @doc """

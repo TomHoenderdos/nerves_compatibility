@@ -67,6 +67,7 @@ defmodule Portal.Workers.Build do
   alias Portal.Catalog.BuildTimeout
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Run
+  alias Portal.Catalog.RunMemory
   alias Portal.Catalog.ToolingSkip
   alias Portal.HexCache
   alias Portal.NervesCache
@@ -191,7 +192,7 @@ defmodule Portal.Workers.Build do
   # than the eight separate fields (seven before `sweep_id` joined them) it
   # would otherwise need to close over.
   defp do_build(ctx, args) do
-    {package, version, image_digest, _scan_request_id, run_id, _attempt, _max, _sweep_id} = ctx
+    {package, version, image_digest, _scan_request_id, run_id, attempt, _max, _sweep_id} = ctx
 
     build_args =
       %{
@@ -206,6 +207,7 @@ defmodule Portal.Workers.Build do
 
     started_at = DateTime.utc_now()
     result = builder().build(build_args)
+    RunMemory.record(:firmware, build_args, result, %{attempt: attempt, started_at: started_at})
 
     case if(stale_attempt?(), do: :stale_attempt, else: result) do
       :stale_attempt ->

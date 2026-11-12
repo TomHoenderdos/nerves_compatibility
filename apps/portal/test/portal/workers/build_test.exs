@@ -1976,4 +1976,72 @@ defmodule Portal.Workers.BuildTest do
   # afterwards asked a real Docker daemon for the image label.
   defp restore_builder_env(nil), do: Application.delete_env(:portal, Portal.Builder)
   defp restore_builder_env(previous), do: Application.put_env(:portal, Portal.Builder, previous)
+
+  # Every container run leaves a `catalog_run_memory` row, written as soon
+  # as the build returns (`Portal.Catalog.RunMemory`).
+  describe "run memory" do
+    @describetag :capture_log
+
+    @memory_args %{"package" => "jason", "version" => "1.4.1", "image_digest" => "sha256:mem"}
+
+    defp memory_rows, do: Ash.read!(Portal.Catalog.RunMemory, domain: Portal.Catalog)
+
+    test "a successful build writes one firmware row before its ingest" do
+      files_dir = files_dir_with([])
+
+      set_response(
+        {:ok,
+         %{
+           exit_code: 0,
+           result: fixture_result(),
+           resources: %{"peak_used_bytes" => 123, "samples" => 3},
+           files_dir: files_dir,
+           output_dir: files_dir,
+           log: "ok"
+         }}
+      )
+
+      assert :ok = perform_job(Build, @memory_args)
+
+      assert [row] = memory_rows()
+      assert %{kind: :firmware, exit_code: 0, oom_killed: false, timed_out: false} = row
+      assert %{package: "jason", version: "1.4.1", image_digest: "sha256:mem"} = row
+      assert %{attempt: 1, peak_used_bytes: 123, samples: 3} = row
+      assert "jason-1.4.1-" <> _ = row.run_id
+      assert [_ingest] = all_enqueued(worker: Ingest)
+    end
+
+    test "an OOM-killed container writes a row marked oom_killed" do
+      set_response(
+        {:ok, %{exit_code: 137, result: nil, files_dir: "", output_dir: "", log: "Killed"}}
+      )
+
+      assert {:error, _} = perform_job(Build, @memory_args)
+
+      assert [%{kind: :firmware, exit_code: 137, oom_killed: true, peak_used_bytes: nil}] =
+               memory_rows()
+    end
+
+    test "a wall-clock timeout writes a row with no exit code" do
+      set_response({:error, {:build_timeout, 7200, "ncc-slow"}})
+
+      perform_job(Build, Map.put(@memory_args, "scope", "argus_only"))
+
+      assert [%{exit_code: nil, timed_out: true, oom_killed: false}] = memory_rows()
+    end
+
+    test "a runner failure writes a row with no exit code" do
+      set_response({:error, :docker_unavailable})
+
+      assert {:error, :docker_unavailable} = perform_job(Build, @memory_args)
+      assert [%{exit_code: nil, timed_out: false}] = memory_rows()
+    end
+
+    test "a host-condition snooze ran no container and writes no row" do
+      set_response({:error, :egress_filter_missing})
+
+      assert {:snooze, 900} = perform_job(Build, @memory_args)
+      assert memory_rows() == []
+    end
+  end
 end

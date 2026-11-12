@@ -162,4 +162,40 @@ defmodule Portal.Workers.WarmNervesTest do
       refute_received {:warm_build, _}
     end
   end
+
+  describe "run memory" do
+    @describetag :capture_log
+
+    defp memory_rows, do: Ash.read!(Portal.Catalog.RunMemory, domain: Portal.Catalog)
+
+    test "a warm writes one warm row" do
+      assert :ok = perform_job(WarmNerves, %{"image_digest" => "sha256:x", "pairs" => @pairs})
+
+      assert [row] = memory_rows()
+      assert %{kind: :warm, exit_code: 0, oom_killed: false, package: nil, version: nil} = row
+      assert %{image_digest: "sha256:x"} = row
+      assert "warm_nerves-" <> _ = row.run_id
+    end
+
+    test "an OOM-killed warm writes a row marked oom_killed" do
+      Process.put(
+        :warm_response,
+        {:ok, %{exit_code: 137, result: nil, files_dir: "", output_dir: "", log: ""}}
+      )
+
+      assert {:error, _} =
+               perform_job(WarmNerves, %{"image_digest" => "sha256:x", "pairs" => @pairs})
+
+      assert [%{kind: :warm, exit_code: 137, oom_killed: true}] = memory_rows()
+    end
+
+    test "a host-condition snooze ran no container and writes no row" do
+      Process.put(:warm_response, {:error, {:insufficient_disk, 1, 2}})
+
+      assert {:snooze, 900} =
+               perform_job(WarmNerves, %{"image_digest" => "sha256:x", "pairs" => @pairs})
+
+      assert memory_rows() == []
+    end
+  end
 end

@@ -435,4 +435,34 @@ defmodule Portal.Workers.ToolchainBuildTest do
   # afterwards asked a real Docker daemon for the image label.
   defp restore_builder_env(nil), do: Application.delete_env(:portal, Portal.Builder)
   defp restore_builder_env(previous), do: Application.put_env(:portal, Portal.Builder, previous)
+
+  describe "run memory" do
+    @describetag :capture_log
+
+    defp memory_rows, do: Ash.read!(Portal.Catalog.RunMemory, domain: Catalog)
+
+    test "a successful build writes one toolchain row" do
+      respond(0)
+      assert :ok = perform_job(ToolchainBuild, @args)
+
+      assert [row] = memory_rows()
+      assert %{kind: :toolchain, exit_code: 0, oom_killed: false, toolchain: "1.19/28"} = row
+      assert %{package: "jason", version: "1.4.4", image_digest: "sha256:toolchain-image"} = row
+      assert "tc-jason-1.4.4-" <> _ = row.run_id
+    end
+
+    test "an OOM-killed container writes a row marked oom_killed" do
+      respond(137)
+      assert {:error, _} = perform_job(ToolchainBuild, @args)
+
+      assert [%{kind: :toolchain, exit_code: 137, oom_killed: true}] = memory_rows()
+    end
+
+    test "a host-condition snooze ran no container and writes no row" do
+      Process.put(:stub_build_response, {:error, :scratch_noexec})
+
+      assert {:snooze, 900} = perform_job(ToolchainBuild, @args)
+      assert memory_rows() == []
+    end
+  end
 end
