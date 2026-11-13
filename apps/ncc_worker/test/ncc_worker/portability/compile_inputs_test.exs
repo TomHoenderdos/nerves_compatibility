@@ -56,7 +56,7 @@ defmodule NccWorker.Portability.CompileInputsTest do
   test "names that hold credentials are unrecordable, whatever their case" do
     names =
       ~w(DB_PASS SMTP_PWD AWS_ACCESS_KEY AUTH BASIC_AUTH HTTP_PROXY http_proxy HTTPS_PROXY no_proxy) ++
-        ~w(ALL_PROXY Fx_Key)
+        ~w(ALL_PROXY Fx_Key AWS_ACCESS_KEY_ID SIGNING_KEY_FILE)
 
     for name <- names do
       assert [%{"value" => "unrecordable"}] =
