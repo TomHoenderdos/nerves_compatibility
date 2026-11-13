@@ -28,6 +28,9 @@ defmodule NccWorker.Tracer.FixturesRebarScriptTest do
     "hook" => """
     [{pre_hooks, [{compile, "true"}]} | CONFIG].
     """,
+    # yamerl 0.10.0's real script, vendored unchanged from its Hex tarball.
+    "yamerl" =>
+      File.read!(Path.join(__DIR__, "../../fixtures/rebar/yamerl-0.10.0.rebar.config.script")),
     # Writes where it is evaluated, to show which VMs evaluate it.
     "marker" => """
     file:write_file(os:getenv("FX_SCRIPT_MARKER"),
@@ -77,7 +80,8 @@ defmodule NccWorker.Tracer.FixturesRebarScriptTest do
     proj = TracerFixtures.project(dir, ["fx_uses_r3s"], deps)
     File.write!(Path.join(proj, "mix.lock"), "%{}\n")
     marker = Path.join(dir, "marker.txt")
-    env = [{"FX_SCRIPT_MARKER", marker}]
+    # The builder has no GitHub Actions variables; CI does, so unset them.
+    env = [{"FX_SCRIPT_MARKER", marker}, {"GITHUB_ACTIONS", nil}, {"GITHUB_TOKEN", nil}]
 
     release =
       TracerFixtures.hex_release(
@@ -121,6 +125,24 @@ defmodule NccWorker.Tracer.FixturesRebarScriptTest do
       assert [%{"kind" => "env", "name" => "FX_SCRIPT_MODE", "set_by" => "host"}] =
                Enum.filter(inputs, &(&1["name"] == "FX_SCRIPT_MODE")),
              app
+    end
+  end
+
+  # yamerl's script always reads GITHUB_TOKEN. Unset on the builder, it is
+  # recorded as unset, so a client without it matches.
+  test "yamerl's script publishes with its unset GitHub variables as inputs", ctx do
+    unset =
+      :error |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
+
+    for app <- ["fx_r3s", "fx_uses_r3s"] do
+      v = verdict(ctx, "yamerl", app)
+      assert %{status: :pass, compile_inputs: inputs} = v, "#{app}: #{inspect(v.observations)}"
+
+      for name <- ["GITHUB_ACTIONS", "GITHUB_TOKEN"] do
+        assert [%{"kind" => "env", "value" => ^unset, "set_by" => "host"}] =
+                 Enum.filter(inputs, &(&1["name"] == name)),
+               "#{app} #{name}"
+      end
     end
   end
 

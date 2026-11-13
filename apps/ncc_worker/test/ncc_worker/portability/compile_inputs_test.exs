@@ -53,6 +53,27 @@ defmodule NccWorker.Portability.CompileInputsTest do
     assert values == ["unrecordable"]
   end
 
+  # An unset variable reveals nothing: yamerl's rebar.config.script always
+  # reads GITHUB_TOKEN, and a client without it must still match.
+  test "a private-looking name that was unset records the unset value; a set one does not" do
+    assert CompileInputs.build([read("GITHUB_TOKEN", rec(:error), owner: :outside)], []) == [
+             %{
+               "kind" => "env",
+               "name" => "GITHUB_TOKEN",
+               "value" => rec(:error),
+               "set_by" => "host"
+             }
+           ]
+
+    assert [%{"value" => "unrecordable"}] =
+             CompileInputs.build([read("GITHUB_TOKEN", rec({:ok, "ghp_x"}))], [])
+
+    for name <- ~w(NCC_INPUT DB_PASS AWS_ACCESS_KEY HTTP_PROXY AUTH) do
+      assert [%{"value" => value}] = CompileInputs.build([read(name, rec(:error))], [])
+      assert value == rec(:error), name
+    end
+  end
+
   test "names that hold credentials are unrecordable, whatever their case" do
     names =
       ~w(DB_PASS SMTP_PWD AWS_ACCESS_KEY AUTH BASIC_AUTH HTTP_PROXY http_proxy HTTPS_PROXY no_proxy) ++

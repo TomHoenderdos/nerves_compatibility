@@ -30,7 +30,10 @@ defmodule NccWorker.Portability.CompileInputs do
   `_PROXY`, or `AUTH` itself; in any case), or that holds a URL with
   userinfo (`scheme://user:pass@`) is `"unrecordable"`, which matches
   nothing: the builder's environment holds no secret, and this keeps it
-  that way in public manifests. Reading the whole environment, more than
+  that way in public manifests. A variable that was unset (`:error`) is
+  recorded as unset whatever its name: that reveals nothing, and a client
+  without it matches (yamerl's `rebar.config.script` always reads
+  `GITHUB_TOKEN`). Reading the whole environment, more than
   128 variables, or a name no variable can have (empty, with `=` or NUL,
   over 256 bytes, not a string: `Compatibility.CompileInputs.name?/1`) is
   `env_all`.
@@ -54,6 +57,8 @@ defmodule NccWorker.Portability.CompileInputs do
   @private ~r/\ANCC_|TOKEN|SECRET|PASSW|API_KEY|PRIVATE|CREDENTIAL|_PASS\z|_PWD\z|_KEY(\z|_)|(\A|_)AUTH\z|_PROXY\z/i
   # A URL carrying userinfo (`scheme://user:pass@host`, `scheme://token@`),
   # anywhere in the decoded value.
+  # `:error`, as the tracer captures an unset variable's `os:getenv/1`.
+  @unset :error |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
   @userinfo_url ~r{[a-z][a-z0-9+.-]*://[^/?#@\s]*@}i
 
   @spec build([{term(), term()}], [map()]) :: [map()]
@@ -121,6 +126,11 @@ defmodule NccWorker.Portability.CompileInputs do
       write -> Map.merge(base, %{"set_by" => "build", "inputs" => inputs_of(write, reads)})
     end
   end
+
+  # An unset variable reveals nothing, whatever its name: its value is
+  # recorded so a client without it matches. Only a set value can hold a
+  # secret.
+  defp value_of(%{"name" => name, "returned" => @unset}) when is_binary(name), do: @unset
 
   defp value_of(%{"name" => name, "returned" => returned})
        when is_binary(name) and is_binary(returned) do
