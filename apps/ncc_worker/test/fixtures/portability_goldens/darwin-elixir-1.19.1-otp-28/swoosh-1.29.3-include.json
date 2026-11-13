@@ -3442,6 +3442,34 @@
       }
     ],
     "config_unreviewed": [],
+    "config_writes": [
+      {
+        "arg": {
+          "app": "parse_trans",
+          "app_name": "parse_trans",
+          "key": "revert_workaround",
+          "key_name": "revert_workaround"
+        },
+        "file": "<work>/work/proj/deps/parse_trans/src/parse_trans.erl",
+        "line": 653,
+        "mfa": "application:set_env/3",
+        "module": "parse_trans",
+        "owner": "hackney"
+      },
+      {
+        "arg": {
+          "app": "parse_trans",
+          "app_name": "parse_trans",
+          "key": "revert_workaround",
+          "key_name": "revert_workaround"
+        },
+        "file": "<work>/work/proj/deps/parse_trans/src/parse_trans.erl",
+        "line": 653,
+        "mfa": "application:set_env/3",
+        "module": "parse_trans",
+        "owner": "parse_trans"
+      }
+    ],
     "elixir_version": [
       {
         "arg": {
@@ -3494,6 +3522,79 @@
         "owner": "thousand_island"
       }
     ],
+    "env_reads": [
+      {
+        "all": false,
+        "arg": {
+          "name": "FINCH_PATH"
+        },
+        "file": "<work>/work/proj/deps/req/mix.exs",
+        "line": 117,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Req.MixProject",
+        "name": "FINCH_PATH",
+        "owner": "req",
+        "slice_allowed": true,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "FINCH_REF"
+        },
+        "file": "<work>/work/proj/deps/req/mix.exs",
+        "line": 120,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Req.MixProject",
+        "name": "FINCH_REF",
+        "owner": "req",
+        "slice_allowed": true,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "PLUG_CRYPTO_2_0"
+        },
+        "file": "<work>/work/proj/deps/plug/mix.exs",
+        "line": 57,
+        "mfa": "os:getenv/1",
+        "module": "elixir_compiler_N",
+        "name": "PLUG_CRYPTO_2_0",
+        "owner": "plug",
+        "slice_allowed": true,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "PLUG_PATH"
+        },
+        "file": "<work>/work/proj/deps/req/mix.exs",
+        "line": 130,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Req.MixProject",
+        "name": "PLUG_PATH",
+        "owner": "req",
+        "slice_allowed": true,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "PLUG_REF"
+        },
+        "file": "<work>/work/proj/deps/req/mix.exs",
+        "line": 133,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Req.MixProject",
+        "name": "PLUG_REF",
+        "owner": "req",
+        "slice_allowed": true,
+        "vm": "main"
+      }
+    ],
+    "env_writes": [],
     "mix_exs_allowed": [
       {
         "arg": {
@@ -3516,56 +3617,6 @@
         "mfa": "file:list_dir/1",
         "module": "Elixir.Bandit.MixProject",
         "owner": "bandit"
-      },
-      {
-        "arg": {
-          "name": "FINCH_PATH"
-        },
-        "file": "<work>/work/proj/deps/req/mix.exs",
-        "line": 117,
-        "mfa": "os:getenv/1",
-        "module": "Elixir.Req.MixProject",
-        "owner": "req"
-      },
-      {
-        "arg": {
-          "name": "FINCH_REF"
-        },
-        "file": "<work>/work/proj/deps/req/mix.exs",
-        "line": 120,
-        "mfa": "os:getenv/1",
-        "module": "Elixir.Req.MixProject",
-        "owner": "req"
-      },
-      {
-        "arg": {
-          "name": "PLUG_CRYPTO_2_0"
-        },
-        "file": "<work>/work/proj/deps/plug/mix.exs",
-        "line": 57,
-        "mfa": "os:getenv/1",
-        "module": "elixir_compiler_N",
-        "owner": "plug"
-      },
-      {
-        "arg": {
-          "name": "PLUG_PATH"
-        },
-        "file": "<work>/work/proj/deps/req/mix.exs",
-        "line": 130,
-        "mfa": "os:getenv/1",
-        "module": "Elixir.Req.MixProject",
-        "owner": "req"
-      },
-      {
-        "arg": {
-          "name": "PLUG_REF"
-        },
-        "file": "<work>/work/proj/deps/req/mix.exs",
-        "line": 133,
-        "mfa": "os:getenv/1",
-        "module": "Elixir.Req.MixProject",
-        "owner": "req"
       }
     ],
     "mix_project_paths": [],

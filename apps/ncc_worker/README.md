@@ -363,7 +363,9 @@ the compile-time trace (`NccWorker.Portability`).
 under rule 2, when the trace's closure line agrees on the manager (`manager mismatch: ` otherwise). Such a build
 records `judge_revision` one higher. `toolchain_build.manager` is the manager the trace says Mix built the package
 with. Any value other than `true` leaves item 1 off; with it on, a `deps/` the judge cannot list is "portability
-could not be judged".
+could not be judged". Revision 3 records compile-time env reads and config values the snapshot cannot give as
+inputs (`compile_inputs`, including `config_order` items for reads whose value depends on the consumer's compile
+order) instead of refusing; every skipped row below it is reopened once.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
@@ -504,7 +506,7 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
   "config_variant": "default",
   "portability_rule": 2,
   "rule1_reason": "rule 1's reason when it would have skipped, else null",
-  "judge_revision": 1,
+  "judge_revision": 3,
   "manager": "rebar3",
   "compile_observations": {"trace_stats": {"windows": 14, "wall_ms": 9100, "host_compile_sec": 31.2}, "config_reads": [], "refusals": [], "taint": {}, "problems": []},
   "file_manifest": {"ebin": [{"path": "ebin/x.beam", "sha256": "...", "size": 1234, "mode": 33188}], "priv": []}
@@ -582,7 +584,9 @@ environment reads of the package's closure, which no longer refuse a build (`Ncc
 `{"kind": "env", "name", "value", "set_by": "host"}` for a value from the builder's environment,
 `{"kind": "env", "name", "value", "set_by": "build", "inputs": "recorded" | "unknown"}` for a value an earlier
 `System.put_env` in the same build set, `{"kind": "env_all"}` for a read of the whole environment, and
-`{"kind": "config_unrecorded"}` when the config reads could not all be recorded. A value the trace could not
+`{"kind": "config_unrecorded"}` when the config reads could not all be recorded, and
+`{"kind": "config_order", "app", "path", "reader", "default", "seen"}`: an unset key read outside the reader's tree;
+`default` is the app's `.app` env default at the locked version, `seen` what the read returned. A value the trace could not
 capture, over 64 KiB, or under a private-looking name (`NCC_*`, `*TOKEN*`, `*SECRET*`, ...) is `"unrecordable"`.
 Each kind has its own cap inside the list's 256 items: more than 128 `env` items record `env_all` instead, more
 than 96 `config_order` items or 32 of any other kind record `config_unrecorded`; a cap never drops the build.

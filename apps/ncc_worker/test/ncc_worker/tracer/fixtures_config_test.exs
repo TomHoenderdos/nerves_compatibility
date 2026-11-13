@@ -985,16 +985,35 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
     assert item(v, "fx_ord_b", "k").value == ConfigReads.unset()
   end
 
-  test "an unset key of an application outside the reader's tree cannot be told", ctx do
-    assert %{status: :skip, reason: @cnj, observations: obs} = verdict(ctx, "fx_ord_a")
-    assert "config value cannot be told: fx_ord_b k" in obs["problems"], inspect(obs["problems"])
+  # fx_ord_b's shape: whether the other app's .app is loaded when the
+  # read happens depends on the consumer's compile order. The build
+  # publishes a config_order item: the other app's .app default and what
+  # the read saw, which a client compares with its own predicted order.
+  defp order_item(v, app, key),
+    do:
+      Enum.find(
+        v.compile_inputs,
+        &(&1["kind"] == "config_order" and &1["app"] == app and &1["path"] == [key])
+      )
+
+  test "an unset key of an application outside the reader's tree publishes a config_order item",
+       ctx do
+    v = passes(ctx, "fx_ord_a")
+
+    assert %{"reader" => "fx_ord_a", "default" => default, "seen" => seen} =
+             order_item(v, "fx_ord_b", "k")
+
+    assert default == enc({:ok, 1})
+
+    # Compiled after fx_ord_b, the read saw its default. Compiled before, it
+    # saw get_env/3's own default, which cannot tell an unset key from one
+    # set to nil while fx_ord_b's .app gives it a value.
+    assert seen in [enc({:ok, 1}), "unrecordable"]
   end
 
-  test "an unset key of an extra application cannot be told", ctx do
-    assert %{status: :skip, reason: @cnj, observations: obs} = verdict(ctx, "fx_cfg_ssl")
-
-    assert "config value cannot be told: ssl fx_cfg_unset_key" in obs["problems"],
-           inspect(obs["problems"])
+  test "an unset key of an extra application publishes, with no .app default to record", ctx do
+    assert %{"default" => "unrecordable"} =
+             order_item(passes(ctx, "fx_cfg_ssl"), "ssl", "fx_cfg_unset_key")
   end
 
   test "a package that reads no config publishes with no config items", ctx do

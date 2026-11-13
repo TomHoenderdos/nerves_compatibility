@@ -549,9 +549,11 @@
       }
     ],
     "config_unreviewed": [],
+    "config_writes": [],
     "elixir_version": [],
-    "mix_exs_allowed": [
+    "env_reads": [
       {
+        "all": false,
         "arg": {
           "name": "PLUG_CRYPTO_2_0"
         },
@@ -559,9 +561,14 @@
         "line": 57,
         "mfa": "os:getenv/1",
         "module": "elixir_compiler_N",
-        "owner": "plug"
+        "name": "PLUG_CRYPTO_2_0",
+        "owner": "plug",
+        "slice_allowed": true,
+        "vm": "main"
       }
     ],
+    "env_writes": [],
+    "mix_exs_allowed": [],
     "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],

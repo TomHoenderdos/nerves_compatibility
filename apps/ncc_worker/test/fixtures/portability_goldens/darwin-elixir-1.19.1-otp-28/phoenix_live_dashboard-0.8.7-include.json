@@ -3467,6 +3467,21 @@
       }
     ],
     "config_unreviewed": [],
+    "config_writes": [
+      {
+        "arg": {
+          "app": "phoenix_template",
+          "app_name": "phoenix_template",
+          "key": "compiled_template_engines",
+          "key_name": "compiled_template_engines"
+        },
+        "file": "lib/phoenix/template.ex",
+        "line": 337,
+        "mfa": "application:set_env/4",
+        "module": "Elixir.Phoenix.Template",
+        "owner": "phoenix_live_dashboard"
+      }
+    ],
     "elixir_version": [
       {
         "arg": {
@@ -3619,8 +3634,37 @@
         "owner": "phoenix"
       }
     ],
-    "mix_exs_allowed": [
+    "env_reads": [
       {
+        "all": false,
+        "arg": {
+          "name": "ANDROID_API_LEVEL"
+        },
+        "file": "<work>/work/proj/deps/exqlite/mix.exs",
+        "line": 162,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Exqlite.MixProject",
+        "name": "ANDROID_API_LEVEL",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "CC_PRECOMPILER_ONLY_LISTED_TARGETS"
+        },
+        "file": "<work>/work/proj/deps/exqlite/mix.exs",
+        "line": 141,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Exqlite.MixProject",
+        "name": "CC_PRECOMPILER_ONLY_LISTED_TARGETS",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
         "arg": {
           "name": "DB_CONNECTION_PATH"
         },
@@ -3628,9 +3672,13 @@
         "line": 61,
         "mfa": "os:getenv/1",
         "module": "Elixir.MyXQL.MixProject",
-        "owner": "myxql"
+        "name": "DB_CONNECTION_PATH",
+        "owner": "myxql",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
         "arg": {
           "name": "ECTO_ADAPTER"
         },
@@ -3638,9 +3686,13 @@
         "line": 14,
         "mfa": "os:getenv/1",
         "module": "Elixir.EctoSQL.MixProject",
-        "owner": "ecto_sql"
+        "name": "ECTO_ADAPTER",
+        "owner": "ecto_sql",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
         "arg": {
           "name": "ECTO_PATH"
         },
@@ -3648,9 +3700,69 @@
         "line": 84,
         "mfa": "os:getenv/1",
         "module": "Elixir.EctoSQL.MixProject",
-        "owner": "ecto_sql"
+        "name": "ECTO_PATH",
+        "owner": "ecto_sql",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
+        "arg": {
+          "name": "ELIXIR_MAKE_CACHE_DIR"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 17,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "name": "ELIXIR_MAKE_CACHE_DIR",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "EXQLITE_INTEGRATION"
+        },
+        "file": "<work>/work/proj/deps/exqlite/mix.exs",
+        "line": 27,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Exqlite.MixProject",
+        "name": "EXQLITE_INTEGRATION",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "EXQLITE_USE_SYSTEM"
+        },
+        "file": "<work>/work/proj/deps/exqlite/mix.exs",
+        "line": 72,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Exqlite.MixProject",
+        "name": "EXQLITE_USE_SYSTEM",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "HOME"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 18,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "name": "HOME",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
         "arg": {
           "name": "LIVE_VIEW_PATH"
         },
@@ -3658,9 +3770,27 @@
         "line": 75,
         "mfa": "os:getenv/1",
         "module": "Elixir.Phoenix.LiveDashboard.MixProject",
-        "owner": "phoenix_live_dashboard"
+        "name": "LIVE_VIEW_PATH",
+        "owner": "phoenix_live_dashboard",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
+        "arg": {
+          "name": "MIX_XDG"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 13,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "name": "MIX_XDG",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
         "arg": {
           "name": "MYXQL_PATH"
         },
@@ -3668,9 +3798,13 @@
         "line": 100,
         "mfa": "os:getenv/1",
         "module": "Elixir.EctoSQL.MixProject",
-        "owner": "ecto_sql"
+        "name": "MYXQL_PATH",
+        "owner": "ecto_sql",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
         "arg": {
           "name": "PLUG_CRYPTO_2_0"
         },
@@ -3678,9 +3812,13 @@
         "line": 57,
         "mfa": "os:getenv/1",
         "module": "elixir_compiler_N",
-        "owner": "plug"
+        "name": "PLUG_CRYPTO_2_0",
+        "owner": "plug",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
         "arg": {
           "name": "POSTGREX_PATH"
         },
@@ -3688,9 +3826,55 @@
         "line": 92,
         "mfa": "os:getenv/1",
         "module": "Elixir.EctoSQL.MixProject",
-        "owner": "ecto_sql"
+        "name": "POSTGREX_PATH",
+        "owner": "ecto_sql",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
+        "arg": {
+          "name": "TARGET_ABI"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 100,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.CCPrecompiler",
+        "name": "TARGET_ABI",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "TARGET_ARCH"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 98,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.CCPrecompiler",
+        "name": "TARGET_ARCH",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "TARGET_OS"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 99,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.CCPrecompiler",
+        "name": "TARGET_OS",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
         "arg": {
           "name": "TDS_PATH"
         },
@@ -3698,9 +3882,14 @@
         "line": 108,
         "mfa": "os:getenv/1",
         "module": "Elixir.EctoSQL.MixProject",
-        "owner": "ecto_sql"
+        "name": "TDS_PATH",
+        "owner": "ecto_sql",
+        "slice_allowed": true,
+        "vm": "main"
       }
     ],
+    "env_writes": [],
+    "mix_exs_allowed": [],
     "mix_project_paths": [
       {
         "arg": {
@@ -3777,26 +3966,8 @@
     ],
     "native_libs": [],
     "nif_check": "waived",
-    "problems": [
-      "config value cannot be told: phoenix_view template_engines"
-    ],
+    "problems": [],
     "refusals": [
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler (<work>/work/proj/deps/exqlite/mix.exs:72)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler_url (<work>/work/proj/deps/exqlite/mix.exs:141)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler_url (<work>/work/proj/deps/exqlite/mix.exs:162)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler_url (<work>/work/proj/deps/exqlite/mix.exs:27)"
-      },
       {
         "owner": "exqlite",
         "reason": "compile-time host read: erlang:open_port/2 via ram_file:ll_open/3 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
@@ -3879,30 +4050,6 @@
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (ELIXIR_MAKE_CACHE_DIR) in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:17)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (HOME) via filename:basedir_join_home/1 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (MIX_XDG) in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:13)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (TARGET_ABI) in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:100)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (TARGET_ARCH) in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:98)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (TARGET_OS) in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:99)"
-      },
-      {
-        "owner": "exqlite",
         "reason": "compile-time host read: os:type/0 in CCPrecompiler.current_target/0 (lib/cc_precompiler.ex:93)"
       },
       {
@@ -3951,7 +4098,7 @@
       }
     ],
     "taint": {
-      "exqlite": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler (<work>/work/proj/deps/exqlite/mix.exs:72)"
+      "exqlite": "compile-time host read: os:type/0 in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
     },
     "tree_check": {
       "cc_precompiler": "unverified: native build",
@@ -3995,9 +4142,9 @@
   "optional_deps_variant": "include",
   "package": "phoenix_live_dashboard",
   "platform": "darwin-elixir-1.19.1-otp-28",
-  "reason": "portability could not be judged",
+  "reason": "bakes the build path: Elixir.Phoenix.LiveDashboard.LayoutView \"<root>/deps/phoenix_live_dashboard/lib/phoenix/live_dashboard\"",
   "rule1_reason": "OS-specific (lib/phoenix/live_dashboard/pages/home_page.ex: system_architecture)",
   "status": "skipped",
-  "trace_verdict": "could_not_judge",
+  "trace_verdict": "refused",
   "version": "0.8.7"
 }

@@ -61,18 +61,13 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     # (R2 taint); lazy_html's elixir_make precompiled-NIF download reads the
     # host (open_port, system_info, its download cache).
     {"phoenix_live_view", "include"} => "refused",
-    # `embed_templates` calls Phoenix.Template.engines/0 at compile time,
-    # which reads `:phoenix_view, :template_engines` (a deprecated fallback).
-    # The key is unset and phoenix_view is outside phoenix_template's
-    # dependency tree, so whether its .app is loaded when the read happens
-    # depends on the consumer's compile order: the value cannot be told, and
-    # that is checked before the package's own R2 (`embed_templates
-    # "layouts/*"` keeps the template directory in LayoutView), which the
-    # golden no longer reaches. Unpublished either way.
-    {"phoenix_live_dashboard", "exclude"} => "could_not_judge",
-    # The same read first; the optional ecto adapters add exqlite
-    # (elixir_make) and decimal (see @hits) host reads.
-    {"phoenix_live_dashboard", "include"} => "could_not_judge",
+    # `embed_templates` reads `:phoenix_view, :template_engines`, which now
+    # records a config_order input instead of failing the judge, so the
+    # package's own R2 (`embed_templates "layouts/*"` keeps the template
+    # directory in LayoutView) refuses it. The include variant adds exqlite
+    # and decimal host reads.
+    {"phoenix_live_dashboard", "exclude"} => "refused",
+    {"phoenix_live_dashboard", "include"} => "refused",
     {"swoosh", "exclude"} => "pass",
     # quic's and hackney's rebar.config run pre_hooks (R3 taint). The reads
     # certifi_pt and parse_trans made through OTP's own code loading

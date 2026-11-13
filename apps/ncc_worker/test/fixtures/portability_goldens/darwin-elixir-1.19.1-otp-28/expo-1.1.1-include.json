@@ -7,9 +7,11 @@
     "build_root_source_path": [],
     "config_reads": [],
     "config_unreviewed": [],
+    "config_writes": [],
     "elixir_version": [],
-    "mix_exs_allowed": [
+    "env_reads": [
       {
+        "all": false,
         "arg": {
           "name": "DIALYZER_PLT_PRIV"
         },
@@ -17,9 +19,14 @@
         "line": 22,
         "mfa": "os:getenv/1",
         "module": "Elixir.Expo.MixProject",
-        "owner": "expo"
+        "name": "DIALYZER_PLT_PRIV",
+        "owner": "expo",
+        "slice_allowed": true,
+        "vm": "main"
       }
     ],
+    "env_writes": [],
+    "mix_exs_allowed": [],
     "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],

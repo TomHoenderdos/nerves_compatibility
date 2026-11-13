@@ -1720,12 +1720,29 @@ defmodule NccWorker.Portability.JudgeTest do
       assert %{status: :pass, compile_env: []} = judge(proj, traced(proj, [], nil))
     end
 
-    test "an unset key of an application outside the reader's tree cannot be judged",
+    test "an unset key outside the reader's tree publishes with a config_order item",
          %{proj: proj} do
-      assert %{status: :skip, reason: @cnj, compile_env: nil, observations: obs} =
+      assert %{status: :pass, compile_env: [], compile_inputs: [item]} =
                judge(proj, traced(proj, [config_event(35, "fx", "k")], @snap))
 
-      assert "config value cannot be told: fx k" in obs["problems"]
+      assert %{"kind" => "config_order", "app" => "fx", "path" => ["k"]} = item
+      assert Map.keys(item) |> Enum.sort() == ~w(app default kind path reader seen)
+    end
+
+    test "a truncated snapshot publishes with config_unrecorded", %{proj: proj} do
+      snap = %{@snap | truncated: true}
+
+      assert %{status: :pass, compile_inputs: [%{"kind" => "config_unrecorded"}]} =
+               judge(proj, traced(proj, [config_event(35, "fx", "k")], snap))
+    end
+
+    test "the judge revision is 3, 4 with item 1 on" do
+      assert NccWorker.Portability.judge_revision() == 3
+      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 4
+
+      # The portal withdraws only on refusals of a judge at least this new.
+      assert NccWorker.Portability.judge_revision() ==
+               Compatibility.Portability.withdrawal_judge_revision()
     end
 
     test "get_all_env in the package's window refuses it; in a dependency's it taints",

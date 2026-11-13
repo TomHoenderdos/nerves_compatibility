@@ -132,7 +132,10 @@
       }
     ],
     "config_unreviewed": [],
+    "config_writes": [],
     "elixir_version": [],
+    "env_reads": [],
+    "env_writes": [],
     "mix_exs_allowed": [],
     "mix_project_paths": [],
     "native_calls": [],

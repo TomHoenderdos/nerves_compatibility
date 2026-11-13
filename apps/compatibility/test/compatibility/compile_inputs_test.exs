@@ -46,6 +46,36 @@ defmodule Compatibility.CompileInputsTest do
     end
   end
 
+  @order %{
+    "kind" => "config_order",
+    "app" => "phoenix_view",
+    "path" => ["template_engines"],
+    "reader" => "phoenix_live_dashboard",
+    "default" => "g3cFZXJyb3I",
+    "seen" => "unrecordable"
+  }
+
+  test "a config_order item is accepted in its exact shape and needs a check" do
+    assert CompileInputs.validate([@order]) == {:ok, [@order]}
+    assert CompileInputs.needs_check?([@order])
+  end
+
+  test "a malformed config_order item is malformed" do
+    for bad <- [
+          Map.put(@order, "extra", 1),
+          Map.delete(@order, "seen"),
+          %{@order | "path" => []},
+          %{@order | "path" => ["a", "b"]},
+          %{@order | "path" => "template_engines"},
+          %{@order | "app" => ""},
+          %{@order | "reader" => 1},
+          %{@order | "default" => rec(fn -> :ok end)},
+          %{@order | "seen" => "default"}
+        ] do
+      assert CompileInputs.validate([bad]) == :error, inspect(bad)
+    end
+  end
+
   test "only build-set items with recorded inputs need no check" do
     refute CompileInputs.needs_check?(nil)
     refute CompileInputs.needs_check?([])

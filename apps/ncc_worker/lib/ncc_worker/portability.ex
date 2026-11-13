@@ -37,12 +37,12 @@ defmodule NccWorker.Portability do
   package's whole closure (`ConfigReads`, `ElixirVersion`): their refusals
   belong to the window they fell in, so in a dependency's window they taint
   it (step 7), and their problems (a toolchain read no reviewed list covers,
-  no config snapshot or a truncated one, an unset key whose value cannot be
-  told, no Elixir version) make the trace incomplete (step 1). A passing
-  verdict carries `compile_env`, the closure's config reads as manifest
-  items valued from the trace's config snapshot; every other verdict has it
-  nil. It also carries `compile_inputs`, the closure's compile-time
-  environment reads (`CompileInputs`); every other verdict has it nil.
+  no config snapshot, no Elixir version) make the trace incomplete (step
+  1). A passing verdict carries `compile_env`, the closure's config reads
+  as manifest items valued from the trace's config snapshot; every other
+  verdict has it nil. It also carries `compile_inputs`, the closure's
+  compile-time environment reads and the config reads a client must check
+  itself (`CompileInputs`); every other verdict has it nil.
 
   Steps 1, 4, an `ebin` R2 cannot read (for the package or any closure
   dependency) and the package's own rebar3 coverage are "portability could
@@ -124,8 +124,10 @@ defmodule NccWorker.Portability do
   # bumped by every change to what the judge accepts, written into each
   # toolchain build's `judge_revision`, and what the portal reopens skipped
   # rows by (`Portal.Catalog`, `@judge_reopen`). Never key anything on
-  # reason text instead.
-  @judge_revision 1
+  # reason text instead. 3: compile-time env reads and config values the
+  # snapshot cannot give are recorded inputs, not refusals (bumped by two
+  # while `makefile_rule2` exists).
+  @judge_revision 3
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on
@@ -578,7 +580,14 @@ defmodule NccWorker.Portability do
     elixir = elixir_of(report)
 
     config =
-      ConfigReads.judge(decided, elixir, report.config_env, ConfigReads.trees(ctx), ctx.nested)
+      ConfigReads.judge(
+        decided,
+        elixir,
+        report.config_env,
+        ConfigReads.trees(ctx),
+        ctx.nested,
+        ConfigReads.app_defaults(ctx)
+      )
 
     version = ElixirVersion.judge(decided, elixir)
     decided = decided ++ config.refusals ++ version.refusals

@@ -249,7 +249,7 @@ defmodule NccWorker.Portability.CompileInputsTest do
     assert length(items) <= 256
     assert %{"kind" => "env_all"} in items
     assert %{"kind" => "config_unrecorded"} in items
-    assert valid_but_order?(items)
+    assert Compatibility.CompileInputs.validate(items) == {:ok, items}
 
     more = CompileInputs.build([read("V129", rec(:error)) | env], [order(97) | orders] ++ extras)
     assert Enum.sort(more) == [%{"kind" => "config_unrecorded"}, %{"kind" => "env_all"}]
@@ -258,12 +258,5 @@ defmodule NccWorker.Portability.CompileInputsTest do
   test "other kinds over their cap collapse to one not-recorded item" do
     others = for i <- 1..33, do: %{"kind" => "config_other_#{i}"}
     assert CompileInputs.build([], others) == [%{"kind" => "config_unrecorded"}]
-  end
-
-  # config_order items are checked by the shared shape once it knows them;
-  # everything else must already pass it.
-  defp valid_but_order?(items) do
-    rest = Enum.reject(items, &(&1["kind"] == "config_order"))
-    Compatibility.CompileInputs.validate(rest) == {:ok, rest}
   end
 end

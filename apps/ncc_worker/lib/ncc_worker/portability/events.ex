@@ -233,7 +233,7 @@ defmodule NccWorker.Portability.Events do
   defp channel("cwd", event, _ctx, _owner), do: {:refuse, host_read(event, event["arg"]["path"])}
 
   defp channel("config", event, _ctx, _owner),
-    do: {:observe, "config_reads", traced_summary(event)}
+    do: {:observe, "config_reads", Map.put(traced_summary(event), "returned", event["returned"])}
 
   # Writes a compile makes to the environment or the application env
   # (compile-time inputs spec, section 1): observed for `CompileInputs`,

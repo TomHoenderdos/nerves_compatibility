@@ -26,7 +26,8 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       "line" => 3,
       "first" => Keyword.get(opts, :first, "Elixir.Pkg"),
       "first_kind" => Keyword.get(opts, :kind, "user"),
-      "extent" => "frame"
+      "extent" => "frame",
+      "returned" => Keyword.get(opts, :returned)
     }
   end
 
@@ -105,24 +106,88 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       assert value == ConfigReads.unset()
     end
 
-    test "cannot be told when the app is outside the reader's tree" do
+    test "outside the reader's tree, a read becomes a config_order item" do
+      decided = [obs("r", read("a", "k", returned: enc({:ok, 1})))]
+      defaults = fn "a", "k" -> enc({:ok, 1}) end
       trees = ConfigReads.trees(ctx([]))
 
-      assert %{items: [], problems: ["config value cannot be told: a k"]} =
-               ConfigReads.judge([obs("r", read("a", "k"))], @elixir, snap(%{}), trees, %{})
+      assert %{items: [], problems: [], inputs: [item]} =
+               ConfigReads.judge(decided, @elixir, snap(%{}), trees, %{}, defaults)
+
+      assert item == %{
+               "kind" => "config_order",
+               "app" => "a",
+               "path" => ["k"],
+               "reader" => "r",
+               "default" => enc({:ok, 1}),
+               "seen" => enc({:ok, 1})
+             }
     end
 
-    test "cannot be told when any of its readers has the app outside its tree" do
+    test "seen is the reader's agreed capture; default stands for unset only without a .app default" do
       trees = ConfigReads.trees(ctx([]))
-      decided = [obs("a", read("a", "k")), obs("r", read("a", "k"))]
 
-      assert %{items: [], problems: ["config value cannot be told: a k"]} =
+      for {returns, default, seen} <- [
+            {[enc(:error)], enc({:ok, 1}), enc(:error)},
+            {[enc({:ok, 1}), enc({:ok, 2})], enc({:ok, 1}), "unrecordable"},
+            {[nil], enc(:error), "unrecordable"},
+            {["unrecordable"], enc(:error), "unrecordable"},
+            {["default"], enc(:error), enc(:error)},
+            {["default"], enc({:ok, 1}), "unrecordable"}
+          ] do
+        decided = for r <- returns, do: obs("r", read("a", "k", returned: r))
+
+        assert %{inputs: [%{"default" => ^default, "seen" => ^seen}]} =
+                 ConfigReads.judge(decided, @elixir, snap(%{}), trees, %{}, fn _, _ ->
+                   default
+                 end),
+               inspect(returns)
+      end
+    end
+
+    test "one item per ordered reader, each with its own captures; no defaults is unrecordable" do
+      decided = [
+        obs("r1", read("a", "k", returned: enc({:ok, 1}))),
+        obs("r2", read("a", "k", returned: enc(:error)))
+      ]
+
+      trees = ConfigReads.trees(ctx([]))
+
+      assert %{items: [], inputs: [i1, i2]} =
                ConfigReads.judge(decided, @elixir, snap(%{}), trees, %{})
+
+      assert {i1["reader"], i1["seen"], i1["default"]} == {"r1", enc({:ok, 1}), "unrecordable"}
+      assert {i2["reader"], i2["seen"]} == {"r2", enc(:error)}
     end
 
-    test "cannot be told outside every window" do
-      assert %{items: [], problems: ["config value cannot be told: fx k"]} =
+    # The shared compile_inputs cap leaves 96 config_order items.
+    test "more than 96 config_order items record config_unrecorded instead" do
+      trees = ConfigReads.trees(ctx([]))
+      orders = fn n -> for i <- 1..n, do: obs("r#{i}", read("a", "k", returned: enc(:error))) end
+
+      assert %{inputs: inputs} = ConfigReads.judge(orders.(96), @elixir, snap(%{}), trees, %{})
+      assert length(inputs) == 96
+      assert Enum.all?(inputs, &(&1["kind"] == "config_order"))
+
+      assert %{items: [], inputs: [%{"kind" => "config_unrecorded"}]} =
+               ConfigReads.judge(orders.(97), @elixir, snap(%{}), trees, %{})
+    end
+
+    test "outside every window there is no reader to order: config_unrecorded" do
+      assert %{items: [], problems: [], inputs: [%{"kind" => "config_unrecorded"}]} =
                judge([obs(:outside, read("fx", "k"))], snap(%{}))
+    end
+
+    test "a reader in the tree keeps the unset item, one outside it gets a config_order item" do
+      trees = ConfigReads.trees(ctx(["a"]))
+      decided = [obs("r", read("a", "k")), obs("q", read("a", "k", returned: enc(:error)))]
+
+      assert %{items: [%{app: "a", path: ["k"], value: value}], problems: [], inputs: [item]} =
+               ConfigReads.judge(decided, @elixir, snap(%{}), trees, %{})
+
+      assert value == ConfigReads.unset()
+      assert %{"kind" => "config_order", "reader" => "q", "seen" => seen} = item
+      assert seen == enc(:error)
     end
 
     test "is unset for an application Mix loads before every compile" do
@@ -191,12 +256,21 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     assert %{problems: [], unreviewed: [], dropped: 1} = result
 
     unknown = [
-      obs("dep", read("mix", "unknown_key", kind: "toolchain", first: "Elixir.Mix.Project"))
+      obs(
+        "dep",
+        read("mix", "unknown_key",
+          kind: "toolchain",
+          first: "Elixir.Mix.Project",
+          returned: enc({:ok, "builder"})
+        )
+      )
     ]
 
     assert %{items: [], problems: [problem], unreviewed: [flagged]} = judge(unknown, snap(%{}))
     assert problem == "unreviewed toolchain config read: mix unknown_key from Elixir.Mix.Project"
     assert %{"owner" => "dep", "arg" => %{"key_name" => "unknown_key"}} = flagged
+    # The list is published for review: never with the value the read returned.
+    refute Map.has_key?(flagged, "returned")
   end
 
   test "Mix's shell's and Logger's handler's :elixir ansi_enabled is never recorded, set or not" do
@@ -381,18 +455,19 @@ defmodule NccWorker.Portability.ConfigReadsTest do
              judge([obs("pkg", read("fx", "k", atoms: false))], snap(%{}))
   end
 
-  test "values that cannot be told cannot be judged" do
+  test "values the snapshot cannot give are recorded, never a problem" do
     decided = [obs("pkg", read("fx", "k"))]
 
     assert %{items: [], problems: ["no config snapshot"]} = judge(decided, nil)
     assert %{problems: ["no config snapshot"]} = judge(decided, :error)
-    assert %{problems: ["config snapshot truncated"]} = judge(decided, snap(%{}, true))
 
-    assert %{problems: ["config value too large: fx k"]} =
+    assert %{items: [], problems: [], inputs: [%{"kind" => "config_unrecorded"}]} =
+             judge(decided, snap(%{}, true))
+
+    assert %{items: [%{value: "unrecordable"}], problems: [], inputs: []} =
              judge(decided, snap(%{{"fx", "k"} => :oversize}))
 
-    # Nothing recorded, nothing to value.
-    assert %{items: [], problems: []} = judge([], nil)
+    assert %{items: [], problems: [], inputs: []} = judge([], nil)
   end
 
   test "a snapshot value that is not plain, small ETF cannot be recorded" do
@@ -403,7 +478,7 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       |> :erlang.term_to_binary(compressed: 9)
       |> Base.url_encode64(padding: false)
 
-    assert %{items: [], problems: ["config value unrecordable: fx k"]} =
+    assert %{items: [%{app: "fx", path: ["k"], value: "unrecordable"}], problems: []} =
              judge(decided, snap(%{{"fx", "k"} => compressed}))
 
     fun =
@@ -411,7 +486,7 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       |> :erlang.term_to_binary([:deterministic])
       |> Base.url_encode64(padding: false)
 
-    assert %{items: [], problems: ["config value unrecordable: fx k"]} =
+    assert %{items: [%{app: "fx", path: ["k"], value: "unrecordable"}], problems: []} =
              judge(decided, snap(%{{"fx", "k"} => fun}))
   end
 
@@ -429,10 +504,11 @@ defmodule NccWorker.Portability.ConfigReadsTest do
              judge(decided, snap(%{{"fx", "k"} => absent_atom}))
   end
 
-  test "more than 500 distinct reads cannot be judged" do
+  test "more than 500 distinct reads record none and say so" do
     decided = for i <- 1..501, do: obs("pkg", read("fx", "k#{i}"))
 
-    assert %{items: [], problems: ["more than 500 config reads"]} = judge(decided, snap(%{}))
+    assert %{items: [], problems: [], inputs: [%{"kind" => "config_unrecorded"}]} =
+             judge(decided, snap(%{}))
   end
 
   test "merge/2 keeps the .app's items first and never repeats a path" do
@@ -1116,5 +1192,53 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       end)
 
     acc
+  end
+
+  describe "app_defaults/1" do
+    @describetag :tmp_dir
+
+    defp app_ctx(dir, app_term) do
+      build = Path.join([dir, "_build", "dev", "lib", "a"])
+      File.mkdir_p!(Path.join(build, "ebin"))
+
+      case app_term do
+        nil -> :ok
+        {:raw, bytes} -> File.write!(Path.join([build, "ebin", "a.app"]), bytes)
+        term -> File.write!(Path.join([build, "ebin", "a.app"]), :io_lib.format("~tp.~n", [term]))
+      end
+
+      dep = %{
+        dest: nil,
+        build: build,
+        manager: "mix",
+        native?: false,
+        hex_files: nil,
+        children: []
+      }
+
+      %Context{deps: %{"a" => dep}}
+    end
+
+    test "the .app's env default of a key, :error when it declares none", %{tmp_dir: dir} do
+      defaults =
+        dir
+        |> app_ctx({:application, :a, [vsn: ~c"1.0.0", env: [k: 1]]})
+        |> ConfigReads.app_defaults()
+
+      assert defaults.("a", "k") == enc({:ok, 1})
+      assert defaults.("a", "j") == enc(:error)
+    end
+
+    test "an app outside the closure, a missing .app or one over 1 MiB is unrecordable",
+         %{tmp_dir: dir} do
+      assert ConfigReads.app_defaults(app_ctx(dir, nil)).("a", "k") == "unrecordable"
+
+      ctx = app_ctx(dir, {:application, :a, [env: [k: 1]]})
+      assert ConfigReads.app_defaults(ctx).("other", "k") == "unrecordable"
+
+      padding = "%" <> String.duplicate("x", 1_048_576) <> "\n"
+      big = app_ctx(dir, {:raw, padding <> "{application, a, [{env, [{k, 1}]}]}.\n"})
+      assert ConfigReads.app_defaults(big).("a", "k") == "unrecordable"
+    end
   end
 end

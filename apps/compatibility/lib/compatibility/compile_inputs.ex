@@ -16,6 +16,11 @@ defmodule Compatibility.CompileInputs do
     * `%{"kind" => "env_all"}`: the compile read the whole environment.
     * `%{"kind" => "config_unrecorded"}`: compile-time config reads were
       not all recorded.
+    * `%{"kind" => "config_order", "app", "path" => [key], "reader",
+      "default", "seen"}`: an unset key `reader` read outside its tree;
+      `default` is `app`'s `.app` env default at the locked version, `seen`
+      what the read returned. A client predicts its own compile order and
+      compares.
 
   `value` is a recorded value (`Compatibility.RecordedValue`: base64url ETF
   of `:error` or `{:ok, binary}`) or `"unrecordable"`, which matches nothing.
@@ -75,6 +80,20 @@ defmodule Compatibility.CompileInputs do
        )
        when inputs in ["recorded", "unknown"],
        do: map_size(item) == 5 and name?(name) and value?(value)
+
+  defp item?(
+         %{
+           "kind" => "config_order",
+           "app" => app,
+           "path" => [key],
+           "reader" => reader,
+           "default" => default,
+           "seen" => seen
+         } = item
+       ),
+       do:
+         map_size(item) == 6 and name?(app) and name?(key) and name?(reader) and value?(default) and
+           value?(seen)
 
   defp item?(_item), do: false
 

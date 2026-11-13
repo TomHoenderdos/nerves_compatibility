@@ -3421,6 +3421,21 @@
       }
     ],
     "config_unreviewed": [],
+    "config_writes": [
+      {
+        "arg": {
+          "app": "phoenix_template",
+          "app_name": "phoenix_template",
+          "key": "compiled_template_engines",
+          "key_name": "compiled_template_engines"
+        },
+        "file": "lib/phoenix/template.ex",
+        "line": 337,
+        "mfa": "application:set_env/4",
+        "module": "Elixir.Phoenix.Template",
+        "owner": "phoenix_live_dashboard"
+      }
+    ],
     "elixir_version": [
       {
         "arg": {
@@ -3473,8 +3488,9 @@
         "owner": "phoenix"
       }
     ],
-    "mix_exs_allowed": [
+    "env_reads": [
       {
+        "all": false,
         "arg": {
           "name": "LIVE_VIEW_PATH"
         },
@@ -3482,9 +3498,13 @@
         "line": 75,
         "mfa": "os:getenv/1",
         "module": "Elixir.Phoenix.LiveDashboard.MixProject",
-        "owner": "phoenix_live_dashboard"
+        "name": "LIVE_VIEW_PATH",
+        "owner": "phoenix_live_dashboard",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
         "arg": {
           "name": "PLUG_CRYPTO_2_0"
         },
@@ -3492,16 +3512,19 @@
         "line": 57,
         "mfa": "os:getenv/1",
         "module": "elixir_compiler_N",
-        "owner": "plug"
+        "name": "PLUG_CRYPTO_2_0",
+        "owner": "plug",
+        "slice_allowed": true,
+        "vm": "main"
       }
     ],
+    "env_writes": [],
+    "mix_exs_allowed": [],
     "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "waived",
-    "problems": [
-      "config value cannot be told: phoenix_view template_engines"
-    ],
+    "problems": [],
     "refusals": [],
     "taint": {},
     "tree_check": {
@@ -3528,9 +3551,9 @@
   "optional_deps_variant": "exclude",
   "package": "phoenix_live_dashboard",
   "platform": "darwin-elixir-1.19.1-otp-28",
-  "reason": "portability could not be judged",
+  "reason": "bakes the build path: Elixir.Phoenix.LiveDashboard.LayoutView \"<root>/deps/phoenix_live_dashboard/lib/phoenix/live_dashboard\"",
   "rule1_reason": "OS-specific (lib/phoenix/live_dashboard/pages/home_page.ex: system_architecture)",
   "status": "skipped",
-  "trace_verdict": "could_not_judge",
+  "trace_verdict": "refused",
   "version": "0.8.7"
 }

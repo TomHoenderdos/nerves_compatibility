@@ -62,8 +62,8 @@ defmodule NccWorker.Portability.ConfigReads do
   dependency's `.app`. An item's value is that same lookup in the traced
   compile's Mix VM: the tracer's snapshot of the application env taken
   before anything compiled (`NccWorker.Tracer.Report`'s `config_env`). The
-  value the read returned during the compile is not used: the call trace
-  sees only the call, and `get_env/3` folds its default in.
+  value the read returned during the compile is used only for
+  `config_order` inputs (below): `get_env/3` folds its default in.
 
   A key the snapshot holds is recorded with the snapshot's value: config is
   persistent, so it wins over every `.app` default in both VMs.
@@ -86,15 +86,30 @@ defmodule NccWorker.Portability.ConfigReads do
 
   So an unset key is recorded as `:error` (`unset/0`) only when every one of
   its readers reads its own application, one in its dependency tree
-  (`trees/1`), or one Mix preloads. Any other unset read, and every unset
-  read outside a dependency window, whose reader is unknown, cannot be told:
-  the build is not judged.
+  (`trees/1`), or one Mix preloads. Any other reader of an unset key saw
+  the application's `.app` default only if the consumer's compile order
+  loaded that `.app` first. So each such reader gets a `config_order` input
+  (compile-time inputs spec, option 2): the application's `.app` default at
+  the locked version (`app_defaults/1`) and what the reader's read returned,
+  as the tracer captured it. The client predicts its own compile order and
+  compares. A reader outside every window cannot be ordered and records
+  `config_unrecorded`. A value over the cap, or not plain ETF, is
+  `"unrecordable"`, which matches nothing. A key missing from a truncated
+  snapshot, or more than 500 keys, records a `config_unrecorded` input
+  instead of items. None of these stops the build from publishing.
+
+  A key with readers of both kinds keeps its unset item for the readers
+  loaded alike and a `config_order` input for each of the others; a key
+  whose readers are all ordered has no item, since the client's
+  `compile_env` check would compare it with the wrong value. More than 96
+  `config_order` inputs (`Compatibility.CompileInputs`' share for them)
+  record `config_unrecorded` instead.
 
   The items never enter the published `.app`: `merge/2` adds them to the
   build's `compile_env` list only.
   """
 
-  alias Compatibility.RecordedValue
+  alias Compatibility.{CompileInputs, RecordedValue}
   alias NccWorker.Portability.Context
 
   @prefix "compile-time config read: "
@@ -200,9 +215,16 @@ defmodule NccWorker.Portability.ConfigReads do
   @preloaded ~w(elixir mix ex_unit iex logger)
 
   @max_items 500
+  @unrecorded %{"kind" => "config_unrecorded"}
+  @max_app_bytes 1_048_576
+  # `Compatibility.CompileInputs`' share for config_order items (with 128
+  # env items and 32 of the rest, within its 256-item cap): more than this
+  # record config_unrecorded.
+  @max_order_items 96
 
   @type item :: %{app: String.t(), path: [String.t()], value: String.t()}
   @type trees :: %{String.t() => [String.t()]}
+  @type defaults :: (String.t(), String.t() -> String.t()) | nil
   @type result :: %{
           items: [item()],
           refusals: [{term(), {:refuse, String.t()}}],
@@ -245,14 +267,18 @@ defmodule NccWorker.Portability.ConfigReads do
   The items, refusals and problems of the `config_reads` observations in
   `decided` (`{owner, decision}`, already limited to the package's closure),
   for a trace made on Elixir `elixir` whose snapshot is `snapshot`; `trees`
-  is every owner's dependency tree (`trees/1`), and `nested` the windows
+  is every owner's dependency tree (`trees/1`), `nested` the windows
   package code started a compile or a capture of diagnostics in
-  (`Context.nested`).
+  (`Context.nested`), and `defaults` the `.app` env defaults of the traced
+  build (`app_defaults/1`), or nil when there are none to read: every
+  `config_order` input's `default` is then `"unrecordable"`.
   """
-  @spec judge([{term(), term()}], String.t() | nil, term(), trees(), map()) :: result()
-  def judge(decided, elixir, snapshot, trees, nested) when is_map(trees) and is_map(nested) do
+  @spec judge([{term(), term()}], String.t() | nil, term(), trees(), map(), defaults()) ::
+          result()
+  def judge(decided, elixir, snapshot, trees, nested, defaults \\ nil)
+      when is_map(trees) and is_map(nested) do
     toolchain = {elixir, reviewed(elixir)}
-    acc = %{keys: %{}, refusals: [], problems: [], unreviewed: [], dropped: 0}
+    acc = %{keys: %{}, returns: %{}, refusals: [], problems: [], unreviewed: [], dropped: 0}
 
     decided
     |> Enum.reduce(acc, fn
@@ -262,8 +288,45 @@ defmodule NccWorker.Portability.ConfigReads do
       _other, acc ->
         acc
     end)
-    |> finish(snapshot, trees)
+    |> finish(snapshot, trees, defaults)
   end
+
+  @doc """
+  The `.app` env default of `{app, key}` in the traced build, as a recorded
+  value: `{:ok, value}` when `app`'s `_build/<env>/lib/<app>/ebin/<app>.app`
+  declares `key`, `:error` when it does not. `"unrecordable"` when `app` is
+  not a closure dependency, its `.app` is missing, over 1 MiB or not a
+  single application term, or the value cannot be encoded. Keys compare by
+  name, so no atom is made from the trace.
+  """
+  @spec app_defaults(Context.t()) :: (String.t(), String.t() -> String.t())
+  def app_defaults(%Context{} = ctx) do
+    fn app, key -> app_default(Context.ebin(ctx, app), app, key) end
+  end
+
+  # `ebin` is a closure dependency's build dir in the traced build
+  # (`Context.ebin/2`) and `app` that dependency's name.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp app_default(ebin, app, key) when is_binary(ebin) do
+    path = Path.join(ebin, app <> ".app")
+
+    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_app_bytes <-
+           File.stat(path),
+         {:ok, [{:application, _name, props}]} when is_list(props) <- :file.consult(path),
+         env when is_list(env) <- Keyword.get(props, :env, []) do
+      case Enum.find(env, &named?(&1, key)) do
+        {_key, value} -> recordable(encode({:ok, value}))
+        nil -> unset()
+      end
+    else
+      _ -> CompileInputs.unrecordable()
+    end
+  end
+
+  defp app_default(_ebin, _app, _key), do: CompileInputs.unrecordable()
+
+  defp named?({k, _v}, key) when is_atom(k), do: Atom.to_string(k) == key
+  defp named?(_entry, _key), do: false
 
   @doc """
   The build's `compile_env`: the `.app`'s own items (`NccWorker.AppFile`),
@@ -297,7 +360,13 @@ defmodule NccWorker.Portability.ConfigReads do
   defp nested_drop({:drop, _entry}, _owner, _nested), do: :drop
   defp nested_drop(decision, _owner, _nested), do: decision
 
-  defp add(acc, owner, _item, {:record, key}), do: put_key(acc, owner, key)
+  defp add(acc, owner, item, {:record, key}) do
+    capture = {owner, item["returned"]}
+
+    acc
+    |> put_key(owner, key)
+    |> Map.update!(:returns, &Map.update(&1, key, [capture], fn r -> [capture | r] end))
+  end
 
   defp add(acc, owner, item, {:unreviewed, what}) do
     why = "unreviewed toolchain config read: #{what} from #{first(item)}"
@@ -315,8 +384,12 @@ defmodule NccWorker.Portability.ConfigReads do
   defp put_key(acc, owner, key),
     do: %{acc | keys: Map.update(acc.keys, key, MapSet.new([owner]), &MapSet.put(&1, owner))}
 
-  defp flag(acc, owner, item),
-    do: %{acc | unreviewed: [Map.put(item, "owner", name(owner)) | acc.unreviewed]}
+  # The unreviewed list is published for review: without the value the read
+  # returned, which only a compile_inputs item may carry.
+  defp flag(acc, owner, item) do
+    flagged = item |> Map.delete("returned") |> Map.put("owner", name(owner))
+    %{acc | unreviewed: [flagged | acc.unreviewed]}
+  end
 
   defp classify(%{"mfa" => "application:get_env/1"}, _toolchain), do: :ignore
 
@@ -379,8 +452,9 @@ defmodule NccWorker.Portability.ConfigReads do
   defp toolchain?(%{"first_kind" => "toolchain"}), do: true
   defp toolchain?(_item), do: false
 
-  defp finish(acc, snapshot, trees) do
-    {items, problems} = items(Enum.sort(acc.keys), snapshot, trees)
+  defp finish(acc, snapshot, trees, defaults) do
+    {items, problems, inputs} =
+      items(Enum.sort(acc.keys), snapshot, trees, acc.returns, defaults)
 
     %{
       items: items,
@@ -388,56 +462,105 @@ defmodule NccWorker.Portability.ConfigReads do
       problems: Enum.uniq(Enum.reverse(acc.problems) ++ problems),
       unreviewed: Enum.reverse(acc.unreviewed),
       dropped: acc.dropped,
-      inputs: []
+      inputs: inputs
     }
   end
 
-  defp items([], _snapshot, _trees), do: {[], []}
+  defp items([], _snapshot, _trees, _returns, _defaults), do: {[], [], []}
 
-  defp items(keys, _snapshot, _trees) when length(keys) > @max_items,
-    do: {[], ["more than #{@max_items} config reads"]}
+  defp items(keys, _snapshot, _trees, _returns, _defaults) when length(keys) > @max_items,
+    do: {[], [], [@unrecorded]}
 
-  defp items(keys, %{entries: entries, truncated: truncated}, trees) when is_map(entries) do
-    {items, problems} =
-      Enum.reduce(keys, {[], []}, fn {{app, key}, readers}, {items, problems} ->
-        case value(entries, {app, key}, truncated, readers, trees) do
-          {:ok, value} -> {[%{app: app, path: [key], value: value} | items], problems}
-          {:error, why} -> {items, [why | problems]}
-        end
+  defp items(keys, %{entries: entries, truncated: truncated}, trees, returns, defaults)
+       when is_map(entries) do
+    {items, inputs} =
+      Enum.reduce(keys, {[], []}, fn {{app, key}, readers}, {items, inputs} ->
+        captures = Map.get(returns, {app, key}, [])
+        {item, more} = value(entries, {app, key}, truncated, readers, trees, captures, defaults)
+        {if(item, do: [item | items], else: items), Enum.reverse(more, inputs)}
       end)
 
-    {Enum.reverse(items), problems |> Enum.reverse() |> Enum.uniq()}
+    {Enum.reverse(items), [], inputs |> Enum.reverse() |> Enum.uniq() |> cap_orders()}
   end
 
-  defp items(_keys, _snapshot, _trees), do: {[], ["no config snapshot"]}
+  defp items(_keys, _snapshot, _trees, _returns, _defaults),
+    do: {[], ["no config snapshot"], []}
 
-  defp value(entries, {app, key}, truncated, readers, trees) do
+  defp cap_orders(inputs) do
+    {orders, others} = Enum.split_with(inputs, &(&1["kind"] == "config_order"))
+
+    if length(orders) > @max_order_items,
+      do: Enum.uniq(others ++ [@unrecorded]),
+      else: inputs
+  end
+
+  defp value(entries, {app, key}, truncated, readers, trees, captures, defaults) do
     case Map.fetch(entries, {app, key}) do
-      {:ok, :oversize} -> {:error, "config value too large: #{app} #{key}"}
-      {:ok, value} -> recordable(value, app, key)
-      :error when truncated -> {:error, "config snapshot truncated"}
-      :error -> unset_value(app, key, readers, trees)
+      {:ok, :oversize} -> {item(app, key, CompileInputs.unrecordable()), []}
+      {:ok, value} -> {item(app, key, recordable(value)), []}
+      :error when truncated -> {nil, [@unrecorded]}
+      :error -> unset_value(app, key, readers, trees, captures, defaults)
     end
   end
 
+  defp item(app, key, value), do: %{app: app, path: [key], value: value}
+
   # A snapshot value is already the base64url text the manifest records
-  # (R5's own `encode/1` or the tracer's; see the moduledoc). Task I: a
-  # compile-time-set term that is not plain, small ETF (compressed, over
-  # 64 KiB, or holding a fun, pid, port or reference) is treated exactly
-  # like an `:oversize` entry rather than published.
-  defp recordable(value, app, key) do
-    if RecordedValue.acceptable?(value),
-      do: {:ok, value},
-      else: {:error, "config value unrecordable: #{app} #{key}"}
+  # (R5's own `encode/1` or the tracer's; see the moduledoc). One that is
+  # not plain, small ETF (compressed, over 64 KiB, or holding a fun, pid,
+  # port or reference) is recorded as matching nothing, like an
+  # `:oversize` entry.
+  defp recordable(value) do
+    if RecordedValue.acceptable?(value), do: value, else: CompileInputs.unrecordable()
   end
 
   # An unset key reads the same in both VMs only when its application's
-  # .app is loaded, or not, in both: see the moduledoc.
-  defp unset_value(app, key, readers, trees) do
-    if Enum.all?(readers, &loaded_alike?(app, &1, trees)),
-      do: {:ok, unset()},
-      else: {:error, "config value cannot be told: #{app} #{key}"}
+  # .app is loaded, or not, in both (see the moduledoc): those readers keep
+  # the unset item. For every other reader, whether the .app default was
+  # loaded depends on the consumer's compile order, so the build records
+  # the default and what the reader saw, and the client predicts the rest.
+  defp unset_value(app, key, readers, trees, captures, defaults) do
+    {alike, ordered} = Enum.split_with(readers, &loaded_alike?(app, &1, trees))
+    item = if alike != [] or ordered == [], do: item(app, key, unset())
+    default = default_of(defaults, app, key)
+    {item, ordered |> Enum.sort() |> Enum.map(&order_item(app, key, &1, default, captures))}
   end
+
+  defp order_item(app, key, reader, default, captures) when is_binary(reader) do
+    %{
+      "kind" => "config_order",
+      "app" => app,
+      "path" => [key],
+      "reader" => reader,
+      "default" => default,
+      "seen" => seen(for({^reader, r} <- captures, do: r), default)
+    }
+  end
+
+  # A read outside every window has no place in a compile order.
+  defp order_item(_app, _key, _reader, _default, _captures), do: @unrecorded
+
+  # What one reader saw: the one value all its captures agree on. get_env/3's
+  # "default" says only that the result equalled its default argument; with
+  # no .app default the key was unset when it read, otherwise it cannot be
+  # told.
+  defp seen(captures, default) do
+    unrecordable = CompileInputs.unrecordable()
+
+    case Enum.uniq(captures) do
+      ["default"] ->
+        if default == unset(), do: unset(), else: unrecordable
+
+      [value] when is_binary(value) and value != unrecordable ->
+        recordable(value)
+
+      _ ->
+        unrecordable
+    end
+  end
+
+  defp default_of(nil, _app, _key), do: CompileInputs.unrecordable()
+  defp default_of(defaults, app, key), do: defaults.(app, key)
 
   defp loaded_alike?(app, _reader, _trees) when app in @preloaded, do: true
 

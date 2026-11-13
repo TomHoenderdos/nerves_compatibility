@@ -3447,6 +3447,34 @@
       }
     ],
     "config_unreviewed": [],
+    "config_writes": [
+      {
+        "arg": {
+          "app": "parse_trans",
+          "app_name": "parse_trans",
+          "key": "revert_workaround",
+          "key_name": "revert_workaround"
+        },
+        "file": "<work>/work/proj/deps/parse_trans/src/parse_trans.erl",
+        "line": 653,
+        "mfa": "application:set_env/3",
+        "module": "parse_trans",
+        "owner": "hackney"
+      },
+      {
+        "arg": {
+          "app": "parse_trans",
+          "app_name": "parse_trans",
+          "key": "revert_workaround",
+          "key_name": "revert_workaround"
+        },
+        "file": "<work>/work/proj/deps/parse_trans/src/parse_trans.erl",
+        "line": 653,
+        "mfa": "application:set_env/3",
+        "module": "parse_trans",
+        "owner": "parse_trans"
+      }
+    ],
     "elixir_version": [
       {
         "arg": {
@@ -3555,8 +3583,23 @@
         "owner": "phoenix"
       }
     ],
-    "mix_exs_allowed": [
+    "env_reads": [
       {
+        "all": false,
+        "arg": {
+          "name": "GPROC_DIST"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "os:getenv/1",
+        "module": null,
+        "name": "GPROC_DIST",
+        "owner": "outside",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
         "arg": {
           "name": "PLUG_CRYPTO_2_0"
         },
@@ -3564,9 +3607,42 @@
         "line": 57,
         "mfa": "os:getenv/1",
         "module": "elixir_compiler_N",
-        "owner": "plug"
+        "name": "PLUG_CRYPTO_2_0",
+        "owner": "plug",
+        "slice_allowed": true,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "REBAR_DEPS"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "os:getenv/1",
+        "module": null,
+        "name": "REBAR_DEPS",
+        "owner": "outside",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "SENTRY_INTEGRATION"
+        },
+        "file": "<work>/work/proj/deps/sentry/mix.exs",
+        "line": 17,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Sentry.Mixfile",
+        "name": "SENTRY_INTEGRATION",
+        "owner": "sentry",
+        "slice_allowed": false,
+        "vm": "main"
       }
     ],
+    "env_writes": [],
+    "mix_exs_allowed": [],
     "mix_project_paths": [],
     "native_calls": [],
     "native_libs": [],
@@ -3740,14 +3816,6 @@
         "reason": "compile-time host read: init:get_plain_arguments/0 (dispatcher stack, first frame erl_eval)"
       },
       {
-        "owner": "outside",
-        "reason": "compile-time host read: os:getenv/1 (GPROC_DIST) (dispatcher stack, first frame erl_eval)"
-      },
-      {
-        "owner": "outside",
-        "reason": "compile-time host read: os:getenv/1 (REBAR_DEPS) (dispatcher stack, first frame erl_eval)"
-      },
-      {
         "owner": "sentry",
         "reason": "compile-time Elixir patch dependence: System.version/0 project/0 is not a keyword list literal (<work>/work/proj/deps/sentry/mix.exs:174)"
       },
@@ -3766,10 +3834,6 @@
       {
         "owner": "sentry",
         "reason": "compile-time Elixir patch dependence: Version.match?/2 project/0 is not a keyword list literal (<work>/work/proj/deps/sentry/mix.exs:75)"
-      },
-      {
-        "owner": "sentry",
-        "reason": "compile-time host read in mix.exs: os:getenv/1 project/0 is not a keyword list literal (<work>/work/proj/deps/sentry/mix.exs:17)"
       },
       {
         "owner": "sentry",
@@ -3846,7 +3910,7 @@
   "optional_deps_variant": "include",
   "package": "sentry",
   "platform": "darwin-elixir-1.19.1-otp-28",
-  "reason": "compile-time host read: os:getenv/1 (REBAR_DEPS) (dispatcher stack, first frame erl_eval)",
+  "reason": "compile-time host read: init:get_plain_arguments/0 (dispatcher stack, first frame erl_eval)",
   "rule1_reason": "OS-specific (lib/sentry/event.ex: :os.type()",
   "status": "skipped",
   "trace_verdict": "refused",
