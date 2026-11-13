@@ -297,7 +297,8 @@ defmodule NccWorker.Portability.Trees do
   Whether `rel`, relative to a dependency's source dir and not `""`, names
   nothing in `members`: no member is `rel` or lies under it, compared with
   case folded, so a case-insensitive file system (APFS) that would find a
-  member under another spelling never counts as absent. Never absent: a
+  member under another spelling (case, or Unicode normalisation: both
+  sides are NFC first) never counts as absent. Never absent: a
   path under `priv` (a package may fill it at runtime on the user's
   machine, and `_build/<env>/lib/<d>/priv` links there) or under a root
   name `snapshot/5` leaves out (Hex's own files, `_build`), in any case and
@@ -306,16 +307,25 @@ defmodule NccWorker.Portability.Trees do
   """
   @spec absent?(String.t(), members()) :: boolean()
   def absent?(rel, members) when is_binary(rel) and rel != "" do
-    folded = String.downcase(rel)
+    folded = fold(rel)
 
     not root_extra?(folded, ["priv", "_build" | @hex_extras]) and
       not Enum.any?(Map.keys(members), fn member ->
-        member = String.downcase(member)
+        member = fold(member)
         member == folded or under_rel?(member, folded)
       end)
   end
 
   def absent?(_rel, _members), do: false
+
+  # NFC, then case folded: the spellings a normalising, case-insensitive
+  # file system (APFS) takes for one name. Not valid UTF-8 stays as it is.
+  defp fold(name) do
+    case :unicode.characters_to_nfc_binary(name) do
+      nfc when is_binary(nfc) -> String.downcase(nfc)
+      _ -> String.downcase(name)
+    end
+  end
 
   defp root_extra?(rel, extras) do
     case Path.split(rel) do

@@ -371,20 +371,30 @@ defmodule NccWorker.Portability.Events do
   # such a tree's tarball does not hold, read while that dependency's own
   # mix.exs is evaluated (`Context.absent_from_tree?/3`: a wildcard over
   # `guides/` the package left out), is decided by the same check: absent
-  # when checked, absent on the user's side.
+  # when checked, absent on the user's side. A missing path under any
+  # dependency's priv refuses first (`Context.missing_under_priv?/2`).
   defp readable(e, ctx, path, owner) do
     real = Context.resolve(ctx, path, owner)
 
-    if Context.readable?(ctx, real) or absent_in_mix_exs?(e, ctx, owner, real) do
-      case Context.tree_check(ctx, real, e["arg"]["listing"] == true) do
-        :ok ->
-          :ignore
+    cond do
+      Context.missing_under_priv?(ctx, real) ->
+        {:refuse, host_read(e, path)}
 
-        {:differs, app, detail} ->
-          unjudged("dependency tree changed after the check: #{app} (#{detail})")
-      end
-    else
-      {:refuse, host_read(e, path)}
+      Context.readable?(ctx, real) or absent_in_mix_exs?(e, ctx, owner, real) ->
+        tree_read(e, ctx, real)
+
+      true ->
+        {:refuse, host_read(e, path)}
+    end
+  end
+
+  defp tree_read(e, ctx, real) do
+    case Context.tree_check(ctx, real, e["arg"]["listing"] == true) do
+      :ok ->
+        :ignore
+
+      {:differs, app, detail} ->
+        unjudged("dependency tree changed after the check: #{app} (#{detail})")
     end
   end
 

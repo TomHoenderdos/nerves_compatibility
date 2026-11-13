@@ -183,6 +183,14 @@ defmodule NccWorker.Portability.TreesTest do
       refute Trees.absent?(rel, members), rel
     end
 
+    # Case folding after NFC, on both sides: a decomposed spelling of a
+    # member is that member.
+    nfc = %{"lib/caf\u00e9.ex" => "s", "docs/re\u0301sume\u0301.md" => "s"}
+    refute Trees.absent?("lib/cafe\u0301.ex", nfc)
+    refute Trees.absent?("LIB/CAF\u00c9.EX", nfc)
+    refute Trees.absent?("docs/r\u00e9sum\u00e9.md", nfc)
+    assert Trees.absent?("lib/cafe.ex", nfc)
+
     for rel <- ["_build/y", "_build", ".hex", "hex_metadata.config", ".hex/x", "_BUILD/y"] do
       refute Trees.absent?(rel, members), rel
     end

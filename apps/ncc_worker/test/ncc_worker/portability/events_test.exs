@@ -52,7 +52,8 @@ defmodule NccWorker.Portability.EventsTest do
   defp build(dir, proj, report, opts \\ []) do
     home = Path.join(dir, "hex-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(home, "packages/hexpm"))
-    meta = ~s({<<"files">>,[<<"lib">>,<<"README.md">>,<<"mix.exs">>]}.\n)
+    files = Keyword.get(opts, :hex_files, ~w(lib README.md mix.exs))
+    meta = ~s({<<"files">>,[#{Enum.map_join(files, ",", &~s(<<"#{&1}">>))}]}.\n)
     tar = Path.join(dir, "pkg-#{System.unique_integer([:positive])}.tar")
 
     :ok =
@@ -69,7 +70,7 @@ defmodule NccWorker.Portability.EventsTest do
       Keyword.get(opts, :native, []),
       Keyword.merge(
         [hex_home: home, releases: %{"pkg" => %{name: "pkg", version: "1.0.0", checksum: sum}}],
-        Keyword.delete(opts, :native)
+        Keyword.drop(opts, [:native, :hex_files])
       )
     )
   end
@@ -1063,5 +1064,70 @@ defmodule NccWorker.Portability.EventsTest do
       assert {:unjudged, "portability could not be judged (dependency tree changed" <> _} =
                Events.decide(event, ctx, "pkg")
     end
+  end
+
+  # A missing file under any dependency's priv (or its _build priv) is where
+  # runtime or Mix-task data appears on a user's machine (ex_cldr's
+  # priv/cldr/locales): its absence on the builder says nothing about the
+  # user's, in any window.
+  test "a missing path under a priv dir refuses in every window", %{dir: dir, proj: proj} do
+    pkg = Path.join([proj, "deps", "pkg"])
+    File.mkdir_p!(Path.join(pkg, "priv/cldr/locales"))
+    File.write!(Path.join(pkg, "priv/cldr/locales/en.json"), "{}")
+    build_priv = Path.join(proj, "_build/host/lib/pkg/priv")
+    File.mkdir_p!(build_priv)
+    File.write!(Path.join(build_priv, "kept"), "")
+
+    ctx = build(dir, proj, report(dir, proj, pkg, []), hex_files: ~w(lib README.md mix.exs priv))
+
+    missing = [
+      Path.join(pkg, "priv/cldr/locales/xx.json"),
+      Path.join(pkg, "priv/cldr/nowhere"),
+      Path.join(pkg, "Priv/x"),
+      Path.join(build_priv, "xx.json"),
+      Path.join(build_priv, "deep/x")
+    ]
+
+    for path <- missing,
+        mfa <- ["file:read_file/1", "file:read_file_info/1", "prim_file:read_file_info/2"],
+        owner <- ["pkg", :outside, "other"] do
+      event = ev("file_read", mfa, %{"path" => path})
+
+      assert {:refuse, "compile-time host read: " <> _} = Events.decide(event, ctx, owner),
+             "#{path} #{mfa} #{inspect(owner)}"
+    end
+
+    listing =
+      ev("file_read", "file:list_dir/1", %{
+        "path" => Path.join(pkg, "priv/none"),
+        "listing" => true
+      })
+
+    assert {:refuse, _} = Events.decide(listing, ctx, "pkg")
+
+    # Also in the dependency's mix.exs.
+    in_mix =
+      in_mix_exs(ev("file_read", "file:read_file/1", %{"path" => "priv/cldr/xx.json"}), pkg, 5)
+
+    assert {:refuse, "compile-time host read" <> _} = Events.decide(in_mix, ctx, "pkg")
+
+    # Paths that exist keep today's rules.
+    for path <- [
+          Path.join(pkg, "priv/cldr/locales/en.json"),
+          Path.join(pkg, "priv/cldr/locales"),
+          Path.join(build_priv, "kept")
+        ] do
+      assert :ignore =
+               Events.decide(ev("file_read", "file:read_file/1", %{"path" => path}), ctx, "pkg"),
+             path
+    end
+
+    # A missing listed path outside priv is unchanged.
+    assert :ignore =
+             Events.decide(
+               ev("file_read", "file:read_file/1", %{"path" => Path.join(pkg, "lib/none.ex")}),
+               ctx,
+               "pkg"
+             )
   end
 end

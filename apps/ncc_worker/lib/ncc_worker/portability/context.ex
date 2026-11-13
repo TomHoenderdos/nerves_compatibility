@@ -273,9 +273,33 @@ defmodule NccWorker.Portability.Context do
   defp dep_readable?(dep, real),
     do: under?(real, dep.build) or (under?(real, dep.dest) and hex_listed?(dep, real))
 
+  @doc """
+  Whether `real` lies under a closure dependency's `priv` (its source dir's,
+  or its build dir's, which Mix links there or copies), compared
+  case-insensitively, and does not exist on the builder. Such a path is
+  where runtime or Mix-task data appears on a user's machine (ex_cldr's
+  `priv/cldr/locales`), so a compile-time read of it is a host read in
+  every window, whatever the Hex file list says: its absence here says
+  nothing about the user's.
+  """
+  @spec missing_under_priv?(t(), String.t() | nil) :: boolean()
+  def missing_under_priv?(ctx, real) when is_binary(real) do
+    Enum.any?(Map.values(ctx.deps), fn dep ->
+      under_priv?(real, dep.dest) or under_priv?(real, dep.build)
+    end) and not exists?(real)
+  end
+
+  def missing_under_priv?(_ctx, _real), do: false
+
+  # Without following a final link: a dangling link is there too.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp exists?(real), do: match?({:ok, _}, File.lstat(real))
+
   # Case-insensitively, so no file system folds `Priv` into `priv` past it.
-  defp under_priv?(real, dest),
+  defp under_priv?(real, dest) when is_binary(dest),
     do: under?(String.downcase(real), String.downcase(Path.join(dest, "priv")))
+
+  defp under_priv?(_real, _dest), do: false
 
   # The source dir itself, a listed file or anything under a listed
   # directory, or a directory on the way to a listed entry.
