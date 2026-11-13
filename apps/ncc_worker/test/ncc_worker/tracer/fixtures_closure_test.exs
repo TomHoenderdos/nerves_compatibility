@@ -26,7 +26,6 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
 
   @cnj "portability could not be judged"
   @taint "closure dependency observed the host: "
-  @mix_read "compile-time host read in mix.exs: "
 
   @deps %{
     "fx_d_os" => lib("fx_d_os", "defmodule FxDOs do\n  @os :os.type()\n  def os, do: @os\nend\n"),
@@ -70,8 +69,8 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
             ~S|, elixirc_options: [debug_info: System.get_env("FX_D") != "0"]|
           )
       }),
-    # A slice reason that is not "sets <key>" passes through unchanged
-    # (a read in a bare module-body statement).
+    # An env read in a bare module-body statement: R4 cannot place it, so it
+    # is a compile input.
     "fx_mix_body" =>
       lib("fx_mix_body", "defmodule FxMixBody do\nend\n", %{
         mix_exs: """
@@ -325,32 +324,34 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
     assert %{status: :skip, reason: @taint <> "fx_d_pt (" <> _} = verdict(ctx, "fx_uses_pt")
   end
 
-  test "mix.exs reads: deps and test_paths are allowed, elixirc_options refuses (R4)", ctx do
+  test "mix.exs env reads: deps and test_paths are no input, elixirc_options is one (R4)", ctx do
     v = passes(ctx, "fx_mix_deps")
 
-    assert [%{"owner" => "fx_mix_deps", "mfa" => "os:getenv/1"} | _] =
-             v.observations["mix_exs_allowed"]
+    assert [%{"owner" => "fx_mix_deps", "mfa" => "os:getenv/1", "slice_allowed" => true} | _] =
+             v.observations["env_reads"]
+
+    assert v.compile_inputs == []
 
     v = passes(ctx, "fx_mix_paths")
-    assert [%{"owner" => "fx_mix_paths"} | _] = v.observations["mix_exs_allowed"]
 
-    assert @mix_read <> "os:getenv/1 sets elixirc_options (" <> where =
-             refused(ctx, "fx_mix_opts")
+    assert [%{"owner" => "fx_mix_paths", "slice_allowed" => true} | _] =
+             v.observations["env_reads"]
 
-    assert where =~ "deps/fx_mix_opts/mix.exs:"
+    assert v.compile_inputs == []
 
-    assert %{status: :skip, reason: @taint <> "fx_mix_opts (" <> _} =
+    assert %{status: :pass, compile_inputs: [%{"kind" => "env", "name" => "FX_D"}]} =
+             verdict(ctx, "fx_mix_opts")
+
+    assert %{status: :pass, compile_inputs: [%{"kind" => "env", "name" => "FX_D"}]} =
              verdict(ctx, "fx_uses_mix_opts")
 
     passes(ctx, "fx_uses_mix_deps")
   end
 
-  test "mix.exs: a slice reason passes through; running a program refuses whatever it reaches",
+  test "mix.exs: an unplaced env read is an input; running a program refuses whatever it reaches",
        ctx do
-    assert @mix_read <> "os:getenv/1 observation outside every definition (" <> where =
-             refused(ctx, "fx_mix_body")
-
-    assert where =~ "deps/fx_mix_body/mix.exs:3)"
+    assert %{status: :pass, compile_inputs: [%{"kind" => "env", "name" => "FX_BODY"}]} =
+             verdict(ctx, "fx_mix_body")
 
     assert "compile-time host read: erlang:open_port/2" <> _ =
              reason =

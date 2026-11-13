@@ -127,13 +127,22 @@ defmodule NccWorker.JsonWriter do
   # `deps_lock` only on one that kept the optional dependencies, whose files
   # were built against that lock rather than the run's. `compile_env_rule`
   # only on a `pure_elixir` result whose files are published with the trace's
-  # config reads. `toolchain`, `otp_full` and `system_libs` only on a passing
+  # config reads. `compile_inputs` only on a published `pure_elixir` result.
+  # `toolchain`, `otp_full` and `system_libs` only on a passing
   # firmware target whose release they could be read for
   # (`NccWorker.SystemAbi`), `system_libs` only for a release the portal
   # did not already know.
   @spec convert_system_result(map()) :: map()
   defp convert_system_result(system_result) do
-    [:deps_lock, :optional_deps, :compile_env_rule, :toolchain, :otp_full, :system_libs]
+    [
+      :deps_lock,
+      :optional_deps,
+      :compile_env_rule,
+      :compile_inputs,
+      :toolchain,
+      :otp_full,
+      :system_libs
+    ]
     |> Enum.reduce(base_system_result(system_result), fn key, json ->
       put_present(json, key, Map.get(system_result, key))
     end)

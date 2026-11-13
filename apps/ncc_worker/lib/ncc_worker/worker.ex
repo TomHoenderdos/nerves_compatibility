@@ -134,6 +134,9 @@ defmodule NccWorker.Worker do
           # trace observed across the package's closure (`ConfigReads`, R5);
           # nil when it is the `.app`'s own list alone.
           compile_env_rule: 1 | nil,
+          # The compile-time inputs a client checks itself
+          # (`NccWorker.Portability.CompileInputs`); a list on "pass", nil otherwise.
+          compile_inputs: [map()] | nil,
           # The config variant the build was made in, echoed for the portal
           # to check against the job. Added by `toolchain_project/7` once
           # `toolchain_build/5` returns (see `t:toolchain_build_verdict/0`):
@@ -194,6 +197,9 @@ defmodule NccWorker.Worker do
           declared: [map()] | nil,
           compile_env: [map()] | nil,
           compile_env_rule: 1 | nil,
+          # The compile-time inputs a client checks itself
+          # (`NccWorker.Portability.CompileInputs`); a list on "pass", nil otherwise.
+          compile_inputs: [map()] | nil,
           portability_rule: 2 | nil,
           rule1_reason: String.t() | nil,
           # The worker's judge revision (`NccWorker.Portability.judge_revision/1`)
@@ -374,6 +380,8 @@ defmodule NccWorker.Worker do
               # config reads in `compile_env` (R5), nil on one that is not;
               # absent on firmware results and from `result.json` when nil.
               optional(:compile_env_rule) => 1 | nil,
+              # On a published pure_elixir result only.
+              optional(:compile_inputs) => [map()] | nil,
               # Only on a passing firmware target, each absent when it could
               # not be read (`NccWorker.SystemAbi`, advisory): the toolchain
               # the project's lock resolved for the system,
@@ -1383,6 +1391,7 @@ defmodule NccWorker.Worker do
     {compile_env, compile_env_rule} =
       if gate == :publish, do: r5_compile_env(app_env, verdict), else: {app_env, nil}
 
+    compile_inputs = if gate == :publish, do: verdict[:compile_inputs]
     {beam_scan, unpublished} = apply_gate(beam_scan, gate)
 
     %{
@@ -1395,6 +1404,7 @@ defmodule NccWorker.Worker do
           unpublished,
       compile_env: compile_env,
       compile_env_rule: compile_env_rule,
+      compile_inputs: compile_inputs,
       beam_scan: beam_scan,
       error: nil,
       host_portability: host_portability(gate, verdict)
@@ -2005,6 +2015,7 @@ defmodule NccWorker.Worker do
       declared: nil,
       compile_env: nil,
       compile_env_rule: nil,
+      compile_inputs: nil,
       file_manifest: nil,
       portability_rule: nil,
       rule1_reason: nil,
@@ -2094,7 +2105,13 @@ defmodule NccWorker.Worker do
     case combine(static, portability) do
       :ok ->
         manifest = BeamScan.normalize(scan)["footprint"]["file_manifest"]
-        %{build | status: "pass", file_manifest: manifest}
+
+        %{
+          build
+          | status: "pass",
+            file_manifest: manifest,
+            compile_inputs: portability[:compile_inputs]
+        }
 
       {:skip, reason} ->
         %{build | status: "skipped", reason: reason}
@@ -2128,11 +2145,16 @@ defmodule NccWorker.Worker do
 
   def r5_compile_env(app_env, _verdict), do: {app_env, nil}
 
-  # A pass names the config reads its files depend on (`compile_env`, `[]`
-  # for none). One that does not could have dropped them, so it is judged
-  # as a trace that could not be used: it never publishes.
+  # A pass names the config reads and the env reads its files depend on
+  # (`compile_env` and `compile_inputs`, `[]` for none). One that does not
+  # could have dropped them, so it is judged as a trace that could not be
+  # used: it never publishes.
+  defp require_compile_env(%{status: :pass, compile_env: items, compile_inputs: inputs} = verdict)
+       when is_list(items) and is_list(inputs),
+       do: verdict
+
   defp require_compile_env(%{status: :pass, compile_env: items} = verdict) when is_list(items),
-    do: verdict
+    do: cannot_judge(verdict, "pass without compile inputs")
 
   defp require_compile_env(%{status: :pass} = verdict),
     do: cannot_judge(verdict, "pass without config reads")
@@ -2148,7 +2170,7 @@ defmodule NccWorker.Worker do
     verdict
     |> Map.merge(%{status: :skip, reason: PortabilityReasons.could_not_judge()})
     |> Map.put(:observations, Map.put(observations, "problems", problems))
-    |> Map.delete(:compile_env)
+    |> Map.drop([:compile_env, :compile_inputs])
   end
 
   # The host compile's own wall time (its `deps.get` included) next to the

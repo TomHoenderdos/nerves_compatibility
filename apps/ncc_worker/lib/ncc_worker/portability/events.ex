@@ -40,7 +40,12 @@ defmodule NccWorker.Portability.Events do
       exactly the shape pinned per toolchain for that read
       (`:ncc_tracer_stack.code_loading_read/4`). The beam read that follows
       is judged as a read; `prim_file:get_cwd/0` is never flagged.
-    * Environment, programs, network, crypto and native loading refuse.
+    * Environment reads are build inputs, never refused: `os:getenv/1`
+      (with the value the tracer captured), `os:getenv/0` and `os:env/0`
+      are observed as `env_reads` for `CompileInputs`; `os:getenv/2` is
+      the `os:getenv/1` read below it. Environment and config writes are
+      observed (`env_writes`, `config_writes`). Init arguments, programs,
+      network, crypto and native loading refuse.
     * Integrity (the trace API, `erts_internal` trace BIFs, `system_flag`,
       reading another process's stack, mailbox or dictionary, unsticking a
       module, the tracer's own API) refuses everywhere, `mix.exs` included.
@@ -120,6 +125,12 @@ defmodule NccWorker.Portability.Events do
   @max_mix_exs_bytes 1024 * 1024
   @mix_paths ~w(build_path app_path compile_path)
 
+  # Compile-time env reads are build inputs (compile-time inputs spec):
+  # observed with what they returned, never refused. os:getenv/2 reaches
+  # os:getenv/1 through a remote call, whose event is the read.
+  @env_reads ~w(os:getenv/1)
+  @env_all ~w(os:getenv/0 os:env/0)
+
   # Item 5d: keys constant within an OTP major on every supported platform
   # (BEAM; SMP and threads since OTP 21; private heaps). The client checks
   # the OTP major. Exact atom keys only: `term_bin` renders a tuple key
@@ -177,6 +188,17 @@ defmodule NccWorker.Portability.Events do
   defp unjudged(why), do: {:unjudged, "#{Reasons.could_not_judge()} (#{why})"}
 
   defp owned(_event, _ctx, :wrapper, _slices), do: :ignore
+
+  defp owned(%{"channel" => "env", "mfa" => mfa} = event, ctx, owner, slices)
+       when mfa in @env_reads,
+       do: {:observe, "env_reads", env_read(event, ctx, owner, slices)}
+
+  defp owned(%{"channel" => "env", "mfa" => "os:getenv/2"}, _ctx, _owner, _slices), do: :ignore
+
+  defp owned(%{"channel" => "env", "mfa" => mfa} = event, _ctx, _owner, _slices)
+       when mfa in @env_all,
+       do:
+         {:observe, "env_reads", Map.merge(summary(event), %{"ts" => event["ts"], "all" => true})}
 
   defp owned(%{"channel" => "elixir_version"} = event, ctx, owner, slices) do
     case Context.mix_exs(ctx, event, owner) do
@@ -497,6 +519,22 @@ defmodule NccWorker.Portability.Events do
 
   defp display("Elixir." <> name), do: name
   defp display(name), do: name
+
+  defp env_read(event, ctx, owner, slices) do
+    Map.merge(summary(event), %{
+      "name" => event["arg"]["name"],
+      "returned" => event["returned"],
+      "ts" => event["ts"],
+      "all" => false,
+      "slice_allowed" => slice_allowed?(event, ctx, owner, slices)
+    })
+  end
+
+  # R4 on a read in a dependency's mix.exs: one that cannot reach a
+  # compile-relevant key is no input by itself (`CompileInputs` takes it
+  # back when its file also writes the environment).
+  defp slice_allowed?(event, ctx, owner, slices),
+    do: match?({:observe, "mix_exs_allowed", _}, in_mix_exs(event, ctx, owner, slices, :none))
 
   defp env_write(event) do
     event

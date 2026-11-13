@@ -310,9 +310,9 @@ defmodule NccWorker.Portability.JudgeTest do
     end
 
     test "an event outside every window counts against everything", %{proj: proj} do
-      r = report(proj, %{events: [event(25 + 100, "os:getenv/1", "lib/x.ex", "env")]})
+      r = report(proj, %{events: [event(25 + 100, "os:cmd/1", "lib/x.ex", "programs")]})
 
-      assert %{status: :skip, reason: "compile-time host read: os:getenv/1" <> _} =
+      assert %{status: :skip, reason: "compile-time host read: os:cmd/1" <> _} =
                judge(proj, r)
     end
 
@@ -795,10 +795,17 @@ defmodule NccWorker.Portability.JudgeTest do
     end
 
     defp mix_exs_read(proj, line) do
+      15
+      |> event("inet:gethostname/0", Path.join([proj, "deps", "dep", "mix.exs"]), "network")
+      |> put_in(["user", "line"], line)
+    end
+
+    defp mix_exs_env_read(proj, line) do
       %{
         event(15, "os:getenv/1", Path.join([proj, "deps", "dep", "mix.exs"]), "env")
         | "arg" => %{"name" => "XV"}
       }
+      |> Map.merge(%{"call_id" => line, "returned" => enc(:error)})
       |> put_in(["user", "line"], line)
     end
 
@@ -810,9 +817,20 @@ defmodule NccWorker.Portability.JudgeTest do
 
       assert %{
                reason:
-                 "closure dependency observed the host: dep (compile-time host read in mix.exs: os:getenv/1 sets elixirc_options" <>
+                 "closure dependency observed the host: dep (compile-time host read in mix.exs: inet:gethostname/0 sets elixirc_options" <>
                    _
              } = judge(proj, r)
+    end
+
+    test "an env read in mix.exs is an input only where it reaches a compile key", %{proj: proj} do
+      assert %{status: :pass, compile_inputs: []} =
+               judge(proj, report(proj, %{events: [mix_exs_env_read(proj, 4)]}))
+
+      assert %{
+               status: :pass,
+               compile_inputs: [%{"kind" => "env", "name" => "XV", "set_by" => "host"}]
+             } =
+               judge(proj, report(proj, %{events: [mix_exs_env_read(proj, 5)]}))
     end
 
     test "an Elixir version read only a compile-relevant key reaches taints", %{proj: proj} do
@@ -1806,6 +1824,68 @@ defmodule NccWorker.Portability.JudgeTest do
                reason: "compile-time Elixir patch dependence: System.build_info/0" <> _
              } =
                judge(proj, r)
+    end
+  end
+
+  describe "compile-time inputs" do
+    defp env_event(ts, name, returned, file \\ "lib/x.ex") do
+      ts
+      |> event("os:getenv/1", file, "env")
+      |> Map.merge(%{
+        "arg" => %{"name" => name},
+        "first_kind" => "user",
+        "call_id" => ts,
+        "returned" => returned
+      })
+    end
+
+    test "an env read in the package's window publishes with a host input", %{proj: proj} do
+      assert %{status: :pass, compile_inputs: [item]} =
+               judge(proj, traced(proj, [env_event(35, "GITHUB_ACTIONS", enc(:error))], @snap))
+
+      assert item == %{
+               "kind" => "env",
+               "name" => "GITHUB_ACTIONS",
+               "value" => enc(:error),
+               "set_by" => "host"
+             }
+    end
+
+    test "an env read in a dependency's window no longer taints it", %{proj: proj} do
+      assert %{status: :pass, compile_inputs: [%{"name" => "X"}]} =
+               judge(proj, traced(proj, [env_event(15, "X", enc({:ok, "1"}))], @snap))
+    end
+
+    test "a pass with no reads carries empty inputs; a skip carries none", %{proj: proj} do
+      assert %{status: :pass, compile_inputs: []} = judge(proj, traced(proj, [], @snap))
+      cmd = event(35, "os:cmd/1", "lib/x.ex", "programs")
+      assert %{status: :skip, compile_inputs: nil} = judge(proj, traced(proj, [cmd], @snap))
+    end
+
+    test "a private-looking name's value is in neither the inputs nor the observations",
+         %{proj: proj} do
+      secret = enc({:ok, "s3cret"})
+      read = env_event(35, "FX_API_TOKEN", secret)
+
+      write =
+        35
+        |> event("os:putenv/2", "lib/x.ex", "env_write")
+        |> Map.put("arg", %{"name" => "NCC_SECRET_X", "value" => secret})
+
+      assert %{status: :pass} = v = judge(proj, traced(proj, [write, read], @snap))
+      refute inspect(v, limit: :infinity, printable_limit: :infinity) =~ secret
+      assert [%{"value" => "unrecordable"}] = v.compile_inputs
+      assert [read_obs] = v.observations["env_reads"]
+      assert [write_obs] = v.observations["env_writes"]
+      refute Map.has_key?(read_obs, "returned")
+      refute Map.has_key?(write_obs, "value")
+    end
+
+    test "init arguments are still a host read", %{proj: proj} do
+      arg = event(35, "init:get_argument/1", "lib/x.ex", "env")
+
+      assert %{status: :skip, reason: "compile-time host read: init:get_argument/1" <> _} =
+               judge(proj, traced(proj, [arg], @snap))
     end
   end
 end

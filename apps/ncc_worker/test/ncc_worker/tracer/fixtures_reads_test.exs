@@ -326,8 +326,9 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
     assert "compile-time host read: os:type/0" <> _ = refused(ctx, "fx_task")
   end
 
-  test "an environment read deciding a definition refuses", ctx do
-    assert "compile-time host read: os:getenv/1" <> _ = refused(ctx, "fx_env")
+  test "an environment read deciding a definition is a compile input", ctx do
+    assert %{status: :pass, compile_inputs: [%{"kind" => "env", "name" => "FX_FLAG"}]} =
+             verdict(ctx, "fx_env")
   end
 
   # The system_flag refusal is not the reason: the judge puts

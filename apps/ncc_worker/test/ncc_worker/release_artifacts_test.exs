@@ -268,10 +268,16 @@ defmodule NccWorker.ReleaseArtifactsTest do
 
   # The compile-time trace's verdicts (`NccWorker.Portability.run/3`), as the
   # full run's `pure_elixir_result/3` takes them.
-  # A pass always carries the config reads it observed, `[]` for none.
+  # A pass always carries the config and env reads it observed, `[]` for none.
   defp traced_pass do
     fn _package ->
-      %{status: :pass, reason: nil, observations: %{"trace_stats" => %{}}, compile_env: []}
+      %{
+        status: :pass,
+        reason: nil,
+        observations: %{"trace_stats" => %{}},
+        compile_env: [],
+        compile_inputs: []
+      }
     end
   end
 
@@ -668,7 +674,7 @@ defmodule NccWorker.ReleaseArtifactsTest do
   # Everything a withheld result may differ in from a published one.
   defp strip_publication(result) do
     result
-    |> Map.drop([:host_portability, :log_tail, :compile_env_rule])
+    |> Map.drop([:host_portability, :log_tail, :compile_env_rule, :compile_inputs])
     |> update_in([:beam_scan, "footprint"], &Map.delete(&1, "file_manifest"))
   end
 

@@ -500,6 +500,7 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
   "declared": [{"app": "decimal", "name": "decimal", "requirement": "~> 1.0 or ~> 2.0", "optional": true}],
   "compile_env": [{"app": "...", "path": ["..."], "value": "<base64url term>"}],
   "compile_env_rule": 1,
+  "compile_inputs": [{"kind": "env", "name": "...", "value": "<base64url term>", "set_by": "host"}],
   "config_variant": "default",
   "portability_rule": 2,
   "rule1_reason": "rule 1's reason when it would have skipped, else null",
@@ -575,6 +576,17 @@ that differs between patches of the minor (`compile-time Elixir patch dependence
 is judged "portability could not be judged" and publishes nothing. A `pure_elixir` system result whose files are
 published carries the same list and `"compile_env_rule": 1`; one whose `.app` cannot be read (`compile_env` `null`,
 which no client matches) publishes nothing either, as "portability could not be judged".
+
+`compile_inputs` (on `pass`, `null` otherwise; also on a published `pure_elixir` system result) lists the compile-time
+environment reads of the package's closure, which no longer refuse a build (`NccWorker.Portability.CompileInputs`):
+`{"kind": "env", "name", "value", "set_by": "host"}` for a value from the builder's environment,
+`{"kind": "env", "name", "value", "set_by": "build", "inputs": "recorded" | "unknown"}` for a value an earlier
+`System.put_env` in the same build set, `{"kind": "env_all"}` for a read of the whole environment, and
+`{"kind": "config_unrecorded"}` when the config reads could not all be recorded. A value the trace could not
+capture, over 64 KiB, or under a private-looking name (`NCC_*`, `*TOKEN*`, `*SECRET*`, ...) is `"unrecordable"`.
+Each kind has its own cap inside the list's 256 items: more than 128 `env` items record `env_all` instead, more
+than 96 `config_order` items or 32 of any other kind record `config_unrecorded`; a cap never drops the build.
+Other host reads (`os:type`, `system_info`, files, the network, programs, init arguments) still refuse.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 

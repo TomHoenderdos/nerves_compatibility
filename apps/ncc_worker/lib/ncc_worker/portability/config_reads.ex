@@ -208,7 +208,8 @@ defmodule NccWorker.Portability.ConfigReads do
           refusals: [{term(), {:refuse, String.t()}}],
           problems: [String.t()],
           unreviewed: [map()],
-          dropped: non_neg_integer()
+          dropped: non_neg_integer(),
+          inputs: [map()]
         }
 
   @doc "The reviewed toolchain reads for Elixir version `elixir`, or nil."
@@ -386,7 +387,8 @@ defmodule NccWorker.Portability.ConfigReads do
       refusals: Enum.reverse(acc.refusals),
       problems: Enum.uniq(Enum.reverse(acc.problems) ++ problems),
       unreviewed: Enum.reverse(acc.unreviewed),
-      dropped: acc.dropped
+      dropped: acc.dropped,
+      inputs: []
     }
   end
 

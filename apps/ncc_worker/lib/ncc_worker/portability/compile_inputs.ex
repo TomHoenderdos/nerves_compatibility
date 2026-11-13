@@ -1,0 +1,138 @@
+defmodule NccWorker.Portability.CompileInputs do
+  @moduledoc """
+  The build's `compile_inputs` (compile-time inputs spec, section 2): every
+  environment variable the package's closure read at compile time, and what
+  it read, instead of a refusal. Shape: `Compatibility.CompileInputs`.
+
+  A read (`os:getenv/1`, its value from the tracer's return capture) is
+  `set_by: "build"` when an earlier write in the same build (`os:putenv/2`,
+  `os:unsetenv/1`) set the value it returned: in the Mix VM, the latest
+  write of that name before it, when its value is the one returned; in a
+  child VM, whose clock is its own, a Mix-VM write of that value. Such a
+  value follows from the build's own inputs, so a client does not compare
+  it, as long as the writer's inputs were recorded: `inputs: "recorded"`
+  when the write has a source file and every env read from that file before
+  it is itself recorded, `"unknown"` otherwise. Any other read is
+  `set_by: "host"`.
+
+  A read in a dependency's `mix.exs` that R4 found cannot reach a
+  compile-relevant key (`slice_allowed`) is no input, unless its file also
+  writes the environment: then it may decide what the write sets.
+
+  A value the trace did not capture, could not record, or read under a
+  private-looking name (`NCC_*`, or a name with TOKEN, SECRET, PASSW,
+  API_KEY, PRIVATE or CREDENTIAL) is `"unrecordable"`, which matches
+  nothing: the builder's environment holds no secret, and this keeps it
+  that way in public manifests. Reading the whole environment, or more
+  than 128 variables, is `env_all`.
+
+  Each kind has its own cap, and the caps together fit the shared 256-item
+  cap of `Compatibility.CompileInputs`: 128 `env` items, 96 `config_order`
+  items and 32 of every other kind. A kind over its cap records that it
+  was not recorded instead (`env_all` for `env`, `config_unrecorded` for
+  the rest), so the list never grows past the shared cap and the build is
+  never dropped for it.
+  """
+
+  alias Compatibility.{CompileInputs, RecordedValue}
+
+  @max_env_items 128
+  @max_order_items 96
+  @max_other_items 32
+  @env_all %{"kind" => "env_all"}
+  @unrecorded %{"kind" => "config_unrecorded"}
+  @private ~r/\ANCC_|TOKEN|SECRET|PASSW|API_KEY|PRIVATE|CREDENTIAL/i
+
+  @spec build([{term(), term()}], [map()]) :: [map()]
+  def build(decided, config_inputs) do
+    reads = for {_owner, {:observe, "env_reads", item}} <- decided, do: item
+    writes = for {_owner, {:observe, "env_writes", item}} <- decided, do: item
+    {all, named} = Enum.split_with(reads, &(&1["all"] == true))
+    writer_files = MapSet.new(writes, &file_key/1)
+
+    env =
+      named
+      |> Enum.filter(&(&1["slice_allowed"] != true or MapSet.member?(writer_files, file_key(&1))))
+      |> Enum.map(&item(&1, writes, named))
+      |> Enum.uniq()
+      |> Enum.sort_by(&{&1["name"], &1["set_by"], &1["value"], &1["inputs"]})
+
+    {env, all?} =
+      if length(env) > @max_env_items, do: {[], true}, else: {env, all != []}
+
+    env ++ cap_config(if(all?, do: [@env_all], else: []) ++ config_inputs)
+  end
+
+  defp cap_config(inputs) do
+    inputs = Enum.uniq(inputs)
+    {orders, others} = Enum.split_with(inputs, &(&1["kind"] == "config_order"))
+
+    {orders, others} =
+      if length(orders) > @max_order_items,
+        do: {[], Enum.uniq(others ++ [@unrecorded])},
+        else: {orders, others}
+
+    others =
+      if length(others) > @max_other_items,
+        do: Enum.uniq(Enum.filter(others, &(&1 == @env_all)) ++ [@unrecorded]),
+        else: others
+
+    others ++ orders
+  end
+
+  defp item(read, writes, reads) do
+    base = %{"kind" => "env", "name" => read["name"], "value" => value_of(read)}
+
+    case writer(read, writes) do
+      nil -> Map.put(base, "set_by", "host")
+      write -> Map.merge(base, %{"set_by" => "build", "inputs" => inputs_of(write, reads)})
+    end
+  end
+
+  defp value_of(%{"name" => name, "returned" => returned})
+       when is_binary(name) and is_binary(returned) do
+    if Regex.match?(@private, name) or not RecordedValue.acceptable?(returned),
+      do: CompileInputs.unrecordable(),
+      else: returned
+  end
+
+  defp value_of(_read), do: CompileInputs.unrecordable()
+
+  defp writer(%{"vm" => "main"} = read, writes) do
+    writes
+    |> Enum.filter(&(&1["vm"] == "main" and &1["name"] == read["name"] and before?(&1, read)))
+    |> Enum.max_by(& &1["ts"], fn -> nil end)
+    |> same_value(read["returned"])
+  end
+
+  defp writer(read, writes) do
+    writes
+    |> Enum.filter(
+      &(&1["vm"] == "main" and &1["name"] == read["name"] and same_value(&1, read["returned"]))
+    )
+    |> Enum.max_by(& &1["ts"], fn -> nil end)
+  end
+
+  # Only a value the trace recorded can match: two missing or unrecordable
+  # captures say nothing about each other.
+  defp same_value(%{"value" => returned} = write, returned) when is_binary(returned) do
+    if RecordedValue.acceptable?(returned), do: write
+  end
+
+  defp same_value(_write, _returned), do: nil
+
+  defp inputs_of(%{"file" => file} = write, reads) when is_binary(file) do
+    earlier = Enum.filter(reads, &(file_key(&1) == file_key(write) and before?(&1, write)))
+
+    if Enum.all?(earlier, &(value_of(&1) != CompileInputs.unrecordable())),
+      do: "recorded",
+      else: "unknown"
+  end
+
+  defp inputs_of(_write, _reads), do: "unknown"
+
+  defp before?(%{"ts" => a}, %{"ts" => b}) when is_integer(a) and is_integer(b), do: a < b
+  defp before?(_a, _b), do: false
+
+  defp file_key(item), do: {item["vm"], item["file"]}
+end

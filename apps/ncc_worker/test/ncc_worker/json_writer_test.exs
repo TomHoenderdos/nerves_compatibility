@@ -676,5 +676,26 @@ defmodule NccWorker.JsonWriterTest do
       refute Map.has_key?(systems["nerves_system_bbb"], "deps_lock")
       refute Map.has_key?(systems["nerves_system_bbb"], "optional_deps")
     end
+
+    @tag :tmp_dir
+    test "writes compile_inputs only on a result that carries them", %{tmp_dir: dir} do
+      inputs = [%{"kind" => "env_all"}]
+
+      result =
+        with_systems(%{
+          "pure_elixir" => system(%{compile_inputs: inputs}),
+          "nerves_system_bbb" => system(%{compile_inputs: nil}),
+          "nerves_system_rpi4" => system(%{})
+        })
+
+      assert :ok = JsonWriter.write_result(dir, result)
+
+      systems =
+        dir |> Path.join("result.json") |> File.read!() |> JSON.decode!() |> Map.get("systems")
+
+      assert systems["pure_elixir"]["compile_inputs"] == inputs
+      refute Map.has_key?(systems["nerves_system_bbb"], "compile_inputs")
+      refute Map.has_key?(systems["nerves_system_rpi4"], "compile_inputs")
+    end
   end
 end

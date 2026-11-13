@@ -41,7 +41,8 @@ defmodule NccWorker.Portability do
   told, no Elixir version) make the trace incomplete (step 1). A passing
   verdict carries `compile_env`, the closure's config reads as manifest
   items valued from the trace's config snapshot; every other verdict has it
-  nil.
+  nil. It also carries `compile_inputs`, the closure's compile-time
+  environment reads (`CompileInputs`); every other verdict has it nil.
 
   Steps 1, 4, an `ebin` R2 cannot read (for the package or any closure
   dependency) and the package's own rebar3 coverage are "portability could
@@ -76,6 +77,7 @@ defmodule NccWorker.Portability do
 
   alias NccWorker.Portability.{
     BuildRoot,
+    CompileInputs,
     ConfigReads,
     Context,
     ElixirVersion,
@@ -94,6 +96,7 @@ defmodule NccWorker.Portability do
           required(:reason) => String.t() | nil,
           required(:observations) => map(),
           optional(:compile_env) => [ConfigReads.item()] | nil,
+          optional(:compile_inputs) => [map()] | nil,
           optional(:manager) => String.t() | nil
         }
 
@@ -105,6 +108,7 @@ defmodule NccWorker.Portability do
     "mix_exs_allowed" => 50,
     "build_root_source_path" => 50,
     "mix_project_paths" => 50,
+    "env_reads" => 50,
     "env_writes" => 50,
     "config_writes" => 50
   }
@@ -422,6 +426,7 @@ defmodule NccWorker.Portability do
         observations: Map.put(obs, "problems", [problem | Map.get(obs, "problems") || []])
     }
     |> Map.put(:compile_env, nil)
+    |> Map.put(:compile_inputs, nil)
   end
 
   defp judge_compile({:ok, 0}), do: "finished"
@@ -586,6 +591,7 @@ defmodule NccWorker.Portability do
       report: report,
       decided: decided,
       config: config,
+      inputs: CompileInputs.build(decided, config.inputs),
       trace_problems:
         trace_problems(report, ctx) ++
           built_problems(ctx, report, opts) ++
@@ -646,20 +652,27 @@ defmodule NccWorker.Portability do
     children =
       for {app, child} <- Enum.sort(report.children),
           Context.dep?(ctx, app),
-          do: for(event <- child.events, do: {app, event})
+          do: {"child:" <> app, for(event <- child.events, do: {app, event})}
 
-    vms = [main | children]
-    owned = Enum.concat(vms)
+    vms = [{"main", main} | children]
+    owned = Enum.flat_map(vms, &elem(&1, 1))
     slices = Events.mix_exs_slices(ctx, Enum.reject(owned, &match?({:quiet, _}, &1)))
 
-    for vm <- vms,
+    for {vm_name, vm} <- vms,
         vm_ctx = %{ctx | ensured: Probes.ensured(vm)},
         {owner, event} <- vm,
-        decision = Events.decide(event, vm_ctx, owner, slices),
+        decision = event |> Events.decide(vm_ctx, owner, slices) |> in_vm(vm_name),
         kept = keep(owner, decision, scope),
         kept != nil,
         do: kept
   end
+
+  # Env reads and writes keep the VM they were made in: timestamps compare
+  # only within one VM (`CompileInputs`).
+  defp in_vm({:observe, kind, item}, vm) when kind in ["env_reads", "env_writes"],
+    do: {:observe, kind, Map.put(item, "vm", vm)}
+
+  defp in_vm(decision, _vm), do: decision
 
   # An unjudged event counts wherever it fell (`:any`, never in scope). An
   # integrity refusal (the trace itself tampered with) refuses wherever it
@@ -1054,6 +1067,7 @@ defmodule NccWorker.Portability do
       reason: reason,
       observations: observations(facts, problems),
       compile_env: if(status == :pass, do: facts.config.items),
+      compile_inputs: if(status == :pass, do: facts.inputs),
       manager: Context.manager(facts.ctx, facts.ctx.package)
     }
   end

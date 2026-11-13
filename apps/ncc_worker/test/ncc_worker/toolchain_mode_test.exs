@@ -45,12 +45,13 @@ defmodule NccWorker.ToolchainModeTest do
   defp passing_host, do: %{status: :pass, error: nil}
 
   @finished %{"judge_compile" => "finished"}
-  # A pass always carries the config reads it observed, `[]` for none.
+  # A pass always carries the config and env reads it observed, `[]` for none.
   @traced_pass %{
     status: :pass,
     reason: nil,
     observations: %{"trace_stats" => Map.put(@finished, "windows", 2)},
-    compile_env: []
+    compile_env: [],
+    compile_inputs: []
   }
   # The traced compile finished, but its trace could not be used.
   @not_judged %{
@@ -73,7 +74,8 @@ defmodule NccWorker.ToolchainModeTest do
     status: :skip,
     reason: "compile-time host read: os:type/0 in X.f/0 (lib/x.ex:2)",
     observations: %{"trace_stats" => @finished},
-    compile_env: @r5
+    compile_env: @r5,
+    compile_inputs: []
   }
 
   describe "the compile-time trace" do
@@ -1126,6 +1128,29 @@ defmodule NccWorker.ToolchainModeTest do
         assert %{compile_env_rule: nil, host_portability: %{status: "skipped"}} = result
         refute Map.has_key?(result.beam_scan["footprint"] || %{}, "file_manifest")
       end
+    end
+
+    test "a published build carries compile_inputs; a pass without them never publishes",
+         %{tmp_dir: work_dir} do
+      inputs = [%{"kind" => "env", "name" => "X", "value" => "g3cFZXJyb3I", "set_by" => "host"}]
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      verdict = %{@traced_pass | compile_inputs: inputs}
+      build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict)
+      assert %{status: "pass", compile_inputs: ^inputs} = build
+
+      missing = Map.delete(@traced_pass, :compile_inputs)
+      skipped = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, missing)
+      assert %{status: "skipped", compile_inputs: nil} = skipped
+      assert "pass without compile inputs" in skipped.compile_observations["problems"]
+
+      refused = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @refused)
+      assert %{status: "skipped", compile_inputs: nil} = refused
+
+      assert %{compile_inputs: ^inputs, host_portability: %{status: "pass"}} =
+               Worker.pure_elixir_result(project, "sample", fn _ -> verdict end)
+
+      assert %{compile_inputs: nil, host_portability: %{status: "skipped"}} =
+               Worker.pure_elixir_result(project, "sample", fn _ -> missing end)
     end
 
     test "an :os.type() in a function body no longer withholds; the trace decides",

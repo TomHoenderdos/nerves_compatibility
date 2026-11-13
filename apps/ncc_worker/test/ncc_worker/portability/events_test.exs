@@ -257,9 +257,7 @@ defmodule NccWorker.Portability.EventsTest do
              Events.decide(epp("erlang:system_info/1", %{"key" => "wordsize"}), ctx, "pkg")
 
     getenv = %{epp("os:getenv/1", %{"name" => "X"}) | "channel" => "env"}
-
-    assert {:refuse, "compile-time host read: os:getenv/1" <> _} =
-             Events.decide(getenv, ctx, "pkg")
+    assert {:observe, "env_reads", %{"name" => "X"}} = Events.decide(getenv, ctx, "pkg")
 
     version = epp("os:version/0", %{})
     assert {:refuse, _} = Events.decide(version, ctx, "pkg")
@@ -298,9 +296,9 @@ defmodule NccWorker.Portability.EventsTest do
 
   test "a stack without a user frame names its extent", %{ctx: ctx} do
     assert {:refuse,
-            "compile-time host read: os:getenv/1 (X) (truncated stack, first frame Elixir.Macro)"} =
+            "compile-time host read: os:cmd/1 (truncated stack, first frame Elixir.Macro)"} =
              Events.decide(
-               ev("env", "os:getenv/1", %{"name" => "X"},
+               ev("programs", "os:cmd/1", %{"cmd" => "x"},
                  user: nil,
                  extent: "truncated",
                  first: "Elixir.Macro"
@@ -606,13 +604,14 @@ defmodule NccWorker.Portability.EventsTest do
   end
 
   test "a refusal inside mix.exs goes to R4", %{ctx: ctx, pkg: pkg} do
-    deps_read = in_mix_exs(ev("env", "os:getenv/1", %{"name" => "XV"}), pkg, 4)
+    deps_read = in_mix_exs(ev("network", "inet:gethostname/0", %{}), pkg, 4)
     opts_read = put_in(deps_read, ["user", "line"], 5)
 
-    assert {:observe, "mix_exs_allowed", %{"mfa" => "os:getenv/1", "line" => 4}} =
+    assert {:observe, "mix_exs_allowed", %{"mfa" => "inet:gethostname/0", "line" => 4}} =
              Events.decide(deps_read, ctx, "pkg")
 
-    assert {:refuse, "compile-time host read in mix.exs: os:getenv/1 sets elixirc_options" <> _} =
+    assert {:refuse,
+            "compile-time host read in mix.exs: inet:gethostname/0 sets elixirc_options" <> _} =
              Events.decide(opts_read, ctx, "pkg")
 
     # A precomputed slice is used instead of reading the file again.
@@ -624,7 +623,7 @@ defmodule NccWorker.Portability.EventsTest do
     # A frame without a line cannot be sliced.
     no_line = put_in(deps_read, ["user", "line"], nil)
 
-    assert {:refuse, "compile-time host read: os:getenv/1" <> _} =
+    assert {:refuse, "compile-time host read: inet:gethostname/0" <> _} =
              Events.decide(no_line, ctx, "pkg")
 
     # Native loading runs code the trace cannot follow: never R4.
@@ -654,11 +653,38 @@ defmodule NccWorker.Portability.EventsTest do
              Events.decide(put_in(lookup, ["user", "line"], 5), ctx, "pkg")
   end
 
+  test "an env read in mix.exs is an input; R4 marks one that reaches no compile key",
+       %{ctx: ctx, pkg: pkg} do
+    deps_read = in_mix_exs(ev("env", "os:getenv/1", %{"name" => "XV"}), pkg, 4)
+
+    assert {:observe, "env_reads", %{"slice_allowed" => true}} =
+             Events.decide(deps_read, ctx, "pkg")
+
+    opts_read = put_in(deps_read, ["user", "line"], 5)
+
+    assert {:observe, "env_reads", %{"slice_allowed" => false}} =
+             Events.decide(opts_read, ctx, "pkg")
+
+    assert :ignore = Events.decide(ev("env", "os:getenv/2", %{"name" => "X"}), ctx, "pkg")
+
+    assert {:observe, "env_reads", %{"all" => true}} =
+             Events.decide(ev("env", "os:env/0", %{}), ctx, "pkg")
+  end
+
+  test "init arguments are still a host read", %{ctx: ctx} do
+    for mfa <- ~w(init:get_argument/1 init:get_arguments/0 init:get_plain_arguments/0) do
+      assert {:refuse, "compile-time host read: " <> rest} =
+               Events.decide(ev("env", mfa, %{}), ctx, "pkg")
+
+      assert String.starts_with?(rest, mfa)
+    end
+  end
+
   test "a mix.exs the slice cannot read refuses", %{ctx: ctx, pkg: pkg} do
     File.write!(Path.join(pkg, "mix.exs"), String.duplicate("#", 300 * 1024))
-    event = in_mix_exs(ev("env", "os:getenv/1", %{"name" => "XV"}), pkg, 4)
+    event = in_mix_exs(ev("network", "inet:gethostname/0", %{}), pkg, 4)
 
-    assert {:refuse, "compile-time host read in mix.exs: os:getenv/1 " <> _} =
+    assert {:refuse, "compile-time host read in mix.exs: inet:gethostname/0 " <> _} =
              Events.decide(event, ctx, "pkg")
 
     File.rm!(Path.join(pkg, "mix.exs"))
@@ -833,7 +859,7 @@ defmodule NccWorker.Portability.EventsTest do
     end
 
     test "a reason names the env var and the frame that made the call", %{ctx: ctx} do
-      assert {:refuse, "compile-time host read: os:getenv/1 (FX_FLAG) in Pkg.f/0 (lib/pkg.ex:3)"} =
+      assert {:observe, "env_reads", %{"name" => "FX_FLAG", "file" => "lib/pkg.ex", "line" => 3}} =
                Events.decide(ev("env", "os:getenv/1", %{"name" => "FX_FLAG"}), ctx, "pkg")
 
       event =
