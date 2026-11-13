@@ -120,8 +120,8 @@ defmodule NccWorker.Portability.BuildRoot do
   `BeamScanner`'s evidence, which names the beam each call is in: a path
   held in one module and run from another, in the package or a dependency,
   stays an observation, unless any module of the package itself (not the
-  closure) calls `:os.cmd/1,2`: that returns the shell's error text rather
-  than raising, so a missing path handed to it from another module fails
+  closure) runs a shell, `:os.cmd/1,2` or `System.shell/1,2`: they return
+  the shell's error text rather than raising, so a missing path handed to it from another module fails
   silently (`foo_paths` returning `filename:dirname(?FILE)`, `foo_build`
   running `os:cmd("cd " ++ Dir ++ " && make helper")` and ignoring the
   output). Then any bare source path refuses, naming the first module
@@ -166,17 +166,18 @@ defmodule NccWorker.Portability.BuildRoot do
         |> Enum.filter(&MapSet.member?(holders, &1))
         |> Enum.sort()
 
-      os_cmd? = Enum.any?(scan.shell_evidence, &match?(%{mfa: {:os, :cmd, _}}, &1))
+      # `:os.cmd/1,2` and `System.shell/1,2` (BeamScanner's shell class).
+      shell? = scan.shell_evidence != []
 
       cond do
         same_module != [] ->
           {:refuse,
            "bakes the build path: #{hd(same_module)} (a source path in a module that runs programs)"}
 
-        os_cmd? ->
+        shell? ->
           {:refuse,
            "bakes the build path: #{holders |> Enum.sort() |> hd()} " <>
-             "(a source path in a package that calls :os.cmd)"}
+             "(a source path in a package that runs a shell)"}
 
         true ->
           :ok

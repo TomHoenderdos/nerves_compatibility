@@ -139,7 +139,7 @@ defmodule NccWorker.Portability.ProgramSourcePathTest do
              end
              """)
 
-    assert why == " (a source path in a package that calls :os.cmd)"
+    assert why == " (a source path in a package that runs a shell)"
   end
 
   test "a dependency's :os.cmd does not count against the package's path", %{proj: proj} do

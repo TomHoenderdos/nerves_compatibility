@@ -500,7 +500,9 @@ defmodule NccWorker.Portability.BuildRootTest do
       for {name, call} <- [
             {"FxPspOsCmd1",
              ~s|_ = :os.cmd(String.to_charlist("cd " <> dir <> " && make helper"))|},
-            {"FxPspOsCmd2", ~s|_ = :os.cmd(String.to_charlist("cd " <> dir), %{})|}
+            {"FxPspOsCmd2", ~s|_ = :os.cmd(String.to_charlist("cd " <> dir), %{})|},
+            {"FxPspShell1", ~s|_ = System.shell("cd " <> dir <> " && make helper")|},
+            {"FxPspShell2", ~s|_ = System.shell("cd " <> dir, stderr_to_stdout: true)|}
           ] do
         dir = Path.join(root, name)
 
@@ -519,7 +521,7 @@ defmodule NccWorker.Portability.BuildRootTest do
         assert BuildRoot.program_source_paths(ebin, [dir], ok?) ==
                  {:refuse,
                   "bakes the build path: Elixir.#{name}.Paths" <>
-                    " (a source path in a package that calls :os.cmd)"},
+                    " (a source path in a package that runs a shell)"},
                name
       end
     end
@@ -551,7 +553,7 @@ defmodule NccWorker.Portability.BuildRootTest do
 
       assert BuildRoot.program_source_paths(ebin, [erl], ok?) ==
                {:refuse,
-                "bakes the build path: foo_paths (a source path in a package that calls :os.cmd)"}
+                "bakes the build path: foo_paths (a source path in a package that runs a shell)"}
     end
 
     test "a path in one module and System.cmd, a port or a lookup in another passes",
