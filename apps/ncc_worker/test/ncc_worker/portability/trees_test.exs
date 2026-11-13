@@ -177,7 +177,13 @@ defmodule NccWorker.Portability.TreesTest do
     refute Trees.absent?("README.md", members)
     refute Trees.absent?("", members)
 
-    for rel <- ["_build/y", "_build", ".hex", "hex_metadata.config", ".hex/x"] do
+    # A case variant of a member, or of a directory on the way to one, is
+    # not absent; nor is anything under priv, in any case.
+    for rel <- ["readme.md", "LIB", "Lib/A.ex", "README.MD", "priv", "priv/x", "PRIV/x"] do
+      refute Trees.absent?(rel, members), rel
+    end
+
+    for rel <- ["_build/y", "_build", ".hex", "hex_metadata.config", ".hex/x", "_BUILD/y"] do
       refute Trees.absent?(rel, members), rel
     end
   end

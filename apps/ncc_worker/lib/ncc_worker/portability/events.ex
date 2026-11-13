@@ -60,8 +60,9 @@ defmodule NccWorker.Portability.Events do
       file or directory listing in a closure dependency whose tree matched
       its tarball before the compile must still be the tarball's
       (`Context.tree_check/3`, item 5e); one that no longer is cannot be
-      judged. A path such a dependency's tarball does not hold at all
-      (`Context.absent_from_tree?/2`) is decided by that check too, not
+      judged. A path such a dependency's tarball does not hold at all, read
+      while its own `mix.exs` is evaluated and outside `priv`
+      (`Context.absent_from_tree?/3`), is decided by that check too, not
       refused for missing from the Hex file list.
     * Writes: only under the window's own `ebin` (`Context.writable?/3`); a
       rename's source too, a copy's source must be readable. Any symlink or
@@ -367,13 +368,14 @@ defmodule NccWorker.Portability.Events do
   # tree matched its tarball before the compile, still the tarball's (item
   # 5e, `Context.tree_check/3`). A tree changed since that check is no
   # refusal (it was the tarball's when checked) but cannot be judged. A path
-  # such a tree's tarball does not hold (`Context.absent_from_tree?/2`: a
-  # mix.exs wildcard over `guides/` the package left out) is decided by the
-  # same check: absent when checked, absent on the user's side.
+  # such a tree's tarball does not hold, read while that dependency's own
+  # mix.exs is evaluated (`Context.absent_from_tree?/3`: a wildcard over
+  # `guides/` the package left out), is decided by the same check: absent
+  # when checked, absent on the user's side.
   defp readable(e, ctx, path, owner) do
     real = Context.resolve(ctx, path, owner)
 
-    if Context.readable?(ctx, real) or Context.absent_from_tree?(ctx, real) do
+    if Context.readable?(ctx, real) or absent_in_mix_exs?(e, ctx, owner, real) do
       case Context.tree_check(ctx, real, e["arg"]["listing"] == true) do
         :ok ->
           :ignore
@@ -383,6 +385,19 @@ defmodule NccWorker.Portability.Events do
       end
     else
       {:refuse, host_read(e, path)}
+    end
+  end
+
+  # Only while the dependency's own mix.exs is evaluated (its first user
+  # frame is there), and only in that dependency's tree.
+  defp absent_in_mix_exs?(e, ctx, owner, real) do
+    case Context.mix_exs(ctx, e, owner) do
+      path when is_binary(path) ->
+        app = Enum.find(Map.keys(ctx.deps), &(Context.dest(ctx, &1) == Path.dirname(path)))
+        Context.absent_from_tree?(ctx, app, real)
+
+      _ ->
+        false
     end
   end
 

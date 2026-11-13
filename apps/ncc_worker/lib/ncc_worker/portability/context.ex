@@ -290,34 +290,34 @@ defmodule NccWorker.Portability.Context do
   end
 
   @doc """
-  Whether `real` is a path under the source dir of a closure dependency
-  that builds no native code and whose tree matched its verified tarball
-  before the compile (`Trees.snapshot/5`), that the tarball does not hold:
-  no member is the path or lies under it, and its first segment is none of
-  the root names the snapshot leaves out (`Trees.absent?/2`).
+  Whether `real`, read while `app`'s own `mix.exs` was evaluated, is a path
+  under `app`'s source dir that its verified tarball does not hold: `app`
+  builds no native code, its tree matched the tarball before the compile
+  (`Trees.snapshot/5`), and no member is the path or lies under it, case
+  folded, outside `priv` and the root names the snapshot leaves out
+  (`Trees.absent?/2`).
 
   The snapshot proved such a path absent before the compile, and the user's
   `deps/<d>` is unpacked from the same tarball, so reading it gives the same
   answer on both sides: nothing there. `tree_check/3` then decides the read
   as it does a listed one, so a path that is there at judge time cannot be
-  judged. A path the tarball holds is left to the Hex file list.
+  judged. A path the tarball holds is left to the Hex file list. Only
+  `mix.exs` evaluation: a read from compiled code keeps the Hex file list
+  rule.
   """
-  @spec absent_from_tree?(t(), String.t() | nil) :: boolean()
-  def absent_from_tree?(ctx, real) when is_binary(real) do
-    Enum.any?(ctx.deps, fn {app, dep} ->
-      with false <- dep.native?,
-           dest when is_binary(dest) <- dep.dest,
-           true <- under?(real, dest),
-           {:ok, members} <- Map.get(ctx.trees, app) do
-        rel = Path.split(real) |> Enum.drop(length(Path.split(dest)))
-        rel != [] and Trees.absent?(Path.join(rel), members)
-      else
-        _ -> false
-      end
-    end)
+  @spec absent_from_tree?(t(), term(), String.t() | nil) :: boolean()
+  def absent_from_tree?(ctx, app, real) when is_binary(real) do
+    with %{native?: false, dest: dest} when is_binary(dest) <- Map.get(ctx.deps, app),
+         true <- under?(real, dest),
+         {:ok, members} <- Map.get(ctx.trees, app) do
+      rel = Path.split(real) |> Enum.drop(length(Path.split(dest)))
+      rel != [] and Trees.absent?(Path.join(rel), members)
+    else
+      _ -> false
+    end
   end
 
-  def absent_from_tree?(_ctx, _real), do: false
+  def absent_from_tree?(_ctx, _app, _real), do: false
 
   @doc """
   Item 5e: the re-check of a read of `real` under the source dir of a

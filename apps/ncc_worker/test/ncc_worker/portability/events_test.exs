@@ -978,7 +978,12 @@ defmodule NccWorker.Portability.EventsTest do
     read =
       in_mix_exs(ev("file_read", "file:read_file_info/1", %{"path" => "guides/a.md"}), pkg, 5)
 
-    absolute = ev("file_read", "file:read_file/1", %{"path" => Path.join(pkg, "edoc/x.md")})
+    absolute =
+      in_mix_exs(
+        ev("file_read", "file:read_file/1", %{"path" => Path.join(pkg, "edoc/x.md")}),
+        pkg,
+        5
+      )
 
     for event <- [wildcard, read, absolute] do
       assert :ignore = Events.decide(event, ctx, "pkg")
@@ -987,10 +992,33 @@ defmodule NccWorker.Portability.EventsTest do
     end
 
     # Hex's own files and a `_build` the tarball does not carry are left out
-    # of the snapshot, so the tree cannot speak for them.
-    for rel <- ["hex_metadata.config", ".hex", "_build/prod/lib/pkg/ebin/x.beam"] do
-      event = ev("file_read", "file:read_file/1", %{"path" => rel})
-      assert {:refuse, "compile-time host read: " <> _} = Events.decide(event, ctx, "pkg")
+    # of the snapshot, so the tree cannot speak for them. Nor for `priv`,
+    # which a package may fill at runtime on the user's machine.
+    for rel <- [
+          "hex_metadata.config",
+          ".hex",
+          "_build/prod/lib/pkg/ebin/x.beam",
+          "priv/cldr/locales/en.json",
+          "priv",
+          "Priv/x.json",
+          "PRIV"
+        ] do
+      event = in_mix_exs(ev("file_read", "file:read_file/1", %{"path" => rel}), pkg, 5)
+      assert {:refuse, "compile-time host read" <> _} = Events.decide(event, ctx, "pkg"), rel
+    end
+
+    # The same reads outside mix.exs (a macro or module body at compile
+    # time) keep today's refusal: only mix.exs evaluation was meant.
+    for event <- [wildcard, read, absolute] do
+      at_compile = Map.put(event, "user", @user)
+      assert {:refuse, "compile-time host read: " <> _} = Events.decide(at_compile, ctx, "pkg")
+    end
+
+    # A case variant of a tarball entry is never absent: a case-insensitive
+    # file system would find the entry.
+    for rel <- ["readme.md", "MIX.EXS", "README.MD"] do
+      event = in_mix_exs(ev("file_read", "file:read_file/1", %{"path" => rel}), pkg, 5)
+      assert {:refuse, "compile-time host read" <> _} = Events.decide(event, ctx, "pkg"), rel
     end
 
     # A path the tarball holds but the Hex file list leaves out stays refused.
@@ -1030,6 +1058,8 @@ defmodule NccWorker.Portability.EventsTest do
     probe = ev("file_read", "file:read_file_info/1", %{"path" => "guides"})
 
     for event <- [read, listing, probe] do
+      event = in_mix_exs(event, pkg, 5)
+
       assert {:unjudged, "portability could not be judged (dependency tree changed" <> _} =
                Events.decide(event, ctx, "pkg")
     end
