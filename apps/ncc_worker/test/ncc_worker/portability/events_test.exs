@@ -49,7 +49,7 @@ defmodule NccWorker.Portability.EventsTest do
   end
 
   # The run's Hex cache: pkg's verified tarball lists lib, README.md and mix.exs.
-  defp build(dir, proj, report) do
+  defp build(dir, proj, report, opts \\ []) do
     home = Path.join(dir, "hex-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(home, "packages/hexpm"))
     meta = ~s({<<"files">>,[<<"lib">>,<<"README.md">>,<<"mix.exs">>]}.\n)
@@ -62,9 +62,15 @@ defmodule NccWorker.Portability.EventsTest do
     File.write!(Path.join(home, "packages/hexpm/pkg-1.0.0.tar"), bytes)
     sum = :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
 
-    Context.build(proj, "pkg", report, [],
-      hex_home: home,
-      releases: %{"pkg" => %{name: "pkg", version: "1.0.0", checksum: sum}}
+    Context.build(
+      proj,
+      "pkg",
+      report,
+      Keyword.get(opts, :native, []),
+      Keyword.merge(
+        [hex_home: home, releases: %{"pkg" => %{name: "pkg", version: "1.0.0", checksum: sum}}],
+        Keyword.delete(opts, :native)
+      )
     )
   end
 
@@ -905,5 +911,90 @@ defmodule NccWorker.Portability.EventsTest do
              Events.decide(set, ctx, "pkg")
 
     assert {:observe, "env_writes", _} = Events.decide(put, ctx, :outside)
+  end
+
+  # The members of pkg's tarball as they are on disk: the snapshot matched.
+  defp matched_tree(pkg) do
+    members =
+      for rel <- ["README.md", "mix.exs"], into: %{} do
+        sha = :crypto.hash(:sha256, File.read!(Path.join(pkg, rel)))
+        {rel, Base.encode16(sha, case: :lower)}
+      end
+
+    %{"pkg" => {:ok, members}}
+  end
+
+  test "a read of a path absent from a matched tarball tree is the tree check's to decide",
+       %{dir: dir, proj: proj, pkg: pkg} do
+    report = report(dir, proj, pkg, [])
+    ctx = build(dir, proj, report, trees: matched_tree(pkg))
+    unchecked = build(dir, proj, report)
+
+    # Line 5 sets elixirc_options, so the mix.exs slice alone would refuse.
+    wildcard =
+      in_mix_exs(
+        ev("file_read", "file:list_dir/1", %{"path" => "guides", "listing" => true}),
+        pkg,
+        5
+      )
+
+    read =
+      in_mix_exs(ev("file_read", "file:read_file_info/1", %{"path" => "guides/a.md"}), pkg, 5)
+
+    absolute = ev("file_read", "file:read_file/1", %{"path" => Path.join(pkg, "edoc/x.md")})
+
+    for event <- [wildcard, read, absolute] do
+      assert :ignore = Events.decide(event, ctx, "pkg")
+      # No snapshot, no tree check: still a host read.
+      assert {:refuse, _} = Events.decide(event, unchecked, "pkg")
+    end
+
+    # Hex's own files and a `_build` the tarball does not carry are left out
+    # of the snapshot, so the tree cannot speak for them.
+    for rel <- ["hex_metadata.config", ".hex", "_build/prod/lib/pkg/ebin/x.beam"] do
+      event = ev("file_read", "file:read_file/1", %{"path" => rel})
+      assert {:refuse, "compile-time host read: " <> _} = Events.decide(event, ctx, "pkg")
+    end
+
+    # A path the tarball holds but the Hex file list leaves out stays refused.
+    {:ok, members} = matched_tree(pkg)["pkg"]
+    File.mkdir_p!(Path.join(pkg, "priv"))
+    File.write!(Path.join(pkg, "priv/x"), "x")
+    sha = :sha256 |> :crypto.hash("x") |> Base.encode16(case: :lower)
+    listed = build(dir, proj, report, trees: %{"pkg" => {:ok, Map.put(members, "priv/x", sha)}})
+
+    assert {:refuse, _} =
+             Events.decide(
+               ev("file_read", "file:read_file/1", %{"path" => "priv/x"}),
+               listed,
+               "pkg"
+             )
+
+    # A tree that is not verified, or a native dependency, keeps the refusal.
+    unverified = build(dir, proj, report, trees: %{"pkg" => {:unverified, "no verified tarball"}})
+    native = build(dir, proj, report, trees: matched_tree(pkg), native: ["pkg"])
+
+    for c <- [unverified, native] do
+      assert {:refuse, _} = Events.decide(read, c, "pkg")
+    end
+
+    # Outside every dependency window a relative path resolves to nothing.
+    assert {:refuse, _} = Events.decide(read, ctx, :outside)
+  end
+
+  test "an absent path that is there at judge time cannot be judged",
+       %{dir: dir, proj: proj, pkg: pkg} do
+    ctx = build(dir, proj, report(dir, proj, pkg, []), trees: matched_tree(pkg))
+    File.mkdir_p!(Path.join(pkg, "guides"))
+    File.write!(Path.join(pkg, "guides/a.md"), "# a")
+
+    read = ev("file_read", "file:read_file/1", %{"path" => "guides/a.md"})
+    listing = ev("file_read", "file:list_dir/1", %{"path" => "guides", "listing" => true})
+    probe = ev("file_read", "file:read_file_info/1", %{"path" => "guides"})
+
+    for event <- [read, listing, probe] do
+      assert {:unjudged, "portability could not be judged (dependency tree changed" <> _} =
+               Events.decide(event, ctx, "pkg")
+    end
   end
 end

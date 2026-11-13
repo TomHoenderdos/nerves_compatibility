@@ -163,4 +163,22 @@ defmodule NccWorker.Portability.TreesTest do
              "c" => {:differs, "y"}
            }
   end
+
+  test "absent?/2: a path no member is or lies under, outside the left-out root names" do
+    members = %{"lib/a.ex" => "s", "README.md" => "s", "_build/x" => "s"}
+
+    assert Trees.absent?("guides", members)
+    assert Trees.absent?("guides/a/b.md", members)
+    assert Trees.absent?("lib/b.ex", members)
+    assert Trees.absent?("li", members)
+
+    refute Trees.absent?("lib", members)
+    refute Trees.absent?("lib/a.ex", members)
+    refute Trees.absent?("README.md", members)
+    refute Trees.absent?("", members)
+
+    for rel <- ["_build/y", "_build", ".hex", "hex_metadata.config", ".hex/x"] do
+      refute Trees.absent?(rel, members), rel
+    end
+  end
 end

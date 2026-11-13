@@ -293,6 +293,21 @@ defmodule NccWorker.Portability.Trees do
   defp entry_matches?({:ok, _link_or_other}, _path, _rel, _members), do: false
   defp entry_matches?({:error, _reason}, _path, _rel, _members), do: true
 
+  @doc """
+  Whether `rel`, relative to a dependency's source dir and not `""`, names
+  nothing in `members`: no member is `rel` or lies under it. A path under a
+  root name `snapshot/5` leaves out (Hex's own files, `_build`) is never
+  absent here, even when the tarball carries a `_build`: the snapshot does
+  not speak for those names.
+  """
+  @spec absent?(String.t(), members()) :: boolean()
+  def absent?(rel, members) when is_binary(rel) and rel != "" do
+    not root_extra?(rel, ["_build" | @hex_extras]) and
+      not Enum.any?(Map.keys(members), &(&1 == rel or under_rel?(&1, rel)))
+  end
+
+  def absent?(_rel, _members), do: false
+
   defp root_extra?(rel, extras) do
     case Path.split(rel) do
       [name | _] -> name in extras

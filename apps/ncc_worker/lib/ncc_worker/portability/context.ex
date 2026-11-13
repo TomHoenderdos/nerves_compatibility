@@ -290,6 +290,36 @@ defmodule NccWorker.Portability.Context do
   end
 
   @doc """
+  Whether `real` is a path under the source dir of a closure dependency
+  that builds no native code and whose tree matched its verified tarball
+  before the compile (`Trees.snapshot/5`), that the tarball does not hold:
+  no member is the path or lies under it, and its first segment is none of
+  the root names the snapshot leaves out (`Trees.absent?/2`).
+
+  The snapshot proved such a path absent before the compile, and the user's
+  `deps/<d>` is unpacked from the same tarball, so reading it gives the same
+  answer on both sides: nothing there. `tree_check/3` then decides the read
+  as it does a listed one, so a path that is there at judge time cannot be
+  judged. A path the tarball holds is left to the Hex file list.
+  """
+  @spec absent_from_tree?(t(), String.t() | nil) :: boolean()
+  def absent_from_tree?(ctx, real) when is_binary(real) do
+    Enum.any?(ctx.deps, fn {app, dep} ->
+      with false <- dep.native?,
+           dest when is_binary(dest) <- dep.dest,
+           true <- under?(real, dest),
+           {:ok, members} <- Map.get(ctx.trees, app) do
+        rel = Path.split(real) |> Enum.drop(length(Path.split(dest)))
+        rel != [] and Trees.absent?(Path.join(rel), members)
+      else
+        _ -> false
+      end
+    end)
+  end
+
+  def absent_from_tree?(_ctx, _real), do: false
+
+  @doc """
   Item 5e: the re-check of a read of `real` under the source dir of a
   closure dependency whose tree matched its tarball before the compile
   (`Trees.check_read/4`), `listing?` for a directory listing. `:ok` for any
