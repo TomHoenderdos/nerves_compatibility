@@ -525,18 +525,34 @@ defmodule NccWorker.BuildCache do
       not reads_target?(dir)
   end
 
-  defp native?(dir), do: native_build?(dir, true)
+  defp native?(dir), do: native_build?(dir, :rule1)
 
   # The one list of native-build refusals, shared by rule 1 (`native?/1`) and
-  # rule 2 (`native_rule2?/2`), so a refusal added here reaches both. `files?`
-  # says whether a native build file (`@native_files`) counts on its own;
-  # rule 2 passes false and judges those files by manager instead.
-  defp native_build?(dir, files?) do
+  # rule 2 (`native_rule2?/2`), so a refusal added here reaches both. Under
+  # rule 1 a native build file (`@native_files`) counts on its own and a
+  # native tool name counts anywhere in `mix.exs`, even inside a longer word.
+  # Rule 2 judges those files by manager instead, and counts a tool name only
+  # as a whole word (`native_deps_word/0`): tds 2.3.x's leftover
+  # `rustler_crates:` key, with no rustler dependency, compiler or native
+  # source, does not make it native. Rule 1 keeps the substring so the cache
+  # keys do not move.
+  defp native_build?(dir, rule) do
+    mix_exs = Path.join(dir, "mix.exs")
+
     Enum.any?(@native_dirs, &File.dir?(Path.join(dir, &1))) or
-      (files? and Enum.any?(@native_files, &File.regular?(Path.join(dir, &1)))) or
-      mentions?(Path.join(dir, "mix.exs"), @native_deps) or
+      (rule == :rule1 and Enum.any?(@native_files, &File.regular?(Path.join(dir, &1)))) or
+      native_tool_named?(mix_exs, rule) or
       mentions?(Path.join(dir, "rebar.config"), @rebar_native)
   end
+
+  defp native_tool_named?(mix_exs, :rule1), do: mentions?(mix_exs, @native_deps)
+  defp native_tool_named?(mix_exs, :rule2), do: mentions_regex?(mix_exs, native_deps_word())
+
+  # A `@native_deps` name with no word character on either side, so
+  # `:rustler`, `{:elixir_make, ...}` and a `# uses rustler` comment count and
+  # `rustler_crates` does not.
+  defp native_deps_word,
+    do: ~r/(?<!\w)(?:elixir_make|rustler|rustler_precompiled|zigler|cc_precompiler)(?!\w)/
 
   # Rule 2 only (precompiled judge refinements, item 1; `NccWorker.NativeBuild`):
   # `dep_target_agnostic?/2` with a native build file counting only when
@@ -550,7 +566,7 @@ defmodule NccWorker.BuildCache do
     dir = Path.join(deps_path, name)
 
     File.dir?(dir) and not String.starts_with?(name, "nerves") and
-      not native_rule2?(dir, manager) and not reads_target?(dir)
+      not native_rule2?(dir, manager) and not reads_target?(dir, target_read_pattern_rule2())
   end
 
   @doc false
@@ -561,7 +577,7 @@ defmodule NccWorker.BuildCache do
         Enum.any?(@native_files, &File.regular?(Path.join(dir, &1)))
 
   defp native_rule2?(dir, manager),
-    do: native_build?(dir, false) or native_build_files?(dir, manager)
+    do: native_build?(dir, :rule2) or native_build_files?(dir, manager)
 
   # Read-only inspection of mix.exs/rebar.config in the worker dependency tree.
   # sobelow_skip ["Traversal.FileModule"]
@@ -569,6 +585,17 @@ defmodule NccWorker.BuildCache do
     case File.read(path) do
       {:ok, contents} -> Enum.any?(needles, &String.contains?(contents, &1))
       _ -> false
+    end
+  end
+
+  # `mentions?/2` with a regex. A missing file mentions nothing, as there;
+  # one that exists but cannot be read counts as a mention.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp mentions_regex?(path, regex) do
+    case File.read(path) do
+      {:ok, contents} -> Regex.match?(regex, contents)
+      {:error, :enoent} -> false
+      {:error, _} -> true
     end
   end
 
@@ -649,6 +676,16 @@ defmodule NccWorker.BuildCache do
     do:
       ~r/Mix['"]?\s*[.:,]\s*\[?\s*:?['"]?target(?!\w)|MIX_TARGET|\b(?:import|alias)\b\s*\(?\s*:?['"]?(?:Elixir\.)?Mix\b(?![.\w])|['"]Elixir\.Mix['"](?!\.)|\b\w+\s*=\s*Mix\b(?![.\w])/
 
+  # Rule 2 only: `target_read_pattern/0` except that `x = Mix` followed on
+  # the same line by the word `in` does not bind `Mix`. erlang.mk, which
+  # ranch, cowlib and gun ship, has `pkg_mixer_description = Mix in functions
+  # from other modules`; in Elixir `x = Mix in l` is `x = (Mix in l)`, a
+  # boolean, and in Erlang it does not parse. A line break before `in` still
+  # matches. Rule 1 keeps the old pattern so the cache keys do not move.
+  defp target_read_pattern_rule2,
+    do:
+      ~r/Mix['"]?\s*[.:,]\s*\[?\s*:?['"]?target(?!\w)|MIX_TARGET|\b(?:import|alias)\b\s*\(?\s*:?['"]?(?:Elixir\.)?Mix\b(?![.\w])|['"]Elixir\.Mix['"](?!\.)|\b\w+\s*=\s*Mix\b(?![.\w])(?![ \t]+in\b)/
+
   # Files over this size are not read and count as a target read. Sources and
   # templates are far smaller; a larger text file is a bundled asset, which
   # `--exclude` keeps out of the listing in the usual layouts.
@@ -661,15 +698,20 @@ defmodule NccWorker.BuildCache do
   # artifacts and VCS metadata are skipped. grep exit 1 is no candidate;
   # anything else (no grep, unreadable tree, a file that cannot be read or is
   # too large) counts as a match so the dependency stays target-scoped.
-  defp reads_target?(dir) do
+  defp reads_target?(dir, pattern \\ target_read_pattern()) do
     excludes = Enum.map(~w(.git _build node_modules), &"--exclude-dir=#{&1}")
     args = ["-r", "-l", "-I", "-i", "-F", "--null", "--exclude=*.beam"] ++ excludes
     args = args ++ ["-e", "target", "-e", "mix", "--", dir]
 
     case System.cmd("grep", args, stderr_to_stdout: true) do
-      {_, 1} -> false
-      {output, 0} -> output |> String.split(<<0>>, trim: true) |> Enum.any?(&target_read?/1)
-      _ -> true
+      {_, 1} ->
+        false
+
+      {output, 0} ->
+        output |> String.split(<<0>>, trim: true) |> Enum.any?(&target_read?(&1, pattern))
+
+      _ ->
+        true
     end
   rescue
     _ -> true
@@ -677,10 +719,10 @@ defmodule NccWorker.BuildCache do
 
   # Read-only inspection of a dependency file grep listed.
   # sobelow_skip ["Traversal.FileModule"]
-  defp target_read?(file) do
+  defp target_read?(file, pattern) do
     with {:ok, %File.Stat{size: size}} when size <= @target_scan_max_bytes <- File.stat(file),
          {:ok, contents} <- File.read(file) do
-      Regex.match?(target_read_pattern(), contents)
+      Regex.match?(pattern, contents)
     else
       _ -> true
     end

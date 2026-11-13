@@ -258,6 +258,100 @@ defmodule NccWorker.BuildCacheTest do
     end
   end
 
+  describe "dep_target_agnostic_rule2?/3 text checks" do
+    setup do
+      deps = Path.join(System.tmp_dir!(), "ncc-deps2-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(deps) end)
+      {:ok, deps: deps}
+    end
+
+    defp write_dep2(deps, name, files) do
+      Enum.each(files, fn {path, contents} ->
+        full = Path.join([deps, name, path])
+        File.mkdir_p!(Path.dirname(full))
+        File.write!(full, contents)
+      end)
+    end
+
+    # tds 2.3.x's mix.exs: a leftover `rustler_crates` key, no rustler
+    # dependency, no compiler, no native sources.
+    @tds_mix_exs """
+    defmodule Tds.Mixfile do
+      use Mix.Project
+      def project do
+        [
+          app: :tds,
+          deps: [{:decimal, "~> 2.0"}, {:db_connection, "~> 2.0"}],
+          rustler_crates: [
+            tds_encoding: [mode: if(Mix.env() == :prod, do: :release, else: :debug)]
+          ]
+        ]
+      end
+    end
+    """
+
+    test "a leftover rustler_crates key is not a native build under rule 2", ctx do
+      write_dep2(ctx.deps, "tds", [
+        {"mix.exs", @tds_mix_exs},
+        {"lib/tds.ex", "defmodule Tds do end"}
+      ])
+
+      assert BuildCache.dep_target_agnostic_rule2?(ctx.deps, "tds", "mix")
+      # Rule 1 and the cache keys keep the substring match.
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "tds")
+    end
+
+    test "a native tool named as a whole word still refuses under rule 2", ctx do
+      for body <- [
+            ~s|deps: [{:rustler, "~> 0.30"}]|,
+            ~s|deps: [{:rustler_precompiled, "~> 0.8"}]|,
+            "compilers: [:elixir_make] ++ Mix.compilers()",
+            ~s|deps: [{:zigler, "~> 0.13"}]|,
+            ~s|deps: [{:cc_precompiler, "~> 0.1"}]|,
+            "make_precompiler: {:nif, CCPrecompiler}, x: :elixir_make",
+            "# uses rustler\n"
+          ] do
+        name = "nat#{System.unique_integer([:positive])}"
+        write_dep2(ctx.deps, name, [{"mix.exs", body}])
+        refute BuildCache.dep_target_agnostic_rule2?(ctx.deps, name, "mix"), body
+      end
+    end
+
+    test "erlang.mk's mixer description is not a target read under rule 2", ctx do
+      write_dep2(ctx.deps, "ranch", [
+        {"rebar.config", "{deps, []}.\n"},
+        {"src/ranch.erl", "-module(ranch).\n"},
+        {"erlang.mk",
+         "pkg_mixer_name = mixer\npkg_mixer_description = Mix in functions from other modules\n"}
+      ])
+
+      assert BuildCache.dep_target_agnostic_rule2?(ctx.deps, "ranch", "rebar3")
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "ranch")
+    end
+
+    test "every spelling of a target read still refuses under rule 2", ctx do
+      for {file, body} <- [
+            {"lib/a.ex", "@t Mix.target"},
+            {"lib/a.ex", "f = &Mix.target/0"},
+            {"lib/a.ex", ~s|:"Elixir.Mix".target()|},
+            {"lib/a.ex", "apply(Mix, :target, [])"},
+            {"lib/a.ex", "import Mix, only: [target: 0]\ntarget()"},
+            {"lib/a.ex", "alias Mix, as: M\nM.target()"},
+            {"lib/a.ex", ~s|System.get_env("MIX_TARGET")|},
+            {"src/a.erl", "t() -> 'Elixir.Mix':target()."},
+            {"include/m.hrl", "-define(M, 'Elixir.Mix')."},
+            {"lib/a.ex", "mod = Mix\nmod.target()"},
+            {"lib/a.ex", "mod = Mix\n  in_list = 1\nmod.target()"},
+            {"lib/a.ex", "mod = Mix inspect"},
+            {"lib/a.ex", "mod = Mix; x in y"}
+          ] do
+        name = "dep#{System.unique_integer([:positive])}"
+        write_dep2(ctx.deps, name, [{"mix.exs", "defmodule X do end"}, {file, body}])
+        refute BuildCache.dep_target_agnostic_rule2?(ctx.deps, name, "mix"), inspect(body)
+      end
+    end
+  end
+
   describe "restore/1 and store/2" do
     setup do
       tmp = Path.join(System.tmp_dir!(), "ncc-cache-#{System.unique_integer([:positive])}")
