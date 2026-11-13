@@ -84,7 +84,14 @@ defmodule NccWorker.Portability.Probes do
       every path (`kernel`, `stdlib`, `elixir`, `compiler`, `logger`;
       channel `app_call`): untraced, a caller that does not list the
       application (on its path as above) gets `undef` or another answer.
-      Allowed when it does;
+      Allowed when it does, and, whatever the window, when the frame that
+      made the call runs installed OTP code (the tracer's `caller_app`: the
+      application whose `code:lib_dir()` ebin the frame's module was loaded
+      from) whose own `.app` lists the application under `applications`:
+      OTP's public_key decoding a certificate through `asn1rt_nif` during
+      an HTTPS download runs the same untraced, since asn1 is on the path
+      wherever public_key is. Only that direct listing, never another OTP
+      application's call;
     * listing the loaded modules (`code:all_loaded/0`, `erlang:loaded/0`,
       `code:module_status/0`, `code:modified_modules/0`; channel
       `loaded_modules`): the list holds every module the tracer loaded.
@@ -125,16 +132,15 @@ defmodule NccWorker.Portability.Probes do
   end
 
   def decide(
-        %{"channel" => "app_call", "mfa" => mfa, "arg" => %{"module" => m, "app" => app}},
+        %{"channel" => "app_call", "mfa" => mfa, "arg" => %{"module" => m, "app" => app}} =
+          event,
         %Context{} = ctx,
         owner
       )
       when is_binary(mfa) and is_binary(m) and is_binary(app) do
-    cond do
-      app in @always -> :ignore
-      app != @tracer_app and Context.dep?(ctx, owner) and app in path_of(ctx, owner) -> :ignore
-      true -> {:unjudged, "compile-time call into a module the trace loaded: #{mfa} (#{app})"}
-    end
+    if app in @always or app_call_same?(event, app, ctx, owner),
+      do: :ignore,
+      else: {:unjudged, "compile-time call into a module the trace loaded: #{mfa} (#{app})"}
   end
 
   def decide(
@@ -287,6 +293,46 @@ defmodule NccWorker.Portability.Probes do
   end
 
   defp why(module, app), do: "compile-time probe of a module the trace loaded: #{module} (#{app})"
+
+  # A call into `app` (not the tracer's) answers the same untraced: the
+  # owner lists `app` (on its path), or installed OTP code that lists it
+  # made the call.
+  defp app_call_same?(_event, @tracer_app, _ctx, _owner), do: false
+
+  defp app_call_same?(event, app, ctx, owner) do
+    (Context.dep?(ctx, owner) and app in path_of(ctx, owner)) or
+      otp_caller_lists?(caller_app(event), app)
+  end
+
+  defp caller_app(%{"arg" => %{"caller_app" => caller}}) when is_binary(caller), do: caller
+  defp caller_app(_event), do: nil
+
+  # The caller is installed OTP code (the tracer names its application only
+  # when the frame's module was loaded from `code:lib_dir()`), and that
+  # application's own `.app`, read in this VM (the same install), lists
+  # `app` under `applications`: not included applications, and not
+  # transitively.
+  defp otp_caller_lists?(nil, _app), do: false
+
+  defp otp_caller_lists?(caller, app) do
+    atom = String.to_existing_atom(caller)
+
+    if otp_installed?(atom) do
+      _ = :application.load(atom)
+      app in Enum.map(Application.spec(atom, :applications) || [], &Atom.to_string/1)
+    else
+      false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp otp_installed?(atom) do
+    case :code.lib_dir(atom) do
+      dir when is_list(dir) -> String.starts_with?(List.to_string(dir), "#{:code.lib_dir()}/")
+      _ -> false
+    end
+  end
 
   defp path_of(ctx, owner) do
     closure = Context.closure_of(ctx, owner)

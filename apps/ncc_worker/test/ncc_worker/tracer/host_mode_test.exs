@@ -525,6 +525,34 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert "compile-time call into a module the trace loaded: ssl:format_error/1 (ssl)" in obs[
              "problems"
            ]
+
+    # Package code made the call: no installed OTP application did.
+    assert [call] = Enum.filter(traced.report.events, &(&1["channel"] == "app_call"))
+    assert call["arg"]["caller_app"] == nil
+  end
+
+  # public_key decodes and encodes DER through asn1rt_nif, which the tracer
+  # loads before anything compiles: the call is OTP's own, from an
+  # application whose .app lists asn1.
+  test "a call into asn1rt_nif from OTP's public_key names public_key", %{tmp_dir: dir} do
+    proj =
+      probe_fixture(
+        dir,
+        [:public_key],
+        ":public_key.der_encode(:RSAPublicKey, " <>
+          ":public_key.der_decode(:RSAPublicKey, <<48, 6, 2, 1, 5, 2, 1, 3>>))"
+      )
+
+    {untraced, host, traced} = both(proj)
+    assert BuildIdentity.differences(host, untraced) == []
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_probe", traced)
+
+    calls =
+      for %{"channel" => "app_call", "arg" => %{"module" => "asn1rt_nif"} = arg} <-
+            traced.report.events,
+          do: arg["caller_app"]
+
+    assert calls != [] and Enum.all?(calls, &(&1 == "public_key")), inspect(calls)
   end
 
   test "a compile-time call into an application the package lists passes", %{tmp_dir: dir} do

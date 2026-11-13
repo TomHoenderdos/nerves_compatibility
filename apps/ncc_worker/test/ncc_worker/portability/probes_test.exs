@@ -324,6 +324,55 @@ defmodule NccWorker.Portability.ProbesTest do
                )
     end
 
+    # OTP's public_key decodes and encodes certificates through asn1rt_nif
+    # while a compile downloads over HTTPS, in ssl's own connection process.
+    # Untraced, the same installed OTP code makes the same call: public_key's
+    # .app lists asn1, so asn1 is on the path wherever public_key runs.
+    test "from installed OTP code whose .app lists the application is no concern",
+         %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"]})
+
+      for mfa <- ~w(asn1rt_nif:encode_ber_tlv/1 asn1rt_nif:decode_ber_tlv/1),
+          owner <- ["pkg", :outside] do
+        event = put_in(call("asn1rt_nif", "asn1", mfa)["arg"]["caller_app"], "public_key")
+        assert Probes.decide(event, c, owner) == :ignore, "#{mfa} #{inspect(owner)}"
+      end
+    end
+
+    test "from any other caller it is judged", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"]})
+      encode = call("asn1rt_nif", "asn1", "asn1rt_nif:encode_ber_tlv/1")
+      by = fn event, caller -> put_in(event["arg"]["caller_app"], caller) end
+      why = "compile-time call into a module the trace loaded: "
+
+      # No caller application (package code, a module loaded from anywhere
+      # but OTP's lib dir, no frame), or one the tracer could not name.
+      for event <- [encode, by.(encode, nil), by.(encode, 7)] do
+        assert {:unjudged, ^why <> "asn1rt_nif:encode_ber_tlv/1 (asn1)"} =
+                 Probes.decide(event, c, :outside)
+      end
+
+      # An application that does not list asn1 itself: ssl lists public_key,
+      # which lists asn1, but only a direct listing counts.
+      for caller <- ~w(ssl inets crypto asn1 kernel) do
+        assert {:unjudged, _} = Probes.decide(by.(encode, caller), c, :outside), caller
+      end
+
+      # A name that is no installed OTP application, or an Elixir one.
+      for caller <- ~w(no_such_otp_app pkg ncc_tracer mix elixir) do
+        assert {:unjudged, _} = Probes.decide(by.(encode, caller), c, :outside), caller
+      end
+
+      # public_key lists asn1 and crypto, never inets or the tracer.
+      for {module, app, mfa} <- [
+            {"httpc", "inets", "httpc:request/4"},
+            {"ncc_tracer_digest", "ncc_tracer", "ncc_tracer_digest:dir/1"}
+          ] do
+        event = by.(call(module, app, mfa), "public_key")
+        assert {:unjudged, ^why <> _} = Probes.decide(event, c, :outside), mfa
+      end
+    end
+
     test "into an application always on the path is no concern", %{tmp_dir: dir} do
       c = ctx(dir, %{"pkg" => []})
 

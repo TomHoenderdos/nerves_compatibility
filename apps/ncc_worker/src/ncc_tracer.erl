@@ -488,8 +488,30 @@ probe_spec(_MFA, Preloaded, Depth) ->
 %% (ncc_tracer_stack:checker/2; each frame's kind looked up afresh).
 probed({probe, #{module := Module} = Arg}, Stack) ->
     {probe, Arg#{app => maps:get(Module, get(preloaded), null), checker => checker(Stack)}};
-probed({app_call, Arg}, Stack) -> {app_call, Arg#{checker => checker(Stack)}};
+probed({app_call, Arg}, Stack) ->
+    {app_call, Arg#{checker => checker(Stack), caller_app => caller_app(caller(Stack))}};
 probed(Class, _Stack) -> Class.
+
+%% For a call into a module we loaded, the installed OTP application whose
+%% code made it: the frame right below the call runs a module whose object
+%% code is <code:lib_dir()>/<app>[-<vsn>]/ebin/<module>.beam, looked up now
+%% (never cached: a package could load its own module of that name). null
+%% for any other frame, module or place it was loaded from. The judge
+%% allows the call only when that application's .app lists the called
+%% module's (NccWorker.Portability.Probes).
+caller_app({M, _F, _A, _Location}) when is_atom(M) ->
+    try installed_app(M, code:which(M)) catch _:_ -> null end;
+caller_app(_Frame) -> null.
+
+installed_app(M, Path) when is_list(Path), Path =/= [] ->
+    Lib = filename:split(norm(code:lib_dir())),
+    Beam = atom_to_list(M) ++ ".beam",
+    Parts = filename:split(norm(Path)),
+    case length(Parts) =:= length(Lib) + 3 andalso lists:split(length(Lib), Parts) of
+        {Lib, [AppVsn, "ebin", Beam]} -> list_to_binary(hd(string:split(AppVsn, "-")));
+        _ -> null
+    end;
+installed_app(_M, _Path) -> null.
 
 checker(Stack) ->
     try ncc_tracer_stack:checker(Stack, fun toolchain_module/1)
