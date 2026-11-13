@@ -1083,17 +1083,27 @@ defmodule NccWorker.Portability.JudgeTest do
       assert %{reason: "closure dependency observed the host: dep (rebar3 build runs pre_hooks)"} =
                judge(proj, r, opts)
 
-      # A script in the tarball refuses although none is on disk.
+      # A script in the tarball is judged by what its evaluation read (the
+      # trace, outside every window) and by the mix.rebar.config Mix wrote
+      # from its result: a clean one does not taint.
       opts =
         rebar_opts(proj, ["dep"], %{
           "dep" => %{"rebar.config" => "{erl_opts, []}.\n", "rebar.config.script" => "CONFIG.\n"}
         })
 
-      assert %{
-               reason:
-                 "closure dependency observed the host: dep (rebar3 build evaluates rebar.config.script)"
-             } =
+      assert %{status: :pass, observations: %{"taint" => taint}} = judge(proj, r, opts)
+      assert taint == %{}
+
+      # A hook the script added is in the mix.rebar.config Mix wrote from it.
+      File.write!(
+        Path.join(proj, "_build/host/lib/dep/mix.rebar.config"),
+        ~s({erl_opts,[]}.\n{pre_hooks,[{compile,"sh evil.sh"}]}.\n)
+      )
+
+      assert %{reason: "closure dependency observed the host: dep (rebar3 build runs pre_hooks)"} =
                judge(proj, r, opts)
+
+      File.write!(Path.join(proj, "_build/host/lib/dep/mix.rebar.config"), "{erl_opts, []}.\n")
 
       # No verified tarball: could not be judged, never a pass.
       assert %{status: :skip, reason: @cnj, observations: obs} =
@@ -1249,6 +1259,8 @@ defmodule NccWorker.Portability.JudgeTest do
                name
       end
 
+      # A script without the mix.rebar.config Mix wrote from it: its result
+      # is unknown.
       assert {:refuse, "rebar3 build evaluates rebar.config.script"} =
                Rebar.check(
                  write(dir, "script", %{
@@ -1328,6 +1340,55 @@ defmodule NccWorker.Portability.JudgeTest do
 
       File.rm!(mix_config)
       assert {:unjudged, "rebar3 mix.rebar.config missing"} = Rebar.check(dest, mix_config)
+    end
+
+    # Mix evaluates a dependency's rebar.config.script in its own VM, under
+    # the trace (outside every window), and writes the result to
+    # mix.rebar.config, the only config rebar3 reads: the script is judged
+    # by what it read and by that result, not refused for existing.
+    test "a rebar.config.script is judged by the mix.rebar.config Mix wrote from it",
+         %{tmp_dir: dir} do
+      script = """
+      case os:getenv("CI") of "true" -> [{plugins, [x]} | CONFIG]; _ -> CONFIG end.
+      """
+
+      dest =
+        write(dir, "dest", %{
+          "rebar.config" => "{erl_opts, []}.\n",
+          "rebar.config.script" => script
+        })
+
+      build = write(dir, "build", %{"mix.rebar.config" => "{erl_opts,[]}.\n"})
+      mix_config = Path.join(build, "mix.rebar.config")
+      assert :ok = Rebar.check(dest, mix_config)
+
+      # What the script added is in its result.
+      File.write!(mix_config, "{plugins,[x]}.\n{erl_opts,[]}.\n")
+      assert {:refuse, "rebar3 build runs plugins"} = Rebar.check(dest, mix_config)
+
+      File.write!(mix_config, ~s({erl_opts,[{platform_define,"linux",'L'}]}.\n))
+      assert {:refuse, "rebar3 build uses platform_define"} = Rebar.check(dest, mix_config)
+
+      File.rm!(mix_config)
+      assert {:unjudged, "rebar3 mix.rebar.config missing"} = Rebar.check(dest, mix_config)
+
+      # The tarball's own rebar.config is still held to the rules too.
+      hooked =
+        write(dir, "hooked", %{
+          "rebar.config" => ~s({pre_hooks, [{compile, "make"}]}.\n),
+          "rebar.config.script" => "CONFIG.\n"
+        })
+
+      File.write!(mix_config, "{erl_opts,[]}.\n")
+      assert {:refuse, "rebar3 build runs pre_hooks"} = Rebar.check(hooked, mix_config)
+
+      # A parent's script still leaves the overrides it hands down unknown.
+      assert {:unjudged, "a rebar3 parent evaluates rebar.config.script"} =
+               Rebar.check_sources(
+                 %{config: "{erl_opts, []}.\n", script?: false},
+                 [%{config: "{erl_opts, []}.\n", script?: true}],
+                 mix_config
+               )
     end
 
     test "coverage needs a sentinel and a traced compile:file per beam", %{tmp_dir: dir} do

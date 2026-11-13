@@ -950,7 +950,8 @@ defmodule NccWorker.Portability do
 
   # The static rules on the app's rebar.config from its verified Hex
   # tarball and its rebar3 parents' (their overrides), then the
-  # mix.rebar.config rebar3 read. A script on disk refuses too.
+  # mix.rebar.config rebar3 read. A script on disk counts as one in the
+  # tarball: judged by that mix.rebar.config and the trace (`Rebar`).
   defp static_rebar(ctx, app, dest) do
     parents = Context.rebar3_parents(ctx, app)
 

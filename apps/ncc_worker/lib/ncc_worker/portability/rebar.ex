@@ -3,11 +3,24 @@ defmodule NccWorker.Portability.Rebar do
   Spec R1 "Other OS processes" and R0 for rebar3-built packages and closure
   dependencies. rebar3 compiles in its own VM, which the trace reaches only
   through `ERL_AFLAGS`; hooks and plugins run programs no trace sees, and
-  `platform_define` and `rebar.config.script` are host dependence by
-  definition when rebar compiles, except a `platform_define` whose regex can
-  consume only the leading OTP major (precompiled judge refinements, item 3),
-  which decides the same on every host. Any `provider_hooks` entry refuses
-  too: providers come from plugins or run arbitrary build steps.
+  `platform_define` is host dependence by definition when rebar compiles,
+  except one whose regex can consume only the leading OTP major
+  (precompiled judge refinements, item 3), which decides the same on every
+  host. Any `provider_hooks` entry refuses too: providers come from plugins
+  or run arbitrary build steps.
+
+  A dependency's own `rebar.config.script` is not refused for existing.
+  Mix evaluates it (`Mix.Rebar.load_config/1`, from
+  `Mix.Dep.Loader.rebar_dep/4`) in the traced Mix VM when it loads the
+  dependencies, after the tracer started and outside every window, so what
+  its evaluation reads is judged like any other read there: a host read
+  refuses the build, an environment read is a `compile_inputs` item. rebar3
+  does not evaluate it again: `REBAR_CONFIG` points it at the
+  `mix.rebar.config` Mix wrote from the script's result, which is held to
+  the rules below, so a hook, plugin or `platform_define` the script adds
+  refuses there. Without that file (`check/2` on its own) a script still
+  refuses. A rebar3 parent's script stays could-not-judge: the overrides
+  it hands its children are computed.
 
   Only what rebar3 runs when Mix compiles the dependency counts. Mix
   (`Mix.Tasks.Deps.Compile.do_rebar3/2`, Elixir 1.19 and 1.20) runs
@@ -32,9 +45,8 @@ defmodule NccWorker.Portability.Rebar do
   `Mix.Rebar.apply_overrides/3`), are read from the parent's tarball the
   same way and checked as if they were the dependency's own `overrides`. As
   a second check the `mix.rebar.config` rebar3 actually read is held to the
-  same rules; a missing one is could-not-judge. `rebar.config.script`
-  refuses on its own: it is code. `check/2` applies the same rules to the
-  files on disk (tests, and nothing the judge trusts).
+  same rules; a missing one is could-not-judge. `check/2` applies the same
+  rules to the files on disk (tests, and nothing the judge trusts).
 
   Config files are anyone's text, so they are read with
   `NccWorker.Portability.HexFiles.parse/1` (bounded, creates no atoms)
@@ -94,7 +106,7 @@ defmodule NccWorker.Portability.Rebar do
   """
   @spec check_sources(sources(), [sources()], String.t() | nil) ::
           :ok | {:refuse, String.t()} | {:unjudged, String.t()}
-  def check_sources(%{script?: true}, _parents, _mix_config),
+  def check_sources(%{script?: true}, _parents, nil),
     do: {:refuse, "rebar3 build evaluates rebar.config.script"}
 
   def check_sources(%{config: own}, parents, mix_config) do
