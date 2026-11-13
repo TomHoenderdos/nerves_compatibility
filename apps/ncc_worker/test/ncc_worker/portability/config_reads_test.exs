@@ -304,6 +304,47 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     assert %{items: [], problems: [], dropped: 2} = judge(decided, snap(entries))
   end
 
+  # rebar3 runs in a child VM the tracer follows, from Mix's own rebar3
+  # escript: its logger state and cf's colour flag only shape its console
+  # output. Each is dropped from the one frame that reads it.
+  test "rebar3's own log state and colour flag reads are dropped, from those frames only" do
+    reads = [{"rebar_log", "rebar", "log"}, {"cf", "cf", "colour_term"}]
+
+    for elixir <- ["1.19.5", "1.20.4"],
+        read <- reads,
+        do: assert(read in ConfigReads.reviewed(elixir).drop)
+
+    decided =
+      for {first, app, key} <- reads,
+          do: obs("dep", read(app, key, kind: "toolchain", first: first))
+
+    nested = %{"dep" => "Code.with_diagnostics/2"}
+
+    assert %{items: [], problems: [], unreviewed: [], refusals: [], dropped: 2} =
+             ConfigReads.judge(decided, "1.19.5", snap(%{}), @trees, nested)
+
+    # Another rebar3 key, or the same key from another frame, stays unreviewed.
+    for {first, app, key} <- [
+          {"rebar_log", "rebar", "log_level"},
+          {"rebar_log", "rebar", "color_intensity"},
+          {"rebar3", "rebar", "log"},
+          {"ec_cmd_log", "cf", "colour_term"}
+        ] do
+      decided = [obs("dep", read(app, key, kind: "toolchain", first: first))]
+
+      assert %{items: [], dropped: 0, problems: [problem]} = judge(decided, snap(%{}))
+      assert problem == "unreviewed toolchain config read: #{app} #{key} from #{first}"
+    end
+
+    # Package code reading either key itself records it, and the tracer
+    # classifies both frames afresh on every event.
+    set = snap(%{{"cf", "colour_term"} => enc({:ok, true})})
+    assert keys(judge([obs("dep", read("cf", "colour_term"))], set)) == [{"cf", ["colour_term"]}]
+
+    for {first, _app, _key} <- reads,
+        do: assert(String.to_atom(first) in :ncc_tracer_stack.uncached(), first)
+  end
+
   # The type checker's coloured text only reaches its diagnostics, which go
   # to Mix unless package code compiled something itself, or captured
   # diagnostics, in the same window: then the text can reach the package.
@@ -431,13 +472,13 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     output = [
       {"Elixir.Mix.Shell.IO", "elixir", "ansi_enabled"},
       {"logger_h_common", "elixir", "ansi_enabled"},
-      {"elixir_errors", "elixir", "ansi_enabled"}
+      {"elixir_errors", "elixir", "ansi_enabled"},
+      {"Elixir.Module.Types.Apply", "elixir", "ansi_enabled"},
+      {"rebar_log", "rebar", "log"},
+      {"cf", "cf", "colour_term"}
     ]
 
-    for {elixir, drop} <- [
-          {"1.19.5", output ++ [{"Elixir.Module.Types.Apply", "elixir", "ansi_enabled"}]},
-          {"1.20.4", output ++ [{"Elixir.Module.Types.Apply", "elixir", "ansi_enabled"}]}
-        ] do
+    for {elixir, drop} <- [{"1.19.5", output}, {"1.20.4", output}] do
       assert %{record: [_ | _], drop: ^drop} = ConfigReads.reviewed(elixir)
     end
   end

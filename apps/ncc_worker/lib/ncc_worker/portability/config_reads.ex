@@ -22,7 +22,9 @@ defmodule NccWorker.Portability.ConfigReads do
       (`:elixir, :ansi_enabled` as read for `Mix.Shell.IO`, Logger's
       handler, the compiler's diagnostics printer and the type checker's
       warning formatter, which colour terminal output and generate no
-      code), refused when `{first frame, app, key}` is on its reviewed
+      code), and rebar3's `{rebar, log}` from `rebar_log` and
+      `{cf, colour_term}` from `cf`, which only shape rebar3's console
+      output), refused when `{first frame, app, key}` is on its reviewed
       `refuse` list (OTP's certificate store, TLS version table and socket
       options, which read their key only on the way to the host's CA
       store, its crypto library or the network: the compile reached the
@@ -167,6 +169,17 @@ defmodule NccWorker.Portability.ConfigReads do
   # so the drop holds only in a window without one (`@diagnostic_drops`).
   @type_checker_ansi {"Elixir.Module.Types.Apply", "elixir", "ansi_enabled"}
 
+  # rebar3 (Mix's own escript under `MIX_HOME`, so toolchain code in the
+  # child VM the tracer follows) logs through `rebar_log:log/3`, which reads
+  # its `ec_cmd_log` state from `{rebar, log}`, prints the message with it
+  # and returns `ok`; and colours text through `cf`, whose `colour_term/0`
+  # reads `{cf, colour_term}` to pick escape codes, or none, for the
+  # console. Neither value reaches a beam rebar3 compiles. Keyed on those
+  # two frames only: rebar3's other keys (`log_level`, `color_intensity`)
+  # and the same keys read from any other frame stay unreviewed.
+  @rebar3_log {"rebar_log", "rebar", "log"}
+  @rebar3_colour {"cf", "cf", "colour_term"}
+
   # Drops whose text reaches the diagnostics a compile returns, not only
   # its output.
   @diagnostic_drops [@type_checker_ansi]
@@ -202,12 +215,26 @@ defmodule NccWorker.Portability.ConfigReads do
   @reviewed %{
     "1.19" => %{
       record: @logger_compile_keys,
-      drop: [@mix_shell_ansi, @logger_handler_ansi, @compiler_diagnostic_ansi, @type_checker_ansi],
+      drop: [
+        @mix_shell_ansi,
+        @logger_handler_ansi,
+        @compiler_diagnostic_ansi,
+        @type_checker_ansi,
+        @rebar3_log,
+        @rebar3_colour
+      ],
       refuse: @host_reads
     },
     "1.20" => %{
       record: @logger_compile_keys,
-      drop: [@mix_shell_ansi, @logger_handler_ansi, @compiler_diagnostic_ansi, @type_checker_ansi],
+      drop: [
+        @mix_shell_ansi,
+        @logger_handler_ansi,
+        @compiler_diagnostic_ansi,
+        @type_checker_ansi,
+        @rebar3_log,
+        @rebar3_colour
+      ],
       refuse: @host_reads
     }
   }

@@ -353,6 +353,14 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
         def x, do: :ok
       end
       """),
+    # rebar3 prints a compile warning: it logs through rebar_log and colours
+    # the text through cf, both rebar3's own code in its child VM.
+    "fx_tc_rebar" => %{
+      manager: :rebar3,
+      files: %{
+        "src/fx_tc_rebar.erl" => "-module(fx_tc_rebar).\n-export([x/1]).\nx(Unused) -> ok.\n"
+      }
+    },
     "fx_tc_dbg" =>
       lib("fx_tc_dbg", """
       defmodule FxTcDbg do
@@ -533,6 +541,7 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
     "fx_cfg_iowarn_forms",
     "fx_cfg_logbody",
     "fx_tc_shell",
+    "fx_tc_rebar",
     "fx_tc_native",
     "fx_tc_checker",
     "fx_tc_types",
@@ -562,6 +571,15 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
         ["fx_tc_checker", "fx_tc_types", "fx_mix_after", "fx_mix_rerun"],
         &TracerFixtures.hex_release(hex_home, &1, ["lib", "mix.exs"])
       )
+
+    # The judge reads a rebar3 app's rebar.config from its Hex tarball only.
+    releases =
+      Map.new([
+        TracerFixtures.hex_release(hex_home, "fx_tc_rebar", ["src", "rebar.config"], %{
+          "rebar.config" => "{erl_opts, []}.\n"
+        })
+        | Map.to_list(releases)
+      ])
 
     shared = @deps |> Map.drop(@alone ++ ["fx_cfg_d", "fx_ord_b", "fx_tc_comp"]) |> Map.keys()
 
@@ -705,12 +723,32 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
 
     %{record: record, drop: drop, refuse: refuse} = ConfigReads.reviewed(System.version())
 
+    # No fixture here makes rebar3's two reads on a recorded stack (see the
+    # rebar3 test above).
+    rebar3 = [{"rebar_log", "rebar", "log"}, {"cf", "cf", "colour_term"}]
+
     expected =
       MapSet.new(
-        Enum.map(record, fn {app, key} -> {"Elixir.Logger", app, key} end) ++ drop ++ refuse
+        Enum.map(record, fn {app, key} -> {"Elixir.Logger", app, key} end) ++
+          (drop -- rebar3) ++ refuse
       )
 
     assert observed == expected, inspect(MapSet.to_list(observed))
+  end
+
+  # This small rebar3 compile makes its own log and colour reads on stacks
+  # the tracer does not record (no package frame, not cut short), so none
+  # shows up here; real Hex dependencies' traces carry them, and
+  # ConfigReadsTest pins the drop. Whatever rebar3 reads here is one of the
+  # two reviewed reads.
+  test "a rebar3 dependency printing a warning makes no unreviewed config read", ctx do
+    v = passes(ctx, "fx_tc_rebar")
+    assert v.observations["config_unreviewed"] == []
+
+    assert MapSet.subset?(
+             toolchain_reads(v, "fx_tc_rebar"),
+             MapSet.new([{"rebar", "log"}, {"cf", "colour_term"}])
+           )
   end
 
   test "IO.warn in any form records nothing", ctx do

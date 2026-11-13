@@ -29,7 +29,7 @@
 %% cache, so a package that redefines one mid-compile is not taken for the
 %% toolchain's.
 -define(UNCACHED, ?ATTRIBUTED_THROUGH ++ ['Elixir.Mix.Shell.IO', logger_h_common, elixir_errors,
-                                          'Elixir.Module.Types.Apply']).
+                                          'Elixir.Module.Types.Apply', rebar_log, cf]).
 %% The compiler's diagnostics module colours a warning or error by
 %% `:elixir, :ansi_enabled` while formatting it. Its frame stays first only
 %% when one of its printing functions (the ones that format a diagnostic and
