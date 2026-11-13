@@ -6,7 +6,7 @@ defmodule NccWorker.Tracer.FixturesReturnsTest do
 
   alias NccWorker.TracerFixtures
 
-  import NccWorker.TracerFixtures, only: [lib: 2]
+  import NccWorker.TracerFixtures, only: [lib: 2, lib: 3]
 
   @moduletag timeout: 600_000
 
@@ -51,7 +51,38 @@ defmodule NccWorker.Tracer.FixturesReturnsTest do
         @w System.get_env("FX_RET_W")
         def w, do: @w
       end
-      """)
+      """),
+    # circuits' shape: `project/0` sets a variable from a `defp` (circuits'
+    # `set_make_env`) while Mix loads the dependency, before any compile
+    # window opens, and its own lib reads it back at module level. Mix
+    # evaluates a dependency's `mix.exs` more than once, so the write is
+    # made more than once, from the one frame.
+    "fx_ret_mixw" =>
+      lib(
+        "fx_ret_mixw",
+        """
+        defmodule FxRetMixw do
+          @dev System.get_env("FX_RET_DEV")
+          def dev, do: @dev
+        end
+        """,
+        %{
+          mix_exs: """
+          defmodule FxRetMixw.MixProject do
+            use Mix.Project
+
+            def project do
+              set_make_env()
+              [app: :fx_ret_mixw, version: "0.1.0", deps: []]
+            end
+
+            defp set_make_env do
+              System.put_env("FX_RET_DEV", "normal")
+            end
+          end
+          """
+        }
+      )
   }
 
   # 2000 reads of one 60 KB value, then 300 reads of 300 distinct ones:
@@ -173,7 +204,7 @@ defmodule NccWorker.Tracer.FixturesReturnsTest do
 
   test "an env write is a line with the value it set, before the read that sees it", ctx do
     assert [%{"ts" => wts, "arg" => %{"value" => value}}] =
-             Enum.filter(ctx.traced.report.events, &(&1["mfa"] == "os:putenv/2"))
+             reads(ctx, "os:putenv/2", named("FX_RET_W"))
 
     assert value == rec({:ok, "w"})
 
@@ -189,7 +220,11 @@ defmodule NccWorker.Tracer.FixturesReturnsTest do
     lines = ctx.trace_file |> File.stream!() |> Enum.map(&JSON.decode!/1)
 
     assert [%{"arg" => %{"value_id" => vid} = arg}] =
-             for(%{"kind" => "event", "mfa" => "os:putenv/2"} = l <- lines, do: l)
+             for(
+               %{"kind" => "event", "mfa" => "os:putenv/2", "arg" => %{"name" => "FX_RET_W"}} = l <-
+                 lines,
+               do: l
+             )
 
     refute Map.has_key?(arg, "value")
 
@@ -224,6 +259,39 @@ defmodule NccWorker.Tracer.FixturesReturnsTest do
       refute Map.has_key?(item, "returned"), inspect(item)
       refute Map.has_key?(item["arg"] || %{}, "value"), inspect(item)
     end
+  end
+
+  test "a write in a dependency's mix.exs is the dependency's, with its read's value", ctx do
+    v = TracerFixtures.judge(ctx.proj, "fx_ret_mixw", ctx.traced)
+    mix_exs = Path.join([ctx.proj, "deps", "fx_ret_mixw", "mix.exs"])
+
+    assert [%{"owner" => "fx_ret_mixw", "name" => "FX_RET_DEV", "file" => file} = w] =
+             Enum.filter(v.observations["env_writes"], &(&1["name"] == "FX_RET_DEV")),
+           inspect(v.observations["env_writes"])
+
+    assert Path.basename(file) == "mix.exs"
+    assert File.stat!(file) == File.stat!(mix_exs)
+    refute Map.has_key?(w, "ts")
+
+    lines = ctx.trace_file |> File.stream!() |> Enum.map(&JSON.decode!/1)
+
+    writes =
+      for %{"kind" => "event", "mfa" => "os:putenv/2", "arg" => %{"name" => "FX_RET_DEV"}} = l <-
+            lines,
+          do: l
+
+    # Two events, one public item: repeats differ only in their time.
+    assert [_, _ | _] = writes
+    assert [vid] = writes |> Enum.map(& &1["arg"]["value_id"]) |> Enum.uniq()
+    assert is_integer(vid)
+
+    [%{"call_id" => id}] =
+      for %{"kind" => "event", "mfa" => "os:getenv/1", "arg" => %{"name" => "FX_RET_DEV"}} = l <-
+            lines,
+          do: l
+
+    assert [%{"value_id" => ^vid}] =
+             for(%{"kind" => "returned", "call_id" => ^id} = l <- lines, do: l)
   end
 
   describe "the value budget" do

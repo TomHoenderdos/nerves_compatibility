@@ -713,6 +713,37 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert [%{"overflow" => true, "integrity_ok" => false}] = kind(lines, "end")
   end
 
+  test "a write dropped by the user event cap leaves no value line", %{tmp_dir: dir} do
+    {0, out} =
+      run_script(
+        dir,
+        """
+        {:ok, tok} = :ncc_tracer.start_main()
+        for i <- 1..20, do: System.put_env("FX_W\#{i}", "v\#{i}")
+        IO.inspect(:ncc_tracer.finish(tok, "ok"), label: "finish")
+        """,
+        [{"NCC_TRACE_MAX_USER_EVENTS", "8"}]
+      )
+
+    # The VM's own start reads come first; some writes fit under the cap,
+    # the rest are dropped.
+    assert out =~ "finish: :ok"
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    assert [%{"what" => "user_events"}] = kind(lines, "overflow")
+
+    named =
+      for %{"mfa" => "os:putenv/2", "arg" => %{"name" => "FX_W" <> _, "value_id" => id}} <-
+            kind(lines, "event"),
+          do: id
+
+    assert named != []
+    all = for %{"arg" => %{"value_id" => id}} <- kind(lines, "event"), do: id
+    returned = for %{"value_id" => id} <- kind(lines, "returned"), do: id
+    # Every value line is named by a written event or a returned line.
+    assert Enum.sort(Enum.uniq(all ++ returned)) ==
+             Enum.sort(for v <- kind(lines, "value"), do: v["value_id"])
+  end
+
   test "a watcher killed over and over writes a bounded number of lines", %{tmp_dir: dir} do
     {0, out} =
       run_script(

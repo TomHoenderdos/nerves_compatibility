@@ -638,16 +638,17 @@ stored(Etf, #st{values = Values, value_bytes = Bytes} = St) ->
             end
     end.
 
-%% The value an env or config write set is stored like a value a read
-%% returned (stored/2): written once, named by value_id, under the same
-%% budget. A read that returns the value the write set names the same id.
-written_value(Channel, #{value := Value} = Arg, St)
-  when (Channel =:= env_write orelse Channel =:= config_write), is_binary(Value),
-       Value =/= <<"unrecordable">> ->
-    Etf = base64:decode(Value, #{mode => urlsafe, padding => false}),
+%% The value an env or config write set (the classifier's value_etf) is
+%% stored like a value a read returned (stored/2): written once, named by
+%% value_id, under the same budget. A read that returns the value the write
+%% set names the same id. Only for an event that will be written: past the
+%% user-event cap user_event/3 drops the event unwritten, and its value with
+%% it: no value line, no budget spent.
+written_value(Arg, #st{user = U, max_user = Max} = St) when U >= Max -> {Arg, St};
+written_value(#{value_etf := Etf} = Arg, St) when is_binary(Etf) ->
     {Ref, St1} = stored(Etf, St),
-    {maps:merge(maps:remove(value, Arg), Ref), St1};
-written_value(_Channel, Arg, St) -> {Arg, St}.
+    {maps:merge(maps:remove(value_etf, Arg), Ref), St1};
+written_value(Arg, St) -> {Arg, St}.
 
 %% A line that follows a traced call one to one (a `returned` line): counted
 %% as a call (check_limits/1, the queue check), not as a user event, so it
@@ -920,7 +921,7 @@ path_frame(First) ->
 
 user_line({Channel, Arg0}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends, Id}, St0) ->
     {Kind, First, User, {Caller, Bottom}} = frames(Kind0, First0, User0, Ends),
-    {Arg, St1} = written_value(Channel, Arg0, St0),
+    {Arg, St1} = written_value(Arg0, St0),
     Line0 = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
               mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
               arg => enrich(Channel, Arg), extent => Kind, first => First, user => User,

@@ -327,8 +327,17 @@ config_key(App, Key) ->
 %% The value an env write set, recorded as a read of it would return it.
 env_value(Value) ->
     case chars_term(Value) of
-        {recorded, Term} -> recorded(Term);
-        Marker -> Marker
+        {recorded, Term} -> written(Term);
+        Marker -> #{value => Marker}
+    end.
+
+%% The value a write set, as its ETF (value_etf): the collector stores it
+%% once in a value line and names it by value_id, as it does a read's
+%% (ncc_tracer stored/2). One too big to record is `unrecordable`.
+written(Term) ->
+    case value_etf(Term) of
+        {ok, Etf} -> #{value_etf => Etf};
+        unrecordable -> #{value => <<"unrecordable">>}
     end.
 
 nested_compile(true) -> {nested_compile, #{}};
@@ -399,8 +408,8 @@ specific(ets, lookup_element, ['Elixir.Mix.State', target | Rest]) when length(R
 specific('Elixir.Mix.Project', F, Args)
   when (F =:= build_path orelse F =:= app_path orelse F =:= compile_path), length(Args) =< 1 ->
     {mix_state, #{'fun' => atom_to_binary(F)}};
-specific(os, putenv, [Name, Value]) -> {env_write, #{name => chars(Name), value => env_value(Value)}};
-specific(os, unsetenv, [Name]) -> {env_write, #{name => chars(Name), value => recorded(error)}};
+specific(os, putenv, [Name, Value]) -> {env_write, (env_value(Value))#{name => chars(Name)}};
+specific(os, unsetenv, [Name]) -> {env_write, (written(error))#{name => chars(Name)}};
 specific(_M, _F, _Args) -> unknown.
 
 mix_target() -> {mix_state, #{'fun' => <<"target">>}}.
@@ -445,10 +454,10 @@ by_module(application, get_env, [App, Key | _]) ->
     {config, #{app => term_bin(App), key => term_bin(Key), app_name => atom_name(App),
                key_name => atom_name(Key), atoms => is_atom(App) andalso is_atom(Key)}};
 by_module(application, set_env, [App, Key, Value | _]) ->
-    {config_write, (config_key(App, Key))#{value => recorded({ok, Value})}};
+    {config_write, maps:merge(config_key(App, Key), written({ok, Value}))};
 by_module(application, set_env, [_Config | _]) -> {config_write, #{all => true}};
 by_module(application, unset_env, [App, Key | _]) ->
-    {config_write, (config_key(App, Key))#{value => recorded(error)}};
+    {config_write, maps:merge(config_key(App, Key), written(error))};
 by_module(application, get_all_env, Args) ->
     {config, #{app => first_term(Args), app_name => first_atom_name(Args), all => true}};
 by_module(M, _F, _Args) ->

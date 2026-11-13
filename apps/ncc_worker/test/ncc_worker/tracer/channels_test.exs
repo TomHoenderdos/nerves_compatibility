@@ -471,31 +471,52 @@ defmodule NccWorker.Tracer.ChannelsTest do
   end
 
   describe "the write channel" do
-    defp wrec(term),
-      do: term |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
+    # The classifier hands the tracer the value's ETF, which it stores once
+    # (a value line) and names by value_id: never base64 it encodes here.
+    defp etf(term), do: :erlang.term_to_binary(term, [:deterministic])
 
     test "env writes name the variable and the value set" do
-      assert {:env_write, %{name: "X", value: value}} =
+      assert {:env_write, %{name: "X", value_etf: value} = arg} =
                :ncc_tracer_channels.classify(:os, :putenv, [~c"X", ~c"1"])
 
-      assert value == wrec({:ok, "1"})
+      assert value == etf({:ok, "1"})
+      refute Map.has_key?(arg, :value)
 
-      assert {:env_write, %{name: "X", value: unset}} =
+      assert {:env_write, %{name: "X", value_etf: unset}} =
                :ncc_tracer_channels.classify(:os, :unsetenv, [~c"X"])
 
-      assert unset == wrec(:error)
+      assert unset == etf(:error)
+    end
+
+    test "a value that cannot be recorded is marked, with no ETF" do
+      big = String.to_charlist(String.duplicate("x", 70_000))
+
+      assert {:env_write, %{value: "unrecordable"} = arg} =
+               :ncc_tracer_channels.classify(:os, :putenv, [~c"X", big])
+
+      refute Map.has_key?(arg, :value_etf)
+
+      assert {:env_write, %{value: "unrecordable"}} =
+               :ncc_tracer_channels.classify(:os, :putenv, [~c"X", [0xD800]])
+
+      assert {:config_write, %{value: "unrecordable"}} =
+               :ncc_tracer_channels.classify(:application, :set_env, [
+                 :a,
+                 :k,
+                 String.duplicate("y", 70_000)
+               ])
     end
 
     test "config writes name the app and key and the value set" do
-      assert {:config_write, %{app_name: "a", key_name: "k", value: v}} =
+      assert {:config_write, %{app_name: "a", key_name: "k", value_etf: v}} =
                :ncc_tracer_channels.classify(:application, :set_env, [:a, :k, 1, []])
 
-      assert v == wrec({:ok, 1})
+      assert v == etf({:ok, 1})
 
-      assert {:config_write, %{value: e}} =
+      assert {:config_write, %{value_etf: e}} =
                :ncc_tracer_channels.classify(:application, :unset_env, [:a, :k])
 
-      assert e == wrec(:error)
+      assert e == etf(:error)
 
       assert {:config_write, %{all: true}} =
                :ncc_tracer_channels.classify(:application, :set_env, [[{:a, [k: 1]}]])

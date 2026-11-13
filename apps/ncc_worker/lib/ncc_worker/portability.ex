@@ -1159,9 +1159,11 @@ defmodule NccWorker.Portability do
 
   # What the build observed, without any value a read returned or a write
   # set: values go to `compile_env` and `compile_inputs` only, where a
-  # private name is never recorded (`CompileInputs`).
+  # private name is never recorded (`CompileInputs`). Nor a write's time,
+  # which only orders it against reads: a `mix.exs` Mix evaluates again
+  # makes the same write, which is one item.
   defp public_item(item) do
-    item = Map.drop(item, ["returned", "value"])
+    item = Map.drop(item, ["returned", "value", "ts"])
 
     case item do
       %{"arg" => %{} = arg} -> %{item | "arg" => Map.delete(arg, "value")}
