@@ -23,6 +23,7 @@ defmodule Portal.Reports.Payload do
                   malformed_entry rule8_unscannable rule8_env rule8_target build_predates
                   toolchain_elixir toolchain_otp dep_env_differs checksum_differs
                   closure_mismatch closure_checksum closure_absent closure_without
+                  closure_env_absent
                   compile_env_differs excepted revoked_provenance revoked_not_in_batch
                   remove_failed deadline_passed fetch_failed verify_failed install_failed
                   internal system_version_abi toolchain_otp_minor needed_lib_missing
