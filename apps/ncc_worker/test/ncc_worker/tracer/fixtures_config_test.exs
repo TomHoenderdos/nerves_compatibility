@@ -1005,10 +1005,9 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
 
     assert default == enc({:ok, 1})
 
-    # Compiled after fx_ord_b, the read saw its default. Compiled before, it
-    # saw get_env/3's own default, which cannot tell an unset key from one
-    # set to nil while fx_ord_b's .app gives it a value.
-    assert seen in [enc({:ok, 1}), "unrecordable"]
+    # Compiled after fx_ord_b, the read saw its .app default; before, its own
+    # fallback, which is what an unset key gives it.
+    assert seen in [enc(:error), enc({:ok, 1})]
   end
 
   test "an unset key of an extra application publishes, with no .app default to record", ctx do

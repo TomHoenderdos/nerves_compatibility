@@ -533,29 +533,24 @@ defmodule NccWorker.Portability.ConfigReads do
       "path" => [key],
       "reader" => reader,
       "default" => default,
-      "seen" => seen(for({^reader, r} <- captures, do: r), default)
+      "seen" => seen(for({^reader, r} <- captures, do: r))
     }
   end
 
   # A read outside every window has no place in a compile order.
   defp order_item(_app, _key, _reader, _default, _captures), do: @unrecorded
 
-  # What one reader saw: the one value all its captures agree on. get_env/3's
-  # "default" says only that the result equalled its default argument; with
-  # no .app default the key was unset when it read, otherwise it cannot be
-  # told.
-  defp seen(captures, default) do
+  # What one reader saw: the one value all its captures agree on.
+  # "default": the read got its own fallback, which is what an unset key
+  # gives it. A capture without "returned" (an older tracer) stays
+  # "unrecordable".
+  defp seen(captures) do
     unrecordable = CompileInputs.unrecordable()
 
     case Enum.uniq(captures) do
-      ["default"] ->
-        if default == unset(), do: unset(), else: unrecordable
-
-      [value] when is_binary(value) and value != unrecordable ->
-        recordable(value)
-
-      _ ->
-        unrecordable
+      ["default"] -> unset()
+      [value] when is_binary(value) and value != unrecordable -> recordable(value)
+      _ -> unrecordable
     end
   end
 

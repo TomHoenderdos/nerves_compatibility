@@ -124,7 +124,7 @@ defmodule NccWorker.Portability.ConfigReadsTest do
              }
     end
 
-    test "seen is the reader's agreed capture; default stands for unset only without a .app default" do
+    test "seen is the reader's agreed capture; get_env/3's default always stands for unset" do
       trees = ConfigReads.trees(ctx([]))
 
       for {returns, default, seen} <- [
@@ -133,7 +133,8 @@ defmodule NccWorker.Portability.ConfigReadsTest do
             {[nil], enc(:error), "unrecordable"},
             {["unrecordable"], enc(:error), "unrecordable"},
             {["default"], enc(:error), enc(:error)},
-            {["default"], enc({:ok, 1}), "unrecordable"}
+            {["default"], enc({:ok, 1}), enc(:error)},
+            {["default"], "unrecordable", enc(:error)}
           ] do
         decided = for r <- returns, do: obs("r", read("a", "k", returned: r))
 
