@@ -258,7 +258,8 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
   defp rebar3_releases(home) do
     apps = Map.merge(@deps, @kill_child)
 
-    plugin = %{rebar_config: "{erl_opts, []}.\n{plugins, [rebar3_hex]}.\n"}
+    # Any plugin but a Hex rebar3_hex, which the judge lets through.
+    plugin = %{rebar_config: "{erl_opts, []}.\n{plugins, [pc]}.\n"}
     apps = Map.update!(apps, "fx_r3_plugin", &Map.merge(&1, plugin))
 
     for {app, %{manager: :rebar3} = spec} <- apps, into: %{} do

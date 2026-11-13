@@ -18,6 +18,14 @@ defmodule NccWorker.Portability.Rebar do
   value `[{pre | post, [{Command, Provider}]}]`; any other shape counts
   (fail closed), in a section and inside `overrides` alike.
 
+  `plugins` refuse unless every entry is `rebar3_hex` from Hex, as the bare
+  atom or `{rebar3_hex, Requirement}` with a version requirement string.
+  rebar3 installs a dependency's `plugins` before `bare compile` and runs
+  each one's `init/1` (`rebar_plugins:top_level_install/1`, without
+  provider overrides). rebar3_hex's (7.1.0) only adds providers in the
+  `hex` namespace, so it changes nothing about the compile. A git source,
+  a `{pkg, Name}` source, or any other plugin still refuses.
+
   A dependency's own `rebar.config.script` is not refused for existing.
   Mix evaluates it (`Mix.Rebar.load_config/1`, from
   `Mix.Dep.Loader.rebar_dep/4`) in the traced Mix VM when it loads the
@@ -327,6 +335,9 @@ defmodule NccWorker.Portability.Rebar do
   defp counts?(hooks, value) when hooks in ["pre_hooks", "post_hooks"],
     do: not proper_list?(value) or Enum.any?(value, &compile_hook?/1)
 
+  defp counts?("plugins", value),
+    do: not proper_list?(value) or not Enum.all?(value, &hex_plugin?/1)
+
   defp counts?("provider_hooks", value),
     do: not proper_list?(value) or Enum.any?(value, &compile_provider_hooks?/1)
 
@@ -345,6 +356,19 @@ defmodule NccWorker.Portability.Rebar do
   end
 
   defp compile_provider_hooks?(_entry), do: true
+
+  defp hex_plugin?({:atom, "rebar3_hex"}), do: true
+
+  defp hex_plugin?({{:atom, "rebar3_hex"}, requirement}) do
+    with {:ok, text} <- regex_text(requirement),
+         {:ok, _parsed} <- Version.parse_requirement(text) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp hex_plugin?(_plugin), do: false
 
   defp proper_list?([]), do: true
   defp proper_list?([_ | tail]), do: proper_list?(tail)
