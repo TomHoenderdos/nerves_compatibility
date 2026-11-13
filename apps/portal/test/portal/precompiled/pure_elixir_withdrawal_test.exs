@@ -69,7 +69,9 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
         "file_manifest" => nil,
         "portability_rule" => 1,
         "rule1_reason" => nil,
-        "compile_observations" => observations
+        "compile_observations" => observations,
+        "judge_revision" =>
+          Keyword.get(opts, :judge_revision, Portability.withdrawal_judge_revision())
       }
     }
 
@@ -236,6 +238,29 @@ defmodule Portal.Precompiled.PureElixirWithdrawalTest do
 
     assert {:withdrawn, 0, []} = PureElixirWithdrawal.withdraw(dry_run: false, before: @later)
     assert [%{unpublished_at: nil}] = results("pure_elixir")
+  end
+
+  # A judge older than the one that records env reads refused them: such a
+  # row says nothing about what the current judge decides until rebuilt.
+  test "a refusal judged under an older revision withdraws nothing until rebuilt" do
+    pure_elixir_run!()
+    current = Portability.withdrawal_judge_revision()
+
+    for {reason, revision} <- [
+          {"compile-time host read: os:getenv/1 \"X\" in X.f/0 (lib/x.ex:2)", current - 1},
+          {"compile-time host read in mix.exs: os:getenv/1 \"X\" (mix.exs:3)", current - 1},
+          {@host_read, current - 1},
+          {@host_read, nil}
+        ] do
+      toolchain_build!(reason, %{}, judge_revision: revision)
+      assert PureElixirWithdrawal.candidates() == [], "#{reason} at #{inspect(revision)}"
+    end
+
+    assert {:withdrawn, 0, []} = PureElixirWithdrawal.withdraw(dry_run: false, before: @later)
+    assert [%{unpublished_at: nil}] = results("pure_elixir")
+
+    toolchain_build!(@host_read, %{}, judge_revision: current + 1)
+    assert [%{reason: @host_read}] = PureElixirWithdrawal.candidates()
   end
 
   # Every pure_elixir row of the version goes, or an older

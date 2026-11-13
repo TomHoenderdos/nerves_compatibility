@@ -17,6 +17,10 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
   outside `ebin`, a tracing or system flag, an Elixir patch dependence, or a
   baked build path. Those say the package's own compile observed the host
   (or read the Elixir version in a way that differs between patches).
+  Only a row judged at `Compatibility.Portability.withdrawal_judge_revision/0`
+  or later counts: an older judge refused compile-time env reads the current
+  one records as inputs, so its refusal waits for the row's rebuild
+  (`Portal.Catalog`'s `@judge_reopen` reopens it).
 
   R3 closure taint (`closure dependency observed the host: `), a call into a
   natively built dependency, the rebar3 rules, "portability could not be
@@ -95,7 +99,8 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
 
   # `$1` toolchain, `$2` builder_version, `$3` the prefixes, `$4` the
   # package name and `$5` the version (nulls: every version), `$6` the
-  # cutoff (null: none). `t` is a default config variant build: a named
+  # cutoff (null: none). The judge revision is a literal, the same in every
+  # statement. `t` is a default config variant build: a named
   # variant's verdict says nothing about the default's result. `s` is any
   # pure_elixir result of a run of the version, carried copies included,
   # that still has files and is not withdrawn; `b` is the run it was
@@ -114,6 +119,7 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
     AND t.status = 'skipped'
     AND t.revoked_at IS NULL
     AND t.compile_observations IS NOT NULL
+    AND t.judge_revision >= #{Portability.withdrawal_judge_revision()}
     AND EXISTS (SELECT 1 FROM unnest($3::text[]) AS pre(prefix)
                 WHERE starts_with(t.reason, pre.prefix))
     AND ($4::text IS NULL OR (p.name = $4 AND t.version = $5))

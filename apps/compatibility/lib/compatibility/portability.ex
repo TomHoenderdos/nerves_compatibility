@@ -44,6 +44,12 @@ defmodule Compatibility.Portability do
     "bakes the build path: "
   ]
 
+  # The oldest judge revision (`NccWorker.Portability.judge_revision/1`)
+  # whose refusals withdraw: 3, the first that records compile-time env
+  # reads as inputs instead of refusing them. A row an older judge refused
+  # may be one the current judge publishes, so it waits for its rebuild.
+  @withdrawal_judge_revision 3
+
   @could_not_judge "portability could not be judged"
   @manager_mismatch "manager mismatch: "
   @tree_differs "dependency tree differs from its tarball: "
@@ -55,6 +61,13 @@ defmodule Compatibility.Portability do
   @doc "The R1 and R2 refusal prefixes, the subset that withdraws an earlier publication."
   @spec withdrawing_prefixes() :: [String.t()]
   def withdrawing_prefixes, do: @withdrawing_prefixes
+
+  @doc """
+  The oldest judge revision whose refusals withdraw an earlier publication:
+  a row judged before it is no evidence until rebuilt.
+  """
+  @spec withdrawal_judge_revision() :: pos_integer()
+  def withdrawal_judge_revision, do: @withdrawal_judge_revision
 
   @doc "Whether `reason` is an R1 or R2 refusal, one that withdraws an earlier publication."
   @spec withdraws?(term()) :: boolean()
