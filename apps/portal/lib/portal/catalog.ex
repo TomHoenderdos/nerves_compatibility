@@ -1385,7 +1385,10 @@ defmodule Portal.Catalog do
   # refinements spec, "Rollout"): its `judge_revision` is NULL (before
   # revisions) or below the newest revision any row of the toolchain and
   # builder version carries. Reopened once per revision, whatever its reason
-  # or rule, when due (`@reopen_due`), and only while its last activity is
+  # or rule: at once while its last activity is older than the first build at
+  # that newest revision (a revision reopens the whole skipped backlog, most
+  # of it built days ago), afterwards only when due (`@reopen_due`, as an
+  # error rebuild keeps the old revision); and only while its last activity is
   # older than the newest build at that newest revision: before any build
   # host writes a revision nothing reopens, and a row an older image wrote
   # after the last newest-revision build (a rollback) is not rebuilt again.
@@ -1405,7 +1408,14 @@ defmodule Portal.Catalog do
   coalesce(coalesce(t.judge_revision, 0) <
      (SELECT max(jr.judge_revision) FROM catalog_toolchain_builds jr
       WHERE jr.toolchain = $1 AND jr.builder_version = $2)
-   AND #{@reopen_due}
+   AND t.transient_attempts < $8::integer
+   AND (#{@reopen_due}
+        OR coalesce(t.attempted_at, t.finished_at, t.updated_at) <
+          (SELECT min(js.finished_at) FROM catalog_toolchain_builds js
+           WHERE js.toolchain = $1 AND js.builder_version = $2
+             AND js.judge_revision =
+               (SELECT max(jn.judge_revision) FROM catalog_toolchain_builds jn
+                WHERE jn.toolchain = $1 AND jn.builder_version = $2)))
    AND coalesce(t.attempted_at, t.finished_at, t.updated_at) <
      (SELECT max(jf.finished_at) FROM catalog_toolchain_builds jf
       WHERE jf.toolchain = $1 AND jf.builder_version = $2

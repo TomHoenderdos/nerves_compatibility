@@ -153,10 +153,39 @@ defmodule Portal.Catalog.ToolchainBacklogJudgeRevisionTest do
     assert names() == []
   end
 
-  test "a row that is not due yet waits" do
+  # A new revision reopens its whole skipped backlog at once, without the
+  # weekly floor: a toolchain whose backlog was built in the last week would
+  # otherwise sit idle until it came due.
+  test "a row built before the first build at the newest revision reopens at once" do
     revised!(1)
     run!("fresh", "1.0.0")
     row!("fresh", "1.0.0", :skipped, reason: "nerves-specific source", finished_at: ago(2 * @day))
+
+    assert names() == ["fresh"]
+  end
+
+  # Its rebuild at the old revision (an error keeps the row's revision) is
+  # after the first newest-revision build: from then on it waits for the
+  # weekly floor like any other reopen.
+  test "a row last attempted after the first build at the newest revision waits" do
+    revised!(1, 3 * @day)
+    run!("again", "1.0.0")
+
+    row!("again", "1.0.0", :skipped,
+      reason: "nerves-specific source",
+      finished_at: ago(30 * @day),
+      attempted_at: ago(2 * @day)
+    )
+
+    # A later build at the revision, so the rollback rule does not close it.
+    run!("later", "1.0.0")
+
+    row!("later", "1.0.0", :pass,
+      rule: 2,
+      marked: true,
+      judge_revision: 1,
+      finished_at: ago(3600)
+    )
 
     assert names() == []
   end
