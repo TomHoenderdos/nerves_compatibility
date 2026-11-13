@@ -99,9 +99,11 @@ defmodule NccWorker.Portability.TreesTest do
     File.ln_s!("/etc/hosts", Path.join(src, "b"))
     gz = Path.join(dir, "contents.tar.gz")
 
-    File.cd!(src, fn ->
-      :ok = :erl_tar.create(String.to_charlist(gz), [~c"a", ~c"b"], [:compressed])
-    end)
+    # Full paths rather than File.cd!/2: the working directory is the whole
+    # VM's, and the async test files load beside this one. erl_tar keeps a
+    # link only for a plain file name, so the members carry the full path.
+    entries = for n <- ["a", "b"], do: String.to_charlist(Path.join(src, n))
+    :ok = :erl_tar.create(String.to_charlist(gz), entries, [:compressed])
 
     outer = Path.join(dir, "outer.tar")
     :ok = :erl_tar.create(String.to_charlist(outer), [{~c"contents.tar.gz", File.read!(gz)}])
