@@ -132,8 +132,15 @@ defmodule NccWorker.Portability do
   # runs programs, installed OTP code may call into a module the trace
   # loaded when its `.app` lists that module's application, and a
   # dependency's `rebar.config.script` is judged by its reads and result
-  # (bumped by two while `makefile_rule2` exists).
-  @judge_revision 5
+  # (bumped by two while `makefile_rule2` exists). 7: rule 2's text checks
+  # match whole tool names, a rebar3 parent's script overrides come from its
+  # `mix.rebar.config`, rebar3 hooks count only on compile commands and
+  # `platform_define` is judged per branch, a `rebar3_hex` plugin from Hex is
+  # let through, a mix.exs read of a path the verified tarball lacks is the
+  # tree check's, a literal Version comparison in mix.exs is judged over the
+  # minor series, and a source directory held only by `__mix_recompile__?/0`
+  # is observed (bumped by two while `makefile_rule2` exists).
+  @judge_revision 7
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on
