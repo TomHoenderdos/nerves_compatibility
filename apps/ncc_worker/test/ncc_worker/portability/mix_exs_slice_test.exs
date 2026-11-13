@@ -489,4 +489,109 @@ defmodule NccWorker.Portability.MixExsSliceTest do
       assert {:refuse, "mix.exs does not parse"} = MixExsSlice.analyse("defmodule (")
     end
   end
+
+  describe "direct_version_line?/3" do
+    # Credo's shape: a module-body conditional on the Elixir version that
+    # picks which helper project/0 joins, so the slice itself refuses.
+    @credo """
+    defmodule C.MixProject do
+      use Mix.Project
+      def project, do: [app: :c, version: "1.0.0", deps: []] ++ cli_entry()
+      if Version.match?(System.version(), ">= 1.19.0-dev") do
+        defp cli_entry, do: []
+      else
+        defp cli_entry, do: [preferred_cli_env: []]
+      end
+      defp opts do
+        if Version.compare(System.version(), "1.20.0-dev") == :lt, do: [a: 1], else: []
+      end
+      defp multi do
+        Version.match?(
+          System.version(),
+          "~> 1.15"
+        )
+      end
+      defp other, do: System.version() |> String.split(".")
+      defp both, do: Version.match?(System.version(), ">= 1.0.0") and System.version() > "1"
+      defp req, do: Version.match?(System.version(), @req)
+      defp three, do: Version.match?(System.version(), "~> 1.0", allow_pre: false)
+      defp info, do: Version.match?(System.version(), "~> 1.0") and System.build_info()
+    end
+    """
+
+    defp direct?(source, line, mfa) do
+      {:ok, analysis} = MixExsSlice.analyse(source)
+      MixExsSlice.direct_version_line?(analysis, line, mfa)
+    end
+
+    test "System.version() as a direct argument of a literal Version.match?/compare" do
+      assert {:refuse, _} = MixExsSlice.judge(@credo, 4)
+
+      for line <- [4, 10] do
+        assert direct?(@credo, line, "System.version/0")
+      end
+
+      assert direct?(@credo, 4, "Version.match?/2")
+      assert direct?(@credo, 10, "Version.compare/2")
+      refute direct?(@credo, 4, "Version.compare/2")
+      refute direct?(@credo, 10, "Version.match?/2")
+      refute direct?(@credo, 4, "System.build_info/0")
+      refute direct?(@credo, 4, "Version.match?/3")
+
+      # Over several lines: the read's line and the call's line each pass.
+      assert direct?(@credo, 13, "Version.match?/2")
+      assert direct?(@credo, 14, "System.version/0")
+      refute direct?(@credo, 15, "System.version/0")
+    end
+
+    test "any other use of the version on the line refuses" do
+      for line <- 19..22 do
+        for mfa <- ["System.version/0", "Version.match?/2"] do
+          refute direct?(@credo, line, mfa), "line #{line} #{mfa}"
+        end
+      end
+
+      refute direct?(@credo, 18, "System.version/0")
+      refute direct?(@credo, 3, "System.version/0")
+      refute direct?(@credo, 999, "System.version/0")
+    end
+
+    test "a file that can rename Version or System refuses" do
+      for header <- [
+            "alias Foo.Version",
+            "alias Foo.Bar, as: System",
+            "import Version",
+            "alias Foo.{Version, Bar}",
+            "defmodule Version do\n  def match?(_, _), do: true\nend"
+          ] do
+        source = String.replace(@credo, "  use Mix.Project\n", "  use Mix.Project\n  #{header}\n")
+        line = @credo |> String.split("\n") |> Enum.find_index(&(&1 =~ "1.19.0-dev"))
+        shift = header |> String.split("\n") |> length()
+
+        refute direct?(source, line + 1 + shift, "System.version/0"), header
+      end
+
+      # An unrelated alias does not.
+      source =
+        String.replace(@credo, "  use Mix.Project\n", "  use Mix.Project\n  alias Foo.Bar\n")
+
+      assert direct?(source, 5, "System.version/0")
+    end
+
+    test "a qualified Elixir.Version or a capture is no direct call" do
+      source = """
+      defmodule C.MixProject do
+        use Mix.Project
+        def project, do: [app: :c, version: "1.0.0", deps: []]
+        defp a, do: Elixir.Version.match?(System.version(), "~> 1.0")
+        defp b, do: Enum.map([System.version()], &Version.match?(&1, "~> 1.0"))
+        defp c, do: Version.match?(System.version(), ~S"~> 1.0")
+      end
+      """
+
+      for line <- 4..6, mfa <- ["System.version/0", "Version.match?/2"] do
+        refute direct?(source, line, mfa), "line #{line} #{mfa}"
+      end
+    end
+  end
 end

@@ -10,8 +10,10 @@ defmodule NccWorker.Portability.Events do
   first frame, its kind and the extent. An Elixir-version read in a closure
   dependency's `mix.exs` goes to R4 (`MixExsSlice`) instead: one that can
   reach a compile-relevant key refuses (`compile-time Elixir patch
-  dependence: `, compile options that may differ between patches), any
-  other is ignored. Everything else is allowed by a narrow rule or refused:
+  dependence: `, compile options that may differ between patches), unless
+  its line holds only direct literal comparisons
+  (`MixExsSlice.direct_version_line?/3`), which `ElixirVersion` then judges
+  over the build's whole minor; any other is ignored. Everything else is allowed by a narrow rule or refused:
 
     * OS identity: `system_info(otp_release)` is allowed, and `os:type/0`,
       `os:version/0` or `system_info(os_type)` when the first frame after
@@ -435,26 +437,41 @@ defmodule NccWorker.Portability.Events do
     do: {:refuse, "compile-time host read in mix.exs: #{event["mfa"]} #{why} (#{path}:#{line})"}
 
   # R4 for an Elixir-version read in a dependency's mix.exs: ignored unless
-  # it can reach a compile-relevant key (or the slice cannot tell).
+  # it can reach a compile-relevant key (or the slice cannot tell). One that
+  # can, on a line of direct literal comparisons only
+  # (`MixExsSlice.direct_version_line?/3`), is observed for
+  # `ElixirVersion`, marked `"series"`: its result must be the same over the
+  # build's whole minor.
   defp version_in_mix_exs(event, path, slices) do
     line = get_in(event, ["user", "line"])
 
-    verdict =
+    {verdict, analysis} =
       if is_integer(line) and line > 0 do
-        slices |> Map.get_lazy(path, fn -> analyse(path) end) |> slice_judge(line)
+        analysis = Map.get_lazy(slices, path, fn -> analyse(path) end)
+        {slice_judge(analysis, line), analysis}
       else
-        {:refuse, "has no line"}
+        {{:refuse, "has no line"}, nil}
       end
 
-    case verdict do
-      :ok ->
+    cond do
+      verdict == :ok ->
         :ignore
 
-      {:refuse, why} ->
+      direct_version?(analysis, line, event["mfa"]) ->
+        {:observe, "elixir_version", Map.put(traced_summary(event), "series", true)}
+
+      true ->
+        {:refuse, why} = verdict
+
         {:refuse,
          "compile-time Elixir patch dependence: #{event["mfa"]} #{why} (#{path}:#{line})"}
     end
   end
+
+  defp direct_version?({:ok, analysis}, line, mfa),
+    do: MixExsSlice.direct_version_line?(analysis, line, mfa)
+
+  defp direct_version?(_analysis, _line, _mfa), do: false
 
   defp slice_judge({:ok, analysis}, line), do: MixExsSlice.judge(analysis, line)
   defp slice_judge({:refuse, _why} = refusal, _line), do: refusal

@@ -739,6 +739,43 @@ defmodule NccWorker.Portability.EventsTest do
              Events.decide(opts_read, ctx, "pkg", slices)
   end
 
+  test "a direct, literal Version comparison in mix.exs is observed for the series rule",
+       %{ctx: ctx, pkg: pkg} do
+    File.write!(Path.join(pkg, "mix.exs"), """
+    defmodule Pkg.MixProject do
+      use Mix.Project
+      def project, do: [app: :pkg, version: "1.0.0", deps: [], elixirc_options: opts() ++ raw()]
+      defp opts, do: if(Version.match?(System.version(), "~> 1.15"), do: [a: 1], else: [])
+      defp raw, do: [b: System.version()]
+    end
+    """)
+
+    read = in_mix_exs(ev("elixir_version", "System.version/0", %{}), pkg, 4)
+
+    call =
+      in_mix_exs(
+        ev("elixir_version", "Version.match?/2", %{
+          "left" => ~s("1.19.5"),
+          "right" => ~s("~> 1.15")
+        }),
+        pkg,
+        4
+      )
+
+    for event <- [read, call] do
+      assert {:observe, "elixir_version", %{"series" => true, "line" => 4} = item} =
+               Events.decide(event, ctx, "pkg")
+
+      assert item["mfa"] == event["mfa"]
+    end
+
+    # A read used any other way still refuses.
+    raw = in_mix_exs(ev("elixir_version", "System.version/0", %{}), pkg, 5)
+
+    assert {:refuse, "compile-time Elixir patch dependence: System.version/0" <> _} =
+             Events.decide(raw, ctx, "pkg")
+  end
+
   describe "mix_state (item 2's gap)" do
     # No mix.exs exemption: a literal read there is native by the static
     # scan already, so one the trace sees is one that scan could not.

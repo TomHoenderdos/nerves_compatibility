@@ -23,6 +23,13 @@ defmodule NccWorker.Portability.ElixirVersion do
       comparison against a `Version` struct the tracer cannot render)
       refuses.
 
+  A comparison made on a line of a dependency's `mix.exs` that
+  `NccWorker.Portability.MixExsSlice.direct_version_line?/3` accepts (the
+  observation's `"series"`) must also give the same result for every final
+  patch x.y.0 to x.y.99: its result picks the project's configuration, so a
+  requirement that cuts inside the minor refuses even above the built
+  patch.
+
   A refusal, `compile-time Elixir patch dependence: ...`, belongs to its
   window: in the package's it refuses the package, in a dependency's it
   taints that dependency (R3). Reads to judge with no usable Elixir version
@@ -102,6 +109,7 @@ defmodule NccWorker.Portability.ElixirVersion do
   defp invariant?(%{"mfa" => mfa} = item, built, versions) when mfa in @judged do
     left = arg(item, "left")
     right = arg(item, "right")
+    versions = if item["series"] == true, do: series(built, versions), else: versions
     results = for v <- versions, do: call(mfa, swap(left, built, v), swap(right, built, v))
     Enum.all?(results, &match?({:ok, _}, &1)) and length(Enum.uniq(results)) == 1
   end
@@ -136,6 +144,15 @@ defmodule NccWorker.Portability.ElixirVersion do
   end
 
   defp versions(_built), do: :error
+
+  # A call from a dependency's `mix.exs` (`"series"`, `Events` marks it):
+  # the same answer for every final patch of the built minor, from x.y.0,
+  # as well as for the versions above. The toolchain key is the minor, so a
+  # requirement that cuts inside it refuses, wherever the built patch is.
+  defp series(built, versions) do
+    {:ok, %Version{major: major, minor: minor}} = Version.parse(built)
+    Enum.uniq(versions ++ for(p <- 0..@last_patch, do: "#{major}.#{minor}.#{p}"))
+  end
 
   defp arg(%{"arg" => %{} = arg}, side), do: unquoted(arg[side])
   defp arg(_item, _side), do: nil

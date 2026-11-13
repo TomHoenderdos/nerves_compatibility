@@ -153,4 +153,36 @@ defmodule NccWorker.Portability.ElixirVersionTest do
     assert %{refusals: [{"dep", _}], problems: ["no Elixir version in the trace"]} =
              judge([obs("dep", ev("System.build_info/0")), obs("pkg", read())], "not a version")
   end
+
+  describe "a mix.exs line judged over the whole minor series (series)" do
+    defp series(item), do: Map.put(item, "series", true)
+
+    test "a requirement on a minor boundary passes for every patch" do
+      for req <- [">= 1.19.0-dev", ">= 1.14.0", "< 1.20.0", "~> 1.15", "~> 1.19"] do
+        assert %{refusals: []} =
+                 judge([obs("dep", series(read())), obs("dep", series(match(req)))]),
+               req
+      end
+
+      compare = series(ev("Version.compare/2", {@built, "1.20.0-dev"}))
+      assert %{refusals: []} = judge([obs("dep", series(read())), obs("dep", compare)])
+    end
+
+    # Invariant from the built patch on, so a lib-code read passes, but not
+    # over the whole series: the toolchain key is the minor.
+    test "a requirement that cuts inside the minor refuses" do
+      for req <- ["~> 1.19.3", ">= 1.19.2", "< 1.19.1", ">= 1.19.5"] do
+        assert %{refusals: []} = judge([obs("dep", read()), obs("dep", match(req))]), req
+
+        assert %{refusals: [{"dep", {:refuse, @prefix <> "Version.match?/2" <> _}}]} =
+                 judge([obs("dep", series(read())), obs("dep", series(match(req)))]),
+               req
+      end
+    end
+
+    test "the read still needs its comparison" do
+      assert %{refusals: [{"dep", {:refuse, reason}}]} = judge([obs("dep", series(read()))])
+      assert reason =~ "System.version/0 read without a patch-invariant Version comparison"
+    end
+  end
 end

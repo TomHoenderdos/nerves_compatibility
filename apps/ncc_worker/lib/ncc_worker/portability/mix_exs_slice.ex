@@ -121,10 +121,10 @@ defmodule NccWorker.Portability.MixExsSlice do
   @max_depth 200
 
   @enforce_keys [:index]
-  defstruct [:index]
+  defstruct [:index, ast: nil]
 
   @typedoc "A parsed and indexed `mix.exs`, judged once per observation."
-  @type t :: %__MODULE__{index: map()}
+  @type t :: %__MODULE__{index: map(), ast: Macro.t()}
   @type why :: String.t()
 
   @doc """
@@ -152,6 +152,114 @@ defmodule NccWorker.Portability.MixExsSlice do
     end)
   end
 
+  @version_mfas %{
+    "System.version/0" => :read,
+    "Version.match?/2" => {:call, :match?},
+    "Version.compare/2" => {:call, :compare}
+  }
+
+  @doc """
+  Whether the Elixir-version observation `mfa` made on `line` is one of a
+  direct, literal comparison, which `NccWorker.Portability.ElixirVersion`
+  can then judge over the build's whole minor series (`"series"`) instead
+  of the slice refusing it: `System.version/0`, `Version.match?/2` or
+  `Version.compare/2` only, and on that line
+
+    * every `System.version()` is an argument of a `Version.match?/2` or
+      `Version.compare/2` call whose other argument is a string literal,
+    * every such `Version` call has exactly that shape, every other
+      `System` or `Version` call is absent, and the line holds one of the
+      observation's kind;
+
+  and nothing in the file can make `Version` or `System` name another
+  module: no `alias`, `import` or `require` naming either, no module
+  defined under either name. `Elixir.Version` and captures are not direct
+  calls. Anything unexpected is `false`.
+  """
+  @spec direct_version_line?(t(), pos_integer(), String.t()) :: boolean()
+  def direct_version_line?(%__MODULE__{ast: ast}, line, mfa)
+      when is_integer(line) and is_map_key(@version_mfas, mfa) and ast != nil do
+    kind = Map.fetch!(@version_mfas, mfa)
+
+    guarded(fn ->
+      nodes = for {node_kind, ^line, ok?} <- version_nodes(ast, []), do: {node_kind, ok?}
+
+      not renames_version?(ast) and Enum.all?(nodes, &elem(&1, 1)) and
+        Enum.any?(nodes, &(elem(&1, 0) == kind))
+    end) == true
+  end
+
+  def direct_version_line?(_analysis, _line, _mfa), do: false
+
+  # `{kind, line, ok?}` for every `System` and `Version` call or reference
+  # in `ast`: a `System.version()` read is ok only as a direct argument of
+  # a literal comparison, a `Version` call only when it is one; any other
+  # call on either module, and either name used any other way (a bare
+  # `System`, `Elixir.Version`), never is.
+  defp version_nodes({{:., _, [mod, fun]}, meta, args}, acc)
+       when is_atom(fun) and is_list(args) do
+    line = meta[:line]
+
+    case {exact_alias(mod), fun, args} do
+      {:System, :version, []} ->
+        [{:read, line, false} | acc]
+
+      {:Version, fun, [a, b]} when fun in [:match?, :compare] ->
+        if literal_comparison?(a, b),
+          do: [{:read, read_line(a, b), true}, {{:call, fun}, line, true} | acc],
+          else: version_nodes(args, [{{:call, fun}, line, false} | acc])
+
+      {nil, _fun, _args} ->
+        version_nodes(args, version_nodes(mod, acc))
+
+      {_system_or_version, _fun, _args} ->
+        version_nodes(args, [{:other, line, false} | acc])
+    end
+  end
+
+  defp version_nodes({:__aliases__, meta, parts}, acc) when is_list(parts) do
+    if Enum.any?(parts, &(&1 in [:System, :Version])),
+      do: [{:other, meta[:line], false} | acc],
+      else: acc
+  end
+
+  defp version_nodes({a, _meta, b}, acc), do: version_nodes(b, version_nodes(a, acc))
+  defp version_nodes({a, b}, acc), do: version_nodes(b, version_nodes(a, acc))
+  defp version_nodes(list, acc) when is_list(list), do: Enum.reduce(list, acc, &version_nodes/2)
+  defp version_nodes(_leaf, acc), do: acc
+
+  defp literal_comparison?(a, b),
+    do: (version_read?(a) and is_binary(b)) or (is_binary(a) and version_read?(b))
+
+  defp version_read?({{:., _, [mod, :version]}, _, []}), do: exact_alias(mod) == :System
+  defp version_read?(_node), do: false
+
+  defp read_line(a, b), do: if(is_binary(a), do: elem(b, 1)[:line], else: elem(a, 1)[:line])
+
+  defp exact_alias({:__aliases__, _, [name]}) when name in [:System, :Version], do: name
+  defp exact_alias(_mod), do: nil
+
+  # An `alias`, `import` or `require` whose arguments name `Version` or
+  # `System` anywhere (`alias A.Version`, `as: System`, `A.{Version}`), or
+  # a module defined under either name.
+  defp renames_version?(ast) do
+    walk_any?(ast, fn
+      {form, _, args} when form in [:alias, :import, :require] and is_list(args) ->
+        walk_any?(args, &names_version_part?/1)
+
+      {:defmodule, _, [name | _]} ->
+        names_version_part?(name)
+
+      _ ->
+        false
+    end)
+  end
+
+  defp names_version_part?({:__aliases__, _, parts}) when is_list(parts),
+    do: Enum.any?(parts, &(&1 in [:Version, :System]))
+
+  defp names_version_part?(_node), do: false
+
   defp guarded(fun) do
     fun.()
   rescue
@@ -170,7 +278,7 @@ defmodule NccWorker.Portability.MixExsSlice do
          :ok <- static(ast),
          index = index(body),
          :ok <- named(index) do
-      {:ok, %__MODULE__{index: index}}
+      {:ok, %__MODULE__{index: index, ast: ast}}
     end
   end
 
