@@ -1797,13 +1797,18 @@ defmodule NccWorker.Portability.JudgeTest do
                judge(proj, traced(proj, [config_event(35, "fx", "k")], snap))
     end
 
-    test "the judge revision is 3, 4 with item 1 on" do
-      assert NccWorker.Portability.judge_revision() == 3
-      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 4
+    test "the judge revision is 5, 6 with item 1 on" do
+      assert NccWorker.Portability.judge_revision() == 5
+      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 6
 
       # The portal withdraws only on refusals of a judge at least this new.
-      assert NccWorker.Portability.judge_revision() ==
+      # Revision 5 only loosens what revision 3 refused, so a revision 3 or 4
+      # refusal still withdraws: one the current judge would publish is a
+      # false miss until its rebuild, never a false hit.
+      assert NccWorker.Portability.judge_revision() >=
                Compatibility.Portability.withdrawal_judge_revision()
+
+      assert Compatibility.Portability.withdrawal_judge_revision() == 3
     end
 
     test "get_all_env in the package's window refuses it; in a dependency's it taints",

@@ -126,8 +126,13 @@ defmodule NccWorker.Portability do
   # rows by (`Portal.Catalog`, `@judge_reopen`). Never key anything on
   # reason text instead. 3: compile-time env reads and config values the
   # snapshot cannot give are recorded inputs, not refusals (bumped by two
-  # while `makefile_rule2` exists).
-  @judge_revision 3
+  # while `makefile_rule2` exists). 5: rebar3's own log and colour config
+  # reads are dropped, a baked source path refuses only in a module that
+  # runs programs, installed OTP code may call into a module the trace
+  # loaded when its `.app` lists that module's application, and a
+  # dependency's `rebar.config.script` is judged by its reads and result
+  # (bumped by two while `makefile_rule2` exists).
+  @judge_revision 5
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on

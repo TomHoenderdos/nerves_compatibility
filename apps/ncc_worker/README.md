@@ -365,7 +365,11 @@ records `judge_revision` one higher. `toolchain_build.manager` is the manager th
 with. Any value other than `true` leaves item 1 off; with it on, a `deps/` the judge cannot list is "portability
 could not be judged". Revision 3 records compile-time env reads and config values the snapshot cannot give as
 inputs (`compile_inputs`, including `config_order` items for reads whose value depends on the consumer's compile
-order) instead of refusing; every skipped row below it is reopened once.
+order) instead of refusing; every skipped row below it is reopened once. Revision 5 drops rebar3's own log and colour
+config reads (`{rebar, log}` from `rebar_log`, `{cf, colour_term}` from `cf`), refuses a baked source path only in a
+module that itself runs programs, allows a call into a module the trace loaded from installed OTP code whose `.app`
+lists that module's application (public_key into `asn1rt_nif`), and judges a dependency's `rebar.config.script` by
+what its evaluation read and the `mix.rebar.config` Mix wrote from it.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
@@ -509,7 +513,7 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
   "config_variant": "default",
   "portability_rule": 2,
   "rule1_reason": "rule 1's reason when it would have skipped, else null",
-  "judge_revision": 3,
+  "judge_revision": 5,
   "manager": "rebar3",
   "compile_observations": {"trace_stats": {"windows": 14, "wall_ms": 9100, "host_compile_sec": 31.2}, "config_reads": [], "refusals": [], "taint": {}, "problems": []},
   "file_manifest": {"ebin": [{"path": "ebin/x.beam", "sha256": "...", "size": 1234, "mode": 33188}], "priv": []}
