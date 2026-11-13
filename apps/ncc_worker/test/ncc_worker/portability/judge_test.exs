@@ -932,6 +932,38 @@ defmodule NccWorker.Portability.JudgeTest do
                judge(proj, report(proj))
     end
 
+    test "a template root only __mix_recompile__?/0 holds is observed, for a dependency too",
+         %{proj: proj} do
+      lib = Context.realpath(Path.join([proj, "deps", "pkg", "lib"]))
+
+      source = """
+      defmodule JudgeR2Tpl do
+        def __mix_recompile__?, do: <<0>> != hash(#{inspect(lib)})
+        defp hash(root), do: root |> Path.wildcard() |> :erlang.md5()
+      end
+      """
+
+      write_beam(proj, "pkg", source)
+
+      assert %{
+               status: :pass,
+               observations: %{
+                 "build_root_recompile_dir" => [%{"owner" => "pkg", "path" => path}]
+               }
+             } = judge(proj, report(proj))
+
+      assert path == "<root>/deps/pkg/lib"
+
+      File.rm!(Path.join([proj, "_build/host/lib/pkg/ebin", "Elixir.JudgeR2Tpl.beam"]))
+      write_beam(proj, "dep", String.replace(source, "JudgeR2Tpl", "JudgeR2TplDep"))
+
+      assert %{
+               status: :pass,
+               observations: %{"build_root_recompile_dir" => [%{"owner" => "dep"}]}
+             } =
+               judge(proj, report(proj))
+    end
+
     test "a baked build path refuses the package and taints a dependency", %{proj: proj} do
       baked =
         "defmodule JudgeR2Bake do\n  def f, do: #{inspect(Path.join(proj, "x") <> " y")}\nend\n"

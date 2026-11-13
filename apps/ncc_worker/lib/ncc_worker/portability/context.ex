@@ -389,6 +389,24 @@ defmodule NccWorker.Portability.Context do
 
   def closure_file?(_ctx, _string), do: false
 
+  @doc "An absolute path to a directory in some closure dependency's source dir (not the dir itself)."
+  @spec closure_dir?(t(), term()) :: boolean()
+  def closure_dir?(ctx, string) when is_binary(string) do
+    with :absolute <- Path.type(string),
+         real when is_binary(real) <- realpath(string),
+         true <- dir?(real) do
+      Enum.any?(Map.values(ctx.deps), &(under?(real, &1.dest) and real != &1.dest))
+    else
+      _ -> false
+    end
+  end
+
+  def closure_dir?(_ctx, _string), do: false
+
+  # A path a beam literal named, checked, never opened.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp dir?(real), do: File.dir?(real)
+
   # A path the trace or a beam literal named, checked, never opened.
   # sobelow_skip ["Traversal.FileModule"]
   defp regular?(real), do: File.regular?(real)

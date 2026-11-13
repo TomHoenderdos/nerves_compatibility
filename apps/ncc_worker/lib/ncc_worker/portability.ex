@@ -107,6 +107,7 @@ defmodule NccWorker.Portability do
     "native_calls" => 50,
     "mix_exs_allowed" => 50,
     "build_root_source_path" => 50,
+    "build_root_recompile_dir" => 50,
     "mix_project_paths" => 50,
     "env_reads" => 50,
     "env_writes" => 50,
@@ -906,8 +907,13 @@ defmodule NccWorker.Portability do
   # `{:error, why}`.
   defp build_root(ctx, app) do
     case Context.ebin(ctx, app) do
-      nil -> {:error, "no ebin for #{inspect(app)}"}
-      ebin -> ebin |> BuildRoot.check(Context.roots(ctx), &Context.closure_file?(ctx, &1)) |> r2()
+      nil ->
+        {:error, "no ebin for #{inspect(app)}"}
+
+      ebin ->
+        ebin
+        |> BuildRoot.check(Context.roots(ctx), &Context.closure_file?(ctx, &1), r2_opts(ctx))
+        |> r2()
     end
   end
 
@@ -922,10 +928,18 @@ defmodule NccWorker.Portability do
 
       ebin ->
         ebin
-        |> BuildRoot.program_source_paths(Context.roots(ctx), &Context.closure_file?(ctx, &1))
+        |> BuildRoot.program_source_paths(
+          Context.roots(ctx),
+          &Context.closure_file?(ctx, &1),
+          r2_opts(ctx)
+        )
         |> r2()
     end
   end
+
+  # A template root only `__mix_recompile__?/0` holds is an observation
+  # (`BuildRoot`, "build_root_recompile_dir").
+  defp r2_opts(ctx), do: [closure_dir?: &Context.closure_dir?(ctx, &1)]
 
   defp r2(:ok), do: nil
   defp r2({:observe, list}) when is_list(list), do: {:observe, list}

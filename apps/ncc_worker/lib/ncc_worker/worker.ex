@@ -171,7 +171,7 @@ defmodule NccWorker.Worker do
           # untraced fallback included),
           # "config_reads",
           # "elixir_version", "native_calls", "mix_exs_allowed",
-          # "build_root_source_path", "refusals", "taint", "native_libs",
+          # "build_root_source_path", "build_root_recompile_dir", "refusals", "taint", "native_libs",
           # "nif_check", "problems"; nil for an "error" build.
           compile_observations: map() | nil,
           file_manifest:

@@ -987,4 +987,120 @@ defmodule NccWorker.Portability.BuildRootTest do
     {pre, <<_, post::binary>>} = :erlang.split_binary(bin, pos)
     <<pre::binary, :rand.uniform(256) - 1, post::binary>>
   end
+
+  describe "a template root used only by __mix_recompile__?/0" do
+    # Phoenix.Template's embed_templates: the template root, a source-tree
+    # directory, is a literal of __mix_recompile__?/0 alone.
+    @template """
+    defmodule FxTpl do
+      @root Path.expand(".", __DIR__)
+      def __mix_recompile__?, do: <<0>> != hash(@root, "*.heex")
+      def render, do: {__MODULE__, {:render, 0}, __ENV__.file, 1}
+      defp hash(root, pattern), do: root |> Path.join(pattern) |> Path.wildcard() |> :erlang.md5()
+    end
+    """
+
+    defp dir?(root), do: &(String.starts_with?(&1, Path.join(root, "deps/fx/")) and File.dir?(&1))
+
+    test "is an observation, for the package's beams too", %{tmp_dir: root} do
+      {ebin, ok?} = compile(root, @template)
+      opts = [closure_dir?: dir?(root)]
+      observed = {:observe, [{:observe, "build_root_recompile_dir", "<root>/deps/fx/lib"}]}
+
+      assert BuildRoot.check(ebin, [root], ok?, opts) == observed
+      assert BuildRoot.program_source_paths(ebin, [root], ok?, opts) == observed
+
+      # Without a closure directory it is the refusal it always was.
+      assert {:refuse, "bakes the build path: Elixir.FxTpl " <> _} =
+               BuildRoot.check(ebin, [root], ok?)
+    end
+
+    test "refuses when another function of the module holds the root too", %{tmp_dir: root} do
+      for {name, extra} <- [
+            {"FxTplOther", "def root, do: @root"},
+            {"FxTplCall", "def stale?, do: __mix_recompile__?()"},
+            {"FxTplCapture", "def check, do: &__MODULE__.__mix_recompile__?/0"},
+            {"FxTplFun", "def later, do: fn -> @root end"}
+          ] do
+        dir = Path.join(root, name)
+
+        source =
+          @template
+          |> String.replace("FxTpl do", "#{name} do")
+          |> String.replace("defp hash", "#{extra}\n  defp hash")
+
+        {ebin, ok?} = compile(dir, source)
+
+        assert {:refuse, "bakes the build path: Elixir." <> rest} =
+                 BuildRoot.check(ebin, [dir], ok?, closure_dir?: dir?(dir)),
+               name
+
+        assert String.starts_with?(rest, name <> " "), rest
+      end
+    end
+
+    test "refuses inside a fun of __mix_recompile__?/0", %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxTplLambda do
+          @root Path.expand(".", __DIR__)
+          def __mix_recompile__?, do: Enum.any?([1], fn _ -> File.dir?(@root) end)
+        end
+        """)
+
+      assert {:refuse, _} = BuildRoot.check(ebin, [root], ok?, closure_dir?: dir?(root))
+    end
+
+    test "refuses when another module of the ebin calls it", %{tmp_dir: root} do
+      {ebin, ok?} =
+        compile(
+          root,
+          @template <> "\ndefmodule FxTplUser do\n  def x, do: FxTpl.__mix_recompile__?()\nend\n"
+        )
+
+      assert {:refuse, "bakes the build path: Elixir.FxTpl " <> _} =
+               BuildRoot.check(ebin, [root], ok?, closure_dir?: dir?(root))
+    end
+
+    test "only a source-tree directory: never priv, test, a file or another function",
+         %{tmp_dir: root} do
+      for {name, expr} <- [
+            {"FxTplPriv", ~s|Path.expand("../priv", __DIR__)|},
+            {"FxTplTest", ~s|Path.expand("../test", __DIR__)|},
+            {"FxTplFile", ~s|Path.expand("../README.md", __DIR__)|},
+            {"FxTplMissing", ~s|Path.expand("./nowhere", __DIR__)|}
+          ] do
+        dir = Path.join(root, name)
+        File.mkdir_p!(Path.join(dir, "deps/fx/priv"))
+        File.mkdir_p!(Path.join(dir, "deps/fx/test"))
+        source = String.replace(@template, ~s|Path.expand(".", __DIR__)|, expr)
+        source = String.replace(source, "FxTpl do", "#{name} do")
+        {ebin, ok?} = compile(dir, source)
+
+        assert {:refuse, _} = BuildRoot.check(ebin, [dir], ok?, closure_dir?: dir?(dir)), name
+      end
+
+      {ebin, ok?} =
+        compile(root, """
+        defmodule FxTplRecompile2 do
+          @root Path.expand(".", __DIR__)
+          def __mix_recompile__?(x), do: x == @root
+        end
+        """)
+
+      assert {:refuse, _} = BuildRoot.check(ebin, [root], ok?, closure_dir?: dir?(root))
+    end
+
+    test "a program-running module that holds one refuses as a source path holder",
+         %{tmp_dir: root} do
+      source =
+        String.replace(@template, "FxTpl do", ~s|FxTpl do\n  def run, do: System.cmd("true", [])|)
+
+      {ebin, ok?} = compile(root, source)
+
+      assert {:refuse,
+              "bakes the build path: Elixir.FxTpl (a source path in a module that runs programs)"} =
+               BuildRoot.program_source_paths(ebin, [root], ok?, closure_dir?: dir?(root))
+    end
+  end
 end

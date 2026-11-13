@@ -34,6 +34,20 @@ defmodule NccWorker.Portability.BuildRoot do
   refused. Ecto's query macros build `%{file: __ENV__.file}` at runtime,
   which leaves the path as a bare literal.
 
+  A second exception, with `closure_dir?:`: a literal that is exactly the
+  real path of a directory in a closure dependency's source tree (not under
+  its `priv/` or `test/`) is observed (`build_root_recompile_dir`) when the
+  only function that holds it is the module's `__mix_recompile__?/0`
+  (Phoenix.Template's `embed_templates` puts its template root there), no
+  other function of the module holds it or refers to that function, and no
+  beam of the `ebin` calls or captures it (`:beam_disasm`, per function).
+  Mix calls `__mix_recompile__?/0` only while it compiles that dependency's
+  own project, for the modules of that project's compile manifest; a served
+  build ships no manifest and Mix does not compile a dependency it finds
+  compiled, so the path there never runs on a user's machine, and when Mix
+  does compile the dependency it compiles it from source. The holder still
+  counts as one for `program_source_paths/4`.
+
   Limits of the substring scan: a root is found in a binary, an atom, a
   charlist and any run of code points inside a list (iodata, improper
   lists), but not when it is split across separate terms, such as
@@ -58,12 +72,12 @@ defmodule NccWorker.Portability.BuildRoot do
   """
   @pattern {__MODULE__, :pattern}
 
-  @spec check(String.t(), [String.t()], (String.t() -> boolean())) ::
+  @spec check(String.t(), [String.t()], (String.t() -> boolean()), keyword()) ::
           :ok | {:observe, [observation()]} | {:refuse, String.t()} | {:error, String.t()}
-  def check(ebin, roots, closure_file?) do
+  def check(ebin, roots, closure_file?, opts \\ []) do
     roots = needles(roots)
 
-    with {:ok, by_module} <- scan_ebin(ebin, roots, closure_file?),
+    with {:ok, by_module} <- scan_ebin(ebin, roots, closure_file?, opts),
          do: observations(by_module, roots)
   end
 
@@ -75,22 +89,26 @@ defmodule NccWorker.Portability.BuildRoot do
   @spec source_path_modules(String.t(), [String.t()], (String.t() -> boolean())) ::
           {:ok, [String.t()]} | {:refuse, String.t()} | {:error, String.t()}
   def source_path_modules(ebin, roots, closure_file?) do
-    with {:ok, by_module} <- scan_ebin(ebin, needles(roots), closure_file?),
+    with {:ok, by_module} <- scan_ebin(ebin, needles(roots), closure_file?, []),
          do: {:ok, by_module |> Enum.map(&elem(&1, 0)) |> Enum.sort()}
   end
 
-  # Every beam's bare source paths as `{module, paths}` (beams without any
-  # left out), once the `.app` is clean too.
-  defp scan_ebin(ebin, roots, closure_file?) do
+  # Every beam's bare source paths (and template roots, `{:recompile_dir,
+  # path}`) as `{module, paths}` (beams without any left out), once the
+  # `.app` is clean too and every template root is attributed.
+  defp scan_ebin(ebin, roots, closure_file?, opts) do
+    dir? = Keyword.get(opts, :closure_dir?, fn _ -> false end)
+
     with :ok <- ebin_dir(ebin),
          {:ok, by_module} <-
-           each(files(ebin, "*.beam"), &observed_beam(&1, roots, closure_file?)),
+           each(files(ebin, "*.beam"), &observed_beam(&1, roots, closure_file?, dir?)),
          {:ok, []} <- each(files(ebin, "*.app"), &check_app(&1, roots)),
+         :ok <- attribute_recompile_dirs(ebin, by_module, roots),
          do: {:ok, by_module}
   end
 
-  defp observed_beam(path, roots, closure_file?) do
-    case check_beam(path, roots, closure_file?) do
+  defp observed_beam(path, roots, closure_file?, dir?) do
+    case check_beam(path, roots, closure_file?, dir?) do
       {:ok, []} -> :ok
       {:ok, observed} -> {:ok, [{Path.basename(path, ".beam"), observed}]}
       other -> other
@@ -100,7 +118,10 @@ defmodule NccWorker.Portability.BuildRoot do
   defp observations(by_module, roots) do
     by_module
     |> Enum.flat_map(&elem(&1, 1))
-    |> Enum.map(&{:observe, "build_root_source_path", snippet_text(&1, roots)})
+    |> Enum.map(fn
+      {:recompile_dir, dir} -> {:observe, "build_root_recompile_dir", snippet_text(dir, roots)}
+      path -> {:observe, "build_root_source_path", snippet_text(path, roots)}
+    end)
     |> Enum.uniq()
     |> then(&if(&1 == [], do: :ok, else: {:observe, &1}))
   end
@@ -133,12 +154,12 @@ defmodule NccWorker.Portability.BuildRoot do
   calls only when a path was found; a beam that scan cannot read is an
   error, never a pass.
   """
-  @spec program_source_paths(String.t(), [String.t()], (String.t() -> boolean())) ::
+  @spec program_source_paths(String.t(), [String.t()], (String.t() -> boolean()), keyword()) ::
           :ok | {:observe, [observation()]} | {:refuse, String.t()} | {:error, String.t()}
-  def program_source_paths(ebin, roots, closure_file?) do
+  def program_source_paths(ebin, roots, closure_file?, opts \\ []) do
     roots = needles(roots)
 
-    case scan_ebin(ebin, roots, closure_file?) do
+    case scan_ebin(ebin, roots, closure_file?, opts) do
       {:ok, []} ->
         :ok
 
@@ -185,6 +206,109 @@ defmodule NccWorker.Portability.BuildRoot do
     end
   end
 
+  @recompile :__mix_recompile__?
+
+  # A template root (`{:recompile_dir, dir}`) is allowed only where Phoenix
+  # puts it, `embed_templates`' generated `__mix_recompile__?/0`: Mix calls
+  # that function only while it compiles the dependency's own project, for
+  # the modules in that project's compile manifest, and a served build
+  # ships none (and is never compiled by Mix while it is served), so a stale
+  # path there can only make Mix compile it from source. The holder's other
+  # functions (its funs included, which are functions of their own) must
+  # neither hold the root nor refer to `__mix_recompile__?/0`, and no beam
+  # of the ebin may call or capture it. Read with `:beam_disasm` on the
+  # bounded, inflated beam; anything unreadable refuses as before.
+  defp attribute_recompile_dirs(ebin, by_module, roots) do
+    holders =
+      for {module, observed} <- by_module,
+          dirs = for({:recompile_dir, dir} <- observed, do: dir),
+          dirs != [],
+          into: %{},
+          do: {module, dirs}
+
+    if holders == %{}, do: :ok, else: attribute(files(ebin, "*.beam"), holders, roots)
+  end
+
+  defp attribute(paths, holders, roots) do
+    code = Map.new(paths, &{Path.basename(&1, ".beam"), disasm(&1)})
+
+    refs =
+      for {name, _dirs} <- holders, {:ok, {module, _}} <- [code[name]], into: MapSet.new() do
+        {module, @recompile, 0}
+      end
+
+    Enum.find_value(Enum.sort(holders), :ok, fn {name, dirs} ->
+      if attributed?(name, dirs, code, refs), do: nil, else: refusal(name, hd(dirs), roots)
+    end)
+  end
+
+  # The holder has `__mix_recompile__?/0`, every other function of it is
+  # free of the root and of a reference to that function, and so is every
+  # function of every other beam of the ebin.
+  defp attributed?(name, dirs, code, refs) do
+    with {:ok, {module, functions}} <- code[name],
+         true <- MapSet.member?(refs, {module, @recompile, 0}),
+         true <- Enum.any?(functions, &match?({:function, @recompile, 0, _, _}, &1)) do
+      Enum.all?(code, fn
+        {^name, {:ok, {_, fs}}} ->
+          not Enum.any?(fs, &(not recompile?(&1) and mentions?(&1, dirs, refs)))
+
+        {_other, {:ok, {_, fs}}} ->
+          not Enum.any?(fs, &mentions?(&1, [], refs))
+
+        {_other, :error} ->
+          false
+      end)
+    else
+      _ -> false
+    end
+  end
+
+  defp recompile?(function), do: match?({:function, @recompile, 0, _, _}, function)
+
+  # The dir itself, or a call, capture or export of a holder's
+  # `__mix_recompile__?/0`. A longer literal holding the dir (a template
+  # file under it) is judged by the literal scan on its own.
+  defp mentions?(term, dirs, _refs) when is_binary(term), do: term in dirs
+
+  defp mentions?({:extfunc, m, f, a}, _dirs, refs), do: MapSet.member?(refs, {m, f, a})
+
+  defp mentions?(term, dirs, refs) when is_tuple(term) do
+    MapSet.member?(refs, term) or mentions?(Tuple.to_list(term), dirs, refs)
+  end
+
+  defp mentions?([head | tail], dirs, refs),
+    do: mentions?(head, dirs, refs) or mentions?(tail, dirs, refs)
+
+  defp mentions?(term, dirs, refs) when is_map(term),
+    do: mentions?(Map.to_list(term), dirs, refs)
+
+  defp mentions?(term, dirs, refs) when is_function(term) do
+    info = Function.info(term)
+
+    MapSet.member?(refs, {info[:module], info[:name], info[:arity]}) or
+      mentions?(Keyword.get(info, :env, []), dirs, refs)
+  end
+
+  defp mentions?(_term, _dirs, _refs), do: false
+
+  defp disasm(path) do
+    name = Path.basename(path, ".beam")
+
+    with {:ok, binary} <- read(path, name),
+         {:ok, plain} <- container(binary, name),
+         {:beam_file, module, _exports, _attrs, _info, functions} when is_atom(module) <-
+           :beam_disasm.file(plain) do
+      {:ok, {module, functions}}
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  catch
+    _, _ -> :error
+  end
+
   # A missing ebin means the caller looked in the wrong place: never a pass.
   # sobelow_skip ["Traversal.FileModule"]
   defp ebin_dir(ebin) when is_binary(ebin) do
@@ -214,7 +338,7 @@ defmodule NccWorker.Portability.BuildRoot do
     |> Enum.uniq()
   end
 
-  defp check_beam(path, roots, closure_file?) do
+  defp check_beam(path, roots, closure_file?, dir?) do
     module = Path.basename(path, ".beam")
 
     with {:ok, binary} <- read(path, module),
@@ -222,7 +346,7 @@ defmodule NccWorker.Portability.BuildRoot do
          :ok <- search_bytes(chunks["StrT"], roots, module, "string table"),
          :ok <- search_bytes(chunks["AtU8"], roots, module, "atom table"),
          :ok <- search_bytes(chunks["Atom"], roots, module, "atom table"),
-         {:ok, observed} <- literals(chunks["LitT"], roots, closure_file?, module),
+         {:ok, observed} <- literals(chunks["LitT"], roots, {closure_file?, dir?}, module),
          :ok <- attributes(chunks["Attr"], roots, closure_file?, module) do
       {:ok, observed}
     end
@@ -243,11 +367,7 @@ defmodule NccWorker.Portability.BuildRoot do
   # `beam_lib` accepts). It is inflated once, to at most 64 MiB, and must
   # then be a plain container: a nested gzip is not.
   defp chunks(<<31, 139, _::binary>> = gz, module) do
-    case Etf.gunzip(gz, @max_literal_bytes) do
-      {:ok, <<"FOR1", _::binary>> = inflated} -> chunks(inflated, module)
-      {:ok, _other} -> {:error, "unreadable beam #{module} (not a beam container)"}
-      {:error, why} -> {:error, "unreadable beam #{module} (gzip #{why})"}
-    end
+    with {:ok, inflated} <- container(gz, module), do: chunks(inflated, module)
   end
 
   # The IFF container: "FOR1", the form size, "BEAM", then chunks of a
@@ -258,6 +378,17 @@ defmodule NccWorker.Portability.BuildRoot do
        do: chunk_list(body, %{}, module)
 
   defp chunks(_binary, module), do: {:error, "unreadable beam #{module} (not a beam container)"}
+
+  # The plain container of a beam, inflated (bounded) when gzipped.
+  defp container(<<31, 139, _::binary>> = gz, module) do
+    case Etf.gunzip(gz, @max_literal_bytes) do
+      {:ok, <<"FOR1", _::binary>> = inflated} -> {:ok, inflated}
+      {:ok, _other} -> {:error, "unreadable beam #{module} (not a beam container)"}
+      {:error, why} -> {:error, "unreadable beam #{module} (gzip #{why})"}
+    end
+  end
+
+  defp container(binary, _module), do: {:ok, binary}
 
   defp chunk_list(<<>>, acc, _module), do: {:ok, acc}
 
@@ -315,13 +446,16 @@ defmodule NccWorker.Portability.BuildRoot do
     end
   end
 
-  defp literal_outcome({:string, s} = tree, observed, roots, closure_file?, module) do
-    if contains_root?(s, roots) and source_path?(s, roots, closure_file?),
-      do: {:cont, {:ok, [s | observed]}},
-      else: scan_outcome(tree, observed, roots, closure_file?, module)
+  defp literal_outcome({:string, s} = tree, observed, roots, {closure_file?, dir?}, module) do
+    cond do
+      not contains_root?(s, roots) -> scan_outcome(tree, observed, roots, closure_file?, module)
+      source_path?(s, roots, closure_file?) -> {:cont, {:ok, [s | observed]}}
+      source_dir?(s, roots, dir?) -> {:cont, {:ok, [{:recompile_dir, s} | observed]}}
+      true -> scan_outcome(tree, observed, roots, closure_file?, module)
+    end
   end
 
-  defp literal_outcome(tree, observed, roots, closure_file?, module),
+  defp literal_outcome(tree, observed, roots, {closure_file?, _dir?}, module),
     do: scan_outcome(tree, observed, roots, closure_file?, module)
 
   defp scan_outcome(tree, observed, roots, closure_file?, module) do
@@ -337,6 +471,14 @@ defmodule NccWorker.Portability.BuildRoot do
   defp source_path?(s, roots, closure_file?) do
     Path.type(s) == :absolute and Path.extname(s) in @source_extensions and
       not priv_or_test?(s, roots) and Context.realpath(s) == s and closure_file?.(s)
+  end
+
+  # A template root candidate (`attribute_recompile_dirs/3` decides): the
+  # real path of a directory in a closure dependency's source tree, outside
+  # its `priv/` and `test/`.
+  defp source_dir?(s, roots, dir?) do
+    Path.type(s) == :absolute and not priv_or_test?(s, roots) and Context.realpath(s) == s and
+      dir?.(s)
   end
 
   # `priv/**` and `test/**` of a dependency (`<root>/deps/<d>/...`) or of a
