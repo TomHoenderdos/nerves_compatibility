@@ -568,6 +568,28 @@ What it lists:
   package itself.
 - A build whose `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
   is `null` is left out, since no client can match it (it stays in format 1).
+- `build.compile_inputs` (optional) lists what the build's compile read that a client checks on its
+  own side (builds since 2026-11; absent before):
+  - `{"kind": "env", "name", "value", "set_by": "host"}`: an environment variable, `value` being
+    `base64url(:erlang.term_to_binary(:error | {:ok, binary}, [:deterministic]))` or
+    `"unrecordable"`;
+  - `{"kind": "env", "name", "value", "set_by": "build", "inputs": "recorded" | "unknown"}`: a
+    variable the build set itself before reading it;
+  - `{"kind": "env_all"}`: the whole environment was read;
+  - `{"kind": "config_unrecorded"}`: the config reads were not all recorded;
+  - `{"kind": "config_order", "app", "path": [key], "reader", "default", "seen"}`: the compile of
+    `reader` read the unset key outside its own dependency tree, so whether it saw `app`'s `.app`
+    default depends on the consumer's compile order. `default` is that `.app` env default at the
+    locked version (`:error` when it declares none), `seen` what the read returned, both recorded
+    like `value` or `"unrecordable"`.
+
+  A `compile_env` value may also be `"unrecordable"`, which matches no config.
+- A build with any input to check (anything but `set_by: "build"` with `inputs: "recorded"`) is
+  listed under `versions[v].builds_with_inputs`, never under `builds`, and never in format 1. Every
+  version keeps a `builds` list, possibly empty. Clients before 0.6.0 read `builds` alone: they
+  do not know `compile_inputs`, so they would use such a build without comparing its environment
+  or config reads, and to them it does not exist. They also refuse the whole manifest when a
+  version has no `builds` key, which is why it is never left out.
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
   `system_version`, `deps` and config variant: the newest wins. A toolchain
   build with and one without the package's optional dependencies differ in
@@ -614,6 +636,22 @@ build fails as the reason it was not used:
    lock as one the package may declare.
 9. **compile_env** — `build.compile_env` is present, and every `build.compile_env` item decodes to the value the
    project's config gives for that app and path.
+10. **compile_inputs** (clients 0.6.0 and later; they read `builds` and `builds_with_inputs`) —
+    every item holds:
+    - an `env` item with `set_by: "host"` decodes to what the project's environment gives for
+      `name` (`:error` when unset, `{:ok, value}`), else `env_differs`;
+    - `set_by: "build"` with `inputs: "recorded"` is not compared, with `"unknown"` it is
+      `env_differs`;
+    - `env_all` and `config_unrecorded` never match;
+    - a `config_order` item holds when the client's prediction equals `seen`: the project's config
+      for the key when set, otherwise `default` when `app` compiles (and loads) before `reader` in
+      the project's `mix deps.compile` order, otherwise `:error`. Else `config_order_differs`.
+
+    On a device, a `config_order` item holds only when `app` and `reader` are both present or both
+    being installed, `default` is `:error`, and the device's value for the key equals `seen`.
+    On a device, an `env` item recorded unset holds, one recorded set is `env_set_at_build`. A
+    client never prints the project's value. A build that carries `compile_inputs` is exempt
+    from the source scan's environment-variable rule (`rule8_env`).
 
 Among the builds that pass, the client prefers an exact Elixir patch match,
 then the closest older patch, then `pure_elixir` over a system build, then the
@@ -712,7 +750,8 @@ Reason codes: `hit`, `not_in_batch`, `not_built_version`,
 `deadline_passed`, `fetch_failed`, `verify_failed`, `install_failed`,
 `internal`, `system_version_abi`, `toolchain_otp_minor`,
 `needed_lib_missing`, `symbol_version_missing`, `system_unknown`,
-`system_bound_compile`. Another code is stored as `unknown`.
+`system_bound_compile`, `env_differs`, `env_set_at_build`, `env_all`,
+`config_unrecorded`, `config_order_differs`. Another code is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
 `DELETE` counts against, refused ones included; and, for `POST` only, 300

@@ -2,7 +2,7 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
   @moduledoc "What a format-2 build was built with."
   require OpenApiSpex
   alias OpenApiSpex.Schema
-  alias PortalWeb.ApiSchemas.{CompileEnvEntry, DeclaredDep, DepLockEntry}
+  alias PortalWeb.ApiSchemas.{CompileEnvEntry, CompileInputItem, DeclaredDep, DepLockEntry}
 
   OpenApiSpex.schema(
     %{
@@ -37,6 +37,14 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
           additionalProperties: DepLockEntry
         },
         compile_env: %Schema{type: :array, items: CompileEnvEntry},
+        compile_inputs: %Schema{
+          type: :array,
+          items: CompileInputItem,
+          description:
+            "Optional: the compile-time inputs a client checks itself. Absent on builds " <>
+              "made before they were recorded. A build with any item to check is listed " <>
+              "under `builds_with_inputs`."
+        },
         package_checksum: %Schema{
           type: :string,
           description: "The package's own outer Hex checksum."

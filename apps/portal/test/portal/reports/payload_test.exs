@@ -164,7 +164,7 @@ defmodule Portal.Reports.PayloadTest do
   end
 
   test "known codes are the shared table" do
-    assert length(Payload.known_codes()) == 36
+    assert length(Payload.known_codes()) == 41
     assert "not_built_target" in Payload.known_codes()
     refute "unknown" in Payload.known_codes()
   end
@@ -305,5 +305,20 @@ defmodule Portal.Reports.PayloadTest do
       assert message =~ "os.*: and 995 more unknown fields"
       assert byte_size(message) < 8_000
     end
+  end
+
+  test "the compile-time input codes are known, with their arguments" do
+    for code <- ~w(env_differs env_set_at_build env_all config_unrecorded config_order_differs) do
+      assert code in Payload.known_codes()
+    end
+
+    l = line("jason", "1.4.5", "miss", "env_differs", ["GITHUB_ACTIONS"])
+    assert {:ok, %{lines: [line]}} = Payload.validate(%{body() | "lines" => [l]})
+    assert line.reason_code == "env_differs" and line.reason_args == ["GITHUB_ACTIONS"]
+
+    args = ["phoenix_view", "template_engines"]
+    l = line("phoenix_live_dashboard", "0.8.4", "miss", "config_order_differs", args)
+    assert {:ok, %{lines: [line]}} = Payload.validate(%{body() | "lines" => [l]})
+    assert line.reason_code == "config_order_differs" and line.reason_args == args
   end
 end

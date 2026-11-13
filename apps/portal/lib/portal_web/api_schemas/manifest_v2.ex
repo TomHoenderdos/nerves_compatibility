@@ -18,7 +18,16 @@ defmodule PortalWeb.ApiSchemas.ManifestV2 do
           description: "Keyed by package version.",
           additionalProperties: %Schema{
             type: :object,
-            properties: %{builds: %Schema{type: :array, items: ManifestBuild}},
+            properties: %{
+              builds: %Schema{type: :array, items: ManifestBuild},
+              builds_with_inputs: %Schema{
+                type: :array,
+                items: ManifestBuild,
+                description:
+                  "Builds whose `compile_inputs` a client must check. Clients before " <>
+                    "0.6.0 do not read this key."
+              }
+            },
             required: [:builds],
             additionalProperties: false
           }

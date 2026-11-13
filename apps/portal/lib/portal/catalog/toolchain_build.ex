@@ -63,6 +63,7 @@ defmodule Portal.Catalog.ToolchainBuild do
     :package_checksum,
     :declared,
     :compile_env,
+    :compile_inputs,
     :file_manifest,
     :optional_deps,
     :finished_at,
@@ -291,6 +292,13 @@ defmodule Portal.Catalog.ToolchainBuild do
     end
 
     attribute :compile_env, {:array, :map} do
+      public?(true)
+    end
+
+    # The compile-time inputs a client checks itself
+    # (`Compatibility.CompileInputs`); nil before they were recorded, or when
+    # the build's list was malformed (then `compile_env` is nil too).
+    attribute :compile_inputs, {:array, :map} do
       public?(true)
     end
 

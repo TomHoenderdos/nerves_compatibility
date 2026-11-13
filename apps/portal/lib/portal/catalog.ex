@@ -25,6 +25,7 @@ defmodule Portal.Catalog do
       windows: 3
     ]
 
+  alias Compatibility.CompileInputs
   alias Portal.ArtifactStore
 
   alias Portal.Catalog.{
@@ -108,6 +109,7 @@ defmodule Portal.Catalog do
     :beam_scan,
     :carried_from_run_id,
     :compile_env,
+    :compile_inputs,
     :deps_lock,
     :unpublished_at,
     :compile_env_rule,
@@ -1143,7 +1145,8 @@ defmodule Portal.Catalog do
   # column's place, so no two rows' fields can shift into each other. A
   # system result's ABI facts are in it as values too: the ELF facts land
   # after the ingest commits, so a manifest rendered between the two must not
-  # be vouched for once they arrive.
+  # be vouched for once they arrive. Compile inputs are in it as values too:
+  # a raw SQL update in the writing transaction keeps `xmin`.
   @precompiled_fingerprints_sql """
   WITH runs AS (
     SELECT r.package_id,
@@ -1156,11 +1159,11 @@ defmodule Portal.Catalog do
     GROUP BY r.package_id
   ), results AS (
     SELECT r.package_id,
-           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', s.id, s.xmin,
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', s.id, s.xmin,
                                  s.updated_at, s.carried_from_run_id,
                                  pg_column_size(s.beam_scan), s.native, s.portable,
                                  md5(s.elf_needs::text), s.otp_full, s.toolchain_pkg,
-                                 s.toolchain_version),
+                                 s.toolchain_version, md5(s.compile_inputs::text)),
                           ',' ORDER BY s.id)) AS fp
     FROM catalog_system_results s
     JOIN catalog_runs r ON r.id = s.run_id
@@ -1174,8 +1177,8 @@ defmodule Portal.Catalog do
     GROUP BY r.package_id
   ), toolchain AS (
     SELECT t.package_id,
-           md5(string_agg(format('%s|%s|%s|%s|%s', t.id, t.xmin, t.updated_at, t.status,
-                                 t.revoked_at),
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s', t.id, t.xmin, t.updated_at, t.status,
+                                 t.revoked_at, md5(t.compile_inputs::text)),
                           ',' ORDER BY t.id)) AS fp
     FROM catalog_toolchain_builds t
     GROUP BY t.package_id
@@ -3011,7 +3014,7 @@ defmodule Portal.Catalog do
           builds
           |> Enum.group_by(&elem(&1, 0), &elem(&1, 2))
           |> Map.new(fn {version, list} ->
-            {version, %{"builds" => Enum.sort_by(list, &build_order/1)}}
+            {version, version_builds(list)}
           end),
         "updated_at" =>
           builds
@@ -3021,6 +3024,23 @@ defmodule Portal.Catalog do
           |> iso8601()
       }
     end
+  end
+
+  # A build with an input a client must check (`CompileInputs.needs_check?/1`)
+  # goes under `builds_with_inputs`, which a client before 0.6.0 never reads:
+  # to it the build does not exist, as before these builds were published.
+  # Every version keeps a `builds` list, empty or not: those clients refuse
+  # the whole manifest when a version has none. A version without such a
+  # build renders the bytes it always did.
+  defp version_builds(list) do
+    {checked, plain} =
+      list
+      |> Enum.sort_by(&build_order/1)
+      |> Enum.split_with(&CompileInputs.needs_check?(&1["build"]["compile_inputs"]))
+
+    if checked == [],
+      do: %{"builds" => plain},
+      else: %{"builds" => plain, "builds_with_inputs" => checked}
   end
 
   # Every result format 1 could publish, not only the newest per system:
@@ -3044,6 +3064,7 @@ defmodule Portal.Catalog do
         |> Map.put("mix_target", mix_target(result.system_pkg))
         |> put_declared(built_by.declared)
         |> put_abi_facts(result)
+        |> put_inputs(result.compile_inputs)
 
       {version, built_by.finished_at,
        Map.merge(files, %{"target" => result.system_pkg, "build" => build})}
@@ -3075,6 +3096,7 @@ defmodule Portal.Catalog do
         |> put_config_variant(tb.config_variant)
         |> put_declared(tb.declared)
         |> put_manager(tb.manager)
+        |> put_inputs(tb.compile_inputs)
 
       {tb.version, tb.finished_at,
        Map.merge(files, %{"target" => "pure_elixir", "build" => build})}
@@ -3099,6 +3121,12 @@ defmodule Portal.Catalog do
   # build made before it was recorded renders the bytes it always did.
   defp put_manager(build, nil), do: build
   defp put_manager(build, manager), do: Map.put(build, "manager", manager)
+
+  # The compile-time inputs a client checks (`Compatibility.CompileInputs`).
+  # Left out when nil, so a build made before they were recorded renders the
+  # bytes it always did.
+  defp put_inputs(build, nil), do: build
+  defp put_inputs(build, inputs), do: Map.put(build, "compile_inputs", inputs)
 
   # Format 2 only, each left out while unknown, so a build made before they
   # were recorded renders the bytes it always did: whether its priv holds ELF
@@ -3185,6 +3213,7 @@ defmodule Portal.Catalog do
       :declared,
       :manager,
       :compile_env,
+      :compile_inputs,
       :compile_env_rule,
       :compile_env_run_id,
       :file_manifest,
@@ -3229,7 +3258,14 @@ defmodule Portal.Catalog do
     runs_by_id = Map.new(runs, &{&1.id, &1})
 
     Enum.reduce(runs, %{}, fn run, acc ->
-      run_results = Enum.filter(results, &(&1.run_id == run.id and &1.system_pkg != "host"))
+      # Format 1 has no inputs: a result whose compile read one a client must
+      # check is never listed there.
+      run_results =
+        Enum.filter(
+          results,
+          &(&1.run_id == run.id and &1.system_pkg != "host" and
+              not CompileInputs.needs_check?(&1.compile_inputs))
+        )
 
       systems =
         precompiled_systems(runs_by_id, run_results, shas_by_system_result_id, present_shas)

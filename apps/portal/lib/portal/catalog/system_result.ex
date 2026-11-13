@@ -55,6 +55,7 @@ defmodule Portal.Catalog.SystemResult do
         :hex_version_tested,
         :beam_scan,
         :compile_env,
+        :compile_inputs,
         :dependency_scans,
         :log_path,
         :log_tail,
@@ -151,6 +152,13 @@ defmodule Portal.Catalog.SystemResult do
     # `{:ok, v}` or `:error`. Nil for results from images before it was
     # recorded or when the worker could not read the .app file.
     attribute :compile_env, {:array, :map} do
+      public?(true)
+    end
+
+    # The compile-time inputs a client checks itself
+    # (`Compatibility.CompileInputs`); nil before they were recorded, or when
+    # the build's list was malformed (then `compile_env` is nil too).
+    attribute :compile_inputs, {:array, :map} do
       public?(true)
     end
 

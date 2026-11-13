@@ -46,8 +46,8 @@ defmodule Portal.Catalog.Ingestion do
 
   import Ecto.Query, only: [from: 2]
 
+  alias Compatibility.CompileInputs
   alias Compatibility.ConfigVariants
-  alias Compatibility.RecordedValue
   alias Portal.ArtifactStore
 
   alias Portal.Catalog.{
@@ -829,7 +829,7 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp upsert_toolchain_build(result, build, {{status, reason}, attempts}, opts, package_id) do
-    compiled_env = compile_env(build["compile_env"], {opts.package, opts.version})
+    {inputs, compiled_env} = inputs_and_env(build, {opts.package, opts.version})
 
     ToolchainBuild
     |> Ash.Changeset.for_create(:upsert, %{
@@ -849,6 +849,7 @@ defmodule Portal.Catalog.Ingestion do
       package_checksum: package_checksum(build["package_checksum"]),
       declared: declared(build["declared"]),
       compile_env: compiled_env,
+      compile_inputs: inputs,
       file_manifest: file_manifest(build["file_manifest"]),
       optional_deps: optional_deps(result["optional_deps"]),
       portability_rule: portability_rule(build["portability_rule"]),
@@ -1134,8 +1135,10 @@ defmodule Portal.Catalog.Ingestion do
   # ETF (`Compatibility.RecordedValue.acceptable?/1`) drops the whole list,
   # the same as a malformed one, because the container that wrote
   # result.json could have recorded any term the package set in its own
-  # application env. `context` (`{package, version}`) is used only for the
-  # warning; never the value itself.
+  # application env. The literal `"unrecordable"`
+  # (`Compatibility.CompileInputs`) is kept: it matches nothing on any
+  # client. `context` (`{package, version}`) is used only for the warning;
+  # never the value itself.
   defp compile_env(list, context \\ nil)
 
   defp compile_env(list, context) when is_list(list) do
@@ -1146,7 +1149,7 @@ defmodule Portal.Catalog.Ingestion do
           not Enum.all?(path, &is_binary/1) ->
             {:halt, nil}
 
-          not RecordedValue.acceptable?(value) ->
+          not CompileInputs.value?(value) ->
             warn_unrecordable(context)
             {:halt, nil}
 
@@ -1164,6 +1167,27 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp compile_env(_list, _context), do: nil
+
+  # A build's compile-time inputs (`Compatibility.CompileInputs`), checked
+  # whole. A malformed list stores none and drops the build's `compile_env`
+  # too, so the build is never published looking as if it read nothing.
+  # `context` is used only for the warning; never a value.
+  defp inputs_and_env(raw, context) do
+    case CompileInputs.validate(raw["compile_inputs"]) do
+      {:ok, inputs} ->
+        {inputs, compile_env(raw["compile_env"], context)}
+
+      :error ->
+        warn_inputs(context)
+        {nil, nil}
+    end
+  end
+
+  defp warn_inputs({package, version}),
+    do:
+      Logger.warning(
+        "compile_inputs malformed for #{package} #{version}: the build is not published"
+      )
 
   defp warn_unrecordable(nil), do: :ok
 
@@ -1354,13 +1378,13 @@ defmodule Portal.Catalog.Ingestion do
       """
       INSERT INTO catalog_system_results
         (id, run_id, system_pkg, system_version, status, firmware_size_bytes, duration_sec,
-         phase_timings, hex_version_tested, beam_scan, compile_env, dependency_scans, log_path,
-         log_tail, failure_category, carried_from_run_id, deps_lock, unpublished_at,
-         compile_env_rule, portability_rule, unpublished_reason, native, portable, elf_needs,
+         phase_timings, hex_version_tested, beam_scan, compile_env, compile_inputs,
+         dependency_scans, log_path, log_tail, failure_category, carried_from_run_id, deps_lock,
+         unpublished_at, compile_env_rule, portability_rule, unpublished_reason, native, portable, elf_needs,
          toolchain_pkg, toolchain_version, otp_full, inserted_at, updated_at)
       SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
              s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan, s.compile_env,
-             s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
+             s.compile_inputs, s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
              s.deps_lock, s.unpublished_at, s.compile_env_rule, s.portability_rule,
              s.unpublished_reason, s.native, s.portable, s.elf_needs, s.toolchain_pkg,
              s.toolchain_version, s.otp_full, now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
@@ -1429,7 +1453,7 @@ defmodule Portal.Catalog.Ingestion do
        ) do
     status = Compatibility.Types.parse_status(sys["status"])
     held_at = if system_pkg == "pure_elixir", do: hold
-    compiled_env = compile_env(sys["compile_env"], {package_name, version})
+    {inputs, compiled_env} = inputs_and_env(sys, {package_name, version})
     {toolchain_pkg, toolchain_version} = system_toolchain(sys["toolchain"])
 
     result =
@@ -1445,6 +1469,7 @@ defmodule Portal.Catalog.Ingestion do
         hex_version_tested: version,
         beam_scan: sys["beam_scan"],
         compile_env: compiled_env,
+        compile_inputs: inputs,
         dependency_scans: drop_file_manifests(sys["dependency_scans"]),
         log_path: nil,
         log_tail: sys["log_tail"],
