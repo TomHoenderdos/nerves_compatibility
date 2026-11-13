@@ -753,7 +753,8 @@ Reason codes: `hit`, `not_in_batch`, `not_built_version`,
 `internal`, `system_version_abi`, `toolchain_otp_minor`,
 `needed_lib_missing`, `symbol_version_missing`, `system_unknown`,
 `system_bound_compile`, `env_differs`, `env_set_at_build`, `env_all`,
-`config_unrecorded`, `config_order_differs`. Another code is stored as `unknown`.
+`config_unrecorded`, `config_order_differs`, `rebar3_global_config`,
+`erl_compiler_options`. Another code is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
 `DELETE` counts against, refused ones included; and, for `POST` only, 300

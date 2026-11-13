@@ -164,7 +164,7 @@ defmodule Portal.Reports.PayloadTest do
   end
 
   test "known codes are the shared table" do
-    assert length(Payload.known_codes()) == 42
+    assert length(Payload.known_codes()) == 44
     assert "not_built_target" in Payload.known_codes()
 
     # In the client's table order (`Precompiled.Reason`).
