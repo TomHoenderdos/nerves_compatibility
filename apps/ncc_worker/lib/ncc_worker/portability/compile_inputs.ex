@@ -55,10 +55,10 @@ defmodule NccWorker.Portability.CompileInputs do
   @env_all %{"kind" => "env_all"}
   @unrecorded %{"kind" => "config_unrecorded"}
   @private ~r/\ANCC_|TOKEN|SECRET|PASSW|API_KEY|PRIVATE|CREDENTIAL|_PASS\z|_PWD\z|_KEY(\z|_)|(\A|_)AUTH\z|_PROXY\z/i
-  # A URL carrying userinfo (`scheme://user:pass@host`, `scheme://token@`),
-  # anywhere in the decoded value.
   # `:error`, as the tracer captures an unset variable's `os:getenv/1`.
   @unset :error |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
+  # A URL carrying userinfo (`scheme://user:pass@host`, `scheme://token@`),
+  # anywhere in the decoded value.
   @userinfo_url ~r{[a-z][a-z0-9+.-]*://[^/?#@\s]*@}i
 
   @spec build([{term(), term()}], [map()]) :: [map()]

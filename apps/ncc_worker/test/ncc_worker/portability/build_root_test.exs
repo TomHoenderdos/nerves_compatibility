@@ -493,6 +493,91 @@ defmodule NccWorker.Portability.BuildRootTest do
       assert BuildRoot.program_source_paths(ebin, [root], ok?) == observed
     end
 
+    # :os.cmd returns the shell's error text rather than raising, so a
+    # missing path handed to it from another module fails silently: any
+    # :os.cmd in the package keeps the refusal, wherever it is.
+    test "a path in one module and :os.cmd in another refuses", %{tmp_dir: root} do
+      for {name, call} <- [
+            {"FxPspOsCmd1",
+             ~s|_ = :os.cmd(String.to_charlist("cd " <> dir <> " && make helper"))|},
+            {"FxPspOsCmd2", ~s|_ = :os.cmd(String.to_charlist("cd " <> dir), %{})|}
+          ] do
+        dir = Path.join(root, name)
+
+        {ebin, ok?} =
+          compile(dir, """
+          defmodule #{name}.Paths do
+            def dir, do: Path.dirname(file())
+            defp file, do: __ENV__.file
+          end
+
+          defmodule #{name}.Build do
+            def run(dir), do: (#{call}; :ok)
+          end
+          """)
+
+        assert BuildRoot.program_source_paths(ebin, [dir], ok?) ==
+                 {:refuse,
+                  "bakes the build path: Elixir.#{name}.Paths" <>
+                    " (a source path in a package that calls :os.cmd)"},
+               name
+      end
+    end
+
+    test "Erlang's ?FILE shape, run through os:cmd from another module, refuses",
+         %{tmp_dir: root} do
+      erl = Path.join(root, "erl")
+      src = Path.join(erl, "deps/fx/src")
+      File.mkdir_p!(src)
+      ebin = Path.join(erl, "ebin")
+      File.mkdir_p!(ebin)
+
+      for {mod, body} <- [
+            {"foo_paths",
+             "-module(foo_paths).\n-export([dir/0]).\ndir() -> filename:dirname(?FILE).\n"},
+            {"foo_build",
+             "-module(foo_build).\n-export([run/0]).\n" <>
+               "run() -> _ = os:cmd(\"cd \" ++ foo_paths:dir() ++ \" && make helper\"), ok.\n"}
+          ] do
+        file = Path.join(src, mod <> ".erl")
+        File.write!(file, body)
+        {:ok, _, bin} = :compile.file(String.to_charlist(file), [:binary, :debug_info])
+        File.write!(Path.join(ebin, mod <> ".beam"), bin)
+      end
+
+      ok? = &(String.starts_with?(&1, Path.join(erl, "deps/fx/")) and File.regular?(&1))
+
+      assert {:observe, [_]} = BuildRoot.check(ebin, [erl], ok?)
+
+      assert BuildRoot.program_source_paths(ebin, [erl], ok?) ==
+               {:refuse,
+                "bakes the build path: foo_paths (a source path in a package that calls :os.cmd)"}
+    end
+
+    test "a path in one module and System.cmd, a port or a lookup in another passes",
+         %{tmp_dir: root} do
+      for {name, call} <- [
+            {"FxPspSysCmd", ~s|System.cmd("make", ["-C", dir])|},
+            {"FxPspPortB", ~s|Port.open({:spawn_executable, "/usr/bin/make"}, args: [dir])|},
+            {"FxPspFind", ~s|{System.find_executable("make"), dir}|}
+          ] do
+        dir = Path.join(root, name)
+
+        {ebin, ok?} =
+          compile(dir, """
+          defmodule #{name}.Paths do
+            def file, do: __ENV__.file
+          end
+
+          defmodule #{name}.Build do
+            def run(dir), do: #{call}
+          end
+          """)
+
+        assert {:observe, [_]} = BuildRoot.program_source_paths(ebin, [dir], ok?), name
+      end
+    end
+
     test "Ecto's query metadata shape, a path stored in a struct built at runtime",
          %{tmp_dir: root} do
       query = """

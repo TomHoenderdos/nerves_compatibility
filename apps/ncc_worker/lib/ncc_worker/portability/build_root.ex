@@ -119,10 +119,15 @@ defmodule NccWorker.Portability.BuildRoot do
   (sorted) that holds a path and makes such a call. Judged per module, by
   `BeamScanner`'s evidence, which names the beam each call is in: a path
   held in one module and run from another, in the package or a dependency,
-  stays an observation. Such a path names a file that does not exist on the
-  user's machine, so running it fails there rather than reading something
-  else; Ecto's query metadata (`file: __ENV__.file` in a struct built at
-  runtime) and log lines that carry the path are the usual holders.
+  stays an observation, unless any module of the package itself (not the
+  closure) calls `:os.cmd/1,2`: that returns the shell's error text rather
+  than raising, so a missing path handed to it from another module fails
+  silently (`foo_paths` returning `filename:dirname(?FILE)`, `foo_build`
+  running `os:cmd("cd " ++ Dir ++ " && make helper")` and ignoring the
+  output). Then any bare source path refuses, naming the first module
+  (sorted) that holds one. Ecto's query metadata (`file: __ENV__.file` in
+  a struct built at runtime) and log lines that carry the path are the
+  usual holders.
 
   The `ebin` is read once, and scanned with `BeamScanner.analyze/1` for the
   calls only when a path was found; a beam that scan cannot read is an
@@ -154,18 +159,27 @@ defmodule NccWorker.Portability.BuildRoot do
     if scan.errors != [] do
       {:error, "beam scan: " <> (scan.errors |> Enum.take(3) |> Enum.join("; "))}
     else
-      @program_evidence
-      |> Enum.flat_map(&Map.fetch!(scan, &1))
-      |> Enum.map(&Path.basename(&1.file, ".beam"))
-      |> Enum.filter(&MapSet.member?(holders, &1))
-      |> Enum.sort()
-      |> case do
-        [] ->
-          :ok
+      same_module =
+        @program_evidence
+        |> Enum.flat_map(&Map.fetch!(scan, &1))
+        |> Enum.map(&Path.basename(&1.file, ".beam"))
+        |> Enum.filter(&MapSet.member?(holders, &1))
+        |> Enum.sort()
 
-        [module | _] ->
+      os_cmd? = Enum.any?(scan.shell_evidence, &match?(%{mfa: {:os, :cmd, _}}, &1))
+
+      cond do
+        same_module != [] ->
           {:refuse,
-           "bakes the build path: #{module} (a source path in a module that runs programs)"}
+           "bakes the build path: #{hd(same_module)} (a source path in a module that runs programs)"}
+
+        os_cmd? ->
+          {:refuse,
+           "bakes the build path: #{holders |> Enum.sort() |> hd()} " <>
+             "(a source path in a package that calls :os.cmd)"}
+
+        true ->
+          :ok
       end
     end
   end

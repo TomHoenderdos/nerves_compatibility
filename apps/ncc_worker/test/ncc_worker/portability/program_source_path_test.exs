@@ -125,6 +125,38 @@ defmodule NccWorker.Portability.ProgramSourcePathTest do
              """)
   end
 
+  test "a path held in one package module and run through :os.cmd from another refuses",
+       %{proj: proj} do
+    assert %{status: :skip, reason: "bakes the build path: Elixir.FxPspjOsPaths" <> why} =
+             judged(proj, """
+             defmodule FxPspjOsPaths do
+               def dir, do: Path.dirname(file())
+               defp file, do: __ENV__.file
+             end
+
+             defmodule FxPspjOsBuild do
+               def run, do: (_ = :os.cmd(String.to_charlist("cd " <> FxPspjOsPaths.dir())); :ok)
+             end
+             """)
+
+    assert why == " (a source path in a package that calls :os.cmd)"
+  end
+
+  test "a dependency's :os.cmd does not count against the package's path", %{proj: proj} do
+    build(proj, "dep", """
+    defmodule FxPspjDepOs do
+      def run(cmd), do: :os.cmd(cmd)
+    end
+    """)
+
+    assert %{status: :pass} =
+             judged(proj, """
+             defmodule FxPspjDepOsPkg do
+               def file, do: __ENV__.file
+             end
+             """)
+  end
+
   test "the package's path handed to a dependency that runs programs passes, observed",
        %{proj: proj} do
     build(proj, "dep", """
