@@ -231,6 +231,32 @@ defmodule Portal.Workers.ToolchainBuildTest do
       refute_enqueued(worker: Ingest)
     end
 
+    test "an unknown optional-deps variant is cancelled before anything runs" do
+      respond(0)
+
+      for variant <- ["world_phx", "default", nil, 1] do
+        assert {:cancel, "unknown variant " <> _} =
+                 perform_job(ToolchainBuild, job_args(%{"variant" => variant}))
+      end
+
+      refute_received {:image_digest, _}
+      refute_received {:build_args, _}
+      refute_enqueued(worker: Ingest)
+      assert rows("jason") == []
+    end
+
+    test "a job without a variant is a with build; with and without build as named" do
+      for {extra, optional_deps} <- [
+            {%{}, "include"},
+            {%{"variant" => "with"}, "include"},
+            {%{"variant" => "without"}, "exclude"}
+          ] do
+        respond(0)
+        assert :ok = perform_job(ToolchainBuild, job_args(extra))
+        assert_received {:build_args, %{optional_deps: ^optional_deps}}
+      end
+    end
+
     test "a default job and a named job of one version are both queued" do
       base = %{
         package: "p",

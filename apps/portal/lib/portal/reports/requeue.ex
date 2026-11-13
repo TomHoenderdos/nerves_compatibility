@@ -97,6 +97,8 @@ defmodule Portal.Reports.Requeue do
   @codes ["not_built_version", "not_built_target", "closure_mismatch"]
   @incomplete ~w(available scheduled executing retryable)
   @judged ~w(pass fail skipped)
+  # Only rows of a variant this release knows are its verdicts.
+  @variants Enum.map(Portal.Catalog.ToolchainBuild.variants(), &Atom.to_string/1)
   @buildable_days 30
   # Hex lookups one run makes at most; later packages wait for the sweep.
   @max_hex_packages 20
@@ -548,7 +550,8 @@ defmodule Portal.Reports.Requeue do
           where:
             p.name == ^package and t.version == ^version and t.toolchain == ^toolchain and
               t.builder_version == ^Toolchains.builder_version() and is_nil(t.revoked_at) and
-              t.status in ^@judged and not (t.status == "skipped" and t.transient_attempts > 0)
+              t.status in ^@judged and not (t.status == "skipped" and t.transient_attempts > 0),
+          where: t.variant in ^@variants
         )
       )
 

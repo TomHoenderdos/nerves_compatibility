@@ -1181,12 +1181,14 @@ defmodule Portal.Catalog do
                                  t.revoked_at, md5(t.compile_inputs::text)),
                           ',' ORDER BY t.id)) AS fp
     FROM catalog_toolchain_builds t
+    WHERE t.variant IN #{ToolchainBuild.variants_sql()}
     GROUP BY t.package_id
   ), toolchain_files AS (
     SELECT t.package_id, count(*) AS n,
            sum(hashtextextended(format('%s|%s|%s|%s', m.id, m.xmin, m.toolchain_build_id, m.sha256), 0)) AS h
     FROM catalog_artifact_memberships m
     JOIN catalog_toolchain_builds t ON t.id = m.toolchain_build_id
+    WHERE t.variant IN #{ToolchainBuild.variants_sql()}
     GROUP BY t.package_id
   )
   SELECT p.name,
@@ -1312,6 +1314,7 @@ defmodule Portal.Catalog do
   JOIN catalog_artifact_memberships m ON m.toolchain_build_id = t.id
   WHERE t.revoked_at IS NULL
     AND t.status = 'pass'
+    AND t.variant IN #{ToolchainBuild.variants_sql()}
     AND #{@withheld_toolchain_clause}
     AND #{@config_variant_served_clause}
   ORDER BY 1
@@ -1743,6 +1746,8 @@ defmodule Portal.Catalog do
   # `ConfigVariants.rows/1`, column-wise. A live row of the variant's own
   # identity removes it, as for a default. Never a refresh: a named variant
   # is a new build. Its `rank` orders a version's variants as `wanted/2` does.
+  # Only a default of a known optional-deps variant (`ToolchainBuild.variants/0`)
+  # wants any: a newer release's variant is not this release's to build.
   @config_variant_candidates_sql """
   SELECT p.name AS package, d.version, d.variant, cv.name AS config_variant,
          d.finished_at, p.hex_downloads_recent AS recent, false AS refresh,
@@ -1770,6 +1775,7 @@ defmodule Portal.Catalog do
   WHERE $9::boolean
     AND d.toolchain = $1
     AND d.builder_version = $2
+    AND d.variant IN #{ToolchainBuild.variants_sql()}
     AND d.config_variant = 'default'
     AND d.status = 'pass'
     AND d.revoked_at IS NULL
@@ -1899,21 +1905,25 @@ defmodule Portal.Catalog do
         ) ++ config_variant_params() ++ [limit | backfill_params(backfill)]
       )
 
-    Enum.map(rows, fn [package, version, variant, config_variant, refresh, reopen, backfill] ->
+    for [package, version, variant, config_variant, refresh, reopen, backfill] <- rows,
+        {:ok, variant} <- [variant(variant)] do
       %{
         package: package,
         version: version,
-        variant: variant(variant),
+        variant: variant,
         config_variant: config_variant,
         refresh: refresh,
         reopen: reopen,
         backfill: backfill
       }
-    end)
+    end
   end
 
-  defp variant("with"), do: :with
-  defp variant("without"), do: :without
+  # The queries name only known variants; a row of any other is dropped
+  # rather than built as one this release knows.
+  defp variant("with"), do: {:ok, :with}
+  defp variant("without"), do: {:ok, :without}
+  defp variant(_other), do: :error
 
   @doc """
   The packages `Portal.Catalog.VersionBackfill` may reach back into, as
@@ -2072,6 +2082,16 @@ defmodule Portal.Catalog do
   defp newer_run?(_row, {_, _, nil, _, _}), do: true
   defp newer_run?({_, _, a, _, _}, {_, _, b, _, _}), do: NaiveDateTime.compare(a, b) == :gt
 
+  # `toolchain_counts/0`'s statuses: rows of the default config variant and of
+  # a known optional-deps variant only.
+  @toolchain_counts_sql """
+  SELECT toolchain, status, count(*)
+  FROM catalog_toolchain_builds
+  WHERE builder_version = $1 AND revoked_at IS NULL AND config_variant = 'default'
+    AND variant IN #{ToolchainBuild.variants_sql()}
+  GROUP BY toolchain, status
+  """
+
   @doc """
   Per configured toolchain (`Portal.Toolchains.images/0`), at the current
   `builder_version`: how many non-revoked toolchain builds of the default
@@ -2094,16 +2114,7 @@ defmodule Portal.Catalog do
   def toolchain_counts do
     builder_version = Portal.Toolchains.builder_version()
 
-    %{rows: rows} =
-      Repo.query!(
-        """
-        SELECT toolchain, status, count(*)
-        FROM catalog_toolchain_builds
-        WHERE builder_version = $1 AND revoked_at IS NULL AND config_variant = 'default'
-        GROUP BY toolchain, status
-        """,
-        [builder_version]
-      )
+    %{rows: rows} = Repo.query!(@toolchain_counts_sql, [builder_version])
 
     statuses = Map.new(rows, fn [toolchain, status, count] -> {{toolchain, status}, count} end)
 
@@ -2325,6 +2336,7 @@ defmodule Portal.Catalog do
   WHERE m.sha256 = $1
     AND t.revoked_at IS NULL
     AND t.status = 'pass'
+    AND t.variant IN #{ToolchainBuild.variants_sql()}
     AND #{@withheld_toolchain_clause}
     AND #{@config_variant_served_clause}
   LIMIT 1

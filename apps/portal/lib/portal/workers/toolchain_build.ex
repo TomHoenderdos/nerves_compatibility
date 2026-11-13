@@ -16,7 +16,9 @@ defmodule Portal.Workers.ToolchainBuild do
   `Compatibility.ConfigVariants` name; a job without one, queued before config
   variants, is `"default"`; the sweep always sets it, since Oban's unique match
   is a containment that a missing key would widen. A name the worker does not
-  know cancels the job before anything runs. The image and its digest are
+  know cancels the job before anything runs, and so does a `variant` other
+  than `"with"` or `"without"`: a newer release's variant is never built as
+  one of those. The image and its digest are
   resolved here, on the build host that has the images: the toolchain's image
   in this node's own `Portal.Toolchains.images/0`, and the job's `image` only
   when this node does not configure the toolchain at all.
@@ -77,10 +79,24 @@ defmodule Portal.Workers.ToolchainBuild do
   def perform(%Oban.Job{args: args} = job) do
     name = config_variant(args)
 
-    if ConfigVariants.known?(name) do
-      perform_known(job)
-    else
-      {:cancel, "unknown config variant #{inspect(name)}"}
+    cond do
+      not known_variant?(args) ->
+        {:cancel, "unknown variant #{inspect(args["variant"])}"}
+
+      not ConfigVariants.known?(name) ->
+        {:cancel, "unknown config variant #{inspect(name)}"}
+
+      true ->
+        perform_known(job)
+    end
+  end
+
+  # A job without a `variant` was queued before variants existed and is a
+  # `with` build; any value but the two this release builds is not.
+  defp known_variant?(args) do
+    case Map.fetch(args, "variant") do
+      :error -> true
+      {:ok, variant} -> variant in ["with", "without"]
     end
   end
 
@@ -177,8 +193,10 @@ defmodule Portal.Workers.ToolchainBuild do
     end
   end
 
+  # Only after `known_variant?/1`: a missing `variant` is `with`.
   defp variant(%{"variant" => "without"}), do: :without
-  defp variant(_args), do: :with
+  defp variant(%{"variant" => "with"}), do: :with
+  defp variant(args) when not is_map_key(args, "variant"), do: :with
 
   defp optional_deps(:with), do: "include"
   defp optional_deps(:without), do: "exclude"
@@ -442,7 +460,8 @@ defmodule Portal.Workers.ToolchainBuild do
 
   defp describe(%Oban.Job{args: args}),
     do:
-      "#{args["package"]} #{args["version"]} (#{variant(args)}) on #{args["toolchain"]}" <>
+      "#{args["package"]} #{args["version"]} (#{Map.get(args, "variant", "with")}) " <>
+        "on #{args["toolchain"]}" <>
         describe_config_variant(config_variant(args))
 
   defp describe_config_variant("default"), do: ""

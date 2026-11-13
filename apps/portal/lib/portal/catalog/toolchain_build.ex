@@ -29,6 +29,14 @@ defmodule Portal.Catalog.ToolchainBuild do
   (`Portal.Catalog.toolchain_backlog/3`). A row written before variants
   existed was built the `:with` way, which is the default.
 
+  A newer release may store a variant this one does not know (`variants/0`).
+  Such a row is not this release's to read: the primary read filters it out
+  in SQL, before Ash would load its `variant` (an atom cast that raises on a
+  name this VM has no atom for, and that skips `one_of` for one it has), and
+  every raw SQL reader of the table restricts itself to `variants_sql/0`. It
+  is never served, counted, shown or rebuilt here, and a create still takes
+  only `variants/0`.
+
   ## Config variants
 
   A package that reads compile-time config compiles differently under the
@@ -48,9 +56,12 @@ defmodule Portal.Catalog.ToolchainBuild do
   (`Portal.Catalog.ToolchainIdentity`).
   """
 
+  # The primary read filters by variant on purpose, relationship loads
+  # included (moduledoc, "Variants").
   use Ash.Resource,
     domain: Portal.Catalog,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    primary_read_warning?: false
 
   @mutable [
     :status,
@@ -79,6 +90,21 @@ defmodule Portal.Catalog.ToolchainBuild do
 
   @transient_cap 5
   @withheld_revocation "withheld closure"
+  @variants [:with, :without]
+
+  @doc """
+  The optional-deps variants this release knows, the only ones it creates,
+  reads or builds (see "Variants" in the moduledoc).
+  """
+  @spec variants() :: [atom()]
+  def variants, do: @variants
+
+  @doc """
+  `variants/0` as a SQL list, `('with', 'without')`, for the raw SQL readers
+  of the table: `t.variant IN \#{variants_sql()}`.
+  """
+  @spec variants_sql() :: String.t()
+  def variants_sql, do: "(" <> Enum.map_join(@variants, ", ", &"'#{&1}'") <> ")"
 
   @doc """
   How many transient "could not be judged" builds in a row an identity gets
@@ -106,7 +132,12 @@ defmodule Portal.Catalog.ToolchainBuild do
   end
 
   actions do
-    defaults([:read])
+    # Every read, relationship loads included, leaves out a row of a variant
+    # this release does not know (moduledoc, "Variants").
+    read :read do
+      primary?(true)
+      filter(expr(variant in ^@variants))
+    end
 
     create :create do
       accept([
@@ -236,7 +267,7 @@ defmodule Portal.Catalog.ToolchainBuild do
       allow_nil?(false)
       public?(true)
       default(:with)
-      constraints(one_of: [:with, :without])
+      constraints(one_of: @variants)
     end
 
     # The config variant (precompiled portability spec, R7) the build was

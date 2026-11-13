@@ -341,6 +341,45 @@ defmodule Portal.Reports.RequeueTest do
     assert decision(id) == "skipped:judged"
   end
 
+  test "a toolchain build of a variant this release does not know judges nothing" do
+    jason = package!("jason")
+    run!(jason, "1.0.0", [])
+
+    tb =
+      Ash.create!(
+        Portal.Catalog.ToolchainBuild,
+        %{
+          package_id: jason.id,
+          version: "1.4.5",
+          toolchain: "1.19/28",
+          builder_version: Portal.Toolchains.builder_version(),
+          status: :skipped
+        },
+        action: :create,
+        domain: Portal.Catalog
+      )
+
+    # As a newer release would store it.
+    Portal.Repo.query!(
+      "UPDATE catalog_toolchain_builds SET variant = 'world_phx' WHERE id = $1::uuid",
+      [Ecto.UUID.dump!(tb.id)]
+    )
+
+    id =
+      miss!("jason", "1.4.5",
+        body: %{
+          "target" => "host",
+          "system" => nil,
+          "system_version" => nil,
+          "elixir" => "1.19.5",
+          "otp" => 28
+        }
+      )
+
+    assert :ok = requeue(id)
+    refute decision(id) == "skipped:judged"
+  end
+
   test "Hex being unavailable decides nothing and asks to retry" do
     image_builds_rpi4!()
     package!("jason") |> run!("1.0.0", [])

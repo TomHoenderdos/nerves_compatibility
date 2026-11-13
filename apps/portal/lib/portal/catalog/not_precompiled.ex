@@ -10,7 +10,9 @@ defmodule Portal.Catalog.NotPrecompiled do
       other than `"default"` (`ToolchainBuild`, "Config variants"): a skip
       under a `phx_prod` overlay speaks only for clients with that config,
       the way `Portal.Catalog.toolchain_counts/0` counts default rows only.
-      Both optional-dependency `variant`s count.
+      Both optional-dependency `variant`s count, and only those this release
+      knows (`ToolchainBuild.variants/0`): a newer release's variant is not
+      read at all.
     * Per package and toolchain, only the newest version with a verdict
       counts: the highest version (stable before pre-release, as
       `Portal.Catalog.Coverage` picks) among the non-revoked rows whose
@@ -33,10 +35,11 @@ defmodule Portal.Catalog.NotPrecompiled do
 
   import Ecto.Query, only: [from: 2]
 
-  alias Portal.Catalog.{Cache, SkipReasons}
+  alias Portal.Catalog.{Cache, SkipReasons, ToolchainBuild}
   alias Portal.Repo
 
   @default_config "default"
+  @variants Enum.map(ToolchainBuild.variants(), &Atom.to_string/1)
 
   @type row :: %{
           package: String.t(),
@@ -63,7 +66,7 @@ defmodule Portal.Catalog.NotPrecompiled do
           on: p.id == b.package_id,
           where:
             is_nil(b.revoked_at) and b.status == "skipped" and
-              b.config_variant == ^@default_config,
+              b.config_variant == ^@default_config and b.variant in ^@variants,
           distinct: true,
           select: %{
             package_id: b.package_id,
@@ -102,7 +105,8 @@ defmodule Portal.Catalog.NotPrecompiled do
   defp latest_versions do
     from(b in "catalog_toolchain_builds",
       where:
-        is_nil(b.revoked_at) and b.status != "error" and b.config_variant == ^@default_config,
+        is_nil(b.revoked_at) and b.status != "error" and b.config_variant == ^@default_config and
+          b.variant in ^@variants,
       distinct: true,
       select: {b.package_id, b.toolchain, b.version}
     )
