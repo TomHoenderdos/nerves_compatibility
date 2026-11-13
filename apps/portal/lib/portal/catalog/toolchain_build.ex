@@ -137,6 +137,8 @@ defmodule Portal.Catalog.ToolchainBuild do
     read :read do
       primary?(true)
       filter(expr(variant in ^@variants))
+      # As the default read had: streams and stream-strategy bulk actions.
+      pagination(keyset?: true, offset?: true, required?: false)
     end
 
     create :create do
