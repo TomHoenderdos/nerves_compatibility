@@ -522,4 +522,59 @@ defmodule NccWorker.Tracer.ReportTest do
 
     refute Enum.any?(report.problems, &(&1 =~ "returned"))
   end
+
+  test "a returned line names a stored value by value_id, per file", %{tmp_dir: dir} do
+    ev = fn ts, id ->
+      %{
+        "kind" => "event",
+        "ts" => ts,
+        "channel" => "env",
+        "mfa" => "os:getenv/1",
+        "arg" => %{"name" => "X"},
+        "extent" => "frame",
+        "call_id" => id
+      }
+    end
+
+    extra = [
+      ev.(33, 1),
+      %{"kind" => "value", "value_id" => 1, "value" => "g3cFZXJyb3I"},
+      %{"kind" => "returned", "call_id" => 1, "value_id" => 1},
+      ev.(34, 2),
+      %{"kind" => "returned", "call_id" => 2, "value_id" => 1},
+      ev.(35, 3),
+      %{"kind" => "returned", "call_id" => 3, "value" => "unrecordable"}
+    ]
+
+    {body, tail} = Enum.split(clean(), -2)
+    report = read(dir, body ++ extra ++ tail)
+
+    assert report.problems == []
+
+    assert ["g3cFZXJyb3I", "g3cFZXJyb3I", "unrecordable"] =
+             report.events
+             |> Enum.filter(&(&1["mfa"] == "os:getenv/1"))
+             |> Enum.map(& &1["returned"])
+  end
+
+  test "a returned line naming no value line is a problem", %{tmp_dir: dir} do
+    extra = [
+      %{
+        "kind" => "event",
+        "ts" => 35,
+        "channel" => "env",
+        "mfa" => "os:getenv/1",
+        "arg" => %{"name" => "X"},
+        "extent" => "frame",
+        "call_id" => 4
+      },
+      %{"kind" => "returned", "call_id" => 4, "value_id" => 9}
+    ]
+
+    {body, tail} = Enum.split(clean(), -2)
+    report = read(dir, body ++ extra ++ tail)
+
+    assert "a returned line names an unknown value" in report.problems
+    assert [%{"returned" => nil}] = Enum.filter(report.events, &(&1["mfa"] == "os:getenv/1"))
+  end
 end

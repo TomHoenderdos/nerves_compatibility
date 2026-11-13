@@ -22,6 +22,10 @@
 -define(SENTINEL, "NCC_TRACE_SENTINEL:").
 -define(TIMEOUT, 120000).
 -define(WRITE_BUFFER, 262144).
+%% The bytes of recorded values (value lines) one trace file may hold. Each
+%% distinct value is written once; one past this is recorded `unrecordable`,
+%% so values never overflow a trace nor outgrow the report's read budget.
+-define(MAX_VALUE_BYTES, 8388608).
 -define(INTROSPECTION, ['__info__', module_info, behaviour_info]).
 -define(SPAWNS, [spawn, spawn_link, spawn_monitor, spawn_opt, spawn_request]).
 
@@ -42,13 +46,15 @@
 %% monitored in turn. tampered: a forged request or a dead watcher was seen;
 %% it fails every check until the end.
 %% returns: per process, a stack of the return-traced calls awaiting their return ({call, CallId, Args} or skip).
+%% values: each recorded value's ETF => its value_id; value_bytes: the bytes
+%% of value lines written, at most max_value_bytes.
 -record(st, {fd, file, session, initial = #{}, procs = #{}, native = #{}, sources = #{},
              spawning = #{}, parents = #{}, set_depth = ?DEPTH, depth = ?DEPTH, lowered = false,
              wanted = [], unpatterned = false, final_pid, final_nonce, unloaded = [],
              token, watcher, wref, tampered = false, libs = unavailable, libs_written = false,
              calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0, path_os_reads = 0,
              max_calls, max_user, max_queue, overflow = false, final = false,
-             returns = #{}}).
+             returns = #{}, values = #{}, value_bytes = 0, max_value_bytes}).
 
 %% --- API used by the driver ---------------------------------------------
 
@@ -262,7 +268,8 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
               token = Token,             initial = maps:from_keys(erlang:processes(), true),
              max_calls = env_int("NCC_TRACE_MAX_CALLS", 20000000),
              max_user = env_int("NCC_TRACE_MAX_USER_EVENTS", 200000),
-             max_queue = env_int("NCC_TRACE_MAX_QUEUE", 2000000)},
+             max_queue = env_int("NCC_TRACE_MAX_QUEUE", 2000000),
+             max_value_bytes = env_int("NCC_TRACE_MAX_VALUE_BYTES", ?MAX_VALUE_BYTES)},
     %% Before any pattern is set: loading a module makes the code server
     %% search the path, and those reads would be traced (pattern/3 loads
     %% each patterned module too; these are loaded first for the same reason).
@@ -515,7 +522,12 @@ match_spec(MFA, _Role, Depth) ->
 
 %% exception_trace: a return_from message on return, an exception_from one
 %% when the call raises, so every pushed frame is popped
-%% (ncc_tracer_channels:returned_mfas/0).
+%% (ncc_tracer_channels:returned_mfas/0). The message copies the returned
+%% term into the collector's mailbox, once per return, however big: that is
+%% accepted, as the copy lives only until the message is handled (the value
+%% is sized before it is encoded, and what is written is bounded by
+%% MAX_VALUE_BYTES), the queue stays under max_queue like any other trace
+%% message, and these reads are rare next to the file and code reads.
 return_action({M, F, A}) ->
     case ncc_tracer_channels:returned_mfa(M, F, A) of
         true -> [{exception_trace}];
@@ -577,20 +589,64 @@ pending(Pid, M, F, Args, #st{returns = Returns} = St) ->
         false -> St
     end.
 
-%% A return pops its frame; a frame with an id writes the value, bounded
-%% like any line a package can make the collector write (capped_line/2).
+%% A return pops its frame; a frame with an id writes a `returned` line,
+%% which names its value by value_id (stored/2) or carries a marker.
+returned(_Pid, _M, _F, _A, _Outcome, #st{overflow = true} = St) -> St;
 returned(Pid, M, F, A, Outcome, #st{returns = Returns} = St) ->
     case {ncc_tracer_channels:returned_mfa(M, F, A), maps:get(Pid, Returns, [])} of
         {true, [Top | Rest]} ->
             St1 = St#st{returns = put_frames(Pid, Rest, Returns)},
             case Top of
                 {call, Id, Args} ->
-                    Value = ncc_tracer_channels:returned_value(M, F, Args, Outcome),
-                    capped_line(#{kind => returned, call_id => Id, value => Value}, St1);
+                    Term = ncc_tracer_channels:returned_term(M, F, Args, Outcome),
+                    {Ref, St2} = value_ref(Term, St1),
+                    counted_line(Ref#{kind => returned, call_id => Id}, St2);
                 skip ->
                     St1
             end;
         _ ->
+            St
+    end.
+
+value_ref({recorded, Term}, St) ->
+    case ncc_tracer_channels:value_etf(Term) of
+        {ok, Etf} -> stored(Etf, St);
+        unrecordable -> {#{value => <<"unrecordable">>}, St}
+    end;
+value_ref(Marker, St) -> {#{value => Marker}, St}.
+
+%% Each distinct value is written once, in a `value` line, keyed by its
+%% deterministic ETF itself (exact: no hash can collide); every later read
+%% of it names the same value_id. A value that would take the value lines
+%% past max_value_bytes is `unrecordable`, never an overflow. The map holds
+%% at most the budget's worth of binaries.
+stored(Etf, #st{values = Values, value_bytes = Bytes} = St) ->
+    case Values of
+        #{Etf := VId} ->
+            {#{value_id => VId}, St};
+        _ ->
+            Size = (byte_size(Etf) * 4 + 2) div 3,
+            case Bytes + Size > St#st.max_value_bytes of
+                true ->
+                    {#{value => <<"unrecordable">>}, St};
+                false ->
+                    VId = map_size(Values) + 1,
+                    write(St, #{kind => value, value_id => VId,
+                                value => ncc_tracer_channels:value_b64(Etf)}),
+                    {#{value_id => VId},
+                     St#st{values = Values#{Etf => VId}, value_bytes = Bytes + Size}}
+            end
+    end.
+
+%% A line that follows a traced call one to one (a `returned` line): counted
+%% as a call (check_limits/1, the queue check), not as a user event, so it
+%% does not take from the read budget max_user gives the events themselves.
+counted_line(_Line, #st{overflow = true} = St) -> St;
+counted_line(Line, #st{calls = Calls} = St0) ->
+    case check_limits(St0#st{calls = Calls + 1}) of
+        #st{overflow = true} = St -> St;
+        St ->
+            write(St, Line),
             St
     end.
 
@@ -599,7 +655,7 @@ put_frames(Pid, Frames, Returns) -> Returns#{Pid => Frames}.
 
 %% The event of a return-traced call carries the id its `returned` line
 %% will name; the call's own frame (pushed by pending/5) remembers it.
-hold(Pid, M, F, Args, Line, #st{returns = Returns, calls = Id} = St) ->
+hold(Pid, M, F, Args, Id, Line, #st{returns = Returns} = St) ->
     case {ncc_tracer_channels:returned_mfa(M, F, length(Args)), maps:get(Pid, Returns, [])} of
         {true, [skip | Rest]} ->
             {Line#{call_id => Id}, St#st{returns = Returns#{Pid => [{call, Id, Args} | Rest]}}};
@@ -679,11 +735,12 @@ call_event(Pid, M, F, Args, Stack, Ts, #st{calls = Calls} = St0) ->
             St = depth_seen(M, F, Args, St1),
             Extent = safe_extent(Stack, St#st.depth, fun toolchain/1, user_process(Pid, St),
                                  is_script(Pid)),
-            Info = {Pid, M, F, Args, Ts, {caller(Stack), bottom(Stack, St#st.depth)}},
+            %% The call's id is its own count, taken here once.
+            Info = {Pid, M, F, Args, Ts, {caller(Stack), bottom(Stack, St#st.depth)}, Calls + 1},
             classified(M, F, Args, Extent, Info, Stack, St)
     end.
 
-classified(erlang, F, _Args, Extent, {Pid, _, _, _, _, _}, _Stack, St)
+classified(erlang, F, _Args, Extent, {Pid, _, _, _, _, _, _}, _Stack, St)
   when F =:= spawn; F =:= spawn_link; F =:= spawn_monitor; F =:= spawn_opt;
        F =:= spawn_request ->
     spawn_call(Pid, Extent, St);
@@ -819,12 +876,12 @@ record(_Class, toolchain, _Info, St) -> St;
 record(unknown, {user, unjudged, _, _}, _Info, St) -> St#st{unjudged = St#st.unjudged + 1};
 record(unknown, _Extent, _Info, St) -> St;
 record({env, #{name := <<?SENTINEL, App0/binary>>}}, {user, _, _, {?PROBE, _, _, _}},
-       {Pid, _, _, _, Ts, _}, St0) ->
+       {Pid, _, _, _, Ts, _, _}, St0) ->
     {Checks, St} = checks(St0, sentinel),
     {App, Final} = sentinel_app(App0, Pid, St),
     write(St, Checks#{kind => sentinel, app => App, ts => Ts, pid => pid_bin(Pid)}),
     St#st{final = St#st.final orelse Final};
-record({Channel, Arg} = Class, {user, Kind, First, _} = Extent, {_, M, F, _, _, _} = Info, St) ->
+record({Channel, Arg} = Class, {user, Kind, First, _} = Extent, {_, M, F, _, _, _, _} = Info, St) ->
     case path_os_read(Channel, M, F, Arg, Kind, First) of
         true -> St#st{path_os_reads = St#st.path_os_reads + 1};
         false -> user_line(Class, Extent, Info, St)
@@ -850,13 +907,13 @@ path_frame(First) ->
     catch _:_ -> false
     end.
 
-user_line({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends}, St0) ->
+user_line({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends, Id}, St0) ->
     {Kind, First, User, {Caller, Bottom}} = frames(Kind0, First0, User0, Ends),
     Line0 = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
               mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
               arg => enrich(Channel, Arg), extent => Kind, first => First, user => User,
               caller => Caller, bottom => Bottom, first_kind => first_kind(First0)},
-    {Line, St} = hold(Pid, M, F, Args, Line0, St0),
+    {Line, St} = hold(Pid, M, F, Args, Id, Line0, St0),
     user_event(Line, Kind =:= unjudged orelse Channel =:= unclassified, St).
 
 sentinel_app(<<"__final__:", Nonce/binary>>, Pid, #st{final_pid = Pid, final_nonce = Nonce}) ->

@@ -46,6 +46,27 @@ defmodule NccWorker.Tracer.FixturesReturnsTest do
       """)
   }
 
+  # 2000 reads of one 60 KB value, then 300 reads of 300 distinct ones:
+  # 18 MB of distinct values against the 8 MiB a trace file records.
+  @big_size 60_000
+  @big %{
+    "fx_ret_big" =>
+      lib("fx_ret_big", """
+      defmodule FxRetBig do
+        @same Enum.count(1..2000, fn _ -> Application.fetch_env(:fx_ret_big, :same) end)
+        @distinct Enum.count(1..300, fn i -> Application.fetch_env(:fx_ret_big, :"v\#{i}") end)
+        def n, do: {@same, @distinct}
+      end
+      """)
+  }
+  @big_config """
+  config :fx_ret_big, same: String.duplicate("s", #{@big_size})
+
+  for i <- 1..300 do
+    config :fx_ret_big, [{:"v\#{i}", String.pad_trailing("v\#{i}-", #{@big_size}, "d")}]
+  end
+  """
+
   setup_all do
     root =
       Path.join(
@@ -66,7 +87,18 @@ defmodule NccWorker.Tracer.FixturesReturnsTest do
         ]
       )
 
-    %{traced: traced, trace_file: Path.join([root, "p", "trace", "trace-main.jsonl"])}
+    # Its own trace: values past the value budget would otherwise take the
+    # budget from the reads above, whichever dependency compiles first.
+    big = TracerFixtures.project(Path.join(root, "b"), Map.keys(@big), @big)
+    TracerFixtures.put_config(big, @big_config)
+    big_traced = TracerFixtures.trace(big, Map.keys(@big))
+
+    %{
+      traced: traced,
+      trace_file: Path.join([root, "p", "trace", "trace-main.jsonl"]),
+      big: big_traced,
+      big_file: Path.join([root, "b", "trace", "trace-main.jsonl"])
+    }
   end
 
   defp rec(term),
@@ -120,4 +152,59 @@ defmodule NccWorker.Tracer.FixturesReturnsTest do
     assert Enum.sort(returned) == Enum.sort(ids)
     assert %{"pending_returns" => 0} = Enum.find(lines, &(&1["kind"] == "stats"))
   end
+
+  # A returned line follows its event one to one: it counts as a call, but
+  # not against the user-event cap, which stays the events' own budget.
+  test "returned lines do not count as user events", ctx do
+    lines = ctx.trace_file |> File.stream!() |> Enum.map(&JSON.decode!/1)
+    events = Enum.count(lines, &(&1["kind"] == "event"))
+    assert Enum.count(lines, &(&1["kind"] == "returned")) >= 2000
+    assert %{"user_events" => ^events} = Enum.find(lines, &(&1["kind"] == "stats"))
+  end
+
+  describe "the value budget" do
+    test "the trace stays whole and within the report's budget", ctx do
+      assert {:ok, 0} = ctx.big.result, ctx.big.log
+      assert ctx.big.report.problems == []
+      refute ctx.big.report.over_budget
+    end
+
+    test "a value read again and again is written once", ctx do
+      same = rec({:ok, String.duplicate("s", @big_size)})
+      reads = reads(%{traced: ctx.big}, "application:get_env/2", keyed("same"))
+
+      assert length(reads) == 2000
+      assert Enum.all?(reads, &(&1["returned"] == same))
+
+      values =
+        for %{"kind" => "value", "value" => v} <- big_lines(ctx), v == same, do: v
+
+      assert length(values) == 1
+    end
+
+    test "values past the budget are unrecordable, those within it recorded", ctx do
+      distinct =
+        Enum.filter(
+          ctx.big.report.events,
+          &(&1["mfa"] == "application:get_env/2" and &1["arg"]["key_name"] =~ ~r/^v\d+$/)
+        )
+
+      assert length(distinct) == 300
+      {kept, dropped} = Enum.split_with(distinct, &(&1["returned"] != "unrecordable"))
+
+      assert dropped != []
+      assert length(kept) in 100..140
+
+      for %{"returned" => v, "arg" => %{"key_name" => "v" <> i}} <- kept do
+        assert v == rec({:ok, String.pad_trailing("v#{i}-", @big_size, "d")})
+      end
+
+      value_bytes =
+        for(%{"kind" => "value", "value" => v} <- big_lines(ctx), do: byte_size(v)) |> Enum.sum()
+
+      assert value_bytes <= 8 * 1024 * 1024
+    end
+  end
+
+  defp big_lines(ctx), do: ctx.big_file |> File.stream!() |> Enum.map(&JSON.decode!/1)
 end

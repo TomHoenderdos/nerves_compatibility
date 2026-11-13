@@ -84,8 +84,11 @@ defmodule NccWorker.Tracer.Report do
             built: %{},
             over_budget: false,
             problems: [],
-            # returns: call_id => value of the main file's returned lines, attached to events in finalize/2.
-            returns: %{}
+            # returns: call_id => value (or {:value_id, id}) of the main file's
+            # returned lines; values: value_id => value of its value lines. Both
+            # are resolved onto events in finalize/2.
+            returns: %{},
+            values: %{}
 
   @type window :: %{
           app: String.t() | nil,
@@ -299,7 +302,11 @@ defmodule NccWorker.Tracer.Report do
   defp main_line({:line, %{"kind" => "refused_start"} = l}, r), do: %{r | refused_start: l}
 
   defp main_line({:line, %{"kind" => "returned", "call_id" => id} = l}, r) when is_integer(id),
-    do: %{r | returns: Map.put(r.returns, id, l["value"])}
+    do: %{r | returns: Map.put(r.returns, id, returned_ref(l))}
+
+  defp main_line({:line, %{"kind" => "value", "value_id" => id, "value" => v}}, r)
+       when is_integer(id) and is_binary(v),
+       do: %{r | values: Map.put(r.values, id, v)}
 
   defp main_line({:line, l}, r), do: problem(r, other_problem(l))
 
@@ -453,16 +460,20 @@ defmodule NccWorker.Tracer.Report do
           events: [],
           libs: [],
           problems: [],
-          returns: %{}
+          returns: %{},
+          values: %{}
         },
         &child_line/2
       )
 
     app = (child.start && child.start["app"]) || file_app(path)
 
+    {returns, unknown} = resolve_returns(child.returns, child.values)
+    child = Enum.reduce(unknown, child, &child_problem(&2, &1))
+
     child = %{
-      Map.delete(child, :returns)
-      | events: Enum.map(child.events, &with_returned(&1, child.returns)),
+      Map.drop(child, [:returns, :values])
+      | events: Enum.map(child.events, &with_returned(&1, returns)),
         problems: Enum.reverse(child.problems)
     }
 
@@ -493,7 +504,11 @@ defmodule NccWorker.Tracer.Report do
     do: child_problem(c, "trace overflowed: #{l["what"]}")
 
   defp child_line({:line, %{"kind" => "returned", "call_id" => id} = l}, c) when is_integer(id),
-    do: %{c | returns: Map.put(c.returns, id, l["value"])}
+    do: %{c | returns: Map.put(c.returns, id, returned_ref(l))}
+
+  defp child_line({:line, %{"kind" => "value", "value_id" => id, "value" => v}}, c)
+       when is_integer(id) and is_binary(v),
+       do: %{c | values: Map.put(c.values, id, v)}
 
   defp child_line({:line, l}, c), do: child_problem(c, other_problem(l))
 
@@ -514,6 +529,9 @@ defmodule NccWorker.Tracer.Report do
   # --- both --------------------------------------------------------------------
 
   defp finalize(r, items) do
+    {returns, unknown} = resolve_returns(r.returns, r.values)
+    r = Enum.reduce(unknown, r, &problem(&2, &1))
+
     r = %{
       r
       | windows: Enum.reverse(r.windows),
@@ -523,7 +541,7 @@ defmodule NccWorker.Tracer.Report do
           r.events
           |> Enum.reverse()
           |> Enum.sort_by(&(&1["ts"] || 0))
-          |> Enum.map(&with_returned(&1, r.returns)),
+          |> Enum.map(&with_returned(&1, returns)),
         overflow: Enum.reverse(r.overflow),
         problems: Enum.reverse(r.problems)
     }
@@ -544,6 +562,26 @@ defmodule NccWorker.Tracer.Report do
     do: Map.put(event, "returned", Map.get(returns, id))
 
   defp with_returned(event, _returns), do: event
+
+  # A returned line names a stored value (`value_id`, its value line is
+  # written once before the first read of it) or carries a marker itself.
+  defp returned_ref(%{"value_id" => vid}) when is_integer(vid), do: {:value_id, vid}
+  defp returned_ref(l), do: l["value"]
+
+  # Every value_id to its value, within the one file (ids restart per VM).
+  # One that names no value line is a problem: the trace is not whole.
+  defp resolve_returns(returns, values) do
+    Enum.reduce(returns, {%{}, []}, fn
+      {id, {:value_id, vid}}, {acc, unknown} ->
+        case Map.fetch(values, vid) do
+          {:ok, v} -> {Map.put(acc, id, v), unknown}
+          :error -> {acc, Enum.uniq(["a returned line names an unknown value" | unknown])}
+        end
+
+      {id, v}, {acc, unknown} ->
+        {Map.put(acc, id, v), unknown}
+    end)
+  end
 
   defp finish_child(c, tracer) do
     c = %{

@@ -5,7 +5,8 @@
 -export([patterns/0, probe_mfas/0, patterned/3, classify/3, chars/1, term_bin/1,
          checker_module/1, mix_patterns/0, mix_entry/1, mix_state/3, mix_state_heads/1,
          path_os_frames/0, path_os_frame/3,
-         path_os_read/3, returned_mfas/0, returned_mfa/3, returned_value/4, recorded/1]).
+         path_os_read/3, returned_mfas/0, returned_mfa/3, returned_value/4,
+         returned_term/4, recorded/1, value_etf/1, value_b64/1]).
 
 -define(READS, [{file, read_file}, {file, read_file_info}, {file, read_link_info},
                 {file, read_link}, {file, read_link_all}, {file, list_dir},
@@ -272,32 +273,46 @@ returned_mfa(M, F, A) -> lists:member({M, F, A}, returned_mfas()).
 %% its default in, so a result equal to the default cannot say whether the
 %% key was set: `default`. A value over 64 KiB, or a variable that is not
 %% unicode, is `unrecordable`; a call that raised returned nothing (null).
-returned_value(_M, _F, _Args, exception) -> null;
-returned_value(os, getenv, [_Name], {value, false}) -> recorded(error);
-returned_value(os, getenv, [_Name], {value, Value}) -> recorded_chars(Value);
-returned_value(application, get_env, [_App, _Key], {value, undefined}) -> recorded(error);
-returned_value(application, get_env, [_App, _Key], {value, {ok, Value}}) -> recorded({ok, Value});
-returned_value(application, get_env, [_App, _Key, Default], {value, Default}) -> <<"default">>;
-returned_value(application, get_env, [_App, _Key, _Default], {value, Value}) -> recorded({ok, Value});
-returned_value(_M, _F, _Args, _Outcome) -> <<"unrecordable">>.
-
-%% Sized before it is encoded, so a huge value is never copied into a binary.
-recorded(Term) ->
-    case erlang:external_size(Term, [deterministic]) =< 65536 of
-        true ->
-            base64:encode(term_to_binary(Term, [deterministic]),
-                          #{mode => urlsafe, padding => false});
-        false ->
-            <<"unrecordable">>
+returned_value(M, F, Args, Outcome) ->
+    case returned_term(M, F, Args, Outcome) of
+        {recorded, Term} -> recorded(Term);
+        Marker -> Marker
     end.
 
-recorded_chars(Value) when is_list(Value) ->
+%% returned_value/4 before encoding: {recorded, Term} for a value to record,
+%% else the marker itself. The collector encodes and stores each distinct
+%% value once (ncc_tracer's value lines).
+returned_term(_M, _F, _Args, exception) -> null;
+returned_term(os, getenv, [_Name], {value, false}) -> {recorded, error};
+returned_term(os, getenv, [_Name], {value, Value}) -> chars_term(Value);
+returned_term(application, get_env, [_App, _Key], {value, undefined}) -> {recorded, error};
+returned_term(application, get_env, [_App, _Key], {value, {ok, Value}}) -> {recorded, {ok, Value}};
+returned_term(application, get_env, [_App, _Key, Default], {value, Default}) -> <<"default">>;
+returned_term(application, get_env, [_App, _Key, _Default], {value, Value}) -> {recorded, {ok, Value}};
+returned_term(_M, _F, _Args, _Outcome) -> <<"unrecordable">>.
+
+recorded(Term) ->
+    case value_etf(Term) of
+        {ok, Etf} -> value_b64(Etf);
+        unrecordable -> <<"unrecordable">>
+    end.
+
+%% Sized before it is encoded, so a huge value is never copied into a binary.
+value_etf(Term) ->
+    case erlang:external_size(Term, [deterministic]) =< 65536 of
+        true -> {ok, term_to_binary(Term, [deterministic])};
+        false -> unrecordable
+    end.
+
+value_b64(Etf) -> base64:encode(Etf, #{mode => urlsafe, padding => false}).
+
+chars_term(Value) when is_list(Value) ->
     case erlang:external_size(Value) =< 65536 andalso
          (catch unicode:characters_to_binary(Value)) of
-        Bin when is_binary(Bin) -> recorded({ok, Bin});
+        Bin when is_binary(Bin) -> {recorded, {ok, Bin}};
         _ -> <<"unrecordable">>
     end;
-recorded_chars(_Value) -> <<"unrecordable">>.
+chars_term(_Value) -> <<"unrecordable">>.
 
 nested_compile(true) -> {nested_compile, #{}};
 nested_compile(false) -> unknown.
