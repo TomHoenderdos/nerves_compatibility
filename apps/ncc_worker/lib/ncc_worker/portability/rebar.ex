@@ -4,10 +4,19 @@ defmodule NccWorker.Portability.Rebar do
   dependencies. rebar3 compiles in its own VM, which the trace reaches only
   through `ERL_AFLAGS`; hooks and plugins run programs no trace sees, and
   `platform_define` is host dependence by definition when rebar compiles,
-  except one whose regex can consume only the leading OTP major
-  (precompiled judge refinements, item 3), which decides the same on every
-  host. Any `provider_hooks` entry refuses too: providers come from plugins
-  or run arbitrary build steps.
+  except one whose regex the OTP major alone decides (precompiled judge
+  refinements, item 3, branch by branch: `otp_major_only?/1`), which
+  decides the same on every host. `provider_hooks` refuse too: providers come from plugins or run
+  arbitrary build steps.
+
+  A hook counts only when `rebar3 bare compile` runs it: on `compile`,
+  `erlc_compile` or `app_compile`, the only commands whose hooks
+  `rebar_prv_compile` runs, and `rebar_hooks` matches the command exactly.
+  So `{pre_hooks, [{clean, "rm -rf ..."}]}` (hackney, yamerl, erlfmt,
+  covertool) does not refuse. A `pre_hooks`/`post_hooks` entry is
+  `{Command, Script}` or `{Arch, Command, Script}`, a `provider_hooks`
+  value `[{pre | post, [{Command, Provider}]}]`; any other shape counts
+  (fail closed), in a section and inside `overrides` alike.
 
   A dependency's own `rebar.config.script` is not refused for existing.
   Mix evaluates it (`Mix.Rebar.load_config/1`, from
@@ -40,7 +49,7 @@ defmodule NccWorker.Portability.Rebar do
   other profile (`test`, `docs`, ...) are ignored. A hook or plugin key
   counts only as a key of an active section; inside `overrides` it counts
   at any depth (fail closed). `platform_define` counts at any depth of an
-  active section, unless its regex can consume only the leading OTP major
+  active section, unless the OTP major alone decides its regex
   (precompiled judge refinements, item 3).
 
   The judge (`check_sources/3`) reads the dependency's `rebar.config` and
@@ -76,6 +85,8 @@ defmodule NccWorker.Portability.Rebar do
   alias NccWorker.Portability.HexFiles
 
   @hook_keys ~w(pre_hooks post_hooks provider_hooks plugins)
+  # The commands `rebar3 bare compile` runs hooks for (`rebar_prv_compile`).
+  @compile_commands ~w(compile erlc_compile app_compile)
   # `REBAR_PROFILE=prod` on top of rebar3's default profile.
   @active_profiles ~w(default prod)
   @max_config_bytes 1024 * 1024
@@ -294,20 +305,54 @@ defmodule NccWorker.Portability.Rebar do
 
   defp runs?(sections, key) do
     Enum.any?(sections, fn section ->
-      Enum.any?(List.wrap(section), &match?({{:atom, ^key}, value} when value != [], &1))
+      Enum.any?(List.wrap(section), fn
+        {{:atom, ^key}, value} -> counts?(key, value)
+        _ -> false
+      end)
     end)
   end
 
   defp nested?(terms, key) do
     any_term?(terms, fn
-      {{:atom, ^key}, value} -> value != []
+      {{:atom, ^key}, value} -> counts?(key, value)
       _ -> false
     end)
   end
 
+  # Whether a hook or plugin key's value runs anything under Mix's
+  # `rebar3 bare compile`: plugins whenever there are any, hooks only on a
+  # compile command, any shape not understood always.
+  defp counts?(_key, []), do: false
+
+  defp counts?(hooks, value) when hooks in ["pre_hooks", "post_hooks"],
+    do: not proper_list?(value) or Enum.any?(value, &compile_hook?/1)
+
+  defp counts?("provider_hooks", value),
+    do: not proper_list?(value) or Enum.any?(value, &compile_provider_hooks?/1)
+
+  defp counts?(_key, _value), do: true
+
+  defp compile_hook?({{:atom, command}, _script}), do: command in @compile_commands
+  defp compile_hook?({_arch, {:atom, command}, _script}), do: command in @compile_commands
+  defp compile_hook?(_entry), do: true
+
+  defp compile_provider_hooks?({{:atom, type}, hooks}) when type in ["pre", "post"] do
+    not proper_list?(hooks) or
+      Enum.any?(hooks, fn
+        {{:atom, command}, _provider} -> command in @compile_commands
+        _entry -> true
+      end)
+  end
+
+  defp compile_provider_hooks?(_entry), do: true
+
+  defp proper_list?([]), do: true
+  defp proper_list?([_ | tail]), do: proper_list?(tail)
+  defp proper_list?(_term), do: false
+
   # Ignoring `project_plugins` and inactive profiles at the top level. Item 3
-  # (precompiled judge refinements): a `platform_define` whose regex can
-  # consume only the leading OTP major (`otp_major_only?/1`) is accepted;
+  # (precompiled judge refinements): a `platform_define` whose regex the
+  # OTP major alone decides (`otp_major_only?/1`) is accepted;
   # any other one refuses, as before.
   defp platform_define(sections) do
     searched =
@@ -337,11 +382,14 @@ defmodule NccWorker.Portability.Rebar do
   end
 
   # `rebar_utils:get_arch/0` is `<full OTP version>-<arch>-<wordsize>`, and
-  # the client checks only the OTP major. A regex of `^` followed only by
-  # digits, `R`, classes of digits and `( | )` groups of the same can only
-  # consume characters before the first `.` or `-`, so it decides the same
-  # on every host and patch of the build's major. Evaluated against the
-  # major followed by `.` and by `-`: both must agree.
+  # the client checks only the OTP major. Atoms of digits, `R`, classes of
+  # digits and `( | )` groups of the same, each optionally quantified
+  # (`?`, `*`, `+`, `{n}`, `{n,}`, `{n,m}`), can only consume characters
+  # before the first `.` or `-`. The regex is split on its top-level `|`
+  # (`top_branches/1`) and each branch judged on its own (`branch/2`): it
+  # always matches, never matches, or may depend on the host. A regex any
+  # of whose branches always matches, or all of whose branches never
+  # match, decides the same on every host and patch of the build's major.
   defp otp_major_only?({{:atom, "platform_define"}, regex, _key}), do: major_regex?(regex)
 
   defp otp_major_only?({{:atom, "platform_define"}, regex, _key, _value}),
@@ -351,15 +399,100 @@ defmodule NccWorker.Portability.Rebar do
 
   defp major_regex?(regex) do
     with {:ok, text} <- regex_text(regex),
-         "^" <> body <- text,
-         {:ok, ""} <- major_seq(body),
-         {:ok, compiled} <- Regex.compile(text) do
+         {:ok, _compiled} <- Regex.compile(text),
+         {:ok, branches} <- top_branches(text) do
       major = :erlang.system_info(:otp_release) |> List.to_string()
-      Regex.match?(compiled, major <> ".") == Regex.match?(compiled, major <> "-")
+      kinds = Enum.map(branches, &branch(&1, major))
+      :always in kinds or Enum.all?(kinds, &(&1 == :never))
     else
       _ -> false
     end
   end
+
+  # One top-level branch, anchored with `^`. Wholly in the grammar, it is
+  # evaluated against the major followed by `.` and by `-` (what can follow
+  # it): both match is `:always`, neither `:never`. Only a leading part in
+  # the grammar (`^20` of `^20\.3`) decides only when that part matches
+  # neither: the branch then never matches either, as anything it matches
+  # starts with a match of that part. Anything else is `:unknown`.
+  defp branch("^" <> body = text, major) do
+    case major_seq(body) do
+      {:ok, ""} ->
+        probe(text, major, &both/2)
+
+      {:ok, <<next, _::binary>> = rest} when next not in [??, ?*, ?+, ?{] and rest != body ->
+        prefix = binary_part(text, 0, byte_size(text) - byte_size(rest))
+        probe(prefix, major, &prefix_only/2)
+
+      _ ->
+        :unknown
+    end
+  end
+
+  defp branch(_text, _major), do: :unknown
+
+  defp probe(text, major, verdict) do
+    case Regex.compile(text) do
+      {:ok, compiled} ->
+        verdict.(Regex.match?(compiled, major <> "."), Regex.match?(compiled, major <> "-"))
+
+      _ ->
+        :unknown
+    end
+  end
+
+  defp both(true, true), do: :always
+  defp both(false, false), do: :never
+  defp both(_dot, _dash), do: :unknown
+
+  defp prefix_only(false, false), do: :never
+  defp prefix_only(_dot, _dash), do: :unknown
+
+  # The regex's top-level branches, split on `|` outside groups, classes
+  # and escapes. Anything that could hide a `|` from this scan or change
+  # how the pattern reads, `(?...)`, `(*...)`, `\Q`, `\E`, `\c`, a POSIX
+  # class inside `[...]`, or unbalanced parentheses, is `:error`.
+  defp top_branches(text), do: split(text, 0, "", [])
+
+  defp split("", 0, current, acc), do: {:ok, Enum.reverse([current | acc])}
+  defp split("", _depth, _current, _acc), do: :error
+
+  defp split(<<?\\, c, rest::binary>>, depth, current, acc) when c not in ~c"QEc",
+    do: split(rest, depth, current <> <<?\\, c>>, acc)
+
+  defp split(<<?\\, _::binary>>, _depth, _current, _acc), do: :error
+  defp split("(?" <> _, _depth, _current, _acc), do: :error
+  defp split("(*" <> _, _depth, _current, _acc), do: :error
+  defp split("(" <> rest, depth, current, acc), do: split(rest, depth + 1, current <> "(", acc)
+  defp split(")" <> _, 0, _current, _acc), do: :error
+  defp split(")" <> rest, depth, current, acc), do: split(rest, depth - 1, current <> ")", acc)
+  defp split("|" <> rest, 0, current, acc), do: split(rest, 0, "", [current | acc])
+
+  defp split("[" <> rest, depth, current, acc) do
+    with {:ok, class, rest} <- class_body(rest) do
+      split(rest, depth, current <> "[" <> class, acc)
+    end
+  end
+
+  defp split(<<c, rest::binary>>, depth, current, acc),
+    do: split(rest, depth, current <> <<c>>, acc)
+
+  # The rest of a `[...]` class, its closing `]` included: a leading `^`
+  # and a leading `]` are literal, as in PCRE.
+  defp class_body("^]" <> rest), do: class_more(rest, "^]")
+  defp class_body("^" <> rest), do: class_more(rest, "^")
+  defp class_body("]" <> rest), do: class_more(rest, "]")
+  defp class_body(rest), do: class_more(rest, "")
+
+  defp class_more("]" <> rest, acc), do: {:ok, acc <> "]", rest}
+  defp class_more("[:" <> _, _acc), do: :error
+
+  defp class_more(<<?\\, c, rest::binary>>, acc) when c not in ~c"QEc",
+    do: class_more(rest, acc <> <<?\\, c>>)
+
+  defp class_more(<<?\\, _::binary>>, _acc), do: :error
+  defp class_more(<<c, rest::binary>>, acc), do: class_more(rest, acc <> <<c>>)
+  defp class_more("", _acc), do: :error
 
   defp regex_text(text) when is_binary(text),
     do: if(String.valid?(text), do: {:ok, text}, else: :error)
@@ -372,18 +505,36 @@ defmodule NccWorker.Portability.Rebar do
 
   defp regex_text(_regex), do: :error
 
-  # The grammar: items until something else, returning what is left.
-  defp major_seq(<<c, rest::binary>>) when c in ?0..?9 or c == ?R, do: major_seq(rest)
+  # The grammar: atoms, each optionally quantified, until something else,
+  # returning what is left.
+  defp major_seq(<<c, rest::binary>>) when c in ?0..?9 or c == ?R, do: quantified(rest)
 
   defp major_seq("[" <> rest) do
-    with {:ok, rest} <- major_class(rest), do: major_seq(rest)
+    with {:ok, rest} <- major_class(rest), do: quantified(rest)
   end
 
   defp major_seq("(" <> rest) do
-    with {:ok, rest} <- major_group(rest), do: major_seq(rest)
+    with {:ok, rest} <- major_group(rest), do: quantified(rest)
   end
 
   defp major_seq(rest), do: {:ok, rest}
+
+  # One optional greedy quantifier after an atom. A lazy or possessive
+  # suffix, or a `{` that is not a quantifier, is left for the caller,
+  # which never reads it as part of the grammar.
+  defp quantified(<<c, rest::binary>>) when c in [??, ?*, ?+], do: major_seq(rest)
+
+  defp quantified("{" <> rest = text) do
+    case Regex.run(~r/\A[0-9]+(,[0-9]*)?\}/, rest) do
+      [counted | _] ->
+        major_seq(binary_part(rest, byte_size(counted), byte_size(rest) - byte_size(counted)))
+
+      nil ->
+        {:ok, text}
+    end
+  end
+
+  defp quantified(rest), do: major_seq(rest)
 
   defp major_group(text) do
     case major_seq(text) do

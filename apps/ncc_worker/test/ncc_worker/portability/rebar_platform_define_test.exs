@@ -38,16 +38,76 @@ defmodule NccWorker.Portability.RebarPlatformDefineTest do
     end
   end
 
+  # The builder's OTP major: rebar3 matches `<OTP_VERSION>-<arch>-<words>`
+  # (`rebar_utils:get_arch/0`), so every major-relative case is written
+  # from it.
+  @major :erlang.system_info(:otp_release) |> List.to_string()
+
+  test "quantifiers and top-level alternation are decided branch by branch" do
+    # On an OTP 2x builder: a branch that always matches decides, and so do
+    # branches that all never match, whatever follows the part they consume.
+    for regex <- [
+          ~s("^2+"),
+          ~s("^[0-9]+"),
+          ~s("^2[0-9]{1}"),
+          ~s("^2{1,2}"),
+          ~s("^2[0-9]*"),
+          ~s("^19.|^2"),
+          ~s("18|19|^2"),
+          ~s("^2|musl"),
+          ~s("^R|^1"),
+          ~s{"^(1|(20))"},
+          ~s{"^(R|1|20)"},
+          ~s("^1[0-9]\\\\.|^R1"),
+          ~s("^20\\\\.3"),
+          # tls_certificate_check 1.32.2
+          ~s("^23\\\\.[1-3]"),
+          ~s("^2[4-9]"),
+          ~s("^[3-9]"),
+          ~s("^22\\\\."),
+          ~s("^23\\\\.[0-2][^0-9]"),
+          ~s("^2[3-6]\\\\."),
+          ~s("^#{String.to_integer(@major) - 1}\\\\.[0-2]\\\\."),
+          ~s("^#{String.to_integer(@major) + 1}\\\\.")
+        ] do
+      assert check(define(regex)) == :ok, regex
+    end
+  end
+
+  test "a branch that might match depending on what follows the major keeps refusing" do
+    for regex <- [
+          ~s("^#{@major}\\\\.1"),
+          ~s("^#{@major}-x86"),
+          ~s("^#{@major}\\\\."),
+          ~s("^2[7-9]\\\\."),
+          ~s("^3|musl"),
+          ~s("19"),
+          ~s("18|19"),
+          ~s{"(R12|R13|R14|R15|R16|17)"},
+          ~s("R14"),
+          ~s("^2+?"),
+          ~s("^2{"),
+          ~s("^2{x}"),
+          ~s("^1[8|9]"),
+          ~s("^1\\\\Q|^2"),
+          ~s{"^1|(?#x)^2"},
+          ~s{"(*UTF)^2"},
+          ~s("^1|^2\\\\c|"),
+          ~s("^3||^2x")
+        ] do
+      assert check(define(regex)) == @refusal, regex
+    end
+  end
+
   test "anything that can see past the major, or is not a regex string, keeps refusing" do
     for regex <- [
-          ~s("^28\\\\.1"),
+          ~s("^#{@major}\\\\.1"),
           ~s("alpine"),
           ~s("musl"),
           ~s("darwin2[5-9]"),
-          ~s("^28-x86"),
+          ~s("^#{@major}-x86"),
           ~s("^2.*linux"),
           ~s("^2$"),
-          ~s("^2+"),
           ~s("^(2"),
           ~s("^[^0]"),
           ~s('atom'),
@@ -56,9 +116,9 @@ defmodule NccWorker.Portability.RebarPlatformDefineTest do
           # `Regex.compile/1` (descending range), exercising the
           # compile-failure branch `"^(2"` never reaches.
           ~s("^[9-0]"),
-          # Top-level alternation: the `|` sits outside any `( | )` group,
-          # so the second branch, `musl`, drops the `^` anchor.
-          ~s("^2|musl"),
+          # Top-level alternation: no branch always matches and `musl`
+          # drops the `^` anchor.
+          ~s("^3|musl"),
           ~s("^[0-9.]"),
           ~s("^\\\\d")
         ] do

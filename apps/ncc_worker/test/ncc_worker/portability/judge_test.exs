@@ -1303,6 +1303,29 @@ defmodule NccWorker.Portability.JudgeTest do
             {"default_override_plugins",
              "{profiles, [{default, [{overrides, [{add, x, [{plugins, [pc]}]}]}]}]}.\n",
              "rebar3 build runs plugins"},
+            {"erlc_hook", ~s({pre_hooks, [{erlc_compile, "make"}]}.\n),
+             "rebar3 build runs pre_hooks"},
+            {"app_hook", ~s({post_hooks, [{"linux", app_compile, "make"}]}.\n),
+             "rebar3 build runs post_hooks"},
+            {"mixed_hooks", ~s({pre_hooks, [{clean, "rm x"}, {compile, "make"}]}.\n),
+             "rebar3 build runs pre_hooks"},
+            {"odd_hook", ~s({pre_hooks, [{compile}]}.\n), "rebar3 build runs pre_hooks"},
+            {"bare_hook", "{pre_hooks, [clean]}.\n", "rebar3 build runs pre_hooks"},
+            {"string_cmd", ~s({pre_hooks, [{"clean", "rm x"}]}.\n),
+             "rebar3 build runs pre_hooks"},
+            {"not_list_hooks", ~s({pre_hooks, {clean, "rm x"}}.\n),
+             "rebar3 build runs pre_hooks"},
+            {"prov_erlc", "{provider_hooks, [{post, [{erlc_compile, {x, y}}]}]}.\n",
+             "rebar3 build runs provider_hooks"},
+            {"prov_odd", "{provider_hooks, [{pre, compile}]}.\n",
+             "rebar3 build runs provider_hooks"},
+            {"prov_bare", "{provider_hooks, [{pre, [compile]}]}.\n",
+             "rebar3 build runs provider_hooks"},
+            {"prov_type", "{provider_hooks, [{around, [{clean, {x, y}}]}]}.\n",
+             "rebar3 build runs provider_hooks"},
+            {"override_compile_hook",
+             ~s|{overrides, [{override, x, [{post_hooks, [{"(linux)", compile, "make"}]}]}]}.\n|,
+             "rebar3 build runs post_hooks"},
             {"garbled", "{erl_opts, [\n", "rebar3 build config unreadable"},
             {"macro", "{erl_opts, [?X]}.\n", "rebar3 build config unreadable"}
           ] do
@@ -1330,6 +1353,14 @@ defmodule NccWorker.Portability.JudgeTest do
              "{profiles, [{test, [{plugins, [covertool]}]}, {docs, [{plugins, [x]}]}]}.\n"},
             {"test_pd", ~s({profiles, [{test, [{erl_opts, [{platform_define, "x", 'X'}]}]}]}.\n)},
             {"dep_named_plugins", ~s({deps, [{plugins, "1.0.0"}, pre_hooks]}.\n)},
+            # Hooks on a command `rebar3 bare compile` never runs (hackney,
+            # yamerl, erlfmt, covertool: `clean`).
+            {"clean_hook", ~s({pre_hooks, [{clean, "rm -rf *~ */*~"}]}.\n)},
+            {"arch_clean_hook", ~s|{post_hooks, [{"(linux\|darwin)", clean, "make clean"}]}.\n|},
+            {"eunit_hook", ~s({pre_hooks, [{eunit, "x"}, {ct, "y"}]}.\n)},
+            {"prov_clean", "{provider_hooks, [{pre, [{clean, {pc, clean}}]}, {post, []}]}.\n"},
+            {"override_clean_hook",
+             ~s({overrides, [{override, x, [{pre_hooks, [{clean, "rm x"}]}]}]}.\n)},
             {"test_override",
              ~s({profiles, [{test, [{overrides, [{override, [{pre_hooks, [{compile, "x"}]}]}]}]}]}.\n)}
           ] do
@@ -1356,20 +1387,20 @@ defmodule NccWorker.Portability.JudgeTest do
       config =
         File.read!(Path.join([__DIR__, "../../fixtures/rebar/hackney-4.9.1.rebar.config"]))
 
-      # A top-level `{pre_hooks, [{clean, "rm -rf ..."}]}`: any non-empty
-      # hook list refuses (fail closed), before its platform_define.
-      assert {:refuse, "rebar3 build runs pre_hooks"} =
+      # A top-level `{pre_hooks, [{clean, "rm -rf ..."}]}` never runs under
+      # `rebar3 bare compile`; its unanchored "R14" platform_define refuses.
+      assert {:refuse, "rebar3 build uses platform_define"} =
                Rebar.check(write(dir, "hackney", %{"rebar.config" => config}))
 
-      without_hook =
+      on_compile =
         String.replace(
           config,
           ~s({pre_hooks, [{clean, "rm -rf *~ */*~ */*.xfm test/*.beam"}]}.),
-          ""
+          ~s({pre_hooks, [{compile, "rm -rf *~ */*~ */*.xfm test/*.beam"}]}.)
         )
 
-      assert {:refuse, "rebar3 build uses platform_define"} =
-               Rebar.check(write(dir, "hackney_pd", %{"rebar.config" => without_hook}))
+      assert {:refuse, "rebar3 build runs pre_hooks"} =
+               Rebar.check(write(dir, "hackney_hook", %{"rebar.config" => on_compile}))
 
       # As a parent it hands its children no overrides (only its test
       # profile has any), so they are not refused through it.
