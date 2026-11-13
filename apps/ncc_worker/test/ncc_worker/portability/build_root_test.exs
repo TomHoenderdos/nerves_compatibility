@@ -427,10 +427,10 @@ defmodule NccWorker.Portability.BuildRootTest do
     end
   end
 
-  describe "source_path_modules/3 and program_source_paths/4" do
+  describe "source_path_modules/3 and program_source_paths/3" do
     # `defp file` is not inlined, so the path stays a whole literal of its
     # own (an observation) rather than part of a larger literal (a refusal).
-    @refusal " (a source path in a package that runs programs)"
+    @refusal " (a source path in a module that runs programs)"
 
     test "names the modules holding a bare source path", %{tmp_dir: root} do
       {ebin, ok?} =
@@ -473,7 +473,11 @@ defmodule NccWorker.Portability.BuildRootTest do
       end
     end
 
-    test "a path held in one module and run from another refuses", %{tmp_dir: root} do
+    # The refusal needs both in one module: a path held in one module and
+    # run from another fails loudly on a user's machine (no such file)
+    # rather than silently, and Ecto's query metadata and log lines that
+    # carry `__ENV__.file` sit in modules that run nothing.
+    test "a path held in one module and run from another is an observation", %{tmp_dir: root} do
       {ebin, ok?} =
         compile(root, """
         defmodule FxPspHold do
@@ -485,25 +489,73 @@ defmodule NccWorker.Portability.BuildRootTest do
         end
         """)
 
-      assert BuildRoot.program_source_paths(ebin, [root], ok?) ==
-               {:refuse, "bakes the build path: Elixir.FxPspHold" <> @refusal}
+      assert {:observe, [_]} = observed = BuildRoot.check(ebin, [root], ok?)
+      assert BuildRoot.program_source_paths(ebin, [root], ok?) == observed
     end
 
-    test "the first module with the path (sorted) is named", %{tmp_dir: root} do
+    test "Ecto's query metadata shape, a path stored in a struct built at runtime",
+         %{tmp_dir: root} do
+      query = """
+      defmodule FxPspQuery do
+        defstruct [:expr, :file, :line]
+        def build(expr), do: %__MODULE__{expr: expr, file: __ENV__.file, line: __ENV__.line}
+      end
+      """
+
+      quiet = Path.join(root, "quiet")
+
+      {ebin, ok?} =
+        compile(
+          quiet,
+          query <>
+            """
+
+            defmodule FxPspAdapter do
+              def run(sql), do: System.cmd("psql", ["-c", sql])
+            end
+            """
+        )
+
+      # The path is a bare literal, an observation, and the module that holds
+      # it runs nothing: it stays one.
+      assert {:observe, [_]} = observed = BuildRoot.check(ebin, [quiet], ok?)
+      assert BuildRoot.program_source_paths(ebin, [quiet], ok?) == observed
+
+      loud = Path.join(root, "loud")
+
+      {ebin, ok?} =
+        compile(loud, """
+        defmodule FxPspQueryRun do
+          defstruct [:expr, :file, :line]
+          def build(expr), do: %__MODULE__{expr: expr, file: __ENV__.file, line: __ENV__.line}
+          def run(q), do: System.cmd("cat", [q.file])
+        end
+        """)
+
+      assert BuildRoot.program_source_paths(ebin, [loud], ok?) ==
+               {:refuse, "bakes the build path: Elixir.FxPspQueryRun" <> @refusal}
+    end
+
+    test "the first module (sorted) with both the path and a program call is named",
+         %{tmp_dir: root} do
       {ebin, ok?} =
         compile(root, """
-        defmodule FxPspZed do
+        defmodule FxPspAbe do
           def file, do: __ENV__.file
         end
 
-        defmodule FxPspAbe do
+        defmodule FxPspMid do
+          def run, do: System.cmd("true", [])
+        end
+
+        defmodule FxPspZed do
           def run, do: System.cmd("cat", [file()])
           defp file, do: __ENV__.file
         end
         """)
 
       assert BuildRoot.program_source_paths(ebin, [root], ok?) ==
-               {:refuse, "bakes the build path: Elixir.FxPspAbe" <> @refusal}
+               {:refuse, "bakes the build path: Elixir.FxPspZed" <> @refusal}
     end
 
     test "the path or the program call alone passes", %{tmp_dir: root} do
@@ -535,43 +587,19 @@ defmodule NccWorker.Portability.BuildRootTest do
       assert BuildRoot.program_source_paths(ebin, [cmd_only], ok?) == :ok
     end
 
-    test "program calls anywhere in the closure count", %{tmp_dir: root} do
-      # The package holds the path and hands it to a dependency that runs it.
-      {dep_ebin, _} =
-        compile(Path.join(root, "dep"), """
-        defmodule FxPspDepCmd do
-          def cmd(file), do: System.cmd("cat", [file])
-        end
-        """)
-
+    test "a beam of the package that cannot be scanned is an error, never a pass",
+         %{tmp_dir: root} do
       {ebin, ok?} =
         compile(root, """
         defmodule FxPspPkg do
-          @compile {:no_warn_undefined, FxPspDepCmd}
-          def run, do: FxPspDepCmd.cmd(file())
-          defp file, do: __ENV__.file
+          def file, do: __ENV__.file
         end
         """)
 
-      assert {:observe, [_]} = observed = BuildRoot.program_source_paths(ebin, [root], ok?)
+      File.write!(Path.join(ebin, "Elixir.Broken.beam"), "not a beam")
 
-      assert BuildRoot.program_source_paths(ebin, [root], ok?, [ebin, dep_ebin]) ==
-               {:refuse, "bakes the build path: Elixir.FxPspPkg" <> @refusal}
-
-      # A closure without program calls keeps the observation.
-      {quiet_ebin, _} =
-        compile(Path.join(root, "quiet"), "defmodule FxPspQuiet do\n  def x, do: :ok\nend\n")
-
-      assert BuildRoot.program_source_paths(ebin, [root], ok?, [ebin, quiet_ebin]) == observed
-
-      # A closure ebin that is missing or unreadable is an error, never a pass.
-      assert {:error, _} =
-               BuildRoot.program_source_paths(ebin, [root], ok?, [ebin, Path.join(root, "none")])
-
-      File.write!(Path.join(quiet_ebin, "Elixir.Broken.beam"), "not a beam")
-
-      assert {:error, "beam scan: " <> _} =
-               BuildRoot.program_source_paths(ebin, [root], ok?, [ebin, quiet_ebin])
+      assert {:error, _} = BuildRoot.program_source_paths(ebin, [root], ok?)
+      assert {:error, _} = BuildRoot.program_source_paths(Path.join(root, "none"), [root], ok?)
     end
 
     test "a path inside a larger literal still refuses as a baked path", %{tmp_dir: root} do

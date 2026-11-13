@@ -109,24 +109,28 @@ defmodule NccWorker.Portability.BuildRoot do
 
   @doc """
   `check/3` on a package's `ebin`, where a bare closure source path, there
-  otherwise an observation, refuses when anything in `program_ebins` (the
-  ebins of the package's whole closure, the package's own included) runs
-  programs, opens ports or looks up executables.
+  otherwise an observation, refuses when the same module runs programs,
+  opens ports or looks up executables.
 
   A bare source path is cosmetic only while no code hands it to something
-  outside the BEAM. Once the closure can run a program, the path could reach
-  it at runtime, where a local compile would pass the user's own path:
-  refused as a baked build path, naming the first module (sorted) that holds
-  one. Judged over the closure, not per module: a path held in one module
-  and handed to another, or to a dependency, that runs it refuses too.
+  outside the BEAM. A module that holds one and also runs a program could
+  pass it to that program at runtime, where a local compile would pass the
+  user's own path: refused as a baked build path, naming the first module
+  (sorted) that holds a path and makes such a call. Judged per module, by
+  `BeamScanner`'s evidence, which names the beam each call is in: a path
+  held in one module and run from another, in the package or a dependency,
+  stays an observation. Such a path names a file that does not exist on the
+  user's machine, so running it fails there rather than reading something
+  else; Ecto's query metadata (`file: __ENV__.file` in a struct built at
+  runtime) and log lines that carry the path are the usual holders.
 
-  The `ebin` is read once. `program_ebins` are read with
-  `BeamScanner.analyze/1` for the calls only when a path was found; one that
-  is missing or that scan cannot read is an error, never a pass.
+  The `ebin` is read once, and scanned with `BeamScanner.analyze/1` for the
+  calls only when a path was found; a beam that scan cannot read is an
+  error, never a pass.
   """
-  @spec program_source_paths(String.t(), [String.t()], (String.t() -> boolean()), [String.t()]) ::
+  @spec program_source_paths(String.t(), [String.t()], (String.t() -> boolean())) ::
           :ok | {:observe, [observation()]} | {:refuse, String.t()} | {:error, String.t()}
-  def program_source_paths(ebin, roots, closure_file?, program_ebins \\ nil) do
+  def program_source_paths(ebin, roots, closure_file?) do
     roots = needles(roots)
 
     case scan_ebin(ebin, roots, closure_file?) do
@@ -134,9 +138,9 @@ defmodule NccWorker.Portability.BuildRoot do
         :ok
 
       {:ok, by_module} ->
-        [module | _] = by_module |> Enum.map(&elem(&1, 0)) |> Enum.sort()
+        holders = MapSet.new(by_module, &elem(&1, 0))
 
-        with :ok <- runs_programs(program_ebins || [ebin], module),
+        with :ok <- runs_programs(ebin, holders),
              do: observations(by_module, roots)
 
       other ->
@@ -144,29 +148,24 @@ defmodule NccWorker.Portability.BuildRoot do
     end
   end
 
-  defp runs_programs(ebins, module) do
-    Enum.reduce_while(ebins, :ok, fn ebin, :ok ->
-      case ebin_runs_programs(ebin, module) do
-        :ok -> {:cont, :ok}
-        other -> {:halt, other}
-      end
-    end)
-  end
+  defp runs_programs(ebin, holders) do
+    scan = BeamScanner.analyze(Path.dirname(ebin))
 
-  defp ebin_runs_programs(ebin, module) do
-    with :ok <- ebin_dir(ebin) do
-      scan = BeamScanner.analyze(Path.dirname(ebin))
-
-      cond do
-        scan.errors != [] ->
-          {:error, "beam scan: " <> (scan.errors |> Enum.take(3) |> Enum.join("; "))}
-
-        Enum.any?(@program_evidence, &(Map.fetch!(scan, &1) != [])) ->
-          {:refuse,
-           "bakes the build path: #{module} (a source path in a package that runs programs)"}
-
-        true ->
+    if scan.errors != [] do
+      {:error, "beam scan: " <> (scan.errors |> Enum.take(3) |> Enum.join("; "))}
+    else
+      @program_evidence
+      |> Enum.flat_map(&Map.fetch!(scan, &1))
+      |> Enum.map(&Path.basename(&1.file, ".beam"))
+      |> Enum.filter(&MapSet.member?(holders, &1))
+      |> Enum.sort()
+      |> case do
+        [] ->
           :ok
+
+        [module | _] ->
+          {:refuse,
+           "bakes the build path: #{module} (a source path in a module that runs programs)"}
       end
     end
   end

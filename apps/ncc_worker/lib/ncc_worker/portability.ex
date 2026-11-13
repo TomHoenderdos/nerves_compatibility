@@ -26,8 +26,8 @@ defmodule NccWorker.Portability do
     4. the package's window broken (missing, lowered depth, failed
        integrity, no sentinel);
     5. R2 on the package's `ebin` (`BuildRoot`), where a bare source path
-       also refuses when anything in its closure runs programs
-       (`BuildRoot.program_source_paths/4`);
+       also refuses when the module that holds it runs programs
+       (`BuildRoot.program_source_paths/3`);
     6. the rebar3 rules on the package (`Rebar`);
     7. host taint of a closure dependency (R3), the first in compile order:
        its window broken or without a sentinel, a refusal in its window, R2,
@@ -908,34 +908,18 @@ defmodule NccWorker.Portability do
 
   # R2 for the package's own beams (closure dependencies are not published
   # by this build): a bare source path, otherwise an observation, refuses
-  # when anything in the package's closure runs programs
-  # (`BuildRoot.program_source_paths/4`).
+  # when the module that holds it runs programs
+  # (`BuildRoot.program_source_paths/3`).
   defp package_build_root(ctx) do
-    case closure_ebins(ctx) do
-      {:ok, [ebin | _] = ebins} ->
+    case Context.ebin(ctx, ctx.package) do
+      nil ->
+        {:error, "R2: no ebin for #{inspect(ctx.package)}"}
+
+      ebin ->
         ebin
-        |> BuildRoot.program_source_paths(
-          Context.roots(ctx),
-          &Context.closure_file?(ctx, &1),
-          ebins
-        )
+        |> BuildRoot.program_source_paths(Context.roots(ctx), &Context.closure_file?(ctx, &1))
         |> r2()
-
-      error ->
-        r2(error)
     end
-  end
-
-  # The package's ebin first, then every closure dependency's.
-  defp closure_ebins(ctx) do
-    apps = [ctx.package | List.delete(Context.closure_of(ctx, ctx.package), ctx.package)]
-
-    Enum.reduce_while(apps, {:ok, []}, fn app, {:ok, acc} ->
-      case Context.ebin(ctx, app) do
-        nil -> {:halt, {:error, "no ebin for #{inspect(app)}"}}
-        ebin -> {:cont, {:ok, acc ++ [ebin]}}
-      end
-    end)
   end
 
   defp r2(:ok), do: nil

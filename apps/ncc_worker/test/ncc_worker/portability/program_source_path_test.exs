@@ -7,7 +7,7 @@ defmodule NccWorker.Portability.ProgramSourcePathTest do
   @moduletag :tmp_dir
 
   @libs %{"nif_check" => "ok", "mapped_libs" => ["/usr/lib/libc.so.6"]}
-  @refusal " (a source path in a package that runs programs)"
+  @refusal " (a source path in a module that runs programs)"
 
   # deps/<app> and _build/host/lib/<app>/ebin for the package `fx` and its
   # dependency `dep`.
@@ -110,8 +110,10 @@ defmodule NccWorker.Portability.ProgramSourcePathTest do
     assert Compatibility.Portability.withdraws?(verdict.reason)
   end
 
-  test "a path held in one package module and run from another refuses", %{proj: proj} do
-    assert %{status: :skip, reason: "bakes the build path: Elixir.FxPspjHold" <> @refusal} =
+  # The refusal needs the path and the program call in one module.
+  test "a path held in one package module and run from another passes, observed",
+       %{proj: proj} do
+    assert %{status: :pass, observations: %{"build_root_source_path" => [%{"owner" => "fx"}]}} =
              judged(proj, """
              defmodule FxPspjHold do
                def file, do: __ENV__.file
@@ -123,19 +125,48 @@ defmodule NccWorker.Portability.ProgramSourcePathTest do
              """)
   end
 
-  test "the package's path handed to a dependency that runs programs refuses", %{proj: proj} do
+  test "the package's path handed to a dependency that runs programs passes, observed",
+       %{proj: proj} do
     build(proj, "dep", """
     defmodule FxPspjDepCmd do
       def cmd(file), do: System.cmd("cat", [file])
     end
     """)
 
-    assert %{status: :skip, reason: "bakes the build path: Elixir.FxPspjPkgRun" <> @refusal} =
+    assert %{status: :pass, observations: %{"build_root_source_path" => [%{"owner" => "fx"}]}} =
              judged(proj, """
              defmodule FxPspjPkgRun do
                @compile {:no_warn_undefined, FxPspjDepCmd}
                def run, do: FxPspjDepCmd.cmd(file())
                defp file, do: __ENV__.file
+             end
+             """)
+  end
+
+  # Ecto's query macros store `file: __ENV__.file` in a struct built at
+  # runtime; the adapter that runs programs is another module.
+  test "Ecto's query metadata shape passes beside a module that runs programs",
+       %{proj: proj} do
+    assert %{status: :pass, observations: %{"build_root_source_path" => [%{"owner" => "fx"}]}} =
+             judged(proj, """
+             defmodule FxPspjQuery do
+               defstruct [:expr, :file, :line]
+               def build(expr), do: %__MODULE__{expr: expr, file: __ENV__.file, line: __ENV__.line}
+             end
+
+             defmodule FxPspjAdapter do
+               def run(sql), do: System.cmd("psql", ["-c", sql])
+             end
+             """)
+  end
+
+  test "the same query shape in a module that runs programs refuses", %{proj: proj} do
+    assert %{status: :skip, reason: "bakes the build path: Elixir.FxPspjQueryRun" <> @refusal} =
+             judged(proj, """
+             defmodule FxPspjQueryRun do
+               defstruct [:expr, :file, :line]
+               def build(expr), do: %__MODULE__{expr: expr, file: __ENV__.file, line: __ENV__.line}
+               def run(q), do: System.cmd("cat", [q.file])
              end
              """)
   end

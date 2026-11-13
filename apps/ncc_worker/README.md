@@ -528,7 +528,7 @@ Erlang, no NIF or driver load, static priv only, no mention of Nerves in the cod
 (`NccWorker.NervesCode`; rule 1 keeps the plain grep), no native sources, native
 build dependencies, target reads or `nerves*` name) AND the compile-time trace. A program call, an executable lookup
 or an `:os.type()` in the sources no longer refuses a build; the trace refuses one made at compile time, and a
-module that holds a source path in a package that runs programs. `rule1_reason` is what rule 1 (`portable?/4`, the
+module that holds a source path and itself runs programs. `rule1_reason` is what rule 1 (`portable?/4`, the
 verdict before rule 2) would have said, `null` when it passes: a `pass` with a `rule1_reason` is a build only rule 2
 publishes. `judge_revision` is the worker's judge revision (`NccWorker.Portability.judge_revision/1`), present for
 `pass` and `skipped` and `null` for `error`; the portal reopens skipped rows below the newest revision once. `manager`
