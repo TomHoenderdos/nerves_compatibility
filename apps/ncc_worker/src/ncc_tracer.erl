@@ -638,6 +638,17 @@ stored(Etf, #st{values = Values, value_bytes = Bytes} = St) ->
             end
     end.
 
+%% The value an env or config write set is stored like a value a read
+%% returned (stored/2): written once, named by value_id, under the same
+%% budget. A read that returns the value the write set names the same id.
+written_value(Channel, #{value := Value} = Arg, St)
+  when (Channel =:= env_write orelse Channel =:= config_write), is_binary(Value),
+       Value =/= <<"unrecordable">> ->
+    Etf = base64:decode(Value, #{mode => urlsafe, padding => false}),
+    {Ref, St1} = stored(Etf, St),
+    {maps:merge(maps:remove(value, Arg), Ref), St1};
+written_value(_Channel, Arg, St) -> {Arg, St}.
+
 %% A line that follows a traced call one to one (a `returned` line): counted
 %% as a call (check_limits/1, the queue check), not as a user event, so it
 %% does not take from the read budget max_user gives the events themselves.
@@ -907,13 +918,14 @@ path_frame(First) ->
     catch _:_ -> false
     end.
 
-user_line({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends, Id}, St0) ->
+user_line({Channel, Arg0}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends, Id}, St0) ->
     {Kind, First, User, {Caller, Bottom}} = frames(Kind0, First0, User0, Ends),
+    {Arg, St1} = written_value(Channel, Arg0, St0),
     Line0 = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
               mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
               arg => enrich(Channel, Arg), extent => Kind, first => First, user => User,
               caller => Caller, bottom => Bottom, first_kind => first_kind(First0)},
-    {Line, St} = hold(Pid, M, F, Args, Id, Line0, St0),
+    {Line, St} = hold(Pid, M, F, Args, Id, Line0, St1),
     user_event(Line, Kind =:= unjudged orelse Channel =:= unclassified, St).
 
 sentinel_app(<<"__final__:", Nonce/binary>>, Pid, #st{final_pid = Pid, final_nonce = Nonce}) ->

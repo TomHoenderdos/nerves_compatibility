@@ -104,7 +104,9 @@ defmodule NccWorker.Portability do
     "native_calls" => 50,
     "mix_exs_allowed" => 50,
     "build_root_source_path" => 50,
-    "mix_project_paths" => 50
+    "mix_project_paths" => 50,
+    "env_writes" => 50,
+    "config_writes" => 50
   }
   @max_refusals 100
   @max_problems 20
@@ -1150,9 +1152,21 @@ defmodule NccWorker.Portability do
   defp collect(observed, kind, cap) do
     observed
     |> Enum.filter(&(elem(&1, 0) == kind))
-    |> Enum.map(&elem(&1, 1))
+    |> Enum.map(&(&1 |> elem(1) |> public_item()))
     |> Enum.uniq()
     |> Enum.take(cap)
+  end
+
+  # What the build observed, without any value a read returned or a write
+  # set: values go to `compile_env` and `compile_inputs` only, where a
+  # private name is never recorded (`CompileInputs`).
+  defp public_item(item) do
+    item = Map.drop(item, ["returned", "value"])
+
+    case item do
+      %{"arg" => %{} = arg} -> %{item | "arg" => Map.delete(arg, "value")}
+      _ -> item
+    end
   end
 
   defp stats(%{report: report} = facts) do

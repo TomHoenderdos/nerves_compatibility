@@ -864,4 +864,20 @@ defmodule NccWorker.Portability.EventsTest do
       assert Compatibility.Portability.withdraws?(reason)
     end
   end
+
+  test "env and config writes are observed, never refused", %{ctx: ctx} do
+    put = ev("env_write", "os:putenv/2", %{"name" => "X", "value" => "v"})
+
+    assert {:observe, "env_writes",
+            %{"name" => "X", "value" => "v", "ts" => 50, "file" => "lib/pkg.ex"}} =
+             Events.decide(put, ctx, "pkg")
+
+    set =
+      ev("config_write", "application:set_env/4", %{"app" => "a", "key" => "k", "value" => "v"})
+
+    assert {:observe, "config_writes", %{"mfa" => "application:set_env/4"}} =
+             Events.decide(set, ctx, "pkg")
+
+    assert {:observe, "env_writes", _} = Events.decide(put, ctx, :outside)
+  end
 end

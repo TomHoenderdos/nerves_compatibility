@@ -43,6 +43,14 @@ defmodule NccWorker.Tracer.FixturesReturnsTest do
         @n Enum.count(1..2000, fn i -> Application.get_env(:fx_ret_many, :"k\#{rem(i, 7)}") end)
         def n, do: @n
       end
+      """),
+    "fx_ret_write" =>
+      lib("fx_ret_write", """
+      defmodule FxRetWrite do
+        System.put_env("FX_RET_W", "w")
+        @w System.get_env("FX_RET_W")
+        def w, do: @w
+      end
       """)
   }
 
@@ -95,6 +103,7 @@ defmodule NccWorker.Tracer.FixturesReturnsTest do
 
     %{
       traced: traced,
+      proj: proj,
       trace_file: Path.join([root, "p", "trace", "trace-main.jsonl"]),
       big: big_traced,
       big_file: Path.join([root, "b", "trace", "trace-main.jsonl"])
@@ -160,6 +169,61 @@ defmodule NccWorker.Tracer.FixturesReturnsTest do
     events = Enum.count(lines, &(&1["kind"] == "event"))
     assert Enum.count(lines, &(&1["kind"] == "returned")) >= 2000
     assert %{"user_events" => ^events} = Enum.find(lines, &(&1["kind"] == "stats"))
+  end
+
+  test "an env write is a line with the value it set, before the read that sees it", ctx do
+    assert [%{"ts" => wts, "arg" => %{"value" => value}}] =
+             Enum.filter(ctx.traced.report.events, &(&1["mfa"] == "os:putenv/2"))
+
+    assert value == rec({:ok, "w"})
+
+    assert [%{"ts" => rts, "returned" => ^value} | _] =
+             reads(ctx, "os:getenv/1", named("FX_RET_W"))
+
+    assert wts < rts
+  end
+
+  # The value a write set is stored like a value a read returned: once, in
+  # a value line, which the read that sees it names too.
+  test "an env write names its value by value_id, shared with the read", ctx do
+    lines = ctx.trace_file |> File.stream!() |> Enum.map(&JSON.decode!/1)
+
+    assert [%{"arg" => %{"value_id" => vid} = arg}] =
+             for(%{"kind" => "event", "mfa" => "os:putenv/2"} = l <- lines, do: l)
+
+    refute Map.has_key?(arg, "value")
+
+    assert [%{"value" => value}] =
+             for(%{"kind" => "value", "value_id" => ^vid} = l <- lines, do: l)
+
+    assert value == rec({:ok, "w"})
+
+    [%{"call_id" => id}] =
+      for %{"kind" => "event", "mfa" => "os:getenv/1", "arg" => %{"name" => "FX_RET_W"}} = l <-
+            lines,
+          do: l
+
+    assert [%{"value_id" => ^vid}] =
+             for(%{"kind" => "returned", "call_id" => ^id} = l <- lines, do: l)
+  end
+
+  # The value a write set reaches compile inputs only: the verdict's public
+  # observations keep the write, never its value.
+  test "the verdict observes the env write without its value", ctx do
+    v = TracerFixtures.judge(ctx.proj, "fx_ret_write", ctx.traced)
+
+    assert [%{"owner" => "fx_ret_write", "name" => "FX_RET_W", "mfa" => "os:putenv/2"} = w] =
+             v.observations["env_writes"],
+           inspect(v.observations)
+
+    refute Map.has_key?(w, "value")
+    refute Map.has_key?(w["arg"], "value")
+    assert v.observations["config_writes"] == []
+
+    for kind <- ["config_reads", "env_writes"], item <- v.observations[kind] do
+      refute Map.has_key?(item, "returned"), inspect(item)
+      refute Map.has_key?(item["arg"] || %{}, "value"), inspect(item)
+    end
   end
 
   describe "the value budget" do

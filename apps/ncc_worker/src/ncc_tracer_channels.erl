@@ -95,6 +95,12 @@ patterns() ->
      {erlang, process_info, 1}, {erlang, process_info, 2},
      {application, get_env, 1}, {application, get_env, 2}, {application, get_env, 3},
      {application, get_all_env, 0}, {application, get_all_env, 1},
+     %% Writes a compile makes to the environment or the application env
+     %% (compile-time inputs spec, section 1): a later read of the same name
+     %% sees the build's own value, not the host's.
+     {os, putenv, 2}, {os, unsetenv, 1},
+     {application, set_env, 1}, {application, set_env, 2}, {application, set_env, 3},
+     {application, set_env, 4}, {application, unset_env, 2}, {application, unset_env, 3},
      %% Listing the loaded modules: under the trace the list holds every
      %% module the tracer loaded.
      {code, all_loaded, 0}, {erlang, loaded, 0}, {code, module_status, 0},
@@ -314,6 +320,17 @@ chars_term(Value) when is_list(Value) ->
     end;
 chars_term(_Value) -> <<"unrecordable">>.
 
+config_key(App, Key) ->
+    #{app => term_bin(App), key => term_bin(Key), app_name => atom_name(App),
+      key_name => atom_name(Key)}.
+
+%% The value an env write set, recorded as a read of it would return it.
+env_value(Value) ->
+    case chars_term(Value) of
+        {recorded, Term} -> recorded(Term);
+        Marker -> Marker
+    end.
+
 nested_compile(true) -> {nested_compile, #{}};
 nested_compile(false) -> unknown.
 
@@ -382,6 +399,8 @@ specific(ets, lookup_element, ['Elixir.Mix.State', target | Rest]) when length(R
 specific('Elixir.Mix.Project', F, Args)
   when (F =:= build_path orelse F =:= app_path orelse F =:= compile_path), length(Args) =< 1 ->
     {mix_state, #{'fun' => atom_to_binary(F)}};
+specific(os, putenv, [Name, Value]) -> {env_write, #{name => chars(Name), value => env_value(Value)}};
+specific(os, unsetenv, [Name]) -> {env_write, #{name => chars(Name), value => recorded(error)}};
 specific(_M, _F, _Args) -> unknown.
 
 mix_target() -> {mix_state, #{'fun' => <<"target">>}}.
@@ -425,6 +444,11 @@ by_module(application, get_env, [Key]) ->
 by_module(application, get_env, [App, Key | _]) ->
     {config, #{app => term_bin(App), key => term_bin(Key), app_name => atom_name(App),
                key_name => atom_name(Key), atoms => is_atom(App) andalso is_atom(Key)}};
+by_module(application, set_env, [App, Key, Value | _]) ->
+    {config_write, (config_key(App, Key))#{value => recorded({ok, Value})}};
+by_module(application, set_env, [_Config | _]) -> {config_write, #{all => true}};
+by_module(application, unset_env, [App, Key | _]) ->
+    {config_write, (config_key(App, Key))#{value => recorded(error)}};
 by_module(application, get_all_env, Args) ->
     {config, #{app => first_term(Args), app_name => first_atom_name(Args), all => true}};
 by_module(M, _F, _Args) ->

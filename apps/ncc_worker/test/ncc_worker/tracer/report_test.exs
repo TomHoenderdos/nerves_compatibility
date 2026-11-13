@@ -577,4 +577,40 @@ defmodule NccWorker.Tracer.ReportTest do
     assert "a returned line names an unknown value" in report.problems
     assert [%{"returned" => nil}] = Enum.filter(report.events, &(&1["mfa"] == "os:getenv/1"))
   end
+
+  test "a write event's value_id resolves to the value it set", %{tmp_dir: dir} do
+    write = fn ts, arg ->
+      %{
+        "kind" => "event",
+        "ts" => ts,
+        "channel" => "env_write",
+        "mfa" => "os:putenv/2",
+        "arg" => Map.put(arg, "name", "X"),
+        "extent" => "frame"
+      }
+    end
+
+    extra = [
+      %{"kind" => "value", "value_id" => 1, "value" => "g3cFZXJyb3I"},
+      write.(33, %{"value_id" => 1}),
+      write.(34, %{"value" => "unrecordable"}),
+      write.(35, %{"value_id" => 9})
+    ]
+
+    {body, tail} = Enum.split(clean(), -2)
+    report = read(dir, body ++ extra ++ tail)
+
+    assert [
+             %{"name" => "X", "value" => "g3cFZXJyb3I"} = a,
+             %{"value" => "unrecordable"},
+             %{"value" => nil} = c
+           ] =
+             report.events
+             |> Enum.filter(&(&1["mfa"] == "os:putenv/2"))
+             |> Enum.map(& &1["arg"])
+
+    refute Map.has_key?(a, "value_id")
+    refute Map.has_key?(c, "value_id")
+    assert report.problems == ["a write names an unknown value"]
+  end
 end

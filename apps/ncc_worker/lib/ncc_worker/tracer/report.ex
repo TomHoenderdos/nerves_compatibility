@@ -469,11 +469,12 @@ defmodule NccWorker.Tracer.Report do
     app = (child.start && child.start["app"]) || file_app(path)
 
     {returns, unknown} = resolve_returns(child.returns, child.values)
-    child = Enum.reduce(unknown, child, &child_problem(&2, &1))
+    {events, unwritten} = resolve_written(child.events, child.values)
+    child = Enum.reduce(unknown ++ unwritten, child, &child_problem(&2, &1))
 
     child = %{
       Map.drop(child, [:returns, :values])
-      | events: Enum.map(child.events, &with_returned(&1, returns)),
+      | events: Enum.map(events, &with_returned(&1, returns)),
         problems: Enum.reverse(child.problems)
     }
 
@@ -530,7 +531,8 @@ defmodule NccWorker.Tracer.Report do
 
   defp finalize(r, items) do
     {returns, unknown} = resolve_returns(r.returns, r.values)
-    r = Enum.reduce(unknown, r, &problem(&2, &1))
+    {events, unwritten} = resolve_written(r.events, r.values)
+    r = Enum.reduce(unknown ++ unwritten, %{r | events: events}, &problem(&2, &1))
 
     r = %{
       r
@@ -580,6 +582,25 @@ defmodule NccWorker.Tracer.Report do
 
       {id, v}, {acc, unknown} ->
         {Map.put(acc, id, v), unknown}
+    end)
+  end
+
+  # An env or config write names the value it set by value_id, like a
+  # returned line: its arg gets the value back, nil (and a problem) when no
+  # value line has that id.
+  defp resolve_written(events, values) do
+    Enum.map_reduce(events, [], fn
+      %{"arg" => %{"value_id" => vid} = arg} = event, unknown when is_integer(vid) ->
+        {value, unknown} =
+          case Map.fetch(values, vid) do
+            {:ok, v} -> {v, unknown}
+            :error -> {nil, Enum.uniq(["a write names an unknown value" | unknown])}
+          end
+
+        {%{event | "arg" => arg |> Map.delete("value_id") |> Map.put("value", value)}, unknown}
+
+      event, unknown ->
+        {event, unknown}
     end)
   end
 

@@ -469,4 +469,51 @@ defmodule NccWorker.Tracer.ChannelsTest do
       refute :ncc_tracer_channels.returned_mfa(:os, :getenv, 2)
     end
   end
+
+  describe "the write channel" do
+    defp wrec(term),
+      do: term |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
+
+    test "env writes name the variable and the value set" do
+      assert {:env_write, %{name: "X", value: value}} =
+               :ncc_tracer_channels.classify(:os, :putenv, [~c"X", ~c"1"])
+
+      assert value == wrec({:ok, "1"})
+
+      assert {:env_write, %{name: "X", value: unset}} =
+               :ncc_tracer_channels.classify(:os, :unsetenv, [~c"X"])
+
+      assert unset == wrec(:error)
+    end
+
+    test "config writes name the app and key and the value set" do
+      assert {:config_write, %{app_name: "a", key_name: "k", value: v}} =
+               :ncc_tracer_channels.classify(:application, :set_env, [:a, :k, 1, []])
+
+      assert v == wrec({:ok, 1})
+
+      assert {:config_write, %{value: e}} =
+               :ncc_tracer_channels.classify(:application, :unset_env, [:a, :k])
+
+      assert e == wrec(:error)
+
+      assert {:config_write, %{all: true}} =
+               :ncc_tracer_channels.classify(:application, :set_env, [[{:a, [k: 1]}]])
+    end
+
+    test "the writes are patterned" do
+      for mfa <- [
+            {:os, :putenv, 2},
+            {:os, :unsetenv, 1},
+            {:application, :set_env, 3},
+            {:application, :set_env, 4},
+            {:application, :unset_env, 2},
+            {:application, :unset_env, 3},
+            {:application, :set_env, 1},
+            {:application, :set_env, 2}
+          ] do
+        assert mfa in :ncc_tracer_channels.patterns(), inspect(mfa)
+      end
+    end
+  end
 end

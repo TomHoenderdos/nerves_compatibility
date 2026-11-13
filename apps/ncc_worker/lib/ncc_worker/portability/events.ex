@@ -213,6 +213,15 @@ defmodule NccWorker.Portability.Events do
   defp channel("config", event, _ctx, _owner),
     do: {:observe, "config_reads", traced_summary(event)}
 
+  # Writes a compile makes to the environment or the application env
+  # (compile-time inputs spec, section 1): observed for `CompileInputs`,
+  # which tells a read of the build's own value from a read of the host's.
+  # Writing changes nothing outside the compile, so it never refuses.
+  defp channel("env_write", event, _ctx, _owner), do: {:observe, "env_writes", env_write(event)}
+
+  defp channel("config_write", event, _ctx, _owner),
+    do: {:observe, "config_writes", summary(event)}
+
   # Item 2's gap: Mix state read through a module name. The target refuses
   # wherever it is made, a dependency's `mix.exs` included: a literal
   # `Mix.target` there already makes the dependency native by the static
@@ -488,6 +497,16 @@ defmodule NccWorker.Portability.Events do
 
   defp display("Elixir." <> name), do: name
   defp display(name), do: name
+
+  defp env_write(event) do
+    event
+    |> summary()
+    |> Map.merge(%{
+      "name" => event["arg"]["name"],
+      "value" => event["arg"]["value"],
+      "ts" => event["ts"]
+    })
+  end
 
   defp summary(event) do
     user = if is_map(event["user"]), do: event["user"], else: %{}
