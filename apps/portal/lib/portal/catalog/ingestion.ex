@@ -1186,7 +1186,8 @@ defmodule Portal.Catalog.Ingestion do
   defp warn_inputs({package, version}),
     do:
       Logger.warning(
-        "compile_inputs malformed for #{package} #{version}: the build is not published"
+        "compile_inputs malformed for #{package} #{version}: stored as none and compile_env " <>
+          "dropped, so format 2 leaves the build out"
       )
 
   defp warn_unrecordable(nil), do: :ok

@@ -3003,7 +3003,11 @@ defmodule Portal.Catalog do
     builds =
       (run_builds(sources) ++ toolchain_builds_v2(sources))
       |> Enum.filter(&matchable?/1)
-      |> newest_per_key()
+      |> Enum.split_with(&needs_check?/1)
+      |> then(fn {checked, plain} ->
+        Enum.map(newest_per_key(checked), &{:checked, &1}) ++
+          Enum.map(newest_per_key(plain), &{:plain, &1})
+      end)
 
     if builds == [] do
       nil
@@ -3012,13 +3016,11 @@ defmodule Portal.Catalog do
         "format" => 2,
         "versions" =>
           builds
-          |> Enum.group_by(&elem(&1, 0), &elem(&1, 2))
-          |> Map.new(fn {version, list} ->
-            {version, version_builds(list)}
-          end),
+          |> Enum.group_by(fn {_list, {version, _at, _build}} -> version end)
+          |> Map.new(fn {version, list} -> {version, version_builds(list)} end),
         "updated_at" =>
           builds
-          |> Enum.map(&elem(&1, 1))
+          |> Enum.map(fn {_list, {_version, at, _build}} -> at end)
           |> Enum.reject(&is_nil/1)
           |> Enum.max(DateTime, fn -> nil end)
           |> iso8601()
@@ -3029,18 +3031,23 @@ defmodule Portal.Catalog do
   # A build with an input a client must check (`CompileInputs.needs_check?/1`)
   # goes under `builds_with_inputs`, which a client before 0.6.0 never reads:
   # to it the build does not exist, as before these builds were published.
-  # Every version keeps a `builds` list, empty or not: those clients refuse
-  # the whole manifest when a version has none. A version without such a
-  # build renders the bytes it always did.
-  defp version_builds(list) do
-    {checked, plain} =
-      list
-      |> Enum.sort_by(&build_order/1)
-      |> Enum.split_with(&CompileInputs.needs_check?(&1["build"]["compile_inputs"]))
+  # The newest per key is picked within each list, so a newer such build
+  # never hides an older plain one those clients can use. Every version keeps
+  # a `builds` list, empty or not: those clients refuse the whole manifest
+  # when a version has none. A version without such a build renders the
+  # bytes it always did.
+  defp needs_check?({_version, _at, %{"build" => build}}),
+    do: CompileInputs.needs_check?(build["compile_inputs"])
 
-    if checked == [],
-      do: %{"builds" => plain},
-      else: %{"builds" => plain, "builds_with_inputs" => checked}
+  defp version_builds(list) do
+    pick = fn tag ->
+      for({^tag, {_version, _at, build}} <- list, do: build) |> Enum.sort_by(&build_order/1)
+    end
+
+    case pick.(:checked) do
+      [] -> %{"builds" => pick.(:plain)}
+      checked -> %{"builds" => pick.(:plain), "builds_with_inputs" => checked}
+    end
   end
 
   # Every result format 1 could publish, not only the newest per system:

@@ -127,4 +127,34 @@ defmodule Portal.Catalog.CompileInputsTest do
 
     refute Catalog.precompiled_fingerprints()[name] == before
   end
+
+  test "a newer build that needs a check never hides an older plain one of the same key" do
+    name = name()
+
+    ingest_toolchain_build(name, "0.3.0",
+      builder_version: 1,
+      finished_at: "2026-10-24T10:00:00Z",
+      compile_inputs: []
+    )
+
+    ingest_toolchain_build(name, "0.3.0",
+      builder_version: 2,
+      finished_at: "2026-11-13T10:00:00Z",
+      compile_inputs: @host
+    )
+
+    version = Catalog.precompiled_manifest_v2(name)["versions"]["0.3.0"]
+    assert [%{"build" => plain}] = version["builds"]
+    assert plain["compile_inputs"] == []
+    assert [%{"build" => checked}] = version["builds_with_inputs"]
+    assert checked["compile_inputs"] == @host
+  end
+
+  test "a rebuild replaces the stored inputs" do
+    name = name()
+    ingest_toolchain_build(name, "0.3.0", compile_inputs: @host)
+    tb = ingest_toolchain_build(name, "0.3.0", compile_inputs: @own)
+    assert tb.compile_inputs == @own
+    assert Repo.reload!(tb).compile_inputs == @own
+  end
 end
