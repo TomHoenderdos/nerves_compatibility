@@ -1015,6 +1015,15 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
              order_item(passes(ctx, "fx_cfg_ssl"), "ssl", "fx_cfg_unset_key")
   end
 
+  # The worker's real output is what the portal validates, for every
+  # fixture that publishes (config_order items included).
+  test "every published build's compile_inputs passes the shared shape check", ctx do
+    for app <- Map.keys(@deps), %{status: :pass} = v <- [verdict(ctx, app)] do
+      assert Compatibility.CompileInputs.validate(v.compile_inputs) == {:ok, v.compile_inputs},
+             app
+    end
+  end
+
   test "a package that reads no config publishes with no config items", ctx do
     v = passes(ctx, "fx_cfg_plain")
     assert v.compile_env == []

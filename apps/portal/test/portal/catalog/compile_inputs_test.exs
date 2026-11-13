@@ -78,13 +78,48 @@ defmodule Portal.Catalog.CompileInputsTest do
     refute Map.has_key?(build["build"], "compile_inputs")
   end
 
-  test "malformed inputs store none and drop compile_env, so nothing publishes" do
-    for bad <- [[%{"kind" => "teleport"}], [%{"kind" => "env", "name" => "X"}], "nope"] do
+  # A list the shared shape rejects still says the compile read something:
+  # it is stored as config_unrecorded, which needs a check, never as none.
+  test "malformed inputs store config_unrecorded and drop compile_env, so nothing publishes" do
+    bad_order = %{
+      "kind" => "config_order",
+      "app" => "a=b",
+      "path" => ["k"],
+      "reader" => "r",
+      "default" => @unset,
+      "seen" => @unset
+    }
+
+    for bad <- [
+          [%{"kind" => "teleport"}],
+          [%{"kind" => "env", "name" => "X"}],
+          @host ++ [bad_order],
+          "nope"
+        ] do
       name = name()
-      tb = ingest_toolchain_build(name, "0.3.0", compile_inputs: bad)
-      assert tb.compile_inputs == nil and tb.compile_env == nil
+      tb = ingest_toolchain_build(name, "0.3.0", compile_env: [], compile_inputs: bad)
+      assert tb.compile_inputs == [%{"kind" => "config_unrecorded"}]
+      assert tb.compile_env == nil
       assert Catalog.precompiled_manifest_v2(name) == nil
     end
+  end
+
+  test "format 1 and format 2's builds never list a run result with malformed inputs" do
+    bad = @host ++ [%{"kind" => "config_order", "app" => "", "path" => ["k"]}]
+
+    result =
+      result_fixture()
+      |> put_in(["systems", "nerves_system_rpi4", "compile_inputs"], bad)
+      |> put_in(["systems", "nerves_system_rpi4", "compile_env"], [])
+
+    ingest_with_artifact(result)
+    name = result["package"]["name"]
+    version = result["package"]["version"]
+    %{v1: v1, v2: v2} = Catalog.precompiled_manifests(name)
+
+    refute v1 && Map.has_key?(v1.versions[version] || %{}, "nerves_system_rpi4")
+    builds = (v2 && v2["versions"][version]["builds"]) || []
+    refute Enum.any?(builds, &(&1["target"] == "nerves_system_rpi4"))
   end
 
   test "an unrecordable compile_env value is kept" do

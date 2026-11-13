@@ -31,10 +31,20 @@ defmodule Compatibility.CompileInputs do
   @unrecordable "unrecordable"
   @max_items 256
   @max_name_bytes 256
+  # The share of `@max_items` the worker gives `config_order` items, next to
+  # 128 `env` items and 32 of every other kind.
+  @max_config_order_items 96
 
   @doc "The value of an item whose value was not recorded: it matches nothing."
   @spec unrecordable() :: String.t()
   def unrecordable, do: @unrecordable
+
+  @doc """
+  How many `config_order` items a build records at most: more record
+  `config_unrecorded` instead, so the list stays within the shared cap.
+  """
+  @spec max_config_order_items() :: pos_integer()
+  def max_config_order_items, do: @max_config_order_items
 
   @doc "The list when every item has exactly one of the shapes above, `:error` otherwise."
   @spec validate(term()) :: {:ok, [map()] | nil} | :error

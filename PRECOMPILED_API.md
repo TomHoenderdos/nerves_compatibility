@@ -583,7 +583,9 @@ What it lists:
     locked version (`:error` when it declares none), `seen` what the read returned, both recorded
     like `value` or `"unrecordable"`.
 
-  A `compile_env` value may also be `"unrecordable"`, which matches no config.
+  A `compile_env` value may also be `"unrecordable"`, which matches no config. A list the portal
+  rejects as malformed is stored as `[{"kind": "config_unrecorded"}]` with the build's `compile_env`
+  dropped, so neither format lists that build.
 - A build with any input to check (anything but `set_by: "build"` with `inputs: "recorded"`) is
   listed under `versions[v].builds_with_inputs`, never under `builds`, and never in format 1. Every
   version keeps a `builds` list, possibly empty. Clients before 0.6.0 read `builds` alone: they

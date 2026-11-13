@@ -587,9 +587,12 @@ environment reads of the package's closure, which no longer refuse a build (`Ncc
 `{"kind": "config_unrecorded"}` when the config reads could not all be recorded, and
 `{"kind": "config_order", "app", "path", "reader", "default", "seen"}`: an unset key read outside the reader's tree;
 `default` is the app's `.app` env default at the locked version, `seen` what the read returned. A value the trace could not
-capture, over 64 KiB, or under a private-looking name (`NCC_*`, `*TOKEN*`, `*SECRET*`, ...) is `"unrecordable"`.
+capture, over 64 KiB, under a private-looking name (`NCC_*`, `*TOKEN*`, `*SECRET*`, `*_KEY`, `*_PASS`, `*_PROXY`,
+...) or holding a URL with userinfo (`scheme://user:pass@`) is `"unrecordable"`.
 Each kind has its own cap inside the list's 256 items: more than 128 `env` items record `env_all` instead, more
-than 96 `config_order` items or 32 of any other kind record `config_unrecorded`; a cap never drops the build.
+than 96 `config_order` items or 32 of any other kind record `config_unrecorded`; a cap never drops the build. A
+`config_order` item whose app, key or reader no item may name (an empty atom, one with `=` or NUL, or over 256 bytes)
+records `config_unrecorded` too.
 Other host reads (`os:type`, `system_info`, files, the network, programs, init arguments) still refuse.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.

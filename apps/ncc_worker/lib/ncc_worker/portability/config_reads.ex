@@ -102,8 +102,10 @@ defmodule NccWorker.Portability.ConfigReads do
   loaded alike and a `config_order` input for each of the others; a key
   whose readers are all ordered has no item, since the client's
   `compile_env` check would compare it with the wrong value. More than 96
-  `config_order` inputs (`Compatibility.CompileInputs`' share for them)
-  record `config_unrecorded` instead.
+  `config_order` inputs (`Compatibility.CompileInputs.max_config_order_items/0`)
+  record `config_unrecorded` instead, and so does one whose application,
+  key or reader is a name no item may carry
+  (`Compatibility.CompileInputs.name?/1`).
 
   The items never enter the published `.app`: `merge/2` adds them to the
   build's `compile_env` list only.
@@ -217,10 +219,6 @@ defmodule NccWorker.Portability.ConfigReads do
   @max_items 500
   @unrecorded %{"kind" => "config_unrecorded"}
   @max_app_bytes 1_048_576
-  # `Compatibility.CompileInputs`' share for config_order items (with 128
-  # env items and 32 of the rest, within its 256-item cap): more than this
-  # record config_unrecorded.
-  @max_order_items 96
 
   @type item :: %{app: String.t(), path: [String.t()], value: String.t()}
   @type trees :: %{String.t() => [String.t()]}
@@ -489,7 +487,7 @@ defmodule NccWorker.Portability.ConfigReads do
   defp cap_orders(inputs) do
     {orders, others} = Enum.split_with(inputs, &(&1["kind"] == "config_order"))
 
-    if length(orders) > @max_order_items,
+    if length(orders) > CompileInputs.max_config_order_items(),
       do: Enum.uniq(others ++ [@unrecorded]),
       else: inputs
   end
@@ -526,7 +524,20 @@ defmodule NccWorker.Portability.ConfigReads do
     {item, ordered |> Enum.sort() |> Enum.map(&order_item(app, key, &1, default, captures))}
   end
 
+  # A name no compile_inputs item may carry (`CompileInputs.name?/1`: an
+  # atom that is empty, holds `=` or NUL, or runs over 256 bytes) would make
+  # the portal reject the whole list: it records config_unrecorded instead,
+  # which a client must still check.
   defp order_item(app, key, reader, default, captures) when is_binary(reader) do
+    if Enum.all?([app, key, reader], &CompileInputs.name?/1),
+      do: named_order_item(app, key, reader, default, captures),
+      else: @unrecorded
+  end
+
+  # A read outside every window has no place in a compile order.
+  defp order_item(_app, _key, _reader, _default, _captures), do: @unrecorded
+
+  defp named_order_item(app, key, reader, default, captures) do
     %{
       "kind" => "config_order",
       "app" => app,
@@ -536,9 +547,6 @@ defmodule NccWorker.Portability.ConfigReads do
       "seen" => seen(for({^reader, r} <- captures, do: r))
     }
   end
-
-  # A read outside every window has no place in a compile order.
-  defp order_item(_app, _key, _reader, _default, _captures), do: @unrecorded
 
   # What one reader saw: the one value all its captures agree on.
   # "default": the read got its own fallback, which is what an unset key

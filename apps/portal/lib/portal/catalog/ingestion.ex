@@ -1169,9 +1169,14 @@ defmodule Portal.Catalog.Ingestion do
   defp compile_env(_list, _context), do: nil
 
   # A build's compile-time inputs (`Compatibility.CompileInputs`), checked
-  # whole. A malformed list stores none and drops the build's `compile_env`
-  # too, so the build is never published looking as if it read nothing.
-  # `context` is used only for the warning; never a value.
+  # whole. A malformed list still says the compile read something it could
+  # not record: it is stored as one `config_unrecorded` item, which needs a
+  # check, so format 1 and format 2's `builds` both leave the build out (none
+  # would make it a plain build there). The build's `compile_env` is dropped
+  # too, so format 2 leaves it out of `builds_with_inputs` as well. `context`
+  # is used only for the warning; never a value.
+  @malformed_inputs [%{"kind" => "config_unrecorded"}]
+
   defp inputs_and_env(raw, context) do
     case CompileInputs.validate(raw["compile_inputs"]) do
       {:ok, inputs} ->
@@ -1179,15 +1184,15 @@ defmodule Portal.Catalog.Ingestion do
 
       :error ->
         warn_inputs(context)
-        {nil, nil}
+        {@malformed_inputs, nil}
     end
   end
 
   defp warn_inputs({package, version}),
     do:
       Logger.warning(
-        "compile_inputs malformed for #{package} #{version}: stored as none and compile_env " <>
-          "dropped, so format 2 leaves the build out"
+        "compile_inputs malformed for #{package} #{version}: stored as config_unrecorded and " <>
+          "compile_env dropped, so neither format publishes the build"
       )
 
   defp warn_unrecordable(nil), do: :ok

@@ -53,6 +53,50 @@ defmodule NccWorker.Portability.CompileInputsTest do
     assert values == ["unrecordable"]
   end
 
+  test "names that hold credentials are unrecordable, whatever their case" do
+    names =
+      ~w(DB_PASS SMTP_PWD AWS_ACCESS_KEY AUTH BASIC_AUTH HTTP_PROXY http_proxy HTTPS_PROXY no_proxy) ++
+        ~w(ALL_PROXY Fx_Key)
+
+    for name <- names do
+      assert [%{"value" => "unrecordable"}] =
+               CompileInputs.build([read(name, rec({:ok, "v"}))], []),
+             name
+    end
+  end
+
+  test "a name only containing those words keeps its value" do
+    for name <- ~w(KEYBOARD PASSAGE AUTHOR PROXYING MONKEY_KEYS LANG) do
+      assert [%{"value" => value}] = CompileInputs.build([read(name, rec({:ok, "v"}))], [])
+      assert value == rec({:ok, "v"}), name
+    end
+  end
+
+  test "a value that is a URL with userinfo is unrecordable, whatever the name" do
+    for url <- [
+          "postgres://user:pass@db.example/app",
+          "https://token@example.com/x",
+          "  redis://:pw@cache:6379",
+          "git+ssh://u:p@example.com/r.git"
+        ] do
+      assert [%{"value" => "unrecordable"}] =
+               CompileInputs.build([read("DATABASE_URL", rec({:ok, url}))], []),
+             url
+    end
+
+    for url <- ["https://example.com/a@b", "https://example.com", "mailto:a@b.example"] do
+      assert [%{"value" => value}] = CompileInputs.build([read("SITE", rec({:ok, url}))], [])
+      assert value == rec({:ok, url}), url
+    end
+  end
+
+  test "a config_order input with a name it cannot carry becomes config_unrecorded" do
+    bad = for app <- ["a=b", "", String.duplicate("x", 257)], do: Map.put(order(1), "app", app)
+    items = CompileInputs.build([], [order(2) | bad] ++ [%{"kind" => "config_unrecorded"}])
+    assert Enum.sort_by(items, & &1["kind"]) == [order(2), %{"kind" => "config_unrecorded"}]
+    assert Compatibility.CompileInputs.validate(items) == {:ok, items}
+  end
+
   # The circuits shape: mix.exs reads CROSS, then sets BACKEND; lib reads BACKEND.
   test "a read of a value the build wrote is set by the build, its inputs recorded" do
     mix = "/p/deps/pkg/mix.exs"

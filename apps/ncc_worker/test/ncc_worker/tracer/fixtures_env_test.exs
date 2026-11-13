@@ -74,6 +74,16 @@ defmodule NccWorker.Tracer.FixturesEnvTest do
           """
         }
       ),
+    # A config read of an application no compile_inputs item can name,
+    # next to an env read: the env read still needs its check.
+    "fx_env_badapp" =>
+      lib("fx_env_badapp", """
+      defmodule FxEnvBadApp do
+        @x System.get_env("FX_ENV_BADAPP")
+        @a Application.get_env(:"a=b", :k)
+        def v, do: {@x, @a}
+      end
+      """),
     "fx_env_cmd" =>
       lib("fx_env_cmd", """
       defmodule FxEnvCmd do
@@ -158,6 +168,23 @@ defmodule NccWorker.Tracer.FixturesEnvTest do
     assert value == rec({:ok, "host"})
     assert %{"set_by" => "host", "value" => cross} = env(v, "FX_SHAPE_CROSS")
     assert cross == rec(:error)
+  end
+
+  test "a config read of an unnameable application records config_unrecorded", ctx do
+    v = passes(ctx, "fx_env_badapp")
+    assert %{"kind" => "config_unrecorded"} in v.compile_inputs
+    refute Enum.any?(v.compile_inputs, &(&1["kind"] == "config_order"))
+    assert %{"set_by" => "host"} = env(v, "FX_ENV_BADAPP")
+    assert Compatibility.CompileInputs.needs_check?(v.compile_inputs)
+  end
+
+  # The worker's real output is what the portal validates: a list it would
+  # reject is stored as needing a check, never published as recorded.
+  test "every published build's compile_inputs passes the shared shape check", ctx do
+    for app <- Map.keys(@deps), app != "fx_env_cmd" do
+      inputs = passes(ctx, app).compile_inputs
+      assert Compatibility.CompileInputs.validate(inputs) == {:ok, inputs}, app
+    end
   end
 
   test "other host reads still refuse", ctx do

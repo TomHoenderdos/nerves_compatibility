@@ -174,6 +174,26 @@ defmodule NccWorker.Portability.ConfigReadsTest do
                ConfigReads.judge(orders.(97), @elixir, snap(%{}), trees, %{})
     end
 
+    # An atom name no compile_inputs item may carry (empty, with `=` or NUL,
+    # over 256 bytes: `Compatibility.CompileInputs.name?/1`) would make the
+    # portal reject the whole list, and the build would publish as plain.
+    test "a config_order item with a name it cannot carry is config_unrecorded" do
+      trees = ConfigReads.trees(ctx([]))
+      long = String.duplicate("é", 200)
+
+      for {app, key} <- [{"a=b", "k"}, {"", "k"}, {long, "k"}, {"a", "k=v"}, {"a", ""}] do
+        decided = [
+          obs("r", read(app, key, returned: enc(:error))),
+          obs("q", read(app, key, returned: enc(:error))),
+          obs(:outside, read("fx", "k"))
+        ]
+
+        assert %{inputs: [%{"kind" => "config_unrecorded"}]} =
+                 ConfigReads.judge(decided, @elixir, snap(%{}), trees, %{}),
+               inspect({app, key})
+      end
+    end
+
     test "outside every window there is no reader to order: config_unrecorded" do
       assert %{items: [], problems: [], inputs: [%{"kind" => "config_unrecorded"}]} =
                judge([obs(:outside, read("fx", "k"))], snap(%{}))
