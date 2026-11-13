@@ -13,7 +13,12 @@ defmodule NccWorker.Portability.CompileInputs do
   it, as long as the writer's inputs were recorded: `inputs: "recorded"`
   when the write has a source file and every env read from that file before
   it is itself recorded, `"unknown"` otherwise. Any other read is
-  `set_by: "host"`.
+  `set_by: "host"`. Only a write made in the package's closure (its owner
+  the package or a closure dependency) is the build's: one in the
+  project's own `mix.exs` or outside every window is something a client's
+  project does not do. A child-VM read is matched by value to a Mix-VM
+  write made at any time, by design: the clocks do not compare, and a
+  write of the same value elsewhere in the build is rare.
 
   A read in a dependency's `mix.exs` that R4 found cannot reach a
   compile-relevant key (`slice_allowed`) is no input, unless its file also
@@ -23,8 +28,10 @@ defmodule NccWorker.Portability.CompileInputs do
   private-looking name (`NCC_*`, or a name with TOKEN, SECRET, PASSW,
   API_KEY, PRIVATE or CREDENTIAL) is `"unrecordable"`, which matches
   nothing: the builder's environment holds no secret, and this keeps it
-  that way in public manifests. Reading the whole environment, or more
-  than 128 variables, is `env_all`.
+  that way in public manifests. Reading the whole environment, more than
+  128 variables, or a name no variable can have (empty, with `=` or NUL,
+  over 256 bytes, not a string: `Compatibility.CompileInputs.name?/1`) is
+  `env_all`.
 
   Each kind has its own cap, and the caps together fit the shared 256-item
   cap of `Compatibility.CompileInputs`: 128 `env` items, 96 `config_order`
@@ -46,19 +53,28 @@ defmodule NccWorker.Portability.CompileInputs do
   @spec build([{term(), term()}], [map()]) :: [map()]
   def build(decided, config_inputs) do
     reads = for {_owner, {:observe, "env_reads", item}} <- decided, do: item
-    writes = for {_owner, {:observe, "env_writes", item}} <- decided, do: item
+
+    writes =
+      for {owner, {:observe, "env_writes", item}} <- decided, is_binary(owner), do: item
+
     {all, named} = Enum.split_with(reads, &(&1["all"] == true))
     writer_files = MapSet.new(writes, &file_key/1)
 
-    env =
+    {named_ok, named_bad} =
       named
       |> Enum.filter(&(&1["slice_allowed"] != true or MapSet.member?(writer_files, file_key(&1))))
+      |> Enum.split_with(&CompileInputs.name?(&1["name"]))
+
+    env =
+      named_ok
       |> Enum.map(&item(&1, writes, named))
       |> Enum.uniq()
       |> Enum.sort_by(&{&1["name"], &1["set_by"], &1["value"], &1["inputs"]})
 
     {env, all?} =
-      if length(env) > @max_env_items, do: {[], true}, else: {env, all != []}
+      if length(env) > @max_env_items,
+        do: {[], true},
+        else: {env, all != [] or named_bad != []}
 
     env ++ cap_config(if(all?, do: [@env_all], else: []) ++ config_inputs)
   end
@@ -124,12 +140,15 @@ defmodule NccWorker.Portability.CompileInputs do
   defp inputs_of(%{"file" => file} = write, reads) when is_binary(file) do
     earlier = Enum.filter(reads, &(file_key(&1) == file_key(write) and before?(&1, write)))
 
-    if Enum.all?(earlier, &(value_of(&1) != CompileInputs.unrecordable())),
+    if Enum.all?(earlier, &recorded?/1),
       do: "recorded",
       else: "unknown"
   end
 
   defp inputs_of(_write, _reads), do: "unknown"
+
+  defp recorded?(read),
+    do: CompileInputs.name?(read["name"]) and value_of(read) != CompileInputs.unrecordable()
 
   defp before?(%{"ts" => a}, %{"ts" => b}) when is_integer(a) and is_integer(b), do: a < b
   defp before?(_a, _b), do: false

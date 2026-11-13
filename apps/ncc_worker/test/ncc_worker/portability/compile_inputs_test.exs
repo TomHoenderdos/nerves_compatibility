@@ -21,7 +21,7 @@ defmodule NccWorker.Portability.CompileInputsTest do
   end
 
   defp write(name, value, opts) do
-    {Keyword.get(opts, :owner, :outside),
+    {Keyword.get(opts, :owner, "pkg"),
      {:observe, "env_writes",
       %{
         "name" => name,
@@ -157,6 +157,62 @@ defmodule NccWorker.Portability.CompileInputsTest do
 
     items = CompileInputs.build(decided, [%{"kind" => "config_unrecorded"}])
     assert Compatibility.CompileInputs.validate(items) == {:ok, items}
+
+    # Names the shared shape rejects: the package passed something no
+    # variable can be named, so the read is recorded as reading anything.
+    for bad <- ["", "A=B", "A" <> <<0>>, String.duplicate("x", 257), <<255>>, nil, 7] do
+      items = CompileInputs.build([read("A", rec(:error)), read(bad, rec(:error))], [])
+      assert Compatibility.CompileInputs.validate(items) == {:ok, items}, inspect(bad)
+      assert %{"kind" => "env_all"} in items
+
+      assert %{"kind" => "env", "name" => "A", "value" => rec(:error), "set_by" => "host"} in items
+    end
+  end
+
+  test "a bad name in mix.exs follows the slice, and leaves its file's writes unknown" do
+    mix = "/p/deps/pkg/mix.exs"
+
+    assert CompileInputs.build([read("", rec(:error), ts: 2, file: mix, slice_allowed: true)], []) ==
+             []
+
+    decided = [
+      read("", rec(:error), ts: 2, file: mix),
+      write("W", rec({:ok, "1"}), ts: 3, file: mix),
+      read("W", rec({:ok, "1"}), ts: 40)
+    ]
+
+    assert [%{"name" => "W", "inputs" => "unknown"}, %{"kind" => "env_all"}] =
+             CompileInputs.build(decided, [])
+  end
+
+  test "a read before the write, or after a later write of another value, is the host's" do
+    assert [%{"set_by" => "host"}] =
+             CompileInputs.build(
+               [read("X", rec({:ok, "1"}), ts: 3), write("X", rec({:ok, "1"}), ts: 4)],
+               []
+             )
+
+    decided = [
+      write("X", rec({:ok, "1"}), ts: 2),
+      write("X", rec({:ok, "2"}), ts: 3),
+      read("X", rec({:ok, "1"}), ts: 9)
+    ]
+
+    assert [%{"set_by" => "host"}] = CompileInputs.build(decided, [])
+  end
+
+  test "a write outside the package's closure is not the build's" do
+    decided = [
+      write("X", rec({:ok, "1"}), ts: 4, owner: :outside),
+      read("X", rec({:ok, "1"}), ts: 9)
+    ]
+
+    assert [%{"set_by" => "host"}] = CompileInputs.build(decided, [])
+
+    child = read("X", rec({:ok, "1"}), ts: 1, vm: "child:dep")
+
+    assert [%{"set_by" => "host"}] =
+             CompileInputs.build([write("X", rec({:ok, "1"}), ts: 4, owner: :outside), child], [])
   end
 
   defp order(i),

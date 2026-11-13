@@ -78,10 +78,12 @@ defmodule Compatibility.CompileInputs do
 
   defp item?(_item), do: false
 
-  defp name?(name) when is_binary(name) do
+  @doc "Whether `name` may stand as an `env` item's name."
+  @spec name?(term()) :: boolean()
+  def name?(name) when is_binary(name) do
     byte_size(name) in 1..@max_name_bytes and String.valid?(name) and
       not String.contains?(name, ["=", <<0>>])
   end
 
-  defp name?(_name), do: false
+  def name?(_name), do: false
 end
