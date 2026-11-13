@@ -593,7 +593,7 @@ defmodule NccWorker.BuildCache do
   # sobelow_skip ["Traversal.FileModule"]
   defp mentions_regex?(path, regex) do
     case File.read(path) do
-      {:ok, contents} -> Regex.match?(regex, contents)
+      {:ok, contents} -> match_or_error?(regex, contents)
       {:error, :enoent} -> false
       {:error, _} -> true
     end
@@ -722,10 +722,24 @@ defmodule NccWorker.BuildCache do
   defp target_read?(file, pattern) do
     with {:ok, %File.Stat{size: size}} when size <= @target_scan_max_bytes <- File.stat(file),
          {:ok, contents} <- File.read(file) do
-      Regex.match?(pattern, contents)
+      match_or_error?(pattern, contents)
     else
       _ -> true
     end
+  end
+
+  # `Regex.match?/2`, failing closed: it reads a regex engine error (a match
+  # or depth limit on a large or pathological file) as no match, which here
+  # would pass a dependency nobody actually checked. `:report_errors` turns
+  # that into `{:error, _}`, which counts as a match, and so does anything
+  # that raises.
+  @doc false
+  @spec match_or_error?(Regex.t(), binary()) :: boolean()
+  def match_or_error?(%Regex{} = regex, subject) when is_binary(subject) do
+    opts = Regex.opts(regex) ++ [:report_errors, {:capture, :none}]
+    :re.run(subject, Regex.source(regex), opts) != :nomatch
+  rescue
+    _ -> true
   end
 
   @doc false

@@ -352,6 +352,24 @@ defmodule NccWorker.BuildCacheTest do
     end
   end
 
+  describe "match_or_error?/2" do
+    test "an engine error counts as a match" do
+      # Catastrophic backtracking: PCRE gives up with a match limit error,
+      # which `Regex.match?/2` reports as no match.
+      regex = ~r/(.*a){25}/
+      subject = String.duplicate("a", 30) <> "!"
+
+      refute Regex.match?(regex, subject)
+      assert BuildCache.match_or_error?(regex, subject)
+    end
+
+    test "answers like Regex.match?/2 otherwise" do
+      assert BuildCache.match_or_error?(~r/Mix\.target/, "x = Mix.target()")
+      refute BuildCache.match_or_error?(~r/Mix\.target/, "x = Mix.env()")
+      assert BuildCache.match_or_error?(~r/mix/i, "MIX")
+    end
+  end
+
   describe "restore/1 and store/2" do
     setup do
       tmp = Path.join(System.tmp_dir!(), "ncc-cache-#{System.unique_integer([:positive])}")
