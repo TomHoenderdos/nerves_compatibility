@@ -409,4 +409,64 @@ defmodule NccWorker.Tracer.ChannelsTest do
 
     assert {:config, %{app_name: :null}} = classify(:application, :get_all_env, ["fx"])
   end
+
+  describe "the value a read returned" do
+    defp rec(term),
+      do: term |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
+
+    test "os:getenv/1 records :error or {:ok, binary}" do
+      assert :ncc_tracer_channels.returned_value(:os, :getenv, [~c"X"], {:value, false}) ==
+               rec(:error)
+
+      assert :ncc_tracer_channels.returned_value(:os, :getenv, [~c"X"], {:value, ~c"on"}) ==
+               rec({:ok, "on"})
+    end
+
+    test "application:get_env/2 records the fetch_env shape" do
+      assert :ncc_tracer_channels.returned_value(
+               :application,
+               :get_env,
+               [:a, :k],
+               {:value, :undefined}
+             ) ==
+               rec(:error)
+
+      assert :ncc_tracer_channels.returned_value(
+               :application,
+               :get_env,
+               [:a, :k],
+               {:value, {:ok, 42}}
+             ) ==
+               rec({:ok, 42})
+    end
+
+    test "application:get_env/3 cannot tell its default from a set value" do
+      assert :ncc_tracer_channels.returned_value(:application, :get_env, [:a, :k, 7], {:value, 7}) ==
+               "default"
+
+      assert :ncc_tracer_channels.returned_value(:application, :get_env, [:a, :k, 7], {:value, 8}) ==
+               rec({:ok, 8})
+    end
+
+    test "a huge or non-unicode value is unrecordable, an exception records nothing" do
+      big = String.to_charlist(String.duplicate("x", 70_000))
+
+      assert :ncc_tracer_channels.returned_value(:os, :getenv, [~c"X"], {:value, big}) ==
+               "unrecordable"
+
+      assert :ncc_tracer_channels.returned_value(:os, :getenv, [~c"X"], {:value, [0xD800]}) ==
+               "unrecordable"
+
+      assert :ncc_tracer_channels.returned_value(:os, :getenv, [~c"X"], :exception) == :null
+      assert :ncc_tracer_channels.recorded(String.duplicate("y", 70_000)) == "unrecordable"
+    end
+
+    test "only the three reads are return-traced" do
+      assert :ncc_tracer_channels.returned_mfas() ==
+               [{:os, :getenv, 1}, {:application, :get_env, 2}, {:application, :get_env, 3}]
+
+      assert :ncc_tracer_channels.returned_mfa(:os, :getenv, 1)
+      refute :ncc_tracer_channels.returned_mfa(:os, :getenv, 2)
+    end
+  end
 end

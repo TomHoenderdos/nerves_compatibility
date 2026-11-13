@@ -5,7 +5,7 @@
 -export([patterns/0, probe_mfas/0, patterned/3, classify/3, chars/1, term_bin/1,
          checker_module/1, mix_patterns/0, mix_entry/1, mix_state/3, mix_state_heads/1,
          path_os_frames/0, path_os_frame/3,
-         path_os_read/3]).
+         path_os_read/3, returned_mfas/0, returned_mfa/3, returned_value/4, recorded/1]).
 
 -define(READS, [{file, read_file}, {file, read_file_info}, {file, read_link_info},
                 {file, read_link}, {file, read_link_all}, {file, list_dir},
@@ -256,6 +256,48 @@ path_os_read(os, type, _Arg) -> true;
 path_os_read(os, version, _Arg) -> true;
 path_os_read(erlang, system_info, #{key := <<"os_type">>}) -> true;
 path_os_read(_M, _F, _Arg) -> false.
+
+%% The reads whose returned value the trace records (compile-time inputs
+%% spec, section 1): the tracer sets {exception_trace} on these alone, and
+%% writes a `returned` line for each one it wrote an event for. os:getenv/2
+%% is not here: OTP's os:getenv/2 calls os:getenv/1 through a remote call,
+%% so its read is the getenv/1 event below it (FixturesReturnsTest pins it).
+returned_mfas() -> [{os, getenv, 1}, {application, get_env, 2}, {application, get_env, 3}].
+
+returned_mfa(M, F, A) -> lists:member({M, F, A}, returned_mfas()).
+
+%% What the read returned, as a manifest records a value: base64url of the
+%% deterministic ETF of `error` or `{ok, Value}`, the shape of
+%% Application.fetch_env/2 and of an unset or set variable. get_env/3 folds
+%% its default in, so a result equal to the default cannot say whether the
+%% key was set: `default`. A value over 64 KiB, or a variable that is not
+%% unicode, is `unrecordable`; a call that raised returned nothing (null).
+returned_value(_M, _F, _Args, exception) -> null;
+returned_value(os, getenv, [_Name], {value, false}) -> recorded(error);
+returned_value(os, getenv, [_Name], {value, Value}) -> recorded_chars(Value);
+returned_value(application, get_env, [_App, _Key], {value, undefined}) -> recorded(error);
+returned_value(application, get_env, [_App, _Key], {value, {ok, Value}}) -> recorded({ok, Value});
+returned_value(application, get_env, [_App, _Key, Default], {value, Default}) -> <<"default">>;
+returned_value(application, get_env, [_App, _Key, _Default], {value, Value}) -> recorded({ok, Value});
+returned_value(_M, _F, _Args, _Outcome) -> <<"unrecordable">>.
+
+%% Sized before it is encoded, so a huge value is never copied into a binary.
+recorded(Term) ->
+    case erlang:external_size(Term, [deterministic]) =< 65536 of
+        true ->
+            base64:encode(term_to_binary(Term, [deterministic]),
+                          #{mode => urlsafe, padding => false});
+        false ->
+            <<"unrecordable">>
+    end.
+
+recorded_chars(Value) when is_list(Value) ->
+    case erlang:external_size(Value) =< 65536 andalso
+         (catch unicode:characters_to_binary(Value)) of
+        Bin when is_binary(Bin) -> recorded({ok, Bin});
+        _ -> <<"unrecordable">>
+    end;
+recorded_chars(_Value) -> <<"unrecordable">>.
 
 nested_compile(true) -> {nested_compile, #{}};
 nested_compile(false) -> unknown.

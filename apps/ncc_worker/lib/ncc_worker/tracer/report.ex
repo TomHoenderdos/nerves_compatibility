@@ -83,7 +83,9 @@ defmodule NccWorker.Tracer.Report do
             children: %{},
             built: %{},
             over_budget: false,
-            problems: []
+            problems: [],
+            # returns: call_id => value of the main file's returned lines, attached to events in finalize/2.
+            returns: %{}
 
   @type window :: %{
           app: String.t() | nil,
@@ -296,6 +298,9 @@ defmodule NccWorker.Tracer.Report do
 
   defp main_line({:line, %{"kind" => "refused_start"} = l}, r), do: %{r | refused_start: l}
 
+  defp main_line({:line, %{"kind" => "returned", "call_id" => id} = l}, r) when is_integer(id),
+    do: %{r | returns: Map.put(r.returns, id, l["value"])}
+
   defp main_line({:line, l}, r), do: problem(r, other_problem(l))
 
   # A built line belongs right after its own window's close: the driver
@@ -441,12 +446,26 @@ defmodule NccWorker.Tracer.Report do
     child =
       Enum.reduce(
         lines,
-        %{start: nil, sentinel?: false, compiles: [], events: [], libs: [], problems: []},
+        %{
+          start: nil,
+          sentinel?: false,
+          compiles: [],
+          events: [],
+          libs: [],
+          problems: [],
+          returns: %{}
+        },
         &child_line/2
       )
 
     app = (child.start && child.start["app"]) || file_app(path)
-    child = %{child | problems: Enum.reverse(child.problems)}
+
+    child = %{
+      Map.delete(child, :returns)
+      | events: Enum.map(child.events, &with_returned(&1, child.returns)),
+        problems: Enum.reverse(child.problems)
+    }
+
     Map.update(acc, app, child, &merge_child(&1, child))
   end
 
@@ -473,6 +492,9 @@ defmodule NccWorker.Tracer.Report do
   defp child_line({:line, %{"kind" => "overflow"} = l}, c),
     do: child_problem(c, "trace overflowed: #{l["what"]}")
 
+  defp child_line({:line, %{"kind" => "returned", "call_id" => id} = l}, c) when is_integer(id),
+    do: %{c | returns: Map.put(c.returns, id, l["value"])}
+
   defp child_line({:line, l}, c), do: child_problem(c, other_problem(l))
 
   defp child_problem(c, why), do: %{c | problems: [why | c.problems]}
@@ -497,7 +519,11 @@ defmodule NccWorker.Tracer.Report do
       | windows: Enum.reverse(r.windows),
         quiet: Enum.reverse(r.quiet),
         sentinels: Enum.reverse(r.sentinels),
-        events: r.events |> Enum.reverse() |> Enum.sort_by(&(&1["ts"] || 0)),
+        events:
+          r.events
+          |> Enum.reverse()
+          |> Enum.sort_by(&(&1["ts"] || 0))
+          |> Enum.map(&with_returned(&1, r.returns)),
         overflow: Enum.reverse(r.overflow),
         problems: Enum.reverse(r.problems)
     }
@@ -510,6 +536,14 @@ defmodule NccWorker.Tracer.Report do
 
     %{r | problems: r.problems ++ structural ++ child_problems(r)}
   end
+
+  # The value a return-traced read returned (`ncc_tracer`'s `returned`
+  # lines, by call id), nil when its return was never seen: a read whose
+  # value is unknown is recorded as unrecordable downstream, never dropped.
+  defp with_returned(%{"call_id" => id} = event, returns) when is_integer(id),
+    do: Map.put(event, "returned", Map.get(returns, id))
+
+  defp with_returned(event, _returns), do: event
 
   defp finish_child(c, tracer) do
     c = %{

@@ -490,4 +490,36 @@ defmodule NccWorker.Tracer.ReportTest do
       assert read(dir, late).built["r3"] == %{digest: nil, files: nil, error: "out_of_order"}
     end
   end
+
+  test "a returned line attaches its value to the event with that call id", %{tmp_dir: dir} do
+    extra = [
+      %{
+        "kind" => "event",
+        "ts" => 35,
+        "channel" => "env",
+        "mfa" => "os:getenv/1",
+        "arg" => %{"name" => "X"},
+        "extent" => "frame",
+        "call_id" => 7
+      },
+      %{
+        "kind" => "event",
+        "ts" => 36,
+        "channel" => "env",
+        "mfa" => "os:getenv/1",
+        "arg" => %{"name" => "Y"},
+        "extent" => "frame",
+        "call_id" => 8
+      },
+      %{"kind" => "returned", "call_id" => 7, "value" => "g3cFZXJyb3I"}
+    ]
+
+    {body, tail} = Enum.split(clean(), -2)
+    report = read(dir, body ++ extra ++ tail)
+
+    assert [%{"returned" => "g3cFZXJyb3I"}, %{"returned" => nil}] =
+             Enum.filter(report.events, &(&1["mfa"] == "os:getenv/1"))
+
+    refute Enum.any?(report.problems, &(&1 =~ "returned"))
+  end
 end

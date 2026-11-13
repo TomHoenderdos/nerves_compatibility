@@ -41,12 +41,14 @@
 %% carry it. watcher, wref: the process that records the collector's death,
 %% monitored in turn. tampered: a forged request or a dead watcher was seen;
 %% it fails every check until the end.
+%% returns: per process, a stack of the return-traced calls awaiting their return ({call, CallId, Args} or skip).
 -record(st, {fd, file, session, initial = #{}, procs = #{}, native = #{}, sources = #{},
              spawning = #{}, parents = #{}, set_depth = ?DEPTH, depth = ?DEPTH, lowered = false,
              wanted = [], unpatterned = false, final_pid, final_nonce, unloaded = [],
              token, watcher, wref, tampered = false, libs = unavailable, libs_written = false,
              calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0, path_os_reads = 0,
-             max_calls, max_user, max_queue, overflow = false, final = false}).
+             max_calls, max_user, max_queue, overflow = false, final = false,
+             returns = #{}}).
 
 %% --- API used by the driver ---------------------------------------------
 
@@ -505,10 +507,21 @@ match_spec({erlang, process_info, 2}, _Role, Depth) ->
         ++ [{['_', '$1'], [{is_list, '$1'}], [Msg]}];
 match_spec(MFA, _Role, Depth) ->
     Msg = {message, {current_stacktrace, Depth}},
+    Body = [Msg | return_action(MFA)],
     case ncc_tracer_channels:mix_state_heads(MFA) of
-        undefined -> [{'_', [], [Msg]}];
-        Heads -> [{Head, Guards, [Msg]} || {Head, Guards} <- Heads]
+        undefined -> [{'_', [], Body}];
+        Heads -> [{Head, Guards, Body} || {Head, Guards} <- Heads]
     end.
+
+%% exception_trace: a return_from message on return, an exception_from one
+%% when the call raises, so every pushed frame is popped
+%% (ncc_tracer_channels:returned_mfas/0).
+return_action({M, F, A}) ->
+    case ncc_tracer_channels:returned_mfa(M, F, A) of
+        true -> [{exception_trace}];
+        false -> []
+    end;
+return_action(_Module) -> [].
 
 loop(St) ->
     receive
@@ -530,14 +543,18 @@ loop(St) ->
     end.
 
 traced({trace_ts, Pid, call, {M, F, Args}, Stack, Ts}, St) ->
-    call_event(Pid, M, F, Args, Stack, Ts, St);
+    call_event(Pid, M, F, Args, Stack, Ts, pending(Pid, M, F, Args, St));
 traced({trace_ts, Pid, call, {compile, file, [Src | _]}, _Ts}, St) ->
     St#st{sources = maps:put(Pid, Src, St#st.sources)};
 traced({trace_ts, Pid, call, {M, F, Args}, Ts}, St) ->
     %% A call with no stack: our match spec was replaced. Unjudged.
-    call_event(Pid, M, F, Args, no_stack, Ts, St);
+    call_event(Pid, M, F, Args, no_stack, Ts, pending(Pid, M, F, Args, St));
 traced({trace_ts, Pid, return_from, {compile, file, 2}, Result, Ts}, St) ->
     compiled(Pid, Result, Ts, St);
+traced({trace_ts, Pid, return_from, {M, F, A}, Result, _Ts}, St) ->
+    returned(Pid, M, F, A, {value, Result}, St);
+traced({trace_ts, Pid, exception_from, {M, F, A}, _Exception, _Ts}, St) ->
+    returned(Pid, M, F, A, exception, St);
 traced({trace_ts, Parent, spawn, Child, MFA, _Ts}, St) ->
     spawned(Child, Parent, MFA, St);
 traced({trace_ts, Child, spawned, Parent, _MFA, _Ts}, St) ->
@@ -547,8 +564,48 @@ traced({trace_ts, Child, spawned, Parent, _MFA, _Ts}, St) ->
     end;
 traced({trace_ts, Pid, exit, _Reason, _Ts}, St) ->
     St#st{procs = maps:remove(Pid, St#st.procs), spawning = maps:remove(Pid, St#st.spawning),
-          parents = maps:remove(Pid, St#st.parents)};
+          parents = maps:remove(Pid, St#st.parents), returns = maps:remove(Pid, St#st.returns)};
 traced(_Msg, St) -> St.
+
+%% Every return-traced call pushes one frame, whatever its extent: its
+%% return pops it. user_line/4 turns the top frame into the call's id when
+%% it writes the call's event; any other call's frame stays `skip`.
+pending(_Pid, _M, _F, _Args, #st{overflow = true} = St) -> St;
+pending(Pid, M, F, Args, #st{returns = Returns} = St) ->
+    case ncc_tracer_channels:returned_mfa(M, F, length(Args)) of
+        true -> St#st{returns = Returns#{Pid => [skip | maps:get(Pid, Returns, [])]}};
+        false -> St
+    end.
+
+%% A return pops its frame; a frame with an id writes the value, bounded
+%% like any line a package can make the collector write (capped_line/2).
+returned(Pid, M, F, A, Outcome, #st{returns = Returns} = St) ->
+    case {ncc_tracer_channels:returned_mfa(M, F, A), maps:get(Pid, Returns, [])} of
+        {true, [Top | Rest]} ->
+            St1 = St#st{returns = put_frames(Pid, Rest, Returns)},
+            case Top of
+                {call, Id, Args} ->
+                    Value = ncc_tracer_channels:returned_value(M, F, Args, Outcome),
+                    capped_line(#{kind => returned, call_id => Id, value => Value}, St1);
+                skip ->
+                    St1
+            end;
+        _ ->
+            St
+    end.
+
+put_frames(Pid, [], Returns) -> maps:remove(Pid, Returns);
+put_frames(Pid, Frames, Returns) -> Returns#{Pid => Frames}.
+
+%% The event of a return-traced call carries the id its `returned` line
+%% will name; the call's own frame (pushed by pending/5) remembers it.
+hold(Pid, M, F, Args, Line, #st{returns = Returns, calls = Id} = St) ->
+    case {ncc_tracer_channels:returned_mfa(M, F, length(Args)), maps:get(Pid, Returns, [])} of
+        {true, [skip | Rest]} ->
+            {Line#{call_id => Id}, St#st{returns = Returns#{Pid => [{call, Id, Args} | Rest]}}};
+        _ ->
+            {Line, St}
+    end.
 
 %% Messages from two traced processes reach the collector in any order. A
 %% child's own `spawned` message comes before its own events, but its
@@ -793,12 +850,13 @@ path_frame(First) ->
     catch _:_ -> false
     end.
 
-user_line({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends}, St) ->
+user_line({Channel, Arg}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends}, St0) ->
     {Kind, First, User, {Caller, Bottom}} = frames(Kind0, First0, User0, Ends),
-    Line = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
-             mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
-             arg => enrich(Channel, Arg), extent => Kind, first => First, user => User,
-             caller => Caller, bottom => Bottom, first_kind => first_kind(First0)},
+    Line0 = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
+              mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
+              arg => enrich(Channel, Arg), extent => Kind, first => First, user => User,
+              caller => Caller, bottom => Bottom, first_kind => first_kind(First0)},
+    {Line, St} = hold(Pid, M, F, Args, Line0, St0),
     user_event(Line, Kind =:= unjudged orelse Channel =:= unclassified, St).
 
 sentinel_app(<<"__final__:", Nonce/binary>>, Pid, #st{final_pid = Pid, final_nonce = Nonce}) ->
@@ -1053,7 +1111,8 @@ finish_trace(Status, Ts, Delivered, #st{fd = Fd, session = Session} = St1) ->
     {Checks, St} = closing_checks(St0, Delivered),
     write(St, #{kind => stats, calls => St#st.calls, user_events => St#st.user,
                 truncated => St#st.truncated, unjudged => St#st.unjudged,
-                spawned => St#st.spawned, path_os_reads => St#st.path_os_reads}),
+                spawned => St#st.spawned, path_os_reads => St#st.path_os_reads,
+                pending_returns => lists:sum([length(Fs) || Fs <- maps:values(St#st.returns)])}),
     Late = [atom_to_binary(M) || M <- St#st.unloaded, erlang:module_loaded(M)],
     write(St, (maps:merge(Checks, libs_fields(mapped_libs())))#{kind => 'end', ts => Ts,
                                                                 status => Status,
