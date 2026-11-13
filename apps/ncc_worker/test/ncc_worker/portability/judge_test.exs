@@ -1158,6 +1158,57 @@ defmodule NccWorker.Portability.JudgeTest do
       assert %{status: :skip, reason: @cnj} = judge(proj, r, rebar_opts(proj, ["dep"]))
     end
 
+    # A scripted rebar3 parent (idna, shotgun, erlware_commons, coveralls):
+    # Mix evaluates its script under the trace and writes the result, the
+    # overrides it hands its children included, to its own mix.rebar.config.
+    test "a scripted rebar3 parent's overrides are read from its mix.rebar.config",
+         %{proj: proj} do
+      File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
+      r = rebar_report(proj, "dep", %{"dep" => child([])})
+
+      deps =
+        for d <- r.closure["deps"] do
+          case d["app"] do
+            "other" -> %{d | "manager" => "rebar3", "children" => ["dep"]}
+            _ -> d
+          end
+        end
+
+      r = %{
+        r
+        | closure: %{r.closure | "deps" => deps},
+          children: Map.put(r.children, "other", child([]))
+      }
+
+      parent_mix = Path.join([proj, "_build/host/lib/other/mix.rebar.config"])
+
+      tarball = %{
+        "other" => %{
+          "rebar.config" => "{erl_opts, []}.\n",
+          "rebar.config.script" => "CONFIG.\n"
+        }
+      }
+
+      opts = rebar_opts(proj, ["dep", "other"], tarball)
+
+      File.write!(parent_mix, "{erl_opts,[]}.\n{overrides,[{override,dep,[{erl_opts,[]}]}]}.\n")
+      assert %{status: :pass} = judge(proj, r, opts)
+
+      # What the script evaluated to is held to the override rules.
+      File.write!(
+        parent_mix,
+        ~s({erl_opts,[]}.\n{overrides,[{override,dep,[{pre_hooks,[{compile,"make"}]}]}]}.\n)
+      )
+
+      assert %{reason: "closure dependency observed the host: dep (rebar3 build runs pre_hooks)"} =
+               judge(proj, r, opts)
+
+      # Without the file the overrides are unknown: could not be judged.
+      File.rm!(parent_mix)
+      assert %{status: :skip, reason: @cnj, observations: obs} = judge(proj, r, opts)
+      assert Enum.any?(obs["problems"], &(&1 =~ "mix.rebar.config"))
+    end
+
     test "a dependency with telemetry's real rebar.config is not tainted", %{proj: proj} do
       config =
         File.read!(Path.join([__DIR__, "../../fixtures/rebar/telemetry-1.4.2.rebar.config"]))
@@ -1382,12 +1433,58 @@ defmodule NccWorker.Portability.JudgeTest do
       File.write!(mix_config, "{erl_opts,[]}.\n")
       assert {:refuse, "rebar3 build runs pre_hooks"} = Rebar.check(hooked, mix_config)
 
-      # A parent's script still leaves the overrides it hands down unknown.
+      # A parent's script without its evaluated config leaves the overrides
+      # it hands down unknown.
       assert {:unjudged, "a rebar3 parent evaluates rebar.config.script"} =
                Rebar.check_sources(
                  %{config: "{erl_opts, []}.\n", script?: false},
                  [%{config: "{erl_opts, []}.\n", script?: true}],
                  mix_config
+               )
+    end
+
+    test "a scripted parent's overrides are its evaluated mix.rebar.config's", %{tmp_dir: dir} do
+      own = %{config: "{erl_opts, []}.\n", script?: false}
+      build = write(dir, "parent_build", %{})
+      parent_mix = Path.join(build, "mix.rebar.config")
+      parent = %{config: "{erl_opts, []}.\n", script?: true, mix_config: parent_mix}
+
+      File.write!(parent_mix, "{erl_opts,[]}.\n{deps,[{x,\"1.0.0\"}]}.\n")
+      assert :ok = Rebar.check_sources(own, [parent], nil)
+
+      File.write!(
+        parent_mix,
+        ~s({erl_opts,[]}.\n{overrides,[{override,[{post_hooks,[{compile,"make"}]}]}]}.\n)
+      )
+
+      assert {:refuse, "rebar3 build runs post_hooks"} = Rebar.check_sources(own, [parent], nil)
+
+      # Only its top-level overrides reach the child: a hook of its own is
+      # its own rule's business.
+      File.write!(parent_mix, ~s({erl_opts,[]}.\n{pre_hooks,[{compile,"make"}]}.\n))
+      assert :ok = Rebar.check_sources(own, [parent], nil)
+
+      # The tarball's static overrides still count too (fail closed).
+      static = ~s({overrides,[{override,[{plugins,[x]}]}]}.\n)
+
+      assert {:refuse, "rebar3 build runs plugins"} =
+               Rebar.check_sources(own, [%{parent | config: static}], nil)
+
+      File.write!(parent_mix, "{overrides, [unterminated")
+
+      assert {:unjudged, "a rebar3 parent's mix.rebar.config is unreadable"} =
+               Rebar.check_sources(own, [parent], nil)
+
+      File.rm!(parent_mix)
+
+      assert {:unjudged, "a rebar3 parent's mix.rebar.config is missing"} =
+               Rebar.check_sources(own, [parent], nil)
+
+      assert {:unjudged, "rebar3 build dir missing"} =
+               Rebar.check_sources(
+                 own,
+                 [%{parent | mix_config: {:unjudged, "rebar3 build dir missing"}}],
+                 nil
                )
     end
 

@@ -967,11 +967,19 @@ defmodule NccWorker.Portability do
     end
   end
 
+  # A scripted parent's overrides are what its script evaluated to: Mix
+  # wrote them into the parent's own mix.rebar.config (`Rebar`).
   defp parent_sources(ctx, parents) do
     Enum.reduce_while(parents, {:ok, []}, fn parent, {:ok, acc} ->
       case Rebar.tarball_sources(Context.tarball(ctx, parent)) do
-        {:ok, sources} -> {:cont, {:ok, acc ++ [sources]}}
-        {:unjudged, why} -> {:halt, {:unjudged, "rebar3 parent #{parent}: #{why}"}}
+        {:ok, %{script?: true} = sources} ->
+          {:cont, {:ok, acc ++ [Map.put(sources, :mix_config, mix_rebar_config(ctx, parent))]}}
+
+        {:ok, sources} ->
+          {:cont, {:ok, acc ++ [sources]}}
+
+        {:unjudged, why} ->
+          {:halt, {:unjudged, "rebar3 parent #{parent}: #{why}"}}
       end
     end)
   end

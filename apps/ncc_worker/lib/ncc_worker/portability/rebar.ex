@@ -19,8 +19,14 @@ defmodule NccWorker.Portability.Rebar do
   `mix.rebar.config` Mix wrote from the script's result, which is held to
   the rules below, so a hook, plugin or `platform_define` the script adds
   refuses there. Without that file (`check/2` on its own) a script still
-  refuses. A rebar3 parent's script stays could-not-judge: the overrides
-  it hands its children are computed.
+  refuses. A rebar3 parent's script is judged the same way: the overrides
+  it hands its children (`Mix.Dep.Loader.rebar_children/4`, the parent's
+  evaluated config's top-level `overrides`) are in the `mix.rebar.config`
+  Mix writes for the parent from that same evaluated config
+  (`Mix.Rebar.dependency_config/1` keeps `overrides`), so they are read
+  from there (`parent_overrides/1`, the parent's `mix_config:`). Without
+  that file, or with one that cannot be read, the parent stays
+  could-not-judge.
 
   Only what rebar3 runs when Mix compiles the dependency counts. Mix
   (`Mix.Tasks.Deps.Compile.do_rebar3/2`, Elixir 1.19 and 1.20) runs
@@ -76,8 +82,17 @@ defmodule NccWorker.Portability.Rebar do
   @max_contents_bytes 64 * 1024 * 1024
   @config_files [~c"rebar.config", ~c"rebar.config.script"]
 
-  @typedoc "A rebar3 app's own config files: `rebar.config`'s text (or `nil`) and whether it has a script."
-  @type sources :: %{config: binary() | nil, script?: boolean()}
+  @typedoc """
+  A rebar3 app's own config files: `rebar.config`'s text (or `nil`) and
+  whether it has a script. As a parent, a scripted app also carries
+  `mix_config:`, the path of the `mix.rebar.config` Mix wrote from the
+  script's result (or `{:unjudged, why}`).
+  """
+  @type sources :: %{
+          required(:config) => binary() | nil | :unreadable,
+          required(:script?) => boolean(),
+          optional(:mix_config) => String.t() | {:unjudged, String.t()}
+        }
 
   @doc """
   The static rebar3 rules for the source dir `dest` as it is on disk and,
@@ -129,22 +144,39 @@ defmodule NccWorker.Portability.Rebar do
   end
 
   # Each parent's top-level `overrides`, as `overrides` entries of the
-  # child's own config. A parent's script could compute them: unknowable.
+  # child's own config. A scripted parent's are what its script evaluated
+  # to, read from the `mix.rebar.config` Mix wrote from that result
+  # (`mix_config:`), on top of its tarball's (fail closed); without that
+  # file they are unknowable.
   defp parent_overrides(parents) do
-    Enum.reduce_while(parents, {:ok, []}, fn
-      %{script?: true}, _acc ->
-        {:halt, {:unjudged, "a rebar3 parent evaluates rebar.config.script"}}
-
-      %{config: text}, {:ok, acc} ->
-        case parse_own(text) do
-          {:ok, terms} ->
-            {:cont, {:ok, acc ++ for({{:atom, "overrides"}, _} = o <- terms, do: o)}}
-
-          refusal ->
-            {:halt, refusal}
-        end
+    Enum.reduce_while(parents, {:ok, []}, fn parent, {:ok, acc} ->
+      with {:ok, terms} <- parse_own(parent.config),
+           {:ok, evaluated} <- evaluated_terms(parent) do
+        {:cont, {:ok, acc ++ top_overrides(terms) ++ top_overrides(evaluated)}}
+      else
+        other -> {:halt, other}
+      end
     end)
   end
+
+  defp top_overrides(terms), do: for({{:atom, "overrides"}, _} = o <- terms, do: o)
+
+  defp evaluated_terms(%{script?: false}), do: {:ok, []}
+
+  defp evaluated_terms(%{script?: true, mix_config: path}) when is_binary(path) do
+    with {:ok, text} <- read_file(path),
+         {:ok, terms} <- HexFiles.parse(text) do
+      {:ok, terms}
+    else
+      :absent -> {:unjudged, "a rebar3 parent's mix.rebar.config is missing"}
+      _ -> {:unjudged, "a rebar3 parent's mix.rebar.config is unreadable"}
+    end
+  end
+
+  defp evaluated_terms(%{script?: true, mix_config: {:unjudged, _} = unjudged}), do: unjudged
+
+  defp evaluated_terms(%{script?: true}),
+    do: {:unjudged, "a rebar3 parent evaluates rebar.config.script"}
 
   @doc """
   `rebar.config` and `rebar.config.script` from a Hex tarball's
