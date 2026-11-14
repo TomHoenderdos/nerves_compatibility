@@ -496,6 +496,44 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert Enum.map(~w(minor failing same), &hex_latest/1) == [nil, nil, nil]
     end
 
+    test "a prerelease is never nominated" do
+      passing_package("alpha", "1.2.3")
+      hex_says([{"alpha", "1.2.4-rc.1"}])
+
+      assert {:ok, %{nominated: 0}} = UpdateCheck.run()
+      assert hex_latest("alpha") == nil
+
+      # Prerelease churn after a nominated release leaves it as it is.
+      hex_says([{"alpha", "1.2.4"}])
+      assert {:ok, %{nominated: 1}} = UpdateCheck.run()
+      hex_says([{"alpha", "1.2.5-rc.1"}])
+      assert {:ok, %{nominated: 0}} = UpdateCheck.run()
+      assert hex_latest("alpha") == "1.2.4"
+    end
+
+    test "a nomination is cleared once a toolchain row of it exists" do
+      passing_package("alpha", "1.2.3")
+      hex_says([{"alpha", "1.2.4"}])
+      assert {:ok, %{nominated: 1}} = UpdateCheck.run()
+
+      Portal.PrecompiledFixtures.ingest_toolchain_build("alpha", "1.2.4")
+      assert {:ok, %{nominated: 0}} = UpdateCheck.run()
+      assert hex_latest("alpha") == nil
+    end
+
+    test "a nomination is cleared once a full run reaches that version" do
+      package = passing_package("alpha", "1.2.3")
+      hex_says([{"alpha", "1.2.4"}])
+      assert {:ok, %{nominated: 1}} = UpdateCheck.run()
+
+      package
+      |> Ash.Changeset.for_update(:update, %{latest_version: "1.2.4"})
+      |> Ash.update!(domain: Portal.Catalog)
+
+      assert {:ok, %{moved: 0, nominated: 0}} = UpdateCheck.run()
+      assert hex_latest("alpha") == nil
+    end
+
     test "a dry run nominates nothing" do
       passing_package("alpha", "1.2.3")
       hex_says([{"alpha", "1.2.4"}])

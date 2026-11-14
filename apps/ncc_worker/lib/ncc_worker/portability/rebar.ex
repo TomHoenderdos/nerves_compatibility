@@ -547,8 +547,8 @@ defmodule NccWorker.Portability.Rebar do
   @doc """
   The builder's arch string as rebar3 computes it (`rebar_utils:get_arch/0`):
   `<OTP version>-<system_architecture>-<wordsize in bits>`, the OTP version
-  read from `<root>/releases/<major>/OTP_VERSION` without its newline and
-  a trailing `**` (the major alone when that file cannot be read).
+  read from `<root>/releases/<major>/OTP_VERSION` as `otp_version_of/2`
+  reads it.
   """
   @spec arch() :: String.t()
   def arch do
@@ -561,19 +561,25 @@ defmodule NccWorker.Portability.Rebar do
   defp otp_version do
     release = List.to_string(:erlang.system_info(:otp_release))
     file = Path.join([List.to_string(:code.root_dir()), "releases", release, "OTP_VERSION"])
+    otp_version_of(File.read(file), release)
+  end
 
-    case File.read(file) do
-      {:ok, vsn} when byte_size(vsn) >= 3 ->
-        size = byte_size(vsn)
-
-        if binary_part(vsn, size, -3) == "**\n",
-          do: binary_part(vsn, 0, size - 3),
-          else: binary_part(vsn, 0, size - 1)
-
-      _ ->
-        release
+  @doc """
+  The OTP version from `OTP_VERSION`'s `read` result, as
+  `rebar_utils:otp_release1/1` (rebar3 3.22 to 3.28) takes it: everything
+  before the first `**` when there is one, else the contents with every
+  trailing newline trimmed; `release`, the major, when the file cannot be
+  read.
+  """
+  @spec otp_version_of({:ok, binary()} | {:error, term()}, String.t()) :: String.t()
+  def otp_version_of({:ok, vsn}, _release) when is_binary(vsn) do
+    case :binary.match(vsn, "**") do
+      {pos, _} -> binary_part(vsn, 0, pos)
+      :nomatch -> String.trim_trailing(vsn, "\n")
     end
   end
+
+  def otp_version_of(_read, release), do: release
 
   defp inactive?({{:atom, key}, _value}), do: key in ["profiles", "project_plugins"]
   defp inactive?(_term), do: false

@@ -592,9 +592,9 @@ What it lists:
     1 to 1024 bytes), and `matched` whether
     `re:run(Arch, Regex, [{capture, none}])` matched on the builder, `Arch` being
     `rebar_utils:get_arch/0`'s `<OTP version>-<system_architecture>-<wordsize in bits>`: the OTP
-    version is the contents of `<code:root_dir()>/releases/<otp_release>/OTP_VERSION` without its
-    trailing newline (and without a trailing `**`), or the major alone when that file cannot be
-    read; the wordsize is `8 * erlang:system_info({wordsize, external})`. Each distinct regex is
+    version is the contents of `<code:root_dir()>/releases/<otp_release>/OTP_VERSION` cut before
+    the first `**` when it has one, otherwise with every trailing `\n` trimmed (rebar3 3.22 to
+    3.28, `rebar_utils:otp_release1/1`), or the major alone when that file cannot be read; the wordsize is `8 * erlang:system_info({wordsize, external})`. Each distinct regex is
     listed once. A regex the builder's `re` cannot compile, or one that is not ASCII, is recorded as
     `config_unrecorded` instead. A regex the OTP major does decide is not listed, as before.
 

@@ -92,6 +92,18 @@ defmodule NccWorker.Portability.RebarPlatformDefineTest do
     assert Rebar.arch() == "#{full}-#{sys}-#{words}"
   end
 
+  # rebar_utils:otp_release1/1 (rebar3 3.22-3.28): cut at the first `**`,
+  # else trim every trailing newline.
+  test "the OTP version is read from OTP_VERSION as rebar3 reads it" do
+    assert Rebar.otp_version_of({:ok, "28.1\n"}, "28") == "28.1"
+    assert Rebar.otp_version_of({:ok, "28.1"}, "28") == "28.1"
+    assert Rebar.otp_version_of({:ok, "28.1\n\n"}, "28") == "28.1"
+    assert Rebar.otp_version_of({:ok, "28.1**\n"}, "28") == "28.1"
+    assert Rebar.otp_version_of({:ok, "28.1**x**\n"}, "28") == "28.1"
+    assert Rebar.otp_version_of({:ok, "28.0.2.1\r\n"}, "28") == "28.0.2.1\r"
+    assert Rebar.otp_version_of({:error, :enoent}, "28") == "28"
+  end
+
   test "a branch that might match depending on what follows the major is recorded, not refused" do
     for {source, regex} <- [
           {~s("^#{@major}\\\\.1"), "^#{@major}\\.1"},
