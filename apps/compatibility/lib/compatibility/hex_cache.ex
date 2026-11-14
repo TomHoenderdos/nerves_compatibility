@@ -372,9 +372,24 @@ defmodule Compatibility.HexCache do
   # The lookup's HTTP timeouts are per phase (connect, then each receive), so
   # they bound nothing in total. This does: the lookup runs in a process of
   # its own, killed at `timeout_ms`, and a raise or exit there is an answer
-  # like any other failure rather than a crash of the caller.
+  # like any other failure rather than a crash of the caller. The spawned
+  # function catches its own raise/throw/exit before calling `exit/1`: left
+  # uncaught, it still reaches us the same way (the monitor's `:DOWN`), but
+  # it also fires the BEAM's own asynchronous crash-report logging, which
+  # races the synchronous `receive` above and whatever flushes a caller's
+  # `capture_log` around this call.
   defp bounded(fun, timeout_ms) do
-    {pid, ref} = spawn_monitor(fn -> exit({:answer, fun.()}) end)
+    {pid, ref} =
+      spawn_monitor(fn ->
+        answer =
+          try do
+            fun.()
+          catch
+            kind, reason -> {:error, caught(kind, reason)}
+          end
+
+        exit({:answer, answer})
+      end)
 
     receive do
       {:DOWN, ^ref, :process, ^pid, {:answer, answer}} -> answer
@@ -388,6 +403,14 @@ defmodule Compatibility.HexCache do
         end
     end
   end
+
+  # A caught `kind, reason` as an error term: `{:exception, message}` for a
+  # raise, `{kind, reason}` otherwise. Mirrors
+  # `Portal.BuildCache.L2.Client.caught/2`.
+  defp caught(:error, reason),
+    do: {:exception, Exception.message(Exception.normalize(:error, reason, []))}
+
+  defp caught(kind, reason), do: {kind, reason}
 
   # The size was checked by `lstat`; reading one byte more than the cap
   # catches a file that grew since.

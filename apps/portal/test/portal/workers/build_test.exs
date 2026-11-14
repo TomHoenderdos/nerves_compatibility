@@ -465,7 +465,16 @@ defmodule Portal.Workers.BuildTest do
         release_checksum: fn _, _ -> raise "hex lookup exploded" end
       )
 
-      log = capture_log(fn -> assert :ok = build_jason_for_hex() end)
+      # The deliberate message for this ("Hex cache misses from ... checksum
+      # lookup returned ...") is logged at :info, which the suite's :warning
+      # primary level drops; raise it for the capture, as the OOM-retry
+      # tests below do.
+      level = Logger.level()
+      Logger.configure(level: :info)
+      on_exit(fn -> Logger.configure(level: level) end)
+
+      log =
+        capture_log([level: :info], fn -> assert :ok = build_jason_for_hex() end)
 
       assert log =~ "hex lookup exploded"
       assert_enqueued(worker: Ingest)
