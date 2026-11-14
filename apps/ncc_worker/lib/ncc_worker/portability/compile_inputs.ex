@@ -41,7 +41,8 @@ defmodule NccWorker.Portability.CompileInputs do
   Each kind has its own cap, and the caps together fit the shared 256-item
   cap of `Compatibility.CompileInputs`: 128 `env` items, 96 `config_order`
   items (`Compatibility.CompileInputs.max_config_order_items/0`) and 32 of
-  every other kind. A `config_order` input the shared shape rejects (a
+  every other kind (`platform_define` items among them, rebar3's
+  `platform_define` regexes the OTP major does not decide, `Rebar`). A `config_order` input the shared shape rejects (a
   name no item may carry) records `config_unrecorded` instead. A kind over its cap records that it
   was not recorded instead (`env_all` for `env`, `config_unrecorded` for
   the rest), so the list never grows past the shared cap and the build is
@@ -107,9 +108,10 @@ defmodule NccWorker.Portability.CompileInputs do
     others ++ orders
   end
 
-  # A config_order input the shared shape rejects (a name no item may carry)
-  # would make the portal reject the whole list: it is not recorded instead.
-  defp carriable(%{"kind" => "config_order"} = input) do
+  # A config_order or platform_define input the shared shape rejects (a
+  # name no item may carry, an over-long regex) would make the portal
+  # reject the whole list: it is not recorded instead.
+  defp carriable(%{"kind" => kind} = input) when kind in ["config_order", "platform_define"] do
     case CompileInputs.validate([input]) do
       {:ok, _} -> input
       :error -> @unrecorded

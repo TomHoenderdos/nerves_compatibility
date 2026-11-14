@@ -164,7 +164,7 @@ defmodule Portal.Reports.PayloadTest do
   end
 
   test "known codes are the shared table" do
-    assert length(Payload.known_codes()) == 44
+    assert length(Payload.known_codes()) == 45
     assert "not_built_target" in Payload.known_codes()
 
     # In the client's table order (`Precompiled.Reason`).
@@ -172,6 +172,8 @@ defmodule Portal.Reports.PayloadTest do
              ~w(closure_without closure_env_absent compile_env_differs)
 
     refute "unknown" in Payload.known_codes()
+    # Appended: earlier codes keep their place.
+    assert List.last(Payload.known_codes()) == "platform_define_differs"
   end
 
   describe "type confusion" do
@@ -313,7 +315,9 @@ defmodule Portal.Reports.PayloadTest do
   end
 
   test "the compile-time input codes are known, with their arguments" do
-    for code <- ~w(env_differs env_set_at_build env_all config_unrecorded config_order_differs) do
+    for code <-
+          ~w(env_differs env_set_at_build env_all config_unrecorded config_order_differs
+             platform_define_differs) do
       assert code in Payload.known_codes()
     end
 
@@ -325,5 +329,9 @@ defmodule Portal.Reports.PayloadTest do
     l = line("phoenix_live_dashboard", "0.8.4", "miss", "config_order_differs", args)
     assert {:ok, %{lines: [line]}} = Payload.validate(%{body() | "lines" => [l]})
     assert line.reason_code == "config_order_differs" and line.reason_args == args
+
+    l = line("hackney", "4.11.1", "miss", "platform_define_differs", ["R14"])
+    assert {:ok, %{lines: [line]}} = Payload.validate(%{body() | "lines" => [l]})
+    assert line.reason_code == "platform_define_differs" and line.reason_args == ["R14"]
   end
 end

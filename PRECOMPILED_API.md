@@ -584,7 +584,19 @@ What it lists:
     `reader` read the unset key outside its own dependency tree, so whether it saw `app`'s `.app`
     default depends on the consumer's compile order. `default` is that `.app` env default at the
     locked version (`:error` when it declares none), `seen` what the read returned, both recorded
-    like `value` or `"unrecordable"`.
+    like `value` or `"unrecordable"`;
+  - `{"kind": "platform_define", "regex": <string>, "matched": <boolean>}` (judge revision 9 and
+    later): a rebar3 `platform_define` in the closure (the package's or a dependency's) whose regex
+    the OTP major alone does not decide, such as hackney's `"R14"`. `regex` is the regex string
+    rebar3 hands `re:run/3`, as written in `rebar.config` with its escapes resolved (ASCII only,
+    1 to 1024 bytes), and `matched` whether
+    `re:run(Arch, Regex, [{capture, none}])` matched on the builder, `Arch` being
+    `rebar_utils:get_arch/0`'s `<OTP version>-<system_architecture>-<wordsize in bits>`: the OTP
+    version is the contents of `<code:root_dir()>/releases/<otp_release>/OTP_VERSION` without its
+    trailing newline (and without a trailing `**`), or the major alone when that file cannot be
+    read; the wordsize is `8 * erlang:system_info({wordsize, external})`. Each distinct regex is
+    listed once. A regex the builder's `re` cannot compile, or one that is not ASCII, is recorded as
+    `config_unrecorded` instead. A regex the OTP major does decide is not listed, as before.
 
   A `compile_env` value may also be `"unrecordable"`, which matches no config. A list the portal
   rejects as malformed is stored as `[{"kind": "config_unrecorded"}]` with the build's `compile_env`
@@ -668,7 +680,11 @@ build fails as the reason it was not used:
     - `env_all` and `config_unrecorded` never match;
     - a `config_order` item holds when the client's prediction equals `seen`: the project's config
       for the key when set, otherwise `default` when `app` compiles (and loads) before `reader` in
-      the project's `mix deps.compile` order, otherwise `:error`. Else `config_order_differs`.
+      the project's `mix deps.compile` order, otherwise `:error`. Else `config_order_differs`;
+    - a `platform_define` item holds when the client, computing its own arch string the way
+      rebar3 does (above) under the OTP it would compile with, gets the same `matched` for
+      `regex`. Else `platform_define_differs`, with the regex as its argument. A client that
+      cannot compute the arch string treats the item as differing.
 
     On a device, a `config_order` item holds only when `app` and `reader` are both present or both
     being installed, `default` is `:error`, and the device's value for the key equals `seen`.
@@ -775,7 +791,7 @@ Reason codes: `hit`, `not_in_batch`, `not_built_version`,
 `needed_lib_missing`, `symbol_version_missing`, `system_unknown`,
 `system_bound_compile`, `env_differs`, `env_set_at_build`, `env_all`,
 `config_unrecorded`, `config_order_differs`, `rebar3_global_config`,
-`erl_compiler_options`. Another code is stored as `unknown`.
+`erl_compiler_options`, `platform_define_differs`. Another code is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
 `DELETE` counts against, refused ones included; and, for `POST` only, 300

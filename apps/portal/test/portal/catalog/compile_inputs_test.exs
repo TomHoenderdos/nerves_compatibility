@@ -63,6 +63,18 @@ defmodule Portal.Catalog.CompileInputsTest do
     assert_api_schema(manifest, "ManifestV2")
   end
 
+  test "a build with a platform_define item is published under builds_with_inputs" do
+    name = name()
+    define = [%{"kind" => "platform_define", "regex" => "R14", "matched" => false}]
+
+    tb = ingest_toolchain_build(name, "0.3.0", compile_inputs: define)
+    assert tb.compile_inputs == define
+    manifest = Catalog.precompiled_manifest_v2(name)
+    assert %{"builds" => [], "builds_with_inputs" => [build]} = manifest["versions"]["0.3.0"]
+    assert build["build"]["compile_inputs"] == define
+    assert_api_schema(manifest, "ManifestV2")
+  end
+
   test "a build whose inputs need no check stays under builds, with the field" do
     name = name()
     ingest_toolchain_build(name, "0.3.0", compile_inputs: @own)

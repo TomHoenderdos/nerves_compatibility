@@ -21,6 +21,12 @@ defmodule Compatibility.CompileInputs do
       `default` is `app`'s `.app` env default at the locked version, `seen`
       what the read returned. A client predicts its own compile order and
       compares.
+    * `%{"kind" => "platform_define", "regex", "matched"}`: a rebar3
+      `platform_define` in the closure whose regex the OTP major alone does
+      not decide. `regex` is the regex string rebar3 hands `re:run/3`
+      (escapes resolved), `matched` (a boolean) whether it matched the
+      builder's `rebar_utils:get_arch/0` string. A client computes its own
+      arch string the same way and compares.
 
   `value` is a recorded value (`Compatibility.RecordedValue`: base64url ETF
   of `:error` or `{:ok, binary}`) or `"unrecordable"`, which matches nothing.
@@ -31,6 +37,7 @@ defmodule Compatibility.CompileInputs do
   @unrecordable "unrecordable"
   @max_items 256
   @max_name_bytes 256
+  @max_regex_bytes 1024
   # The share of `@max_items` the worker gives `config_order` items, next to
   # 128 `env` items and 32 of every other kind.
   @max_config_order_items 96
@@ -105,7 +112,20 @@ defmodule Compatibility.CompileInputs do
          map_size(item) == 6 and name?(app) and name?(key) and name?(reader) and value?(default) and
            value?(seen)
 
+  defp item?(%{"kind" => "platform_define", "regex" => regex, "matched" => matched} = item)
+       when is_boolean(matched),
+       do: map_size(item) == 3 and regex?(regex)
+
   defp item?(_item), do: false
+
+  @doc "Whether `regex` may stand as a `platform_define` item's regex."
+  @spec regex?(term()) :: boolean()
+  def regex?(regex) when is_binary(regex) do
+    byte_size(regex) in 1..@max_regex_bytes and String.valid?(regex) and
+      not String.contains?(regex, <<0>>)
+  end
+
+  def regex?(_regex), do: false
 
   @doc "Whether `name` may stand as an `env` item's name."
   @spec name?(term()) :: boolean()

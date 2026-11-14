@@ -361,20 +361,20 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
     assert reason =~ "mix.exs"
   end
 
-  test "rebar3: a clean package passes; platform_define and hooks refuse; as a dependency they taint",
+  test "rebar3: a clean package passes; platform_define is an input; hooks refuse and taint",
        ctx do
     passes(ctx, "fx_r3_clean")
     passes(ctx, "fx_uses_r3_clean")
     passes(ctx, "fx_r3_two")
     passes(ctx, "fx_uses_r3_two")
 
-    assert %{status: :skip, reason: "rebar3 build uses platform_define"} =
-             verdict(ctx, "fx_r3_pd")
+    # A regex the OTP major does not decide: recorded with the builder's
+    # verdict, the package's own and a dependency's alike.
+    define = %{"kind" => "platform_define", "regex" => "^nomatch$", "matched" => false}
+    assert %{status: :pass, compile_inputs: [^define]} = verdict(ctx, "fx_r3_pd")
+    assert %{status: :pass, compile_inputs: [^define]} = verdict(ctx, "fx_uses_r3_pd")
 
     assert %{status: :skip, reason: "rebar3 build runs pre_hooks"} = verdict(ctx, "fx_r3_hooks")
-
-    assert %{status: :skip, reason: @taint <> "fx_r3_pd (rebar3 build uses platform_define)"} =
-             verdict(ctx, "fx_uses_r3_pd")
   end
 
   test "rebar3: a plugin refuses, and taints a package that has it", ctx do

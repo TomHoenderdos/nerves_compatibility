@@ -645,6 +645,8 @@ defmodule NccWorker.Portability do
     decided = decided ++ config.refusals ++ version.refusals
     package_r2 = package_build_root(ctx)
     deps = dep_results(ctx, report, decided)
+    {package_rebar, package_inputs} = rebar(ctx, report, ctx.package)
+    rebar_inputs = Enum.uniq(package_inputs ++ Enum.flat_map(deps, &elem(&1, 1).inputs))
 
     %{
       ctx: ctx,
@@ -652,7 +654,7 @@ defmodule NccWorker.Portability do
       report: report,
       decided: decided,
       config: config,
-      inputs: CompileInputs.build(decided, config.inputs),
+      inputs: CompileInputs.build(decided, config.inputs ++ rebar_inputs),
       trace_problems:
         trace_problems(report, ctx) ++
           built_problems(ctx, report, opts) ++
@@ -660,7 +662,7 @@ defmodule NccWorker.Portability do
       libs: libs,
       package_window: window_problem(report, ctx.package),
       package_r2: package_r2,
-      package_rebar: rebar(ctx, report, ctx.package),
+      package_rebar: package_rebar,
       deps: deps,
       manager_mismatch: manager_mismatch(ctx, scope, Keyword.get(opts, :declassified, %{})),
       tree_refusal: tree_refusal(ctx, scope)
@@ -993,25 +995,27 @@ defmodule NccWorker.Portability do
   defp r2({:error, why}), do: {:error, "R2: #{why}"}
   defp r2(other), do: {:error, "R2: unexpected #{inspect(other, limit: 5)}"}
 
-  # The rebar3 rules: `nil` for a Mix-built app, else `{:refuse, reason}`,
-  # `{:error, why}` (coverage, taint for a dependency), `{:unjudged, why}`
-  # (could not be judged), `{:gap, module}` or `:ok`.
+  # The rebar3 rules, with the compile inputs they record (`platform_define`
+  # items, `Rebar`): `{nil, []}` for a Mix-built app, else the result,
+  # `{:refuse, reason}`, `{:error, why}` (coverage, taint for a dependency),
+  # `{:unjudged, why}` (could not be judged), `{:gap, module}` or `:ok`.
   defp rebar(ctx, report, app) do
-    if Context.manager(ctx, app) == "rebar3", do: rebar3(ctx, report, app)
+    if Context.manager(ctx, app) == "rebar3", do: rebar3(ctx, report, app), else: {nil, []}
   end
 
   defp rebar3(ctx, report, app) do
     case Context.dest(ctx, app) do
-      nil -> {:unjudged, "rebar3 source dir missing"}
+      nil -> {{:unjudged, "rebar3 source dir missing"}, []}
       dest -> rebar3(static_rebar(ctx, report, app, dest), ctx, report, app)
     end
   end
 
-  defp rebar3({:refuse, _} = refusal, _ctx, _report, _app), do: refusal
-  defp rebar3({:unjudged, _} = unjudged, _ctx, _report, _app), do: unjudged
+  defp rebar3({:refuse, _} = refusal, _ctx, _report, _app), do: {refusal, []}
+  defp rebar3({:unjudged, _} = unjudged, _ctx, _report, _app), do: {unjudged, []}
+  defp rebar3(:ok, ctx, report, app), do: rebar3({:inputs, []}, ctx, report, app)
 
-  defp rebar3(:ok, ctx, report, app),
-    do: Rebar.coverage(Context.ebin(ctx, app), Map.get(report.children, app))
+  defp rebar3({:inputs, items}, ctx, report, app),
+    do: {Rebar.coverage(Context.ebin(ctx, app), Map.get(report.children, app)), items}
 
   # The static rules on the app's rebar.config from its verified Hex
   # tarball and its rebar3 parents' (their overrides), then the
@@ -1100,7 +1104,7 @@ defmodule NccWorker.Portability do
 
   defp dep_result(ctx, report, decided, app) do
     r2 = build_root(ctx, app)
-    rebar = rebar(ctx, report, app)
+    {rebar, inputs} = rebar(ctx, report, app)
 
     taint =
       Enum.find_value(
@@ -1113,7 +1117,7 @@ defmodule NccWorker.Portability do
         & &1.()
       )
 
-    %{taint: taint, r2: r2, rebar: rebar}
+    %{taint: taint, r2: r2, rebar: rebar, inputs: inputs}
   end
 
   defp refusal_of({:refuse, reason}), do: reason

@@ -74,65 +74,90 @@ defmodule NccWorker.Portability.RebarPlatformDefineTest do
     end
   end
 
-  test "a branch that might match depending on what follows the major keeps refusing" do
-    for regex <- [
-          ~s("^#{@major}\\\\.1"),
-          ~s("^#{@major}-x86"),
-          ~s("^#{@major}\\\\."),
-          ~s("^2[7-9]\\\\."),
-          ~s("^3|musl"),
-          ~s("19"),
-          ~s("18|19"),
-          ~s{"(R12|R13|R14|R15|R16|17)"},
-          ~s("R14"),
-          ~s("^2+?"),
-          ~s("^2{"),
-          ~s("^2{x}"),
-          ~s("^1[8|9]"),
-          ~s("^1\\\\Q|^2"),
-          ~s{"^1|(?#x)^2"},
-          ~s{"(*UTF)^2"},
-          ~s("^1|^2\\\\c|"),
-          ~s("^3||^2x")
+  # What the build records for a regex the major does not decide: the
+  # regex string and whether it matched the builder's arch string.
+  defp recorded(regex),
+    do: %{
+      "kind" => "platform_define",
+      "regex" => regex,
+      "matched" => :re.run(Rebar.arch(), regex, [{:capture, :none}]) == :match
+    }
+
+  test "the arch string is rebar_utils:get_arch/0's" do
+    major = :erlang.system_info(:otp_release) |> List.to_string()
+    file = Path.join([:code.root_dir(), "releases", major, "OTP_VERSION"])
+    full = file |> File.read!() |> String.trim_trailing("\n") |> String.trim_trailing("**")
+    sys = :erlang.system_info(:system_architecture) |> List.to_string()
+    words = Integer.to_string(8 * :erlang.system_info({:wordsize, :external}))
+    assert Rebar.arch() == "#{full}-#{sys}-#{words}"
+  end
+
+  test "a branch that might match depending on what follows the major is recorded, not refused" do
+    for {source, regex} <- [
+          {~s("^#{@major}\\\\.1"), "^#{@major}\\.1"},
+          {~s("^#{@major}-x86"), "^#{@major}-x86"},
+          {~s("^#{@major}\\\\."), "^#{@major}\\."},
+          {~s("^2[7-9]\\\\."), "^2[7-9]\\."},
+          {~s("^3|musl"), "^3|musl"},
+          {~s("19"), "19"},
+          {~s("18|19"), "18|19"},
+          {~s{"(R12|R13|R14|R15|R16|17)"}, "(R12|R13|R14|R15|R16|17)"},
+          # hackney 4.x
+          {~s("R14"), "R14"},
+          {~s("^2+?"), "^2+?"},
+          {~s("^2{"), "^2{"},
+          {~s("^2{x}"), "^2{x}"},
+          {~s("^1[8|9]"), "^1[8|9]"},
+          {~s{"^1|(?#x)^2"}, "^1|(?#x)^2"},
+          {~s{"(*UTF)^2"}, "(*UTF)^2"},
+          {~s("^3||^2x"), "^3||^2x"},
+          {~s("^1\\\\Q|^2"), "^1\\Q|^2"},
+          {~s("^1|^2\\\\c|"), "^1|^2\\c|"},
+          {~s("alpine"), "alpine"},
+          {~s("darwin2[5-9]"), "darwin2[5-9]"},
+          {~s("^2.*linux"), "^2.*linux"},
+          {~s("^2$"), "^2$"},
+          {~s("^[^0]"), "^[^0]"},
+          {~s("^[0-9.]"), "^[0-9.]"},
+          {~s("^\\\\d"), "^\\d"},
+          {~s(<<"musl">>), "musl"}
         ] do
-      assert check(define(regex)) == @refusal, regex
+      assert check(define(source)) == {:inputs, [recorded(regex)]}, source
+    end
+
+    # The builder's own arch string matches its own pieces.
+    sys = :erlang.system_info(:system_architecture) |> List.to_string()
+    assert {:inputs, [%{"matched" => true}]} = check(define(inspect(sys)))
+    assert {:inputs, [%{"matched" => false}]} = check(define(~s("R14")))
+
+    # Several, each once, in order; decided ones are not recorded.
+    assert check(
+             define(~s("musl")) <> define(~s("^2")) <> define(~s("R14")) <> define(~s("musl"))
+           ) ==
+             {:inputs, [recorded("musl"), recorded("R14")]}
+  end
+
+  test "a regex re cannot compile, or that is not ASCII, records config_unrecorded" do
+    for source <- [~s("^(2"), ~s("^[9-0]"), ~s("\\x{e9}")] do
+      assert check(define(source)) == {:inputs, [%{"kind" => "config_unrecorded"}]}, source
     end
   end
 
-  test "anything that can see past the major, or is not a regex string, keeps refusing" do
-    for regex <- [
-          ~s("^#{@major}\\\\.1"),
-          ~s("alpine"),
-          ~s("musl"),
-          ~s("darwin2[5-9]"),
-          ~s("^#{@major}-x86"),
-          ~s("^2.*linux"),
-          ~s("^2$"),
-          ~s("^(2"),
-          ~s("^[^0]"),
-          ~s('atom'),
-          ~s(42),
-          # Passes the grammar (a digit range inside `[...]`) but fails
-          # `Regex.compile/1` (descending range), exercising the
-          # compile-failure branch `"^(2"` never reaches.
-          ~s("^[9-0]"),
-          # Top-level alternation: no branch always matches and `musl`
-          # drops the `^` anchor.
-          ~s("^3|musl"),
-          ~s("^[0-9.]"),
-          ~s("^\\\\d")
-        ] do
+  test "a define that is not a regex string, or not a define tuple, keeps refusing" do
+    for regex <- [~s('atom'), ~s(42), ~s({x})] do
       assert check(define(regex)) == @refusal, regex
     end
 
     assert check(~s({erl_opts, [{platform_define, "^2"}]}.\n)) == @refusal
-    assert check(define(~s("^2")) <> define(~s("musl"))) == @refusal
+    assert check(define(~s('atom')) <> define(~s("musl"))) == @refusal
   end
 
   test "a define a rebar3 parent's overrides inject is held to the same rule" do
     good = ~s({overrides, [{add, [{erl_opts, [{platform_define, "^2", 'X'}]}]}]}.\n)
-    bad = ~s({overrides, [{add, [{erl_opts, [{platform_define, "musl", 'X'}]}]}]}.\n)
+    other = ~s({overrides, [{add, [{erl_opts, [{platform_define, "musl", 'X'}]}]}]}.\n)
+    bad = ~s({overrides, [{add, [{erl_opts, [{platform_define, 42, 'X'}]}]}]}.\n)
     assert check("{erl_opts, []}.\n", [good]) == :ok
+    assert check("{erl_opts, []}.\n", [other]) == {:inputs, [recorded("musl")]}
     assert check("{erl_opts, []}.\n", [bad]) == @refusal
   end
 end

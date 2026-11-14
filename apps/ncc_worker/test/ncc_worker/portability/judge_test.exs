@@ -1452,12 +1452,12 @@ defmodule NccWorker.Portability.JudgeTest do
              "rebar3 build runs plugins"},
             {"hex_not_list", "{plugins, rebar3_hex}.\n", "rebar3 build runs plugins"},
             {"hex_string_name", ~s|{plugins, ["rebar3_hex"]}.\n|, "rebar3 build runs plugins"},
-            {"pd", ~s({erl_opts, [{platform_define, "win32", 'WIN'}]}.\n),
+            {"pd", ~s({erl_opts, [{platform_define, 'win32', 'WIN'}]}.\n),
              "rebar3 build uses platform_define"},
             {"profile", ~s({profiles, [{prod, [{pre_hooks, [{compile, "make"}]}]}]}.\n),
              "rebar3 build runs pre_hooks"},
             {"profile_pd",
-             ~s({profiles, [{prod, [{erl_opts, [{platform_define, "x", 'X'}]}]}]}.\n),
+             ~s({profiles, [{prod, [{erl_opts, [{platform_define, 42, 'X'}]}]}]}.\n),
              "rebar3 build uses platform_define"},
             {"profile_plugins", "{profiles, [{prod, [{plugins, [pc]}]}]}.\n",
              "rebar3 build runs plugins"},
@@ -1557,14 +1557,16 @@ defmodule NccWorker.Portability.JudgeTest do
       end
     end
 
-    test "hackney 4.9.1's real rebar.config reads (erl_scan escapes) and refuses",
+    test "hackney 4.9.1's real rebar.config reads (erl_scan escapes) and records R14",
          %{tmp_dir: dir} do
       config =
         File.read!(Path.join([__DIR__, "../../fixtures/rebar/hackney-4.9.1.rebar.config"]))
 
       # A top-level `{pre_hooks, [{clean, "rm -rf ..."}]}` never runs under
-      # `rebar3 bare compile`; its unanchored "R14" platform_define refuses.
-      assert {:refuse, "rebar3 build uses platform_define"} =
+      # `rebar3 bare compile`; its unanchored "R14" platform_define is a
+      # compile input (no OTP since 17 has an `R` in its version), and the
+      # four the OTP major decides are not.
+      assert {:inputs, [%{"kind" => "platform_define", "regex" => "R14", "matched" => false}]} =
                Rebar.check(write(dir, "hackney", %{"rebar.config" => config}))
 
       on_compile =
@@ -1624,6 +1626,11 @@ defmodule NccWorker.Portability.JudgeTest do
       assert {:refuse, "rebar3 build runs plugins"} = Rebar.check(dest, mix_config)
 
       File.write!(mix_config, ~s({erl_opts,[{platform_define,"linux",'L'}]}.\n))
+
+      assert {:inputs, [%{"kind" => "platform_define", "regex" => "linux"}]} =
+               Rebar.check(dest, mix_config)
+
+      File.write!(mix_config, ~s({erl_opts,[{platform_define,linux,'L'}]}.\n))
       assert {:refuse, "rebar3 build uses platform_define"} = Rebar.check(dest, mix_config)
 
       File.rm!(mix_config)

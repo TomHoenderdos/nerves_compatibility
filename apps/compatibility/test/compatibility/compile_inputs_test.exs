@@ -93,4 +93,32 @@ defmodule Compatibility.CompileInputsTest do
     assert CompileInputs.needs_check?([%{"kind" => "env_all"}])
     assert CompileInputs.needs_check?([%{"kind" => "config_unrecorded"}])
   end
+
+  @define %{"kind" => "platform_define", "regex" => "R14", "matched" => false}
+
+  test "a platform_define item is accepted in its exact shape and needs a check" do
+    matched = %{@define | "matched" => true, "regex" => "^(linux|darwin)"}
+    assert CompileInputs.validate([@define, matched]) == {:ok, [@define, matched]}
+    assert CompileInputs.needs_check?([@define])
+  end
+
+  test "a malformed platform_define item is malformed" do
+    for bad <- [
+          Map.put(@define, "extra", 1),
+          Map.delete(@define, "matched"),
+          Map.delete(@define, "regex"),
+          %{@define | "matched" => "false"},
+          %{@define | "matched" => nil},
+          %{@define | "regex" => ""},
+          %{@define | "regex" => 14},
+          %{@define | "regex" => "a" <> <<0>>},
+          %{@define | "regex" => <<0xFF>>},
+          %{@define | "regex" => String.duplicate("a", 1025)}
+        ] do
+      assert CompileInputs.validate([bad]) == :error, inspect(bad)
+    end
+
+    assert CompileInputs.validate([%{@define | "regex" => String.duplicate("a", 1024)}]) ==
+             {:ok, [%{@define | "regex" => String.duplicate("a", 1024)}]}
+  end
 end

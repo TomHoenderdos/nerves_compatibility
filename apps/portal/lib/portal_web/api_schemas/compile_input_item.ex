@@ -10,12 +10,25 @@ defmodule PortalWeb.ApiSchemas.CompileInputItem do
         "An environment variable or config the build's compile read that a client checks " <>
           "itself. `env` items carry `name`, `value` and `set_by` (`inputs` too when " <>
           "`set_by` is `build`); `env_all` and `config_unrecorded` carry `kind` alone; " <>
-          "`config_order` items carry `app`, `path`, `reader`, `default` and `seen`.",
+          "`config_order` items carry `app`, `path`, `reader`, `default` and `seen`; " <>
+          "`platform_define` items carry `regex` and `matched`.",
       type: :object,
       properties: %{
         kind: %Schema{
           type: :string,
-          enum: ["env", "env_all", "config_unrecorded", "config_order"]
+          enum: ["env", "env_all", "config_unrecorded", "config_order", "platform_define"]
+        },
+        regex: %Schema{
+          type: :string,
+          description:
+            "A rebar3 `platform_define` regex the OTP major does not decide: the string rebar3 " <>
+              "hands `re:run/3` (escapes resolved)."
+        },
+        matched: %Schema{
+          type: :boolean,
+          description:
+            "Whether `regex` matched the `rebar_utils:get_arch/0` string of the build " <>
+              "(`<OTP version>-<system_architecture>-<wordsize>`)."
         },
         name: %Schema{type: :string},
         app: %Schema{type: :string},

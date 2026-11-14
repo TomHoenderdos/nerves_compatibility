@@ -432,10 +432,10 @@ of these skips the build:
   `mix_project_paths` observations and refuse nothing;
 - a build path baked into the beams outside diagnostic metadata;
 - a call into a natively built dependency while the package compiles;
-- a rebar3 build with hooks, plugins, or a `platform_define` whose regex can see past the leading OTP major
-  (precompiled judge refinements, item 3; `rebar_utils:get_arch/0` puts the full OTP version ahead of the arch and
-  wordsize, but the client checks only the major), in its `rebar.config` or in the `mix.rebar.config` Mix wrote for
-  rebar3. A dependency's own `rebar.config.script` is judged by what its evaluation read (Mix evaluates it in the
+- a rebar3 build with hooks, plugins, or a `platform_define` whose regex is not a string, in its `rebar.config` or in
+  the `mix.rebar.config` Mix wrote for rebar3 (a regex string the OTP major does not decide is a `platform_define`
+  compile input instead, for the client to evaluate against its own arch string; precompiled judge refinements,
+  item 3, and judge round 2). A dependency's own `rebar.config.script` is judged by what its evaluation read (Mix evaluates it in the
   traced VM, outside every window) and by that `mix.rebar.config`, which holds its result; a rebar3 parent's script
   could not be judged. One reviewed compile hook is let through: quic's `sh c_src/build_nif.sh` (a no-op unless
   `QUIC_BUILD_NIF=1`), only when that script in the verified tarball and on disk before the compile has a reviewed
@@ -641,7 +641,10 @@ environment reads of the package's closure, which no longer refuse a build (`Ncc
 `System.put_env` in the same build set, `{"kind": "env_all"}` for a read of the whole environment, and
 `{"kind": "config_unrecorded"}` when the config reads could not all be recorded, and
 `{"kind": "config_order", "app", "path", "reader", "default", "seen"}`: an unset key read outside the reader's tree;
-`default` is the app's `.app` env default at the locked version, `seen` what the read returned. A value the trace could not
+`default` is the app's `.app` env default at the locked version, `seen` what the read returned, and
+`{"kind": "platform_define", "regex", "matched"}`: a rebar3 `platform_define` regex in the closure that the OTP major
+does not decide, with whether it matched the builder's `rebar_utils:get_arch/0` string (`Rebar.arch/0`; one `re`
+cannot compile, or not ASCII, records `config_unrecorded`). A value the trace could not
 capture, over 64 KiB, under a private-looking name (`NCC_*`, `*TOKEN*`, `*SECRET*`, `*_KEY`, `*_PASS`, `*_PROXY`,
 ...) or holding a URL with userinfo (`scheme://user:pass@`) is `"unrecordable"`.
 Each kind has its own cap inside the list's 256 items: more than 128 `env` items record `env_all` instead, more

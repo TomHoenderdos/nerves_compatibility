@@ -5,8 +5,12 @@ defmodule NccWorker.Portability.Rebar do
   through `ERL_AFLAGS`; hooks and plugins run programs no trace sees, and
   `platform_define` is host dependence by definition when rebar compiles,
   except one whose regex the OTP major alone decides (precompiled judge
-  refinements, item 3, branch by branch: `otp_major_only?/1`), which
-  decides the same on every host. `provider_hooks` refuse too: providers come from plugins or run
+  refinements, item 3, branch by branch: `major_regex?/1`), which
+  decides the same on every host. Any other regex string is a compile
+  input (`check_sources/3`'s `{:inputs, items}`): `%{"kind" =>
+  "platform_define", "regex", "matched"}`, whether it matched the
+  builder's `arch/0`, for a client to recompute (judge round 2, change 3).
+  `provider_hooks` refuse too: providers come from plugins or run
   arbitrary build steps.
 
   A hook counts only when `rebar3 bare compile` runs it: on `compile`,
@@ -69,7 +73,8 @@ defmodule NccWorker.Portability.Rebar do
   counts only as a key of an active section; inside `overrides` it counts
   at any depth (fail closed). `platform_define` counts at any depth of an
   active section, unless the OTP major alone decides its regex
-  (precompiled judge refinements, item 3).
+  (precompiled judge refinements, item 3); it is then recorded, or
+  refuses when its regex is not a string.
 
   The judge (`check_sources/3`) reads the dependency's `rebar.config` and
   `rebar.config.script` from its checksum-verified Hex tarball
@@ -148,7 +153,7 @@ defmodule NccWorker.Portability.Rebar do
   when given, the `mix.rebar.config` Mix wrote for rebar3.
   """
   @spec check(String.t(), String.t() | nil) ::
-          :ok | {:refuse, String.t()} | {:unjudged, String.t()}
+          :ok | {:inputs, [map()]} | {:refuse, String.t()} | {:unjudged, String.t()}
   # A dependency's own build files, read as data; nothing is evaluated.
   # sobelow_skip ["Traversal.FileModule"]
   def check(dest, mix_config \\ nil) when is_binary(dest) do
@@ -169,7 +174,7 @@ defmodule NccWorker.Portability.Rebar do
   `overrides` Mix applies to it, and the `mix.rebar.config` rebar3 read.
   """
   @spec check_sources(sources(), [sources()], String.t() | nil) ::
-          :ok | {:refuse, String.t()} | {:unjudged, String.t()}
+          :ok | {:inputs, [map()]} | {:refuse, String.t()} | {:unjudged, String.t()}
   def check_sources(%{script?: true}, _parents, nil),
     do: {:refuse, "rebar3 build evaluates rebar.config.script"}
 
@@ -178,10 +183,18 @@ defmodule NccWorker.Portability.Rebar do
 
     with {:ok, own_terms} <- parse_own(own),
          {:ok, inherited} <- parent_overrides(parents),
-         :ok <- config({:ok, own_terms ++ inherited}, reviewed) do
-      mix_config(mix_config, reviewed)
+         {:ok, own_inputs} <- inputs(config({:ok, own_terms ++ inherited}, reviewed)),
+         {:ok, mix_inputs} <- inputs(mix_config(mix_config, reviewed)) do
+      case Enum.uniq(own_inputs ++ mix_inputs) do
+        [] -> :ok
+        items -> {:inputs, items}
+      end
     end
   end
+
+  defp inputs(:ok), do: {:ok, []}
+  defp inputs({:inputs, items}), do: {:ok, items}
+  defp inputs(other), do: other
 
   @doc """
   The reviewed hook files: `%{app => {script path, variable}}`, the script
@@ -466,8 +479,12 @@ defmodule NccWorker.Portability.Rebar do
 
   # Ignoring `project_plugins` and inactive profiles at the top level. Item 3
   # (precompiled judge refinements): a `platform_define` whose regex the
-  # OTP major alone decides (`otp_major_only?/1`) is accepted;
-  # any other one refuses, as before.
+  # OTP major alone decides (`major_regex?/1`) is accepted. Judge round
+  # 2, change 3: any other regex string is recorded as a `platform_define`
+  # compile input, with whether it matched the builder's arch string
+  # (`arch/0`), which a client recomputes and compares; one `:re` cannot
+  # compile, or that is not ASCII, records `config_unrecorded`. A define
+  # whose regex is not a string, or that is not a define tuple, refuses.
   defp platform_define(sections) do
     searched =
       Enum.map(sections, fn
@@ -481,9 +498,81 @@ defmodule NccWorker.Portability.Rebar do
         &(is_tuple(&1) and tuple_size(&1) > 0 and elem(&1, 0) == {:atom, "platform_define"})
       )
 
-    if Enum.all?(defines, &otp_major_only?/1),
-      do: :ok,
-      else: {:refuse, "rebar3 build uses platform_define"}
+    defines
+    |> Enum.reduce_while([], fn define, acc ->
+      case define_input(define) do
+        :decided -> {:cont, acc}
+        {:input, item} -> {:cont, [item | acc]}
+        :refuse -> {:halt, :refuse}
+      end
+    end)
+    |> case do
+      :refuse -> {:refuse, "rebar3 build uses platform_define"}
+      [] -> :ok
+      items -> {:inputs, items |> Enum.reverse() |> Enum.uniq()}
+    end
+  end
+
+  defp define_input(define) do
+    case define_regex(define) do
+      {:ok, text} -> if major_regex?(text), do: :decided, else: {:input, arch_input(text)}
+      :error -> :refuse
+    end
+  end
+
+  defp define_regex({{:atom, "platform_define"}, regex, _key}), do: regex_text(regex)
+  defp define_regex({{:atom, "platform_define"}, regex, _key, _value}), do: regex_text(regex)
+  defp define_regex(_define), do: :error
+
+  @unrecorded %{"kind" => "config_unrecorded"}
+
+  # rebar3's own test (`rebar_utils:is_arch/1`): `re:run(get_arch(), Regex,
+  # [{capture, none}])`. Only ASCII, so the string rebar3 passes (a
+  # charlist from `rebar.config`) and this binary are the same pattern.
+  defp arch_input(text) do
+    with true <- ascii?(text),
+         true <- Compatibility.CompileInputs.regex?(text),
+         {:ok, compiled} <- :re.compile(text) do
+      matched = :re.run(arch(), compiled, [{:capture, :none}]) == :match
+      %{"kind" => "platform_define", "regex" => text, "matched" => matched}
+    else
+      _ -> @unrecorded
+    end
+  rescue
+    _ -> @unrecorded
+  end
+
+  defp ascii?(text), do: for(<<c <- text>>, reduce: true, do: (acc -> acc and c < 128))
+
+  @doc """
+  The builder's arch string as rebar3 computes it (`rebar_utils:get_arch/0`):
+  `<OTP version>-<system_architecture>-<wordsize in bits>`, the OTP version
+  read from `<root>/releases/<major>/OTP_VERSION` without its newline and
+  a trailing `**` (the major alone when that file cannot be read).
+  """
+  @spec arch() :: String.t()
+  def arch do
+    words = Integer.to_string(8 * :erlang.system_info({:wordsize, :external}))
+    system = List.to_string(:erlang.system_info(:system_architecture))
+    otp_version() <> "-" <> system <> "-" <> words
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp otp_version do
+    release = List.to_string(:erlang.system_info(:otp_release))
+    file = Path.join([List.to_string(:code.root_dir()), "releases", release, "OTP_VERSION"])
+
+    case File.read(file) do
+      {:ok, vsn} when byte_size(vsn) >= 3 ->
+        size = byte_size(vsn)
+
+        if binary_part(vsn, size, -3) == "**\n",
+          do: binary_part(vsn, 0, size - 3),
+          else: binary_part(vsn, 0, size - 1)
+
+      _ ->
+        release
+    end
   end
 
   defp inactive?({{:atom, key}, _value}), do: key in ["profiles", "project_plugins"]
@@ -504,16 +593,8 @@ defmodule NccWorker.Portability.Rebar do
   # always matches, never matches, or may depend on the host. A regex any
   # of whose branches always matches, or all of whose branches never
   # match, decides the same on every host and patch of the build's major.
-  defp otp_major_only?({{:atom, "platform_define"}, regex, _key}), do: major_regex?(regex)
-
-  defp otp_major_only?({{:atom, "platform_define"}, regex, _key, _value}),
-    do: major_regex?(regex)
-
-  defp otp_major_only?(_define), do: false
-
-  defp major_regex?(regex) do
-    with {:ok, text} <- regex_text(regex),
-         {:ok, _compiled} <- Regex.compile(text),
+  defp major_regex?(text) do
+    with {:ok, _compiled} <- Regex.compile(text),
          {:ok, branches} <- top_branches(text) do
       major = :erlang.system_info(:otp_release) |> List.to_string()
       kinds = Enum.map(branches, &branch(&1, major))
