@@ -26,7 +26,7 @@ defmodule Portal.Workers.ToolchainSweep do
   starve the others inside a run. A toolchain with less backlog than its
   share leaves the rest to the others.
 
-  The run is taken in four tiers, each round-robin over the toolchains: the
+  The run is taken in five tiers, each round-robin over the toolchains: the
   named config variants (`config_variant` in `Catalog.toolchain_backlog/3`: a
   served default build's variants under the pinned
   `Compatibility.ConfigVariants` overlays it read), every `default` build
@@ -40,8 +40,17 @@ defmodule Portal.Workers.ToolchainSweep do
     2. defaults that are not reopens, up to the cap less the refresh
        reserve and the named variants taken;
     3. refreshes, up to the reserve, a quarter of the cap;
-    4. any slot still free, to the defaults left over, then the reopens,
-       then the refreshes left over, so no slot goes unused.
+    4. world builds (`Compatibility.Worlds`, a `with` build's version
+       built again in a world's closure), up to
+       `Portal.Toolchains.world_share/0` of the cap (a quarter by default),
+       taken out of the defaults' slots;
+    5. any slot still free, to the defaults left over, then the reopens,
+       then the world builds left over, then the refreshes left over, so no
+       slot goes unused.
+
+  World builds are proposed only while the `world_variants_enabled` setting
+  is on (`Portal.Toolchains.world_variants/0`); with none in the backlog
+  their share goes back to the defaults.
 
   An older Hex release of a popular package (`Portal.Catalog.VersionBackfill`,
   `backfill` in `Catalog.toolchain_backlog/3`) is a new default build: it
@@ -67,7 +76,7 @@ defmodule Portal.Workers.ToolchainSweep do
   gives the rest back to the defaults.
 
   Oban priorities are independent of the tiers: defaults at 0 and 1, named
-  variants at 2, refreshes and reopens at 3. The tiers decide what a capped run
+  variants at 2, refreshes, reopens and world builds at 3. The tiers decide what a capped run
   enqueues, the priority what the queue runs first, so no build waits in the
   queue for a refresh.
 
@@ -105,6 +114,8 @@ defmodule Portal.Workers.ToolchainSweep do
   # this count, not stay in it, and counting it would make the guard trigger
   # one job sooner than the threshold says.
   @queued_states ~w(available scheduled retryable)
+
+  @tiers [:named, :refresh, :default, :backfill, :reopen, :world]
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: args}) do
@@ -156,20 +167,19 @@ defmodule Portal.Workers.ToolchainSweep do
       |> Enum.frequencies_by(&enqueue/1)
 
     for %{toolchain: toolchain} <- Toolchains.images() do
-      [named, refresh, default, backfill, reopen] =
-        for tier <- [:named, :refresh, :default, :backfill, :reopen],
-            do: Map.get(counts, {toolchain, :enqueued, tier}, 0)
+      [named, refresh, default, backfill, reopen, world] =
+        for tier <- @tiers, do: Map.get(counts, {toolchain, :enqueued, tier}, 0)
 
       pending =
-        for tier <- [:named, :refresh, :default, :backfill, :reopen], reduce: 0 do
+        for tier <- @tiers, reduce: 0 do
           sum -> sum + Map.get(counts, {toolchain, :pending, tier}, 0)
         end
 
       Logger.info(
         "Toolchain sweep #{toolchain} (builder #{builder_version}): " <>
-          "enqueued #{named + default + backfill + refresh + reopen} " <>
+          "enqueued #{named + default + backfill + refresh + reopen + world} " <>
           "(#{named} config variants, #{backfill} old releases, #{refresh} refreshes, " <>
-          "#{reopen} judge-revision reopens), already queued #{pending}"
+          "#{reopen} judge-revision reopens, #{world} world builds), already queued #{pending}"
       )
     end
 
@@ -198,19 +208,22 @@ defmodule Portal.Workers.ToolchainSweep do
   # the other's leftovers, defaults first. Reopens only fill what is left
   # after the leftover defaults, ahead of the leftover refreshes.
   defp pick(backlogs, cap) do
-    [named, defaults, refreshes, reopens] =
-      Enum.map([:named, :default, :refresh, :reopen], &round_robin(only(backlogs, &1)))
+    [named, defaults, refreshes, reopens, worlds] =
+      Enum.map([:named, :default, :refresh, :reopen, :world], &round_robin(only(backlogs, &1)))
 
     named = Enum.take(named, cap)
     reserve = div(cap, 4)
+    {worlds, more_worlds} = Enum.split(worlds, trunc(cap * Toolchains.world_share()))
 
     {defaults, more_defaults} =
-      split_defaults(defaults, max(cap - reserve - length(named), 0))
+      split_defaults(defaults, max(cap - reserve - length(named) - length(worlds), 0))
 
     {refreshes, more_refreshes} = Enum.split(refreshes, reserve)
 
     Enum.take(
-      named ++ defaults ++ refreshes ++ more_defaults ++ reopens ++ more_refreshes,
+      named ++
+        defaults ++
+        refreshes ++ worlds ++ more_defaults ++ reopens ++ more_worlds ++ more_refreshes,
       cap
     )
   end
@@ -247,6 +260,11 @@ defmodule Portal.Workers.ToolchainSweep do
 
   defp tier(%{refresh: true}), do: :refresh
   defp tier(%{reopen: true}), do: :reopen
+
+  defp tier(%{config_variant: "default", variant: variant})
+       when variant not in [:with, :without],
+       do: :world
+
   defp tier(%{config_variant: "default", backfill: true}), do: :backfill
   defp tier(%{config_variant: "default"}), do: :default
   defp tier(%{config_variant: _named}), do: :named
@@ -287,6 +305,7 @@ defmodule Portal.Workers.ToolchainSweep do
 
   defp priority(_variant, :refresh), do: 3
   defp priority(_variant, :reopen), do: 3
+  defp priority(_variant, :world), do: 3
   defp priority(_variant, :named), do: 2
   defp priority(:with, :default), do: 0
   defp priority(:without, :default), do: 1

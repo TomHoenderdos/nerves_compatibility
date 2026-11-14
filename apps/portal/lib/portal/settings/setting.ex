@@ -54,7 +54,8 @@ defmodule Portal.Settings.Setting do
         :argus_timeout_seconds,
         :remote_mode,
         :remote_backlog_threshold,
-        :remote_auto_on
+        :remote_auto_on,
+        :world_variants_enabled
       ])
 
       upsert?(true)
@@ -130,6 +131,16 @@ defmodule Portal.Settings.Setting do
     end
 
     attribute :remote_auto_on, :boolean do
+      allow_nil?(false)
+      default(false)
+      public?(true)
+    end
+
+    # Whether the toolchain backlog proposes world builds
+    # (`Portal.Toolchains.worlds/0`). Off by default: turn it on only once
+    # every node that runs portal code has a release that knows the world
+    # variants, since an older one cannot read their rows.
+    attribute :world_variants_enabled, :boolean do
       allow_nil?(false)
       default(false)
       public?(true)

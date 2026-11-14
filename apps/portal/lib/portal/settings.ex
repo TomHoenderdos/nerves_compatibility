@@ -20,7 +20,8 @@ defmodule Portal.Settings do
     argus_timeout_seconds: 300,
     remote_mode: :auto,
     remote_backlog_threshold: 10,
-    remote_auto_on: false
+    remote_auto_on: false,
+    world_variants_enabled: false
   }
 
   resources do

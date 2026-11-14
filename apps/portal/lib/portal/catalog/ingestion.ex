@@ -509,7 +509,12 @@ defmodule Portal.Catalog.Ingestion do
   defp result_variant(_result), do: nil
 
   defp stage_toolchain_build(result, opts) do
-    build = result |> toolchain_build_map() |> gate_manifest() |> gate_config_variant(opts)
+    build =
+      result
+      |> toolchain_build_map()
+      |> gate_manifest()
+      |> gate_config_variant(opts)
+      |> gate_world_closure(opts)
 
     case ToolchainPriv.verify(result, build, opts) do
       :ok -> stage_toolchain_build(result, keyed(build), opts)
@@ -628,6 +633,47 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp gate_config_variant(build, _opts), do: build
+
+  # A world build whose closure came out equal to a live build of another
+  # variant of the same version (the with or without one first) is that
+  # build again: a client that reads both lists would see one build twice.
+  # It is stored as a deterministic skip with no files and its own lock, so
+  # the backlog does not want it again while the row stands.
+  defp gate_world_closure(%{"status" => "pass"} = build, opts) do
+    with variant when variant not in [nil, :with, :without] <- Map.get(opts, :variant),
+         %{} = deps when deps != %{} <- deps_lock(build["deps_lock"]),
+         [[other]] <- same_closure(opts, variant, deps) do
+      skip_variant(build, "same closure as the #{other} build")
+    else
+      _ -> build
+    end
+  end
+
+  defp gate_world_closure(build, _opts), do: build
+
+  @same_closure_sql """
+  SELECT t.variant
+  FROM catalog_toolchain_builds t
+  JOIN catalog_packages p ON p.id = t.package_id
+  WHERE p.name = $1 AND t.version = $2 AND t.toolchain = $3 AND t.builder_version = $4
+    AND t.config_variant = $5 AND t.variant <> $6 AND t.variant IN #{ToolchainBuild.variants_sql()}
+    AND t.revoked_at IS NULL AND t.status IN ('pass', 'skipped')
+    AND t.deps_lock = $7::jsonb
+  ORDER BY CASE t.variant WHEN 'with' THEN 0 WHEN 'without' THEN 1 ELSE 2 END, t.variant
+  LIMIT 1
+  """
+
+  defp same_closure(opts, variant, deps) do
+    Repo.query!(@same_closure_sql, [
+      opts.package,
+      opts.version,
+      opts.toolchain,
+      opts.builder_version,
+      Map.get(opts, :config_variant, ConfigVariants.default()),
+      Atom.to_string(variant),
+      deps
+    ]).rows
+  end
 
   defp skip_variant(build, reason),
     do: Map.merge(build, %{"status" => "skipped", "reason" => reason, "file_manifest" => nil})

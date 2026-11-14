@@ -14,6 +14,7 @@ defmodule Portal.Toolchains do
   """
 
   alias Compatibility.ConfigVariants
+  alias Compatibility.Worlds
 
   @toolchain ~r/^\d+\.\d+\/\d+$/
 
@@ -53,6 +54,51 @@ defmodule Portal.Toolchains do
   """
   @spec backfill_share() :: number()
   def backfill_share, do: Keyword.get(config(), :backfill_share, 1 / 3)
+
+  @doc """
+  The worlds the toolchain backlog builds (`Compatibility.Worlds`), in
+  pinned order: every known one unless `config :portal, Portal.Toolchains,
+  worlds:` lists a subset. Nothing is proposed for any of them while the
+  `world_variants_enabled` setting is off (`world_variants/0`).
+  """
+  @spec worlds() :: [String.t()]
+  def worlds do
+    case Keyword.get(config(), :worlds, :all) do
+      :all -> Worlds.names()
+      list when is_list(list) -> Enum.filter(Worlds.names(), &(&1 in list))
+    end
+  end
+
+  @doc """
+  The world variants (`:world_<name>`) the backlog proposes now: those of
+  `worlds/0` while the `world_variants_enabled` setting (`Portal.Settings`)
+  is on, none while it is off.
+  """
+  @spec world_variants() :: [atom()]
+  def world_variants do
+    if Portal.Settings.get().world_variants_enabled do
+      for name <- worlds(), {:ok, variant} <- [Worlds.variant(name)], do: variant
+    else
+      []
+    end
+  end
+
+  @doc """
+  World builds are wanted only for versions of the `world_top_packages`
+  packages with the most hex.pm recent downloads (`config :portal,
+  Portal.Toolchains`, default 500); nil wants them for every package.
+  """
+  @spec world_top_packages() :: pos_integer() | nil
+  def world_top_packages, do: Keyword.get(config(), :world_top_packages, 500)
+
+  @doc """
+  The most of a `Portal.Workers.ToolchainSweep` run's slots that world
+  builds may take, as a fraction of the cap: `world_share` under `config
+  :portal, Portal.Toolchains`, default a quarter. Slots they leave free go
+  to the other builds, and slots every other build leaves free go to them.
+  """
+  @spec world_share() :: number()
+  def world_share, do: Keyword.get(config(), :world_share, 0.25)
 
   @doc """
   How far back the toolchain backlog reaches into a popular package's Hex

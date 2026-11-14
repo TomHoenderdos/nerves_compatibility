@@ -1705,8 +1705,9 @@ defmodule Portal.Catalog do
   @candidate_version_order "(regexp_match(c.version, '^(\\d+)\\.(\\d+)\\.(\\d+)'))::numeric[]"
 
   # `toolchain_backlog/3`'s ranking of the candidates `c` (release downloads
-  # `d`), most wanted first.
+  # `d`), most wanted first: new builds, then reopens, then world builds.
   @backlog_order """
+  left(c.variant, 6) = 'world_' AND NOT c.reopen,
   c.reopen,
   c.config_variant = 'default',
   c.recent DESC NULLS LAST,
@@ -1714,7 +1715,7 @@ defmodule Portal.Catalog do
   c.finished_at DESC NULLS LAST,
   #{@candidate_version_order} DESC NULLS LAST,
   c.version DESC,
-  c.variant = 'without',
+  CASE c.variant WHEN 'with' THEN 0 WHEN 'without' THEN 1 ELSE 2 END,
   c.rank,
   c.package
   """
@@ -1784,6 +1785,51 @@ defmodule Portal.Catalog do
     AND NOT #{live_row.("d.package_id", "d.version", "d.variant", "cv.name", true, "false")}
   """
 
+  # World builds wanted (`Compatibility.Worlds`, phase 1a): for every
+  # version of a package among the $WTOP most downloaded on hex.pm (all of
+  # them when NULL) whose `with` default row is a pass or a skip, unrevoked,
+  # with a recorded lock, one candidate per enabled world variant in $WV
+  # (empty while `world_variants_enabled` is off, which proposes nothing). A
+  # live row of the world's own identity removes it, by the same rules as a
+  # default's. The closure the world gives is not predicted: a build whose
+  # closure comes out equal to the with or without build's is stored as a
+  # skip with no files at ingest (`Portal.Catalog.Ingestion`), so it is not
+  # wanted again. Never a refresh or a backfill.
+  @world_candidates_template """
+  SELECT p.name AS package, w.version, wv.variant, 'default'::text AS config_variant,
+         w.finished_at, p.hex_downloads_recent AS recent, false AS refresh,
+         0 AS rank,
+         #{live_row.("w.package_id", "w.version", "wv.variant", "'default'", false, "false")} AS reopen,
+         false AS backfill
+  FROM catalog_toolchain_builds w
+  JOIN catalog_packages p ON p.id = w.package_id
+  CROSS JOIN unnest($WV::text[]) AS wv(variant)
+  WHERE w.toolchain = $1
+    AND w.builder_version = $2
+    AND w.variant = 'with'
+    AND w.config_variant = 'default'
+    AND w.status IN ('pass', 'skipped')
+    AND w.revoked_at IS NULL
+    AND jsonb_typeof(w.deps_lock) = 'object'
+    AND ($WTOP::integer IS NULL OR p.id IN (
+      SELECT tp.id FROM catalog_packages tp
+      WHERE tp.hex_downloads_recent IS NOT NULL
+      ORDER BY tp.hex_downloads_recent DESC, tp.name
+      LIMIT $WTOP::integer
+    ))
+    AND NOT #{live_row.("w.package_id", "w.version", "wv.variant", "'default'", true, "false")}
+  """
+
+  # `@world_candidates_template` with its two parameters at `variants` and
+  # `top`.
+  world_candidates = fn variants, top ->
+    @world_candidates_template
+    |> String.replace("$WV", variants)
+    |> String.replace("$WTOP", top)
+  end
+
+  @world_candidates_backlog_sql world_candidates.("$18", "$19")
+
   @doc """
   Toolchain builds to make on `toolchain` at `builder_version`, at most
   `limit` that are not refreshes and at most `limit` refreshes (see below),
@@ -1847,6 +1893,17 @@ defmodule Portal.Catalog do
   image and the same `NCC_JUDGE_MAKEFILE_RULE2`; a fleet at mixed judge
   revisions rebuilds the same reopened rows every week.
 
+  World builds (`Compatibility.Worlds`, variant `:world_<name>`) are wanted
+  only while the `world_variants_enabled` setting is on
+  (`Portal.Toolchains.world_variants/0`): for every version of one of the
+  `Portal.Toolchains.world_top_packages/0` most downloaded packages whose
+  `with` default build passed or was skipped, unrevoked, with a recorded
+  lock, and whose world identity has no live row. A world build that comes
+  out with the closure of the with or without build is stored as a skip
+  (`Portal.Catalog.Ingestion`), so it is not wanted again. They rank after
+  every new build and every reopen, and the limit applies to them on their
+  own, so `Portal.Workers.ToolchainSweep` can give them their share.
+
   Most wanted first, so a capped sweep builds what projects resolve before
   what nobody asks for: by the package's hex.pm recent downloads, then, within
   a package, by the release's own downloads
@@ -1861,7 +1918,7 @@ defmodule Portal.Catalog do
           %{
             package: String.t(),
             version: String.t(),
-            variant: :with | :without,
+            variant: atom(),
             config_variant: String.t(),
             refresh: boolean(),
             reopen: boolean(),
@@ -1878,13 +1935,16 @@ defmodule Portal.Catalog do
           #{@toolchain_candidates_backfill_sql}
           UNION ALL
           #{@config_variant_candidates_sql}
+          UNION ALL
+          #{@world_candidates_backlog_sql}
         )
         SELECT package, version, variant, config_variant, refresh, reopen, backfill
         FROM (
           SELECT c.package, c.version, c.variant, c.config_variant, c.refresh, c.reopen,
                  c.backfill AND NOT c.reopen AND NOT c.refresh AS backfill,
                  row_number() OVER (
-                   PARTITION BY c.refresh, c.backfill AND NOT c.reopen AND NOT c.refresh
+                   PARTITION BY c.refresh, c.backfill AND NOT c.reopen AND NOT c.refresh,
+                                left(c.variant, 6) = 'world_' AND NOT c.reopen
                    ORDER BY #{@backlog_order}
                  ) AS place,
                  row_number() OVER (
@@ -1902,7 +1962,7 @@ defmodule Portal.Catalog do
           toolchain,
           builder_version,
           UnrecordedOptionalDeps.wanted(toolchain, builder_version)
-        ) ++ config_variant_params() ++ [limit | backfill_params(backfill)]
+        ) ++ config_variant_params() ++ [limit | backfill_params(backfill)] ++ world_params()
       )
 
     for [package, version, variant, config_variant, refresh, reopen, backfill] <- rows,
@@ -2140,6 +2200,16 @@ defmodule Portal.Catalog do
       )
 
     count
+  end
+
+  # `@world_candidates_template`'s two parameters: the enabled world
+  # variants as text, none while `world_variants_enabled` is off, and how
+  # many of the most downloaded packages they are wanted for.
+  defp world_params do
+    [
+      Enum.map(Portal.Toolchains.world_variants(), &Atom.to_string/1),
+      Portal.Toolchains.world_top_packages()
+    ]
   end
 
   # `@config_variant_candidates_sql`'s $9..$14: whether named variants can be
