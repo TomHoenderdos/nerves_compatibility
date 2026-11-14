@@ -99,6 +99,14 @@ defmodule Portal.Catalog.WorldDedupeTest do
     assert %{status: :skipped, reason: "same closure as the without build"} = row
   end
 
+  test "a world build with no dependencies, like its with build, is a skip too" do
+    ingest!("nodeps", :with, %{}, "include")
+    {row, sha} = ingest!("nodeps", :world_phx, %{}, "world:phx")
+
+    assert %{status: :skipped, reason: "same closure as the with build"} = row
+    refute member?(sha)
+  end
+
   test "a world build with a closure of its own passes and keeps its files" do
     ingest!("own", :with, @jason, "include")
     {row, sha} = ingest!("own", :world_phx, @world, "world:phx")

@@ -90,6 +90,7 @@ defmodule Portal.Catalog.ToolchainBacklogWorldTest do
         optional_deps: %{"added" => []},
         compile_env_rule: 1,
         compile_env: [],
+        judge_revision: Keyword.get(opts, :judge_revision),
         run_id: "tc-#{name}-#{version}-#{System.unique_integer([:positive])}",
         finished_at: DateTime.add(DateTime.utc_now(), -Keyword.get(opts, :days_ago, 30) * @day)
       })
@@ -166,6 +167,36 @@ defmodule Portal.Catalog.ToolchainBacklogWorldTest do
 
       row!("phoenix", "1.8.16", :error, variant: :world_phx, days_ago: 2)
       assert worlds(backlog()) == [{"phoenix", "1.8.16", false}]
+    end
+
+    test "a world skip at the current judge revision is not proposed again a week later" do
+      run!("phoenix", "1.8.16", 1_000)
+      row!("phoenix", "1.8.16", :pass, judge_revision: 8, days_ago: 1)
+
+      world =
+        row!("phoenix", "1.8.16", :skipped,
+          variant: :world_phx,
+          reason: "world closure not built: deps_get_failed",
+          judge_revision: 8,
+          days_ago: 8
+        )
+
+      assert worlds(backlog()) == []
+
+      # Without a revision it reads as an older one and comes back as a
+      # reopen, which is what a stamped skip avoids.
+      Portal.Repo.query!(
+        "UPDATE catalog_toolchain_builds SET judge_revision = NULL WHERE id = $1::uuid",
+        [Ecto.UUID.dump!(world.id)]
+      )
+
+      assert worlds(backlog()) == [{"phoenix", "1.8.16", true}]
+    end
+
+    test "a version whose with build has an empty lock wants no world build" do
+      run!("mime", "2.0.7", 1_000)
+      row!("mime", "2.0.7", :pass, deps_lock: %{})
+      assert worlds(backlog()) == []
     end
 
     test "only the world_top_packages most downloaded packages; nil wants every one" do

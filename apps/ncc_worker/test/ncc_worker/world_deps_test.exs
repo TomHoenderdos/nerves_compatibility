@@ -416,6 +416,10 @@ defmodule NccWorker.WorldDepsTest do
                "deps_lock" => nil
              } = json["toolchain_build"]
 
+      # Stamped like a judged build, so the portal reopens it only under a
+      # newer judge revision.
+      assert json["toolchain_build"]["judge_revision"] == NccWorker.Portability.judge_revision()
+
       assert %{
                "added" => [],
                "dropped" => [],
@@ -441,6 +445,8 @@ defmodule NccWorker.WorldDepsTest do
       assert %{status: "skipped", reason: "world closure not built: host_compile_failed"} =
                result.toolchain_build
 
+      assert result.toolchain_build.judge_revision == NccWorker.Portability.judge_revision()
+
       assert %{added: [], dropped: ["decimal"], reason: "host_compile_failed"} =
                result.optional_deps
     end
@@ -463,6 +469,7 @@ defmodule NccWorker.WorldDepsTest do
                )
 
       assert result.toolchain_build.reason == "world closure not built: world_extra_deps (ranch)"
+      assert result.toolchain_build.judge_revision == NccWorker.Portability.judge_revision()
       assert result.toolchain_build.file_manifest == nil
       assert %{reason: "world_extra_deps", dropped: ["decimal"]} = result.optional_deps
     end

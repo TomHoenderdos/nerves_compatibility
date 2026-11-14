@@ -1720,8 +1720,8 @@ defmodule NccWorker.Worker do
 
   # A world closure that could not be built compiled nothing: its build is
   # skipped with no files, and nothing describes a lock it was not built in.
-  defp compiled_build(%{world_skip: reason}, _project_dir, _package_name, toolchain, _opts),
-    do: world_skipped_build(toolchain, reason)
+  defp compiled_build(%{world_skip: reason}, _project_dir, _package_name, toolchain, opts),
+    do: world_skipped_build(toolchain, reason, opts)
 
   defp compiled_build(compiled, project_dir, package_name, toolchain, opts),
     do:
@@ -1734,10 +1734,14 @@ defmodule NccWorker.Worker do
 
   @doc false
   # The `toolchain_build` of a world build whose closure was not built
-  # (`toolchain_compile/5`): skipped, no files, no lock-derived fields.
+  # (`toolchain_compile/5`): skipped, no files, no lock-derived fields. It
+  # carries the judge revision (`Portability.judge_revision/1`, `opts` the
+  # run's judge options) as a judged build does: the portal reopens a skipped
+  # row whose revision is older than the newest, so a nil one would be built
+  # again every week although the world fails the same way every time.
   # Public for tests.
-  @spec world_skipped_build(map(), String.t()) :: toolchain_build_verdict()
-  def world_skipped_build(toolchain, reason) do
+  @spec world_skipped_build(map(), String.t(), keyword()) :: toolchain_build_verdict()
+  def world_skipped_build(toolchain, reason, opts \\ []) do
     %{
       status: "skipped",
       reason: "world closure not built: " <> reason,
@@ -1752,7 +1756,7 @@ defmodule NccWorker.Worker do
       file_manifest: nil,
       portability_rule: nil,
       rule1_reason: nil,
-      judge_revision: nil,
+      judge_revision: Portability.judge_revision(opts),
       manager: nil,
       compile_observations: nil
     }

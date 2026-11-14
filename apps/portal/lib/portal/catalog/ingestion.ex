@@ -641,7 +641,7 @@ defmodule Portal.Catalog.Ingestion do
   # the backlog does not want it again while the row stands.
   defp gate_world_closure(%{"status" => "pass"} = build, opts) do
     with variant when variant not in [nil, :with, :without] <- Map.get(opts, :variant),
-         %{} = deps when deps != %{} <- deps_lock(build["deps_lock"]),
+         %{} = deps <- deps_lock(build["deps_lock"]),
          [[other]] <- same_closure(opts, variant, deps) do
       skip_variant(build, "same closure as the #{other} build")
     else

@@ -22,14 +22,17 @@ A world build whose `deps` comes out equal to the version's `with` or `without`
 build is stored as `skipped` with reason `same closure as the with build` (or
 `without`) and no files, so the same build is never listed twice. Like any
 skipped row, it is rebuilt once when a newer judge revision reopens the
-toolchain's skips.
+toolchain's skips. A world build whose closure could not be built (`world closure
+not built: <reason>`) carries the judge revision too, so it is not rebuilt every
+week, only under a newer revision.
 
 ## What is built
 
 While the `world_variants_enabled` setting is on, the toolchain backlog wants a
 world build for every version of a package among the `world_top_packages` most
 downloaded on hex.pm (500 by default; `nil` means every package) whose `with`
-default build passed or was skipped, is unrevoked and has a recorded lock. A
+default build passed or was skipped, is unrevoked and has a recorded lock
+with at least one dependency. A
 served world default whose compile read LiveView's config also wants its
 `phx_prod`, `phx_test` and `phx_dev` config variants, while the setting is on.
 

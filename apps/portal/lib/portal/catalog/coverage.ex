@@ -17,9 +17,11 @@ defmodule Portal.Catalog.Coverage do
   build. A revoked build is not served and counts for nothing, not even as
   a build of the version.
 
+  A world build (`Compatibility.Worlds`) counts in neither column: it serves
+  only clients that read `builds_closure`.
+
   A covered version also counts in the second column when a covering build
-  other than a world build (`Compatibility.Worlds`) carries the package's
-  optional dependencies, since a fresh lock that adds
+  carries the package's optional dependencies, since a fresh lock that adds
   one misses a build made without it. Carrying them means the build's
   `deps_lock` holds every optional Hex dependency the version declares,
   each at the newest stable release its requirement allows: what a fresh
@@ -230,15 +232,18 @@ defmodule Portal.Catalog.Coverage do
 
   # `toolchain => package_id => [build]`, passing or not, of every builder
   # version, of the default config variant only: a named variant's build
-  # covers nothing its default does not.
+  # covers nothing its default does not. Not a world build either (moduledoc).
   defp builds([]), do: %{}
 
   defp builds(ids) do
     ToolchainBuild
-    |> Ash.Query.filter(package_id in ^ids and is_nil(revoked_at) and config_variant == "default")
+    |> Ash.Query.filter(
+      package_id in ^ids and is_nil(revoked_at) and config_variant == "default" and
+        variant in ^ToolchainBuild.optional_deps_variants()
+    )
     # Not `file_manifest`: a build's file list is the largest thing on the
     # row and nothing here reads it.
-    |> Ash.Query.select([:id, :package_id, :version, :toolchain, :status, :variant, :deps_lock])
+    |> Ash.Query.select([:id, :package_id, :version, :toolchain, :status, :deps_lock])
     |> Ash.read!(domain: Portal.Catalog)
     |> Enum.group_by(& &1.toolchain)
     |> Map.new(fn {toolchain, builds} -> {toolchain, Enum.group_by(builds, & &1.package_id)} end)
@@ -293,13 +298,8 @@ defmodule Portal.Catalog.Coverage do
 
   defp passing_verdict([], _complete?), do: :failed
 
-  # A world build carries a world's members, not the package's own optional
-  # dependencies, so it never counts in the second column.
-  defp passing_verdict(passing, complete?) do
-    if Enum.any?(passing, &(not ToolchainBuild.world?(&1.variant) and complete?.(&1))),
-      do: :covered,
-      else: :without
-  end
+  defp passing_verdict(passing, complete?),
+    do: if(Enum.any?(passing, complete?), do: :covered, else: :without)
 
   # The default `optional_deps_complete?`: per package whose latest version
   # has a passing build on some toolchain, the optional dependencies that

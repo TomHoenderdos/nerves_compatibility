@@ -206,17 +206,16 @@ defmodule Portal.Catalog.CoverageTest do
       refute gap(row, "jason")
     end
 
-    # A world build carries the world's members, not the package's optional
-    # dependencies, and serves only clients that read `builds_closure`: it
-    # covers the version, but never counts in the second column.
-    test "a world build covers, and never counts as carrying optional dependencies" do
+    # A world build serves only clients that read `builds_closure`, so it
+    # counts in neither column.
+    test "a world build covers nothing" do
       package!("phoenix", 1_000, ["1.8.16"])
       build!("phoenix", "1.8.16", :pass, variant: :world_phx)
 
       row = report() |> toolchain("1.19/28")
 
-      assert %{covered: 1, covered_with_optional: 0} = row
-      assert %{reason: :no_optional_deps_build} = gap(row, "phoenix")
+      assert %{covered: 0, covered_with_optional: 0} = row
+      assert %{reason: :no_host_build} = gap(row, "phoenix")
 
       build!("phoenix", "1.8.16", :pass)
       assert %{covered: 1, covered_with_optional: 1} = report() |> toolchain("1.19/28")

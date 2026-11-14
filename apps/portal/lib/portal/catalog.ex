@@ -1799,7 +1799,9 @@ defmodule Portal.Catalog do
   # version of a package among the $WTOP most downloaded on hex.pm (all of
   # them when NULL) whose `with` default row is a pass or a skip, unrevoked,
   # with a recorded lock, one candidate per enabled world variant in $WV
-  # (empty while `world_variants_enabled` is off, which proposes nothing). A
+  # (empty while `world_variants_enabled` is off, which proposes nothing and,
+  # through the `cardinality` guard, scans nothing). A version whose with
+  # lock is empty has no closure a world could add to, so it wants none. A
   # live row of the world's own identity removes it, by the same rules as a
   # default's. The closure the world gives is not predicted: a build whose
   # closure comes out equal to the with or without build's is stored as a
@@ -1814,13 +1816,15 @@ defmodule Portal.Catalog do
   FROM catalog_toolchain_builds w
   JOIN catalog_packages p ON p.id = w.package_id
   CROSS JOIN unnest($WV::text[]) AS wv(variant)
-  WHERE w.toolchain = $1
+  WHERE cardinality($WV::text[]) > 0
+    AND w.toolchain = $1
     AND w.builder_version = $2
     AND w.variant = 'with'
     AND w.config_variant = 'default'
     AND w.status IN ('pass', 'skipped')
     AND w.revoked_at IS NULL
     AND jsonb_typeof(w.deps_lock) = 'object'
+    AND w.deps_lock <> '{}'::jsonb
     AND ($WTOP::integer IS NULL OR p.id IN (
       SELECT tp.id FROM catalog_packages tp
       WHERE tp.hex_downloads_recent IS NOT NULL
@@ -1909,7 +1913,7 @@ defmodule Portal.Catalog do
   (`Portal.Toolchains.world_variants/0`): for every version of one of the
   `Portal.Toolchains.world_top_packages/0` most downloaded packages whose
   `with` default build passed or was skipped, unrevoked, with a recorded
-  lock, and whose world identity has no live row. A world build that comes
+  lock that is not empty, and whose world identity has no live row. A world build that comes
   out with the closure of the with or without build is stored as a skip
   (`Portal.Catalog.Ingestion`), so it is not wanted again. They rank after
   every new build and every reopen, and the limit applies to them on their
