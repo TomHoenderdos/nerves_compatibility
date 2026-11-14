@@ -296,13 +296,21 @@ builder_toolchain_registry=${NCC_TOOLCHAIN_REGISTRY:-ghcr.io/tomhoenderdos/ncc-w
 # A tag an earlier image already got stays, and is overwritten by the
 # fallback's build or replaced by the next pull.
 builder_pull_toolchain_images() {
-  local sha tags tag remote
+  local sha tags tag remote label
   sha=$(git -C "$builder_src" rev-parse HEAD) || return 1
   [[ $sha =~ ^[0-9a-f]{40}$ ]] || return 1
   tags=$(builder_toolchain_tags) || return 1
   for tag in $tags; do
     remote="$builder_toolchain_registry:${tag##*:}-$sha"
     builder_docker pull -q "$remote" >/dev/null || return 1
+    # The label deploy.yml's build sets: a tag that names another commit's
+    # image is treated as no image at all.
+    label=$(builder_docker image inspect \
+      --format '{{ index .Config.Labels "ncc.commit" }}' "$remote") || return 1
+    if [[ $label != "$sha" ]]; then
+      echo "toolchain image: $remote is labelled for commit '${label:-unknown}', not $sha" >&2
+      return 1
+    fi
     builder_docker tag "$remote" "$tag-deploy" || return 1
     echo "toolchain image: $remote"
   done

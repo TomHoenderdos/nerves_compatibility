@@ -204,7 +204,7 @@ builder_queues_drained
     SHA = "0123456789abcdef0123456789abcdef01234567"
 
     def run_build_image(self, pull_status="0", inspect_status="0", toolchain_pull_status="0",
-                        label=SHA, **env):
+                        label=SHA, remote_label=None, **env):
         script = r'''
 set -euo pipefail
 source "$HELPER"
@@ -218,7 +218,11 @@ docker() {
     return "$PULL_STATUS"
   fi
   if [[ $1 == image && $2 == inspect ]]; then
-    [[ $3 != --format ]] || printf '%s\n' "$LABEL"
+    if [[ $3 == --format && $5 == *ncc-worker-toolchain:* ]]; then
+      printf '%s\n' "$REMOTE_LABEL"
+    elif [[ $3 == --format ]]; then
+      printf '%s\n' "$LABEL"
+    fi
     return "$INSPECT_STATUS"
   fi
 }
@@ -238,6 +242,7 @@ builder_build_image
                      "HOSTS": str(hosts), "PULL_STATUS": pull_status,
                      "INSPECT_STATUS": inspect_status,
                      "TOOLCHAIN_PULL_STATUS": toolchain_pull_status, "LABEL": label,
+                     "REMOTE_LABEL": label if remote_label is None else remote_label,
                      **env},
                 capture_output=True, text=True, timeout=5,
             )
@@ -394,7 +399,8 @@ builder_activate_image
         self.assertIn(
             f"docker tag {self.TOOLCHAIN_REMOTE} ncc-worker:elixir-1.19-otp-28-deploy", events)
         self.assertNotIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
-        self.assertFalse(any(e.startswith("docker image inspect") for e in events))
+        self.assertIn("docker image inspect --format {{ index .Config.Labels \"ncc.commit\" }} "
+                      + self.TOOLCHAIN_REMOTE, events)
         self.assertIn(f"toolchain image: {self.TOOLCHAIN_REMOTE}", result.stdout)
 
     # The worker and toolchain images fall back on their own.
@@ -410,6 +416,21 @@ builder_activate_image
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("docker pull -q registry.example/tc:elixir-1.19-otp-28-"
                       "0123456789abcdef0123456789abcdef01234567", events)
+
+    # A registry tag that names another commit's image counts as no image.
+    def test_a_pulled_toolchain_image_for_another_commit_falls_back(self):
+        for prebuilt, fallback in (("0", "make build-toolchains TOOLCHAIN_SUFFIX=-deploy"),
+                                   ("1", "docker image inspect --format {{ index .Config.Labels "
+                                         "\"ncc.commit\" }} ncc-worker:elixir-1.19-otp-28-deploy")):
+            for remote_label in ("f" * 40, ""):
+                with self.subTest(prebuilt=prebuilt, remote_label=remote_label):
+                    result, events = self.run_build_image(
+                        remote_label=remote_label, NCC_TOOLCHAIN_PREBUILT=prebuilt)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn(f"docker tag {self.TOOLCHAIN_REMOTE} "
+                                     "ncc-worker:elixir-1.19-otp-28-deploy", events)
+                    self.assertIn(fallback, events)
+                    self.assertIn(f"not {self.SHA}", result.stderr)
 
     def test_builds_the_toolchain_images_when_the_registry_has_none(self):
         result, events = self.run_build_image(toolchain_pull_status="1")
@@ -437,7 +458,8 @@ builder_activate_image
         self.assertIn(
             f"docker tag {self.TOOLCHAIN_REMOTE} ncc-worker:elixir-1.19-otp-28-deploy", events)
         self.assertNotIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
-        self.assertFalse(any(e.startswith("docker image inspect") for e in events))
+        self.assertFalse(any(e.startswith("docker image inspect") and e.endswith("-deploy")
+                             for e in events), events)
 
     def test_a_prebuilt_host_without_a_registry_image_checks_the_loaded_one(self):
         for overrides in ({"toolchain_pull_status": "1"}, {"NCC_TOOLCHAIN_FROM_REGISTRY": "0"}):
@@ -461,7 +483,7 @@ builder_activate_image
     # An image an earlier deploy left under `<tag>-deploy`, or one without
     # the label, must not pass for this commit.
     def test_a_prebuilt_toolchain_image_for_another_commit_stops_the_deploy(self):
-        for label in ("f" * 40, "", "<no value>"):
+        for label in ("f" * 40, "", "<no value>", self.SHA + "-dirty"):
             with self.subTest(label=label):
                 result, events = self.run_build_image(
                     NCC_TOOLCHAIN_PREBUILT="1", toolchain_pull_status="1", label=label)
@@ -477,6 +499,32 @@ builder_activate_image
         self.assertIn(f"--label ncc.commit={self.SHA}", make.stdout)
         workflow = (SRC / ".github" / "workflows" / "deploy.yml").read_text()
         self.assertIn('--label "ncc.commit=$GITHUB_SHA"', workflow)
+
+    # A hand build from a checkout with uncommitted changes is not the
+    # commit's image: its label says so, and the prebuilt check refuses it.
+    def test_a_dirty_checkout_labels_its_toolchain_builds_dirty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            (repo / "Makefile").write_text((SRC / "Makefile").read_text())
+            # The target's prerequisite; `make -n` reads no more of it.
+            (repo / "apps" / "ncc_worker").mkdir(parents=True)
+            (repo / "apps" / "ncc_worker" / "Dockerfile.toolchain").write_text("FROM scratch\n")
+            git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+            subprocess.run(git + ["init", "-q"], check=True)
+            subprocess.run(git + ["add", "."], check=True)
+            subprocess.run(git + ["commit", "-q", "-m", "x"], check=True)
+            head = subprocess.run(git + ["rev-parse", "HEAD"], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+
+            def label():
+                out = subprocess.run(["make", "-n", "-C", str(repo), "build-toolchains"],
+                                     capture_output=True, text=True, timeout=10, check=True)
+                return out.stdout.split("--label ncc.commit=")[1].split()[0]
+
+            self.assertEqual(label(), head)
+            with (repo / "Makefile").open("a") as makefile:
+                makefile.write("\n# changed\n")
+            self.assertEqual(label(), head + "-dirty")
 
     def run_warm(self, status, running=""):
         script = r'''

@@ -20,11 +20,11 @@ def job(name, **overrides):
 
 
 class WaitForImagesTest(unittest.TestCase):
-    def run_wait(self, jobs, timeout="600"):
+    def run_wait(self, jobs, timeout="600", raw=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = root / "jobs.json"
-            fixture.write_text(json.dumps({"jobs": jobs}))
+            fixture.write_text(raw if raw is not None else json.dumps({"jobs": jobs}))
             calls = root / "calls"
             gh = root / "gh"
             gh.write_text(f"""#!/bin/sh
@@ -85,6 +85,15 @@ cat "{fixture}"
         result = self.run_wait([job(NAMES[0])], timeout="0")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("::warning::the image jobs had not finished", result.stdout)
+
+    # An answer jq cannot read is no job yet, never a failed step.
+    def test_an_unreadable_answer_never_fails_the_step(self):
+        for raw in ("<html>rate limited</html>", "", '{"jobs": "nope"}'):
+            with self.subTest(raw=raw):
+                self.assertEqual(self.run_wait([], raw=raw).returncode, 99)
+                result = self.run_wait([], raw=raw, timeout="0")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("::warning::the image jobs had not finished", result.stdout)
 
     def test_the_job_names_are_deploy_yml_s(self):
         text = WORKFLOW.read_text()

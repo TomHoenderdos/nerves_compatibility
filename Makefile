@@ -19,8 +19,9 @@ TOOLCHAIN_IMAGES := ncc-worker:elixir-1.19-otp-28=hexpm/elixir:1.19.3-erlang-28.
 TOOLCHAIN_SUFFIX :=
 # The commit each toolchain image is built from, as its `ncc.commit` label: a
 # deploy that falls back to a prebuilt image (ops/builder-deploy.sh) accepts
-# only one labelled with the commit it deploys. CI passes the same label.
-TOOLCHAIN_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null)
+# only one labelled with the commit it deploys. CI passes the same label. A
+# checkout with uncommitted changes labels `<sha>-dirty`, which no deploy takes.
+TOOLCHAIN_COMMIT ?= $(shell sha=$$(git rev-parse HEAD 2>/dev/null) && if git diff --quiet HEAD 2>/dev/null; then echo "$$sha"; else echo "$$sha-dirty"; fi)
 
 all: help
 

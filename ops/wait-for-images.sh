@@ -28,10 +28,12 @@ while true; do
   ready=true
   failed=()
   for name in "${names[@]}"; do
+    # An answer jq cannot read counts as no job yet: this never fails the step.
     job=$(jq -c --arg name "$name" \
-      '[.jobs[]? | select(.name == $name)] | sort_by(.id) | last' <<< "$result")
-    status=$(jq -r '.status // "missing"' <<< "$job")
-    conclusion=$(jq -r '.conclusion // "pending"' <<< "$job")
+      '[.jobs[]? | select(.name == $name)] | sort_by(.id) | last' <<< "$result" 2>/dev/null) ||
+      job=null
+    status=$(jq -r '.status // "missing"' <<< "$job" 2>/dev/null) || status=missing
+    conclusion=$(jq -r '.conclusion // "pending"' <<< "$job" 2>/dev/null) || conclusion=pending
     echo "$name: $status ($conclusion)"
     if [[ $status != completed ]]; then
       ready=false
