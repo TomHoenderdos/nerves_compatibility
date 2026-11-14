@@ -1,7 +1,8 @@
 """Pin the gates on the privileged CI jobs without a YAML library.
 
-`deploy.yml`'s `worker-image`, `worker-manifest`, `agent-release` and
-`publish` jobs push the worker image and create a GitHub release with write
+`deploy.yml`'s `worker-image`, `worker-manifest`, `toolchain-image`,
+`toolchain-manifest`, `agent-release` and `publish` jobs push the worker
+and toolchain images and create a GitHub release with write
 tokens (`packages: write`, `contents: write`). They run `needs: test`, so a
 failing `test` job already skips them, but `needs:` alone does not keep a
 pull_request run, including one from a fork, out of this default-branch
@@ -23,7 +24,14 @@ import unittest
 
 WORKFLOWS = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 
-IMAGE_JOBS = ("worker-image", "worker-manifest", "agent-release", "publish")
+IMAGE_JOBS = (
+    "worker-image",
+    "worker-manifest",
+    "toolchain-image",
+    "toolchain-manifest",
+    "agent-release",
+    "publish",
+)
 
 PUSH_OR_DISPATCH_GATE = (
     "github.repository == 'TomHoenderdos/nerves_compatibility'",
@@ -96,6 +104,9 @@ class ImagesJobsGateTest(unittest.TestCase):
         # `deploy`: the image path must not wait for the drain.
         self.assertEqual(normalise(job_key(self.jobs["worker-image"], "needs")), "test")
         self.assertEqual(normalise(job_key(self.jobs["worker-manifest"], "needs")), "worker-image")
+        self.assertEqual(normalise(job_key(self.jobs["toolchain-image"], "needs")), "test")
+        self.assertEqual(
+            normalise(job_key(self.jobs["toolchain-manifest"], "needs")), "toolchain-image")
         self.assertEqual(normalise(job_key(self.jobs["agent-release"], "needs")), "test")
         self.assertIn("worker-manifest", job_key(self.jobs["publish"], "needs"))
         self.assertIn("agent-release", job_key(self.jobs["publish"], "needs"))
@@ -118,6 +129,28 @@ class ImagesJobsGateTest(unittest.TestCase):
         self.assertIn("provenance: false", block)
         self.assertIn("sbom: false", block)
         self.assertIn("push-by-digest=true", block)
+
+    def test_toolchain_images_are_built_like_the_worker_image(self):
+        worker = "\n".join(self.jobs["worker-image"])
+        block = "\n".join(self.jobs["toolchain-image"])
+        for line in ("runs-on: ${{ matrix.runner }}", "timeout-minutes: 90"):
+            self.assertIn(line, block)
+        matrix = re.search(r"strategy:\n(?:\s+.*\n)+?runs-on", worker).group(0)
+        self.assertIn(matrix, block)
+        self.assertIn("--provenance=false --sbom=false", block)
+        self.assertIn("push-by-digest=true,name-canonical=true,push=true", block)
+        self.assertIn("make -s toolchain-pairs", block)
+
+    # ops/builder-deploy.sh pulls `<name>-<sha>` unchecked, as it pulls the
+    # worker's `<sha>`: the tag may only move onto a list already verified.
+    def test_toolchain_tags_move_only_onto_a_verified_list(self):
+        block = "\n".join(self.jobs["toolchain-manifest"])
+        candidate = block.index('candidate="candidate-$name-$SHA"')
+        verify = block.index("assert found == want")
+        tag = block.index('-t "$TOOLCHAIN_IMAGE:$name-$SHA"')
+        self.assertLess(candidate, verify)
+        self.assertLess(verify, tag)
+        self.assertIn('"$TOOLCHAIN_IMAGE@$index"', block[tag:])
 
     def test_images_json_names_a_digest_per_architecture(self):
         block = "\n".join(self.jobs["publish"])
@@ -159,6 +192,8 @@ class ImagesJobsGateTest(unittest.TestCase):
         expected = {
             "worker-image": {"contents: read", "packages: write"},
             "worker-manifest": {"contents: read", "packages: write"},
+            "toolchain-image": {"contents: read", "packages: write"},
+            "toolchain-manifest": {"contents: read", "packages: write"},
             "agent-release": {"contents: read"},
             "publish": {"contents: write"},
         }

@@ -284,30 +284,60 @@ builder_pull_worker_image() {
   echo "worker image: $builder_registry_image:$sha"
 }
 
+# The toolchain images the same jobs push, one manifest list per toolchain
+# tag in the Makefile's TOOLCHAIN_IMAGES: the live `<repo>:<name>` is pulled
+# as `$builder_toolchain_registry:<name>-<sha>`. Trusted the way the worker
+# image's `:<sha>` is: deploy.yml's manifest job moves that tag only onto a
+# list it has checked names exactly the two images its own builds pushed.
+# `NCC_TOOLCHAIN_FROM_REGISTRY=0` skips the pull.
+builder_toolchain_registry=${NCC_TOOLCHAIN_REGISTRY:-ghcr.io/tomhoenderdos/ncc-worker-toolchain}
+
+# All or nothing: the caller falls back for every image if one is missing.
+# A tag an earlier image already got stays, and is overwritten by the
+# fallback's build or replaced by the next pull.
+builder_pull_toolchain_images() {
+  local sha tags tag remote
+  sha=$(git -C "$builder_src" rev-parse HEAD) || return 1
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] || return 1
+  tags=$(builder_toolchain_tags) || return 1
+  for tag in $tags; do
+    remote="$builder_toolchain_registry:${tag##*:}-$sha"
+    builder_docker pull -q "$remote" >/dev/null || return 1
+    builder_docker tag "$remote" "$tag-deploy" || return 1
+    echo "toolchain image: $remote"
+  done
+}
+
 builder_build_image() {
   # A candidate tag either way. Existing jobs and failed builds retain the live
   # tag. The registry image for this commit exists only once deploy.yml's image
   # jobs have pushed it, which starts as soon as `test` passes (not after CI's
-  # own deploy); until then this host builds its own and shares no build cache
-  # entries with the others.
+  # own deploy; CI's builder deploy waits for those jobs, ops/wait-for-images.sh);
+  # until then this host builds its own and shares no build cache entries with
+  # the others.
   if [[ ${NCC_WORKER_FROM_REGISTRY:-1} == 1 ]] && builder_pull_worker_image; then
     :
   else
     echo 'worker image: no registry image for this commit; building locally, so this host shares no build cache entries' >&2
     make build WORKER_IMAGE=ncc-worker:deploy
   fi
-  # The same for every toolchain image: `<tag>-deploy` beside the live `<tag>`.
-  # A failure here stops the deploy before any tag moves, like the main image.
+  # The same for every toolchain image: `<tag>-deploy` beside the live `<tag>`,
+  # pulled from the registry first. A failure here stops the deploy before any
+  # tag moves, like the main image.
   #
-  # A host whose image builds cannot run a RUN step gets them prebuilt:
-  # docker-ncc in an OrbStack machine runs BuildKit's RUN steps under gVisor,
-  # and every dpkg install in them fails (EXDEV, then ESTALE), so the images
-  # are built elsewhere on the same architecture and `docker load`ed under
-  # the `<tag>-deploy` names before the deploy. `NCC_TOOLCHAIN_PREBUILT=1`
-  # (ncc-deploy.env) then only checks each one is there.
-  if [[ ${NCC_TOOLCHAIN_PREBUILT:-0} == 1 ]]; then
+  # Without a registry image the fallback depends on the host. One whose
+  # docker cannot run a Dockerfile's RUN steps (BuildKit under gVisor, where
+  # every dpkg install fails) cannot build them: with
+  # `NCC_TOOLCHAIN_PREBUILT=1` (ncc-deploy.env) it only checks that each one
+  # was built elsewhere on the same architecture and `docker load`ed under
+  # its `<tag>-deploy` name before the deploy. Every other host builds them.
+  if [[ ${NCC_TOOLCHAIN_FROM_REGISTRY:-1} == 1 ]] && builder_pull_toolchain_images; then
+    :
+  elif [[ ${NCC_TOOLCHAIN_PREBUILT:-0} == 1 ]]; then
+    echo 'toolchain images: no registry image for this commit; checking for prebuilt ones' >&2
     builder_check_prebuilt_toolchains
   else
+    echo 'toolchain images: no registry image for this commit; building locally' >&2
     make build-toolchains TOOLCHAIN_SUFFIX=-deploy
   fi
 }
@@ -317,7 +347,7 @@ builder_check_prebuilt_toolchains() {
   while read -r tag; do
     [[ -n $tag ]] || continue
     if ! builder_docker image inspect "$tag-deploy" >/dev/null 2>&1; then
-      echo "NCC_TOOLCHAIN_PREBUILT=1 but $tag-deploy is not loaded on this host; load the prebuilt image first" >&2
+      echo "NCC_TOOLCHAIN_PREBUILT=1 and no registry image, but $tag-deploy is not loaded on this host; load the prebuilt image first" >&2
       return 1
     fi
     echo "toolchain image: prebuilt $tag-deploy"

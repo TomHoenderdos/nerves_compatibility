@@ -13,6 +13,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   WORKER_IMAGE: ghcr.io/tomhoenderdos/ncc-worker
+  TOOLCHAIN_IMAGE: ghcr.io/tomhoenderdos/ncc-worker-toolchain
 
 jobs:
   test:
@@ -65,10 +66,10 @@ jobs:
       - name: Validate deployment scripts
         run: |
           # `bash -n a b` parses only `a` (the rest are its arguments): one file per call.
-          for script in ops/deploy.sh ops/blue-green.sh ops/portal-rpc.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh ops/build-reaper.sh apps/ncc_agent/priv/egress.sh apps/ncc_agent/rel/overlays/builder-host-setup.sh ops/remote-builders-golive.sh; do
+          for script in ops/deploy.sh ops/blue-green.sh ops/portal-rpc.sh ops/wait-for-checks.sh ops/wait-for-images.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh ops/build-reaper.sh apps/ncc_agent/priv/egress.sh apps/ncc_agent/rel/overlays/builder-host-setup.sh ops/remote-builders-golive.sh; do
             bash -n "$script"
           done
-          shellcheck -x ops/deploy.sh ops/blue-green.sh ops/portal-rpc.sh ops/wait-for-checks.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh ops/build-reaper.sh apps/ncc_agent/priv/egress.sh apps/ncc_agent/rel/overlays/builder-host-setup.sh ops/remote-builders-golive.sh
+          shellcheck -x ops/deploy.sh ops/blue-green.sh ops/portal-rpc.sh ops/wait-for-checks.sh ops/wait-for-images.sh ops/builder-deploy.sh ops/ssh-deploy.sh ops/deploy-builders.sh ops/images-sync.sh ops/build-release.sh ops/build-reaper.sh apps/ncc_agent/priv/egress.sh apps/ncc_agent/rel/overlays/builder-host-setup.sh ops/remote-builders-golive.sh
           python3 -m unittest discover -s ops -p 'test_*.py'
 
   # Publishes what a remote builder needs to mean the same thing as a local
@@ -219,6 +220,166 @@ jobs:
             echo "x86_64=$amd"
             echo "aarch64=$arm"
           } >> "$GITHUB_OUTPUT"
+
+  # The toolchain worker images (the Makefile's TOOLCHAIN_IMAGES), pushed and
+  # checked exactly like ncc-worker above: one plain image per architecture,
+  # built natively, pushed by digest, then one manifest list per toolchain
+  # tag, `$TOOLCHAIN_IMAGE:<name>-<sha>`, where `<name>` is the live tag's part
+  # after the colon (`ncc-worker:elixir-1.19-otp-28` is pulled as
+  # `ncc-worker-toolchain:elixir-1.19-otp-28-<sha>`). ops/builder-deploy.sh
+  # pulls those, so a builder whose docker cannot run a Dockerfile's RUN
+  # steps no longer needs them built elsewhere and loaded by hand.
+  toolchain-image:
+    name: Push toolchain images (${{ matrix.arch }})
+    needs: test
+    if: >-
+      github.repository == 'TomHoenderdos/nerves_compatibility' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    concurrency:
+      group: images-toolchain-image-${{ matrix.arch }}-${{ github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      # One build per TOOLCHAIN_IMAGES pair, with the options the worker
+      # image's build-push-action step passes: plain platform manifests (no
+      # provenance or SBOM index around them), pushed by digest only.
+      - name: Build and push each toolchain image by digest
+        env:
+          ARCH: ${{ matrix.arch }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          mkdir -p digests
+          : > "digests/$ARCH"
+          seen=' '
+          pairs="$(make -s toolchain-pairs)"
+          for pair in $pairs; do
+            tag="${pair%%=*}"
+            base="${pair#*=}"
+            name="${tag##*:}"
+            # `candidate-<name>-<sha>` must stay within a tag's 128 characters.
+            [[ $name =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$ ]] || { echo "bad toolchain tag: $tag" >&2; exit 1; }
+            [[ $seen != *" $name "* ]] || { echo "two toolchain images are named $name" >&2; exit 1; }
+            seen+="$name "
+            rm -f metadata.json
+            docker buildx build \
+              --file apps/ncc_worker/Dockerfile.toolchain \
+              --build-arg "BASE=$base" \
+              --platform "$PLATFORM" \
+              --provenance=false --sbom=false \
+              --metadata-file metadata.json \
+              --output "type=image,name=$TOOLCHAIN_IMAGE,push-by-digest=true,name-canonical=true,push=true" \
+              .
+            digest="$(python3 -c 'import json; print(json.load(open("metadata.json"))["containerimage.digest"])')"
+            [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad digest for $name: $digest" >&2; exit 1; }
+            printf '%s %s\n' "$name" "$digest" >> "digests/$ARCH"
+          done
+          [[ -s "digests/$ARCH" ]] || { echo 'TOOLCHAIN_IMAGES names no image' >&2; exit 1; }
+          cat "digests/$ARCH"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: toolchain-digest-${{ matrix.arch }}
+          path: digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  toolchain-manifest:
+    name: toolchain manifest list
+    needs: toolchain-image
+    if: >-
+      github.repository == 'TomHoenderdos/nerves_compatibility' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: images-toolchain-manifest-${{ github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: toolchain-digest-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      # The same candidate-then-verify-then-tag sequence as ncc-worker's list:
+      # `ops/builder-deploy.sh` pulls `<name>-$SHA` directly, trusting it
+      # unconditionally, so that tag must never name a list this job has not
+      # checked holds exactly the two images the builds above pushed.
+      - name: Create a manifest list per toolchain
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Both architectures must have pushed the same toolchains.
+          python3 - <<'PY' > lists
+          import re
+          def read(arch):
+              entries = {}
+              for line in open(f"digests/{arch}"):
+                  name, digest = line.split()
+                  assert re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}", name), name
+                  assert re.fullmatch(r"sha256:[0-9a-f]{64}", digest), digest
+                  assert name not in entries, f"{name} twice"
+                  entries[name] = digest
+              return entries
+          amd, arm = read("x86_64"), read("aarch64")
+          assert amd and amd.keys() == arm.keys(), f"{sorted(amd)} vs {sorted(arm)}"
+          for name in sorted(amd):
+              print(name, amd[name], arm[name])
+          PY
+          while read -r name amd arm <&3; do
+            candidate="candidate-$name-$SHA"
+            docker buildx imagetools create -t "$TOOLCHAIN_IMAGE:$candidate" \
+              "$TOOLCHAIN_IMAGE@$amd" "$TOOLCHAIN_IMAGE@$arm"
+            docker buildx imagetools inspect --raw "$TOOLCHAIN_IMAGE:$candidate" > index.json
+            index="$(docker buildx imagetools inspect "$TOOLCHAIN_IMAGE:$candidate" --format '{{json .Manifest}}' |
+              python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
+            [[ $index =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad index digest for $name: $index" >&2; exit 1; }
+            python3 - "$amd" "$arm" <<'PY'
+          import json, sys
+          amd, arm = sys.argv[1:]
+          manifests = json.load(open("index.json"))["manifests"]
+          found = {(m["platform"]["os"], m["platform"]["architecture"]): m["digest"] for m in manifests}
+          want = {("linux", "amd64"): amd, ("linux", "arm64"): arm}
+          assert found == want, f"manifest list {found} is not {want}"
+          PY
+            docker buildx imagetools create \
+              -t "$TOOLCHAIN_IMAGE:$name-$SHA" -t "$TOOLCHAIN_IMAGE:$name-latest" \
+              "$TOOLCHAIN_IMAGE@$index"
+            echo "$TOOLCHAIN_IMAGE:$name-$SHA -> $index"
+          done 3< lists
 
   agent-release:
     name: Agent release (${{ matrix.arch }})
@@ -380,6 +541,14 @@ jobs:
             --output /dev/null https://compatibility.nerves-project.org/packages
           printf 'Deployed `%s` to [production](https://compatibility.nerves-project.org).\n' \
             "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      # The image jobs above start beside this job, so the builder's pull
+      # could otherwise come before their push. Never fails the deploy: a
+      # builder without this commit's images falls back (ops/builder-deploy.sh).
+      - name: Wait for this commit's worker images
+        if: steps.checks.outputs.deploy == 'true' && vars.BUILDER_AUTO_DEPLOY == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash ops/wait-for-images.sh
       - name: Drain and deploy builder
         if: steps.checks.outputs.deploy == 'true' && vars.BUILDER_AUTO_DEPLOY == 'true'
         env:

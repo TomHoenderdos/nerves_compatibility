@@ -1,4 +1,4 @@
-.PHONY: build build-clean build-toolchains toolchain-tags check-code-loading-shapes dev test test-integration test-portability-goldens test-remote-e2e test-remote-integration test-report-e2e format clean help all
+.PHONY: build build-clean build-toolchains toolchain-tags toolchain-pairs check-code-loading-shapes dev test test-integration test-portability-goldens test-remote-e2e test-remote-integration test-report-e2e format clean help all
 
 WORKER_IMAGE := ncc-worker:local
 
@@ -12,7 +12,9 @@ export DOCKER_BUILDKIT := 1
 # Elixir/OTP pair (apps/ncc_worker/Dockerfile.toolchain). Each tag must also be
 # in Portal.Toolchains' images. Bases are pinned: Elixir 1.19.3 on the newest
 # OTP 28 patch, bookworm, slim. A deploy passes TOOLCHAIN_SUFFIX=-deploy to
-# build candidate tags beside the live ones.
+# build candidate tags beside the live ones; by default it pulls them instead,
+# from the per-architecture images deploy.yml pushes for the commit
+# (ops/builder-deploy.sh), and builds them only when that pull fails.
 TOOLCHAIN_IMAGES := ncc-worker:elixir-1.19-otp-28=hexpm/elixir:1.19.3-erlang-28.5.0.2-debian-bookworm-20260610-slim
 TOOLCHAIN_SUFFIX :=
 
@@ -63,6 +65,10 @@ build-toolchains: apps/ncc_worker/Dockerfile.toolchain
 # The toolchain tags alone, one per line, for ops/builder-deploy.sh.
 toolchain-tags:
 	@for pair in $(TOOLCHAIN_IMAGES); do echo "$${pair%%=*}"; done
+
+# The `tag=base` pairs, one per line, for deploy.yml's toolchain image jobs.
+toolchain-pairs:
+	@for pair in $(TOOLCHAIN_IMAGES); do echo "$$pair"; done
 
 dev:
 	mix phx.server

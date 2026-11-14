@@ -201,7 +201,8 @@ builder_queues_drained
         self.assertIn("function_exported?(Portal.BuilderDrain, :report, 1)", expression)
         self.assertIn("%{paused: true, running: []}", expression)
 
-    def run_build_image(self, pull_status="0", inspect_status="0", **env):
+    def run_build_image(self, pull_status="0", inspect_status="0", toolchain_pull_status="0",
+                        **env):
         script = r'''
 set -euo pipefail
 source "$HELPER"
@@ -210,7 +211,10 @@ git() { echo 0123456789abcdef0123456789abcdef01234567; }
 docker() {
   echo "docker $*" >> "$EVENTS"
   echo "docker ${DOCKER_HOST-unset}" >> "$HOSTS"
-  [[ $1 != pull ]] || return "$PULL_STATUS"
+  if [[ $1 == pull ]]; then
+    [[ $3 != *ncc-worker-toolchain:* ]] || return "$TOOLCHAIN_PULL_STATUS"
+    return "$PULL_STATUS"
+  fi
   [[ $1 != image || $2 != inspect ]] || return "$INSPECT_STATUS"
 }
 make() {
@@ -227,7 +231,8 @@ builder_build_image
                 ["bash", "-c", script],
                 env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
                      "HOSTS": str(hosts), "PULL_STATUS": pull_status,
-                     "INSPECT_STATUS": inspect_status, **env},
+                     "INSPECT_STATUS": inspect_status,
+                     "TOOLCHAIN_PULL_STATUS": toolchain_pull_status, **env},
                 capture_output=True, text=True, timeout=5,
             )
             self.hosts = hosts.read_text().splitlines() if hosts.exists() else []
@@ -237,7 +242,10 @@ builder_build_image
     # rootless socket no longer exists. Every image change goes to docker-ncc's
     # root socket, as root, whichever way the image arrives.
     def test_every_image_change_goes_to_the_root_socket_of_docker_ncc(self):
-        for overrides in ({}, {"pull_status": "1"}, {"NCC_WORKER_FROM_REGISTRY": "0"}):
+        for overrides in ({}, {"pull_status": "1"}, {"NCC_WORKER_FROM_REGISTRY": "0"},
+                          {"toolchain_pull_status": "1"},
+                          {"toolchain_pull_status": "1", "NCC_TOOLCHAIN_PREBUILT": "1"},
+                          {"NCC_TOOLCHAIN_FROM_REGISTRY": "0"}):
             result, events = self.run_build_image(**overrides)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(events, overrides)
@@ -357,34 +365,87 @@ builder_activate_image
         result, events = self.run_build_image(pull_status="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("make build WORKER_IMAGE=ncc-worker:deploy", events)
-        self.assertFalse(any(e.startswith("docker tag") for e in events))
+        self.assertFalse(any(e.startswith("docker tag") and e.endswith(" ncc-worker:deploy")
+                             for e in events), events)
         self.assertIn("building locally", result.stderr)
 
     def test_registry_pull_can_be_turned_off(self):
         result, events = self.run_build_image(NCC_WORKER_FROM_REGISTRY="0")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(any(e.startswith("docker pull") for e in events))
+        self.assertFalse(any(e.startswith("docker pull -q ghcr.io/tomhoenderdos/ncc-worker:")
+                             for e in events), events)
         self.assertIn("make build WORKER_IMAGE=ncc-worker:deploy", events)
 
-    def test_builds_the_toolchain_images_by_default(self):
+    TOOLCHAIN_REMOTE = ("ghcr.io/tomhoenderdos/ncc-worker-toolchain:"
+                        "elixir-1.19-otp-28-0123456789abcdef0123456789abcdef01234567")
+
+    # Each toolchain image arrives like the worker image: this commit's
+    # manifest list from the registry, tagged as the `-deploy` candidate.
+    def test_pulls_the_commits_toolchain_images_by_default(self):
         result, events = self.run_build_image()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"docker pull -q {self.TOOLCHAIN_REMOTE}", events)
+        self.assertIn(
+            f"docker tag {self.TOOLCHAIN_REMOTE} ncc-worker:elixir-1.19-otp-28-deploy", events)
+        self.assertNotIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
+        self.assertFalse(any(e.startswith("docker image inspect") for e in events))
+        self.assertIn(f"toolchain image: {self.TOOLCHAIN_REMOTE}", result.stdout)
+
+    # The worker and toolchain images fall back on their own.
+    def test_a_missing_worker_image_does_not_rebuild_the_toolchain_images(self):
+        result, events = self.run_build_image(pull_status="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("make build WORKER_IMAGE=ncc-worker:deploy", events)
+        self.assertIn(f"docker pull -q {self.TOOLCHAIN_REMOTE}", events)
+        self.assertNotIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
+
+    def test_the_toolchain_registry_can_be_overridden(self):
+        result, events = self.run_build_image(NCC_TOOLCHAIN_REGISTRY="registry.example/tc")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("docker pull -q registry.example/tc:elixir-1.19-otp-28-"
+                      "0123456789abcdef0123456789abcdef01234567", events)
+
+    def test_builds_the_toolchain_images_when_the_registry_has_none(self):
+        result, events = self.run_build_image(toolchain_pull_status="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
         self.assertFalse(any(e.startswith("docker image inspect") for e in events))
+        self.assertNotIn(
+            f"docker tag {self.TOOLCHAIN_REMOTE} ncc-worker:elixir-1.19-otp-28-deploy", events)
+        self.assertIn("toolchain images: no registry image", result.stderr)
 
-    # A host whose image builds cannot run a RUN step (docker-ncc in an
-    # OrbStack machine runs them under gVisor and every dpkg install fails)
-    # gets its toolchain images loaded from elsewhere, under the `-deploy`
-    # tags, before the deploy; the deploy then only checks they are there.
-    def test_prebuilt_toolchain_images_skip_the_build(self):
+    def test_toolchain_registry_pull_can_be_turned_off(self):
+        result, events = self.run_build_image(NCC_TOOLCHAIN_FROM_REGISTRY="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any("ncc-worker-toolchain" in e for e in events), events)
+        self.assertIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
+
+    # A host whose docker cannot run a Dockerfile's RUN steps (BuildKit under
+    # gVisor, where every dpkg install fails) pulls from the registry too:
+    # that is the fix for it. Only without a registry image does it fall back
+    # to checking for images loaded from elsewhere, never to a build.
+    def test_a_prebuilt_host_pulls_from_the_registry_first(self):
         result, events = self.run_build_image(NCC_TOOLCHAIN_PREBUILT="1")
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"docker pull -q {self.TOOLCHAIN_REMOTE}", events)
+        self.assertIn(
+            f"docker tag {self.TOOLCHAIN_REMOTE} ncc-worker:elixir-1.19-otp-28-deploy", events)
         self.assertNotIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
-        self.assertIn("docker image inspect ncc-worker:elixir-1.19-otp-28-deploy", events)
-        self.assertIn("ncc-worker:elixir-1.19-otp-28-deploy", result.stdout)
+        self.assertFalse(any(e.startswith("docker image inspect") for e in events))
+
+    def test_a_prebuilt_host_without_a_registry_image_checks_the_loaded_one(self):
+        for overrides in ({"toolchain_pull_status": "1"}, {"NCC_TOOLCHAIN_FROM_REGISTRY": "0"}):
+            with self.subTest(overrides=overrides):
+                result, events = self.run_build_image(NCC_TOOLCHAIN_PREBUILT="1", **overrides)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
+                self.assertIn("docker image inspect ncc-worker:elixir-1.19-otp-28-deploy",
+                              events)
+                self.assertIn("prebuilt ncc-worker:elixir-1.19-otp-28-deploy", result.stdout)
 
     def test_a_missing_prebuilt_toolchain_image_stops_the_deploy(self):
-        result, events = self.run_build_image(NCC_TOOLCHAIN_PREBUILT="1", inspect_status="1")
+        result, events = self.run_build_image(
+            NCC_TOOLCHAIN_PREBUILT="1", toolchain_pull_status="1", inspect_status="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
         self.assertIn("ncc-worker:elixir-1.19-otp-28-deploy", result.stderr)
