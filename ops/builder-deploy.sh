@@ -342,15 +342,25 @@ builder_build_image() {
   fi
 }
 
+# A prebuilt image must carry the `ncc.commit` label of the commit being
+# deployed (`make build-toolchains` and deploy.yml set it), so an image an
+# earlier deploy left under `<tag>-deploy` never passes for this one.
 builder_check_prebuilt_toolchains() {
-  local tag
+  local sha tag label
+  sha=$(git -C "$builder_src" rev-parse HEAD) || return 1
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] || return 1
   while read -r tag; do
     [[ -n $tag ]] || continue
-    if ! builder_docker image inspect "$tag-deploy" >/dev/null 2>&1; then
+    if ! label=$(builder_docker image inspect \
+      --format '{{ index .Config.Labels "ncc.commit" }}' "$tag-deploy" 2>/dev/null); then
       echo "NCC_TOOLCHAIN_PREBUILT=1 and no registry image, but $tag-deploy is not loaded on this host; load the prebuilt image first" >&2
       return 1
     fi
-    echo "toolchain image: prebuilt $tag-deploy"
+    if [[ $label != "$sha" ]]; then
+      echo "NCC_TOOLCHAIN_PREBUILT=1 and no registry image, but $tag-deploy was built for commit '${label:-unknown}', not $sha; load one built from this commit (make build-toolchains labels it)" >&2
+      return 1
+    fi
+    echo "toolchain image: prebuilt $tag-deploy for $sha"
   done < <(builder_toolchain_tags)
 }
 

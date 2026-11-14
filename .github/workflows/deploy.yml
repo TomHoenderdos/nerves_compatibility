@@ -265,7 +265,8 @@ jobs:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       # One build per TOOLCHAIN_IMAGES pair, with the options the worker
       # image's build-push-action step passes: plain platform manifests (no
-      # provenance or SBOM index around them), pushed by digest only.
+      # provenance or SBOM index around them), pushed by digest only. The
+      # `ncc.commit` label is the one `make build-toolchains` sets.
       - name: Build and push each toolchain image by digest
         env:
           ARCH: ${{ matrix.arch }}
@@ -288,6 +289,7 @@ jobs:
             docker buildx build \
               --file apps/ncc_worker/Dockerfile.toolchain \
               --build-arg "BASE=$base" \
+              --label "ncc.commit=$GITHUB_SHA" \
               --platform "$PLATFORM" \
               --provenance=false --sbom=false \
               --metadata-file metadata.json \

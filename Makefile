@@ -17,6 +17,10 @@ export DOCKER_BUILDKIT := 1
 # (ops/builder-deploy.sh), and builds them only when that pull fails.
 TOOLCHAIN_IMAGES := ncc-worker:elixir-1.19-otp-28=hexpm/elixir:1.19.3-erlang-28.5.0.2-debian-bookworm-20260610-slim
 TOOLCHAIN_SUFFIX :=
+# The commit each toolchain image is built from, as its `ncc.commit` label: a
+# deploy that falls back to a prebuilt image (ops/builder-deploy.sh) accepts
+# only one labelled with the commit it deploys. CI passes the same label.
+TOOLCHAIN_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null)
 
 all: help
 
@@ -58,7 +62,7 @@ build-toolchains: apps/ncc_worker/Dockerfile.toolchain
 	@set -e; for pair in $(TOOLCHAIN_IMAGES); do \
 	  tag=$${pair%%=*}; base=$${pair#*=}; \
 	  echo "Building toolchain image $$tag$(TOOLCHAIN_SUFFIX) from $$base..."; \
-	  docker build -f apps/ncc_worker/Dockerfile.toolchain --build-arg BASE=$$base -t $$tag$(TOOLCHAIN_SUFFIX) .; \
+	  docker build -f apps/ncc_worker/Dockerfile.toolchain --build-arg BASE=$$base --label ncc.commit=$(TOOLCHAIN_COMMIT) -t $$tag$(TOOLCHAIN_SUFFIX) .; \
 	done
 	@echo "Toolchain images built."
 

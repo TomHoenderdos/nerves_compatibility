@@ -201,8 +201,10 @@ builder_queues_drained
         self.assertIn("function_exported?(Portal.BuilderDrain, :report, 1)", expression)
         self.assertIn("%{paused: true, running: []}", expression)
 
+    SHA = "0123456789abcdef0123456789abcdef01234567"
+
     def run_build_image(self, pull_status="0", inspect_status="0", toolchain_pull_status="0",
-                        **env):
+                        label=SHA, **env):
         script = r'''
 set -euo pipefail
 source "$HELPER"
@@ -215,7 +217,10 @@ docker() {
     [[ $3 != *ncc-worker-toolchain:* ]] || return "$TOOLCHAIN_PULL_STATUS"
     return "$PULL_STATUS"
   fi
-  [[ $1 != image || $2 != inspect ]] || return "$INSPECT_STATUS"
+  if [[ $1 == image && $2 == inspect ]]; then
+    [[ $3 != --format ]] || printf '%s\n' "$LABEL"
+    return "$INSPECT_STATUS"
+  fi
 }
 make() {
   echo "make $*" >> "$EVENTS"; echo "make ${DOCKER_HOST-unset}" >> "$HOSTS"
@@ -232,7 +237,8 @@ builder_build_image
                 env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
                      "HOSTS": str(hosts), "PULL_STATUS": pull_status,
                      "INSPECT_STATUS": inspect_status,
-                     "TOOLCHAIN_PULL_STATUS": toolchain_pull_status, **env},
+                     "TOOLCHAIN_PULL_STATUS": toolchain_pull_status, "LABEL": label,
+                     **env},
                 capture_output=True, text=True, timeout=5,
             )
             self.hosts = hosts.read_text().splitlines() if hosts.exists() else []
@@ -439,8 +445,9 @@ builder_activate_image
                 result, events = self.run_build_image(NCC_TOOLCHAIN_PREBUILT="1", **overrides)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertNotIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
-                self.assertIn("docker image inspect ncc-worker:elixir-1.19-otp-28-deploy",
-                              events)
+                self.assertIn(
+                    "docker image inspect --format {{ index .Config.Labels \"ncc.commit\" }} "
+                    "ncc-worker:elixir-1.19-otp-28-deploy", events)
                 self.assertIn("prebuilt ncc-worker:elixir-1.19-otp-28-deploy", result.stdout)
 
     def test_a_missing_prebuilt_toolchain_image_stops_the_deploy(self):
@@ -450,6 +457,26 @@ builder_activate_image
         self.assertNotIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
         self.assertIn("ncc-worker:elixir-1.19-otp-28-deploy", result.stderr)
         self.assertIn("NCC_TOOLCHAIN_PREBUILT", result.stderr)
+
+    # An image an earlier deploy left under `<tag>-deploy`, or one without
+    # the label, must not pass for this commit.
+    def test_a_prebuilt_toolchain_image_for_another_commit_stops_the_deploy(self):
+        for label in ("f" * 40, "", "<no value>"):
+            with self.subTest(label=label):
+                result, events = self.run_build_image(
+                    NCC_TOOLCHAIN_PREBUILT="1", toolchain_pull_status="1", label=label)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("make build-toolchains TOOLCHAIN_SUFFIX=-deploy", events)
+                self.assertIn(f"not {self.SHA}", result.stderr)
+                self.assertNotIn("toolchain image: prebuilt", result.stdout)
+
+    def test_toolchain_builds_carry_the_commit_label(self):
+        make = subprocess.run(
+            ["make", "-n", "build-toolchains", "TOOLCHAIN_COMMIT=" + self.SHA],
+            cwd=SRC, capture_output=True, text=True, timeout=10, check=True)
+        self.assertIn(f"--label ncc.commit={self.SHA}", make.stdout)
+        workflow = (SRC / ".github" / "workflows" / "deploy.yml").read_text()
+        self.assertIn('--label "ncc.commit=$GITHUB_SHA"', workflow)
 
     def run_warm(self, status, running=""):
         script = r'''
