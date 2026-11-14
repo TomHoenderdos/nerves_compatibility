@@ -264,7 +264,7 @@ defmodule Portal.Workers.ToolchainBuildTest do
       assert :ok = perform_job(ToolchainBuild, job_args(%{"variant" => "world_phx"}))
 
       assert_received {:build_args,
-                       %{optional_deps: "world", world: %{"name" => "phx", "members" => ^members}}}
+                       %{optional_deps: "world", world: "phx", world_members: ^members}}
 
       assert [%Oban.Job{args: %{"variant" => "world_phx"}}] = all_enqueued(worker: Ingest)
 
@@ -275,11 +275,13 @@ defmodule Portal.Workers.ToolchainBuildTest do
           image_digest: "d",
           systems_filter: nil,
           optional_deps: "world",
-          world: %{"name" => "phx", "members" => members}
+          world: "phx",
+          world_members: members
         })
 
       assert input["optional_deps"] == "world"
-      assert input["world"] == %{"name" => "phx", "members" => members}
+      assert input["world"] == "phx"
+      assert input["world_members"] == members
     end
 
     test "a with or without job sends no world" do
@@ -288,6 +290,7 @@ defmodule Portal.Workers.ToolchainBuildTest do
         assert :ok = perform_job(ToolchainBuild, job_args(%{"variant" => variant}))
         assert_received {:build_args, args}
         refute Map.has_key?(args, :world)
+        refute Map.has_key?(args, :world_members)
       end
     end
 

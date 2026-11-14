@@ -12,7 +12,7 @@ defmodule Portal.Workers.ToolchainBuild do
   time) and `variant` (`"with"` or `"without"` the package's optional
   dependencies, or a world `"world_<name>"`, see `Portal.Catalog.ToolchainBuild`),
   which the worker gets as `optional_deps: "include" | "exclude" | "world"`; a
-  world build also sends `world: %{"name", "members"}`
+  world build also sends `world` (its name) and `world_members`
   (`Compatibility.Worlds`). A job without a `variant`, queued
   before variants existed, is a `with` build. `config_variant` is a
   `Compatibility.ConfigVariants` name; a job without one, queued before config
@@ -208,14 +208,14 @@ defmodule Portal.Workers.ToolchainBuild do
   defp optional_deps(:without), do: "exclude"
   defp optional_deps(_world), do: "world"
 
-  # A world build names its world and sends the members (spec, 3.1), so the
-  # worker image needs no copy of the list.
+  # A world build names its world and sends the members, so the worker image
+  # needs no copy of the list.
   defp put_world(build_args, variant) when variant in [:with, :without], do: build_args
 
   defp put_world(build_args, variant) do
     {:ok, name} = Compatibility.Worlds.world(variant)
     {:ok, members} = Compatibility.Worlds.members(name)
-    Map.put(build_args, :world, %{"name" => name, "members" => members})
+    Map.merge(build_args, %{world: name, world_members: members})
   end
 
   defp config_variant(args), do: Map.get(args, "config_variant", "default")
