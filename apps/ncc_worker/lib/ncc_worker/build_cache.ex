@@ -115,6 +115,8 @@ defmodule NccWorker.BuildCache do
   variance.
   """
 
+  alias NccWorker.TargetScan
+
   @cache_env "NCC_BUILD_CACHE"
   @local_root_dir "ncc-build-cache"
 
@@ -536,23 +538,27 @@ defmodule NccWorker.BuildCache do
   # `rustler_crates:` key, with no rustler dependency, compiler or native
   # source, does not make it native. Rule 1 keeps the substring so the cache
   # keys do not move.
-  defp native_build?(dir, rule) do
+  defp native_build?(dir, rule, tools \\ @native_deps) do
     mix_exs = Path.join(dir, "mix.exs")
 
     Enum.any?(@native_dirs, &File.dir?(Path.join(dir, &1))) or
       (rule == :rule1 and Enum.any?(@native_files, &File.regular?(Path.join(dir, &1)))) or
-      native_tool_named?(mix_exs, rule) or
+      native_tool_named?(mix_exs, rule, tools) or
       mentions?(Path.join(dir, "rebar.config"), @rebar_native)
   end
 
-  defp native_tool_named?(mix_exs, :rule1), do: mentions?(mix_exs, @native_deps)
-  defp native_tool_named?(mix_exs, :rule2), do: mentions_regex?(mix_exs, native_deps_word())
+  defp native_tool_named?(mix_exs, :rule1, _tools), do: mentions?(mix_exs, @native_deps)
+
+  defp native_tool_named?(mix_exs, :rule2, tools),
+    do: tools != [] and mentions_regex?(mix_exs, native_deps_word(tools))
 
   # A `@native_deps` name with no word character on either side, so
   # `:rustler`, `{:elixir_make, ...}` and a `# uses rustler` comment count and
   # `rustler_crates` does not.
-  defp native_deps_word,
-    do: ~r/(?<!\w)(?:elixir_make|rustler|rustler_precompiled|zigler|cc_precompiler)(?!\w)/
+  defp native_deps_word(tools) do
+    names = Enum.map_join(tools, "|", &Regex.escape/1)
+    Regex.compile!("(?<!\\w)(?:" <> names <> ")(?!\\w)")
+  end
 
   # Rule 2 only (precompiled judge refinements, item 1; `NccWorker.NativeBuild`):
   # `dep_target_agnostic?/2` with a native build file counting only when
@@ -560,13 +566,26 @@ defmodule NccWorker.BuildCache do
   # "rebar3". Every other check is the same, so it holds wherever
   # `dep_target_agnostic?/2` does. Rule 1, `classify/4` and the cache keys
   # keep `dep_target_agnostic?/2`.
+  #
+  # `own: true` (judge round 2, change 4), for the package under test only:
+  # its own name is left out of the native-tool grep (elixir_make's
+  # `app: :elixir_make`), and a target read counts only where it can run
+  # while the package compiles (`NccWorker.TargetScan`): not in a
+  # `def`/`defp` body, a literal `@doc`/`@moduledoc`/`@typedoc`, a comment
+  # or a doc file. Any compile-time `Mix.target`/`MIX_TARGET` read is the
+  # trace's refusal or compile input as well. As a dependency, the same
+  # package keeps both checks whole.
   @doc false
-  @spec dep_target_agnostic_rule2?(String.t(), String.t(), String.t() | nil) :: boolean()
-  def dep_target_agnostic_rule2?(deps_path, name, manager) do
+  @spec dep_target_agnostic_rule2?(String.t(), String.t(), String.t() | nil, keyword()) ::
+          boolean()
+  def dep_target_agnostic_rule2?(deps_path, name, manager, opts \\ []) do
     dir = Path.join(deps_path, name)
+    own? = Keyword.get(opts, :own) == true
+    tools = if own?, do: @native_deps -- [name], else: @native_deps
 
     File.dir?(dir) and not String.starts_with?(name, "nerves") and
-      not native_rule2?(dir, manager) and not reads_target?(dir, target_read_pattern_rule2())
+      not native_rule2?(dir, manager, tools) and
+      not reads_target?(dir, target_read_pattern_rule2(), own?)
   end
 
   @doc false
@@ -576,8 +595,8 @@ defmodule NccWorker.BuildCache do
       manager not in ["mix", "rebar3"] and
         Enum.any?(@native_files, &File.regular?(Path.join(dir, &1)))
 
-  defp native_rule2?(dir, manager),
-    do: native_build?(dir, :rule2) or native_build_files?(dir, manager)
+  defp native_rule2?(dir, manager, tools),
+    do: native_build?(dir, :rule2, tools) or native_build_files?(dir, manager)
 
   # Read-only inspection of mix.exs/rebar.config in the worker dependency tree.
   # sobelow_skip ["Traversal.FileModule"]
@@ -698,7 +717,7 @@ defmodule NccWorker.BuildCache do
   # artifacts and VCS metadata are skipped. grep exit 1 is no candidate;
   # anything else (no grep, unreadable tree, a file that cannot be read or is
   # too large) counts as a match so the dependency stays target-scoped.
-  defp reads_target?(dir, pattern \\ target_read_pattern()) do
+  defp reads_target?(dir, pattern \\ target_read_pattern(), compile_time? \\ false) do
     excludes = Enum.map(~w(.git _build node_modules), &"--exclude-dir=#{&1}")
     args = ["-r", "-l", "-I", "-i", "-F", "--null", "--exclude=*.beam"] ++ excludes
     args = args ++ ["-e", "target", "-e", "mix", "--", dir]
@@ -708,7 +727,9 @@ defmodule NccWorker.BuildCache do
         false
 
       {output, 0} ->
-        output |> String.split(<<0>>, trim: true) |> Enum.any?(&target_read?(&1, pattern))
+        output
+        |> String.split(<<0>>, trim: true)
+        |> Enum.any?(&target_read?(&1, pattern, compile_time?))
 
       _ ->
         true
@@ -719,14 +740,21 @@ defmodule NccWorker.BuildCache do
 
   # Read-only inspection of a dependency file grep listed.
   # sobelow_skip ["Traversal.FileModule"]
-  defp target_read?(file, pattern) do
+  defp target_read?(file, pattern, compile_time?) do
     with {:ok, %File.Stat{size: size}} when size <= @target_scan_max_bytes <- File.stat(file),
          {:ok, contents} <- File.read(file) do
-      match_or_error?(pattern, contents)
+      scanned_match?(
+        pattern,
+        if(compile_time?, do: TargetScan.scanned(file, contents), else: contents)
+      )
     else
       _ -> true
     end
   end
+
+  # `nil`: nothing in the file can run at compile time (`TargetScan`).
+  defp scanned_match?(_pattern, nil), do: false
+  defp scanned_match?(pattern, text), do: match_or_error?(pattern, text)
 
   # `Regex.match?/2`, failing closed: it reads a regex engine error (a match
   # or depth limit on a large or pathological file) as no match, which here

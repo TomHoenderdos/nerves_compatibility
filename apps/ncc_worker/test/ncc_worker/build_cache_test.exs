@@ -352,6 +352,120 @@ defmodule NccWorker.BuildCacheTest do
     end
   end
 
+  describe "dep_target_agnostic_rule2?/4 for the package under test (own: true)" do
+    setup do
+      deps = Path.join(System.tmp_dir!(), "ncc-deps-own-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(deps) end)
+      {:ok, deps: deps}
+    end
+
+    defp write_own(deps, name, files) do
+      Enum.each(files, fn {path, contents} ->
+        full = Path.join([deps, name, path])
+        File.mkdir_p!(Path.dirname(full))
+        File.write!(full, contents)
+      end)
+    end
+
+    # The real elixir_make 0.10.1 tree (Hex tarball contents), stored with a
+    # `.txt` suffix so nothing formats or compiles it.
+    @elixir_make Path.expand("../fixtures/elixir_make-0.10.1", __DIR__)
+
+    defp copy_elixir_make(deps) do
+      for src <- Path.wildcard(Path.join(@elixir_make, "**/*.txt"), match_dot: true) do
+        rel = src |> Path.relative_to(@elixir_make) |> String.replace_suffix(".txt", "")
+        dest = Path.join([deps, "elixir_make", rel])
+        File.mkdir_p!(Path.dirname(dest))
+        File.cp!(src, dest)
+      end
+    end
+
+    test "elixir_make itself passes; as a dependency, or without own:, it does not", ctx do
+      copy_elixir_make(ctx.deps)
+
+      assert BuildCache.dep_target_agnostic_rule2?(ctx.deps, "elixir_make", "mix", own: true)
+      refute BuildCache.dep_target_agnostic_rule2?(ctx.deps, "elixir_make", "mix")
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "elixir_make")
+    end
+
+    test "another native tool, a native dir or port_specs still refuses", ctx do
+      for {files, why} <- [
+            {[{"mix.exs", "app: :elixir_make, compilers: [:rustler]"}], "another tool"},
+            {[{"mix.exs", "app: :elixir_make"}, {"c_src/a.c", ""}], "native dir"},
+            {[{"mix.exs", "app: :elixir_make"}, {"rebar.config", "{port_specs, []}."}],
+             "port_specs"},
+            {[{"mix.exs", "app: :x, deps: [{:elixir_make, \"~> 0.9\"}]"}], "uses elixir_make"}
+          ] do
+        name = if why == "uses elixir_make", do: "x", else: "elixir_make"
+        File.rm_rf!(Path.join(ctx.deps, name))
+        write_own(ctx.deps, name, files)
+        refute BuildCache.dep_target_agnostic_rule2?(ctx.deps, name, "mix", own: true), why
+      end
+    end
+
+    test "a target read only in a function body, docs, a comment or a doc file passes", ctx do
+      for {file, body} <- [
+            {"lib/a.ex", "defmodule A do\n  def t, do: Mix.target()\nend\n"},
+            {"lib/a.ex",
+             "defmodule A do\n  defp e, do: %{\"MIX_TARGET\" => System.get_env(\"MIX_TARGET\")}\nend\n"},
+            {"lib/a.ex",
+             "defmodule A do\n  @moduledoc \"\"\"\n  Set `MIX_TARGET`.\n  \"\"\"\n  @doc \"Mix.target\"\n  def x, do: 1\nend\n"},
+            {"lib/a.ex", "defmodule A do\n  # Mix.target() is not used\n  def x, do: 1\nend\n"},
+            {"lib/a.ex",
+             "defmodule A do\n  def t(x) when x == 1 do\n    mod = Mix\n    mod.target()\n  end\nend\n"},
+            {"README.md", "export MIX_TARGET=rpi0\n"},
+            {"CHANGELOG.markdown", "Mix.target\n"},
+            {"NOTES.txt", "MIX_TARGET\n"},
+            {"LICENSE.md", "MIX_TARGET\n"}
+          ] do
+        name = "own#{System.unique_integer([:positive])}"
+        write_own(ctx.deps, name, [{"mix.exs", "defmodule X do end"}, {file, body}])
+        assert BuildCache.dep_target_agnostic_rule2?(ctx.deps, name, "mix", own: true), body
+        refute BuildCache.dep_target_agnostic_rule2?(ctx.deps, name, "mix"), body
+      end
+    end
+
+    test "a target read that can run at compile time still refuses", ctx do
+      for {file, body} <- [
+            # Module level, an attribute, a macro body, an unquote fragment
+            # in a def, a non-literal doc, a mix.exs anywhere.
+            {"lib/a.ex", "defmodule A do\n  @t Mix.target()\n  def t, do: @t\nend\n"},
+            {"lib/a.ex", "defmodule A do\n  if Mix.target() == :host, do: def(x, do: 1)\nend\n"},
+            {"lib/a.ex",
+             "defmodule A do\n  @e System.get_env(\"MIX_TARGET\")\n  def e, do: @e\nend\n"},
+            {"lib/a.ex", "defmodule A do\n  defmacro t, do: Mix.target()\nend\n"},
+            {"lib/a.ex",
+             "defmodule A do\n  defmacro __using__(_) do\n    quote do\n      @t Mix.target()\n    end\n  end\nend\n"},
+            {"lib/a.ex", "defmodule A do\n  def t, do: unquote(Mix.target())\nend\n"},
+            {"lib/a.ex", "defmodule A do\n  def unquote(Mix.target())(), do: 1\nend\n"},
+            {"lib/a.ex", "defmodule A do\n  @doc \"on \#{Mix.target()}\"\n  def x, do: 1\nend\n"},
+            {"lib/a.ex", "defmodule A do\n  mod = Mix\n  @t mod.target()\nend\n"},
+            {"lib/a.ex", "defmodule A do\n  import Mix, only: [target: 0]\nend\n"},
+            {"lib/a.ex", "defmodule A do\n  @t :\"Elixir.Mix\".target()\nend\n"},
+            {"lib/a.ex", "defmodule A do\n  @t apply(Mix, :target, [])\nend\n"},
+            {"lib/a.exs", "IO.puts(Mix.target())\n"},
+            {"mix.exs",
+             "defmodule X do\n  def project, do: [t: Mix.target()]\n  def t, do: Mix.target()\nend\n"},
+            {"lib/sub/mix.exs", "defmodule Y do\n  def t, do: Mix.target()\nend\n"},
+            # Not Elixir: the raw pattern.
+            {"src/a.erl", "t() -> 'Elixir.Mix':target()."},
+            {"lib/a.eex", "<%= Mix.target() %>"},
+            # Does not parse: the raw pattern.
+            {"lib/a.ex", "defmodule A do\n  def t, do: Mix.target(\n"}
+          ] do
+        name = "own#{System.unique_integer([:positive])}"
+
+        files =
+          if file == "mix.exs",
+            do: [{file, body}],
+            else: [{"mix.exs", "defmodule X do end"}, {file, body}]
+
+        write_own(ctx.deps, name, files)
+        refute BuildCache.dep_target_agnostic_rule2?(ctx.deps, name, "mix", own: true), body
+      end
+    end
+  end
+
   describe "match_or_error?/2" do
     test "an engine error counts as a match" do
       # Catastrophic backtracking: PCRE gives up with a match limit error,

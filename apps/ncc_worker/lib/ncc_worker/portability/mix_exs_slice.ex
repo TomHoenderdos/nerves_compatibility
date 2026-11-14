@@ -152,6 +152,27 @@ defmodule NccWorker.Portability.MixExsSlice do
     end)
   end
 
+  @doc """
+  Any Elixir `source` parsed under the same bounds as `analyse/1` (size and
+  AST depth), for callers that walk the AST themselves
+  (`NccWorker.TargetScan`); `:error` when it is too large, too deep or does
+  not parse. Never raises.
+  """
+  @spec quoted(String.t()) :: {:ok, Macro.t()} | :error
+  def quoted(source) when is_binary(source) do
+    with true <- byte_size(source) <= @max_source_bytes,
+         {:ok, ast} <- Code.string_to_quoted(source, emit_warnings: false),
+         :ok <- shallow(ast) do
+      {:ok, ast}
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  catch
+    _, _ -> :error
+  end
+
   @version_mfas %{
     "System.version/0" => :read,
     "Version.match?/2" => {:call, :match?},

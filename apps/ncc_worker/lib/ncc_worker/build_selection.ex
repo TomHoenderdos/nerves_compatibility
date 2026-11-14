@@ -142,7 +142,7 @@ defmodule NccWorker.BuildSelection do
 
     if Keyword.get(opts, :makefile_rule2) == true and trace in ["mix", "rebar3"] and
          NativeBuild.manager(Keyword.get(opts, :tarball), Path.join(deps, package)) == trace do
-      BuildCache.dep_target_agnostic_rule2?(deps, package, trace)
+      BuildCache.dep_target_agnostic_rule2?(deps, package, trace, own: true)
     else
       BuildCache.dep_target_agnostic?(deps, package)
     end
