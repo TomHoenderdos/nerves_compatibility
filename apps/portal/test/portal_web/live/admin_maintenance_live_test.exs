@@ -373,6 +373,32 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
     end
   end
 
+  describe "world builds" do
+    test "the toggle turns world builds on and off and the counts show beside the backlog",
+         %{conn: conn} do
+      {view, html} = live_maintenance(conn)
+
+      refute Portal.Settings.get().world_variants_enabled
+      assert html =~ "World builds are off"
+      assert has_element?(view, ~S(#toolchain-1\.19-28-world-candidates))
+
+      html = view |> element("#world-variants-toggle") |> render_click()
+      assert html =~ "World builds are on"
+      assert Portal.Settings.get().world_variants_enabled
+
+      view |> element("#world-variants-toggle") |> render_click()
+      refute Portal.Settings.get().world_variants_enabled
+    end
+
+    test "a demoted admin cannot turn world builds on", %{conn: conn, admin: admin} do
+      {view, _html} = live_maintenance(conn)
+      demote!(admin)
+
+      view |> element("#world-variants-toggle") |> render_click()
+      refute Portal.Settings.get().world_variants_enabled
+    end
+  end
+
   describe "update check" do
     test "run now queues a check and says so", %{conn: conn} do
       {view, _html} = live_maintenance(conn)

@@ -570,6 +570,26 @@ defmodule Portal.Admin do
 
   def update_remote_settings(_params), do: {:error, :invalid_remote_settings}
 
+  @doc """
+  Turns world builds (`Compatibility.Worlds`) on or off: the
+  `world_variants_enabled` setting the toolchain backlog proposes them under
+  (`Portal.Toolchains.world_variants/0`). Turn it on only once every node
+  that runs portal code, the toolchain builders included, has a release that
+  knows the world variants. Off stops new world builds; the rows already
+  made stay served (see `docs/WORLD_BUILDS.md`).
+  """
+  @spec set_world_variants_enabled(boolean(), %{username: String.t()}) ::
+          {:ok, Portal.Settings.Setting.t()} | {:error, term()}
+  def set_world_variants_enabled(enabled, actor) when is_boolean(enabled) do
+    with {:ok, setting} <- Portal.Settings.save(%{world_variants_enabled: enabled}) do
+      Logger.warning(
+        "World builds turned #{if enabled, do: "on", else: "off"} by #{actor.username}"
+      )
+
+      {:ok, setting}
+    end
+  end
+
   defp remote_mode(mode) when mode in ~w(auto on off), do: {:ok, String.to_existing_atom(mode)}
   defp remote_mode(_mode), do: :error
 

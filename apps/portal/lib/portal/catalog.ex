@@ -1839,6 +1839,7 @@ defmodule Portal.Catalog do
   end
 
   @world_candidates_backlog_sql world_candidates.("$18", "$19")
+  @world_candidates_count_sql world_candidates.("$9", "$10")
 
   @doc """
   Toolchain builds to make on `toolchain` at `builder_version`, at most
@@ -2193,6 +2194,83 @@ defmodule Portal.Catalog do
         end)
 
       {toolchain, Map.put(counts, :backlog, toolchain_backlog_count(toolchain, builder_version))}
+    end)
+  end
+
+  # `toolchain_world_counts/0`'s statuses: unrevoked default rows of a world
+  # variant, and how many of each status are same-closure skips.
+  @toolchain_world_counts_sql """
+  SELECT toolchain, status, count(*),
+         count(*) FILTER (WHERE reason LIKE 'same closure as %')
+  FROM catalog_toolchain_builds
+  WHERE builder_version = $1 AND revoked_at IS NULL AND config_variant = 'default'
+    AND variant = ANY($2::text[])
+  GROUP BY toolchain, status
+  """
+
+  @doc """
+  World builds (`Compatibility.Worlds`) per configured toolchain at the
+  current `builder_version`, for the admin Maintenance tab: whether they are
+  `enabled` (the `world_variants_enabled` setting), the unrevoked default
+  world rows by status, how many of the skips only repeat the closure of the
+  with or without build (`same_closure`), and how many world builds the
+  backlog wants (`candidates`) for the configured worlds
+  (`Portal.Toolchains.worlds/0`). The candidates are counted whether or not
+  world builds are on, so the count is known before they are turned on;
+  while they are off none of them is queued. A world's config variants are
+  counted in the backlog of `toolchain_counts/0`.
+  """
+  @spec toolchain_world_counts() :: %{
+          String.t() => %{
+            enabled: boolean(),
+            pass: non_neg_integer(),
+            skipped: non_neg_integer(),
+            error: non_neg_integer(),
+            fail: non_neg_integer(),
+            same_closure: non_neg_integer(),
+            candidates: non_neg_integer()
+          }
+        }
+  def toolchain_world_counts do
+    builder_version = Portal.Toolchains.builder_version()
+
+    variants =
+      for name <- Portal.Toolchains.worlds(),
+          {:ok, variant} <- [Compatibility.Worlds.variant(name)],
+          do: Atom.to_string(variant)
+
+    enabled = Portal.Settings.get().world_variants_enabled
+
+    %{rows: rows} = Repo.query!(@toolchain_world_counts_sql, [builder_version, variants])
+
+    statuses =
+      Map.new(rows, fn [toolchain, status, count, same] ->
+        {{toolchain, status}, {count, same}}
+      end)
+
+    Map.new(Portal.Toolchains.images(), fn %{toolchain: toolchain} ->
+      counts =
+        Map.new(~w(pass skipped error fail)a, fn status ->
+          {count, _same} = Map.get(statuses, {toolchain, Atom.to_string(status)}, {0, 0})
+          {status, count}
+        end)
+
+      {_count, same} = Map.get(statuses, {toolchain, "skipped"}, {0, 0})
+
+      %{rows: [[candidates]]} =
+        Repo.query!(
+          # The query reads neither the `unrecorded` pairs nor the withheld
+          # list ($5..$7, `toolchain_params/3`), which still need a type.
+          """
+          SELECT count(*) FROM (#{@world_candidates_count_sql}) candidates
+          WHERE cardinality($5::text[]) + cardinality($6::text[]) + cardinality($7::text[]) >= 0
+          """,
+          toolchain_params(toolchain, builder_version) ++
+            [variants, Portal.Toolchains.world_top_packages()]
+        )
+
+      {toolchain,
+       Map.merge(counts, %{enabled: enabled, same_closure: same, candidates: candidates})}
     end)
   end
 

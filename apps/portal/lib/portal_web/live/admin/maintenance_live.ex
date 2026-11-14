@@ -88,12 +88,18 @@ defmodule PortalWeb.Admin.MaintenanceLive do
   # In configured order, which a map of counts would lose.
   defp toolchain_rows do
     counts = Portal.Catalog.toolchain_counts()
+    worlds = Portal.Catalog.toolchain_world_counts()
 
     %{
       builder_version: Portal.Toolchains.builder_version(),
+      worlds_enabled: Portal.Settings.get().world_variants_enabled,
+      worlds: Portal.Toolchains.worlds(),
+      world_top_packages: Portal.Toolchains.world_top_packages(),
       rows:
         for %{toolchain: toolchain} <- Portal.Toolchains.images() do
-          Map.put(Map.fetch!(counts, toolchain), :toolchain, toolchain)
+          counts
+          |> Map.fetch!(toolchain)
+          |> Map.merge(%{toolchain: toolchain, world: Map.fetch!(worlds, toolchain)})
         end
     }
   end
@@ -134,6 +140,26 @@ defmodule PortalWeb.Admin.MaintenanceLive do
 
         {:error, reason} ->
           done(socket, :error, AdminMessages.error(reason))
+      end
+    end)
+  end
+
+  # The button carries the state it offers to switch to, which is what the
+  # admin saw: a second click on a stale page repeats the same intent rather
+  # than flipping it back.
+  def handle_event("toggle_world_variants", params, socket) do
+    as_admin(socket, fn socket, user ->
+      enabled = params["enabled"] == "true"
+
+      case Portal.Admin.set_world_variants_enabled(enabled, user) do
+        {:ok, _setting} ->
+          {:noreply,
+           socket
+           |> put_flash(:info, "World builds turned #{if enabled, do: "on", else: "off"}.")
+           |> load_panels()}
+
+        {:error, reason} ->
+          {:noreply, socket |> put_flash(:error, AdminMessages.error(reason)) |> load_panels()}
       end
     end)
   end
@@ -222,6 +248,8 @@ defmodule PortalWeb.Admin.MaintenanceLive do
     |> update(:counts_version, &(&1 + 1))
     |> Cinder.refresh_tables(@tables)
   end
+
+  defp world_dom_key(key), do: key |> Atom.to_string() |> String.replace("_", "-")
 
   defp done(socket, kind, message) do
     {:noreply, socket |> put_flash(kind, message) |> refresh_sweeps()}
@@ -648,6 +676,66 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                     class="text-right tabular-nums"
                   >
                     {Map.fetch!(row, key)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div
+            id="world-builds"
+            class="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div>
+              <h3 class="font-semibold">World builds</h3>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                <span id="world-variants-state">
+                  World builds are {if @toolchains.worlds_enabled, do: "on", else: "off"}.
+                </span>
+                Worlds {Enum.join(@toolchains.worlds, ", ")}, for the {@toolchains.world_top_packages ||
+                  "all"} most downloaded packages. Served only under <code>builds_closure</code>.
+                Turn on only once every node, toolchain builders included, runs this release.
+                Candidates count what the backlog wants, on or off.
+              </p>
+            </div>
+            <button
+              type="button"
+              id="world-variants-toggle"
+              phx-click="toggle_world_variants"
+              phx-value-enabled={to_string(not @toolchains.worlds_enabled)}
+              class={[
+                "btn btn-sm",
+                if(@toolchains.worlds_enabled, do: "btn-ghost", else: "btn-primary")
+              ]}
+            >
+              {if @toolchains.worlds_enabled,
+                do: "Turn world builds off",
+                else: "Turn world builds on"}
+            </button>
+          </div>
+
+          <div class="mt-3 overflow-x-auto">
+            <table class="table table-sm">
+              <thead>
+                <tr>
+                  <th>Toolchain</th>
+                  <th class="text-right">Pass</th>
+                  <th class="text-right">Skipped</th>
+                  <th class="text-right">Same closure</th>
+                  <th class="text-right">Fail</th>
+                  <th class="text-right">Error</th>
+                  <th class="text-right">Candidates</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={row <- @toolchains.rows}>
+                  <td class="font-mono">{row.toolchain}</td>
+                  <td
+                    :for={key <- [:pass, :skipped, :same_closure, :fail, :error, :candidates]}
+                    id={"toolchain-#{toolchain_dom_id(row.toolchain)}-world-#{world_dom_key(key)}"}
+                    class="text-right tabular-nums"
+                  >
+                    {Map.fetch!(row.world, key)}
                   </td>
                 </tr>
               </tbody>

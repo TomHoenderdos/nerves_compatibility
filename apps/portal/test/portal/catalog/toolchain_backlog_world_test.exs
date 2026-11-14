@@ -250,6 +250,26 @@ defmodule Portal.Catalog.ToolchainBacklogWorldTest do
     end
   end
 
+  test "world counts: rows by status per toolchain, the same-closure skips, and the candidates" do
+    for i <- 1..3 do
+      run!("top#{i}", "1.0.0", 9_000 - i)
+      row!("top#{i}", "1.0.0", :pass)
+    end
+
+    row!("top1", "1.0.0", :pass, variant: :world_phx, deps_lock: %{})
+    row!("top2", "1.0.0", :skipped, variant: :world_phx, reason: "same closure as the with build")
+
+    # Off: what turning it on would propose, and no world row in the
+    # with/without counts.
+    assert %{"1.19/28" => counts} = Catalog.toolchain_world_counts()
+    assert %{enabled: false, pass: 1, skipped: 1, same_closure: 1, error: 0, fail: 0} = counts
+    assert counts.candidates == 1
+    assert %{pass: 3, skipped: 0} = Catalog.toolchain_counts()["1.19/28"]
+
+    enable_worlds!()
+    assert %{"1.19/28" => %{enabled: true, candidates: 1}} = Catalog.toolchain_world_counts()
+  end
+
   test "the sweep enqueues no world build while the setting is off" do
     for i <- 1..3 do
       run!("top#{i}", "1.0.0", 9_000 - i)
