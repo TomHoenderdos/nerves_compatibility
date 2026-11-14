@@ -26,6 +26,15 @@ defmodule PortalWeb.ApiSchemas.ManifestV2 do
                 description:
                   "Builds whose `compile_inputs` a client must check. Clients before " <>
                     "0.6.0 do not read this key."
+              },
+              builds_closure: %Schema{
+                type: :array,
+                items: ManifestBuild,
+                description:
+                  "World builds: the package built with every optional dependency, at any " <>
+                    "depth, that a common application shape (a world) has. Only clients " <>
+                    "0.7.0 and later, which require a build's whole `deps` closure to equal " <>
+                    "their env closure, read this key. Absent when empty."
               }
             },
             required: [:builds],

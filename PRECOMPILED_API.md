@@ -478,6 +478,9 @@ toolchain:
   `pure_elixir`. A client compares it with its own target only for a
   dependency that reads `Mix.target()` at compile time. Builds signed before
   2026-11 lack it; a client then assumes that same conventional name.
+- `build.variant` — optional, informational, only on a build under
+  `builds_closure`: the world it was built in, such as `"world_phx"` (see
+  below). A client matches the build by its `deps` and can ignore this key.
 - `build.config_variant` — optional, informational: the config variant a
   toolchain build was compiled in (see below). Absent for the default build.
   A client matches a variant by its `compile_env` like any other build, and
@@ -592,6 +595,23 @@ What it lists:
   do not know `compile_inputs`, so they would use such a build without comparing its environment
   or config reads, and to them it does not exist. They also refuse the whole manifest when a
   version has no `builds` key, which is why it is never left out.
+- `versions[v].builds_closure` — world builds, read only by clients 0.7.0 and later, which
+  enforce env-closure equality: a build is taken only when the names in its whole `deps` closure
+  equal the closure Mix gives the package in the project's env. A world is a named, pinned set of
+  Hex package names a common application has in its prod env; `phx` is the prod set of a
+  `mix phx.new` 1.8.16 app. A world build of a package is made in a plain project to which the
+  builder adds, at every depth of the package's closure, each optional dependency that is a
+  member of the world, until nothing changes. Its `deps` is then the closure such an app gives
+  the package (jason with decimal, phoenix with bandit and jason). It carries an informational
+  `build.variant` (`"world_phx"`), and is otherwise listed, picked and matched like any other
+  toolchain build, its config variants included; the `builds_with_inputs` split does not apply
+  to it, since its readers check `compile_inputs` anyway. The key is absent when a version has
+  no world build, so a package without one renders the bytes it did before; a version with only
+  world builds still has `"builds": []`. A world build is never listed in `builds`,
+  `builds_with_inputs` or format 1: a client before 0.7.0 compares only the dependencies it
+  locks, so it would take one in a project that has, say, `decimal` only in `:test`, where Mix
+  compiles the package against a closure without it. A world build whose `deps` came out equal
+  to the version's build with or without its optional dependencies is not listed at all.
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
   `system_version`, `deps` and config variant: the newest wins. A toolchain
   build with and one without the package's optional dependencies differ in
@@ -638,7 +658,8 @@ build fails as the reason it was not used:
    lock as one the package may declare.
 9. **compile_env** — `build.compile_env` is present, and every `build.compile_env` item decodes to the value the
    project's config gives for that app and path.
-10. **compile_inputs** (clients 0.6.0 and later; they read `builds` and `builds_with_inputs`) —
+10. **compile_inputs** (clients 0.6.0 and later; they read `builds` and `builds_with_inputs`, and
+    0.7.0 and later on a Mix project also `builds_closure`) —
     every item holds:
     - an `env` item with `set_by: "host"` decodes to what the project's environment gives for
       `name` (`:error` when unset, `{:ok, value}`), else `env_differs`;

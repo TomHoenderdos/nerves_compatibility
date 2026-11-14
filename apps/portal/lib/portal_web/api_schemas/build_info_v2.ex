@@ -49,6 +49,13 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
           type: :string,
           description: "The package's own outer Hex checksum."
         },
+        variant: %Schema{
+          type: :string,
+          enum: Enum.map(Compatibility.Worlds.variants(), &Atom.to_string/1),
+          description:
+            "Optional, informational: the world a build under `builds_closure` was made " <>
+              "in. Absent on every other build. A client matches the build by its `deps`."
+        },
         config_variant: %Schema{
           type: :string,
           enum: Compatibility.ConfigVariants.names(),

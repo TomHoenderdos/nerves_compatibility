@@ -47,7 +47,8 @@ defmodule Portal.PrecompiledFixtures do
   `:mode` (`33_188`), `:config_variant` (`"default"`, both the result's echo
   and the job's value), `:portability_rule`, `:rule1_reason`, `:declared`,
   `:manager`, `:judge_revision` and `:compile_inputs` (each absent from the
-  result unless given).
+  result unless given), and `:variant` (the job's optional-deps variant and
+  the result's echo of it; absent, a `with` build that echoes nothing).
   """
   def ingest_toolchain_build(name, version, opts \\ []) do
     content = "toolchain-beam-#{name}-#{version}-#{System.unique_integer([:positive])}"
@@ -117,6 +118,24 @@ defmodule Portal.PrecompiledFixtures do
         |> Map.new(fn {k, v} -> {Atom.to_string(k), v} end)
       )
     end)
+    |> put_requested_optional_deps(Keyword.get(opts, :variant))
+  end
+
+  # The worker's echo of the optional-deps variant it was asked to build.
+  defp put_requested_optional_deps(result, nil), do: result
+
+  defp put_requested_optional_deps(result, :with),
+    do: Map.put(result, "requested_optional_deps", "include")
+
+  defp put_requested_optional_deps(result, :without),
+    do:
+      result
+      |> Map.put("requested_optional_deps", "exclude")
+      |> Map.put("optional_deps", %{"added" => [], "reason" => "not_requested"})
+
+  defp put_requested_optional_deps(result, variant) do
+    {:ok, world} = Compatibility.Worlds.world(variant)
+    Map.put(result, "requested_optional_deps", "world:" <> world)
   end
 
   @doc """
@@ -138,6 +157,12 @@ defmodule Portal.PrecompiledFixtures do
       builder_version: Keyword.get(opts, :builder_version, 1),
       config_variant: Keyword.get(opts, :config_variant, "default")
     }
+    |> then(fn job_opts ->
+      case Keyword.fetch(opts, :variant) do
+        {:ok, variant} -> Map.put(job_opts, :variant, variant)
+        :error -> job_opts
+      end
+    end)
   end
 
   defp tmp_files_dir do

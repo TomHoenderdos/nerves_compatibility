@@ -3090,14 +3090,19 @@ defmodule Portal.Catalog do
   # Builds are `{version, finished_at, build}` until the end, so the newest of
   # each key can be picked and `updated_at` taken over what is published.
   defp manifest_v2(sources) do
-    builds =
+    {closure, builds} =
       (run_builds(sources) ++ toolchain_builds_v2(sources))
       |> Enum.filter(&matchable?/1)
+      |> Enum.split_with(&closure_build?/1)
+
+    builds =
+      builds
       |> Enum.split_with(&needs_check?/1)
       |> then(fn {checked, plain} ->
         Enum.map(newest_per_key(checked), &{:checked, &1}) ++
           Enum.map(newest_per_key(plain), &{:plain, &1})
       end)
+      |> Kernel.++(Enum.map(newest_per_key(closure), &{:closure, &1}))
 
     if builds == [] do
       nil
@@ -3134,11 +3139,24 @@ defmodule Portal.Catalog do
       for({^tag, {_version, _at, build}} <- list, do: build) |> Enum.sort_by(&build_order/1)
     end
 
-    case pick.(:checked) do
-      [] -> %{"builds" => pick.(:plain)}
-      checked -> %{"builds" => pick.(:plain), "builds_with_inputs" => checked}
-    end
+    %{"builds" => pick.(:plain)}
+    |> put_list("builds_with_inputs", pick.(:checked))
+    |> put_list("builds_closure", pick.(:closure))
   end
+
+  defp put_list(version, _key, []), do: version
+  defp put_list(version, key, builds), do: Map.put(version, key, builds)
+
+  # A world build (`Compatibility.Worlds`) goes under `builds_closure` only,
+  # whatever its compile inputs: only a client that checks a build's whole
+  # `deps` closure against its project's env closure reads that list (0.7.0
+  # and later). A client before that compares only the dependencies it locks
+  # and would take a world build in an env that compiles the package against
+  # another closure. Readers of `builds_closure` check inputs anyway, so the
+  # `builds_with_inputs` split does not apply to it. A version whose only
+  # builds are world builds keeps an empty `builds` list.
+  defp closure_build?({_version, _at, %{"build" => build}}),
+    do: ToolchainBuild.world?(build["variant"])
 
   # Every result format 1 could publish, not only the newest per system:
   # format 2 keeps one per toolchain, so an older build under another
@@ -3172,7 +3190,6 @@ defmodule Portal.Catalog do
   # is what Mix compiles any dependency as unless the project overrides it.
   defp toolchain_builds_v2(sources) do
     for tb <- sources.toolchain_builds,
-        not ToolchainBuild.world?(tb.variant),
         stored = Map.get(sources.shas_by_toolchain_build_id, tb.id, MapSet.new()),
         files = toolchain_files(tb.file_manifest, stored, sources.present_shas),
         files != nil do
@@ -3191,6 +3208,7 @@ defmodule Portal.Catalog do
 
       build =
         build
+        |> put_variant(tb.variant)
         |> put_config_variant(tb.config_variant)
         |> put_declared(tb.declared)
         |> put_manager(tb.manager)
@@ -3200,6 +3218,13 @@ defmodule Portal.Catalog do
        Map.merge(files, %{"target" => "pure_elixir", "build" => build})}
     end
   end
+
+  # Informational, and only for a world build, which `manifest_v2/1` lists
+  # under `builds_closure` by it: a client matches the build by its `deps`
+  # and ignores this key. Left out for `with` and `without`, so a package
+  # without world builds renders the bytes it always did.
+  defp put_variant(build, variant) when variant in [:with, :without], do: build
+  defp put_variant(build, variant), do: Map.put(build, "variant", Atom.to_string(variant))
 
   # Informational: the client matches a variant by its recorded
   # `compile_env`, and ignores this key. Left out for the default, so a
