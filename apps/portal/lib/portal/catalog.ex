@@ -1365,10 +1365,11 @@ defmodule Portal.Catalog do
   # comparisons stay separate: `least()` would drop a NULL newest-rule-2 time
   # and reopen everything. Every NULL (no rule-2 build yet, a row with no
   # reason) reads as "not reopened": the clause sits under a NOT, where a
-  # NULL would make the live row not live. The word "nerves" stays a refusal
-  # under rule 2, so a `nerves-specific source` row is not reopened; rebar
-  # `platform_define`, native, priv and every trace reason stay as they are
-  # too.
+  # NULL would make the live row not live. A `nerves-specific source` row is
+  # not reopened here: judge revision 9 dropped that refusal from rule 2, and
+  # `@judge_reopen` reopens every skipped row below it, whatever its reason.
+  # Rebar `platform_define`, native, priv and every trace reason are left to
+  # that too.
   @rule1_reopen """
   coalesce(coalesce(t.portability_rule, 1) < 2
    AND (t.reason ~ '^calls (System\\.(cmd|shell|find_executable)|os:(cmd|find_executable)|erlang:open_port|Port\\.open)/'

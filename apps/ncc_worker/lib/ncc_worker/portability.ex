@@ -144,8 +144,9 @@ defmodule NccWorker.Portability do
   # a `platform_define` regex the OTP major does not decide is a compile input
   # rather than a refusal, and rule 2 leaves the package's own name out of
   # its native-tool grep and counts its target reads only where they can run
-  # at compile time (`NccWorker.TargetScan`) (bumped by two while
-  # `makefile_rule2` exists).
+  # at compile time (`NccWorker.TargetScan`), and no longer refuses a
+  # mention of Nerves in the sources (bumped by two while `makefile_rule2`
+  # exists).
   @judge_revision 9
 
   @doc "The judge revision a toolchain build made with `opts` records."

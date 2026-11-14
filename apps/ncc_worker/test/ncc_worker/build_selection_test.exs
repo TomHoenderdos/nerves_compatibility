@@ -432,18 +432,57 @@ defmodule NccWorker.BuildSelectionTest do
       assert {:skip, "calls os:cmd/1"} = BuildSelection.portable?(root, "sample", calls)
     end
 
-    test "Nerves named in code refuses; in prose it no longer does (item 2)", %{root: root} do
+    # The "nerves-specific source" refusal is gone from rule 2 (judge round
+    # 2, section 2): a mention of Nerves reaches no beam on its own. What
+    # guards the target stays: the target grep here, the trace, the client's
+    # source scan and closure matching. Rule 1 keeps its plain grep.
+    test "Nerves named in code or prose passes rule 2; rule 1 still refuses it", %{root: root} do
       source = package(root, "sample")
-      File.write!(Path.join(source, "lib/example.ex"), "# runs on Nerves.Runtime too\n")
-      assert BuildSelection.static_rules(root, "sample", scan()) == :ok
+
+      for body <- [
+            "# runs on Nerves.Runtime too\n",
+            "defmodule E do\n  alias Nerves.Runtime\n  def r, do: Runtime.reboot()\nend\n",
+            "defmodule E do\n  def leds, do: Nerves.Leds.set(:a, true)\nend\n",
+            "defmodule E do\n  @deps [:nerves_runtime, :nerves_time_zones]\nend\n"
+          ] do
+        File.write!(Path.join(source, "lib/example.ex"), body)
+        assert BuildSelection.static_rules(root, "sample", scan()) == :ok, body
+
+        assert BuildSelection.portable?(root, "sample", scan()) ==
+                 {:skip, "nerves-specific source"}
+      end
+
+      # A dev-only Nerves dependency in mix.exs (time_zone_info).
+      File.write!(Path.join(source, "lib/example.ex"), "defmodule E do\nend\n")
 
       File.write!(
-        Path.join(source, "lib/example.ex"),
-        "defmodule E do\n  alias Nerves.Runtime\nend\n"
+        Path.join(source, "mix.exs"),
+        "defmodule S.MixProject do\n  use Mix.Project\n  def project, do: [app: :sample, deps: [{:nerves_time_zones, only: :dev}]]\nend\n"
       )
 
-      assert BuildSelection.static_rules(root, "sample", scan()) ==
-               {:skip, "nerves-specific source"}
+      assert BuildSelection.static_rules(root, "sample", scan()) == :ok
+    end
+
+    test "a target read beside a Nerves mention still refuses", %{root: root} do
+      source = package(root, "sample")
+
+      for body <- [
+            "defmodule E do\n  alias Nerves.Runtime\n  @t Mix.target()\nend\n",
+            "defmodule E do\n  @t System.get_env(\"MIX_TARGET\")\n  def r, do: Nerves.Runtime.reboot()\nend\n"
+          ] do
+        File.write!(Path.join(source, "lib/example.ex"), body)
+
+        assert BuildSelection.static_rules(root, "sample", scan()) ==
+                 {:skip, "reads the target or ships native code"},
+               body
+      end
+    end
+
+    test "a nerves* package name still refuses under rule 2", %{root: root} do
+      package(root, "nerves_sample")
+
+      assert BuildSelection.static_rules(root, "nerves_sample", scan()) ==
+               {:skip, "reads the target or ships native code"}
     end
 
     test "NIF loads keep rule 1's reason", %{root: root} do

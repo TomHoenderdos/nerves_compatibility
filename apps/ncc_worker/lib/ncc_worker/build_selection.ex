@@ -6,7 +6,7 @@ defmodule NccWorker.BuildSelection do
   Unavailable or ambiguous evidence always keeps firmware builds enabled.
   """
 
-  alias NccWorker.{BuildCache, NativeBuild, NervesCode, StaticPriv}
+  alias NccWorker.{BuildCache, NativeBuild, StaticPriv}
 
   @spec select(String.t(), String.t(), String.t(), map(), [{String.t(), String.t()}]) ::
           :pure_elixir | :firmware
@@ -82,10 +82,13 @@ defmodule NccWorker.BuildSelection do
   The static half of the precompiled verdict (precompiled portability spec,
   R0), which the compile-time trace (`NccWorker.Portability`) does not
   cover: compiled beams in portable languages, no NIF or driver load in
-  them, static priv data only (`portable?/4`'s priv rule), no mention of
-  Nerves in the code of its sources (`NccWorker.NervesCode`; rule 1 keeps
-  the plain grep), and no native sources, native build dependencies,
-  target reads or `nerves*` name (`BuildCache.dep_target_agnostic?/2`).
+  them, static priv data only (`portable?/4`'s priv rule), and no native
+  sources, native build dependencies, target reads or `nerves*` name
+  (`BuildCache.dep_target_agnostic?/2`). A mention of Nerves in the sources
+  no longer refuses (judge round 2): it reaches no beam on its own, and
+  every way the target can reach one is guarded by the target check here,
+  the trace, the client's source scan and closure matching. Rule 1
+  (`portable?/4`) keeps its plain grep.
   These checks cover the package only, not the dependencies in its closure:
   a dependency that mentions Nerves or reads the target, such as a Mix
   compiler for native code, does not change the package's beams unless its
@@ -97,8 +100,8 @@ defmodule NccWorker.BuildSelection do
   `platform_define` and `rebar.config.script` are the trace's to judge, and
   only for a package rebar3 builds.
 
-  The Nerves and target checks stay because the trace does not see a read
-  of `Mix.target/0`: it is Mix state, not the host, and a build compiled for
+  The target check stays because the trace does not see every read of
+  `Mix.target/0`: it is Mix state, not the host, and a build compiled for
   `:host` would be served to firmware builds. Reasons are `portable?/4`'s.
   Anything missing or unreadable fails closed.
 
@@ -109,11 +112,8 @@ defmodule NccWorker.BuildSelection do
   """
   @spec static_rules(String.t(), String.t(), map(), keyword()) :: :ok | {:skip, String.t()}
   def static_rules(project, package, scan, opts \\ []) do
-    deps = Path.join(project, "deps")
-
     with :ok <- static_scan(scan),
-         :ok <- portable_priv(project, package, scan, opts),
-         :ok <- nerves_code_check(Path.join(deps, package)) do
+         :ok <- portable_priv(project, package, scan, opts) do
       check(target_agnostic(project, package, opts), "reads the target or ships native code")
     end
   rescue
@@ -226,17 +226,6 @@ defmodule NccWorker.BuildSelection do
        do: true
 
   defp pure_beams?(_), do: false
-
-  # Rule 2's Nerves check (item 2, `NccWorker.NervesCode`): code, not prose.
-  # The same outcomes as `nerves_check/1`, which rule 1 keeps.
-  defp nerves_code_check(dir) do
-    case NervesCode.mention(dir) do
-      :found -> {:skip, "nerves-specific source"}
-      :none -> :ok
-      :missing -> :ok
-      :error -> {:skip, "portability could not be judged"}
-    end
-  end
 
   # The package's own Nerves check. A missing source is left to
   # `BuildCache.dep_target_agnostic?/2`, the next check, which refuses it as

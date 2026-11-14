@@ -372,7 +372,7 @@ lists that module's application (public_key into `asn1rt_nif`), and judges a dep
 what its evaluation read and the `mix.rebar.config` Mix wrote from it. Revision 9 lets quic's reviewed `build_nif.sh`
 compile hook through, records a `platform_define` regex the OTP major does not decide as a compile input instead of
 refusing, and for the package itself leaves its own name out of the native-tool grep and counts a target read only
-where it can run at compile time (elixir_make).
+where it can run at compile time (elixir_make), and drops rule 2's "nerves-specific source" refusal.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
@@ -580,11 +580,11 @@ mode does not run it through `NccWorker.DepsGetClassifier`; only a full, targets
 
 `portability_rule`, `rule1_reason` and `compile_observations` are present for `pass` and `skipped` and `null` for
 `error`. `portability_rule` is `2`: the static rules (`BuildSelection.static_rules/4`: compiled beams in Elixir or
-Erlang, no NIF or driver load, static priv only, no mention of Nerves in the code of its sources
-(`NccWorker.NervesCode`; rule 1 keeps the plain grep), no native sources, native
+Erlang, no NIF or driver load, static priv only, no native sources, native
 build dependencies, target reads or `nerves*` name; for the package itself its own name is not a native build
 dependency, and a target read counts only where it can run while it compiles, not in a `def`/`defp` body, a literal
-doc, a comment or a doc file: `NccWorker.TargetScan`) AND the compile-time trace. A program call, an executable lookup
+doc, a comment or a doc file: `NccWorker.TargetScan`) AND the compile-time trace. A mention of Nerves in the
+sources no longer refuses under rule 2 (revision 9); rule 1 keeps its "nerves-specific source" grep. A program call, an executable lookup
 or an `:os.type()` in the sources no longer refuses a build; the trace refuses one made at compile time, and a
 module that holds a source path and itself runs programs. `rule1_reason` is what rule 1 (`portable?/4`, the
 verdict before rule 2) would have said, `null` when it passes: a `pass` with a `rule1_reason` is a build only rule 2
