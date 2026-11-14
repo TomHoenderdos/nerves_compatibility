@@ -1921,9 +1921,7 @@ defmodule Portal.Catalog do
 
   # The queries name only known variants; a row of any other is dropped
   # rather than built as one this release knows.
-  defp variant("with"), do: {:ok, :with}
-  defp variant("without"), do: {:ok, :without}
-  defp variant(_other), do: :error
+  defp variant(name), do: ToolchainBuild.parse_variant(name)
 
   @doc """
   The packages `Portal.Catalog.VersionBackfill` may reach back into, as
@@ -2083,12 +2081,12 @@ defmodule Portal.Catalog do
   defp newer_run?({_, _, a, _, _}, {_, _, b, _, _}), do: NaiveDateTime.compare(a, b) == :gt
 
   # `toolchain_counts/0`'s statuses: rows of the default config variant and of
-  # a known optional-deps variant only.
+  # `with` or `without` only; world rows are counted on their own.
   @toolchain_counts_sql """
   SELECT toolchain, status, count(*)
   FROM catalog_toolchain_builds
   WHERE builder_version = $1 AND revoked_at IS NULL AND config_variant = 'default'
-    AND variant IN #{ToolchainBuild.variants_sql()}
+    AND variant IN #{ToolchainBuild.optional_deps_variants_sql()}
   GROUP BY toolchain, status
   """
 
@@ -3104,6 +3102,7 @@ defmodule Portal.Catalog do
   # is what Mix compiles any dependency as unless the project overrides it.
   defp toolchain_builds_v2(sources) do
     for tb <- sources.toolchain_builds,
+        not ToolchainBuild.world?(tb.variant),
         stored = Map.get(sources.shas_by_toolchain_build_id, tb.id, MapSet.new()),
         files = toolchain_files(tb.file_manifest, stored, sources.present_shas),
         files != nil do

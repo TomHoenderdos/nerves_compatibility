@@ -234,7 +234,7 @@ defmodule Portal.Workers.ToolchainBuildTest do
     test "an unknown optional-deps variant is cancelled before anything runs" do
       respond(0)
 
-      for variant <- ["world_phx", "default", nil, 1] do
+      for variant <- ["world_nope", "default", nil, 1] do
         assert {:cancel, "unknown variant " <> _} =
                  perform_job(ToolchainBuild, job_args(%{"variant" => variant}))
       end
@@ -255,6 +255,55 @@ defmodule Portal.Workers.ToolchainBuildTest do
         assert :ok = perform_job(ToolchainBuild, job_args(extra))
         assert_received {:build_args, %{optional_deps: ^optional_deps}}
       end
+    end
+
+    test "a world job asks the worker for the world closure, members included" do
+      respond(0)
+      {:ok, members} = Compatibility.Worlds.members("phx")
+
+      assert :ok = perform_job(ToolchainBuild, job_args(%{"variant" => "world_phx"}))
+
+      assert_received {:build_args,
+                       %{optional_deps: "world", world: %{"name" => "phx", "members" => ^members}}}
+
+      assert [%Oban.Job{args: %{"variant" => "world_phx"}}] = all_enqueued(worker: Ingest)
+
+      input =
+        Portal.Builder.worker_input(%{
+          run_id: "r",
+          image_name: "i",
+          image_digest: "d",
+          systems_filter: nil,
+          optional_deps: "world",
+          world: %{"name" => "phx", "members" => members}
+        })
+
+      assert input["optional_deps"] == "world"
+      assert input["world"] == %{"name" => "phx", "members" => members}
+    end
+
+    test "a with or without job sends no world" do
+      for variant <- ["with", "without"] do
+        respond(0)
+        assert :ok = perform_job(ToolchainBuild, job_args(%{"variant" => variant}))
+        assert_received {:build_args, args}
+        refute Map.has_key?(args, :world)
+      end
+    end
+
+    test "a world job that fails for good records a world_phx error row" do
+      package!("jason")
+
+      Process.put(
+        :stub_build_response,
+        {:ok, %{exit_code: 10, result: nil, files_dir: "/x", output_dir: "/y", log: ""}}
+      )
+
+      capture_log(fn ->
+        perform_job(ToolchainBuild, job_args(%{"variant" => "world_phx"}), attempt: 2)
+      end)
+
+      assert [%{variant: :world_phx, status: :error}] = rows("jason")
     end
 
     test "a default job and a named job of one version are both queued" do

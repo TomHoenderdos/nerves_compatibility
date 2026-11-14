@@ -67,10 +67,13 @@ defmodule Portal.Builder do
           # e.g. `%{elixir: "1.19", otp: "28"}`.
           optional(:toolchain) => %{elixir: String.t(), otp: String.t()} | nil,
           # For `mode: "toolchain"`: `"include"` runs the worker's optional
-          # dependencies pass, `"exclude"` builds without it.
+          # dependencies pass, `"exclude"` builds without it, `"world"`
+          # resolves the closure of `:world`'s members.
           optional(:optional_deps) => String.t() | nil,
           # For mode: "toolchain": a Compatibility.ConfigVariants name; nil is "default".
           optional(:config_variant) => String.t() | nil,
+          # For `optional_deps: "world"`: `%{"name", "members"}` (`Compatibility.Worlds`).
+          optional(:world) => %{String.t() => term()} | nil,
           optional(:argus) => map() | nil,
           # For `mode: "warm_nerves"`: `%{"name", "version"}` pairs to warm
           # (`Portal.Workers.WarmNerves`); `[]` warms what the template resolves.
@@ -338,6 +341,7 @@ defmodule Portal.Builder do
       toolchain: Map.get(args, :toolchain),
       optional_deps: Map.get(args, :optional_deps),
       config_variant: Map.get(args, :config_variant),
+      world: Map.get(args, :world),
       argus: Map.get(args, :argus),
       nerves_packages: Map.get(args, :nerves_packages),
       system_abi: Map.get(args, :system_abi),
@@ -923,6 +927,7 @@ defmodule Portal.Builder do
     |> maybe_put("toolchain", Map.get(job, :toolchain))
     |> maybe_put("optional_deps", Map.get(job, :optional_deps))
     |> maybe_put("config_variant", Map.get(job, :config_variant))
+    |> maybe_put("world", Map.get(job, :world))
     |> maybe_put("argus", Map.get(job, :argus))
     |> maybe_put("nerves_packages", Map.get(job, :nerves_packages))
     |> maybe_put("system_abi", Map.get(job, :system_abi))

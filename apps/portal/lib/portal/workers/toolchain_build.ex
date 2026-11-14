@@ -10,15 +10,17 @@ defmodule Portal.Workers.ToolchainBuild do
   `toolchain` (`"1.19/28"`), `image` (the tag the sweeping node has configured
   for it), `builder_version` (`Portal.Toolchains.builder_version/0` at sweep
   time) and `variant` (`"with"` or `"without"` the package's optional
-  dependencies, see `Portal.Catalog.ToolchainBuild`), which the worker gets as
-  `optional_deps: "include" | "exclude"`. A job without a `variant`, queued
+  dependencies, or a world `"world_<name>"`, see `Portal.Catalog.ToolchainBuild`),
+  which the worker gets as `optional_deps: "include" | "exclude" | "world"`; a
+  world build also sends `world: %{"name", "members"}`
+  (`Compatibility.Worlds`). A job without a `variant`, queued
   before variants existed, is a `with` build. `config_variant` is a
   `Compatibility.ConfigVariants` name; a job without one, queued before config
   variants, is `"default"`; the sweep always sets it, since Oban's unique match
   is a containment that a missing key would widen. A name the worker does not
-  know cancels the job before anything runs, and so does a `variant` other
-  than `"with"` or `"without"`: a newer release's variant is never built as
-  one of those. The image and its digest are
+  know cancels the job before anything runs, and so does a `variant` this
+  release does not know (`Portal.Catalog.ToolchainBuild.variants/0`): a newer
+  release's variant is never built as one of these. The image and its digest are
   resolved here, on the build host that has the images: the toolchain's image
   in this node's own `Portal.Toolchains.images/0`, and the job's `image` only
   when this node does not configure the toolchain at all.
@@ -96,7 +98,7 @@ defmodule Portal.Workers.ToolchainBuild do
   defp known_variant?(args) do
     case Map.fetch(args, "variant") do
       :error -> true
-      {:ok, variant} -> variant in ["with", "without"]
+      {:ok, variant} -> match?({:ok, _}, Portal.Catalog.ToolchainBuild.parse_variant(variant))
     end
   end
 
@@ -164,6 +166,7 @@ defmodule Portal.Workers.ToolchainBuild do
         optional_deps: optional_deps(variant(args)),
         config_variant: input_config_variant(config_variant(args))
       }
+      |> put_world(variant(args))
       |> Map.merge(oom_overrides(job))
 
     started_at = DateTime.utc_now()
@@ -194,12 +197,26 @@ defmodule Portal.Workers.ToolchainBuild do
   end
 
   # Only after `known_variant?/1`: a missing `variant` is `with`.
-  defp variant(%{"variant" => "without"}), do: :without
-  defp variant(%{"variant" => "with"}), do: :with
   defp variant(args) when not is_map_key(args, "variant"), do: :with
+
+  defp variant(%{"variant" => name}) do
+    {:ok, variant} = Portal.Catalog.ToolchainBuild.parse_variant(name)
+    variant
+  end
 
   defp optional_deps(:with), do: "include"
   defp optional_deps(:without), do: "exclude"
+  defp optional_deps(_world), do: "world"
+
+  # A world build names its world and sends the members (spec, 3.1), so the
+  # worker image needs no copy of the list.
+  defp put_world(build_args, variant) when variant in [:with, :without], do: build_args
+
+  defp put_world(build_args, variant) do
+    {:ok, name} = Compatibility.Worlds.world(variant)
+    {:ok, members} = Compatibility.Worlds.members(name)
+    Map.put(build_args, :world, %{"name" => name, "members" => members})
+  end
 
   defp config_variant(args), do: Map.get(args, "config_variant", "default")
 

@@ -120,7 +120,7 @@ defmodule Portal.Catalog.Ingestion do
           required(:package) => String.t(),
           required(:version) => String.t(),
           optional(:output_dir) => Path.t() | nil,
-          optional(:variant) => :with | :without,
+          optional(:variant) => atom(),
           optional(:config_variant) => String.t(),
           optional(:hex_outer_checksum) => (String.t(), String.t() -> term()),
           optional(:hex_tarball) => (String.t(), String.t() -> term())
@@ -444,8 +444,10 @@ defmodule Portal.Catalog.Ingestion do
   # defaults to `:with`, for an ingest job enqueued before variants existed;
   # it is never taken from the result.
   defp check_variant(result, opts, keys) do
-    case Map.get(opts, :variant, :with) do
-      variant when variant in [:with, :without] ->
+    variant = Map.get(opts, :variant, :with)
+
+    case variant in ToolchainBuild.variants() do
+      true ->
         case reported_variant(result, variant) do
           ^variant ->
             :ok
@@ -458,7 +460,7 @@ defmodule Portal.Catalog.Ingestion do
               result |> result_identity(keys) |> Map.put(:variant, reported)}}
         end
 
-      _other ->
+      false ->
         {:error, {:identity_missing, [:variant]}}
     end
   end
@@ -475,6 +477,10 @@ defmodule Portal.Catalog.Ingestion do
     if added_optional_deps?(result), do: :with, else: result_variant(result)
   end
 
+  # A world job takes only a result that echoes its world: an older worker
+  # refuses the request (exit 10) and writes no result at all.
+  defp reported_variant(result, _world), do: result_variant(result)
+
   defp added_optional_deps?(%{"optional_deps" => %{"added" => added}})
        when added not in [nil, []],
        do: true
@@ -485,9 +491,18 @@ defmodule Portal.Catalog.Ingestion do
   # `optional_deps` request it was given (`requested_optional_deps`); a result
   # from a worker that does not echo it still says it never started the
   # optional pass (`optional_deps.reason` "not_requested"), which only a
-  # build asked to exclude them reports. Anything else states no variant.
+  # build asked to exclude them reports. A world build echoes
+  # `world:<name>`. Anything else states no variant.
   defp result_variant(%{"requested_optional_deps" => "include"}), do: :with
   defp result_variant(%{"requested_optional_deps" => "exclude"}), do: :without
+
+  defp result_variant(%{"requested_optional_deps" => "world:" <> name} = echo) do
+    case Compatibility.Worlds.variant(name) do
+      {:ok, variant} -> variant
+      :error -> echo["requested_optional_deps"]
+    end
+  end
+
   defp result_variant(%{"requested_optional_deps" => other}) when other != nil, do: other
 
   defp result_variant(%{"optional_deps" => %{"reason" => "not_requested"}}), do: :without

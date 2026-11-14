@@ -272,10 +272,14 @@ defmodule Portal.Workers.Ingest do
   # variant the job could have built.
   defp job_variant(args) do
     case Map.fetch(args, "variant") do
-      :error -> :with
-      {:ok, "with"} -> :with
-      {:ok, "without"} -> :without
-      {:ok, _other} -> nil
+      :error ->
+        :with
+
+      {:ok, name} ->
+        case Portal.Catalog.ToolchainBuild.parse_variant(name) do
+          {:ok, variant} -> variant
+          :error -> nil
+        end
     end
   end
 

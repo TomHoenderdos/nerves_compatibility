@@ -10,9 +10,11 @@ defmodule Portal.Catalog.NotPrecompiled do
       other than `"default"` (`ToolchainBuild`, "Config variants"): a skip
       under a `phx_prod` overlay speaks only for clients with that config,
       the way `Portal.Catalog.toolchain_counts/0` counts default rows only.
-      Both optional-dependency `variant`s count, and only those this release
-      knows (`ToolchainBuild.variants/0`): a newer release's variant is not
-      read at all.
+      Both optional-dependency `variant`s count
+      (`ToolchainBuild.optional_deps_variants/0`), and no other: a world
+      build's skip speaks only for apps of that world's shape and clients
+      that read `builds_closure`, and a newer release's variant is not read
+      at all.
     * Per package and toolchain, only the newest version with a verdict
       counts: the highest version (stable before pre-release, as
       `Portal.Catalog.Coverage` picks) among the non-revoked rows whose
@@ -39,7 +41,7 @@ defmodule Portal.Catalog.NotPrecompiled do
   alias Portal.Repo
 
   @default_config "default"
-  @variants Enum.map(ToolchainBuild.variants(), &Atom.to_string/1)
+  @variants Enum.map(ToolchainBuild.optional_deps_variants(), &Atom.to_string/1)
 
   @type row :: %{
           package: String.t(),

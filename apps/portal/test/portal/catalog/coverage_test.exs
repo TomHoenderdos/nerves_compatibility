@@ -69,6 +69,7 @@ defmodule Portal.Catalog.CoverageTest do
         toolchain: Keyword.get(opts, :toolchain, "1.19/28"),
         builder_version: Keyword.get(opts, :builder_version, 2),
         status: status,
+        variant: Keyword.get(opts, :variant, :with),
         deps_lock: Keyword.get(opts, :deps_lock, %{}),
         finished_at: DateTime.utc_now()
       })
@@ -203,6 +204,22 @@ defmodule Portal.Catalog.CoverageTest do
       assert %{covered_with_optional: 1, percent_with_optional: 50.0} = row
       assert %{version: "1.3.0", reason: :no_optional_deps_build} = gap(row, "telemetry")
       refute gap(row, "jason")
+    end
+
+    # A world build carries the world's members, not the package's optional
+    # dependencies, and serves only clients that read `builds_closure`: it
+    # covers the version, but never counts in the second column.
+    test "a world build covers, and never counts as carrying optional dependencies" do
+      package!("phoenix", 1_000, ["1.8.16"])
+      build!("phoenix", "1.8.16", :pass, variant: :world_phx)
+
+      row = report() |> toolchain("1.19/28")
+
+      assert %{covered: 1, covered_with_optional: 0} = row
+      assert %{reason: :no_optional_deps_build} = gap(row, "phoenix")
+
+      build!("phoenix", "1.8.16", :pass)
+      assert %{covered: 1, covered_with_optional: 1} = report() |> toolchain("1.19/28")
     end
 
     # A package that is not covered at all is not counted again in the second

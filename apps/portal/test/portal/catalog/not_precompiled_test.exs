@@ -43,6 +43,14 @@ defmodule Portal.Catalog.NotPrecompiledTest do
     assert [%{class: :nerves_specific}] = NotPrecompiled.rows()
   end
 
+  test "a world build's skip does not count" do
+    build!("worldly", "1.0.0", reason: "no compiled beams", variant: :world_phx)
+    assert NotPrecompiled.rows() == []
+
+    build!("worldly", "1.0.0", reason: "nerves-specific source")
+    assert [%{class: :nerves_specific}] = NotPrecompiled.rows()
+  end
+
   test "semver, not string order, picks the newest version" do
     build!("semver", "1.10.0", reason: "no compiled beams")
     build!("semver", "1.9.0", reason: "nerves-specific source")

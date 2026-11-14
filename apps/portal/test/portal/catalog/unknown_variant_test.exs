@@ -23,7 +23,7 @@ defmodule Portal.Catalog.UnknownVariantTest do
   alias Portal.Workers.ToolchainSweep
 
   @pure %{"nif_language" => nil, "port_languages" => [], "compatibility_basis" => "pure_elixir"}
-  @world "world_phx"
+  @world "world_from_a_newer_release"
   @pw "correct horse battery staple"
 
   setup do

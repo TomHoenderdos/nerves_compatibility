@@ -572,6 +572,63 @@ defmodule Portal.Workers.IngestIdentityTest do
       refute membership?(other_beam)
     end
 
+    # A world build echoes `world:<name>`; the job's world is the identity.
+    defp world_result(name, beam, echo) do
+      name
+      |> toolchain_result("1.0.0", beam)
+      |> Map.put("requested_optional_deps", echo)
+      |> Map.put("optional_deps", %{
+        "added" => ["jason", "decimal"],
+        "dropped" => [],
+        "skipped" => [],
+        "reason" => nil,
+        "world" => "phx",
+        "rounds" => 2
+      })
+    end
+
+    test "records a world result under the job's world variant" do
+      name = unique("tcworldok")
+      beam = "beam-#{name}"
+      replay(world_result(name, beam, "world:phx"), files_dir_with([beam]))
+
+      assert :ok = ingest(variant_args(name, "world_phx"))
+
+      assert [%{variant: :world_phx, status: :pass, optional_deps: %{"world" => "phx"}}] =
+               toolchain_rows_of(name)
+
+      assert membership?(beam)
+    end
+
+    test "refuses a world result whose echo does not match the job" do
+      for {job, echo} <- [
+            {"world_phx", "world:other"},
+            {"world_phx", "include"},
+            {"world_phx", "exclude"},
+            {"world_phx", nil},
+            {"with", "world:phx"},
+            {"without", "world:phx"}
+          ] do
+        name = unique("tcworldbad")
+        beam = "beam-#{name}"
+
+        result =
+          case echo do
+            nil -> name |> world_result(beam, "x") |> Map.delete("requested_optional_deps")
+            echo -> world_result(name, beam, echo)
+          end
+
+        replay(result, files_dir_with([beam]))
+
+        capture_log(fn ->
+          assert {:cancel, "ingest refused: " <> _} = ingest(variant_args(name, job))
+        end)
+
+        assert toolchain_rows_of(name) == [], "#{job} took #{inspect(echo)}"
+        refute membership?(beam)
+      end
+    end
+
     test "refuses a job whose variant is neither with nor without" do
       name = unique("tcvarbad")
       beam = "beam-#{name}"

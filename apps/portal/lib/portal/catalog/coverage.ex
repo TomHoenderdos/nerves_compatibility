@@ -18,7 +18,8 @@ defmodule Portal.Catalog.Coverage do
   a build of the version.
 
   A covered version also counts in the second column when a covering build
-  carries the package's optional dependencies, since a fresh lock that adds
+  other than a world build (`Compatibility.Worlds`) carries the package's
+  optional dependencies, since a fresh lock that adds
   one misses a build made without it. Carrying them means the build's
   `deps_lock` holds every optional Hex dependency the version declares,
   each at the newest stable release its requirement allows: what a fresh
@@ -237,7 +238,7 @@ defmodule Portal.Catalog.Coverage do
     |> Ash.Query.filter(package_id in ^ids and is_nil(revoked_at) and config_variant == "default")
     # Not `file_manifest`: a build's file list is the largest thing on the
     # row and nothing here reads it.
-    |> Ash.Query.select([:id, :package_id, :version, :toolchain, :status, :deps_lock])
+    |> Ash.Query.select([:id, :package_id, :version, :toolchain, :status, :variant, :deps_lock])
     |> Ash.read!(domain: Portal.Catalog)
     |> Enum.group_by(& &1.toolchain)
     |> Map.new(fn {toolchain, builds} -> {toolchain, Enum.group_by(builds, & &1.package_id)} end)
@@ -292,8 +293,13 @@ defmodule Portal.Catalog.Coverage do
 
   defp passing_verdict([], _complete?), do: :failed
 
-  defp passing_verdict(passing, complete?),
-    do: if(Enum.any?(passing, complete?), do: :covered, else: :without)
+  # A world build carries a world's members, not the package's own optional
+  # dependencies, so it never counts in the second column.
+  defp passing_verdict(passing, complete?) do
+    if Enum.any?(passing, &(not ToolchainBuild.world?(&1.variant) and complete?.(&1))),
+      do: :covered,
+      else: :without
+  end
 
   # The default `optional_deps_complete?`: per package whose latest version
   # has a passing build on some toolchain, the optional dependencies that

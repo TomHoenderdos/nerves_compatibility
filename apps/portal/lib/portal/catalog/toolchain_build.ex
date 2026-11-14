@@ -29,6 +29,15 @@ defmodule Portal.Catalog.ToolchainBuild do
   (`Portal.Catalog.toolchain_backlog/3`). A row written before variants
   existed was built the `:with` way, which is the default.
 
+  A world variant, `:world_<name>` (`Compatibility.Worlds`), adds every
+  optional dependency at any depth of the closure that is a member of the
+  world, until nothing changes: the closure Mix gives the package in an app
+  of that shape. Its `optional_deps` also records `world` and `rounds`. A
+  world row is served only in a manifest's `builds_closure` list, which
+  only clients that check the whole env closure read
+  (`Portal.Catalog.manifest_v2/1`); it is wanted only while the
+  `world_variants_enabled` setting is on (`Portal.Toolchains.worlds/0`).
+
   A newer release may store a variant this one does not know (`variants/0`).
   Such a row is not this release's to read: the primary read filters it out
   in SQL, before Ash would load its `variant` (an atom cast that raises on a
@@ -90,17 +99,52 @@ defmodule Portal.Catalog.ToolchainBuild do
 
   @transient_cap 5
   @withheld_revocation "withheld closure"
-  @variants [:with, :without]
+  @optional_deps_variants [:with, :without]
+  @world_variants Compatibility.Worlds.variants()
+  @variants @optional_deps_variants ++ @world_variants
 
   @doc """
   The optional-deps variants this release knows, the only ones it creates,
-  reads or builds (see "Variants" in the moduledoc).
+  reads or builds (see "Variants" in the moduledoc): `:with`, `:without`
+  and one `:world_<name>` per `Compatibility.Worlds` world.
   """
   @spec variants() :: [atom()]
   def variants, do: @variants
 
+  @doc "The `:with` and `:without` variants, the ones every manifest list but `builds_closure` serves."
+  @spec optional_deps_variants() :: [atom()]
+  def optional_deps_variants, do: @optional_deps_variants
+
+  @doc "The world variants (`Compatibility.Worlds.variants/0`)."
+  @spec world_variants() :: [atom()]
+  def world_variants, do: @world_variants
+
+  @doc "Whether `variant`, an atom or its text, is a world variant."
+  @spec world?(term()) :: boolean()
+  def world?(variant), do: match?({:ok, _}, Compatibility.Worlds.world(variant))
+
   @doc """
-  `variants/0` as a SQL list, `('with', 'without')`, for the raw SQL readers
+  The known variant a job or a SQL row names as text, `{:ok, atom}`, or
+  `:error` for any other value: a name this release does not know is never
+  read as one it does.
+  """
+  @spec parse_variant(term()) :: {:ok, atom()} | :error
+  def parse_variant(name) when is_binary(name) do
+    case Enum.find(@variants, &(Atom.to_string(&1) == name)) do
+      nil -> :error
+      variant -> {:ok, variant}
+    end
+  end
+
+  def parse_variant(_name), do: :error
+
+  @doc "`optional_deps_variants/0` as a SQL list, `('with', 'without')`."
+  @spec optional_deps_variants_sql() :: String.t()
+  def optional_deps_variants_sql,
+    do: "(" <> Enum.map_join(@optional_deps_variants, ", ", &"'#{&1}'") <> ")"
+
+  @doc """
+  `variants/0` as a SQL list, `('with', 'without', 'world_phx')`, for the raw SQL readers
   of the table: `t.variant IN \#{variants_sql()}`.
   """
   @spec variants_sql() :: String.t()

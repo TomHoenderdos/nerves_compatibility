@@ -361,7 +361,7 @@ defmodule Portal.Reports.RequeueTest do
 
     # As a newer release would store it.
     Portal.Repo.query!(
-      "UPDATE catalog_toolchain_builds SET variant = 'world_phx' WHERE id = $1::uuid",
+      "UPDATE catalog_toolchain_builds SET variant = 'world_from_a_newer_release' WHERE id = $1::uuid",
       [Ecto.UUID.dump!(tb.id)]
     )
 
