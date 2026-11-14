@@ -355,11 +355,14 @@ defmodule NccWorker.BuildCacheTest do
   describe "match_or_error?/2" do
     test "an engine error counts as a match" do
       # Catastrophic backtracking: PCRE gives up with a match limit error,
-      # which `Regex.match?/2` reports as no match.
+      # which `:re.run/3` without `:report_errors` reports as no match (and
+      # `Regex.match?/2` reports as no match before Elixir 1.20, which raises).
       regex = ~r/(.*a){25}/
       subject = String.duplicate("a", 30) <> "!"
 
-      refute Regex.match?(regex, subject)
+      assert :re.run(subject, Regex.source(regex), Regex.opts(regex) ++ [capture: :none]) ==
+               :nomatch
+
       assert BuildCache.match_or_error?(regex, subject)
     end
 
