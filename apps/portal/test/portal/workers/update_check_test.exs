@@ -458,4 +458,50 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert queued_packages() == []
     end
   end
+
+  # #105: a patch release of a passing package earns no full run, so
+  # `latest_version` stays behind. UpdateCheck nominates the registry's
+  # latest version for a toolchain build instead (`hex_latest_version`).
+  describe "the Hex latest version as a toolchain build candidate" do
+    defp hex_latest(name),
+      do:
+        Repo.one(
+          from(p in "catalog_packages", where: p.name == ^name, select: p.hex_latest_version)
+        )
+
+    test "a patch release of a passing package is nominated, not queued" do
+      passing_package("alpha", "1.2.3")
+      hex_says([{"alpha", "1.2.4"}])
+
+      assert {:ok, %{moved: 0, enqueued: 0, nominated: 1}} = UpdateCheck.run()
+      assert queued_packages() == []
+      assert hex_latest("alpha") == "1.2.4"
+
+      # Nothing new on the next run.
+      assert {:ok, %{nominated: 0}} = UpdateCheck.run()
+
+      hex_says([{"alpha", "1.2.5"}])
+      assert {:ok, %{nominated: 1}} = UpdateCheck.run()
+      assert hex_latest("alpha") == "1.2.5"
+    end
+
+    test "a release that earns a full run, or no drift, nominates nothing" do
+      passing_package("minor", "1.2.3")
+      failing = package("failing", "1.2.3")
+      run(failing, :fail)
+      passing_package("same", "2.0.0")
+      hex_says([{"minor", "1.3.0"}, {"failing", "1.2.4"}, {"same", "2.0.0"}])
+
+      assert {:ok, %{moved: 2, nominated: 0}} = UpdateCheck.run()
+      assert Enum.map(~w(minor failing same), &hex_latest/1) == [nil, nil, nil]
+    end
+
+    test "a dry run nominates nothing" do
+      passing_package("alpha", "1.2.3")
+      hex_says([{"alpha", "1.2.4"}])
+
+      assert {:ok, %{nominated: 0}} = UpdateCheck.run(dry_run: true)
+      assert hex_latest("alpha") == nil
+    end
+  end
 end

@@ -38,6 +38,16 @@ defmodule Portal.Workers.UpdateCheck do
   rebuild. Every eligible update is offered to the queue; existing job and
   request uniqueness prevents duplicate builds.
 
+  ## A toolchain build for the release that earns no full run
+
+  A patch release of a passing package earns no full run, so
+  `latest_version` stays behind it, and a toolchain build is only ever
+  wanted for a version with a run or one `Portal.Catalog.VersionBackfill`
+  reaches. For such a release the run records the registry's latest
+  version in `hex_latest_version` instead, which
+  `Portal.Catalog.toolchain_backlog/3` offers as a new build (#105). It only
+  nominates: the toolchain build compiles and judges that version itself.
+
   ## Scope
 
   Only packages already in the catalogue. A registry package we have never
@@ -120,6 +130,7 @@ defmodule Portal.Workers.UpdateCheck do
         "seen" => summary.seen,
         "moved" => summary.moved,
         "enqueued" => summary.enqueued,
+        "nominated" => summary.nominated,
         "dry_run" => dry_run?
       })
 
@@ -134,10 +145,11 @@ defmodule Portal.Workers.UpdateCheck do
   Runs regardless of the `:enabled` flag -- that gate belongs to the scheduled
   path, not to a human at a console deciding to run one on purpose.
 
-  Returns `{:ok, %{seen: n, moved: n, enqueued: n}}`, where `seen` counts
-  registry packages, `moved` counts tracked packages worth rebuilding, and
-  `enqueued` counts newly inserted jobs. Existing jobs do not prevent other
-  eligible updates from being queued.
+  Returns `{:ok, %{seen: n, moved: n, enqueued: n, nominated: n}}`, where
+  `seen` counts registry packages, `moved` counts tracked packages worth
+  rebuilding, `enqueued` counts newly inserted jobs, and `nominated` counts
+  packages whose `hex_latest_version` this run set. Existing jobs do not
+  prevent other eligible updates from being queued.
 
   Metadata lookup jobs are scheduled one second apart, oldest updates first.
   Build concurrency and firmware selection are handled by the builder.
@@ -150,24 +162,28 @@ defmodule Portal.Workers.UpdateCheck do
   def run(opts \\ []) do
     case registry_source().snapshot() do
       {:ok, registry} ->
-        moved = moved(registry)
+        {moved, patch_only} = moved(registry)
+        dry_run? = Keyword.get(opts, :dry_run, false)
 
         enqueued =
-          if Keyword.get(opts, :dry_run, false) do
+          if dry_run? do
             0
           else
             moved |> oldest_first() |> Enum.with_index() |> Enum.count(&enqueue/1)
           end
 
+        nominated = if dry_run?, do: 0, else: nominate(patch_only)
+
         Logger.info(
-          "Update check: #{length(registry)} packages on hex, #{length(moved)} tracked and worth rebuilding, #{enqueued} queued"
+          "Update check: #{length(registry)} packages on hex, #{length(moved)} tracked and worth rebuilding, #{enqueued} queued, #{nominated} toolchain builds nominated"
         )
 
         {:ok,
          %{
            seen: length(registry),
            moved: length(moved),
-           enqueued: enqueued
+           enqueued: enqueued,
+           nominated: nominated
          }}
 
       {:error, reason} ->
@@ -208,7 +224,29 @@ defmodule Portal.Workers.UpdateCheck do
     # than for the whole catalogue.
     statuses = latest_run_statuses(Enum.map(drifted, fn {package, _entry} -> package.id end))
 
-    for {package, entry} <- drifted, rebuild?(package, entry, statuses), do: entry
+    {rebuild, patch_only} =
+      Enum.split_with(drifted, &rebuild?(elem(&1, 0), elem(&1, 1), statuses))
+
+    {Enum.map(rebuild, &elem(&1, 1)), patch_only}
+  end
+
+  # The registry's latest version of each package whose release earns no
+  # full run, as a toolchain build candidate (`hex_latest_version`). Counts
+  # the rows it changed.
+  defp nominate(patch_only) do
+    Enum.count(patch_only, fn {package, entry} ->
+      {count, _} =
+        Portal.Repo.update_all(
+          from(p in "catalog_packages",
+            where:
+              p.id == type(^package.id, Ecto.UUID) and
+                (is_nil(p.hex_latest_version) or p.hex_latest_version != ^entry.latest_version)
+          ),
+          set: [hex_latest_version: entry.latest_version]
+        )
+
+      count == 1
+    end)
   end
 
   # A tracked package with no version on record has never produced a build

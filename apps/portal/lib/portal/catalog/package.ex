@@ -70,6 +70,13 @@ defmodule Portal.Catalog.Package do
       public?(true)
     end
 
+    # The Hex registry's latest version, when a patch release of a passing
+    # package earned no full run (`Portal.Workers.UpdateCheck`): a toolchain
+    # build candidate (`Portal.Catalog.toolchain_backlog/3`), never shown.
+    attribute :hex_latest_version, :string do
+      public?(false)
+    end
+
     attribute :last_run_at, :utc_datetime do
       public?(true)
     end

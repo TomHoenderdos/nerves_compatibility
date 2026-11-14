@@ -1584,6 +1584,11 @@ defmodule Portal.Catalog do
   # which reads the registry in Elixir). Only `toolchain_backlog/3` fills them
   # in ($16/$17); every other reader of this query gets empty lists. A version
   # that also qualifies on a run is one row, with that run's `finished_at`.
+  # So does a package's `hex_latest_version` (#105), the registry's latest
+  # release `Portal.Workers.UpdateCheck` nominates when a patch release of a
+  # passing package earned no full run, for a package known to be pure as
+  # `version_backfill_packages/1` reads it: a new build like a run's version,
+  # not a backfill, whatever the package's downloads.
   # `backfill` marks a version only the backfill nominates: its `error` rows
   # follow `@backfill_error_reopen` rather than the day-old-error rule, and
   # `Portal.Workers.ToolchainSweep` caps how many it takes per run.
@@ -1672,6 +1677,18 @@ defmodule Portal.Catalog do
       SELECT p.id, p.name, b.version, NULL, p.hex_downloads_recent, true
       FROM unnest($BACKFILL_PACKAGES::text[], $BACKFILL_VERSIONS::text[]) AS b(package, version)
       JOIN catalog_packages p ON p.name = b.package
+      UNION ALL
+      SELECT p.id, p.name, p.hex_latest_version, NULL, p.hex_downloads_recent, false
+      FROM catalog_packages p
+      WHERE p.hex_latest_version IS NOT NULL
+        AND #{@pure_beam_clause}
+        AND EXISTS (
+          SELECT 1
+          FROM catalog_runs r
+          JOIN catalog_system_results s ON s.run_id = r.id
+          WHERE r.package_id = p.id
+            AND #{@pure_evidence_clause}
+        )
     ) q
     GROUP BY q.package_id, q.package, q.version, q.recent
   ) e

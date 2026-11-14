@@ -2,6 +2,8 @@ defmodule Portal.Catalog.VersionBackfillTest do
   # Not async: swaps the `Portal.Toolchains` application env.
   use Portal.DataCase, async: false
 
+  import Ecto.Query, only: [from: 2]
+
   require Ash.Query
 
   alias Portal.Catalog
@@ -105,6 +107,48 @@ defmodule Portal.Catalog.VersionBackfillTest do
 
   defp backlog, do: Catalog.toolchain_backlog("1.19/28", 1, 10_000)
   defp versions(name), do: for(%{package: ^name, version: v} <- backlog(), do: v)
+
+  defp hex_latest!(name, version) do
+    {1, _} =
+      Repo.update_all(
+        from(p in "catalog_packages", where: p.name == ^name),
+        set: [hex_latest_version: version]
+      )
+
+    :ok
+  end
+
+  # #105: the version `Portal.Workers.UpdateCheck` nominates.
+  describe "toolchain_backlog/3 with the Hex latest version" do
+    test "a pure package's Hex latest version is a new build, ranked like any other" do
+      run!("pkg", "1.2.3")
+      hex_latest!("pkg", "1.2.4")
+
+      assert backlog()
+             |> Enum.map(&{&1.version, &1.backfill, &1.reopen, &1.refresh})
+             |> Enum.sort() ==
+               [{"1.2.3", false, false, false}, {"1.2.4", false, false, false}]
+    end
+
+    test "it is one candidate with a run of the same version, and none with a live build" do
+      run!("pkg", "1.2.3")
+      hex_latest!("pkg", "1.2.3")
+      assert versions("pkg") == ["1.2.3"]
+
+      hex_latest!("pkg", "1.2.4")
+      row!("pkg", "1.2.4", :pass)
+      assert versions("pkg") == ["1.2.3"]
+    end
+
+    test "a package not known to be pure gets none" do
+      run!("failed", "2.0.0", host: "fail")
+      run!("native", "2.0.0", native: %{"nif_language" => "c", "port_languages" => []})
+      {1, _} = Repo.insert_all("catalog_packages", [package_row("norun", 1_000)])
+      for name <- ~w(failed native norun), do: hex_latest!(name, "2.0.1")
+
+      assert backlog() == []
+    end
+  end
 
   describe "toolchain_backlog/3 with the version backfill" do
     test "a top package's last ten releases are wanted, newest first, and no older ones" do
