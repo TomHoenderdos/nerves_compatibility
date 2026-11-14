@@ -37,6 +37,22 @@ defmodule PortalWeb.RateLimitedRoutesTest do
 
   defp from(conn, client), do: put_req_header(conn, "x-forwarded-for", client)
 
+  # `Portal.RateLimiter.hit/5` counts into fixed windows aligned to the wall
+  # clock (`div(now, window_ms)`), not to when a test starts -- the
+  # moduledoc accepts a client getting through twice its limit across that
+  # boundary, which is fine for "stop a flood". A test that dispatches a few
+  # requests in a row and expects one past the boundary to still be 429 does
+  # not have that luxury: landing right on the edge resets the counter mid
+  # test and turns the expected 429 into a 200. Rather than assume the test
+  # is fast enough to never land there, wait the exact, computed distance to
+  # the next window whenever it is already close, so every request below
+  # lands inside one window.
+  defp avoid_window_edge(window_ms, guard_ms \\ 2_000) do
+    now = System.system_time(:millisecond)
+    remaining = window_ms - rem(now, window_ms)
+    if remaining < guard_ms, do: Process.sleep(remaining)
+  end
+
   defp signed_in(conn) do
     conn
     |> init_test_session(%{})
@@ -103,6 +119,7 @@ defmodule PortalWeb.RateLimitedRoutesTest do
   describe "behind the proxy" do
     test "each forwarded client gets its own budget", %{conn: conn} do
       limits(%{auth: {2, 60_000}})
+      avoid_window_edge(60_000)
       params = %{"username" => "nobody", "password" => "wrong password"}
 
       # `Phoenix.ConnTest` requests come from 127.0.0.1, as Apache's do.
@@ -189,6 +206,7 @@ defmodule PortalWeb.RateLimitedRoutesTest do
 
     test "the client's budget comes first and counts cached answers too", %{conn: conn} do
       limits(%{hex_search: {1, 60_000}, hex_search_global: {100, 60_000}})
+      avoid_window_edge(60_000)
       HexSearchCache.put("jason", @jason)
 
       assert conn
@@ -204,6 +222,7 @@ defmodule PortalWeb.RateLimitedRoutesTest do
 
     test "a miss counts against the budget every client shares", %{conn: conn} do
       limits(%{hex_search: {100, 60_000}, hex_search_global: {1, 60_000}})
+      avoid_window_edge(60_000)
       # Another client's miss, already counted.
       assert :ok = RateLimiter.hit(:hex_search_global, :global, 1, 60_000)
 
