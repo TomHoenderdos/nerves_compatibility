@@ -60,6 +60,13 @@ defmodule PortalWeb.SessionRevocationTest do
     topic
   end
 
+  # Every test here hashes or verifies a password (Argon2, deliberately
+  # slow) before reaching the broadcast it waits on, so ExUnit's 100 ms
+  # default for `assert_receive` leaves little room once the scheduler is
+  # under any load. The broadcast itself is still asserted exactly; this
+  # only widens how long the test waits for it.
+  @disconnect_timeout 1_000
+
   defp signed_in?(conn), do: conn |> get(~p"/settings") |> Map.fetch!(:status) == 200
 
   # The public LiveView's mount resolves `current_user` from the session; the
@@ -173,7 +180,8 @@ defmodule PortalWeb.SessionRevocationTest do
         "new_password" => @new_password
       })
 
-      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"},
+                     @disconnect_timeout
     end
 
     test "a refused change disconnects nothing" do
@@ -200,7 +208,9 @@ defmodule PortalWeb.SessionRevocationTest do
       assert redirected_to(posted) == ~p"/settings/security"
       conn = recycle(posted)
 
-      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"},
+                     @disconnect_timeout
+
       assert signed_in?(conn)
       refute signed_in?(other)
 
@@ -225,7 +235,10 @@ defmodule PortalWeb.SessionRevocationTest do
       conn = recycle(posted)
 
       refute Accounts.Totp.confirmed?(user)
-      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
+
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"},
+                     @disconnect_timeout
+
       assert signed_in?(conn)
       assert live_signed_in?(conn)
       refute signed_in?(other)
@@ -260,7 +273,9 @@ defmodule PortalWeb.SessionRevocationTest do
       assert html_response(posted, 200)
       conn = recycle(posted)
 
-      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"},
+                     @disconnect_timeout
+
       assert signed_in?(conn)
       assert live_signed_in?(conn)
       refute signed_in?(other)
@@ -301,7 +316,10 @@ defmodule PortalWeb.SessionRevocationTest do
 
       reloaded = Ash.reload!(user, domain: Accounts)
       assert is_nil(reloaded.github_id)
-      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
+
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"},
+                     @disconnect_timeout
+
       assert signed_in?(conn)
       assert live_signed_in?(conn)
       refute signed_in?(other)
@@ -360,7 +378,10 @@ defmodule PortalWeb.SessionRevocationTest do
       conn = post(conn, ~p"/settings/security/sign-out-everywhere")
       assert redirected_to(conn) == ~p"/settings/security"
       conn = recycle(conn)
-      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}
+
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"},
+                     @disconnect_timeout
+
       assert signed_in?(conn)
       assert live_signed_in?(conn)
       refute signed_in?(other)
