@@ -203,10 +203,12 @@ defmodule NccWorker.CLI do
           | {:error,
              {:invalid_json, String.t()}
              | {:invalid_optional_deps, term()}
+             | {:invalid_world, term()}
              | {:invalid_config_variant, term()}}
   def parse_input(content) do
     with {:ok, input} <- decode_input(content),
-         {:ok, input} <- validate_optional_deps(input) do
+         {:ok, input} <- validate_optional_deps(input),
+         {:ok, input} <- validate_world(input) do
       validate_config_variant(input)
     end
   end
@@ -222,10 +224,41 @@ defmodule NccWorker.CLI do
   # would run as some default and be recorded as the wrong variant, so it is
   # refused; an input without the key runs as before.
   defp validate_optional_deps(%{optional_deps: value})
-       when value not in ["include", "exclude"],
+       when value not in ["include", "exclude", "world"],
        do: {:error, {:invalid_optional_deps, value}}
 
   defp validate_optional_deps(input), do: {:ok, input}
+
+  # A world build (`optional_deps: "world"`) names its world and carries the
+  # members, which come from the portal and are checked here
+  # (`NccWorker.WorldDeps.validate/2`): `world: "<name>"` with
+  # `world_members: [names]`, or `world: %{"name", "members"}`. Either is
+  # normalised to `world` and `world_members`. A world without
+  # `optional_deps: "world"`, or that request without a valid world, is
+  # refused: it would be recorded as the wrong variant.
+  defp validate_world(%{optional_deps: "world"} = input) do
+    with {:ok, name, members} <- world_fields(input),
+         {:ok, world} <- NccWorker.WorldDeps.validate(name, members) do
+      {:ok, %{input | world: world.name} |> Map.put(:world_members, world.members)}
+    end
+  end
+
+  defp validate_world(%{world: _} = input),
+    do: {:error, {:invalid_world, {:not_a_world_build, input[:optional_deps]}}}
+
+  defp validate_world(%{world_members: _} = input),
+    do: {:error, {:invalid_world, {:not_a_world_build, input[:optional_deps]}}}
+
+  defp validate_world(input), do: {:ok, input}
+
+  defp world_fields(%{world: %{} = world} = input) do
+    if Map.has_key?(input, :world_members),
+      do: {:error, {:invalid_world, :members_given_twice}},
+      else: {:ok, world[:name], world["members"]}
+  end
+
+  defp world_fields(%{world: name} = input), do: {:ok, name, input[:world_members]}
+  defp world_fields(_input), do: {:error, {:invalid_world, :missing}}
 
   # The portal records a toolchain build under the config variant it asked
   # for; a name this image does not pin would build some other config.
@@ -237,7 +270,7 @@ defmodule NccWorker.CLI do
 
   defp validate_config_variant(input), do: {:ok, input}
 
-  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter known_system_abi systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages system_abi egress_probe optional_deps config_variant judge makefile_rule2)a
+  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter known_system_abi systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages system_abi egress_probe optional_deps world world_members config_variant judge makefile_rule2)a
   @input_key_map Map.new(@input_keys, &{Atom.to_string(&1), &1})
 
   @spec atomize_keys(map()) :: map()

@@ -32,7 +32,8 @@ defmodule NccWorker.Worker do
     SystemAbiRun,
     Systems,
     TargetDepsGet,
-    WarmNerves
+    WarmNerves,
+    WorldDeps
   }
 
   alias Compatibility.Portability, as: PortabilityReasons
@@ -79,8 +80,16 @@ defmodule NccWorker.Worker do
           },
           # For "toolchain": "include" (the default) adds the optional
           # dependencies before the compile, "exclude" builds the package
-          # without them.
+          # without them, "world" adds, at every depth of the closure, the
+          # unresolved optional dependencies that are members of `world`
+          # (`NccWorker.WorldDeps`).
           optional(:optional_deps) => String.t(),
+          # For "world": the world's name and its members, both checked when
+          # the input is read (`NccWorker.WorldDeps.validate/2`). The input may
+          # also carry `world: %{"name", "members"}`, which `NccWorker.CLI`
+          # normalises to these two keys.
+          optional(:world) => String.t(),
+          optional(:world_members) => [String.t()],
           # For "toolchain": a `Compatibility.ConfigVariants` name; its overlay
           # is written as `config/config.exs` before the compile
           # (`NccWorker.ConfigOverlay`). Absent is `default`, no overlay.
@@ -243,8 +252,9 @@ defmodule NccWorker.Worker do
           # `NCC_INPUT.toolchain` echoed back, when present.
           optional(:requested_toolchain) => map(),
           # A toolchain run's `NCC_INPUT.optional_deps` ("include" or
-          # "exclude") echoed back, when present: the portal checks it
-          # against the variant it queued the build as.
+          # "exclude", and "world:<name>" for a world build) echoed back,
+          # when present: the portal checks it against the variant it queued
+          # the build as.
           optional(:requested_optional_deps) => String.t(),
           # The package's optional dependencies the generated project did not
           # resolve on its own (`NccWorker.DepsLock.unresolved_optional_deps/2`),
@@ -270,11 +280,24 @@ defmodule NccWorker.Worker do
           # argus-only runs.
           # `skipped` were never tried: dev tooling and alternatives on
           # `Compatibility.OptionalDeps.never_added/0`.
+          # A world build (`optional_deps: "world"`) also carries `world`, its
+          # name, and `rounds`, the lock reads its fixpoint took
+          # (`NccWorker.WorldDeps`). `added` is every member it added, at any
+          # depth; `skipped` the unresolved optional dependencies of the
+          # closure that are not members. When the world closure could not be
+          # built (`reason` "deps_get_failed", "mix_exs_edit_failed",
+          # "stale_build_not_removed", "lock_policy_violation",
+          # "world_not_converged", "world_extra_deps", "deps_lock_unreadable"
+          # or "host_compile_failed"), `added` is empty, `dropped` names what
+          # was added, and `toolchain_build` is skipped with no files: there
+          # is no fallback to a build without them.
           optional(:optional_deps) => %{
-            added: [String.t()],
-            dropped: [String.t()],
-            skipped: [String.t()],
-            reason: String.t() | nil
+            required(:added) => [String.t()],
+            required(:dropped) => [String.t()],
+            required(:skipped) => [String.t()],
+            required(:reason) => String.t() | nil,
+            optional(:world) => String.t(),
+            optional(:rounds) => pos_integer()
           },
           # The package's transitive dependency closure as locked for this
           # build, itself excluded, keyed by name. For a firmware run, the
@@ -1651,7 +1674,7 @@ defmodule NccWorker.Worker do
     with {:ok, compiled} <-
            toolchain_compile(
              project_dir,
-             input[:optional_deps],
+             compile_request(input),
              package_name,
              paths,
              compile_opts
@@ -1672,19 +1695,67 @@ defmodule NccWorker.Worker do
           finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
           scope: RunScope.to_string(:toolchain),
           toolchain_build:
-            project_dir
-            |> toolchain_build(package_name, compiled.host, toolchain, compiled.verdict,
-              makefile_rule2: rule2
-            )
+            compiled
+            |> compiled_build(project_dir, package_name, toolchain, makefile_rule2: rule2)
             |> Map.put(:config_variant, config_variant)
         }
         |> put_optional_deps(compiled.optional_deps)
-        |> put_deps_lock(:toolchain, nil, project_dir, package_name)
+        |> put_run_deps_lock(compiled, project_dir, package_name)
         |> put_requested_toolchain(input[:toolchain])
-        |> put_requested_optional_deps(input[:optional_deps])
+        |> put_requested_optional_deps(requested_optional_deps(input))
 
       {:ok, result}
     end
+  end
+
+  # What `toolchain_compile/5` is asked for: a world build's world, or the
+  # input's `optional_deps` as given.
+  defp compile_request(%{optional_deps: "world", world: name, world_members: members}),
+    do: {:world, name, members}
+
+  defp compile_request(input), do: input[:optional_deps]
+
+  defp requested_optional_deps(%{optional_deps: "world", world: name}), do: "world:" <> name
+  defp requested_optional_deps(input), do: input[:optional_deps]
+
+  # A world closure that could not be built compiled nothing: its build is
+  # skipped with no files, and nothing describes a lock it was not built in.
+  defp compiled_build(%{world_skip: reason}, _project_dir, _package_name, toolchain, _opts),
+    do: world_skipped_build(toolchain, reason)
+
+  defp compiled_build(compiled, project_dir, package_name, toolchain, opts),
+    do:
+      toolchain_build(project_dir, package_name, compiled.host, toolchain, compiled.verdict, opts)
+
+  defp put_run_deps_lock(result, %{world_skip: _}, _project_dir, _package_name), do: result
+
+  defp put_run_deps_lock(result, _compiled, project_dir, package_name),
+    do: put_deps_lock(result, :toolchain, nil, project_dir, package_name)
+
+  @doc false
+  # The `toolchain_build` of a world build whose closure was not built
+  # (`toolchain_compile/5`): skipped, no files, no lock-derived fields.
+  # Public for tests.
+  @spec world_skipped_build(map(), String.t()) :: toolchain_build_verdict()
+  def world_skipped_build(toolchain, reason) do
+    %{
+      status: "skipped",
+      reason: "world closure not built: " <> reason,
+      elixir: toolchain.elixir,
+      otp: toolchain.erlang,
+      deps_lock: nil,
+      package_checksum: nil,
+      declared: nil,
+      compile_env: nil,
+      compile_env_rule: nil,
+      compile_inputs: nil,
+      file_manifest: nil,
+      portability_rule: nil,
+      rule1_reason: nil,
+      judge_revision: nil,
+      manager: nil,
+      compile_observations: nil
+    }
   end
 
   # NCC_INPUT.judge.makefile_rule2 (precompiled judge refinements, item 1):
@@ -1713,9 +1784,41 @@ defmodule NccWorker.Worker do
   # project_dir, package -> {deps, skipped} end`) and `deps_get:`
   # (`Project.add_optional_deps/5`'s); none of the three reaches the traced
   # compile.
-  @spec toolchain_compile(String.t(), String.t() | nil, String.t(), map(), keyword()) ::
+  #
+  # `{:world, name, members}` is a world build (`NccWorker.WorldDeps`): the
+  # members are added at every depth of the closure until nothing changes,
+  # the lock snapshots are taken again after the last `deps.get`, and the
+  # one traced compile runs and is judged as any other. There is no
+  # fallback: when the fixpoint, the lock policy, the stray-dependency check
+  # or the compile fails, the result is `world_skip:` with the reason, no
+  # `host` or `verdict`, and `optional_deps` naming what was dropped.
+  @spec toolchain_compile(
+          String.t(),
+          String.t() | nil | {:world, String.t(), [String.t()]},
+          String.t(),
+          map(),
+          keyword()
+        ) ::
           {:ok, %{host: map(), verdict: Portability.verdict(), optional_deps: map() | nil}}
+          | {:ok, %{world_skip: String.t(), optional_deps: map()}}
           | {:error, term()}
+  def toolchain_compile(project_dir, {:world, name, members}, package_name, paths, opts) do
+    log_host(paths, "World build #{name}: adding its members at every depth of the closure")
+
+    resolve_opts = [env: host_env(project_dir)] ++ Keyword.take(opts, [:deps_get])
+
+    case WorldDeps.resolve(project_dir, package_name, members, resolve_opts) do
+      {:ok, progress} ->
+        compile_world(progress, {name, members}, project_dir, package_name, paths, opts)
+
+      {:error, reason, detail, progress} ->
+        world_skip(paths, {name, members}, project_dir, package_name, progress, reason, detail)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   def toolchain_compile(project_dir, "exclude", package_name, paths, opts) do
     with {:ok, compiled} <- host_trace(project_dir, package_name, paths, opts) do
       info = Map.put(optional_deps_info([], [], "not_requested"), :skipped, [])
@@ -1739,6 +1842,73 @@ defmodule NccWorker.Worker do
       {:ok, Map.update!(compiled, :optional_deps, &put_skipped(&1, skipped))}
     end
   end
+
+  defp compile_world(progress, world, project_dir, package_name, paths, opts) do
+    if progress.added != [] do
+      log_host(paths, "World build added: " <> Enum.join(progress.added, ", "))
+    end
+
+    # After the last `deps.get`, before the only compile.
+    releases = Portability.lock_snapshot(project_dir)
+
+    world_opts =
+      opts
+      |> Keyword.put(:releases, releases)
+      |> Keyword.put(:trees, added_trees(project_dir, releases, opts))
+
+    case host_trace(project_dir, package_name, paths, world_opts) do
+      {:ok, %{host: %{status: :pass}} = compiled} ->
+        info = world_info(world, project_dir, package_name, progress, progress.added, [], nil)
+        {:ok, Map.put(compiled, :optional_deps, info)}
+
+      {:ok, %{host: host}} ->
+        world_skip(
+          paths,
+          world,
+          project_dir,
+          package_name,
+          progress,
+          "host_compile_failed",
+          host[:error]
+        )
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp world_skip(paths, {name, _} = world, project_dir, package_name, progress, reason, detail) do
+    log_host(
+      paths,
+      String.trim_trailing(
+        "World build #{name} not built (#{reason}), nothing is published: " <>
+          world_detail(detail)
+      )
+    )
+
+    info = world_info(world, project_dir, package_name, progress, [], progress.added, reason)
+    {:ok, %{world_skip: world_reason(reason, detail), optional_deps: info}}
+  end
+
+  defp world_info({name, members}, project_dir, package_name, progress, added, dropped, reason) do
+    project_dir
+    |> WorldDeps.set_aside(package_name, members)
+    |> then(&%{added: added, dropped: dropped, skipped: &1, reason: reason})
+    |> Map.merge(%{world: name, rounds: progress.rounds})
+  end
+
+  # The names are the useful part of these two; the rest stay in host.log.
+  defp world_reason(reason, names)
+       when reason in ["world_extra_deps", "world_not_converged"] and is_list(names),
+       do: "#{reason} (#{Enum.join(names, ", ")})"
+
+  defp world_reason(reason, _detail), do: reason
+
+  defp world_detail({:deps_get_failed, output}), do: LogTail.tail(output, 2000)
+  defp world_detail(nil), do: ""
+  defp world_detail(text) when is_binary(text), do: LogTail.tail(text, 2000)
+  defp world_detail(names) when is_list(names), do: Enum.join(names, ", ")
+  defp world_detail(other), do: inspect(other, limit: 20)
 
   defp optional_deps_to_add(project_dir, package_name) do
     project_dir
@@ -1982,6 +2152,9 @@ defmodule NccWorker.Worker do
   # against the variant the job was queued for. Public for tests.
   @spec put_requested_optional_deps(map(), term()) :: map()
   def put_requested_optional_deps(result, requested) when requested in ["include", "exclude"],
+    do: Map.put(result, :requested_optional_deps, requested)
+
+  def put_requested_optional_deps(result, "world:" <> _ = requested),
     do: Map.put(result, :requested_optional_deps, requested)
 
   def put_requested_optional_deps(result, _requested), do: result

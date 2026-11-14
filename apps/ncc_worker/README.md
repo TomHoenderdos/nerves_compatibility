@@ -470,6 +470,50 @@ malformed input is, rather than run as the default and recorded as the wrong var
 portal checks against the variant it queued the build as. The portal queues a version `"include"` first and
 `"exclude"` only when that build added one.
 
+`"optional_deps": "world"` is a world build (`NccWorker.WorldDeps`): the package compiled with exactly the optional
+dependencies a common real application has. The input names the world and carries its members, which the image does
+not pin:
+
+```json
+{"optional_deps": "world", "world": "phx", "world_members": ["bandit", "decimal", "jason", "..."]}
+```
+
+`"world": {"name": "phx", "members": [...]}` is accepted too and read as the same two keys. The members are checked
+when the input is read: the name and each member match `^[a-z][a-z0-9_]*$` and are at most 64 bytes, there are 1 to
+200 members, no duplicates, and none on `Compatibility.OptionalDeps.never_added/0`. A list that fails, a world build
+without a world, or a `world` / `world_members` key on any other request is refused (`{:error, {:invalid_world,
+why}}`, exit `10` with no result).
+
+After the package's `deps.get` and the lock policy, the worker runs a fixpoint. Each round reads the lock and collects
+every optional dependency declared by the package or by any member of its closure that the lock did not resolve, comes
+from the public Hex repo and is a world member (`DepsLock.unresolved_optional_deps_in_closure/2`). It adds them to
+`mix.exs`, runs `deps.get` and checks the lock policy again, then starts the next round. It stops when a round finds
+nothing to add. A round is one read of the lock: esbuild converges in 2 (decimal under jason) and phoenix in 3
+(bandit, jason and phoenix_html, then decimal; never cowboy or phoenix_view, which are not members). A round that
+still finds something to add at the cap of 6 is `world_not_converged`. After the last `deps.get` the lock may hold
+nothing but the package and its closure; anything else would be loadable while the package compiles and is
+`world_extra_deps`. The lock and tree snapshots the trace judges against are taken again after that last `deps.get`,
+and then the one traced compile runs and is judged like any other build.
+
+There is no fallback to a build without the members. When a round's `deps.get` fails, the lock policy rejects the
+lock, the fixpoint does not converge, a stray dependency is found or the host compile fails, the run still writes a
+result: `toolchain_build.status` is `"skipped"`, its `reason` is `"world closure not built: <reason>"` (the stray or
+unconverged names in parentheses), it has no `file_manifest` and no lock-derived fields, and the top-level `deps_lock`,
+`package_checksum` and `declared` are left out. A host compile that is a worker error, or a project that cannot be put
+back after a failed round, is still exit `10`.
+
+`requested_optional_deps` is `"world:<name>"`, and `optional_deps` carries the world:
+
+```json
+"optional_deps": {"added": ["bandit", "jason", "phoenix_html", "decimal"], "dropped": [],
+                  "skipped": ["phoenix_view", "plug_cowboy"], "reason": null, "world": "phx", "rounds": 3}
+```
+
+`added` lists the members it added, in the order it added them. `skipped` lists the closure's unresolved optional
+dependencies that are not members. When the closure was not built, `added` is `[]`, `dropped` lists what earlier
+rounds had added, and `reason` is one of `deps_get_failed`, `mix_exs_edit_failed`, `stale_build_not_removed`,
+`lock_policy_violation`, `world_not_converged`, `world_extra_deps`, `deps_lock_unreadable` or `host_compile_failed`.
+
 `"config_variant"` in `NCC_INPUT` (toolchain mode) is a `Compatibility.ConfigVariants` name; its overlay is written as
 `config/config.exs` before the compile (`NccWorker.ConfigOverlay`). Absent is `"default"`, no overlay. The overlay
 is written after the project's `deps.get` and before the lock snapshot and the traced compile, so the traced

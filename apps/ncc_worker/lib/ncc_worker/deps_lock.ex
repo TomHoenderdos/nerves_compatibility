@@ -132,6 +132,58 @@ defmodule NccWorker.DepsLock do
   end
 
   @doc """
+  `unresolved_optional_deps/2` across the package's whole closure: every
+  optional dependency that the package or any locked member of its closure
+  declares, that the lock did not resolve, and that comes from the public Hex
+  repo, as `%{app, package, requirement}` sorted by app. The requirement is
+  that of the first declaring entry by lock name; once the dependency is
+  locked, Mix applies every declarer's requirement anyway. `[]` when the lock
+  is missing or does not name the package.
+
+  A world build (`NccWorker.WorldDeps`) adds the ones that are members of the
+  world, at any depth: decimal under jason counts as much as jason under
+  phoenix, because an application that has decimal compiles jason with it.
+  """
+  @spec unresolved_optional_deps_in_closure(String.t(), String.t()) ::
+          [%{app: String.t(), package: String.t(), requirement: String.t() | nil}]
+  def unresolved_optional_deps_in_closure(project_dir, package) do
+    with {:ok, lock} <- read_lock(project_dir),
+         {:ok, name} <- lock_name(lock, package) do
+      members = lock |> graph() |> BuildCache.closure(name) |> MapSet.put(name)
+
+      for member <- Enum.sort(members),
+          {app, requirement, opts} <- lock_deps(lock[member]),
+          opts[:optional] == true,
+          to_string(opts[:repo] || "hexpm") == "hexpm",
+          app = to_string(app),
+          not Map.has_key?(lock, app) do
+        %{app: app, package: to_string(opts[:hex] || app), requirement: requirement}
+      end
+      |> Enum.uniq_by(& &1.app)
+      |> Enum.sort_by(& &1.app)
+    else
+      _ -> []
+    end
+  end
+
+  @doc """
+  The lock names that are neither the package nor in its closure, sorted:
+  dependencies the project resolved that the package never reaches. They are
+  loadable while the package compiles (Mix puts every locked dependency on
+  the load path), and a real application whose closure for the package is
+  the same does not have to have them. `:error` when the lock is missing or
+  does not name the package.
+  """
+  @spec outside_closure(String.t(), String.t()) :: {:ok, [String.t()]} | :error
+  def outside_closure(project_dir, package) do
+    with {:ok, lock} <- read_lock(project_dir),
+         {:ok, name} <- lock_name(lock, package) do
+      closure = lock |> graph() |> BuildCache.closure(name) |> MapSet.put(name)
+      {:ok, lock |> Map.keys() |> Enum.reject(&MapSet.member?(closure, &1)) |> Enum.sort()}
+    end
+  end
+
+  @doc """
   The dependencies `package` declares, from its own lock entry, as
   `%{"app", "name", "requirement", "optional"}` sorted by app: every one,
   optional or not, resolved or not. `[]` for a package that declares
