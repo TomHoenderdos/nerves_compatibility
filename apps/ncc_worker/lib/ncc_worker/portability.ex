@@ -139,8 +139,14 @@ defmodule NccWorker.Portability do
   # let through, a mix.exs read of a path the verified tarball lacks is the
   # tree check's, a literal Version comparison in mix.exs is judged over the
   # minor series, and a source directory held only by `__mix_recompile__?/0`
-  # is observed (bumped by two while `makefile_rule2` exists).
-  @judge_revision 7
+  # is observed (bumped by two while `makefile_rule2` exists). 9: quic's
+  # reviewed `build_nif.sh` compile hook is let through (`Rebar.reviewed_hooks/0`),
+  # a `platform_define` regex the OTP major does not decide is a compile input
+  # rather than a refusal, and rule 2 leaves the package's own name out of
+  # its native-tool grep and counts its target reads only where they can run
+  # at compile time (`NccWorker.TargetScan`) (bumped by two while
+  # `makefile_rule2` exists).
+  @judge_revision 9
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on

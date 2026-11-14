@@ -369,7 +369,10 @@ order) instead of refusing; every skipped row below it is reopened once. Revisio
 config reads (`{rebar, log}` from `rebar_log`, `{cf, colour_term}` from `cf`), refuses a baked source path only in a
 module that itself runs programs, allows a call into a module the trace loaded from installed OTP code whose `.app`
 lists that module's application (public_key into `asn1rt_nif`), and judges a dependency's `rebar.config.script` by
-what its evaluation read and the `mix.rebar.config` Mix wrote from it.
+what its evaluation read and the `mix.rebar.config` Mix wrote from it. Revision 9 lets quic's reviewed `build_nif.sh`
+compile hook through, records a `platform_define` regex the OTP major does not decide as a compile input instead of
+refusing, and for the package itself leaves its own name out of the native-tool grep and counts a target read only
+where it can run at compile time (elixir_make).
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
