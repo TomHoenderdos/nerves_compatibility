@@ -32,6 +32,33 @@ defmodule Portal.Catalog.CacheTest do
     end
   end
 
+  # `counting_fun`'s message is sent by the background refresh process
+  # itself, from inside `fun.()`, strictly before that process sends the
+  # Cache GenServer its `{:result, ...}`. Receiving it only proves the
+  # computation ran, not that the GenServer has since handled `{:result,
+  # ...}` and called `store/3` -- those are two different senders racing
+  # for the GenServer's mailbox, and the test process can resume and read
+  # the table before the store lands. Wait on the table itself.
+  defp await_cached(key, value, deadline \\ nil)
+
+  defp await_cached(key, value, nil),
+    do: await_cached(key, value, System.monotonic_time(:millisecond) + 1_000)
+
+  defp await_cached(key, value, deadline) do
+    case :ets.lookup(Cache, key) do
+      [{^key, ^value, _fresh_until}] ->
+        :ok
+
+      _ ->
+        if System.monotonic_time(:millisecond) > deadline do
+          flunk("cache entry for #{inspect(key)} never settled on #{inspect(value)}")
+        else
+          Process.sleep(5)
+          await_cached(key, value, deadline)
+        end
+    end
+  end
+
   describe "with the cache disabled (ttl_ms: 0)" do
     test "calls through on every fetch and stores nothing" do
       set_ttl(0)
@@ -78,6 +105,7 @@ defmodule Portal.Catalog.CacheTest do
       assert Cache.fetch(k, counting_fun(:new)) == :old
       # ...which then runs in the background.
       assert_receive {:computed, :new}, 1_000
+      await_cached(k, :new)
 
       set_ttl(:timer.seconds(60))
       assert Cache.fetch(k, counting_fun(:unused)) == :new
