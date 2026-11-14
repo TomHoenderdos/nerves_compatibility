@@ -215,7 +215,9 @@ defmodule Portal.BuildCache.L2Test do
       {micros, result} =
         :timer.tc(fn -> L2.upload(entry, @slug, key, "jason", config: cfg, timeout_ms: 200) end)
 
-      assert {:error, :timeout} = result
+      # The total bound and Req's receive timeout are both 200 ms, so either
+      # can fire first; what matters is that the call returns in time.
+      assert result in [{:error, :timeout}, {:error, %Req.TransportError{reason: :timeout}}]
       assert micros < 1_000_000
       assert %{upload_failures: 1} = Stats.snapshot()
       assert File.ls!(slug_dir) == [key], "no tarball left beside the entry"
