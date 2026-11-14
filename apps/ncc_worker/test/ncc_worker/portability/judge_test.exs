@@ -1292,6 +1292,131 @@ defmodule NccWorker.Portability.JudgeTest do
     end
   end
 
+  describe "a reviewed rebar3 compile hook (quic's build_nif.sh)" do
+    # webtransport 0.5.8: its only taint was quic's compile hook,
+    # `{"(linux|darwin|solaris)", compile, "sh c_src/build_nif.sh"}`. The
+    # real quic 2.7.0 rebar.config and script, as its Hex tarball has them.
+    @quic Path.expand("../../fixtures/quic-2.7.0", __DIR__)
+    @quic_sha "e92786641bbfba08e0640db6eca95247b468bd923729d0e5b199e9a278b2ab0b"
+
+    setup %{proj: proj} do
+      config = File.read!(Path.join(@quic, "rebar.config"))
+      script = File.read!(Path.join(@quic, "c_src/build_nif.sh"))
+      File.mkdir_p!(Path.join([proj, "deps/quic/c_src"]))
+      File.mkdir_p!(Path.join([proj, "_build/host/lib/quic/ebin"]))
+      File.write!(Path.join([proj, "deps/quic/rebar.config"]), config)
+      File.write!(Path.join([proj, "deps/quic/c_src/build_nif.sh"]), script)
+      File.write!(Path.join([proj, "_build/host/lib/quic/mix.rebar.config"]), config)
+      %{config: config, script: script}
+    end
+
+    defp quic_report(proj, events \\ []) do
+      r = report(proj, %{children: %{"quic" => child([])}, events: events})
+
+      deps =
+        Enum.map(r.closure["deps"], fn
+          %{"app" => "pkg"} = d -> %{d | "children" => ["dep", "quic"]}
+          d -> d
+        end)
+
+      %{
+        r
+        | closure: %{r.closure | "deps" => [dep(proj, "quic", [], "rebar3") | deps]},
+          windows: [window("quic", 1, 9) | r.windows],
+          sentinels: [%{app: "quic", ts: 2, integrity_ok: true} | r.sentinels]
+      }
+    end
+
+    defp quic_opts(proj, contents, hook_scripts) do
+      home = Path.join(Path.dirname(proj), "hex-#{System.unique_integer([:positive])}")
+
+      releases =
+        Map.new(["dep", "pkg", "other", "quic"], fn app ->
+          files = if app == "quic", do: contents, else: %{"README" => ""}
+          NccWorker.TracerFixtures.hex_release(home, app, ["src"], files)
+        end)
+
+      [releases: releases, hex_home: home, hook_scripts: hook_scripts]
+    end
+
+    @taint "closure dependency observed the host: quic (rebar3 build runs pre_hooks)"
+
+    test "passes only with the reviewed script in the tarball and on disk before the compile",
+         %{proj: proj, config: config, script: script} do
+      contents = %{"rebar.config" => config, "c_src/build_nif.sh" => script}
+      r = quic_report(proj)
+
+      assert %{status: :pass, observations: %{"taint" => taint}} =
+               judge(proj, r, quic_opts(proj, contents, %{"quic" => @quic_sha}))
+
+      assert taint == %{}
+
+      # No disk digest (run/3 takes none when QUIC_BUILD_NIF is set): taint.
+      assert %{reason: @taint} = judge(proj, r, quic_opts(proj, contents, %{}))
+
+      # A disk copy with another digest: taint.
+      other = String.duplicate("0", 64)
+      assert %{reason: @taint} = judge(proj, r, quic_opts(proj, contents, %{"quic" => other}))
+
+      # A tarball whose script is not the reviewed one: taint.
+      edited = %{contents | "c_src/build_nif.sh" => script <> "touch /tmp/x\n"}
+      assert %{reason: @taint} = judge(proj, r, quic_opts(proj, edited, %{"quic" => @quic_sha}))
+
+      # A tarball without the script: taint.
+      bare = Map.delete(contents, "c_src/build_nif.sh")
+      assert %{reason: @taint} = judge(proj, r, quic_opts(proj, bare, %{"quic" => @quic_sha}))
+    end
+
+    test "a traced write of QUIC_BUILD_NIF keeps the hook counting",
+         %{proj: proj, config: config, script: script} do
+      contents = %{"rebar.config" => config, "c_src/build_nif.sh" => script}
+
+      write =
+        Map.merge(event(31, "os:putenv/2", Path.join([proj, "deps/pkg/mix.exs"]), "env_write"), %{
+          "arg" => %{"name" => "QUIC_BUILD_NIF", "value" => "1"}
+        })
+
+      r = quic_report(proj, [write])
+
+      assert %{reason: @taint} =
+               judge(proj, r, quic_opts(proj, contents, %{"quic" => @quic_sha}))
+    end
+
+    test "another hook, arch or command beside the reviewed one still counts",
+         %{proj: proj, script: script} do
+      for config <- [
+            ~s'{pre_hooks, [{"(linux|darwin|solaris)", compile, "sh c_src/build_nif.sh"}, {compile, "make"}]}.\n',
+            ~s'{pre_hooks, [{"linux", compile, "sh c_src/build_nif.sh"}]}.\n',
+            ~s'{pre_hooks, [{"(linux|darwin|solaris)", erlc_compile, "sh c_src/build_nif.sh"}]}.\n',
+            ~s'{pre_hooks, [{"(linux|darwin|solaris)", compile, "sh c_src/build_nif.sh build"}]}.\n',
+            ~s'{overrides, [{override, quic, [{pre_hooks, [{"(linux|darwin|solaris)", compile, "sh c_src/build_nif.sh"}]}]}]}.\n'
+          ] do
+        File.write!(Path.join([proj, "_build/host/lib/quic/mix.rebar.config"]), config)
+        contents = %{"rebar.config" => config, "c_src/build_nif.sh" => script}
+
+        assert %{status: :skip, observations: %{"taint" => %{"quic" => _}}} =
+                 judge(proj, quic_report(proj), quic_opts(proj, contents, %{"quic" => @quic_sha})),
+               config
+      end
+    end
+
+    test "run/3's disk digest: only with QUIC_BUILD_NIF unset", %{proj: proj} do
+      assert Portability.hook_scripts(proj, []) == %{"quic" => @quic_sha}
+      assert Portability.hook_scripts(proj, [{"QUIC_BUILD_NIF", nil}]) == %{"quic" => @quic_sha}
+      assert Portability.hook_scripts(proj, [{"QUIC_BUILD_NIF", "1"}]) == %{}
+      assert Portability.hook_scripts(proj, [{"QUIC_BUILD_NIF", ""}]) == %{}
+
+      File.rm!(Path.join([proj, "deps/quic/c_src/build_nif.sh"]))
+
+      File.ln_s!(
+        Path.join(@quic, "c_src/build_nif.sh"),
+        Path.join([proj, "deps/quic/c_src/build_nif.sh"])
+      )
+
+      assert Portability.hook_scripts(proj, []) == %{}
+    end
+  end
+
   describe "Rebar" do
     defp write(dir, name, files) do
       d = Path.join(dir, name)

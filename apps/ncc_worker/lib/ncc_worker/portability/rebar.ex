@@ -18,6 +18,17 @@ defmodule NccWorker.Portability.Rebar do
   value `[{pre | post, [{Command, Provider}]}]`; any other shape counts
   (fail closed), in a section and inside `overrides` alike.
 
+  One reviewed compile hook is let through (`reviewed_hooks/0`): quic's
+  `{"(linux|darwin|solaris)", compile, "sh c_src/build_nif.sh"}` and its
+  BSD twin, which run a script that exits 0 unless `QUIC_BUILD_NIF=1`
+  and otherwise writes only into quic's own tree (`c_src/build`,
+  `priv/quic_crypto_nif.so`). Only when the caller vouches for it
+  (`sources`' `reviewed:`, `allowed_hooks/3`): the script in the verified
+  tarball and on disk before the compile has a reviewed sha256, and the
+  build env left `QUIC_BUILD_NIF` unset. Only as an entry of the app's own
+  active sections; in `overrides`, or any other script, arch, command or
+  digest, it counts as before. quic itself stays native (`c_src`).
+
   `plugins` refuse unless every entry is `rebar3_hex` from Hex, as the bare
   atom or `{rebar3_hex, Requirement}` with a version requirement string.
   rebar3 installs a dependency's `plugins` before `bare compile` and runs
@@ -110,8 +121,27 @@ defmodule NccWorker.Portability.Rebar do
   @type sources :: %{
           required(:config) => binary() | nil | :unreadable,
           required(:script?) => boolean(),
-          optional(:mix_config) => String.t() | {:unjudged, String.t()}
+          optional(:mix_config) => String.t() | {:unjudged, String.t()},
+          optional(:reviewed) => [{String.t(), String.t()}]
         }
+
+  # Reviewed rebar3 compile hooks, by app: the `{Arch, compile, Script}`
+  # entries let through, the script file they run, the sha256 of every
+  # reviewed copy of it, and the variable that must be unset for it to do
+  # nothing. quic 2.1.4, 2.6.1 and 2.7.0 carry the same script (judge round
+  # 2, section 6): `[ "$QUIC_BUILD_NIF" = 1 ] || exit 0`, else a cmake
+  # build into `c_src/build` and `priv/quic_crypto_nif.so`.
+  @reviewed_hooks %{
+    "quic" => %{
+      hooks: [
+        {"(linux|darwin|solaris)", "sh c_src/build_nif.sh"},
+        {"(freebsd|netbsd|openbsd)", "sh c_src/build_nif.sh"}
+      ],
+      file: "c_src/build_nif.sh",
+      sha256: ["e92786641bbfba08e0640db6eca95247b468bd923729d0e5b199e9a278b2ab0b"],
+      env: "QUIC_BUILD_NIF"
+    }
+  }
 
   @doc """
   The static rebar3 rules for the source dir `dest` as it is on disk and,
@@ -143,13 +173,57 @@ defmodule NccWorker.Portability.Rebar do
   def check_sources(%{script?: true}, _parents, nil),
     do: {:refuse, "rebar3 build evaluates rebar.config.script"}
 
-  def check_sources(%{config: own}, parents, mix_config) do
+  def check_sources(%{config: own} = sources, parents, mix_config) do
+    reviewed = Map.get(sources, :reviewed, [])
+
     with {:ok, own_terms} <- parse_own(own),
          {:ok, inherited} <- parent_overrides(parents),
-         :ok <- config({:ok, own_terms ++ inherited}) do
-      mix_config(mix_config)
+         :ok <- config({:ok, own_terms ++ inherited}, reviewed) do
+      mix_config(mix_config, reviewed)
     end
   end
+
+  @doc """
+  The reviewed hook files: `%{app => {script path, variable}}`, the script
+  `allowed_hooks/3` wants the on-disk sha256 of, taken before the compile
+  and only when the build env leaves the variable unset.
+  """
+  @spec reviewed_hooks() :: %{String.t() => {String.t(), String.t()}}
+  def reviewed_hooks, do: Map.new(@reviewed_hooks, fn {app, r} -> {app, {r.file, r.env}} end)
+
+  @doc """
+  The reviewed `{Arch, Script}` compile hooks `app` may run (`sources`'
+  `reviewed:`): its entry's hooks when both the copy of its script in the
+  verified Hex tarball `tarball` and `disk_sha256`, the copy on disk before
+  the compile, have a reviewed sha256; `[]` otherwise.
+  """
+  @spec allowed_hooks(String.t(), binary() | nil, String.t() | nil) :: [{String.t(), String.t()}]
+  def allowed_hooks(app, tarball, disk_sha256) do
+    with %{} = entry <- Map.get(@reviewed_hooks, app),
+         true <- disk_sha256 in entry.sha256,
+         {:ok, bytes} <- tarball_file(tarball, entry.file),
+         true <- sha256(bytes) in entry.sha256 do
+      entry.hooks
+    else
+      _ -> []
+    end
+  end
+
+  defp tarball_file(bytes, path) when is_binary(bytes) do
+    with {:ok, tar} <- contents_tar(bytes),
+         {:ok, [{_name, body}]} <-
+           :erl_tar.extract({:binary, tar}, [:memory, {:files, [String.to_charlist(path)]}]) do
+      {:ok, body}
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  defp tarball_file(_bytes, _path), do: :error
+
+  defp sha256(bytes), do: :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
 
   defp parse_own(nil), do: {:ok, []}
   defp parse_own(text) when is_binary(text), do: parse_or_refuse(text)
@@ -252,14 +326,14 @@ defmodule NccWorker.Portability.Rebar do
      }}
   end
 
-  defp mix_config(nil), do: :ok
+  defp mix_config(nil, _reviewed), do: :ok
 
-  defp mix_config({:unjudged, _} = unjudged), do: unjudged
+  defp mix_config({:unjudged, _} = unjudged, _reviewed), do: unjudged
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp mix_config(path) when is_binary(path) do
+  defp mix_config(path, reviewed) when is_binary(path) do
     case read_file(path) do
-      {:ok, text} -> config(HexFiles.parse(text))
+      {:ok, text} -> config(HexFiles.parse(text), reviewed)
       :absent -> {:unjudged, "rebar3 mix.rebar.config missing"}
       :error -> {:refuse, "rebar3 build config unreadable"}
     end
@@ -282,7 +356,7 @@ defmodule NccWorker.Portability.Rebar do
     end
   end
 
-  defp config({:ok, terms}) do
+  defp config({:ok, terms}, reviewed) do
     sections = active_sections(terms)
 
     # `overrides` of every active section, top level and profiles alike.
@@ -291,14 +365,14 @@ defmodule NccWorker.Portability.Rebar do
           {{:atom, "overrides"}, value} <- List.wrap(section),
           do: value
 
-    case Enum.find(@hook_keys, &(runs?(sections, &1) or nested?(overrides, &1))) do
+    case Enum.find(@hook_keys, &(runs?(sections, &1, reviewed) or nested?(overrides, &1))) do
       # The sections hold their `overrides` already.
       nil -> platform_define(sections)
       key -> {:refuse, "rebar3 build runs #{key}"}
     end
   end
 
-  defp config(:error), do: {:refuse, "rebar3 build config unreadable"}
+  defp config(:error, _reviewed), do: {:refuse, "rebar3 build config unreadable"}
 
   # The top level and the bodies of the profiles active under Mix's rebar3
   # call, each a list of `{key, value}` terms.
@@ -311,10 +385,12 @@ defmodule NccWorker.Portability.Rebar do
     [terms | profiles]
   end
 
-  defp runs?(sections, key) do
+  # A reviewed hook (`reviewed`) is let through here only: as an entry of
+  # an active section, never inside `overrides`.
+  defp runs?(sections, key, reviewed) do
     Enum.any?(sections, fn section ->
       Enum.any?(List.wrap(section), fn
-        {{:atom, ^key}, value} -> counts?(key, value)
+        {{:atom, ^key}, value} -> counts?(key, value, reviewed)
         _ -> false
       end)
     end)
@@ -322,7 +398,7 @@ defmodule NccWorker.Portability.Rebar do
 
   defp nested?(terms, key) do
     any_term?(terms, fn
-      {{:atom, ^key}, value} -> counts?(key, value)
+      {{:atom, ^key}, value} -> counts?(key, value, [])
       _ -> false
     end)
   end
@@ -330,22 +406,36 @@ defmodule NccWorker.Portability.Rebar do
   # Whether a hook or plugin key's value runs anything under Mix's
   # `rebar3 bare compile`: plugins whenever there are any, hooks only on a
   # compile command, any shape not understood always.
-  defp counts?(_key, []), do: false
+  defp counts?(_key, [], _reviewed), do: false
 
-  defp counts?(hooks, value) when hooks in ["pre_hooks", "post_hooks"],
-    do: not proper_list?(value) or Enum.any?(value, &compile_hook?/1)
+  defp counts?(hooks, value, reviewed) when hooks in ["pre_hooks", "post_hooks"],
+    do: not proper_list?(value) or Enum.any?(value, &compile_hook?(&1, reviewed))
 
-  defp counts?("plugins", value),
+  defp counts?("plugins", value, _reviewed),
     do: not proper_list?(value) or not Enum.all?(value, &hex_plugin?/1)
 
-  defp counts?("provider_hooks", value),
+  defp counts?("provider_hooks", value, _reviewed),
     do: not proper_list?(value) or Enum.any?(value, &compile_provider_hooks?/1)
 
-  defp counts?(_key, _value), do: true
+  defp counts?(_key, _value, _reviewed), do: true
 
-  defp compile_hook?({{:atom, command}, _script}), do: command in @compile_commands
-  defp compile_hook?({_arch, {:atom, command}, _script}), do: command in @compile_commands
-  defp compile_hook?(_entry), do: true
+  defp compile_hook?({{:atom, command}, _script}, _reviewed), do: command in @compile_commands
+
+  defp compile_hook?({arch, {:atom, command}, script}, reviewed),
+    do: command in @compile_commands and not reviewed_hook?(arch, command, script, reviewed)
+
+  defp compile_hook?(_entry, _reviewed), do: true
+
+  defp reviewed_hook?(arch, "compile", script, reviewed) do
+    with {:ok, arch} <- regex_text(arch),
+         {:ok, script} <- regex_text(script) do
+      {arch, script} in reviewed
+    else
+      _ -> false
+    end
+  end
+
+  defp reviewed_hook?(_arch, _command, _script, _reviewed), do: false
 
   defp compile_provider_hooks?({{:atom, type}, hooks}) when type in ["pre", "post"] do
     not proper_list?(hooks) or

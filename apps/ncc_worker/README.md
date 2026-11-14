@@ -437,7 +437,9 @@ of these skips the build:
   wordsize, but the client checks only the major), in its `rebar.config` or in the `mix.rebar.config` Mix wrote for
   rebar3. A dependency's own `rebar.config.script` is judged by what its evaluation read (Mix evaluates it in the
   traced VM, outside every window) and by that `mix.rebar.config`, which holds its result; a rebar3 parent's script
-  could not be judged;
+  could not be judged. One reviewed compile hook is let through: quic's `sh c_src/build_nif.sh` (a no-op unless
+  `QUIC_BUILD_NIF=1`), only when that script in the verified tarball and on disk before the compile has a reviewed
+  sha256 and the build env left `QUIC_BUILD_NIF` unset, with no traced write of it (`Rebar.reviewed_hooks/0`);
 - a trace that did not finish.
 
 A host-read reason names the `system_info` key or environment variable, the path, and with `via` the function that

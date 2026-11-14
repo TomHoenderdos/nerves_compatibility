@@ -62,7 +62,8 @@ defmodule NccWorker.Portability.Context do
     preloaded: %{},
     nested: %{},
     ensured: %{},
-    trees: %{}
+    trees: %{},
+    hook_scripts: %{}
   ]
 
   @type dep :: %{
@@ -88,7 +89,8 @@ defmodule NccWorker.Portability.Context do
           preloaded: %{String.t() => String.t()},
           nested: %{(String.t() | atom()) => String.t()},
           ensured: %{{term(), String.t(), String.t()} => integer()},
-          trees: %{String.t() => Trees.tree()}
+          trees: %{String.t() => Trees.tree()},
+          hook_scripts: %{String.t() => String.t()}
         }
 
   @max_hops 40
@@ -103,7 +105,11 @@ defmodule NccWorker.Portability.Context do
       map, the locked Hex releases that verify them (default: the project's
       `mix.lock`, `NccWorker.DepsLock.hex_releases/1`);
     * `:trees`, the `NccWorker.Portability.Trees.snapshot/5` taken before
-      the compile (item 5e); without it no tree is checked.
+      the compile (item 5e); without it no tree is checked;
+    * `:hook_scripts`, `%{app => sha256}` of each reviewed rebar3 hook
+      script on disk before the compile (`NccWorker.Portability.Rebar.reviewed_hooks/0`),
+      taken only when the build env left its variable unset; without it no
+      reviewed hook is let through.
 
   A dependency whose tarball is missing or does not match its lock entry has
   no file list, so none of its source files is readable.
@@ -126,7 +132,8 @@ defmodule NccWorker.Portability.Context do
       roots: roots(project_dir, start),
       hex: hex,
       preloaded: preloaded(start["preloaded"]),
-      trees: trees(Keyword.get(opts, :trees))
+      trees: trees(Keyword.get(opts, :trees)),
+      hook_scripts: trees(Keyword.get(opts, :hook_scripts))
     }
 
     %{ctx | cd: changed_dir(ctx, report), nested: nested(ctx, report)}

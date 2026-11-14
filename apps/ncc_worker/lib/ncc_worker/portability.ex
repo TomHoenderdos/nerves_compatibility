@@ -288,12 +288,20 @@ defmodule NccWorker.Portability do
     {trees_ms, {trees, tree_problem}} =
       timed(fn -> trees(project_dir, opts, env, releases, home, native) end)
 
+    hooks = hook_scripts(project_dir, env ++ Keyword.get(opts, :extra_env, []))
+
     {compile_ms, traced} =
       timed(fn ->
         Tracer.run(project_dir, [package], tracer_opts(opts, env, trace_dir, native))
       end)
 
-    ctx_opts = [releases: releases, hex_home: home, declassified: declassified, trees: trees]
+    ctx_opts = [
+      releases: releases,
+      hex_home: home,
+      declassified: declassified,
+      trees: trees,
+      hook_scripts: hooks
+    ]
 
     project_dir
     |> verdict(package, traced, trace_dir, native, ctx_opts)
@@ -332,6 +340,37 @@ defmodule NccWorker.Portability do
   end
 
   defp makefile_rule2?(opts), do: Keyword.get(opts, :makefile_rule2) == true
+
+  @doc false
+  # Public for tests. The sha256 of each reviewed rebar3 hook script
+  # (`Rebar.reviewed_hooks/0`) under `deps/`, taken before the compile, for
+  # the apps whose variable the compile's `env` and this VM's environment
+  # (which the compile inherits) both leave unset. A script that is not a
+  # regular file, or any set value, even an empty one, leaves the app out:
+  # its hook then counts.
+  @spec hook_scripts(String.t(), [{String.t(), String.t() | nil}]) :: %{String.t() => String.t()}
+  def hook_scripts(project_dir, env) do
+    for {app, {file, var}} <- Rebar.reviewed_hooks(),
+        System.get_env(var) == nil,
+        not Enum.any?(env, &match?({^var, value} when is_binary(value), &1)),
+        sha = regular_sha256(Path.join([project_dir, "deps", app, file])),
+        sha != nil,
+        into: %{},
+        do: {app, sha}
+  end
+
+  @max_hook_script_bytes 1024 * 1024
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp regular_sha256(path) do
+    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_hook_script_bytes <-
+           File.lstat(path),
+         {:ok, bytes} <- File.read(path) do
+      :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+    else
+      _ -> nil
+    end
+  end
 
   @doc """
   Item 5e's tree snapshot (`NccWorker.Portability.Trees.snapshot/5`) of
@@ -964,7 +1003,7 @@ defmodule NccWorker.Portability do
   defp rebar3(ctx, report, app) do
     case Context.dest(ctx, app) do
       nil -> {:unjudged, "rebar3 source dir missing"}
-      dest -> rebar3(static_rebar(ctx, app, dest), ctx, report, app)
+      dest -> rebar3(static_rebar(ctx, report, app, dest), ctx, report, app)
     end
   end
 
@@ -978,14 +1017,41 @@ defmodule NccWorker.Portability do
   # tarball and its rebar3 parents' (their overrides), then the
   # mix.rebar.config rebar3 read. A script on disk counts as one in the
   # tarball: judged by that mix.rebar.config and the trace (`Rebar`).
-  defp static_rebar(ctx, app, dest) do
+  defp static_rebar(ctx, report, app, dest) do
     parents = Context.rebar3_parents(ctx, app)
 
     with {:ok, own} <- Rebar.tarball_sources(Context.tarball(ctx, app)),
          {:ok, inherited} <- parent_sources(ctx, parents) do
       own = %{own | script?: own.script? or disk_script?(dest)}
+      own = Map.put(own, :reviewed, reviewed_hooks(ctx, report, app))
       Rebar.check_sources(own, inherited, mix_rebar_config(ctx, app))
     end
+  end
+
+  # The reviewed compile hooks `app` may run (`Rebar.allowed_hooks/3`):
+  # none when the compile wrote the hook's variable anywhere it was traced,
+  # as rebar3 inherits the Mix VM's environment.
+  defp reviewed_hooks(ctx, report, app) do
+    case Map.get(Rebar.reviewed_hooks(), app) do
+      {_file, var} ->
+        if env_written?(report, var),
+          do: [],
+          else: Rebar.allowed_hooks(app, Context.tarball(ctx, app), ctx.hook_scripts[app])
+
+      nil ->
+        []
+    end
+  end
+
+  defp env_written?(report, var) do
+    events = report.events ++ Enum.flat_map(report.children, fn {_app, c} -> c.events end)
+
+    # A write whose name the trace did not record as a string counts.
+    Enum.any?(events, fn
+      %{"channel" => "env_write", "arg" => %{"name" => name}} when is_binary(name) -> name == var
+      %{"channel" => "env_write"} -> true
+      _ -> false
+    end)
   end
 
   # A scripted parent's overrides are what its script evaluated to: Mix
