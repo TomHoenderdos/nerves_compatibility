@@ -1748,8 +1748,11 @@ defmodule Portal.Catalog do
   # identity removes it, as for a default. Never a refresh: a named variant
   # is a new build. Its `rank` orders a version's variants as `wanted/2` does.
   # Only a default of a known optional-deps variant (`ToolchainBuild.variants/0`)
-  # wants any: a newer release's variant is not this release's to build.
-  @config_variant_candidates_sql """
+  # wants any: a newer release's variant is not this release's to build. A
+  # world default's variants are wanted only while its world is enabled
+  # ($WV, as for `@world_candidates_template`), so nothing of a world is
+  # proposed while `world_variants_enabled` is off.
+  @config_variant_candidates_template """
   SELECT p.name AS package, d.version, d.variant, cv.name AS config_variant,
          d.finished_at, p.hex_downloads_recent AS recent, false AS refresh,
          cv.rank,
@@ -1776,7 +1779,8 @@ defmodule Portal.Catalog do
   WHERE $9::boolean
     AND d.toolchain = $1
     AND d.builder_version = $2
-    AND d.variant IN #{ToolchainBuild.variants_sql()}
+    AND (d.variant IN #{ToolchainBuild.optional_deps_variants_sql()}
+         OR (d.variant IN #{ToolchainBuild.variants_sql()} AND d.variant = ANY($WV::text[])))
     AND d.config_variant = 'default'
     AND d.status = 'pass'
     AND d.revoked_at IS NULL
@@ -1784,6 +1788,12 @@ defmodule Portal.Catalog do
     AND #{default_not_withheld}
     AND NOT #{live_row.("d.package_id", "d.version", "d.variant", "cv.name", true, "false")}
   """
+  @config_variant_candidates_sql String.replace(@config_variant_candidates_template, "$WV", "$18")
+  @config_variant_candidates_count_sql String.replace(
+                                         @config_variant_candidates_template,
+                                         "$WV",
+                                         "$15"
+                                       )
 
   # World builds wanted (`Compatibility.Worlds`, phase 1a): for every
   # version of a package among the $WTOP most downloaded on hex.pm (all of
@@ -2193,10 +2203,11 @@ defmodule Portal.Catalog do
         SELECT count(*) FROM (
           #{@toolchain_candidates_sql}
           UNION ALL
-          #{@config_variant_candidates_sql}
+          #{@config_variant_candidates_count_sql}
         ) candidates
         """,
-        toolchain_params(toolchain, builder_version) ++ config_variant_params()
+        toolchain_params(toolchain, builder_version) ++
+          config_variant_params() ++ [hd(world_params())]
       )
 
     count
